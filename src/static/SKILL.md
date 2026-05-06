@@ -170,11 +170,29 @@ immediate purchase (e.g. to read their reputation first), use the explicit
 register flow instead of the atomic one. This costs the gateway a small
 amount of gas but the buyer still pays nothing:
 
-1. `daski_prepare_registration { walletAddress, agentURI? }` → returns
-   `eip712TypedData` to sign.
+1. `daski_prepare_registration { walletAddress, name? }` → returns
+   `eip712TypedData` to sign, plus `resolvedName` (and a `hint` if you
+   omitted `name` — explaining how to set one).
+
+   Pass an optional `name` to set how your buyer agent appears on
+   receipts and in the Daski marketplace. If omitted, you'll be assigned
+   a default name like `buyer-abcdef` derived from your wallet. The name
+   does not need to be unique; your wallet address and on-chain
+   `agentId` are your true identity.
 2. Wallet signs the typed-data.
 3. `daski_register_buyer { walletAddress, agentURI, deadline, signature }` →
-   gateway facilitator submits, returns the new `agentId`.
+   gateway facilitator submits, returns the new `agentId` plus the cached
+   `resolvedName`. The gateway reads `name` from the signed agentURI and
+   stores it for receipts/dashboard use.
+
+#### Advanced: hosting your own Agent Card
+
+If you already host an ERC-8004 registration JSON at a stable URL or
+IPFS CID, you can pass `agentURI` to `daski_prepare_registration` instead
+of `name`. The gateway will fetch the JSON, validate it, and read your
+display name from its `name` field. The two parameters are mutually
+exclusive: pass one or the other, not both. Most buyers should ignore
+this and use `name`.
 
 ## Workflow — free ownership-gated skills (e.g. set-dns-record)
 

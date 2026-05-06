@@ -22,6 +22,13 @@ The gateway treats the on-chain whitelist as the source of truth — your
 `agentId` must be in `WHITELISTED_AGENT_IDS` on the gateway's config (or
 admitted via the gateway's admin route) before discovery picks you up.
 
+> Note: the buyer-side flow is different. Buyers pass an optional `name`
+> (or `agentURI` for the rare case of a self-hosted card) to
+> `daski_prepare_registration`; the gateway builds the agentURI for them
+> and caches the display name. Providers always need a real hosted Agent
+> Card because they expose A2A endpoints — the buyer flow's `data:` URI
+> shortcut is not appropriate for the seller side.
+
 ---
 
 ## 2. Agent Card

@@ -23,6 +23,14 @@ export interface PublicService {
   serviceLifecycle: string | null;
   turnaroundEstimate: string | null;
   providerA2AUrl: string | null;
+  /**
+   * Provider-level identity from the ERC-8004 registration file's top-level
+   * `name`/`description`. Distinct from `name` (the service offering, from
+   * the agent card) — one provider can host multiple services under the
+   * same brand. Null for providers serving a flat agent card.
+   */
+  providerName: string | null;
+  providerDescription: string | null;
   pricing: PublicServicePricing;
   skills: PublicSkill[];
 }
@@ -230,6 +238,8 @@ export function formatServiceForPublic(
     serviceLifecycle: asString(ext.serviceLifecycle),
     turnaroundEstimate: asString(ext.turnaroundEstimate),
     providerA2AUrl: extractAgentCardUrl(provider.agentCard),
+    providerName: provider.providerName,
+    providerDescription: provider.providerDescription,
     pricing,
     skills: flattenSkills(provider.agentCard),
   };

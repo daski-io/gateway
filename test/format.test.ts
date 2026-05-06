@@ -21,6 +21,8 @@ function makeProvider(
     walletAddress: "0x0000000000000000000000000000000000000001",
     agentURI: "http://test/agent.json",
     agentCard,
+    providerName: null,
+    providerDescription: null,
     lastFetched: new Date(),
     fetchError: null,
   };

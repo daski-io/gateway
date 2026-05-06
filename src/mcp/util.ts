@@ -8,17 +8,83 @@ import type { Hex } from "../types.js";
 // off-chain hosting yet, we default to a `data:application/json;base64,...`
 // URI containing a minimal stub. ~200-400 bytes of calldata; on Base
 // Sepolia gas is negligible.
-export function defaultBuyerAgentURI(walletAddress: Hex): string {
+//
+// `buildBuyerAgentURI` accepts an optional display name; callers that have
+// no name fall back to the wallet-derived `buyer-<last6>` slug via
+// `defaultBuyerAgentURI`. Names are NOT validated/sanitized here — pass
+// pre-sanitized values from `sanitizeBuyerName`.
+export function buildBuyerAgentURI(
+  walletAddress: Hex,
+  name?: string,
+): string {
   const lower = walletAddress.toLowerCase();
-  const short = lower.slice(-6);
+  const resolvedName = name ?? `buyer-${lower.slice(-6)}`;
   const card = {
-    name: `buyer-${short}`,
+    name: resolvedName,
     type: "buyer",
     wallet: lower,
     endpoints: {},
   };
   const b64 = Buffer.from(JSON.stringify(card)).toString("base64");
   return `data:application/json;base64,${b64}`;
+}
+
+export function defaultBuyerAgentURI(walletAddress: Hex): string {
+  return buildBuyerAgentURI(walletAddress);
+}
+
+// Wallet-derived default name. Callers that need to surface "the name we
+// would have picked" without rebuilding the URI can use this directly.
+export function defaultBuyerName(walletAddress: Hex): string {
+  return `buyer-${walletAddress.toLowerCase().slice(-6)}`;
+}
+
+// ── Buyer display-name validation ──────────────────────────────────────────
+//
+// Free-form, NOT enforced unique. We trim whitespace, cap length at 64
+// chars, and reject anything containing C0/C1 control chars. Unicode
+// letters, digits, spaces, common punctuation are all fine. Rationale: see
+// the buyer-naming spec — uniqueness is a stage-3 ENS concern, not ours.
+export const BUYER_NAME_MAX_LENGTH = 64;
+
+export interface SanitizedBuyerName {
+  ok: true;
+  name: string;
+}
+export interface SanitizedBuyerNameError {
+  ok: false;
+  error: string;
+}
+
+export function sanitizeBuyerName(
+  raw: unknown,
+): SanitizedBuyerName | SanitizedBuyerNameError {
+  if (typeof raw !== "string") {
+    return { ok: false, error: "name must be a string" };
+  }
+  const trimmed = raw.trim();
+  if (trimmed.length === 0) {
+    return { ok: false, error: "name must not be empty" };
+  }
+  if (trimmed.length > BUYER_NAME_MAX_LENGTH) {
+    return {
+      ok: false,
+      error: `name must be ${BUYER_NAME_MAX_LENGTH} characters or fewer`,
+    };
+  }
+  // Reject C0 (\x00–\x1F) and C1/DEL (\x7F) control characters. These
+  // disrupt downstream display in receipts and CLI output and have no
+  // legitimate use in a display name.
+  for (let i = 0; i < trimmed.length; i++) {
+    const code = trimmed.charCodeAt(i);
+    if (code <= 0x1f || code === 0x7f) {
+      return {
+        ok: false,
+        error: "name must not contain control characters",
+      };
+    }
+  }
+  return { ok: true, name: trimmed };
 }
 
 // ── serviceArgs normalization (§3.2 — flat + nested registrant) ────────────

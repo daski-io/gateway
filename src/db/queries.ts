@@ -193,6 +193,64 @@ export function createQueries(pool: Pool) {
     },
 
     /**
+     * Upserts a buyer-identity row. Called at registration time (and any
+     * future setAgentURI rotation) with the resolved display name so
+     * receipts and dashboards can render it without re-fetching the
+     * agentURI. Uniqueness is enforced on `agent_id` only — Daski does
+     * NOT enforce name uniqueness (see the buyer-naming spec).
+     */
+    async upsertBuyerIdentity(row: {
+      agentId: bigint;
+      walletAddress: Hex;
+      resolvedName: string;
+      agentURI: string;
+    }): Promise<void> {
+      await pool.query(
+        `INSERT INTO buyer_identities
+           (agent_id, wallet_address, resolved_name, agent_uri)
+         VALUES ($1, $2, $3, $4)
+         ON CONFLICT (agent_id) DO UPDATE SET
+           wallet_address = EXCLUDED.wallet_address,
+           resolved_name = EXCLUDED.resolved_name,
+           agent_uri = EXCLUDED.agent_uri,
+           updated_at = now()`,
+        [
+          row.agentId.toString(),
+          row.walletAddress.toLowerCase(),
+          row.resolvedName,
+          row.agentURI,
+        ],
+      );
+    },
+
+    async getBuyerIdentity(agentId: bigint): Promise<{
+      agentId: bigint;
+      walletAddress: Hex;
+      resolvedName: string;
+      agentURI: string;
+    } | null> {
+      const res = await pool.query<{
+        agent_id: string;
+        wallet_address: string;
+        resolved_name: string;
+        agent_uri: string;
+      }>(
+        `SELECT agent_id, wallet_address, resolved_name, agent_uri
+           FROM buyer_identities
+          WHERE agent_id = $1`,
+        [agentId.toString()],
+      );
+      const row = res.rows[0];
+      if (!row) return null;
+      return {
+        agentId: BigInt(row.agent_id),
+        walletAddress: row.wallet_address as Hex,
+        resolvedName: row.resolved_name,
+        agentURI: row.agent_uri,
+      };
+    },
+
+    /**
      * Aggregate over all paid settlements that flowed through this
      * gateway. `totalAtomic` is the sum of `amount` columns (USDC atomic
      * units, 6 decimals). Caller divides by 1e6 for human display.

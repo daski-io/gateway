@@ -105,12 +105,14 @@ export class DiscoveryCache {
     for (const provider of onChain) {
       const existing = this.cache.get(provider.agentId.toString());
       try {
-        const agentCard = await this.resolveAgentCard(provider.agentURI);
+        const resolved = await this.resolveAgentCard(provider.agentURI);
         nextCache.set(provider.agentId.toString(), {
           agentId: provider.agentId,
           walletAddress: provider.walletAddress,
           agentURI: provider.agentURI,
-          agentCard,
+          agentCard: resolved.agentCard,
+          providerName: resolved.providerName,
+          providerDescription: resolved.providerDescription,
           lastFetched: new Date(),
           fetchError: null,
         });
@@ -130,6 +132,8 @@ export class DiscoveryCache {
             walletAddress: provider.walletAddress,
             agentURI: provider.agentURI,
             agentCard: {},
+            providerName: null,
+            providerDescription: null,
             lastFetched: new Date(),
             fetchError: message,
           });
@@ -161,6 +165,8 @@ export class DiscoveryCache {
       const o = oldProviders[i];
       const n = newProviders[i];
       if (o.agentId !== n.agentId) return true;
+      if (o.providerName !== n.providerName) return true;
+      if (o.providerDescription !== n.providerDescription) return true;
       if (JSON.stringify(o.agentCard) !== JSON.stringify(n.agentCard)) {
         return true;
       }
@@ -169,39 +175,55 @@ export class DiscoveryCache {
   }
 
   /**
-   * Resolves a provider's Agent Card from its ERC-8004 agentURI.
+   * Resolves a provider's Agent Card from its ERC-8004 agentURI, alongside
+   * the provider-level name/description on the registration file.
    *
-   * The spec says agentURI points to the agent registration file (JSON with a
-   * `services` array). The A2A Agent Card lives at the endpoint of the entry
-   * whose `name` is "A2A" (typically `…/.well-known/agent.json` or
-   * `…/.well-known/agent-card.json`).
+   * The spec says agentURI points to the agent registration file (JSON with
+   * a `services` array). The A2A Agent Card lives at the endpoint of the
+   * entry whose `name` is "A2A" (typically `…/.well-known/agent.json` or
+   * `…/.well-known/agent-card.json`). Top-level `name` and `description` on
+   * that registration file describe the *provider* (operating entity) and
+   * are kept separately so callers can render provider identity without
+   * re-fetching.
    *
    * For backwards compatibility with pre-ERC-8004 providers that serve a
-   * flat Agent Card directly at agentURI, we treat the response as an Agent
-   * Card when it does NOT look like a registration file — specifically when
-   * it lacks a `services` array or the A2A entry is missing.
+   * flat Agent Card directly at agentURI, we treat the response as an
+   * Agent Card when it does NOT look like a registration file — specifically
+   * when it lacks a `services` array or the A2A entry is missing. In that
+   * legacy shape we have no separate provider identity, so providerName /
+   * providerDescription are null.
    */
-  private async resolveAgentCard(
-    agentURI: string,
-  ): Promise<Record<string, unknown>> {
+  private async resolveAgentCard(agentURI: string): Promise<{
+    agentCard: Record<string, unknown>;
+    providerName: string | null;
+    providerDescription: string | null;
+  }> {
     const doc = await this.fetchJson(agentURI);
 
     const services = doc["services"];
     if (Array.isArray(services)) {
+      const providerName =
+        typeof doc["name"] === "string" ? (doc["name"] as string) : null;
+      const providerDescription =
+        typeof doc["description"] === "string"
+          ? (doc["description"] as string)
+          : null;
       const a2a = services.find(
         (s: any) => s && typeof s === "object" && s.name === "A2A",
       );
       if (a2a && typeof a2a.endpoint === "string") {
-        return await this.fetchJson(a2a.endpoint);
+        const agentCard = await this.fetchJson(a2a.endpoint);
+        return { agentCard, providerName, providerDescription };
       }
       // No A2A endpoint — the registration file itself has no Agent Card to
       // serve. Return the registration doc so downstream callers at least
       // see the ERC-8004 metadata.
-      return doc;
+      return { agentCard: doc, providerName, providerDescription };
     }
 
-    // Flat Agent Card (pre-ERC-8004 layout).
-    return doc;
+    // Flat Agent Card (pre-ERC-8004 layout). No registration-level identity
+    // is available in this shape.
+    return { agentCard: doc, providerName: null, providerDescription: null };
   }
 
   private async fetchJson(uri: string): Promise<Record<string, unknown>> {

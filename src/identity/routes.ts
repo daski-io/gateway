@@ -1,13 +1,136 @@
 import { Router, type Request, type Response } from "express";
 import type { ChainReader } from "../chain/reader.js";
 import type { Config } from "../config.js";
+import type { Queries } from "../db/queries.js";
 import type { Eip712TypedData, Hex } from "../types.js";
-import { defaultBuyerAgentURI } from "../mcp/util.js";
+import {
+  buildBuyerAgentURI,
+  defaultBuyerName,
+  sanitizeBuyerName,
+} from "../mcp/util.js";
+import {
+  AgentCardFetchError,
+  fetchAgentCard,
+  type FetchAgentCardOptions,
+} from "./fetch-agent-card.js";
 import { logErrorWithId } from "../util/errorWrap.js";
 
 export interface IdentityDeps {
   config: Config;
   reader: ChainReader;
+  queries: Queries;
+  /** Test seam: lets vitest stub the agent-card fetcher without going to network. */
+  fetchAgentCardFn?: FetchAgentCardOptions["fetchFn"];
+}
+
+const NAME_AGENT_URI_HINT =
+  "Pass a 'name' parameter on registration to set a custom display " +
+  "name. This name appears on receipts and in the marketplace UI; it " +
+  "does not need to be unique.";
+
+interface ResolutionOk {
+  ok: true;
+  agentURI: string;
+  resolvedName: string;
+  hint?: string;
+}
+
+interface ResolutionError {
+  ok: false;
+  status: number;
+  code: string;
+  message: string;
+}
+
+/**
+ * Resolves the (agentURI, resolvedName) pair from the four buyer-naming
+ * cases laid out in the spec. Used by both /register-prep and /register so
+ * the value cached on submit matches the value the buyer signed.
+ *
+ *   1. Neither name nor agentURI → wallet-derived `buyer-<last6>`.
+ *   2. name only                  → embed in a fresh data: URI.
+ *   3. agentURI only              → fetch + read JSON `name`.
+ *   4. Both                       → reject (agentURI is source of truth
+ *                                   when present; the name lives in the JSON).
+ */
+async function resolveBuyerIdentity(
+  walletAddress: Hex,
+  name: unknown,
+  agentURI: unknown,
+  deps: IdentityDeps,
+): Promise<ResolutionOk | ResolutionError> {
+  const hasName = name != null && name !== "";
+  const hasAgentURI = agentURI != null && agentURI !== "";
+
+  if (hasName && hasAgentURI) {
+    return {
+      ok: false,
+      status: 400,
+      code: "NAME_AGENT_URI_CONFLICT",
+      message:
+        "Pass either 'name' or 'agentURI', not both. 'agentURI' is the " +
+        "source of truth when present; the name is read from the JSON " +
+        "it resolves to.",
+    };
+  }
+
+  if (hasAgentURI) {
+    if (typeof agentURI !== "string") {
+      return {
+        ok: false,
+        status: 400,
+        code: "BAD_AGENT_URI",
+        message: "agentURI must be a string",
+      };
+    }
+    try {
+      const card = await fetchAgentCard(agentURI, {
+        ipfsGatewayUrl: deps.config.ipfsGatewayUrl,
+        fetchFn: deps.fetchAgentCardFn,
+      });
+      return {
+        ok: true,
+        agentURI,
+        resolvedName: card.name,
+      };
+    } catch (err) {
+      if (err instanceof AgentCardFetchError) {
+        return {
+          ok: false,
+          status: 400,
+          code: err.code,
+          message: err.message,
+        };
+      }
+      throw err;
+    }
+  }
+
+  if (hasName) {
+    const sanitized = sanitizeBuyerName(name);
+    if (!sanitized.ok) {
+      return {
+        ok: false,
+        status: 400,
+        code: "BAD_NAME",
+        message: sanitized.error,
+      };
+    }
+    return {
+      ok: true,
+      agentURI: buildBuyerAgentURI(walletAddress, sanitized.name),
+      resolvedName: sanitized.name,
+    };
+  }
+
+  // Case 1: zero-input default. Surface the hint so callers learn about
+  // the `name` parameter without us forcing it.
+  return {
+    ok: true,
+    agentURI: buildBuyerAgentURI(walletAddress),
+    resolvedName: defaultBuyerName(walletAddress),
+    hint: NAME_AGENT_URI_HINT,
+  };
 }
 
 function isHexAddress(x: unknown): x is Hex {
@@ -131,17 +254,6 @@ export function createIdentityRouter(deps: IdentityDeps): Router {
     }
     const walletAddress = walletAddressRaw.toLowerCase() as Hex;
 
-    // ERC-8004 §2.2: every tokenURI MUST resolve. When the caller doesn't
-    // supply one, default to a `data:application/json;base64,...` stub so
-    // reputation queries / Bazaar / agentic.market indexers can fetch a
-    // minimal agent card. Callers can opt back into empty by passing an
-    // explicit empty string.
-    const agentURIRaw = req.query.agentURI;
-    const agentURI =
-      typeof agentURIRaw === "string"
-        ? agentURIRaw
-        : defaultBuyerAgentURI(walletAddress);
-
     const deadlineSecondsRaw = req.query.deadlineSeconds
       ? Number(req.query.deadlineSeconds)
       : 3600;
@@ -179,6 +291,29 @@ export function createIdentityRouter(deps: IdentityDeps): Router {
       });
       return;
     }
+
+    // ERC-8004 §2.2: every tokenURI MUST resolve. The four-case resolver
+    // returns either:
+    //   - the buyer-supplied `agentURI` (whose JSON `name` is the display name)
+    //   - a fresh data: URI embedding a buyer-supplied `name`
+    //   - a fresh data: URI embedding the wallet-derived default name
+    // Both `name` and `agentURI` together is rejected — the spec is
+    // unambiguous that `agentURI` is the source of truth when present.
+    // Resolved AFTER the on-chain check so an https:// fetch isn't wasted
+    // on already-registered wallets.
+    const resolution = await resolveBuyerIdentity(
+      walletAddress,
+      req.query.name,
+      req.query.agentURI,
+      deps,
+    );
+    if (!resolution.ok) {
+      res.status(resolution.status).json({
+        error: { code: resolution.code, message: resolution.message },
+      });
+      return;
+    }
+    const { agentURI, resolvedName, hint } = resolution;
 
     let nonce: bigint;
     try {
@@ -223,6 +358,10 @@ export function createIdentityRouter(deps: IdentityDeps): Router {
     res.json({
       walletAddress,
       agentURI,
+      // Display name the gateway will cache once /register lands. Echoed
+      // back so the agent can show the user what they're about to mint.
+      resolvedName,
+      ...(hint ? { hint } : {}),
       nonce: nonce.toString(),
       deadline: deadline.toString(),
       eip712TypedData: typedData,
@@ -304,6 +443,24 @@ export function createIdentityRouter(deps: IdentityDeps): Router {
       return;
     }
 
+    // Re-derive the display name from the buyer-signed agentURI. The
+    // value is whatever the buyer authorized at /register-prep time; we
+    // don't second-guess it on submit. Failure to resolve here doesn't
+    // block registration — we'd rather mint the agentId and skip the
+    // cache update than reject a valid signed payload.
+    let resolvedName: string | null = null;
+    try {
+      const card = await fetchAgentCard(agentURI, {
+        ipfsGatewayUrl: deps.config.ipfsGatewayUrl,
+        fetchFn: deps.fetchAgentCardFn,
+      });
+      resolvedName = card.name;
+    } catch (err) {
+      // Best-effort. Surface as a log line so operators notice if every
+      // registration is silently failing the resolve step.
+      logErrorWithId("resolveBuyerNameOnSubmit", err);
+    }
+
     try {
       const result = await deps.reader.registerBuyer({
         agentURI,
@@ -311,10 +468,23 @@ export function createIdentityRouter(deps: IdentityDeps): Router {
         deadline,
         signature,
       });
+      if (resolvedName) {
+        try {
+          await deps.queries.upsertBuyerIdentity({
+            agentId: result.agentId,
+            walletAddress,
+            resolvedName,
+            agentURI,
+          });
+        } catch (err) {
+          logErrorWithId("upsertBuyerIdentityOnRegister", err);
+        }
+      }
       res.json({
         walletAddress,
         agentId: result.agentId.toString(),
         agentURI,
+        resolvedName,
         transactionHash: result.transactionHash,
       });
     } catch (err) {

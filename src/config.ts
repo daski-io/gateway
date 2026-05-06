@@ -40,6 +40,11 @@ export interface Config {
   challengeTtlSeconds: number;
   databaseUrl: string;
   publicUrl: string;
+  // Public IPFS HTTP gateway used to resolve `ipfs://` agentURIs for
+  // optional buyer registration. Trailing slash is required. Override with
+  // a self-hosted gateway in production to avoid relying on a public
+  // service for liveness.
+  ipfsGatewayUrl: string;
   // EAS wiring: the facilitator submits delegated buyer confirmations
   // against the registered schema. All three are required.
   easAddress: Hex;
@@ -194,5 +199,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     challengeTtlSeconds: Number(env.CHALLENGE_TTL_SECONDS ?? 3600),
     databaseUrl: requireDatabaseUrl(env.DATABASE_URL),
     publicUrl: env.PUBLIC_URL ?? `http://localhost:${port}`,
+    ipfsGatewayUrl: (env.IPFS_GATEWAY_URL ?? "https://ipfs.io/ipfs/").replace(
+      /\/?$/,
+      "/",
+    ),
   };
 }

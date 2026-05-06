@@ -58,6 +58,16 @@ const TEST_DATABASE_URL =
 export interface TestGatewayOptions {
   providers?: Array<TestProviderDef>;
   initialTaskState?: MockTaskState;
+  /**
+   * Optional override for the buyer agentURI fetcher
+   * (`/register-prep` + `/register`). Defaults to a stub that returns
+   * `{ name: "buyer-test" }` for any URL — enough to satisfy callers that
+   * don't assert on the resolved name.
+   */
+  buyerAgentCardFetch?: (
+    url: string,
+    init?: RequestInit,
+  ) => Promise<Response>;
 }
 
 /**
@@ -193,6 +203,7 @@ export async function startTestGateway(
     easAddress: EAS_ADDRESS,
     easConfirmationSchemaUid: EAS_CONFIRMATION_SCHEMA_UID,
     easOutcomeSchemaUid: EAS_OUTCOME_SCHEMA_UID,
+    ipfsGatewayUrl: "https://ipfs.io/ipfs/",
   };
 
   const schemaName = `gw_test_${randomUUID().replace(/-/g, "_")}`;
@@ -211,6 +222,21 @@ export async function startTestGateway(
     searchPath: `${schemaName},public`,
   });
 
+  // Default stub for the buyer-side agentURI fetcher used by
+  // /register-prep + /register. Returns `{ name: "buyer-test" }` for any
+  // URI tests don't otherwise care about, lets ipfs:// and https:// URIs
+  // pass without going to the network. Tests that need to assert on the
+  // resolved name should override the test gateway's `buyerAgentCardFetch`
+  // before calling the route. (data: URIs are decoded inline by
+  // fetch-agent-card itself and never hit this stub.)
+  const buyerAgentCardFetch =
+    opts.buyerAgentCardFetch ??
+    (async () =>
+      new Response(JSON.stringify({ name: "buyer-test" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }));
+
   const bundle = await createApp({
     config,
     reader: mockChain,
@@ -218,6 +244,7 @@ export async function startTestGateway(
     embedder: stubEmbedder(),
     startCacheRefreshLoop: false,
     agentCardFetchTimeoutMs: 2000,
+    buyerAgentCardFetch,
   });
 
   await bundle.cache.refresh();

@@ -18,6 +18,7 @@ import { createQueries, type Queries } from "./db/queries.js";
 import { createPool, runMigrations, type Pool } from "./db/pool.js";
 import { xenovaEmbedder, type Embedder } from "./discovery/embeddings.js";
 import type { FetchFn } from "./discovery/cache.js";
+import type { FetchAgentCardOptions } from "./identity/fetch-agent-card.js";
 import { rateLimit, securityHeaders } from "./util/security.js";
 
 export interface CreateAppOptions {
@@ -36,6 +37,13 @@ export interface CreateAppOptions {
   a2aTimeoutMs?: number;
   startCacheRefreshLoop?: boolean;
   agentCardFetchTimeoutMs?: number;
+  /**
+   * Test seam for the buyer agentURI fetcher used at /register-prep and
+   * /register. Production leaves this undefined so the global `fetch`
+   * is used; tests pass a stub that maps test URIs to known JSON without
+   * going to the network.
+   */
+  buyerAgentCardFetch?: FetchAgentCardOptions["fetchFn"];
 }
 
 export interface AppBundle {
@@ -313,7 +321,14 @@ export async function createApp(options: CreateAppOptions): Promise<AppBundle> {
   app.use(createConfirmRouter({ config, reader }));
   app.use(createFacilitatorRouter({ config, queries, reader }));
   app.use(createPrepRouter({ config, reader }));
-  app.use(createIdentityRouter({ config, reader }));
+  app.use(
+    createIdentityRouter({
+      config,
+      reader,
+      queries,
+      fetchAgentCardFn: options.buyerAgentCardFetch,
+    }),
+  );
   app.use(createPublicRouter({ config, cache, queries, reader }));
 
   let mcp: McpWiring | null = null;

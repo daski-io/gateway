@@ -45,6 +45,15 @@ export interface CachedProvider {
   walletAddress: Hex;
   agentURI: string;
   agentCard: Record<string, unknown>;
+  /**
+   * Top-level name/description from the ERC-8004 registration file at
+   * `agentURI`. These describe the *provider* (operating entity); the
+   * agent card's `name`/`description` describe the service offering.
+   * Null when the provider serves a flat agent card (pre-ERC-8004) or
+   * the registration file omits the field.
+   */
+  providerName: string | null;
+  providerDescription: string | null;
   lastFetched: Date;
   fetchError: string | null;
 }

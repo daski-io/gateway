@@ -623,15 +623,31 @@ export async function createMcpServer(
           "no gas. Use when the buyer has no agentId yet (most fresh " +
           "wallets). For a one-shot first purchase, prefer daski_buy_service " +
           "(or pass the resulting `registration` to daski_settle_payment) — " +
-          "that bundles registration + payment into one atomic on-chain tx.",
+          "that bundles registration + payment into one atomic on-chain tx. " +
+          "Optionally pass `name` to set the buyer's display name on " +
+          "receipts and in the marketplace UI.",
         inputSchema: {
           walletAddress: z.string(),
+          name: z
+            .string()
+            .optional()
+            .describe(
+              "Optional display name for your buyer agent. Free-form, max " +
+                "64 characters, not validated for uniqueness. Defaults to " +
+                "`buyer-<last6>` derived from your wallet. Appears on " +
+                "receipts and in the Daski marketplace UI. Mutually " +
+                "exclusive with `agentURI`.",
+            ),
           agentURI: z
             .string()
             .optional()
             .describe(
-              "Optional ERC-8004 agentURI (an off-chain URL or IPFS CID " +
-                "resolving to the agent's registration JSON). May be empty.",
+              "Advanced. Optional ERC-8004 agentURI (an https:// URL, " +
+                "ipfs:// CID, or data: URI resolving to the agent's " +
+                "registration JSON). When provided, the gateway fetches " +
+                "it and reads `name` from the JSON. Mutually exclusive " +
+                "with the `name` parameter. Most buyers should pass " +
+                "`name` instead.",
             ),
           deadlineSeconds: z
             .number()
@@ -653,6 +669,7 @@ export async function createMcpServer(
           });
         }
         const qs = new URLSearchParams({ walletAddress: args.walletAddress });
+        if (args.name != null) qs.set("name", args.name);
         if (args.agentURI != null) qs.set("agentURI", args.agentURI);
         if (args.deadlineSeconds != null) {
           qs.set("deadlineSeconds", String(args.deadlineSeconds));
@@ -669,15 +686,25 @@ export async function createMcpServer(
       {
         description:
           "Submit a signed RegisterAgent payload via the gateway facilitator. " +
-          "Mints an ERC-8004 agentId to walletAddress. Use this when you " +
-          "want to register WITHOUT an immediate purchase (e.g. to read " +
-          "your reputation first). For a first-purchase flow, prefer the " +
-          "atomic register-and-settle path through daski_buy_service / " +
-          "daski_settle_payment, which bundles both into one tx so the " +
+          "Mints an ERC-8004 agentId to walletAddress and caches the " +
+          "buyer's display name (read from the signed agentURI's JSON) " +
+          "for use on receipts and in the marketplace UI. Use this when " +
+          "you want to register WITHOUT an immediate purchase (e.g. to " +
+          "read your reputation first). For a first-purchase flow, prefer " +
+          "the atomic register-and-settle path through daski_buy_service " +
+          "/ daski_settle_payment, which bundles both into one tx so the " +
           "USDC payment carries the Sybil tax for the registration.",
         inputSchema: {
           walletAddress: z.string(),
-          agentURI: z.string(),
+          agentURI: z
+            .string()
+            .describe(
+              "The exact agentURI the wallet signed at " +
+                "daski_prepare_registration. Whether built from the " +
+                "buyer-supplied `name` or from a hosted JSON, the gateway " +
+                "treats this as the source of truth and reads the display " +
+                "name from it.",
+            ),
           deadline: z.string().describe("Unix seconds; same value used in the typed-data."),
           signature: z.string().describe("0x-prefixed hex bytes from your wallet's signTypedData."),
         },
