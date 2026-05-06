@@ -1,6 +1,7 @@
 import {
   BaseError,
   ContractFunctionRevertedError,
+  ContractFunctionZeroDataError,
   createPublicClient,
   createWalletClient,
   decodeEventLog,
@@ -13,6 +14,7 @@ import { base, baseSepolia } from "viem/chains";
 import {
   easAbi,
   identityRegistryAbi,
+  knownErrorAbis,
   paymentRouterAbi,
   providerRegistryAbi,
   usdcAbi,
@@ -57,28 +59,76 @@ function chainForId(chainId: ChainId) {
  *
  * Without this, every on-chain failure surfaces as the generic message
  * the caller threw (e.g. "adapter settle reverted") with no hint at the
- * underlying cause. ContractFunctionRevertedError carries the decoded
- * `reason` (Solidity require/revert string) and a fallback shortMessage
- * for typed custom errors. Walking the BaseError cause chain finds it
- * even when nested inside ContractFunctionExecutionError or
- * EstimateGasExecutionError.
+ * underlying cause. ContractFunctionRevertedError carries:
+ *   - `reason`        — Solidity require/revert STRING
+ *   - `data`          — decoded custom error { errorName, args } when the
+ *                       error fragment is in the simulate-time ABI
+ *                       (see knownErrorAbis)
+ *   - `signature`/`raw` — the 4-byte selector / raw bytes when the ABI
+ *                       didn't include a matching error fragment
+ *   - `shortMessage`  — viem's prose summary, sometimes already names a
+ *                       decoded custom error
+ *
+ * We prefer the most specific available form. Walking the BaseError cause
+ * chain finds the revert even when nested inside
+ * ContractFunctionExecutionError or EstimateGasExecutionError.
+ *
+ * ZeroData reverts (out-of-gas, bare `revert()`, missing returndata) used
+ * to fall through here as the bare cause-chain message. We surface them
+ * explicitly so the caller can distinguish "the contract told us no" from
+ * "the EVM ran out of gas mid-call".
  *
  * Falls back to shortMessage / message for non-revert chain errors
  * (RPC outage, signer issues) so callers always get *something* useful.
  */
-function decodeRevertReason(err: unknown): string {
+export function decodeRevertReason(err: unknown): string {
   if (err instanceof BaseError) {
     const revert = err.walk(
-      (e) => e instanceof ContractFunctionRevertedError,
+      (e) =>
+        e instanceof ContractFunctionRevertedError ||
+        e instanceof ContractFunctionZeroDataError,
     );
     if (revert instanceof ContractFunctionRevertedError) {
-      return (
-        revert.reason ?? revert.shortMessage ?? "execution reverted"
-      );
+      // Solidity require / revert("reason") — clearest form.
+      if (revert.reason) return revert.reason;
+      // Custom error decoded against the simulate-time ABI. Format as
+      // `ErrorName(arg1, arg2)` so the caller sees a typed name instead
+      // of "execution reverted".
+      const data = revert.data;
+      if (data?.errorName) {
+        const args = data.args
+          ? Array.from(data.args).map(formatErrorArg).join(", ")
+          : "";
+        return args ? `${data.errorName}(${args})` : `${data.errorName}()`;
+      }
+      // No matching error fragment in the ABI but we do have raw bytes:
+      // surface the 4-byte selector at least, so the caller can grep.
+      if (revert.signature) return `unknown error ${revert.signature}`;
+      if (revert.raw && revert.raw !== "0x")
+        return `unknown error ${revert.raw.slice(0, 10)}`;
+      return revert.shortMessage ?? "execution reverted (no data)";
+    }
+    if (revert instanceof ContractFunctionZeroDataError) {
+      // Bare revert() or out-of-gas — the call returned no data so there
+      // is no string to decode. Common with OOG on tight gas budgets.
+      return "execution reverted with no data (out-of-gas or bare revert)";
     }
     return err.shortMessage ?? err.message;
   }
   return err instanceof Error ? err.message : String(err);
+}
+
+function formatErrorArg(arg: unknown): string {
+  if (typeof arg === "bigint") return arg.toString();
+  if (typeof arg === "string") return arg;
+  if (arg === null || arg === undefined) return String(arg);
+  try {
+    return JSON.stringify(arg, (_k, v) =>
+      typeof v === "bigint" ? v.toString() : v,
+    );
+  } catch {
+    return String(arg);
+  }
 }
 
 export function createViemChainReader(opts: ViemReaderOptions): ChainReader {
@@ -201,7 +251,7 @@ export function createViemChainReader(opts: ViemReaderOptions): ChainReader {
       try {
         const sim = await publicClient.simulateContract({
           address: adapterAddress,
-          abi: x402AdapterAbi,
+          abi: [...x402AdapterAbi, ...knownErrorAbis],
           functionName: "settle",
           args: [usdcAddress, input.amount, input.serviceRef, input.providerAgentId, auth],
           account,
@@ -276,7 +326,7 @@ export function createViemChainReader(opts: ViemReaderOptions): ChainReader {
       try {
         const sim = await publicClient.simulateContract({
           address: opts.identityRegistryAddress,
-          abi: identityRegistryAbi,
+          abi: [...identityRegistryAbi, ...knownErrorAbis],
           functionName: "registerBySig",
           args: [input.agentURI, input.agentWallet, input.deadline, input.signature],
           account,
@@ -345,7 +395,7 @@ export function createViemChainReader(opts: ViemReaderOptions): ChainReader {
       try {
         const sim = await publicClient.simulateContract({
           address: adapterAddress,
-          abi: x402AdapterAbi,
+          abi: [...x402AdapterAbi, ...knownErrorAbis],
           functionName: "settleWithRegistration",
           args: [
             usdcAddress,
@@ -460,7 +510,7 @@ export function createViemChainReader(opts: ViemReaderOptions): ChainReader {
       try {
         const sim = await publicClient.simulateContract({
           address: easAddress,
-          abi: easAbi,
+          abi: [...easAbi, ...knownErrorAbis],
           functionName: "attestByDelegation",
           args: [request],
           account,

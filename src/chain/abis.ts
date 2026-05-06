@@ -247,3 +247,77 @@ export const usdcAbi = [
     stateMutability: "view",
   },
 ] as const;
+
+// ── Known custom-error fragments (for revert decoding only) ─────────────
+//
+// Viem can only decode a custom error if its ABI fragment is present in the
+// ABI passed to the call. The contracts above don't declare errors thrown
+// by their dependencies (OpenZeppelin ERC721 used inside IdentityRegistry,
+// Initializable inside the proxies, ECDSA inside SignatureChecker), so when
+// one of those reverts the gateway sees bare "execution reverted" and the
+// caller learns nothing.
+//
+// Concatenate these into the ABI used at simulate-time so the decoded error
+// surfaces as e.g. `ERC721InvalidReceiver(0x0000…)` instead of the generic
+// fallback. Keep this list narrow — only errors actually throwable along
+// the gateway's on-chain paths.
+export const knownErrorAbis = [
+  // OpenZeppelin ERC721 v5 — IdentityRegistry mints via _safeMint, so the
+  // receiver/sender errors are reachable through registerBySig.
+  { type: "error", name: "ERC721InvalidOwner", inputs: [{ name: "owner", type: "address" }] },
+  { type: "error", name: "ERC721NonexistentToken", inputs: [{ name: "tokenId", type: "uint256" }] },
+  {
+    type: "error",
+    name: "ERC721IncorrectOwner",
+    inputs: [
+      { name: "sender", type: "address" },
+      { name: "tokenId", type: "uint256" },
+      { name: "owner", type: "address" },
+    ],
+  },
+  { type: "error", name: "ERC721InvalidSender", inputs: [{ name: "sender", type: "address" }] },
+  { type: "error", name: "ERC721InvalidReceiver", inputs: [{ name: "receiver", type: "address" }] },
+  {
+    type: "error",
+    name: "ERC721InsufficientApproval",
+    inputs: [
+      { name: "operator", type: "address" },
+      { name: "tokenId", type: "uint256" },
+    ],
+  },
+  { type: "error", name: "ERC721InvalidApprover", inputs: [{ name: "approver", type: "address" }] },
+  { type: "error", name: "ERC721InvalidOperator", inputs: [{ name: "operator", type: "address" }] },
+
+  // OpenZeppelin Initializable — UUPS proxies behind every Daski contract.
+  { type: "error", name: "InvalidInitialization", inputs: [] },
+  { type: "error", name: "NotInitializing", inputs: [] },
+
+  // OpenZeppelin ECDSA — SignatureChecker uses ECDSA.tryRecover internally.
+  // SignatureChecker itself swallows these and returns false (causing a
+  // require-string revert in registerBySig), but raw ECDSA.recover is also
+  // used in places, and these errors travel up unwrapped.
+  { type: "error", name: "ECDSAInvalidSignature", inputs: [] },
+  {
+    type: "error",
+    name: "ECDSAInvalidSignatureLength",
+    inputs: [{ name: "length", type: "uint256" }],
+  },
+  { type: "error", name: "ECDSAInvalidSignatureS", inputs: [{ name: "s", type: "bytes32" }] },
+
+  // EAS errors thrown by attestByDelegation along the confirm-delivery path.
+  { type: "error", name: "AccessDenied", inputs: [] },
+  { type: "error", name: "DeadlineExpired", inputs: [] },
+  { type: "error", name: "InvalidAttestation", inputs: [] },
+  { type: "error", name: "InvalidExpirationTime", inputs: [] },
+  { type: "error", name: "InvalidLength", inputs: [] },
+  { type: "error", name: "InvalidNonce", inputs: [] },
+  { type: "error", name: "InvalidRegistry", inputs: [] },
+  { type: "error", name: "InvalidRevocation", inputs: [] },
+  { type: "error", name: "InvalidSchema", inputs: [] },
+  { type: "error", name: "InvalidSignature", inputs: [] },
+  { type: "error", name: "InvalidVerifier", inputs: [] },
+  { type: "error", name: "Irrevocable", inputs: [] },
+  { type: "error", name: "NotFound", inputs: [] },
+  { type: "error", name: "NotPayable", inputs: [] },
+  { type: "error", name: "WrongSchema", inputs: [] },
+] as const;
