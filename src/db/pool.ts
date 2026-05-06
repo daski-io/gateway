@@ -32,15 +32,6 @@ export function createPool(opts: CreatePoolOptions): Pool {
   return pool;
 }
 
-export async function checkDatabase(pool: Pool): Promise<boolean> {
-  try {
-    await pool.query("SELECT 1");
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 /**
  * Apply pending migrations from src/db/migrations (or dist/db/migrations
  * after build). Each .sql file is run in a single transaction and recorded

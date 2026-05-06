@@ -37,10 +37,10 @@ const IDENTITY_DOMAIN_VERSION = "1";
 export function createIdentityRouter(deps: IdentityDeps): Router {
   const router = Router();
 
-  // Reverse lookup: wallet → ERC-8004 agentId. Skill callers use this in
-  // daski_init / daski_status to resolve buyerTokenId from the address the
-  // CDP SDK issued. Returns `null` for wallets without a minted identity;
-  // the skill surfaces that to the user as "mint an identity first".
+  // Reverse lookup: wallet → ERC-8004 agentId. Used to resolve buyerTokenId
+  // from the address the CDP SDK issued. Returns `null` for wallets without
+  // a minted identity; callers surface that to the user as "mint an
+  // identity first".
   router.get("/identity/by-wallet/:address", async (req: Request, res: Response) => {
     const raw = String(req.params.address ?? "");
     if (!isHexAddress(raw)) {
@@ -75,9 +75,9 @@ export function createIdentityRouter(deps: IdentityDeps): Router {
     });
   });
 
-  // Convenience endpoint used by daski_sign_confirmation. The skill needs
-  // the attester's EAS nonce and doesn't hold an RPC URL of its own — the
-  // gateway already has a public client aimed at the right chain.
+  // Convenience endpoint for callers that need the attester's EAS nonce
+  // without holding an RPC URL of their own — the gateway already has a
+  // public client aimed at the right chain.
   router.get("/eas/nonce/:address", async (req: Request, res: Response) => {
     const raw = String(req.params.address ?? "");
     if (!isHexAddress(raw)) {

@@ -247,17 +247,3 @@ export interface StoredChallenge {
   verifiedAt: Date | null;
 }
 
-// ── A2A task types (flattened shapes returned by daski_get_task_status) ──
-
-export interface FlatArtifact {
-  type: "file" | "data";
-  name: string;
-  url?: string;
-  mimeType?: string;
-  data?: unknown;
-}
-
-export interface FlatMessage {
-  role: string;
-  content: string;
-}

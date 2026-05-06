@@ -204,7 +204,11 @@ export async function startTestGateway(
 
   const pool: Pool = createPool({
     connectionString: TEST_DATABASE_URL,
-    searchPath: schemaName,
+    // Include `public` so the test schema can resolve the pgvector type
+    // (the extension is installed in `public` by the migration). Tables
+    // created without an explicit schema land in the test schema (first
+    // match wins) so per-test isolation is preserved.
+    searchPath: `${schemaName},public`,
   });
 
   const bundle = await createApp({

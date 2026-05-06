@@ -783,7 +783,7 @@ export async function createMcpServer(
           "tool with skillId='prepare-dns-capability', sign the returned " +
           "typed-data, then reuse the original asset's paymentId). " +
           "Returns { taskId, contextId, state, ... } — thread contextId back " +
-          "into daski_get_task_status / daski_get_task_status (stream:true) / daski_confirm_delivery " +
+          "into daski_get_task_status (poll or stream) / daski_confirm_delivery " +
           "to keep the multi-turn A2A conversation linked.",
         inputSchema: {
           providerA2AUrl: z.string(),

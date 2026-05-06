@@ -6,23 +6,9 @@
 export const identityRegistryAbi = [
   {
     type: "function",
-    name: "ownerOf",
-    inputs: [{ name: "tokenId", type: "uint256" }],
-    outputs: [{ name: "", type: "address" }],
-    stateMutability: "view",
-  },
-  {
-    type: "function",
     name: "tokenURI",
     inputs: [{ name: "tokenId", type: "uint256" }],
     outputs: [{ name: "", type: "string" }],
-    stateMutability: "view",
-  },
-  {
-    type: "function",
-    name: "getAgentWallet",
-    inputs: [{ name: "agentId", type: "uint256" }],
-    outputs: [{ name: "", type: "address" }],
     stateMutability: "view",
   },
   {
@@ -103,20 +89,12 @@ export const providerRegistryAbi = [
     outputs: [{ name: "", type: "uint256" }],
     stateMutability: "view",
   },
-  {
-    type: "function",
-    name: "isRegistered",
-    inputs: [{ name: "agentId", type: "uint256" }],
-    outputs: [{ name: "", type: "bool" }],
-    stateMutability: "view",
-  },
 ] as const;
 
 // ── Daski PaymentRouter ─────────────────────────────────────────────────
 //
 // The router is now rail-agnostic — adapters handle the specifics of how
-// funds arrive. The gateway consumes PaymentSettled (emitted by the router)
-// and the Refunded event.
+// funds arrive. The gateway consumes PaymentSettled (emitted by the router).
 
 export const paymentRouterAbi = [
   {
@@ -132,56 +110,6 @@ export const paymentRouterAbi = [
       { name: "providerAmount", type: "uint256", indexed: false },
       { name: "commission", type: "uint256", indexed: false },
     ],
-  },
-  {
-    type: "event",
-    name: "Refunded",
-    inputs: [
-      { name: "paymentId", type: "uint256", indexed: true },
-      { name: "amountToBuyer", type: "uint256", indexed: false },
-      { name: "cumulativeRefunded", type: "uint256", indexed: false },
-    ],
-  },
-  {
-    type: "function",
-    name: "getPayment",
-    inputs: [{ name: "paymentId", type: "uint256" }],
-    outputs: [
-      {
-        name: "",
-        type: "tuple",
-        components: [
-          { name: "buyerAgentId", type: "uint256" },
-          { name: "providerAgentId", type: "uint256" },
-          { name: "token", type: "address" },
-          { name: "amount", type: "uint256" },
-          { name: "cachedBuyerWallet", type: "address" },
-          { name: "serviceRef", type: "bytes32" },
-        ],
-      },
-    ],
-    stateMutability: "view",
-  },
-  {
-    type: "function",
-    name: "refundedAmount",
-    inputs: [{ name: "paymentId", type: "uint256" }],
-    outputs: [{ name: "", type: "uint256" }],
-    stateMutability: "view",
-  },
-  {
-    type: "function",
-    name: "isAdapter",
-    inputs: [{ name: "adapter", type: "address" }],
-    outputs: [{ name: "", type: "bool" }],
-    stateMutability: "view",
-  },
-  {
-    type: "function",
-    name: "isAcceptedToken",
-    inputs: [{ name: "token", type: "address" }],
-    outputs: [{ name: "", type: "bool" }],
-    stateMutability: "view",
   },
 ] as const;
 
@@ -250,61 +178,11 @@ export const x402AdapterAbi = [
   },
 ] as const;
 
-// ── PermitAdapter (EIP-2612) — informational; gateway does not submit ──
-
-export const permitAdapterAbi = [
-  {
-    type: "function",
-    name: "settle",
-    inputs: [
-      { name: "token", type: "address" },
-      { name: "amount", type: "uint256" },
-      { name: "serviceRef", type: "bytes32" },
-      { name: "providerAgentId", type: "uint256" },
-      {
-        name: "permit",
-        type: "tuple",
-        components: [
-          { name: "value", type: "uint256" },
-          { name: "deadline", type: "uint256" },
-          { name: "v", type: "uint8" },
-          { name: "r", type: "bytes32" },
-          { name: "s", type: "bytes32" },
-        ],
-      },
-    ],
-    outputs: [{ name: "", type: "uint256" }],
-    stateMutability: "nonpayable",
-  },
-] as const;
-
-// ── ApprovalAdapter — informational ────────────────────────────────────
-
-export const approvalAdapterAbi = [
-  {
-    type: "function",
-    name: "settle",
-    inputs: [
-      { name: "token", type: "address" },
-      { name: "amount", type: "uint256" },
-      { name: "serviceRef", type: "bytes32" },
-      { name: "providerAgentId", type: "uint256" },
-    ],
-    outputs: [{ name: "", type: "uint256" }],
-    stateMutability: "nonpayable",
-  },
-] as const;
-
 // ── EAS (subset the gateway uses) ───────────────────────────────────────
 //
 // The gateway acts as the relayer for buyer confirmations: it receives a
 // signed AttestByDelegation payload from the buyer and submits it via
-// EAS.attestByDelegation so the buyer never pays gas. It also reads back
-// the attestation to return the resulting UID to the caller.
-//
-// Schema registry subset (attestations land on-chain by schema UID; the UID
-// was registered once against the Daski ReputationStorage resolver at
-// deployment time and is passed through as env config).
+// EAS.attestByDelegation so the buyer never pays gas.
 
 export const easAbi = [
   {
@@ -344,39 +222,6 @@ export const easAbi = [
       },
     ],
     outputs: [{ type: "bytes32" }],
-  },
-  {
-    // Needed for building a proper ATTEST typed-data signature on the buyer
-    // side. Gateway does not call this — we pass it through so the helper
-    // in daski-test can read it.
-    type: "function",
-    name: "getDomainSeparator",
-    stateMutability: "view",
-    inputs: [],
-    outputs: [{ type: "bytes32" }],
-  },
-  {
-    type: "function",
-    name: "getAttestation",
-    stateMutability: "view",
-    inputs: [{ name: "uid", type: "bytes32" }],
-    outputs: [
-      {
-        type: "tuple",
-        components: [
-          { name: "uid", type: "bytes32" },
-          { name: "schema", type: "bytes32" },
-          { name: "time", type: "uint64" },
-          { name: "expirationTime", type: "uint64" },
-          { name: "revocationTime", type: "uint64" },
-          { name: "refUID", type: "bytes32" },
-          { name: "recipient", type: "address" },
-          { name: "attester", type: "address" },
-          { name: "revocable", type: "bool" },
-          { name: "data", type: "bytes" },
-        ],
-      },
-    ],
   },
   {
     // EIP-712 nonce per attester — buyer includes it in the signed payload.

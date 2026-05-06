@@ -325,7 +325,8 @@ export async function issuePaymentRequirements(
           `issue a new payment. Reuse the paymentId from the original ` +
           `asset purchase (e.g. register-domain) and call daski_submit_task ` +
           `directly — if the skill's requiresCapability flag is set, first ` +
-          `sign an EIP-712 capability with the matching daski_sign_* skill action.`,
+          `fetch and sign the EIP-712 capability via the provider's ` +
+          `'prepare-dns-capability' (or equivalent) free A2A skill.`,
         status: 400,
       };
     }

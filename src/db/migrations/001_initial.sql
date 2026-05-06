@@ -46,7 +46,12 @@ CREATE INDEX idx_challenges_txhash
 -- by the discovery cache (Xenova all-MiniLM-L6-v2 → 384-dim float32).
 -- Source text is stored so we can cheap-detect cache changes and avoid
 -- recomputing embeddings on every refresh.
-CREATE EXTENSION IF NOT EXISTS vector;
+--
+-- Pinned to `public` so per-test schemas (which run with a narrow
+-- search_path) can resolve the `vector` type without each test reinstalling
+-- the extension into its own throwaway schema. WITH SCHEMA is honored only
+-- on first install — already-installed extensions stay where they are.
+CREATE EXTENSION IF NOT EXISTS vector WITH SCHEMA public;
 
 CREATE TABLE skill_embeddings (
     provider_agent_id BIGINT NOT NULL,

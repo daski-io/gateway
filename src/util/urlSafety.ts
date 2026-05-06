@@ -34,13 +34,10 @@ export type UrlSafetyErrorCode =
   | "URL_SCHEME_BLOCKED"
   | "URL_DNS_FAILED"
   | "URL_PRIVATE_HOST"
-  | "URL_TOO_MANY_REDIRECTS"
   | "RESPONSE_TOO_LARGE"
   | "RESPONSE_NOT_JSON";
 
 const DEFAULT_MAX_BYTES = 256 * 1024;
-const DEFAULT_TIMEOUT_MS = 10_000;
-export const MAX_REDIRECTS = 3;
 
 // IPv4 ranges we reject. Loopback (127/8), private (10/8, 172.16-31/12,
 // 192.168/16), CGNAT (100.64/10), link-local + IMDS (169.254/16),
@@ -148,72 +145,6 @@ export async function validateUrlForOutbound(
     }
   }
   return { url, resolvedAddrs: addrs };
-}
-
-export type FetchLike = (
-  url: string,
-  init?: RequestInit,
-) => Promise<Response>;
-
-export interface SafeFetchOptions {
-  timeoutMs?: number;
-  init?: RequestInit;
-  /**
-   * Custom fetch (e.g. test mock). Defaults to the global `fetch`. The
-   * URL safety check runs regardless of this — pass the URL guard's
-   * `validateUrlForOutbound` upstream of this function for full
-   * validation, OR rely on the gating built in here.
-   */
-  fetchFn?: FetchLike;
-}
-
-/**
- * Performs an outbound fetch with URL validation, redirect re-validation,
- * and an overall timeout. Each redirect's `Location` is re-validated by
- * `validateUrlForOutbound` so an attacker can't bypass the guard with a
- * 30x to a private host. Caller is responsible for capping the response
- * body — see `readBoundedBody` / `readBoundedJson`.
- */
-export async function safeFetch(
-  rawUrl: string,
-  opts: SafeFetchOptions = {},
-): Promise<Response> {
-  const { timeoutMs = DEFAULT_TIMEOUT_MS, init = {} } = opts;
-  const fetchFn: FetchLike = opts.fetchFn ?? ((u, i) => fetch(u, i));
-
-  let target = (await validateUrlForOutbound(rawUrl)).url.toString();
-
-  for (let i = 0; i <= MAX_REDIRECTS; i++) {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
-    let res: Response;
-    try {
-      res = await fetchFn(target, {
-        ...init,
-        redirect: "manual",
-        signal: controller.signal,
-      });
-    } finally {
-      clearTimeout(timer);
-    }
-    const loc = res.headers.get("location");
-    if (res.status >= 300 && res.status < 400 && loc) {
-      if (i === MAX_REDIRECTS) {
-        throw new UrlSafetyError(
-          `too many redirects from ${rawUrl}`,
-          "URL_TOO_MANY_REDIRECTS",
-        );
-      }
-      const next = new URL(loc, target).toString();
-      target = (await validateUrlForOutbound(next)).url.toString();
-      continue;
-    }
-    return res;
-  }
-  throw new UrlSafetyError(
-    "unexpected redirect loop",
-    "URL_TOO_MANY_REDIRECTS",
-  );
 }
 
 /**

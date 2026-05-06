@@ -9,8 +9,8 @@
     "dev": "tsx src/index.ts",
     "build": "tsc -p tsconfig.build.json && cp -r src/db/migrations dist/db/migrations && mkdir -p dist/static && cp src/static/SKILL.md dist/static/SKILL.md",
     "start": "node dist/index.js",
-    "test": "vitest run",
-    "test:watch": "vitest",
+    "test": "NODE_ENV=test vitest run",
+    "test:watch": "NODE_ENV=test vitest",
     "live-e2e": "tsx scripts/live-e2e.ts"
   },
   "dependencies": {

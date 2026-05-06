@@ -55,25 +55,6 @@ function isHex32(x: unknown): x is Hex {
   return typeof x === "string" && /^0x[0-9a-fA-F]{64}$/.test(x);
 }
 
-// ── DNS capability typed-data ─────────────────────────────────────────────
-
-const DNS_SET_RECORD_AUTHORIZATION_TYPES = {
-  DnsSetRecordAuthorization: [
-    { name: "buyerTokenId", type: "uint256" },
-    { name: "paymentId", type: "uint256" },
-    { name: "domain", type: "string" },
-    { name: "recordType", type: "string" },
-    { name: "recordName", type: "string" },
-    { name: "recordContent", type: "string" },
-    { name: "recordTtl", type: "uint256" },
-    { name: "nonce", type: "bytes32" },
-    { name: "expiry", type: "uint256" },
-  ],
-} as const;
-
-const DASKI_CAPABILITY_DOMAIN_NAME = "Daski";
-const DASKI_CAPABILITY_DOMAIN_VERSION = "1";
-
 // ── Router ────────────────────────────────────────────────────────────────
 
 export function createPrepRouter(deps: PrepDeps): Router {
