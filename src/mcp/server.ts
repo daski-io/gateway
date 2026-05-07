@@ -1851,21 +1851,28 @@ export async function createMcpServer(
           });
         }
 
-        // Resolve buyerAgentId. Caller-supplied wins; otherwise we look up
-        // the agent for this wallet on-chain. Missing/0 means "not yet
-        // registered" → the paid path below routes through atomic
-        // register-and-settle; the free path errors out (no payment to
-        // piggyback registration onto).
-        let buyerAgentId: bigint;
+        // Resolve buyerAgentId. A non-zero caller-supplied value wins;
+        // missing OR an explicit "0" both fall through to the on-chain
+        // lookup. Treating "0" as a valid override would route an
+        // already-registered wallet down atomic register-and-settle and
+        // burn the buyer's USDC re-minting an agentId they already have
+        // (or, more often now, surface as a bare "execution reverted"
+        // when registerBySig sees a stale nonce). On-chain agentOfWallet
+        // is the single source of truth; let it speak.
+        let parsedBuyerTokenId: bigint | null = null;
         if (args.buyerTokenId) {
           try {
-            buyerAgentId = BigInt(args.buyerTokenId);
+            parsedBuyerTokenId = BigInt(args.buyerTokenId);
           } catch {
             return errorJson({
               code: "BAD_INPUT",
               message: "buyerTokenId must be numeric",
             });
           }
+        }
+        let buyerAgentId: bigint;
+        if (parsedBuyerTokenId !== null && parsedBuyerTokenId !== 0n) {
+          buyerAgentId = parsedBuyerTokenId;
         } else {
           try {
             buyerAgentId = await deps.reader.agentOfWallet(

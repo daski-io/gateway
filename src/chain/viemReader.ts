@@ -120,7 +120,26 @@ export function decodeRevertReason(err: unknown): string {
       // is no string to decode. Common with OOG on tight gas budgets.
       return "execution reverted with no data (out-of-gas or bare revert)";
     }
-    return err.shortMessage ?? err.message;
+    // No typed revert in the cause chain. This is what happens when an
+    // RPC returns an error response that viem wraps as a generic
+    // ContractFunctionExecutionError or CallExecutionError without a
+    // decodable revert payload — common on Base Sepolia's public RPC
+    // when the upstream node truncates returndata. shortMessage alone
+    // here is usually the bare phrase "Execution reverted." with no
+    // hint. Append err.details (the raw RPC error string) and the
+    // cause's message when present so the caller still has something
+    // to grep / paste into a tracer.
+    const short = err.shortMessage ?? err.message;
+    const details = (err as { details?: unknown }).details;
+    const cause = (err as { cause?: { message?: string } }).cause;
+    const extras: string[] = [];
+    if (typeof details === "string" && details && details !== short) {
+      extras.push(details);
+    }
+    if (cause?.message && cause.message !== short && cause.message !== details) {
+      extras.push(cause.message);
+    }
+    return extras.length > 0 ? `${short} (${extras.join("; ")})` : short;
   }
   return err instanceof Error ? err.message : String(err);
 }
