@@ -5,9 +5,11 @@ import type { Queries } from "../db/queries.js";
 import type { DiscoveryCache } from "../discovery/cache.js";
 import { extractAgentCardName } from "../discovery/format.js";
 import {
+  deriveProviderReputation,
   formatActivityRow,
   formatServiceForPublic,
   type PublicService,
+  type PublicServiceReputation,
 } from "./format.js";
 
 const ACTIVITY_DEFAULT_LIMIT = 50;
@@ -48,6 +50,45 @@ class BlockNumberCache {
   }
 }
 
+/**
+ * Per-agentId cache for provider reputation. Same shape as BlockNumberCache
+ * but keyed: each service-detail page hit otherwise translates 1:1 into an
+ * RPC read against ReputationStorage. 30s TTL is well below the cadence at
+ * which counters move (each tick requires a real on-chain attestation), so
+ * no user perceives staleness.
+ *
+ * On RPC failure: serve the last known value if we have one, else null. The
+ * route's empty-state already handles null — a brief flatline is far less
+ * disruptive than a hard 5xx for a marketing-side surface.
+ */
+class ProviderReputationCache {
+  private readonly entries = new Map<
+    string,
+    { value: PublicServiceReputation | null; fetchedAt: number }
+  >();
+  private readonly ttlMs: number;
+  constructor(
+    private readonly reader: ChainReader,
+    ttlMs = 30_000,
+  ) {
+    this.ttlMs = ttlMs;
+  }
+  async get(agentId: bigint): Promise<PublicServiceReputation | null> {
+    const key = agentId.toString();
+    const now = Date.now();
+    const hit = this.entries.get(key);
+    if (hit && now - hit.fetchedAt < this.ttlMs) return hit.value;
+    try {
+      const raw = await this.reader.getProviderReputation(agentId);
+      const value = raw ? deriveProviderReputation(raw) : null;
+      this.entries.set(key, { value, fetchedAt: now });
+      return value;
+    } catch {
+      return hit?.value ?? null;
+    }
+  }
+}
+
 function parseLimit(raw: unknown, fallback: number, cap: number): number {
   if (raw === undefined) return fallback;
   if (typeof raw !== "string") return fallback;
@@ -69,6 +110,8 @@ export interface PublicRouterDeps {
   reader: ChainReader;
   /** Override the block-number TTL (ms). Tests pass 0 to bypass caching. */
   blockNumberCacheTtlMs?: number;
+  /** Override the provider-reputation TTL (ms). Tests pass 0 to bypass caching. */
+  reputationCacheTtlMs?: number;
 }
 
 /**
@@ -84,6 +127,10 @@ export function createPublicRouter(deps: PublicRouterDeps): Router {
   const blockCache = new BlockNumberCache(
     reader,
     deps.blockNumberCacheTtlMs ?? 2000,
+  );
+  const reputationCache = new ProviderReputationCache(
+    reader,
+    deps.reputationCacheTtlMs ?? 30_000,
   );
 
   router.get("/public/v1/services", (_req: Request, res: Response) => {
@@ -118,14 +165,14 @@ export function createPublicRouter(deps: PublicRouterDeps): Router {
         notFound(res, "unknown service");
         return;
       }
-      const recent = await queries.listRecentPaidByProvider(
-        agentId,
-        PER_SERVICE_RECENT_LIMIT,
-      );
+      const [recent, reputation] = await Promise.all([
+        queries.listRecentPaidByProvider(agentId, PER_SERVICE_RECENT_LIMIT),
+        reputationCache.get(agentId),
+      ]);
       const recentPurchases = recent.map((c) =>
         formatActivityRow(c, formatted.name),
       );
-      res.json({ ...formatted, recentPurchases });
+      res.json({ ...formatted, recentPurchases, reputation });
     },
   );
 

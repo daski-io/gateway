@@ -1,4 +1,5 @@
 import { DASKI_A2A_EXTENSION_URI } from "../config.js";
+import type { ProviderReputation } from "../chain/reader.js";
 import {
   extractAgentCardName,
   extractAgentCardUrl,
@@ -73,6 +74,56 @@ export interface PublicSkill {
   requiresAssetOwnership: boolean;
   requiresCapability: boolean;
   assetType: string | null;
+}
+
+/**
+ * Provider-level reputation derived from `ReputationStorage.getProviderStats`.
+ *
+ * The contract returns raw counters; the website wants ranked-friendly rates
+ * plus the underlying volume. We derive both here so all consumers share the
+ * same definition (and the website doesn't have to handle divide-by-zero
+ * across multiple components).
+ *
+ * Rates are 0..1 floats, or null when the denominator is zero — null encodes
+ * "no data" cleanly for the UI's empty state. `totalTransactions` is the
+ * combined outcome count (completed + failed + canceled), which is what the
+ * whitepaper §Trust Model labels "Volume" and what discovery ranking weights
+ * with. It is NOT confirmed + notConfirmed: a buyer can confirm later or
+ * never, so a transaction can exist without a confirmation pair.
+ */
+export interface PublicServiceReputation {
+  totalTransactions: number;
+  completionRate: number | null;
+  buyerSatisfactionRate: number | null;
+  completedCount: number;
+  failedCount: number;
+  canceledCount: number;
+  confirmedCount: number;
+  notConfirmedCount: number;
+}
+
+export function deriveProviderReputation(
+  raw: ProviderReputation,
+): PublicServiceReputation {
+  const completed = Number(raw.completed);
+  const failed = Number(raw.failed);
+  const canceled = Number(raw.canceled);
+  const confirmed = Number(raw.confirmed);
+  const notConfirmed = Number(raw.notConfirmed);
+  const totalTransactions = completed + failed + canceled;
+  const totalConfirmations = confirmed + notConfirmed;
+  return {
+    totalTransactions,
+    completionRate:
+      totalTransactions > 0 ? completed / totalTransactions : null,
+    buyerSatisfactionRate:
+      totalConfirmations > 0 ? confirmed / totalConfirmations : null,
+    completedCount: completed,
+    failedCount: failed,
+    canceledCount: canceled,
+    confirmedCount: confirmed,
+    notConfirmedCount: notConfirmed,
+  };
 }
 
 export interface PublicActivityRow {

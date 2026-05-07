@@ -14,6 +14,7 @@ async function main() {
     usdcAddress: config.usdcAddress,
     facilitatorPrivateKey: config.facilitatorPrivateKey,
     easAddress: config.easAddress,
+    reputationStorageAddress: config.reputationStorageAddress,
   });
 
   const bundle = await createApp({ config, reader });

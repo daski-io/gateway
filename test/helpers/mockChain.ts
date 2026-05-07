@@ -1,8 +1,10 @@
 import type {
+  BuyerReputation,
   ChainReader,
   ConfirmationDelegationInput,
   ConfirmationResult,
   PaymentSettledEvent,
+  ProviderReputation,
   RegisterBySigInput,
   RegisterBySigResult,
   SettleWithRegistrationInput,
@@ -220,6 +222,53 @@ export class MockChainReader implements ChainReader {
 
   async getBlockNumber(): Promise<bigint> {
     return this.blockNumber;
+  }
+
+  // ── Reputation mock ──────────────────────────────────────────────
+  //
+  // Default null mirrors the production behavior when no
+  // ReputationStorage is wired into the gateway. Tests that exercise
+  // the reputation surface set explicit values via the setters.
+  private providerReputations = new Map<string, ProviderReputation>();
+  private buyerReputations = new Map<string, BuyerReputation>();
+  private reputationConfigured = false;
+
+  setProviderReputation(agentId: bigint, value: ProviderReputation): void {
+    this.reputationConfigured = true;
+    this.providerReputations.set(agentId.toString(), value);
+  }
+
+  setBuyerReputation(agentId: bigint, value: BuyerReputation): void {
+    this.reputationConfigured = true;
+    this.buyerReputations.set(agentId.toString(), value);
+  }
+
+  async getProviderReputation(
+    agentId: bigint,
+  ): Promise<ProviderReputation | null> {
+    if (!this.reputationConfigured) return null;
+    return (
+      this.providerReputations.get(agentId.toString()) ?? {
+        completed: 0n,
+        failed: 0n,
+        canceled: 0n,
+        confirmed: 0n,
+        notConfirmed: 0n,
+      }
+    );
+  }
+
+  async getBuyerReputation(
+    agentId: bigint,
+  ): Promise<BuyerReputation | null> {
+    if (!this.reputationConfigured) return null;
+    return (
+      this.buyerReputations.get(agentId.toString()) ?? {
+        transactions: 0n,
+        confirmed: 0n,
+        notConfirmed: 0n,
+      }
+    );
   }
 
   async settleWithRegistration(

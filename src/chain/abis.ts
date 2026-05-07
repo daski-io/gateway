@@ -113,6 +113,41 @@ export const paymentRouterAbi = [
   },
 ] as const;
 
+// ── Daski ReputationStorage ─────────────────────────────────────────────
+//
+// EAS schema resolver that maintains aggregate counters per
+// (provider, buyer). Gateway only reads the views — writes happen via EAS
+// attestations that the resolver intercepts. The two getters below are the
+// shape consumed by the public service-detail endpoint to surface
+// completion / buyer-confirmation rates on the marketing site.
+
+export const reputationStorageAbi = [
+  {
+    type: "function",
+    name: "getProviderStats",
+    inputs: [{ name: "providerAgentId", type: "uint256" }],
+    outputs: [
+      { name: "completed", type: "uint256" },
+      { name: "failed", type: "uint256" },
+      { name: "canceled", type: "uint256" },
+      { name: "confirmed", type: "uint256" },
+      { name: "notConfirmed_", type: "uint256" },
+    ],
+    stateMutability: "view",
+  },
+  {
+    type: "function",
+    name: "getBuyerStats",
+    inputs: [{ name: "buyerAgentId", type: "uint256" }],
+    outputs: [
+      { name: "transactions", type: "uint256" },
+      { name: "confirmed", type: "uint256" },
+      { name: "notConfirmed_", type: "uint256" },
+    ],
+    stateMutability: "view",
+  },
+] as const;
+
 // ── X402Adapter (EIP-3009) ──────────────────────────────────────────────
 
 export const x402AdapterAbi = [

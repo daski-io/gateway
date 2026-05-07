@@ -111,6 +111,27 @@ export interface ConfirmationResult {
   attestationUid: Hex;
 }
 
+// ── ReputationStorage views ──────────────────────────────────────────────
+//
+// Mirrors the (completed, failed, canceled, confirmed, notConfirmed) and
+// (transactions, confirmed, notConfirmed) tuples returned by
+// ReputationStorage. Counters are bigints because the contract returns
+// uint256 — it's vanishingly unlikely they'd ever exceed Number.MAX_SAFE,
+// but keeping the type honest at the boundary lets the formatter decide.
+export interface ProviderReputation {
+  completed: bigint;
+  failed: bigint;
+  canceled: bigint;
+  confirmed: bigint;
+  notConfirmed: bigint;
+}
+
+export interface BuyerReputation {
+  transactions: bigint;
+  confirmed: bigint;
+  notConfirmed: bigint;
+}
+
 // Wraps every chain read AND write the gateway performs. Tests inject a
 // fake implementation; prod uses the viem-backed one in viemReader.ts.
 export interface ChainReader {
@@ -183,6 +204,16 @@ export interface ChainReader {
   // so the marketing site can show a live "block height" indicator without
   // needing its own RPC wiring.
   getBlockNumber(): Promise<bigint>;
+
+  // ── ReputationStorage views ────────────────────────────────────────────
+  // Both return null when the gateway is configured without a
+  // ReputationStorage address (e.g. local dev). When the contract is wired
+  // but the agent has no recorded activity, the counters are all zero —
+  // which is a meaningful "no transaction history yet" signal, not an
+  // error. Callers should distinguish null (not configured) from all-zero
+  // (configured but inactive).
+  getProviderReputation(agentId: bigint): Promise<ProviderReputation | null>;
+  getBuyerReputation(agentId: bigint): Promise<BuyerReputation | null>;
 }
 
 /**

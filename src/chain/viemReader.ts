@@ -17,14 +17,17 @@ import {
   knownErrorAbis,
   paymentRouterAbi,
   providerRegistryAbi,
+  reputationStorageAbi,
   usdcAbi,
   x402AdapterAbi,
 } from "./abis.js";
 import type {
+  BuyerReputation,
   ChainReader,
   ConfirmationDelegationInput,
   ConfirmationResult,
   PaymentSettledEvent,
+  ProviderReputation,
   RegisterBySigInput,
   RegisterBySigResult,
   SettleWithRegistrationInput,
@@ -48,6 +51,10 @@ export interface ViemReaderOptions {
   // EAS contract. On Base / Base Sepolia this is the canonical
   // 0x4200000000000000000000000000000000000021.
   easAddress: Hex;
+  // Optional — when unset, the reputation getters return null. The marketing
+  // site treats null as "no reputation data" and renders the empty state
+  // rather than 5xxing.
+  reputationStorageAddress?: Hex;
 }
 
 function chainForId(chainId: ChainId) {
@@ -143,6 +150,7 @@ export function createViemChainReader(opts: ViemReaderOptions): ChainReader {
   const adapterAddress = opts.x402AdapterAddress;
   const usdcAddress = opts.usdcAddress;
   const easAddress = opts.easAddress;
+  const reputationStorageAddress = opts.reputationStorageAddress;
 
   // EAS's Attested event — referenced to pull the UID out of the receipt.
   // Signature is the canonical one from eas-contracts (indexed recipient,
@@ -577,6 +585,42 @@ export function createViemChainReader(opts: ViemReaderOptions): ChainReader {
 
     async getBlockNumber(): Promise<bigint> {
       return await publicClient.getBlockNumber();
+    },
+
+    async getProviderReputation(
+      agentId: bigint,
+    ): Promise<ProviderReputation | null> {
+      if (!reputationStorageAddress) return null;
+      const result = (await publicClient.readContract({
+        address: reputationStorageAddress,
+        abi: reputationStorageAbi,
+        functionName: "getProviderStats",
+        args: [agentId],
+      })) as readonly [bigint, bigint, bigint, bigint, bigint];
+      return {
+        completed: result[0],
+        failed: result[1],
+        canceled: result[2],
+        confirmed: result[3],
+        notConfirmed: result[4],
+      };
+    },
+
+    async getBuyerReputation(
+      agentId: bigint,
+    ): Promise<BuyerReputation | null> {
+      if (!reputationStorageAddress) return null;
+      const result = (await publicClient.readContract({
+        address: reputationStorageAddress,
+        abi: reputationStorageAbi,
+        functionName: "getBuyerStats",
+        args: [agentId],
+      })) as readonly [bigint, bigint, bigint];
+      return {
+        transactions: result[0],
+        confirmed: result[1],
+        notConfirmed: result[2],
+      };
     },
   };
 }
