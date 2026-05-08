@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { encodeAbiParameters, keccak256 } from "viem";
 import type { Config } from "../config.js";
 import { DASKI_A2A_EXTENSION_URI } from "../config.js";
 import type { DiscoveryCache } from "../discovery/cache.js";
@@ -384,11 +385,21 @@ export async function issuePaymentRequirements(
   });
 
   // Pre-bake the EIP-712 typed-data so the agent's wallet can sign verbatim.
-  // nonce + validBefore are gateway-chosen here; the wallet signs them
-  // exactly, and verifyAndSettle later recovers the signature against the
-  // same values. validAfter is always 0 — we don't need delayed-start
-  // semantics for marketplace settlement.
-  const nonce = `0x${crypto.randomBytes(32).toString("hex")}` as Hex;
+  // validBefore is gateway-chosen here; the wallet signs it exactly, and
+  // verifyAndSettle later recovers the signature against the same value.
+  // validAfter is always 0 — no delayed-start semantics for settlement.
+  //
+  // The EIP-3009 nonce MUST be `keccak256(abi.encode(serviceRef, providerAgentId))`
+  // — the X402Adapter rejects calls whose auth.nonce does not match this
+  // binding, so a frontrunner cannot reuse the auth with a different
+  // serviceRef / providerAgentId. See daski/src/adapters/X402Adapter.sol
+  // contract NatSpec ("AUTH BINDING").
+  const nonce = keccak256(
+    encodeAbiParameters(
+      [{ type: "bytes32" }, { type: "uint256" }],
+      [serviceRef, params.providerTokenId],
+    ),
+  ) as Hex;
   const nowSec = BigInt(Math.floor(now.getTime() / 1000));
   const validAfter = 0n;
   const validBefore = nowSec + BigInt(config.challengeTtlSeconds);
