@@ -1,6 +1,5 @@
 import dns from "node:dns/promises";
 import net from "node:net";
-import { Agent, fetch as undiciFetch } from "undici";
 
 // SSRF guard for outbound fetches. Two failure modes we close:
 //
@@ -216,51 +215,29 @@ export async function readBoundedJson<T = unknown>(
 }
 
 /**
- * Outbound fetch with the SSRF guard applied AND the resolved IP pinned at
- * the connect layer. Closes the DNS-rebinding TOCTOU between
- * `validateUrlForOutbound` and the kernel's connect() — undici calls our
- * `lookup` instead of the system resolver, so a hostile DNS server can't
- * flip an A record between validate-time and dial-time. TLS SNI and
- * certificate validation still run against the URL's hostname; only the
- * destination address of the syscall is pinned.
+ * Outbound fetch with the SSRF host-validation guard applied. Validates the
+ * URL host (or accepts a pre-validated handle) and then delegates to the
+ * platform fetch.
  *
- * Pass `preValidated` to skip a second DNS lookup when the caller already
- * resolved the URL (e.g. cache.fetchJson does its own validate so it can
- * surface the error before opening the request).
+ * NOTE: an earlier revision of this function used `undici.Agent` with a
+ * custom `connect.lookup` to also pin the resolved IP at the dial layer
+ * (closing the DNS-rebinding TOCTOU between validate and connect). That
+ * variant returned `fetch failed` in the Railway runtime — undici 7's
+ * connect-options surface needs more digging before we can re-enable it.
+ * The host-validation check still runs on every call, so a malicious
+ * agentURI cannot point at a private/loopback/IMDS host. Re-introducing
+ * the IP-pinning is tracked as a follow-up.
  */
 export async function safeFetch(
   url: string,
   init?: RequestInit,
   preValidated?: ValidatedUrl,
 ): Promise<Response> {
-  const validated = preValidated ?? (await validateUrlForOutbound(url));
-
-  // Test mode: validateUrlForOutbound short-circuits and returns no addrs.
-  // Nothing to pin against, and tests use 127.0.0.1 / mock fetch handlers,
-  // so fall through to the global fetch.
-  if (validated.resolvedAddrs.length === 0) {
-    return fetch(url, init);
+  // Run validation for the side effect (it throws on private hosts). The
+  // resolved address list is no longer used here; preserved on the type
+  // for the eventual IP-pinning re-introduction.
+  if (!preValidated) {
+    await validateUrlForOutbound(url);
   }
-
-  // Every entry in resolvedAddrs has already been screened against the
-  // private/loopback/IMDS list; picking the first is sufficient to close
-  // the rebinding window.
-  const addr = validated.resolvedAddrs[0];
-  const family = net.isIPv6(addr) ? 6 : 4;
-  const dispatcher = new Agent({
-    connect: {
-      lookup: (_hostname, _opts, cb) => {
-        // net.connect calls back with the single-result form; supplying
-        // (err, address, family) matches Node's net.LookupFunction.
-        cb(null, addr, family);
-      },
-    },
-  });
-
-  // undici and the global Response both implement WHATWG fetch; the cast
-  // bridges TypeScript's separate type declarations for the two.
-  return (await undiciFetch(url, {
-    ...init,
-    dispatcher,
-  } as never)) as unknown as Response;
+  return fetch(url, init);
 }
