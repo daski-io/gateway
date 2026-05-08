@@ -19,7 +19,11 @@
     "cors": "^2.8.5",
     "express": "^4.21.0",
     "pg": "^8.13.0",
+    "undici": "^7.0.0",
     "viem": "^2.21.0"
+  },
+  "overrides": {
+    "protobufjs": "^7.5.5"
   },
   "devDependencies": {
     "@coinbase/cdp-sdk": "^1.48.0",

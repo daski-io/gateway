@@ -84,6 +84,12 @@ export async function createApp(options: CreateAppOptions): Promise<AppBundle> {
   });
 
   const app = express();
+  // Trust the immediate proxy (Railway / single-LB / Cloudflare). Without
+  // this, `req.ip` resolves to the proxy's address and the per-IP rate
+  // limiter collapses into a global bucket. Operators behind a multi-hop
+  // proxy chain can override via TRUST_PROXY=N. `0` disables (direct
+  // exposure / local dev).
+  app.set("trust proxy", Number(process.env.TRUST_PROXY ?? 1));
   app.use(securityHeaders);
   app.use(cors({ origin: "*" }));
   app.use(express.json({ limit: "1mb" }));
@@ -110,6 +116,15 @@ export async function createApp(options: CreateAppOptions): Promise<AppBundle> {
       ],
       stateChangeLimiter,
     );
+    // POSTs to the MCP transport dispatch tool calls that can submit txs,
+    // hit RPC, and write to Postgres. Without this limiter, an anonymous
+    // client could bypass the REST gates entirely by going through /mcp.
+    // Sized higher than the REST limit because a normal MCP session does
+    // 5–10 tool calls per buy flow. SSE responses (GET /mcp) and session
+    // teardown (DELETE /mcp) are not limited so reconnects don't consume
+    // budget.
+    const mcpLimiter = rateLimit({ windowMs: 60_000, max: 60 });
+    app.post(config.mcpPath, mcpLimiter);
   }
 
   // Request logging — JSON-structured to match provider format

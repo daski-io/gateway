@@ -1,7 +1,9 @@
 import {
   readBoundedJson,
+  safeFetch,
   UrlSafetyError,
   validateUrlForOutbound,
+  type ValidatedUrl,
 } from "../util/urlSafety.js";
 
 // Buyer agentURIs are user-supplied (or on-chain) and so must be treated
@@ -49,9 +51,16 @@ export interface FetchedAgentCard {
 
 export interface FetchAgentCardOptions {
   ipfsGatewayUrl: string;
-  // Test seam — caller supplies a fetch impl in vitest. Defaults to the
-  // global `fetch` in production.
-  fetchFn?: (url: string, init?: RequestInit) => Promise<Response>;
+  // Test seam — caller supplies a fetch impl in vitest. Defaults to
+  // `safeFetch` in production, which validates the host AND pins the
+  // resolved IP at the connect layer to close DNS-rebinding TOCTOU.
+  // The optional `preValidated` arg lets the caller skip a redundant
+  // DNS lookup when it has already validated the URL.
+  fetchFn?: (
+    url: string,
+    init?: RequestInit,
+    preValidated?: ValidatedUrl,
+  ) => Promise<Response>;
   timeoutMs?: number;
   maxBytes?: number;
 }
@@ -60,7 +69,7 @@ export async function fetchAgentCard(
   uri: string,
   opts: FetchAgentCardOptions,
 ): Promise<FetchedAgentCard> {
-  const fetchFn = opts.fetchFn ?? ((u, init) => fetch(u, init));
+  const fetchFn = opts.fetchFn ?? safeFetch;
   const timeoutMs = opts.timeoutMs ?? AGENT_CARD_TIMEOUT_MS;
   const maxBytes = opts.maxBytes ?? AGENT_CARD_MAX_BYTES;
 
@@ -112,6 +121,21 @@ function parseDataUri(uri: string, maxBytes: number): Record<string, unknown> {
   const payload = uri.slice(comma + 1);
   const isBase64 = /;base64$/i.test(meta) || /;base64;/i.test(meta);
 
+  // Reject before decoding so a 10 MB encoded payload doesn't allocate
+  // a 7.5 MB buffer just to fail the post-decode cap. base64 expands
+  // ~4/3, percent-encoding can reach 3x for pure binary; both pre-checks
+  // leave generous slack and only fire on payloads that couldn't fit
+  // under maxBytes anyway.
+  const inputCap = isBase64
+    ? Math.ceil((maxBytes * 4) / 3) + 16
+    : maxBytes * 3 + 16;
+  if (payload.length > inputCap) {
+    throw new AgentCardFetchError(
+      `data: URI payload too large (encoded length ${payload.length} > cap ${inputCap})`,
+      "AGENT_URI_TOO_LARGE",
+    );
+  }
+
   let buf: Buffer;
   try {
     if (isBase64) {
@@ -156,12 +180,17 @@ function ipfsToHttp(uri: string, gateway: string): string {
 
 async function fetchHttp(
   url: string,
-  fetchFn: (u: string, init?: RequestInit) => Promise<Response>,
+  fetchFn: (
+    u: string,
+    init?: RequestInit,
+    preValidated?: ValidatedUrl,
+  ) => Promise<Response>,
   timeoutMs: number,
   maxBytes: number,
 ): Promise<Record<string, unknown>> {
+  let validated: ValidatedUrl;
   try {
-    await validateUrlForOutbound(url);
+    validated = await validateUrlForOutbound(url);
   } catch (err) {
     if (err instanceof UrlSafetyError) {
       throw new AgentCardFetchError(
@@ -176,10 +205,11 @@ async function fetchHttp(
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   let res: Response;
   try {
-    res = await fetchFn(url, {
-      signal: controller.signal,
-      redirect: "manual",
-    });
+    res = await fetchFn(
+      url,
+      { signal: controller.signal, redirect: "manual" },
+      validated,
+    );
   } catch (err) {
     const e = err as { name?: string; message?: string };
     if (e?.name === "AbortError") {

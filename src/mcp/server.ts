@@ -24,6 +24,7 @@ import {
 import { syncSkillEmbeddings } from "../discovery/embeddingSync.js";
 import {
   readBoundedJson,
+  safeFetch,
   UrlSafetyError,
   validateUrlForOutbound,
 } from "../util/urlSafety.js";
@@ -144,7 +145,14 @@ export async function createMcpServer(
   deps: McpDeps,
 ): Promise<McpWiring> {
   const sessions = new Map<string, Session>();
-  const a2aFetch = deps.fetch ?? ((u: string, i?: RequestInit) => fetch(u, i));
+  // Default to safeFetch (validates host + pins resolved IP at connect).
+  // Tests inject deps.fetch with a mock that ignores SSRF; the loose
+  // signature means a `(url, init) => Promise<Response>` mock satisfies
+  // safeFetch's `(url, init?, preValidated?)` signature without changes.
+  const a2aFetch: (
+    u: string,
+    i?: RequestInit,
+  ) => Promise<Response> = deps.fetch ?? safeFetch;
   const a2aTimeoutMs = deps.a2aTimeoutMs ?? 10_000;
 
   function registerTools(server: McpServer) {

@@ -5,7 +5,9 @@ import {
 import type { CachedProvider, OnChainProvider } from "../types.js";
 import {
   readBoundedJson,
+  safeFetch,
   validateUrlForOutbound,
+  type ValidatedUrl,
 } from "../util/urlSafety.js";
 
 // 256 KB is enough for any well-formed Agent Card (largest live one is ~12 KB).
@@ -16,6 +18,7 @@ const AGENT_CARD_MAX_BYTES = 256 * 1024;
 export type FetchFn = (
   url: string,
   init?: RequestInit,
+  preValidated?: ValidatedUrl,
 ) => Promise<Response>;
 
 export interface CacheOptions {
@@ -51,7 +54,11 @@ export class DiscoveryCache {
     this.reader = opts.reader;
     this.whitelist = [...opts.whitelist];
     this.refreshIntervalMs = opts.refreshIntervalSeconds * 1000;
-    this.fetchFn = opts.fetch ?? ((url, init) => fetch(url, init));
+    // Default to safeFetch in production: validates the host AND pins the
+    // resolved IP at connect time so a hostile DNS server can't flip an A
+    // record between validate and dial. Tests inject their own fetchFn
+    // (mockProvider on 127.0.0.1) which is unaffected.
+    this.fetchFn = opts.fetch ?? safeFetch;
     this.agentCardFetchTimeoutMs = opts.agentCardFetchTimeoutMs ?? 5000;
     this.onCatalogChanged = opts.onCatalogChanged;
     this.logger = opts.logger ?? console;
@@ -232,7 +239,7 @@ export class DiscoveryCache {
     // RPC ports, internal services). A whitelisted-but-malicious provider
     // who controls their on-chain `agentURI` could otherwise pivot the
     // gateway's outbound fetch into the cluster's internal network.
-    await validateUrlForOutbound(uri);
+    const validated = await validateUrlForOutbound(uri);
 
     const controller = new AbortController();
     const timeout = setTimeout(
@@ -242,16 +249,19 @@ export class DiscoveryCache {
     try {
       // `redirect: "manual"` so a 30x to a private host doesn't slip past
       // the validator. Tests inject `fetchFn` and use 127.0.0.1 URLs;
-      // urlSafety short-circuits the host check when NODE_ENV=test.
-      const res = await this.fetchFn(uri, {
-        signal: controller.signal,
-        redirect: "manual",
-      });
+      // urlSafety short-circuits the host check when NODE_ENV=test. The
+      // validated URL is forwarded to safeFetch so it can pin the connect
+      // to the IP we already resolved (no second DNS lookup).
+      const res = await this.fetchFn(
+        uri,
+        { signal: controller.signal, redirect: "manual" },
+        validated,
+      );
       if (res.status >= 300 && res.status < 400) {
         const loc = res.headers.get("location");
         if (loc) {
           const next = new URL(loc, uri).toString();
-          await validateUrlForOutbound(next);
+          const nextValidated = await validateUrlForOutbound(next);
           // Single redirect hop only: real Agent Card hosts don't need
           // chains, and longer chains are an attacker's preferred way to
           // smuggle a private-host target in.
@@ -261,10 +271,11 @@ export class DiscoveryCache {
             this.agentCardFetchTimeoutMs,
           );
           try {
-            const followed = await this.fetchFn(next, {
-              signal: innerController.signal,
-              redirect: "manual",
-            });
+            const followed = await this.fetchFn(
+              next,
+              { signal: innerController.signal, redirect: "manual" },
+              nextValidated,
+            );
             if (!followed.ok) {
               throw new Error(`HTTP ${followed.status}`);
             }
