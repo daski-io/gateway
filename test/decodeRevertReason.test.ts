@@ -68,6 +68,19 @@ describe("decodeRevertReason", () => {
     expect(decodeRevertReason(err)).toBe("unknown error 0xdeadbeef");
   });
 
+  it("flags revert with no reason / data / signature as likely OOG", () => {
+    // This is the shape viem produces when simulation hits the supplied
+    // gas budget mid-call: the EVM returns empty returndata, so the
+    // ContractFunctionRevertedError ends up with `reason`, `data`,
+    // `signature`, and `raw` all empty. Pre-fix this fell through to the
+    // bare phrase "execution reverted (no data)" which sent debuggers
+    // hunting for non-existent signature mismatches; the OOG hint short-
+    // circuits that wild goose chase.
+    const err = makeReverted({ abi: knownErrorAbis });
+    expect(decodeRevertReason(err)).toContain("out-of-gas");
+    expect(decodeRevertReason(err)).toContain("gas budget was too low");
+  });
+
   it("calls out zero-data reverts (OOG / bare revert()) explicitly", () => {
     // ContractFunctionExecutionError wraps a ZeroData error in real flows
     // (e.g. when a sub-call OOGs and bubbles up empty returndata). Walk the

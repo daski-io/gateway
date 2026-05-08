@@ -113,7 +113,15 @@ export function decodeRevertReason(err: unknown): string {
       if (revert.signature) return `unknown error ${revert.signature}`;
       if (revert.raw && revert.raw !== "0x")
         return `unknown error ${revert.raw.slice(0, 10)}`;
-      return revert.shortMessage ?? "execution reverted (no data)";
+      // ContractFunctionRevertedError with no reason / data / signature /
+      // raw is the shape viem produces when simulation hits the supplied
+      // gas budget mid-call (the EVM returns empty returndata). Every
+      // entrypoint in this file passes an explicit `gas` arg, so this
+      // case is almost always "the budget was too low for this code
+      // path", not "the contract genuinely reverted with no message".
+      // Naming OOG explicitly saves the next debugger from chasing
+      // signature mismatches that aren't there.
+      return "execution reverted with no data (likely out-of-gas — the simulation gas budget was too low for this call)";
     }
     if (revert instanceof ContractFunctionZeroDataError) {
       // Bare revert() or out-of-gas — the call returned no data so there
@@ -410,9 +418,18 @@ export function createViemChainReader(opts: ViemReaderOptions): ChainReader {
         s: input.s,
       } as const;
 
-      // 600k gas budget: settle alone is ~150-250k, registerBySig is
-      // ~150-200k; combined ~300-450k. 600k matches the EAS-attest limit
-      // already in use here for the same sepolia.base.org reason.
+      // 2M gas budget: real-world atomic register+settle measured at ~713k
+      // on Base Sepolia (registerBySig with _safeMint + ERC721URIStorage
+      // SSTORE for the agentURI ≈ 380k, EIP-3009 transferWithAuthorization
+      // ≈ 100k, router.settle bookkeeping ≈ 230k). The original 600k
+      // estimate undercounted ERC-721 minting and the per-byte cost of
+      // storing dynamic agentURIs, so simulation aborted mid-execution
+      // and surfaced as a bare "execution reverted" with no debuggable
+      // data — exactly the silent-revert footgun this comment used to
+      // claim was impossible. 2M leaves ~1.3M headroom for longer
+      // agentURIs and ERC-1271 contract-wallet signatures (which can
+      // be arbitrary length and pull in extra SignatureChecker gas) and
+      // still sits comfortably below Base Sepolia's ~5M per-tx cap.
       //
       // Simulate first — see settlePayment for the rationale. Atomic
       // register+settle has *two* sources of revert (registration sig
@@ -436,7 +453,7 @@ export function createViemChainReader(opts: ViemReaderOptions): ChainReader {
           ],
           account,
           chain,
-          gas: 600_000n,
+          gas: 2_000_000n,
         });
         settleRequest = sim.request;
       } catch (err) {
