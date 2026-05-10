@@ -260,6 +260,10 @@ describe("hosted MCP — wallet-agnostic surface", () => {
             providerTokenId: "2",
             buyerTokenId: "5",
             walletAddress: gateway.buyerAddress,
+            // post-service-identity-refactor: skillId is required so the
+            // gateway can derive serviceId from (providerAgentId, skillId,
+            // version) and bind the EIP-3009 nonce accordingly.
+            skillId: "register-domain",
           },
         }),
       );

@@ -17,6 +17,11 @@ export interface ChainTransactionReceipt {
 export interface PaymentSettledEvent {
   paymentId: bigint;
   serviceRef: Hex;
+  // serviceId — 32-byte hex. The post-refactor router (PaymentRouter v2)
+  // emits this as the third indexed topic so subgraphs can cheap-filter
+  // per-service. Always set on new settlements; legacy events read as
+  // bytes32(0).
+  serviceId: Hex;
   buyerAgentId: bigint;
   providerAgentId: bigint;
   // Address of the ERC-20 used for this payment. Added when the router
@@ -29,6 +34,11 @@ export interface PaymentSettledEvent {
 
 export interface SettlementInput {
   providerAgentId: bigint;
+  // 32-byte hex serviceId. PaymentRouter.settle requires this — it
+  // validates the (provider, service) pair against ServiceRegistry and
+  // resolves the payee using the per-service wallet override (if set)
+  // or the provider's live ERC-8004 agentWallet (default).
+  serviceId: Hex;
   amount: bigint;
   serviceRef: Hex;
   from: Hex;
@@ -132,6 +142,18 @@ export interface BuyerReputation {
   notConfirmed: bigint;
 }
 
+// Per-service reputation tuple — same outcome counters as
+// ProviderReputation plus a totalRefunded (atomic USDC). Returned by
+// ReputationStorage.getServiceStats.
+export interface ServiceReputation {
+  completed: bigint;
+  failed: bigint;
+  canceled: bigint;
+  confirmed: bigint;
+  notConfirmed: bigint;
+  totalRefunded: bigint;
+}
+
 // Wraps every chain read AND write the gateway performs. Tests inject a
 // fake implementation; prod uses the viem-backed one in viemReader.ts.
 export interface ChainReader {
@@ -214,6 +236,11 @@ export interface ChainReader {
   // (configured but inactive).
   getProviderReputation(agentId: bigint): Promise<ProviderReputation | null>;
   getBuyerReputation(agentId: bigint): Promise<BuyerReputation | null>;
+  // Per-service stats. Same null-when-unconfigured contract as the
+  // provider/buyer getters. The all-zero return is "valid service, no
+  // recorded activity yet" — distinct from null (gateway has no
+  // ReputationStorage configured).
+  getServiceReputation(serviceId: Hex): Promise<ServiceReputation | null>;
 }
 
 /**

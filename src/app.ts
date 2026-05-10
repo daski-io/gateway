@@ -334,7 +334,14 @@ export async function createApp(options: CreateAppOptions): Promise<AppBundle> {
   app.use(createDiscoveryRouter(cache, config));
   app.use(createPurchaseRouter({ config, cache, queries, reader }));
   app.use(createConfirmRouter({ config, reader }));
-  app.use(createFacilitatorRouter({ config, queries, reader }));
+  app.use(
+    createFacilitatorRouter({
+      config,
+      queries,
+      reader,
+      fetchAgentCardFn: options.buyerAgentCardFetch,
+    }),
+  );
   app.use(createPrepRouter({ config, reader }));
   app.use(
     createIdentityRouter({
@@ -357,6 +364,7 @@ export async function createApp(options: CreateAppOptions): Promise<AppBundle> {
       embedder,
       fetch: options.a2aFetch,
       a2aTimeoutMs: options.a2aTimeoutMs,
+      buyerAgentCardFetch: options.buyerAgentCardFetch,
     });
   }
 

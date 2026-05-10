@@ -86,6 +86,21 @@ export interface DaskiRequirementsExtra {
     providerTokenId: string;
     buyerTokenId: string;
     skillId: string | null;
+    /**
+     * Free-form service version. Defaults to "1" when the provider's
+     * agent card does not advertise one. Combined with skillId and
+     * providerTokenId to derive serviceId.
+     */
+    serviceVersion: string;
+    /**
+     * 32-byte hex serviceId. Identifies the row in ServiceRegistry this
+     * payment is for. Computed as
+     * `keccak256(abi.encodePacked(uint256 providerAgentId, string skillId, string version))`.
+     * Clients that sign the EIP-3009 nonce themselves must include this
+     * value in the bound 3-tuple — the X402Adapter rejects calls whose
+     * nonce does not match.
+     */
+    serviceId: Hex;
     serviceRef: Hex;
     /**
      * Token the buyer should authorize. Previously implicit USDC. Explicit
@@ -219,6 +234,13 @@ export interface SettlementResponse {
   daski?: {
     paymentId: string;
     serviceRef: Hex;
+    /**
+     * 32-byte hex serviceId, echoed from the on-chain PaymentSettled
+     * event so providers / clients see exactly which service row was
+     * paid for. Absent only on legacy responses; new settlements always
+     * carry it.
+     */
+    serviceId?: Hex;
     providerTokenId: string;
     buyerTokenId: string;
     amount: string;
@@ -238,6 +260,15 @@ export interface StoredChallenge {
   providerTokenId: bigint;
   buyerTokenId: bigint;
   skillId: string | null;
+  // The version baked into the serviceId hash. Stored alongside skillId
+  // so the gateway can re-derive serviceId without a contract round-trip
+  // (and so we have an audit trail of which version a payment targeted).
+  serviceVersion: string;
+  // 32-byte hex serviceId — `keccak256(abi.encodePacked(providerAgentId, skillId, version))`.
+  // Persisted on the challenge so /verify can cross-check the on-chain
+  // PaymentSettled event's serviceId field rather than trusting the
+  // adapter call args alone.
+  serviceId: Hex;
   amount: bigint;
   providerA2AUrl: string;
   // Wallet address that the gateway baked into the EIP-712 typed-data's

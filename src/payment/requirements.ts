@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import { encodeAbiParameters, keccak256 } from "viem";
+import { encodeAbiParameters, encodePacked, keccak256 } from "viem";
 import type { Config } from "../config.js";
 import { DASKI_A2A_EXTENSION_URI } from "../config.js";
 import type { DiscoveryCache } from "../discovery/cache.js";
@@ -87,6 +87,54 @@ export type IssueResult =
 
 function generateServiceRef(): Hex {
   return `0x${crypto.randomBytes(32).toString("hex")}` as Hex;
+}
+
+/**
+ * Default version used when the provider's Agent Card does not advertise
+ * one. Matches the convention documented on the contract
+ * (`registerService(.., version="1", ..)`). Free-form, but providers and
+ * the gateway must agree — the version is part of the serviceId hash.
+ */
+const DEFAULT_SERVICE_VERSION = "1";
+
+/**
+ * Pulls the per-skill `version` field out of the provider's Agent Card.
+ * Looks in the same two locations as findSkillMetaForPricing — falls back
+ * to "1" when missing or non-string.
+ */
+function resolveServiceVersion(
+  ext: DaskiMarketplaceExtension,
+  agentCard: Record<string, unknown>,
+  skillId: string,
+): string {
+  const meta = findSkillMetaForPricing(ext, agentCard, skillId);
+  const raw = meta?.["version"];
+  if (typeof raw === "string" && raw.length > 0 && raw.length <= 32) {
+    return raw;
+  }
+  return DEFAULT_SERVICE_VERSION;
+}
+
+/**
+ * Off-chain serviceId derivation. Mirrors
+ * `ServiceRegistry._computeServiceId`:
+ *   keccak256(abi.encodePacked(uint256 providerAgentId, string skillId, string version))
+ * Off-chain identity is critical — the X402Adapter rejects any settle
+ * whose EIP-3009 nonce isn't bound to the same `(serviceRef,
+ * providerAgentId, serviceId)` 3-tuple, so a mismatch here surfaces as
+ * "auth not bound to call" at settlement time.
+ */
+export function computeServiceId(
+  providerAgentId: bigint,
+  skillId: string,
+  version: string,
+): Hex {
+  return keccak256(
+    encodePacked(
+      ["uint256", "string", "string"],
+      [providerAgentId, skillId, version],
+    ),
+  ) as Hex;
 }
 
 /**
@@ -367,7 +415,29 @@ export async function issuePaymentRequirements(
     amount = amountResult.amount;
   }
 
+  // Service-identity refactor: every paid settle binds to a row in
+  // ServiceRegistry. We can't compute serviceId without skillId, and the
+  // contract rejects empty / overlong skillIds (1–64 bytes) and versions
+  // (1–32 bytes), so reject here with a clear error rather than letting
+  // the on-chain call revert with a less helpful message.
   const skillId = params.skillId ?? null;
+  if (!skillId || skillId.length === 0 || skillId.length > 64) {
+    return {
+      ok: false,
+      code: "skill_id_required",
+      message:
+        "skillId is required and must be 1–64 bytes — every payment is " +
+        "bound to a specific service in ServiceRegistry. Pass the " +
+        "AgentSkill.id from the provider's Agent Card.",
+      status: 400,
+    };
+  }
+  const serviceVersion = resolveServiceVersion(ext, provider.agentCard, skillId);
+  const serviceId = computeServiceId(
+    params.providerTokenId,
+    skillId,
+    serviceVersion,
+  );
   const serviceRef = generateServiceRef();
   const expiresAt = new Date(
     now.getTime() + config.challengeTtlSeconds * 1000,
@@ -379,6 +449,8 @@ export async function issuePaymentRequirements(
     buyerTokenId: params.buyerTokenId,
     amount,
     skillId,
+    serviceVersion,
+    serviceId,
     providerA2AUrl,
     walletAddress: params.walletAddress,
     expiresAt,
@@ -389,15 +461,16 @@ export async function issuePaymentRequirements(
   // verifyAndSettle later recovers the signature against the same value.
   // validAfter is always 0 — no delayed-start semantics for settlement.
   //
-  // The EIP-3009 nonce MUST be `keccak256(abi.encode(serviceRef, providerAgentId))`
-  // — the X402Adapter rejects calls whose auth.nonce does not match this
-  // binding, so a frontrunner cannot reuse the auth with a different
-  // serviceRef / providerAgentId. See daski/src/adapters/X402Adapter.sol
-  // contract NatSpec ("AUTH BINDING").
+  // The EIP-3009 nonce MUST be
+  // `keccak256(abi.encode(serviceRef, providerAgentId, serviceId))`.
+  // Post-refactor X402Adapter rejects calls whose auth.nonce doesn't match
+  // this 3-tuple, so a frontrunner cannot redirect the auth to a
+  // different service or provider. See
+  // daski/src/adapters/X402Adapter.sol contract NatSpec ("AUTH BINDING").
   const nonce = keccak256(
     encodeAbiParameters(
-      [{ type: "bytes32" }, { type: "uint256" }],
-      [serviceRef, params.providerTokenId],
+      [{ type: "bytes32" }, { type: "uint256" }, { type: "bytes32" }],
+      [serviceRef, params.providerTokenId, serviceId],
     ),
   ) as Hex;
   const nowSec = BigInt(Math.floor(now.getTime() / 1000));
@@ -451,6 +524,8 @@ export async function issuePaymentRequirements(
         providerTokenId: params.providerTokenId.toString(),
         buyerTokenId: params.buyerTokenId.toString(),
         skillId,
+        serviceVersion,
+        serviceId,
         serviceRef,
         token: config.usdcAddress,
         rails: buildRails(config),
@@ -469,6 +544,8 @@ export async function issuePaymentRequirements(
     providerTokenId: params.providerTokenId,
     buyerTokenId: params.buyerTokenId,
     skillId,
+    serviceVersion,
+    serviceId,
     amount,
     providerA2AUrl,
     walletAddress: params.walletAddress.toLowerCase() as Hex,

@@ -30,6 +30,7 @@ import type {
   ProviderReputation,
   RegisterBySigInput,
   RegisterBySigResult,
+  ServiceReputation,
   SettleWithRegistrationInput,
   SettleWithRegistrationResult,
   SettlementInput,
@@ -288,7 +289,14 @@ export function createViemChainReader(opts: ViemReaderOptions): ChainReader {
           address: adapterAddress,
           abi: [...x402AdapterAbi, ...knownErrorAbis],
           functionName: "settle",
-          args: [usdcAddress, input.amount, input.serviceRef, input.providerAgentId, auth],
+          args: [
+            usdcAddress,
+            input.amount,
+            input.serviceRef,
+            input.providerAgentId,
+            input.serviceId,
+            auth,
+          ],
           account,
           chain,
           gas: 500_000n,
@@ -337,6 +345,7 @@ export function createViemChainReader(opts: ViemReaderOptions): ChainReader {
         event: {
           paymentId: args.paymentId,
           serviceRef: args.serviceRef,
+          serviceId: args.serviceId,
           buyerAgentId: args.buyerAgentId,
           providerAgentId: args.providerAgentId,
           token: args.token,
@@ -446,6 +455,7 @@ export function createViemChainReader(opts: ViemReaderOptions): ChainReader {
             input.amount,
             input.serviceRef,
             input.providerAgentId,
+            input.serviceId,
             auth,
             input.registration.agentURI,
             input.registration.deadline,
@@ -508,6 +518,7 @@ export function createViemChainReader(opts: ViemReaderOptions): ChainReader {
         event: {
           paymentId: settledArgs.paymentId,
           serviceRef: settledArgs.serviceRef,
+          serviceId: settledArgs.serviceId,
           buyerAgentId: settledArgs.buyerAgentId,
           providerAgentId: settledArgs.providerAgentId,
           token: settledArgs.token,
@@ -656,6 +667,26 @@ export function createViemChainReader(opts: ViemReaderOptions): ChainReader {
         transactions: result[0],
         confirmed: result[1],
         notConfirmed: result[2],
+      };
+    },
+
+    async getServiceReputation(
+      serviceId: Hex,
+    ): Promise<ServiceReputation | null> {
+      if (!reputationStorageAddress) return null;
+      const result = (await publicClient.readContract({
+        address: reputationStorageAddress,
+        abi: reputationStorageAbi,
+        functionName: "getServiceStats",
+        args: [serviceId],
+      })) as readonly [bigint, bigint, bigint, bigint, bigint, bigint];
+      return {
+        completed: result[0],
+        failed: result[1],
+        canceled: result[2],
+        confirmed: result[3],
+        notConfirmed: result[4],
+        totalRefunded: result[5],
       };
     },
   };

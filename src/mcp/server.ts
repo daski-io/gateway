@@ -88,6 +88,14 @@ export interface McpDeps {
   embedder?: import("../discovery/embeddings.js").Embedder | null;
   fetch?: typeof fetch;
   a2aTimeoutMs?: number;
+  /**
+   * Test seam for the buyer-side agentURI fetcher used by the atomic
+   * register-and-settle path inside daski_settle_payment /
+   * daski_buy_service. Defaults to the production safeFetch; the test
+   * gateway plugs in a stub so atomic settles can populate
+   * `buyer_identities` without a network call.
+   */
+  buyerAgentCardFetch?: import("../identity/fetch-agent-card.js").FetchAgentCardOptions["fetchFn"];
 }
 
 export interface McpWiring {
@@ -528,6 +536,8 @@ export async function createMcpServer(
               deps.config,
               deps.reader,
               deps.queries,
+              new Date(),
+              { fetchAgentCardFn: deps.buyerAgentCardFetch },
             )
           : await verifyAndSettle(
               {
@@ -1623,6 +1633,8 @@ export async function createMcpServer(
                 deps.config,
                 deps.reader,
                 deps.queries,
+                new Date(),
+                { fetchAgentCardFn: deps.buyerAgentCardFetch },
               )
             : await verifyAndSettle(
                 { payload: inboundPayload, challenge },

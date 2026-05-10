@@ -2,6 +2,7 @@ import { Router, type Request, type Response } from "express";
 import type { Config } from "../config.js";
 import type { ChainReader } from "../chain/reader.js";
 import type { Queries } from "../db/queries.js";
+import type { FetchAgentCardOptions } from "../identity/fetch-agent-card.js";
 import {
   verifyAndSettle,
   verifyAndSettleWithRegistration,
@@ -14,6 +15,15 @@ export interface FacilitatorDeps {
   config: Config;
   queries: Queries;
   reader: ChainReader;
+  /**
+   * Optional test seam for the buyer-side agentURI fetcher used by the
+   * atomic register-and-settle path. The default `safeFetch` is right
+   * for production; tests stub it via the gateway's `buyerAgentCardFetch`.
+   * The atomic path uses this to resolve a display name from the buyer's
+   * signed agentURI so `buyer_identities` is populated alongside the
+   * fresh agent mint.
+   */
+  fetchAgentCardFn?: FetchAgentCardOptions["fetchFn"];
 }
 
 interface FacilitatorBody {
@@ -210,6 +220,8 @@ export function createFacilitatorRouter(deps: FacilitatorDeps): Router {
             deps.config,
             deps.reader,
             deps.queries,
+            new Date(),
+            { fetchAgentCardFn: deps.fetchAgentCardFn },
           );
         })()
       : await verifyAndSettle(

@@ -103,6 +103,11 @@ export const paymentRouterAbi = [
     inputs: [
       { name: "paymentId", type: "uint256", indexed: true },
       { name: "serviceRef", type: "bytes32", indexed: true },
+      // Indexed third arg in the post-refactor router (PaymentRouter v2,
+      // Base Sepolia 2026-05). Subgraphs filter on this for cheap
+      // per-service queries — same convention as the ERC-8004 NewFeedback
+      // tag1 path, just on the settlement side.
+      { name: "serviceId", type: "bytes32", indexed: true },
       { name: "buyerAgentId", type: "uint256", indexed: false },
       { name: "providerAgentId", type: "uint256", indexed: false },
       { name: "token", type: "address", indexed: false },
@@ -110,6 +115,63 @@ export const paymentRouterAbi = [
       { name: "providerAmount", type: "uint256", indexed: false },
       { name: "commission", type: "uint256", indexed: false },
     ],
+  },
+] as const;
+
+// ── Daski ServiceRegistry ───────────────────────────────────────────────
+//
+// Per-provider service catalog introduced in the service-identity refactor.
+// `serviceId = keccak256(abi.encodePacked(uint256 providerAgentId, string skillId, string version))`
+// — matches the contract's `_computeServiceId`. Gateway computes it
+// off-chain (cheap, deterministic) and PaymentRouter.settle validates that
+// the service belongs to providerAgentId and is active.
+export const serviceRegistryAbi = [
+  {
+    type: "function",
+    name: "getService",
+    inputs: [{ name: "serviceId", type: "bytes32" }],
+    outputs: [
+      {
+        name: "",
+        type: "tuple",
+        components: [
+          { name: "providerAgentId", type: "uint256" },
+          { name: "serviceId", type: "bytes32" },
+          { name: "skillId", type: "string" },
+          { name: "version", type: "string" },
+          { name: "serviceURI", type: "string" },
+          { name: "serviceWallet", type: "address" },
+          { name: "createdAt", type: "uint64" },
+          { name: "active", type: "bool" },
+        ],
+      },
+    ],
+    stateMutability: "view",
+  },
+  {
+    type: "function",
+    name: "isActive",
+    inputs: [{ name: "serviceId", type: "bytes32" }],
+    outputs: [{ name: "", type: "bool" }],
+    stateMutability: "view",
+  },
+  {
+    type: "function",
+    name: "exists",
+    inputs: [{ name: "serviceId", type: "bytes32" }],
+    outputs: [{ name: "", type: "bool" }],
+    stateMutability: "view",
+  },
+  {
+    type: "function",
+    name: "computeServiceId",
+    inputs: [
+      { name: "providerAgentId", type: "uint256" },
+      { name: "skillId", type: "string" },
+      { name: "version", type: "string" },
+    ],
+    outputs: [{ name: "", type: "bytes32" }],
+    stateMutability: "pure",
   },
 ] as const;
 
@@ -146,6 +208,23 @@ export const reputationStorageAbi = [
     ],
     stateMutability: "view",
   },
+  {
+    // Per-service counters (post-refactor). Same shape as getProviderStats
+    // plus a totalRefunded entry. Service-level discovery ranking and the
+    // marketing site's per-service detail card both read this.
+    type: "function",
+    name: "getServiceStats",
+    inputs: [{ name: "serviceId", type: "bytes32" }],
+    outputs: [
+      { name: "completed", type: "uint256" },
+      { name: "failed", type: "uint256" },
+      { name: "canceled", type: "uint256" },
+      { name: "confirmed", type: "uint256" },
+      { name: "notConfirmed_", type: "uint256" },
+      { name: "totalRefunded", type: "uint256" },
+    ],
+    stateMutability: "view",
+  },
 ] as const;
 
 // ── X402Adapter (EIP-3009) ──────────────────────────────────────────────
@@ -159,6 +238,11 @@ export const x402AdapterAbi = [
       { name: "amount", type: "uint256" },
       { name: "serviceRef", type: "bytes32" },
       { name: "providerAgentId", type: "uint256" },
+      // serviceId binds the payment to a specific row in ServiceRegistry.
+      // The buyer's EIP-3009 nonce MUST be
+      // `keccak256(abi.encode(serviceRef, providerAgentId, serviceId))`
+      // so a frontrunner cannot redirect the auth to a different service.
+      { name: "serviceId", type: "bytes32" },
       {
         name: "auth",
         type: "tuple",
@@ -188,6 +272,7 @@ export const x402AdapterAbi = [
       { name: "amount", type: "uint256" },
       { name: "serviceRef", type: "bytes32" },
       { name: "providerAgentId", type: "uint256" },
+      { name: "serviceId", type: "bytes32" },
       {
         name: "auth",
         type: "tuple",

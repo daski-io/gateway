@@ -7,6 +7,7 @@ import type {
   ProviderReputation,
   RegisterBySigInput,
   RegisterBySigResult,
+  ServiceReputation,
   SettleWithRegistrationInput,
   SettleWithRegistrationResult,
   SettlementInput,
@@ -115,7 +116,18 @@ export class MockChainReader implements ChainReader {
     }
     if (outcome.kind === "revert") throw new Error(outcome.reason);
     this.setAuthorizationUsed(input.from, input.nonce, true);
-    return { transactionHash: outcome.txHash, event: outcome.event };
+    // If the test didn't bother setting a serviceId on the queued event
+    // (the default is bytes32(0) from makePaymentSettledEvent), echo the
+    // serviceId the caller passed in. This is what the real router does
+    // — it emits the same value it received as input — and keeps
+    // verifyAndSettle's "event.serviceId === challenge.serviceId" cross
+    // -check from spuriously tripping in tests that don't care about it.
+    const ZERO = "0x" + "00".repeat(32);
+    const event =
+      outcome.event.serviceId.toLowerCase() === ZERO
+        ? { ...outcome.event, serviceId: input.serviceId }
+        : outcome.event;
+    return { transactionHash: outcome.txHash, event };
   }
 
   // ── Confirmation mock ────────────────────────────────────────────
@@ -231,6 +243,7 @@ export class MockChainReader implements ChainReader {
   // the reputation surface set explicit values via the setters.
   private providerReputations = new Map<string, ProviderReputation>();
   private buyerReputations = new Map<string, BuyerReputation>();
+  private serviceReputations = new Map<string, ServiceReputation>();
   private reputationConfigured = false;
 
   setProviderReputation(agentId: bigint, value: ProviderReputation): void {
@@ -241,6 +254,11 @@ export class MockChainReader implements ChainReader {
   setBuyerReputation(agentId: bigint, value: BuyerReputation): void {
     this.reputationConfigured = true;
     this.buyerReputations.set(agentId.toString(), value);
+  }
+
+  setServiceReputation(serviceId: Hex, value: ServiceReputation): void {
+    this.reputationConfigured = true;
+    this.serviceReputations.set(serviceId.toLowerCase(), value);
   }
 
   async getProviderReputation(
@@ -267,6 +285,22 @@ export class MockChainReader implements ChainReader {
         transactions: 0n,
         confirmed: 0n,
         notConfirmed: 0n,
+      }
+    );
+  }
+
+  async getServiceReputation(
+    serviceId: Hex,
+  ): Promise<ServiceReputation | null> {
+    if (!this.reputationConfigured) return null;
+    return (
+      this.serviceReputations.get(serviceId.toLowerCase()) ?? {
+        completed: 0n,
+        failed: 0n,
+        canceled: 0n,
+        confirmed: 0n,
+        notConfirmed: 0n,
+        totalRefunded: 0n,
       }
     );
   }
@@ -302,6 +336,9 @@ export class MockChainReader implements ChainReader {
 export function makePaymentSettledEvent(args: {
   paymentId: bigint;
   serviceRef: Hex;
+  // Optional in helpers so tests that don't care about the serviceId
+  // dimension still compile. Production never emits a zero serviceId.
+  serviceId?: Hex;
   buyerAgentId: bigint;
   providerAgentId: bigint;
   totalAmount: bigint;
@@ -312,6 +349,7 @@ export function makePaymentSettledEvent(args: {
   return {
     paymentId: args.paymentId,
     serviceRef: args.serviceRef,
+    serviceId: args.serviceId ?? (("0x" + "00".repeat(32)) as Hex),
     buyerAgentId: args.buyerAgentId,
     providerAgentId: args.providerAgentId,
     token: args.token ?? ("0x000000000000000000000000000000000000a003" as Hex),

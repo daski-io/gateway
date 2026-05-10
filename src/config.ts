@@ -16,6 +16,11 @@ export interface Config {
   network: "base" | "base-sepolia";
   identityRegistryAddress: Hex;
   providerRegistryAddress: Hex;
+  // ServiceRegistry — service-identity refactor (2026-05). serviceId is
+  // computed off-chain from (providerAgentId, skillId, version) and the
+  // gateway threads it through the EIP-3009 nonce binding and into
+  // PaymentRouter.settle so each payment is bound to a specific catalog row.
+  serviceRegistryAddress: Hex;
   paymentRouterAddress: Hex;
   // The x402 (EIP-3009) adapter is what the facilitator actually submits
   // settle calls to. The router emits the PaymentSettled event but no longer
@@ -142,6 +147,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     providerRegistryAddress: requireAddress(
       "PROVIDER_REGISTRY_ADDRESS",
       env.PROVIDER_REGISTRY_ADDRESS,
+    ),
+    serviceRegistryAddress: requireAddress(
+      "SERVICE_REGISTRY_ADDRESS",
+      env.SERVICE_REGISTRY_ADDRESS,
     ),
     paymentRouterAddress: requireAddress(
       "PAYMENT_ROUTER_ADDRESS",

@@ -293,6 +293,16 @@ describe("facilitator endpoints", () => {
     // Ensure both mock paths were exercised.
     expect(gateway.mockChain.registrations).toHaveLength(1);
     expect(gateway.mockChain.settlements).toHaveLength(1);
+
+    // Atomic path must mirror the same `buyer_identities` upsert that the
+    // explicit /register endpoint does — pre-fix, the cache stayed empty
+    // for any buyer whose first action was a purchase rather than a bare
+    // registration. The test gateway's default agent-card fetcher returns
+    // `{ name: "buyer-test" }`, so the resolved name lands here.
+    const cached = await gateway.bundle.queries.getBuyerIdentity(77n);
+    expect(cached).not.toBeNull();
+    expect(cached?.resolvedName).toBe("buyer-test");
+    expect(cached?.agentURI).toBe("ipfs://buyer.json");
   });
 
   it("POST /settle returns 400 when challenge needs registration but body omits it", async () => {

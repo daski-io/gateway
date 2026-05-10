@@ -31,6 +31,8 @@ const PAYMENT_ROUTER_ADDRESS =
 const USDC_ADDRESS = "0x000000000000000000000000000000000000a003" as Hex;
 const X402_ADAPTER_ADDRESS = "0x000000000000000000000000000000000000a004" as Hex;
 const EAS_ADDRESS = "0x000000000000000000000000000000000000a005" as Hex;
+const SERVICE_REGISTRY_ADDRESS =
+  "0x000000000000000000000000000000000000a006" as Hex;
 const EAS_OUTCOME_SCHEMA_UID =
   "0xaa00000000000000000000000000000000000000000000000000000000000001" as Hex;
 const EAS_CONFIRMATION_SCHEMA_UID =
@@ -189,6 +191,7 @@ export async function startTestGateway(
     network: "base-sepolia",
     identityRegistryAddress: IDENTITY_REGISTRY_ADDRESS,
     providerRegistryAddress: REGISTRY_ADDRESS,
+    serviceRegistryAddress: SERVICE_REGISTRY_ADDRESS,
     paymentRouterAddress: PAYMENT_ROUTER_ADDRESS,
     x402AdapterAddress: X402_ADAPTER_ADDRESS,
     usdcAddress: USDC_ADDRESS,
@@ -316,8 +319,15 @@ export async function startTestGateway(
     async purchaseChallenge(tokenId, body) {
       // Default the walletAddress to the test buyer so existing tests don't
       // have to pass it; tests that exercise validation override explicitly.
+      // Default the skillId to "default-service" — post-service-identity-refactor
+      // the gateway requires a non-empty skillId to derive serviceId. Tests
+      // that don't care about which skill they're paying for get a stable
+      // default; tests that specifically want to omit skillId can pass
+      // `skillId: undefined` explicitly (the merge below preserves the
+      // omission via `hasOwnProperty`).
       const merged: Record<string, unknown> = {
         walletAddress: buyerAccount.address.toLowerCase(),
+        skillId: "default-service",
         ...body,
       };
       const res = await fetch(`${baseUrl}/purchase/${tokenId.toString()}`, {

@@ -2,6 +2,12 @@ import { hexToBytes, recoverTypedDataAddress, type Address } from "viem";
 import type { Config } from "../config.js";
 import type { ChainReader } from "../chain/reader.js";
 import type { Queries } from "../db/queries.js";
+import {
+  AgentCardFetchError,
+  fetchAgentCard,
+  type FetchAgentCardOptions,
+} from "../identity/fetch-agent-card.js";
+import { logErrorWithId } from "../util/errorWrap.js";
 import type {
   Hex,
   PaymentPayload,
@@ -395,6 +401,7 @@ export async function verifyAndSettle(
         daski: {
           paymentId: challenge.paymentId.toString(),
           serviceRef: challenge.serviceRef,
+          serviceId: challenge.serviceId,
           providerTokenId: challenge.providerTokenId.toString(),
           buyerTokenId: challenge.buyerTokenId.toString(),
           amount: challenge.amount.toString(),
@@ -422,6 +429,7 @@ export async function verifyAndSettle(
     settlement = await reader.settlePayment({
       // Wire-level `providerTokenId` on the challenge is the ERC-8004 agentId.
       providerAgentId: challenge.providerTokenId,
+      serviceId: challenge.serviceId,
       amount: challenge.amount,
       serviceRef: challenge.serviceRef,
       from: payer,
@@ -461,6 +469,23 @@ export async function verifyAndSettle(
       payer,
     );
   }
+  // Cross-check serviceId against the value the gateway computed at
+  // challenge issuance. The contract enforces consistency too (settle
+  // reverts if the serviceId argument doesn't match a registered service
+  // for the provider), but a mismatch here would mean the adapter call
+  // args were tampered between simulate and broadcast — surface as a
+  // 500 rather than silently trusting the event.
+  if (
+    event.serviceId.toLowerCase() !== challenge.serviceId.toLowerCase()
+  ) {
+    return fail(
+      500,
+      "unexpected_settle_error",
+      "event serviceId does not match challenge",
+      network,
+      payer,
+    );
+  }
   if (event.totalAmount < challenge.amount) {
     return fail(
       500,
@@ -487,6 +512,7 @@ export async function verifyAndSettle(
       daski: {
         paymentId: event.paymentId.toString(),
         serviceRef: challenge.serviceRef,
+        serviceId: event.serviceId,
         providerTokenId: challenge.providerTokenId.toString(),
         buyerTokenId: challenge.buyerTokenId.toString(),
         amount: event.totalAmount.toString(),
@@ -511,6 +537,17 @@ export interface RegistrationDelegation {
   signature: Hex;
 }
 
+/**
+ * Optional dependencies for the atomic register-and-settle path. The only
+ * extra knob today is a custom Agent Card fetcher (test seam) — production
+ * uses the default `fetchAgentCard` to resolve the buyer's display name
+ * from `registration.agentURI` after a successful mint, so the
+ * `buyer_identities` cache is populated for receipts and dashboards.
+ */
+export interface VerifyAndSettleWithRegistrationOptions {
+  fetchAgentCardFn?: FetchAgentCardOptions["fetchFn"];
+}
+
 export async function verifyAndSettleWithRegistration(
   input: SettleInput,
   registration: RegistrationDelegation,
@@ -518,6 +555,7 @@ export async function verifyAndSettleWithRegistration(
   reader: ChainReader,
   queries: Queries,
   now: Date = new Date(),
+  opts: VerifyAndSettleWithRegistrationOptions = {},
 ): Promise<SettleResult> {
   const { challenge } = input;
   const network = config.network;
@@ -543,6 +581,7 @@ export async function verifyAndSettleWithRegistration(
         daski: {
           paymentId: challenge.paymentId.toString(),
           serviceRef: challenge.serviceRef,
+          serviceId: challenge.serviceId,
           providerTokenId: challenge.providerTokenId.toString(),
           buyerTokenId: challenge.buyerTokenId.toString(),
           amount: challenge.amount.toString(),
@@ -562,6 +601,7 @@ export async function verifyAndSettleWithRegistration(
   try {
     settlement = await reader.settleWithRegistration({
       providerAgentId: challenge.providerTokenId,
+      serviceId: challenge.serviceId,
       amount: challenge.amount,
       serviceRef: challenge.serviceRef,
       from: payer,
@@ -590,12 +630,24 @@ export async function verifyAndSettleWithRegistration(
   const event = settlement.event;
   // We DO NOT enforce event.buyerAgentId === challenge.buyerTokenId here:
   // for atomic flows the challenge stores 0n (unknown) and the on-chain
-  // event carries the freshly minted ID. Provider/amount checks still hold.
+  // event carries the freshly minted ID. Provider/amount/serviceId checks
+  // still hold.
   if (event.providerAgentId !== challenge.providerTokenId) {
     return fail(
       500,
       "unexpected_settle_error",
       "event providerAgentId does not match challenge",
+      network,
+      payer,
+    );
+  }
+  if (
+    event.serviceId.toLowerCase() !== challenge.serviceId.toLowerCase()
+  ) {
+    return fail(
+      500,
+      "unexpected_settle_error",
+      "event serviceId does not match challenge",
       network,
       payer,
     );
@@ -616,6 +668,37 @@ export async function verifyAndSettleWithRegistration(
     settlement.transactionHash,
   );
 
+  // Mirror the buyer-name resolution that the /register flow does, so
+  // the atomic register-and-settle path also populates buyer_identities.
+  // Without this, every fresh-wallet purchase mints an agent on-chain but
+  // leaves the cache empty — receipts and dashboards then fall back to
+  // walletAddress display until the buyer manually re-registers.
+  // Best-effort: failures here log + continue, never block the on-chain
+  // settlement that already succeeded.
+  if (settlement.registered) {
+    try {
+      const card = await fetchAgentCard(registration.agentURI, {
+        ipfsGatewayUrl: config.ipfsGatewayUrl,
+        fetchFn: opts.fetchAgentCardFn,
+      });
+      await queries.upsertBuyerIdentity({
+        agentId: event.buyerAgentId,
+        walletAddress: payer,
+        resolvedName: card.name,
+        agentURI: registration.agentURI,
+      });
+    } catch (err) {
+      if (err instanceof AgentCardFetchError) {
+        // Couldn't resolve a name — agentURI is malformed, unreachable,
+        // or missing the `name` field. Log so operators notice if this
+        // is hitting every atomic settle, but don't block.
+        logErrorWithId("upsertBuyerIdentityOnAtomic.fetch", err);
+      } else {
+        logErrorWithId("upsertBuyerIdentityOnAtomic", err);
+      }
+    }
+  }
+
   return {
     ok: true,
     response: {
@@ -626,6 +709,7 @@ export async function verifyAndSettleWithRegistration(
       daski: {
         paymentId: event.paymentId.toString(),
         serviceRef: challenge.serviceRef,
+        serviceId: event.serviceId,
         providerTokenId: challenge.providerTokenId.toString(),
         // Use the freshly-minted ID from the event when the buyer was
         // registered atomically; otherwise echo the challenge value.
