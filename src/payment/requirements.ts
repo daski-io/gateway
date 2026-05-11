@@ -9,6 +9,7 @@ import {
 } from "../discovery/format.js";
 import type { Queries } from "../db/queries.js";
 import type {
+  CachedProvider,
   DaskiMarketplaceExtension,
   DaskiRail,
   Eip712TypedData,
@@ -169,6 +170,43 @@ export function computeServiceId(
       [providerAgentId, serviceSlug, version],
     ),
   ) as Hex;
+}
+
+/**
+ * Resolves the **primary service triple** for a cached provider — i.e. the
+ * (serviceSlug, version, serviceId) that the provider's first listed skill
+ * rolls up to on-chain. Picks the first skill with valid metadata.
+ *
+ * With current 1:1 cardinality (one provider lists one service), this is
+ * also the only service. Once providers list multiple services we'd return
+ * an array; for now this is what the public detail route uses to scope
+ * service-level reputation reads without changing the URL shape.
+ *
+ * Returns null when the provider has no skills, no marketplace extension,
+ * or no skill whose slug passes the contract's 1–64-byte bound.
+ */
+export function derivePrimaryServiceId(
+  provider: CachedProvider,
+): { serviceSlug: string; serviceVersion: string; serviceId: Hex } | null {
+  const ext = extractMarketplaceExtension(provider.agentCard);
+  if (!ext) return null;
+  const skills = provider.agentCard["skills"];
+  if (!Array.isArray(skills) || skills.length === 0) return null;
+  for (const skill of skills) {
+    if (!skill || typeof skill !== "object") continue;
+    const id = (skill as Record<string, unknown>).id;
+    if (typeof id !== "string" || id.length === 0) continue;
+    const serviceSlug = resolveServiceSlug(ext, provider.agentCard, id);
+    if (serviceSlug.length === 0 || serviceSlug.length > 64) continue;
+    const serviceVersion = resolveServiceVersion(ext, provider.agentCard, id);
+    const serviceId = computeServiceId(
+      provider.agentId,
+      serviceSlug,
+      serviceVersion,
+    );
+    return { serviceSlug, serviceVersion, serviceId };
+  }
+  return null;
 }
 
 /**

@@ -6,11 +6,14 @@ import type { DiscoveryCache } from "../discovery/cache.js";
 import { extractAgentCardName } from "../discovery/format.js";
 import {
   deriveProviderReputation,
+  deriveServiceReputation,
   formatActivityRow,
   formatServiceForPublic,
   type PublicService,
+  type PublicServiceLevelReputation,
   type PublicServiceReputation,
 } from "./format.js";
+import type { Hex } from "../types.js";
 
 const ACTIVITY_DEFAULT_LIMIT = 50;
 const ACTIVITY_MAX_LIMIT = 200;
@@ -89,6 +92,41 @@ class ProviderReputationCache {
   }
 }
 
+/**
+ * Per-serviceId cache for service-scoped reputation. Same shape as
+ * ProviderReputationCache but keyed by 32-byte serviceId so multiple
+ * services owned by the same provider don't collide. 30s TTL matches the
+ * provider-level cache and the cadence at which counters move (each tick
+ * requires a real on-chain attestation).
+ */
+class ServiceReputationCache {
+  private readonly entries = new Map<
+    string,
+    { value: PublicServiceLevelReputation | null; fetchedAt: number }
+  >();
+  private readonly ttlMs: number;
+  constructor(
+    private readonly reader: ChainReader,
+    ttlMs = 30_000,
+  ) {
+    this.ttlMs = ttlMs;
+  }
+  async get(serviceId: Hex): Promise<PublicServiceLevelReputation | null> {
+    const key = serviceId.toLowerCase();
+    const now = Date.now();
+    const hit = this.entries.get(key);
+    if (hit && now - hit.fetchedAt < this.ttlMs) return hit.value;
+    try {
+      const raw = await this.reader.getServiceReputation(serviceId);
+      const value = raw ? deriveServiceReputation(raw, serviceId) : null;
+      this.entries.set(key, { value, fetchedAt: now });
+      return value;
+    } catch {
+      return hit?.value ?? null;
+    }
+  }
+}
+
 function parseLimit(raw: unknown, fallback: number, cap: number): number {
   if (raw === undefined) return fallback;
   if (typeof raw !== "string") return fallback;
@@ -132,6 +170,10 @@ export function createPublicRouter(deps: PublicRouterDeps): Router {
     reader,
     deps.reputationCacheTtlMs ?? 30_000,
   );
+  const serviceReputationCache = new ServiceReputationCache(
+    reader,
+    deps.reputationCacheTtlMs ?? 30_000,
+  );
 
   router.get("/public/v1/services", (_req: Request, res: Response) => {
     const services: PublicService[] = [];
@@ -165,14 +207,26 @@ export function createPublicRouter(deps: PublicRouterDeps): Router {
         notFound(res, "unknown service");
         return;
       }
-      const [recent, reputation] = await Promise.all([
+      const [recent, reputation, serviceReputation] = await Promise.all([
         queries.listRecentPaidByProvider(agentId, PER_SERVICE_RECENT_LIMIT),
         reputationCache.get(agentId),
+        // Scope-narrow service-level counters. Reads only when the cached
+        // provider resolves to a primary serviceId — otherwise the UI sees
+        // null and renders the same empty state it uses for unconfigured
+        // ReputationStorage.
+        formatted.serviceId
+          ? serviceReputationCache.get(formatted.serviceId)
+          : Promise.resolve(null),
       ]);
       const recentPurchases = recent.map((c) =>
         formatActivityRow(c, formatted.name),
       );
-      res.json({ ...formatted, recentPurchases, reputation });
+      res.json({
+        ...formatted,
+        recentPurchases,
+        reputation,
+        serviceReputation,
+      });
     },
   );
 
@@ -220,6 +274,7 @@ export function createPublicRouter(deps: PublicRouterDeps): Router {
       contracts: {
         paymentRouter: config.paymentRouterAddress,
         providerRegistry: config.providerRegistryAddress,
+        serviceRegistry: config.serviceRegistryAddress,
         identityRegistry: config.identityRegistryAddress,
         x402Adapter: config.x402AdapterAddress,
         permitAdapter: config.permitAdapterAddress ?? null,

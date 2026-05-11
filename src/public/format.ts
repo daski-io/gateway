@@ -1,10 +1,14 @@
 import { DASKI_A2A_EXTENSION_URI } from "../config.js";
-import type { ProviderReputation } from "../chain/reader.js";
+import type {
+  ProviderReputation,
+  ServiceReputation,
+} from "../chain/reader.js";
 import {
   extractAgentCardName,
   extractAgentCardUrl,
   extractMarketplaceExtension,
 } from "../discovery/format.js";
+import { derivePrimaryServiceId } from "../payment/requirements.js";
 import type { CachedProvider, Hex, StoredChallenge } from "../types.js";
 
 /**
@@ -32,6 +36,16 @@ export interface PublicService {
    */
   providerName: string | null;
   providerDescription: string | null;
+  /**
+   * Primary on-chain service identity for this provider. With current 1:1
+   * cardinality (one provider lists one service), this is the only service;
+   * when providers list multiple, this remains the first one and the others
+   * would be exposed via a future per-service route. Null if the provider's
+   * agent card has no resolvable skill / marketplace extension.
+   */
+  serviceId: Hex | null;
+  serviceSlug: string | null;
+  serviceVersion: string | null;
   pricing: PublicServicePricing;
   skills: PublicSkill[];
 }
@@ -123,6 +137,33 @@ export function deriveProviderReputation(
     canceledCount: canceled,
     confirmedCount: confirmed,
     notConfirmedCount: notConfirmed,
+  };
+}
+
+/**
+ * Service-scoped reputation. Same outcome shape as the provider-level
+ * counters (so the UI can reuse rate derivations) plus `totalRefundedUsdc`,
+ * which the contract tracks per-service only, and the on-chain `serviceId`
+ * so consumers can deep-link to ServiceRegistry / cross-reference logs.
+ */
+export interface PublicServiceLevelReputation extends PublicServiceReputation {
+  /** USDC, two-decimal string. Atomic sum of refunds for this serviceId. */
+  totalRefundedUsdc: string;
+  /** 32-byte hex serviceId of the service these counters scope to. */
+  serviceId: Hex;
+}
+
+export function deriveServiceReputation(
+  raw: ServiceReputation,
+  serviceId: Hex,
+): PublicServiceLevelReputation {
+  // ServiceReputation is structurally a superset of ProviderReputation
+  // (same five outcome counters plus totalRefunded), so the existing rate
+  // derivation works unchanged.
+  return {
+    ...deriveProviderReputation(raw),
+    totalRefundedUsdc: atomicToUsdc(raw.totalRefunded),
+    serviceId,
   };
 }
 
@@ -279,6 +320,11 @@ export function formatServiceForPublic(
     billingModel: asString(pricingExt.billingModel),
   };
 
+  // Primary service identity. derivePrimaryServiceId walks the same skill
+  // metadata the issuer path uses, so the website-side serviceId matches
+  // what the X402Adapter binds the EIP-3009 nonce to at settle time.
+  const primary = derivePrimaryServiceId(provider);
+
   return {
     agentId: provider.agentId.toString(),
     name: extractAgentCardName(provider.agentCard),
@@ -291,6 +337,9 @@ export function formatServiceForPublic(
     providerA2AUrl: extractAgentCardUrl(provider.agentCard),
     providerName: provider.providerName,
     providerDescription: provider.providerDescription,
+    serviceId: primary?.serviceId ?? null,
+    serviceSlug: primary?.serviceSlug ?? null,
+    serviceVersion: primary?.serviceVersion ?? null,
     pricing,
     skills: flattenSkills(provider.agentCard),
   };
