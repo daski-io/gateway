@@ -29,6 +29,7 @@ interface ChallengeRow {
   buyer_token_id: string;
   amount: string;
   skill_id: string | null;
+  service_slug: string | null;
   service_version: string | null;
   service_id: Buffer | null;
   provider_a2a_url: string;
@@ -50,10 +51,12 @@ function rowToChallenge(row: ChallengeRow): StoredChallenge {
     buyerTokenId: BigInt(row.buyer_token_id),
     amount: BigInt(row.amount),
     skillId: row.skill_id ?? null,
-    // Pre-refactor rows have NULL service_version / service_id (legacy
-    // before migration 003). Surface as "1" / 0x0000... so callers don't
-    // have to special-case the absence — settlement on those would have
-    // already been completed under the old contract anyway.
+    // Pre-refactor rows have NULL service_slug / service_version /
+    // service_id (legacy before migrations 003 + 004). Surface a
+    // sensible default for each so callers don't special-case the
+    // absence — settlement on those was completed under the old
+    // contract anyway.
+    serviceSlug: row.service_slug ?? (row.skill_id ?? ""),
     serviceVersion: row.service_version ?? "1",
     serviceId: row.service_id ? byteaToHex(row.service_id) : ZERO_SERVICE_ID,
     providerA2AUrl: row.provider_a2a_url,
@@ -76,6 +79,7 @@ export function createQueries(pool: Pool) {
       buyerTokenId: bigint;
       amount: bigint;
       skillId: string | null;
+      serviceSlug: string;
       serviceVersion: string;
       serviceId: Hex;
       providerA2AUrl: string;
@@ -85,15 +89,16 @@ export function createQueries(pool: Pool) {
       await pool.query(
         `INSERT INTO payment_challenges
            (service_ref, provider_token_id, buyer_token_id, amount, skill_id,
-            service_version, service_id,
+            service_slug, service_version, service_id,
             provider_a2a_url, wallet_address, expires_at, status)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'pending')`,
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'pending')`,
         [
           hexToBytea(challenge.serviceRef),
           challenge.providerTokenId.toString(),
           challenge.buyerTokenId.toString(),
           challenge.amount.toString(),
           challenge.skillId,
+          challenge.serviceSlug,
           challenge.serviceVersion,
           hexToBytea(challenge.serviceId),
           challenge.providerA2AUrl,

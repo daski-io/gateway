@@ -26,6 +26,7 @@ async function seedPaid(
     buyerTokenId: args.buyerAgentId,
     amount: args.amountAtomic,
     skillId: args.skillId ?? null,
+    serviceSlug: args.skillId ?? "test-service",
     serviceVersion: "1",
     serviceId: ("0x" + "00".repeat(32)) as Hex,
     providerA2AUrl: PROVIDER_A2A,

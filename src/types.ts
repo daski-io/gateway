@@ -85,10 +85,23 @@ export interface DaskiRequirementsExtra {
   daski: {
     providerTokenId: string;
     buyerTokenId: string;
+    /**
+     * The A2A skill the buyer is invoking (off-chain identifier like
+     * `register-domain`). Distinct from `serviceSlug` (the on-chain
+     * product category — one slug can map to many skills).
+     */
     skillId: string | null;
     /**
+     * On-chain product category — `keccak256(providerAgentId,
+     * serviceSlug, version)` is the serviceId. Resolved from the
+     * skill's daski metadata in the Agent Card; falls back to skillId
+     * when the provider hasn't declared a slug yet (legacy 1:1
+     * cardinality).
+     */
+    serviceSlug: string;
+    /**
      * Free-form service version. Defaults to "1" when the provider's
-     * agent card does not advertise one. Combined with skillId and
+     * agent card does not advertise one. Combined with serviceSlug and
      * providerTokenId to derive serviceId.
      */
     serviceVersion: string;
@@ -259,12 +272,19 @@ export interface StoredChallenge {
   serviceRef: Hex;
   providerTokenId: bigint;
   buyerTokenId: bigint;
+  // The A2A skill the buyer requested (off-chain identifier). Distinct
+  // from serviceSlug — see DaskiRequirementsExtra.daski.
   skillId: string | null;
-  // The version baked into the serviceId hash. Stored alongside skillId
-  // so the gateway can re-derive serviceId without a contract round-trip
-  // (and so we have an audit trail of which version a payment targeted).
+  // The on-chain product category baked into the serviceId hash.
+  // Resolved from the skill's daski metadata in the provider Agent Card
+  // at challenge-issue time; persisted so the (slug, version) tuple
+  // that produced this serviceId is fully recoverable for analytics.
+  serviceSlug: string;
+  // The version baked into the serviceId hash. Stored alongside
+  // serviceSlug so the gateway can re-derive serviceId without a
+  // contract round-trip.
   serviceVersion: string;
-  // 32-byte hex serviceId — `keccak256(abi.encodePacked(providerAgentId, skillId, version))`.
+  // 32-byte hex serviceId — `keccak256(abi.encodePacked(providerAgentId, serviceSlug, version))`.
   // Persisted on the challenge so /verify can cross-check the on-chain
   // PaymentSettled event's serviceId field rather than trusting the
   // adapter call args alone.

@@ -350,6 +350,7 @@ describe("payment", () => {
       buyerTokenId: 5n,
       amount: 15_000_000n,
       skillId: null,
+      serviceSlug: "test-service",
       serviceVersion: "1",
       serviceId: ("0x" + "00".repeat(32)) as Hex,
       providerA2AUrl: `${gateway.mockProvider.baseUrl}/a2a`,
@@ -404,6 +405,7 @@ describe("payment", () => {
       buyerTokenId: 5n,
       amount: 15_000_000n,
       skillId: null,
+      serviceSlug: "test-service",
       serviceVersion: "1",
       serviceId: ("0x" + "00".repeat(32)) as Hex,
       providerA2AUrl: `${gateway.mockProvider.baseUrl}/a2a`,
@@ -426,5 +428,93 @@ describe("payment", () => {
       { scheme: "exact", network: "base-sepolia", chainId: "eip155:84532" },
     ]);
     expect(body.chainIdCaip2).toBe("eip155:84532");
+  });
+
+  // Three-layer identity regression: when the Agent Card declares
+  // `serviceSlug` in the skill's daski metadata, the gateway resolves
+  // it instead of using skillId-as-slug. Two different skills sharing
+  // the same serviceSlug must produce the same serviceId.
+  it("resolves serviceSlug from skill metadata; two skills rolling up to one service share serviceId", async () => {
+    gateway.registerProvider({
+      tokenId: 42n,
+      erc8004TokenId: 142n,
+      name: "Three-layer test provider",
+      priceUsdcSmallest: "15000000",
+      category: "domain-registration",
+      skills: [
+        {
+          id: "register-domain",
+          metadata: {
+            paymentRequired: true,
+            serviceSlug: "domain-registration",
+            baseAmount: "15000000",
+          },
+        },
+        {
+          id: "renew-domain",
+          metadata: {
+            paymentRequired: true,
+            serviceSlug: "domain-registration",
+            baseAmount: "15000000",
+          },
+        },
+      ],
+    });
+    await gateway.refresh();
+
+    const a = await gateway.purchaseChallenge(42n, {
+      buyerTokenId: "5",
+      skillId: "register-domain",
+    });
+    const b = await gateway.purchaseChallenge(42n, {
+      buyerTokenId: "5",
+      skillId: "renew-domain",
+    });
+    expect(a.status).toBe(402);
+    expect(b.status).toBe(402);
+
+    const aDaski = a.json.accepts[0].extra.daski;
+    const bDaski = b.json.accepts[0].extra.daski;
+
+    // Both challenges resolve to the same serviceSlug...
+    expect(aDaski.serviceSlug).toBe("domain-registration");
+    expect(bDaski.serviceSlug).toBe("domain-registration");
+    // ...and therefore the same serviceId (since slug + version +
+    // providerAgentId are identical).
+    expect(aDaski.serviceId).toBe(bDaski.serviceId);
+    // But the skillId is preserved on each challenge, so the provider
+    // (or gateway) can still route each settlement to the right A2A
+    // method off-chain.
+    expect(aDaski.skillId).toBe("register-domain");
+    expect(bDaski.skillId).toBe("renew-domain");
+  });
+
+  // Fallback: when the skill has no daski `serviceSlug` metadata, the
+  // gateway uses skillId-as-slug. Preserves backwards compat with
+  // providers that haven't migrated their Agent Card.
+  it("falls back to skillId-as-slug when the agent card omits serviceSlug", async () => {
+    gateway.registerProvider({
+      tokenId: 43n,
+      erc8004TokenId: 143n,
+      name: "Legacy single-skill provider",
+      priceUsdcSmallest: "15000000",
+      category: "domain-registration",
+      skills: [
+        {
+          id: "register-domain",
+          // No serviceSlug declared — legacy cardinality.
+          metadata: { paymentRequired: true, baseAmount: "15000000" },
+        },
+      ],
+    });
+    await gateway.refresh();
+
+    const { json } = await gateway.purchaseChallenge(43n, {
+      buyerTokenId: "5",
+      skillId: "register-domain",
+    });
+    const daski = json.accepts[0].extra.daski;
+    expect(daski.serviceSlug).toBe("register-domain");
+    expect(daski.skillId).toBe("register-domain");
   });
 });

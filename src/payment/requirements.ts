@@ -116,9 +116,43 @@ function resolveServiceVersion(
 }
 
 /**
+ * Resolves the **on-chain serviceSlug** for a given A2A skillId.
+ *
+ * Per the three-layer identity model (provider / service / skill), a
+ * skillId is the off-chain A2A method name (e.g. `register-domain`),
+ * while a serviceSlug is the on-chain product category (e.g.
+ * `domain-registration`). One service can be implemented by many skills.
+ *
+ * Resolution order:
+ *   1. The skill's daski metadata explicitly declares `serviceSlug` —
+ *      provider follows the corrected convention.
+ *   2. Fallback: use the skillId itself as the slug. Preserves
+ *      backwards compat with providers whose Agent Card was authored
+ *      under the pre-fix model (one service per skill — wrong
+ *      cardinality, but functionally correct so payments still settle).
+ *
+ * The fallback path will leave provider reputation fragmented across
+ * skills; the right answer is for providers to declare serviceSlug in
+ * their Agent Card. Until they do, we don't synthesize a wrong slug.
+ */
+function resolveServiceSlug(
+  ext: DaskiMarketplaceExtension,
+  agentCard: Record<string, unknown>,
+  skillId: string,
+): string {
+  const meta = findSkillMetaForPricing(ext, agentCard, skillId);
+  const raw = meta?.["serviceSlug"];
+  if (typeof raw === "string" && raw.length > 0 && raw.length <= 64) {
+    return raw;
+  }
+  // Fallback: skillId becomes the slug. Legacy 1:1 cardinality.
+  return skillId;
+}
+
+/**
  * Off-chain serviceId derivation. Mirrors
  * `ServiceRegistry._computeServiceId`:
- *   keccak256(abi.encodePacked(uint256 providerAgentId, string skillId, string version))
+ *   keccak256(abi.encodePacked(uint256 providerAgentId, string serviceSlug, string version))
  * Off-chain identity is critical — the X402Adapter rejects any settle
  * whose EIP-3009 nonce isn't bound to the same `(serviceRef,
  * providerAgentId, serviceId)` 3-tuple, so a mismatch here surfaces as
@@ -126,13 +160,13 @@ function resolveServiceVersion(
  */
 export function computeServiceId(
   providerAgentId: bigint,
-  skillId: string,
+  serviceSlug: string,
   version: string,
 ): Hex {
   return keccak256(
     encodePacked(
       ["uint256", "string", "string"],
-      [providerAgentId, skillId, version],
+      [providerAgentId, serviceSlug, version],
     ),
   ) as Hex;
 }
@@ -416,10 +450,11 @@ export async function issuePaymentRequirements(
   }
 
   // Service-identity refactor: every paid settle binds to a row in
-  // ServiceRegistry. We can't compute serviceId without skillId, and the
-  // contract rejects empty / overlong skillIds (1–64 bytes) and versions
-  // (1–32 bytes), so reject here with a clear error rather than letting
-  // the on-chain call revert with a less helpful message.
+  // ServiceRegistry. We resolve the on-chain serviceSlug from the
+  // skill's daski metadata (the new three-layer model); providers that
+  // haven't declared serviceSlug yet fall back to skillId-as-slug to
+  // preserve backwards compat. Either way, the resulting serviceSlug
+  // must be 1–64 bytes (contract enforces this on registerService).
   const skillId = params.skillId ?? null;
   if (!skillId || skillId.length === 0 || skillId.length > 64) {
     return {
@@ -432,10 +467,21 @@ export async function issuePaymentRequirements(
       status: 400,
     };
   }
+  const serviceSlug = resolveServiceSlug(ext, provider.agentCard, skillId);
+  if (serviceSlug.length === 0 || serviceSlug.length > 64) {
+    return {
+      ok: false,
+      code: "bad_service_slug",
+      message:
+        `resolved serviceSlug '${serviceSlug}' must be 1–64 bytes; check ` +
+        `the provider's Agent Card skill metadata for the daski extension.`,
+      status: 400,
+    };
+  }
   const serviceVersion = resolveServiceVersion(ext, provider.agentCard, skillId);
   const serviceId = computeServiceId(
     params.providerTokenId,
-    skillId,
+    serviceSlug,
     serviceVersion,
   );
   const serviceRef = generateServiceRef();
@@ -449,6 +495,7 @@ export async function issuePaymentRequirements(
     buyerTokenId: params.buyerTokenId,
     amount,
     skillId,
+    serviceSlug,
     serviceVersion,
     serviceId,
     providerA2AUrl,
@@ -524,6 +571,7 @@ export async function issuePaymentRequirements(
         providerTokenId: params.providerTokenId.toString(),
         buyerTokenId: params.buyerTokenId.toString(),
         skillId,
+        serviceSlug,
         serviceVersion,
         serviceId,
         serviceRef,
@@ -544,6 +592,7 @@ export async function issuePaymentRequirements(
     providerTokenId: params.providerTokenId,
     buyerTokenId: params.buyerTokenId,
     skillId,
+    serviceSlug,
     serviceVersion,
     serviceId,
     amount,
