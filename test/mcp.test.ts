@@ -693,6 +693,10 @@ describe("hosted MCP — wallet-agnostic surface", () => {
             paymentRequired: false,
             requiresAssetOwnership: true,
             requiresCapability: true,
+            // Required for capability-gated skills — the orchestrator
+            // refuses to build a plan when this is missing so we declare
+            // it here even though the test asserts the paymentId branch.
+            capabilityType: "DnsRecordCapability",
             requiredFields: ["domain", "recordType", "recordName", "recordContent"],
           },
         },
@@ -723,6 +727,61 @@ describe("hosted MCP — wallet-agnostic surface", () => {
         (r.content[0]! as { type: "text"; text: string }).text,
       );
       expect(err.code).toBe("payment_id_required");
+    } finally {
+      await transport.close();
+    }
+  });
+
+  it("daski_buy_service: refuses to emit a plan when requiresCapability=true but capabilityType is missing", async () => {
+    // Regression for the audit finding: previously the plan-builder
+    // silently omitted the prepare-capability step when the provider
+    // declared `requiresCapability: true` without a `capabilityType`,
+    // leaving the buyer with a plan that says "pass capability" but
+    // no upstream step to produce one.
+    gateway.registerProvider({
+      tokenId: 2n,
+      name: "Misconfigured Reg",
+      priceUsdcSmallest: "15000000",
+      category: "domain-registration",
+      skills: [
+        {
+          id: "set-dns-record",
+          metadata: {
+            paymentRequired: false,
+            requiresAssetOwnership: true,
+            requiresCapability: true,
+            // capabilityType deliberately omitted to exercise the guard.
+            requiredFields: ["domain", "recordType", "recordName", "recordContent"],
+          },
+        },
+      ],
+    });
+    await gateway.refresh();
+
+    const { client, transport } = await connectClient(gateway.baseUrl);
+    try {
+      const result = await client.callTool({
+        name: "daski_buy_service",
+        arguments: {
+          skillId: "set-dns-record",
+          walletAddress: gateway.buyerAddress,
+          buyerTokenId: "5",
+          paymentId: "42",
+          serviceArgs: {
+            domain: "owned.xyz",
+            recordType: "A",
+            recordName: "@",
+            recordContent: "1.2.3.4",
+          },
+        },
+      });
+      const r = result as ToolResultContent;
+      expect(r.isError).toBe(true);
+      const err = JSON.parse(
+        (r.content[0]! as { type: "text"; text: string }).text,
+      );
+      expect(err.code).toBe("provider_missing_capability_type");
+      expect(err.details.skillId).toBe("set-dns-record");
     } finally {
       await transport.close();
     }

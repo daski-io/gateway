@@ -121,10 +121,15 @@ export const paymentRouterAbi = [
 // ── Daski ServiceRegistry ───────────────────────────────────────────────
 //
 // Per-provider service catalog introduced in the service-identity refactor.
-// `serviceId = keccak256(abi.encodePacked(uint256 providerAgentId, string skillId, string version))`
+// `serviceId = keccak256(abi.encodePacked(uint256 providerAgentId, string serviceSlug, string version))`
 // — matches the contract's `_computeServiceId`. Gateway computes it
 // off-chain (cheap, deterministic) and PaymentRouter.settle validates that
 // the service belongs to providerAgentId and is active.
+//
+// `serviceSlug` is the on-chain product-category identifier (e.g.
+// "domain-registration"). It is NOT an A2A skill id — one service maps
+// to many skills via the off-chain serviceURI JSON. Renamed from
+// `skillId` in the audit refactor (2026-05-12 deploy).
 export const serviceRegistryAbi = [
   {
     type: "function",
@@ -137,7 +142,7 @@ export const serviceRegistryAbi = [
         components: [
           { name: "providerAgentId", type: "uint256" },
           { name: "serviceId", type: "bytes32" },
-          { name: "skillId", type: "string" },
+          { name: "serviceSlug", type: "string" },
           { name: "version", type: "string" },
           { name: "serviceURI", type: "string" },
           { name: "serviceWallet", type: "address" },
@@ -167,7 +172,7 @@ export const serviceRegistryAbi = [
     name: "computeServiceId",
     inputs: [
       { name: "providerAgentId", type: "uint256" },
-      { name: "skillId", type: "string" },
+      { name: "serviceSlug", type: "string" },
       { name: "version", type: "string" },
     ],
     outputs: [{ name: "", type: "bytes32" }],

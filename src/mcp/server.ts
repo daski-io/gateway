@@ -23,13 +23,25 @@ import {
   extractMarketplaceExtension,
 } from "../discovery/format.js";
 import { syncSkillEmbeddings } from "../discovery/embeddingSync.js";
-import {
-  readBoundedJson,
-  safeFetch,
-  UrlSafetyError,
-  validateUrlForOutbound,
-} from "../util/urlSafety.js";
+import { safeFetch } from "../util/urlSafety.js";
 import { normalizeState, normalizeRole } from "../util/a2aShape.js";
+import { issuePaymentRequirements } from "../payment/requirements.js";
+import { verifyAndSettle, verifyAndSettleWithRegistration } from "../payment/verify.js";
+import { runConfirmDelivery } from "../payment/confirm.js";
+import {
+  defaultBuyerAgentURI,
+  mcpError,
+  mcpJson,
+  normalizeContactFields,
+  parseBigIntArg,
+  validateAndNormalizeServiceArgs,
+  type McpToolResult,
+} from "./util.js";
+import {
+  a2aPostJson,
+  guardProviderUrl,
+  providerErrorFromFailure,
+} from "./a2a.js";
 
 // JSON response cap on provider A2A calls. Real responses are <50 KB; 1 MB
 // is generous enough for unusual artifact payloads while still protecting
@@ -39,38 +51,6 @@ const A2A_RESPONSE_MAX_BYTES = 1024 * 1024;
 // timeout below so a stuck or hostile stream can't exhaust memory.
 const SSE_TOTAL_MAX_BYTES = 4 * 1024 * 1024;
 const SSE_MAX_EVENTS = 1000;
-
-// Validates a provider URL before a fetch. Returns an MCP error envelope
-// when the URL is blocked (private/loopback host, non-HTTP scheme, etc.)
-// — callers `return await guardProviderUrl(...)` on the error path.
-async function guardProviderUrl(
-  url: string,
-): Promise<McpToolResult | null> {
-  try {
-    await validateUrlForOutbound(url);
-    return null;
-  } catch (err) {
-    if (err instanceof UrlSafetyError) {
-      return mcpError({
-        code: "PROVIDER_URL_BLOCKED",
-        message: `Provider URL rejected: ${err.message}`,
-        details: { reason: err.code },
-      });
-    }
-    throw err;
-  }
-}
-import { issuePaymentRequirements } from "../payment/requirements.js";
-import { verifyAndSettle, verifyAndSettleWithRegistration } from "../payment/verify.js";
-import { runConfirmDelivery } from "../payment/confirm.js";
-import {
-  defaultBuyerAgentURI,
-  isFieldPresent,
-  mcpError,
-  mcpJson,
-  normalizeContactFields,
-  type McpToolResult,
-} from "./util.js";
 
 // ── Tool surface ──────────────────────────────────────────────────────────
 //
@@ -336,16 +316,9 @@ export async function createMcpServer(
         },
       },
       async (args) => {
-        let id: bigint;
-        try {
-          id = BigInt(args.providerTokenId);
-        } catch {
-          return errorJson({
-            code: "BAD_INPUT",
-            message: "providerTokenId must be a numeric string",
-          });
-        }
-        const provider = deps.cache.get(id);
+        const parsed = parseBigIntArg(args.providerTokenId, "providerTokenId");
+        if (!parsed.ok) return parsed.error;
+        const provider = deps.cache.get(parsed.value);
         if (!provider) {
           return errorJson({
             code: "PROVIDER_NOT_FOUND",
@@ -405,17 +378,12 @@ export async function createMcpServer(
             message: "walletAddress must be a 20-byte hex address",
           });
         }
-        let providerTokenId: bigint;
-        let buyerTokenId: bigint;
-        try {
-          providerTokenId = BigInt(args.providerTokenId);
-          buyerTokenId = BigInt(args.buyerTokenId);
-        } catch {
-          return errorJson({
-            code: "BAD_INPUT",
-            message: "providerTokenId and buyerTokenId must be numeric strings",
-          });
-        }
+        const parsedProvider = parseBigIntArg(args.providerTokenId, "providerTokenId");
+        if (!parsedProvider.ok) return parsedProvider.error;
+        const parsedBuyer = parseBigIntArg(args.buyerTokenId, "buyerTokenId");
+        if (!parsedBuyer.ok) return parsedBuyer.error;
+        const providerTokenId = parsedProvider.value;
+        const buyerTokenId = parsedBuyer.value;
         const resource = `${deps.config.publicUrl}/purchase/${providerTokenId.toString()}`;
         const result = await issuePaymentRequirements(
           {
@@ -972,40 +940,6 @@ export async function createMcpServer(
           },
         };
 
-        const guard = await guardProviderUrl(args.providerA2AUrl);
-        if (guard) return guard;
-
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), a2aTimeoutMs);
-        let res: Response;
-        try {
-          res = await a2aFetch(args.providerA2AUrl, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(body),
-            signal: controller.signal,
-            redirect: "manual",
-          });
-        } catch (err) {
-          const e = err as { name?: string };
-          return errorJson({
-            code: e.name === "AbortError" ? "PROVIDER_TIMEOUT" : "PROVIDER_UNREACHABLE",
-            message: `Provider unreachable at ${args.providerA2AUrl}`,
-            details: { providerA2AUrl: args.providerA2AUrl, contextId },
-            recoverable: true,
-            next_action:
-              "Retry with the same contextId once the provider is reachable.",
-          });
-        } finally {
-          clearTimeout(timer);
-        }
-        if (!res.ok) {
-          return errorJson({
-            code: "PROVIDER_ERROR",
-            message: `Provider returned HTTP ${res.status}`,
-            details: { status: res.status, contextId },
-          });
-        }
         type SubmitRpc = {
           error?: { message?: string };
           result?: {
@@ -1018,23 +952,20 @@ export async function createMcpServer(
             artifacts?: unknown[];
           };
         };
-        let rpc: SubmitRpc;
-        try {
-          rpc = await readBoundedJson<SubmitRpc>(res, A2A_RESPONSE_MAX_BYTES);
-        } catch (err) {
-          if (err instanceof UrlSafetyError) {
-            return errorJson({
-              code: "PROVIDER_RESPONSE_TOO_LARGE",
-              message: err.message,
-              details: { contextId },
-            });
-          }
-          return errorJson({
-            code: "PROVIDER_ERROR",
-            message: `Provider returned non-JSON (status ${res.status})`,
-            details: { contextId },
+        const post = await a2aPostJson<SubmitRpc>(args.providerA2AUrl, body, {
+          fetch: a2aFetch,
+          timeoutMs: a2aTimeoutMs,
+          maxBytes: A2A_RESPONSE_MAX_BYTES,
+          failOnNonOk: true,
+        });
+        if (!post.ok) {
+          return providerErrorFromFailure(post, args.providerA2AUrl, {
+            contextId,
+            nextAction:
+              "Retry with the same contextId once the provider is reachable.",
           });
         }
+        const rpc = post.body;
         if (rpc.error) {
           return errorJson({
             code: "PROVIDER_ERROR",
@@ -1223,34 +1154,6 @@ export async function createMcpServer(
           method: "GetTask",
           params: { id: args.taskId },
         };
-        const guard = await guardProviderUrl(args.providerA2AUrl);
-        if (guard) return guard;
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), a2aTimeoutMs);
-        let res: Response;
-        try {
-          res = await a2aFetch(args.providerA2AUrl, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(body),
-            signal: controller.signal,
-            redirect: "manual",
-          });
-        } catch (err) {
-          const e = err as { name?: string };
-          return errorJson({
-            code: e.name === "AbortError" ? "PROVIDER_TIMEOUT" : "PROVIDER_UNREACHABLE",
-            message: `Provider unreachable at ${args.providerA2AUrl}`,
-          });
-        } finally {
-          clearTimeout(timer);
-        }
-        if (!res.ok) {
-          return errorJson({
-            code: "PROVIDER_ERROR",
-            message: `Provider returned HTTP ${res.status}`,
-          });
-        }
         type CheckRpc = {
           error?: { message?: string };
           result?: {
@@ -1260,21 +1163,16 @@ export async function createMcpServer(
             artifacts?: Array<{ name?: string; parts?: any[] }>;
           };
         };
-        let rpc: CheckRpc;
-        try {
-          rpc = await readBoundedJson<CheckRpc>(res, A2A_RESPONSE_MAX_BYTES);
-        } catch (err) {
-          if (err instanceof UrlSafetyError) {
-            return errorJson({
-              code: "PROVIDER_RESPONSE_TOO_LARGE",
-              message: err.message,
-            });
-          }
-          return errorJson({
-            code: "PROVIDER_ERROR",
-            message: `Provider returned non-JSON (status ${res.status})`,
-          });
+        const post = await a2aPostJson<CheckRpc>(args.providerA2AUrl, body, {
+          fetch: a2aFetch,
+          timeoutMs: a2aTimeoutMs,
+          maxBytes: A2A_RESPONSE_MAX_BYTES,
+          failOnNonOk: true,
+        });
+        if (!post.ok) {
+          return providerErrorFromFailure(post, args.providerA2AUrl);
         }
+        const rpc = post.body;
         if (rpc.error) {
           return errorJson({
             code: "PROVIDER_ERROR",
@@ -1573,6 +1471,908 @@ export async function createMcpServer(
         });
     }
 
+    // ── daski_buy_service path helpers ────────────────────────────────
+    //
+    // The orchestrator splits cleanly into three named paths:
+    //   1. x402 retry — when paymentPayload arrives, run verify+settle+
+    //      submit in one round-trip instead of returning a plan.
+    //   2. Free skill — open-free (synchronous direct dispatch) or
+    //      ownership-gated (multi-step plan).
+    //   3. Paid skill — live /quote against the provider, then
+    //      paymentRequirements + EIP-712 typed-data.
+    // Each helper takes a shared `BuyServiceCtx` so the dispatcher stays
+    // narrow (validate → resolve → dispatch). Function declarations
+    // hoist within `registerTools`, so they appear after the registered
+    // tool body that calls them.
+
+    interface BuyServiceArgs {
+      skillId: string;
+      walletAddress: string;
+      buyerTokenId?: string;
+      providerTokenId?: string;
+      serviceArgs?: Record<string, unknown>;
+      amount?: string;
+      paymentId?: string;
+      paymentPayload?: Record<string, unknown>;
+      paymentRequirements?: Record<string, unknown>;
+      registration?: { agentURI: string; deadline: string; signature: string };
+    }
+
+    interface BuyServiceCtx {
+      args: BuyServiceArgs;
+      provider: ProviderMatch;
+      providerA2AUrl: string;
+      serviceArgs: Record<string, unknown>;
+      buyerAgentId: bigint;
+    }
+
+    // Synchronous free skills (open-free, single round-trip, answer
+    // inline). Driven off `skillMeta.directEndpoint`; older provider
+    // deployments that haven't migrated still dispatch `check-availability`
+    // to /availability via the legacy fallback so the audit refactor
+    // doesn't force a coordinated provider deploy.
+    function resolveSynchronousDispatch(
+      skillMeta: Record<string, unknown>,
+      skillId: string,
+    ): { endpoint: string; kind: string } | null {
+      const direct = skillMeta["directEndpoint"];
+      if (typeof direct === "string" && direct.startsWith("/")) {
+        const kind =
+          typeof skillMeta["directResultKind"] === "string"
+            ? (skillMeta["directResultKind"] as string)
+            : "direct";
+        return { endpoint: direct, kind };
+      }
+      if (skillId === "check-availability") {
+        return { endpoint: "/availability", kind: "availability" };
+      }
+      return null;
+    }
+
+    function resolveBuyServiceProvider(
+      args: BuyServiceArgs,
+    ):
+      | { ok: true; provider: ProviderMatch }
+      | { ok: false; error: McpToolResult } {
+      const matches = findProvidersOfferingSkill(deps.cache, args.skillId);
+      if (args.providerTokenId) {
+        const parsed = parseBigIntArg(args.providerTokenId, "providerTokenId");
+        if (!parsed.ok) return { ok: false, error: parsed.error };
+        const found = matches.find((m) => m.agentId === parsed.value);
+        if (!found) {
+          return {
+            ok: false,
+            error: errorJson({
+              code: "skill_not_offered_by_provider",
+              message: `provider ${args.providerTokenId} does not offer skill '${args.skillId}'`,
+            }),
+          };
+        }
+        return { ok: true, provider: found };
+      }
+      if (matches.length === 0) {
+        return {
+          ok: false,
+          error: errorJson({
+            code: "skill_not_found",
+            message: `no whitelisted provider offers skill '${args.skillId}'`,
+          }),
+        };
+      }
+      if (matches.length > 1) {
+        return {
+          ok: false,
+          error: errorJson({
+            code: "ambiguous_provider",
+            message: `multiple providers offer skill '${args.skillId}'`,
+            details: {
+              providerTokenIds: matches.map((m) => m.agentId.toString()),
+            },
+          }),
+        };
+      }
+      return { ok: true, provider: matches[0]! };
+    }
+
+    async function runBuyServiceX402Retry(
+      args: BuyServiceArgs,
+      extra: { _meta?: Record<string, unknown> },
+    ): Promise<McpToolResult | null> {
+      const metaPaymentRaw = extra._meta?.["x402/payment"];
+      let inboundPayload: PaymentPayload | undefined =
+        (args.paymentPayload as unknown as PaymentPayload | undefined) ??
+        undefined;
+      if (!inboundPayload && typeof metaPaymentRaw === "string") {
+        try {
+          inboundPayload = JSON.parse(
+            Buffer.from(metaPaymentRaw, "base64").toString("utf8"),
+          ) as PaymentPayload;
+        } catch {
+          return errorJson({
+            code: "invalid_meta_payment",
+            message:
+              "_meta['x402/payment'] is not valid base64-encoded JSON",
+            recoverable: true,
+            next_action:
+              "Encode the PaymentPayload JSON as base64 and resend, or pass `paymentPayload` directly as a tool argument.",
+          });
+        }
+      }
+      if (!inboundPayload) return null;
+
+      const reqs = args.paymentRequirements as
+        | PaymentRequirements
+        | undefined;
+      const serviceRefRaw =
+        reqs?.extra?.daski?.serviceRef ??
+        (inboundPayload as { serviceRef?: string }).serviceRef;
+      if (typeof serviceRefRaw !== "string" || !HEX_32.test(serviceRefRaw)) {
+        return errorJson({
+          code: "BAD_INPUT",
+          message:
+            "Cannot locate the stored challenge. Pass `paymentRequirements` " +
+            "alongside `paymentPayload` so the gateway can read serviceRef.",
+          recoverable: true,
+          next_action:
+            "Echo the paymentRequirements you received in the first call and retry.",
+        });
+      }
+      const challenge = await deps.queries.getChallengeByRef(
+        serviceRefRaw.toLowerCase() as Hex,
+      );
+      if (!challenge) {
+        return errorJson({
+          code: "CHALLENGE_NOT_FOUND",
+          message: "no challenge found for the given serviceRef",
+          details: { serviceRef: serviceRefRaw },
+        });
+      }
+      const needsRegistration = challenge.buyerTokenId === 0n;
+      if (needsRegistration && !args.registration) {
+        return errorJson({
+          code: "registration_required",
+          message:
+            "this challenge was issued for an unregistered wallet " +
+            "(buyerTokenId=0). Pass `registration` with a signed " +
+            "RegisterAgent payload — see registrationPrep in the " +
+            "first response.",
+          recoverable: true,
+          next_action:
+            "Sign registrationPrep.eip712TypedData and pass the signature in `registration`.",
+        });
+      }
+
+      const settleResult = needsRegistration
+        ? await verifyAndSettleWithRegistration(
+            { payload: inboundPayload, challenge },
+            {
+              agentURI: args.registration!.agentURI,
+              deadline: BigInt(args.registration!.deadline),
+              signature: args.registration!.signature as Hex,
+            },
+            deps.config,
+            deps.reader,
+            deps.queries,
+            new Date(),
+            { fetchAgentCardFn: deps.buyerAgentCardFetch },
+          )
+        : await verifyAndSettle(
+            { payload: inboundPayload, challenge },
+            deps.config,
+            deps.reader,
+            deps.queries,
+          );
+
+      if (!settleResult.ok) {
+        return errorJson({
+          code: settleResult.errorReason,
+          message: settleResult.message,
+          details: {
+            transaction: settleResult.response.transaction,
+            payer: settleResult.response.payer,
+          },
+        });
+      }
+      const settlement = settleResult.response;
+
+      // Standardized x402 paymentResponse — base64(SettlementResponse)
+      // mirrored from the spec's `X-PAYMENT-RESPONSE` header.
+      const paymentResponseB64 = Buffer.from(
+        JSON.stringify(settlement),
+      ).toString("base64");
+      const responseMeta: Record<string, unknown> = {
+        "x402/paymentResponse": paymentResponseB64,
+      };
+
+      // Same A2A envelope shape as daski_submit_task.
+      const a2aMeta: Record<string, unknown> = {
+        skillId: challenge.skillId,
+        paymentId: settlement.daski?.paymentId,
+        chainId: deps.config.chainId,
+        serviceRef: serviceRefRaw,
+        transactionHash: settlement.transaction,
+      };
+      const a2aParts: Array<Record<string, unknown>> = [
+        { kind: "text", text: `Execute skill ${challenge.skillId}` },
+      ];
+      const submitArgs = normalizeContactFields(args.serviceArgs ?? {});
+      if (Object.keys(submitArgs).length > 0) {
+        a2aParts.push({ kind: "data", data: submitArgs });
+      }
+      const messageId = randomUUID();
+      const contextId = randomUUID();
+      const a2aBody = {
+        jsonrpc: "2.0",
+        id: randomUUID(),
+        method: "SendMessage",
+        params: {
+          message: {
+            role: "ROLE_USER",
+            parts: a2aParts,
+            messageId,
+            contextId,
+            metadata: { [DASKI_A2A_EXTENSION_URI]: a2aMeta },
+          },
+        },
+      };
+
+      type SubmitJsonAfterSettle = {
+        error?: { message?: string };
+        result?: {
+          id?: string;
+          contextId?: string;
+          status?: { state?: string; message?: unknown };
+          artifacts?: unknown[];
+        };
+      };
+      const post = await a2aPostJson<SubmitJsonAfterSettle>(
+        challenge.providerA2AUrl,
+        a2aBody,
+        {
+          fetch: a2aFetch,
+          timeoutMs: a2aTimeoutMs,
+          maxBytes: A2A_RESPONSE_MAX_BYTES,
+        },
+      );
+      // The settle already landed on-chain — any post-settle failure
+      // must echo enough context (paymentId/serviceRef/txHash) that the
+      // caller can retry with daski_submit_task without re-paying.
+      if (!post.ok) {
+        return errorJson(
+          {
+            code: "submit_failed_after_settle",
+            message:
+              post.reason === "timeout" || post.reason === "unreachable"
+                ? `Settled on-chain but A2A submit_task failed: ${post.message}. ` +
+                  "Use daski_submit_task with the returned paymentId/serviceRef to retry."
+                : post.reason === "non_json"
+                  ? `provider returned non-JSON after settle (status ${post.status})`
+                  : `provider returned HTTP ${post.status ?? "?"} after settle`,
+            details: {
+              paymentId: settlement.daski?.paymentId,
+              serviceRef: serviceRefRaw,
+              transactionHash: settlement.transaction,
+              providerA2AUrl: challenge.providerA2AUrl,
+            },
+            recoverable: true,
+            next_action:
+              "Call daski_submit_task explicitly with the paymentId/serviceRef from details.",
+          },
+          responseMeta,
+        );
+      }
+      const submitJson = post.body;
+      if (!post.raw.ok || submitJson.error) {
+        return errorJson(
+          {
+            code: "submit_failed_after_settle",
+            message:
+              submitJson.error?.message ??
+              `provider returned HTTP ${post.status} after settle`,
+            details: {
+              paymentId: settlement.daski?.paymentId,
+              serviceRef: serviceRefRaw,
+              transactionHash: settlement.transaction,
+              providerA2AUrl: challenge.providerA2AUrl,
+            },
+            recoverable: true,
+            next_action:
+              "Call daski_submit_task explicitly to dispatch the task.",
+          },
+          responseMeta,
+        );
+      }
+      const taskResult = submitJson.result;
+      return json(
+        {
+          success: true,
+          kind: "paid-resource",
+          transaction: settlement.transaction,
+          network: settlement.network,
+          payer: settlement.payer,
+          paymentId: settlement.daski?.paymentId ?? null,
+          serviceRef: settlement.daski?.serviceRef ?? serviceRefRaw,
+          providerTokenId: settlement.daski?.providerTokenId ?? null,
+          buyerTokenId: settlement.daski?.buyerTokenId ?? null,
+          amount: settlement.daski?.amount ?? null,
+          providerA2AUrl: settlement.daski?.providerA2AUrl ?? null,
+          skillId: challenge.skillId,
+          registered: settlement.daski?.registered ?? false,
+          taskId: taskResult?.id ?? null,
+          contextId: taskResult?.contextId ?? contextId,
+          state: normalizeState(taskResult?.status?.state) ?? "submitted",
+          artifacts: taskResult?.artifacts ?? [],
+          statusMessage: taskResult?.status?.message ?? null,
+        },
+        responseMeta,
+      );
+    }
+
+    async function runSynchronousFreeSkill(
+      ctx: BuyServiceCtx,
+      endpoint: string,
+      responseKind: string,
+    ): Promise<McpToolResult> {
+      const targetUrl = ctx.providerA2AUrl.replace(/\/a2a(?=\/|$)/, endpoint);
+      const post = await a2aPostJson<Record<string, unknown>>(
+        targetUrl,
+        ctx.serviceArgs,
+        {
+          fetch: a2aFetch,
+          timeoutMs: a2aTimeoutMs,
+          maxBytes: A2A_RESPONSE_MAX_BYTES,
+        },
+      );
+      if (!post.ok) {
+        // Map the helper's reason codes to the legacy direct-dispatch
+        // error envelope (lowercase `provider_*`) so on-chain free
+        // skills keep their existing agent-facing surface.
+        if (post.reason === "timeout") {
+          return errorJson({
+            code: "provider_timeout",
+            message: `${ctx.args.skillId} at ${targetUrl} failed: ${post.message}`,
+          });
+        }
+        if (post.reason === "unreachable") {
+          return errorJson({
+            code: "provider_unreachable",
+            message: `${ctx.args.skillId} at ${targetUrl} failed: ${post.message}`,
+          });
+        }
+        if (post.reason === "non_json") {
+          return errorJson({
+            code: "provider_error",
+            message: `${ctx.args.skillId} returned non-JSON (status ${post.status})`,
+          });
+        }
+        return providerErrorFromFailure(post, targetUrl);
+      }
+      const body = post.body;
+      if (!post.raw.ok) {
+        return errorJson({
+          code:
+            (body.error as { code?: string } | undefined)?.code ??
+            "provider_error",
+          message:
+            (body.error as { message?: string } | undefined)?.message ??
+            `${ctx.args.skillId} returned HTTP ${post.status}`,
+        });
+      }
+      // Provider fields land at the top level; the wrapper's keys
+      // (kind, providerTokenId, etc.) win so the agent-facing
+      // discriminator stays stable. Empty plan signals "no further
+      // steps; the answer is in the top-level fields."
+      return json({
+        ...body,
+        kind: responseKind,
+        providerTokenId: ctx.provider.agentId.toString(),
+        providerA2AUrl: ctx.providerA2AUrl,
+        skillId: ctx.args.skillId,
+        chainId: deps.config.chainId,
+        network: deps.config.network,
+        plan: { steps: [] },
+      });
+    }
+
+    function buildFreeSkillPlan(
+      ctx: BuyServiceCtx,
+      flags: {
+        isOpenFree: boolean;
+        requiresCapability: boolean;
+        requiresAssetOwnership: boolean;
+        capabilityType: string | null;
+      },
+    ): McpToolResult {
+      const { args, provider, providerA2AUrl, serviceArgs } = ctx;
+      const { isOpenFree, requiresCapability, requiresAssetOwnership, capabilityType } = flags;
+      const steps: Array<{ toolName: string; hint: string; args: unknown }> = [];
+      // Capability-gated skills need an upstream prepare-capability hop.
+      // The misconfig guard in `runBuyServiceFreePath` ensures
+      // capabilityType is non-null whenever requiresCapability is true.
+      if (requiresCapability && capabilityType) {
+        steps.push({
+          toolName: "daski_submit_task",
+          hint:
+            "Fetch the EIP-712 typed-data for this capability as a free " +
+            "A2A skill on the provider. Sign the returned eip712TypedData " +
+            "with your wallet; extract the signature.",
+          args: {
+            providerA2AUrl,
+            skillId: "prepare-capability",
+            paymentId: args.paymentId,
+            chainId: deps.config.chainId,
+            serviceArgs: {
+              capabilityType,
+              paymentId: args.paymentId,
+              buyerTokenId: args.buyerTokenId,
+              // Echo the entire serviceArgs so the schema-specific
+              // builder pulls the fields it commits to (e.g. domain,
+              // recordType, recordName for set-dns; domain, recordId
+              // for delete-dns).
+              ...serviceArgs,
+            },
+          },
+        });
+      }
+      // Envelope auth: required for any non-open-free skill.
+      if (!isOpenFree) {
+        steps.push({
+          toolName: "daski_build_envelope_auth",
+          hint:
+            "Build the A2ARequestAuthorization typed-data. Sign the " +
+            "returned eip712TypedData with the buyer's agent wallet. " +
+            "Retain the messageId returned here — daski_submit_task " +
+            "rejects if it doesn't match what you signed.",
+          args: {
+            skillId: args.skillId,
+            paymentId: args.paymentId ?? "0",
+            chainId: deps.config.chainId,
+            buyerTokenId: args.buyerTokenId,
+            serviceArgs,
+          },
+        });
+      }
+      steps.push({
+        toolName: "daski_submit_task",
+        hint: isOpenFree
+          ? "Dispatch directly. No paymentId, serviceRef, or " +
+            "transactionHash, and no envelopeAuth. Open-free skills " +
+            "complete synchronously: the result (artifacts + " +
+            "statusMessage) is returned inline in this call's response " +
+            "— DO NOT call daski_get_task_status, the taskId is " +
+            "non-persistent."
+          : "Dispatch the task to the provider. OMIT serviceRef and " +
+            "transactionHash. Pass envelopeAuth + the same messageId " +
+            "from daski_build_envelope_auth." +
+            (requiresCapability
+              ? " Also pass the signed { signature, authorization } as `capability`."
+              : ""),
+        args: {
+          providerA2AUrl,
+          skillId: args.skillId,
+          ...(args.paymentId ? { paymentId: args.paymentId } : {}),
+          chainId: deps.config.chainId,
+          serviceArgs,
+          ...(isOpenFree
+            ? {}
+            : {
+                messageId: "<from daski_build_envelope_auth>",
+                envelopeAuth: "<signed envelope from previous step>",
+              }),
+          ...(requiresCapability
+            ? { capability: "<signed capability from previous step>" }
+            : {}),
+        },
+      });
+      // Open-free skills are synchronous (submit_task returns artifacts
+      // inline); ownership-gated skills create persisted tasks and need
+      // polling.
+      if (!isOpenFree) {
+        steps.push({
+          toolName: "daski_get_task_status",
+          hint: "Poll until status is 'completed' or 'failed'.",
+          args: { providerA2AUrl, taskId: "<from daski_submit_task>" },
+        });
+      }
+      return json({
+        kind: "free",
+        freeKind: isOpenFree ? "open" : "ownership-gated",
+        providerTokenId: provider.agentId.toString(),
+        providerA2AUrl,
+        skillId: args.skillId,
+        paymentId: args.paymentId ?? null,
+        requiresCapability,
+        requiresAssetOwnership,
+        chainId: deps.config.chainId,
+        network: deps.config.network,
+        plan: { steps },
+      });
+    }
+
+    async function runBuyServiceFreePath(
+      ctx: BuyServiceCtx,
+    ): Promise<McpToolResult> {
+      const { args, provider, buyerAgentId } = ctx;
+      const requiresAssetOwnership =
+        provider.skillMeta.requiresAssetOwnership === true;
+      const requiresCapability =
+        provider.skillMeta.requiresCapability === true;
+      const isOpenFree = !requiresAssetOwnership && !requiresCapability;
+      const capabilityType =
+        typeof provider.skillMeta.capabilityType === "string"
+          ? (provider.skillMeta.capabilityType as string)
+          : null;
+
+      // Provider-misconfiguration guard: a capability-gated skill that
+      // doesn't declare its capabilityType can't have a usable plan
+      // emitted — the prepare-capability step needs the type, and the
+      // submit step would instruct the caller to pass a `capability`
+      // that no upstream step provides. Surface the misconfig instead
+      // of silently returning a half-baked plan.
+      if (requiresCapability && !capabilityType) {
+        return errorJson({
+          code: "provider_missing_capability_type",
+          message:
+            `Provider ${provider.agentId} advertises requiresCapability=true ` +
+            `for skill '${args.skillId}' but does not declare 'capabilityType' ` +
+            "in skill metadata. The gateway can't build a usable plan.",
+          details: {
+            providerTokenId: provider.agentId.toString(),
+            skillId: args.skillId,
+          },
+          next_action:
+            "Ask the provider to add 'capabilityType' to the skill's daski " +
+            "metadata, or use a different provider.",
+        });
+      }
+
+      // Synchronous direct-dispatch (open-free + declared
+      // `directEndpoint`, or the legacy `check-availability` fallback).
+      // The provider's response fields land inline; no plan steps.
+      if (isOpenFree) {
+        const sync = resolveSynchronousDispatch(
+          provider.skillMeta,
+          args.skillId,
+        );
+        if (sync) return runSynchronousFreeSkill(ctx, sync.endpoint, sync.kind);
+      }
+
+      // Ownership-gated free skills need an existing agentId AND the
+      // paymentId for the asset they act on. Open-free skills are
+      // public reads — neither check applies.
+      if (!isOpenFree) {
+        if (buyerAgentId === 0n) {
+          return errorJson({
+            code: "buyer_not_registered",
+            message:
+              "wallet has no ERC-8004 agentId yet. Ownership-gated " +
+              "free skills can't bootstrap registration — call " +
+              "daski_prepare_registration + daski_register_buyer " +
+              "first, then retry.",
+          });
+        }
+        if (!args.paymentId) {
+          return errorJson({
+            code: "payment_id_required",
+            message:
+              `Skill '${args.skillId}' acts on an asset you already ` +
+              "purchased. Pass the paymentId of the original asset " +
+              "purchase (e.g. register-domain) as `paymentId`.",
+          });
+        }
+      }
+
+      return buildFreeSkillPlan(ctx, {
+        isOpenFree,
+        requiresCapability,
+        requiresAssetOwnership,
+        capabilityType,
+      });
+    }
+
+    async function runBuyServicePaidPath(
+      ctx: BuyServiceCtx,
+    ): Promise<McpToolResult> {
+      const { args, provider, providerA2AUrl, serviceArgs, buyerAgentId } = ctx;
+
+      // Live-quote the provider before issuing paymentRequirements so
+      // the buyer pays the actual price AND user-input errors (bad
+      // phone, unsupported TLD, missing fields) surface before any
+      // USDC moves. The A2A URL convention is `<base>/a2a[/<slug>]`;
+      // /quote mirrors that shape, so we swap the segment in place.
+      const quoteUrl = providerA2AUrl.replace(/\/a2a(?=\/|$)/, "/quote");
+
+      // Track whether the amount came from THIS request's live /quote.
+      // Caller-supplied args.amount is NOT trusted as a quote — that
+      // would bypass resolveAmount's static floor check (audit P1).
+      let quoteAmount: string | undefined = args.amount;
+      let quoteNotes: string[] = [];
+      let quoteAmountFromLiveQuote = false;
+      if (!args.amount) {
+        type QuoteJson = {
+          ok?: boolean;
+          amount?: string;
+          currency?: string;
+          notes?: string[];
+          errors?: Array<{ field: string; code: string; message: string }>;
+        };
+        const post = await a2aPostJson<QuoteJson>(
+          quoteUrl,
+          { skillId: args.skillId, serviceArgs },
+          {
+            fetch: a2aFetch,
+            timeoutMs: a2aTimeoutMs,
+            maxBytes: A2A_RESPONSE_MAX_BYTES,
+          },
+        );
+        if (!post.ok) {
+          if (post.reason === "timeout") {
+            return errorJson({
+              code: "provider_timeout",
+              message: `quote at ${quoteUrl} failed: ${post.message}`,
+            });
+          }
+          if (post.reason === "unreachable") {
+            return errorJson({
+              code: "provider_unreachable",
+              message: `quote at ${quoteUrl} failed: ${post.message}`,
+            });
+          }
+          if (post.reason === "non_json") {
+            return errorJson({
+              code: "quote_malformed",
+              message: `provider /quote returned non-JSON (status ${post.status})`,
+            });
+          }
+          return providerErrorFromFailure(post, quoteUrl);
+        }
+        const quoteJson = post.body;
+        if (!quoteJson.ok) {
+          return errorJson({
+            code: "quote_validation_failed",
+            message:
+              "Provider rejected the requested args. Fix the listed errors and retry.",
+            details: { validationErrors: quoteJson.errors ?? [] },
+            recoverable: true,
+            next_action:
+              "Fix the listed validationErrors in serviceArgs and retry daski_buy_service.",
+          });
+        }
+        if (!quoteJson.amount) {
+          return errorJson({
+            code: "quote_malformed",
+            message: "provider /quote returned ok=true with no amount",
+          });
+        }
+        quoteAmount = quoteJson.amount;
+        quoteNotes = quoteJson.notes ?? [];
+        quoteAmountFromLiveQuote = true;
+      }
+
+      const resource = `${deps.config.publicUrl}/purchase/${provider.agentId.toString()}`;
+      const result = await issuePaymentRequirements(
+        {
+          providerTokenId: provider.agentId,
+          buyerTokenId: buyerAgentId,
+          skillId: args.skillId,
+          amount: quoteAmount,
+          resource,
+          walletAddress: args.walletAddress.toLowerCase() as Hex,
+          trustQuotedAmount: quoteAmountFromLiveQuote,
+        },
+        deps.config,
+        deps.cache,
+        deps.queries,
+      );
+      if (!result.ok) {
+        return errorJson({ code: result.code, message: result.message });
+      }
+      const r = result.requirements;
+
+      // Fresh wallets get a RegisterAgent prep block alongside the
+      // payment so the agent can sign both typed-data blocks back to
+      // back, then submit them atomically via daski_settle_payment.
+      const isAtomic = buyerAgentId === 0n;
+      let registrationPrep: unknown = null;
+      if (isAtomic) {
+        try {
+          const nonce = await deps.reader.getRegistrationNonce(
+            args.walletAddress.toLowerCase() as Hex,
+          );
+          const nowSec = BigInt(Math.floor(Date.now() / 1000));
+          const deadline = nowSec + 3600n;
+          // ERC-8004 §2.2 conformance: default to a non-empty data: URI
+          // resolving to a minimal buyer card so reputation queries and
+          // Bazaar / agentic.market indexers can fetch agent metadata.
+          const agentURI = defaultBuyerAgentURI(
+            args.walletAddress.toLowerCase() as Hex,
+          );
+          registrationPrep = {
+            walletAddress: args.walletAddress.toLowerCase(),
+            agentURI,
+            nonce: nonce.toString(),
+            deadline: deadline.toString(),
+            eip712TypedData: {
+              domain: {
+                name: "Daski IdentityRegistry",
+                version: "1",
+                chainId: deps.config.chainId,
+                verifyingContract: deps.config.identityRegistryAddress,
+              },
+              types: {
+                RegisterAgent: [
+                  { name: "agentURI", type: "string" },
+                  { name: "agentWallet", type: "address" },
+                  { name: "nonce", type: "uint256" },
+                  { name: "deadline", type: "uint256" },
+                ],
+              },
+              primaryType: "RegisterAgent",
+              message: {
+                agentURI,
+                agentWallet: args.walletAddress.toLowerCase(),
+                nonce: nonce.toString(),
+                deadline: deadline.toString(),
+              },
+            },
+            submitTemplate: {
+              walletAddress: args.walletAddress.toLowerCase(),
+              agentURI,
+              deadline: deadline.toString(),
+            },
+          };
+        } catch (err) {
+          return errorJson({
+            code: "CHAIN_READ_FAILED",
+            message: `registrationNonce reverted: ${(err as Error).message}`,
+          });
+        }
+      }
+
+      const steps: Array<{ toolName: string; hint: string; args: unknown }> = [];
+      steps.push({
+        toolName: "<your-wallet>.signTypedData",
+        hint:
+          "Pass paymentRequirements.extra.daski.eip712TypedData to " +
+          "your wallet's signTypedData tool. AgentKit, CDP Wallet " +
+          "MCP, MetaMask Snap, viem accounts all support this.",
+        args: { typedData: r.extra.daski.eip712TypedData },
+      });
+      if (isAtomic) {
+        steps.push({
+          toolName: "<your-wallet>.signTypedData",
+          hint:
+            "Also sign registrationPrep.eip712TypedData with the SAME " +
+            "wallet. The result is the `registration.signature` you'll " +
+            "pass to daski_settle_payment alongside the payment payload.",
+          args: {
+            typedData: (registrationPrep as { eip712TypedData: unknown })
+              .eip712TypedData,
+          },
+        });
+      }
+      steps.push({
+        toolName: "daski_settle_payment",
+        hint: isAtomic
+          ? "Atomic register-and-settle: pass paymentPayload + " +
+            "paymentRequirements + registration: { agentURI, deadline, " +
+            "signature } where the signature is from the second wallet " +
+            "sign step. Both registration and settlement go on-chain in " +
+            "one tx — if either fails, neither happens."
+          : "Assemble paymentPayload = { x402Version: 1, scheme, " +
+            "network, payload: { signature, authorization: <typedData.message> } } " +
+            "and pass it with the original paymentRequirements.",
+        args: {
+          paymentPayload: "<assembled from signature + typedData.message>",
+          paymentRequirements: r,
+          ...(isAtomic
+            ? {
+                registration: {
+                  agentURI: "<from registrationPrep.agentURI>",
+                  deadline: "<from registrationPrep.deadline>",
+                  signature: "<from second wallet sign step>",
+                },
+              }
+            : {}),
+        },
+      });
+      steps.push({
+        toolName: "daski_submit_task",
+        hint: "Use serviceRef + transactionHash from daski_settle_payment.",
+        args: {
+          providerA2AUrl: result.challenge.providerA2AUrl,
+          skillId: args.skillId,
+          serviceRef: result.challenge.serviceRef,
+          paymentId: "<from daski_settle_payment>",
+          transactionHash: "<from daski_settle_payment>",
+          chainId: deps.config.chainId,
+          serviceArgs,
+        },
+      });
+      steps.push({
+        toolName: "daski_get_task_status",
+        hint: "Poll until completed or failed.",
+        args: {
+          providerA2AUrl: result.challenge.providerA2AUrl,
+          taskId: "<from daski_submit_task>",
+        },
+      });
+
+      // Reputation step. Buyer's confirmation attestation tells the
+      // network whether the delivered work matched intent. Counters
+      // on ReputationStorage update accordingly. Gateway facilitator
+      // pays gas; buyer just signs the EAS Attest typed-data.
+      steps.push({
+        toolName: "daski_prepare_confirm",
+        hint:
+          "After daski_get_task_status reports state='completed' (or " +
+          "'failed'), call this to fetch the EAS Attest typed-data. " +
+          "Use confirmation:'Confirmed' for a positive review, " +
+          "'NotConfirmed' for a negative one.",
+        args: {
+          paymentId: "<from daski_settle_payment>",
+          confirmation: "Confirmed",
+          attester: args.walletAddress.toLowerCase(),
+        },
+      });
+      steps.push({
+        toolName: "<your-wallet>.signTypedData",
+        hint:
+          "Sign daski_prepare_confirm's eip712TypedData with the SAME " +
+          "wallet that paid (the EAS attestation must come from that " +
+          "address). Extract { v, r, s } from the signature.",
+        args: { typedData: "<from daski_prepare_confirm.eip712TypedData>" },
+      });
+      steps.push({
+        toolName: "daski_confirm_delivery",
+        hint:
+          "Submit the v/r/s. Gateway facilitator relays the delegated " +
+          "EAS attestation; buyer pays no gas. Bumps the provider's " +
+          "confirmed/notConfirmed counter on ReputationStorage.",
+        args: {
+          paymentId: "<from daski_settle_payment>",
+          confirmation: "Confirmed",
+          attester: args.walletAddress.toLowerCase(),
+          deadline: "<from daski_prepare_confirm.deadline>",
+          signature: { v: "<v>", r: "<r>", s: "<s>" },
+        },
+      });
+
+      // §1.1 — also surface paymentRequirements via _meta so x402-mcp
+      // clients (and indexers like x402scan) recognize the challenge
+      // without reading Daski-specific fields.
+      const paymentRequiredB64 = Buffer.from(JSON.stringify(r)).toString(
+        "base64",
+      );
+      return json(
+        {
+          kind: "paid",
+          atomic: isAtomic,
+          providerTokenId: provider.agentId.toString(),
+          providerA2AUrl: result.challenge.providerA2AUrl,
+          skillId: args.skillId,
+          serviceArgs,
+          chainId: deps.config.chainId,
+          network: deps.config.network,
+          acceptedToken: {
+            address: deps.config.usdcAddress,
+            name: deps.config.usdcName,
+            version: deps.config.usdcVersion,
+            chainId: deps.config.chainId,
+            network: deps.config.network,
+          },
+          quoteNotes,
+          paymentRequirements: r,
+          registrationPrep,
+          plan: { steps },
+        },
+        {
+          "x402/paymentRequired": paymentRequiredB64,
+          "x402/version": X402_VERSION,
+        },
+      );
+    }
+
     // ── Orchestrator ─────────────────────────────────────────────────
 
     server.registerTool(
@@ -1690,346 +2490,44 @@ export async function createMcpServer(
           });
         }
 
-        // ── §1.1 x402 retry path: verify+settle+submit in one call ─────
-        //
-        // Activated when the agent supplies either an explicit
-        // paymentPayload arg or a base64-encoded one in _meta["x402/payment"]
-        // (the canonical x402-mcp / Civic / Cloudflare paidTool convention).
-        // The gateway runs the same flow as daski_settle_payment + the A2A
-        // submit_task call, returns the resource (artifacts / taskId) and
-        // attaches _meta["x402/paymentResponse"] with the base64 SettlementResponse.
-        const metaPaymentRaw = extra._meta?.["x402/payment"];
-        let inboundPayload: PaymentPayload | undefined =
-          (args.paymentPayload as unknown as PaymentPayload | undefined) ?? undefined;
-        if (!inboundPayload && typeof metaPaymentRaw === "string") {
-          try {
-            inboundPayload = JSON.parse(
-              Buffer.from(metaPaymentRaw, "base64").toString("utf8"),
-            ) as PaymentPayload;
-          } catch {
-            return errorJson({
-              code: "invalid_meta_payment",
-              message: "_meta['x402/payment'] is not valid base64-encoded JSON",
-              recoverable: true,
-              next_action:
-                "Encode the PaymentPayload JSON as base64 and resend, or pass `paymentPayload` directly as a tool argument.",
-            });
-          }
-        }
+        // §1.1 x402 retry path. When paymentPayload arrives (arg or
+        // _meta["x402/payment"]), verify+settle+submit runs in one
+        // round-trip. The helper returns null on the read-only first
+        // leg so we fall through to plan-building.
+        const retry = await runBuyServiceX402Retry(args, extra);
+        if (retry !== null) return retry;
 
-        if (inboundPayload) {
-          const reqs = args.paymentRequirements as
-            | PaymentRequirements
-            | undefined;
-          const serviceRefRaw =
-            reqs?.extra?.daski?.serviceRef ??
-            (inboundPayload as { serviceRef?: string }).serviceRef;
-          if (
-            typeof serviceRefRaw !== "string" ||
-            !HEX_32.test(serviceRefRaw)
-          ) {
-            return errorJson({
-              code: "BAD_INPUT",
-              message:
-                "Cannot locate the stored challenge. Pass `paymentRequirements` " +
-                "alongside `paymentPayload` so the gateway can read serviceRef.",
-              recoverable: true,
-              next_action:
-                "Echo the paymentRequirements you received in the first call and retry.",
-            });
-          }
-          const challenge = await deps.queries.getChallengeByRef(
-            serviceRefRaw.toLowerCase() as Hex,
-          );
-          if (!challenge) {
-            return errorJson({
-              code: "CHALLENGE_NOT_FOUND",
-              message: "no challenge found for the given serviceRef",
-              details: { serviceRef: serviceRefRaw },
-            });
-          }
-          const needsRegistration = challenge.buyerTokenId === 0n;
-          if (needsRegistration && !args.registration) {
-            return errorJson({
-              code: "registration_required",
-              message:
-                "this challenge was issued for an unregistered wallet " +
-                "(buyerTokenId=0). Pass `registration` with a signed " +
-                "RegisterAgent payload — see registrationPrep in the " +
-                "first response.",
-              recoverable: true,
-              next_action:
-                "Sign registrationPrep.eip712TypedData and pass the signature in `registration`.",
-            });
-          }
+        const lookup = resolveBuyServiceProvider(args);
+        if (!lookup.ok) return lookup.error;
+        const provider = lookup.provider;
 
-          const settleResult = needsRegistration
-            ? await verifyAndSettleWithRegistration(
-                { payload: inboundPayload, challenge },
-                {
-                  agentURI: args.registration!.agentURI,
-                  deadline: BigInt(args.registration!.deadline),
-                  signature: args.registration!.signature as Hex,
-                },
-                deps.config,
-                deps.reader,
-                deps.queries,
-                new Date(),
-                { fetchAgentCardFn: deps.buyerAgentCardFetch },
-              )
-            : await verifyAndSettle(
-                { payload: inboundPayload, challenge },
-                deps.config,
-                deps.reader,
-                deps.queries,
-              );
-
-          if (!settleResult.ok) {
-            return errorJson({
-              code: settleResult.errorReason,
-              message: settleResult.message,
-              details: {
-                transaction: settleResult.response.transaction,
-                payer: settleResult.response.payer,
-              },
-            });
-          }
-          const settlement = settleResult.response;
-
-          // Build the standardized x402 paymentResponse — the spec defines
-          // it as base64(SettlementResponse) in `X-PAYMENT-RESPONSE`. For
-          // MCP transport we mirror the same bytes inside _meta.
-          const paymentResponseB64 = Buffer.from(
-            JSON.stringify(settlement),
-          ).toString("base64");
-          const responseMeta: Record<string, unknown> = {
-            "x402/paymentResponse": paymentResponseB64,
-          };
-
-          // Submit the task to the provider over A2A so the resource is
-          // produced. We reuse the same envelope shape as daski_submit_task.
-          const a2aMeta: Record<string, unknown> = {
-            skillId: challenge.skillId,
-            paymentId: settlement.daski?.paymentId,
-            chainId: deps.config.chainId,
-            serviceRef: serviceRefRaw,
-            transactionHash: settlement.transaction,
-          };
-          const a2aParts: Array<Record<string, unknown>> = [
-            { kind: "text", text: `Execute skill ${challenge.skillId}` },
-          ];
-          const submitArgs = normalizeContactFields(args.serviceArgs ?? {});
-          if (Object.keys(submitArgs).length > 0) {
-            a2aParts.push({ kind: "data", data: submitArgs });
-          }
-          const messageId = randomUUID();
-          const contextId = randomUUID();
-          const a2aBody = {
-            jsonrpc: "2.0",
-            id: randomUUID(),
-            method: "SendMessage",
-            params: {
-              message: {
-                role: "ROLE_USER",
-                parts: a2aParts,
-                messageId,
-                contextId,
-                metadata: { [DASKI_A2A_EXTENSION_URI]: a2aMeta },
-              },
-            },
-          };
-          const submitGuard = await guardProviderUrl(challenge.providerA2AUrl);
-          if (submitGuard) return submitGuard;
-          const submitController = new AbortController();
-          const submitTimer = setTimeout(
-            () => submitController.abort(),
-            a2aTimeoutMs,
-          );
-          let submitRes: Response;
-          try {
-            submitRes = await a2aFetch(challenge.providerA2AUrl, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify(a2aBody),
-              signal: submitController.signal,
-              redirect: "manual",
-            });
-          } catch (err) {
-            return errorJson(
-              {
-                code: "submit_failed_after_settle",
-                message:
-                  `Settled on-chain but A2A submit_task failed: ${(err as Error).message}. ` +
-                  "Use daski_submit_task with the returned paymentId/serviceRef to retry.",
-                details: {
-                  paymentId: settlement.daski?.paymentId,
-                  serviceRef: serviceRefRaw,
-                  transactionHash: settlement.transaction,
-                  providerA2AUrl: challenge.providerA2AUrl,
-                },
-                recoverable: true,
-                next_action:
-                  "Call daski_submit_task explicitly with the paymentId/serviceRef from details.",
-              },
-              responseMeta,
-            );
-          } finally {
-            clearTimeout(submitTimer);
-          }
-          type SubmitJsonAfterSettle = {
-            error?: { message?: string };
-            result?: {
-              id?: string;
-              contextId?: string;
-              status?: { state?: string; message?: unknown };
-              artifacts?: unknown[];
-            };
-          };
-          let submitJson: SubmitJsonAfterSettle;
-          try {
-            submitJson = await readBoundedJson<SubmitJsonAfterSettle>(
-              submitRes,
-              A2A_RESPONSE_MAX_BYTES,
-            );
-          } catch {
-            // Non-JSON / oversized body. Treat as upstream submit failure
-            // — the on-chain settle already happened, so surface enough
-            // context that the caller can retry with daski_submit_task.
-            submitJson = {};
-          }
-          if (!submitRes.ok || submitJson.error) {
-            return errorJson(
-              {
-                code: "submit_failed_after_settle",
-                message:
-                  submitJson.error?.message ??
-                  `provider returned HTTP ${submitRes.status} after settle`,
-                details: {
-                  paymentId: settlement.daski?.paymentId,
-                  serviceRef: serviceRefRaw,
-                  transactionHash: settlement.transaction,
-                  providerA2AUrl: challenge.providerA2AUrl,
-                },
-                recoverable: true,
-                next_action:
-                  "Call daski_submit_task explicitly to dispatch the task.",
-              },
-              responseMeta,
-            );
-          }
-          const taskResult = submitJson.result;
-          return json(
-            {
-              success: true,
-              kind: "paid-resource",
-              transaction: settlement.transaction,
-              network: settlement.network,
-              payer: settlement.payer,
-              paymentId: settlement.daski?.paymentId ?? null,
-              serviceRef: settlement.daski?.serviceRef ?? serviceRefRaw,
-              providerTokenId: settlement.daski?.providerTokenId ?? null,
-              buyerTokenId: settlement.daski?.buyerTokenId ?? null,
-              amount: settlement.daski?.amount ?? null,
-              providerA2AUrl: settlement.daski?.providerA2AUrl ?? null,
-              skillId: challenge.skillId,
-              registered: settlement.daski?.registered ?? false,
-              taskId: taskResult?.id ?? null,
-              contextId: taskResult?.contextId ?? contextId,
-              state: normalizeState(taskResult?.status?.state) ?? "submitted",
-              artifacts: taskResult?.artifacts ?? [],
-              statusMessage: taskResult?.status?.message ?? null,
-            },
-            responseMeta,
-          );
-        }
-        // ── End of retry path ──────────────────────────────────────────
-
-        const matches = findProvidersOfferingSkill(deps.cache, args.skillId);
-        let provider: ProviderMatch;
-        if (args.providerTokenId) {
-          let id: bigint;
-          try {
-            id = BigInt(args.providerTokenId);
-          } catch {
-            return errorJson({
-              code: "BAD_INPUT",
-              message: "providerTokenId must be numeric",
-            });
-          }
-          const found = matches.find((m) => m.agentId === id);
-          if (!found) {
-            return errorJson({
-              code: "skill_not_offered_by_provider",
-              message: `provider ${args.providerTokenId} does not offer skill '${args.skillId}'`,
-            });
-          }
-          provider = found;
-        } else {
-          if (matches.length === 0) {
-            return errorJson({
-              code: "skill_not_found",
-              message: `no whitelisted provider offers skill '${args.skillId}'`,
-            });
-          }
-          if (matches.length > 1) {
-            return errorJson({
-              code: "ambiguous_provider",
-              message: `multiple providers offer skill '${args.skillId}'`,
-              details: { providerTokenIds: matches.map((m) => m.agentId.toString()) },
-            });
-          }
-          provider = matches[0]!;
-        }
-
-        // §3.2 — accept both flat and nested registrant/admin/tech/billing
-        // shapes. Real registrar APIs split between OpenSRS / Name.com (nested
-        // contact_set objects) and Namecheap (flat RegistrantFirstName-style
-        // fields). Daski normalizes by hoisting nested role objects to the
-        // top level before validating against requiredFields, so the agent
-        // can pass either shape and the provider sees a superset.
-        const serviceArgs = normalizeContactFields(args.serviceArgs ?? {});
+        // §3.2 — accept both flat and nested registrant/admin/tech/
+        // billing shapes (OpenSRS/Name.com vs Namecheap). Helper hoists
+        // nested role objects to the top level before checking
+        // requiredFields.
         const requiredFields = Array.isArray(provider.skillMeta.requiredFields)
           ? (provider.skillMeta.requiredFields as string[])
           : [];
-        // requiredFields may contain dot-paths ("registrant.firstName") or
-        // bare names ("firstName"). isFieldPresent handles both styles.
-        const missing = requiredFields.filter((f) => !isFieldPresent(serviceArgs, f));
-        if (missing.length > 0) {
-          return errorJson({
-            code: "missing_fields",
-            message: `serviceArgs missing required field(s): ${missing.join(", ")}`,
-            details: {
-              missingFields: missing,
-              requiredFields,
-              acceptedShapes: [
-                "flat: { firstName, lastName, ... }",
-                "nested: { registrant: { firstName, lastName, ... } }",
-              ],
-            },
-            recoverable: true,
-            next_action:
-              "Add the missing fields to serviceArgs (either flat or nested under `registrant`/`admin`/`tech`/`billing`) and retry.",
-          });
-        }
+        const validated = validateAndNormalizeServiceArgs(
+          args.serviceArgs,
+          requiredFields,
+        );
+        if (!validated.ok) return validated.error;
+        const serviceArgs = validated.args;
 
         // Resolve buyerAgentId. A non-zero caller-supplied value wins;
         // missing OR an explicit "0" both fall through to the on-chain
         // lookup. Treating "0" as a valid override would route an
         // already-registered wallet down atomic register-and-settle and
         // burn the buyer's USDC re-minting an agentId they already have
-        // (or, more often now, surface as a bare "execution reverted"
-        // when registerBySig sees a stale nonce). On-chain agentOfWallet
-        // is the single source of truth; let it speak.
+        // (or surface as a bare "execution reverted" when registerBySig
+        // sees a stale nonce). agentOfWallet is the single source of
+        // truth — let it speak.
         let parsedBuyerTokenId: bigint | null = null;
         if (args.buyerTokenId) {
-          try {
-            parsedBuyerTokenId = BigInt(args.buyerTokenId);
-          } catch {
-            return errorJson({
-              code: "BAD_INPUT",
-              message: "buyerTokenId must be numeric",
-            });
-          }
+          const p = parseBigIntArg(args.buyerTokenId, "buyerTokenId");
+          if (!p.ok) return p.error;
+          parsedBuyerTokenId = p.value;
         }
         let buyerAgentId: bigint;
         if (parsedBuyerTokenId !== null && parsedBuyerTokenId !== 0n) {
@@ -2062,578 +2560,19 @@ export async function createMcpServer(
           });
         }
 
-        // Free path. Two flavours:
-        //   - "open": no asset, no capability — anyone can call (e.g.
-        //     check-availability). Skip registration check, skip
-        //     paymentId requirement.
-        //   - "ownership-gated": operates on an asset the buyer already
-        //     owns (e.g. set-dns-record on a registered domain). Needs
-        //     a paymentId of the asset's purchase + (sometimes) a signed
-        //     capability.
-        const paymentRequired = provider.skillMeta.paymentRequired !== false;
-        if (!paymentRequired) {
-          const requiresAssetOwnership =
-            provider.skillMeta.requiresAssetOwnership === true;
-          const requiresCapability =
-            provider.skillMeta.requiresCapability === true;
-          const isOpenFree = !requiresAssetOwnership && !requiresCapability;
+        const ctx: BuyServiceCtx = {
+          args,
+          provider,
+          providerA2AUrl,
+          serviceArgs,
+          buyerAgentId,
+        };
 
-          // Synchronous one-shot lookups (currently only check-availability)
-          // don't fit the task lifecycle. Inline the registrar call here
-          // and return the answer directly. Single round-trip, no plan
-          // steps — agent gets {available, price?, currency?} back.
-          if (isOpenFree && args.skillId === "check-availability") {
-            const availabilityUrl = providerA2AUrl.replace(
-              /\/a2a(?=\/|$)/,
-              "/availability",
-            );
-            const domain = serviceArgs.domain;
-            if (typeof domain !== "string" || domain.length === 0) {
-              return errorJson({
-                code: "missing_fields",
-                message: "serviceArgs.domain is required for check-availability",
-                details: { missingFields: ["domain"] },
-              });
-            }
-            const orchAvailGuard = await guardProviderUrl(availabilityUrl);
-            if (orchAvailGuard) return orchAvailGuard;
-            const orchAvailController = new AbortController();
-            const orchAvailTimer = setTimeout(
-              () => orchAvailController.abort(),
-              a2aTimeoutMs,
-            );
-            let availRes: Response;
-            try {
-              availRes = await a2aFetch(availabilityUrl, {
-                method: "POST",
-                headers: { "content-type": "application/json" },
-                body: JSON.stringify({ domain }),
-                signal: orchAvailController.signal,
-                redirect: "manual",
-              });
-            } catch (err) {
-              const e = err as { name?: string };
-              return errorJson({
-                code:
-                  e.name === "AbortError"
-                    ? "provider_timeout"
-                    : "provider_unreachable",
-                message: `availability at ${availabilityUrl} failed: ${(err as Error).message}`,
-              });
-            } finally {
-              clearTimeout(orchAvailTimer);
-            }
-            let availBody: Record<string, unknown>;
-            try {
-              availBody = await readBoundedJson<Record<string, unknown>>(
-                availRes,
-                A2A_RESPONSE_MAX_BYTES,
-              );
-            } catch (err) {
-              if (err instanceof UrlSafetyError) {
-                return errorJson({
-                  code: "PROVIDER_RESPONSE_TOO_LARGE",
-                  message: err.message,
-                });
-              }
-              return errorJson({
-                code: "provider_error",
-                message: `availability returned non-JSON (status ${availRes.status})`,
-              });
-            }
-            if (!availRes.ok) {
-              return errorJson({
-                code:
-                  (availBody.error as { code?: string } | undefined)?.code ??
-                  "provider_error",
-                message:
-                  (availBody.error as { message?: string } | undefined)
-                    ?.message ?? `availability returned HTTP ${availRes.status}`,
-              });
-            }
-            return json({
-              kind: "availability",
-              providerTokenId: provider.agentId.toString(),
-              providerA2AUrl,
-              skillId: args.skillId,
-              chainId: deps.config.chainId,
-              network: deps.config.network,
-              domain: availBody.domain,
-              available: availBody.available,
-              ...(availBody.price !== undefined
-                ? { price: availBody.price }
-                : {}),
-              ...(availBody.currency ? { currency: availBody.currency } : {}),
-              // Empty plan signals "no further steps; the answer is in
-              // the top-level fields above". Agents that walk plans get
-              // a clear no-op; agents that read kind:'availability'
-              // directly use domain/available/price.
-              plan: { steps: [] },
-            });
-          }
-
-          // Ownership-gated free skills need both an existing agentId
-          // (the asset is bound to it) and the paymentId for the asset.
-          // Open free skills are public reads — neither check applies.
-          if (!isOpenFree) {
-            if (buyerAgentId === 0n) {
-              return errorJson({
-                code: "buyer_not_registered",
-                message:
-                  "wallet has no ERC-8004 agentId yet. Ownership-gated " +
-                  "free skills can't bootstrap registration — call " +
-                  "daski_prepare_registration + daski_register_buyer " +
-                  "first, then retry.",
-              });
-            }
-            if (!args.paymentId) {
-              return errorJson({
-                code: "payment_id_required",
-                message:
-                  `Skill '${args.skillId}' acts on an asset you already ` +
-                  "purchased. Pass the paymentId of the original asset " +
-                  "purchase (e.g. register-domain) as `paymentId`.",
-              });
-            }
-          }
-
-          // Plan-emitter is now driven off `capabilityType` from the
-          // agent card metadata — no per-skill hardcoding. Any future
-          // capability-gated skill (transfer-domain-out, future
-          // services) inherits the same flow as soon as the provider
-          // advertises its capabilityType.
-          const capabilityType =
-            typeof provider.skillMeta.capabilityType === "string"
-              ? provider.skillMeta.capabilityType
-              : null;
-          const steps: Array<{ toolName: string; hint: string; args: unknown }> =
-            [];
-          if (requiresCapability && capabilityType) {
-            steps.push({
-              toolName: "daski_submit_task",
-              hint:
-                "Fetch the EIP-712 typed-data for this capability as a free " +
-                "A2A skill on the provider. Sign the returned eip712TypedData " +
-                "with your wallet; extract the signature.",
-              args: {
-                providerA2AUrl,
-                skillId: "prepare-capability",
-                paymentId: args.paymentId,
-                chainId: deps.config.chainId,
-                serviceArgs: {
-                  capabilityType,
-                  paymentId: args.paymentId,
-                  buyerTokenId: args.buyerTokenId,
-                  // Echo the entire serviceArgs so the schema-specific
-                  // builder pulls the fields it commits to (e.g. domain,
-                  // recordType, recordName for set-dns; domain, recordId
-                  // for delete-dns).
-                  ...serviceArgs,
-                },
-              },
-            });
-          }
-          // Envelope auth: required for any non-open-free skill. The
-          // buyer builds the typed-data via daski_build_envelope_auth,
-          // signs it with the agent wallet, and threads the same
-          // messageId + signature into daski_submit_task.
-          if (!isOpenFree) {
-            steps.push({
-              toolName: "daski_build_envelope_auth",
-              hint:
-                "Build the A2ARequestAuthorization typed-data. Sign the " +
-                "returned eip712TypedData with the buyer's agent wallet. " +
-                "Retain the messageId returned here — daski_submit_task " +
-                "rejects if it doesn't match what you signed.",
-              args: {
-                skillId: args.skillId,
-                paymentId: args.paymentId ?? "0",
-                chainId: deps.config.chainId,
-                buyerTokenId: args.buyerTokenId,
-                serviceArgs,
-              },
-            });
-          }
-          steps.push({
-            toolName: "daski_submit_task",
-            hint: isOpenFree
-              ? "Dispatch directly. No paymentId, serviceRef, or " +
-                "transactionHash, and no envelopeAuth. Open-free skills " +
-                "complete synchronously: the result (artifacts + " +
-                "statusMessage) is returned inline in this call's response " +
-                "— DO NOT call daski_get_task_status, the taskId is " +
-                "non-persistent."
-              : "Dispatch the task to the provider. OMIT serviceRef and " +
-                "transactionHash. Pass envelopeAuth + the same messageId " +
-                "from daski_build_envelope_auth." +
-                (requiresCapability
-                  ? " Also pass the signed { signature, authorization } as `capability`."
-                  : ""),
-            args: {
-              providerA2AUrl,
-              skillId: args.skillId,
-              ...(args.paymentId ? { paymentId: args.paymentId } : {}),
-              chainId: deps.config.chainId,
-              serviceArgs,
-              ...(isOpenFree
-                ? {}
-                : {
-                    messageId: "<from daski_build_envelope_auth>",
-                    envelopeAuth: "<signed envelope from previous step>",
-                  }),
-              ...(requiresCapability
-                ? { capability: "<signed capability from previous step>" }
-                : {}),
-            },
-          });
-          // Open-free skills are synchronous — submit_task returns
-          // artifacts inline. Skip the polling step. Ownership-gated
-          // skills create real persisted tasks and need polling.
-          if (!isOpenFree) {
-            steps.push({
-              toolName: "daski_get_task_status",
-              hint: "Poll until status is 'completed' or 'failed'.",
-              args: { providerA2AUrl, taskId: "<from daski_submit_task>" },
-            });
-          }
-          return json({
-            kind: "free",
-            freeKind: isOpenFree ? "open" : "ownership-gated",
-            providerTokenId: provider.agentId.toString(),
-            providerA2AUrl,
-            skillId: args.skillId,
-            paymentId: args.paymentId ?? null,
-            requiresCapability,
-            requiresAssetOwnership,
-            chainId: deps.config.chainId,
-            network: deps.config.network,
-            plan: { steps },
-          });
-        }
-
-        // Paid path. Live-quote the provider first so the buyer pays the
-        // registrar's actual price (not a stale priceList) AND so user-input
-        // errors (bad phone format, unsupported TLD, missing fields) are
-        // caught before any USDC moves.
-        // The A2A URL convention is `<base>/a2a[/<serviceSlug>]`; the /quote
-        // route mirrors the same shape (`<base>/quote[/<serviceSlug>]`), so
-        // we just swap the segment in place. Anchored to `/` or end-of-string
-        // to avoid clobbering URLs that happen to contain "a2a" elsewhere.
-        const quoteUrl = providerA2AUrl.replace(/\/a2a(?=\/|$)/, "/quote");
-        // Track whether the amount we end up forwarding came from the live
-        // provider /quote in *this* request. Caller-supplied `args.amount`
-        // is NOT trusted as a quote — that bypasses the static floor check
-        // and would let a malicious caller mint a $0.000001 challenge for
-        // a $15 service. See `trustQuotedAmount` in payment/requirements.ts.
-        let quoteAmount: string | undefined = args.amount;
-        let quoteNotes: string[] = [];
-        let quoteAmountFromLiveQuote = false;
-        if (!args.amount) {
-          const quoteGuard = await guardProviderUrl(quoteUrl);
-          if (quoteGuard) return quoteGuard;
-          const quoteController = new AbortController();
-          const quoteTimer = setTimeout(
-            () => quoteController.abort(),
-            a2aTimeoutMs,
-          );
-          let quoteRes: Response;
-          try {
-            quoteRes = await a2aFetch(quoteUrl, {
-              method: "POST",
-              headers: { "content-type": "application/json" },
-              body: JSON.stringify({
-                skillId: args.skillId,
-                serviceArgs,
-              }),
-              signal: quoteController.signal,
-              redirect: "manual",
-            });
-          } catch (err) {
-            const e = err as { name?: string };
-            return errorJson({
-              code:
-                e.name === "AbortError"
-                  ? "provider_timeout"
-                  : "provider_unreachable",
-              message: `quote at ${quoteUrl} failed: ${(err as Error).message}`,
-            });
-          } finally {
-            clearTimeout(quoteTimer);
-          }
-          type QuoteJson = {
-            ok?: boolean;
-            amount?: string;
-            currency?: string;
-            notes?: string[];
-            errors?: Array<{ field: string; code: string; message: string }>;
-          };
-          let quoteJson: QuoteJson;
-          try {
-            quoteJson = await readBoundedJson<QuoteJson>(
-              quoteRes,
-              A2A_RESPONSE_MAX_BYTES,
-            );
-          } catch (err) {
-            if (err instanceof UrlSafetyError) {
-              return errorJson({
-                code: "PROVIDER_RESPONSE_TOO_LARGE",
-                message: err.message,
-              });
-            }
-            return errorJson({
-              code: "quote_malformed",
-              message: `provider /quote returned non-JSON (status ${quoteRes.status})`,
-            });
-          }
-          if (!quoteJson.ok) {
-            return errorJson({
-              code: "quote_validation_failed",
-              message:
-                "Provider rejected the requested args. Fix the listed errors and retry.",
-              details: { validationErrors: quoteJson.errors ?? [] },
-              recoverable: true,
-              next_action:
-                "Fix the listed validationErrors in serviceArgs and retry daski_buy_service.",
-            });
-          }
-          if (!quoteJson.amount) {
-            return errorJson({
-              code: "quote_malformed",
-              message: "provider /quote returned ok=true with no amount",
-            });
-          }
-          quoteAmount = quoteJson.amount;
-          quoteNotes = quoteJson.notes ?? [];
-          quoteAmountFromLiveQuote = true;
-        }
-
-        const resource = `${deps.config.publicUrl}/purchase/${provider.agentId.toString()}`;
-        // Only bypass the static priceList floor when the amount actually
-        // came from a live /quote in this request. If the caller passed
-        // `args.amount` directly we run resolveAmount's floor check —
-        // closing the orchestrator-floor-bypass surface (audit P1).
-        // baseAmount in the agent card.
-        const result = await issuePaymentRequirements(
-          {
-            providerTokenId: provider.agentId,
-            buyerTokenId: buyerAgentId,
-            skillId: args.skillId,
-            amount: quoteAmount,
-            resource,
-            walletAddress: args.walletAddress.toLowerCase() as Hex,
-            trustQuotedAmount: quoteAmountFromLiveQuote,
-          },
-          deps.config,
-          deps.cache,
-          deps.queries,
-        );
-        if (!result.ok) {
-          return errorJson({ code: result.code, message: result.message });
-        }
-        const r = result.requirements;
-
-        // For unregistered wallets we ALSO fetch a RegisterAgent prep
-        // block here so the agent can sign both typed-data blocks back
-        // to back, then submit them atomically via daski_settle_payment.
-        const isAtomic = buyerAgentId === 0n;
-        let registrationPrep: unknown = null;
-        if (isAtomic) {
-          try {
-            const nonce = await deps.reader.getRegistrationNonce(
-              args.walletAddress.toLowerCase() as Hex,
-            );
-            const nowSec = BigInt(Math.floor(Date.now() / 1000));
-            const deadline = nowSec + 3600n;
-            // ERC-8004 §2.2 conformance: default to a non-empty `data:` URI
-            // resolving to a minimal buyer card so reputation queries and
-            // Bazaar / agentic.market indexers can fetch agent metadata.
-            const agentURI = defaultBuyerAgentURI(
-              args.walletAddress.toLowerCase() as Hex,
-            );
-            registrationPrep = {
-              walletAddress: args.walletAddress.toLowerCase(),
-              agentURI,
-              nonce: nonce.toString(),
-              deadline: deadline.toString(),
-              eip712TypedData: {
-                domain: {
-                  name: "Daski IdentityRegistry",
-                  version: "1",
-                  chainId: deps.config.chainId,
-                  verifyingContract: deps.config.identityRegistryAddress,
-                },
-                types: {
-                  RegisterAgent: [
-                    { name: "agentURI", type: "string" },
-                    { name: "agentWallet", type: "address" },
-                    { name: "nonce", type: "uint256" },
-                    { name: "deadline", type: "uint256" },
-                  ],
-                },
-                primaryType: "RegisterAgent",
-                message: {
-                  agentURI,
-                  agentWallet: args.walletAddress.toLowerCase(),
-                  nonce: nonce.toString(),
-                  deadline: deadline.toString(),
-                },
-              },
-              submitTemplate: {
-                walletAddress: args.walletAddress.toLowerCase(),
-                agentURI,
-                deadline: deadline.toString(),
-              },
-            };
-          } catch (err) {
-            return errorJson({
-              code: "CHAIN_READ_FAILED",
-              message: `registrationNonce reverted: ${(err as Error).message}`,
-            });
-          }
-        }
-
-        const steps: Array<{ toolName: string; hint: string; args: unknown }> = [];
-        steps.push({
-          toolName: "<your-wallet>.signTypedData",
-          hint:
-            "Pass paymentRequirements.extra.daski.eip712TypedData to " +
-            "your wallet's signTypedData tool. AgentKit, CDP Wallet " +
-            "MCP, MetaMask Snap, viem accounts all support this.",
-          args: { typedData: r.extra.daski.eip712TypedData },
-        });
-        if (isAtomic) {
-          steps.push({
-            toolName: "<your-wallet>.signTypedData",
-            hint:
-              "Also sign registrationPrep.eip712TypedData with the SAME " +
-              "wallet. The result is the `registration.signature` you'll " +
-              "pass to daski_settle_payment alongside the payment payload.",
-            args: { typedData: (registrationPrep as { eip712TypedData: unknown }).eip712TypedData },
-          });
-        }
-        steps.push({
-          toolName: "daski_settle_payment",
-          hint: isAtomic
-            ? "Atomic register-and-settle: pass paymentPayload + " +
-              "paymentRequirements + registration: { agentURI, deadline, " +
-              "signature } where the signature is from the second wallet " +
-              "sign step. Both registration and settlement go on-chain in " +
-              "one tx — if either fails, neither happens."
-            : "Assemble paymentPayload = { x402Version: 1, scheme, " +
-              "network, payload: { signature, authorization: <typedData.message> } } " +
-              "and pass it with the original paymentRequirements.",
-          args: {
-            paymentPayload: "<assembled from signature + typedData.message>",
-            paymentRequirements: r,
-            ...(isAtomic
-              ? {
-                  registration: {
-                    agentURI: "<from registrationPrep.agentURI>",
-                    deadline: "<from registrationPrep.deadline>",
-                    signature: "<from second wallet sign step>",
-                  },
-                }
-              : {}),
-          },
-        });
-        steps.push({
-          toolName: "daski_submit_task",
-          hint: "Use serviceRef + transactionHash from daski_settle_payment.",
-          args: {
-            providerA2AUrl: result.challenge.providerA2AUrl,
-            skillId: args.skillId,
-            serviceRef: result.challenge.serviceRef,
-            paymentId: "<from daski_settle_payment>",
-            transactionHash: "<from daski_settle_payment>",
-            chainId: deps.config.chainId,
-            serviceArgs,
-          },
-        });
-        steps.push({
-          toolName: "daski_get_task_status",
-          hint: "Poll until completed or failed.",
-          args: {
-            providerA2AUrl: result.challenge.providerA2AUrl,
-            taskId: "<from daski_submit_task>",
-          },
-        });
-
-        // Reputation step. Once the task is completed, the buyer's
-        // confirmation attestation tells the network whether the
-        // delivered work matched the buyer's intent. Counters on
-        // ReputationStorage update accordingly. The gateway facilitator
-        // pays gas; buyer just signs the EAS Attest typed-data.
-        steps.push({
-          toolName: "daski_prepare_confirm",
-          hint:
-            "After daski_get_task_status reports state='completed' (or " +
-            "'failed'), call this to fetch the EAS Attest typed-data. " +
-            "Use confirmation:'Confirmed' for a positive review, " +
-            "'NotConfirmed' for a negative one.",
-          args: {
-            paymentId: "<from daski_settle_payment>",
-            confirmation: "Confirmed",
-            attester: args.walletAddress.toLowerCase(),
-          },
-        });
-        steps.push({
-          toolName: "<your-wallet>.signTypedData",
-          hint:
-            "Sign daski_prepare_confirm's eip712TypedData with the SAME " +
-            "wallet that paid (the EAS attestation must come from that " +
-            "address). Extract { v, r, s } from the signature.",
-          args: { typedData: "<from daski_prepare_confirm.eip712TypedData>" },
-        });
-        steps.push({
-          toolName: "daski_confirm_delivery",
-          hint:
-            "Submit the v/r/s. Gateway facilitator relays the delegated " +
-            "EAS attestation; buyer pays no gas. Bumps the provider's " +
-            "confirmed/notConfirmed counter on ReputationStorage.",
-          args: {
-            paymentId: "<from daski_settle_payment>",
-            confirmation: "Confirmed",
-            attester: args.walletAddress.toLowerCase(),
-            deadline: "<from daski_prepare_confirm.deadline>",
-            signature: { v: "<v>", r: "<r>", s: "<s>" },
-          },
-        });
-
-        // §1.1 — also surface paymentRequirements via _meta so x402-mcp /
-        // Civic / Cloudflare paidTool clients (and indexers like x402scan)
-        // recognize the challenge without reading Daski-specific fields.
-        // The structured `paymentRequirements` field at the top of the body
-        // remains canonical for Daski-aware agents.
-        const paymentRequiredB64 = Buffer.from(JSON.stringify(r)).toString(
-          "base64",
-        );
-        return json(
-          {
-            kind: "paid",
-            atomic: isAtomic,
-            providerTokenId: provider.agentId.toString(),
-            providerA2AUrl: result.challenge.providerA2AUrl,
-            skillId: args.skillId,
-            serviceArgs,
-            chainId: deps.config.chainId,
-            network: deps.config.network,
-            acceptedToken: {
-              address: deps.config.usdcAddress,
-              name: deps.config.usdcName,
-              version: deps.config.usdcVersion,
-              chainId: deps.config.chainId,
-              network: deps.config.network,
-            },
-            quoteNotes,
-            paymentRequirements: r,
-            registrationPrep,
-            plan: { steps },
-          },
-          {
-            "x402/paymentRequired": paymentRequiredB64,
-            "x402/version": X402_VERSION,
-          },
-        );
+        const paymentRequired =
+          provider.skillMeta.paymentRequired !== false;
+        return paymentRequired
+          ? runBuyServicePaidPath(ctx)
+          : runBuyServiceFreePath(ctx);
       },
     );
   }

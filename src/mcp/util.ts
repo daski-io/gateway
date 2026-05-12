@@ -45,7 +45,7 @@ export function defaultBuyerName(walletAddress: Hex): string {
 // chars, and reject anything containing C0/C1 control chars. Unicode
 // letters, digits, spaces, common punctuation are all fine. Rationale: see
 // the buyer-naming spec — uniqueness is a stage-3 ENS concern, not ours.
-export const BUYER_NAME_MAX_LENGTH = 64;
+const BUYER_NAME_MAX_LENGTH = 64;
 
 export interface SanitizedBuyerName {
   ok: true;
@@ -183,4 +183,77 @@ export function mcpError(
   };
   if (meta) result._meta = meta;
   return result;
+}
+
+// ── Tagged-union helpers ───────────────────────────────────────────────────
+//
+// Both return either the parsed value or a fully-formed MCP error envelope
+// the caller can `return` directly. The discriminator lives in `ok` so call
+// sites stay readable:
+//
+//   const r = parseBigIntArg(args.id, "providerTokenId");
+//   if (!r.ok) return r.error;
+//   const id = r.value;
+
+export type ParseBigIntResult =
+  | { ok: true; value: bigint }
+  | { ok: false; error: McpToolResult };
+
+/** Parses a decimal numeric string into a bigint. The caller has already
+ *  validated presence (zod gates this in the tool schema); this only maps
+ *  the parse-error branch to a standardized MCP envelope. */
+export function parseBigIntArg(
+  raw: string,
+  fieldName: string,
+): ParseBigIntResult {
+  try {
+    return { ok: true, value: BigInt(raw) };
+  } catch {
+    return {
+      ok: false,
+      error: mcpError({
+        code: "BAD_INPUT",
+        message: `${fieldName} must be numeric`,
+      }),
+    };
+  }
+}
+
+export type ValidateServiceArgsResult =
+  | { ok: true; args: Record<string, unknown> }
+  | { ok: false; error: McpToolResult };
+
+/** Normalizes the caller's serviceArgs (hoists nested registrant/admin/
+ *  tech/billing subobjects to the top level) and checks that every entry
+ *  in `requiredFields` is present. Returns the standardized
+ *  `missing_fields` envelope on failure — including a hint about the two
+ *  accepted shapes — so call sites stop hand-rolling the same error
+ *  payload. */
+export function validateAndNormalizeServiceArgs(
+  rawArgs: Record<string, unknown> | undefined,
+  requiredFields: readonly string[],
+): ValidateServiceArgsResult {
+  const args = normalizeContactFields(rawArgs ?? {});
+  const missing = requiredFields.filter((f) => !isFieldPresent(args, f));
+  if (missing.length === 0) {
+    return { ok: true, args };
+  }
+  return {
+    ok: false,
+    error: mcpError({
+      code: "missing_fields",
+      message: `serviceArgs missing required field(s): ${missing.join(", ")}`,
+      details: {
+        missingFields: missing,
+        requiredFields: [...requiredFields],
+        acceptedShapes: [
+          "flat: { firstName, lastName, ... }",
+          "nested: { registrant: { firstName, lastName, ... } }",
+        ],
+      },
+      recoverable: true,
+      next_action:
+        "Add the missing fields to serviceArgs (either flat or nested under `registrant`/`admin`/`tech`/`billing`) and retry.",
+    }),
+  };
 }
