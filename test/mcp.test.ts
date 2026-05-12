@@ -67,6 +67,7 @@ describe("hosted MCP — wallet-agnostic surface", () => {
       const names = tools.tools.map((t) => t.name).sort();
       expect(names).toEqual(
         [
+          "daski_build_envelope_auth",
           "daski_buy_service",
           "daski_confirm_delivery",
           "daski_get_provider",

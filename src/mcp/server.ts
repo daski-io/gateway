@@ -6,6 +6,7 @@ import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import type { Express } from "express";
 import type { Config } from "../config.js";
 import { DASKI_A2A_EXTENSION_URI, X402_VERSION } from "../config.js";
+import { buildEnvelopeAuth } from "../auth/envelope.js";
 import type { ChainReader } from "../chain/reader.js";
 import type { DiscoveryCache } from "../discovery/cache.js";
 import type { Queries } from "../db/queries.js";
@@ -821,12 +822,19 @@ export async function createMcpServer(
         description:
           "Dispatch the actual service task to the provider over A2A after " +
           "payment has settled (paid) or capability has been signed (free " +
-          "ownership-gated). For paid skills include serviceRef and " +
-          "transactionHash from daski_settle_payment. For free skills, " +
-          "include the `capability` returned by the provider's " +
-          "`prepare-dns-capability` free A2A skill (reach it via this same " +
-          "tool with skillId='prepare-dns-capability', sign the returned " +
-          "typed-data, then reuse the original asset's paymentId). " +
+          "capability-gated). For paid skills include serviceRef and " +
+          "transactionHash from daski_settle_payment. For capability-gated " +
+          "free skills, include the `capability` returned by the provider's " +
+          "`prepare-capability` skill (reach it via this same tool with " +
+          "skillId='prepare-capability' and capabilityType set, sign the " +
+          "returned typed-data, then reuse the original asset's paymentId). " +
+          "Paid and ownership-/capability-gated skills also require " +
+          "`envelopeAuth` — an EIP-712 A2ARequestAuthorization signed by " +
+          "the buyer's agent wallet that binds (skillId, paymentId, " +
+          "messageId, requestHash, …). Build it with daski_build_envelope_auth, " +
+          "sign the typed-data, then pass { signature, authorization } and " +
+          "the matching `messageId`. Open free skills (check-availability, " +
+          "get-pricing, prepare-capability) skip envelopeAuth. " +
           "Returns { taskId, contextId, state, ... } — thread contextId back " +
           "into daski_get_task_status (poll or stream) / daski_confirm_delivery " +
           "to keep the multi-turn A2A conversation linked.",
@@ -846,6 +854,37 @@ export async function createMcpServer(
             })
             .passthrough()
             .optional(),
+          messageId: z
+            .string()
+            .optional()
+            .describe(
+              "A2A messageId. REQUIRED whenever envelopeAuth is set — the " +
+                "envelope signature binds to this exact value, and the " +
+                "provider rejects mismatches. Auto-generated only when no " +
+                "envelopeAuth is provided.",
+            ),
+          envelopeAuth: z
+            .object({
+              signature: z.string(),
+              authorization: z
+                .object({
+                  buyerTokenId: z.string(),
+                  skillId: z.string(),
+                  paymentId: z.string(),
+                  chainId: z.number(),
+                  messageId: z.string(),
+                  requestHash: z.string(),
+                  issuedAt: z.string(),
+                })
+                .passthrough(),
+            })
+            .passthrough()
+            .optional()
+            .describe(
+              "Signed A2ARequestAuthorization. Build the typed-data with " +
+                "daski_build_envelope_auth, sign with the buyer's agent " +
+                "wallet, then pass { signature, authorization } here.",
+            ),
           contextId: z
             .string()
             .optional()
@@ -885,8 +924,33 @@ export async function createMcpServer(
         if (args.serviceRef) meta.serviceRef = args.serviceRef;
         if (args.transactionHash) meta.transactionHash = args.transactionHash;
         if (args.capability) meta.capability = args.capability;
+        if (args.envelopeAuth) meta.envelopeAuth = args.envelopeAuth;
 
-        const messageId = randomUUID();
+        // When the buyer signs envelopeAuth they commit to a specific
+        // messageId. We must thread that same value here — auto-generating
+        // would invalidate the signature.
+        if (args.envelopeAuth && !args.messageId) {
+          return errorJson({
+            code: "MESSAGE_ID_REQUIRED",
+            message:
+              "messageId must be supplied alongside envelopeAuth so the " +
+              "A2A envelope matches what the buyer signed. Pass the same " +
+              "messageId returned by daski_build_envelope_auth.",
+          });
+        }
+        if (
+          args.envelopeAuth &&
+          args.messageId &&
+          args.envelopeAuth.authorization.messageId !== args.messageId
+        ) {
+          return errorJson({
+            code: "MESSAGE_ID_MISMATCH",
+            message:
+              `envelopeAuth.authorization.messageId=${args.envelopeAuth.authorization.messageId} ` +
+              `but submit_task messageId=${args.messageId}. They must match.`,
+          });
+        }
+        const messageId = args.messageId ?? randomUUID();
         const contextId = args.contextId ?? randomUUID();
 
         // A2A v1.0 §5.3 mandates PascalCase method names. Pre-1.0
@@ -1010,6 +1074,83 @@ export async function createMcpServer(
           flattened.statusMessage = result.status.message;
         }
         return json(flattened);
+      },
+    );
+
+    // ── A2A envelope auth: build the typed-data for the buyer to sign ─
+    //
+    // Every paid / ownership-gated / capability-gated A2A call must carry
+    // a signed A2ARequestAuthorization in metadata.envelopeAuth. The
+    // buyer's agent wallet signs an EIP-712 typed-data committing to
+    // (buyerTokenId, skillId, paymentId, chainId, messageId, requestHash,
+    // issuedAt). This tool is the pure-compute helper that produces the
+    // typed-data: pass the about-to-be-sent request, sign the returned
+    // eip712TypedData with the wallet, then thread { signature, authorization }
+    // + the same messageId into daski_submit_task.
+    server.registerTool(
+      "daski_build_envelope_auth",
+      {
+        description:
+          "Build the EIP-712 typed-data the buyer's agent wallet signs to " +
+          "produce envelopeAuth for daski_submit_task. Pure compute; no " +
+          "chain calls, no DB writes. Generates a fresh messageId and " +
+          "issuedAt, hashes the canonical-JSON serviceArgs into requestHash, " +
+          "and wraps everything in the Daski auth domain. Sign the returned " +
+          "eip712TypedData with the buyer wallet, then call daski_submit_task " +
+          "with messageId from this result and envelopeAuth = " +
+          "{ signature, authorization: <returned authorization> }. " +
+          "Required for paid, ownership-gated, and capability-gated skills.",
+        inputSchema: {
+          skillId: z.string(),
+          paymentId: z
+            .string()
+            .describe("Decimal string. Pass \"0\" if the skill isn't bound to a payment."),
+          chainId: z.number(),
+          buyerTokenId: z.string().describe("Decimal string. The signer's ERC-8004 agentId."),
+          serviceArgs: z
+            .record(z.string(), z.unknown())
+            .optional()
+            .describe(
+              "The exact serviceArgs you'll submit to daski_submit_task. " +
+                "Mutating any field after signing invalidates the envelope.",
+            ),
+          messageId: z
+            .string()
+            .optional()
+            .describe("Optional override. Auto-generated if omitted."),
+          issuedAt: z
+            .number()
+            .optional()
+            .describe("Optional override (seconds since epoch). Defaults to now."),
+        },
+        annotations: {
+          title: "Build envelope-auth typed-data",
+          readOnlyHint: true,
+          openWorldHint: false,
+        },
+      },
+      async (args) => {
+        const envelope = buildEnvelopeAuth({
+          skillId: args.skillId,
+          paymentId: args.paymentId,
+          chainId: args.chainId,
+          buyerTokenId: args.buyerTokenId,
+          identityRegistryAddress: deps.config.identityRegistryAddress,
+          serviceArgs: args.serviceArgs ?? {},
+          messageId: args.messageId,
+          issuedAt: args.issuedAt,
+        });
+        return json({
+          messageId: envelope.messageId,
+          requestHash: envelope.requestHash,
+          issuedAt: envelope.issuedAt,
+          authorization: envelope.authorization,
+          eip712TypedData: envelope.eip712TypedData,
+          hint:
+            "Sign eip712TypedData with the buyer's agent wallet. Pass the " +
+            "signature + authorization back via daski_submit_task's " +
+            "envelopeAuth arg, and use the SAME messageId here.",
+        });
       },
     );
 
@@ -2056,28 +2197,60 @@ export async function createMcpServer(
             }
           }
 
+          // Plan-emitter is now driven off `capabilityType` from the
+          // agent card metadata — no per-skill hardcoding. Any future
+          // capability-gated skill (transfer-domain-out, future
+          // services) inherits the same flow as soon as the provider
+          // advertises its capabilityType.
+          const capabilityType =
+            typeof provider.skillMeta.capabilityType === "string"
+              ? provider.skillMeta.capabilityType
+              : null;
           const steps: Array<{ toolName: string; hint: string; args: unknown }> =
             [];
-          if (requiresCapability && args.skillId === "set-dns-record") {
+          if (requiresCapability && capabilityType) {
             steps.push({
               toolName: "daski_submit_task",
               hint:
-                "Fetch the EIP-712 typed-data for this DNS change as a free " +
-                "A2A skill on the provider. Sign the returned " +
-                "eip712TypedData with your wallet; extract the signature.",
+                "Fetch the EIP-712 typed-data for this capability as a free " +
+                "A2A skill on the provider. Sign the returned eip712TypedData " +
+                "with your wallet; extract the signature.",
               args: {
                 providerA2AUrl,
-                skillId: "prepare-dns-capability",
+                skillId: "prepare-capability",
                 paymentId: args.paymentId,
                 chainId: deps.config.chainId,
                 serviceArgs: {
+                  capabilityType,
                   paymentId: args.paymentId,
                   buyerTokenId: args.buyerTokenId,
-                  domain: serviceArgs.domain,
-                  recordType: serviceArgs.recordType,
-                  recordName: serviceArgs.recordName,
-                  recordContent: serviceArgs.recordContent,
+                  // Echo the entire serviceArgs so the schema-specific
+                  // builder pulls the fields it commits to (e.g. domain,
+                  // recordType, recordName for set-dns; domain, recordId
+                  // for delete-dns).
+                  ...serviceArgs,
                 },
+              },
+            });
+          }
+          // Envelope auth: required for any non-open-free skill. The
+          // buyer builds the typed-data via daski_build_envelope_auth,
+          // signs it with the agent wallet, and threads the same
+          // messageId + signature into daski_submit_task.
+          if (!isOpenFree) {
+            steps.push({
+              toolName: "daski_build_envelope_auth",
+              hint:
+                "Build the A2ARequestAuthorization typed-data. Sign the " +
+                "returned eip712TypedData with the buyer's agent wallet. " +
+                "Retain the messageId returned here — daski_submit_task " +
+                "rejects if it doesn't match what you signed.",
+              args: {
+                skillId: args.skillId,
+                paymentId: args.paymentId ?? "0",
+                chainId: deps.config.chainId,
+                buyerTokenId: args.buyerTokenId,
+                serviceArgs,
               },
             });
           }
@@ -2085,14 +2258,16 @@ export async function createMcpServer(
             toolName: "daski_submit_task",
             hint: isOpenFree
               ? "Dispatch directly. No paymentId, serviceRef, or " +
-                "transactionHash. Open-free skills complete synchronously: " +
-                "the result (artifacts + statusMessage) is returned " +
-                "inline in this call's response — DO NOT call daski_get_task_status, " +
-                "the taskId is non-persistent."
+                "transactionHash, and no envelopeAuth. Open-free skills " +
+                "complete synchronously: the result (artifacts + " +
+                "statusMessage) is returned inline in this call's response " +
+                "— DO NOT call daski_get_task_status, the taskId is " +
+                "non-persistent."
               : "Dispatch the task to the provider. OMIT serviceRef and " +
-                "transactionHash. " +
+                "transactionHash. Pass envelopeAuth + the same messageId " +
+                "from daski_build_envelope_auth." +
                 (requiresCapability
-                  ? "Pass the signed { signature, authorization } as `capability`."
+                  ? " Also pass the signed { signature, authorization } as `capability`."
                   : ""),
             args: {
               providerA2AUrl,
@@ -2100,6 +2275,12 @@ export async function createMcpServer(
               ...(args.paymentId ? { paymentId: args.paymentId } : {}),
               chainId: deps.config.chainId,
               serviceArgs,
+              ...(isOpenFree
+                ? {}
+                : {
+                    messageId: "<from daski_build_envelope_auth>",
+                    envelopeAuth: "<signed envelope from previous step>",
+                  }),
               ...(requiresCapability
                 ? { capability: "<signed capability from previous step>" }
                 : {}),

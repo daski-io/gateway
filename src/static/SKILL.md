@@ -49,10 +49,15 @@ schemas by hand.
   Pass that block straight to the wallet's `signTypedData`.
 - `daski_prepare_confirm` → returns the EAS Attest typed-data for buyer
   confirmations, with the on-chain attester nonce already filled in.
-- DNS-record capability typed-data is produced by the provider as a
-  free A2A skill (`prepare-dns-capability`) — reach it via
-  `daski_submit_task` with that skillId. See "Workflow — free
-  ownership-gated skills" below.
+- `daski_build_envelope_auth` → produces the EIP-712 A2ARequestAuthorization
+  typed-data your wallet signs to authenticate each A2A submit_task call.
+  Required for every paid skill and every ownership-/capability-gated
+  free skill. The provider rejects unsigned ones.
+- Capability typed-data (for capability-gated skills like set-dns-record /
+  delete-dns-record / transfer-domain-out) is produced by the provider as
+  the free skill `prepare-capability` — reach it via `daski_submit_task`
+  with `skillId: "prepare-capability"` and `capabilityType` set. See
+  "Workflow — free ownership-gated skills" below.
 
 After signing, the agent assembles the result into the corresponding
 `daski_settle_payment` / `daski_confirm_delivery` / `daski_submit_task`
@@ -145,16 +150,22 @@ the gateway-mediated flow.
    ```
    Omit `registration` when `atomic` was false. Returns `paymentId`,
    `transaction`, `providerA2AUrl`, and (when applicable) `registered: true`.
-7. Call `daski_submit_task` with `providerA2AUrl`, `skillId`, `paymentId`,
-   `serviceRef`, `transactionHash`, `chainId`, and `serviceArgs`. It
-   returns a `taskId`.
-8. Poll `daski_get_task_status` every 2–5 seconds with `providerA2AUrl`
+7. Build the envelope auth: call `daski_build_envelope_auth` with
+   `skillId`, `paymentId`, `chainId`, `buyerTokenId`, and the same
+   `serviceArgs` you'll submit. It returns `messageId`, `requestHash`,
+   `issuedAt`, `authorization`, and `eip712TypedData`. Sign the
+   `eip712TypedData` with the wallet to produce the envelope signature.
+8. Call `daski_submit_task` with `providerA2AUrl`, `skillId`, `paymentId`,
+   `serviceRef`, `transactionHash`, `chainId`, `serviceArgs`, the
+   `messageId` from step 7, and `envelopeAuth: { signature: <from
+   wallet>, authorization: <from step 7> }`. It returns a `taskId`.
+9. Poll `daski_get_task_status` every 2–5 seconds with `providerA2AUrl`
    and `taskId` until `status` is `"completed"` or `"failed"`. For
    long-running tasks (domain registration regularly takes 30–120s),
    pass `stream: true` to subscribe via SSE and receive incremental
    progress notifications instead of polling. Surface artifacts (e.g.,
    the registered domain certificate) and messages to the user.
-9. After the task completes, call `daski_prepare_confirm` → wallet
+10. After the task completes, call `daski_prepare_confirm` → wallet
    `signTypedData` → `daski_confirm_delivery` to record a buyer-
    confirmation EAS attestation. Use `confirmation: "Confirmed"` when
    the delivered artifact matched what the user wanted, `"NotConfirmed"`
@@ -194,37 +205,51 @@ display name from its `name` field. The two parameters are mutually
 exclusive: pass one or the other, not both. Most buyers should ignore
 this and use `name`.
 
-## Workflow — free ownership-gated skills (e.g. set-dns-record)
+## Workflow — free ownership-gated skills (e.g. set-dns-record, delete-dns-record)
 
 These skills act on an asset the user already paid for (e.g., a domain
 they registered earlier). No new USDC payment; the previous purchase's
-`paymentId` plus a signed capability authorize the action.
+`paymentId` plus an envelope-auth signature (and a capability for
+destructive writes) authorize the action.
 
 1. Identify the original purchase's `paymentId` (e.g., the
    `register-domain` payment that bought the domain). Ask the user or
    look it up.
-2. Call `daski_buy_service` with `skillId: "set-dns-record"`,
-   `buyerTokenId`, `walletAddress`, `paymentId`, and `serviceArgs`
-   (`domain`, `recordType`, `recordName`, `recordContent`). It returns
-   `kind: "free"` + a plan.
-3. If the plan calls for a capability prep, call `daski_submit_task` with
-   `skillId: "prepare-dns-capability"`, the provider's `providerA2AUrl`,
-   the `paymentId`, and `serviceArgs` containing `paymentId`,
-   `buyerTokenId`, `domain`, `recordType`, `recordName`,
-   `recordContent`. The provider's free A2A skill returns
+2. Call `daski_buy_service` with the target `skillId`, `buyerTokenId`,
+   `walletAddress`, `paymentId`, and `serviceArgs` matching the skill's
+   `requiredFields`. It returns `kind: "free"` + a plan. The plan tells
+   you exactly which steps to run; the items below describe the shape.
+3. **(Capability-gated only — set-dns-record, delete-dns-record, transfer-domain-out)**
+   Call `daski_submit_task` with `skillId: "prepare-capability"`,
+   `providerA2AUrl`, `paymentId`, and `serviceArgs` containing
+   `capabilityType` (from the agent card's
+   `skills[<id>].capabilityType`), `paymentId`, `buyerTokenId`, plus
+   the schema-specific fields (e.g. `domain` + `recordType/name/content`
+   for set, or `domain` + `recordId` for delete). The provider returns
    `eip712TypedData` and a `capabilityTemplate` inline in the artifacts.
-4. Sign the typed-data with the wallet. Build the `capability` object:
+   Sign the typed-data with the wallet. Build the `capability` object:
    ```json
    {
      "signature": "<from wallet>",
      "authorization": "<eip712TypedData.message>"
    }
    ```
-5. Call `daski_submit_task` again with `skillId: "set-dns-record"`,
-   `providerA2AUrl`, `paymentId`, `chainId`, `serviceArgs`, and the
-   `capability` from step 4. Omit `serviceRef` and `transactionHash` —
-   those are for paid skills only.
+4. **(All ownership-gated)** Build the envelope auth: call
+   `daski_build_envelope_auth` with `skillId`, `paymentId`, `chainId`,
+   `buyerTokenId`, and the same `serviceArgs` you'll submit. Sign the
+   returned `eip712TypedData` with the wallet. Retain the `messageId`
+   from this step — `daski_submit_task` rejects if it doesn't match.
+5. Call `daski_submit_task` with the target `skillId`, `providerA2AUrl`,
+   `paymentId`, `chainId`, `serviceArgs`, the `messageId` from step 4,
+   `envelopeAuth: { signature, authorization }`, and — for capability-
+   gated skills — the `capability` from step 3. Omit `serviceRef` and
+   `transactionHash` (those are for paid skills only).
 6. Poll `daski_get_task_status` (or pass `stream: true`) until completion.
+
+Open free skills (`check-availability`, `get-pricing`, `prepare-capability`)
+skip steps 3–4 entirely: call `daski_submit_task` directly with no
+envelopeAuth and no paymentId. The plan returned by `daski_buy_service`
+will reflect this.
 
 ## Errors you'll see
 
@@ -240,6 +265,15 @@ they registered earlier). No new USDC payment; the previous purchase's
   `daski://provider/{tokenId}` MCP resource.
 - `payment_id_required` — you tried a free ownership-gated skill without
   a `paymentId`. Ask the user which prior purchase this operates on.
+- `MESSAGE_ID_REQUIRED` / `MESSAGE_ID_MISMATCH` from `daski_submit_task`
+  — you passed `envelopeAuth` but no matching `messageId`, or the two
+  diverged. Use the `messageId` returned by `daski_build_envelope_auth`
+  verbatim.
+- `envelope auth rejected (ENVELOPE_*)` from the provider — the signed
+  envelope failed verification. Common causes: stale `issuedAt` (build
+  a fresh one and re-sign), `serviceArgs` mutated between sign and
+  submit (rebuild + re-sign), or the wallet signing is not the agent
+  wallet on file for the buyerTokenId.
 - `invalid_exact_evm_payload_signature` from `daski_settle_payment` —
   the wallet signed against a different `from` address than the one
   baked into the typed-data. Check that the wallet you're using for
@@ -279,10 +313,19 @@ User: "Register example.xyz for me."
    → "0x123...signature"
 4. daski_settle_payment({ paymentPayload, paymentRequirements })
    → { paymentId: "42", transaction: "0x...", providerA2AUrl: "https://..." }
-5. daski_submit_task({ ...settlement output, serviceArgs })
+5. daski_build_envelope_auth({
+     skillId: "register-domain", paymentId: "42",
+     chainId, buyerTokenId, serviceArgs: { domain: "example.xyz" }
+   })
+   → { messageId, eip712TypedData, authorization, ... }
+6. wallet.signTypedData(eip712TypedData) → envelope signature
+7. daski_submit_task({ ...settlement output, serviceArgs,
+     messageId,
+     envelopeAuth: { signature: <step 6>, authorization: <step 5> }
+   })
    → { taskId: "task-7" }
-6. Loop: daski_get_task_status({ providerA2AUrl, taskId })
+8. Loop: daski_get_task_status({ providerA2AUrl, taskId })
    until status == "completed"
    (or pass stream:true for SSE-streamed progress)
-7. Surface artifacts + offer daski_confirm_delivery to record reputation.
+9. Surface artifacts + offer daski_confirm_delivery to record reputation.
 ```
