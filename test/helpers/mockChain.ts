@@ -7,6 +7,7 @@ import type {
   ProviderReputation,
   RegisterBySigInput,
   RegisterBySigResult,
+  ReputationRecord,
   ServiceReputation,
   SettleWithRegistrationInput,
   SettleWithRegistrationResult,
@@ -96,6 +97,25 @@ export class MockChainReader implements ChainReader {
 
   async agentOfWallet(wallet: Hex): Promise<bigint> {
     return this.walletToAgent.get(wallet.toLowerCase()) ?? 0n;
+  }
+
+  // Live agentWallet override. Tests that exercise wallet rotation set this
+  // explicitly; otherwise the mock falls back to the registered provider's
+  // walletAddress so existing tests don't have to know about the new
+  // IdentityRegistry-driven path.
+  private agentWalletOverrides = new Map<string, Hex>();
+
+  setAgentWallet(agentId: bigint, wallet: Hex): void {
+    this.agentWalletOverrides.set(agentId.toString(), wallet.toLowerCase() as Hex);
+  }
+
+  async getAgentWallet(agentId: bigint): Promise<Hex> {
+    const override = this.agentWalletOverrides.get(agentId.toString());
+    if (override) return override;
+    const provider = this.providers.get(agentId.toString());
+    return provider
+      ? (provider.walletAddress.toLowerCase() as Hex)
+      : (("0x" + "00".repeat(20)) as Hex);
   }
 
   async authorizationUsed(authorizer: Hex, nonce: Hex): Promise<boolean> {
@@ -303,6 +323,38 @@ export class MockChainReader implements ChainReader {
         totalRefunded: 0n,
       }
     );
+  }
+
+  // Per-paymentId record mock. Unlike the aggregate getters, "absent record"
+  // is the common case (most paid rows haven't been outcome-attested yet),
+  // so the absence-returns-null contract here mirrors the real reader's
+  // "paymentId == 0 → null" path. Tests opt-in by calling setReputationRecord.
+  private reputationRecords = new Map<string, ReputationRecord>();
+
+  setReputationRecord(paymentId: bigint, value: ReputationRecord): void {
+    this.reputationConfigured = true;
+    this.reputationRecords.set(paymentId.toString(), value);
+  }
+
+  async getReputationRecord(
+    paymentId: bigint,
+  ): Promise<ReputationRecord | null> {
+    if (!this.reputationConfigured) return null;
+    return this.reputationRecords.get(paymentId.toString()) ?? null;
+  }
+
+  // Per-paymentId refund mock. Default 0n (settled, no refund), which
+  // matches the PaymentRouter behavior — the contract returns 0 for both
+  // unknown and unrefunded paymentIds. Tests that exercise refunds call
+  // setPaymentRefundedAmount.
+  private paymentRefunds = new Map<string, bigint>();
+
+  setPaymentRefundedAmount(paymentId: bigint, atomic: bigint): void {
+    this.paymentRefunds.set(paymentId.toString(), atomic);
+  }
+
+  async getPaymentRefundedAmount(paymentId: bigint): Promise<bigint> {
+    return this.paymentRefunds.get(paymentId.toString()) ?? 0n;
   }
 
   async settleWithRegistration(

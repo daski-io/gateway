@@ -305,5 +305,11 @@ export interface StoredChallenge {
   // Set when status transitions pending → paid. Used as the "settled at"
   // timestamp for the public activity feed.
   verifiedAt: Date | null;
+  // 32-byte UID of the buyer's EAS confirmation attestation, persisted by
+  // /confirm/:paymentId on success. Null when no confirmation has landed,
+  // or for rows that pre-date migration 005. Latest UID wins — confirmation
+  // revisions overwrite. Used by the public activity feed to deep-link to
+  // the canonical attestation on an EAS explorer.
+  confirmationAttestationUid: Hex | null;
 }
 

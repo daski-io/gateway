@@ -29,6 +29,19 @@ export const identityRegistryAbi = [
     stateMutability: "view",
   },
   {
+    // Canonical live wallet for an agentId. The contract comment on
+    // ProviderRegistry.updateWalletAddress flags `ProviderRegistry.walletAddress`
+    // as a deprecated hint — `IdentityRegistry.getAgentWallet` is what
+    // PaymentRouter resolves the payee against, and what survives
+    // ERC-8004 wallet rotation. The gateway reads this for cache-side
+    // wallet resolution so discovery doesn't go stale after rotation.
+    type: "function",
+    name: "getAgentWallet",
+    inputs: [{ name: "agentId", type: "uint256" }],
+    outputs: [{ name: "", type: "address" }],
+    stateMutability: "view",
+  },
+  {
     // Gasless registration: the buyer signs an EIP-712 RegisterAgent struct
     // off-chain, the gateway facilitator submits it. NFT mints to the
     // signer (`agentWallet`), not the relayer (msg.sender).
@@ -97,6 +110,17 @@ export const providerRegistryAbi = [
 // funds arrive. The gateway consumes PaymentSettled (emitted by the router).
 
 export const paymentRouterAbi = [
+  {
+    // Cumulative refunded amount (atomic USDC) for one paymentId. Returns
+    // 0 for unknown paymentIds and for settled-but-unrefunded ones — the
+    // caller can't distinguish the two from this view alone (use the
+    // gateway's own challenge row to check whether the payment exists).
+    type: "function",
+    name: "refundedAmount",
+    inputs: [{ name: "paymentId", type: "uint256" }],
+    outputs: [{ name: "", type: "uint256" }],
+    stateMutability: "view",
+  },
   {
     type: "event",
     name: "PaymentSettled",
@@ -227,6 +251,37 @@ export const reputationStorageAbi = [
       { name: "confirmed", type: "uint256" },
       { name: "notConfirmed_", type: "uint256" },
       { name: "totalRefunded", type: "uint256" },
+    ],
+    stateMutability: "view",
+  },
+  {
+    // Per-paymentId reputation record. Carries the provider-attested outcome
+    // and the on-chain-derived `fulfillmentTime` (block.timestamp at outcome
+    // attest minus PaymentRouter.paidAt — gameless wall-clock turnaround).
+    // For unknown paymentIds the contract returns a zero-init struct; the
+    // gateway treats `paymentId == 0` as "no record yet".
+    type: "function",
+    name: "getRecord",
+    inputs: [{ name: "paymentId", type: "uint256" }],
+    outputs: [
+      {
+        name: "",
+        type: "tuple",
+        components: [
+          { name: "paymentId", type: "uint256" },
+          { name: "providerAgentId", type: "uint256" },
+          { name: "buyerAgentId", type: "uint256" },
+          { name: "serviceId", type: "bytes32" },
+          // Solidity enum encoded as uint8. 0=Completed, 1=Failed, 2=Canceled.
+          { name: "outcome", type: "uint8" },
+          // Solidity enum encoded as uint8. 0=Pending, 1=Confirmed, 2=NotConfirmed.
+          { name: "confirmation", type: "uint8" },
+          { name: "fulfillmentTime", type: "uint256" },
+          { name: "outcomeTimestamp", type: "uint256" },
+          { name: "confirmationTimestamp", type: "uint256" },
+          { name: "outcomeRecorded", type: "bool" },
+        ],
+      },
     ],
     stateMutability: "view",
   },

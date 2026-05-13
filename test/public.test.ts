@@ -179,6 +179,23 @@ describe("public v1 — /services", () => {
     expect(dns!.paymentRequired).toBe(false);
   });
 
+  it("sources providerAddress from IdentityRegistry.getAgentWallet (picks up wallet rotation)", async () => {
+    // ProviderRegistry.walletAddress is documented as a deprecated hint;
+    // PaymentRouter resolves payees through IdentityRegistry. If the
+    // gateway trusted the deprecated field, a rotated provider would have
+    // its old wallet displayed on the marketing site while settlements
+    // correctly went to the new one. Verify the cache picks up the live
+    // wallet from IdentityRegistry.
+    const ROTATED = "0x000000000000000000000000000000000000beef" as Hex;
+    gateway.mockChain.setAgentWallet(1n, ROTATED);
+    await gateway.refresh();
+
+    const res = await fetch(`${gateway.baseUrl}/public/v1/services`);
+    const body = (await res.json()) as any;
+    const acme = body.services.find((s: any) => s.agentId === "1");
+    expect(acme.providerAddress.toLowerCase()).toBe(ROTATED);
+  });
+
   it("excludes providers without the marketplace extension", async () => {
     gateway.registerProvider({
       tokenId: 99n,
@@ -250,6 +267,59 @@ describe("public v1 — /services/:agentId", () => {
       skillId: "register-domain",
     });
     expect(typeof body.recentPurchases[0].timestamp).toBe("string");
+    // Default shape when ReputationStorage isn't configured / no record yet:
+    // outcome unknown, confirmation pending, no fulfillment time. Matches
+    // the contract's zero-init struct semantics.
+    expect(body.recentPurchases[0].outcome).toBeNull();
+    expect(body.recentPurchases[0].confirmation).toBe("Pending");
+    expect(body.recentPurchases[0].fulfillmentSeconds).toBeNull();
+    // PaymentRouter is always configured — refundedUsdc has the "0.00"
+    // default rather than null. Confirmation UID is null until the buyer
+    // attests via /confirm/:paymentId.
+    expect(body.recentPurchases[0].refundedUsdc).toBe("0.00");
+    expect(body.recentPurchases[0].confirmationAttestationUid).toBeNull();
+  });
+
+  it("surfaces on-chain outcome, confirmation, and fulfillmentSeconds from ReputationStorage.getRecord", async () => {
+    await seedPaid(gateway, {
+      serviceRef:
+        "0x4444444444444444444444444444444444444444444444444444444444444444",
+      providerAgentId: 1n,
+      buyerAgentId: 7n,
+      amountAtomic: 12_000_000n,
+      skillId: "register-domain",
+      paymentId: 101n,
+      txHash:
+        "0xabc4444444444444444444444444444444444444444444444444444444444444",
+    });
+
+    // Mirror the post-outcome-attest shape: contract has computed
+    // fulfillmentTime as block.timestamp - paidAt; buyer has subsequently
+    // attested Confirmed. The gateway should forward both, unmodified.
+    gateway.mockChain.setReputationRecord(101n, {
+      paymentId: 101n,
+      providerAgentId: 1n,
+      buyerAgentId: 7n,
+      serviceId: ("0x" + "00".repeat(32)) as Hex,
+      outcome: "Completed",
+      confirmation: "Confirmed",
+      fulfillmentSeconds: 1234n,
+      outcomeTimestamp: 1_700_000_000n,
+      confirmationTimestamp: 1_700_001_000n,
+      outcomeRecorded: true,
+    });
+
+    const res = await fetch(`${gateway.baseUrl}/public/v1/services/1`);
+    const body = (await res.json()) as any;
+    const row = body.recentPurchases.find(
+      (r: any) =>
+        r.txHash ===
+        "0xabc4444444444444444444444444444444444444444444444444444444444444",
+    );
+    expect(row).toBeDefined();
+    expect(row.outcome).toBe("Completed");
+    expect(row.confirmation).toBe("Confirmed");
+    expect(row.fulfillmentSeconds).toBe(1234);
   });
 
   it("returns 404 for an unknown agentId", async () => {
@@ -309,6 +379,124 @@ describe("public v1 — /activity", () => {
       amount: "12.00",
       skillId: "register-domain",
     });
+    expect(body.activity[0].outcome).toBeNull();
+    expect(body.activity[0].confirmation).toBe("Pending");
+    expect(body.activity[0].fulfillmentSeconds).toBeNull();
+    expect(body.activity[0].refundedUsdc).toBe("0.00");
+    expect(body.activity[0].confirmationAttestationUid).toBeNull();
+  });
+
+  it("surfaces PaymentRouter.refundedAmount per activity row", async () => {
+    await seedPaid(gateway, {
+      serviceRef:
+        "0x6666666666666666666666666666666666666666666666666666666666666666",
+      providerAgentId: 1n,
+      buyerAgentId: 5n,
+      amountAtomic: 12_000_000n,
+      skillId: "register-domain",
+      paymentId: 202n,
+      txHash:
+        "0xdef6666666666666666666666666666666666666666666666666666666666666",
+    });
+    // Half refund — exercises the formatter's USDC conversion (no special
+    // case for partial-vs-full) and shows the buyer the partial state.
+    gateway.mockChain.setPaymentRefundedAmount(202n, 6_000_000n);
+
+    const res = await fetch(`${gateway.baseUrl}/public/v1/activity`);
+    const body = (await res.json()) as any;
+    const row = body.activity.find(
+      (r: any) =>
+        r.txHash ===
+        "0xdef6666666666666666666666666666666666666666666666666666666666666",
+    );
+    expect(row.refundedUsdc).toBe("6.00");
+  });
+
+  it("persists EAS UID on /confirm and surfaces it on the matching activity row", async () => {
+    await seedPaid(gateway, {
+      serviceRef:
+        "0x7777777777777777777777777777777777777777777777777777777777777777",
+      providerAgentId: 1n,
+      buyerAgentId: 5n,
+      amountAtomic: 12_000_000n,
+      skillId: "register-domain",
+      paymentId: 203n,
+      txHash:
+        "0xdef7777777777777777777777777777777777777777777777777777777777777",
+    });
+
+    const attestationUid =
+      "0xcafe000000000000000000000000000000000000000000000000000000000abc" as Hex;
+    const txHash =
+      "0xdead000000000000000000000000000000000000000000000000000000000abc" as Hex;
+    gateway.mockChain.queueConfirmation({
+      kind: "success",
+      txHash,
+      attestationUid,
+    });
+
+    const confirmRes = await fetch(`${gateway.baseUrl}/confirm/203`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        confirmation: "Confirmed",
+        attester: "0x000000000000000000000000000000000000beef",
+        deadline: String(Math.floor(Date.now() / 1000) + 3600),
+        signature: {
+          v: 27,
+          r: "0x1111111111111111111111111111111111111111111111111111111111111111",
+          s: "0x2222222222222222222222222222222222222222222222222222222222222222",
+        },
+      }),
+    });
+    expect(confirmRes.status).toBe(200);
+
+    const activityRes = await fetch(`${gateway.baseUrl}/public/v1/activity`);
+    const body = (await activityRes.json()) as any;
+    const row = body.activity.find(
+      (r: any) =>
+        r.txHash ===
+        "0xdef7777777777777777777777777777777777777777777777777777777777777",
+    );
+    expect(row.confirmationAttestationUid).toBe(attestationUid);
+  });
+
+  it("emits fulfillmentSeconds + outcome on activity rows once provider attests", async () => {
+    await seedPaid(gateway, {
+      serviceRef:
+        "0x5555555555555555555555555555555555555555555555555555555555555555",
+      providerAgentId: 1n,
+      buyerAgentId: 5n,
+      amountAtomic: 12_000_000n,
+      skillId: "register-domain",
+      paymentId: 201n,
+      txHash:
+        "0xdef5555555555555555555555555555555555555555555555555555555555555",
+    });
+    // Provider has attested Completed; buyer hasn't confirmed yet.
+    gateway.mockChain.setReputationRecord(201n, {
+      paymentId: 201n,
+      providerAgentId: 1n,
+      buyerAgentId: 5n,
+      serviceId: ("0x" + "00".repeat(32)) as Hex,
+      outcome: "Completed",
+      confirmation: "Pending",
+      fulfillmentSeconds: 42n,
+      outcomeTimestamp: 1_700_000_000n,
+      confirmationTimestamp: 0n,
+      outcomeRecorded: true,
+    });
+
+    const res = await fetch(`${gateway.baseUrl}/public/v1/activity`);
+    const body = (await res.json()) as any;
+    const row = body.activity.find(
+      (r: any) =>
+        r.txHash ===
+        "0xdef5555555555555555555555555555555555555555555555555555555555555",
+    );
+    expect(row.outcome).toBe("Completed");
+    expect(row.confirmation).toBe("Pending");
+    expect(row.fulfillmentSeconds).toBe(42);
   });
 
   it("respects ?limit and caps to 200", async () => {

@@ -580,7 +580,7 @@ export async function createMcpServer(
       },
       async (args) => {
         const result = await runConfirmDelivery(
-          { config: deps.config, reader: deps.reader },
+          { config: deps.config, reader: deps.reader, queries: deps.queries },
           args.paymentId,
           {
             confirmation: args.confirmation,

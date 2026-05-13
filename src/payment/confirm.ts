@@ -2,11 +2,13 @@ import { Router, type Request, type Response } from "express";
 import { encodeAbiParameters, parseAbiParameters } from "viem";
 import type { Config } from "../config.js";
 import type { ChainReader } from "../chain/reader.js";
+import type { Queries } from "../db/queries.js";
 import type { Hex } from "../types.js";
 
 export interface ConfirmDeps {
   config: Config;
   reader: ChainReader;
+  queries: Queries;
 }
 
 // ReputationStorage.sol BuyerConfirmation enum values. Keep these in lock-step
@@ -181,6 +183,17 @@ export async function runConfirmDelivery(
         s: input.signature.s,
       },
     });
+
+    // Best-effort persist the UID on the matching challenge row. Failure
+    // doesn't invalidate the on-chain attestation (EAS is canonical), so
+    // we don't propagate the error to the caller — they got their UID in
+    // the response. Worst case the public activity feed deep-link to EAS
+    // shows null for this row until the next confirmation revises it.
+    try {
+      await deps.queries.recordConfirmation(paymentId, result.attestationUid);
+    } catch {
+      // Swallow — see comment above.
+    }
 
     return {
       ok: true,

@@ -40,6 +40,7 @@ interface ChallengeRow {
   payment_id: string | null;
   transaction_hash: string | null;
   verified_at: Date | null;
+  confirmation_attestation_uid: Buffer | null;
 }
 
 const ZERO_SERVICE_ID = ("0x" + "00".repeat(32)) as Hex;
@@ -68,6 +69,9 @@ function rowToChallenge(row: ChallengeRow): StoredChallenge {
     transactionHash:
       row.transaction_hash != null ? (row.transaction_hash as Hex) : null,
     verifiedAt: row.verified_at,
+    confirmationAttestationUid: row.confirmation_attestation_uid
+      ? byteaToHex(row.confirmation_attestation_uid)
+      : null,
   };
 }
 
@@ -156,6 +160,29 @@ export function createQueries(pool: Pool) {
           WHERE status = 'pending' AND expires_at < now()`,
       );
       return res.rowCount ?? 0;
+    },
+
+    /**
+     * Persist the EAS attestation UID for a successful buyer confirmation.
+     * Match by paymentId (unique across the table). No-op when the
+     * challenge row hasn't been written yet — the confirm path doesn't
+     * have a hard dependency on a local row existing, since EAS is the
+     * canonical store and we treat our DB as a deep-link convenience.
+     *
+     * Revisions overwrite: the resolver allows refUID-linked confirmation
+     * revisions and rebalances counters, so we always want the latest UID
+     * here so deep-links reflect the current state.
+     */
+    async recordConfirmation(
+      paymentId: bigint,
+      attestationUid: Hex,
+    ): Promise<void> {
+      await pool.query(
+        `UPDATE payment_challenges
+            SET confirmation_attestation_uid = $1
+          WHERE payment_id = $2`,
+        [hexToBytea(attestationUid), paymentId.toString()],
+      );
     },
 
     async listRecentPaid(limit: number): Promise<StoredChallenge[]> {

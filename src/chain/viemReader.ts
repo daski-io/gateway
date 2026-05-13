@@ -22,6 +22,7 @@ import {
   x402AdapterAbi,
 } from "./abis.js";
 import type {
+  BuyerConfirmationLabel,
   BuyerReputation,
   ChainReader,
   ConfirmationDelegationInput,
@@ -30,11 +31,13 @@ import type {
   ProviderReputation,
   RegisterBySigInput,
   RegisterBySigResult,
+  ReputationRecord,
   ServiceReputation,
   SettleWithRegistrationInput,
   SettleWithRegistrationResult,
   SettlementInput,
   SettlementResult,
+  TransactionOutcome,
 } from "./reader.js";
 import type { ChainId, Hex } from "../types.js";
 
@@ -234,6 +237,24 @@ export function createViemChainReader(opts: ViemReaderOptions): ChainReader {
         abi: identityRegistryAbi,
         functionName: "agentOfWallet",
         args: [wallet],
+      })) as bigint;
+    },
+
+    async getAgentWallet(agentId: bigint) {
+      return (await publicClient.readContract({
+        address: opts.identityRegistryAddress,
+        abi: identityRegistryAbi,
+        functionName: "getAgentWallet",
+        args: [agentId],
+      })) as Hex;
+    },
+
+    async getPaymentRefundedAmount(paymentId: bigint) {
+      return (await publicClient.readContract({
+        address: routerAddress,
+        abi: paymentRouterAbi,
+        functionName: "refundedAmount",
+        args: [paymentId],
       })) as bigint;
     },
 
@@ -689,5 +710,59 @@ export function createViemChainReader(opts: ViemReaderOptions): ChainReader {
         totalRefunded: result[5],
       };
     },
+
+    async getReputationRecord(
+      paymentId: bigint,
+    ): Promise<ReputationRecord | null> {
+      if (!reputationStorageAddress) return null;
+      const raw = (await publicClient.readContract({
+        address: reputationStorageAddress,
+        abi: reputationStorageAbi,
+        functionName: "getRecord",
+        args: [paymentId],
+      })) as {
+        paymentId: bigint;
+        providerAgentId: bigint;
+        buyerAgentId: bigint;
+        serviceId: Hex;
+        outcome: number;
+        confirmation: number;
+        fulfillmentTime: bigint;
+        outcomeTimestamp: bigint;
+        confirmationTimestamp: bigint;
+        outcomeRecorded: boolean;
+      };
+      // Contract returns a zero-init struct for unknown paymentIds rather
+      // than reverting. Distinguish "no record" from "record exists, no
+      // outcome yet" so callers don't have to.
+      if (raw.paymentId === 0n) return null;
+      return {
+        paymentId: raw.paymentId,
+        providerAgentId: raw.providerAgentId,
+        buyerAgentId: raw.buyerAgentId,
+        serviceId: raw.serviceId,
+        outcome: raw.outcomeRecorded ? OUTCOME_LABELS[raw.outcome] ?? null : null,
+        confirmation: CONFIRMATION_LABELS[raw.confirmation] ?? "Pending",
+        fulfillmentSeconds: raw.outcomeRecorded ? raw.fulfillmentTime : null,
+        outcomeTimestamp: raw.outcomeTimestamp,
+        confirmationTimestamp: raw.confirmationTimestamp,
+        outcomeRecorded: raw.outcomeRecorded,
+      };
+    },
   };
 }
+
+// Index aligns with the Solidity enum ordinals in ReputationStorage. Keep in
+// lock-step with the contract — reordering the enum without updating these
+// is a silent correctness bug.
+const OUTCOME_LABELS: Record<number, TransactionOutcome> = {
+  0: "Completed",
+  1: "Failed",
+  2: "Canceled",
+};
+
+const CONFIRMATION_LABELS: Record<number, BuyerConfirmationLabel> = {
+  0: "Pending",
+  1: "Confirmed",
+  2: "NotConfirmed",
+};

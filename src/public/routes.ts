@@ -1,5 +1,5 @@
 import { Router, type Request, type Response } from "express";
-import type { ChainReader } from "../chain/reader.js";
+import type { ChainReader, ReputationRecord } from "../chain/reader.js";
 import type { Config } from "../config.js";
 import type { Queries } from "../db/queries.js";
 import type { DiscoveryCache } from "../discovery/cache.js";
@@ -13,7 +13,7 @@ import {
   type PublicServiceLevelReputation,
   type PublicServiceReputation,
 } from "./format.js";
-import type { Hex } from "../types.js";
+import type { Hex, StoredChallenge } from "../types.js";
 
 const ACTIVITY_DEFAULT_LIMIT = 50;
 const ACTIVITY_MAX_LIMIT = 200;
@@ -127,6 +127,102 @@ class ServiceReputationCache {
   }
 }
 
+/**
+ * Per-paymentId cache for `ReputationStorage.getRecord`. Activity rows
+ * fan out one read per row otherwise — at the 200-row cap that's a 200-RPC
+ * burst per cold page load. 60s TTL is loose enough that warm reloads cost
+ * nothing and tight enough that newly-attested outcomes surface promptly.
+ *
+ * Records are largely append-once (outcome attestations are not revocable
+ * per the resolver), so a generous TTL is safe; the buyer-confirmation
+ * field is the only mutable part and tolerates a minute of staleness.
+ */
+class ReputationRecordCache {
+  private readonly entries = new Map<
+    string,
+    { value: ReputationRecord | null; fetchedAt: number }
+  >();
+  private readonly ttlMs: number;
+  constructor(
+    private readonly reader: ChainReader,
+    ttlMs = 60_000,
+  ) {
+    this.ttlMs = ttlMs;
+  }
+  async get(paymentId: bigint): Promise<ReputationRecord | null> {
+    const key = paymentId.toString();
+    const now = Date.now();
+    const hit = this.entries.get(key);
+    if (hit && now - hit.fetchedAt < this.ttlMs) return hit.value;
+    try {
+      const value = await this.reader.getReputationRecord(paymentId);
+      this.entries.set(key, { value, fetchedAt: now });
+      return value;
+    } catch {
+      return hit?.value ?? null;
+    }
+  }
+}
+
+/**
+ * Per-paymentId cache for `PaymentRouter.refundedAmount`. Unlike outcome
+ * records (which are append-once), refunds can land at any time and the
+ * cumulative tally moves with each one — so the TTL is tighter (30s) to
+ * keep partial-refund displays from lagging too far behind. On RPC failure
+ * fall back to 0n rather than null so the formatter always renders a
+ * dollar string (the field is non-nullable; "0.00" is the safe default).
+ */
+class RefundAmountCache {
+  private readonly entries = new Map<
+    string,
+    { value: bigint; fetchedAt: number }
+  >();
+  private readonly ttlMs: number;
+  constructor(
+    private readonly reader: ChainReader,
+    ttlMs = 30_000,
+  ) {
+    this.ttlMs = ttlMs;
+  }
+  async get(paymentId: bigint): Promise<bigint> {
+    const key = paymentId.toString();
+    const now = Date.now();
+    const hit = this.entries.get(key);
+    if (hit && now - hit.fetchedAt < this.ttlMs) return hit.value;
+    try {
+      const value = await this.reader.getPaymentRefundedAmount(paymentId);
+      this.entries.set(key, { value, fetchedAt: now });
+      return value;
+    } catch {
+      return hit?.value ?? 0n;
+    }
+  }
+}
+
+// Fan out per-row record + refund lookups in parallel. Rows without a
+// paymentId (legacy / mid-settlement rows) resolve to (null, 0n) without
+// touching either cache — the formatter renders defaults for both.
+async function loadEnrichmentFor(
+  rows: readonly StoredChallenge[],
+  recordCache: ReputationRecordCache,
+  refundCache: RefundAmountCache,
+): Promise<Array<{ record: ReputationRecord | null; refundedAtomic: bigint }>> {
+  return Promise.all(
+    rows.map(async (c) => {
+      if (c.paymentId == null) {
+        return { record: null, refundedAtomic: 0n };
+      }
+      // Parallel by design: the two reads hit different contracts so a
+      // multicall wouldn't help, and the caches are independent.
+      const [record, refundedAtomic] = await Promise.all([
+        recordCache.get(c.paymentId),
+        refundCache.get(c.paymentId),
+      ]);
+      return { record, refundedAtomic };
+    }),
+  );
+}
+
 function parseLimit(raw: unknown, fallback: number, cap: number): number {
   if (raw === undefined) return fallback;
   if (typeof raw !== "string") return fallback;
@@ -150,6 +246,10 @@ export interface PublicRouterDeps {
   blockNumberCacheTtlMs?: number;
   /** Override the provider-reputation TTL (ms). Tests pass 0 to bypass caching. */
   reputationCacheTtlMs?: number;
+  /** Override the per-paymentId record TTL (ms). Tests pass 0 to bypass caching. */
+  reputationRecordCacheTtlMs?: number;
+  /** Override the per-paymentId refund TTL (ms). Tests pass 0 to bypass caching. */
+  refundAmountCacheTtlMs?: number;
 }
 
 /**
@@ -173,6 +273,14 @@ export function createPublicRouter(deps: PublicRouterDeps): Router {
   const serviceReputationCache = new ServiceReputationCache(
     reader,
     deps.reputationCacheTtlMs ?? 30_000,
+  );
+  const recordCache = new ReputationRecordCache(
+    reader,
+    deps.reputationRecordCacheTtlMs ?? 60_000,
+  );
+  const refundCache = new RefundAmountCache(
+    reader,
+    deps.refundAmountCacheTtlMs ?? 30_000,
   );
 
   router.get("/public/v1/services", (_req: Request, res: Response) => {
@@ -218,8 +326,14 @@ export function createPublicRouter(deps: PublicRouterDeps): Router {
           ? serviceReputationCache.get(formatted.serviceId)
           : Promise.resolve(null),
       ]);
-      const recentPurchases = recent.map((c) =>
-        formatActivityRow(c, formatted.name),
+      const enrichment = await loadEnrichmentFor(recent, recordCache, refundCache);
+      const recentPurchases = recent.map((c, i) =>
+        formatActivityRow(
+          c,
+          formatted.name,
+          enrichment[i]?.record ?? null,
+          enrichment[i]?.refundedAtomic ?? 0n,
+        ),
       );
       res.json({
         ...formatted,
@@ -247,11 +361,14 @@ export function createPublicRouter(deps: PublicRouterDeps): Router {
       );
     }
 
+    const enrichment = await loadEnrichmentFor(rows, recordCache, refundCache);
     res.json({
-      activity: rows.map((c) =>
+      activity: rows.map((c, i) =>
         formatActivityRow(
           c,
           nameByAgentId.get(c.providerTokenId.toString()) ?? null,
+          enrichment[i]?.record ?? null,
+          enrichment[i]?.refundedAtomic ?? 0n,
         ),
       ),
     });

@@ -642,6 +642,7 @@ export async function issuePaymentRequirements(
     paymentId: null,
     transactionHash: null,
     verifiedAt: null,
+    confirmationAttestationUid: null,
   };
 
   return { ok: true, requirements, challenge };

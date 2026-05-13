@@ -154,6 +154,39 @@ export interface ServiceReputation {
   totalRefunded: bigint;
 }
 
+// Solidity-mirror string labels for the two enums attached to a reputation
+// record. The contract stores them as uint8s; this layer maps to strings so
+// downstream JSON consumers don't depend on the enum ordinal.
+export type TransactionOutcome = "Completed" | "Failed" | "Canceled";
+export type BuyerConfirmationLabel = "Pending" | "Confirmed" | "NotConfirmed";
+
+// Per-paymentId record from ReputationStorage.getRecord. The on-chain struct
+// is a zero-init default for unknown paymentIds; the gateway converts that
+// case to `null` at the reader boundary so callers see "no record" cleanly.
+//
+// `fulfillmentSeconds` is the wall-clock turnaround derived ON-CHAIN as
+// `block.timestamp - PaymentRouter.PaymentRecord.paidAt` at the moment the
+// provider's outcome attestation lands. It is gameless — the provider's
+// self-reported number is ignored in favor of block timestamps. Null until
+// `outcomeRecorded` is true.
+export interface ReputationRecord {
+  paymentId: bigint;
+  providerAgentId: bigint;
+  buyerAgentId: bigint;
+  serviceId: Hex;
+  /** Null until the provider attests an outcome. */
+  outcome: TransactionOutcome | null;
+  /** Always present; "Pending" = no buyer confirmation yet. */
+  confirmation: BuyerConfirmationLabel;
+  /** Seconds between paidAt and the outcome attestation. Null until outcomeRecorded. */
+  fulfillmentSeconds: bigint | null;
+  /** Block-timestamp seconds of the outcome attestation; 0 until recorded. */
+  outcomeTimestamp: bigint;
+  /** Block-timestamp seconds of the latest confirmation; 0 until attested. */
+  confirmationTimestamp: bigint;
+  outcomeRecorded: boolean;
+}
+
 // Wraps every chain read AND write the gateway performs. Tests inject a
 // fake implementation; prod uses the viem-backed one in viemReader.ts.
 export interface ChainReader {
@@ -241,6 +274,29 @@ export interface ChainReader {
   // recorded activity yet" — distinct from null (gateway has no
   // ReputationStorage configured).
   getServiceReputation(serviceId: Hex): Promise<ServiceReputation | null>;
+
+  // Per-paymentId reputation record. Two flavors of null:
+  //   - ReputationStorage not configured (returns null without an RPC call).
+  //   - Record absent: the contract returns a zero-init struct for an
+  //     unknown paymentId; the reader detects `paymentId == 0` and returns
+  //     null so the caller doesn't have to disambiguate.
+  // Use the `fulfillmentSeconds` / `outcome` fields to surface wall-clock
+  // turnaround and provider-attested status on activity rows.
+  getReputationRecord(paymentId: bigint): Promise<ReputationRecord | null>;
+
+  // Canonical live agentWallet from IdentityRegistry. PaymentRouter resolves
+  // payees through this same getter, and ProviderRegistry's `walletAddress`
+  // field is explicitly deprecated in favor of it (see ProviderRegistry.sol
+  // around updateWalletAddress). Returns address(0) when the agent has unset
+  // their wallet — callers should fall back to the ProviderRegistry hint
+  // when that happens (or treat it as "no payee currently").
+  getAgentWallet(agentId: bigint): Promise<Hex>;
+
+  // Cumulative refunded amount (atomic USDC) for one paymentId from
+  // PaymentRouter.refundedAmount. Returns 0n for both unknown and
+  // settled-but-unrefunded payments — the gateway disambiguates against
+  // its own challenge row.
+  getPaymentRefundedAmount(paymentId: bigint): Promise<bigint>;
 }
 
 /**
@@ -263,11 +319,26 @@ export async function fetchOnChainProviders(
     if (!provider.isActive) continue;
     if (!whitelistSet.has(agentId.toString())) continue;
 
-    const agentURI = await reader.getAgentURI(agentId);
+    // Read the canonical wallet from IdentityRegistry instead of trusting
+    // ProviderRegistry's deprecated `walletAddress` hint — PaymentRouter
+    // resolves payees through the IdentityRegistry getter, so a wallet
+    // rotation that hasn't been mirrored back into ProviderRegistry would
+    // otherwise leave discovery showing the old address while settlements
+    // correctly went to the new one. If IdentityRegistry returns the zero
+    // address (agent has unset their wallet), fall back to the registry
+    // hint rather than emitting 0x0 — `agentWallet` can lag genuine
+    // intent during a transfer window.
+    const [agentURI, liveWallet] = await Promise.all([
+      reader.getAgentURI(agentId),
+      reader.getAgentWallet(agentId),
+    ]);
+    const ZERO_ADDR = ("0x" + "00".repeat(20)) as Hex;
+    const walletAddress =
+      liveWallet === ZERO_ADDR ? provider.walletAddress : liveWallet;
 
     providers.push({
       agentId,
-      walletAddress: provider.walletAddress,
+      walletAddress,
       agentURI,
       registrationTime: provider.registrationTime,
       isActive: true,

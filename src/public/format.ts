@@ -1,7 +1,10 @@
 import { DASKI_A2A_EXTENSION_URI } from "../config.js";
 import type {
+  BuyerConfirmationLabel,
   ProviderReputation,
+  ReputationRecord,
   ServiceReputation,
+  TransactionOutcome,
 } from "../chain/reader.js";
 import {
   extractAgentCardName,
@@ -180,6 +183,39 @@ export interface PublicActivityRow {
   skillId: string | null;
   /** ISO-8601 timestamp of on-chain settlement (verified_at). */
   timestamp: string;
+  /**
+   * Provider-attested outcome from ReputationStorage. "Completed" / "Failed"
+   * / "Canceled" once the provider has attested; null while pending. The
+   * gateway never derives this off-chain — it reflects what the provider
+   * signed via EAS.
+   */
+  outcome: TransactionOutcome | null;
+  /**
+   * Buyer's confirmation attestation. "Pending" = no confirmation yet,
+   * which is the steady state for rows that never get confirmed.
+   */
+  confirmation: BuyerConfirmationLabel;
+  /**
+   * Seconds between PaymentRouter.paidAt and the provider's outcome
+   * attestation. Computed ON-CHAIN as `block.timestamp - paidAt` so the
+   * provider cannot self-report. Null until the outcome is attested.
+   */
+  fulfillmentSeconds: number | null;
+  /**
+   * Cumulative USDC refunded against this paymentId, two-decimal string.
+   * "0.00" for the steady state (settled, no refund) — distinct from the
+   * `null`-shaped fields above, which only go null when ReputationStorage
+   * isn't configured. PaymentRouter is always configured, so we always
+   * have a value here.
+   */
+  refundedUsdc: string;
+  /**
+   * 32-byte EAS attestation UID for the buyer's confirmation, when one has
+   * been submitted via /confirm/:paymentId. Null when the buyer hasn't
+   * confirmed yet (or for rows that pre-date migration 005). Consumers
+   * deep-link to canonical attestations on EAS explorers with this.
+   */
+  confirmationAttestationUid: Hex | null;
 }
 
 function atomicToUsdc(atomic: string | number | bigint): string {
@@ -352,10 +388,23 @@ export function formatServiceForPublic(
  *
  * `providerName` is supplied by the caller (looked up against the cache);
  * passing null is fine and signals "provider no longer in cache".
+ *
+ * `record` is the on-chain ReputationStorage.getRecord lookup for the
+ * challenge's paymentId. Pass null when:
+ *   - the gateway has no ReputationStorage configured
+ *   - the challenge has no paymentId (pre-paid legacy rows shouldn't reach
+ *     this formatter, but be defensive)
+ *   - the provider hasn't attested an outcome yet (contract returns a
+ *     zero-init struct; the reader converts that to null)
+ *
+ * `refundedAtomic` is the cumulative refund tally for this paymentId from
+ * PaymentRouter.refundedAmount (always-readable; defaults to 0n).
  */
 export function formatActivityRow(
   challenge: StoredChallenge,
   providerName: string | null,
+  record: ReputationRecord | null,
+  refundedAtomic: bigint,
 ): PublicActivityRow {
   // Defensive: if a non-paid row leaks through, fall back to createdAt for
   // the timestamp. Better than emitting `null` and breaking the UI.
@@ -368,5 +417,14 @@ export function formatActivityRow(
     amount: atomicToUsdc(challenge.amount),
     skillId: challenge.skillId,
     timestamp,
+    outcome: record?.outcome ?? null,
+    confirmation: record?.confirmation ?? "Pending",
+    // bigint → number coercion is safe: fulfillmentSeconds is a wall-clock
+    // delta capped by realistic provider turnaround (hours to days), well
+    // within Number.MAX_SAFE_INTEGER.
+    fulfillmentSeconds:
+      record?.fulfillmentSeconds != null ? Number(record.fulfillmentSeconds) : null,
+    refundedUsdc: atomicToUsdc(refundedAtomic),
+    confirmationAttestationUid: challenge.confirmationAttestationUid,
   };
 }

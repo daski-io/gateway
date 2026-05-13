@@ -333,7 +333,7 @@ export async function createApp(options: CreateAppOptions): Promise<AppBundle> {
 
   app.use(createDiscoveryRouter(cache, config));
   app.use(createPurchaseRouter({ config, cache, queries, reader }));
-  app.use(createConfirmRouter({ config, reader }));
+  app.use(createConfirmRouter({ config, reader, queries }));
   app.use(
     createFacilitatorRouter({
       config,
