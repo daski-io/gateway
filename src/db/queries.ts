@@ -336,6 +336,53 @@ export function createQueries(pool: Pool) {
         totalAtomic: BigInt(row.total_atomic),
       };
     },
+
+    /**
+     * Per-provider spend aggregate — total atomic USDC that has flowed
+     * through this gateway destined for `providerAgentId`'s services.
+     * Counts and dollar sum, same shape as `getPaidAggregate`. The
+     * on-chain ReputationStorage tracks outcome counts but not amounts,
+     * so the gateway DB is the only source of truth for "money in".
+     */
+    async getProviderSpend(
+      providerAgentId: bigint,
+    ): Promise<{ count: number; totalAtomic: bigint }> {
+      const res = await pool.query<{ count: string; total_atomic: string }>(
+        `SELECT COUNT(*)::bigint AS count,
+                COALESCE(SUM(amount), 0)::bigint AS total_atomic
+           FROM payment_challenges
+          WHERE status = 'paid' AND provider_token_id = $1`,
+        [providerAgentId.toString()],
+      );
+      const row = res.rows[0];
+      return {
+        count: Number(row.count),
+        totalAtomic: BigInt(row.total_atomic),
+      };
+    },
+
+    /**
+     * Per-service spend aggregate. Filters on the on-chain serviceId
+     * (BYTEA, indexed by migration 003). Same shape as `getProviderSpend`.
+     * A provider with multiple services will have its provider-level spend
+     * be the sum of all their service-level spends — useful sanity check.
+     */
+    async getServiceSpend(
+      serviceId: Hex,
+    ): Promise<{ count: number; totalAtomic: bigint }> {
+      const res = await pool.query<{ count: string; total_atomic: string }>(
+        `SELECT COUNT(*)::bigint AS count,
+                COALESCE(SUM(amount), 0)::bigint AS total_atomic
+           FROM payment_challenges
+          WHERE status = 'paid' AND service_id = $1`,
+        [hexToBytea(serviceId)],
+      );
+      const row = res.rows[0];
+      return {
+        count: Number(row.count),
+        totalAtomic: BigInt(row.total_atomic),
+      };
+    },
   };
 }
 

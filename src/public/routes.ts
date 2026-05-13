@@ -72,6 +72,7 @@ class ProviderReputationCache {
   private readonly ttlMs: number;
   constructor(
     private readonly reader: ChainReader,
+    private readonly queries: Queries,
     ttlMs = 30_000,
   ) {
     this.ttlMs = ttlMs;
@@ -82,8 +83,14 @@ class ProviderReputationCache {
     const hit = this.entries.get(key);
     if (hit && now - hit.fetchedAt < this.ttlMs) return hit.value;
     try {
-      const raw = await this.reader.getProviderReputation(agentId);
-      const value = raw ? deriveProviderReputation(raw) : null;
+      // Reputation counters + per-provider spend in parallel. Spend is
+      // DB-sourced and effectively free; reading it here keeps the cache
+      // entry self-contained so the route doesn't have to merge.
+      const [raw, spend] = await Promise.all([
+        this.reader.getProviderReputation(agentId),
+        this.queries.getProviderSpend(agentId),
+      ]);
+      const value = raw ? deriveProviderReputation(raw, spend.totalAtomic) : null;
       this.entries.set(key, { value, fetchedAt: now });
       return value;
     } catch {
@@ -107,6 +114,7 @@ class ServiceReputationCache {
   private readonly ttlMs: number;
   constructor(
     private readonly reader: ChainReader,
+    private readonly queries: Queries,
     ttlMs = 30_000,
   ) {
     this.ttlMs = ttlMs;
@@ -117,8 +125,16 @@ class ServiceReputationCache {
     const hit = this.entries.get(key);
     if (hit && now - hit.fetchedAt < this.ttlMs) return hit.value;
     try {
-      const raw = await this.reader.getServiceReputation(serviceId);
-      const value = raw ? deriveServiceReputation(raw, serviceId) : null;
+      // Service counters + per-service spend in parallel (same rationale
+      // as ProviderReputationCache). Fulfillment is intentionally NOT
+      // bundled here — it has a heavier fan-out path and its own cache.
+      const [raw, spend] = await Promise.all([
+        this.reader.getServiceReputation(serviceId),
+        this.queries.getServiceSpend(serviceId),
+      ]);
+      const value = raw
+        ? deriveServiceReputation(raw, serviceId, undefined, spend.totalAtomic)
+        : null;
       this.entries.set(key, { value, fetchedAt: now });
       return value;
     } catch {
@@ -356,10 +372,12 @@ export function createPublicRouter(deps: PublicRouterDeps): Router {
   );
   const reputationCache = new ProviderReputationCache(
     reader,
+    queries,
     deps.reputationCacheTtlMs ?? 30_000,
   );
   const serviceReputationCache = new ServiceReputationCache(
     reader,
+    queries,
     deps.reputationCacheTtlMs ?? 30_000,
   );
   const recordCache = new ReputationRecordCache(

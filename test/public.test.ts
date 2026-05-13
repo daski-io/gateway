@@ -422,6 +422,75 @@ describe("public v1 — /services/:agentId", () => {
     expect(body.serviceReputation.fulfillmentSampleSize).toBe(3);
   });
 
+  it("surfaces totalSpentUsdc on both reputation (provider) and serviceReputation (service)", async () => {
+    gateway.registerProvider({
+      tokenId: 11n,
+      name: "Spend Stats Provider",
+      priceUsdcSmallest: "1000000",
+      category: "domains",
+      skills: [
+        {
+          id: "register-domain",
+          metadata: {
+            paymentRequired: true,
+            baseAmount: "1000000",
+            serviceSlug: "domain-registration",
+          },
+        },
+      ],
+    });
+    await gateway.refresh();
+
+    const serviceId = computeServiceId(11n, "domain-registration", "1");
+    // ReputationStorage needs to be "configured" for the public route to
+    // return a populated reputation block. Counters can be zero — spend
+    // is what we're testing, sourced from the gateway DB not the contract.
+    gateway.mockChain.setProviderReputation(11n, {
+      completed: 0n,
+      failed: 0n,
+      canceled: 0n,
+      confirmed: 0n,
+      notConfirmed: 0n,
+    });
+    gateway.mockChain.setServiceReputation(serviceId, {
+      completed: 0n,
+      failed: 0n,
+      canceled: 0n,
+      confirmed: 0n,
+      notConfirmed: 0n,
+      totalRefunded: 0n,
+    });
+
+    // Two paid rows on this service: 12.34 + 7.66 = 20.00 USDC.
+    await seedPaid(gateway, {
+      serviceRef: ("0x" + "a1".repeat(32)) as Hex,
+      providerAgentId: 11n,
+      buyerAgentId: 5n,
+      amountAtomic: 12_340_000n,
+      skillId: "register-domain",
+      paymentId: 1101n,
+      txHash: ("0x" + "b1".repeat(32)) as Hex,
+      serviceId,
+      serviceSlug: "domain-registration",
+    });
+    await seedPaid(gateway, {
+      serviceRef: ("0x" + "a2".repeat(32)) as Hex,
+      providerAgentId: 11n,
+      buyerAgentId: 5n,
+      amountAtomic: 7_660_000n,
+      skillId: "register-domain",
+      paymentId: 1102n,
+      txHash: ("0x" + "b2".repeat(32)) as Hex,
+      serviceId,
+      serviceSlug: "domain-registration",
+    });
+
+    const res = await fetch(`${gateway.baseUrl}/public/v1/services/11`);
+    const body = (await res.json()) as any;
+    expect(body.reputation.totalSpentUsdc).toBe("20.00");
+    expect(body.serviceReputation.totalSpentUsdc).toBe("20.00");
+  });
+
   it("reports null averageFulfillmentSeconds when no paid rows have outcome records", async () => {
     gateway.registerProvider({
       tokenId: 10n,

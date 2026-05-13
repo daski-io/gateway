@@ -117,10 +117,20 @@ export interface PublicServiceReputation {
   canceledCount: number;
   confirmedCount: number;
   notConfirmedCount: number;
+  /**
+   * Total USDC settled through this gateway at this scope (provider-level
+   * for `reputation`, service-level for `serviceReputation`), two-decimal
+   * string. Sourced from `payment_challenges.amount` summed over paid
+   * rows — the gateway DB, not on-chain, because ReputationStorage tracks
+   * outcome counts but not dollar amounts. Always present; "0.00" when no
+   * paid rows have landed yet.
+   */
+  totalSpentUsdc: string;
 }
 
 export function deriveProviderReputation(
   raw: ProviderReputation,
+  totalSpentAtomic: bigint = 0n,
 ): PublicServiceReputation {
   const completed = Number(raw.completed);
   const failed = Number(raw.failed);
@@ -140,6 +150,7 @@ export function deriveProviderReputation(
     canceledCount: canceled,
     confirmedCount: confirmed,
     notConfirmedCount: notConfirmed,
+    totalSpentUsdc: atomicToUsdc(totalSpentAtomic),
   };
 }
 
@@ -175,14 +186,17 @@ export function deriveServiceReputation(
     averageFulfillmentSeconds: number | null;
     sampleSize: number;
   } = { averageFulfillmentSeconds: null, sampleSize: 0 },
+  totalSpentAtomic: bigint = 0n,
 ): PublicServiceLevelReputation {
   // ServiceReputation is structurally a superset of ProviderReputation
   // (same five outcome counters plus totalRefunded), so the existing rate
   // derivation works unchanged. The fulfillment aggregate is mixed in
   // separately because it's computed off-chain from per-record reads —
-  // callers without that data pass the default zero-sample object.
+  // callers without that data pass the default zero-sample object. The
+  // spend total comes from the gateway DB (not the contract) and is
+  // scoped to this serviceId.
   return {
-    ...deriveProviderReputation(raw),
+    ...deriveProviderReputation(raw, totalSpentAtomic),
     totalRefundedUsdc: atomicToUsdc(raw.totalRefunded),
     serviceId,
     averageFulfillmentSeconds: fulfillment.averageFulfillmentSeconds,
