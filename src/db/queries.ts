@@ -211,6 +211,27 @@ export function createQueries(pool: Pool) {
     },
 
     /**
+     * Service-scoped sibling of listRecentPaidByProvider. Returns the last
+     * `limit` paid challenges that hashed to this serviceId. Used by the
+     * per-service fulfillment-time aggregate — that aggregate samples this
+     * window rather than scanning all-time, so the RPC fan-out stays
+     * bounded even on hot services.
+     */
+    async listRecentPaidByServiceId(
+      serviceId: Hex,
+      limit: number,
+    ): Promise<StoredChallenge[]> {
+      const res = await pool.query<ChallengeRow>(
+        `SELECT * FROM payment_challenges
+          WHERE status = 'paid' AND service_id = $1
+          ORDER BY verified_at DESC
+          LIMIT $2`,
+        [hexToBytea(serviceId), limit],
+      );
+      return res.rows.map(rowToChallenge);
+    },
+
+    /**
      * Top-N skill matches for an embedded intent vector, ordered by
      * cosine distance ascending. Used by `search_services`. Caller is
      * expected to dedupe/aggregate by provider.

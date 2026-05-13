@@ -199,6 +199,92 @@ class RefundAmountCache {
   }
 }
 
+/**
+ * Per-serviceId cache for the average-fulfillment-time aggregate. The
+ * contract stores per-record fulfillmentTime but no aggregate, so we
+ * compute the mean off-chain over the last N paid challenges for the
+ * service. N caps the RPC fan-out on hot services and keeps the number
+ * reflective of *current* operational performance rather than averaging
+ * over slow historical periods.
+ *
+ * Reuses the supplied recordCache so per-record lookups warm both this
+ * aggregate and the activity-row enrichment in the same response.
+ * 60s TTL: aggregates move slowly (a new completed task shifts the mean
+ * by 1/N), so consumers can poll without thrashing the RPC.
+ */
+class ServiceFulfillmentCache {
+  private readonly entries = new Map<
+    string,
+    {
+      value: { averageFulfillmentSeconds: number | null; sampleSize: number };
+      fetchedAt: number;
+    }
+  >();
+  private readonly ttlMs: number;
+  constructor(
+    private readonly queries: Queries,
+    private readonly recordCache: ReputationRecordCache,
+    private readonly sampleLimit: number,
+    ttlMs = 60_000,
+  ) {
+    this.ttlMs = ttlMs;
+  }
+  async get(
+    serviceId: Hex,
+  ): Promise<{ averageFulfillmentSeconds: number | null; sampleSize: number }> {
+    const key = serviceId.toLowerCase();
+    const now = Date.now();
+    const hit = this.entries.get(key);
+    if (hit && now - hit.fetchedAt < this.ttlMs) return hit.value;
+
+    let challenges;
+    try {
+      challenges = await this.queries.listRecentPaidByServiceId(
+        serviceId,
+        this.sampleLimit,
+      );
+    } catch {
+      // DB failure: return previous value if any, else the empty default
+      // so the UI doesn't show stale or broken state.
+      return hit?.value ?? { averageFulfillmentSeconds: null, sampleSize: 0 };
+    }
+
+    const records = await Promise.all(
+      challenges.map((c) =>
+        c.paymentId != null
+          ? this.recordCache.get(c.paymentId)
+          : Promise.resolve(null),
+      ),
+    );
+
+    let sumSec = 0;
+    let count = 0;
+    for (const r of records) {
+      if (r?.outcomeRecorded && r.fulfillmentSeconds != null) {
+        // Per-record fulfillmentTime is bounded by realistic provider
+        // turnaround (hours to days), so Number is safe at the cast and
+        // the running sum stays well below MAX_SAFE_INTEGER even at
+        // sampleLimit * 86400.
+        sumSec += Number(r.fulfillmentSeconds);
+        count++;
+      }
+    }
+
+    const value = {
+      averageFulfillmentSeconds: count > 0 ? Math.round(sumSec / count) : null,
+      sampleSize: count,
+    };
+    this.entries.set(key, { value, fetchedAt: now });
+    return value;
+  }
+}
+
+// Default sample window for the per-service average. 100 keeps a single
+// cold-load fan-out under 100 RPCs (mitigated by the shared recordCache),
+// large enough to smooth out outliers, small enough that the mean
+// reflects recent performance not all-time.
+const SERVICE_FULFILLMENT_SAMPLE_LIMIT = 100;
+
 // Fan out per-row record + refund lookups in parallel. Rows without a
 // paymentId (legacy / mid-settlement rows) resolve to (null, 0n) without
 // touching either cache — the formatter renders defaults for both.
@@ -250,6 +336,8 @@ export interface PublicRouterDeps {
   reputationRecordCacheTtlMs?: number;
   /** Override the per-paymentId refund TTL (ms). Tests pass 0 to bypass caching. */
   refundAmountCacheTtlMs?: number;
+  /** Override the per-service fulfillment aggregate TTL (ms). Tests pass 0 to bypass caching. */
+  serviceFulfillmentCacheTtlMs?: number;
 }
 
 /**
@@ -281,6 +369,12 @@ export function createPublicRouter(deps: PublicRouterDeps): Router {
   const refundCache = new RefundAmountCache(
     reader,
     deps.refundAmountCacheTtlMs ?? 30_000,
+  );
+  const serviceFulfillmentCache = new ServiceFulfillmentCache(
+    queries,
+    recordCache,
+    SERVICE_FULFILLMENT_SAMPLE_LIMIT,
+    deps.serviceFulfillmentCacheTtlMs ?? 60_000,
   );
 
   router.get("/public/v1/services", (_req: Request, res: Response) => {
@@ -315,17 +409,24 @@ export function createPublicRouter(deps: PublicRouterDeps): Router {
         notFound(res, "unknown service");
         return;
       }
-      const [recent, reputation, serviceReputation] = await Promise.all([
-        queries.listRecentPaidByProvider(agentId, PER_SERVICE_RECENT_LIMIT),
-        reputationCache.get(agentId),
-        // Scope-narrow service-level counters. Reads only when the cached
-        // provider resolves to a primary serviceId — otherwise the UI sees
-        // null and renders the same empty state it uses for unconfigured
-        // ReputationStorage.
-        formatted.serviceId
-          ? serviceReputationCache.get(formatted.serviceId)
-          : Promise.resolve(null),
-      ]);
+      const [recent, reputation, serviceReputation, serviceFulfillment] =
+        await Promise.all([
+          queries.listRecentPaidByProvider(agentId, PER_SERVICE_RECENT_LIMIT),
+          reputationCache.get(agentId),
+          // Scope-narrow service-level counters. Reads only when the cached
+          // provider resolves to a primary serviceId — otherwise the UI sees
+          // null and renders the same empty state it uses for unconfigured
+          // ReputationStorage.
+          formatted.serviceId
+            ? serviceReputationCache.get(formatted.serviceId)
+            : Promise.resolve(null),
+          // Off-chain average fulfillment time over the recent sample
+          // window. Computed only when we have a serviceId to scope to;
+          // otherwise the merge below leaves the field unchanged.
+          formatted.serviceId
+            ? serviceFulfillmentCache.get(formatted.serviceId)
+            : Promise.resolve(null),
+        ]);
       const enrichment = await loadEnrichmentFor(recent, recordCache, refundCache);
       const recentPurchases = recent.map((c, i) =>
         formatActivityRow(
@@ -335,11 +436,24 @@ export function createPublicRouter(deps: PublicRouterDeps): Router {
           enrichment[i]?.refundedAtomic ?? 0n,
         ),
       );
+      // Merge the fulfillment aggregate into the already-derived service
+      // reputation. The two caches have independent TTLs (60s for the
+      // aggregate, 30s for the raw counters) so we don't recompute the
+      // mean every time a new transaction shifts a counter.
+      const mergedServiceReputation =
+        serviceReputation && serviceFulfillment
+          ? {
+              ...serviceReputation,
+              averageFulfillmentSeconds:
+                serviceFulfillment.averageFulfillmentSeconds,
+              fulfillmentSampleSize: serviceFulfillment.sampleSize,
+            }
+          : serviceReputation;
       res.json({
         ...formatted,
         recentPurchases,
         reputation,
-        serviceReputation,
+        serviceReputation: mergedServiceReputation,
       });
     },
   );

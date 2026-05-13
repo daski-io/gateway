@@ -148,25 +148,45 @@ export function deriveProviderReputation(
  * counters (so the UI can reuse rate derivations) plus `totalRefundedUsdc`,
  * which the contract tracks per-service only, and the on-chain `serviceId`
  * so consumers can deep-link to ServiceRegistry / cross-reference logs.
+ *
+ * `averageFulfillmentSeconds` is computed off-chain over the most recent
+ * paid purchases for this serviceId — the contract stores per-record
+ * fulfillment time but no aggregate, and a full all-time scan would be
+ * unbounded RPC cost on hot services. `fulfillmentSampleSize` is the
+ * number of records that actually contributed to the mean (i.e. had a
+ * provider-attested outcome), so consumers can distinguish "average over
+ * 100 fulfilled tasks" from "average over 2 fulfilled tasks (low signal)".
  */
 export interface PublicServiceLevelReputation extends PublicServiceReputation {
   /** USDC, two-decimal string. Atomic sum of refunds for this serviceId. */
   totalRefundedUsdc: string;
   /** 32-byte hex serviceId of the service these counters scope to. */
   serviceId: Hex;
+  /** Mean fulfillment time in whole seconds; null when no fulfilled samples. */
+  averageFulfillmentSeconds: number | null;
+  /** Count of records that contributed to the mean. */
+  fulfillmentSampleSize: number;
 }
 
 export function deriveServiceReputation(
   raw: ServiceReputation,
   serviceId: Hex,
+  fulfillment: {
+    averageFulfillmentSeconds: number | null;
+    sampleSize: number;
+  } = { averageFulfillmentSeconds: null, sampleSize: 0 },
 ): PublicServiceLevelReputation {
   // ServiceReputation is structurally a superset of ProviderReputation
   // (same five outcome counters plus totalRefunded), so the existing rate
-  // derivation works unchanged.
+  // derivation works unchanged. The fulfillment aggregate is mixed in
+  // separately because it's computed off-chain from per-record reads —
+  // callers without that data pass the default zero-sample object.
   return {
     ...deriveProviderReputation(raw),
     totalRefundedUsdc: atomicToUsdc(raw.totalRefunded),
     serviceId,
+    averageFulfillmentSeconds: fulfillment.averageFulfillmentSeconds,
+    fulfillmentSampleSize: fulfillment.sampleSize,
   };
 }
 

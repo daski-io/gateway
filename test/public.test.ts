@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { startTestGateway, type TestGateway } from "./helpers/setup.js";
+import { computeServiceId } from "../src/payment/requirements.js";
 import type { Hex } from "../src/types.js";
 
 const PROVIDER_A2A = "http://provider.test/a2a";
@@ -14,6 +15,14 @@ async function seedPaid(
     skillId?: string;
     paymentId: bigint;
     txHash: Hex;
+    /**
+     * On-chain serviceId baked into the challenge. Defaults to ZERO so
+     * older tests that don't care continue to pass; tests that exercise
+     * service-scoped queries pass the computed serviceId so the row is
+     * findable via `listRecentPaidByServiceId`.
+     */
+    serviceId?: Hex;
+    serviceSlug?: string;
   },
 ): Promise<void> {
   const queries = gateway.bundle.queries;
@@ -26,9 +35,9 @@ async function seedPaid(
     buyerTokenId: args.buyerAgentId,
     amount: args.amountAtomic,
     skillId: args.skillId ?? null,
-    serviceSlug: args.skillId ?? "test-service",
+    serviceSlug: args.serviceSlug ?? args.skillId ?? "test-service",
     serviceVersion: "1",
-    serviceId: ("0x" + "00".repeat(32)) as Hex,
+    serviceId: args.serviceId ?? (("0x" + "00".repeat(32)) as Hex),
     providerA2AUrl: PROVIDER_A2A,
     walletAddress: gateway.buyerAddress,
     expiresAt: new Date(Date.now() + 3600 * 1000),
@@ -320,6 +329,131 @@ describe("public v1 — /services/:agentId", () => {
     expect(row.outcome).toBe("Completed");
     expect(row.confirmation).toBe("Confirmed");
     expect(row.fulfillmentSeconds).toBe(1234);
+  });
+
+  it("computes averageFulfillmentSeconds + fulfillmentSampleSize over the recent paid sample", async () => {
+    // Provider with explicit serviceSlug metadata, so derivePrimaryServiceId
+    // returns the same on-chain serviceId we'll bake into the seeded rows
+    // — that's what `listRecentPaidByServiceId` filters on.
+    gateway.registerProvider({
+      tokenId: 9n,
+      name: "Fulfillment Stats Provider",
+      priceUsdcSmallest: "1000000",
+      category: "domains",
+      skills: [
+        {
+          id: "register-domain",
+          metadata: {
+            paymentRequired: true,
+            baseAmount: "1000000",
+            serviceSlug: "domain-registration",
+          },
+        },
+      ],
+    });
+    await gateway.refresh();
+
+    const serviceId = computeServiceId(9n, "domain-registration", "1");
+
+    // ReputationStorage must be "configured" for the public route to
+    // attempt service-scoped reads. Set a zeroed counter — the aggregate
+    // is what we're testing, not the counter values themselves.
+    gateway.mockChain.setServiceReputation(serviceId, {
+      completed: 3n,
+      failed: 0n,
+      canceled: 0n,
+      confirmed: 0n,
+      notConfirmed: 0n,
+      totalRefunded: 0n,
+    });
+
+    // Three completed records: 10s, 20s, 60s → mean = 30s exact.
+    const fulfillments = [
+      { paymentId: 901n, seconds: 10n },
+      { paymentId: 902n, seconds: 20n },
+      { paymentId: 903n, seconds: 60n },
+    ];
+    for (const [i, { paymentId, seconds }] of fulfillments.entries()) {
+      await seedPaid(gateway, {
+        serviceRef: ("0x" + (i + 90).toString(16).padStart(64, "0")) as Hex,
+        providerAgentId: 9n,
+        buyerAgentId: 11n,
+        amountAtomic: 1_000_000n,
+        skillId: "register-domain",
+        paymentId,
+        txHash: ("0x" + (i + 200).toString(16).padStart(64, "0")) as Hex,
+        serviceId,
+        serviceSlug: "domain-registration",
+      });
+      gateway.mockChain.setReputationRecord(paymentId, {
+        paymentId,
+        providerAgentId: 9n,
+        buyerAgentId: 11n,
+        serviceId,
+        outcome: "Completed",
+        confirmation: "Pending",
+        fulfillmentSeconds: seconds,
+        outcomeTimestamp: 1_700_000_000n,
+        confirmationTimestamp: 0n,
+        outcomeRecorded: true,
+      });
+    }
+
+    // Plus one row whose outcome hasn't been attested — should NOT
+    // contribute to the mean. Mirrors a real "settled but waiting on
+    // provider" state.
+    await seedPaid(gateway, {
+      serviceRef: ("0x" + "f0".repeat(32)) as Hex,
+      providerAgentId: 9n,
+      buyerAgentId: 11n,
+      amountAtomic: 1_000_000n,
+      skillId: "register-domain",
+      paymentId: 904n,
+      txHash: ("0x" + "f1".repeat(32)) as Hex,
+      serviceId,
+      serviceSlug: "domain-registration",
+    });
+    // No setReputationRecord call → record returns null → excluded.
+
+    const res = await fetch(`${gateway.baseUrl}/public/v1/services/9`);
+    const body = (await res.json()) as any;
+    expect(body.serviceReputation).not.toBeNull();
+    expect(body.serviceReputation.averageFulfillmentSeconds).toBe(30);
+    expect(body.serviceReputation.fulfillmentSampleSize).toBe(3);
+  });
+
+  it("reports null averageFulfillmentSeconds when no paid rows have outcome records", async () => {
+    gateway.registerProvider({
+      tokenId: 10n,
+      name: "No Fulfillment Yet",
+      priceUsdcSmallest: "1000000",
+      category: "domains",
+      skills: [
+        {
+          id: "register-domain",
+          metadata: {
+            paymentRequired: true,
+            baseAmount: "1000000",
+            serviceSlug: "domain-registration",
+          },
+        },
+      ],
+    });
+    await gateway.refresh();
+    const serviceId = computeServiceId(10n, "domain-registration", "1");
+    gateway.mockChain.setServiceReputation(serviceId, {
+      completed: 0n,
+      failed: 0n,
+      canceled: 0n,
+      confirmed: 0n,
+      notConfirmed: 0n,
+      totalRefunded: 0n,
+    });
+
+    const res = await fetch(`${gateway.baseUrl}/public/v1/services/10`);
+    const body = (await res.json()) as any;
+    expect(body.serviceReputation.averageFulfillmentSeconds).toBeNull();
+    expect(body.serviceReputation.fulfillmentSampleSize).toBe(0);
   });
 
   it("returns 404 for an unknown agentId", async () => {
