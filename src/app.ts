@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import type { Config } from "./config.js";
 import type { ChainReader } from "./chain/reader.js";
 import { DiscoveryCache } from "./discovery/cache.js";
+import { extractAgentCardUrl } from "./discovery/format.js";
 import { createDiscoveryRouter } from "./discovery/routes.js";
 import { createPurchaseRouter } from "./payment/routes.js";
 import { createConfirmRouter } from "./payment/confirm.js";
@@ -230,7 +231,8 @@ export async function createApp(options: CreateAppOptions): Promise<AppBundle> {
       const skills = Array.isArray((p.agentCard as { skills?: unknown }).skills)
         ? ((p.agentCard as { skills: Array<Record<string, unknown>> }).skills)
         : [];
-      const card = p.agentCard as { url?: string; name?: string };
+      const card = p.agentCard as { name?: string };
+      const providerA2AUrl = extractAgentCardUrl(p.agentCard);
       return skills.flatMap((s) => {
         const meta = (s.metadata as Record<string, unknown> | undefined)?.[
           "https://daski.xyz/a2a/v1"
@@ -249,7 +251,7 @@ export async function createApp(options: CreateAppOptions): Promise<AppBundle> {
             description: `${card.name ?? "provider"} — ${s.id}`,
             providerTokenId: p.agentId.toString(),
             skillId: s.id,
-            providerA2AUrl: card.url ?? null,
+            providerA2AUrl,
           },
         ];
       });

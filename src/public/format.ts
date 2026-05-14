@@ -7,7 +7,9 @@ import type {
   TransactionOutcome,
 } from "../chain/reader.js";
 import {
+  extractAgentCardIconUrl,
   extractAgentCardName,
+  extractAgentCardProvider,
   extractAgentCardUrl,
   extractMarketplaceExtension,
 } from "../discovery/format.js";
@@ -39,6 +41,18 @@ export interface PublicService {
    */
   providerName: string | null;
   providerDescription: string | null;
+  /**
+   * Provider website URL from A2A v1.0 `provider.url`. Null when the
+   * AgentCard omits the provider block. Distinct from `providerA2AUrl`
+   * (the JSON-RPC endpoint); this one is what marketplace UIs link the
+   * provider chip to.
+   */
+  providerWebsite: string | null;
+  /**
+   * Square icon for the provider's brand mark from A2A v1.0 `iconUrl`.
+   * Null when unset; the website falls back to a category-derived icon.
+   */
+  iconUrl: string | null;
   /**
    * Primary on-chain service identity for this provider. With current 1:1
    * cardinality (one provider lists one service), this is the only service;
@@ -415,6 +429,8 @@ export function formatServiceForPublic(
     providerA2AUrl: extractAgentCardUrl(provider.agentCard),
     providerName: provider.providerName,
     providerDescription: provider.providerDescription,
+    providerWebsite: extractAgentCardProvider(provider.agentCard).url,
+    iconUrl: extractAgentCardIconUrl(provider.agentCard),
     serviceId: primary?.serviceId ?? null,
     serviceSlug: primary?.serviceSlug ?? null,
     serviceVersion: primary?.serviceVersion ?? null,

@@ -21,11 +21,48 @@ export function extractAgentCardName(
   return typeof name === "string" ? name : "(unnamed)";
 }
 
+// A2A v1.0 moved the primary endpoint into `supportedInterfaces[0].url`;
+// v0.3 cards still carry it at the top level as `url`. Gateway sees both
+// in the wild (one provider can update ahead of another), so we read the
+// v1 location first and fall back. Same dual-read applies to the other
+// extractors below — never delete the legacy branch without auditing
+// every provider that landed before the v1.0 cutover.
 export function extractAgentCardUrl(
   agentCard: Record<string, unknown>,
 ): string | null {
-  const url = agentCard["url"];
-  return typeof url === "string" ? url : null;
+  const interfaces = agentCard["supportedInterfaces"];
+  if (Array.isArray(interfaces) && interfaces.length > 0) {
+    const first = interfaces[0];
+    if (first && typeof first === "object") {
+      const url = (first as Record<string, unknown>)["url"];
+      if (typeof url === "string" && url.length > 0) return url;
+    }
+  }
+  const legacy = agentCard["url"];
+  return typeof legacy === "string" ? legacy : null;
+}
+
+export function extractAgentCardIconUrl(
+  agentCard: Record<string, unknown>,
+): string | null {
+  const url = agentCard["iconUrl"];
+  return typeof url === "string" && url.length > 0 ? url : null;
+}
+
+// AgentProvider per A2A v1.0 §4.4.2 — `{ organization, url }`. We surface
+// it flat (providerOrganization / providerWebsite) so the public REST
+// shape stays addressable from the website without nested optional reads.
+export function extractAgentCardProvider(
+  agentCard: Record<string, unknown>,
+): { organization: string | null; url: string | null } {
+  const provider = agentCard["provider"];
+  if (!provider || typeof provider !== "object") {
+    return { organization: null, url: null };
+  }
+  const p = provider as Record<string, unknown>;
+  const organization = typeof p.organization === "string" ? p.organization : null;
+  const url = typeof p.url === "string" ? p.url : null;
+  return { organization, url };
 }
 
 export interface DiscoverFilters {

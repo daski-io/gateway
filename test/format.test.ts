@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { formatForSkillDiscover } from "../src/discovery/format.js";
+import {
+  extractAgentCardIconUrl,
+  extractAgentCardProvider,
+  extractAgentCardUrl,
+  formatForSkillDiscover,
+} from "../src/discovery/format.js";
 import { DASKI_A2A_EXTENSION_URI } from "../src/config.js";
 import type { CachedProvider } from "../src/types.js";
 
@@ -194,5 +199,55 @@ describe("formatForSkillDiscover — skill extraction", () => {
     const skills = svc.skills as Array<Record<string, unknown>>;
     expect(skills[0].paymentRequired).toBe(true); // shape A wins
     expect(skills[0].baseAmount).toBe("5.00");
+  });
+});
+
+describe("AgentCard URL/icon/provider extractors", () => {
+  // The gateway sees both A2A v0.3-shaped cards (`url` at root,
+  // `transport` per interface) and v1.0-shaped ones (URL moved under
+  // `supportedInterfaces[]`, plus `iconUrl` and `provider`). These tests
+  // pin the dual-read so a future cleanup that drops the legacy branch
+  // won't quietly orphan pre-v1 providers.
+  it("reads url from supportedInterfaces[0] when present (A2A v1.0)", () => {
+    expect(
+      extractAgentCardUrl({
+        supportedInterfaces: [
+          {
+            url: "https://prov.test/a2a/foo",
+            protocolBinding: "JSONRPC",
+            protocolVersion: "1.0",
+          },
+        ],
+      }),
+    ).toBe("https://prov.test/a2a/foo");
+  });
+
+  it("falls back to top-level url when supportedInterfaces is absent (A2A v0.3)", () => {
+    expect(extractAgentCardUrl({ url: "https://legacy.test/a2a" })).toBe(
+      "https://legacy.test/a2a",
+    );
+  });
+
+  it("returns null when neither shape carries a URL", () => {
+    expect(extractAgentCardUrl({})).toBeNull();
+    expect(extractAgentCardUrl({ supportedInterfaces: [] })).toBeNull();
+    expect(extractAgentCardUrl({ supportedInterfaces: [{ url: "" }] })).toBeNull();
+  });
+
+  it("extracts iconUrl and provider when emitted at the v1.0 root", () => {
+    expect(
+      extractAgentCardIconUrl({ iconUrl: "https://prov.test/icon.svg" }),
+    ).toBe("https://prov.test/icon.svg");
+    expect(extractAgentCardIconUrl({})).toBeNull();
+
+    expect(
+      extractAgentCardProvider({
+        provider: { organization: "Acme", url: "https://acme.example/" },
+      }),
+    ).toEqual({ organization: "Acme", url: "https://acme.example/" });
+    expect(extractAgentCardProvider({})).toEqual({
+      organization: null,
+      url: null,
+    });
   });
 });
