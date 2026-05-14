@@ -15,6 +15,11 @@ import {
 // otherwise OOM the gateway via `res.json()` on every refresh.
 const AGENT_CARD_MAX_BYTES = 256 * 1024;
 
+function strField(doc: Record<string, unknown>, key: string): string | null {
+  const v = doc[key];
+  return typeof v === "string" && v.length > 0 ? v : null;
+}
+
 export type FetchFn = (
   url: string,
   init?: RequestInit,
@@ -120,6 +125,8 @@ export class DiscoveryCache {
           agentCard: resolved.agentCard,
           providerName: resolved.providerName,
           providerDescription: resolved.providerDescription,
+          providerImage: resolved.providerImage,
+          providerExternalUrl: resolved.providerExternalUrl,
           lastFetched: new Date(),
           fetchError: null,
         });
@@ -141,6 +148,8 @@ export class DiscoveryCache {
             agentCard: {},
             providerName: null,
             providerDescription: null,
+            providerImage: null,
+            providerExternalUrl: null,
             lastFetched: new Date(),
             fetchError: message,
           });
@@ -204,33 +213,55 @@ export class DiscoveryCache {
     agentCard: Record<string, unknown>;
     providerName: string | null;
     providerDescription: string | null;
+    providerImage: string | null;
+    providerExternalUrl: string | null;
   }> {
     const doc = await this.fetchJson(agentURI);
 
     const services = doc["services"];
     if (Array.isArray(services)) {
-      const providerName =
-        typeof doc["name"] === "string" ? (doc["name"] as string) : null;
-      const providerDescription =
-        typeof doc["description"] === "string"
-          ? (doc["description"] as string)
-          : null;
+      const providerName = strField(doc, "name");
+      const providerDescription = strField(doc, "description");
+      // ERC-8004 §registration-v1 / ERC-721 metadata. `image` is the
+      // canonical icon slot; `external_url` is the ERC-721/OpenSea
+      // convention for a project homepage. Both are SHOULD-level, so
+      // null is the steady state for providers who haven't filled them.
+      const providerImage = strField(doc, "image");
+      const providerExternalUrl = strField(doc, "external_url");
       const a2a = services.find(
         (s: any) => s && typeof s === "object" && s.name === "A2A",
       );
       if (a2a && typeof a2a.endpoint === "string") {
         const agentCard = await this.fetchJson(a2a.endpoint);
-        return { agentCard, providerName, providerDescription };
+        return {
+          agentCard,
+          providerName,
+          providerDescription,
+          providerImage,
+          providerExternalUrl,
+        };
       }
       // No A2A endpoint — the registration file itself has no Agent Card to
       // serve. Return the registration doc so downstream callers at least
       // see the ERC-8004 metadata.
-      return { agentCard: doc, providerName, providerDescription };
+      return {
+        agentCard: doc,
+        providerName,
+        providerDescription,
+        providerImage,
+        providerExternalUrl,
+      };
     }
 
     // Flat Agent Card (pre-ERC-8004 layout). No registration-level identity
     // is available in this shape.
-    return { agentCard: doc, providerName: null, providerDescription: null };
+    return {
+      agentCard: doc,
+      providerName: null,
+      providerDescription: null,
+      providerImage: null,
+      providerExternalUrl: null,
+    };
   }
 
   private async fetchJson(uri: string): Promise<Record<string, unknown>> {

@@ -54,6 +54,17 @@ export interface CachedProvider {
    */
   providerName: string | null;
   providerDescription: string | null;
+  /**
+   * Provider brand mark from the ERC-8004 registration file's `image`
+   * field (ERC-721 metadata convention). Null when unset or when the
+   * provider serves a flat agent card.
+   */
+  providerImage: string | null;
+  /**
+   * Provider homepage from the ERC-8004 registration file's
+   * `external_url` field (ERC-721/OpenSea convention). Null when unset.
+   */
+  providerExternalUrl: string | null;
   lastFetched: Date;
   fetchError: string | null;
 }

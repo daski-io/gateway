@@ -7,9 +7,7 @@ import type {
   TransactionOutcome,
 } from "../chain/reader.js";
 import {
-  extractAgentCardIconUrl,
   extractAgentCardName,
-  extractAgentCardProvider,
   extractAgentCardUrl,
   extractMarketplaceExtension,
 } from "../discovery/format.js";
@@ -42,14 +40,16 @@ export interface PublicService {
   providerName: string | null;
   providerDescription: string | null;
   /**
-   * Provider website URL from A2A v1.0 `provider.url`. Null when the
-   * AgentCard omits the provider block. Distinct from `providerA2AUrl`
-   * (the JSON-RPC endpoint); this one is what marketplace UIs link the
-   * provider chip to.
+   * Provider website URL from the ERC-8004 registration file's
+   * `external_url` (ERC-721/OpenSea homepage convention). Null when the
+   * provider hasn't set PROVIDER_WEBSITE_URL. Distinct from
+   * `providerA2AUrl` (the JSON-RPC endpoint); this one is what
+   * marketplace UIs link the provider chip to.
    */
   providerWebsite: string | null;
   /**
-   * Square icon for the provider's brand mark from A2A v1.0 `iconUrl`.
+   * Square icon for the provider's brand mark from the ERC-8004
+   * registration file's `image` field (ERC-721 metadata convention).
    * Null when unset; the website falls back to a category-derived icon.
    */
   iconUrl: string | null;
@@ -429,8 +429,8 @@ export function formatServiceForPublic(
     providerA2AUrl: extractAgentCardUrl(provider.agentCard),
     providerName: provider.providerName,
     providerDescription: provider.providerDescription,
-    providerWebsite: extractAgentCardProvider(provider.agentCard).url,
-    iconUrl: extractAgentCardIconUrl(provider.agentCard),
+    providerWebsite: provider.providerExternalUrl,
+    iconUrl: provider.providerImage,
     serviceId: primary?.serviceId ?? null,
     serviceSlug: primary?.serviceSlug ?? null,
     serviceVersion: primary?.serviceVersion ?? null,

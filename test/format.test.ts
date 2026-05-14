@@ -1,7 +1,5 @@
 import { describe, expect, it } from "vitest";
 import {
-  extractAgentCardIconUrl,
-  extractAgentCardProvider,
   extractAgentCardUrl,
   formatForSkillDiscover,
 } from "../src/discovery/format.js";
@@ -28,6 +26,8 @@ function makeProvider(
     agentCard,
     providerName: null,
     providerDescription: null,
+    providerImage: null,
+    providerExternalUrl: null,
     lastFetched: new Date(),
     fetchError: null,
   };
@@ -202,12 +202,13 @@ describe("formatForSkillDiscover — skill extraction", () => {
   });
 });
 
-describe("AgentCard URL/icon/provider extractors", () => {
-  // The gateway sees both A2A v0.3-shaped cards (`url` at root,
-  // `transport` per interface) and v1.0-shaped ones (URL moved under
-  // `supportedInterfaces[]`, plus `iconUrl` and `provider`). These tests
-  // pin the dual-read so a future cleanup that drops the legacy branch
-  // won't quietly orphan pre-v1 providers.
+describe("AgentCard URL extractor — A2A v1.0/v0.3 dual-read", () => {
+  // Gateway sees both v0.3-shaped cards (`url` at root) and v1.0-shaped
+  // ones (URL under `supportedInterfaces[0]`). These tests pin the
+  // dual-read so a future cleanup that drops the legacy branch won't
+  // quietly orphan pre-v1 providers. Provider-level icon/website are NO
+  // LONGER read from the AgentCard — they live on the ERC-8004
+  // registration file (cache.ts.resolveAgentCard), not here.
   it("reads url from supportedInterfaces[0] when present (A2A v1.0)", () => {
     expect(
       extractAgentCardUrl({
@@ -232,22 +233,5 @@ describe("AgentCard URL/icon/provider extractors", () => {
     expect(extractAgentCardUrl({})).toBeNull();
     expect(extractAgentCardUrl({ supportedInterfaces: [] })).toBeNull();
     expect(extractAgentCardUrl({ supportedInterfaces: [{ url: "" }] })).toBeNull();
-  });
-
-  it("extracts iconUrl and provider when emitted at the v1.0 root", () => {
-    expect(
-      extractAgentCardIconUrl({ iconUrl: "https://prov.test/icon.svg" }),
-    ).toBe("https://prov.test/icon.svg");
-    expect(extractAgentCardIconUrl({})).toBeNull();
-
-    expect(
-      extractAgentCardProvider({
-        provider: { organization: "Acme", url: "https://acme.example/" },
-      }),
-    ).toEqual({ organization: "Acme", url: "https://acme.example/" });
-    expect(extractAgentCardProvider({})).toEqual({
-      organization: null,
-      url: null,
-    });
   });
 });
