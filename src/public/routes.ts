@@ -5,6 +5,10 @@ import type { Queries } from "../db/queries.js";
 import type { DiscoveryCache } from "../discovery/cache.js";
 import { extractAgentCardName } from "../discovery/format.js";
 import {
+  fetchAgentCard,
+  type FetchAgentCardOptions,
+} from "../identity/fetch-agent-card.js";
+import {
   deriveProviderReputation,
   deriveServiceReputation,
   formatActivityRow,
@@ -301,6 +305,108 @@ class ServiceFulfillmentCache {
 // reflects recent performance not all-time.
 const SERVICE_FULFILLMENT_SAMPLE_LIMIT = 100;
 
+// Cap the parallel buyer-name resolutions per request. Each miss costs one
+// IdentityRegistry.tokenURI RPC plus an outbound JSON fetch (IPFS gateway or
+// HTTPS), so an uncapped 200-row page would otherwise hit IPFS gateways with
+// 200 concurrent connections. Eight is enough to overlap network latency
+// without looking like a small DDoS.
+const BUYER_NAME_FETCH_CONCURRENCY = 8;
+
+/**
+ * Per-agentId cache for buyer display names. Resolves via
+ * `IdentityRegistry.tokenURI(agentId) → fetchAgentCard(uri) → metadata.name`.
+ * Long TTL (1h default) because names are stable per token — the brief
+ * accepts staleness on rotation, and a hot reload simply picks up the new
+ * value next TTL window.
+ *
+ * Two behaviors worth flagging:
+ *
+ *   - Negative caching: any failure (RPC error, fetch failure, malformed
+ *     JSON, missing `name`) caches `null` for the same TTL. Without this, a
+ *     broken IPFS pin would re-fetch on every request and degrade the whole
+ *     activity feed to the slowest buyer. The buyer must wait a TTL for
+ *     their fixed name to surface — acceptable tradeoff for marketing-site
+ *     latency.
+ *   - Inflight dedupe: concurrent misses for the same agentId coalesce into
+ *     one resolve call. The activity feed sees the same buyer multiple
+ *     times in steady state (repeat purchases), and a cold cache + 50-row
+ *     fan-out would otherwise spawn N parallel lookups for the same name.
+ */
+class BuyerNameCache {
+  private readonly entries = new Map<
+    string,
+    { value: string | null; fetchedAt: number }
+  >();
+  private readonly inflight = new Map<string, Promise<string | null>>();
+  private readonly ttlMs: number;
+  constructor(
+    private readonly reader: ChainReader,
+    private readonly fetchOptions: FetchAgentCardOptions,
+    ttlMs = 60 * 60 * 1000,
+  ) {
+    this.ttlMs = ttlMs;
+  }
+
+  async get(agentId: bigint): Promise<string | null> {
+    const key = agentId.toString();
+    const now = Date.now();
+    const hit = this.entries.get(key);
+    if (hit && now - hit.fetchedAt < this.ttlMs) return hit.value;
+
+    let pending = this.inflight.get(key);
+    if (!pending) {
+      pending = this.resolve(agentId).finally(() => {
+        this.inflight.delete(key);
+      });
+      this.inflight.set(key, pending);
+    }
+    const value = await pending;
+    this.entries.set(key, { value, fetchedAt: Date.now() });
+    return value;
+  }
+
+  private async resolve(agentId: bigint): Promise<string | null> {
+    try {
+      const uri = await this.reader.getAgentURI(agentId);
+      const card = await fetchAgentCard(uri, this.fetchOptions);
+      return card.name;
+    } catch {
+      // Any failure → null. We never throw out of this path: the activity
+      // feed must continue to render even if a single buyer's metadata is
+      // unreachable, and the `null` is the documented contract with the
+      // front-end. See PublicActivityRow.buyerName.
+      return null;
+    }
+  }
+}
+
+/**
+ * Concurrency-capped parallel map. Fans out at most `limit` workers over
+ * `items`, preserving result order. Used to bound the outbound network
+ * fan-out for per-row buyer-name resolution — without this, an N-row page
+ * spawns N concurrent IPFS gateway fetches on a cold cache.
+ */
+async function mapWithLimit<T, R>(
+  items: readonly T[],
+  limit: number,
+  fn: (item: T, idx: number) => Promise<R>,
+): Promise<R[]> {
+  const out: R[] = new Array(items.length);
+  let cursor = 0;
+  const worker = async () => {
+    while (true) {
+      const i = cursor++;
+      if (i >= items.length) return;
+      out[i] = await fn(items[i], i);
+    }
+  };
+  const workerCount = Math.min(limit, items.length);
+  await Promise.all(
+    Array.from({ length: workerCount }, () => worker()),
+  );
+  return out;
+}
+
 // Fan out per-row record + refund lookups in parallel. Rows without a
 // paymentId (legacy / mid-settlement rows) resolve to (null, 0n) without
 // touching either cache — the formatter renders defaults for both.
@@ -344,6 +450,13 @@ export interface PublicRouterDeps {
   cache: DiscoveryCache;
   queries: Queries;
   reader: ChainReader;
+  /**
+   * Test seam for the agentURI fetcher used to resolve buyer display names.
+   * Production leaves this undefined so `fetchAgentCard` uses its default
+   * `safeFetch`; tests pass a stub that returns canned JSON without going
+   * to the network. (data: URIs bypass this entirely.)
+   */
+  buyerAgentCardFetch?: FetchAgentCardOptions["fetchFn"];
   /** Override the block-number TTL (ms). Tests pass 0 to bypass caching. */
   blockNumberCacheTtlMs?: number;
   /** Override the provider-reputation TTL (ms). Tests pass 0 to bypass caching. */
@@ -354,6 +467,8 @@ export interface PublicRouterDeps {
   refundAmountCacheTtlMs?: number;
   /** Override the per-service fulfillment aggregate TTL (ms). Tests pass 0 to bypass caching. */
   serviceFulfillmentCacheTtlMs?: number;
+  /** Override the per-buyer name TTL (ms). Tests pass 0 to bypass caching. */
+  buyerNameCacheTtlMs?: number;
 }
 
 /**
@@ -393,6 +508,14 @@ export function createPublicRouter(deps: PublicRouterDeps): Router {
     recordCache,
     SERVICE_FULFILLMENT_SAMPLE_LIMIT,
     deps.serviceFulfillmentCacheTtlMs ?? 60_000,
+  );
+  const buyerNameCache = new BuyerNameCache(
+    reader,
+    {
+      ipfsGatewayUrl: config.ipfsGatewayUrl,
+      fetchFn: deps.buyerAgentCardFetch,
+    },
+    deps.buyerNameCacheTtlMs ?? 60 * 60 * 1000,
   );
 
   router.get("/public/v1/services", (_req: Request, res: Response) => {
@@ -445,11 +568,21 @@ export function createPublicRouter(deps: PublicRouterDeps): Router {
             ? serviceFulfillmentCache.get(formatted.serviceId)
             : Promise.resolve(null),
         ]);
-      const enrichment = await loadEnrichmentFor(recent, recordCache, refundCache);
+      const [enrichment, buyerNames] = await Promise.all([
+        loadEnrichmentFor(recent, recordCache, refundCache),
+        // Concurrency-capped fan-out so a cold cache on a hot service
+        // doesn't open ten parallel IPFS fetches. PER_SERVICE_RECENT_LIMIT
+        // is 10 today so the cap is rarely the binding constraint here,
+        // but keeps behavior symmetric with the larger /activity feed.
+        mapWithLimit(recent, BUYER_NAME_FETCH_CONCURRENCY, (c) =>
+          buyerNameCache.get(c.buyerTokenId),
+        ),
+      ]);
       const recentPurchases = recent.map((c, i) =>
         formatActivityRow(
           c,
           formatted.name,
+          buyerNames[i] ?? null,
           enrichment[i]?.record ?? null,
           enrichment[i]?.refundedAtomic ?? 0n,
         ),
@@ -493,12 +626,23 @@ export function createPublicRouter(deps: PublicRouterDeps): Router {
       );
     }
 
-    const enrichment = await loadEnrichmentFor(rows, recordCache, refundCache);
+    const [enrichment, buyerNames] = await Promise.all([
+      loadEnrichmentFor(rows, recordCache, refundCache),
+      // Capped fan-out: ACTIVITY_MAX_LIMIT is 200, so without a cap a cold
+      // load could spawn 200 concurrent IPFS gateway fetches and trip
+      // upstream rate limits. Eight is enough to overlap network latency
+      // without looking abusive; repeated buyers across rows coalesce via
+      // the cache's inflight map.
+      mapWithLimit(rows, BUYER_NAME_FETCH_CONCURRENCY, (c) =>
+        buyerNameCache.get(c.buyerTokenId),
+      ),
+    ]);
     res.json({
       activity: rows.map((c, i) =>
         formatActivityRow(
           c,
           nameByAgentId.get(c.providerTokenId.toString()) ?? null,
+          buyerNames[i] ?? null,
           enrichment[i]?.record ?? null,
           enrichment[i]?.refundedAtomic ?? 0n,
         ),

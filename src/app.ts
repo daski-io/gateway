@@ -351,7 +351,19 @@ export async function createApp(options: CreateAppOptions): Promise<AppBundle> {
       fetchAgentCardFn: options.buyerAgentCardFetch,
     }),
   );
-  app.use(createPublicRouter({ config, cache, queries, reader }));
+  app.use(
+    createPublicRouter({
+      config,
+      cache,
+      queries,
+      reader,
+      // Reuse the same buyer-card fetcher test seam the registration
+      // routes use — tests stub a single fetcher and want it applied to
+      // every path that resolves buyer agentURIs (registration AND
+      // activity-row name enrichment).
+      buyerAgentCardFetch: options.buyerAgentCardFetch,
+    }),
+  );
 
   let mcp: McpWiring | null = null;
   if (config.mcpEnabled) {

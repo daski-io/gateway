@@ -87,6 +87,14 @@ export class MockChainReader implements ChainReader {
     return uri;
   }
 
+  // Buyer-side tokenURIs aren't tied to a provider entry — used by the
+  // public-route buyer-name resolver. addProvider also populates
+  // `agentURIs`; this setter is for buyer-only IDs that don't appear in
+  // the provider list.
+  setAgentURI(agentId: bigint, uri: string): void {
+    this.agentURIs.set(agentId.toString(), uri);
+  }
+
   // Reverse-index. Tests that care about identity lookups call
   // setAgentOfWallet; default is 0n (= unregistered).
   private walletToAgent = new Map<string, bigint>();

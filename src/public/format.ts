@@ -212,6 +212,14 @@ export interface PublicActivityRow {
   /** Resolved from the discovery cache; null if the provider has been
    *  deregistered or removed from the whitelist since this row landed. */
   providerName: string | null;
+  /**
+   * Display name resolved from the buyer's ERC-8004 IdentityRegistry
+   * tokenURI metadata (`metadata.name`). Null when the buyer's NFT has no
+   * resolvable name, the metadata fetch failed, or the IdentityRegistry
+   * read errored — surfaces are designed to render `agent#<id>` in that
+   * case rather than break. Provider-side equivalent is `providerName`.
+   */
+  buyerName: string | null;
   /** USDC, two-decimal string. */
   amount: string;
   skillId: string | null;
@@ -423,6 +431,11 @@ export function formatServiceForPublic(
  * `providerName` is supplied by the caller (looked up against the cache);
  * passing null is fine and signals "provider no longer in cache".
  *
+ * `buyerName` is the symmetric field for the buyer — resolved from the
+ * buyer's IdentityRegistry tokenURI metadata. Pass null when the route's
+ * resolver couldn't load a name (unreachable agentURI, malformed JSON,
+ * missing `name` field); the UI degrades to `agent#<id>`.
+ *
  * `record` is the on-chain ReputationStorage.getRecord lookup for the
  * challenge's paymentId. Pass null when:
  *   - the gateway has no ReputationStorage configured
@@ -437,6 +450,7 @@ export function formatServiceForPublic(
 export function formatActivityRow(
   challenge: StoredChallenge,
   providerName: string | null,
+  buyerName: string | null,
   record: ReputationRecord | null,
   refundedAtomic: bigint,
 ): PublicActivityRow {
@@ -448,6 +462,7 @@ export function formatActivityRow(
     buyerAgentId: challenge.buyerTokenId.toString(),
     providerAgentId: challenge.providerTokenId.toString(),
     providerName,
+    buyerName,
     amount: atomicToUsdc(challenge.amount),
     skillId: challenge.skillId,
     timestamp,

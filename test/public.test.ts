@@ -289,6 +289,55 @@ describe("public v1 — /services/:agentId", () => {
     expect(body.recentPurchases[0].confirmationAttestationUid).toBeNull();
   });
 
+  it("resolves buyerName from the buyer's IdentityRegistry tokenURI metadata, or null on failure", async () => {
+    // Two paid rows: one buyer (7n) has a data: URI with a resolvable
+    // name, the other (8n) has no agentURI registered on the mock so the
+    // resolver call throws — the cache must catch and surface null
+    // rather than break the response.
+    const buyerCard = { name: "  Alice the Buyer  " }; // trimmed by fetchAgentCard
+    gateway.mockChain.setAgentURI(
+      7n,
+      `data:application/json,${encodeURIComponent(JSON.stringify(buyerCard))}`,
+    );
+
+    await seedPaid(gateway, {
+      serviceRef:
+        "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      providerAgentId: 1n,
+      buyerAgentId: 7n,
+      amountAtomic: 12_000_000n,
+      skillId: "register-domain",
+      paymentId: 110n,
+      txHash:
+        "0xabc1010101010101010101010101010101010101010101010101010101010101",
+    });
+    await seedPaid(gateway, {
+      serviceRef:
+        "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      providerAgentId: 1n,
+      buyerAgentId: 8n,
+      amountAtomic: 12_000_000n,
+      skillId: "register-domain",
+      paymentId: 111n,
+      txHash:
+        "0xabc2020202020202020202020202020202020202020202020202020202020202",
+    });
+
+    const res = await fetch(`${gateway.baseUrl}/public/v1/services/1`);
+    const body = (await res.json()) as any;
+
+    const rowResolved = body.recentPurchases.find(
+      (r: any) => r.buyerAgentId === "7",
+    );
+    expect(rowResolved.buyerName).toBe("Alice the Buyer");
+
+    const rowUnresolvable = body.recentPurchases.find(
+      (r: any) => r.buyerAgentId === "8",
+    );
+    // Resolver couldn't read tokenURI → null. The row still renders.
+    expect(rowUnresolvable.buyerName).toBeNull();
+  });
+
   it("surfaces on-chain outcome, confirmation, and fulfillmentSeconds from ReputationStorage.getRecord", async () => {
     await seedPaid(gateway, {
       serviceRef:
@@ -587,6 +636,45 @@ describe("public v1 — /activity", () => {
     expect(body.activity[0].fulfillmentSeconds).toBeNull();
     expect(body.activity[0].refundedUsdc).toBe("0.00");
     expect(body.activity[0].confirmationAttestationUid).toBeNull();
+  });
+
+  it("resolves buyerName from the buyer's IdentityRegistry tokenURI metadata on activity rows", async () => {
+    // Same resolution contract as recentPurchases — one buyer has a
+    // readable name, the other has no agentURI and degrades to null.
+    gateway.mockChain.setAgentURI(
+      5n,
+      `data:application/json,${encodeURIComponent(JSON.stringify({ name: "Bob the Buyer" }))}`,
+    );
+
+    await seedPaid(gateway, {
+      serviceRef:
+        "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      providerAgentId: 1n,
+      buyerAgentId: 5n,
+      amountAtomic: 12_000_000n,
+      skillId: "register-domain",
+      paymentId: 210n,
+      txHash:
+        "0xdef1010101010101010101010101010101010101010101010101010101010101",
+    });
+    await seedPaid(gateway, {
+      serviceRef:
+        "0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      providerAgentId: 1n,
+      buyerAgentId: 99n,
+      amountAtomic: 12_000_000n,
+      skillId: "register-domain",
+      paymentId: 211n,
+      txHash:
+        "0xdef2020202020202020202020202020202020202020202020202020202020202",
+    });
+
+    const res = await fetch(`${gateway.baseUrl}/public/v1/activity`);
+    const body = (await res.json()) as any;
+    const known = body.activity.find((r: any) => r.buyerAgentId === "5");
+    expect(known.buyerName).toBe("Bob the Buyer");
+    const unknown = body.activity.find((r: any) => r.buyerAgentId === "99");
+    expect(unknown.buyerName).toBeNull();
   });
 
   it("surfaces PaymentRouter.refundedAmount per activity row", async () => {
