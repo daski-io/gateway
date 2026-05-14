@@ -134,21 +134,41 @@ export function createQueries(pool: Pool) {
      * on-chain submission can succeed; this UPDATE records the winner
      * without racing a concurrent verify request. Returns true if this
      * call performed the transition.
+     *
+     * Pass `buyerAgentId` from the on-chain `PaymentSettled` event when
+     * the challenge was opened against an unregistered wallet
+     * (`buyer_token_id = 0` placeholder) and the atomic register-and-settle
+     * path minted a fresh agent. Without this backfill, the activity feed
+     * and buyer-name resolver would stay stuck on `agent#0` for every
+     * fresh-wallet purchase. For settle-only flows the placeholder already
+     * holds the real agentId and the event's value equals it, so passing
+     * it through is a no-op write.
      */
     async recordChallengePaid(
       serviceRef: Hex,
       paymentId: bigint,
       txHash: Hex,
+      buyerAgentId?: bigint,
     ): Promise<boolean> {
+      const setBuyer = buyerAgentId !== undefined;
       const res = await pool.query(
         `UPDATE payment_challenges
             SET status = 'paid',
                 payment_id = $1,
                 transaction_hash = $2,
-                verified_at = now()
+                verified_at = now()${
+                  setBuyer ? ",\n                buyer_token_id = $4" : ""
+                }
           WHERE service_ref = $3
             AND status = 'pending'`,
-        [paymentId.toString(), normalizeHex(txHash), hexToBytea(serviceRef)],
+        setBuyer
+          ? [
+              paymentId.toString(),
+              normalizeHex(txHash),
+              hexToBytea(serviceRef),
+              (buyerAgentId as bigint).toString(),
+            ]
+          : [paymentId.toString(), normalizeHex(txHash), hexToBytea(serviceRef)],
       );
       return (res.rowCount ?? 0) > 0;
     },

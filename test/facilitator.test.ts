@@ -303,6 +303,19 @@ describe("facilitator endpoints", () => {
     expect(cached).not.toBeNull();
     expect(cached?.resolvedName).toBe("buyer-test");
     expect(cached?.agentURI).toBe("ipfs://buyer.json");
+
+    // Backfill check: the challenge row was opened with buyer_token_id=0
+    // (atomic-register placeholder); after settle, the row must carry the
+    // freshly-minted agentId from the PaymentSettled event. Without this,
+    // /public/v1/activity would render `agent#0` and the buyer-name
+    // resolver would have nothing to look up.
+    const activityRes = await fetch(`${gateway.baseUrl}/public/v1/activity`);
+    const activityBody = (await activityRes.json()) as any;
+    const row = activityBody.activity.find(
+      (r: any) => r.txHash.toLowerCase() === TEST_TX.toLowerCase(),
+    );
+    expect(row).toBeDefined();
+    expect(row.buyerAgentId).toBe("77");
   });
 
   it("POST /settle returns 400 when challenge needs registration but body omits it", async () => {

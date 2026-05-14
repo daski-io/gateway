@@ -662,10 +662,17 @@ export async function verifyAndSettleWithRegistration(
     );
   }
 
+  // Backfill buyer_token_id with the freshly-minted agentId from the
+  // PaymentSettled event. The challenge was opened with `buyer_token_id = 0`
+  // (atomic-register placeholder); without this update the row stays at 0
+  // forever, the activity feed renders `agent#0`, and the public buyer-name
+  // resolver has nothing to look up. Safe for settle-only too (where the
+  // value already matches), but the atomic path is the case that needs it.
   await queries.recordChallengePaid(
     challenge.serviceRef,
     event.paymentId,
     settlement.transactionHash,
+    event.buyerAgentId,
   );
 
   // Mirror the buyer-name resolution that the /register flow does, so
