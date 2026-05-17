@@ -12,10 +12,14 @@ typed-data so any signer (Coinbase AgentKit, CDP Wallet MCP, viem, MetaMask,
 
 ## What's in this repo
 
-- **MCP server** at `/mcp` — `search_services`, `daski_purchase`,
-  `daski_settle_payment`, `daski_submit_task`, `daski_get_task_status`,
-  `daski_prepare_confirm`, `daski_confirm_delivery`, gasless registration,
-  and the rest of the wallet-agnostic tool surface.
+- **MCP server** at `/mcp` — `daski_search_services`, `daski_buy_service`
+  (orchestrator), `daski_submit_task`, `daski_get_task_status`,
+  `daski_confirm_delivery` (all public); `daski_register_agent`,
+  `daski_purchase`, `daski_settle_payment` (advanced). Pre-refactor names
+  (`search_services`, `daski_prepare_confirm`, etc.) remain callable for a
+  one-release-cycle grace period as deprecated aliases. Two-call patterns
+  collapse the old "prepare → submit" pairs into a single tool whose first
+  call returns typed-data and second call submits the signed payload.
 - **REST API** — `/purchase/:tokenId` (x402 paywalled), `/verify` + `/settle`
   (x402 facilitator), `/discover`, `/confirm/:paymentId`, gasless register
   endpoints, and read-only `/public/v1/*`.
@@ -29,7 +33,7 @@ typed-data so any signer (Coinbase AgentKit, CDP Wallet MCP, viem, MetaMask,
 
 - Node.js ≥ 20
 - Postgres 16 with the `pgvector` extension (Daski uses it for
-  `search_services` intent embeddings)
+  `daski_search_services` intent embeddings)
 - An EVM private key for the **facilitator** (signs settle transactions and
   delegated buyer confirmations — keep it funded with a little ETH on
   whichever Base network you're targeting)
@@ -101,7 +105,7 @@ works.
 ## Architecture
 
 - `src/app.ts` — Express wiring, route registration, MCP mount
-- `src/mcp/server.ts` — MCP tool surface (`search_services`, `daski_*`)
+- `src/mcp/server.ts` — MCP tool surface (`daski_search_services`, `daski_*`, deprecated aliases for one grace cycle)
 - `src/discovery/` — Agent Card cache + pgvector embedding sync
 - `src/payment/` — x402 challenge / verify / settle, EAS confirmation
 - `src/identity/` — ERC-8004 lookups + gasless registration

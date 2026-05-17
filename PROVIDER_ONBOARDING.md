@@ -24,10 +24,11 @@ admitted via the gateway's admin route) before discovery picks you up.
 
 > Note: the buyer-side flow is different. Buyers pass an optional `name`
 > (or `agentURI` for the rare case of a self-hosted card) to
-> `daski_prepare_registration`; the gateway builds the agentURI for them
-> and caches the display name. Providers always need a real hosted Agent
-> Card because they expose A2A endpoints — the buyer flow's `data:` URI
-> shortcut is not appropriate for the seller side.
+> `daski_register_agent` (or just call `daski_buy_service` and let it
+> auto-register on first purchase); the gateway builds the agentURI for
+> them and caches the display name. Providers always need a real hosted
+> Agent Card because they expose A2A endpoints — the buyer flow's `data:`
+> URI shortcut is not appropriate for the seller side.
 
 ---
 
@@ -204,7 +205,7 @@ your `name`, `serviceDescription`, `category`, plus per-skill `id`,
 
 The gateway re-fetches Agent Cards on a `CACHE_REFRESH_INTERVAL`
 schedule (default 60s in dev, longer in prod). Embedding sync runs
-lazily on the first `search_services` call after a cache change.
+lazily on the first `daski_search_services` call after a cache change.
 Practical impact: a skill update lands in the catalog within one
 refresh cycle, and in search results on the next intent query.
 

@@ -2,8 +2,13 @@ import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
-import type { Express } from "express";
+import {
+  isInitializeRequest,
+  ListToolsRequestSchema,
+} from "@modelcontextprotocol/sdk/types.js";
+import { normalizeObjectSchema } from "@modelcontextprotocol/sdk/server/zod-compat.js";
+import { toJsonSchemaCompat } from "@modelcontextprotocol/sdk/server/zod-json-schema-compat.js";
+import type { Express, Request } from "express";
 import type { Config } from "../config.js";
 import { DASKI_A2A_EXTENSION_URI, X402_VERSION } from "../config.js";
 import { buildEnvelopeAuth } from "../auth/envelope.js";
@@ -93,6 +98,153 @@ const HEX_ADDR = /^0x[0-9a-fA-F]{40}$/;
 const HEX_32 = /^0x[0-9a-fA-F]{64}$/;
 const DEC_POSITIVE = /^[1-9][0-9]*$/;
 
+// MCP enum sets — converted from free-text fields per the refactor brief so
+// the model can't invent plausible-but-wrong values for cryptic protocol
+// fields. Kept inline so any drift between docs and runtime is impossible.
+const SUPPORTED_CHAIN_IDS = [8453, 84532] as const;
+const SUPPORTED_NETWORKS = ["base", "base-sepolia"] as const;
+const SUPPORTED_SCHEMES = ["exact"] as const;
+const SUPPORTED_X402_VERSIONS = [1] as const;
+
+// Server-level instructions — planted in the MCP `initialize` response and
+// surfaced by Anthropic clients before any individual tool description. The
+// canonical workflow lives here so the model has the map before it sees the
+// individual tool surface.
+const SERVER_INSTRUCTIONS = [
+  "Daski lets your agent buy real-world business services — domain",
+  "registration, LLC formation, hosting, email — by paying USDC on Base.",
+  "The protocol is non-custodial; the gateway never holds funds.",
+  "",
+  "Canonical workflow:",
+  "  1. daski_search_services    — find a provider",
+  "  2. daski_buy_service        — pay (auto-registers fresh wallets)",
+  "  3. daski_submit_task        — dispatch the work (or for free skills, call directly)",
+  "  4. daski_get_task_status    — poll until 'completed' or 'failed'",
+  "  5. daski_confirm_delivery   — leave an on-chain attestation (optional)",
+  "",
+  "Other tools (daski_register_agent, daski_purchase, daski_settle_payment)",
+  "are advanced/manual paths. Use them only when daski_buy_service doesn't fit.",
+  "",
+  "Sandbox runs on Base Sepolia testnet (chainId 84532). Faucet USDC:",
+  "https://faucet.circle.com/. Mainnet (chainId 8453) launches after the next",
+  "batch of service categories goes live.",
+].join("\n");
+
+// Per-session marker carried on the McpServer instance so the tools/list
+// override knows whether deprecated aliases should be visible. The
+// /mcp POST handler reads `?include=deprecated=1` or
+// `X-Daski-Include-Deprecated: 1` from the inbound request and sets this
+// before `buildSession()` registers tools.
+type DeprecationFlag = { includeDeprecated: boolean };
+
+function requestWantsDeprecated(req: Request): boolean {
+  const headerRaw = req.headers["x-daski-include-deprecated"];
+  const header = Array.isArray(headerRaw) ? headerRaw[0] : headerRaw;
+  if (typeof header === "string" && header.trim() !== "" && header !== "0") {
+    return true;
+  }
+  const q = req.query?.include;
+  const qStr = Array.isArray(q) ? q[0] : q;
+  if (typeof qStr === "string") {
+    // Accept any of `?include=deprecated`, `?include=deprecated,foo`,
+    // or `?include=1` — keep the matcher permissive so URL-typing slips
+    // don't lock callers out.
+    if (qStr.split(",").map((s) => s.trim()).includes("deprecated")) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// Names of the deprecated tools — kept in one place so the
+// tools/list filter, the deprecation-warning logger, and any future
+// telemetry stay in sync.
+const DEPRECATED_TOOL_NAMES = new Set<string>([
+  "search_services",
+  "daski_get_provider",
+  "daski_build_envelope_auth",
+  "daski_prepare_registration",
+  "daski_register_buyer",
+  "daski_prepare_confirm",
+]);
+
+// Replacement table emitted in the deprecation log so dashboards can
+// aggregate "callers still on X" without parsing the log message.
+const DEPRECATED_TOOL_REPLACEMENTS: Record<string, string> = {
+  search_services: "daski_search_services",
+  daski_get_provider: "daski://provider/{tokenId} (MCP Resource)",
+  daski_build_envelope_auth: "daski_submit_task (first call without envelopeAuth)",
+  daski_prepare_registration: "daski_register_agent (first call without signature)",
+  daski_register_buyer: "daski_register_agent (second call with signature)",
+  daski_prepare_confirm: "daski_confirm_delivery (first call without signature)",
+};
+
+function logDeprecatedToolCall(name: string): void {
+  console.log(
+    JSON.stringify({
+      timestamp: new Date().toISOString(),
+      level: "warn",
+      event: "deprecated_tool_call",
+      tool: name,
+      replacement: DEPRECATED_TOOL_REPLACEMENTS[name] ?? null,
+    }),
+  );
+}
+
+// Mirrors the SDK's auto-generated `tools/list` payload using its own
+// serialization helpers, so the override produced by `buildSession` matches
+// the SDK's shape byte-for-byte. The SDK doesn't expose a public iterator
+// over registered tools, so we read its private `_registeredTools` table
+// directly — pinned by the SDK's semver range in package.json.
+function listRegisteredTools(server: McpServer): Array<{
+  name: string;
+  title?: string;
+  description?: string;
+  inputSchema?: unknown;
+  annotations?: unknown;
+  _meta?: Record<string, unknown>;
+}> {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const registered = (server as any)._registeredTools as
+    | Record<
+        string,
+        {
+          enabled: boolean;
+          title?: string;
+          description?: string;
+          inputSchema?: unknown;
+          annotations?: unknown;
+          _meta?: Record<string, unknown>;
+        }
+      >
+    | undefined;
+  if (!registered) return [];
+  const EMPTY_OBJECT_JSON_SCHEMA = { type: "object", properties: {} };
+  return Object.entries(registered)
+    .filter(([, tool]) => tool.enabled)
+    .map(([name, tool]) => {
+      let inputSchema: unknown = EMPTY_OBJECT_JSON_SCHEMA;
+      if (tool.inputSchema) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const normalized = normalizeObjectSchema(tool.inputSchema as any);
+        if (normalized) {
+          inputSchema = toJsonSchemaCompat(normalized, {
+            strictUnions: true,
+            pipeStrategy: "input",
+          });
+        }
+      }
+      return {
+        name,
+        title: tool.title,
+        description: tool.description,
+        inputSchema,
+        annotations: tool.annotations,
+        _meta: tool._meta,
+      };
+    });
+}
+
 // JSON-result wrappers — `mcpJson` and `mcpError` enforce the standardized
 // MCP `CallToolResult` shape (content[0].type:"text", text:JSON.stringify(...))
 // and the standardized error envelope `{ code, message, details?,
@@ -147,53 +299,43 @@ export async function createMcpServer(
   function registerTools(server: McpServer) {
     // ── Discovery ────────────────────────────────────────────────────
 
-    server.registerTool(
-      "search_services",
-      {
-        description:
-          "Find Daski providers and skills matching the agent's intent. " +
-          "Pass a free-text `intent` (e.g. 'register a .com domain') and " +
-          "the gateway returns the most relevant providers ranked by " +
-          "vector similarity over pgvector embeddings of every skill in " +
-          "the catalog. Each match includes the provider's full " +
-          "AgentCard-shaped descriptor (agentCardUrl, a2aUrl, skills with " +
-          "requiredFields and pricing) so the agent can call the provider " +
-          "via A2A directly or via daski_submit_task. Without `intent`, " +
-          "returns the unranked catalog (use `category` / `maxPrice` to " +
-          "narrow). Replaces the legacy daski_discover tool.",
-        inputSchema: {
-          intent: z
-            .string()
-            .optional()
-            .describe(
-              "Free-text description of what the agent wants to do. " +
-                "Embedded with pgvector; ranked by cosine similarity over " +
-                "every (provider, skill) pair in the catalog.",
-            ),
-          category: z
-            .string()
-            .optional()
-            .describe("Filter by provider category (e.g. domain-registration)."),
-          maxPrice: z
-            .number()
-            .optional()
-            .describe("Filter by max base price in USDC (not smallest units)."),
-          limit: z
-            .number()
-            .int()
-            .min(1)
-            .max(50)
-            .optional()
-            .describe("Max providers to return. Default 10."),
-        },
-        annotations: {
-          title: "Search Daski services",
-          readOnlyHint: true,
-          idempotentHint: true,
-          openWorldHint: false,
-        },
-      },
-      async (args) => {
+    const SEARCH_SERVICES_INPUT_SCHEMA = {
+      intent: z
+        .string()
+        .optional()
+        .describe(
+          "Free-text description of what the agent wants to do (e.g. " +
+            "'register a .com domain'). Embedded with pgvector; ranked " +
+            "by cosine similarity over every (provider, skill) pair in " +
+            "the catalog.",
+        ),
+      category: z
+        .string()
+        .optional()
+        .describe("Filter by provider category (e.g. domain-registration)."),
+      maxPrice: z
+        .number()
+        .optional()
+        .describe("Filter by max base price in USDC (not smallest units)."),
+      limit: z
+        .number()
+        .int()
+        .min(1)
+        .max(50)
+        .optional()
+        .describe("Max providers to return. Default 10."),
+    };
+
+    type SearchServicesArgs = {
+      intent?: string;
+      category?: string;
+      maxPrice?: number;
+      limit?: number;
+    };
+
+    const searchServicesHandler = async (
+      args: SearchServicesArgs,
+    ): Promise<McpToolResult> => {
         const limit = args?.limit ?? 10;
         const all = deps.cache.getAll();
         const filtered = applyDiscoverFilters(all, {
@@ -294,6 +436,58 @@ export async function createMcpServer(
           providers: matches,
           cachedAt: deps.cache.getLastRefresh()?.toISOString() ?? null,
         });
+    };
+
+    server.registerTool(
+      "daski_search_services",
+      {
+        description: [
+          "Find a provider on the Daski marketplace that can perform a real-world service for USDC (domain registration, LLC formation, hosting, email, etc.).",
+          "",
+          "When to use:",
+          "- The user asks for any paid real-world action (\"register example.com\", \"form an LLC in Wyoming\", \"set up a mailbox\").",
+          "- You need to discover what services exist before deciding which tool to call.",
+          "- You want to compare providers by price or reputation.",
+          "",
+          "When NOT to use:",
+          "- You already have a `providerTokenId` + `skillId` and just want to execute — go straight to `daski_buy_service`.",
+          "- You are polling an existing task — use `daski_get_task_status`.",
+          "",
+          "Inputs: free-text `intent` ranked by vector similarity over the catalog; optional `category`, `maxPrice`, `limit`.",
+          "Returns: ranked list of providers. Each entry has `tokenId`, `name`, `category`, `agentCardUrl`, `providerA2AUrl`, and a `skills[]` array. Each skill includes `id`, `description`, `requiredFields[]`, `paymentRequired`, `variablePricing`, and the asset/capability flags you need to plan the next call.",
+          "Next step: `daski_buy_service` for paid skills, or `daski_submit_task` for free read-only skills like `check-availability` or `get-pricing`.",
+        ].join("\n"),
+        inputSchema: SEARCH_SERVICES_INPUT_SCHEMA,
+        annotations: {
+          title: "Find a Daski provider",
+          readOnlyHint: true,
+          idempotentHint: true,
+          openWorldHint: false,
+        },
+      },
+      searchServicesHandler,
+    );
+
+    // Deprecated alias — kept callable through the grace period so agents
+    // that hardcoded the legacy name keep working while they migrate.
+    // Hidden from `tools/list` unless the client opts in via
+    // `?include=deprecated` or `X-Daski-Include-Deprecated: 1`.
+    server.registerTool(
+      "search_services",
+      {
+        description:
+          "Deprecated alias for `daski_search_services`. Use the new name.",
+        inputSchema: SEARCH_SERVICES_INPUT_SCHEMA,
+        annotations: {
+          title: "[Deprecated] Search Daski services",
+          readOnlyHint: true,
+          idempotentHint: true,
+          openWorldHint: false,
+        },
+      },
+      async (args) => {
+        logDeprecatedToolCall("search_services");
+        return searchServicesHandler(args);
       },
     );
 
@@ -301,21 +495,21 @@ export async function createMcpServer(
       "daski_get_provider",
       {
         description:
-          "Fetch a single provider by ERC-8004 agentId. Returns the same " +
-          "shape as one entry of search_services. Kept as a back-compat " +
-          "alias; new agents should use search_services or the " +
-          "`daski://provider/{tokenId}` MCP Resource.",
+          "Deprecated alias. Read the MCP Resource `daski://provider/{tokenId}` " +
+          "instead — same shape, no tool-budget cost. Kept callable for one " +
+          "release cycle.",
         inputSchema: {
           providerTokenId: z.string(),
         },
         annotations: {
-          title: "Get Daski provider by tokenId",
+          title: "[Deprecated] Get Daski provider by tokenId",
           readOnlyHint: true,
           idempotentHint: true,
           openWorldHint: false,
         },
       },
       async (args) => {
+        logDeprecatedToolCall("daski_get_provider");
         const parsed = parseBigIntArg(args.providerTokenId, "providerTokenId");
         if (!parsed.ok) return parsed.error;
         const provider = deps.cache.get(parsed.value);
@@ -341,21 +535,32 @@ export async function createMcpServer(
     server.registerTool(
       "daski_purchase",
       {
-        description:
-          "Open a payment challenge. Returns x402 PaymentRequirements with " +
-          "an inline EIP-712 typed-data block (extra.daski.eip712TypedData). " +
-          "Pass that block to your wallet's generic signTypedData tool — no " +
-          "schema knowledge required. Then assemble a paymentPayload " +
-          "{ x402Version: 1, scheme, network, payload: { signature, " +
-          "authorization: <message> } } and call daski_settle_payment.",
+        description: [
+          "**Advanced/manual.** Prefer `daski_buy_service` unless you're managing the payment lifecycle yourself (custom UIs, multi-leg signing flows, dry-run quotes).",
+          "",
+          "Open an x402 payment challenge for a specific (provider, skill) pair. Returns `paymentRequirements` with inline EIP-712 typed-data to sign. Pair with `daski_settle_payment` to finalize.",
+          "",
+          "When to use:",
+          "- You explicitly want to separate quoting from settlement (e.g. to preview the price before signing).",
+          "- You are building a custom UI on top of Daski.",
+          "",
+          "When NOT to use:",
+          "- Anything else. `daski_buy_service` does this and more in one call.",
+          "",
+          "Inputs: `providerTokenId`, `buyerTokenId`, `walletAddress`; optional `skillId`, `amount` (atomic USDC units, defaults to skill base).",
+          "Returns: `paymentRequirements` with `extra.daski.eip712TypedData` to sign.",
+          "Next step: sign the typed-data, then call `daski_settle_payment`.",
+        ].join("\n"),
         inputSchema: {
           providerTokenId: z.string(),
           buyerTokenId: z.string().describe("Buyer's ERC-8004 agentId."),
           walletAddress: z
             .string()
             .describe(
-              "The wallet address that will sign. Baked into the typed-data " +
-                "`from` field; the wallet MUST sign with this exact address.",
+              "The exact address the wallet will sign with. Baked into the " +
+                "typed-data — mismatch causes the signed payload to be " +
+                "rejected on-chain. Use the lowercased checksum form your " +
+                "wallet returns.",
             ),
           skillId: z.string().optional(),
           amount: z
@@ -364,11 +569,10 @@ export async function createMcpServer(
             .describe("Atomic USDC units. Defaults to skill base."),
         },
         annotations: {
-          title: "Open x402 payment challenge",
-          readOnlyHint: false,
-          destructiveHint: false,
-          idempotentHint: false,
-          openWorldHint: false,
+          title: "Daski: open payment challenge",
+          readOnlyHint: true,
+          idempotentHint: true,
+          openWorldHint: true,
         },
       },
       async (args) => {
@@ -408,23 +612,42 @@ export async function createMcpServer(
     server.registerTool(
       "daski_settle_payment",
       {
-        description:
-          "Submit a signed paymentPayload on-chain via the gateway's " +
-          "facilitator wallet. Takes the x402 paymentPayload (signature + " +
-          "authorization) and the original paymentRequirements that " +
-          "produced the typed-data block. Returns paymentId, transaction " +
-          "hash, and providerA2AUrl — everything daski_submit_task needs. " +
-          "If the buyer wallet was unregistered when the challenge was " +
-          "issued (paymentRequirements.extra.daski.buyerTokenId === '0'), " +
-          "ALSO pass `registration` with a signed RegisterAgent payload " +
-          "from daski_prepare_registration. Both will be submitted in one " +
-          "atomic tx (the USDC payment is the Sybil tax for the new agentId).",
+        description: [
+          "**Advanced/manual.** Prefer `daski_buy_service` unless you called `daski_purchase` separately.",
+          "",
+          "Submit a signed x402 paymentPayload on-chain via the gateway facilitator. Atomic with agent registration when the buyer wallet has no ERC-8004 token yet.",
+          "",
+          "When to use:",
+          "- You called `daski_purchase` separately and have a typed-data signature.",
+          "- You are retrying a settlement after a transient error.",
+          "",
+          "When NOT to use:",
+          "- You haven't called `daski_purchase` first.",
+          "- You'd rather use the one-shot orchestrator — call `daski_buy_service`.",
+          "",
+          "Inputs: `paymentPayload` (`{ x402Version, scheme, network, payload }`), `paymentRequirements` (echo from `daski_purchase`); optional `registration` (required only for fresh wallets — get the typed-data from `daski_register_agent`, sign with the SAME wallet that signed the payment).",
+          "Returns: `{ paymentId, transactionHash, serviceRef, providerA2AUrl, buyerTokenId }`.",
+          "Next step: `daski_submit_task` with the returned `serviceRef`, `transactionHash`, and `paymentId`.",
+        ].join("\n"),
         inputSchema: {
           paymentPayload: z
             .object({
-              x402Version: z.number(),
-              scheme: z.string(),
-              network: z.string(),
+              x402Version: z
+                .literal(1)
+                .describe(
+                  "x402 protocol version. Currently `1`.",
+                ),
+              scheme: z
+                .enum(SUPPORTED_SCHEMES)
+                .describe(
+                  "x402 settlement scheme. Currently only `exact` is " +
+                    "supported (EIP-3009 transferWithAuthorization).",
+                ),
+              network: z
+                .enum(SUPPORTED_NETWORKS)
+                .describe(
+                  "Lowercased Base network identifier matching `chainId`.",
+                ),
               payload: z.object({
                 signature: z.string(),
                 authorization: z.record(z.string(), z.unknown()),
@@ -434,16 +657,23 @@ export async function createMcpServer(
           paymentRequirements: z.record(z.string(), z.unknown()),
           registration: z
             .object({
-              agentURI: z.string(),
+              agentURI: z
+                .string()
+                .describe(
+                  "Echo verbatim the `agentURI` returned by " +
+                    "`daski_register_agent`'s first call. Mutating it " +
+                    "between calls invalidates the signature.",
+                ),
               deadline: z.string(),
               signature: z.string(),
             })
             .optional()
             .describe(
-              "Required only when paymentRequirements.extra.daski.buyerTokenId " +
-                "=== '0' (atomic register-and-settle for fresh wallets). " +
-                "Get the typed-data from daski_prepare_registration and " +
-                "sign with the same wallet that signed the payment.",
+              "Required only for fresh wallets (challenge.buyerTokenId === '0'). " +
+                "Get the typed-data from `daski_register_agent`, sign with the " +
+                "SAME wallet that signed the payment. Both will be submitted " +
+                "in one atomic tx (the USDC payment is the Sybil tax for the " +
+                "new agentId).",
             ),
         },
         annotations: {
@@ -451,11 +681,11 @@ export async function createMcpServer(
           // EIP-3009 nonces are consumed on first use, so a retry of the
           // same payload reverts on-chain. Daski returns the cached
           // settlement instead of re-submitting.
-          title: "Settle x402 payment + (optional) register",
+          title: "Daski: settle payment",
           readOnlyHint: false,
           destructiveHint: true,
-          idempotentHint: true,
-          openWorldHint: false,
+          idempotentHint: false,
+          openWorldHint: true,
         },
       },
       async (args) => {
@@ -487,7 +717,7 @@ export async function createMcpServer(
             message:
               "this challenge was issued for an unregistered wallet (" +
               "buyerTokenId=0). Pass `registration` with a signed " +
-              "RegisterAgent payload — see daski_prepare_registration.",
+              "RegisterAgent payload — see daski_register_agent.",
           });
         }
 
@@ -547,212 +777,67 @@ export async function createMcpServer(
       },
     );
 
-    server.registerTool(
-      "daski_confirm_delivery",
-      {
-        description:
-          "Submit a signed buyer-confirmation EAS attestation. Use " +
-          "daski_prepare_confirm to fetch the typed-data, sign it with " +
-          "your wallet, then pass v/r/s here. Gateway relays the delegated " +
-          "attestation on-chain (buyer pays no gas).",
-        inputSchema: {
-          paymentId: z.string(),
-          confirmation: z.enum(["Confirmed", "NotConfirmed"]),
-          attester: z.string(),
-          deadline: z.string(),
-          refUid: z.string().optional(),
-          signature: z.object({
-            v: z.number(),
-            r: z.string(),
-            s: z.string(),
-          }),
-        },
-        annotations: {
-          // Submits an EAS attestation on-chain (gateway pays gas, buyer
-          // signs). Not idempotent: the EAS resolver rejects a duplicate
-          // confirmation for the same paymentId, so a retry will revert.
-          title: "Submit buyer-confirmation EAS attestation",
-          readOnlyHint: false,
-          destructiveHint: true,
-          idempotentHint: false,
-          openWorldHint: false,
-        },
-      },
-      async (args) => {
-        const result = await runConfirmDelivery(
-          { config: deps.config, reader: deps.reader, queries: deps.queries },
-          args.paymentId,
-          {
-            confirmation: args.confirmation,
-            attester: args.attester,
-            deadline: args.deadline,
-            refUid: args.refUid,
-            signature: args.signature,
-          },
-        );
-        if (!result.ok) {
-          return errorJson(result.error);
-        }
-        const { ok: _ok, ...rest } = result;
-        return json(rest);
-      },
-    );
+    const CONFIRM_DELIVERY_INPUT_SCHEMA = {
+      paymentId: z
+        .string()
+        .describe(
+          "Decimal string returned by `daski_buy_service` (or " +
+            "`daski_settle_payment`). Do not construct manually — it's " +
+            "an on-chain identifier the gateway issues at settlement time.",
+        ),
+      confirmation: z.enum(["Confirmed", "NotConfirmed"]),
+      attester: z
+        .string()
+        .describe(
+          "The buyer wallet that paid for the service. The EAS attestation " +
+            "MUST come from this address; using a different wallet fails " +
+            "the signature check.",
+        ),
+      deadlineSeconds: z
+        .number()
+        .optional()
+        .describe(
+          "First-call only. Signature expiry, seconds from now. Default 3600.",
+        ),
+      deadline: z
+        .string()
+        .optional()
+        .describe(
+          "Second-call only. Echo verbatim the `deadline` returned by the " +
+            "first call — it's baked into the typed-data the wallet signed.",
+        ),
+      refUid: z.string().optional(),
+      signature: z
+        .object({
+          v: z.number(),
+          r: z.string(),
+          s: z.string(),
+        })
+        .optional()
+        .describe(
+          "Second-call only. Omit to get back the EAS Attest typed-data the " +
+            "wallet must sign; pass `{v,r,s}` (extracted from the signature) " +
+            "to submit the attestation on-chain.",
+        ),
+    };
 
-    // ── Prepare typed-data (wallet-agnostic signing helpers) ─────────
+    type ConfirmDeliveryArgs = {
+      paymentId: string;
+      confirmation: "Confirmed" | "NotConfirmed";
+      attester: string;
+      deadlineSeconds?: number;
+      deadline?: string;
+      refUid?: string;
+      signature?: { v: number; r: string; s: string };
+    };
 
-    server.registerTool(
-      "daski_prepare_registration",
-      {
-        description:
-          "Returns the EIP-712 RegisterAgent typed-data your wallet signs " +
-          "to enroll a fresh wallet as an ERC-8004 agent. Gateway relays " +
-          "the signed bytes via the facilitator wallet so the buyer pays " +
-          "no gas. Use when the buyer has no agentId yet (most fresh " +
-          "wallets). For a one-shot first purchase, prefer daski_buy_service " +
-          "(or pass the resulting `registration` to daski_settle_payment) — " +
-          "that bundles registration + payment into one atomic on-chain tx. " +
-          "Optionally pass `name` to set the buyer's display name on " +
-          "receipts and in the marketplace UI.",
-        inputSchema: {
-          walletAddress: z.string(),
-          name: z
-            .string()
-            .optional()
-            .describe(
-              "Optional display name for your buyer agent. Free-form, max " +
-                "64 characters, not validated for uniqueness. Defaults to " +
-                "`buyer-<last6>` derived from your wallet. Appears on " +
-                "receipts and in the Daski marketplace UI. Mutually " +
-                "exclusive with `agentURI`.",
-            ),
-          agentURI: z
-            .string()
-            .optional()
-            .describe(
-              "Advanced. Optional ERC-8004 agentURI (an https:// URL, " +
-                "ipfs:// CID, or data: URI resolving to the agent's " +
-                "registration JSON). When provided, the gateway fetches " +
-                "it and reads `name` from the JSON. Mutually exclusive " +
-                "with the `name` parameter. Most buyers should pass " +
-                "`name` instead.",
-            ),
-          deadlineSeconds: z
-            .number()
-            .optional()
-            .describe("Signature expiry, seconds from now. Default 3600."),
-        },
-        annotations: {
-          title: "Get RegisterAgent typed-data",
-          readOnlyHint: true,
-          idempotentHint: false,
-          openWorldHint: false,
-        },
-      },
-      async (args) => {
-        if (!HEX_ADDR.test(args.walletAddress)) {
-          return errorJson({
-            code: "BAD_WALLET",
-            message: "walletAddress must be a 20-byte hex address",
-          });
-        }
-        const qs = new URLSearchParams({ walletAddress: args.walletAddress });
-        if (args.name != null) qs.set("name", args.name);
-        if (args.agentURI != null) qs.set("agentURI", args.agentURI);
-        if (args.deadlineSeconds != null) {
-          qs.set("deadlineSeconds", String(args.deadlineSeconds));
-        }
-        const res = await fetch(`${deps.config.publicUrl}/register-prep?${qs}`);
-        const body = await res.json();
-        if (!res.ok) return upstreamErrorJson(body);
-        return json(body);
-      },
-    );
-
-    server.registerTool(
-      "daski_register_buyer",
-      {
-        description:
-          "Submit a signed RegisterAgent payload via the gateway facilitator. " +
-          "Mints an ERC-8004 agentId to walletAddress and caches the " +
-          "buyer's display name (read from the signed agentURI's JSON) " +
-          "for use on receipts and in the marketplace UI. Use this when " +
-          "you want to register WITHOUT an immediate purchase (e.g. to " +
-          "read your reputation first). For a first-purchase flow, prefer " +
-          "the atomic register-and-settle path through daski_buy_service " +
-          "/ daski_settle_payment, which bundles both into one tx so the " +
-          "USDC payment carries the Sybil tax for the registration.",
-        inputSchema: {
-          walletAddress: z.string(),
-          agentURI: z
-            .string()
-            .describe(
-              "The exact agentURI the wallet signed at " +
-                "daski_prepare_registration. Whether built from the " +
-                "buyer-supplied `name` or from a hosted JSON, the gateway " +
-                "treats this as the source of truth and reads the display " +
-                "name from it.",
-            ),
-          deadline: z.string().describe("Unix seconds; same value used in the typed-data."),
-          signature: z.string().describe("0x-prefixed hex bytes from your wallet's signTypedData."),
-        },
-        annotations: {
-          // Mints an ERC-8004 agentId. The on-chain registry rejects a
-          // second register-by-sig for the same wallet (already-registered
-          // revert), so retrying with the same payload is a no-op.
-          title: "Register an ERC-8004 agent (gasless)",
-          readOnlyHint: false,
-          destructiveHint: false,
-          idempotentHint: true,
-          openWorldHint: false,
-        },
-      },
-      async (args) => {
-        if (!HEX_ADDR.test(args.walletAddress)) {
-          return errorJson({
-            code: "BAD_WALLET",
-            message: "walletAddress must be a 20-byte hex address",
-          });
-        }
-        const res = await fetch(`${deps.config.publicUrl}/register`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            walletAddress: args.walletAddress,
-            agentURI: args.agentURI,
-            deadline: args.deadline,
-            signature: args.signature,
-          }),
-        });
-        const body = await res.json();
-        if (!res.ok) return upstreamErrorJson(body);
-        return json(body);
-      },
-    );
-
-    server.registerTool(
-      "daski_prepare_confirm",
-      {
-        description:
-          "Returns the EIP-712 Attest typed-data to sign for a buyer " +
-          "confirmation. Reads the EAS attester nonce from chain so the " +
-          "agent doesn't need an RPC of its own. Pass the typed-data block " +
-          "to your wallet's signTypedData; extract {v,r,s}; call " +
-          "daski_confirm_delivery.",
-        inputSchema: {
-          paymentId: z.string(),
-          confirmation: z.enum(["Confirmed", "NotConfirmed"]),
-          attester: z.string(),
-          deadlineSeconds: z.number().optional(),
-          refUid: z.string().optional(),
-        },
-        annotations: {
-          title: "Get EAS Attest typed-data for confirmation",
-          readOnlyHint: true,
-          idempotentHint: false,
-          openWorldHint: false,
-        },
-      },
-      async (args) => {
+    const confirmDeliveryHandler = async (
+      args: ConfirmDeliveryArgs,
+    ): Promise<McpToolResult> => {
+      // First call (no signature) → return typed-data the wallet signs.
+      // Same shape as the legacy daski_prepare_confirm tool. The buyer
+      // re-calls with `signature` + `deadline` to submit the attestation.
+      if (!args.signature) {
         if (!HEX_ADDR.test(args.attester)) {
           return errorJson({
             code: "BAD_ATTESTER",
@@ -773,6 +858,321 @@ export async function createMcpServer(
         const body = await res.json();
         if (!res.ok) return upstreamErrorJson(body);
         return json(body);
+      }
+
+      // Second call (signature present) → submit the EAS attestation.
+      if (!args.deadline) {
+        return errorJson({
+          code: "BAD_INPUT",
+          message:
+            "deadline is required alongside signature — echo the value " +
+            "returned by the first call so the signed typed-data matches " +
+            "what the resolver expects.",
+        });
+      }
+      const result = await runConfirmDelivery(
+        { config: deps.config, reader: deps.reader, queries: deps.queries },
+        args.paymentId,
+        {
+          confirmation: args.confirmation,
+          attester: args.attester,
+          deadline: args.deadline,
+          refUid: args.refUid,
+          signature: args.signature,
+        },
+      );
+      if (!result.ok) {
+        return errorJson(result.error);
+      }
+      const { ok: _ok, ...rest } = result;
+      return json(rest);
+    };
+
+    server.registerTool(
+      "daski_confirm_delivery",
+      {
+        description: [
+          "Leave a confirmed / not-confirmed attestation for a completed Daski purchase. Bumps the provider's on-chain reputation. The buyer pays no gas — the gateway facilitator relays the signed attestation.",
+          "",
+          "When to use:",
+          "- After `daski_get_task_status` (or the final `daski_submit_task` response) shows `state: 'completed'` and the user is satisfied — submit `confirmation: 'Confirmed'`.",
+          "- The work was delivered incorrectly or not at all — submit `confirmation: 'NotConfirmed'`.",
+          "",
+          "When NOT to use:",
+          "- The task is still in progress — wait for `state: 'completed' | 'failed'`.",
+          "- You're trying to dispute or refund — Daski attestations are reputational, not financial. There is no chargeback path; on-chain settlement is final.",
+          "",
+          "Inputs:",
+          "- First call (no signature): `paymentId`, `attester` (the wallet that paid), `confirmation` (`'Confirmed' | 'NotConfirmed'`); optional `deadlineSeconds`, `refUid`.",
+          "- Second call (signed retry): the same inputs plus `deadline` and `signature: { v, r, s }`.",
+          "",
+          "Returns:",
+          "- First call: `{ eip712TypedData, deadline }`. Sign `eip712TypedData` with the SAME wallet that paid (the EAS attestation must come from that address). Extract `{ v, r, s }`.",
+          "- Second call: `{ attestationUid, transactionHash, success: true }`.",
+          "",
+          "Next step: done. The provider's `ReputationStorage` counter is now bumped.",
+        ].join("\n"),
+        inputSchema: CONFIRM_DELIVERY_INPUT_SCHEMA,
+        annotations: {
+          // Two-call: first call is read-only (returns typed-data), second
+          // call submits the attestation. The EAS resolver rejects a
+          // duplicate confirmation for the same paymentId, so a retry of
+          // the second call reverts on-chain.
+          title: "Confirm Daski delivery",
+          readOnlyHint: false,
+          destructiveHint: false,
+          idempotentHint: true,
+          openWorldHint: true,
+        },
+      },
+      confirmDeliveryHandler,
+    );
+
+    // ── Standalone registration (advanced) ────────────────────────────
+    //
+    // Two-call: first call (no `signature`) returns RegisterAgent typed-data
+    // for the wallet to sign; second call (with `signature`) submits via the
+    // facilitator and returns the new agentId. Most buyers should NOT need
+    // this — daski_buy_service auto-registers fresh wallets atomically.
+
+    type RegisterAgentArgs = {
+      walletAddress: string;
+      name?: string;
+      agentURI?: string;
+      deadline?: string;
+      deadlineSeconds?: number;
+      signature?: string;
+    };
+
+    const registerAgentHandler = async (
+      args: RegisterAgentArgs,
+    ): Promise<McpToolResult> => {
+      if (!HEX_ADDR.test(args.walletAddress)) {
+        return errorJson({
+          code: "BAD_WALLET",
+          message: "walletAddress must be a 20-byte hex address",
+        });
+      }
+      // First call (no signature) → return typed-data.
+      if (!args.signature) {
+        const qs = new URLSearchParams({ walletAddress: args.walletAddress });
+        if (args.name != null) qs.set("name", args.name);
+        if (args.agentURI != null) qs.set("agentURI", args.agentURI);
+        if (args.deadlineSeconds != null) {
+          qs.set("deadlineSeconds", String(args.deadlineSeconds));
+        }
+        const res = await fetch(`${deps.config.publicUrl}/register-prep?${qs}`);
+        const body = await res.json();
+        if (!res.ok) return upstreamErrorJson(body);
+        return json(body);
+      }
+      // Second call → submit signed registration.
+      if (!args.agentURI || !args.deadline) {
+        return errorJson({
+          code: "BAD_INPUT",
+          message:
+            "agentURI and deadline are required alongside signature — " +
+            "echo the values returned by the first call so the signed " +
+            "typed-data matches what the registry expects.",
+        });
+      }
+      const res = await fetch(`${deps.config.publicUrl}/register`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          walletAddress: args.walletAddress,
+          agentURI: args.agentURI,
+          deadline: args.deadline,
+          signature: args.signature,
+        }),
+      });
+      const body = await res.json();
+      if (!res.ok) return upstreamErrorJson(body);
+      return json(body);
+    };
+
+    server.registerTool(
+      "daski_register_agent",
+      {
+        description: [
+          "**Advanced.** Register a fresh wallet as an ERC-8004 Daski agent without making a purchase. Most agents do NOT need this — `daski_buy_service` registers atomically on first purchase, free of gas. Use this only when you want a Daski identity ahead of any transaction (e.g. to claim a display name or read reputation).",
+          "",
+          "When to use:",
+          "- The user wants a Daski identity before buying anything.",
+          "- You're staking out a display name for a fresh wallet.",
+          "",
+          "When NOT to use:",
+          "- The user is about to make a purchase — `daski_buy_service` bundles registration and payment into one tx.",
+          "",
+          "Inputs:",
+          "- First call: `walletAddress`; optional `name` (max 64 chars, shown on receipts and in the marketplace UI).",
+          "- Second call: `walletAddress`, `agentURI` (echo verbatim from the first call), `deadline`, `signature` (0x-prefixed hex from `signTypedData`).",
+          "",
+          "Returns:",
+          "- First call: `{ eip712TypedData, agentURI, deadline }`. Sign `eip712TypedData` with the buyer wallet.",
+          "- Second call: `{ buyerTokenId, transactionHash }`.",
+          "",
+          "Next step: done. The wallet now has an ERC-8004 agentId, viewable on the marketplace.",
+        ].join("\n"),
+        inputSchema: {
+          walletAddress: z
+            .string()
+            .describe(
+              "The exact address the wallet will sign with. Baked into the " +
+                "typed-data — mismatch causes the signed payload to be " +
+                "rejected on-chain. Use the lowercased checksum form your " +
+                "wallet returns.",
+            ),
+          name: z
+            .string()
+            .optional()
+            .describe(
+              "First-call only. Free-form display name for the buyer agent, " +
+                "max 64 chars, not validated for uniqueness. Defaults to " +
+                "`buyer-<last6>` derived from your wallet. Appears on " +
+                "receipts and in the Daski marketplace UI. Mutually " +
+                "exclusive with `agentURI`.",
+            ),
+          agentURI: z
+            .string()
+            .optional()
+            .describe(
+              "First call (advanced) OR second call (required, echoed). " +
+                "First call: optional ERC-8004 agentURI (https://, ipfs://, " +
+                "or data: URI). Most buyers should pass `name` instead. " +
+                "Second call: echo verbatim the agentURI returned by the " +
+                "first call — it's baked into the typed-data the wallet " +
+                "signed.",
+            ),
+          deadlineSeconds: z
+            .number()
+            .optional()
+            .describe(
+              "First-call only. Signature expiry, seconds from now. Default 3600.",
+            ),
+          deadline: z
+            .string()
+            .optional()
+            .describe(
+              "Second-call only. Echo verbatim the `deadline` returned by " +
+                "the first call.",
+            ),
+          signature: z
+            .string()
+            .optional()
+            .describe(
+              "Second-call only. 0x-prefixed hex bytes from your wallet's " +
+                "signTypedData over the first call's `eip712TypedData`.",
+            ),
+        },
+        annotations: {
+          // Mints an ERC-8004 agentId. The on-chain registry rejects a
+          // second register-by-sig for the same wallet (already-registered
+          // revert), so retrying with the same payload is a no-op.
+          title: "Register a Daski agent",
+          readOnlyHint: false,
+          destructiveHint: false,
+          idempotentHint: true,
+          openWorldHint: true,
+        },
+      },
+      registerAgentHandler,
+    );
+
+    server.registerTool(
+      "daski_prepare_registration",
+      {
+        description:
+          "Deprecated alias. Call `daski_register_agent` without `signature` " +
+          "to receive the RegisterAgent typed-data. Kept callable for one " +
+          "release cycle.",
+        inputSchema: {
+          walletAddress: z.string(),
+          name: z.string().optional(),
+          agentURI: z.string().optional(),
+          deadlineSeconds: z.number().optional(),
+        },
+        annotations: {
+          title: "[Deprecated] Get RegisterAgent typed-data",
+          readOnlyHint: true,
+          idempotentHint: false,
+          openWorldHint: false,
+        },
+      },
+      async (args) => {
+        logDeprecatedToolCall("daski_prepare_registration");
+        return registerAgentHandler({
+          walletAddress: args.walletAddress,
+          name: args.name,
+          agentURI: args.agentURI,
+          deadlineSeconds: args.deadlineSeconds,
+        });
+      },
+    );
+
+    server.registerTool(
+      "daski_register_buyer",
+      {
+        description:
+          "Deprecated alias. Call `daski_register_agent` with `signature` " +
+          "(plus the `agentURI` and `deadline` returned by the first call) " +
+          "to submit the registration. Kept callable for one release cycle.",
+        inputSchema: {
+          walletAddress: z.string(),
+          agentURI: z.string(),
+          deadline: z.string(),
+          signature: z.string(),
+        },
+        annotations: {
+          title: "[Deprecated] Register an ERC-8004 agent (gasless)",
+          readOnlyHint: false,
+          destructiveHint: false,
+          idempotentHint: true,
+          openWorldHint: true,
+        },
+      },
+      async (args) => {
+        logDeprecatedToolCall("daski_register_buyer");
+        return registerAgentHandler({
+          walletAddress: args.walletAddress,
+          agentURI: args.agentURI,
+          deadline: args.deadline,
+          signature: args.signature,
+        });
+      },
+    );
+
+    server.registerTool(
+      "daski_prepare_confirm",
+      {
+        description:
+          "Deprecated alias. Call `daski_confirm_delivery` without " +
+          "`signature` to receive the same typed-data, then call it again " +
+          "with the signed `{v,r,s}` to submit. Kept callable for one " +
+          "release cycle.",
+        inputSchema: {
+          paymentId: z.string(),
+          confirmation: z.enum(["Confirmed", "NotConfirmed"]),
+          attester: z.string(),
+          deadlineSeconds: z.number().optional(),
+          refUid: z.string().optional(),
+        },
+        annotations: {
+          title: "[Deprecated] Get EAS Attest typed-data for confirmation",
+          readOnlyHint: true,
+          idempotentHint: false,
+          openWorldHint: false,
+        },
+      },
+      async (args) => {
+        logDeprecatedToolCall("daski_prepare_confirm");
+        return confirmDeliveryHandler({
+          paymentId: args.paymentId,
+          confirmation: args.confirmation,
+          attester: args.attester,
+          deadlineSeconds: args.deadlineSeconds,
+          refUid: args.refUid,
+        });
       },
     );
 
@@ -784,94 +1184,187 @@ export async function createMcpServer(
 
     // ── A2A: submit_task / check_task ────────────────────────────────
 
-    server.registerTool(
-      "daski_submit_task",
-      {
-        description:
-          "Dispatch the actual service task to the provider over A2A after " +
-          "payment has settled (paid) or capability has been signed (free " +
-          "capability-gated). For paid skills include serviceRef and " +
-          "transactionHash from daski_settle_payment. For capability-gated " +
-          "free skills, include the `capability` returned by the provider's " +
-          "`prepare-capability` skill (reach it via this same tool with " +
-          "skillId='prepare-capability' and capabilityType set, sign the " +
-          "returned typed-data, then reuse the original asset's paymentId). " +
-          "Paid and ownership-/capability-gated skills also require " +
-          "`envelopeAuth` — an EIP-712 A2ARequestAuthorization signed by " +
-          "the buyer's agent wallet that binds (skillId, paymentId, " +
-          "messageId, requestHash, …). Build it with daski_build_envelope_auth, " +
-          "sign the typed-data, then pass { signature, authorization } and " +
-          "the matching `messageId`. Open free skills (check-availability, " +
-          "get-pricing, prepare-capability) skip envelopeAuth. " +
-          "Returns { taskId, contextId, state, ... } — thread contextId back " +
-          "into daski_get_task_status (poll or stream) / daski_confirm_delivery " +
-          "to keep the multi-turn A2A conversation linked.",
-        inputSchema: {
-          providerA2AUrl: z.string(),
-          skillId: z.string(),
-          paymentId: z.string(),
-          chainId: z.number(),
-          serviceRef: z.string().optional(),
-          transactionHash: z.string().optional(),
-          prompt: z.string().optional(),
-          serviceArgs: z.record(z.string(), z.unknown()).optional(),
-          capability: z
+    const SUBMIT_TASK_INPUT_SCHEMA = {
+      providerA2AUrl: z.string(),
+      skillId: z.string(),
+      paymentId: z
+        .string()
+        .describe(
+          'Decimal string returned by `daski_buy_service`. Pass `"0"` ' +
+            "for free open skills (check-availability, get-pricing, " +
+            "prepare-capability) — those skip the envelope-auth handshake.",
+        ),
+      chainId: z
+        .union(
+          SUPPORTED_CHAIN_IDS.map((v) => z.literal(v)) as [
+            z.ZodLiteral<8453>,
+            z.ZodLiteral<84532>,
+          ],
+        )
+        .describe(
+          "Base chain ID. `8453` = mainnet, `84532` = Sepolia testnet.",
+        ),
+      buyerTokenId: z
+        .string()
+        .optional()
+        .describe(
+          "Required on the first call for paid / ownership-gated / " +
+            "capability-gated skills — used to build the envelope-auth " +
+            "typed-data the wallet signs. Optional on the second (signed) " +
+            "call and on free open skills.",
+        ),
+      serviceRef: z
+        .string()
+        .optional()
+        .describe(
+          "32-byte hex string (`0x`-prefixed) returned by " +
+            "`daski_buy_service`'s second call or `daski_settle_payment`. " +
+            "Identifies the (provider, service) binding for this purchase. " +
+            "Do not construct manually.",
+        ),
+      transactionHash: z
+        .string()
+        .optional()
+        .describe(
+          "0x-prefixed 32-byte hex Base transaction hash from the " +
+            "settlement. Returned by `daski_buy_service` (second call) or " +
+            "`daski_settle_payment`. Used by the provider to verify the " +
+            "on-chain payment before doing work.",
+        ),
+      prompt: z.string().optional(),
+      serviceArgs: z.record(z.string(), z.unknown()).optional(),
+      capability: z
+        .object({
+          signature: z.string(),
+          authorization: z.record(z.string(), z.unknown()),
+        })
+        .passthrough()
+        .optional(),
+      messageId: z
+        .string()
+        .optional()
+        .describe(
+          "REQUIRED whenever envelopeAuth is set — the envelope signature " +
+            "binds to this exact value, and the provider rejects mismatches. " +
+            "Echo the value returned in the first call's response. " +
+            "Auto-generated only on the no-envelopeAuth first call.",
+        ),
+      envelopeAuth: z
+        .object({
+          signature: z.string(),
+          authorization: z
             .object({
-              signature: z.string(),
-              authorization: z.record(z.string(), z.unknown()),
+              buyerTokenId: z.string(),
+              skillId: z.string(),
+              paymentId: z.string(),
+              chainId: z.number(),
+              messageId: z.string(),
+              requestHash: z.string(),
+              issuedAt: z.string(),
             })
-            .passthrough()
-            .optional(),
-          messageId: z
-            .string()
-            .optional()
-            .describe(
-              "A2A messageId. REQUIRED whenever envelopeAuth is set — the " +
-                "envelope signature binds to this exact value, and the " +
-                "provider rejects mismatches. Auto-generated only when no " +
-                "envelopeAuth is provided.",
-            ),
-          envelopeAuth: z
-            .object({
-              signature: z.string(),
-              authorization: z
-                .object({
-                  buyerTokenId: z.string(),
-                  skillId: z.string(),
-                  paymentId: z.string(),
-                  chainId: z.number(),
-                  messageId: z.string(),
-                  requestHash: z.string(),
-                  issuedAt: z.string(),
-                })
-                .passthrough(),
-            })
-            .passthrough()
-            .optional()
-            .describe(
-              "Signed A2ARequestAuthorization. Build the typed-data with " +
-                "daski_build_envelope_auth, sign with the buyer's agent " +
-                "wallet, then pass { signature, authorization } here.",
-            ),
-          contextId: z
-            .string()
-            .optional()
-            .describe(
-              "A2A contextId — set when continuing a prior conversation " +
-                "(e.g. follow-up after daski_buy_service). Auto-allocated " +
-                "if omitted and returned in the result so the caller can " +
-                "thread it through subsequent calls.",
-            ),
-        },
-        annotations: {
-          title: "Submit task over A2A",
-          readOnlyHint: false,
-          destructiveHint: false,
-          idempotentHint: false,
-          openWorldHint: true,
-        },
-      },
-      async (args) => {
+            .passthrough(),
+        })
+        .passthrough()
+        .optional()
+        .describe(
+          "Omit on the first call for a paid / ownership-gated / " +
+            "capability-gated skill to get back the typed-data the gateway " +
+            "will accept on the retry; this replaces the deprecated " +
+            "`daski_build_envelope_auth` flow. On the retry, pass " +
+            "`{ signature, authorization }` alongside the matching `messageId`.",
+        ),
+      contextId: z
+        .string()
+        .optional()
+        .describe(
+          "A2A contextId — set when continuing a prior conversation " +
+            "(e.g. follow-up after daski_buy_service). Auto-allocated " +
+            "if omitted and returned in the result so the caller can " +
+            "thread it through subsequent calls.",
+        ),
+    };
+
+    type SubmitTaskArgs = {
+      providerA2AUrl: string;
+      skillId: string;
+      paymentId: string;
+      chainId: 8453 | 84532;
+      buyerTokenId?: string;
+      serviceRef?: string;
+      transactionHash?: string;
+      prompt?: string;
+      serviceArgs?: Record<string, unknown>;
+      capability?: {
+        signature: string;
+        authorization: Record<string, unknown>;
+      };
+      messageId?: string;
+      envelopeAuth?: {
+        signature: string;
+        authorization: {
+          buyerTokenId: string;
+          skillId: string;
+          paymentId: string;
+          chainId: number;
+          messageId: string;
+          requestHash: string;
+          issuedAt: string;
+        };
+      };
+      contextId?: string;
+    };
+
+    const submitTaskHandler = async (
+      args: SubmitTaskArgs,
+    ): Promise<McpToolResult> => {
+        // Envelope-auth is needed for every paid skill and every
+        // ownership-/capability-gated free skill. The free open skills
+        // (check-availability, get-pricing, prepare-capability) opt out by
+        // passing `paymentId: "0"` or an empty paymentId — match the legacy
+        // behavior so existing free-skill callers don't break.
+        const requiresEnvelopeAuth =
+          args.paymentId !== "0" && args.paymentId !== "";
+
+        // First-call branch — return the typed-data the wallet must sign,
+        // plus the matching messageId to thread back through. This absorbs
+        // the legacy daski_build_envelope_auth flow.
+        if (requiresEnvelopeAuth && !args.envelopeAuth) {
+          if (!args.buyerTokenId) {
+            return errorJson({
+              code: "BAD_INPUT",
+              message:
+                "buyerTokenId is required on the first (no-envelopeAuth) " +
+                "call for paid / ownership-gated / capability-gated skills. " +
+                "Look it up via daski_search_services or pass the value " +
+                "you already have.",
+              recoverable: true,
+              next_action:
+                "Re-call this tool with buyerTokenId set; the response " +
+                "will be the typed-data the wallet should sign.",
+            });
+          }
+          const envelope = buildEnvelopeAuth({
+            skillId: args.skillId,
+            paymentId: args.paymentId,
+            chainId: args.chainId,
+            buyerTokenId: args.buyerTokenId,
+            identityRegistryAddress: deps.config.identityRegistryAddress,
+            serviceArgs: args.serviceArgs ?? {},
+            messageId: args.messageId,
+          });
+          return json({
+            messageId: envelope.messageId,
+            requestHash: envelope.requestHash,
+            issuedAt: envelope.issuedAt,
+            authorization: envelope.authorization,
+            eip712TypedData: envelope.eip712TypedData,
+            hint:
+              "Sign eip712TypedData with the buyer agent wallet, then " +
+              "call this tool again with envelopeAuth: { signature, " +
+              "authorization } and the SAME messageId.",
+          });
+        }
+
         // §2.1 — A2A v0.3.0 envelope. parts use `kind:"text"|"data"` (not
         // `type`), the message has a required `messageId` and optional
         // `contextId` for multi-turn conversations.
@@ -903,7 +1396,7 @@ export async function createMcpServer(
             message:
               "messageId must be supplied alongside envelopeAuth so the " +
               "A2A envelope matches what the buyer signed. Pass the same " +
-              "messageId returned by daski_build_envelope_auth.",
+              "messageId returned by the first (no-envelopeAuth) call.",
           });
         }
         if (
@@ -1005,62 +1498,82 @@ export async function createMcpServer(
           flattened.statusMessage = result.status.message;
         }
         return json(flattened);
+    };
+
+    server.registerTool(
+      "daski_submit_task",
+      {
+        description: [
+          "Dispatch a task to a Daski provider over A2A. Use for free skills (price checks, availability, capability prep) and as the second step after `daski_buy_service` for paid skills.",
+          "",
+          "When to use:",
+          "- Free read-only skills like `check-availability`, `get-pricing`, `prepare-capability` (pass `paymentId: \"0\"`, omit `envelopeAuth`).",
+          "- After `daski_buy_service` settled a payment — dispatch the actual task using the returned `serviceRef` and `transactionHash`.",
+          "- Continuing a multi-turn A2A conversation — pass the `contextId` from the previous turn.",
+          "",
+          "When NOT to use:",
+          "- You are starting a paid purchase — use `daski_buy_service` first; it returns the `serviceRef` and `transactionHash` you'll need here.",
+          "- You are polling an existing task — use `daski_get_task_status`.",
+          "",
+          "Inputs:",
+          "- Free skill: `skillId`, `providerA2AUrl`, `chainId`, `paymentId: \"0\"`, `serviceArgs`.",
+          "- Paid skill, first call (no signature): `skillId`, `providerA2AUrl`, `chainId`, `paymentId`, `serviceRef`, `transactionHash`, `buyerTokenId`, `serviceArgs`. Returns the envelope-auth typed-data to sign.",
+          "- Paid skill, signed retry: the same inputs plus `envelopeAuth: { signature, authorization }` and the matching `messageId` from the first call.",
+          "",
+          "Returns:",
+          "- First call on a paid skill: `{ eip712TypedData, authorization, messageId, hint }`. Sign `eip712TypedData` with the buyer's agent wallet, then call again with `envelopeAuth: { signature, authorization }` and the SAME `messageId`.",
+          "- Free skill or second-call paid: `{ taskId, contextId, state, artifacts, statusMessage }`. `state` is one of `submitted | working | input-required | completed | failed`. `completed` and `failed` are terminal.",
+          "",
+          "Next step:",
+          "- `state === 'completed'`: read `artifacts`, then optionally `daski_confirm_delivery`.",
+          "- `state === 'working' | 'submitted'`: poll with `daski_get_task_status`.",
+          "- `state === 'input-required'`: call this tool again with the additional info and the SAME `contextId`.",
+          "- `state === 'failed'`: read `statusMessage`, optionally `daski_confirm_delivery` with `confirmation: 'NotConfirmed'`.",
+        ].join("\n"),
+        inputSchema: SUBMIT_TASK_INPUT_SCHEMA,
+        annotations: {
+          title: "Run a Daski task",
+          // Static annotations can't reflect the paid/free split: free
+          // skills are read-only, paid ones submit a chargeable task. We
+          // pick the conservative defaults (destructive=true) so clients
+          // that auto-confirm on `destructiveHint:false` still prompt
+          // before money moves. The "When to use" block above explains
+          // the difference for free skills.
+          readOnlyHint: false,
+          destructiveHint: true,
+          idempotentHint: false,
+          openWorldHint: true,
+        },
       },
+      submitTaskHandler,
     );
 
-    // ── A2A envelope auth: build the typed-data for the buyer to sign ─
-    //
-    // Every paid / ownership-gated / capability-gated A2A call must carry
-    // a signed A2ARequestAuthorization in metadata.envelopeAuth. The
-    // buyer's agent wallet signs an EIP-712 typed-data committing to
-    // (buyerTokenId, skillId, paymentId, chainId, messageId, requestHash,
-    // issuedAt). This tool is the pure-compute helper that produces the
-    // typed-data: pass the about-to-be-sent request, sign the returned
-    // eip712TypedData with the wallet, then thread { signature, authorization }
-    // + the same messageId into daski_submit_task.
     server.registerTool(
       "daski_build_envelope_auth",
       {
         description:
-          "Build the EIP-712 typed-data the buyer's agent wallet signs to " +
-          "produce envelopeAuth for daski_submit_task. Pure compute; no " +
-          "chain calls, no DB writes. Generates a fresh messageId and " +
-          "issuedAt, hashes the canonical-JSON serviceArgs into requestHash, " +
-          "and wraps everything in the Daski auth domain. Sign the returned " +
-          "eip712TypedData with the buyer wallet, then call daski_submit_task " +
-          "with messageId from this result and envelopeAuth = " +
-          "{ signature, authorization: <returned authorization> }. " +
-          "Required for paid, ownership-gated, and capability-gated skills.",
+          "Deprecated alias. Call `daski_submit_task` without `envelopeAuth` " +
+          "on a paid / ownership-gated / capability-gated skill — the " +
+          "gateway returns the same typed-data, plus the matching " +
+          "`messageId` for the signed retry. Kept callable for one release " +
+          "cycle.",
         inputSchema: {
           skillId: z.string(),
-          paymentId: z
-            .string()
-            .describe("Decimal string. Pass \"0\" if the skill isn't bound to a payment."),
+          paymentId: z.string(),
           chainId: z.number(),
-          buyerTokenId: z.string().describe("Decimal string. The signer's ERC-8004 agentId."),
-          serviceArgs: z
-            .record(z.string(), z.unknown())
-            .optional()
-            .describe(
-              "The exact serviceArgs you'll submit to daski_submit_task. " +
-                "Mutating any field after signing invalidates the envelope.",
-            ),
-          messageId: z
-            .string()
-            .optional()
-            .describe("Optional override. Auto-generated if omitted."),
-          issuedAt: z
-            .number()
-            .optional()
-            .describe("Optional override (seconds since epoch). Defaults to now."),
+          buyerTokenId: z.string(),
+          serviceArgs: z.record(z.string(), z.unknown()).optional(),
+          messageId: z.string().optional(),
+          issuedAt: z.number().optional(),
         },
         annotations: {
-          title: "Build envelope-auth typed-data",
+          title: "[Deprecated] Build envelope-auth typed-data",
           readOnlyHint: true,
           openWorldHint: false,
         },
       },
       async (args) => {
+        logDeprecatedToolCall("daski_build_envelope_auth");
         const envelope = buildEnvelopeAuth({
           skillId: args.skillId,
           paymentId: args.paymentId,
@@ -1078,9 +1591,11 @@ export async function createMcpServer(
           authorization: envelope.authorization,
           eip712TypedData: envelope.eip712TypedData,
           hint:
-            "Sign eip712TypedData with the buyer's agent wallet. Pass the " +
-            "signature + authorization back via daski_submit_task's " +
-            "envelopeAuth arg, and use the SAME messageId here.",
+            "Deprecated. Sign eip712TypedData with the buyer's agent " +
+            "wallet, then call daski_submit_task with envelopeAuth + the " +
+            "SAME messageId. The same handshake now happens automatically " +
+            "if you call daski_submit_task without envelopeAuth on the " +
+            "first attempt.",
         });
       },
     );
@@ -1099,17 +1614,25 @@ export async function createMcpServer(
     server.registerTool(
       "daski_get_task_status",
       {
-        description:
-          "Get the current state of a provider A2A task. Default mode " +
-          "(stream:false) polls via GetTask and returns flattened " +
-          "{ state, artifacts, messages }. Streaming mode (stream:true) " +
-          "subscribes via SubscribeToTask SSE and forwards each event as " +
-          "an MCP `notifications/progress`; returns the final task state " +
-          "when the stream closes or streamingTimeoutMs elapses. Use " +
-          "stream:true for long-running paid skills (domain registration, " +
-          "etc.); use stream:false for quick polls or when the provider " +
-          "doesn't support streaming. Pass a `progressToken` via request " +
-          "_meta to receive intermediate stream events.",
+        description: [
+          "Get the current state of a Daski provider task. Two modes: poll once, or stream live updates via SSE.",
+          "",
+          "When to use:",
+          "- After `daski_submit_task` returned a non-terminal state (`submitted` or `working`).",
+          "- The user asks \"is the domain registered yet?\" or similar.",
+          "- You want live progress updates for a long-running task (set `stream: true`).",
+          "",
+          "When NOT to use:",
+          "- You haven't dispatched a task yet — call `daski_submit_task` first.",
+          "- The task is already `completed` or `failed` — those are terminal; just read the `artifacts` you already have.",
+          "",
+          "Inputs: `providerA2AUrl`, `taskId`; optional `stream` (default `false`); optional `streamingTimeoutMs` (default `120000`, i.e. 2 min).",
+          "Returns: `{ state, artifacts, messages }`. `state` is one of `submitted | working | input-required | completed | failed`. `completed` and `failed` are terminal — stop polling.",
+          "Next step:",
+          "- `state === 'completed'`: optionally `daski_confirm_delivery`.",
+          "- `state === 'working' | 'submitted'`: poll again after a short delay (5–10 seconds for fast skills, 30+ for slow ones).",
+          "- `state === 'input-required'`: call `daski_submit_task` with the missing info and the same `contextId`.",
+        ].join("\n"),
         inputSchema: {
           providerA2AUrl: z.string(),
           taskId: z.string(),
@@ -1129,7 +1652,7 @@ export async function createMcpServer(
             ),
         },
         annotations: {
-          title: "Get A2A task status",
+          title: "Check a Daski task",
           readOnlyHint: true,
           idempotentHint: true,
           openWorldHint: true,
@@ -1914,16 +2437,20 @@ export async function createMcpServer(
           },
         });
       }
-      // Envelope auth: required for any non-open-free skill.
+      // Envelope auth: required for any non-open-free skill. We collapse
+      // build+submit into a single daski_submit_task two-call exchange:
+      // - First call (no envelopeAuth) → returns typed-data + messageId.
+      // - Sign the typed-data with the buyer wallet.
+      // - Second call (with envelopeAuth + matching messageId) → dispatch.
       if (!isOpenFree) {
         steps.push({
-          toolName: "daski_build_envelope_auth",
+          toolName: "daski_submit_task",
           hint:
-            "Build the A2ARequestAuthorization typed-data. Sign the " +
-            "returned eip712TypedData with the buyer's agent wallet. " +
-            "Retain the messageId returned here — daski_submit_task " +
-            "rejects if it doesn't match what you signed.",
+            "First call: omit envelopeAuth so the gateway returns the " +
+            "A2ARequestAuthorization typed-data and a fresh messageId. " +
+            "Pass buyerTokenId, skillId, paymentId, chainId, serviceArgs.",
           args: {
+            providerA2AUrl,
             skillId: args.skillId,
             paymentId: args.paymentId ?? "0",
             chainId: deps.config.chainId,
@@ -1933,7 +2460,7 @@ export async function createMcpServer(
         });
       }
       steps.push({
-        toolName: "daski_submit_task",
+        toolName: isOpenFree ? "daski_submit_task" : "<your-wallet>.signTypedData",
         hint: isOpenFree
           ? "Dispatch directly. No paymentId, serviceRef, or " +
             "transactionHash, and no envelopeAuth. Open-free skills " +
@@ -1941,29 +2468,42 @@ export async function createMcpServer(
             "statusMessage) is returned inline in this call's response " +
             "— DO NOT call daski_get_task_status, the taskId is " +
             "non-persistent."
-          : "Dispatch the task to the provider. OMIT serviceRef and " +
-            "transactionHash. Pass envelopeAuth + the same messageId " +
-            "from daski_build_envelope_auth." +
+          : "Sign the eip712TypedData returned by the first daski_submit_task " +
+            "call with the buyer's agent wallet.",
+        args: isOpenFree
+          ? {
+              providerA2AUrl,
+              skillId: args.skillId,
+              ...(args.paymentId ? { paymentId: args.paymentId } : {}),
+              chainId: deps.config.chainId,
+              serviceArgs,
+            }
+          : { typedData: "<from previous daski_submit_task.eip712TypedData>" },
+      });
+      if (!isOpenFree) {
+        steps.push({
+          toolName: "daski_submit_task",
+          hint:
+            "Second call: pass envelopeAuth: { signature, authorization } and " +
+            "the SAME messageId returned by the first call. The gateway " +
+            "forwards the task to the provider over A2A." +
             (requiresCapability
               ? " Also pass the signed { signature, authorization } as `capability`."
               : ""),
-        args: {
-          providerA2AUrl,
-          skillId: args.skillId,
-          ...(args.paymentId ? { paymentId: args.paymentId } : {}),
-          chainId: deps.config.chainId,
-          serviceArgs,
-          ...(isOpenFree
-            ? {}
-            : {
-                messageId: "<from daski_build_envelope_auth>",
-                envelopeAuth: "<signed envelope from previous step>",
-              }),
-          ...(requiresCapability
-            ? { capability: "<signed capability from previous step>" }
-            : {}),
-        },
-      });
+          args: {
+            providerA2AUrl,
+            skillId: args.skillId,
+            ...(args.paymentId ? { paymentId: args.paymentId } : {}),
+            chainId: deps.config.chainId,
+            serviceArgs,
+            messageId: "<from first daski_submit_task call>",
+            envelopeAuth: "<signed envelope from sign step>",
+            ...(requiresCapability
+              ? { capability: "<signed capability from previous step>" }
+              : {}),
+          },
+        });
+      }
       // Open-free skills are synchronous (submit_task returns artifacts
       // inline); ownership-gated skills create persisted tasks and need
       // polling.
@@ -2047,8 +2587,8 @@ export async function createMcpServer(
             message:
               "wallet has no ERC-8004 agentId yet. Ownership-gated " +
               "free skills can't bootstrap registration — call " +
-              "daski_prepare_registration + daski_register_buyer " +
-              "first, then retry.",
+              "daski_register_agent (two calls: no signature → sign → " +
+              "with signature) first, then retry.",
           });
         }
         if (!args.paymentId) {
@@ -2302,12 +2842,16 @@ export async function createMcpServer(
       // network whether the delivered work matched intent. Counters
       // on ReputationStorage update accordingly. Gateway facilitator
       // pays gas; buyer just signs the EAS Attest typed-data.
+      //
+      // Two-call pattern via daski_confirm_delivery: first call (no
+      // signature) returns the EAS Attest typed-data; second call (with
+      // signature) submits the attestation on-chain.
       steps.push({
-        toolName: "daski_prepare_confirm",
+        toolName: "daski_confirm_delivery",
         hint:
-          "After daski_get_task_status reports state='completed' (or " +
-          "'failed'), call this to fetch the EAS Attest typed-data. " +
-          "Use confirmation:'Confirmed' for a positive review, " +
+          "First call: after daski_get_task_status reports state='completed' " +
+          "(or 'failed'), call this WITHOUT signature to fetch the EAS Attest " +
+          "typed-data. Use confirmation:'Confirmed' for a positive review, " +
           "'NotConfirmed' for a negative one.",
         args: {
           paymentId: "<from daski_settle_payment>",
@@ -2318,22 +2862,23 @@ export async function createMcpServer(
       steps.push({
         toolName: "<your-wallet>.signTypedData",
         hint:
-          "Sign daski_prepare_confirm's eip712TypedData with the SAME " +
-          "wallet that paid (the EAS attestation must come from that " +
-          "address). Extract { v, r, s } from the signature.",
-        args: { typedData: "<from daski_prepare_confirm.eip712TypedData>" },
+          "Sign the eip712TypedData returned by daski_confirm_delivery's " +
+          "first call with the SAME wallet that paid (the EAS attestation " +
+          "must come from that address). Extract { v, r, s } from the signature.",
+        args: { typedData: "<from daski_confirm_delivery.eip712TypedData>" },
       });
       steps.push({
         toolName: "daski_confirm_delivery",
         hint:
-          "Submit the v/r/s. Gateway facilitator relays the delegated " +
-          "EAS attestation; buyer pays no gas. Bumps the provider's " +
-          "confirmed/notConfirmed counter on ReputationStorage.",
+          "Second call: submit the v/r/s plus the deadline echoed from the " +
+          "first call. Gateway facilitator relays the delegated EAS attestation; " +
+          "buyer pays no gas. Bumps the provider's confirmed/notConfirmed " +
+          "counter on ReputationStorage.",
         args: {
           paymentId: "<from daski_settle_payment>",
           confirmation: "Confirmed",
           attester: args.walletAddress.toLowerCase(),
-          deadline: "<from daski_prepare_confirm.deadline>",
+          deadline: "<from first daski_confirm_delivery call>",
           signature: { v: "<v>", r: "<r>", s: "<s>" },
         },
       });
@@ -2378,24 +2923,40 @@ export async function createMcpServer(
     server.registerTool(
       "daski_buy_service",
       {
-        description:
-          "High-level orchestrator. For paid skills: discovers the provider " +
-          "(if not specified), validates serviceArgs against requiredFields, " +
-          "and returns paymentRequirements with inline EIP-712 typed-data. " +
-          "After signing with your wallet, call daski_settle_payment then " +
-          "daski_submit_task. For free ownership-gated skills, returns a " +
-          "plan that points at the provider's `prepare-dns-capability` " +
-          "free A2A skill (via daski_submit_task) + a second daski_submit_task. " +
-          "Validates required fields up front. " +
-          "If the wallet has no ERC-8004 agentId yet (fresh CDP wallet, " +
-          "no Daski identity), the orchestrator returns an atomic " +
-          "register-and-settle plan: registrationPrep is included, the " +
-          "wallet signs both typed-data blocks, and daski_settle_payment " +
-          "submits both in one tx so the USDC payment is the Sybil tax " +
-          "for the new agentId.",
+        description: [
+          "**Start here for any paid Daski service.** Orchestrates the full purchase: validates inputs, prepares the USDC payment, settles on-chain after wallet signing, and dispatches the task to the provider — in two round-trips end-to-end.",
+          "",
+          "When to use:",
+          "- You have a `providerTokenId` + `skillId` from `daski_search_services` and want to actually run a paid skill.",
+          "- This is your default tool for any priced service. Always prefer it over the manual primitives.",
+          "",
+          "When NOT to use:",
+          "- The skill is free (`paymentRequired: false` in the search result) — call `daski_submit_task` directly.",
+          "- You are polling an existing task — use `daski_get_task_status`.",
+          "- You are submitting a buyer attestation — use `daski_confirm_delivery`.",
+          "",
+          "Inputs:",
+          "- First call (no signature): `providerTokenId`, `skillId`, `serviceArgs` (per the skill's `requiredFields`), `walletAddress`.",
+          "- Second call (signed retry): the same inputs plus `paymentPayload`, `paymentRequirements`, and (for fresh wallets) `registration`.",
+          "",
+          "Returns:",
+          "- First call: `paymentRequirements` (contains `extra.daski.eip712TypedData` to sign) plus an optional `registrationPrep` block (sign this too on first-ever purchase from a fresh wallet) and a `plan[]` outlining the remaining tool calls.",
+          "- Second call: `{ paymentId, transactionHash, serviceRef, providerA2AUrl, buyerTokenId, settled: true }`. The task is NOT dispatched yet (unless the second call also produced a successful A2A submit).",
+          "",
+          "Next step: `daski_submit_task` with the returned `serviceRef`, `transactionHash`, and `paymentId`.",
+          "",
+          "Fresh-wallet note: a wallet with no ERC-8004 agentId auto-registers on first purchase via a second signature, bundled into the same on-chain tx as the USDC payment. Watch for `registrationPrep` in the first response and sign both typed-data blocks before retrying.",
+        ].join("\n"),
         inputSchema: {
           skillId: z.string(),
-          walletAddress: z.string(),
+          walletAddress: z
+            .string()
+            .describe(
+              "The exact address the wallet will sign with. Baked into " +
+                "the typed-data — mismatch causes the signed payload to be " +
+                "rejected on-chain. Use the lowercased checksum form your " +
+                "wallet returns.",
+            ),
           buyerTokenId: z
             .string()
             .optional()
@@ -2404,16 +2965,23 @@ export async function createMcpServer(
                 "looks it up via the wallet, and routes to atomic " +
                 "register-and-settle for fresh wallets.",
             ),
-          providerTokenId: z.string().optional(),
+          providerTokenId: z
+            .string()
+            .describe(
+              "Required. Resolve from `daski_search_services` so the gateway " +
+                "matches your intent to a known provider. Building the " +
+                "value by hand bypasses validation.",
+            ),
           serviceArgs: z
             .record(z.string(), z.unknown())
             .optional()
             .describe(
               "Skill-specific arguments. Per-skill required fields are " +
-                "advertised in search_services under skills[].requiredFields. " +
-                "Contact fields (firstName, lastName, email, …) accept either " +
-                "flat keys or a nested object under `registrant`/`admin`/" +
-                "`tech`/`billing` — the gateway normalizes both shapes.",
+                "advertised in daski_search_services under " +
+                "skills[].requiredFields. Contact fields (firstName, " +
+                "lastName, email, …) accept either flat keys or a nested " +
+                "object under `registrant`/`admin`/`tech`/`billing` — the " +
+                "gateway normalizes both shapes.",
             ),
           amount: z.string().optional(),
           paymentId: z
@@ -2431,9 +2999,22 @@ export async function createMcpServer(
           // x402-mcp interop.
           paymentPayload: z
             .object({
-              x402Version: z.number(),
-              scheme: z.string(),
-              network: z.string(),
+              x402Version: z
+                .literal(1)
+                .describe(
+                  "x402 protocol version. Currently `1`.",
+                ),
+              scheme: z
+                .enum(SUPPORTED_SCHEMES)
+                .describe(
+                  "x402 settlement scheme. Currently only `exact` is " +
+                    "supported (EIP-3009 transferWithAuthorization).",
+                ),
+              network: z
+                .enum(SUPPORTED_NETWORKS)
+                .describe(
+                  "Lowercased Base network identifier matching `chainId`.",
+                ),
               payload: z.object({
                 signature: z.string(),
                 authorization: z.record(z.string(), z.unknown()),
@@ -2475,10 +3056,10 @@ export async function createMcpServer(
           // (with paymentPayload) settles on-chain. Idempotent across
           // retries because the EIP-3009 nonce makes the second submit a
           // no-op (returns the cached settlement).
-          title: "Buy a Daski service (orchestrator)",
+          title: "Buy a Daski service",
           readOnlyHint: false,
           destructiveHint: true,
-          idempotentHint: true,
+          idempotentHint: false,
           openWorldHint: true,
         },
       },
@@ -2654,7 +3235,7 @@ export async function createMcpServer(
 
   // ── Session lifecycle ────────────────────────────────────────────────
 
-  function buildSession(): Promise<Session> {
+  function buildSession(flag: DeprecationFlag): Promise<Session> {
     const server = new McpServer(
       { name: "daski-gateway", version: "0.2.0" },
       {
@@ -2665,13 +3246,30 @@ export async function createMcpServer(
           // (`daski://provider/{tokenId}`) so MCP-aware UIs (Claude Code
           // `@`-mention, Cursor) can lazy-load full Agent Cards without
           // costing a tool slot. The legacy `daski_get_provider` tool
-          // stays as a back-compat alias.
+          // remains callable during the deprecation grace period and is
+          // surfaced in `tools/list` only when the client opts in via
+          // `?include=deprecated` or `X-Daski-Include-Deprecated`.
           resources: { listChanged: false },
         },
+        // Planted in the `initialize` response so the model sees the
+        // canonical workflow before any individual tool description.
+        instructions: SERVER_INSTRUCTIONS,
       },
     );
     registerTools(server);
     registerResources(server);
+
+    // Override the McpServer's auto-generated `tools/list` handler so
+    // deprecated aliases are hidden by default. Deprecated tools stay
+    // *callable* — the override only touches the listing.
+    server.server.setRequestHandler(ListToolsRequestSchema, async () => {
+      const allTools = listRegisteredTools(server);
+      const visible = flag.includeDeprecated
+        ? allTools
+        : allTools.filter((t) => !DEPRECATED_TOOL_NAMES.has(t.name));
+      return { tools: visible };
+    });
+
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: () => randomUUID(),
       onsessioninitialized: (sid) => {
@@ -2694,7 +3292,8 @@ export async function createMcpServer(
         return;
       }
       if (!sessionId && isInitializeRequest(req.body)) {
-        const fresh = await buildSession();
+        const includeDeprecated = requestWantsDeprecated(req);
+        const fresh = await buildSession({ includeDeprecated });
         await fresh.transport.handleRequest(req, res, req.body);
         return;
       }

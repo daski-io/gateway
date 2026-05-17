@@ -176,13 +176,12 @@ async function phase1_discover(
     console.log(`  ✔ MCP tools advertised: ${tools.tools.length}`);
     const toolNames = tools.tools.map((t) => t.name);
     for (const required of [
-      "search_services",
+      "daski_search_services",
       "daski_buy_service",
       "daski_settle_payment",
       "daski_submit_task",
       "daski_get_task_status",
       "daski_confirm_delivery",
-      "daski_prepare_confirm",
     ]) {
       if (!toolNames.includes(required)) {
         throw new Error(`Gateway MCP missing required tool: ${required}`);
@@ -195,8 +194,11 @@ async function phase1_discover(
         skills?: Array<{ id: string; paymentRequired?: boolean }>;
       }>;
     }>(
-      "search_services",
-      await client.callTool({ name: "search_services", arguments: {} }),
+      "daski_search_services",
+      await client.callTool({
+        name: "daski_search_services",
+        arguments: {},
+      }),
     );
     console.log(`  ✔ providers in catalog: ${discover.providers.length}`);
     const provider = discover.providers.find((p) =>
@@ -293,9 +295,43 @@ async function phase2_paid_purchase(
     );
     console.log(`  ✔ settled on-chain: paymentId=${settled.paymentId} tx=${settled.transaction}`);
 
-    // 4. Submit task to provider over A2A
+    // 4. Submit task to provider over A2A — two-call pattern.
+    //    First call (no envelopeAuth) returns the EIP-712 typed-data the
+    //    buyer wallet signs, plus the matching messageId. Second call
+    //    passes envelopeAuth + the SAME messageId; gateway forwards to A2A.
+    const envelope = unwrap<{
+      messageId: string;
+      authorization: Record<string, unknown>;
+      eip712TypedData: {
+        domain: any;
+        types: any;
+        primaryType: string;
+        message: Record<string, unknown>;
+      };
+    }>(
+      "daski_submit_task (first call)",
+      await client.callTool({
+        name: "daski_submit_task",
+        arguments: {
+          providerA2AUrl: settled.providerA2AUrl,
+          skillId: env.skillId,
+          serviceRef: settled.serviceRef,
+          paymentId: settled.paymentId,
+          transactionHash: settled.transaction,
+          chainId: td.domain.chainId,
+          buyerTokenId: ids.buyerTokenId,
+          serviceArgs: { domain: env.domain },
+        },
+      }),
+    );
+    const envelopeSig = await signer.signTypedData({
+      domain: envelope.eip712TypedData.domain,
+      types: envelope.eip712TypedData.types,
+      primaryType: envelope.eip712TypedData.primaryType,
+      message: envelope.eip712TypedData.message,
+    });
     const submit = unwrap<{ taskId: string; state: string }>(
-      "daski_submit_task",
+      "daski_submit_task (second call)",
       await client.callTool({
         name: "daski_submit_task",
         arguments: {
@@ -306,6 +342,11 @@ async function phase2_paid_purchase(
           transactionHash: settled.transaction,
           chainId: td.domain.chainId,
           serviceArgs: { domain: env.domain },
+          messageId: envelope.messageId,
+          envelopeAuth: {
+            signature: envelopeSig,
+            authorization: envelope.authorization,
+          },
         },
       }),
     );
@@ -363,18 +404,22 @@ async function phase3_confirm(
 
   const { client, transport } = await connectMcp(env.gatewayUrl);
   try {
+    // Two-call daski_confirm_delivery: first call (no signature) returns
+    // the EAS Attest typed-data; second call (with v/r/s + the echoed
+    // deadline) submits via the facilitator.
     const prep = unwrap<{
       eip712TypedData: any;
-      submitTemplate: {
+      deadline: string;
+      submitTemplate?: {
         confirmation: string;
         attester: string;
         deadline: string;
         refUid?: string;
       };
     }>(
-      "daski_prepare_confirm",
+      "daski_confirm_delivery (first call)",
       await client.callTool({
-        name: "daski_prepare_confirm",
+        name: "daski_confirm_delivery",
         arguments: {
           paymentId,
           confirmation: "Confirmed",
@@ -400,15 +445,15 @@ async function phase3_confirm(
       attestationUid: string;
       transactionHash: string;
     }>(
-      "daski_confirm_delivery",
+      "daski_confirm_delivery (second call)",
       await client.callTool({
         name: "daski_confirm_delivery",
         arguments: {
           paymentId,
           confirmation: "Confirmed",
           attester: signer.address,
-          deadline: prep.submitTemplate.deadline,
-          refUid: prep.submitTemplate.refUid,
+          deadline: prep.deadline,
+          refUid: prep.submitTemplate?.refUid,
           signature: { v, r, s },
         },
       }),
