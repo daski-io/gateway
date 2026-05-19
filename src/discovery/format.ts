@@ -51,6 +51,38 @@ export interface DiscoverFilters {
   maxPrice?: number; // Human-readable USDC (e.g. 100 for 100 USDC)
 }
 
+// §1.6 of daski-mcp-gateway-fix-brief.md — agents guess category strings
+// from user intent ("domain-registration", "register a domain", …) but
+// providers register under one of the canonical buckets. Map common
+// alternates → canonical so the filter doesn't zero out results that
+// the agent obviously meant to include. New aliases extend cheaply.
+const CATEGORY_ALIASES: Record<string, string> = {
+  "domain-registration": "infrastructure",
+  domains: "infrastructure",
+  dns: "infrastructure",
+  hosting: "infrastructure",
+  "llc-formation": "legal",
+  "company-formation": "legal",
+  llc: "legal",
+  ein: "legal",
+  email: "communications",
+  sms: "communications",
+  messaging: "communications",
+  banking: "finance",
+  cards: "finance",
+  payments: "finance",
+  filings: "compliance",
+  tax: "compliance",
+};
+
+/** Map a buyer-supplied category string to its canonical bucket. The
+ *  canonical bucket falls through unchanged. Comparison is case- and
+ *  whitespace-insensitive. */
+export function canonicalizeCategory(input: string): string {
+  const norm = input.trim().toLowerCase();
+  return CATEGORY_ALIASES[norm] ?? input;
+}
+
 export function applyDiscoverFilters(
   providers: CachedProvider[],
   filters: DiscoverFilters,
@@ -58,10 +90,21 @@ export function applyDiscoverFilters(
   if (!filters.category && filters.maxPrice === undefined) {
     return providers;
   }
+  // §1.6 — match accepts either the buyer-supplied label OR its
+  // canonical bucket. Both sides of the alias work so we don't break
+  // providers that still register under the colloquial name (e.g.
+  // `domain-registration`) before adopting the canonical enum.
+  const acceptedCategories = filters.category
+    ? new Set([filters.category, canonicalizeCategory(filters.category)])
+    : null;
   return providers.filter((p) => {
     const ext = extractMarketplaceExtension(p.agentCard);
     if (!ext) return false; // Providers without the extension are excluded from filtered queries
-    if (filters.category && ext.category !== filters.category) return false;
+    if (acceptedCategories) {
+      const providerCategory =
+        typeof ext.category === "string" ? ext.category : "";
+      if (!acceptedCategories.has(providerCategory)) return false;
+    }
     if (filters.maxPrice !== undefined) {
       // Live-priced services advertise no fixed baseAmount — exclude
       // them from a maxPrice filter rather than applying it (the answer
@@ -168,8 +211,21 @@ function extractSkills(
           ? (Number(meta.baseAmount) / 1_000_000).toFixed(2)
           : undefined,
       requiredFields: meta.requiredFields,
+      // §3.2 of daski-mcp-gateway-fix-brief.md — surface the manifest's
+      // optionalFields and the two-call callPhases block so agents can
+      // schema-validate before paying for a round-trip. The provider
+      // already emits both under extensions[uri].skills[skillId].
+      ...(meta.optionalFields !== undefined && meta.optionalFields !== null
+        ? { optionalFields: meta.optionalFields }
+        : {}),
+      ...(meta.callPhases !== undefined && meta.callPhases !== null
+        ? { callPhases: meta.callPhases }
+        : {}),
       requiresAssetOwnership: meta.requiresAssetOwnership ?? false,
       requiresCapability: meta.requiresCapability ?? false,
+      ...(typeof meta.capabilityType === "string"
+        ? { capabilityType: meta.capabilityType }
+        : {}),
       assetType: meta.assetType,
     });
   }
@@ -232,7 +288,14 @@ export function formatForSkillDiscover(
       // directly without a follow-up fetch.
       agentCardUrl: provider.agentURI,
       providerA2AUrl,
-      skills: sanitizeForLlmReflection(skills),
+      // §1.7 of daski-mcp-gateway-fix-brief.md — skill descriptions
+      // (now ~1.5–2.5KB each after the 6-element-template rewrite) were
+      // getting clipped at the default 1KB sanitizer cap, hiding the
+      // inputs / capability-flow / next-step blocks that exist for the
+      // agent. Raise the per-string cap inside the skills array so the
+      // operational detail makes it through. Top-level fields keep the
+      // default cap.
+      skills: sanitizeForLlmReflection(skills, { stringMax: 4000 }),
     };
     if (pricingModel) {
       entry.pricingModel = pricingModel;

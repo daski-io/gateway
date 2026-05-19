@@ -219,6 +219,72 @@ export function parseBigIntArg(
   }
 }
 
+// Strict E.164. Leading `+`, country code 1-9, then 1-14 more digits, no
+// separators. Mirrors the provider's `E164_STRICT` so the gateway catches
+// the common "+1.555.555.0100" / "(555) 555-0100" mistakes one round-trip
+// earlier than the provider would.
+const E164_STRICT = /^\+[1-9]\d{1,14}$/;
+
+// Known phone-shaped fields. Kept short and ICANN-WHOIS-flavoured because
+// that's where E.164 enforcement bites buyers today. Adding new field
+// names here is cheap (any future skill with a different naming
+// convention extends cleanly).
+const PHONE_FIELDS = [
+  "registrantPhone",
+  "adminPhone",
+  "techPhone",
+  "billingPhone",
+  "phone",
+] as const;
+
+/** Returns the first phone-shaped field whose value is not strict E.164,
+ *  or `null` when everything's fine (including when no phone field is
+ *  present at all). Strings only — non-string values are treated as the
+ *  caller's problem (a separate type error somewhere upstream). */
+export function findInvalidPhoneField(
+  args: Record<string, unknown>,
+): { field: string; value: string } | null {
+  for (const f of PHONE_FIELDS) {
+    const v = args[f];
+    if (typeof v !== "string") continue;
+    if (!E164_STRICT.test(v)) {
+      return { field: f, value: v };
+    }
+  }
+  return null;
+}
+
+/** Build the standardized BAD_INPUT envelope for an E.164 phone failure.
+ *  Pre-screen at the gateway saves a network hop to the provider. */
+export function phoneFormatError(
+  invalid: { field: string; value: string },
+): McpToolResult {
+  return mcpError({
+    code: "BAD_INPUT",
+    message:
+      `Field '${invalid.field}' must be E.164 with no separators (pattern \`^\\+[1-9]\\d{1,14}\\$\`). ` +
+      `Received '${invalid.value}'; expected something like '+15555550100'.`,
+    details: {
+      field: invalid.field,
+      received: invalid.value,
+      pattern: "^\\+[1-9]\\d{1,14}$",
+      example: "+15555550100",
+    },
+    recoverable: true,
+    next_action:
+      "Strip dots, spaces, dashes, and parentheses from the phone number and retry.",
+  });
+}
+
+/** Tool-side convenience: check every known phone field on a normalized
+ *  serviceArgs map and surface the first violation as an MCP error. */
+export function checkPhoneFields(
+  args: Record<string, unknown>,
+): McpToolResult | null {
+  const bad = findInvalidPhoneField(args);
+  return bad ? phoneFormatError(bad) : null;
+}
+
 export type ValidateServiceArgsResult =
   | { ok: true; args: Record<string, unknown> }
   | { ok: false; error: McpToolResult };

@@ -34,10 +34,10 @@ import { issuePaymentRequirements } from "../payment/requirements.js";
 import { verifyAndSettle, verifyAndSettleWithRegistration } from "../payment/verify.js";
 import { runConfirmDelivery } from "../payment/confirm.js";
 import {
+  checkPhoneFields,
   defaultBuyerAgentURI,
   mcpError,
   mcpJson,
-  normalizeContactFields,
   parseBigIntArg,
   validateAndNormalizeServiceArgs,
   type McpToolResult,
@@ -424,6 +424,18 @@ export async function createMcpServer(
           },
         }));
 
+        // §1.5 of daski-mcp-gateway-fix-brief.md — when filters zero the
+        // result but the vector index DID match something, surface the
+        // top-N near misses (ignoring the category/maxPrice filter) so
+        // the agent gets a hint instead of an empty list. The agent can
+        // then drop the category, fix a typo, or surface the alternative
+        // to the user. The flag stays opt-in: regular results don't
+        // include this block.
+        const nearMissBlock =
+          matches.length === 0 && bestByProvider.size > 0
+            ? buildNearMissBlock(bestByProvider, all, limit)
+            : undefined;
+
         return json({
           acceptedToken: {
             address: deps.config.usdcAddress,
@@ -434,9 +446,38 @@ export async function createMcpServer(
           },
           intent: args.intent,
           providers: matches,
+          ...(nearMissBlock ? { nearMisses: nearMissBlock } : {}),
           cachedAt: deps.cache.getLastRefresh()?.toISOString() ?? null,
         });
     };
+
+    // Helper for §1.5 — surfaces vector-index neighbours that were
+    // filtered out by the caller's category/maxPrice constraints. The
+    // returned shape mirrors `matches` so agents can render either
+    // block with the same code path.
+    function buildNearMissBlock(
+      bestByProvider: Map<string, { distance: number; skillId: string }>,
+      allProviders: CachedProvider[],
+      limit: number,
+    ): Array<Record<string, unknown>> {
+      const topByDistance = [...bestByProvider.entries()]
+        .sort((a, b) => a[1].distance - b[1].distance)
+        .slice(0, Math.min(limit, 3));
+      const cardByIdAll = new Map(
+        allProviders.map((p) => [p.agentId.toString(), p] as const),
+      );
+      const providers = topByDistance
+        .map(([id]) => cardByIdAll.get(id))
+        .filter((p): p is NonNullable<typeof p> => p !== undefined);
+      const formatted = formatForSkillDiscover(providers);
+      return formatted.map((entry, i) => ({
+        ...entry,
+        match: {
+          distance: topByDistance[i]![1].distance,
+          bestSkillId: topByDistance[i]![1].skillId,
+        },
+      }));
+    }
 
     server.registerTool(
       "daski_search_services",
@@ -1005,7 +1046,7 @@ export async function createMcpServer(
           "- The user is about to make a purchase — `daski_buy_service` bundles registration and payment into one tx.",
           "",
           "Inputs:",
-          "- First call: `walletAddress`; optional `name` (max 64 chars, shown on receipts and in the marketplace UI).",
+          "- First call: `walletAddress`; optionally `name` (max 64 chars, shown on receipts and in the marketplace UI). Power users may pass `agentURI` directly instead of `name` to set a fully custom ERC-8004 agentURI (`https://`, `ipfs://`, or `data:` URI).",
           "- Second call: `walletAddress`, `agentURI` (echo verbatim from the first call), `deadline`, `signature` (0x-prefixed hex from `signTypedData`).",
           "",
           "Returns:",
@@ -1037,12 +1078,14 @@ export async function createMcpServer(
             .string()
             .optional()
             .describe(
-              "First call (advanced) OR second call (required, echoed). " +
-                "First call: optional ERC-8004 agentURI (https://, ipfs://, " +
-                "or data: URI). Most buyers should pass `name` instead. " +
-                "Second call: echo verbatim the agentURI returned by the " +
-                "first call — it's baked into the typed-data the wallet " +
-                "signed.",
+              "First call: optional, power-user only. ERC-8004 agentURI " +
+                "(`https://`, `ipfs://`, or `data:` URI) baked into the " +
+                "typed-data — bypasses the `name`-based default. Most " +
+                "buyers should pass `name` instead and let the gateway " +
+                "build the URI. " +
+                "Second call: required — echo verbatim the agentURI the " +
+                "first call returned. Any mutation invalidates the wallet's " +
+                "signature.",
             ),
           deadlineSeconds: z
             .number()
@@ -1208,10 +1251,21 @@ export async function createMcpServer(
         .string()
         .optional()
         .describe(
-          "Required on the first call for paid / ownership-gated / " +
-            "capability-gated skills — used to build the envelope-auth " +
-            "typed-data the wallet signs. Optional on the second (signed) " +
-            "call and on free open skills.",
+          "Optional. Auto-derived from `walletAddress` via the on-chain " +
+            "IdentityRegistry when omitted. Pass explicitly only when the " +
+            "caller wants a specific agentId for a wallet that holds " +
+            "multiple Daski tokens (rare).",
+        ),
+      walletAddress: z
+        .string()
+        .optional()
+        .describe(
+          "Buyer wallet (0x-prefixed 20-byte hex). Used to auto-derive " +
+            "`buyerTokenId` for the envelope-auth challenge on paid / " +
+            "ownership-gated / capability-gated skills. Pass when you have " +
+            "the wallet but not the agentId — typical right after " +
+            "`daski_buy_service`'s second call. Either `buyerTokenId` or " +
+            "`walletAddress` must be set for the first (no-envelopeAuth) call.",
         ),
       serviceRef: z
         .string()
@@ -1290,6 +1344,7 @@ export async function createMcpServer(
       paymentId: string;
       chainId: 8453 | 84532;
       buyerTokenId?: string;
+      walletAddress?: string;
       serviceRef?: string;
       transactionHash?: string;
       prompt?: string;
@@ -1329,25 +1384,73 @@ export async function createMcpServer(
         // plus the matching messageId to thread back through. This absorbs
         // the legacy daski_build_envelope_auth flow.
         if (requiresEnvelopeAuth && !args.envelopeAuth) {
-          if (!args.buyerTokenId) {
+          // §1.3 of daski-mcp-gateway-fix-brief.md — auto-derive
+          // buyerTokenId from walletAddress when the caller passes one
+          // but not the other. The on-chain IdentityRegistry is the
+          // source of truth; we already use the same call in
+          // daski_buy_service. Saves the agent from parsing tx receipts
+          // when they just settled a payment for the same wallet.
+          let buyerTokenId = args.buyerTokenId;
+          if (!buyerTokenId && args.walletAddress) {
+            if (!HEX_ADDR.test(args.walletAddress)) {
+              return errorJson({
+                code: "BAD_INPUT",
+                message:
+                  "walletAddress must be a 0x-prefixed 20-byte hex address.",
+              });
+            }
+            try {
+              const agentId = await deps.reader.agentOfWallet(
+                args.walletAddress.toLowerCase() as Hex,
+              );
+              if (agentId === 0n) {
+                return errorJson({
+                  code: "WALLET_NOT_REGISTERED",
+                  message:
+                    `Wallet ${args.walletAddress} has no ERC-8004 agentId on chain ${args.chainId}. ` +
+                    "Register it via daski_register_agent (or let daski_buy_service " +
+                    "register it atomically on first purchase) before calling submit_task.",
+                  recoverable: true,
+                  next_action:
+                    "Call daski_register_agent with this walletAddress, or run a " +
+                    "daski_buy_service flow first.",
+                });
+              }
+              buyerTokenId = agentId.toString();
+            } catch (err) {
+              return errorJson({
+                code: "CHAIN_READ_FAILED",
+                message:
+                  `IdentityRegistry.agentOfWallet(${args.walletAddress}) failed: ${(err as Error).message}`,
+                recoverable: true,
+                next_action:
+                  "Retry, or pass buyerTokenId directly if you already know it.",
+              });
+            }
+          }
+          if (!buyerTokenId) {
+            // §1.4 of daski-mcp-gateway-fix-brief.md — the legacy error
+            // sent agents to daski_search_services, which returns
+            // PROVIDER tokenIds, not the buyer's. Point them at the
+            // right place instead.
             return errorJson({
               code: "BAD_INPUT",
               message:
-                "buyerTokenId is required on the first (no-envelopeAuth) " +
-                "call for paid / ownership-gated / capability-gated skills. " +
-                "Look it up via daski_search_services or pass the value " +
-                "you already have.",
+                "buyerTokenId not provided. If you just settled a payment, " +
+                "it's in the daski_buy_service second-call response as " +
+                "`buyerTokenId`. For a wallet you've used before, pass " +
+                "`walletAddress` and the gateway auto-derives via the " +
+                "on-chain IdentityRegistry.",
               recoverable: true,
               next_action:
-                "Re-call this tool with buyerTokenId set; the response " +
-                "will be the typed-data the wallet should sign.",
+                "Re-call this tool with either `buyerTokenId` or `walletAddress` set.",
             });
           }
           const envelope = buildEnvelopeAuth({
             skillId: args.skillId,
             paymentId: args.paymentId,
             chainId: args.chainId,
-            buyerTokenId: args.buyerTokenId,
+            buyerTokenId,
             identityRegistryAddress: deps.config.identityRegistryAddress,
             serviceArgs: args.serviceArgs ?? {},
             messageId: args.messageId,
@@ -2207,109 +2310,21 @@ export async function createMcpServer(
         "x402/paymentResponse": paymentResponseB64,
       };
 
-      // Same A2A envelope shape as daski_submit_task.
-      const a2aMeta: Record<string, unknown> = {
-        skillId: challenge.skillId,
-        paymentId: settlement.daski?.paymentId,
-        chainId: deps.config.chainId,
-        serviceRef: serviceRefRaw,
-        transactionHash: settlement.transaction,
-      };
-      const a2aParts: Array<Record<string, unknown>> = [
-        { kind: "text", text: `Execute skill ${challenge.skillId}` },
-      ];
-      const submitArgs = normalizeContactFields(args.serviceArgs ?? {});
-      if (Object.keys(submitArgs).length > 0) {
-        a2aParts.push({ kind: "data", data: submitArgs });
-      }
-      const messageId = randomUUID();
-      const contextId = randomUUID();
-      const a2aBody = {
-        jsonrpc: "2.0",
-        id: randomUUID(),
-        method: "SendMessage",
-        params: {
-          message: {
-            role: "ROLE_USER",
-            parts: a2aParts,
-            messageId,
-            contextId,
-            metadata: { [DASKI_A2A_EXTENSION_URI]: a2aMeta },
-          },
-        },
-      };
-
-      type SubmitJsonAfterSettle = {
-        error?: { message?: string };
-        result?: {
-          id?: string;
-          contextId?: string;
-          status?: { state?: string; message?: unknown };
-          artifacts?: unknown[];
-        };
-      };
-      const post = await a2aPostJson<SubmitJsonAfterSettle>(
-        challenge.providerA2AUrl,
-        a2aBody,
-        {
-          fetch: a2aFetch,
-          timeoutMs: a2aTimeoutMs,
-          maxBytes: A2A_RESPONSE_MAX_BYTES,
-        },
-      );
-      // The settle already landed on-chain — any post-settle failure
-      // must echo enough context (paymentId/serviceRef/txHash) that the
-      // caller can retry with daski_submit_task without re-paying.
-      if (!post.ok) {
-        return errorJson(
-          {
-            code: "submit_failed_after_settle",
-            message:
-              post.reason === "timeout" || post.reason === "unreachable"
-                ? `Settled on-chain but A2A submit_task failed: ${post.message}. ` +
-                  "Use daski_submit_task with the returned paymentId/serviceRef to retry."
-                : post.reason === "non_json"
-                  ? `provider returned non-JSON after settle (status ${post.status})`
-                  : `provider returned HTTP ${post.status ?? "?"} after settle`,
-            details: {
-              paymentId: settlement.daski?.paymentId,
-              serviceRef: serviceRefRaw,
-              transactionHash: settlement.transaction,
-              providerA2AUrl: challenge.providerA2AUrl,
-            },
-            recoverable: true,
-            next_action:
-              "Call daski_submit_task explicitly with the paymentId/serviceRef from details.",
-          },
-          responseMeta,
-        );
-      }
-      const submitJson = post.body;
-      if (!post.raw.ok || submitJson.error) {
-        return errorJson(
-          {
-            code: "submit_failed_after_settle",
-            message:
-              submitJson.error?.message ??
-              `provider returned HTTP ${post.status} after settle`,
-            details: {
-              paymentId: settlement.daski?.paymentId,
-              serviceRef: serviceRefRaw,
-              transactionHash: settlement.transaction,
-              providerA2AUrl: challenge.providerA2AUrl,
-            },
-            recoverable: true,
-            next_action:
-              "Call daski_submit_task explicitly to dispatch the task.",
-          },
-          responseMeta,
-        );
-      }
-      const taskResult = submitJson.result;
+      // §1.2 of daski-mcp-gateway-fix-brief.md — Option A (settle-only).
+      // The gateway used to try to dispatch the A2A task in the same
+      // call, but the provider's paid-skill handler now requires an
+      // envelopeAuth signature that this endpoint's schema never
+      // accepted. Every paid first-purchase therefore produced a
+      // `submit_failed_after_settle` failure mode. Dispatch is owned
+      // by daski_submit_task, which already builds the envelope-auth
+      // challenge → sign → execute handshake. We return the settle
+      // context (including the fresh-mint buyerTokenId, §1.1) so the
+      // agent can call submit_task immediately.
       return json(
         {
           success: true,
-          kind: "paid-resource",
+          kind: "settled",
+          settled: true,
           transaction: settlement.transaction,
           network: settlement.network,
           payer: settlement.payer,
@@ -2321,11 +2336,11 @@ export async function createMcpServer(
           providerA2AUrl: settlement.daski?.providerA2AUrl ?? null,
           skillId: challenge.skillId,
           registered: settlement.daski?.registered ?? false,
-          taskId: taskResult?.id ?? null,
-          contextId: taskResult?.contextId ?? contextId,
-          state: normalizeState(taskResult?.status?.state) ?? "submitted",
-          artifacts: taskResult?.artifacts ?? [],
-          statusMessage: taskResult?.status?.message ?? null,
+          next_action:
+            "Call daski_submit_task with the returned serviceRef, " +
+            "transactionHash, paymentId, and buyerTokenId. The first call " +
+            "(no envelopeAuth) returns the typed-data to sign; the second " +
+            "call dispatches the task.",
         },
         responseMeta,
       );
@@ -2924,7 +2939,7 @@ export async function createMcpServer(
       "daski_buy_service",
       {
         description: [
-          "**Start here for any paid Daski service.** Orchestrates the full purchase: validates inputs, prepares the USDC payment, settles on-chain after wallet signing, and dispatches the task to the provider — in two round-trips end-to-end.",
+          "**Start here for any paid Daski service.** Validates inputs, prepares the USDC payment, and (after wallet signing) settles on-chain. Pair with `daski_submit_task` to dispatch the work — settlement and dispatch are separate calls so a failure in one doesn't half-commit the other.",
           "",
           "When to use:",
           "- You have a `providerTokenId` + `skillId` from `daski_search_services` and want to actually run a paid skill.",
@@ -2941,11 +2956,11 @@ export async function createMcpServer(
           "",
           "Returns:",
           "- First call: `paymentRequirements` (contains `extra.daski.eip712TypedData` to sign) plus an optional `registrationPrep` block (sign this too on first-ever purchase from a fresh wallet) and a `plan[]` outlining the remaining tool calls.",
-          "- Second call: `{ paymentId, transactionHash, serviceRef, providerA2AUrl, buyerTokenId, settled: true }`. The task is NOT dispatched yet (unless the second call also produced a successful A2A submit).",
+          "- Second call: `{ paymentId, transactionHash, serviceRef, providerA2AUrl, buyerTokenId, settled: true }`. Settlement only — the task is dispatched by the next `daski_submit_task` call.",
           "",
-          "Next step: `daski_submit_task` with the returned `serviceRef`, `transactionHash`, and `paymentId`.",
+          "Next step: `daski_submit_task` with the returned `serviceRef`, `transactionHash`, `paymentId`, and `buyerTokenId` (or pass `walletAddress` to auto-derive it).",
           "",
-          "Fresh-wallet note: a wallet with no ERC-8004 agentId auto-registers on first purchase via a second signature, bundled into the same on-chain tx as the USDC payment. Watch for `registrationPrep` in the first response and sign both typed-data blocks before retrying.",
+          "Fresh-wallet note: a wallet with no ERC-8004 agentId auto-registers on first purchase via a second signature, bundled into the same on-chain tx as the USDC payment. Watch for `registrationPrep` in the first response and sign both typed-data blocks before retrying. The newly-minted `buyerTokenId` comes back in the second-call response.",
         ].join("\n"),
         inputSchema: {
           skillId: z.string(),
@@ -2981,7 +2996,11 @@ export async function createMcpServer(
                 "skills[].requiredFields. Contact fields (firstName, " +
                 "lastName, email, …) accept either flat keys or a nested " +
                 "object under `registrant`/`admin`/`tech`/`billing` — the " +
-                "gateway normalizes both shapes.",
+                "gateway normalizes both shapes. " +
+                "Phone numbers (e.g. `registrantPhone`) MUST be E.164 with " +
+                "no separators — pattern `^\\+[1-9]\\d{1,14}$` (e.g. " +
+                "`+15555550100`, NOT `+1.555.555.0100` or `(555) 555-0100`). " +
+                "Most provider-side validators reject formatted strings.",
             ),
           amount: z.string().optional(),
           paymentId: z
@@ -3095,6 +3114,15 @@ export async function createMcpServer(
         );
         if (!validated.ok) return validated.error;
         const serviceArgs = validated.args;
+
+        // §1.8 of daski-mcp-gateway-fix-brief.md — fast-fail E.164
+        // phone validation. The provider's quote endpoint rejects
+        // formatted phones too, but catching them in the gateway saves
+        // a network round-trip and produces a clearer agent-side error.
+        // Strict E.164: leading `+`, country code 1-9, then 1-14
+        // digits, no separators.
+        const phoneError = checkPhoneFields(serviceArgs);
+        if (phoneError) return phoneError;
 
         // Resolve buyerAgentId. A non-zero caller-supplied value wins;
         // missing OR an explicit "0" both fall through to the on-chain

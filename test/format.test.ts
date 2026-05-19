@@ -167,6 +167,116 @@ describe("formatForSkillDiscover — skill extraction", () => {
     expect(skills[0].requiresCapability).toBe(false);
   });
 
+  // §3.2 of daski-mcp-gateway-fix-brief.md — surface optionalFields and
+  // the two-call callPhases block from the provider's per-skill metadata.
+  it("surfaces optionalFields and callPhases when the provider declares them", () => {
+    const provider = makeProvider({
+      name: "Two-call provider",
+      description: "x",
+      url: "http://test/a2a",
+      skills: [
+        { id: "set-dns-record", name: "Set DNS", description: "s" },
+        { id: "renew-domain", name: "Renew", description: "r" },
+      ],
+      extensions: {
+        [DASKI_A2A_EXTENSION_URI]: {
+          ...BASE_EXT,
+          skills: {
+            "set-dns-record": {
+              paymentRequired: false,
+              requiresAssetOwnership: true,
+              requiresCapability: true,
+              capabilityType: "DnsSetRecordAuthorization",
+              requiredFields: ["domain", "recordType", "name", "content"],
+              optionalFields: ["ttl", "priority", "capability"],
+              callPhases: {
+                challenge: {
+                  description: "Omit `capability`. Returns typed-data to sign.",
+                  requiredFields: [
+                    "domain",
+                    "recordType",
+                    "name",
+                    "content",
+                  ],
+                  optionalFields: ["ttl", "priority"],
+                },
+                execute: {
+                  description:
+                    "Include `capability: { signature, authorization }`.",
+                  requiredFields: [
+                    "domain",
+                    "recordType",
+                    "name",
+                    "content",
+                    "capability",
+                  ],
+                  optionalFields: ["ttl", "priority"],
+                },
+              },
+            },
+            "renew-domain": {
+              paymentRequired: true,
+              variablePricing: true,
+              requiredFields: ["domain"],
+              optionalFields: ["term"],
+            },
+          },
+        },
+      },
+    });
+
+    const [svc] = formatForSkillDiscover([provider]);
+    const skills = svc.skills as Array<Record<string, unknown>>;
+    const byId = new Map(skills.map((s) => [s.id, s]));
+
+    const setDns = byId.get("set-dns-record")!;
+    expect(setDns.optionalFields).toEqual(["ttl", "priority", "capability"]);
+    expect(setDns.capabilityType).toBe("DnsSetRecordAuthorization");
+    const callPhases = setDns.callPhases as Record<string, Record<string, unknown>>;
+    expect(callPhases.challenge.requiredFields).toEqual([
+      "domain",
+      "recordType",
+      "name",
+      "content",
+    ]);
+    expect(callPhases.execute.requiredFields).toContain("capability");
+
+    const renew = byId.get("renew-domain")!;
+    expect(renew.optionalFields).toEqual(["term"]);
+    // Non-gated skills shouldn't grow a callPhases block.
+    expect(renew.callPhases).toBeUndefined();
+  });
+
+  // §1.7 of daski-mcp-gateway-fix-brief.md — the default 1KB string cap
+  // was clipping the 6-element-template skill descriptions. We raise the
+  // per-string cap inside the skills array specifically so the
+  // operational detail (When NOT to use, capability flow, Returns, Next
+  // step) survives the round-trip.
+  it("preserves long skill descriptions past the default 1KB cap", () => {
+    const longDescription = "x".repeat(3500);
+    const provider = makeProvider({
+      name: "Verbose",
+      description: "x",
+      url: "http://test/a2a",
+      skills: [
+        { id: "register-domain", name: "Register", description: longDescription },
+      ],
+      extensions: {
+        [DASKI_A2A_EXTENSION_URI]: {
+          ...BASE_EXT,
+          skills: {
+            "register-domain": { paymentRequired: true },
+          },
+        },
+      },
+    });
+
+    const [svc] = formatForSkillDiscover([provider]);
+    const skills = svc.skills as Array<Record<string, unknown>>;
+    expect(typeof skills[0].description).toBe("string");
+    expect((skills[0].description as string).length).toBe(3500);
+  });
+
   it("prefers Shape A when both A and B exist (per-skill metadata is authoritative)", () => {
     const provider = makeProvider({
       name: "Both",

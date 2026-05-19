@@ -628,13 +628,17 @@ describe("hosted MCP — wallet-agnostic surface", () => {
   });
 
   it("daski_buy_service returns validation errors from /quote without issuing a payment", async () => {
+    // Uses a domain-side error (not phone-format) because §1.8 added a
+    // gateway-side E.164 precheck that would intercept phone failures
+    // before reaching /quote. The shape we want to prove here is that
+    // provider-side quote errors propagate through unchanged.
     gateway.mockProvider.setQuoteOutcome("register-domain", {
       ok: false,
       errors: [
         {
-          field: "registrantPhone",
-          code: "invalid_format",
-          message: "must be E.164 with no separators",
+          field: "domain",
+          code: "domain_unavailable",
+          message: "atomic.xyz is not available for registration",
         },
       ],
     });
@@ -650,7 +654,7 @@ describe("hosted MCP — wallet-agnostic surface", () => {
           walletAddress: gateway.buyerAddress,
           serviceArgs: {
             domain: "atomic.xyz",
-            registrantPhone: "+48.500000000",
+            registrantPhone: "+15555550100",
           },
         },
       });
@@ -661,7 +665,39 @@ describe("hosted MCP — wallet-agnostic surface", () => {
       );
       expect(err.code).toBe("quote_validation_failed");
       // Standardized error shape (§3.8) nests structured payload under details.
-      expect(err.details.validationErrors[0].field).toBe("registrantPhone");
+      expect(err.details.validationErrors[0].field).toBe("domain");
+    } finally {
+      await transport.close();
+    }
+  });
+
+  it("daski_buy_service rejects formatted phone numbers before reaching the provider", async () => {
+    // §1.8 — gateway-side E.164 precheck. Saves a network round-trip and
+    // produces a clearer agent-side error than the provider would.
+    const { client, transport } = await connectClient(gateway.baseUrl);
+    try {
+      const result = await client.callTool({
+        name: "daski_buy_service",
+        arguments: {
+          skillId: "register-domain",
+          providerTokenId: "2",
+          buyerTokenId: "5",
+          walletAddress: gateway.buyerAddress,
+          serviceArgs: {
+            domain: "atomic.xyz",
+            registrantPhone: "+1.555.555.0100",
+          },
+        },
+      });
+      const r = result as ToolResultContent;
+      expect(r.isError).toBe(true);
+      const err = JSON.parse(
+        (r.content[0]! as { type: "text"; text: string }).text,
+      );
+      expect(err.code).toBe("BAD_INPUT");
+      expect(err.message).toMatch(/E\.164/);
+      expect(err.details.field).toBe("registrantPhone");
+      expect(err.details.example).toBe("+15555550100");
     } finally {
       await transport.close();
     }
@@ -1011,7 +1047,7 @@ describe("hosted MCP — wallet-agnostic surface", () => {
           skillId: "register-domain",
           paymentId: "42",
           chainId: 84532,
-          // buyerTokenId omitted — required for envelope-auth first call.
+          // buyerTokenId AND walletAddress both omitted — required for envelope-auth first call.
           serviceArgs: { domain: "envelope.xyz" },
         },
       });
@@ -1021,7 +1057,72 @@ describe("hosted MCP — wallet-agnostic surface", () => {
         (r.content[0]! as { type: "text"; text: string }).text,
       );
       expect(err.code).toBe("BAD_INPUT");
+      // §1.4 — error message points at walletAddress + the buy_service
+      // response, NOT daski_search_services.
       expect(err.message).toMatch(/buyerTokenId/);
+      expect(err.message).toMatch(/walletAddress/);
+      expect(err.message).not.toMatch(/daski_search_services/);
+    } finally {
+      await transport.close();
+    }
+  });
+
+  it("daski_submit_task auto-derives buyerTokenId from walletAddress via the on-chain registry", async () => {
+    // §1.3 — when the agent has the wallet but not the agentId, the
+    // gateway looks up the ERC-8004 token via agentOfWallet instead of
+    // forcing the agent to parse a tx receipt.
+    gateway.mockChain.setAgentOfWallet(gateway.buyerAddress, 5n);
+    const { client, transport } = await connectClient(gateway.baseUrl);
+    try {
+      const body = parseResult<{
+        eip712TypedData: { primaryType: string; message: Record<string, string> };
+        authorization: { buyerTokenId: string; paymentId: string };
+        messageId: string;
+      }>(
+        await client.callTool({
+          name: "daski_submit_task",
+          arguments: {
+            providerA2AUrl: gateway.mockProvider.baseUrl + "/a2a",
+            skillId: "register-domain",
+            paymentId: "42",
+            chainId: 84532,
+            walletAddress: gateway.buyerAddress,
+            serviceArgs: { domain: "envelope.xyz" },
+          },
+        }),
+      );
+      expect(body.eip712TypedData.primaryType).toBe("A2ARequestAuthorization");
+      expect(body.authorization.buyerTokenId).toBe("5");
+      expect(body.authorization.paymentId).toBe("42");
+    } finally {
+      await transport.close();
+    }
+  });
+
+  it("daski_submit_task surfaces a recoverable error when the wallet has no agentId", async () => {
+    // §1.3 edge case — wallet exists on chain but isn't registered as an
+    // ERC-8004 agent. Mock chain defaults agentOfWallet to 0n.
+    const freshWallet = "0x1111111111111111111111111111111111111111" as Hex;
+    const { client, transport } = await connectClient(gateway.baseUrl);
+    try {
+      const result = await client.callTool({
+        name: "daski_submit_task",
+        arguments: {
+          providerA2AUrl: gateway.mockProvider.baseUrl + "/a2a",
+          skillId: "register-domain",
+          paymentId: "42",
+          chainId: 84532,
+          walletAddress: freshWallet,
+          serviceArgs: { domain: "envelope.xyz" },
+        },
+      });
+      const r = result as ToolResultContent;
+      expect(r.isError).toBe(true);
+      const err = JSON.parse(
+        (r.content[0]! as { type: "text"; text: string }).text,
+      );
+      expect(err.code).toBe("WALLET_NOT_REGISTERED");
+      expect(err.recoverable).toBe(true);
     } finally {
       await transport.close();
     }
