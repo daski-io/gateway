@@ -193,9 +193,15 @@ export async function createApp(options: CreateAppOptions): Promise<AppBundle> {
 
   // ── Discoverability (§3.10) ────────────────────────────────────────────
   //
-  // Three indexer / crawler-friendly surfaces:
+  // Indexer / crawler-friendly surfaces:
   //   • /.well-known/mcp.json — MCP transport descriptor for clients that
   //     auto-discover hosted servers (Cowork plugin loaders, mcp-registry).
+  //   • /.well-known/daski-chain.json — gateway's view of "the current chain":
+  //     chainId, network, and the full set of contract addresses + EAS schema
+  //     UIDs the gateway is configured against. Test suites and integration
+  //     clients fetch this at startup so they always run against whatever the
+  //     gateway is currently pinned to — no env-file sync needed when the
+  //     stack gets redeployed.
   //   • /.well-known/x402-services.json — list of paid resources in the
   //     spec-shaped accepts[] form, so x402scan / Bazaar / MPP indexers can
   //     surface Daski providers without Daski-specific knowledge.
@@ -222,6 +228,49 @@ export async function createApp(options: CreateAppOptions): Promise<AppBundle> {
       chain: {
         chainId: config.chainId,
         network: config.network,
+      },
+    });
+  });
+
+  app.get("/.well-known/daski-chain.json", (_req, res) => {
+    res.json({
+      chainId: config.chainId,
+      network: config.network,
+      contracts: {
+        identityRegistry: config.identityRegistryAddress,
+        providerRegistry: config.providerRegistryAddress,
+        serviceRegistry: config.serviceRegistryAddress,
+        paymentRouter: config.paymentRouterAddress,
+        x402Adapter: config.x402AdapterAddress,
+        ...(config.permitAdapterAddress
+          ? { permitAdapter: config.permitAdapterAddress }
+          : {}),
+        ...(config.approvalAdapterAddress
+          ? { approvalAdapter: config.approvalAdapterAddress }
+          : {}),
+        ...(config.reputationStorageAddress
+          ? { reputationStorage: config.reputationStorageAddress }
+          : {}),
+        ...(config.reputationRegistryAddress
+          ? { reputationRegistry: config.reputationRegistryAddress }
+          : {}),
+        ...(config.validationRegistryAddress
+          ? { validationRegistry: config.validationRegistryAddress }
+          : {}),
+        usdc: config.usdcAddress,
+        eas: config.easAddress,
+      },
+      schemas: {
+        easConfirmation: config.easConfirmationSchemaUid,
+        easOutcome: config.easOutcomeSchemaUid,
+      },
+      // EIP-712 domain hints for clients constructing EIP-3009 USDC
+      // authorizations. The pair changes with the underlying USDC deploy and
+      // belongs alongside `contracts.usdc` so consumers don't have to track
+      // them separately.
+      usdcDomain: {
+        name: config.usdcName,
+        version: config.usdcVersion,
       },
     });
   });
@@ -276,6 +325,7 @@ export async function createApp(options: CreateAppOptions): Promise<AppBundle> {
           "",
           `- MCP endpoint: ${config.publicUrl}${config.mcpPath}`,
           `- x402 services: ${config.publicUrl}/.well-known/x402-services.json`,
+          `- Chain descriptor: ${config.publicUrl}/.well-known/daski-chain.json`,
           `- A2A discovery: ${config.publicUrl}/discover`,
           `- Skill prompt: ${config.publicUrl}/skill.md`,
           `- Full docs: ${config.publicUrl}/llms-full.txt`,

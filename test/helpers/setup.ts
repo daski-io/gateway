@@ -70,6 +70,12 @@ export interface TestGatewayOptions {
     url: string,
     init?: RequestInit,
   ) => Promise<Response>;
+  /**
+   * Shallow overrides applied on top of the default test Config. Use this
+   * to populate optional fields (permitAdapterAddress, reputationStorageAddress,
+   * etc.) that the default fixture leaves unset.
+   */
+  configOverrides?: Partial<Config>;
 }
 
 /**
@@ -207,6 +213,7 @@ export async function startTestGateway(
     easConfirmationSchemaUid: EAS_CONFIRMATION_SCHEMA_UID,
     easOutcomeSchemaUid: EAS_OUTCOME_SCHEMA_UID,
     ipfsGatewayUrl: "https://ipfs.io/ipfs/",
+    ...opts.configOverrides,
   };
 
   const schemaName = `gw_test_${randomUUID().replace(/-/g, "_")}`;
