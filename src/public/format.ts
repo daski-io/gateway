@@ -509,6 +509,163 @@ function quantile(values: number[], q: number): number | null {
   return Math.round(sorted[lo] * (1 - frac) + sorted[hi] * frac);
 }
 
+/**
+ * Aggregated stats for a single buyer agentId. Sourced entirely from
+ * `chain_events` (one query, no RPC): outcome and confirmation counts
+ * come from the indexer's mirror of `PaymentSettled` + the periodic
+ * outcome/confirmation/refund refresh, so the buyer endpoint hits zero
+ * RPCs at request time. The on-chain `getBuyerStats` view would give
+ * the same counters but with an extra read and a one-block lag.
+ */
+export interface PublicBuyerReputation {
+  /** Settled transactions involving this buyer (chain_events rows). */
+  transactions: number;
+
+  // Confirmation counters (buyer's own attestations via /confirm)
+  confirmedCount: number;
+  notConfirmedCount: number;
+  /** Settled rows where the buyer has not yet attested. */
+  pendingConfirmationCount: number;
+  /** confirmed / (confirmed + notConfirmed). Null if the buyer has never attested. */
+  attestationRate: number | null;
+  /**
+   * (confirmed + notConfirmed) / transactions. Useful as a "does this
+   * buyer follow through with feedback" signal. Null when transactions == 0.
+   */
+  attestationCoverage: number | null;
+
+  // Outcome counters (provider-attested via EAS, mirrored from
+  // ReputationStorage into chain_events.outcome).
+  completedCount: number;
+  failedCount: number;
+  canceledCount: number;
+  /** completed / (completed + failed + canceled). Null when no outcomes recorded. */
+  completionRate: number | null;
+
+  /** USDC, two-decimal string. Sum across all settled rows. */
+  totalSpentUsdc: string;
+  /** Mean of `totalSpentUsdc / transactions`, two-decimal. "0.00" when transactions == 0. */
+  averageTransactionUsdc: string;
+  /** Cumulative USDC refunded back to this buyer across all paymentIds. */
+  totalRefundedUsdc: string;
+  /** refundCount / transactions. Null when no transactions. */
+  refundReceivedRate: number | null;
+
+  /** Distinct provider agentIds the buyer has settled with. */
+  uniqueProviderCount: number;
+  /** Distinct skillIds across the buyer's gateway-issued purchases (LEFT JOIN payment_challenges). */
+  uniqueSkillCount: number;
+
+  /** Mean fulfillment in whole seconds across attested outcomes; null if none. */
+  averageFulfillmentSeconds: number | null;
+  /** Records contributing to the mean (rows with non-null fulfillment_seconds). */
+  fulfillmentSampleSize: number;
+}
+
+/** Raw aggregate shape returned by `aggregateChainActivityByBuyer`. */
+export interface BuyerActivityAggregate {
+  transactionCount: number;
+  totalSpentAtomic: bigint;
+  totalRefundedAtomic: bigint;
+  refundCount: number;
+  completedCount: number;
+  failedCount: number;
+  canceledCount: number;
+  confirmedCount: number;
+  notConfirmedCount: number;
+  uniqueProviderCount: number;
+  uniqueSkillCount: number;
+  fulfillmentSumSeconds: number;
+  fulfillmentSampleSize: number;
+}
+
+/**
+ * Pure derivation: turn the DB aggregate into the wire shape. Lives
+ * here rather than in the route so tests can lock the rate math and
+ * formatting without standing up Postgres.
+ */
+export function derivePublicBuyerReputation(
+  agg: BuyerActivityAggregate,
+): PublicBuyerReputation {
+  const {
+    transactionCount,
+    totalSpentAtomic,
+    totalRefundedAtomic,
+    refundCount,
+    completedCount,
+    failedCount,
+    canceledCount,
+    confirmedCount,
+    notConfirmedCount,
+    uniqueProviderCount,
+    uniqueSkillCount,
+    fulfillmentSumSeconds,
+    fulfillmentSampleSize,
+  } = agg;
+  const attested = confirmedCount + notConfirmedCount;
+  const outcomes = completedCount + failedCount + canceledCount;
+  const averageAtomic =
+    transactionCount > 0
+      ? totalSpentAtomic / BigInt(transactionCount)
+      : 0n;
+  return {
+    transactions: transactionCount,
+    confirmedCount,
+    notConfirmedCount,
+    pendingConfirmationCount: Math.max(0, transactionCount - attested),
+    attestationRate: attested > 0 ? confirmedCount / attested : null,
+    attestationCoverage:
+      transactionCount > 0 ? attested / transactionCount : null,
+    completedCount,
+    failedCount,
+    canceledCount,
+    completionRate: outcomes > 0 ? completedCount / outcomes : null,
+    totalSpentUsdc: atomicToUsdc(totalSpentAtomic),
+    averageTransactionUsdc: atomicToUsdc(averageAtomic),
+    totalRefundedUsdc: atomicToUsdc(totalRefundedAtomic),
+    refundReceivedRate:
+      transactionCount > 0 ? refundCount / transactionCount : null,
+    uniqueProviderCount,
+    uniqueSkillCount,
+    averageFulfillmentSeconds:
+      fulfillmentSampleSize > 0
+        ? Math.round(fulfillmentSumSeconds / fulfillmentSampleSize)
+        : null,
+    fulfillmentSampleSize,
+  };
+}
+
+/** Detail response from `GET /public/v1/buyers/:agentId`. */
+export interface PublicBuyerDetail {
+  agentId: string;
+  /** ERC-8004 wallet, lowercase. Null when the IdentityRegistry read failed
+   *  and no buyer_identities row was cached at registration time. */
+  walletAddress: Hex | null;
+  /** Display name from buyer_identities (cached at registration) or, if
+   *  unavailable, resolved live via tokenURI; falls back to `buyer-<last6>`. */
+  name: string | null;
+  /** Mirror of the on-chain agentURI when known; null otherwise. */
+  agentURI: string | null;
+  /** ISO-8601; null when the buyer has no settled rows yet. */
+  firstPurchaseAt: string | null;
+  /** ISO-8601; null when the buyer has no settled rows yet. */
+  lastPurchaseAt: string | null;
+  reputation: PublicBuyerReputation;
+  recentPurchases: PublicActivityRow[];
+}
+
+/** One entry in the `GET /public/v1/buyers` leaderboard. */
+export interface PublicBuyerSummary {
+  agentId: string;
+  /** Resolved name from buyer_identities, or null (UI falls back to `agent#<id>`). */
+  name: string | null;
+  /** USDC, two-decimal string. Lifetime spend. */
+  totalSpentUsdc: string;
+  transactionCount: number;
+  /** ISO-8601 timestamp of the most-recent settled transaction. */
+  lastPurchaseAt: string;
+}
+
 export interface PublicActivityRow {
   /** Always set — only paid rows are emitted. */
   txHash: Hex;

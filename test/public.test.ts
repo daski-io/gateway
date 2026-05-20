@@ -1012,3 +1012,326 @@ describe("public v1 — /stats", () => {
     });
   });
 });
+
+describe("public v1 — /buyers/:agentId", () => {
+  let gateway: TestGateway;
+
+  beforeEach(async () => {
+    gateway = await startTestGateway({
+      providers: [
+        {
+          tokenId: 1n,
+          name: "Acme Domains",
+          priceUsdcSmallest: "10000000",
+          category: "domains",
+          skills: [
+            {
+              id: "register-domain",
+              metadata: {
+                paymentRequired: true,
+                baseAmount: "10000000",
+              },
+            },
+          ],
+        },
+        {
+          tokenId: 2n,
+          name: "Other Provider",
+          priceUsdcSmallest: "5000000",
+          category: "compute",
+        },
+      ],
+    });
+  });
+
+  afterEach(async () => {
+    await gateway.close();
+  });
+
+  it("returns a zeroed shape (200) for buyers with no activity", async () => {
+    // Marketing site can deep-link to any agentId without 404 branching —
+    // unknown buyers render as "no activity yet" rather than an error.
+    const res = await fetch(`${gateway.baseUrl}/public/v1/buyers/999`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as any;
+
+    expect(body.agentId).toBe("999");
+    expect(body.firstPurchaseAt).toBeNull();
+    expect(body.lastPurchaseAt).toBeNull();
+    expect(body.reputation).toMatchObject({
+      transactions: 0,
+      confirmedCount: 0,
+      notConfirmedCount: 0,
+      pendingConfirmationCount: 0,
+      attestationRate: null,
+      attestationCoverage: null,
+      completedCount: 0,
+      failedCount: 0,
+      canceledCount: 0,
+      completionRate: null,
+      totalSpentUsdc: "0.00",
+      averageTransactionUsdc: "0.00",
+      totalRefundedUsdc: "0.00",
+      refundReceivedRate: null,
+      uniqueProviderCount: 0,
+      uniqueSkillCount: 0,
+      averageFulfillmentSeconds: null,
+      fulfillmentSampleSize: 0,
+    });
+    expect(body.recentPurchases).toEqual([]);
+  });
+
+  it("returns 404 for unparseable agentIds", async () => {
+    const res = await fetch(`${gateway.baseUrl}/public/v1/buyers/not-a-number`);
+    expect(res.status).toBe(404);
+    const body = (await res.json()) as any;
+    expect(body.error.code).toBe("BUYER_NOT_FOUND");
+  });
+
+  it("aggregates spend, transactions, outcome and confirmation counters from chain_events", async () => {
+    // Three settlements for buyer 7: two with Acme, one with Other Provider.
+    // After patching: 2 Completed (one Confirmed, one NotConfirmed) + 1 Failed
+    // (still Pending). Skill mix: register-domain twice + default-service once.
+    await seedPaid(gateway, {
+      serviceRef: ("0x" + "aa".repeat(32)) as Hex,
+      providerAgentId: 1n,
+      buyerAgentId: 7n,
+      amountAtomic: 10_000_000n,
+      skillId: "register-domain",
+      paymentId: 501n,
+      txHash: ("0x" + "01".repeat(32)) as Hex,
+    });
+    await patchChainEvent(gateway, 501n, {
+      outcome: "Completed",
+      confirmation: "Confirmed",
+      fulfillmentSeconds: 60,
+    });
+
+    await seedPaid(gateway, {
+      serviceRef: ("0x" + "bb".repeat(32)) as Hex,
+      providerAgentId: 1n,
+      buyerAgentId: 7n,
+      amountAtomic: 20_000_000n,
+      skillId: "register-domain",
+      paymentId: 502n,
+      txHash: ("0x" + "02".repeat(32)) as Hex,
+    });
+    await patchChainEvent(gateway, 502n, {
+      outcome: "Completed",
+      confirmation: "NotConfirmed",
+      fulfillmentSeconds: 120,
+      refundedAtomic: 5_000_000n,
+    });
+
+    await seedPaid(gateway, {
+      serviceRef: ("0x" + "cc".repeat(32)) as Hex,
+      providerAgentId: 2n,
+      buyerAgentId: 7n,
+      amountAtomic: 5_000_000n,
+      skillId: "default-service",
+      paymentId: 503n,
+      txHash: ("0x" + "03".repeat(32)) as Hex,
+    });
+    await patchChainEvent(gateway, 503n, { outcome: "Failed" });
+
+    // Unrelated row for a different buyer — must not bleed into 7's counters.
+    await seedPaid(gateway, {
+      serviceRef: ("0x" + "dd".repeat(32)) as Hex,
+      providerAgentId: 1n,
+      buyerAgentId: 8n,
+      amountAtomic: 10_000_000n,
+      skillId: "register-domain",
+      paymentId: 504n,
+      txHash: ("0x" + "04".repeat(32)) as Hex,
+    });
+
+    const res = await fetch(`${gateway.baseUrl}/public/v1/buyers/7`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as any;
+
+    expect(body.reputation.transactions).toBe(3);
+    expect(body.reputation.totalSpentUsdc).toBe("35.00"); // 10 + 20 + 5
+    expect(body.reputation.averageTransactionUsdc).toBe("11.67"); // (10+20+5)/3 atomic = 11_666_666 → toFixed(2) → 11.67
+    expect(body.reputation.totalRefundedUsdc).toBe("5.00");
+    expect(body.reputation.refundReceivedRate).toBeCloseTo(1 / 3);
+
+    // Outcomes (provider-attested via patch)
+    expect(body.reputation.completedCount).toBe(2);
+    expect(body.reputation.failedCount).toBe(1);
+    expect(body.reputation.canceledCount).toBe(0);
+    expect(body.reputation.completionRate).toBeCloseTo(2 / 3);
+
+    // Confirmations (buyer-attested). One Confirmed, one NotConfirmed, one
+    // Pending → attestation_rate = 1/2, coverage = 2/3.
+    expect(body.reputation.confirmedCount).toBe(1);
+    expect(body.reputation.notConfirmedCount).toBe(1);
+    expect(body.reputation.pendingConfirmationCount).toBe(1);
+    expect(body.reputation.attestationRate).toBeCloseTo(0.5);
+    expect(body.reputation.attestationCoverage).toBeCloseTo(2 / 3);
+
+    // Breadth: two providers (1, 2), two distinct skills.
+    expect(body.reputation.uniqueProviderCount).toBe(2);
+    expect(body.reputation.uniqueSkillCount).toBe(2);
+
+    // Fulfillment mean over the two attested rows.
+    expect(body.reputation.averageFulfillmentSeconds).toBe(90);
+    expect(body.reputation.fulfillmentSampleSize).toBe(2);
+
+    expect(typeof body.firstPurchaseAt).toBe("string");
+    expect(typeof body.lastPurchaseAt).toBe("string");
+  });
+
+  it("includes the buyer's most-recent purchases with provider+buyer names enriched", async () => {
+    // Buyer 7 has an agentURI that resolves to a readable name; the
+    // detail endpoint should pick it up the same way /activity does.
+    const buyerCard = { name: "Alice the Buyer" };
+    gateway.mockChain.setAgentURI(
+      7n,
+      `data:application/json,${encodeURIComponent(JSON.stringify(buyerCard))}`,
+    );
+
+    await seedPaid(gateway, {
+      serviceRef: ("0x" + "11".repeat(32)) as Hex,
+      providerAgentId: 1n,
+      buyerAgentId: 7n,
+      amountAtomic: 10_000_000n,
+      skillId: "register-domain",
+      paymentId: 601n,
+      txHash: ("0x" + "61".repeat(32)) as Hex,
+    });
+
+    const res = await fetch(`${gateway.baseUrl}/public/v1/buyers/7`);
+    const body = (await res.json()) as any;
+    expect(body.name).toBe("Alice the Buyer");
+    expect(body.recentPurchases).toHaveLength(1);
+    expect(body.recentPurchases[0]).toMatchObject({
+      buyerAgentId: "7",
+      providerAgentId: "1",
+      providerName: "Acme Domains",
+      buyerName: "Alice the Buyer",
+      amount: "10.00",
+      skillId: "register-domain",
+    });
+  });
+
+  it("derives buyer-<wallet-suffix> when the buyer has a wallet but no agentURI", async () => {
+    const wallet = "0xABd98f58eCA6e676E613C4001dd4c497fBAA39aA" as Hex;
+    gateway.mockChain.setAgentWallet(42n, wallet);
+    // No setAgentURI(42n, ...) — agentURI is empty.
+
+    await seedPaid(gateway, {
+      serviceRef: ("0x" + "22".repeat(32)) as Hex,
+      providerAgentId: 1n,
+      buyerAgentId: 42n,
+      amountAtomic: 10_000_000n,
+      skillId: "register-domain",
+      paymentId: 701n,
+      txHash: ("0x" + "71".repeat(32)) as Hex,
+    });
+
+    const res = await fetch(`${gateway.baseUrl}/public/v1/buyers/42`);
+    const body = (await res.json()) as any;
+    expect(body.name).toBe("buyer-aa39aa");
+    expect(body.walletAddress?.toLowerCase()).toBe(wallet.toLowerCase());
+  });
+});
+
+describe("public v1 — /buyers (leaderboard)", () => {
+  let gateway: TestGateway;
+
+  beforeEach(async () => {
+    gateway = await startTestGateway({
+      providers: [
+        {
+          tokenId: 1n,
+          name: "Acme Domains",
+          priceUsdcSmallest: "10000000",
+          category: "domains",
+        },
+      ],
+    });
+  });
+
+  afterEach(async () => {
+    await gateway.close();
+  });
+
+  it("ranks buyers by lifetime USDC spend descending", async () => {
+    // Buyer 7: 30 USDC across 2 txns. Buyer 8: 5 USDC across 1 txn.
+    // Buyer 9: 100 USDC across 1 txn (top of leaderboard).
+    await seedPaid(gateway, {
+      serviceRef: ("0x" + "a1".repeat(32)) as Hex,
+      providerAgentId: 1n,
+      buyerAgentId: 7n,
+      amountAtomic: 10_000_000n,
+      paymentId: 801n,
+      txHash: ("0x" + "81".repeat(32)) as Hex,
+    });
+    await seedPaid(gateway, {
+      serviceRef: ("0x" + "a2".repeat(32)) as Hex,
+      providerAgentId: 1n,
+      buyerAgentId: 7n,
+      amountAtomic: 20_000_000n,
+      paymentId: 802n,
+      txHash: ("0x" + "82".repeat(32)) as Hex,
+    });
+    await seedPaid(gateway, {
+      serviceRef: ("0x" + "a3".repeat(32)) as Hex,
+      providerAgentId: 1n,
+      buyerAgentId: 8n,
+      amountAtomic: 5_000_000n,
+      paymentId: 803n,
+      txHash: ("0x" + "83".repeat(32)) as Hex,
+    });
+    await seedPaid(gateway, {
+      serviceRef: ("0x" + "a4".repeat(32)) as Hex,
+      providerAgentId: 1n,
+      buyerAgentId: 9n,
+      amountAtomic: 100_000_000n,
+      paymentId: 804n,
+      txHash: ("0x" + "84".repeat(32)) as Hex,
+    });
+
+    const res = await fetch(`${gateway.baseUrl}/public/v1/buyers`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as any;
+    expect(body.buyers).toHaveLength(3);
+
+    const [first, second, third] = body.buyers;
+    expect(first.agentId).toBe("9");
+    expect(first.totalSpentUsdc).toBe("100.00");
+    expect(first.transactionCount).toBe(1);
+    expect(second.agentId).toBe("7");
+    expect(second.totalSpentUsdc).toBe("30.00");
+    expect(second.transactionCount).toBe(2);
+    expect(third.agentId).toBe("8");
+    expect(third.totalSpentUsdc).toBe("5.00");
+    expect(third.transactionCount).toBe(1);
+
+    expect(typeof first.lastPurchaseAt).toBe("string");
+  });
+
+  it("honors the ?limit query param", async () => {
+    for (let i = 0; i < 5; i++) {
+      await seedPaid(gateway, {
+        serviceRef: ("0x" + (i + 0xb0).toString(16).padStart(2, "0").repeat(32)) as Hex,
+        providerAgentId: 1n,
+        buyerAgentId: BigInt(100 + i),
+        amountAtomic: BigInt((i + 1) * 1_000_000),
+        paymentId: BigInt(900 + i),
+        txHash: ("0x" + (i + 0x90).toString(16).padStart(2, "0").repeat(32)) as Hex,
+      });
+    }
+
+    const res = await fetch(`${gateway.baseUrl}/public/v1/buyers?limit=2`);
+    const body = (await res.json()) as any;
+    expect(body.buyers).toHaveLength(2);
+  });
+
+  it("returns an empty list when no settled rows exist", async () => {
+    const res = await fetch(`${gateway.baseUrl}/public/v1/buyers`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as any;
+    expect(body.buyers).toEqual([]);
+  });
+});

@@ -14,6 +14,7 @@ import {
   type FetchAgentCardOptions,
 } from "../identity/fetch-agent-card.js";
 import {
+  derivePublicBuyerReputation,
   deriveProviderReputation,
   deriveServiceReputation,
   deriveServiceWeightedSatisfaction,
@@ -21,6 +22,9 @@ import {
   formatActivityRow,
   formatChainActivityRow,
   formatServiceForPublic,
+  type PublicBuyerDetail,
+  type PublicBuyerReputation,
+  type PublicBuyerSummary,
   type PublicService,
   type PublicServiceLevelReputation,
   type PublicServiceReputation,
@@ -33,6 +37,9 @@ import type { Hex, StoredChallenge } from "../types.js";
 const ACTIVITY_DEFAULT_LIMIT = 50;
 const ACTIVITY_MAX_LIMIT = 200;
 const PER_SERVICE_RECENT_LIMIT = 10;
+const PER_BUYER_RECENT_LIMIT = 10;
+const BUYER_LEADERBOARD_DEFAULT_LIMIT = 25;
+const BUYER_LEADERBOARD_MAX_LIMIT = 100;
 
 /**
  * Block number cache. /public/v1/stats is intended to be polled by the
@@ -439,42 +446,55 @@ const SERVICE_AGGREGATES_SAMPLE_LIMIT = 200;
 // without looking like a small DDoS.
 const BUYER_NAME_FETCH_CONCURRENCY = 8;
 
+/** Resolved identity tuple for a buyer agentId; any field may be null. */
+interface BuyerIdentity {
+  name: string | null;
+  walletAddress: Hex | null;
+  agentURI: string | null;
+}
+
 /**
- * Per-agentId cache for buyer display names. Resolves via
- * `IdentityRegistry.tokenURI(agentId) → fetchAgentCard(uri) → metadata.name`.
- * Long TTL (1h default) because names are stable per token — the brief
- * accepts staleness on rotation, and a hot reload simply picks up the new
- * value next TTL window.
+ * Per-agentId cache for buyer identity (name + wallet + agentURI). Tries
+ * the `buyer_identities` DB cache first (populated when a buyer registers
+ * through this gateway), then falls back to on-chain resolution via
+ * `IdentityRegistry.tokenURI` and `IdentityRegistry.getAgentWallet` — the
+ * same dual path that registration uses. Long TTL (1h default) because
+ * identities are stable per token; rotation is rare and rebroadcast
+ * tolerates a TTL window of lag.
  *
  * Two behaviors worth flagging:
  *
  *   - Negative caching: any failure (RPC error, fetch failure, malformed
- *     JSON, missing `name`) caches `null` for the same TTL. Without this, a
- *     broken IPFS pin would re-fetch on every request and degrade the whole
- *     activity feed to the slowest buyer. The buyer must wait a TTL for
- *     their fixed name to surface — acceptable tradeoff for marketing-site
- *     latency.
- *   - Inflight dedupe: concurrent misses for the same agentId coalesce into
- *     one resolve call. The activity feed sees the same buyer multiple
- *     times in steady state (repeat purchases), and a cold cache + 50-row
- *     fan-out would otherwise spawn N parallel lookups for the same name.
+ *     JSON, missing `name`) caches the partial result for the same TTL.
+ *     Without this, a broken IPFS pin would re-fetch on every request and
+ *     degrade the whole activity feed to the slowest buyer.
+ *   - Inflight dedupe: concurrent misses for the same agentId coalesce
+ *     into one resolve call. The activity feed sees the same buyer
+ *     multiple times in steady state (repeat purchases), and a cold
+ *     cache + 50-row fan-out would otherwise spawn N parallel lookups
+ *     for the same identity.
+ *
+ * Exposes both `get()` (full tuple, used by /public/v1/buyers/:agentId)
+ * and `getName()` (string-only, used by activity-feed enrichment) so the
+ * existing callers don't need to thread null-chains.
  */
-class BuyerNameCache {
+class BuyerIdentityCache {
   private readonly entries = new Map<
     string,
-    { value: string | null; fetchedAt: number }
+    { value: BuyerIdentity | null; fetchedAt: number }
   >();
-  private readonly inflight = new Map<string, Promise<string | null>>();
+  private readonly inflight = new Map<string, Promise<BuyerIdentity | null>>();
   private readonly ttlMs: number;
   constructor(
     private readonly reader: ChainReader,
+    private readonly queries: Queries,
     private readonly fetchOptions: FetchAgentCardOptions,
     ttlMs = 60 * 60 * 1000,
   ) {
     this.ttlMs = ttlMs;
   }
 
-  async get(agentId: bigint): Promise<string | null> {
+  async get(agentId: bigint): Promise<BuyerIdentity | null> {
     const key = agentId.toString();
     const now = Date.now();
     const hit = this.entries.get(key);
@@ -492,48 +512,200 @@ class BuyerNameCache {
     return value;
   }
 
-  private async resolve(agentId: bigint): Promise<string | null> {
-    // Two-step resolution:
-    //   1. Read the agent's registered `agentURI` from IdentityRegistry and
-    //      pull the `name` out of the AgentCard. Buyers who register
-    //      through the gateway's MCP flow always have this populated.
-    //   2. Fallback: derive `buyer-<last6>` from the agent's on-chain
-    //      wallet — the same default registration assigns when the buyer
-    //      provides neither a name nor an agentURI (see mcp/util.ts).
-    //      Ensures buyers who registered through other paths (e.g. e2e
-    //      test suites, third-party SDKs) still have something to show
-    //      on the activity feed rather than falling back to `agent#N`.
-    //
-    // The two paths are independent — a failure in step 1 must not
-    // prevent step 2 from running. We separate the try/catch boundaries
-    // so the URI path can fail (throw or empty) without short-circuiting
-    // the wallet path.
+  async getName(agentId: bigint): Promise<string | null> {
+    const identity = await this.get(agentId);
+    return identity?.name ?? null;
+  }
+
+  private async resolve(agentId: bigint): Promise<BuyerIdentity | null> {
+    // 1. DB cache: buyer_identities holds {name, wallet, agentURI} captured
+    //    at registration time. For buyers registered through this gateway
+    //    this hits before any RPC — the common case for the marketing
+    //    surface, since most activity is driven by gateway-registered
+    //    agents.
     try {
-      const uri = await this.reader.getAgentURI(agentId);
-      if (uri && uri.length > 0) {
-        try {
-          const card = await fetchAgentCard(uri, this.fetchOptions);
-          if (card.name && card.name.length > 0) return card.name;
-        } catch {
-          // Fall through to the wallet-derived default below.
-        }
+      const row = await this.queries.getBuyerIdentity(agentId);
+      if (row) {
+        return {
+          name: row.resolvedName,
+          walletAddress: row.walletAddress,
+          agentURI: row.agentURI.length > 0 ? row.agentURI : null,
+        };
       }
     } catch {
-      // getAgentURI threw (e.g. agent not registered) — fall through.
+      // DB hiccup — fall through to on-chain. Don't poison the cache.
+    }
+
+    // 2. On-chain fallback for buyers who didn't register through this
+    //    gateway (e2e test suites, third-party SDKs, direct contract
+    //    interaction). Fetch URI and wallet in parallel — both reads
+    //    target the same IdentityRegistry contract and are independent.
+    let agentURI: string | null = null;
+    let walletAddress: Hex | null = null;
+    try {
+      agentURI = await this.reader.getAgentURI(agentId);
+      if (agentURI && agentURI.length === 0) agentURI = null;
+    } catch {
+      // Agent not registered, or RPC down — leave null and continue.
     }
     try {
       const wallet = await this.reader.getAgentWallet(agentId);
       if (wallet && wallet !== "0x0000000000000000000000000000000000000000") {
-        return `buyer-${wallet.toLowerCase().slice(-6)}`;
+        walletAddress = wallet;
       }
     } catch {
-      // Hard fail (e.g. IdentityRegistry RPC down) — the activity feed
-      // must continue to render; the `null` is the documented contract
-      // with the front-end. See PublicActivityRow.buyerName.
+      // Same: leave null and continue.
     }
-    return null;
+
+    // Resolve a display name from the URI if possible, then fall back to
+    // a wallet-derived default. Matches the name-only behavior buyers
+    // see at registration time (see mcp/util.ts).
+    let name: string | null = null;
+    if (agentURI) {
+      try {
+        const card = await fetchAgentCard(agentURI, this.fetchOptions);
+        if (card.name && card.name.length > 0) name = card.name;
+      } catch {
+        // Card fetch failed — fall through to wallet-derived name.
+      }
+    }
+    if (!name && walletAddress) {
+      name = `buyer-${walletAddress.toLowerCase().slice(-6)}`;
+    }
+
+    if (!name && !walletAddress && !agentURI) return null;
+    return { name, walletAddress, agentURI };
   }
 }
+
+/** Per-agentId aggregate value: the full buyer-profile data block. */
+interface BuyerProfileValue {
+  reputation: PublicBuyerReputation;
+  firstPurchaseAt: Date | null;
+  lastPurchaseAt: Date | null;
+  recentPurchases: ChainActivityRow[];
+}
+
+/**
+ * Per-buyer profile cache: one fetch pass per buyer, combining the
+ * SQL aggregate and the most-recent N rows. 60s TTL is the same shape
+ * as ServiceAggregatesCache — aggregates move slowly (one new
+ * transaction shifts each metric by ~1/N) so consumers can poll without
+ * thrashing Postgres. Recent-purchases list is short (10 rows by
+ * default) and cheap to refresh; bundling it with the aggregate
+ * preserves the "one cache hit, one render" contract.
+ *
+ * Returns an empty-shaped value (counts all zero, recentPurchases [])
+ * rather than null when the buyer has no settled rows — the route
+ * still emits 200 with a real PublicBuyerDetail so the marketing site
+ * doesn't have to special-case missing buyers. The 404 is reserved for
+ * unparseable agentIds.
+ */
+class BuyerProfileCache {
+  private readonly entries = new Map<
+    string,
+    { value: BuyerProfileValue; fetchedAt: number }
+  >();
+  private readonly ttlMs: number;
+  constructor(
+    private readonly queries: Queries,
+    ttlMs = 60_000,
+  ) {
+    this.ttlMs = ttlMs;
+  }
+  async get(agentId: bigint): Promise<BuyerProfileValue> {
+    const key = agentId.toString();
+    const now = Date.now();
+    const hit = this.entries.get(key);
+    if (hit && now - hit.fetchedAt < this.ttlMs) return hit.value;
+
+    try {
+      const [agg, recent] = await Promise.all([
+        this.queries.aggregateChainActivityByBuyer(agentId),
+        this.queries.listRecentChainActivityByBuyer(
+          agentId,
+          PER_BUYER_RECENT_LIMIT,
+        ),
+      ]);
+      const value: BuyerProfileValue = {
+        reputation: derivePublicBuyerReputation(agg),
+        firstPurchaseAt: agg.firstSettledAt,
+        lastPurchaseAt: agg.lastSettledAt,
+        recentPurchases: recent,
+      };
+      this.entries.set(key, { value, fetchedAt: now });
+      return value;
+    } catch {
+      // DB failure: serve previous value if any, else the documented
+      // empty shape so the route still renders.
+      return hit?.value ?? EMPTY_BUYER_PROFILE;
+    }
+  }
+}
+
+/**
+ * Buyer leaderboard cache. The `GROUP BY buyer_agent_id` scan over
+ * chain_events is cheap at current volume but grows with the table, so
+ * a global 60s TTL cache amortizes it across all visitors. Keyed by
+ * limit so distinct `?limit=` values cache independently — typical
+ * marketing-site usage will only hit one or two limits, so cache size
+ * stays bounded.
+ */
+class BuyerLeaderboardCache {
+  private readonly entries = new Map<
+    number,
+    {
+      value: Array<{
+        agentId: bigint;
+        transactionCount: number;
+        totalSpentAtomic: bigint;
+        lastSettledAt: Date;
+        resolvedName: string | null;
+      }>;
+      fetchedAt: number;
+    }
+  >();
+  private readonly ttlMs: number;
+  constructor(
+    private readonly queries: Queries,
+    ttlMs = 60_000,
+  ) {
+    this.ttlMs = ttlMs;
+  }
+  async get(limit: number) {
+    const now = Date.now();
+    const hit = this.entries.get(limit);
+    if (hit && now - hit.fetchedAt < this.ttlMs) return hit.value;
+    try {
+      const rows = await this.queries.listBuyersByVolume(limit);
+      this.entries.set(limit, { value: rows, fetchedAt: now });
+      return rows;
+    } catch {
+      return hit?.value ?? [];
+    }
+  }
+}
+
+const EMPTY_BUYER_PROFILE: BuyerProfileValue = {
+  reputation: derivePublicBuyerReputation({
+    transactionCount: 0,
+    totalSpentAtomic: 0n,
+    totalRefundedAtomic: 0n,
+    refundCount: 0,
+    completedCount: 0,
+    failedCount: 0,
+    canceledCount: 0,
+    confirmedCount: 0,
+    notConfirmedCount: 0,
+    uniqueProviderCount: 0,
+    uniqueSkillCount: 0,
+    fulfillmentSumSeconds: 0,
+    fulfillmentSampleSize: 0,
+  }),
+  firstPurchaseAt: null,
+  lastPurchaseAt: null,
+  recentPurchases: [],
+};
 
 /**
  * Concurrency-capped parallel map. Fans out at most `limit` workers over
@@ -624,6 +796,10 @@ export interface PublicRouterDeps {
   serviceAggregatesCacheTtlMs?: number;
   /** Override the per-buyer name TTL (ms). Tests pass 0 to bypass caching. */
   buyerNameCacheTtlMs?: number;
+  /** Override the per-buyer profile TTL (ms). Tests pass 0 to bypass caching. */
+  buyerProfileCacheTtlMs?: number;
+  /** Override the buyer leaderboard TTL (ms). Tests pass 0 to bypass caching. */
+  buyerLeaderboardCacheTtlMs?: number;
 }
 
 /**
@@ -664,13 +840,22 @@ export function createPublicRouter(deps: PublicRouterDeps): Router {
     SERVICE_AGGREGATES_SAMPLE_LIMIT,
     deps.serviceAggregatesCacheTtlMs ?? 60_000,
   );
-  const buyerNameCache = new BuyerNameCache(
+  const buyerIdentityCache = new BuyerIdentityCache(
     reader,
+    queries,
     {
       ipfsGatewayUrl: config.ipfsGatewayUrl,
       fetchFn: deps.buyerAgentCardFetch,
     },
     deps.buyerNameCacheTtlMs ?? 60 * 60 * 1000,
+  );
+  const buyerProfileCache = new BuyerProfileCache(
+    queries,
+    deps.buyerProfileCacheTtlMs ?? 60_000,
+  );
+  const buyerLeaderboardCache = new BuyerLeaderboardCache(
+    queries,
+    deps.buyerLeaderboardCacheTtlMs ?? 60_000,
   );
 
   router.get("/public/v1/services", (_req: Request, res: Response) => {
@@ -734,7 +919,7 @@ export function createPublicRouter(deps: PublicRouterDeps): Router {
       const buyerNames = await mapWithLimit(
         recent,
         BUYER_NAME_FETCH_CONCURRENCY,
-        (r) => buyerNameCache.get(r.buyerAgentId),
+        (r) => buyerIdentityCache.getName(r.buyerAgentId),
       );
       const recentPurchases = recent.map((r, i) =>
         formatChainActivityRow(
@@ -806,7 +991,7 @@ export function createPublicRouter(deps: PublicRouterDeps): Router {
     const buyerNames = await mapWithLimit(
       rows,
       BUYER_NAME_FETCH_CONCURRENCY,
-      (r) => buyerNameCache.get(r.buyerAgentId),
+      (r) => buyerIdentityCache.getName(r.buyerAgentId),
     );
     res.json({
       activity: rows.map((r, i) =>
@@ -846,6 +1031,87 @@ export function createPublicRouter(deps: PublicRouterDeps): Router {
       },
     });
   });
+
+  // ── /public/v1/buyers ─────────────────────────────────────────────────
+  //
+  // Marketplace-side stats keyed by buyer agentId. The detail endpoint
+  // is the buyer mirror of /public/v1/services/:agentId — it always
+  // returns 200 (with zero-valued counters) for any parseable agentId,
+  // so the marketing site can deep-link to any buyer without a
+  // 404-handling branch. The list endpoint is a lifetime-spend
+  // leaderboard. All data is sourced from chain_events; no RPCs at
+  // request time.
+
+  router.get("/public/v1/buyers", async (req: Request, res: Response) => {
+    const limit = parseLimit(
+      req.query.limit,
+      BUYER_LEADERBOARD_DEFAULT_LIMIT,
+      BUYER_LEADERBOARD_MAX_LIMIT,
+    );
+    const rows = await buyerLeaderboardCache.get(limit);
+    // Fill missing names by falling back to the BuyerIdentityCache, which
+    // does the on-chain wallet → `buyer-<last6>` derivation for buyers
+    // who don't have a buyer_identities row. Bounded fan-out for the
+    // same reason as the activity feed: a cold cache on a 100-row page
+    // would otherwise spawn 100 concurrent IdentityRegistry reads.
+    const fallbackNames = await mapWithLimit(
+      rows,
+      BUYER_NAME_FETCH_CONCURRENCY,
+      (r) => (r.resolvedName ? Promise.resolve(r.resolvedName) : buyerIdentityCache.getName(r.agentId)),
+    );
+    const buyers: PublicBuyerSummary[] = rows.map((r, i) => ({
+      agentId: r.agentId.toString(),
+      name: fallbackNames[i] ?? null,
+      totalSpentUsdc: (Number(r.totalSpentAtomic) / 1_000_000).toFixed(2),
+      transactionCount: r.transactionCount,
+      lastPurchaseAt: r.lastSettledAt.toISOString(),
+    }));
+    res.json({ buyers });
+  });
+
+  router.get(
+    "/public/v1/buyers/:agentId",
+    async (req: Request, res: Response) => {
+      let agentId: bigint;
+      try {
+        agentId = BigInt(String(req.params.agentId));
+      } catch {
+        res.status(404).json({
+          error: { code: "BUYER_NOT_FOUND", message: "unknown buyer" },
+        });
+        return;
+      }
+      const [profile, identity] = await Promise.all([
+        buyerProfileCache.get(agentId),
+        buyerIdentityCache.get(agentId),
+      ]);
+      const recentPurchases = profile.recentPurchases.map((r) =>
+        formatChainActivityRow(
+          r,
+          // Provider name: pull from the discovery cache if we know the
+          // provider. Falls back to null (same contract as /activity).
+          (() => {
+            const provider = cache.get(r.providerAgentId);
+            return provider
+              ? extractAgentCardName(provider.agentCard)
+              : null;
+          })(),
+          identity?.name ?? null,
+        ),
+      );
+      const detail: PublicBuyerDetail = {
+        agentId: agentId.toString(),
+        walletAddress: identity?.walletAddress ?? null,
+        name: identity?.name ?? null,
+        agentURI: identity?.agentURI ?? null,
+        firstPurchaseAt: profile.firstPurchaseAt?.toISOString() ?? null,
+        lastPurchaseAt: profile.lastPurchaseAt?.toISOString() ?? null,
+        reputation: profile.reputation,
+        recentPurchases,
+      };
+      res.json(detail);
+    },
+  );
 
   return router;
 }

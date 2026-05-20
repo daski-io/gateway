@@ -405,6 +405,144 @@ export function createQueries(pool: Pool) {
       };
     },
 
+    /**
+     * Single-pass aggregate over a buyer's chain-events history. Returns
+     * everything `/public/v1/buyers/:agentId` needs that can be computed
+     * cheaply in SQL: spend / refund totals, outcome counters, fulfillment
+     * mean, distinct provider+skill counts, and the first/last
+     * settlement timestamps. Skill-bucketing isn't done here — the
+     * provider/service-side patterns sample recent rows and group in JS,
+     * and the same shape works for buyers too if we ever want it; the
+     * counts of unique providers / skills give callers the "breadth"
+     * signal without a per-row join.
+     *
+     * One query, two index lookups (chain_events_buyer_agent_id_settled_at_idx
+     * for the bulk aggregate, payment_challenges PK via the LEFT JOIN for
+     * the skill_id distinct count). Unindexed sort-merge of payment_challenges
+     * rows is bounded by the buyer's own transaction count.
+     */
+    async aggregateChainActivityByBuyer(buyerAgentId: bigint): Promise<{
+      transactionCount: number;
+      totalSpentAtomic: bigint;
+      totalRefundedAtomic: bigint;
+      refundCount: number;
+      completedCount: number;
+      failedCount: number;
+      canceledCount: number;
+      confirmedCount: number;
+      notConfirmedCount: number;
+      uniqueProviderCount: number;
+      uniqueSkillCount: number;
+      fulfillmentSumSeconds: number;
+      fulfillmentSampleSize: number;
+      firstSettledAt: Date | null;
+      lastSettledAt: Date | null;
+    }> {
+      const res = await pool.query<{
+        transaction_count: string;
+        total_spent_atomic: string;
+        total_refunded_atomic: string;
+        refund_count: string;
+        completed_count: string;
+        failed_count: string;
+        canceled_count: string;
+        confirmed_count: string;
+        not_confirmed_count: string;
+        unique_provider_count: string;
+        unique_skill_count: string;
+        fulfillment_sum_seconds: string;
+        fulfillment_sample_size: string;
+        first_settled_at: Date | null;
+        last_settled_at: Date | null;
+      }>(
+        `SELECT COUNT(*)::bigint                                      AS transaction_count,
+                COALESCE(SUM(ce.amount_atomic), 0)::numeric           AS total_spent_atomic,
+                COALESCE(SUM(ce.refunded_atomic), 0)::numeric         AS total_refunded_atomic,
+                COUNT(*) FILTER (WHERE ce.refunded_atomic > 0)::bigint AS refund_count,
+                COUNT(*) FILTER (WHERE ce.outcome = 0)::bigint        AS completed_count,
+                COUNT(*) FILTER (WHERE ce.outcome = 1)::bigint        AS failed_count,
+                COUNT(*) FILTER (WHERE ce.outcome = 2)::bigint        AS canceled_count,
+                COUNT(*) FILTER (WHERE ce.confirmation = 1)::bigint   AS confirmed_count,
+                COUNT(*) FILTER (WHERE ce.confirmation = 2)::bigint   AS not_confirmed_count,
+                COUNT(DISTINCT ce.provider_agent_id)::bigint          AS unique_provider_count,
+                COUNT(DISTINCT pc.skill_id)::bigint                   AS unique_skill_count,
+                COALESCE(SUM(ce.fulfillment_seconds), 0)::bigint      AS fulfillment_sum_seconds,
+                COUNT(ce.fulfillment_seconds)::bigint                 AS fulfillment_sample_size,
+                MIN(ce.settled_at)                                    AS first_settled_at,
+                MAX(ce.settled_at)                                    AS last_settled_at
+           FROM chain_events ce
+           LEFT JOIN payment_challenges pc
+                  ON pc.payment_id = ce.payment_id
+                 AND pc.status = 'paid'
+          WHERE ce.buyer_agent_id = $1`,
+        [buyerAgentId.toString()],
+      );
+      const row = res.rows[0];
+      return {
+        transactionCount: Number(row.transaction_count),
+        totalSpentAtomic: BigInt(row.total_spent_atomic),
+        totalRefundedAtomic: BigInt(row.total_refunded_atomic),
+        refundCount: Number(row.refund_count),
+        completedCount: Number(row.completed_count),
+        failedCount: Number(row.failed_count),
+        canceledCount: Number(row.canceled_count),
+        confirmedCount: Number(row.confirmed_count),
+        notConfirmedCount: Number(row.not_confirmed_count),
+        uniqueProviderCount: Number(row.unique_provider_count),
+        uniqueSkillCount: Number(row.unique_skill_count),
+        fulfillmentSumSeconds: Number(row.fulfillment_sum_seconds),
+        fulfillmentSampleSize: Number(row.fulfillment_sample_size),
+        firstSettledAt: row.first_settled_at,
+        lastSettledAt: row.last_settled_at,
+      };
+    },
+
+    /**
+     * Buyer leaderboard for `/public/v1/buyers`. Ranks by lifetime USDC
+     * spend descending; ties broken by transaction count (more = higher),
+     * then by agentId for stability. LEFT JOIN onto buyer_identities so
+     * the leaderboard can render a name without N round-trips — buyers
+     * who registered outside this gateway return null and the public
+     * route falls back to the wallet-derived default.
+     */
+    async listBuyersByVolume(limit: number): Promise<Array<{
+      agentId: bigint;
+      transactionCount: number;
+      totalSpentAtomic: bigint;
+      lastSettledAt: Date;
+      resolvedName: string | null;
+    }>> {
+      const res = await pool.query<{
+        agent_id: string;
+        transaction_count: string;
+        total_spent_atomic: string;
+        last_settled_at: Date;
+        resolved_name: string | null;
+      }>(
+        `SELECT ce.buyer_agent_id                            AS agent_id,
+                COUNT(*)::bigint                             AS transaction_count,
+                COALESCE(SUM(ce.amount_atomic), 0)::numeric  AS total_spent_atomic,
+                MAX(ce.settled_at)                           AS last_settled_at,
+                bi.resolved_name                             AS resolved_name
+           FROM chain_events ce
+           LEFT JOIN buyer_identities bi
+                  ON bi.agent_id = ce.buyer_agent_id
+          GROUP BY ce.buyer_agent_id, bi.resolved_name
+          ORDER BY total_spent_atomic DESC,
+                   transaction_count DESC,
+                   ce.buyer_agent_id ASC
+          LIMIT $1`,
+        [limit],
+      );
+      return res.rows.map((r) => ({
+        agentId: BigInt(r.agent_id),
+        transactionCount: Number(r.transaction_count),
+        totalSpentAtomic: BigInt(r.total_spent_atomic),
+        lastSettledAt: r.last_settled_at,
+        resolvedName: r.resolved_name,
+      }));
+    },
+
     // ── chain_events: mirror of on-chain PaymentSettled + reputation ──
     //
     // The indexer populates this table; the public routes consume it.
@@ -572,6 +710,20 @@ export function createQueries(pool: Pool) {
          ORDER BY ce.settled_at DESC
          LIMIT $2`,
         [hexToBytea(serviceId), limit],
+      );
+      return res.rows.map(rowToChainActivity);
+    },
+
+    async listRecentChainActivityByBuyer(
+      buyerAgentId: bigint,
+      limit: number,
+    ): Promise<ChainActivityRow[]> {
+      const res = await pool.query<ChainActivityRowDb>(
+        `${CHAIN_ACTIVITY_SELECT}
+          WHERE ce.buyer_agent_id = $1
+         ORDER BY ce.settled_at DESC
+         LIMIT $2`,
+        [buyerAgentId.toString(), limit],
       );
       return res.rows.map(rowToChainActivity);
     },
