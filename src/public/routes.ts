@@ -476,17 +476,45 @@ class BuyerNameCache {
   }
 
   private async resolve(agentId: bigint): Promise<string | null> {
+    // Two-step resolution:
+    //   1. Read the agent's registered `agentURI` from IdentityRegistry and
+    //      pull the `name` out of the AgentCard. Buyers who register
+    //      through the gateway's MCP flow always have this populated.
+    //   2. Fallback: derive `buyer-<last6>` from the agent's on-chain
+    //      wallet — the same default registration assigns when the buyer
+    //      provides neither a name nor an agentURI (see mcp/util.ts).
+    //      Ensures buyers who registered through other paths (e.g. e2e
+    //      test suites, third-party SDKs) still have something to show
+    //      on the activity feed rather than falling back to `agent#N`.
+    //
+    // The two paths are independent — a failure in step 1 must not
+    // prevent step 2 from running. We separate the try/catch boundaries
+    // so the URI path can fail (throw or empty) without short-circuiting
+    // the wallet path.
     try {
       const uri = await this.reader.getAgentURI(agentId);
-      const card = await fetchAgentCard(uri, this.fetchOptions);
-      return card.name;
+      if (uri && uri.length > 0) {
+        try {
+          const card = await fetchAgentCard(uri, this.fetchOptions);
+          if (card.name && card.name.length > 0) return card.name;
+        } catch {
+          // Fall through to the wallet-derived default below.
+        }
+      }
     } catch {
-      // Any failure → null. We never throw out of this path: the activity
-      // feed must continue to render even if a single buyer's metadata is
-      // unreachable, and the `null` is the documented contract with the
-      // front-end. See PublicActivityRow.buyerName.
-      return null;
+      // getAgentURI threw (e.g. agent not registered) — fall through.
     }
+    try {
+      const wallet = await this.reader.getAgentWallet(agentId);
+      if (wallet && wallet !== "0x0000000000000000000000000000000000000000") {
+        return `buyer-${wallet.toLowerCase().slice(-6)}`;
+      }
+    } catch {
+      // Hard fail (e.g. IdentityRegistry RPC down) — the activity feed
+      // must continue to render; the `null` is the documented contract
+      // with the front-end. See PublicActivityRow.buyerName.
+    }
+    return null;
   }
 }
 

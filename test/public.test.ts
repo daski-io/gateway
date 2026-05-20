@@ -406,6 +406,40 @@ describe("public v1 — /services/:agentId", () => {
     expect(body.recentPurchases[0].confirmationAttestationUid).toBeNull();
   });
 
+  it("falls back to buyer-<wallet-suffix> when the buyer has no agentURI but has a registered wallet", async () => {
+    // Mirrors the e2e/SDK case: the agent exists on IdentityRegistry
+    // (has a wallet) but registered without an agentURI (e.g. through a
+    // third-party flow that didn't follow the gateway's MCP defaults).
+    // Without a fallback the activity feed shows `null` for the buyer
+    // name; with the fallback, it derives `buyer-<last6>` from the
+    // wallet — same convention the gateway uses at registration time.
+    const wallet =
+      "0xABd98f58eCA6e676E613C4001dd4c497fBAA39aA" as Hex;
+    gateway.mockChain.setAgentWallet(20n, wallet);
+    // Explicitly no setAgentURI(20n, ...) — agentURI returns "".
+
+    await seedPaid(gateway, {
+      serviceRef:
+        "0xccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc".slice(0, 66) as Hex,
+      providerAgentId: 1n,
+      buyerAgentId: 20n,
+      amountAtomic: 12_000_000n,
+      skillId: "register-domain",
+      paymentId: 220n,
+      txHash:
+        "0xabc2222020202020202020202020202020202020202020202020202020202020",
+    });
+
+    const res = await fetch(`${gateway.baseUrl}/public/v1/services/1`);
+    const body = (await res.json()) as any;
+    const row = body.recentPurchases.find(
+      (r: any) => r.buyerAgentId === "20",
+    );
+    expect(row).toBeDefined();
+    // Last 6 hex chars of `0xabd98f58eca6e676e613c4001dd4c497fbaa39aa` → "aa39aa".
+    expect(row.buyerName).toBe("buyer-aa39aa");
+  });
+
   it("resolves buyerName from the buyer's IdentityRegistry tokenURI metadata, or null on failure", async () => {
     // Two paid rows: one buyer (7n) has a data: URI with a resolvable
     // name, the other (8n) has no agentURI registered on the mock so the
