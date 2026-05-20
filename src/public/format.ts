@@ -14,6 +14,44 @@ import {
 import { derivePrimaryServiceId } from "../payment/requirements.js";
 import type { CachedProvider, Hex, StoredChallenge } from "../types.js";
 
+// ── Value-weighted reputation ───────────────────────────────────────────
+//
+// USDC-value-weighted satisfaction defends against the $0.0001 self-
+// attestation Sybil attack: an attacker who spends < $0.25 contributes
+// zero signal, and above the floor the log curve gives diminishing
+// marginal weight so a single deep-pocketed attester can't single-handedly
+// dictate a provider's rate. See reputation_brief.md for the full
+// justification.
+//
+// Floor: $0.25 USDC (250_000 atomic). Curve: log2(1 + amount / floor).
+//   - $0.0001 → 0 (below floor)
+//   - $0.25   → log2(2) = 1.0
+//   - $1      → log2(5) ≈ 2.32
+//   - $10     → log2(41) ≈ 5.36
+//   - $100    → log2(401) ≈ 8.65
+//   - $1,000  → log2(4001) ≈ 11.97
+// The shape is gentler than log10 (used elsewhere in Web3 reputation work)
+// — it preserves more signal for high-ticket transactions while still
+// dampening the long tail.
+
+/** Minimum USDC (atomic) for an attestation to contribute to buyer satisfaction. */
+export const SATISFACTION_FLOOR_USDC_ATOMIC = 250_000n;
+
+/**
+ * Map a paid amount (atomic USDC) to a satisfaction-rate weight.
+ *
+ * Returns 0 for amounts strictly below the floor — those attestations are
+ * still recorded on chain (per ERC-8004) but contribute zero weight to the
+ * Daski-canonical aggregator. Returns `log2(1 + amount / floor)` otherwise.
+ *
+ * Pure function, no side effects; safe to call inline during aggregation.
+ */
+export function satisfactionWeight(amountAtomic: bigint): number {
+  if (amountAtomic < SATISFACTION_FLOOR_USDC_ATOMIC) return 0;
+  const ratio = Number(amountAtomic) / Number(SATISFACTION_FLOOR_USDC_ATOMIC);
+  return Math.log2(1 + ratio);
+}
+
 /**
  * Curated, UI-friendly view of a service offered by one provider. This is
  * the wire shape served by /public/v1/services — distinct from the discovery
@@ -191,6 +229,16 @@ export interface PublicServiceLevelReputation extends PublicServiceReputation {
   averageFulfillmentSeconds: number | null;
   /** Count of records that contributed to the mean. */
   fulfillmentSampleSize: number;
+  /**
+   * USDC-value-weighted buyer satisfaction over this service's attested
+   * paid transactions. Same numerator-denominator shape as
+   * `buyerSatisfactionRate` but each attestation contributes
+   * `satisfactionWeight(amount)` instead of 1. Null when no attestations
+   * land above the $0.25 floor.
+   */
+  buyerSatisfactionRateByValue: number | null;
+  /** Number of attestations contributing nonzero weight to the by-value rate. */
+  buyerSatisfactionRateByValueSampleSize: number;
 }
 
 export function deriveServiceReputation(
@@ -201,6 +249,10 @@ export function deriveServiceReputation(
     sampleSize: number;
   } = { averageFulfillmentSeconds: null, sampleSize: 0 },
   totalSpentAtomic: bigint = 0n,
+  weightedSatisfaction: ServiceWeightedSatisfaction = {
+    rateByValue: null,
+    sampleSize: 0,
+  },
 ): PublicServiceLevelReputation {
   // ServiceReputation is structurally a superset of ProviderReputation
   // (same five outcome counters plus totalRefunded), so the existing rate
@@ -208,14 +260,251 @@ export function deriveServiceReputation(
   // separately because it's computed off-chain from per-record reads —
   // callers without that data pass the default zero-sample object. The
   // spend total comes from the gateway DB (not the contract) and is
-  // scoped to this serviceId.
+  // scoped to this serviceId. Weighted satisfaction is similarly
+  // computed off-chain (the chain stores count-based attestations only).
   return {
     ...deriveProviderReputation(raw, totalSpentAtomic),
     totalRefundedUsdc: atomicToUsdc(raw.totalRefunded),
     serviceId,
     averageFulfillmentSeconds: fulfillment.averageFulfillmentSeconds,
     fulfillmentSampleSize: fulfillment.sampleSize,
+    buyerSatisfactionRateByValue: weightedSatisfaction.rateByValue,
+    buyerSatisfactionRateByValueSampleSize: weightedSatisfaction.sampleSize,
   };
+}
+
+// ── Per-skill stats + service-level weighted satisfaction ──────────────
+//
+// PublicSkillStats is the per-skill breakdown of the same metrics the
+// service-level view exposes — counts, completion/satisfaction/refund
+// rates, and median/P90 fulfillment time — but grouped by the buyer's
+// stated `skillId`. The grouping is gateway-DB-scoped (rows the chain
+// settled but this gateway didn't issue won't appear).
+//
+// Why per-skill matters: a domain-management service might offer
+// `register-domain` (60-second turnaround, 0% refund) and `transfer-out`
+// (multi-day turnaround, higher refund rate). Service-level aggregates
+// average across both and produce a misleading "3-day median" that
+// neither skill actually reflects. Per-skill breaks that out.
+
+/** Aggregated stats for one skillId under one service. */
+export interface PublicSkillStats {
+  skillId: string;
+  /** Display name from the provider's AgentCard catalog; null if unresolvable. */
+  skillName: string | null;
+  /** Settled paid transactions for this skill. */
+  totalTransactions: number;
+  /** USDC, two-decimal string. Sum across all paid rows for this skill. */
+  totalSpentUsdc: string;
+  /** Distinct buyer agentIds. Sybil heuristic: high txns / low buyers = concentrated. */
+  uniqueBuyerCount: number;
+  // Per-outcome counts (provider attested on chain)
+  completedCount: number;
+  failedCount: number;
+  canceledCount: number;
+  /** completed / (completed + failed + canceled). Null if no outcomes recorded. */
+  completionRate: number | null;
+  // Per-confirmation counts (buyer attested on chain)
+  confirmedCount: number;
+  notConfirmedCount: number;
+  /** Paid rows where the buyer never attested. */
+  pendingConfirmationCount: number;
+  /** confirmed / (confirmed + notConfirmed). Count-based. Null if no attestations. */
+  buyerSatisfactionRate: number | null;
+  /**
+   * USDC-value-weighted satisfaction. Each attestation contributes
+   * `satisfactionWeight(amount)`; below-floor attestations contribute 0.
+   * Null if no attestations land above the floor.
+   */
+  buyerSatisfactionRateByValue: number | null;
+  /** Median (P50) fulfillment time in seconds; null if no fulfilled samples. */
+  medianFulfillmentSeconds: number | null;
+  /** P90 fulfillment time in seconds; null if no fulfilled samples. */
+  p90FulfillmentSeconds: number | null;
+  /** Number of records contributing to the fulfillment quantiles. */
+  fulfillmentSampleSize: number;
+  /** Cumulative USDC refunded across all paymentIds for this skill. */
+  refundedUsdc: string;
+  /** Number of paymentIds with refundedAmount > 0. */
+  refundCount: number;
+  /** refundCount / completedCount. Null if no completed transactions. */
+  refundRate: number | null;
+}
+
+/** Service-level USDC-value-weighted satisfaction (aggregate across all skills). */
+export interface ServiceWeightedSatisfaction {
+  rateByValue: number | null;
+  sampleSize: number;
+}
+
+/** One paid challenge row joined with its on-chain enrichment. */
+export interface SkillEnrichedRow {
+  challenge: StoredChallenge;
+  record: ReputationRecord | null;
+  refundedAtomic: bigint;
+}
+
+/**
+ * Group enriched paid challenges by skillId and compute per-skill
+ * aggregates. Pure function — caller pre-fetches `record` and
+ * `refundedAtomic` (typically via cached chain reads) so this can be
+ * called inside a request handler without further I/O.
+ *
+ * Rows with null/empty skillId are dropped (pre-skill-resolution
+ * history can't be attributed cleanly). Output is sorted by
+ * `totalTransactions` descending, with skillId as the tiebreaker.
+ */
+export function deriveSkillStats(
+  rows: ReadonlyArray<SkillEnrichedRow>,
+  skillNames: ReadonlyMap<string, string> = new Map(),
+): PublicSkillStats[] {
+  const groups = new Map<string, SkillEnrichedRow[]>();
+  for (const row of rows) {
+    const skillId = row.challenge.skillId;
+    if (!skillId) continue;
+    const list = groups.get(skillId);
+    if (list) list.push(row);
+    else groups.set(skillId, [row]);
+  }
+
+  const out: PublicSkillStats[] = [];
+  for (const [skillId, list] of groups) {
+    out.push(
+      aggregateSkillRows(skillId, list, skillNames.get(skillId) ?? null),
+    );
+  }
+  out.sort(
+    (a, b) =>
+      b.totalTransactions - a.totalTransactions ||
+      a.skillId.localeCompare(b.skillId),
+  );
+  return out;
+}
+
+function aggregateSkillRows(
+  skillId: string,
+  rows: SkillEnrichedRow[],
+  skillName: string | null,
+): PublicSkillStats {
+  let totalSpentAtomic = 0n;
+  let refundedAtomic = 0n;
+  let refundCount = 0;
+  let completedCount = 0;
+  let failedCount = 0;
+  let canceledCount = 0;
+  let confirmedCount = 0;
+  let notConfirmedCount = 0;
+  let pendingConfirmationCount = 0;
+  let weightedConfirmed = 0;
+  let weightedAttested = 0;
+  const fulfillmentSamples: number[] = [];
+  const uniqueBuyers = new Set<string>();
+
+  for (const row of rows) {
+    totalSpentAtomic += row.challenge.amount;
+    uniqueBuyers.add(row.challenge.buyerTokenId.toString());
+    if (row.refundedAtomic > 0n) {
+      refundedAtomic += row.refundedAtomic;
+      refundCount++;
+    }
+    const rec = row.record;
+    if (rec?.outcomeRecorded) {
+      if (rec.outcome === "Completed") completedCount++;
+      else if (rec.outcome === "Failed") failedCount++;
+      else if (rec.outcome === "Canceled") canceledCount++;
+      if (rec.fulfillmentSeconds != null) {
+        fulfillmentSamples.push(Number(rec.fulfillmentSeconds));
+      }
+    }
+    const conf = rec?.confirmation ?? "Pending";
+    if (conf === "Confirmed") {
+      confirmedCount++;
+      const w = satisfactionWeight(row.challenge.amount);
+      weightedConfirmed += w;
+      weightedAttested += w;
+    } else if (conf === "NotConfirmed") {
+      notConfirmedCount++;
+      const w = satisfactionWeight(row.challenge.amount);
+      weightedAttested += w;
+    } else {
+      pendingConfirmationCount++;
+    }
+  }
+
+  const totalOutcomes = completedCount + failedCount + canceledCount;
+  const totalAttested = confirmedCount + notConfirmedCount;
+
+  return {
+    skillId,
+    skillName,
+    totalTransactions: rows.length,
+    totalSpentUsdc: atomicToUsdc(totalSpentAtomic),
+    uniqueBuyerCount: uniqueBuyers.size,
+    completedCount,
+    failedCount,
+    canceledCount,
+    completionRate: totalOutcomes > 0 ? completedCount / totalOutcomes : null,
+    confirmedCount,
+    notConfirmedCount,
+    pendingConfirmationCount,
+    buyerSatisfactionRate:
+      totalAttested > 0 ? confirmedCount / totalAttested : null,
+    buyerSatisfactionRateByValue:
+      weightedAttested > 0 ? weightedConfirmed / weightedAttested : null,
+    medianFulfillmentSeconds: quantile(fulfillmentSamples, 0.5),
+    p90FulfillmentSeconds: quantile(fulfillmentSamples, 0.9),
+    fulfillmentSampleSize: fulfillmentSamples.length,
+    refundedUsdc: atomicToUsdc(refundedAtomic),
+    refundCount,
+    refundRate: completedCount > 0 ? refundCount / completedCount : null,
+  };
+}
+
+/**
+ * Service-level USDC-value-weighted satisfaction. Same denominator
+ * semantics as the per-skill version but pooled across all skills,
+ * so the response can headline a single weighted rate alongside the
+ * per-skill breakdown.
+ */
+export function deriveServiceWeightedSatisfaction(
+  rows: ReadonlyArray<SkillEnrichedRow>,
+): ServiceWeightedSatisfaction {
+  let weightedConfirmed = 0;
+  let weightedAttested = 0;
+  let sampleSize = 0;
+  for (const row of rows) {
+    const conf = row.record?.confirmation;
+    if (conf !== "Confirmed" && conf !== "NotConfirmed") continue;
+    const w = satisfactionWeight(row.challenge.amount);
+    if (w === 0) continue;
+    if (conf === "Confirmed") weightedConfirmed += w;
+    weightedAttested += w;
+    sampleSize++;
+  }
+  return {
+    rateByValue:
+      weightedAttested > 0 ? weightedConfirmed / weightedAttested : null,
+    sampleSize,
+  };
+}
+
+/**
+ * Linear-interpolated quantile over an unsorted samples array.
+ * Returns null when the input is empty; otherwise rounds to whole
+ * seconds (the caller's data unit). Quantile choice (vs. raw mean)
+ * is robust to fat-tail fulfillment distributions — e.g. one stuck
+ * transfer-out that takes a week doesn't dominate the P50 the way
+ * it dominates a mean.
+ */
+function quantile(values: number[], q: number): number | null {
+  if (values.length === 0) return null;
+  const sorted = [...values].sort((a, b) => a - b);
+  const pos = q * (sorted.length - 1);
+  const lo = Math.floor(pos);
+  const hi = Math.ceil(pos);
+  if (lo === hi) return Math.round(sorted[lo]);
+  const frac = pos - lo;
+  return Math.round(sorted[lo] * (1 - frac) + sorted[hi] * frac);
 }
 
 export interface PublicActivityRow {

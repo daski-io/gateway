@@ -1,5 +1,10 @@
 import crypto from "node:crypto";
-import { encodeAbiParameters, encodePacked, keccak256 } from "viem";
+import {
+  encodeAbiParameters,
+  encodePacked,
+  keccak256,
+  stringToBytes,
+} from "viem";
 import type { Config } from "../config.js";
 import { DASKI_A2A_EXTENSION_URI } from "../config.js";
 import type { DiscoveryCache } from "../discovery/cache.js";
@@ -86,8 +91,51 @@ export type IssueResult =
   | { ok: true; requirements: PaymentRequirements; challenge: StoredChallenge }
   | { ok: false; code: string; message: string; status: number };
 
-function generateServiceRef(): Hex {
-  return `0x${crypto.randomBytes(32).toString("hex")}` as Hex;
+/**
+ * Off-chain skill identity hash. Treats the skillId as a UTF-8 byte string
+ * and keccak256-hashes it. Stable, deterministic, no registry needed —
+ * any party that knows the skill string can recompute the same hash.
+ */
+export function skillIdHash(skillId: string): Hex {
+  return keccak256(stringToBytes(skillId)) as Hex;
+}
+
+/**
+ * Generates a fresh serviceRef bound to the skill being purchased.
+ *
+ * The serviceRef is treated as an opaque 32-byte identifier by the chain —
+ * X402Adapter only enforces that the EIP-3009 nonce is
+ * `keccak256(serviceRef, providerAgentId, serviceId)`, regardless of what's
+ * inside `serviceRef`. We exploit that to embed `keccak256(skillId)` into
+ * the serviceRef itself: `keccak256(randomEntropy || skillIdHash)`.
+ *
+ * Why bind here, not on chain:
+ *   - Cryptographic commitment to the skill at challenge-issue time. A
+ *     malicious gateway-side actor cannot retroactively claim the buyer
+ *     paid for a different skill, because reconstructing the serviceRef
+ *     requires the original skill string.
+ *   - Zero contract change. The chain still validates the same 3-tuple
+ *     nonce; the binding is purely off-chain commitment.
+ *   - Provider-side disputes have evidence: given (entropy, skillId,
+ *     serviceRef) anyone can verify keccak256(entropy||skillIdHash(skill))
+ *     equals serviceRef.
+ *
+ * Limitations (call out explicitly so we don't oversell this):
+ *   - Does NOT prevent Sybil/self-dealing attacks (provider controls all
+ *     keys in that scenario, can sign any skill they want).
+ *   - Does NOT expose skillId to chain observers — only those holding the
+ *     skill string can verify the binding.
+ *   - Entropy is currently gateway-private; surfacing it later (e.g., for
+ *     a third-party arbiter to verify) is an additive change.
+ */
+function generateServiceRef(skillId: string): Hex {
+  const entropy = `0x${crypto.randomBytes(32).toString("hex")}` as Hex;
+  return keccak256(
+    encodeAbiParameters(
+      [{ type: "bytes32" }, { type: "bytes32" }],
+      [entropy, skillIdHash(skillId)],
+    ),
+  ) as Hex;
 }
 
 /**
@@ -522,7 +570,7 @@ export async function issuePaymentRequirements(
     serviceSlug,
     serviceVersion,
   );
-  const serviceRef = generateServiceRef();
+  const serviceRef = generateServiceRef(skillId);
   const expiresAt = new Date(
     now.getTime() + config.challengeTtlSeconds * 1000,
   );

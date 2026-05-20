@@ -11,11 +11,16 @@ import {
 import {
   deriveProviderReputation,
   deriveServiceReputation,
+  deriveServiceWeightedSatisfaction,
+  deriveSkillStats,
   formatActivityRow,
   formatServiceForPublic,
   type PublicService,
   type PublicServiceLevelReputation,
   type PublicServiceReputation,
+  type PublicSkillStats,
+  type ServiceWeightedSatisfaction,
+  type SkillEnrichedRow,
 } from "./format.js";
 import type { Hex, StoredChallenge } from "../types.js";
 
@@ -219,39 +224,52 @@ class RefundAmountCache {
   }
 }
 
+/** Per-serviceId aggregate value: fulfillment + weighted satisfaction + per-skill breakdown. */
+interface ServiceAggregatesValue {
+  fulfillment: { averageFulfillmentSeconds: number | null; sampleSize: number };
+  weightedSatisfaction: ServiceWeightedSatisfaction;
+  /** Per-skill stats with skillName fields left null — caller fills from AgentCard catalog. */
+  skillStats: PublicSkillStats[];
+}
+
 /**
- * Per-serviceId cache for the average-fulfillment-time aggregate. The
- * contract stores per-record fulfillmentTime but no aggregate, so we
- * compute the mean off-chain over the last N paid challenges for the
- * service. N caps the RPC fan-out on hot services and keeps the number
- * reflective of *current* operational performance rather than averaging
- * over slow historical periods.
+ * Per-serviceId cache for all off-chain-computed service aggregates:
+ *   - mean fulfillment time (legacy `ServiceFulfillmentCache` behaviour)
+ *   - USDC-value-weighted buyer satisfaction (anti-Sybil reputation)
+ *   - per-skill breakdown of counts, rates, refunds, and fulfillment quantiles
  *
- * Reuses the supplied recordCache so per-record lookups warm both this
- * aggregate and the activity-row enrichment in the same response.
- * 60s TTL: aggregates move slowly (a new completed task shifts the mean
- * by 1/N), so consumers can poll without thrashing the RPC.
+ * One fetch pass, one cache, one TTL — these aggregates all derive from
+ * the same `(paid challenges) × (per-record on-chain enrichment)` data,
+ * so doing them separately would multiply RPC fan-out for no benefit.
+ *
+ * Reuses the supplied recordCache and refundCache so per-paymentId reads
+ * warm both this aggregate and the activity-row enrichment in the same
+ * response. 60s TTL: aggregates move slowly (a single new transaction
+ * shifts each metric by ~1/N), so consumers can poll without thrashing
+ * the RPC.
+ *
+ * Skill names are intentionally NOT resolved here — the cache is keyed
+ * by serviceId, but skill names live on the provider's AgentCard
+ * catalog. Resolving them here would couple the cache to discovery
+ * cache state. Callers do a final `.map(s => ({ ...s, skillName }))`
+ * pass after the cache returns.
  */
-class ServiceFulfillmentCache {
+class ServiceAggregatesCache {
   private readonly entries = new Map<
     string,
-    {
-      value: { averageFulfillmentSeconds: number | null; sampleSize: number };
-      fetchedAt: number;
-    }
+    { value: ServiceAggregatesValue; fetchedAt: number }
   >();
   private readonly ttlMs: number;
   constructor(
     private readonly queries: Queries,
     private readonly recordCache: ReputationRecordCache,
+    private readonly refundCache: RefundAmountCache,
     private readonly sampleLimit: number,
     ttlMs = 60_000,
   ) {
     this.ttlMs = ttlMs;
   }
-  async get(
-    serviceId: Hex,
-  ): Promise<{ averageFulfillmentSeconds: number | null; sampleSize: number }> {
+  async get(serviceId: Hex): Promise<ServiceAggregatesValue> {
     const key = serviceId.toLowerCase();
     const now = Date.now();
     const hit = this.entries.get(key);
@@ -264,46 +282,66 @@ class ServiceFulfillmentCache {
         this.sampleLimit,
       );
     } catch {
-      // DB failure: return previous value if any, else the empty default
+      // DB failure: return previous value if any, else an empty default
       // so the UI doesn't show stale or broken state.
-      return hit?.value ?? { averageFulfillmentSeconds: null, sampleSize: 0 };
+      return hit?.value ?? EMPTY_AGGREGATES;
     }
 
-    const records = await Promise.all(
-      challenges.map((c) =>
-        c.paymentId != null
-          ? this.recordCache.get(c.paymentId)
-          : Promise.resolve(null),
-      ),
+    // Fan out enrichment via the shared per-paymentId caches. Same
+    // pattern as `loadEnrichmentFor` but builds the joined row shape
+    // the derive helpers consume.
+    const rows: SkillEnrichedRow[] = await Promise.all(
+      challenges.map(async (c) => {
+        if (c.paymentId == null) {
+          return { challenge: c, record: null, refundedAtomic: 0n };
+        }
+        const [record, refundedAtomic] = await Promise.all([
+          this.recordCache.get(c.paymentId),
+          this.refundCache.get(c.paymentId),
+        ]);
+        return { challenge: c, record, refundedAtomic };
+      }),
     );
 
+    // Compute the three aggregates from the same enriched rows.
     let sumSec = 0;
-    let count = 0;
-    for (const r of records) {
-      if (r?.outcomeRecorded && r.fulfillmentSeconds != null) {
-        // Per-record fulfillmentTime is bounded by realistic provider
-        // turnaround (hours to days), so Number is safe at the cast and
-        // the running sum stays well below MAX_SAFE_INTEGER even at
-        // sampleLimit * 86400.
-        sumSec += Number(r.fulfillmentSeconds);
-        count++;
+    let fulfilledCount = 0;
+    for (const r of rows) {
+      if (r.record?.outcomeRecorded && r.record.fulfillmentSeconds != null) {
+        // Bounded by realistic provider turnaround (hours to days);
+        // Number cast is safe well below MAX_SAFE_INTEGER.
+        sumSec += Number(r.record.fulfillmentSeconds);
+        fulfilledCount++;
       }
     }
 
-    const value = {
-      averageFulfillmentSeconds: count > 0 ? Math.round(sumSec / count) : null,
-      sampleSize: count,
+    const value: ServiceAggregatesValue = {
+      fulfillment: {
+        averageFulfillmentSeconds:
+          fulfilledCount > 0 ? Math.round(sumSec / fulfilledCount) : null,
+        sampleSize: fulfilledCount,
+      },
+      weightedSatisfaction: deriveServiceWeightedSatisfaction(rows),
+      skillStats: deriveSkillStats(rows),
     };
     this.entries.set(key, { value, fetchedAt: now });
     return value;
   }
 }
 
-// Default sample window for the per-service average. 100 keeps a single
-// cold-load fan-out under 100 RPCs (mitigated by the shared recordCache),
-// large enough to smooth out outliers, small enough that the mean
-// reflects recent performance not all-time.
-const SERVICE_FULFILLMENT_SAMPLE_LIMIT = 100;
+const EMPTY_AGGREGATES: ServiceAggregatesValue = {
+  fulfillment: { averageFulfillmentSeconds: null, sampleSize: 0 },
+  weightedSatisfaction: { rateByValue: null, sampleSize: 0 },
+  skillStats: [],
+};
+
+// Default sample window for the per-service aggregates. 200 keeps a
+// cold-load fan-out under 200 RPCs (mitigated by the shared
+// recordCache/refundCache), large enough to give per-skill breakdowns
+// useful signal across skills with uneven traffic, and at current
+// volume (~5 paid txns/day) covers ~40 days of activity — well within
+// the "reflects current operational performance" window.
+const SERVICE_AGGREGATES_SAMPLE_LIMIT = 200;
 
 // Cap the parallel buyer-name resolutions per request. Each miss costs one
 // IdentityRegistry.tokenURI RPC plus an outbound JSON fetch (IPFS gateway or
@@ -465,8 +503,8 @@ export interface PublicRouterDeps {
   reputationRecordCacheTtlMs?: number;
   /** Override the per-paymentId refund TTL (ms). Tests pass 0 to bypass caching. */
   refundAmountCacheTtlMs?: number;
-  /** Override the per-service fulfillment aggregate TTL (ms). Tests pass 0 to bypass caching. */
-  serviceFulfillmentCacheTtlMs?: number;
+  /** Override the per-service aggregates TTL (ms). Tests pass 0 to bypass caching. */
+  serviceAggregatesCacheTtlMs?: number;
   /** Override the per-buyer name TTL (ms). Tests pass 0 to bypass caching. */
   buyerNameCacheTtlMs?: number;
 }
@@ -503,11 +541,12 @@ export function createPublicRouter(deps: PublicRouterDeps): Router {
     reader,
     deps.refundAmountCacheTtlMs ?? 30_000,
   );
-  const serviceFulfillmentCache = new ServiceFulfillmentCache(
+  const serviceAggregatesCache = new ServiceAggregatesCache(
     queries,
     recordCache,
-    SERVICE_FULFILLMENT_SAMPLE_LIMIT,
-    deps.serviceFulfillmentCacheTtlMs ?? 60_000,
+    refundCache,
+    SERVICE_AGGREGATES_SAMPLE_LIMIT,
+    deps.serviceAggregatesCacheTtlMs ?? 60_000,
   );
   const buyerNameCache = new BuyerNameCache(
     reader,
@@ -550,7 +589,7 @@ export function createPublicRouter(deps: PublicRouterDeps): Router {
         notFound(res, "unknown service");
         return;
       }
-      const [recent, reputation, serviceReputation, serviceFulfillment] =
+      const [recent, reputation, serviceReputation, serviceAggregates] =
         await Promise.all([
           queries.listRecentPaidByProvider(agentId, PER_SERVICE_RECENT_LIMIT),
           reputationCache.get(agentId),
@@ -561,11 +600,13 @@ export function createPublicRouter(deps: PublicRouterDeps): Router {
           formatted.serviceId
             ? serviceReputationCache.get(formatted.serviceId)
             : Promise.resolve(null),
-          // Off-chain average fulfillment time over the recent sample
-          // window. Computed only when we have a serviceId to scope to;
-          // otherwise the merge below leaves the field unchanged.
+          // Off-chain per-service aggregates: fulfillment mean,
+          // USDC-value-weighted satisfaction, and per-skill breakdown. All
+          // three derive from the same paid-challenge sample so one cache
+          // entry covers them. Skipped when no serviceId — the merge below
+          // leaves serviceReputation untouched and skillStats is [].
           formatted.serviceId
-            ? serviceFulfillmentCache.get(formatted.serviceId)
+            ? serviceAggregatesCache.get(formatted.serviceId)
             : Promise.resolve(null),
         ]);
       const [enrichment, buyerNames] = await Promise.all([
@@ -587,24 +628,41 @@ export function createPublicRouter(deps: PublicRouterDeps): Router {
           enrichment[i]?.refundedAtomic ?? 0n,
         ),
       );
-      // Merge the fulfillment aggregate into the already-derived service
+      // Merge the off-chain aggregates into the chain-derived service
       // reputation. The two caches have independent TTLs (60s for the
       // aggregate, 30s for the raw counters) so we don't recompute the
       // mean every time a new transaction shifts a counter.
       const mergedServiceReputation =
-        serviceReputation && serviceFulfillment
+        serviceReputation && serviceAggregates
           ? {
               ...serviceReputation,
               averageFulfillmentSeconds:
-                serviceFulfillment.averageFulfillmentSeconds,
-              fulfillmentSampleSize: serviceFulfillment.sampleSize,
+                serviceAggregates.fulfillment.averageFulfillmentSeconds,
+              fulfillmentSampleSize: serviceAggregates.fulfillment.sampleSize,
+              buyerSatisfactionRateByValue:
+                serviceAggregates.weightedSatisfaction.rateByValue,
+              buyerSatisfactionRateByValueSampleSize:
+                serviceAggregates.weightedSatisfaction.sampleSize,
             }
           : serviceReputation;
+      // Fill skillName from the formatted service's catalog. We could
+      // also resolve via cache.get(agentId) but `formatted.skills` is
+      // already a cleaned representation; one pass through it gets us
+      // the names without another extraction.
+      const skillNameById = new Map<string, string>();
+      for (const s of formatted.skills) {
+        if (s.name && s.name.length > 0) skillNameById.set(s.id, s.name);
+      }
+      const skillStats = (serviceAggregates?.skillStats ?? []).map((s) => ({
+        ...s,
+        skillName: skillNameById.get(s.skillId) ?? null,
+      }));
       res.json({
         ...formatted,
         recentPurchases,
         reputation,
         serviceReputation: mergedServiceReputation,
+        skillStats,
       });
     },
   );
