@@ -1,3 +1,4 @@
+import type { PaymentSettledEventLog } from "../../src/chain/reader.js";
 import type {
   BuyerReputation,
   ChainReader,
@@ -363,6 +364,26 @@ export class MockChainReader implements ChainReader {
 
   async getPaymentRefundedAmount(paymentId: bigint): Promise<bigint> {
     return this.paymentRefunds.get(paymentId.toString()) ?? 0n;
+  }
+
+  private paymentSettledLogs: PaymentSettledEventLog[] = [];
+
+  /**
+   * Test helper to seed PaymentSettled event logs for the indexer to
+   * consume. Tests call this before the indexer ticks; the indexer
+   * fetches via getPaymentSettledEvents and gets whatever was queued.
+   */
+  pushPaymentSettledLog(log: PaymentSettledEventLog): void {
+    this.paymentSettledLogs.push(log);
+  }
+
+  async getPaymentSettledEvents(
+    fromBlock: bigint,
+    toBlock: bigint,
+  ): Promise<PaymentSettledEventLog[]> {
+    return this.paymentSettledLogs.filter(
+      (l) => l.blockNumber >= fromBlock && l.blockNumber <= toBlock,
+    );
   }
 
   async settleWithRegistration(

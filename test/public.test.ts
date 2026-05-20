@@ -23,9 +23,17 @@ async function seedPaid(
      */
     serviceId?: Hex;
     serviceSlug?: string;
+    /**
+     * Optional override for the chain_events row's settled_at. Tests that
+     * exercise time-ordering across seeded rows pass distinct values to
+     * pin the sort order; the default lets the DB stamp now(). The
+     * payment_challenges side always uses now() via recordChallengePaid.
+     */
+    settledAt?: Date;
   },
 ): Promise<void> {
   const queries = gateway.bundle.queries;
+  const serviceId = args.serviceId ?? (("0x" + "00".repeat(32)) as Hex);
   // Insert as pending, then flip to paid via the same atomic UPDATE the
   // facilitator uses in production. This exercises the real `recordChallengePaid`
   // semantics (single-use service_ref, verified_at populated by SQL).
@@ -37,7 +45,7 @@ async function seedPaid(
     skillId: args.skillId ?? null,
     serviceSlug: args.serviceSlug ?? args.skillId ?? "test-service",
     serviceVersion: "1",
-    serviceId: args.serviceId ?? (("0x" + "00".repeat(32)) as Hex),
+    serviceId,
     providerA2AUrl: PROVIDER_A2A,
     walletAddress: gateway.buyerAddress,
     expiresAt: new Date(Date.now() + 3600 * 1000),
@@ -48,6 +56,115 @@ async function seedPaid(
     args.txHash,
   );
   if (!ok) throw new Error("recordChallengePaid did not transition the row");
+
+  // Mirror the production indexer: upsert a chain_events row so the
+  // /activity and per-service surfaces (which now read from chain_events
+  // LEFT JOIN payment_challenges) find the seeded transaction.
+  await queries.upsertChainEvent({
+    paymentId: args.paymentId,
+    txHash: args.txHash,
+    blockNumber: 1n,
+    serviceId,
+    buyerAgentId: args.buyerAgentId,
+    providerAgentId: args.providerAgentId,
+    amountAtomic: args.amountAtomic,
+    settledAt: args.settledAt ?? new Date(),
+    outcomeCode: null,
+    confirmationCode: 0,
+    fulfillmentSeconds: null,
+    refundedAtomic: 0n,
+  });
+}
+
+/**
+ * Seed a chain-only row — present in chain_events but with no matching
+ * payment_challenges entry. Used by tests that exercise the "settled
+ * outside this gateway" path: the activity row should still render with
+ * thinner metadata (skillId null, etc.).
+ */
+const OUTCOME_CODE: Record<string, number> = {
+  Completed: 0,
+  Failed: 1,
+  Canceled: 2,
+};
+const CONFIRMATION_CODE: Record<string, number> = {
+  Pending: 0,
+  Confirmed: 1,
+  NotConfirmed: 2,
+};
+
+/**
+ * Partial chain_events update for tests that simulate later attestation
+ * arrivals (outcome attest, buyer confirmation, refund). Production
+ * uses the full-row `refreshChainEvent`; tests want field-by-field
+ * patches so they don't have to repeat all four columns.
+ */
+async function patchChainEvent(
+  gateway: TestGateway,
+  paymentId: bigint,
+  patch: {
+    outcome?: "Completed" | "Failed" | "Canceled" | null;
+    confirmation?: "Pending" | "Confirmed" | "NotConfirmed";
+    fulfillmentSeconds?: number | null;
+    refundedAtomic?: bigint;
+  },
+): Promise<void> {
+  const sets: string[] = ["last_refreshed_at = now()"];
+  const args: unknown[] = [];
+  let i = 1;
+  if ("outcome" in patch) {
+    sets.push(`outcome = $${i++}`);
+    args.push(patch.outcome ? OUTCOME_CODE[patch.outcome] : null);
+  }
+  if ("confirmation" in patch) {
+    sets.push(`confirmation = $${i++}`);
+    args.push(CONFIRMATION_CODE[patch.confirmation!]);
+  }
+  if ("fulfillmentSeconds" in patch) {
+    sets.push(`fulfillment_seconds = $${i++}`);
+    args.push(patch.fulfillmentSeconds);
+  }
+  if ("refundedAtomic" in patch) {
+    sets.push(`refunded_atomic = $${i++}`);
+    args.push(patch.refundedAtomic!.toString());
+  }
+  args.push(paymentId.toString());
+  await gateway.bundle.pool.query(
+    `UPDATE chain_events SET ${sets.join(", ")} WHERE payment_id = $${i}`,
+    args,
+  );
+}
+
+async function seedChainOnly(
+  gateway: TestGateway,
+  args: {
+    paymentId: bigint;
+    txHash: Hex;
+    serviceId: Hex;
+    buyerAgentId: bigint;
+    providerAgentId: bigint;
+    amountAtomic: bigint;
+    settledAt?: Date;
+    outcomeCode?: number | null;
+    confirmationCode?: number;
+    fulfillmentSeconds?: number | null;
+    refundedAtomic?: bigint;
+  },
+): Promise<void> {
+  await gateway.bundle.queries.upsertChainEvent({
+    paymentId: args.paymentId,
+    txHash: args.txHash,
+    blockNumber: 1n,
+    serviceId: args.serviceId,
+    buyerAgentId: args.buyerAgentId,
+    providerAgentId: args.providerAgentId,
+    amountAtomic: args.amountAtomic,
+    settledAt: args.settledAt ?? new Date(),
+    outcomeCode: args.outcomeCode ?? null,
+    confirmationCode: args.confirmationCode ?? 0,
+    fulfillmentSeconds: args.fulfillmentSeconds ?? null,
+    refundedAtomic: args.refundedAtomic ?? 0n,
+  });
 }
 
 describe("public v1 — /services", () => {
@@ -353,18 +470,12 @@ describe("public v1 — /services/:agentId", () => {
 
     // Mirror the post-outcome-attest shape: contract has computed
     // fulfillmentTime as block.timestamp - paidAt; buyer has subsequently
-    // attested Confirmed. The gateway should forward both, unmodified.
-    gateway.mockChain.setReputationRecord(101n, {
-      paymentId: 101n,
-      providerAgentId: 1n,
-      buyerAgentId: 7n,
-      serviceId: ("0x" + "00".repeat(32)) as Hex,
+    // attested Confirmed. The chain-events indexer would write these
+    // values on its next refresh sweep — the test patches them directly.
+    await patchChainEvent(gateway, 101n, {
       outcome: "Completed",
       confirmation: "Confirmed",
-      fulfillmentSeconds: 1234n,
-      outcomeTimestamp: 1_700_000_000n,
-      confirmationTimestamp: 1_700_001_000n,
-      outcomeRecorded: true,
+      fulfillmentSeconds: 1234,
     });
 
     const res = await fetch(`${gateway.baseUrl}/public/v1/services/1`);
@@ -434,17 +545,9 @@ describe("public v1 — /services/:agentId", () => {
         serviceId,
         serviceSlug: "domain-registration",
       });
-      gateway.mockChain.setReputationRecord(paymentId, {
-        paymentId,
-        providerAgentId: 9n,
-        buyerAgentId: 11n,
-        serviceId,
+      await patchChainEvent(gateway, paymentId, {
         outcome: "Completed",
-        confirmation: "Pending",
-        fulfillmentSeconds: seconds,
-        outcomeTimestamp: 1_700_000_000n,
-        confirmationTimestamp: 0n,
-        outcomeRecorded: true,
+        fulfillmentSeconds: Number(seconds),
       });
     }
 
@@ -691,7 +794,9 @@ describe("public v1 — /activity", () => {
     });
     // Half refund — exercises the formatter's USDC conversion (no special
     // case for partial-vs-full) and shows the buyer the partial state.
-    gateway.mockChain.setPaymentRefundedAmount(202n, 6_000_000n);
+    // chain_events refund column is the source post-refactor; the mock
+    // chain reader's refund value is only used by the indexer.
+    await patchChainEvent(gateway, 202n, { refundedAtomic: 6_000_000n });
 
     const res = await fetch(`${gateway.baseUrl}/public/v1/activity`);
     const body = (await res.json()) as any;
@@ -765,17 +870,9 @@ describe("public v1 — /activity", () => {
         "0xdef5555555555555555555555555555555555555555555555555555555555555",
     });
     // Provider has attested Completed; buyer hasn't confirmed yet.
-    gateway.mockChain.setReputationRecord(201n, {
-      paymentId: 201n,
-      providerAgentId: 1n,
-      buyerAgentId: 5n,
-      serviceId: ("0x" + "00".repeat(32)) as Hex,
+    await patchChainEvent(gateway, 201n, {
       outcome: "Completed",
-      confirmation: "Pending",
-      fulfillmentSeconds: 42n,
-      outcomeTimestamp: 1_700_000_000n,
-      confirmationTimestamp: 0n,
-      outcomeRecorded: true,
+      fulfillmentSeconds: 42,
     });
 
     const res = await fetch(`${gateway.baseUrl}/public/v1/activity`);

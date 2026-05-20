@@ -1,6 +1,7 @@
 import { loadConfig } from "./config.js";
 import { createViemChainReader } from "./chain/viemReader.js";
 import { createApp } from "./app.js";
+import { ChainEventsIndexer } from "./indexer/chainEvents.js";
 
 async function main() {
   const config = loadConfig();
@@ -28,6 +29,13 @@ async function main() {
     console.error("initial cache refresh failed:", err);
   }
 
+  // Chain-events indexer: mirrors PaymentSettled events into the gateway
+  // DB so /activity and per-service recentPurchases include transactions
+  // that settled outside this gateway. First tick fires synchronously
+  // inside start(); the interval continues at 5s cadence.
+  const indexer = new ChainEventsIndexer(reader, bundle.queries);
+  indexer.start();
+
   const server = bundle.app.listen(config.port, () => {
     console.log(
       `daski-gateway listening on :${config.port} (chain ${config.chainId}, mcp ${
@@ -38,6 +46,7 @@ async function main() {
 
   const shutdown = async (signal: string) => {
     console.log(`received ${signal}, shutting down`);
+    indexer.stop();
     server.close();
     await bundle.shutdown();
     process.exit(0);

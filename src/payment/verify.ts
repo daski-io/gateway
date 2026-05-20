@@ -502,6 +502,26 @@ export async function verifyAndSettle(
     settlement.transactionHash,
   );
 
+  // Mirror the freshly-settled event into chain_events directly. The
+  // chain-events indexer would catch this on its next forward poll
+  // anyway, but writing here makes the row visible to /activity on
+  // the very next request — no polling latency. Idempotent UPSERT
+  // means the indexer's later poll is a no-op for this paymentId.
+  await queries.upsertChainEvent({
+    paymentId: event.paymentId,
+    txHash: settlement.transactionHash,
+    blockNumber: 0n, // unknown at this point; indexer fills in on refresh
+    serviceId: event.serviceId,
+    buyerAgentId: event.buyerAgentId,
+    providerAgentId: event.providerAgentId,
+    amountAtomic: event.totalAmount,
+    settledAt: new Date(),
+    outcomeCode: null,
+    confirmationCode: 0,
+    fulfillmentSeconds: null,
+    refundedAtomic: 0n,
+  });
+
   return {
     ok: true,
     response: {
@@ -674,6 +694,24 @@ export async function verifyAndSettleWithRegistration(
     settlement.transactionHash,
     event.buyerAgentId,
   );
+
+  // Same chain_events mirror as the settle-only path — make the row
+  // visible to /activity immediately rather than waiting on the
+  // indexer's next forward poll.
+  await queries.upsertChainEvent({
+    paymentId: event.paymentId,
+    txHash: settlement.transactionHash,
+    blockNumber: 0n,
+    serviceId: event.serviceId,
+    buyerAgentId: event.buyerAgentId,
+    providerAgentId: event.providerAgentId,
+    amountAtomic: event.totalAmount,
+    settledAt: new Date(),
+    outcomeCode: null,
+    confirmationCode: 0,
+    fulfillmentSeconds: null,
+    refundedAtomic: 0n,
+  });
 
   // Mirror the buyer-name resolution that the /register flow does, so
   // the atomic register-and-settle path also populates buyer_identities.

@@ -403,6 +403,264 @@ export function createQueries(pool: Pool) {
         totalAtomic: BigInt(row.total_atomic),
       };
     },
+
+    // ── chain_events: mirror of on-chain PaymentSettled + reputation ──
+    //
+    // The indexer populates this table; the public routes consume it.
+    // payment_challenges is now a JOIN target for off-chain enrichment
+    // (skillId, original a2a URL, etc.) — present only for rows this
+    // gateway issued. Chain-only rows surface with thinner metadata.
+
+    async getLastIndexedBlock(): Promise<bigint> {
+      const res = await pool.query<{ last_indexed_block: string }>(
+        `SELECT last_indexed_block FROM chain_indexer_state WHERE id = 1`,
+      );
+      if (res.rows.length === 0) return 0n;
+      return BigInt(res.rows[0].last_indexed_block);
+    },
+
+    async setLastIndexedBlock(blockNumber: bigint): Promise<void> {
+      await pool.query(
+        `INSERT INTO chain_indexer_state (id, last_indexed_block, last_indexed_at)
+            VALUES (1, $1, now())
+         ON CONFLICT (id) DO UPDATE
+            SET last_indexed_block = EXCLUDED.last_indexed_block,
+                last_indexed_at = EXCLUDED.last_indexed_at`,
+        [blockNumber.toString()],
+      );
+    },
+
+    async upsertChainEvent(args: {
+      paymentId: bigint;
+      txHash: Hex;
+      blockNumber: bigint;
+      serviceId: Hex;
+      buyerAgentId: bigint;
+      providerAgentId: bigint;
+      amountAtomic: bigint;
+      settledAt: Date;
+      outcomeCode: number | null;
+      confirmationCode: number;
+      fulfillmentSeconds: number | null;
+      refundedAtomic: bigint;
+    }): Promise<void> {
+      await pool.query(
+        `INSERT INTO chain_events
+           (payment_id, tx_hash, block_number, service_id, buyer_agent_id,
+            provider_agent_id, amount_atomic, settled_at, outcome,
+            confirmation, fulfillment_seconds, refunded_atomic,
+            last_refreshed_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, now())
+         ON CONFLICT (payment_id) DO UPDATE
+            SET tx_hash = EXCLUDED.tx_hash,
+                block_number = EXCLUDED.block_number,
+                service_id = EXCLUDED.service_id,
+                buyer_agent_id = EXCLUDED.buyer_agent_id,
+                provider_agent_id = EXCLUDED.provider_agent_id,
+                amount_atomic = EXCLUDED.amount_atomic,
+                settled_at = EXCLUDED.settled_at,
+                outcome = EXCLUDED.outcome,
+                confirmation = EXCLUDED.confirmation,
+                fulfillment_seconds = EXCLUDED.fulfillment_seconds,
+                refunded_atomic = EXCLUDED.refunded_atomic,
+                last_refreshed_at = now()`,
+        [
+          args.paymentId.toString(),
+          hexToBytea(args.txHash),
+          args.blockNumber.toString(),
+          hexToBytea(args.serviceId),
+          args.buyerAgentId.toString(),
+          args.providerAgentId.toString(),
+          args.amountAtomic.toString(),
+          args.settledAt,
+          args.outcomeCode,
+          args.confirmationCode,
+          args.fulfillmentSeconds,
+          args.refundedAtomic.toString(),
+        ],
+      );
+    },
+
+    /**
+     * Lighter-weight update for the refresh sweep — only the columns the
+     * indexer re-reads (outcome, confirmation, fulfillment, refund). The
+     * settle-time fields (tx_hash, block_number, ...) are immutable so
+     * we skip touching them.
+     */
+    async refreshChainEvent(args: {
+      paymentId: bigint;
+      outcomeCode: number | null;
+      confirmationCode: number;
+      fulfillmentSeconds: number | null;
+      refundedAtomic: bigint;
+    }): Promise<void> {
+      await pool.query(
+        `UPDATE chain_events
+            SET outcome = $2,
+                confirmation = $3,
+                fulfillment_seconds = $4,
+                refunded_atomic = $5,
+                last_refreshed_at = now()
+          WHERE payment_id = $1`,
+        [
+          args.paymentId.toString(),
+          args.outcomeCode,
+          args.confirmationCode,
+          args.fulfillmentSeconds,
+          args.refundedAtomic.toString(),
+        ],
+      );
+    },
+
+    /**
+     * Rows whose state is still mutable (confirmation pending OR
+     * refund still zero) and that haven't been refreshed within the
+     * cutoff. Used by the indexer's refresh sweep.
+     */
+    async listStaleChainEvents(
+      cutoff: Date,
+      limit: number,
+    ): Promise<Array<{ paymentId: bigint }>> {
+      const res = await pool.query<{ payment_id: string }>(
+        `SELECT payment_id FROM chain_events
+          WHERE (confirmation = 0 OR refunded_atomic = 0)
+            AND last_refreshed_at < $1
+          ORDER BY last_refreshed_at ASC
+          LIMIT $2`,
+        [cutoff, limit],
+      );
+      return res.rows.map((r) => ({ paymentId: BigInt(r.payment_id) }));
+    },
+
+    // Activity feed: chain-events as source, payment_challenges as
+    // optional enrichment. Returns rows in `settled_at DESC` order
+    // capped at `limit`. Used by /public/v1/activity.
+    async listRecentChainActivity(
+      limit: number,
+    ): Promise<ChainActivityRow[]> {
+      const res = await pool.query<ChainActivityRowDb>(
+        `${CHAIN_ACTIVITY_SELECT}
+         ORDER BY ce.settled_at DESC
+         LIMIT $1`,
+        [limit],
+      );
+      return res.rows.map(rowToChainActivity);
+    },
+
+    async listRecentChainActivityByProvider(
+      providerAgentId: bigint,
+      limit: number,
+    ): Promise<ChainActivityRow[]> {
+      const res = await pool.query<ChainActivityRowDb>(
+        `${CHAIN_ACTIVITY_SELECT}
+          WHERE ce.provider_agent_id = $1
+         ORDER BY ce.settled_at DESC
+         LIMIT $2`,
+        [providerAgentId.toString(), limit],
+      );
+      return res.rows.map(rowToChainActivity);
+    },
+
+    async listRecentChainActivityByServiceId(
+      serviceId: Hex,
+      limit: number,
+    ): Promise<ChainActivityRow[]> {
+      const res = await pool.query<ChainActivityRowDb>(
+        `${CHAIN_ACTIVITY_SELECT}
+          WHERE ce.service_id = $1
+         ORDER BY ce.settled_at DESC
+         LIMIT $2`,
+        [hexToBytea(serviceId), limit],
+      );
+      return res.rows.map(rowToChainActivity);
+    },
+  };
+}
+
+/**
+ * One row of the chain-events read view: everything chain_events
+ * provides plus the optional payment_challenges enrichment (null
+ * fields when the row settled outside this gateway).
+ */
+export interface ChainActivityRow {
+  paymentId: bigint;
+  txHash: Hex;
+  blockNumber: bigint;
+  serviceId: Hex;
+  buyerAgentId: bigint;
+  providerAgentId: bigint;
+  amountAtomic: bigint;
+  settledAt: Date;
+  outcomeCode: number | null;
+  confirmationCode: number;
+  fulfillmentSeconds: number | null;
+  refundedAtomic: bigint;
+  // Off-chain enrichment from payment_challenges (null for chain-only rows)
+  skillId: string | null;
+  serviceSlug: string | null;
+  serviceVersion: string | null;
+  providerA2AUrl: string | null;
+  walletAddress: Hex | null;
+  confirmationAttestationUid: Hex | null;
+}
+
+interface ChainActivityRowDb {
+  payment_id: string;
+  tx_hash: Buffer;
+  block_number: string;
+  service_id: Buffer;
+  buyer_agent_id: string;
+  provider_agent_id: string;
+  amount_atomic: string;
+  settled_at: Date;
+  outcome: number | null;
+  confirmation: number;
+  fulfillment_seconds: number | null;
+  refunded_atomic: string;
+  skill_id: string | null;
+  service_slug: string | null;
+  service_version: string | null;
+  provider_a2a_url: string | null;
+  wallet_address: string | null;
+  confirmation_attestation_uid: Buffer | null;
+}
+
+const CHAIN_ACTIVITY_SELECT = `
+  SELECT ce.payment_id, ce.tx_hash, ce.block_number, ce.service_id,
+         ce.buyer_agent_id, ce.provider_agent_id, ce.amount_atomic,
+         ce.settled_at, ce.outcome, ce.confirmation,
+         ce.fulfillment_seconds, ce.refunded_atomic,
+         pc.skill_id, pc.service_slug, pc.service_version,
+         pc.provider_a2a_url, pc.wallet_address,
+         pc.confirmation_attestation_uid
+    FROM chain_events ce
+    LEFT JOIN payment_challenges pc
+           ON pc.payment_id = ce.payment_id
+          AND pc.status = 'paid'
+`;
+
+function rowToChainActivity(r: ChainActivityRowDb): ChainActivityRow {
+  return {
+    paymentId: BigInt(r.payment_id),
+    txHash: byteaToHex(r.tx_hash),
+    blockNumber: BigInt(r.block_number),
+    serviceId: byteaToHex(r.service_id),
+    buyerAgentId: BigInt(r.buyer_agent_id),
+    providerAgentId: BigInt(r.provider_agent_id),
+    amountAtomic: BigInt(r.amount_atomic),
+    settledAt: r.settled_at,
+    outcomeCode: r.outcome,
+    confirmationCode: r.confirmation,
+    fulfillmentSeconds: r.fulfillment_seconds,
+    refundedAtomic: BigInt(r.refunded_atomic),
+    skillId: r.skill_id,
+    serviceSlug: r.service_slug,
+    serviceVersion: r.service_version,
+    providerA2AUrl: r.provider_a2a_url,
+    walletAddress: (r.wallet_address as Hex | null) ?? null,
+    confirmationAttestationUid: r.confirmation_attestation_uid
+      ? byteaToHex(r.confirmation_attestation_uid)
+      : null,
   };
 }
 

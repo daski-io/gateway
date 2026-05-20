@@ -752,6 +752,49 @@ export function formatServiceForPublic(
  * `refundedAtomic` is the cumulative refund tally for this paymentId from
  * PaymentRouter.refundedAmount (always-readable; defaults to 0n).
  */
+/**
+ * Sibling formatter for chain-events sourced rows. Same wire shape as
+ * `formatActivityRow` so the UI doesn't need to branch — the only
+ * substantive difference is skillId/confirmationAttestationUid can be
+ * null for chain-only rows (settled outside this gateway, no DB join
+ * row to enrich from). The UI already renders `-` for null skill.
+ *
+ * Outcome / confirmation codes (0/1/2) map to the Solidity enum order
+ * used by ReputationStorage. See indexer/chainEvents.ts for the
+ * reverse mapping at write time.
+ */
+export function formatChainActivityRow(
+  row: import("../db/queries.js").ChainActivityRow,
+  providerName: string | null,
+  buyerName: string | null,
+): PublicActivityRow {
+  const outcomeLabels: readonly TransactionOutcome[] = [
+    "Completed",
+    "Failed",
+    "Canceled",
+  ];
+  const confirmationLabels: readonly BuyerConfirmationLabel[] = [
+    "Pending",
+    "Confirmed",
+    "NotConfirmed",
+  ];
+  return {
+    txHash: row.txHash,
+    buyerAgentId: row.buyerAgentId.toString(),
+    providerAgentId: row.providerAgentId.toString(),
+    providerName,
+    buyerName,
+    amount: atomicToUsdc(row.amountAtomic),
+    skillId: row.skillId,
+    timestamp: row.settledAt.toISOString(),
+    outcome: row.outcomeCode != null ? outcomeLabels[row.outcomeCode] : null,
+    confirmation: confirmationLabels[row.confirmationCode] ?? "Pending",
+    fulfillmentSeconds: row.fulfillmentSeconds,
+    refundedUsdc: atomicToUsdc(row.refundedAtomic),
+    confirmationAttestationUid: row.confirmationAttestationUid,
+  };
+}
+
 export function formatActivityRow(
   challenge: StoredChallenge,
   providerName: string | null,

@@ -1,7 +1,12 @@
 import { Router, type Request, type Response } from "express";
-import type { ChainReader, ReputationRecord } from "../chain/reader.js";
+import type {
+  BuyerConfirmationLabel,
+  ChainReader,
+  ReputationRecord,
+  TransactionOutcome,
+} from "../chain/reader.js";
 import type { Config } from "../config.js";
-import type { Queries } from "../db/queries.js";
+import type { ChainActivityRow, Queries } from "../db/queries.js";
 import type { DiscoveryCache } from "../discovery/cache.js";
 import { extractAgentCardName } from "../discovery/format.js";
 import {
@@ -14,6 +19,7 @@ import {
   deriveServiceWeightedSatisfaction,
   deriveSkillStats,
   formatActivityRow,
+  formatChainActivityRow,
   formatServiceForPublic,
   type PublicService,
   type PublicServiceLevelReputation,
@@ -262,8 +268,6 @@ class ServiceAggregatesCache {
   private readonly ttlMs: number;
   constructor(
     private readonly queries: Queries,
-    private readonly recordCache: ReputationRecordCache,
-    private readonly refundCache: RefundAmountCache,
     private readonly sampleLimit: number,
     ttlMs = 60_000,
   ) {
@@ -275,9 +279,9 @@ class ServiceAggregatesCache {
     const hit = this.entries.get(key);
     if (hit && now - hit.fetchedAt < this.ttlMs) return hit.value;
 
-    let challenges;
+    let chainRows: ChainActivityRow[];
     try {
-      challenges = await this.queries.listRecentPaidByServiceId(
+      chainRows = await this.queries.listRecentChainActivityByServiceId(
         serviceId,
         this.sampleLimit,
       );
@@ -287,29 +291,18 @@ class ServiceAggregatesCache {
       return hit?.value ?? EMPTY_AGGREGATES;
     }
 
-    // Fan out enrichment via the shared per-paymentId caches. Same
-    // pattern as `loadEnrichmentFor` but builds the joined row shape
-    // the derive helpers consume.
-    const rows: SkillEnrichedRow[] = await Promise.all(
-      challenges.map(async (c) => {
-        if (c.paymentId == null) {
-          return { challenge: c, record: null, refundedAtomic: 0n };
-        }
-        const [record, refundedAtomic] = await Promise.all([
-          this.recordCache.get(c.paymentId),
-          this.refundCache.get(c.paymentId),
-        ]);
-        return { challenge: c, record, refundedAtomic };
-      }),
-    );
+    // chain_events already carries outcome / confirmation / fulfillment
+    // / refunded for every row (the indexer fetches them at write time
+    // and the refresh sweep keeps them current). Bridge to the
+    // SkillEnrichedRow shape the derive helpers consume — they take
+    // {challenge, record, refundedAtomic} so we synthesize a thin
+    // StoredChallenge from chain_events fields.
+    const rows = chainRows.map(chainRowToSkillEnriched);
 
-    // Compute the three aggregates from the same enriched rows.
     let sumSec = 0;
     let fulfilledCount = 0;
     for (const r of rows) {
       if (r.record?.outcomeRecorded && r.record.fulfillmentSeconds != null) {
-        // Bounded by realistic provider turnaround (hours to days);
-        // Number cast is safe well below MAX_SAFE_INTEGER.
         sumSec += Number(r.record.fulfillmentSeconds);
         fulfilledCount++;
       }
@@ -327,6 +320,85 @@ class ServiceAggregatesCache {
     this.entries.set(key, { value, fetchedAt: now });
     return value;
   }
+}
+
+const OUTCOME_LABELS: readonly TransactionOutcome[] = [
+  "Completed",
+  "Failed",
+  "Canceled",
+];
+const CONFIRMATION_LABELS: readonly BuyerConfirmationLabel[] = [
+  "Pending",
+  "Confirmed",
+  "NotConfirmed",
+];
+const ZERO_HEX = ("0x" + "00".repeat(32)) as Hex;
+const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000" as Hex;
+
+/**
+ * Bridge `chain_events`-shaped rows into the `SkillEnrichedRow` shape the
+ * pure-function derive helpers consume. The challenge fields not present
+ * in chain_events default to sensible zeros — `aggregateSkillRows` only
+ * reads amount / buyerTokenId / skillId / record / refundedAtomic, so
+ * the rest never matter.
+ */
+function chainRowToSkillEnriched(row: ChainActivityRow): SkillEnrichedRow {
+  const record: ReputationRecord | null =
+    row.outcomeCode != null
+      ? {
+          paymentId: row.paymentId,
+          providerAgentId: row.providerAgentId,
+          buyerAgentId: row.buyerAgentId,
+          serviceId: row.serviceId,
+          outcome: OUTCOME_LABELS[row.outcomeCode] ?? null,
+          confirmation:
+            CONFIRMATION_LABELS[row.confirmationCode] ?? "Pending",
+          fulfillmentSeconds:
+            row.fulfillmentSeconds != null
+              ? BigInt(row.fulfillmentSeconds)
+              : null,
+          outcomeTimestamp: 0n,
+          confirmationTimestamp: 0n,
+          outcomeRecorded: true,
+        }
+      : {
+          // No outcome attested yet — synthesize a Pending record so the
+          // confirmation label still surfaces.
+          paymentId: row.paymentId,
+          providerAgentId: row.providerAgentId,
+          buyerAgentId: row.buyerAgentId,
+          serviceId: row.serviceId,
+          outcome: null,
+          confirmation:
+            CONFIRMATION_LABELS[row.confirmationCode] ?? "Pending",
+          fulfillmentSeconds: null,
+          outcomeTimestamp: 0n,
+          confirmationTimestamp: 0n,
+          outcomeRecorded: false,
+        };
+  return {
+    challenge: {
+      serviceRef: ZERO_HEX,
+      providerTokenId: row.providerAgentId,
+      buyerTokenId: row.buyerAgentId,
+      amount: row.amountAtomic,
+      skillId: row.skillId,
+      serviceSlug: row.serviceSlug ?? "",
+      serviceVersion: row.serviceVersion ?? "1",
+      serviceId: row.serviceId,
+      providerA2AUrl: row.providerA2AUrl ?? "",
+      walletAddress: row.walletAddress ?? ZERO_ADDRESS,
+      createdAt: row.settledAt,
+      expiresAt: row.settledAt,
+      status: "paid",
+      paymentId: row.paymentId,
+      transactionHash: row.txHash,
+      verifiedAt: row.settledAt,
+      confirmationAttestationUid: row.confirmationAttestationUid,
+    },
+    record,
+    refundedAtomic: row.refundedAtomic,
+  };
 }
 
 const EMPTY_AGGREGATES: ServiceAggregatesValue = {
@@ -543,8 +615,6 @@ export function createPublicRouter(deps: PublicRouterDeps): Router {
   );
   const serviceAggregatesCache = new ServiceAggregatesCache(
     queries,
-    recordCache,
-    refundCache,
     SERVICE_AGGREGATES_SAMPLE_LIMIT,
     deps.serviceAggregatesCacheTtlMs ?? 60_000,
   );
@@ -591,7 +661,13 @@ export function createPublicRouter(deps: PublicRouterDeps): Router {
       }
       const [recent, reputation, serviceReputation, serviceAggregates] =
         await Promise.all([
-          queries.listRecentPaidByProvider(agentId, PER_SERVICE_RECENT_LIMIT),
+          // recentPurchases now sources from chain_events too — same data
+          // model as /activity, just filtered by provider. Chain-only rows
+          // (settled outside this gateway) surface here as well.
+          queries.listRecentChainActivityByProvider(
+            agentId,
+            PER_SERVICE_RECENT_LIMIT,
+          ),
           reputationCache.get(agentId),
           // Scope-narrow service-level counters. Reads only when the cached
           // provider resolves to a primary serviceId — otherwise the UI sees
@@ -602,30 +678,23 @@ export function createPublicRouter(deps: PublicRouterDeps): Router {
             : Promise.resolve(null),
           // Off-chain per-service aggregates: fulfillment mean,
           // USDC-value-weighted satisfaction, and per-skill breakdown. All
-          // three derive from the same paid-challenge sample so one cache
+          // three derive from the same chain_events sample so one cache
           // entry covers them. Skipped when no serviceId — the merge below
           // leaves serviceReputation untouched and skillStats is [].
           formatted.serviceId
             ? serviceAggregatesCache.get(formatted.serviceId)
             : Promise.resolve(null),
         ]);
-      const [enrichment, buyerNames] = await Promise.all([
-        loadEnrichmentFor(recent, recordCache, refundCache),
-        // Concurrency-capped fan-out so a cold cache on a hot service
-        // doesn't open ten parallel IPFS fetches. PER_SERVICE_RECENT_LIMIT
-        // is 10 today so the cap is rarely the binding constraint here,
-        // but keeps behavior symmetric with the larger /activity feed.
-        mapWithLimit(recent, BUYER_NAME_FETCH_CONCURRENCY, (c) =>
-          buyerNameCache.get(c.buyerTokenId),
-        ),
-      ]);
-      const recentPurchases = recent.map((c, i) =>
-        formatActivityRow(
-          c,
+      const buyerNames = await mapWithLimit(
+        recent,
+        BUYER_NAME_FETCH_CONCURRENCY,
+        (r) => buyerNameCache.get(r.buyerAgentId),
+      );
+      const recentPurchases = recent.map((r, i) =>
+        formatChainActivityRow(
+          r,
           formatted.name,
           buyerNames[i] ?? null,
-          enrichment[i]?.record ?? null,
-          enrichment[i]?.refundedAtomic ?? 0n,
         ),
       );
       // Merge the off-chain aggregates into the chain-derived service
@@ -673,9 +742,13 @@ export function createPublicRouter(deps: PublicRouterDeps): Router {
       ACTIVITY_DEFAULT_LIMIT,
       ACTIVITY_MAX_LIMIT,
     );
-    const rows = await queries.listRecentPaid(limit);
+    // Source rows from chain_events (the indexer's mirror of on-chain
+    // PaymentSettled + per-paymentId outcome/confirmation/refund) with
+    // a LEFT JOIN onto payment_challenges for off-chain enrichment
+    // (skillId, original a2a URL, walletAddress). Chain-only rows surface
+    // with skillId null — the UI renders `-` in that case.
+    const rows = await queries.listRecentChainActivity(limit);
 
-    // One pass over the cache to build a name lookup, then per-row O(1).
     const nameByAgentId = new Map<string, string>();
     for (const provider of cache.getAll()) {
       nameByAgentId.set(
@@ -684,25 +757,17 @@ export function createPublicRouter(deps: PublicRouterDeps): Router {
       );
     }
 
-    const [enrichment, buyerNames] = await Promise.all([
-      loadEnrichmentFor(rows, recordCache, refundCache),
-      // Capped fan-out: ACTIVITY_MAX_LIMIT is 200, so without a cap a cold
-      // load could spawn 200 concurrent IPFS gateway fetches and trip
-      // upstream rate limits. Eight is enough to overlap network latency
-      // without looking abusive; repeated buyers across rows coalesce via
-      // the cache's inflight map.
-      mapWithLimit(rows, BUYER_NAME_FETCH_CONCURRENCY, (c) =>
-        buyerNameCache.get(c.buyerTokenId),
-      ),
-    ]);
+    const buyerNames = await mapWithLimit(
+      rows,
+      BUYER_NAME_FETCH_CONCURRENCY,
+      (r) => buyerNameCache.get(r.buyerAgentId),
+    );
     res.json({
-      activity: rows.map((c, i) =>
-        formatActivityRow(
-          c,
-          nameByAgentId.get(c.providerTokenId.toString()) ?? null,
+      activity: rows.map((r, i) =>
+        formatChainActivityRow(
+          r,
+          nameByAgentId.get(r.providerAgentId.toString()) ?? null,
           buyerNames[i] ?? null,
-          enrichment[i]?.record ?? null,
-          enrichment[i]?.refundedAtomic ?? 0n,
         ),
       ),
     });

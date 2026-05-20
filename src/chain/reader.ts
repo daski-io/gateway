@@ -297,6 +297,32 @@ export interface ChainReader {
   // settled-but-unrefunded payments — the gateway disambiguates against
   // its own challenge row.
   getPaymentRefundedAmount(paymentId: bigint): Promise<bigint>;
+
+  /**
+   * Pull `PaymentRouter.PaymentSettled` event logs in a block range. Used
+   * by the chain-events indexer to mirror on-chain settlements into the
+   * gateway DB so /activity reflects all transactions, not just the ones
+   * this gateway issued. Block range inclusive on both ends.
+   *
+   * Returns the decoded event payloads plus per-log positional fields
+   * (blockNumber, transactionHash, blockTimestamp) so the indexer can
+   * upsert directly without re-fetching per-tx context.
+   */
+  getPaymentSettledEvents(
+    fromBlock: bigint,
+    toBlock: bigint,
+  ): Promise<Array<PaymentSettledEventLog>>;
+}
+
+/**
+ * One decoded `PaymentSettled` event with the chain-context fields the
+ * indexer needs to persist its row. `blockTimestamp` is the block's
+ * timestamp (seconds since epoch); callers convert to a Date.
+ */
+export interface PaymentSettledEventLog extends PaymentSettledEvent {
+  blockNumber: bigint;
+  blockTimestamp: bigint;
+  transactionHash: Hex;
 }
 
 /**

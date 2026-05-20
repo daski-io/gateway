@@ -28,6 +28,7 @@ import type {
   ConfirmationDelegationInput,
   ConfirmationResult,
   PaymentSettledEvent,
+  PaymentSettledEventLog,
   ProviderReputation,
   RegisterBySigInput,
   RegisterBySigResult,
@@ -653,6 +654,49 @@ export function createViemChainReader(opts: ViemReaderOptions): ChainReader {
 
     async getBlockNumber(): Promise<bigint> {
       return await publicClient.getBlockNumber();
+    },
+
+    async getPaymentSettledEvents(
+      fromBlock: bigint,
+      toBlock: bigint,
+    ): Promise<PaymentSettledEventLog[]> {
+      // Server-side log filter: address+topic only, the RPC node returns
+      // matching logs across the block window. Decoded event shape pulled
+      // out via parseEventLogs (handles type-narrowing better than a manual
+      // decode loop). Block timestamps come from a per-unique-block fetch
+      // — settled txs cluster in small windows so the dedupe is meaningful.
+      const logs = await publicClient.getLogs({
+        address: routerAddress,
+        event: parseAbiItem(
+          "event PaymentSettled(uint256 indexed paymentId, bytes32 indexed serviceRef, bytes32 indexed serviceId, uint256 buyerAgentId, uint256 providerAgentId, address token, uint256 totalAmount, uint256 providerAmount, uint256 commission)",
+        ),
+        fromBlock,
+        toBlock,
+      });
+
+      if (logs.length === 0) return [];
+
+      // Dedupe block numbers across the batch and fetch each block's
+      // timestamp once. /activity needs settled_at to render "Xs ago"
+      // tooltips; block.timestamp is the cheapest accurate signal.
+      const uniqueBlocks = Array.from(new Set(logs.map((l) => l.blockNumber)));
+      const timestamps = new Map<bigint, bigint>();
+      await Promise.all(
+        uniqueBlocks.map(async (bn) => {
+          const b = await publicClient.getBlock({ blockNumber: bn });
+          timestamps.set(bn, b.timestamp);
+        }),
+      );
+
+      return logs.map((l) => {
+        const args = l.args as PaymentSettledEvent;
+        return {
+          ...args,
+          blockNumber: l.blockNumber,
+          blockTimestamp: timestamps.get(l.blockNumber) ?? 0n,
+          transactionHash: l.transactionHash as Hex,
+        };
+      });
     },
 
     async getProviderReputation(
