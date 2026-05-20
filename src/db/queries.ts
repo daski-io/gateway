@@ -339,16 +339,19 @@ export function createQueries(pool: Pool) {
     },
 
     /**
-     * Aggregate over all paid settlements that flowed through this
-     * gateway. `totalAtomic` is the sum of `amount` columns (USDC atomic
+     * Aggregate over **all** settled payments — sourced from chain_events
+     * so the count and volume include transactions that settled through
+     * other gateways or direct-to-router, not just this gateway's
+     * facilitated rows. Matches what /activity displays.
+     *
+     * `totalAtomic` is the sum of `amount_atomic` columns (USDC atomic
      * units, 6 decimals). Caller divides by 1e6 for human display.
      */
     async getPaidAggregate(): Promise<{ count: number; totalAtomic: bigint }> {
       const res = await pool.query<{ count: string; total_atomic: string }>(
         `SELECT COUNT(*)::bigint AS count,
-                COALESCE(SUM(amount), 0)::bigint AS total_atomic
-           FROM payment_challenges
-          WHERE status = 'paid'`,
+                COALESCE(SUM(amount_atomic), 0)::numeric AS total_atomic
+           FROM chain_events`,
       );
       const row = res.rows[0];
       return {
@@ -358,20 +361,19 @@ export function createQueries(pool: Pool) {
     },
 
     /**
-     * Per-provider spend aggregate — total atomic USDC that has flowed
-     * through this gateway destined for `providerAgentId`'s services.
-     * Counts and dollar sum, same shape as `getPaidAggregate`. The
-     * on-chain ReputationStorage tracks outcome counts but not amounts,
-     * so the gateway DB is the only source of truth for "money in".
+     * Per-provider spend aggregate — total atomic USDC that has settled
+     * against `providerAgentId`'s services, across all gateways. Sourced
+     * from chain_events so direct-to-router and other-gateway settlements
+     * are included. Same shape as `getPaidAggregate`.
      */
     async getProviderSpend(
       providerAgentId: bigint,
     ): Promise<{ count: number; totalAtomic: bigint }> {
       const res = await pool.query<{ count: string; total_atomic: string }>(
         `SELECT COUNT(*)::bigint AS count,
-                COALESCE(SUM(amount), 0)::bigint AS total_atomic
-           FROM payment_challenges
-          WHERE status = 'paid' AND provider_token_id = $1`,
+                COALESCE(SUM(amount_atomic), 0)::numeric AS total_atomic
+           FROM chain_events
+          WHERE provider_agent_id = $1`,
         [providerAgentId.toString()],
       );
       const row = res.rows[0];
@@ -382,19 +384,18 @@ export function createQueries(pool: Pool) {
     },
 
     /**
-     * Per-service spend aggregate. Filters on the on-chain serviceId
-     * (BYTEA, indexed by migration 003). Same shape as `getProviderSpend`.
-     * A provider with multiple services will have its provider-level spend
-     * be the sum of all their service-level spends — useful sanity check.
+     * Per-service spend aggregate. Filters chain_events on the on-chain
+     * serviceId — same scope as `getServiceStats` on the contract, so
+     * counts align with what other on-chain consumers see.
      */
     async getServiceSpend(
       serviceId: Hex,
     ): Promise<{ count: number; totalAtomic: bigint }> {
       const res = await pool.query<{ count: string; total_atomic: string }>(
         `SELECT COUNT(*)::bigint AS count,
-                COALESCE(SUM(amount), 0)::bigint AS total_atomic
-           FROM payment_challenges
-          WHERE status = 'paid' AND service_id = $1`,
+                COALESCE(SUM(amount_atomic), 0)::numeric AS total_atomic
+           FROM chain_events
+          WHERE service_id = $1`,
         [hexToBytea(serviceId)],
       );
       const row = res.rows[0];

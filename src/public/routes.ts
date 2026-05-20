@@ -88,6 +88,7 @@ class ProviderReputationCache {
   constructor(
     private readonly reader: ChainReader,
     private readonly queries: Queries,
+    private readonly sampleLimit: number,
     ttlMs = 30_000,
   ) {
     this.ttlMs = ttlMs;
@@ -98,14 +99,30 @@ class ProviderReputationCache {
     const hit = this.entries.get(key);
     if (hit && now - hit.fetchedAt < this.ttlMs) return hit.value;
     try {
-      // Reputation counters + per-provider spend in parallel. Spend is
-      // DB-sourced and effectively free; reading it here keeps the cache
-      // entry self-contained so the route doesn't have to merge.
-      const [raw, spend] = await Promise.all([
+      // Three reads in parallel:
+      //   - on-chain counters (getProviderReputation) for the
+      //     count-based rates and the raw counters surfaced for
+      //     transparency;
+      //   - chain_events spend aggregate for the dollar volume;
+      //   - chain_events sample for the off-chain value-weighted
+      //     satisfaction rate. Same shape as ServiceAggregatesCache
+      //     but provider-scoped.
+      const [raw, spend, chainRows] = await Promise.all([
         this.reader.getProviderReputation(agentId),
         this.queries.getProviderSpend(agentId),
+        this.queries.listRecentChainActivityByProvider(
+          agentId,
+          this.sampleLimit,
+        ),
       ]);
-      const value = raw ? deriveProviderReputation(raw, spend.totalAtomic) : null;
+      if (!raw) {
+        this.entries.set(key, { value: null, fetchedAt: now });
+        return null;
+      }
+      const weighted = deriveServiceWeightedSatisfaction(
+        chainRows.map(chainRowToSkillEnriched),
+      );
+      const value = deriveProviderReputation(raw, spend.totalAtomic, weighted);
       this.entries.set(key, { value, fetchedAt: now });
       return value;
     } catch {
@@ -626,6 +643,7 @@ export function createPublicRouter(deps: PublicRouterDeps): Router {
   const reputationCache = new ProviderReputationCache(
     reader,
     queries,
+    SERVICE_AGGREGATES_SAMPLE_LIMIT,
     deps.reputationCacheTtlMs ?? 30_000,
   );
   const serviceReputationCache = new ServiceReputationCache(

@@ -164,18 +164,29 @@ export interface PublicServiceReputation {
   totalTransactions: number;
   completionRate: number | null;
   buyerSatisfactionRate: number | null;
+  /**
+   * USDC-value-weighted buyer satisfaction over this scope's attested
+   * paid transactions (computed off chain_events). Same numerator-
+   * denominator shape as `buyerSatisfactionRate` but each attestation
+   * contributes `satisfactionWeight(amount)` instead of 1. Null when no
+   * attestations land above the $0.25 floor. This is the canonical
+   * anti-Sybil display metric; the count-based `buyerSatisfactionRate`
+   * remains alongside for transparency.
+   */
+  buyerSatisfactionRateByValue: number | null;
+  /** Number of attestations contributing nonzero weight. */
+  buyerSatisfactionRateByValueSampleSize: number;
   completedCount: number;
   failedCount: number;
   canceledCount: number;
   confirmedCount: number;
   notConfirmedCount: number;
   /**
-   * Total USDC settled through this gateway at this scope (provider-level
-   * for `reputation`, service-level for `serviceReputation`), two-decimal
-   * string. Sourced from `payment_challenges.amount` summed over paid
-   * rows — the gateway DB, not on-chain, because ReputationStorage tracks
-   * outcome counts but not dollar amounts. Always present; "0.00" when no
-   * paid rows have landed yet.
+   * Total USDC settled at this scope (provider-level for `reputation`,
+   * service-level for `serviceReputation`), two-decimal string. Sourced
+   * from chain_events.amount_atomic so direct-to-router and other-gateway
+   * settlements are included. Always present; "0.00" when no settled
+   * rows have landed yet.
    */
   totalSpentUsdc: string;
 }
@@ -183,6 +194,10 @@ export interface PublicServiceReputation {
 export function deriveProviderReputation(
   raw: ProviderReputation,
   totalSpentAtomic: bigint = 0n,
+  weightedSatisfaction: ServiceWeightedSatisfaction = {
+    rateByValue: null,
+    sampleSize: 0,
+  },
 ): PublicServiceReputation {
   const completed = Number(raw.completed);
   const failed = Number(raw.failed);
@@ -197,6 +212,8 @@ export function deriveProviderReputation(
       totalTransactions > 0 ? completed / totalTransactions : null,
     buyerSatisfactionRate:
       totalConfirmations > 0 ? confirmed / totalConfirmations : null,
+    buyerSatisfactionRateByValue: weightedSatisfaction.rateByValue,
+    buyerSatisfactionRateByValueSampleSize: weightedSatisfaction.sampleSize,
     completedCount: completed,
     failedCount: failed,
     canceledCount: canceled,
@@ -229,16 +246,6 @@ export interface PublicServiceLevelReputation extends PublicServiceReputation {
   averageFulfillmentSeconds: number | null;
   /** Count of records that contributed to the mean. */
   fulfillmentSampleSize: number;
-  /**
-   * USDC-value-weighted buyer satisfaction over this service's attested
-   * paid transactions. Same numerator-denominator shape as
-   * `buyerSatisfactionRate` but each attestation contributes
-   * `satisfactionWeight(amount)` instead of 1. Null when no attestations
-   * land above the $0.25 floor.
-   */
-  buyerSatisfactionRateByValue: number | null;
-  /** Number of attestations contributing nonzero weight to the by-value rate. */
-  buyerSatisfactionRateByValueSampleSize: number;
 }
 
 export function deriveServiceReputation(
@@ -255,21 +262,16 @@ export function deriveServiceReputation(
   },
 ): PublicServiceLevelReputation {
   // ServiceReputation is structurally a superset of ProviderReputation
-  // (same five outcome counters plus totalRefunded), so the existing rate
-  // derivation works unchanged. The fulfillment aggregate is mixed in
-  // separately because it's computed off-chain from per-record reads —
-  // callers without that data pass the default zero-sample object. The
-  // spend total comes from the gateway DB (not the contract) and is
-  // scoped to this serviceId. Weighted satisfaction is similarly
-  // computed off-chain (the chain stores count-based attestations only).
+  // (same five outcome counters plus totalRefunded), so the existing
+  // derivation works unchanged. Off-chain enrichment (fulfillment mean,
+  // weighted satisfaction, total spent) is passed in by the caller and
+  // forwarded to `deriveProviderReputation` for the shared fields.
   return {
-    ...deriveProviderReputation(raw, totalSpentAtomic),
+    ...deriveProviderReputation(raw, totalSpentAtomic, weightedSatisfaction),
     totalRefundedUsdc: atomicToUsdc(raw.totalRefunded),
     serviceId,
     averageFulfillmentSeconds: fulfillment.averageFulfillmentSeconds,
     fulfillmentSampleSize: fulfillment.sampleSize,
-    buyerSatisfactionRateByValue: weightedSatisfaction.rateByValue,
-    buyerSatisfactionRateByValueSampleSize: weightedSatisfaction.sampleSize,
   };
 }
 
