@@ -1,22 +1,67 @@
 import { loadConfig } from "./config.js";
 import { createViemChainReader } from "./chain/viemReader.js";
+import { AutoMockChainReader } from "./chain/autoMockReader.js";
 import { createApp } from "./app.js";
 import { ChainEventsIndexer } from "./indexer/chainEvents.js";
+import type { ChainReader } from "./chain/reader.js";
+import type { Hex } from "./types.js";
 
 async function main() {
   const config = loadConfig();
-  const reader = createViemChainReader({
-    rpcUrl: config.baseRpcUrl,
-    chainId: config.chainId,
-    identityRegistryAddress: config.identityRegistryAddress,
-    providerRegistryAddress: config.providerRegistryAddress,
-    paymentRouterAddress: config.paymentRouterAddress,
-    x402AdapterAddress: config.x402AdapterAddress,
-    usdcAddress: config.usdcAddress,
-    facilitatorPrivateKey: config.facilitatorPrivateKey,
-    easAddress: config.easAddress,
-    reputationStorageAddress: config.reputationStorageAddress,
-  });
+
+  // CHAIN_MODE=mock swaps the on-chain reader for an in-process auto-success
+  // stub. Used by daski-test's `e2e:local:managed` orchestration so the
+  // gateway never reaches a real RPC. The placeholder contract addresses
+  // (USDC_ADDRESS, IDENTITY_REGISTRY_ADDRESS, …) must agree with daski-test's
+  // runtimeConfig.LOCAL_PLACEHOLDER_CONTRACTS so EIP-712 signatures the
+  // buyer produces verify against the same domain the gateway bakes into
+  // PaymentRequirements.
+  const chainMode = process.env.CHAIN_MODE ?? "live";
+  let reader: ChainReader;
+  if (chainMode === "mock") {
+    const providerWallet =
+      (process.env.MOCK_PROVIDER_WALLET_ADDRESS as Hex | undefined) ??
+      (("0x" + "11".repeat(20)) as Hex);
+    const providerAgentId = BigInt(process.env.MOCK_PROVIDER_AGENT_ID ?? "1");
+    const providerAgentUri =
+      process.env.MOCK_PROVIDER_AGENT_URI ??
+      "http://localhost:4040/.well-known/agent.json";
+    const defaultBuyerAgentId = BigInt(
+      process.env.MOCK_BUYER_AGENT_ID ?? "99",
+    );
+    reader = new AutoMockChainReader({
+      tokenAddress: config.usdcAddress,
+      providerWalletAddress: providerWallet,
+      providerAgentId,
+      providerAgentUri,
+      defaultBuyerAgentId,
+    });
+    // The provider's whitelist gate filters /discover; in mock mode the
+    // operator might forget to set WHITELISTED_AGENT_IDS, in which case
+    // /discover would return empty. Auto-allow the mock provider so the
+    // orchestrated e2e finds it without extra env wiring.
+    if (config.whitelistedAgentIds.length === 0) {
+      config.whitelistedAgentIds.push(providerAgentId);
+    }
+    console.log(
+      `daski-gateway CHAIN_MODE=mock — using AutoMockChainReader ` +
+        `(provider agentId=${providerAgentId}, agentURI=${providerAgentUri}, ` +
+        `buyer agentId=${defaultBuyerAgentId})`,
+    );
+  } else {
+    reader = createViemChainReader({
+      rpcUrl: config.baseRpcUrl,
+      chainId: config.chainId,
+      identityRegistryAddress: config.identityRegistryAddress,
+      providerRegistryAddress: config.providerRegistryAddress,
+      paymentRouterAddress: config.paymentRouterAddress,
+      x402AdapterAddress: config.x402AdapterAddress,
+      usdcAddress: config.usdcAddress,
+      facilitatorPrivateKey: config.facilitatorPrivateKey,
+      easAddress: config.easAddress,
+      reputationStorageAddress: config.reputationStorageAddress,
+    });
+  }
 
   const bundle = await createApp({ config, reader });
 
