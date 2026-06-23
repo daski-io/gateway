@@ -29,12 +29,13 @@ export const identityRegistryAbi = [
     stateMutability: "view",
   },
   {
-    // Canonical live wallet for an agentId. The contract comment on
-    // ProviderRegistry.updateWalletAddress flags `ProviderRegistry.walletAddress`
-    // as a deprecated hint — `IdentityRegistry.getAgentWallet` is what
-    // PaymentRouter resolves the payee against, and what survives
-    // ERC-8004 wallet rotation. The gateway reads this for cache-side
-    // wallet resolution so discovery doesn't go stale after rotation.
+    // Canonical live wallet for an agentId. The audit refactor dropped the
+    // `walletAddress` field from ProviderRegistry.Provider entirely —
+    // `IdentityRegistry.getAgentWallet` is now the sole source of a
+    // provider's payee wallet: it is what PaymentRouter resolves the payee
+    // against, and what survives ERC-8004 wallet rotation. The gateway
+    // reads this for cache-side wallet resolution so discovery reflects the
+    // live wallet.
     type: "function",
     name: "getAgentWallet",
     inputs: [{ name: "agentId", type: "uint256" }],
@@ -79,7 +80,6 @@ export const providerRegistryAbi = [
         name: "",
         type: "tuple",
         components: [
-          { name: "walletAddress", type: "address" },
           { name: "agentId", type: "uint256" },
           { name: "registrationTime", type: "uint256" },
           { name: "isActive", type: "bool" },
@@ -145,8 +145,9 @@ export const paymentRouterAbi = [
 // ── Daski ServiceRegistry ───────────────────────────────────────────────
 //
 // Per-provider service catalog introduced in the service-identity refactor.
-// `serviceId = keccak256(abi.encodePacked(uint256 providerAgentId, string serviceSlug, string version))`
-// — matches the contract's `_computeServiceId`. Gateway computes it
+// `serviceId = keccak256(abi.encode(uint256 providerAgentId, string serviceSlug, string version))`
+// — matches the contract's `_computeServiceId` (standard ABI encoding, not
+// packed, since the audit refactor). Gateway computes it
 // off-chain (cheap, deterministic) and PaymentRouter.settle validates that
 // the service belongs to providerAgentId and is active.
 //

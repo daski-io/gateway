@@ -194,7 +194,6 @@ export interface ChainReader {
   getProviderCount(): Promise<bigint>;
   getProviderIdAt(index: bigint): Promise<bigint>;
   getProvider(agentId: bigint): Promise<{
-    walletAddress: Hex;
     agentId: bigint;
     registrationTime: bigint;
     isActive: boolean;
@@ -285,11 +284,10 @@ export interface ChainReader {
   getReputationRecord(paymentId: bigint): Promise<ReputationRecord | null>;
 
   // Canonical live agentWallet from IdentityRegistry. PaymentRouter resolves
-  // payees through this same getter, and ProviderRegistry's `walletAddress`
-  // field is explicitly deprecated in favor of it (see ProviderRegistry.sol
-  // around updateWalletAddress). Returns address(0) when the agent has unset
-  // their wallet — callers should fall back to the ProviderRegistry hint
-  // when that happens (or treat it as "no payee currently").
+  // payees through this same getter; the audit refactor removed
+  // ProviderRegistry's `walletAddress` field, making this the sole source of
+  // a provider's payee wallet. Returns address(0) when the agent has unset
+  // their wallet — callers treat that as "no payee currently".
   getAgentWallet(agentId: bigint): Promise<Hex>;
 
   // Cumulative refunded amount (atomic USDC) for one paymentId from
@@ -345,26 +343,22 @@ export async function fetchOnChainProviders(
     if (!provider.isActive) continue;
     if (!whitelistSet.has(agentId.toString())) continue;
 
-    // Read the canonical wallet from IdentityRegistry instead of trusting
-    // ProviderRegistry's deprecated `walletAddress` hint — PaymentRouter
-    // resolves payees through the IdentityRegistry getter, so a wallet
-    // rotation that hasn't been mirrored back into ProviderRegistry would
-    // otherwise leave discovery showing the old address while settlements
-    // correctly went to the new one. If IdentityRegistry returns the zero
-    // address (agent has unset their wallet), fall back to the registry
-    // hint rather than emitting 0x0 — `agentWallet` can lag genuine
-    // intent during a transfer window.
+    // Read the canonical wallet from IdentityRegistry. The audit refactor
+    // dropped ProviderRegistry's `walletAddress` field entirely, so
+    // IdentityRegistry.getAgentWallet is the sole source — it is also what
+    // PaymentRouter resolves payees through, so discovery always reflects
+    // the live payee even across ERC-8004 wallet rotation. When the agent
+    // has unset their wallet, getAgentWallet returns the zero address; we
+    // surface that as-is (there is no longer a registry hint to fall back
+    // to) so callers can treat it as "no payee currently".
     const [agentURI, liveWallet] = await Promise.all([
       reader.getAgentURI(agentId),
       reader.getAgentWallet(agentId),
     ]);
-    const ZERO_ADDR = ("0x" + "00".repeat(20)) as Hex;
-    const walletAddress =
-      liveWallet === ZERO_ADDR ? provider.walletAddress : liveWallet;
 
     providers.push({
       agentId,
-      walletAddress,
+      walletAddress: liveWallet,
       agentURI,
       registrationTime: provider.registrationTime,
       isActive: true,

@@ -119,7 +119,7 @@ export interface DaskiRequirementsExtra {
     /**
      * 32-byte hex serviceId. Identifies the row in ServiceRegistry this
      * payment is for. Computed as
-     * `keccak256(abi.encodePacked(uint256 providerAgentId, string skillId, string version))`.
+     * `keccak256(abi.encode(uint256 providerAgentId, string serviceSlug, string version))`.
      * Clients that sign the EIP-3009 nonce themselves must include this
      * value in the bound 3-tuple — the X402Adapter rejects calls whose
      * nonce does not match.
@@ -295,7 +295,7 @@ export interface StoredChallenge {
   // serviceSlug so the gateway can re-derive serviceId without a
   // contract round-trip.
   serviceVersion: string;
-  // 32-byte hex serviceId — `keccak256(abi.encodePacked(providerAgentId, serviceSlug, version))`.
+  // 32-byte hex serviceId — `keccak256(abi.encode(providerAgentId, serviceSlug, version))`.
   // Persisted on the challenge so /verify can cross-check the on-chain
   // PaymentSettled event's serviceId field rather than trusting the
   // adapter call args alone.

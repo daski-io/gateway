@@ -216,7 +216,6 @@ export function createViemChainReader(opts: ViemReaderOptions): ChainReader {
         functionName: "getProvider",
         args: [agentId],
       })) as {
-        walletAddress: Hex;
         agentId: bigint;
         registrationTime: bigint;
         isActive: boolean;

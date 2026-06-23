@@ -97,7 +97,6 @@ export class AutoMockChainReader implements ChainReader {
   }
 
   async getProvider(agentId: bigint): Promise<{
-    walletAddress: Hex;
     agentId: bigint;
     registrationTime: bigint;
     isActive: boolean;
@@ -106,7 +105,6 @@ export class AutoMockChainReader implements ChainReader {
       throw new Error(`mock provider ${agentId} not registered`);
     }
     return {
-      walletAddress: this.opts.providerWalletAddress,
       agentId,
       registrationTime: 1n,
       isActive: true,

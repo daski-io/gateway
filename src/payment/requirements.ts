@@ -1,8 +1,8 @@
 import crypto from "node:crypto";
 import {
   encodeAbiParameters,
-  encodePacked,
   keccak256,
+  parseAbiParameters,
   stringToBytes,
 } from "viem";
 import type { Config } from "../config.js";
@@ -201,9 +201,11 @@ function resolveServiceSlug(
 /**
  * Off-chain serviceId derivation. Mirrors
  * `ServiceRegistry._computeServiceId`:
- *   keccak256(abi.encodePacked(uint256 providerAgentId, string serviceSlug, string version))
- * Off-chain identity is critical — the X402Adapter rejects any settle
- * whose EIP-3009 nonce isn't bound to the same `(serviceRef,
+ *   keccak256(abi.encode(uint256 providerAgentId, string serviceSlug, string version))
+ * Standard ABI encoding (NOT packed) — the contract switched to
+ * `abi.encode` in the audit refactor, so the gateway must match byte-for
+ * -byte. Off-chain identity is critical — the X402Adapter rejects any
+ * settle whose EIP-3009 nonce isn't bound to the same `(serviceRef,
  * providerAgentId, serviceId)` 3-tuple, so a mismatch here surfaces as
  * "auth not bound to call" at settlement time.
  */
@@ -213,10 +215,11 @@ export function computeServiceId(
   version: string,
 ): Hex {
   return keccak256(
-    encodePacked(
-      ["uint256", "string", "string"],
-      [providerAgentId, serviceSlug, version],
-    ),
+    encodeAbiParameters(parseAbiParameters("uint256, string, string"), [
+      providerAgentId,
+      serviceSlug,
+      version,
+    ]),
   ) as Hex;
 }
 
