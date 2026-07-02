@@ -902,13 +902,20 @@ export function createPublicRouter(deps: PublicRouterDeps): Router {
       }
       const [recent, reputation, serviceReputation, serviceAggregates] =
         await Promise.all([
-          // recentPurchases now sources from chain_events too — same data
-          // model as /activity, just filtered by provider. Chain-only rows
-          // (settled outside this gateway) surface here as well.
-          queries.listRecentChainActivityByProvider(
-            agentId,
-            PER_SERVICE_RECENT_LIMIT,
-          ),
+          // recentPurchases sources from chain_events — scoped to the
+          // SELECTED service when its serviceId resolves, so a
+          // multi-service provider's mailbox page doesn't list domain
+          // purchases. Falls back to provider scope for cards without a
+          // resolvable serviceId (no marketplace extension).
+          formatted.serviceId
+            ? queries.listRecentChainActivityByServiceId(
+                formatted.serviceId as Hex,
+                PER_SERVICE_RECENT_LIMIT,
+              )
+            : queries.listRecentChainActivityByProvider(
+                agentId,
+                PER_SERVICE_RECENT_LIMIT,
+              ),
           reputationCache.get(agentId),
           // Scope-narrow service-level counters. Reads only when the cached
           // provider resolves to a primary serviceId — otherwise the UI sees

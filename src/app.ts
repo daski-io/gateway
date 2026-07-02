@@ -312,7 +312,19 @@ export async function createApp(options: CreateAppOptions): Promise<AppBundle> {
             ? (shapeB as Record<string, unknown>)
             : undefined);
         if (!meta || meta.paymentRequired === false) return [];
-        const baseAmount = meta.baseAmount;
+        // Fixed price at the metadata top level (legacy) or nested under
+        // meta.pricing (daski-provider). Nested "0" is a live-pricing
+        // floor, not a price.
+        const nested =
+          meta.pricing && typeof meta.pricing === "object"
+            ? (meta.pricing as Record<string, unknown>)
+            : null;
+        const baseAmount =
+          typeof meta.baseAmount === "string"
+            ? meta.baseAmount
+            : typeof nested?.baseAmount === "string" && nested.baseAmount !== "0"
+              ? nested.baseAmount
+              : undefined;
         if (typeof baseAmount !== "string") return [];
         return [
           {

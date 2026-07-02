@@ -202,7 +202,15 @@ export function applyDiscoverFilters(
     if (acceptedCategories) {
       const providerCategory =
         typeof ext.category === "string" ? ext.category : "";
-      if (!acceptedCategories.has(providerCategory)) return false;
+      // Canonicalize BOTH sides: a provider registering under the
+      // colloquial label ("email") must match a buyer filtering by the
+      // canonical bucket ("communications") and vice versa.
+      if (
+        !acceptedCategories.has(providerCategory) &&
+        !acceptedCategories.has(canonicalizeCategory(providerCategory))
+      ) {
+        return false;
+      }
     }
     if (filters.maxPrice !== undefined) {
       // Live-priced services advertise no fixed baseAmount — exclude
@@ -305,6 +313,23 @@ function extractSkills(
         : null) ??
       {};
 
+    // baseAmount/priceList live at the metadata top level in older cards,
+    // but daski-provider nests them under meta.pricing (the translated
+    // per-skill pricing block). A nested "0" is the live-priced floor,
+    // not a price — treat it as absent.
+    const nestedPricing =
+      meta.pricing && typeof meta.pricing === "object"
+        ? (meta.pricing as Record<string, unknown>)
+        : null;
+    const nestedBase =
+      nestedPricing?.baseAmount !== undefined &&
+      nestedPricing?.baseAmount !== null &&
+      String(nestedPricing.baseAmount) !== "0"
+        ? nestedPricing.baseAmount
+        : undefined;
+    const baseAmount = meta.baseAmount ?? nestedBase;
+    const priceList = meta.priceList ?? nestedPricing?.priceList;
+
     out.push({
       id,
       name: s.name,
@@ -316,10 +341,10 @@ function extractSkills(
       // on the provider side: live-priced skills have no baseAmount/
       // priceList, fixed-priced ones have no pricingModel.
       ...(meta.pricingModel ? { pricingModel: meta.pricingModel } : {}),
-      priceList: formatPriceList(meta.priceList),
+      priceList: formatPriceList(priceList),
       baseAmount:
-        meta.baseAmount !== undefined && meta.baseAmount !== null
-          ? (Number(meta.baseAmount) / 1_000_000).toFixed(2)
+        baseAmount !== undefined && baseAmount !== null
+          ? (Number(baseAmount) / 1_000_000).toFixed(2)
           : undefined,
       requiredFields: meta.requiredFields,
       // §3.2 of daski-mcp-gateway-fix-brief.md — surface the manifest's

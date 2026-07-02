@@ -792,7 +792,21 @@ function flattenSkills(agentCard: Record<string, unknown>): PublicSkill[] {
       }
     }
 
-    const baseAmount = meta.baseAmount;
+    // baseAmount lives at the metadata top level in older cards, but
+    // daski-provider nests it under meta.pricing (the translated per-skill
+    // pricing block). A nested "0" is the live-priced floor, not a price —
+    // treat it as absent.
+    const nestedPricing =
+      meta.pricing && typeof meta.pricing === "object"
+        ? (meta.pricing as Record<string, unknown>)
+        : null;
+    const nestedBase =
+      nestedPricing?.baseAmount !== undefined &&
+      nestedPricing?.baseAmount !== null &&
+      String(nestedPricing.baseAmount) !== "0"
+        ? nestedPricing.baseAmount
+        : undefined;
+    const baseAmount = meta.baseAmount ?? nestedBase;
     // pricingModel may be a flat string (legacy) or a structured object
     // (current). Surface both: legacy string for back-compat, structured
     // detail (kind/source/hint) so the website can render integrator

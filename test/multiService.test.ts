@@ -73,6 +73,10 @@ function buildCard(args: {
         serviceDescription: args.description,
         serviceLifecycle: "asset-lifecycle",
         // Shape B skill metadata (what daski-provider serves today).
+        // NOTE: the fixed amount is NESTED under meta.pricing — exactly
+        // how daski-provider's generator emits it — so these tests
+        // exercise the gateway's nested-pricing fallback. Free skills
+        // carry the translated "0", which readers must treat as absent.
         skills: Object.fromEntries(
           args.skills.map((s) => [
             s.id,
@@ -80,7 +84,10 @@ function buildCard(args: {
               serviceSlug: args.slug,
               serviceVersion: "1",
               paymentRequired: s.paid,
-              ...(s.baseAmount ? { baseAmount: s.baseAmount } : {}),
+              pricing: {
+                type: "one-time",
+                baseAmount: s.baseAmount ?? "0",
+              },
             },
           ]),
         ),
@@ -149,7 +156,9 @@ describe("multi-service providers", () => {
         base,
         name: "Agent Mailboxes",
         slug: "mailboxes",
-        category: "communications",
+        // Colloquial label, like the real provider — the gateway must
+        // canonicalize it into the "communications" bucket for filters.
+        category: "email",
         description: "Working email mailboxes for agents over IMAP and SMTP.",
         skills: [
           {
@@ -229,6 +238,19 @@ describe("multi-service providers", () => {
       expect(
         bySlug.get("domain-management")!.skills.map((s) => s.id),
       ).toContain("check-availability");
+      // Fixed price surfaces from the NESTED meta.pricing.baseAmount
+      // (the shape daski-provider emits); the free skill's translated
+      // "0" must NOT surface as a $0.00 price.
+      const mailboxSkills = bySlug.get("mailboxes")!.skills as Array<{
+        id: string;
+        baseAmount?: string;
+      }>;
+      expect(
+        mailboxSkills.find((s) => s.id === "create-mailbox")?.baseAmount,
+      ).toBe("9.99");
+      expect(
+        mailboxSkills.find((s) => s.id === "check-availability")?.baseAmount,
+      ).toBeUndefined();
     } finally {
       await transport.close();
     }
@@ -264,21 +286,22 @@ describe("multi-service providers", () => {
     }
   });
 
-  it("category filter selects individual services of one provider", async () => {
+  it("category filter selects individual services of one provider (alias-tolerant both ways)", async () => {
     const { client, transport } = await connectClient(gateway.baseUrl);
     try {
-      const result = await client.callTool({
-        name: "daski_search_services",
-        // 'email' canonicalizes to 'communications' — only the mailbox
-        // card carries that category.
-        arguments: { category: "email" },
-      });
-      const body = parseResult<{
-        providers: Array<{ tokenId: string; serviceSlug: string | null }>;
-      }>(result);
-      const mine = body.providers.filter((p) => p.tokenId === "1");
-      expect(mine).toHaveLength(1);
-      expect(mine[0]!.serviceSlug).toBe("mailboxes");
+      // Buyer filters by the colloquial label the card itself uses.
+      for (const category of ["email", "communications"]) {
+        const result = await client.callTool({
+          name: "daski_search_services",
+          arguments: { category },
+        });
+        const body = parseResult<{
+          providers: Array<{ tokenId: string; serviceSlug: string | null }>;
+        }>(result);
+        const mine = body.providers.filter((p) => p.tokenId === "1");
+        expect(mine, `category=${category}`).toHaveLength(1);
+        expect(mine[0]!.serviceSlug).toBe("mailboxes");
+      }
     } finally {
       await transport.close();
     }
