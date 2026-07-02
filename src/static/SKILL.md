@@ -55,8 +55,7 @@ again with the signed result.
   skills) → first call without `envelopeAuth` returns the EIP-712
   A2ARequestAuthorization typed-data plus the matching `messageId`. Sign
   it, then call again with `envelopeAuth: { signature, authorization }`.
-  Open free skills (check-availability, get-pricing, prepare-capability)
-  skip the handshake.
+  Open free skills (check-availability, get-pricing) skip the handshake.
 - `daski_confirm_delivery` (two-call) → first call without `signature`
   returns the EAS Attest typed-data with the on-chain nonce filled in.
   Sign it, then call again with `{v,r,s}`.
@@ -65,10 +64,13 @@ again with the signed result.
   Most agents don't need this — `daski_buy_service` registers fresh
   wallets atomically on first purchase.
 - Capability typed-data (for capability-gated skills like set-dns-record /
-  delete-dns-record / transfer-domain-out) is produced by the provider as
-  the free skill `prepare-capability` — reach it via `daski_submit_task`
-  with `skillId: "prepare-capability"` and `capabilityType` set. See
-  "Workflow — free ownership-gated skills" below.
+  delete-dns-record / transfer-domain-out / change-password /
+  delete-mailbox) comes from the skill itself via the provider's two-call
+  pattern: the dispatched call returns `state: "input-required"` with a
+  `capability_challenge` artifact plus `nextEnvelopeAuthChallenge` (a
+  pre-minted fresh envelope for the execute call — envelopes are
+  single-use). Sign both, resubmit, done. See "Workflow — free
+  ownership-gated skills" below.
 
 ## Two integration paths
 
@@ -215,49 +217,49 @@ your display name from its `name` field. The two parameters are mutually
 exclusive: pass one or the other, not both. Most buyers should ignore
 this and use `name`.
 
-## Workflow — free ownership-gated skills (e.g. set-dns-record, delete-dns-record)
+## Workflow — free ownership-gated skills (e.g. set-dns-record, change-password)
 
 These skills act on an asset the user already paid for (e.g., a domain
-they registered earlier). No new USDC payment; the previous purchase's
-`paymentId` plus an envelope-auth signature (and a capability for
-destructive writes) authorize the action.
+they registered or a mailbox they created earlier). No new USDC payment;
+the previous purchase's `paymentId` (a receipt binding) plus an
+envelope-auth signature (and a per-action capability signature for
+destructive or credential writes) authorize the action.
 
 1. Identify the original purchase's `paymentId` (e.g., the
-   `register-domain` payment that bought the domain). Ask the user or
+   `register-domain` payment that bought the domain, or the
+   `create-mailbox` payment that bought the mailbox). Ask the user or
    look it up.
 2. Call `daski_buy_service` with the target `skillId`, `buyerTokenId`,
    `walletAddress`, `paymentId`, and `serviceArgs` matching the skill's
    `requiredFields`. It returns `kind: "free"` + a plan. The plan tells
    you exactly which steps to run; the items below describe the shape.
-3. **(Capability-gated only — set-dns-record, delete-dns-record, transfer-domain-out)**
-   Call `daski_submit_task` with `skillId: "prepare-capability"`,
-   `providerA2AUrl`, `paymentId`, and `serviceArgs` containing
-   `capabilityType` (from the agent card's
-   `skills[<id>].capabilityType`), `paymentId`, `buyerTokenId`, plus
-   the schema-specific fields (e.g. `domain` + `recordType/name/content`
-   for set, or `domain` + `recordId` for delete). The provider returns
-   `eip712TypedData` and a `capabilityTemplate` inline in the artifacts.
-   Sign the typed-data with the wallet. Build the `capability` object:
-   ```json
-   {
-     "signature": "<from wallet>",
-     "authorization": "<eip712TypedData.message>"
-   }
-   ```
-4. **(All ownership-gated)** Call `daski_submit_task` WITHOUT
-   `envelopeAuth` — pass `skillId`, `providerA2AUrl`, `paymentId`,
-   `chainId`, `buyerTokenId`, and the `serviceArgs` you'll submit. The
-   gateway returns the EIP-712 typed-data plus a fresh `messageId`. Sign
-   the typed-data with the wallet. Retain the `messageId` — the second
-   call rejects mismatches.
-5. Call `daski_submit_task` AGAIN with the same inputs plus
-   `envelopeAuth: { signature, authorization }`, the SAME `messageId`,
-   and — for capability-gated skills — the `capability` from step 3.
+3. Call `daski_submit_task` WITHOUT `envelopeAuth` — pass `skillId`,
+   `providerA2AUrl`, `paymentId`, `chainId`, `buyerTokenId`, and the
+   `serviceArgs` you'll submit. The gateway returns the EIP-712
+   typed-data plus a fresh `messageId`. Sign the typed-data with the
+   wallet. Retain the `messageId` — the second call rejects mismatches.
+4. Call `daski_submit_task` AGAIN with the same inputs plus
+   `envelopeAuth: { signature, authorization }` and the SAME `messageId`.
    Omit `serviceRef` and `transactionHash` (those are for paid skills only).
+   - Ownership-only skills (`get-domain-info`, `list-dns-records`,
+     `get-mailbox-info`, ...) execute right here — skip to step 6.
+   - Capability-gated skills (`set-dns-record`, `delete-dns-record`,
+     `transfer-domain-out`, `change-password`, `delete-mailbox`) do NOT
+     execute yet: the call returns `state: "input-required"` with a
+     `capability_challenge` artifact (the per-action EIP-712 typed-data)
+     plus `nextEnvelopeAuthChallenge` — a pre-minted FRESH envelope for
+     the execute call. Envelopes are single-use: reusing the step-3
+     `messageId` is rejected as `ENVELOPE_REPLAY`.
+5. **(Capability-gated only)** Sign BOTH typed-datas — the capability
+   challenge and `nextEnvelopeAuthChallenge.eip712TypedData` — then call
+   `daski_submit_task` once more with
+   `capability: { signature, authorization }`, `envelopeAuth` from the
+   fresh challenge, its `messageId`, the same `serviceArgs`/`paymentId`,
+   and the `contextId` returned in step 4.
 6. Poll `daski_get_task_status` (or pass `stream: true`) until completion.
 
-Open free skills (`check-availability`, `get-pricing`, `prepare-capability`)
-skip steps 3–5 entirely: call `daski_submit_task` directly with
+Open free skills (`check-availability`, `get-pricing`) skip the
+handshake entirely: call `daski_submit_task` directly with
 `paymentId: "0"` and no envelopeAuth. The plan returned by `daski_buy_service`
 will reflect this.
 

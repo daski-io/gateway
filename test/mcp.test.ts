@@ -1128,6 +1128,181 @@ describe("hosted MCP — wallet-agnostic surface", () => {
     }
   });
 
+  it("daski_submit_task runs the envelope handshake for a gated FREE skill even with paymentId '0' (catalog-driven gating)", async () => {
+    // Regression for the live 2026-07-02 finding: change-password (free
+    // but ownership+capability-gated) called with paymentId "0" used to
+    // skip the handshake here — "free skill" reads as "paymentId 0" — and
+    // bounce off the provider's ENVELOPE_AUTH_REQUIRED. The skill's own
+    // advertised gating in the discovery cache now decides.
+    gateway.registerProvider({
+      tokenId: 7n,
+      name: "Agent Mailboxes",
+      priceUsdcSmallest: "9990000",
+      category: "email",
+      skills: [
+        {
+          id: "change-password",
+          metadata: {
+            paymentRequired: false,
+            requiresAssetOwnership: true,
+            requiresCapability: true,
+            capabilityType: "MailboxPasswordResetAuthorization",
+            requiredFields: ["address"],
+          },
+        },
+      ],
+    });
+    await gateway.refresh();
+
+    const { client, transport } = await connectClient(gateway.baseUrl);
+    try {
+      const body = parseResult<{
+        eip712TypedData: { primaryType: string };
+        authorization: { paymentId: string; buyerTokenId: string };
+        messageId: string;
+      }>(
+        await client.callTool({
+          name: "daski_submit_task",
+          arguments: {
+            providerA2AUrl: gateway.mockProvider.baseUrl + "/a2a",
+            skillId: "change-password",
+            paymentId: "0",
+            chainId: 84532,
+            buyerTokenId: "5",
+            serviceArgs: { address: "pawel@uat.example" },
+          },
+        }),
+      );
+      // An envelope challenge, not a blind dispatch.
+      expect(body.eip712TypedData.primaryType).toBe("A2ARequestAuthorization");
+      expect(body.authorization.paymentId).toBe("0");
+      expect(body.messageId).toBeDefined();
+    } finally {
+      await transport.close();
+    }
+  });
+
+  it("daski_submit_task passes provider JSON-RPC error.data through (envelopeAuthChallenge recovery)", async () => {
+    // The provider's ENVELOPE_AUTH_REQUIRED error embeds a ready-to-sign
+    // envelopeAuthChallenge in error.data; dropping it strands the agent
+    // with a message that references a payload it can't see.
+    gateway.mockProvider.setNextA2AError({
+      code: -32011,
+      message:
+        "envelopeAuth required: this skill is ownership- or capability-gated.",
+      data: {
+        envelopeAuthChallenge: {
+          primaryType: "A2ARequestAuthorization",
+          message: { skillId: "change-password" },
+        },
+      },
+    });
+    const { client, transport } = await connectClient(gateway.baseUrl);
+    try {
+      const result = await client.callTool({
+        name: "daski_submit_task",
+        arguments: {
+          providerA2AUrl: gateway.mockProvider.baseUrl + "/a2a",
+          skillId: "check-availability",
+          paymentId: "0",
+          chainId: 84532,
+          serviceArgs: { domain: "pacu.ai" },
+        },
+      });
+      const r = result as ToolResultContent;
+      expect(r.isError).toBe(true);
+      const err = JSON.parse(
+        (r.content[0]! as { type: "text"; text: string }).text,
+      );
+      expect(err.code).toBe("PROVIDER_ERROR");
+      expect(err.details.rpcCode).toBe(-32011);
+      expect(err.details.data.envelopeAuthChallenge.primaryType).toBe(
+        "A2ARequestAuthorization",
+      );
+    } finally {
+      await transport.close();
+    }
+  });
+
+  it("daski_submit_task bundles a fresh envelope challenge alongside a capability challenge", async () => {
+    // Envelopes are single-use: the execute call after a capability
+    // challenge needs a NEW envelope. The gateway pre-mints it so the
+    // agent signs capability + next envelope in one pass instead of
+    // discovering ENVELOPE_REPLAY the hard way.
+    gateway.mockProvider.setSyncResult({
+      id: "task-cap-1",
+      state: "input-required",
+      statusMessage: {
+        role: "agent",
+        parts: [{ type: "text", text: "Sign the capability." }],
+      },
+      artifacts: [
+        {
+          name: "capability_challenge",
+          parts: [
+            {
+              type: "data",
+              data: { capabilityType: "MailboxPasswordResetAuthorization" },
+            },
+          ],
+        },
+      ],
+    });
+    const { client, transport } = await connectClient(gateway.baseUrl);
+    try {
+      const body = parseResult<{
+        state: string;
+        nextEnvelopeAuthChallenge?: {
+          messageId: string;
+          authorization: {
+            buyerTokenId: string;
+            skillId: string;
+            messageId: string;
+          };
+          eip712TypedData: { primaryType: string };
+          hint: string;
+        };
+      }>(
+        await client.callTool({
+          name: "daski_submit_task",
+          arguments: {
+            providerA2AUrl: gateway.mockProvider.baseUrl + "/a2a",
+            skillId: "change-password",
+            paymentId: "5",
+            chainId: 84532,
+            buyerTokenId: "5",
+            messageId: "msg-used-1",
+            envelopeAuth: {
+              signature: ("0x" + "ab".repeat(65)) as string,
+              authorization: {
+                buyerTokenId: "5",
+                skillId: "change-password",
+                paymentId: "5",
+                chainId: 84532,
+                messageId: "msg-used-1",
+                requestHash: ("0x" + "00".repeat(32)) as string,
+                issuedAt: "1",
+              },
+            },
+            serviceArgs: { address: "pawel@uat.example" },
+          },
+        }),
+      );
+      expect(body.state).toBe("input-required");
+      expect(body.nextEnvelopeAuthChallenge).toBeDefined();
+      const next = body.nextEnvelopeAuthChallenge!;
+      expect(next.messageId).not.toBe("msg-used-1");
+      expect(next.authorization.buyerTokenId).toBe("5");
+      expect(next.authorization.skillId).toBe("change-password");
+      expect(next.authorization.messageId).toBe(next.messageId);
+      expect(next.eip712TypedData.primaryType).toBe("A2ARequestAuthorization");
+      expect(next.hint).toMatch(/single-use/);
+    } finally {
+      await transport.close();
+      gateway.mockProvider.setSyncResult(null);
+    }
+  });
+
   it("deprecated daski_build_envelope_auth alias still returns the typed-data", async () => {
     const { client, transport } = await connectClient(gateway.baseUrl);
     try {

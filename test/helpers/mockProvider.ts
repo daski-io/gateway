@@ -49,16 +49,21 @@ export interface MockProviderHandle {
   setAgentCard(path: string, card: Record<string, unknown>): void;
   setTaskState(state: MockTaskState): void;
   setShouldHang(hang: boolean): void;
-  setNextA2AError(err: { code: number; message: string } | null): void;
+  setNextA2AError(
+    err: { code: number; message: string; data?: unknown } | null,
+  ): void;
   /// Set the quote outcome for a specific skillId (or pass skillId="*" to
   /// match anything not otherwise scoped). Default is { ok:true, amount:0 }.
   setQuoteOutcome(skillId: string, outcome: MockQuoteOutcome): void;
-  /// When set, message/send returns a fully terminal "completed" task
-  /// inline (mirrors the real provider's open-free skill behaviour).
-  /// Pass null to revert to the default submitted-state response.
+  /// When set, message/send returns a terminal "completed" task inline
+  /// (mirrors the real provider's open-free skill behaviour) — or, when
+  /// `state` is set, that state (e.g. "input-required" for capability
+  /// challenges). Pass null to revert to the default submitted-state
+  /// response.
   setSyncResult(
     result: {
       id?: string;
+      state?: MockTaskState["state"];
       statusMessage?: { role: "agent"; parts: Array<{ type: string; text?: string }> };
       artifacts?: unknown[];
     } | null,
@@ -97,9 +102,11 @@ export async function startMockProvider(
     };
 
   let shouldHang = false;
-  let nextA2AError: { code: number; message: string } | null = null;
+  let nextA2AError: { code: number; message: string; data?: unknown } | null =
+    null;
   let syncResult: {
     id?: string;
+    state?: MockTaskState["state"];
     statusMessage?: { role: "agent"; parts: Array<{ type: string; text?: string }> };
     artifacts?: unknown[];
   } | null = null;
@@ -207,7 +214,7 @@ export async function startMockProvider(
           result: {
             id: syncResult.id ?? "qa-mock-1",
             status: {
-              state: "completed",
+              state: syncResult.state ?? "completed",
               message: syncResult.statusMessage,
             },
             artifacts: syncResult.artifacts ?? [],

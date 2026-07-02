@@ -1244,9 +1244,17 @@ export async function createMcpServer(
       paymentId: z
         .string()
         .describe(
-          'Decimal string returned by `daski_buy_service`. Pass `"0"` ' +
-            "for free open skills (check-availability, get-pricing, " +
-            "prepare-capability) — those skip the envelope-auth handshake.",
+          'Decimal string returned by `daski_buy_service`. Pass `"0"` ONLY ' +
+            "for open free skills (check-availability, get-pricing). For " +
+            "FREE but ownership-/capability-gated skills (get-domain-info, " +
+            "list/set/delete-dns-record, get-mailbox-info, change-password, " +
+            "delete-mailbox, transfer-domain-out, ...) pass the paymentId " +
+            "of the ORIGINAL purchase that created the asset (e.g. the " +
+            "register-domain or create-mailbox payment) — it is bound into " +
+            "the envelope as a receipt reference. The gateway reads the " +
+            "skill's advertised gating from the provider catalog and runs " +
+            "the envelope handshake for gated skills even if you pass " +
+            '`"0"`.',
         ),
       chainId: z
         .union(
@@ -1384,12 +1392,34 @@ export async function createMcpServer(
       args: SubmitTaskArgs,
     ): Promise<McpToolResult> => {
         // Envelope-auth is needed for every paid skill and every
-        // ownership-/capability-gated free skill. The free open skills
-        // (check-availability, get-pricing, prepare-capability) opt out by
-        // passing `paymentId: "0"` or an empty paymentId — match the legacy
-        // behavior so existing free-skill callers don't break.
+        // ownership-/capability-gated free skill. The skill's advertised
+        // gating in the discovery cache is the source of truth: agents
+        // routinely pass `paymentId: "0"` for gated FREE skills
+        // (change-password, get-domain-info, ...) because "free" reads as
+        // "no payment id", and the legacy heuristic then skipped the
+        // handshake here and bounced them off the provider's
+        // ENVELOPE_AUTH_REQUIRED. The paymentId heuristic ("0"/empty =
+        // open free skill) survives only as the fallback for endpoints or
+        // skills the cache hasn't seen. A paid execution (serviceRef +
+        // transactionHash) always authenticates.
+        const cachedSkillMeta = findSkillMetaByA2AUrl(
+          deps.cache,
+          args.providerA2AUrl,
+          args.skillId,
+        );
+        const metaDeclaresGating =
+          cachedSkillMeta !== null &&
+          ("paymentRequired" in cachedSkillMeta ||
+            "requiresAssetOwnership" in cachedSkillMeta ||
+            "requiresCapability" in cachedSkillMeta);
         const requiresEnvelopeAuth =
-          args.paymentId !== "0" && args.paymentId !== "";
+          args.serviceRef !== undefined && args.transactionHash !== undefined
+            ? true
+            : cachedSkillMeta !== null && metaDeclaresGating
+              ? cachedSkillMeta.paymentRequired === true ||
+                cachedSkillMeta.requiresAssetOwnership === true ||
+                cachedSkillMeta.requiresCapability === true
+              : args.paymentId !== "0" && args.paymentId !== "";
 
         // First-call branch — return the typed-data the wallet must sign,
         // plus the matching messageId to thread back through. This absorbs
@@ -1548,7 +1578,7 @@ export async function createMcpServer(
         };
 
         type SubmitRpc = {
-          error?: { message?: string };
+          error?: { code?: number; message?: string; data?: unknown };
           result?: {
             id?: string;
             contextId?: string;
@@ -1574,10 +1604,23 @@ export async function createMcpServer(
         }
         const rpc = post.body;
         if (rpc.error) {
+          // Providers embed recovery material in JSON-RPC error.data — the
+          // ENVELOPE_AUTH_REQUIRED error carries a ready-to-sign
+          // `envelopeAuthChallenge`, for example. Pass it through verbatim
+          // (as details.data) instead of stranding the agent with a bare
+          // message that references a payload it can't see.
           return errorJson({
             code: "PROVIDER_ERROR",
             message: rpc.error.message ?? "JSON-RPC error",
-            details: { contextId },
+            details: {
+              contextId,
+              ...(rpc.error.code !== undefined
+                ? { rpcCode: rpc.error.code }
+                : {}),
+              ...(rpc.error.data !== undefined
+                ? { data: rpc.error.data }
+                : {}),
+            },
           });
         }
         if (!rpc.result?.id) {
@@ -1611,6 +1654,46 @@ export async function createMcpServer(
         if (result.status?.message) {
           flattened.statusMessage = result.status.message;
         }
+        // A capability challenge (`input-required` + capability_challenge
+        // artifact) always needs a SECOND provider call to execute, and
+        // envelopes are single-use — resubmitting with the envelope that
+        // produced this challenge fails with ENVELOPE_REPLAY. Pre-mint the
+        // fresh envelope for the execute call here so the agent signs the
+        // capability and the next envelope in one pass.
+        const capabilityChallengeReturned =
+          flattened.state === "input-required" &&
+          Array.isArray(result.artifacts) &&
+          result.artifacts.some(
+            (a) =>
+              a !== null &&
+              typeof a === "object" &&
+              (a as Record<string, unknown>).name === "capability_challenge",
+          );
+        if (capabilityChallengeReturned && args.envelopeAuth) {
+          const nextEnvelope = buildEnvelopeAuth({
+            skillId: args.skillId,
+            paymentId: args.paymentId,
+            chainId: args.chainId,
+            buyerTokenId: args.envelopeAuth.authorization.buyerTokenId,
+            identityRegistryAddress: deps.config.identityRegistryAddress,
+            serviceArgs: args.serviceArgs ?? {},
+          });
+          flattened.nextEnvelopeAuthChallenge = {
+            messageId: nextEnvelope.messageId,
+            requestHash: nextEnvelope.requestHash,
+            issuedAt: nextEnvelope.issuedAt,
+            authorization: nextEnvelope.authorization,
+            eip712TypedData: nextEnvelope.eip712TypedData,
+            hint:
+              "Envelopes are single-use: the execute call needs THIS fresh " +
+              "envelope, not the one you just used. Sign the capability " +
+              "challenge AND this eip712TypedData, then call " +
+              "daski_submit_task again with capability: { signature, " +
+              "authorization }, envelopeAuth from THIS challenge, " +
+              "messageId set to THIS challenge's messageId, the same " +
+              "serviceArgs and paymentId, and the returned contextId.",
+          };
+        }
         return json(flattened);
     };
 
@@ -1621,7 +1704,8 @@ export async function createMcpServer(
           "Dispatch a task to a Daski provider over A2A. Use for free skills (price checks, availability, capability prep) and as the second step after `daski_buy_service` for paid skills.",
           "",
           "When to use:",
-          "- Free read-only skills like `check-availability`, `get-pricing`, `prepare-capability` (pass `paymentId: \"0\"`, omit `envelopeAuth`).",
+          "- OPEN free skills like `check-availability`, `get-pricing` (pass `paymentId: \"0\"`, omit `envelopeAuth` — no handshake, completes synchronously).",
+          "- FREE ownership-/capability-gated skills (`get-domain-info`, `list/set/delete-dns-record`, `get-mailbox-info`, `change-password`, `delete-mailbox`, `transfer-domain-out`, ...) — same two-call envelope handshake as paid skills; pass the ORIGINAL asset purchase's `paymentId` plus `buyerTokenId` or `walletAddress`. (`daski_buy_service` also emits a ready-made step-by-step plan for these.)",
           "- After `daski_buy_service` settled a payment — dispatch the actual task using the returned `serviceRef` and `transactionHash`.",
           "- Continuing a multi-turn A2A conversation — pass the `contextId` from the previous turn.",
           "",
@@ -1630,18 +1714,19 @@ export async function createMcpServer(
           "- You are polling an existing task — use `daski_get_task_status`.",
           "",
           "Inputs:",
-          "- Free skill: `skillId`, `providerA2AUrl`, `chainId`, `paymentId: \"0\"`, `serviceArgs`.",
-          "- Paid skill, first call (no signature): `skillId`, `providerA2AUrl`, `chainId`, `paymentId`, `serviceRef`, `transactionHash`, `buyerTokenId`, `serviceArgs`. Returns the envelope-auth typed-data to sign.",
-          "- Paid skill, signed retry: the same inputs plus `envelopeAuth: { signature, authorization }` and the matching `messageId` from the first call.",
+          "- Open free skill: `skillId`, `providerA2AUrl`, `chainId`, `paymentId: \"0\"`, `serviceArgs`.",
+          "- Gated skill (paid or free), first call (no signature): `skillId`, `providerA2AUrl`, `chainId`, `paymentId`, `buyerTokenId` (or `walletAddress`), `serviceArgs`; paid skills additionally `serviceRef` + `transactionHash`. Returns the envelope-auth typed-data to sign.",
+          "- Gated skill, signed retry: the same inputs plus `envelopeAuth: { signature, authorization }` and the matching `messageId` from the first call.",
           "",
           "Returns:",
-          "- First call on a paid skill: `{ eip712TypedData, authorization, messageId, hint }`. Sign `eip712TypedData` with the buyer's agent wallet, then call again with `envelopeAuth: { signature, authorization }` and the SAME `messageId`.",
-          "- Free skill or second-call paid: `{ taskId, contextId, state, artifacts, statusMessage }`. `state` is one of `submitted | working | input-required | completed | failed`. `completed` and `failed` are terminal.",
+          "- First call on a gated skill: `{ eip712TypedData, authorization, messageId, hint }`. Sign `eip712TypedData` with the buyer's agent wallet, then call again with `envelopeAuth: { signature, authorization }` and the SAME `messageId`.",
+          "- Otherwise: `{ taskId, contextId, state, artifacts, statusMessage }`. `state` is one of `submitted | working | input-required | completed | failed`. `completed` and `failed` are terminal.",
+          "- Capability-gated skills return `state: 'input-required'` with a `capability_challenge` artifact plus `nextEnvelopeAuthChallenge` (a pre-minted FRESH envelope — envelopes are single-use). Sign BOTH typed-datas, then resubmit with `capability`, the fresh `envelopeAuth` + its `messageId`, and the same `contextId`.",
           "",
           "Next step:",
           "- `state === 'completed'`: read `artifacts`, then optionally `daski_confirm_delivery`.",
           "- `state === 'working' | 'submitted'`: poll with `daski_get_task_status`.",
-          "- `state === 'input-required'`: call this tool again with the additional info and the SAME `contextId`.",
+          "- `state === 'input-required'`: call this tool again with the additional info and the SAME `contextId` (for capability challenges: signed `capability` + the bundled fresh envelope).",
           "- `state === 'failed'`: read `statusMessage`, optionally `daski_confirm_delivery` with `confirmation: 'NotConfirmed'`.",
         ].join("\n"),
         inputSchema: SUBMIT_TASK_INPUT_SCHEMA,
@@ -1792,7 +1877,7 @@ export async function createMcpServer(
           params: { id: args.taskId },
         };
         type CheckRpc = {
-          error?: { message?: string };
+          error?: { code?: number; message?: string; data?: unknown };
           result?: {
             id?: string;
             contextId?: string;
@@ -1811,9 +1896,23 @@ export async function createMcpServer(
         }
         const rpc = post.body;
         if (rpc.error) {
+          // Same passthrough as daski_submit_task: keep whatever recovery
+          // material the provider attached to error.data.
           return errorJson({
             code: "PROVIDER_ERROR",
             message: rpc.error.message ?? "JSON-RPC error",
+            ...(rpc.error.code !== undefined || rpc.error.data !== undefined
+              ? {
+                  details: {
+                    ...(rpc.error.code !== undefined
+                      ? { rpcCode: rpc.error.code }
+                      : {}),
+                    ...(rpc.error.data !== undefined
+                      ? { data: rpc.error.data }
+                      : {}),
+                  },
+                }
+              : {}),
           });
         }
         const result = rpc.result;
@@ -2044,13 +2143,17 @@ export async function createMcpServer(
               try {
                 const parsed = JSON.parse(dataLines.join("\n")) as {
                   result?: any;
-                  error?: { message?: string };
+                  error?: { code?: number; message?: string; data?: unknown };
                 };
                 if (parsed.error) {
-                  // Provider signaled an error mid-stream — surface it.
+                  // Provider signaled an error mid-stream — surface it,
+                  // keeping any recovery material attached to error.data.
                   return errorJson({
                     code: "PROVIDER_ERROR",
                     message: parsed.error.message ?? "stream error",
+                    ...(parsed.error.data !== undefined
+                      ? { details: { data: parsed.error.data } }
+                      : {}),
                   });
                 }
                 if (parsed.result) {
@@ -2435,39 +2538,18 @@ export async function createMcpServer(
       const { args, provider, providerA2AUrl, serviceArgs } = ctx;
       const { isOpenFree, requiresCapability, requiresAssetOwnership, capabilityType } = flags;
       const steps: Array<{ toolName: string; hint: string; args: unknown }> = [];
-      // Capability-gated skills need an upstream prepare-capability hop.
-      // The misconfig guard in `runBuyServiceFreePath` ensures
-      // capabilityType is non-null whenever requiresCapability is true.
-      if (requiresCapability && capabilityType) {
-        steps.push({
-          toolName: "daski_submit_task",
-          hint:
-            "Fetch the EIP-712 typed-data for this capability as a free " +
-            "A2A skill on the provider. Sign the returned eip712TypedData " +
-            "with your wallet; extract the signature.",
-          args: {
-            providerA2AUrl,
-            skillId: "prepare-capability",
-            paymentId: args.paymentId,
-            chainId: deps.config.chainId,
-            serviceArgs: {
-              capabilityType,
-              paymentId: args.paymentId,
-              buyerTokenId: args.buyerTokenId,
-              // Echo the entire serviceArgs so the schema-specific
-              // builder pulls the fields it commits to (e.g. domain,
-              // recordType, recordName for set-dns; domain, recordId
-              // for delete-dns).
-              ...serviceArgs,
-            },
-          },
-        });
-      }
       // Envelope auth: required for any non-open-free skill. We collapse
       // build+submit into a single daski_submit_task two-call exchange:
       // - First call (no envelopeAuth) → returns typed-data + messageId.
       // - Sign the typed-data with the buyer wallet.
       // - Second call (with envelopeAuth + matching messageId) → dispatch.
+      //
+      // Capability-gated skills use the provider's two-call pattern (the
+      // legacy standalone `prepare-capability` skill is gone): the
+      // dispatched call comes back `input-required` with a
+      // `capability_challenge` artifact instead of executing, and the
+      // gateway bundles `nextEnvelopeAuthChallenge` — a pre-minted FRESH
+      // envelope for the execute call, since envelopes are single-use.
       if (!isOpenFree) {
         steps.push({
           toolName: "daski_submit_task",
@@ -2506,16 +2588,13 @@ export async function createMcpServer(
             }
           : { typedData: "<from previous daski_submit_task.eip712TypedData>" },
       });
-      if (!isOpenFree) {
+      if (!isOpenFree && !requiresCapability) {
         steps.push({
           toolName: "daski_submit_task",
           hint:
             "Second call: pass envelopeAuth: { signature, authorization } and " +
             "the SAME messageId returned by the first call. The gateway " +
-            "forwards the task to the provider over A2A." +
-            (requiresCapability
-              ? " Also pass the signed { signature, authorization } as `capability`."
-              : ""),
+            "forwards the task to the provider over A2A.",
           args: {
             providerA2AUrl,
             skillId: args.skillId,
@@ -2524,9 +2603,62 @@ export async function createMcpServer(
             serviceArgs,
             messageId: "<from first daski_submit_task call>",
             envelopeAuth: "<signed envelope from sign step>",
-            ...(requiresCapability
-              ? { capability: "<signed capability from previous step>" }
-              : {}),
+          },
+        });
+      }
+      if (!isOpenFree && requiresCapability) {
+        steps.push({
+          toolName: "daski_submit_task",
+          hint:
+            "Second call: pass envelopeAuth: { signature, authorization } " +
+            "and the SAME messageId from the first call. This skill is " +
+            "capability-gated, so the provider does NOT execute yet — it " +
+            `returns state 'input-required' with a capability_challenge ` +
+            `artifact (the ${capabilityType} typed-data) plus ` +
+            "nextEnvelopeAuthChallenge, a pre-minted FRESH envelope for " +
+            "the execute call (envelopes are single-use; reusing this " +
+            "call's messageId is rejected as ENVELOPE_REPLAY).",
+          args: {
+            providerA2AUrl,
+            skillId: args.skillId,
+            ...(args.paymentId ? { paymentId: args.paymentId } : {}),
+            chainId: deps.config.chainId,
+            serviceArgs,
+            messageId: "<from first daski_submit_task call>",
+            envelopeAuth: "<signed envelope from sign step>",
+          },
+        });
+        steps.push({
+          toolName: "<your-wallet>.signTypedData",
+          hint:
+            "Sign BOTH typed-datas from the previous response with the " +
+            `buyer agent wallet: the ${capabilityType} capability ` +
+            "challenge (in the capability_challenge artifact) and " +
+            "nextEnvelopeAuthChallenge.eip712TypedData.",
+          args: {
+            typedData:
+              "<capability_challenge eip712TypedData, then " +
+              "nextEnvelopeAuthChallenge.eip712TypedData>",
+          },
+        });
+        steps.push({
+          toolName: "daski_submit_task",
+          hint:
+            "Execute call: same skillId, paymentId, and serviceArgs, plus " +
+            "capability: { signature, authorization } from the capability " +
+            "challenge, envelopeAuth from nextEnvelopeAuthChallenge (NOT " +
+            "the first envelope), its messageId, and the contextId " +
+            "returned by the challenge call.",
+          args: {
+            providerA2AUrl,
+            skillId: args.skillId,
+            ...(args.paymentId ? { paymentId: args.paymentId } : {}),
+            chainId: deps.config.chainId,
+            serviceArgs,
+            messageId: "<from nextEnvelopeAuthChallenge>",
+            envelopeAuth: "<signed nextEnvelopeAuthChallenge>",
+            capability: "<signed capability challenge>",
+            contextId: "<from the challenge call>",
           },
         });
       }
@@ -2571,10 +2703,10 @@ export async function createMcpServer(
 
       // Provider-misconfiguration guard: a capability-gated skill that
       // doesn't declare its capabilityType can't have a usable plan
-      // emitted — the prepare-capability step needs the type, and the
-      // submit step would instruct the caller to pass a `capability`
-      // that no upstream step provides. Surface the misconfig instead
-      // of silently returning a half-baked plan.
+      // emitted — the plan's challenge/sign steps name the type the
+      // buyer is signing, and the execute step would instruct the caller
+      // to pass a `capability` that no upstream step describes. Surface
+      // the misconfig instead of silently returning a half-baked plan.
       if (requiresCapability && !capabilityType) {
         return errorJson({
           code: "provider_missing_capability_type",
@@ -3464,35 +3596,96 @@ function findSkillMeta(
   skillId: string,
 ): { skillMeta: Record<string, unknown>; agentCard: Record<string, unknown> } | null {
   for (const card of cardsOf(provider)) {
-    const agentCard = card.agentCard;
-    const skills = agentCard["skills"];
-    let listed = false;
-    if (Array.isArray(skills)) {
-      for (const skill of skills) {
-        if (!skill || typeof skill !== "object") continue;
-        if ((skill as Record<string, unknown>)["id"] !== skillId) continue;
-        listed = true;
-        const meta = (skill as Record<string, unknown>)["metadata"];
-        if (meta && typeof meta === "object") {
-          const daskiMeta = (meta as Record<string, unknown>)[DASKI_A2A_EXTENSION_URI];
-          if (daskiMeta && typeof daskiMeta === "object") {
-            return { skillMeta: daskiMeta as Record<string, unknown>, agentCard };
-          }
-        }
-        break;
-      }
+    const skillMeta = skillMetaFromCard(card.agentCard, skillId);
+    if (skillMeta !== null) {
+      return { skillMeta, agentCard: card.agentCard };
     }
-    const ext = extractMarketplaceExtension(agentCard) as
-      | (Record<string, unknown> & { skills?: unknown })
-      | null;
-    const skillMap = ext?.skills;
-    if (skillMap && typeof skillMap === "object" && !Array.isArray(skillMap)) {
-      const meta = (skillMap as Record<string, unknown>)[skillId];
+  }
+  return null;
+}
+
+/**
+ * Extract `skillId`'s daski metadata from a single card, checking both
+ * publishing shapes (A2A skills[].metadata[extension], and the marketplace
+ * extension's skills map). Returns `{}` when the skill is listed without
+ * daski metadata, and null when the card doesn't list the skill at all.
+ */
+function skillMetaFromCard(
+  agentCard: Record<string, unknown>,
+  skillId: string,
+): Record<string, unknown> | null {
+  const skills = agentCard["skills"];
+  let listed = false;
+  if (Array.isArray(skills)) {
+    for (const skill of skills) {
+      if (!skill || typeof skill !== "object") continue;
+      if ((skill as Record<string, unknown>)["id"] !== skillId) continue;
+      listed = true;
+      const meta = (skill as Record<string, unknown>)["metadata"];
       if (meta && typeof meta === "object") {
-        return { skillMeta: meta as Record<string, unknown>, agentCard };
+        const daskiMeta = (meta as Record<string, unknown>)[DASKI_A2A_EXTENSION_URI];
+        if (daskiMeta && typeof daskiMeta === "object") {
+          return daskiMeta as Record<string, unknown>;
+        }
       }
+      break;
     }
-    if (listed) return { skillMeta: {}, agentCard };
+  }
+  const ext = extractMarketplaceExtension(agentCard) as
+    | (Record<string, unknown> & { skills?: unknown })
+    | null;
+  const skillMap = ext?.skills;
+  if (skillMap && typeof skillMap === "object" && !Array.isArray(skillMap)) {
+    const meta = (skillMap as Record<string, unknown>)[skillId];
+    if (meta && typeof meta === "object") {
+      return meta as Record<string, unknown>;
+    }
+  }
+  return listed ? {} : null;
+}
+
+/** Normalize an A2A endpoint URL for equality checks: lowercased
+ *  scheme/host/path, trailing slashes stripped. Null for unparseable URLs. */
+function normalizeA2AUrl(url: string): string | null {
+  try {
+    const u = new URL(url);
+    return `${u.protocol}//${u.host}${u.pathname.replace(/\/+$/, "")}`.toLowerCase();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Resolve a skill's daski metadata from the discovery cache by the A2A
+ * endpoint the caller is about to hit. `daski_submit_task` uses this to
+ * decide whether a skill is paid/ownership-/capability-gated (→ envelope
+ * handshake) from the provider's own advertisement instead of trusting
+ * the caller's paymentId heuristic. Returns null when the endpoint or
+ * skill isn't in the cache — callers fall back to the legacy heuristic.
+ */
+function findSkillMetaByA2AUrl(
+  cache: DiscoveryCache,
+  providerA2AUrl: string,
+  skillId: string,
+): Record<string, unknown> | null {
+  const target = normalizeA2AUrl(providerA2AUrl);
+  if (!target) return null;
+  for (const provider of cache.getAll()) {
+    for (const card of cardsOf(provider)) {
+      // The A2A endpoint lives inside the card (`url` /
+      // `supportedInterfaces`); `card.endpoint` is where the card JSON was
+      // fetched from. Some layouts make them the same URL — match either.
+      const candidates = [
+        extractAgentCardUrl(card.agentCard),
+        typeof card.endpoint === "string" ? card.endpoint : null,
+      ];
+      const matches = candidates.some(
+        (c) => c !== null && normalizeA2AUrl(c) === target,
+      );
+      if (!matches) continue;
+      const meta = skillMetaFromCard(card.agentCard, skillId);
+      if (meta !== null) return meta;
+    }
   }
   return null;
 }
