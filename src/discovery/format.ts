@@ -1,5 +1,9 @@
 import { DASKI_A2A_EXTENSION_URI } from "../config.js";
-import type { CachedProvider, DaskiMarketplaceExtension } from "../types.js";
+import type {
+  CachedProvider,
+  DaskiMarketplaceExtension,
+  ProviderCard,
+} from "../types.js";
 import { sanitizeForLlmReflection } from "../util/sanitize.js";
 
 // Attempts to extract the daski marketplace extension from an Agent Card.
@@ -44,6 +48,100 @@ export function extractAgentCardUrl(
   }
   const legacy = agentCard["url"];
   return typeof legacy === "string" ? legacy : null;
+}
+
+/**
+ * The provider's cards, tolerating cache entries built before the
+ * multi-card refactor (tests, or a deploy race): a provider without a
+ * `cards` array is treated as a single-card provider wrapping its
+ * legacy `agentCard`.
+ */
+export function cardsOf(provider: CachedProvider): ProviderCard[] {
+  if (Array.isArray(provider.cards) && provider.cards.length > 0) {
+    return provider.cards;
+  }
+  return [
+    {
+      endpoint: provider.agentURI,
+      serviceSlug: extractCardServiceSlug(provider.agentCard),
+      agentCard: provider.agentCard,
+    },
+  ];
+}
+
+/**
+ * The on-chain service slug a card represents. Cards are per-service, so
+ * every skill carries the same `serviceSlug` in its daski metadata — read
+ * it off the first skill that declares one (either publishing shape).
+ * Null for legacy cards with no declared slug.
+ */
+export function extractCardServiceSlug(
+  agentCard: Record<string, unknown>,
+): string | null {
+  const ext = extractMarketplaceExtension(agentCard) as
+    | (Record<string, unknown> & { skills?: unknown })
+    | null;
+  const shapeB = ext?.skills;
+  if (shapeB && typeof shapeB === "object" && !Array.isArray(shapeB)) {
+    for (const meta of Object.values(shapeB as Record<string, unknown>)) {
+      if (!meta || typeof meta !== "object") continue;
+      const slug = (meta as Record<string, unknown>)["serviceSlug"];
+      if (typeof slug === "string" && slug.length > 0) return slug;
+    }
+  }
+  const skills = agentCard["skills"];
+  if (Array.isArray(skills)) {
+    for (const skill of skills) {
+      if (!skill || typeof skill !== "object") continue;
+      const meta = (skill as Record<string, unknown>)["metadata"];
+      if (!meta || typeof meta !== "object") continue;
+      const daski = (meta as Record<string, unknown>)[DASKI_A2A_EXTENSION_URI];
+      if (!daski || typeof daski !== "object") continue;
+      const slug = (daski as Record<string, unknown>)["serviceSlug"];
+      if (typeof slug === "string" && slug.length > 0) return slug;
+    }
+  }
+  return null;
+}
+
+/**
+ * The card that offers `skillId`, for skill-scoped flows (payment
+ * requirements, buy). Skill ids are only unique WITHIN a service, so the
+ * first card listing the skill wins — in practice cross-card collisions
+ * are free utility skills (check-availability, get-pricing) that never
+ * reach the paid path. Falls back to null when no card lists the skill.
+ */
+export function findCardForSkill(
+  provider: CachedProvider,
+  skillId: string | null | undefined,
+): Record<string, unknown> | null {
+  if (!skillId) return null;
+  for (const card of cardsOf(provider)) {
+    const skills = card.agentCard["skills"];
+    if (Array.isArray(skills)) {
+      const listed = skills.some(
+        (s) =>
+          s &&
+          typeof s === "object" &&
+          (s as Record<string, unknown>)["id"] === skillId,
+      );
+      if (listed) return card.agentCard;
+    }
+    // Shape B only (skill listed solely in the extension map).
+    const ext = extractMarketplaceExtension(card.agentCard) as
+      | (Record<string, unknown> & { skills?: unknown })
+      | null;
+    const map = ext?.skills;
+    if (
+      map &&
+      typeof map === "object" &&
+      !Array.isArray(map) &&
+      (map as Record<string, unknown>)[skillId]
+    ) {
+      return card.agentCard;
+    }
+  }
+  return null;
 }
 
 export interface DiscoverFilters {
@@ -97,9 +195,10 @@ export function applyDiscoverFilters(
   const acceptedCategories = filters.category
     ? new Set([filters.category, canonicalizeCategory(filters.category)])
     : null;
-  return providers.filter((p) => {
-    const ext = extractMarketplaceExtension(p.agentCard);
-    if (!ext) return false; // Providers without the extension are excluded from filtered queries
+
+  const cardMatches = (card: ProviderCard): boolean => {
+    const ext = extractMarketplaceExtension(card.agentCard);
+    if (!ext) return false; // Cards without the extension are excluded from filtered queries
     if (acceptedCategories) {
       const providerCategory =
         typeof ext.category === "string" ? ext.category : "";
@@ -116,7 +215,19 @@ export function applyDiscoverFilters(
       if (!Number.isFinite(priceUsdc) || priceUsdc > filters.maxPrice) return false;
     }
     return true;
-  });
+  };
+
+  // Filter per CARD: a multi-service provider survives with the subset
+  // of its cards that match; drops out only when none do. The pruned
+  // provider keeps `agentCard` pointed at its first surviving card so
+  // legacy single-card readers stay coherent.
+  const out: CachedProvider[] = [];
+  for (const p of providers) {
+    const surviving = cardsOf(p).filter(cardMatches);
+    if (surviving.length === 0) continue;
+    out.push({ ...p, agentCard: surviving[0]!.agentCard, cards: surviving });
+  }
+  return out;
 }
 
 /**
@@ -245,11 +356,29 @@ export function formatForSkillDiscover(
 ): Array<Record<string, unknown>> {
   const out: Array<Record<string, unknown>> = [];
   for (const provider of providers) {
-    const ext = extractMarketplaceExtension(provider.agentCard);
-    if (!ext) continue;
-    const name = extractAgentCardName(provider.agentCard);
-    const providerA2AUrl = extractAgentCardUrl(provider.agentCard);
-    const skills = extractSkills(provider.agentCard);
+    for (const card of cardsOf(provider)) {
+      const entry = formatCardForSkillDiscover(provider, card);
+      if (entry) out.push(entry);
+    }
+  }
+  return out;
+}
+
+/**
+ * One search/catalog entry per (provider, card). A multi-service provider
+ * therefore surfaces once per service — same `tokenId`, distinct `name`,
+ * `serviceSlug`, `skills[]`, and `providerA2AUrl`. Returns null for cards
+ * without the marketplace extension.
+ */
+export function formatCardForSkillDiscover(
+  provider: CachedProvider,
+  card: ProviderCard,
+): Record<string, unknown> | null {
+    const ext = extractMarketplaceExtension(card.agentCard);
+    if (!ext) return null;
+    const name = extractAgentCardName(card.agentCard);
+    const providerA2AUrl = extractAgentCardUrl(card.agentCard);
+    const skills = extractSkills(card.agentCard);
 
     // Service-level pricing has two shapes:
     //   - live: baseAmount absent + pricing.model present
@@ -269,6 +398,11 @@ export function formatForSkillDiscover(
     const entry: Record<string, unknown> = {
       tokenId: provider.agentId.toString(),
       agentId: provider.agentId.toString(),
+      // Which of the provider's services this entry describes. Skill ids
+      // are only unique within a service — pair skillId with this slug
+      // when disambiguating across a multi-service provider. Null for
+      // legacy cards that don't declare one.
+      serviceSlug: card.serviceSlug,
       // Provider-supplied free-text fields are reflected to LLM clients
       // via search_services / Resource reads. Strip control chars + BIDI
       // overrides and length-cap to blunt prompt-injection attempts from
@@ -302,14 +436,14 @@ export function formatForSkillDiscover(
     } else if (baseAmountRaw !== undefined && baseAmountRaw !== null) {
       entry.basePrice = (Number(baseAmountRaw) / 1_000_000).toFixed(2);
     }
-    out.push(entry);
-  }
-  return out;
+    return entry;
 }
 
 /**
  * Serializes a cached provider for the REST /discover response. BigInts
  * become strings, dates become ISO, agent card is returned as-is.
+ * `cards` is the multi-service surface (one entry per advertised
+ * service); `agentCard` remains the first card for back-compat.
  */
 export function formatForRestDiscover(
   provider: CachedProvider,
@@ -320,6 +454,11 @@ export function formatForRestDiscover(
     walletAddress: provider.walletAddress,
     agentURI: provider.agentURI,
     agentCard: provider.agentCard,
+    cards: cardsOf(provider).map((c) => ({
+      endpoint: c.endpoint,
+      serviceSlug: c.serviceSlug,
+      agentCard: c.agentCard,
+    })),
     lastFetched: provider.lastFetched.toISOString(),
     fetchError: provider.fetchError,
   };

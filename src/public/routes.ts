@@ -22,6 +22,7 @@ import {
   formatActivityRow,
   formatChainActivityRow,
   formatServiceForPublic,
+  formatServicesForPublic,
   type PublicBuyerDetail,
   type PublicBuyerReputation,
   type PublicBuyerSummary,
@@ -859,10 +860,12 @@ export function createPublicRouter(deps: PublicRouterDeps): Router {
   );
 
   router.get("/public/v1/services", (_req: Request, res: Response) => {
+    // One entry per (provider, service card) — a multi-service provider
+    // lists every service it offers, each with its own serviceSlug/
+    // serviceId, so the site renders them as distinct offerings.
     const services: PublicService[] = [];
     for (const provider of cache.getAll()) {
-      const formatted = formatServiceForPublic(provider);
-      if (formatted) services.push(formatted);
+      services.push(...formatServicesForPublic(provider));
     }
     res.json({
       services,
@@ -885,7 +888,14 @@ export function createPublicRouter(deps: PublicRouterDeps): Router {
         notFound(res, "unknown service");
         return;
       }
-      const formatted = formatServiceForPublic(provider);
+      // Multi-service providers share one agentId — `?service=<slug>`
+      // selects which of their services to render; the primary (first)
+      // card remains the default so existing links keep working.
+      const serviceSlugParam =
+        typeof req.query.service === "string" && req.query.service.length > 0
+          ? req.query.service
+          : null;
+      const formatted = formatServiceForPublic(provider, serviceSlugParam);
       if (!formatted) {
         notFound(res, "unknown service");
         return;

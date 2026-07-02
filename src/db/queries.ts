@@ -4,6 +4,10 @@ import { vectorLiteral } from "../discovery/embeddings.js";
 
 export interface SkillSearchHit {
   providerAgentId: bigint;
+  /** The service (card) the skill belongs to; '' for legacy single-card
+   *  providers without a declared slug. Skill ids are only unique within
+   *  a service, so aggregation keys on (provider, serviceSlug). */
+  serviceSlug: string;
   skillId: string;
   /** Cosine distance in [0, 2]; lower is more similar. */
   distance: number;
@@ -262,10 +266,12 @@ export function createQueries(pool: Pool) {
     ): Promise<SkillSearchHit[]> {
       const res = await pool.query<{
         provider_agent_id: string;
+        service_slug: string;
         skill_id: string;
         distance: number;
       }>(
         `SELECT provider_agent_id,
+                service_slug,
                 skill_id,
                 (embedding <=> $1::vector)::float8 AS distance
            FROM skill_embeddings
@@ -275,6 +281,7 @@ export function createQueries(pool: Pool) {
       );
       return res.rows.map((r) => ({
         providerAgentId: BigInt(r.provider_agent_id),
+        serviceSlug: r.service_slug ?? "",
         skillId: r.skill_id,
         distance: Number(r.distance),
       }));

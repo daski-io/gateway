@@ -24,6 +24,8 @@ import type {
 import {
   formatForSkillDiscover,
   applyDiscoverFilters,
+  cardsOf,
+  extractAgentCardName,
   extractAgentCardUrl,
   extractMarketplaceExtension,
 } from "../discovery/format.js";
@@ -390,37 +392,34 @@ export async function createMcpServer(
           Math.min(limit * 5, 250),
         );
 
-        // Aggregate to best (lowest distance) hit per provider.
-        const bestByProvider = new Map<string, { distance: number; skillId: string }>();
+        // Aggregate to best (lowest distance) hit per (provider, service
+        // card). Multi-service providers surface one ranked entry per
+        // service — the domain card and the mailbox card compete on
+        // their own merits instead of the provider's single best skill
+        // shadowing every other service it offers.
+        const bestByCard = new Map<string, { distance: number; skillId: string }>();
         for (const h of hits) {
-          const key = h.providerAgentId.toString();
-          const cur = bestByProvider.get(key);
+          const key = `${h.providerAgentId.toString()}:${h.serviceSlug}`;
+          const cur = bestByCard.get(key);
           if (!cur || h.distance < cur.distance) {
-            bestByProvider.set(key, {
+            bestByCard.set(key, {
               distance: h.distance,
               skillId: h.skillId,
             });
           }
         }
 
-        const filteredIds = new Set(filtered.map((p) => p.agentId.toString()));
-        const ordered = [...bestByProvider.entries()]
-          .filter(([id]) => filteredIds.has(id))
+        const entryByKey = buildEntryIndex(filtered);
+        const ordered = [...bestByCard.entries()]
+          .filter(([key]) => entryByKey.has(key))
           .sort((a, b) => a[1].distance - b[1].distance)
           .slice(0, limit);
 
-        const cardById = new Map(
-          filtered.map((p) => [p.agentId.toString(), p] as const),
-        );
-        const matchedProviders = ordered
-          .map(([id]) => cardById.get(id))
-          .filter((p): p is NonNullable<typeof p> => p !== undefined);
-        const formatted = formatForSkillDiscover(matchedProviders);
-        const matches = formatted.map((entry, i) => ({
-          ...entry,
+        const matches = ordered.map(([key, m]) => ({
+          ...entryByKey.get(key)!,
           match: {
-            distance: ordered[i]![1].distance,
-            bestSkillId: ordered[i]![1].skillId,
+            distance: m.distance,
+            bestSkillId: m.skillId,
           },
         }));
 
@@ -432,8 +431,8 @@ export async function createMcpServer(
         // to the user. The flag stays opt-in: regular results don't
         // include this block.
         const nearMissBlock =
-          matches.length === 0 && bestByProvider.size > 0
-            ? buildNearMissBlock(bestByProvider, all, limit)
+          matches.length === 0 && bestByCard.size > 0
+            ? buildNearMissBlock(bestByCard, all, limit)
             : undefined;
 
         return json({
@@ -451,30 +450,39 @@ export async function createMcpServer(
         });
     };
 
+    // Index the formatted catalog entries by the same `${agentId}:${slug}`
+    // key the embedding hits carry, so ranked hits map straight onto
+    // per-card entries. Legacy cards without a slug key on ''.
+    function buildEntryIndex(
+      providers: CachedProvider[],
+    ): Map<string, Record<string, unknown>> {
+      const index = new Map<string, Record<string, unknown>>();
+      for (const entry of formatForSkillDiscover(providers)) {
+        const slug = (entry.serviceSlug as string | null) ?? "";
+        index.set(`${entry.tokenId as string}:${slug}`, entry);
+      }
+      return index;
+    }
+
     // Helper for §1.5 — surfaces vector-index neighbours that were
     // filtered out by the caller's category/maxPrice constraints. The
     // returned shape mirrors `matches` so agents can render either
     // block with the same code path.
     function buildNearMissBlock(
-      bestByProvider: Map<string, { distance: number; skillId: string }>,
+      bestByCard: Map<string, { distance: number; skillId: string }>,
       allProviders: CachedProvider[],
       limit: number,
     ): Array<Record<string, unknown>> {
-      const topByDistance = [...bestByProvider.entries()]
+      const entryByKey = buildEntryIndex(allProviders);
+      const topByDistance = [...bestByCard.entries()]
+        .filter(([key]) => entryByKey.has(key))
         .sort((a, b) => a[1].distance - b[1].distance)
         .slice(0, Math.min(limit, 3));
-      const cardByIdAll = new Map(
-        allProviders.map((p) => [p.agentId.toString(), p] as const),
-      );
-      const providers = topByDistance
-        .map(([id]) => cardByIdAll.get(id))
-        .filter((p): p is NonNullable<typeof p> => p !== undefined);
-      const formatted = formatForSkillDiscover(providers);
-      return formatted.map((entry, i) => ({
-        ...entry,
+      return topByDistance.map(([key, m]) => ({
+        ...entryByKey.get(key)!,
         match: {
-          distance: topByDistance[i]![1].distance,
-          bestSkillId: topByDistance[i]![1].skillId,
+          distance: m.distance,
+          bestSkillId: m.skillId,
         },
       }));
     }
@@ -560,7 +568,10 @@ export async function createMcpServer(
             message: "provider is not whitelisted or not in cache",
           });
         }
-        return json(formatForSkillDiscover([provider])[0]);
+        // Multi-service providers return one entry per service; the
+        // single-entry shape is preserved for single-card providers.
+        const entries = formatForSkillDiscover([provider]);
+        return json(entries.length === 1 ? entries[0] : entries);
       },
     );
 
@@ -3161,7 +3172,11 @@ export async function createMcpServer(
             message: "provider is not whitelisted",
           });
         }
-        const providerA2AUrl = extractAgentCardUrl(cached.agentCard);
+        // The A2A endpoint of the CARD that offers this skill — on a
+        // multi-service provider each service has its own /a2a/<slug>
+        // endpoint, and posting a mailbox skill at the domain endpoint
+        // would be rejected as an unknown skill.
+        const providerA2AUrl = extractAgentCardUrl(provider.agentCard);
         if (!providerA2AUrl) {
           return errorJson({
             code: "pricing_unavailable",
@@ -3200,8 +3215,13 @@ export async function createMcpServer(
         list: async () => ({
           resources: deps.cache.getAll().map((p) => ({
             uri: `daski://provider/${p.agentId.toString()}`,
+            // Multi-service providers list every service name on the one
+            // resource ("Domain Management + Agent Mailboxes").
             name:
-              (p.agentCard as { name?: string }).name ?? `provider#${p.agentId}`,
+              cardsOf(p)
+                .map((c) => extractAgentCardName(c.agentCard))
+                .filter((n) => n !== "(unnamed)")
+                .join(" + ") || `provider#${p.agentId}`,
             description: `Daski provider agent card (tokenId ${p.agentId.toString()}).`,
             mimeType: "application/json",
           })),
@@ -3247,7 +3267,10 @@ export async function createMcpServer(
             ],
           };
         }
-        const formatted = formatForSkillDiscover([provider])[0];
+        // One entry per service card; single-card providers keep the
+        // historical single-object shape.
+        const entries = formatForSkillDiscover([provider]);
+        const formatted = entries.length === 1 ? entries[0] : entries;
         return {
           contents: [
             {
@@ -3407,6 +3430,9 @@ export async function createMcpServer(
 interface ProviderMatch {
   agentId: bigint;
   skillMeta: Record<string, unknown>;
+  /** The card (service) that offers the skill — the A2A endpoint and the
+   *  serviceSlug/pricing context downstream flows must use. */
+  agentCard: Record<string, unknown>;
 }
 
 function findProvidersOfferingSkill(
@@ -3415,43 +3441,58 @@ function findProvidersOfferingSkill(
 ): ProviderMatch[] {
   const matches: ProviderMatch[] = [];
   for (const p of cache.getAll()) {
-    const meta = findSkillMeta(p, skillId);
-    if (meta === null) continue;
-    matches.push({ agentId: p.agentId, skillMeta: meta });
+    const found = findSkillMeta(p, skillId);
+    if (found === null) continue;
+    matches.push({
+      agentId: p.agentId,
+      skillMeta: found.skillMeta,
+      agentCard: found.agentCard,
+    });
   }
   return matches;
 }
 
+/**
+ * Locate `skillId` across ALL of a provider's cards. Returns the skill's
+ * daski metadata plus the card that carries it — skill-scoped flows
+ * (payment requirements, A2A submission) must use that card's endpoint,
+ * not the provider's first card. First card listing the skill wins;
+ * cross-card id collisions are free utility skills in practice.
+ */
 function findSkillMeta(
   provider: CachedProvider,
   skillId: string,
-): Record<string, unknown> | null {
-  const skills = provider.agentCard["skills"];
-  let listed = false;
-  if (Array.isArray(skills)) {
-    for (const skill of skills) {
-      if (!skill || typeof skill !== "object") continue;
-      if ((skill as Record<string, unknown>)["id"] !== skillId) continue;
-      listed = true;
-      const meta = (skill as Record<string, unknown>)["metadata"];
-      if (meta && typeof meta === "object") {
-        const daskiMeta = (meta as Record<string, unknown>)[DASKI_A2A_EXTENSION_URI];
-        if (daskiMeta && typeof daskiMeta === "object") {
-          return daskiMeta as Record<string, unknown>;
+): { skillMeta: Record<string, unknown>; agentCard: Record<string, unknown> } | null {
+  for (const card of cardsOf(provider)) {
+    const agentCard = card.agentCard;
+    const skills = agentCard["skills"];
+    let listed = false;
+    if (Array.isArray(skills)) {
+      for (const skill of skills) {
+        if (!skill || typeof skill !== "object") continue;
+        if ((skill as Record<string, unknown>)["id"] !== skillId) continue;
+        listed = true;
+        const meta = (skill as Record<string, unknown>)["metadata"];
+        if (meta && typeof meta === "object") {
+          const daskiMeta = (meta as Record<string, unknown>)[DASKI_A2A_EXTENSION_URI];
+          if (daskiMeta && typeof daskiMeta === "object") {
+            return { skillMeta: daskiMeta as Record<string, unknown>, agentCard };
+          }
         }
+        break;
       }
-      break;
     }
-  }
-  const ext = extractMarketplaceExtension(provider.agentCard) as
-    | (Record<string, unknown> & { skills?: unknown })
-    | null;
-  const skillMap = ext?.skills;
-  if (skillMap && typeof skillMap === "object" && !Array.isArray(skillMap)) {
-    const meta = (skillMap as Record<string, unknown>)[skillId];
-    if (meta && typeof meta === "object") {
-      return meta as Record<string, unknown>;
+    const ext = extractMarketplaceExtension(agentCard) as
+      | (Record<string, unknown> & { skills?: unknown })
+      | null;
+    const skillMap = ext?.skills;
+    if (skillMap && typeof skillMap === "object" && !Array.isArray(skillMap)) {
+      const meta = (skillMap as Record<string, unknown>)[skillId];
+      if (meta && typeof meta === "object") {
+        return { skillMeta: meta as Record<string, unknown>, agentCard };
+      }
     }
+    if (listed) return { skillMeta: {}, agentCard };
   }
-  return listed ? {} : null;
+  return null;
 }

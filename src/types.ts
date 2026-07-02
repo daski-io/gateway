@@ -40,11 +40,43 @@ export interface OnChainProvider {
   isWhitelisted: boolean;
 }
 
+/**
+ * One Agent Card advertised by a provider's ERC-8004 registration file.
+ * Multi-service providers list one `services[name="A2A"]` entry per
+ * service; each resolves to its own card with its own skills, pricing,
+ * and A2A endpoint.
+ */
+export interface ProviderCard {
+  /** The endpoint the card was fetched from (registration `services[].endpoint`). */
+  endpoint: string;
+  /**
+   * The on-chain service slug this card represents, extracted from the
+   * card's per-skill daski metadata (`serviceSlug`). Null for legacy
+   * cards that don't declare one — those fall back to skillId-as-slug
+   * semantics downstream.
+   */
+  serviceSlug: string | null;
+  agentCard: Record<string, unknown>;
+}
+
 export interface CachedProvider {
   agentId: bigint;
   walletAddress: Hex;
   agentURI: string;
+  /**
+   * Back-compat convenience: the FIRST successfully fetched card. Skill-
+   * scoped consumers should resolve the right card via
+   * `findCardForSkill`; catalog-scoped consumers iterate `cards`.
+   */
   agentCard: Record<string, unknown>;
+  /**
+   * Every Agent Card the provider advertises (one per service). Set by
+   * the discovery cache on every successful fetch; mirrors `agentCard`
+   * for single-card providers and legacy flat-card layouts. Optional so
+   * hand-built fixtures (tests) can stay single-card — consumers go
+   * through `cardsOf()`, which falls back to wrapping `agentCard`.
+   */
+  cards?: ProviderCard[];
   /**
    * Top-level name/description from the ERC-8004 registration file at
    * `agentURI`. These describe the *provider* (operating entity); the

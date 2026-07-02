@@ -7,12 +7,18 @@ import type {
   TransactionOutcome,
 } from "../chain/reader.js";
 import {
+  cardsOf,
   extractAgentCardName,
   extractAgentCardUrl,
   extractMarketplaceExtension,
 } from "../discovery/format.js";
 import { derivePrimaryServiceId } from "../payment/requirements.js";
-import type { CachedProvider, Hex, StoredChallenge } from "../types.js";
+import type {
+  CachedProvider,
+  Hex,
+  ProviderCard,
+  StoredChallenge,
+} from "../types.js";
 
 // ── Value-weighted reputation ───────────────────────────────────────────
 //
@@ -834,15 +840,17 @@ function flattenSkills(agentCard: Record<string, unknown>): PublicSkill[] {
 }
 
 /**
- * Flattens a cached provider into the public service shape. Returns null
- * if the provider has no marketplace extension — those aren't surfaced as
- * services on the UI (they may still exist as pure A2A agents on-chain,
- * but the marketplace site only renders priced services).
+ * Flattens ONE of a provider's cards into the public service shape.
+ * Returns null if the card has no marketplace extension — those aren't
+ * surfaced as services on the UI (they may still exist as pure A2A
+ * agents on-chain, but the marketplace site only renders priced
+ * services).
  */
-export function formatServiceForPublic(
+function formatServiceCardForPublic(
   provider: CachedProvider,
+  card: ProviderCard,
 ): PublicService | null {
-  const ext = extractMarketplaceExtension(provider.agentCard);
+  const ext = extractMarketplaceExtension(card.agentCard);
   if (!ext) return null;
 
   const pricingExt = (ext.pricing ?? {}) as Record<string, unknown>;
@@ -860,21 +868,27 @@ export function formatServiceForPublic(
     billingModel: asString(pricingExt.billingModel),
   };
 
-  // Primary service identity. derivePrimaryServiceId walks the same skill
-  // metadata the issuer path uses, so the website-side serviceId matches
-  // what the X402Adapter binds the EIP-3009 nonce to at settle time.
-  const primary = derivePrimaryServiceId(provider);
+  // Service identity for THIS card. derivePrimaryServiceId walks the same
+  // skill metadata the issuer path uses, so the website-side serviceId
+  // matches what the X402Adapter binds the EIP-3009 nonce to at settle
+  // time. Scoping the provider view to the single card keeps the
+  // derivation per-service on multi-service providers.
+  const primary = derivePrimaryServiceId({
+    ...provider,
+    agentCard: card.agentCard,
+    cards: [card],
+  });
 
   return {
     agentId: provider.agentId.toString(),
-    name: extractAgentCardName(provider.agentCard),
+    name: extractAgentCardName(card.agentCard),
     providerAddress: provider.walletAddress,
     agentURI: provider.agentURI,
     category: asString(ext.category),
     serviceDescription: asString(ext.serviceDescription),
     serviceLifecycle: asString(ext.serviceLifecycle),
     turnaroundEstimate: asString(ext.turnaroundEstimate),
-    providerA2AUrl: extractAgentCardUrl(provider.agentCard),
+    providerA2AUrl: extractAgentCardUrl(card.agentCard),
     providerName: provider.providerName,
     providerDescription: provider.providerDescription,
     providerWebsite: provider.providerExternalUrl,
@@ -883,8 +897,40 @@ export function formatServiceForPublic(
     serviceSlug: primary?.serviceSlug ?? null,
     serviceVersion: primary?.serviceVersion ?? null,
     pricing,
-    skills: flattenSkills(provider.agentCard),
+    skills: flattenSkills(card.agentCard),
   };
+}
+
+/**
+ * Every public service a provider offers — one entry per Agent Card.
+ * Single-service providers yield exactly one entry (unchanged shape).
+ */
+export function formatServicesForPublic(
+  provider: CachedProvider,
+): PublicService[] {
+  const out: PublicService[] = [];
+  for (const card of cardsOf(provider)) {
+    const formatted = formatServiceCardForPublic(provider, card);
+    if (formatted) out.push(formatted);
+  }
+  return out;
+}
+
+/**
+ * Back-compat single-service accessor: the card matching `serviceSlug`
+ * when given, else the provider's first (primary) card. Null when the
+ * provider surfaces no public services at all.
+ */
+export function formatServiceForPublic(
+  provider: CachedProvider,
+  serviceSlug?: string | null,
+): PublicService | null {
+  const all = formatServicesForPublic(provider);
+  if (all.length === 0) return null;
+  if (serviceSlug) {
+    return all.find((s) => s.serviceSlug === serviceSlug) ?? null;
+  }
+  return all[0]!;
 }
 
 /**

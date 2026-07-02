@@ -9,8 +9,10 @@ import type { Config } from "../config.js";
 import { DASKI_A2A_EXTENSION_URI } from "../config.js";
 import type { DiscoveryCache } from "../discovery/cache.js";
 import {
+  cardsOf,
   extractAgentCardUrl,
   extractMarketplaceExtension,
+  findCardForSkill,
 } from "../discovery/format.js";
 import type { Queries } from "../db/queries.js";
 import type {
@@ -239,23 +241,29 @@ export function computeServiceId(
 export function derivePrimaryServiceId(
   provider: CachedProvider,
 ): { serviceSlug: string; serviceVersion: string; serviceId: Hex } | null {
-  const ext = extractMarketplaceExtension(provider.agentCard);
-  if (!ext) return null;
-  const skills = provider.agentCard["skills"];
-  if (!Array.isArray(skills) || skills.length === 0) return null;
-  for (const skill of skills) {
-    if (!skill || typeof skill !== "object") continue;
-    const id = (skill as Record<string, unknown>).id;
-    if (typeof id !== "string" || id.length === 0) continue;
-    const serviceSlug = resolveServiceSlug(ext, provider.agentCard, id);
-    if (serviceSlug.length === 0 || serviceSlug.length > 64) continue;
-    const serviceVersion = resolveServiceVersion(ext, provider.agentCard, id);
-    const serviceId = computeServiceId(
-      provider.agentId,
-      serviceSlug,
-      serviceVersion,
-    );
-    return { serviceSlug, serviceVersion, serviceId };
+  // Multi-service providers: the FIRST card that yields a valid slug is
+  // the "primary" service (registration-file order — providers list
+  // their flagship first). Callers that need a specific service should
+  // resolve per skill via findCardForSkill instead.
+  for (const card of cardsOf(provider)) {
+    const ext = extractMarketplaceExtension(card.agentCard);
+    if (!ext) continue;
+    const skills = card.agentCard["skills"];
+    if (!Array.isArray(skills) || skills.length === 0) continue;
+    for (const skill of skills) {
+      if (!skill || typeof skill !== "object") continue;
+      const id = (skill as Record<string, unknown>).id;
+      if (typeof id !== "string" || id.length === 0) continue;
+      const serviceSlug = resolveServiceSlug(ext, card.agentCard, id);
+      if (serviceSlug.length === 0 || serviceSlug.length > 64) continue;
+      const serviceVersion = resolveServiceVersion(ext, card.agentCard, id);
+      const serviceId = computeServiceId(
+        provider.agentId,
+        serviceSlug,
+        serviceVersion,
+      );
+      return { serviceSlug, serviceVersion, serviceId };
+    }
   }
   return null;
 }
@@ -441,8 +449,17 @@ export async function issuePaymentRequirements(
     };
   }
 
-  const ext = extractMarketplaceExtension(provider.agentCard);
-  const providerA2AUrl = extractAgentCardUrl(provider.agentCard);
+  // Multi-service providers: everything below (pricing extension, A2A
+  // endpoint, serviceSlug/serviceId derivation) must come from the CARD
+  // that offers the requested skill, not the provider's first card.
+  // Falls back to the first card when the skill isn't found (the
+  // downstream skill checks surface the real error) or when no skillId
+  // was supplied (legacy /purchase without one).
+  const agentCard =
+    findCardForSkill(provider, params.skillId) ?? provider.agentCard;
+
+  const ext = extractMarketplaceExtension(agentCard);
+  const providerA2AUrl = extractAgentCardUrl(agentCard);
   // Live-priced services intentionally have no pricing.baseAmount; the
   // orchestrator (daski_buy_service) hits /quote first and passes
   // trustQuotedAmount=true so we skip the resolveAmount path entirely.
@@ -485,7 +502,7 @@ export async function issuePaymentRequirements(
   if (params.skillId) {
     const skillMeta = findSkillMetaForPricing(
       ext,
-      provider.agentCard,
+      agentCard,
       params.skillId,
     );
     if (skillMeta && skillMeta["paymentRequired"] === false) {
@@ -530,7 +547,7 @@ export async function issuePaymentRequirements(
   } else {
     const amountResult = resolveAmount(
       ext,
-      provider.agentCard,
+      agentCard,
       params.skillId,
       params.amount,
     );
@@ -556,7 +573,7 @@ export async function issuePaymentRequirements(
       status: 400,
     };
   }
-  const serviceSlug = resolveServiceSlug(ext, provider.agentCard, skillId);
+  const serviceSlug = resolveServiceSlug(ext, agentCard, skillId);
   if (serviceSlug.length === 0 || serviceSlug.length > 64) {
     return {
       ok: false,
@@ -567,7 +584,7 @@ export async function issuePaymentRequirements(
       status: 400,
     };
   }
-  const serviceVersion = resolveServiceVersion(ext, provider.agentCard, skillId);
+  const serviceVersion = resolveServiceVersion(ext, agentCard, skillId);
   const serviceId = computeServiceId(
     params.providerTokenId,
     serviceSlug,

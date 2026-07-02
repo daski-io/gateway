@@ -6,7 +6,11 @@ import { fileURLToPath } from "node:url";
 import type { Config } from "./config.js";
 import type { ChainReader } from "./chain/reader.js";
 import { DiscoveryCache } from "./discovery/cache.js";
-import { extractAgentCardUrl } from "./discovery/format.js";
+import {
+  cardsOf,
+  extractAgentCardUrl,
+  extractMarketplaceExtension,
+} from "./discovery/format.js";
 import { createDiscoveryRouter } from "./discovery/routes.js";
 import { createPurchaseRouter } from "./payment/routes.js";
 import { createConfirmRouter } from "./payment/confirm.js";
@@ -276,16 +280,37 @@ export async function createApp(options: CreateAppOptions): Promise<AppBundle> {
   });
 
   app.get("/.well-known/x402-services.json", (_req, res) => {
-    const services = cache.getAll().flatMap((p) => {
-      const skills = Array.isArray((p.agentCard as { skills?: unknown }).skills)
-        ? ((p.agentCard as { skills: Array<Record<string, unknown>> }).skills)
+    // One pass per (provider, card): multi-service providers advertise
+    // every service's paid skills, each with its own A2A endpoint.
+    const services = cache.getAll().flatMap((p) =>
+      cardsOf(p).flatMap((providerCard) => {
+      const skills = Array.isArray(
+        (providerCard.agentCard as { skills?: unknown }).skills,
+      )
+        ? ((providerCard.agentCard as { skills: Array<Record<string, unknown>> }).skills)
         : [];
-      const card = p.agentCard as { name?: string };
-      const providerA2AUrl = extractAgentCardUrl(p.agentCard);
+      const card = providerCard.agentCard as { name?: string };
+      const providerA2AUrl = extractAgentCardUrl(providerCard.agentCard);
+      // Shape B (extensions[uri].skills map — what daski-provider serves)
+      // falls back when the skill carries no inline (shape A) metadata.
+      const ext = extractMarketplaceExtension(providerCard.agentCard) as
+        | (Record<string, unknown> & { skills?: unknown })
+        | null;
+      const shapeBMap =
+        ext?.skills && typeof ext.skills === "object" && !Array.isArray(ext.skills)
+          ? (ext.skills as Record<string, unknown>)
+          : null;
       return skills.flatMap((s) => {
-        const meta = (s.metadata as Record<string, unknown> | undefined)?.[
+        const shapeA = (s.metadata as Record<string, unknown> | undefined)?.[
           "https://daski.xyz/a2a/v1"
         ] as Record<string, unknown> | undefined;
+        const shapeB =
+          typeof s.id === "string" ? shapeBMap?.[s.id] : undefined;
+        const meta =
+          shapeA ??
+          (shapeB && typeof shapeB === "object"
+            ? (shapeB as Record<string, unknown>)
+            : undefined);
         if (!meta || meta.paymentRequired === false) return [];
         const baseAmount = meta.baseAmount;
         if (typeof baseAmount !== "string") return [];
@@ -304,7 +329,8 @@ export async function createApp(options: CreateAppOptions): Promise<AppBundle> {
           },
         ];
       });
-    });
+      }),
+    );
     res.json({
       x402Version: 1,
       services,
@@ -341,7 +367,12 @@ export async function createApp(options: CreateAppOptions): Promise<AppBundle> {
       .map(
         (p) =>
           `- agentId ${p.agentId.toString()}: ${
-            (p.agentCard as { name?: string }).name ?? "(unnamed)"
+            cardsOf(p)
+              .map(
+                (c) =>
+                  (c.agentCard as { name?: string }).name ?? "(unnamed)",
+              )
+              .join(" + ") || "(unnamed)"
           }`,
       )
       .join("\n");
