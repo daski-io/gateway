@@ -1596,10 +1596,21 @@ export async function createMcpServer(
           failOnNonOk: true,
         });
         if (!post.ok) {
+          // The request MAY have reached the provider before the
+          // timeout/failure — and envelopes are single-use, so "just retry"
+          // guidance causes ENVELOPE_REPLAY (observed in the agentic e2e:
+          // an agent followed the old wording verbatim and burned a
+          // diagnostic roundtrip).
           return providerErrorFromFailure(post, args.providerA2AUrl, {
             contextId,
             nextAction:
-              "Retry with the same contextId once the provider is reachable.",
+              "The request MAY have been processed before the failure and any " +
+              "signed envelope is now consumed — do NOT re-send the same " +
+              "envelope/messageId (it will be rejected as ENVELOPE_REPLAY). " +
+              "First verify actual state with a read-only skill (get-domain-info, " +
+              "list-dns-records, get-mailbox-info, …). Only if the action did NOT " +
+              "take effect, request a FRESH envelope (new first call, new messageId) " +
+              "and retry with the same contextId.",
           });
         }
         const rpc = post.body;
@@ -1728,6 +1739,7 @@ export async function createMcpServer(
           "- `state === 'working' | 'submitted'`: poll with `daski_get_task_status`.",
           "- `state === 'input-required'`: call this tool again with the additional info and the SAME `contextId` (for capability challenges: signed `capability` + the bundled fresh envelope).",
           "- `state === 'failed'`: read `statusMessage`, optionally `daski_confirm_delivery` with `confirmation: 'NotConfirmed'`.",
+          "- On PROVIDER_TIMEOUT or a provider-side error AFTER you submitted a signed envelope: the envelope may already be consumed. Never re-send the same messageId/envelope (ENVELOPE_REPLAY). Confirm actual state with a read-only skill first; if you must retry, start from a fresh first call (new messageId).",
         ].join("\n"),
         inputSchema: SUBMIT_TASK_INPUT_SCHEMA,
         annotations: {

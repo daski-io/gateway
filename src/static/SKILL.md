@@ -117,6 +117,16 @@ the gateway-mediated flow.
 
 ## Workflow — paid skills (e.g. register-domain)
 
+**register-domain: collect everything BEFORE the first purchase call.** The
+WHOIS registrant fields are ICANN-mandated and become public: `registrantName`,
+`registrantEmail` (a monitored inbox — a verification link must be clicked
+within 15 days or the domain is suspended), `registrantAddress`,
+`registrantCity`, `registrantState` (the official subdivision — never invent
+one), `registrantPostalCode`, `registrantCountry` (ISO-3166 alpha-2),
+`registrantPhone` (E.164). Ask your principal for all of them in a single
+message rather than guessing. WHOIS privacy is NOT configurable through this
+skill — there is no privacy field, so don't promise it.
+
 1. Get the user's wallet address from the wallet tool. Remember it.
 2. Call `daski_buy_service` with `skillId`, `walletAddress`, and
    `serviceArgs` (the structured fields the skill requires). You may also
@@ -294,6 +304,20 @@ will reflect this.
   Open a fresh `daski_purchase` and retry.
 - `EIP-3009 nonce already consumed` — replay attempt. Open a fresh
   challenge and retry with the new typed-data.
+- `PROVIDER_TIMEOUT` / provider unreachable after you submitted a signed
+  envelope — the request MAY have been processed and the envelope is
+  consumed either way. Never re-send the same envelope/messageId
+  (`ENVELOPE_REPLAY`); verify actual state with a read-only skill
+  (`get-domain-info`, `list-dns-records`, `get-mailbox-info`, …) and only
+  rebuild + re-sign a FRESH envelope if the action didn't take effect.
+- Repeated `PROVIDER_ERROR` with `rpcCode: -32603` ("Internal error
+  (ref …)") on the same skill+args, while other skills on the same
+  provider succeed — that's a provider-side bug, not your input. Stop
+  after two identical failures with different refs: verify no partial
+  effect with a read-only skill, then report the failing skill, the
+  asset, and all `ref` ids to your principal as a ready-to-forward
+  escalation summary. There is no in-band support-ticket tool — do not
+  keep spending signatures on blind retries.
 
 ## Notes on signing
 
