@@ -115,22 +115,39 @@ When NOT to use direct A2A: anything that runs in a host that can't add
 new MCP servers at runtime (most consumer surfaces in 2026). Stick with
 the gateway-mediated flow.
 
+**Wallet tools: resolve once.** At the start of a run, locate your wallet
+tools (`get_address`, `get_balance`, and the generic `signTypedData`) and
+call `get_address` once — the address is stable and you will reuse it for
+every signature. If your host defers tools behind a discovery step, do that
+discovery now, not mid-purchase.
+
 ## Workflow — paid skills (e.g. register-domain)
 
 **register-domain: collect everything BEFORE the first purchase call.** The
-WHOIS registrant fields are ICANN-mandated and become public: `registrantName`,
-`registrantEmail` (a monitored inbox — a verification link must be clicked
-within 15 days or the domain is suspended), `registrantAddress`,
-`registrantCity`, `registrantState` (the official subdivision — never invent
-one), `registrantPostalCode`, `registrantCountry` (ISO-3166 alpha-2),
-`registrantPhone` (E.164). Ask your principal for all of them in a single
-message — including whether they want WHOIS privacy: pass
-`whoisPrivacy: true` in `serviceArgs` to request it (free where the TLD
-supports it). The `registration_details` artifact reports the outcome
-(`"enabled" | "unavailable" | "not_requested"`) — relay "unavailable" to the
-principal, since their registrant data is then on public WHOIS.
+WHOIS registrant fields are ICANN-mandated and become public. Ask your
+principal for all of them in ONE message using this template, and fill every
+slot before calling `daski_buy_service`:
 
-1. Get the user's wallet address from the wallet tool. Remember it.
+- full name
+- monitored email (a verification link must be clicked within 15 days or
+  the domain is suspended)
+- street address, city, postal code
+- state/province — the official ISO-3166-2 subdivision. If the country
+  genuinely has none, re-use the city name; NEVER send an empty string and
+  NEVER invent a region the principal did not give you — when unsure, ask.
+- country (ISO-3166 alpha-2, e.g. `PL` not `POL`)
+- phone (E.164, e.g. `+14155551234` — no dots/spaces/dashes)
+- WHOIS privacy yes/no — pass `whoisPrivacy: true` to request it (free
+  where the TLD supports it). The `registration_details` artifact reports
+  `"enabled" | "unavailable" | "not_requested"`; relay "unavailable" to the
+  principal, since their registrant data is then on public WHOIS.
+
+If any field is genuinely not applicable, ask the principal how to fill it
+rather than guessing or sending it blank.
+
+1. Use the wallet address you resolved at the start (see "Wallet tools:
+   resolve once" above). Remember it — every signature in this flow comes
+   from that same wallet.
 2. Call `daski_buy_service` with `skillId`, `walletAddress`, and
    `serviceArgs` (the structured fields the skill requires). You may also
    pass an explicit `buyerTokenId`; if you don't, the orchestrator looks

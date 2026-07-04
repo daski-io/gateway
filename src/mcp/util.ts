@@ -332,22 +332,46 @@ export function validateAndNormalizeServiceArgs(
   if (missing.length === 0) {
     return { ok: true, args };
   }
+  // "Sent but blank" and "not sent" call for different recoveries: a blank
+  // usually means the principal said "not applicable" and the agent's next
+  // move should be a documented convention, not a fabricated value
+  // (observed: empty registrantState → agent invented a province).
+  const empty = missing.filter((f) => {
+    const v = getField(args, f);
+    return v !== undefined && v !== null;
+  });
+  const subdivisionAffected = missing.some((f) => /state/i.test(f));
   return {
     ok: false,
     error: mcpError({
       code: "missing_fields",
-      message: `serviceArgs missing required field(s): ${missing.join(", ")}`,
+      message:
+        `serviceArgs missing required field(s): ${missing.join(", ")}` +
+        (empty.length > 0 ? ` (sent as empty string: ${empty.join(", ")})` : ""),
       details: {
         missingFields: missing,
+        emptyFields: empty,
         requiredFields: [...requiredFields],
         acceptedShapes: [
           "flat: { firstName, lastName, ... }",
           "nested: { registrant: { firstName, lastName, ... } }",
         ],
+        ...(subdivisionAffected
+          ? {
+              hint:
+                "registrantState is required by the registry. If the registrant's " +
+                "country has no ISO-3166-2 subdivision, re-use the city name rather " +
+                "than leaving it blank. Never invent a province the principal did " +
+                "not provide — ask them.",
+            }
+          : {}),
       },
       recoverable: true,
-      next_action:
-        "Add the missing fields to serviceArgs (either flat or nested under `registrant`/`admin`/`tech`/`billing`) and retry.",
+      next_action: subdivisionAffected
+        ? "Ask your principal for the missing value(s). For a state/province in a " +
+          "country without subdivisions, re-use the city name — do not send an " +
+          "empty string and do not fabricate a region."
+        : "Add the missing fields to serviceArgs (either flat or nested under `registrant`/`admin`/`tech`/`billing`) and retry.",
     }),
   };
 }
