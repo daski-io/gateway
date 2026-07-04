@@ -124,8 +124,11 @@ within 15 days or the domain is suspended), `registrantAddress`,
 `registrantCity`, `registrantState` (the official subdivision — never invent
 one), `registrantPostalCode`, `registrantCountry` (ISO-3166 alpha-2),
 `registrantPhone` (E.164). Ask your principal for all of them in a single
-message rather than guessing. WHOIS privacy is NOT configurable through this
-skill — there is no privacy field, so don't promise it.
+message — including whether they want WHOIS privacy: pass
+`whoisPrivacy: true` in `serviceArgs` to request it (free where the TLD
+supports it). The `registration_details` artifact reports the outcome
+(`"enabled" | "unavailable" | "not_requested"`) — relay "unavailable" to the
+principal, since their registrant data is then on public WHOIS.
 
 1. Get the user's wallet address from the wallet tool. Remember it.
 2. Call `daski_buy_service` with `skillId`, `walletAddress`, and

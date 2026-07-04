@@ -38,6 +38,7 @@ import { runConfirmDelivery } from "../payment/confirm.js";
 import {
   checkPhoneFields,
   defaultBuyerAgentURI,
+  findUnknownServiceArgKeys,
   mcpError,
   mcpJson,
   parseBigIntArg,
@@ -99,6 +100,30 @@ interface Session {
 const HEX_ADDR = /^0x[0-9a-fA-F]{40}$/;
 const HEX_32 = /^0x[0-9a-fA-F]{64}$/;
 const DEC_POSITIVE = /^[1-9][0-9]*$/;
+
+// Buyer-supplied serviceArgs keys no advertised field consumes get a
+// warning in the buy_service plan response — the provider will silently
+// ignore them, and agents otherwise promise unsupported options to their
+// principals (observed with create-mailbox display names).
+function unknownServiceArgWarnings(
+  skillMeta: { requiredFields?: unknown; optionalFields?: unknown },
+  rawServiceArgs: Record<string, unknown> | undefined,
+): string[] {
+  const required = Array.isArray(skillMeta.requiredFields)
+    ? (skillMeta.requiredFields as string[])
+    : [];
+  const optional = Array.isArray(skillMeta.optionalFields)
+    ? (skillMeta.optionalFields as string[])
+    : [];
+  const unknown = findUnknownServiceArgKeys(rawServiceArgs, required, optional);
+  if (unknown.length === 0) return [];
+  return [
+    `Unsupported serviceArgs ignored by this skill: ${unknown.join(", ")}. ` +
+      `Supported fields — required: [${required.join(", ") || "none"}]; ` +
+      `optional: [${optional.join(", ") || "none"}]. The skill will NOT act ` +
+      `on the ignored fields; do not promise them to your principal.`,
+  ];
+}
 
 // MCP enum sets — converted from free-text fields per the refactor brief so
 // the model can't invent plausible-but-wrong values for cryptic protocol
@@ -2704,6 +2729,10 @@ export async function createMcpServer(
           args: { providerA2AUrl, taskId: "<from daski_submit_task>" },
         });
       }
+      const freeArgWarnings = unknownServiceArgWarnings(
+        provider.skillMeta,
+        args.serviceArgs,
+      );
       return json({
         kind: "free",
         freeKind: isOpenFree ? "open" : "ownership-gated",
@@ -2715,6 +2744,7 @@ export async function createMcpServer(
         requiresAssetOwnership,
         chainId: deps.config.chainId,
         network: deps.config.network,
+        ...(freeArgWarnings.length > 0 ? { warnings: freeArgWarnings } : {}),
         plan: { steps },
       });
     }
@@ -3079,6 +3109,10 @@ export async function createMcpServer(
       const paymentRequiredB64 = Buffer.from(JSON.stringify(r)).toString(
         "base64",
       );
+      const paidArgWarnings = unknownServiceArgWarnings(
+        provider.skillMeta,
+        args.serviceArgs,
+      );
       return json(
         {
           kind: "paid",
@@ -3089,6 +3123,7 @@ export async function createMcpServer(
           serviceArgs,
           chainId: deps.config.chainId,
           network: deps.config.network,
+          ...(paidArgWarnings.length > 0 ? { warnings: paidArgWarnings } : {}),
           acceptedToken: {
             address: deps.config.usdcAddress,
             name: deps.config.usdcName,

@@ -285,6 +285,34 @@ export function checkPhoneFields(
   return bad ? phoneFormatError(bad) : null;
 }
 
+// Top-level serviceArgs keys that are always legitimate even though no
+// skill lists them: the nested contact containers (hoisted by
+// normalizeContactFields) and cross-skill legacy aliases.
+const SERVICE_ARG_ALIASES = ["years"]; // legacy alias for `term`
+
+/**
+ * Keys in the buyer's raw serviceArgs that no advertised field consumes —
+ * the skill will silently ignore them (observed: an agent passed
+ * `displayName` to create-mailbox and only discovered at delivery that
+ * mailboxes have no display name). Conservative by design: dotted field
+ * names whitelist their container, contact-role containers are always
+ * allowed, and the result feeds a WARNING, never a rejection.
+ */
+export function findUnknownServiceArgKeys(
+  rawArgs: Record<string, unknown> | undefined,
+  requiredFields: readonly string[],
+  optionalFields: readonly string[],
+): string[] {
+  if (!rawArgs) return [];
+  const allowed = new Set<string>([...CONTACT_ROLES, ...SERVICE_ARG_ALIASES]);
+  for (const f of [...requiredFields, ...optionalFields]) {
+    allowed.add(f);
+    const dot = f.indexOf(".");
+    if (dot > 0) allowed.add(f.slice(0, dot));
+  }
+  return Object.keys(rawArgs).filter((k) => !allowed.has(k));
+}
+
 export type ValidateServiceArgsResult =
   | { ok: true; args: Record<string, unknown> }
   | { ok: false; error: McpToolResult };
