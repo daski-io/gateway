@@ -181,9 +181,21 @@ skill — there is no privacy field, so don't promise it.
 9. Poll `daski_get_task_status` every 2–5 seconds with `providerA2AUrl`
    and `taskId` until `status` is `"completed"` or `"failed"`. For
    long-running tasks (domain registration regularly takes 30–120s),
-   pass `stream: true` to subscribe via SSE and receive incremental
-   progress notifications instead of polling. Surface artifacts (e.g.,
-   the registered domain certificate) and messages to the user.
+   pass `stream: true` to subscribe via SSE — but not all providers
+   implement SubscribeToTask; on `streaming_unsupported`, fall back to
+   plain polling as the error instructs. Two poll branches to know:
+   - Some tasks sit in `working` with "pending human review" — the
+     provider is holding them for a human. Keep polling patiently;
+     they complete (or fail) when the review resolves.
+   - `Capability required … TaskAccessAuthorization (action="get")`
+     (rpcCode `-32107`): the provider gates status reads per task. NOT
+     transient — do not re-issue the same poll. Sign the error's
+     `details.data.capabilityChallenge.eip712TypedData` with the buyer
+     wallet and re-call `daski_get_task_status` with
+     `capability: { signature, authorization }` (echo
+     `capabilityChallenge.authorization` verbatim).
+   Surface artifacts (e.g., the registered domain certificate) and
+   messages to the user.
 10. After the task completes, two-call `daski_confirm_delivery`:
     first call WITHOUT `signature` (just `paymentId`, `attester`,
     `confirmation`) returns the EAS Attest typed-data. Wallet signs.

@@ -1837,16 +1837,30 @@ export async function createMcpServer(
           "- You haven't dispatched a task yet — call `daski_submit_task` first.",
           "- The task is already `completed` or `failed` — those are terminal; just read the `artifacts` you already have.",
           "",
-          "Inputs: `providerA2AUrl`, `taskId`; optional `stream` (default `false`); optional `streamingTimeoutMs` (default `120000`, i.e. 2 min).",
+          "Inputs: `providerA2AUrl`, `taskId`; optional `capability` (see below); optional `stream` (default `false`); optional `streamingTimeoutMs` (default `120000`, i.e. 2 min).",
           "Returns: `{ state, artifacts, messages }`. `state` is one of `submitted | working | input-required | completed | failed`. `completed` and `failed` are terminal — stop polling.",
           "Next step:",
           "- `state === 'completed'`: optionally `daski_confirm_delivery`.",
-          "- `state === 'working' | 'submitted'`: poll again after a short delay (5–10 seconds for fast skills, 30+ for slow ones).",
+          "- `state === 'working' | 'submitted'`: poll again after a short delay (5–10 seconds for fast skills, 30+ for slow ones). A task can sit in `working` longer when the provider holds it for human review — keep polling patiently.",
           "- `state === 'input-required'`: call `daski_submit_task` with the missing info and the same `contextId`.",
+          "- `PROVIDER_ERROR` with `rpcCode: -32107` (\"Capability required\"): the provider gates task reads behind a per-task signature. This is NOT transient — the same poll fails identically. The error's `details.data.capabilityChallenge` carries ready-to-sign `eip712TypedData`: sign it with the buyer's agent wallet, then re-call this tool with `capability: { signature, authorization }` where `authorization` echoes `capabilityChallenge.authorization` verbatim.",
         ].join("\n"),
         inputSchema: {
           providerA2AUrl: z.string(),
           taskId: z.string(),
+          capability: z
+            .object({
+              signature: z.string(),
+              authorization: z.record(z.string(), z.unknown()),
+            })
+            .optional()
+            .describe(
+              "TaskAccessAuthorization for providers that gate GetTask " +
+                "(rpcCode -32107). Sign the failed poll's " +
+                "details.data.capabilityChallenge.eip712TypedData with the " +
+                "buyer wallet, pass its hex signature here and echo " +
+                "capabilityChallenge.authorization verbatim.",
+            ),
           stream: z
             .boolean()
             .optional()
@@ -1880,13 +1894,19 @@ export async function createMcpServer(
     async function pollTaskStatus(args: {
       providerA2AUrl: string;
       taskId: string;
+      capability?: { signature: string; authorization: Record<string, unknown> };
     }): Promise<McpToolResult> {
         // A2A v1.0: GetTask (was tasks/get). Provider dual-accepts.
+        // `capability` satisfies task-access-gated providers (-32107);
+        // the challenge to sign rides on the gate's error.data.
         const body = {
           jsonrpc: "2.0",
           id: randomUUID(),
           method: "GetTask",
-          params: { id: args.taskId },
+          params: {
+            id: args.taskId,
+            ...(args.capability ? { capability: args.capability } : {}),
+          },
         };
         type CheckRpc = {
           error?: { code?: number; message?: string; data?: unknown };
