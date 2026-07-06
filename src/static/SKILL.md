@@ -216,6 +216,19 @@ rather than guessing or sending it blank.
      `capabilityChallenge.authorization` verbatim).
    Surface artifacts (e.g., the registered domain certificate) and
    messages to the user.
+   - A third branch for LONG-RUNNING tasks (entity formation and other
+     filings run minutes to weeks): the poll can return
+     `state: "input-required"` with a status message listing exactly
+     which fields were rejected (e.g. an implausible date of birth).
+     Correct it via task input: call `daski_submit_task` with `taskId`
+     set to this task's id and the corrected `serviceArgs` — resend the
+     FULL payload, not just the fixed field (providers persist requests
+     redacted, so partial patches can't be merged with what they kept).
+     The first attempt returns `CAPABILITY_REQUIRED` with a
+     ready-to-sign `capabilityChallenge` (action="input"); sign its
+     `eip712TypedData` with the buyer wallet and re-call with
+     `capability: { signature, authorization }`. The task then resumes
+     — keep polling. No new payment is involved.
 10. After the task completes, two-call `daski_confirm_delivery`:
     first call WITHOUT `signature` (just `paymentId`, `attester`,
     `confirmation`) returns the EAS Attest typed-data. Wallet signs.

@@ -1380,6 +1380,22 @@ export async function createMcpServer(
             "if omitted and returned in the result so the caller can " +
             "thread it through subsequent calls.",
         ),
+      taskId: z
+        .string()
+        .optional()
+        .describe(
+          "Set ONLY to answer an existing task that is parked " +
+            "`input-required` (long-running skills like `form-entity` ask " +
+            "for corrected input this way). Routes this message as TASK " +
+            "INPUT to that task instead of creating a new submission. Put " +
+            "the corrected payload in `serviceArgs` — services with " +
+            "redacted persistence need the FULL payload again, not a " +
+            "delta. The first call returns CAPABILITY_REQUIRED with a " +
+            "ready-to-sign `capabilityChallenge` (action=\"input\"): sign " +
+            "it with the buyer's agent wallet and re-call with " +
+            "`capability: { signature, authorization }`. Do NOT combine " +
+            "with serviceRef/transactionHash/envelopeAuth.",
+        ),
     };
 
     type SubmitTaskArgs = {
@@ -1411,11 +1427,37 @@ export async function createMcpServer(
         };
       };
       contextId?: string;
+      taskId?: string;
     };
 
     const submitTaskHandler = async (
       args: SubmitTaskArgs,
     ): Promise<McpToolResult> => {
+        // Task-input mode: answering an `input-required` task addresses an
+        // EXISTING task. Authentication is the action:"input"
+        // TaskAccessAuthorization (the provider issues a ready-to-sign
+        // challenge on the first attempt), NOT an envelope — and a
+        // serviceRef in the metadata would route the provider away from
+        // its task-input handler. Refuse the mix instead of guessing.
+        if (
+          args.taskId &&
+          (args.serviceRef || args.transactionHash || args.envelopeAuth)
+        ) {
+          return errorJson({
+            code: "BAD_INPUT",
+            message:
+              "taskId marks this call as task input to an existing task — " +
+              "do not combine it with serviceRef/transactionHash/" +
+              "envelopeAuth. Pass providerA2AUrl, skillId, paymentId, " +
+              "chainId, taskId and serviceArgs (the corrected payload); " +
+              "after the CAPABILITY_REQUIRED challenge, add capability.",
+            recoverable: true,
+            next_action:
+              "Re-call with taskId + serviceArgs only (+ capability after " +
+              "signing the returned challenge).",
+          });
+        }
+
         // Envelope-auth is needed for every paid skill and every
         // ownership-/capability-gated free skill. The skill's advertised
         // gating in the discovery cache is the source of truth: agents
@@ -1426,7 +1468,8 @@ export async function createMcpServer(
         // ENVELOPE_AUTH_REQUIRED. The paymentId heuristic ("0"/empty =
         // open free skill) survives only as the fallback for endpoints or
         // skills the cache hasn't seen. A paid execution (serviceRef +
-        // transactionHash) always authenticates.
+        // transactionHash) always authenticates. Task input (taskId set)
+        // never does — the capability is the credential.
         const cachedSkillMeta = findSkillMetaByA2AUrl(
           deps.cache,
           args.providerA2AUrl,
@@ -1437,8 +1480,9 @@ export async function createMcpServer(
           ("paymentRequired" in cachedSkillMeta ||
             "requiresAssetOwnership" in cachedSkillMeta ||
             "requiresCapability" in cachedSkillMeta);
-        const requiresEnvelopeAuth =
-          args.serviceRef !== undefined && args.transactionHash !== undefined
+        const requiresEnvelopeAuth = args.taskId
+          ? false
+          : args.serviceRef !== undefined && args.transactionHash !== undefined
             ? true
             : cachedSkillMeta !== null && metaDeclaresGating
               ? cachedSkillMeta.paymentRequired === true ||
@@ -1553,6 +1597,9 @@ export async function createMcpServer(
         };
         if (args.serviceRef) meta.serviceRef = args.serviceRef;
         if (args.transactionHash) meta.transactionHash = args.transactionHash;
+        // Task-input routing: providers dispatch on metadata.taskId (with
+        // no serviceRef) to their task-input handler.
+        if (args.taskId) meta.taskId = args.taskId;
         if (args.capability) meta.capability = args.capability;
         if (args.envelopeAuth) meta.envelopeAuth = args.envelopeAuth;
 
@@ -1744,6 +1791,7 @@ export async function createMcpServer(
           "- FREE ownership-/capability-gated skills (`get-domain-info`, `list/set/delete-dns-record`, `get-mailbox-info`, `change-password`, `delete-mailbox`, `transfer-domain-out`, ...) — same two-call envelope handshake as paid skills; pass the ORIGINAL asset purchase's `paymentId` plus `buyerTokenId` or `walletAddress`. (`daski_buy_service` also emits a ready-made step-by-step plan for these.)",
           "- After `daski_buy_service` settled a payment — dispatch the actual task using the returned `serviceRef` and `transactionHash`.",
           "- Continuing a multi-turn A2A conversation — pass the `contextId` from the previous turn.",
+          "- An existing long-running task went `input-required` (it asked for corrected input, e.g. an entity filing rejecting a field) — pass `taskId` + the corrected `serviceArgs` (see Inputs).",
           "",
           "When NOT to use:",
           "- You are starting a paid purchase — use `daski_buy_service` first; it returns the `serviceRef` and `transactionHash` you'll need here.",
@@ -1753,6 +1801,7 @@ export async function createMcpServer(
           "- Open free skill: `skillId`, `providerA2AUrl`, `chainId`, `paymentId: \"0\"`, `serviceArgs`.",
           "- Gated skill (paid or free), first call (no signature): `skillId`, `providerA2AUrl`, `chainId`, `paymentId`, `buyerTokenId` (or `walletAddress`), `serviceArgs`; paid skills additionally `serviceRef` + `transactionHash`. Returns the envelope-auth typed-data to sign.",
           "- Gated skill, signed retry: the same inputs plus `envelopeAuth: { signature, authorization }` and the matching `messageId` from the first call.",
+          "- Task input (answering `input-required` on an existing task): `skillId`, `providerA2AUrl`, `chainId`, `paymentId`, `taskId`, `serviceArgs` — the FULL corrected payload, not a delta (providers persist requests redacted, so a delta can't be merged; the task's status message says exactly which fields were rejected). NO serviceRef/transactionHash/envelopeAuth. The first call returns a PROVIDER_ERROR with `details.data.capabilityChallenge` (ready-to-sign, action=\"input\"): sign its `eip712TypedData` with the buyer's agent wallet, then re-call the same inputs plus `capability: { signature, authorization }` (echo `capabilityChallenge.authorization` verbatim).",
           "",
           "Returns:",
           "- First call on a gated skill: `{ eip712TypedData, authorization, messageId, hint }`. Sign `eip712TypedData` with the buyer's agent wallet, then call again with `envelopeAuth: { signature, authorization }` and the SAME `messageId`.",
@@ -1762,7 +1811,8 @@ export async function createMcpServer(
           "Next step:",
           "- `state === 'completed'`: read `artifacts`, then optionally `daski_confirm_delivery`.",
           "- `state === 'working' | 'submitted'`: poll with `daski_get_task_status`.",
-          "- `state === 'input-required'`: call this tool again with the additional info and the SAME `contextId` (for capability challenges: signed `capability` + the bundled fresh envelope).",
+          "- `state === 'input-required'` WITH a `capability_challenge` artifact: sign the capability + the bundled fresh envelope, resubmit with the same `contextId` (capability-gated skill, two-call pattern).",
+          "- `state === 'input-required'` WITHOUT a `capability_challenge` artifact (a long-running task asking for corrected input): re-call with `taskId` set to the returned taskId and the FULL corrected `serviceArgs`; expect one CAPABILITY_REQUIRED round-trip (see Inputs, task input).",
           "- `state === 'failed'`: read `statusMessage`, optionally `daski_confirm_delivery` with `confirmation: 'NotConfirmed'`.",
           "- On PROVIDER_TIMEOUT or a provider-side error AFTER you submitted a signed envelope: the envelope may already be consumed. Never re-send the same messageId/envelope (ENVELOPE_REPLAY). Confirm actual state with a read-only skill first; if you must retry, start from a fresh first call (new messageId).",
         ].join("\n"),
@@ -1867,7 +1917,7 @@ export async function createMcpServer(
           "Next step:",
           "- `state === 'completed'`: optionally `daski_confirm_delivery`.",
           "- `state === 'working' | 'submitted'`: poll again after a short delay (5–10 seconds for fast skills, 30+ for slow ones). A task can sit in `working` longer when the provider holds it for human review — keep polling patiently.",
-          "- `state === 'input-required'`: call `daski_submit_task` with the missing info and the same `contextId`.",
+          "- `state === 'input-required'`: the task is asking for corrected/additional input — the status message lists exactly what was rejected. Call `daski_submit_task` with `taskId` set to THIS task's id and the corrected `serviceArgs` (resend the FULL payload, not a delta — providers persist requests redacted and cannot merge partials). Expect one CAPABILITY_REQUIRED round-trip: sign the returned `capabilityChallenge.eip712TypedData` (action=\"input\") with the buyer wallet and re-call with `capability`.",
           "- `PROVIDER_ERROR` with `rpcCode: -32107` (\"Capability required\"): the provider gates task reads behind a per-task signature. This is NOT transient — the same poll fails identically. The error's `details.data.capabilityChallenge` carries ready-to-sign `eip712TypedData`: sign it with the buyer's agent wallet, then re-call this tool with `capability: { signature, authorization }` where `authorization` echoes `capabilityChallenge.authorization` verbatim.",
         ].join("\n"),
         inputSchema: {

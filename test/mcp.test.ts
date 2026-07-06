@@ -1037,6 +1037,69 @@ describe("hosted MCP — wallet-agnostic surface", () => {
     }
   });
 
+  it("daski_submit_task task-input mode (taskId set) skips the envelope handshake and forwards metadata.taskId", async () => {
+    // Answering an input-required task authenticates via the provider's
+    // action:"input" TaskAccessAuthorization challenge, NOT an envelope —
+    // even on a paid skill that would normally get the envelope first-call.
+    const { client, transport } = await connectClient(gateway.baseUrl);
+    try {
+      const body = parseResult<{ taskId: string; state: string }>(
+        await client.callTool({
+          name: "daski_submit_task",
+          arguments: {
+            providerA2AUrl: gateway.mockProvider.baseUrl + "/a2a",
+            skillId: "register-domain",
+            paymentId: "42",
+            chainId: 84532,
+            taskId: "task-parked-1",
+            serviceArgs: { domain: "corrected.xyz" },
+          },
+        }),
+      );
+      // No envelope typed-data — the call went straight to the provider.
+      expect(body.taskId).toBeDefined();
+      const sent = gateway.mockProvider.getLastSendBody();
+      expect(sent).not.toBeNull();
+      const params = sent!.params as {
+        message: { metadata: Record<string, Record<string, unknown>> };
+      };
+      const meta = Object.values(params.message.metadata)[0]!;
+      expect(meta.taskId).toBe("task-parked-1");
+      expect(meta.serviceRef).toBeUndefined();
+      expect(meta.envelopeAuth).toBeUndefined();
+    } finally {
+      await transport.close();
+    }
+  });
+
+  it("daski_submit_task rejects taskId combined with serviceRef", async () => {
+    const { client, transport } = await connectClient(gateway.baseUrl);
+    try {
+      const result = await client.callTool({
+        name: "daski_submit_task",
+        arguments: {
+          providerA2AUrl: gateway.mockProvider.baseUrl + "/a2a",
+          skillId: "register-domain",
+          paymentId: "42",
+          chainId: 84532,
+          taskId: "task-parked-1",
+          serviceRef: "0x" + "ab".repeat(32),
+          transactionHash: "0x" + "cd".repeat(32),
+          serviceArgs: { domain: "corrected.xyz" },
+        },
+      });
+      const r = result as ToolResultContent;
+      expect(r.isError).toBe(true);
+      const err = JSON.parse(
+        (r.content[0]! as { type: "text"; text: string }).text,
+      );
+      expect(err.code).toBe("BAD_INPUT");
+      expect(err.message).toMatch(/task input/i);
+    } finally {
+      await transport.close();
+    }
+  });
+
   it("daski_submit_task first call without buyerTokenId returns BAD_INPUT", async () => {
     const { client, transport } = await connectClient(gateway.baseUrl);
     try {

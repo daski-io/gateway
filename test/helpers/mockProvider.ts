@@ -73,6 +73,10 @@ export interface MockProviderHandle {
     domain: string,
     outcome: { domain: string; available: boolean; price?: number; currency?: string },
   ): void;
+  /// The JSON-RPC body of the last message/send (SendMessage) request the
+  /// mock received — lets tests assert what the gateway forwarded
+  /// (e.g. metadata.taskId routing for task input).
+  getLastSendBody(): Record<string, unknown> | null;
   close(): Promise<void>;
 }
 
@@ -102,6 +106,7 @@ export async function startMockProvider(
     };
 
   let shouldHang = false;
+  let lastSendBody: Record<string, unknown> | null = null;
   let nextA2AError: { code: number; message: string; data?: unknown } | null =
     null;
   let syncResult: {
@@ -203,6 +208,7 @@ export async function startMockProvider(
       return;
     }
     if (body?.method === "message/send" || body?.method === "SendMessage") {
+      lastSendBody = body as Record<string, unknown>;
       // Synchronous-completion path (mirrors real provider's open-free
       // skill handler): when configured, the mock returns a fully
       // terminal task with artifacts inline on this single call. Tests
@@ -274,6 +280,9 @@ export async function startMockProvider(
     },
     setAvailabilityOutcome(domain, outcome) {
       availabilityOutcomes.set(domain, outcome);
+    },
+    getLastSendBody() {
+      return lastSendBody;
     },
     async close() {
       await new Promise<void>((resolve, reject) => {
