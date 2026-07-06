@@ -1788,6 +1788,7 @@ export async function createMcpServer(
           "",
           "When to use:",
           "- OPEN free skills like `check-availability`, `get-pricing` (pass `paymentId: \"0\"`, omit `envelopeAuth` — no handshake, completes synchronously).",
+          "  For entity-formation `get-pricing`, work in two steps: `country` + `state` (2-letter code) lists that state's (entityType, product) combinations with prices; repeat with `entityType` + `product` added for the full `requiredFields` contract. `entityType` must be the full label from the combinations list (e.g. 'Limited Liability Company', never 'LLC'). Keep the filters narrow — country-wide calls return very large responses.",
           "- FREE ownership-/capability-gated skills (`get-domain-info`, `list/set/delete-dns-record`, `get-mailbox-info`, `change-password`, `delete-mailbox`, `transfer-domain-out`, ...) — same two-call envelope handshake as paid skills; pass the ORIGINAL asset purchase's `paymentId` plus `buyerTokenId` or `walletAddress`. (`daski_buy_service` also emits a ready-made step-by-step plan for these.)",
           "- After `daski_buy_service` settled a payment — dispatch the actual task using the returned `serviceRef` and `transactionHash`.",
           "- Continuing a multi-turn A2A conversation — pass the `contextId` from the previous turn.",

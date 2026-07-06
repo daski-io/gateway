@@ -145,6 +145,37 @@ slot before calling `daski_buy_service`:
 If any field is genuinely not applicable, ask the principal how to fill it
 rather than guessing or sending it blank.
 
+**form-entity (entity formation): collect everything BEFORE the first
+purchase call.** Ask your principal in ONE message for all of it, and file
+EXACTLY the parties they authorize — never add, drop, or substitute
+members/managers on your own judgment (if a party gives you pause, raise it
+with your principal before paying):
+
+- a durable **contact email** — every lifecycle notice (progress,
+  corrections, compliance reminders) lands there for the life of the entity
+- the **contact person**: full legal name, phone (E.164, no separators),
+  date of birth (`YYYY-MM-DD` — used only for sanctions screening, never
+  published), and full address `{ line1, city, state, postalCode, country }`
+- the **company principal address** and **mailing address** (often the same)
+- the **management structure** — for LLCs pass exactly `"Member Managed"`
+  or `"Manager Managed"`, plus the matching `members[]` or `managers[]`
+- **every member/manager/officer**: natural persons as
+  `{ firstName, lastName, dob, address }`; company parties as
+  `{ isCompany: true, companyName }` (companies have no DOB)
+- the **state** as a 2-letter code (`"WY"`, not `"Wyoming"`) and the
+  **entityType** as the full catalog label (`"Limited Liability Company"`,
+  not `"LLC"`) — get both from `get-pricing`: call it with
+  `country` + `state` to list that state's (entityType, product)
+  combinations and prices, then repeat with `entityType` + `product` added
+  for the full `requiredFields` contract (including the state's `formData`
+  shape). Narrow your filters — broad, country-wide pricing calls return
+  very large responses.
+
+Formation is long-running: after payment the task stays `working` through
+state processing (minutes to weeks) and may go `input-required` with a
+message naming the exact fields to correct — see the correction branch in
+step 9 below.
+
 1. Use the wallet address you resolved at the start (see "Wallet tools:
    resolve once" above). Remember it — every signature in this flow comes
    from that same wallet.
