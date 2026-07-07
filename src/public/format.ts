@@ -677,9 +677,27 @@ export interface PublicActivityRow {
   txHash: Hex;
   buyerAgentId: string;
   providerAgentId: string;
-  /** Resolved from the discovery cache; null if the provider has been
-   *  deregistered or removed from the whitelist since this row landed. */
+  /** Provider's primary Agent Card name. NOTE: for a multi-service
+   *  provider this is the headline/primary card, NOT the specific service
+   *  bought — use `serviceName` for the actual offering. Null if the
+   *  provider was deregistered or removed from the whitelist since this
+   *  row landed. */
   providerName: string | null;
+  /**
+   * The specific service this purchase settled against, resolved from the
+   * provider's service catalog by the row's on-chain `serviceId` (falling
+   * back to `serviceSlug`). A provider may offer several services; this
+   * names the one actually bought. Null when the service is no longer in
+   * the discovery cache or the row predates service-identity tracking.
+   */
+  serviceName: string | null;
+  /** Slug of the purchased service — stable id within the provider, pairs
+   *  with `providerAgentId` to deep-link the service page. Null for
+   *  chain-only rows with no resolvable service. */
+  serviceSlug: string | null;
+  /** 32-byte on-chain serviceId of the purchased service; null when the
+   *  row carries the all-zero sentinel (no recorded serviceId). */
+  serviceId: Hex | null;
   /**
    * Display name resolved from the buyer's ERC-8004 IdentityRegistry
    * tokenURI metadata (`metadata.name`). Null when the buyer's NFT has no
@@ -731,6 +749,10 @@ export interface PublicActivityRow {
 function atomicToUsdc(atomic: string | number | bigint): string {
   return (Number(atomic) / 1_000_000).toFixed(2);
 }
+
+/** All-zero 32-byte serviceId sentinel — chain_events / challenge rows with
+ *  no recorded serviceId carry this; surfaced as null on public rows. */
+const ZERO_SERVICE_ID = ("0x" + "00".repeat(32)) as Hex;
 
 function asString(v: unknown): string | null {
   return typeof v === "string" ? v : null;
@@ -985,6 +1007,7 @@ export function formatServiceForPublic(
 export function formatChainActivityRow(
   row: import("../db/queries.js").ChainActivityRow,
   providerName: string | null,
+  serviceName: string | null,
   buyerName: string | null,
 ): PublicActivityRow {
   const outcomeLabels: readonly TransactionOutcome[] = [
@@ -1002,6 +1025,10 @@ export function formatChainActivityRow(
     buyerAgentId: row.buyerAgentId.toString(),
     providerAgentId: row.providerAgentId.toString(),
     providerName,
+    serviceName,
+    serviceSlug: row.serviceSlug,
+    serviceId:
+      row.serviceId && row.serviceId !== ZERO_SERVICE_ID ? row.serviceId : null,
     buyerName,
     amount: atomicToUsdc(row.amountAtomic),
     skillId: row.skillId,
@@ -1029,6 +1056,14 @@ export function formatActivityRow(
     buyerAgentId: challenge.buyerTokenId.toString(),
     providerAgentId: challenge.providerTokenId.toString(),
     providerName,
+    // Legacy accessor (no discovery-cache access here); the chain-events
+    // path in formatChainActivityRow is what resolves these for real.
+    serviceName: null,
+    serviceSlug: challenge.serviceSlug || null,
+    serviceId:
+      challenge.serviceId && challenge.serviceId !== ZERO_SERVICE_ID
+        ? challenge.serviceId
+        : null,
     buyerName,
     amount: atomicToUsdc(challenge.amount),
     skillId: challenge.skillId,

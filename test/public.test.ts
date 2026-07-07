@@ -775,6 +775,53 @@ describe("public v1 — /activity", () => {
     expect(body.activity[0].confirmationAttestationUid).toBeNull();
   });
 
+  it("resolves the purchased service (name/slug/id) per activity row", async () => {
+    // Provider with an explicit serviceSlug in skill metadata, so
+    // derivePrimaryServiceId yields the same serviceId we bake into the
+    // seeded row — mirrors how a real purchase records its service. This is
+    // the fix for the activity feed collapsing every row to the provider's
+    // primary service name regardless of what was actually bought.
+    gateway.registerProvider({
+      tokenId: 9n,
+      name: "Blue T Services",
+      priceUsdcSmallest: "5000000",
+      category: "email",
+      skills: [
+        {
+          id: "create-mailbox",
+          metadata: {
+            paymentRequired: true,
+            baseAmount: "5000000",
+            serviceSlug: "mailboxes",
+          },
+        },
+      ],
+    });
+    await gateway.refresh();
+
+    const serviceId = computeServiceId(9n, "mailboxes", "1");
+    const txHash = ("0x" + "a2".repeat(32)) as Hex;
+    await seedPaid(gateway, {
+      serviceRef: ("0x" + "a1".repeat(32)) as Hex,
+      providerAgentId: 9n,
+      buyerAgentId: 7n,
+      amountAtomic: 5_000_000n,
+      skillId: "create-mailbox",
+      paymentId: 250n,
+      txHash,
+      serviceId,
+      serviceSlug: "mailboxes",
+    });
+
+    const res = await fetch(`${gateway.baseUrl}/public/v1/activity`);
+    const body = (await res.json()) as any;
+    const row = body.activity.find((r: any) => r.txHash === txHash);
+    expect(row).toBeDefined();
+    expect(row.serviceName).toBe("Blue T Services");
+    expect(row.serviceSlug).toBe("mailboxes");
+    expect(String(row.serviceId).toLowerCase()).toBe(serviceId.toLowerCase());
+  });
+
   it("resolves buyerName from the buyer's IdentityRegistry tokenURI metadata on activity rows", async () => {
     // Same resolution contract as recentPurchases — one buyer has a
     // readable name, the other has no agentURI and degrades to null.
@@ -992,6 +1039,7 @@ describe("public v1 — /stats", () => {
     });
     expect(body.marketplace).toEqual({
       providerCount: 1,
+      serviceCount: 1,
       paidCount: 1,
       totalVolumeUsdc: "12.00",
     });
@@ -1007,6 +1055,7 @@ describe("public v1 — /stats", () => {
     const body = (await res.json()) as any;
     expect(body.marketplace).toEqual({
       providerCount: 1,
+      serviceCount: 1,
       paidCount: 0,
       totalVolumeUsdc: "0.00",
     });

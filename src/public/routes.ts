@@ -759,6 +759,45 @@ async function loadEnrichmentFor(
   );
 }
 
+/**
+ * Build a `(providerAgentId, serviceId|serviceSlug) → service name` resolver
+ * from the discovery cache. A multi-service provider lists one service per
+ * Agent Card, so an activity/buyer row can be labeled with the exact service
+ * purchased instead of the provider's primary card. Keyed primarily by the
+ * on-chain `serviceId` (the canonical settlement key the X402Adapter binds
+ * the EIP-3009 nonce to), with an `(agentId, serviceSlug)` fallback for rows
+ * whose serviceId wasn't recorded. Built once per request — the cache is a
+ * few entries, so the maps are cheap.
+ */
+function buildServiceNameResolver(
+  cache: DiscoveryCache,
+): (
+  providerAgentId: bigint,
+  serviceId: Hex | null,
+  serviceSlug: string | null,
+) => string | null {
+  const byServiceId = new Map<string, string>();
+  const bySlug = new Map<string, string>();
+  for (const provider of cache.getAll()) {
+    const aid = provider.agentId.toString();
+    for (const svc of formatServicesForPublic(provider)) {
+      if (svc.serviceId) byServiceId.set(svc.serviceId.toLowerCase(), svc.name);
+      if (svc.serviceSlug) bySlug.set(`${aid}:${svc.serviceSlug}`, svc.name);
+    }
+  }
+  return (providerAgentId, serviceId, serviceSlug) => {
+    if (serviceId && serviceId !== ZERO_HEX) {
+      const hit = byServiceId.get(serviceId.toLowerCase());
+      if (hit) return hit;
+    }
+    if (serviceSlug) {
+      const hit = bySlug.get(`${providerAgentId.toString()}:${serviceSlug}`);
+      if (hit) return hit;
+    }
+    return null;
+  };
+}
+
 function parseLimit(raw: unknown, fallback: number, cap: number): number {
   if (raw === undefined) return fallback;
   if (typeof raw !== "string") return fallback;
@@ -942,6 +981,9 @@ export function createPublicRouter(deps: PublicRouterDeps): Router {
         formatChainActivityRow(
           r,
           formatted.name,
+          // Every row here is scoped to the selected service, so its name
+          // labels all of them — no per-row resolution needed.
+          formatted.name,
           buyerNames[i] ?? null,
         ),
       );
@@ -1005,6 +1047,8 @@ export function createPublicRouter(deps: PublicRouterDeps): Router {
       );
     }
 
+    const resolveServiceName = buildServiceNameResolver(cache);
+
     const buyerNames = await mapWithLimit(
       rows,
       BUYER_NAME_FETCH_CONCURRENCY,
@@ -1015,6 +1059,7 @@ export function createPublicRouter(deps: PublicRouterDeps): Router {
         formatChainActivityRow(
           r,
           nameByAgentId.get(r.providerAgentId.toString()) ?? null,
+          resolveServiceName(r.providerAgentId, r.serviceId, r.serviceSlug),
           buyerNames[i] ?? null,
         ),
       ),
@@ -1024,6 +1069,14 @@ export function createPublicRouter(deps: PublicRouterDeps): Router {
   router.get("/public/v1/stats", async (_req: Request, res: Response) => {
     const blockNumber = await blockCache.get();
     const agg = await queries.getPaidAggregate();
+    // Distinct providers vs. distinct services: a provider may list several
+    // services (one per Agent Card), so serviceCount ≥ providerCount. The
+    // marketing site's "services available" tile wants the latter.
+    const providers = cache.getAll();
+    let serviceCount = 0;
+    for (const provider of providers) {
+      serviceCount += formatServicesForPublic(provider).length;
+    }
     res.json({
       chain: {
         chainId: config.chainId,
@@ -1031,7 +1084,8 @@ export function createPublicRouter(deps: PublicRouterDeps): Router {
         blockNumber: blockNumber.toString(),
       },
       marketplace: {
-        providerCount: cache.getAll().length,
+        providerCount: providers.length,
+        serviceCount,
         paidCount: agg.count,
         totalVolumeUsdc: (Number(agg.totalAtomic) / 1_000_000).toFixed(2),
       },
@@ -1102,6 +1156,7 @@ export function createPublicRouter(deps: PublicRouterDeps): Router {
         buyerProfileCache.get(agentId),
         buyerIdentityCache.get(agentId),
       ]);
+      const resolveServiceName = buildServiceNameResolver(cache);
       const recentPurchases = profile.recentPurchases.map((r) =>
         formatChainActivityRow(
           r,
@@ -1113,6 +1168,9 @@ export function createPublicRouter(deps: PublicRouterDeps): Router {
               ? extractAgentCardName(provider.agentCard)
               : null;
           })(),
+          // A buyer's purchases can span multiple services/providers, so
+          // resolve each row's service by its own serviceId/slug.
+          resolveServiceName(r.providerAgentId, r.serviceId, r.serviceSlug),
           identity?.name ?? null,
         ),
       );
