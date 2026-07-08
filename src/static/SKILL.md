@@ -151,14 +151,22 @@ EXACTLY the parties they authorize — never add, drop, or substitute
 members/managers on your own judgment (if a party gives you pause, raise it
 with your principal before paying):
 
-- a durable **contact email** — every lifecycle notice (progress,
-  corrections, compliance reminders) lands there for the life of the entity
+- a durable **contact email** (REQUIRED — the quote will not validate
+  without `contactEmail`) — every lifecycle notice lands there for the
+  life of the entity. Include it explicitly in your single upfront ask;
+  do not defer it, or you'll force a second roundtrip right before payment.
 - the **contact person**: full legal name, phone (E.164, no separators),
   date of birth (`YYYY-MM-DD` — used only for sanctions screening, never
   published), and full address `{ line1, city, state, postalCode, country }`
 - the **company principal address** and **mailing address** (often the same)
-- the **management structure** — for LLCs pass exactly `"Member Managed"`
-  or `"Manager Managed"`, plus the matching `members[]` or `managers[]`
+- the **management structure** — pass `managementType` as a TOP-LEVEL
+  field in `serviceArgs` (a sibling of `companyName`/`contactEmail`, NOT
+  nested under any `officialsByClassification`/`officials` wrapper), value
+  EXACTLY `"Member Managed"` or `"Manager Managed"` (title-case with a
+  space — never `"member-managed"`, `"Member-Managed"`, or `"LLC"`). Put
+  the matching `members[]` or `managers[]` at the same top level. There is
+  no `officialsByClassification` container — inventing one gets those
+  fields silently ignored and then rejected as missing.
 - **every member/manager/officer**: natural persons as
   `{ firstName, lastName, dob, address }`; company parties as
   `{ isCompany: true, companyName }` (companies have no DOB)
@@ -170,6 +178,25 @@ with your principal before paying):
   for the full `requiredFields` contract (including the state's `formData`
   shape). Narrow your filters — broad, country-wide pricing calls return
   very large responses.
+
+A ready-to-fill `serviceArgs` skeleton — `managementType`/`members`/
+`managers` are TOP-LEVEL siblings (there is NO `officialsByClassification`
+wrapper); company parties are `{ isCompany: true, companyName }`:
+
+```
+serviceArgs = {
+  country: "US",
+  state: "WY",
+  entityType: "Limited Liability Company",
+  companyName,
+  contactEmail,
+  contactPerson: { firstName, lastName, phone, dob,
+    address: { line1, city, state_province_region, zip_postal_code, country } },
+  formData: { company_mailing_address: {...}, company_principal_address: {...} },
+  managementType: "Member Managed",
+  members: [ { firstName, lastName, dob, isCompany: false, address: {...} } ]
+}
+```
 
 Formation is long-running: after payment the task stays `working` through
 state processing (minutes to weeks) and may go `input-required` with a

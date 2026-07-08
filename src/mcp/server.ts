@@ -1801,7 +1801,7 @@ export async function createMcpServer(
           "Inputs:",
           "- Open free skill: `skillId`, `providerA2AUrl`, `chainId`, `paymentId: \"0\"`, `serviceArgs`.",
           "- Gated skill (paid or free), first call (no signature): `skillId`, `providerA2AUrl`, `chainId`, `paymentId`, `buyerTokenId` (or `walletAddress`), `serviceArgs`; paid skills additionally `serviceRef` + `transactionHash`. Returns the envelope-auth typed-data to sign.",
-          "- Gated skill, signed retry: the same inputs plus `envelopeAuth: { signature, authorization }` and the matching `messageId` from the first call.",
+          "- Gated skill, signed retry: the SAME inputs (INCLUDING `serviceRef` + `transactionHash` for paid skills — do NOT drop them on the retry) plus `envelopeAuth: { signature, authorization }` and the matching `messageId`. Omitting serviceRef/transactionHash on a paid skill returns PROVIDER_ERROR 'must be called through the paid path'.",
           "- Task input (answering `input-required` on an existing task): `skillId`, `providerA2AUrl`, `chainId`, `paymentId`, `taskId`, `serviceArgs` — the FULL corrected payload, not a delta (providers persist requests redacted, so a delta can't be merged; the task's status message says exactly which fields were rejected). NO serviceRef/transactionHash/envelopeAuth. The first call returns a PROVIDER_ERROR with `details.data.capabilityChallenge` (ready-to-sign, action=\"input\"): sign its `eip712TypedData` with the buyer's agent wallet, then re-call the same inputs plus `capability: { signature, authorization }` (echo `capabilityChallenge.authorization` verbatim).",
           "",
           "Returns:",
@@ -2939,11 +2939,28 @@ export async function createMcpServer(
         }
         const quoteJson = post.body;
         if (!quoteJson.ok) {
+          // Surface the same "unsupported serviceArgs ignored" hint the
+          // success path emits (below), but on the FIRST rejection: a wrapper
+          // like officialsByClassification is discarded here too, so naming it
+          // now stops the agent re-sending the same nested shape after it has
+          // only fixed casing.
+          const ignoredArgWarnings = unknownServiceArgWarnings(
+            provider.skillMeta,
+            args.serviceArgs,
+          );
           return errorJson({
             code: "quote_validation_failed",
             message:
+              (ignoredArgWarnings.length > 0
+                ? `${ignoredArgWarnings.join(" ")} `
+                : "") +
               "Provider rejected the requested args. Fix the listed errors and retry.",
-            details: { validationErrors: quoteJson.errors ?? [] },
+            details: {
+              validationErrors: quoteJson.errors ?? [],
+              ...(ignoredArgWarnings.length > 0
+                ? { warnings: ignoredArgWarnings }
+                : {}),
+            },
             recoverable: true,
             next_action:
               "Fix the listed validationErrors in serviceArgs and retry daski_buy_service.",
