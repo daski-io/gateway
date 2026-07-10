@@ -10,9 +10,9 @@ import type { Hex } from "../types.js";
 // Sepolia gas is negligible.
 //
 // `buildBuyerAgentURI` accepts an optional display name; callers that have
-// no name fall back to the wallet-derived `buyer-<last6>` slug via
-// `defaultBuyerAgentURI`. Names are NOT validated/sanitized here — pass
-// pre-sanitized values from `sanitizeBuyerName`.
+// no name fall back to the wallet-derived `buyer-<last6>` slug. Names are
+// NOT validated/sanitized here — pass pre-sanitized values from
+// `sanitizeBuyerName`.
 export function buildBuyerAgentURI(
   walletAddress: Hex,
   name?: string,
@@ -27,10 +27,6 @@ export function buildBuyerAgentURI(
   };
   const b64 = Buffer.from(JSON.stringify(card)).toString("base64");
   return `data:application/json;base64,${b64}`;
-}
-
-export function defaultBuyerAgentURI(walletAddress: Hex): string {
-  return buildBuyerAgentURI(walletAddress);
 }
 
 // Wallet-derived default name. Callers that need to surface "the name we

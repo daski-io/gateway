@@ -561,6 +561,162 @@ describe("hosted MCP — wallet-agnostic surface", () => {
     }
   });
 
+  it("daski_buy_service atomic: no name → wallet-derived default + how-to-name hint", async () => {
+    const fresh = "0xabcd000000000000000000000000000000aa39aa" as Hex;
+    const { client, transport } = await connectClient(gateway.baseUrl);
+    try {
+      const body = parseResult<{
+        atomic: boolean;
+        registrationPrep: {
+          agentURI: string;
+          resolvedName: string;
+          hint?: string;
+        };
+        plan: { steps: Array<{ toolName: string; hint: string }> };
+      }>(
+        await client.callTool({
+          name: "daski_buy_service",
+          arguments: {
+            skillId: "register-domain",
+            providerTokenId: "2",
+            walletAddress: fresh,
+            serviceArgs: { domain: "atomic.xyz" },
+          },
+        }),
+      );
+
+      expect(body.atomic).toBe(true);
+      expect(body.registrationPrep.resolvedName).toBe("buyer-aa39aa");
+      // The hint fires exactly where the default is applied, and tells the
+      // agent to pick a name itself via re-call before signing.
+      expect(body.registrationPrep.hint).toContain("`name`");
+      expect(body.registrationPrep.hint).toContain("buyer-aa39aa");
+      // The registration sign step repeats the nudge so it survives even
+      // if the agent only reads the plan.
+      const regSign = body.plan.steps.find(
+        (s) =>
+          s.toolName === "<your-wallet>.signTypedData" &&
+          s.hint.includes("registrationPrep"),
+      );
+      expect(regSign).toBeDefined();
+      expect(regSign!.hint).toContain("buyer-aa39aa");
+      expect(regSign!.hint).toContain("`name`");
+    } finally {
+      await transport.close();
+    }
+  });
+
+  it("daski_buy_service atomic: `name` is baked into the signed registration agentURI", async () => {
+    const fresh = "0xabcd000000000000000000000000000000000004" as Hex;
+    const { client, transport } = await connectClient(gateway.baseUrl);
+    try {
+      const body = parseResult<{
+        atomic: boolean;
+        registrationPrep: {
+          agentURI: string;
+          resolvedName: string;
+          hint?: string;
+          eip712TypedData: { message: Record<string, string> };
+          submitTemplate: { agentURI: string };
+        };
+        plan: { steps: Array<{ toolName: string; hint: string }> };
+      }>(
+        await client.callTool({
+          name: "daski_buy_service",
+          arguments: {
+            skillId: "register-domain",
+            providerTokenId: "2",
+            walletAddress: fresh,
+            name: "  Acme Procurement Bot ",
+            serviceArgs: { domain: "atomic.xyz" },
+          },
+        }),
+      );
+
+      expect(body.atomic).toBe(true);
+      // Trimmed by sanitizeBuyerName, echoed so the agent can show it.
+      expect(body.registrationPrep.resolvedName).toBe("Acme Procurement Bot");
+      // Named registration needs no how-to-name hint.
+      expect(body.registrationPrep.hint).toBeUndefined();
+      // The name must live inside the agentURI the wallet actually signs —
+      // decode the data: URI and check the embedded buyer card.
+      const uri = body.registrationPrep.agentURI;
+      expect(body.registrationPrep.eip712TypedData.message.agentURI).toBe(uri);
+      expect(body.registrationPrep.submitTemplate.agentURI).toBe(uri);
+      const b64 = uri.replace("data:application/json;base64,", "");
+      const card = JSON.parse(Buffer.from(b64, "base64").toString("utf8"));
+      expect(card.name).toBe("Acme Procurement Bot");
+      expect(card.wallet).toBe(fresh.toLowerCase());
+      // The registration sign step confirms the chosen name.
+      const regSign = body.plan.steps.find(
+        (s) =>
+          s.toolName === "<your-wallet>.signTypedData" &&
+          s.hint.includes("registrationPrep"),
+      );
+      expect(regSign!.hint).toContain("Acme Procurement Bot");
+    } finally {
+      await transport.close();
+    }
+  });
+
+  it("daski_buy_service rejects an invalid `name` before quoting", async () => {
+    const fresh = "0xabcd000000000000000000000000000000000005" as Hex;
+    const { client, transport } = await connectClient(gateway.baseUrl);
+    try {
+      const result = await client.callTool({
+        name: "daski_buy_service",
+        arguments: {
+          skillId: "register-domain",
+          providerTokenId: "2",
+          walletAddress: fresh,
+          name: "x".repeat(65),
+          serviceArgs: { domain: "atomic.xyz" },
+        },
+      });
+      const r = result as ToolResultContent;
+      expect(r.isError).toBe(true);
+      const err = JSON.parse(r.content[0]!.text);
+      expect(err.code).toBe("BAD_INPUT");
+      expect(err.message).toContain("name");
+      expect(err.recoverable).toBe(true);
+    } finally {
+      await transport.close();
+    }
+  });
+
+  it("daski_buy_service warns when `name` is passed for an already-registered wallet", async () => {
+    gateway.mockChain.setAgentOfWallet(gateway.buyerAddress, 5n);
+    const { client, transport } = await connectClient(gateway.baseUrl);
+    try {
+      const body = parseResult<{
+        atomic: boolean;
+        registrationPrep: unknown;
+        warnings?: string[];
+      }>(
+        await client.callTool({
+          name: "daski_buy_service",
+          arguments: {
+            skillId: "register-domain",
+            providerTokenId: "2",
+            walletAddress: gateway.buyerAddress,
+            name: "Acme Procurement Bot",
+            serviceArgs: { domain: "smoke.xyz" },
+          },
+        }),
+      );
+
+      expect(body.atomic).toBe(false);
+      expect(body.registrationPrep).toBeNull();
+      // Ignored-arg policy: never drop a caller's input silently.
+      expect(body.warnings).toBeDefined();
+      expect(body.warnings!.some((w) => w.includes("`name` was ignored"))).toBe(
+        true,
+      );
+    } finally {
+      await transport.close();
+    }
+  });
+
   it("daski_search_services surfaces acceptedToken at the top of the response", async () => {
     const { client, transport } = await connectClient(gateway.baseUrl);
     try {
