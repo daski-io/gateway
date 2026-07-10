@@ -216,6 +216,13 @@ step 9 below.
      + a longer `plan` — wallet has no agentId yet; the gateway will
      mint one in the same on-chain tx as the USDC settlement, so the
      payment is the Sybil tax for the new agentId. Buyer pays no gas.
+     Pass an optional `name` on this first call to choose the display
+     name minted with the new agentId — pick the name you want to be
+     known by on receipts and the marketplace (max 64 chars, uniqueness
+     not required). Omitted, it defaults to `buyer-<last6>` from the
+     wallet address (`registrationPrep.resolvedName` echoes the final
+     value either way). Renames are not supported yet, so decide before
+     signing — the name is baked into the typed-data of step 5.
    - `kind: "free"` + a `plan` for ownership-gated skills (see below).
 3. If `missing_fields` error: prompt the user for the listed fields and
    retry.

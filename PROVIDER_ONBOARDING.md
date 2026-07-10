@@ -23,12 +23,12 @@ The gateway treats the on-chain whitelist as the source of truth — your
 admitted via the gateway's admin route) before discovery picks you up.
 
 > Note: the buyer-side flow is different. Buyers pass an optional `name`
-> (or `agentURI` for the rare case of a self-hosted card) to
-> `daski_register_agent` (or just call `daski_buy_service` and let it
-> auto-register on first purchase); the gateway builds the agentURI for
-> them and caches the display name. Providers always need a real hosted
-> Agent Card because they expose A2A endpoints — the buyer flow's `data:`
-> URI shortcut is not appropriate for the seller side.
+> to `daski_buy_service` (which auto-registers on first purchase) or to
+> `daski_register_agent` (or `agentURI` to the latter, for the rare case
+> of a self-hosted card); the gateway builds the agentURI for them and
+> caches the display name. Providers always need a real hosted Agent
+> Card because they expose A2A endpoints — the buyer flow's `data:` URI
+> shortcut is not appropriate for the seller side.
 
 ---
 

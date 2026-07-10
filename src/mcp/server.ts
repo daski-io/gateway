@@ -36,12 +36,14 @@ import { issuePaymentRequirements } from "../payment/requirements.js";
 import { verifyAndSettle, verifyAndSettleWithRegistration } from "../payment/verify.js";
 import { runConfirmDelivery } from "../payment/confirm.js";
 import {
+  buildBuyerAgentURI,
   checkPhoneFields,
-  defaultBuyerAgentURI,
+  defaultBuyerName,
   findUnknownServiceArgKeys,
   mcpError,
   mcpJson,
   parseBigIntArg,
+  sanitizeBuyerName,
   validateAndNormalizeServiceArgs,
   type McpToolResult,
 } from "./util.js";
@@ -144,7 +146,7 @@ const SERVER_INSTRUCTIONS = [
   "",
   "Canonical workflow:",
   "  1. daski_search_services    — find a provider",
-  "  2. daski_buy_service        — pay (auto-registers fresh wallets)",
+  "  2. daski_buy_service        — pay (auto-registers fresh wallets; pass `name` to pick your display name)",
   "  3. daski_submit_task        — dispatch the work (or for free skills, call directly)",
   "  4. daski_get_task_status    — poll until 'completed' or 'failed'",
   "  5. daski_confirm_delivery   — leave an on-chain attestation (optional)",
@@ -702,7 +704,7 @@ export async function createMcpServer(
           "- You haven't called `daski_purchase` first.",
           "- You'd rather use the one-shot orchestrator — call `daski_buy_service`.",
           "",
-          "Inputs: `paymentPayload` (`{ x402Version, scheme, network, payload }`), `paymentRequirements` (echo from `daski_purchase`); optional `registration` (required only for fresh wallets — get the typed-data from `daski_register_agent`, sign with the SAME wallet that signed the payment).",
+          "Inputs: `paymentPayload` (`{ x402Version, scheme, network, payload }`), `paymentRequirements` (echo from `daski_purchase`); optional `registration` (required only for fresh wallets — get the typed-data from `daski_buy_service`'s `registrationPrep` or `daski_register_agent`'s first call, sign with the SAME wallet that signed the payment).",
           "Returns: `{ paymentId, transactionHash, serviceRef, providerA2AUrl, buyerTokenId }`.",
           "Next step: `daski_submit_task` with the returned `serviceRef`, `transactionHash`, and `paymentId`.",
         ].join("\n"),
@@ -737,9 +739,10 @@ export async function createMcpServer(
               agentURI: z
                 .string()
                 .describe(
-                  "Echo verbatim the `agentURI` returned by " +
-                    "`daski_register_agent`'s first call. Mutating it " +
-                    "between calls invalidates the signature.",
+                  "Echo verbatim the `agentURI` from `daski_buy_service`'s " +
+                    "`registrationPrep` or `daski_register_agent`'s first " +
+                    "call — whichever produced the typed-data you signed. " +
+                    "Mutating it between calls invalidates the signature.",
                 ),
               deadline: z.string(),
               signature: z.string(),
@@ -747,7 +750,8 @@ export async function createMcpServer(
             .optional()
             .describe(
               "Required only for fresh wallets (challenge.buyerTokenId === '0'). " +
-                "Get the typed-data from `daski_register_agent`, sign with the " +
+                "Get the typed-data from `daski_buy_service`'s `registrationPrep` " +
+                "(or `daski_register_agent` on the manual path), sign with the " +
                 "SAME wallet that signed the payment. Both will be submitted " +
                 "in one atomic tx (the USDC payment is the Sybil tax for the " +
                 "new agentId).",
@@ -794,7 +798,13 @@ export async function createMcpServer(
             message:
               "this challenge was issued for an unregistered wallet (" +
               "buyerTokenId=0). Pass `registration` with a signed " +
-              "RegisterAgent payload — see daski_register_agent.",
+              "RegisterAgent payload — the typed-data comes from " +
+              "`daski_buy_service`'s `registrationPrep` or " +
+              "`daski_register_agent`'s first call.",
+            recoverable: true,
+            next_action:
+              "Sign the RegisterAgent typed-data with the paying wallet " +
+              "and retry with `registration: { agentURI, deadline, signature }`.",
           });
         }
 
@@ -2336,6 +2346,7 @@ export async function createMcpServer(
     interface BuyServiceArgs {
       skillId: string;
       walletAddress: string;
+      name?: string;
       buyerTokenId?: string;
       providerTokenId?: string;
       serviceArgs?: Record<string, unknown>;
@@ -2352,6 +2363,9 @@ export async function createMcpServer(
       providerA2AUrl: string;
       serviceArgs: Record<string, unknown>;
       buyerAgentId: bigint;
+      /** Sanitized display name for the atomic registration, when the
+       *  caller supplied one. Undefined → wallet-derived default. */
+      buyerName?: string;
     }
 
     // Synchronous free skills (open-free, single round-trip, answer
@@ -2884,7 +2898,8 @@ export async function createMcpServer(
     async function runBuyServicePaidPath(
       ctx: BuyServiceCtx,
     ): Promise<McpToolResult> {
-      const { args, provider, providerA2AUrl, serviceArgs, buyerAgentId } = ctx;
+      const { args, provider, providerA2AUrl, serviceArgs, buyerAgentId, buyerName } =
+        ctx;
 
       // Live-quote the provider before issuing paymentRequirements so
       // the buyer pays the actual price AND user-input errors (bad
@@ -3002,22 +3017,42 @@ export async function createMcpServer(
       // back, then submit them atomically via daski_settle_payment.
       const isAtomic = buyerAgentId === 0n;
       let registrationPrep: unknown = null;
+      // Display name baked into registrationPrep's agentURI — caller's
+      // `name` when given, wallet-derived `buyer-<last6>` otherwise. Kept
+      // out of the try block so the plan step below can reference it.
+      let registrationName: string | null = null;
       if (isAtomic) {
         try {
-          const nonce = await deps.reader.getRegistrationNonce(
-            args.walletAddress.toLowerCase() as Hex,
-          );
+          const wallet = args.walletAddress.toLowerCase() as Hex;
+          const nonce = await deps.reader.getRegistrationNonce(wallet);
           const nowSec = BigInt(Math.floor(Date.now() / 1000));
           const deadline = nowSec + 3600n;
           // ERC-8004 §2.2 conformance: default to a non-empty data: URI
           // resolving to a minimal buyer card so reputation queries and
           // Bazaar / agentic.market indexers can fetch agent metadata.
-          const agentURI = defaultBuyerAgentURI(
-            args.walletAddress.toLowerCase() as Hex,
-          );
+          const agentURI = buildBuyerAgentURI(wallet, buyerName);
+          registrationName = buyerName ?? defaultBuyerName(wallet);
           registrationPrep = {
             walletAddress: args.walletAddress.toLowerCase(),
             agentURI,
+            // Display name that will be minted with the new agentId —
+            // shown on receipts, buyer profiles, and the marketplace UI.
+            resolvedName: registrationName,
+            // The name is embedded in the typed-data the wallet signs, so
+            // the moment to pick one is BEFORE signing — surface that here,
+            // where the default is applied, not just in the tool docs.
+            ...(buyerName
+              ? {}
+              : {
+                  hint:
+                    `No display name was provided, so this wallet will be ` +
+                    `registered as '${registrationName}'. To use a real name ` +
+                    `on receipts and the Daski marketplace, re-call ` +
+                    `daski_buy_service with a \`name\` argument (max 64 chars, ` +
+                    `uniqueness not required) before signing — pick whatever ` +
+                    `name you want to be known by. Renames are not supported ` +
+                    `yet, so the name signed here sticks.`,
+                }),
             nonce: nonce.toString(),
             deadline: deadline.toString(),
             eip712TypedData: {
@@ -3072,7 +3107,13 @@ export async function createMcpServer(
           hint:
             "Also sign registrationPrep.eip712TypedData with the SAME " +
             "wallet. The result is the `registration.signature` you'll " +
-            "pass to daski_settle_payment alongside the payment payload.",
+            "pass to daski_settle_payment alongside the payment payload. " +
+            (buyerName
+              ? `This registers the wallet's display name as '${registrationName}'.`
+              : `Signing this registers the wallet under the default name ` +
+                `'${registrationName}' — to appear under a real display name ` +
+                `instead, re-call daski_buy_service with \`name\` set to the ` +
+                `name of your choice BEFORE signing.`),
           args: {
             typedData: (registrationPrep as { eip712TypedData: unknown })
               .eip712TypedData,
@@ -3181,6 +3222,16 @@ export async function createMcpServer(
         provider.skillMeta,
         args.serviceArgs,
       );
+      // `name` only applies to the fresh-wallet atomic registration. Warn
+      // rather than silently drop it (same policy as unknown serviceArgs)
+      // so the agent doesn't believe it just renamed itself.
+      if (!isAtomic && buyerName) {
+        paidArgWarnings.push(
+          `\`name\` was ignored — this wallet is already registered as ` +
+            `agentId ${buyerAgentId.toString()}, and display-name changes ` +
+            `after registration are not supported yet.`,
+        );
+      }
       return json(
         {
           kind: "paid",
@@ -3229,7 +3280,7 @@ export async function createMcpServer(
           "- You are submitting a buyer attestation — use `daski_confirm_delivery`.",
           "",
           "Inputs:",
-          "- First call (no signature): `providerTokenId`, `skillId`, `serviceArgs` (per the skill's `requiredFields`), `walletAddress`.",
+          "- First call (no signature): `providerTokenId`, `skillId`, `serviceArgs` (per the skill's `requiredFields`), `walletAddress`; optional `name` — on a fresh wallet this becomes the display name of the agentId minted with the purchase.",
           "- Second call (signed retry): the same inputs plus `paymentPayload`, `paymentRequirements`, and (for fresh wallets) `registration`.",
           "",
           "Returns:",
@@ -3238,7 +3289,7 @@ export async function createMcpServer(
           "",
           "Next step: `daski_submit_task` with the returned `serviceRef`, `transactionHash`, `paymentId`, and `buyerTokenId` (or pass `walletAddress` to auto-derive it).",
           "",
-          "Fresh-wallet note: a wallet with no ERC-8004 agentId auto-registers on first purchase via a second signature, bundled into the same on-chain tx as the USDC payment. Watch for `registrationPrep` in the first response and sign both typed-data blocks before retrying. The newly-minted `buyerTokenId` comes back in the second-call response.",
+          "Fresh-wallet note: a wallet with no ERC-8004 agentId auto-registers on first purchase via a second signature, bundled into the same on-chain tx as the USDC payment. Watch for `registrationPrep` in the first response and sign both typed-data blocks before retrying. The newly-minted `buyerTokenId` comes back in the second-call response. Pass `name` on the first call to choose the display name minted with that registration — otherwise it defaults to `buyer-<last6>` derived from the wallet address, and renames are not supported yet.",
         ].join("\n"),
         inputSchema: {
           skillId: z.string(),
@@ -3249,6 +3300,19 @@ export async function createMcpServer(
                 "the typed-data — mismatch causes the signed payload to be " +
                 "rejected on-chain. Use the lowercased checksum form your " +
                 "wallet returns.",
+            ),
+          name: z
+            .string()
+            .optional()
+            .describe(
+              "First-call only, fresh wallets only. Display name for the " +
+                "buyer agent minted on first purchase — pick the name you " +
+                "want to be known by on receipts, buyer profiles, and the " +
+                "Daski marketplace (max 64 chars, free-form, uniqueness " +
+                "not required). Defaults to `buyer-<last6>` derived from " +
+                "the wallet address. Ignored when the wallet already has " +
+                "an agentId — renames are not supported yet, so set it on " +
+                "the first purchase.",
             ),
           buyerTokenId: z
             .string()
@@ -3344,7 +3408,9 @@ export async function createMcpServer(
               "Required when paymentRequirements.extra.daski.settlementMode " +
                 "=== 'atomic-register' (fresh wallet). Get the typed-data " +
                 "from registrationPrep in the first response, sign with the " +
-                "same wallet, then pass v/r/s here.",
+                "same wallet, then pass the resulting hex signature as " +
+                "`registration.signature` (with `agentURI` and `deadline` " +
+                "echoed verbatim).",
             ),
         },
         annotations: {
@@ -3374,6 +3440,28 @@ export async function createMcpServer(
         // leg so we fall through to plan-building.
         const retry = await runBuyServiceX402Retry(args, extra);
         if (retry !== null) return retry;
+
+        // Optional buyer display name for the atomic registration.
+        // First-call only — on the retry above the signed
+        // registration.agentURI is already the source of truth, so an
+        // echoed `name` is simply unused there. Sanitize before any
+        // provider round-trip; empty string means "not provided", same
+        // as the /register-prep resolver.
+        let buyerName: string | undefined;
+        if (args.name != null && args.name !== "") {
+          const sanitized = sanitizeBuyerName(args.name);
+          if (!sanitized.ok) {
+            return errorJson({
+              code: "BAD_INPUT",
+              message: `name: ${sanitized.error}`,
+              recoverable: true,
+              next_action:
+                "Fix `name` (max 64 chars, no control characters) and " +
+                "retry, or omit it to accept the wallet-derived default.",
+            });
+          }
+          buyerName = sanitized.name;
+        }
 
         const lookup = resolveBuyServiceProvider(args);
         if (!lookup.ok) return lookup.error;
@@ -3457,6 +3545,7 @@ export async function createMcpServer(
           providerA2AUrl,
           serviceArgs,
           buyerAgentId,
+          buyerName,
         };
 
         const paymentRequired =
