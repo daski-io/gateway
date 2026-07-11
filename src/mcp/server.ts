@@ -1306,7 +1306,7 @@ export async function createMcpServer(
         .optional()
         .describe(
           "Optional. Auto-derived from `walletAddress` via the on-chain " +
-            "IdentityRegistry when omitted. Pass explicitly only when the " +
+            "AgentIndex when omitted. Pass explicitly only when the " +
             "caller wants a specific agentId for a wallet that holds " +
             "multiple Daski tokens (rare).",
         ),
@@ -1506,10 +1506,11 @@ export async function createMcpServer(
         if (requiresEnvelopeAuth && !args.envelopeAuth) {
           // §1.3 of daski-mcp-gateway-fix-brief.md — auto-derive
           // buyerTokenId from walletAddress when the caller passes one
-          // but not the other. The on-chain IdentityRegistry is the
-          // source of truth; we already use the same call in
-          // daski_buy_service. Saves the agent from parsing tx receipts
-          // when they just settled a payment for the same wallet.
+          // but not the other. The on-chain AgentIndex (verified against
+          // the canonical registry) is the source of truth; we already
+          // use the same call in daski_buy_service. Saves the agent from
+          // parsing tx receipts when they just settled a payment for the
+          // same wallet.
           let buyerTokenId = args.buyerTokenId;
           if (!buyerTokenId && args.walletAddress) {
             if (!HEX_ADDR.test(args.walletAddress)) {
@@ -1541,7 +1542,7 @@ export async function createMcpServer(
               return errorJson({
                 code: "CHAIN_READ_FAILED",
                 message:
-                  `IdentityRegistry.agentOfWallet(${args.walletAddress}) failed: ${(err as Error).message}`,
+                  `AgentIndex.resolve(${args.walletAddress}) failed: ${(err as Error).message}`,
                 recoverable: true,
                 next_action:
                   "Retry, or pass buyerTokenId directly if you already know it.",
@@ -1560,7 +1561,7 @@ export async function createMcpServer(
                 "it's in the daski_buy_service second-call response as " +
                 "`buyerTokenId`. For a wallet you've used before, pass " +
                 "`walletAddress` and the gateway auto-derives via the " +
-                "on-chain IdentityRegistry.",
+                "on-chain AgentIndex.",
               recoverable: true,
               next_action:
                 "Re-call this tool with either `buyerTokenId` or `walletAddress` set.",
@@ -3056,11 +3057,14 @@ export async function createMcpServer(
             nonce: nonce.toString(),
             deadline: deadline.toString(),
             eip712TypedData: {
+              // Domain of the Daski AgentIndex — registerWithSig verifies
+              // the consent signature there (the canonical ERC-8004
+              // registry has no gasless registration of its own).
               domain: {
-                name: "Daski IdentityRegistry",
+                name: "Daski AgentIndex",
                 version: "1",
                 chainId: deps.config.chainId,
-                verifyingContract: deps.config.identityRegistryAddress,
+                verifyingContract: deps.config.agentIndexAddress,
               },
               types: {
                 RegisterAgent: [
@@ -3495,9 +3499,9 @@ export async function createMcpServer(
         // lookup. Treating "0" as a valid override would route an
         // already-registered wallet down atomic register-and-settle and
         // burn the buyer's USDC re-minting an agentId they already have
-        // (or surface as a bare "execution reverted" when registerBySig
-        // sees a stale nonce). agentOfWallet is the single source of
-        // truth — let it speak.
+        // (or surface as a bare "execution reverted" when registerWithSig
+        // sees a stale nonce). AgentIndex.resolve (via agentOfWallet) is
+        // the single source of truth — let it speak.
         let parsedBuyerTokenId: bigint | null = null;
         if (args.buyerTokenId) {
           const p = parseBigIntArg(args.buyerTokenId, "buyerTokenId");

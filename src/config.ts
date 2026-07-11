@@ -14,7 +14,14 @@ export interface Config {
   baseRpcUrl: string;
   chainId: ChainId;
   network: "base" | "base-sepolia";
+  // CANONICAL per-chain ERC-8004 IdentityRegistry (0x8004A… singleton) —
+  // Daski no longer deploys an identity registry of its own.
   identityRegistryAddress: Hex;
+  // Daski AgentIndex proxy — verified wallet→agentId reverse lookup plus
+  // gasless registerWithSig; the companion that fills the canonical
+  // registry's gaps. Also the EIP-712 verifyingContract for the
+  // RegisterAgent typed-data buyers sign.
+  agentIndexAddress: Hex;
   providerRegistryAddress: Hex;
   // ServiceRegistry — service-identity refactor (2026-05). serviceId is
   // computed off-chain from (providerAgentId, skillId, version) and the
@@ -157,6 +164,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     identityRegistryAddress: requireAddress(
       "IDENTITY_REGISTRY_ADDRESS",
       env.IDENTITY_REGISTRY_ADDRESS,
+    ),
+    agentIndexAddress: requireAddress(
+      "AGENT_INDEX_ADDRESS",
+      env.AGENT_INDEX_ADDRESS,
     ),
     providerRegistryAddress: requireAddress(
       "PROVIDER_REGISTRY_ADDRESS",

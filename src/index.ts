@@ -53,6 +53,7 @@ async function main() {
       rpcUrl: config.baseRpcUrl,
       chainId: config.chainId,
       identityRegistryAddress: config.identityRegistryAddress,
+      agentIndexAddress: config.agentIndexAddress,
       providerRegistryAddress: config.providerRegistryAddress,
       paymentRouterAddress: config.paymentRouterAddress,
       x402AdapterAddress: config.x402AdapterAddress,

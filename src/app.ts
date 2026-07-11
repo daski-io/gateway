@@ -253,7 +253,10 @@ export async function createApp(options: CreateAppOptions): Promise<AppBundle> {
       chainId: config.chainId,
       network: config.network,
       contracts: {
+        // Canonical per-chain ERC-8004 registry; agentIndex is the Daski
+        // companion (verified reverse lookup + gasless registerWithSig).
         identityRegistry: config.identityRegistryAddress,
+        agentIndex: config.agentIndexAddress,
         providerRegistry: config.providerRegistryAddress,
         serviceRegistry: config.serviceRegistryAddress,
         paymentRouter: config.paymentRouterAddress,

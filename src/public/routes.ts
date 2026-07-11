@@ -1099,6 +1099,7 @@ export function createPublicRouter(deps: PublicRouterDeps): Router {
         providerRegistry: config.providerRegistryAddress,
         serviceRegistry: config.serviceRegistryAddress,
         identityRegistry: config.identityRegistryAddress,
+        agentIndex: config.agentIndexAddress,
         x402Adapter: config.x402AdapterAddress,
         permitAdapter: config.permitAdapterAddress ?? null,
         approvalAdapter: config.approvalAdapterAddress ?? null,

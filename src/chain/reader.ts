@@ -74,9 +74,11 @@ export interface DirectAttributionInput {
 
 // ── Gasless ERC-8004 registration ────────────────────────────────────────
 //
-// The buyer signs an EIP-712 RegisterAgent block over the IdentityRegistry
-// domain; the gateway facilitator relays it via registerBySig(). NFT mints
-// to the signer, gateway pays gas. The signed payload binds (agentURI,
+// The buyer signs an EIP-712 RegisterAgent block over the Daski AgentIndex
+// domain (name "Daski AgentIndex", verifyingContract = the AgentIndex
+// proxy); the gateway facilitator relays it via AgentIndex.registerWithSig().
+// The AgentIndex mints on the CANONICAL ERC-8004 registry and transfers the
+// NFT to the signer — gateway pays gas. The signed payload binds (agentURI,
 // agentWallet, nonce, deadline) so it cannot be replayed across re-registration.
 export interface RegisterBySigInput {
   agentURI: string;
@@ -216,16 +218,18 @@ export interface ChainReader {
     isActive: boolean;
   }>;
 
-  // IdentityRegistry reads
-  /** Returns the agentURI stored at IdentityRegistry.tokenURI(agentId). */
+  // IdentityRegistry / AgentIndex reads
+  /** Returns the agentURI stored at the canonical IdentityRegistry's
+   *  tokenURI(agentId). */
   getAgentURI(agentId: bigint): Promise<string>;
 
   /**
    * Reverse lookup: maps an EVM wallet back to the ERC-8004 agentId it
-   * controls on IdentityRegistry. Returns 0 when the wallet has no minted
-   * identity (the skill surfaces this as "you need to mint a Daski identity
-   * first"). Used by GET /identity/by-wallet to resolve buyer agentId from
-   * a CDP-issued address.
+   * controls. Resolves via the Daski AgentIndex (verified against the
+   * canonical registry; stale bindings return 0). Returns 0 when the
+   * wallet has no bound identity (the skill surfaces this as "you need to
+   * mint a Daski identity first"). Used by GET /identity/by-wallet to
+   * resolve buyer agentId from a CDP-issued address.
    */
   agentOfWallet(wallet: Hex): Promise<bigint>;
 
@@ -234,9 +238,10 @@ export interface ChainReader {
   // is cheaper than a reverted write).
   authorizationUsed(authorizer: Hex, nonce: Hex): Promise<boolean>;
 
-  // Per-wallet RegisterBySig nonce. Buyer reads this and embeds it into
-  // the EIP-712 RegisterAgent typed-data; gateway uses it the same way to
-  // build the typed-data block returned by /register-prep.
+  // Per-wallet registerWithSig nonce, read from AgentIndex.registrationNonce.
+  // Buyer reads this and embeds it into the EIP-712 RegisterAgent
+  // typed-data; gateway uses it the same way to build the typed-data block
+  // returned by /register-prep.
   getRegistrationNonce(wallet: Hex): Promise<bigint>;
 
   // Settlement — submits X402Adapter.settle from the facilitator wallet,
@@ -245,9 +250,10 @@ export interface ChainReader {
   // transaction reverts or no matching event is emitted.
   settlePayment(input: SettlementInput): Promise<SettlementResult>;
 
-  // Gasless registration — submits IdentityRegistry.registerBySig from the
-  // facilitator wallet. NFT mints to input.agentWallet, not the relayer.
-  // Returns the new agentId from the Registered event in the receipt.
+  // Gasless registration — submits AgentIndex.registerWithSig from the
+  // facilitator wallet. The AgentIndex mints on the canonical registry and
+  // transfers the NFT to input.agentWallet, not the relayer. Returns the
+  // new agentId from the AgentRegistered event in the receipt.
   registerBuyer(input: RegisterBySigInput): Promise<RegisterBySigResult>;
 
   // Atomic register-and-settle. Submits X402Adapter.settleWithRegistration
@@ -309,11 +315,14 @@ export interface ChainReader {
   // turnaround and provider-attested status on activity rows.
   getReputationRecord(paymentId: bigint): Promise<ReputationRecord | null>;
 
-  // Canonical live agentWallet from IdentityRegistry. PaymentRouter resolves
-  // payees through this same getter; the audit refactor removed
-  // ProviderRegistry's `walletAddress` field, making this the sole source of
-  // a provider's payee wallet. Returns address(0) when the agent has unset
-  // their wallet — callers treat that as "no payee currently".
+  // Canonical live agentWallet from the canonical IdentityRegistry.
+  // PaymentRouter resolves payees through this same getter; the audit
+  // refactor removed ProviderRegistry's `walletAddress` field, making this
+  // the sole source of a provider's payee wallet. Returns address(0) when
+  // the agent has no wallet set — callers treat that as "no payee
+  // currently". NOTE: the canonical registry never auto-sets agentWallet,
+  // so buyer agents minted via AgentIndex.registerWithSig read as
+  // address(0) here; callers must tolerate 0 for buyers.
   getAgentWallet(agentId: bigint): Promise<Hex>;
 
   // Cumulative refunded amount (atomic USDC) for one paymentId from
@@ -369,14 +378,16 @@ export async function fetchOnChainProviders(
     if (!provider.isActive) continue;
     if (!whitelistSet.has(agentId.toString())) continue;
 
-    // Read the canonical wallet from IdentityRegistry. The audit refactor
-    // dropped ProviderRegistry's `walletAddress` field entirely, so
-    // IdentityRegistry.getAgentWallet is the sole source — it is also what
-    // PaymentRouter resolves payees through, so discovery always reflects
-    // the live payee even across ERC-8004 wallet rotation. When the agent
-    // has unset their wallet, getAgentWallet returns the zero address; we
-    // surface that as-is (there is no longer a registry hint to fall back
-    // to) so callers can treat it as "no payee currently".
+    // Read the canonical wallet from the canonical IdentityRegistry. The
+    // audit refactor dropped ProviderRegistry's `walletAddress` field
+    // entirely, so IdentityRegistry.getAgentWallet is the sole source — it
+    // is also what PaymentRouter resolves payees through, so discovery
+    // always reflects the live payee even across ERC-8004 wallet rotation.
+    // The canonical registry never auto-sets agentWallet (providers must
+    // call setAgentWallet explicitly); when unset, getAgentWallet returns
+    // the zero address and we surface that as-is (there is no longer a
+    // registry hint to fall back to) so callers can treat it as "no payee
+    // currently".
     const [agentURI, liveWallet] = await Promise.all([
       reader.getAgentURI(agentId),
       reader.getAgentWallet(agentId),

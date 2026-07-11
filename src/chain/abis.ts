@@ -1,7 +1,12 @@
 // Contract ABI fragments — single source of truth for the gateway.
 // Mirrors the on-chain contracts in the `daski` repo.
 
-// ── ERC-8004 Identity Registry ──────────────────────────────────────────
+// ── ERC-8004 Identity Registry (canonical per-chain singleton) ──────────
+//
+// Daski no longer deploys an identity registry of its own — agents live in
+// the CANONICAL ERC-8004 IdentityRegistry (0x8004A… per chain). The
+// canonical surface has no reverse lookup and no gasless registration;
+// those gaps are filled by the Daski AgentIndex (agentIndexAbi below).
 
 export const identityRegistryAbi = [
   {
@@ -12,50 +17,21 @@ export const identityRegistryAbi = [
     stateMutability: "view",
   },
   {
-    // Daski auxiliary reverse index — wallet → agentId (0 if unmapped).
-    type: "function",
-    name: "agentOfWallet",
-    inputs: [{ name: "wallet", type: "address" }],
-    outputs: [{ name: "", type: "uint256" }],
-    stateMutability: "view",
-  },
-  {
-    // Per-wallet nonce for registerBySig. Buyer reads this when building
-    // the EIP-712 RegisterAgent typed-data; bumps each successful relay.
-    type: "function",
-    name: "registrationNonce",
-    inputs: [{ name: "wallet", type: "address" }],
-    outputs: [{ name: "", type: "uint256" }],
-    stateMutability: "view",
-  },
-  {
     // Canonical live wallet for an agentId. The audit refactor dropped the
     // `walletAddress` field from ProviderRegistry.Provider entirely —
     // `IdentityRegistry.getAgentWallet` is now the sole source of a
     // provider's payee wallet: it is what PaymentRouter resolves the payee
     // against, and what survives ERC-8004 wallet rotation. The gateway
     // reads this for cache-side wallet resolution so discovery reflects the
-    // live wallet.
+    // live wallet. NOTE: the canonical registry never auto-sets agentWallet
+    // (registration and transfers leave it zero) — buyer agents minted via
+    // AgentIndex.registerWithSig read as address(0) here; ownership is
+    // their control proof.
     type: "function",
     name: "getAgentWallet",
     inputs: [{ name: "agentId", type: "uint256" }],
     outputs: [{ name: "", type: "address" }],
     stateMutability: "view",
-  },
-  {
-    // Gasless registration: the buyer signs an EIP-712 RegisterAgent struct
-    // off-chain, the gateway facilitator submits it. NFT mints to the
-    // signer (`agentWallet`), not the relayer (msg.sender).
-    type: "function",
-    name: "registerBySig",
-    inputs: [
-      { name: "agentURI", type: "string" },
-      { name: "agentWallet", type: "address" },
-      { name: "deadline", type: "uint256" },
-      { name: "signature", type: "bytes" },
-    ],
-    outputs: [{ name: "agentId", type: "uint256" }],
-    stateMutability: "nonpayable",
   },
   {
     type: "event",
@@ -64,6 +40,72 @@ export const identityRegistryAbi = [
       { name: "agentId", type: "uint256", indexed: true },
       { name: "agentURI", type: "string", indexed: false },
       { name: "owner", type: "address", indexed: true },
+    ],
+  },
+] as const;
+
+// ── Daski AgentIndex ─────────────────────────────────────────────────────
+//
+// Daski-local companion to the canonical registry (daski/src/AgentIndex.sol).
+// Fills the two gaps the canonical registry leaves open: a VERIFIED
+// wallet → agentId reverse lookup (`resolve`, re-checked against the
+// canonical registry on every read; stale bindings self-heal to 0) and
+// gasless onboarding (`registerWithSig` mints on the canonical registry,
+// transfers the NFT to the wallet, records the binding — one tx).
+
+export const agentIndexAbi = [
+  {
+    // Verified reverse lookup — wallet → agentId. Returns 0 unless the
+    // wallet is currently the agent's ERC-721 owner or verified agentWallet
+    // on the canonical registry.
+    type: "function",
+    name: "resolve",
+    inputs: [{ name: "wallet", type: "address" }],
+    outputs: [{ name: "agentId", type: "uint256" }],
+    stateMutability: "view",
+  },
+  {
+    // Per-wallet nonce for registerWithSig. Buyer reads this when building
+    // the EIP-712 RegisterAgent typed-data; bumps each successful relay.
+    type: "function",
+    name: "registrationNonce",
+    inputs: [{ name: "wallet", type: "address" }],
+    outputs: [{ name: "", type: "uint256" }],
+    stateMutability: "view",
+  },
+  {
+    // Gasless registration: the buyer signs an EIP-712 RegisterAgent struct
+    // off-chain (domain: name "Daski AgentIndex", verifyingContract = the
+    // AgentIndex proxy), the gateway facilitator submits it. The AgentIndex
+    // mints on the canonical registry, transfers the NFT to `wallet`, and
+    // records the wallet → agentId binding.
+    type: "function",
+    name: "registerWithSig",
+    inputs: [
+      { name: "agentURI", type: "string" },
+      { name: "wallet", type: "address" },
+      { name: "deadline", type: "uint256" },
+      { name: "signature", type: "bytes" },
+    ],
+    outputs: [{ name: "agentId", type: "uint256" }],
+    stateMutability: "nonpayable",
+  },
+  {
+    // Bind the caller to an agent it already controls on the canonical
+    // registry (owner or verified agentWallet). Bring-your-own-agent path.
+    type: "function",
+    name: "claim",
+    inputs: [{ name: "agentId", type: "uint256" }],
+    outputs: [],
+    stateMutability: "nonpayable",
+  },
+  {
+    type: "event",
+    name: "AgentRegistered",
+    inputs: [
+      { name: "agentId", type: "uint256", indexed: true },
+      { name: "wallet", type: "address", indexed: true },
+      { name: "agentURI", type: "string", indexed: false },
     ],
   },
 ] as const;
@@ -323,9 +365,10 @@ export const x402AdapterAbi = [
   },
   {
     // Atomic register-and-settle. If `auth.from` has no agentId, the
-    // buyer's RegisterAgent signature mints one in the same tx as the
-    // EIP-3009 transfer. Either both succeed or both revert. Used by the
-    // gateway when a fresh wallet's first action is a purchase.
+    // buyer's RegisterAgent signature mints one on the canonical registry
+    // (via AgentIndex.registerWithSig) in the same tx as the EIP-3009
+    // transfer. Either both succeed or both revert. Used by the gateway
+    // when a fresh wallet's first action is a purchase.
     type: "function",
     name: "settleWithRegistration",
     inputs: [
@@ -468,8 +511,9 @@ export const usdcAbi = [
 // fallback. Keep this list narrow — only errors actually throwable along
 // the gateway's on-chain paths.
 export const knownErrorAbis = [
-  // OpenZeppelin ERC721 v5 — IdentityRegistry mints via _safeMint, so the
-  // receiver/sender errors are reachable through registerBySig.
+  // OpenZeppelin ERC721 v5 — the canonical IdentityRegistry mints via
+  // _safeMint and AgentIndex.registerWithSig transfers the NFT onward, so
+  // the receiver/sender errors are reachable through registerWithSig.
   { type: "error", name: "ERC721InvalidOwner", inputs: [{ name: "owner", type: "address" }] },
   { type: "error", name: "ERC721NonexistentToken", inputs: [{ name: "tokenId", type: "uint256" }] },
   {
@@ -500,8 +544,9 @@ export const knownErrorAbis = [
 
   // OpenZeppelin ECDSA — SignatureChecker uses ECDSA.tryRecover internally.
   // SignatureChecker itself swallows these and returns false (causing a
-  // require-string revert in registerBySig), but raw ECDSA.recover is also
-  // used in places, and these errors travel up unwrapped.
+  // require-string revert in AgentIndex.registerWithSig), but raw
+  // ECDSA.recover is also used in places, and these errors travel up
+  // unwrapped.
   { type: "error", name: "ECDSAInvalidSignature", inputs: [] },
   {
     type: "error",

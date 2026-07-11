@@ -12,6 +12,7 @@ import {
 import { privateKeyToAccount } from "viem/accounts";
 import { base, baseSepolia } from "viem/chains";
 import {
+  agentIndexAbi,
   directTransferAdapterAbi,
   easAbi,
   identityRegistryAbi,
@@ -47,7 +48,11 @@ import type { ChainId, Hex } from "../types.js";
 export interface ViemReaderOptions {
   rpcUrl: string;
   chainId: ChainId;
+  // Canonical per-chain ERC-8004 IdentityRegistry (0x8004A…).
   identityRegistryAddress: Hex;
+  // Daski AgentIndex proxy — verified wallet→agentId reverse lookup plus
+  // gasless registerWithSig, the two gaps the canonical registry leaves.
+  agentIndexAddress: Hex;
   providerRegistryAddress: Hex;
   paymentRouterAddress: Hex;
   // X402 adapter that the facilitator submits the EIP-3009 settle call to.
@@ -236,11 +241,13 @@ export function createViemChainReader(opts: ViemReaderOptions): ChainReader {
       })) as string;
     },
 
+    // Resolves via the Daski AgentIndex (verified against the canonical
+    // registry; stale bindings return 0).
     async agentOfWallet(wallet: Hex) {
       return (await publicClient.readContract({
-        address: opts.identityRegistryAddress,
-        abi: identityRegistryAbi,
-        functionName: "agentOfWallet",
+        address: opts.agentIndexAddress,
+        abi: agentIndexAbi,
+        functionName: "resolve",
         args: [wallet],
       })) as bigint;
     },
@@ -265,8 +272,8 @@ export function createViemChainReader(opts: ViemReaderOptions): ChainReader {
 
     async getRegistrationNonce(wallet: Hex) {
       return (await publicClient.readContract({
-        address: opts.identityRegistryAddress,
-        abi: identityRegistryAbi,
+        address: opts.agentIndexAddress,
+        abi: agentIndexAbi,
         functionName: "registrationNonce",
         args: [wallet],
       })) as bigint;
@@ -467,11 +474,14 @@ export function createViemChainReader(opts: ViemReaderOptions): ChainReader {
     },
 
     async registerBuyer(input: RegisterBySigInput): Promise<RegisterBySigResult> {
-      // Facilitator submits IdentityRegistry.registerBySig. The contract
-      // verifies the buyer's signature and mints to input.agentWallet.
+      // Facilitator submits AgentIndex.registerWithSig. The AgentIndex
+      // verifies the buyer's signature, mints on the CANONICAL registry
+      // (to itself), transfers the NFT to input.agentWallet, and records
+      // the wallet→agentId binding.
       // Same explicit-gas reasoning as settlePayment — sepolia.base.org
-      // rejects estimateGas with the block gas limit; registerBySig burns
-      // ~150-200k in practice; 500k leaves headroom.
+      // rejects estimateGas with the block gas limit. The flow is now
+      // canonical register (~380k) + safeTransferFrom (~60k) + binding
+      // (~50k); 800k leaves headroom without tripping the ~5M per-tx cap.
       //
       // Simulate first — see settlePayment. Common reverts here are
       // expired deadline, wrong nonce, and signature mismatch; all worth
@@ -479,17 +489,17 @@ export function createViemChainReader(opts: ViemReaderOptions): ChainReader {
       let registerRequest;
       try {
         const sim = await publicClient.simulateContract({
-          address: opts.identityRegistryAddress,
-          abi: [...identityRegistryAbi, ...knownErrorAbis],
-          functionName: "registerBySig",
+          address: opts.agentIndexAddress,
+          abi: [...agentIndexAbi, ...knownErrorAbis],
+          functionName: "registerWithSig",
           args: [input.agentURI, input.agentWallet, input.deadline, input.signature],
           account,
           chain,
-          gas: 500_000n,
+          gas: 800_000n,
         });
         registerRequest = sim.request;
       } catch (err) {
-        throw new Error(`registerBySig reverted: ${decodeRevertReason(err)}`);
+        throw new Error(`registerWithSig reverted: ${decodeRevertReason(err)}`);
       }
 
       const hash = await walletClient.writeContract(registerRequest);
@@ -497,26 +507,29 @@ export function createViemChainReader(opts: ViemReaderOptions): ChainReader {
       const receipt = await publicClient.waitForTransactionReceipt({ hash });
       if (receipt.status !== "success") {
         throw new Error(
-          `registerBySig reverted on broadcast despite passing simulation (tx ${hash})`,
+          `registerWithSig reverted on broadcast despite passing simulation (tx ${hash})`,
         );
       }
 
-      // Extract agentId from the Registered event. The event is emitted
-      // by IdentityRegistry itself, indexed on (agentId, owner).
-      const registryLogs = receipt.logs.filter(
-        (l) => l.address.toLowerCase() === opts.identityRegistryAddress.toLowerCase(),
+      // Extract agentId from the AgentRegistered event. The event is
+      // emitted by the AgentIndex itself, indexed on (agentId, wallet).
+      // (The canonical registry's Registered event fires with the
+      // AgentIndex as owner — the mint-then-transfer flow — so it cannot
+      // be matched against the buyer wallet.)
+      const indexLogs = receipt.logs.filter(
+        (l) => l.address.toLowerCase() === opts.agentIndexAddress.toLowerCase(),
       );
       const parsed = parseEventLogs({
-        abi: identityRegistryAbi,
-        eventName: "Registered",
-        logs: registryLogs as any,
+        abi: agentIndexAbi,
+        eventName: "AgentRegistered",
+        logs: indexLogs as any,
       });
       const match = parsed.find(
         (e: any) =>
-          String(e.args.owner).toLowerCase() === input.agentWallet.toLowerCase(),
+          String(e.args.wallet).toLowerCase() === input.agentWallet.toLowerCase(),
       );
       if (!match) {
-        throw new Error("Registered event missing for agentWallet after registerBySig");
+        throw new Error("AgentRegistered event missing for wallet after registerWithSig");
       }
       return {
         agentId: (match as any).args.agentId as bigint,
@@ -537,17 +550,16 @@ export function createViemChainReader(opts: ViemReaderOptions): ChainReader {
         s: input.s,
       } as const;
 
-      // 2M gas budget: real-world atomic register+settle measured at ~713k
-      // on Base Sepolia (registerBySig with _safeMint + ERC721URIStorage
-      // SSTORE for the agentURI ≈ 380k, EIP-3009 transferWithAuthorization
-      // ≈ 100k, router.settle bookkeeping ≈ 230k). The original 600k
-      // estimate undercounted ERC-721 minting and the per-byte cost of
-      // storing dynamic agentURIs, so simulation aborted mid-execution
-      // and surfaced as a bare "execution reverted" with no debuggable
-      // data — exactly the silent-revert footgun this comment used to
-      // claim was impossible. 2M leaves ~1.3M headroom for longer
-      // agentURIs and ERC-1271 contract-wallet signatures (which can
-      // be arbitrary length and pull in extra SignatureChecker gas) and
+      // 2M gas budget: the atomic path now runs AgentIndex.registerWithSig
+      // inside the adapter — canonical-registry register with _safeMint +
+      // ERC721URIStorage SSTORE for the agentURI ≈ 380k, safeTransferFrom
+      // of the fresh NFT to the buyer ≈ 60k, binding SSTOREs ≈ 50k — plus
+      // the EIP-3009 transferWithAuthorization ≈ 100k and router.settle
+      // bookkeeping ≈ 230k. A budget that aborts mid-execution surfaces as
+      // a bare "execution reverted" with no debuggable data (the
+      // silent-revert footgun an earlier 600k budget hit), so 2M keeps
+      // ~1M headroom for longer agentURIs and ERC-1271 contract-wallet
+      // signatures (arbitrary length, extra SignatureChecker gas) and
       // still sits comfortably below Base Sepolia's ~5M per-tx cap.
       //
       // Simulate first — see settlePayment for the rationale. Atomic
@@ -592,8 +604,9 @@ export function createViemChainReader(opts: ViemReaderOptions): ChainReader {
       }
 
       // Pull PaymentSettled out of router logs (same defensive filter as
-      // settlePayment) and the optional Registered event from the registry
-      // (only present when the buyer was actually minted in this tx).
+      // settlePayment) and the optional AgentRegistered event from the
+      // AgentIndex (only present when the buyer was actually minted in
+      // this tx).
       const routerLogs = receipt.logs.filter(
         (l) => l.address.toLowerCase() === routerAddress.toLowerCase(),
       );
@@ -611,16 +624,16 @@ export function createViemChainReader(opts: ViemReaderOptions): ChainReader {
       }
       const settledArgs = (settledMatch as any).args as PaymentSettledEvent;
 
-      const registryLogs = receipt.logs.filter(
-        (l) => l.address.toLowerCase() === opts.identityRegistryAddress.toLowerCase(),
+      const indexLogs = receipt.logs.filter(
+        (l) => l.address.toLowerCase() === opts.agentIndexAddress.toLowerCase(),
       );
       const registered = parseEventLogs({
-        abi: identityRegistryAbi,
-        eventName: "Registered",
-        logs: registryLogs as any,
+        abi: agentIndexAbi,
+        eventName: "AgentRegistered",
+        logs: indexLogs as any,
       });
       const wasRegistered = registered.some(
-        (e: any) => String(e.args.owner).toLowerCase() === input.from.toLowerCase(),
+        (e: any) => String(e.args.wallet).toLowerCase() === input.from.toLowerCase(),
       );
 
       return {

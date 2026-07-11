@@ -37,9 +37,11 @@ describe("GET /register-prep", () => {
     expect(body.agentURI).toBe("ipfs://abc");
     expect(body.nonce).toBe("7");
     expect(body.eip712TypedData.primaryType).toBe("RegisterAgent");
-    expect(body.eip712TypedData.domain.name).toBe("Daski IdentityRegistry");
+    // Domain moved to the Daski AgentIndex (registerWithSig verifies the
+    // consent signature there); struct fields are unchanged.
+    expect(body.eip712TypedData.domain.name).toBe("Daski AgentIndex");
     expect(body.eip712TypedData.domain.verifyingContract).toBe(
-      gateway.config.identityRegistryAddress,
+      gateway.config.agentIndexAddress,
     );
     expect(body.eip712TypedData.message.agentWallet).toBe(FRESH_WALLET);
     expect(body.eip712TypedData.message.nonce).toBe("7");

@@ -97,8 +97,8 @@ export class MockChainReader implements ChainReader {
     this.agentURIs.set(agentId.toString(), uri);
   }
 
-  // Reverse-index. Tests that care about identity lookups call
-  // setAgentOfWallet; default is 0n (= unregistered).
+  // Reverse-index — mirrors AgentIndex.resolve. Tests that care about
+  // identity lookups call setAgentOfWallet; default is 0n (= unregistered).
   private walletToAgent = new Map<string, bigint>();
 
   setAgentOfWallet(wallet: Hex, agentId: bigint): void {
@@ -201,7 +201,7 @@ export class MockChainReader implements ChainReader {
     return this.nonces.get(attester.toLowerCase()) ?? 0n;
   }
 
-  // ── Registration mock ────────────────────────────────────────────
+  // ── Registration mock (AgentIndex.registerWithSig) ───────────────
   //
   // Mirrors the buyer-confirmation pattern: queue an outcome before each
   // call. Successful registers also auto-update agentOfWallet so any

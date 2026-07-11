@@ -112,7 +112,7 @@ export class AutoMockChainReader implements ChainReader {
     };
   }
 
-  // ── IdentityRegistry views ─────────────────────────────────────────
+  // ── IdentityRegistry / AgentIndex views ────────────────────────────
 
   async getAgentURI(agentId: bigint): Promise<string> {
     if (agentId === this.opts.providerAgentId) {
@@ -122,6 +122,8 @@ export class AutoMockChainReader implements ChainReader {
     return "";
   }
 
+  // Mirrors AgentIndex.resolve — the in-memory map plays the role of the
+  // verified wallet→agentId binding (no staleness in mock mode).
   async agentOfWallet(wallet: Hex): Promise<bigint> {
     return this.agentByWallet.get(wallet.toLowerCase()) ?? 0n;
   }

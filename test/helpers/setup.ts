@@ -25,6 +25,10 @@ import type {
 } from "../../src/types.js";
 
 const IDENTITY_REGISTRY_ADDRESS = "0x000000000000000000000000000000000000a000" as Hex;
+// Daski AgentIndex — reverse lookup + gasless registerWithSig companion of
+// the (canonical) identity registry. Distinct address so tests can assert
+// the RegisterAgent typed-data verifies against the index, not the registry.
+const AGENT_INDEX_ADDRESS = "0x000000000000000000000000000000000000a007" as Hex;
 const REGISTRY_ADDRESS = "0x000000000000000000000000000000000000a001" as Hex;
 const PAYMENT_ROUTER_ADDRESS =
   "0x000000000000000000000000000000000000a002" as Hex;
@@ -203,6 +207,7 @@ export async function startTestGateway(
     chainId: CHAIN_ID,
     network: "base-sepolia",
     identityRegistryAddress: IDENTITY_REGISTRY_ADDRESS,
+    agentIndexAddress: AGENT_INDEX_ADDRESS,
     providerRegistryAddress: REGISTRY_ADDRESS,
     serviceRegistryAddress: SERVICE_REGISTRY_ADDRESS,
     paymentRouterAddress: PAYMENT_ROUTER_ADDRESS,
