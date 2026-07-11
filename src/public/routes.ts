@@ -420,6 +420,11 @@ function chainRowToSkillEnriched(row: ChainActivityRow): SkillEnrichedRow {
       transactionHash: row.txHash,
       verifiedAt: row.settledAt,
       confirmationAttestationUid: row.confirmationAttestationUid,
+      // Synthesized from a chain event — the rail isn't recoverable from
+      // the on-chain record, and it doesn't matter for display purposes.
+      rail: "daski",
+      authNonce: null,
+      externalSettleTx: null,
     },
     record,
     refundedAtomic: row.refundedAtomic,

@@ -55,6 +55,23 @@ export interface SettlementResult {
   event: PaymentSettledEvent;
 }
 
+// ── External-rail attribution (DirectTransferAdapter) ────────────────────
+//
+// Used by the Bazaar-facing route after an EXTERNAL x402 facilitator (CDP)
+// settled the buyer's EIP-3009 authorization as a bare transfer into the
+// router. The gateway then submits DirectTransferAdapter.attribute to run
+// the commission split + payment record for funds that already arrived.
+// `authNonce` is the client-chosen EIP-3009 nonce — the adapter requires
+// authorizationState(from, authNonce) == true as defense-in-depth.
+export interface DirectAttributionInput {
+  providerAgentId: bigint;
+  serviceId: Hex;
+  amount: bigint;
+  serviceRef: Hex;
+  from: Hex;
+  authNonce: Hex;
+}
+
 // ── Gasless ERC-8004 registration ────────────────────────────────────────
 //
 // The buyer signs an EIP-712 RegisterAgent block over the IdentityRegistry
@@ -240,6 +257,15 @@ export interface ChainReader {
   settleWithRegistration(
     input: SettleWithRegistrationInput,
   ): Promise<SettleWithRegistrationResult>;
+
+  // External-rail attribution — submits DirectTransferAdapter.attribute
+  // from the facilitator wallet AFTER an external facilitator's settle
+  // moved the funds. Returns the decoded PaymentSettled event (emitted by
+  // the router). Throws when DIRECT_ADAPTER_ADDRESS is unconfigured, the
+  // tx reverts, or no matching event is found.
+  attributeDirectTransfer(
+    input: DirectAttributionInput,
+  ): Promise<SettlementResult>;
 
   // Confirmation submission — submits EAS.attestByDelegation on the buyer's
   // behalf so they pay no gas. The reader does not verify the delegation

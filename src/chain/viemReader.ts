@@ -12,6 +12,7 @@ import {
 import { privateKeyToAccount } from "viem/accounts";
 import { base, baseSepolia } from "viem/chains";
 import {
+  directTransferAdapterAbi,
   easAbi,
   identityRegistryAbi,
   knownErrorAbis,
@@ -27,6 +28,7 @@ import type {
   ChainReader,
   ConfirmationDelegationInput,
   ConfirmationResult,
+  DirectAttributionInput,
   PaymentSettledEvent,
   PaymentSettledEventLog,
   ProviderReputation,
@@ -56,6 +58,9 @@ export interface ViemReaderOptions {
   // EAS contract. On Base / Base Sepolia this is the canonical
   // 0x4200000000000000000000000000000000000021.
   easAddress: Hex;
+  // DirectTransferAdapter — attribution entry point for the external-
+  // facilitator rail. Optional; attributeDirectTransfer throws when unset.
+  directAdapterAddress?: Hex;
   // Optional — when unset, the reputation getters return null. The marketing
   // site treats null as "no reputation data" and renders the empty state
   // rather than 5xxing.
@@ -358,6 +363,90 @@ export function createViemChainReader(opts: ViemReaderOptions): ChainReader {
       );
       if (!match) {
         throw new Error("PaymentSettled event missing after settle");
+      }
+
+      const args = (match as any).args as PaymentSettledEvent;
+      return {
+        transactionHash: hash,
+        event: {
+          paymentId: args.paymentId,
+          serviceRef: args.serviceRef,
+          serviceId: args.serviceId,
+          buyerAgentId: args.buyerAgentId,
+          providerAgentId: args.providerAgentId,
+          token: args.token,
+          totalAmount: args.totalAmount,
+          providerAmount: args.providerAmount,
+          commission: args.commission,
+        },
+      };
+    },
+
+    async attributeDirectTransfer(
+      input: DirectAttributionInput,
+    ): Promise<SettlementResult> {
+      const directAdapter = opts.directAdapterAddress;
+      if (!directAdapter) {
+        throw new Error(
+          "DIRECT_ADAPTER_ADDRESS is not configured — external-rail " +
+            "attribution unavailable",
+        );
+      }
+
+      // Funds already sit on the router (moved by the external
+      // facilitator's bare EIP-3009 transfer); this tx only runs the
+      // split + bookkeeping. Same explicit-gas + simulate-first reasoning
+      // as settlePayment. Common reverts worth surfacing: "authorization
+      // not consumed" (attribution raced ahead of the external settle),
+      // "router under-funded", "serviceRef used" (double attribution).
+      let attributeRequest;
+      try {
+        const sim = await publicClient.simulateContract({
+          address: directAdapter,
+          abi: [...directTransferAdapterAbi, ...knownErrorAbis],
+          functionName: "attribute",
+          args: [
+            usdcAddress,
+            input.amount,
+            input.serviceRef,
+            input.providerAgentId,
+            input.serviceId,
+            input.from,
+            input.authNonce,
+          ],
+          account,
+          chain,
+          gas: 500_000n,
+        });
+        attributeRequest = sim.request;
+      } catch (err) {
+        throw new Error(`attribution reverted: ${decodeRevertReason(err)}`);
+      }
+
+      const hash = await walletClient.writeContract(attributeRequest);
+
+      const receipt = await publicClient.waitForTransactionReceipt({ hash });
+      if (receipt.status !== "success") {
+        throw new Error(
+          `attribution reverted on broadcast despite passing simulation (tx ${hash})`,
+        );
+      }
+
+      const routerLogs = receipt.logs.filter(
+        (l) => l.address.toLowerCase() === routerAddress.toLowerCase(),
+      );
+      const parsed = parseEventLogs({
+        abi: paymentRouterAbi,
+        eventName: "PaymentSettled",
+        logs: routerLogs as any,
+      });
+      const match = parsed.find(
+        (e: any) =>
+          String(e.args.serviceRef).toLowerCase() ===
+          input.serviceRef.toLowerCase(),
+      );
+      if (!match) {
+        throw new Error("PaymentSettled event missing after attribution");
       }
 
       const args = (match as any).args as PaymentSettledEvent;

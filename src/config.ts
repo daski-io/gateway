@@ -40,6 +40,20 @@ export interface Config {
   usdcName: string;
   usdcVersion: string;
   facilitatorPrivateKey: Hex;
+  // ── External-facilitator rail (x402 Bazaar listability) ──────────────
+  // DirectTransferAdapter — attributes payments that an EXTERNAL x402
+  // facilitator (CDP) settled as bare EIP-3009 transfers into the router.
+  // The Bazaar-facing resource route is mounted iff this is set.
+  directAdapterAddress?: Hex;
+  // Base URL of the external facilitator's /verify + /settle endpoints.
+  // Defaults per network: x402.org for Base Sepolia (no auth), the CDP
+  // facilitator for Base mainnet. Note that Bazaar INDEXING only happens
+  // for settlements processed by the CDP facilitator.
+  externalFacilitatorUrl: string;
+  // Raw `Authorization` header value for the external facilitator. The CDP
+  // facilitator requires a CDP API key JWT for mainnet /settle; testnet
+  // facilitators are typically unauthenticated. Optional.
+  externalFacilitatorAuthHeader?: string;
   whitelistedAgentIds: bigint[];
   cacheRefreshIntervalSeconds: number;
   challengeTtlSeconds: number;
@@ -199,6 +213,17 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       "FACILITATOR_PRIVATE_KEY",
       env.FACILITATOR_PRIVATE_KEY,
     ),
+    directAdapterAddress: optionalAddress(
+      "DIRECT_ADAPTER_ADDRESS",
+      env.DIRECT_ADAPTER_ADDRESS,
+    ),
+    externalFacilitatorUrl: (
+      env.EXTERNAL_FACILITATOR_URL ??
+      (chainId === 8453
+        ? "https://api.cdp.coinbase.com/platform/v2/x402"
+        : "https://x402.org/facilitator")
+    ).replace(/\/$/, ""),
+    externalFacilitatorAuthHeader: env.EXTERNAL_FACILITATOR_AUTH_HEADER,
     // WHITELISTED_AGENT_IDS is the canonical name; WHITELISTED_TOKEN_IDS is
     // accepted as a deprecated alias for operator continuity.
     whitelistedAgentIds: parseAgentIds(

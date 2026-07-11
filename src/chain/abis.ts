@@ -359,6 +359,31 @@ export const x402AdapterAbi = [
   },
 ] as const;
 
+// ── DirectTransferAdapter (external-facilitator rail) ───────────────────
+//
+// Attribution entry point for payments settled by an EXTERNAL x402
+// facilitator (CDP) as bare EIP-3009 transfers into the router. Gateway-
+// callable only (attributor whitelist); the router emits PaymentSettled
+// in the same tx, exactly like the X402Adapter path.
+
+export const directTransferAdapterAbi = [
+  {
+    type: "function",
+    name: "attribute",
+    inputs: [
+      { name: "token", type: "address" },
+      { name: "amount", type: "uint256" },
+      { name: "serviceRef", type: "bytes32" },
+      { name: "providerAgentId", type: "uint256" },
+      { name: "serviceId", type: "bytes32" },
+      { name: "from", type: "address" },
+      { name: "authNonce", type: "bytes32" },
+    ],
+    outputs: [{ name: "", type: "uint256" }],
+    stateMutability: "nonpayable",
+  },
+] as const;
+
 // ── EAS (subset the gateway uses) ───────────────────────────────────────
 //
 // The gateway acts as the relayer for buyer confirmations: it receives a

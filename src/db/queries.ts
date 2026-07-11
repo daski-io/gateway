@@ -45,6 +45,9 @@ interface ChallengeRow {
   transaction_hash: string | null;
   verified_at: Date | null;
   confirmation_attestation_uid: Buffer | null;
+  rail: "daski" | "external" | null;
+  auth_nonce: string | null;
+  external_settle_tx: string | null;
 }
 
 const ZERO_SERVICE_ID = ("0x" + "00".repeat(32)) as Hex;
@@ -76,6 +79,12 @@ function rowToChallenge(row: ChallengeRow): StoredChallenge {
     confirmationAttestationUid: row.confirmation_attestation_uid
       ? byteaToHex(row.confirmation_attestation_uid)
       : null,
+    // Rows that pre-date migration 008 have NULL rail — they were all
+    // gateway-settled, so default 'daski'.
+    rail: row.rail ?? "daski",
+    authNonce: row.auth_nonce != null ? (row.auth_nonce as Hex) : null,
+    externalSettleTx:
+      row.external_settle_tx != null ? (row.external_settle_tx as Hex) : null,
   };
 }
 
@@ -93,13 +102,17 @@ export function createQueries(pool: Pool) {
       providerA2AUrl: string;
       walletAddress: Hex;
       expiresAt: Date;
+      // External rail (Bazaar route): rail='external' plus the client's
+      // EIP-3009 nonce. Omitted for the default gateway-settled flow.
+      rail?: "daski" | "external";
+      authNonce?: Hex | null;
     }): Promise<void> {
       await pool.query(
         `INSERT INTO payment_challenges
            (service_ref, provider_token_id, buyer_token_id, amount, skill_id,
             service_slug, service_version, service_id,
-            provider_a2a_url, wallet_address, expires_at, status)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'pending')`,
+            provider_a2a_url, wallet_address, expires_at, status, rail, auth_nonce)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'pending', $12, $13)`,
         [
           hexToBytea(challenge.serviceRef),
           challenge.providerTokenId.toString(),
@@ -112,8 +125,50 @@ export function createQueries(pool: Pool) {
           challenge.providerA2AUrl,
           challenge.walletAddress.toLowerCase(),
           challenge.expiresAt,
+          challenge.rail ?? "daski",
+          challenge.authNonce ? challenge.authNonce.toLowerCase() : null,
         ],
       );
+    },
+
+    /**
+     * External-rail idempotency lookup: resolve a challenge by the buyer
+     * wallet + the client-chosen EIP-3009 nonce from the payment payload.
+     * External x402 clients never learn Daski serviceRefs, so a paid retry
+     * of the same signed payload can only be recognized by this pair
+     * (unique per migration 008's partial index).
+     */
+    async getChallengeByWalletAndNonce(
+      walletAddress: Hex,
+      authNonce: Hex,
+    ): Promise<StoredChallenge | null> {
+      const res = await pool.query<ChallengeRow>(
+        `SELECT * FROM payment_challenges
+          WHERE wallet_address = $1 AND auth_nonce = $2`,
+        [walletAddress.toLowerCase(), authNonce.toLowerCase()],
+      );
+      return res.rows[0] ? rowToChallenge(res.rows[0]) : null;
+    },
+
+    /**
+     * Record the external facilitator's settle tx hash the moment it is
+     * known — BEFORE the gateway submits the attribution tx. A crash
+     * between the two leaves a pending row with external_settle_tx set,
+     * which the paid-retry path reads as "funds already moved, go straight
+     * to attribution".
+     */
+    async recordChallengeExternallySettled(
+      serviceRef: Hex,
+      externalSettleTx: Hex,
+    ): Promise<boolean> {
+      const res = await pool.query(
+        `UPDATE payment_challenges
+            SET external_settle_tx = $1
+          WHERE service_ref = $2
+            AND status = 'pending'`,
+        [normalizeHex(externalSettleTx), hexToBytea(serviceRef)],
+      );
+      return (res.rowCount ?? 0) > 0;
     },
 
     async getChallengeByRef(serviceRef: Hex): Promise<StoredChallenge | null> {

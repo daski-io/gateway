@@ -15,6 +15,8 @@ import { createDiscoveryRouter } from "./discovery/routes.js";
 import { createPurchaseRouter } from "./payment/routes.js";
 import { createConfirmRouter } from "./payment/confirm.js";
 import { createFacilitatorRouter } from "./payment/facilitator.js";
+import { createBazaarRouter } from "./payment/bazaar.js";
+import { createExternalFacilitatorClient } from "./payment/externalFacilitator.js";
 import { createPrepRouter } from "./payment/prep.js";
 import { createIdentityRouter } from "./identity/routes.js";
 import { createMcpServer, type McpWiring } from "./mcp/server.js";
@@ -49,6 +51,13 @@ export interface CreateAppOptions {
    * going to the network.
    */
   buyerAgentCardFetch?: FetchAgentCardOptions["fetchFn"];
+  /**
+   * Test seam for the EXTERNAL x402 facilitator client used by the
+   * Bazaar-facing routes (/x402/services/…). Production leaves this
+   * undefined so the client hits config.externalFacilitatorUrl over the
+   * network; tests pass a stub that plays the CDP facilitator.
+   */
+  externalFacilitatorFetch?: typeof fetch;
 }
 
 export interface AppBundle {
@@ -118,6 +127,9 @@ export async function createApp(options: CreateAppOptions): Promise<AppBundle> {
         "/confirm",
         "/register",
         "/register-prep",
+        // Bazaar rail: paid retries forward to the external facilitator
+        // and submit an attribution tx — same gas-burn surface as /settle.
+        "/x402",
       ],
       stateChangeLimiter,
     );
@@ -326,9 +338,16 @@ export async function createApp(options: CreateAppOptions): Promise<AppBundle> {
               ? nested.baseAmount
               : undefined;
         if (typeof baseAmount !== "string") return [];
+        // When the external rail is live, point indexers at the
+        // Bazaar-facing resource — a standard x402 endpoint any client
+        // can pay without Daski-specific wiring. Fall back to the
+        // Daski-orchestrated /purchase URL otherwise.
+        const resource = config.directAdapterAddress
+          ? `${config.publicUrl}/x402/services/${p.agentId.toString()}/${String(s.id)}`
+          : `${config.publicUrl}/purchase/${p.agentId.toString()}`;
         return [
           {
-            resource: `${config.publicUrl}/purchase/${p.agentId.toString()}`,
+            resource,
             scheme: "exact",
             network: config.network,
             asset: config.usdcAddress,
@@ -425,6 +444,7 @@ export async function createApp(options: CreateAppOptions): Promise<AppBundle> {
           "## HTTP surface",
           "",
           "- POST /purchase/:tokenId — x402 paywalled (HTTP 402 challenge → X-PAYMENT retry)",
+          "- GET/POST /x402/services/:tokenId/:skillId — standard x402 v2 resource per fixed-price skill (external-facilitator settle; Bazaar-indexable)",
           "- POST /verify, /settle — x402 facilitator endpoints",
           "- GET /supported — facilitator advertisement",
           "- POST /confirm/:paymentId — submit signed buyer confirmation",
@@ -444,6 +464,25 @@ export async function createApp(options: CreateAppOptions): Promise<AppBundle> {
 
   app.use(createDiscoveryRouter(cache, config));
   app.use(createPurchaseRouter({ config, cache, queries, reader }));
+  // Bazaar-facing x402 resources — mounted only when the external rail is
+  // configured (DirectTransferAdapter deployed + whitelisted). Without the
+  // adapter the gateway could take CDP-settled money it can never split,
+  // so the surface stays off entirely.
+  if (config.directAdapterAddress) {
+    app.use(
+      createBazaarRouter({
+        config,
+        cache,
+        queries,
+        reader,
+        facilitator: createExternalFacilitatorClient({
+          baseUrl: config.externalFacilitatorUrl,
+          authHeader: config.externalFacilitatorAuthHeader,
+          fetchFn: options.externalFacilitatorFetch,
+        }),
+      }),
+    );
+  }
   app.use(createConfirmRouter({ config, reader, queries }));
   app.use(
     createFacilitatorRouter({

@@ -130,7 +130,7 @@ export function skillIdHash(skillId: string): Hex {
  *   - Entropy is currently gateway-private; surfacing it later (e.g., for
  *     a third-party arbiter to verify) is an additive change.
  */
-function generateServiceRef(skillId: string): Hex {
+export function generateServiceRef(skillId: string): Hex {
   const entropy = `0x${crypto.randomBytes(32).toString("hex")}` as Hex;
   return keccak256(
     encodeAbiParameters(
@@ -432,6 +432,165 @@ function resolveAmount(
   }
 }
 
+// ── Fixed-price skill offer (external rail / Bazaar) ─────────────────────
+
+export interface SkillOffer {
+  providerTokenId: bigint;
+  skillId: string;
+  /** Fixed price in atomic USDC. Live-priced skills are never offered. */
+  amount: bigint;
+  serviceSlug: string;
+  serviceVersion: string;
+  serviceId: Hex;
+  providerA2AUrl: string;
+  /** Human description for the 402 body / Bazaar catalog. ≤ 500 chars —
+   *  the CDP facilitator rejects verify/settle with longer descriptions. */
+  description: string;
+}
+
+export type SkillOfferResult =
+  | { ok: true; offer: SkillOffer }
+  | { ok: false; code: string; message: string; status: number };
+
+/**
+ * Resolves the static, fixed-price offer for a (provider, skill) pair —
+ * the shape the Bazaar-facing x402 route advertises in its 402 response
+ * and validates paid retries against.
+ *
+ * Stricter than issuePaymentRequirements on two axes, both deliberate:
+ *   - the skill must exist on one of the provider's cards (unknown skills
+ *     404 so crawlers can't index garbage paths), and
+ *   - the price must be a fixed non-zero baseAmount (skill-level, else
+ *     service-level). Live-priced / priceList-only skills need a /quote
+ *     hop, which the exact-scheme single-amount 402 cannot express.
+ */
+export function resolveSkillOffer(
+  providerTokenId: bigint,
+  skillId: string,
+  cache: DiscoveryCache,
+): SkillOfferResult {
+  const provider = cache.get(providerTokenId);
+  if (!provider) {
+    return {
+      ok: false,
+      code: "provider_not_found",
+      message: "provider is not whitelisted",
+      status: 404,
+    };
+  }
+  if (skillId.length === 0 || skillId.length > 64) {
+    return {
+      ok: false,
+      code: "skill_not_found",
+      message: "skillId must be 1–64 bytes",
+      status: 404,
+    };
+  }
+
+  const agentCard = findCardForSkill(provider, skillId);
+  if (!agentCard) {
+    return {
+      ok: false,
+      code: "skill_not_found",
+      message: `provider ${providerTokenId} does not list skill '${skillId}'`,
+      status: 404,
+    };
+  }
+
+  const ext = extractMarketplaceExtension(agentCard);
+  const providerA2AUrl = extractAgentCardUrl(agentCard);
+  if (!ext?.pricing || !providerA2AUrl) {
+    return {
+      ok: false,
+      code: "pricing_unavailable",
+      message: "provider agent card has no pricing extension or url",
+      status: 422,
+    };
+  }
+
+  const skillMeta = findSkillMetaForPricing(ext, agentCard, skillId);
+  if (skillMeta && skillMeta["paymentRequired"] === false) {
+    return {
+      ok: false,
+      code: "skill_is_free",
+      message: `skill '${skillId}' is free (ownership-gated); nothing to purchase`,
+      status: 404,
+    };
+  }
+
+  // Fixed price only: skill-level baseAmount wins, else service-level.
+  // "0" doubles as the live-pricing floor marker, so treat it as absent.
+  let amount: bigint | null = null;
+  for (const raw of [skillMeta?.["baseAmount"], ext.pricing.baseAmount]) {
+    if (raw === undefined || raw === null) continue;
+    try {
+      const parsed = BigInt(raw as string | number);
+      if (parsed > 0n) {
+        amount = parsed;
+        break;
+      }
+    } catch {
+      // malformed — try the next source
+    }
+  }
+  if (amount === null) {
+    return {
+      ok: false,
+      code: "not_fixed_price",
+      message:
+        `skill '${skillId}' has no fixed baseAmount (live registrar ` +
+        `pricing). It cannot be offered on the external x402 rail — use ` +
+        `the MCP daski_buy_service flow, which quotes live prices.`,
+      status: 404,
+    };
+  }
+
+  const serviceSlug = resolveServiceSlug(ext, agentCard, skillId);
+  if (serviceSlug.length === 0 || serviceSlug.length > 64) {
+    return {
+      ok: false,
+      code: "bad_service_slug",
+      message: `resolved serviceSlug '${serviceSlug}' must be 1–64 bytes`,
+      status: 422,
+    };
+  }
+  const serviceVersion = resolveServiceVersion(ext, agentCard, skillId);
+  const serviceId = computeServiceId(providerTokenId, serviceSlug, serviceVersion);
+
+  // Provider display name + the skill's own description, bounded to the
+  // CDP facilitator's 500-char description cap.
+  const cardName =
+    typeof (agentCard as { name?: unknown }).name === "string"
+      ? ((agentCard as { name: string }).name as string)
+      : `provider ${providerTokenId}`;
+  let skillDescription = skillId;
+  const skills = agentCard["skills"];
+  if (Array.isArray(skills)) {
+    for (const s of skills) {
+      if (s && typeof s === "object" && (s as Record<string, unknown>).id === skillId) {
+        const d = (s as Record<string, unknown>).description;
+        if (typeof d === "string" && d.length > 0) skillDescription = d;
+        break;
+      }
+    }
+  }
+  const description = `${cardName} — ${skillDescription}`.slice(0, 500);
+
+  return {
+    ok: true,
+    offer: {
+      providerTokenId,
+      skillId,
+      amount,
+      serviceSlug,
+      serviceVersion,
+      serviceId,
+      providerA2AUrl,
+      description,
+    },
+  };
+}
+
 export async function issuePaymentRequirements(
   params: IssueParams,
   config: Config,
@@ -711,6 +870,9 @@ export async function issuePaymentRequirements(
     transactionHash: null,
     verifiedAt: null,
     confirmationAttestationUid: null,
+    rail: "daski",
+    authNonce: null,
+    externalSettleTx: null,
   };
 
   return { ok: true, requirements, challenge };

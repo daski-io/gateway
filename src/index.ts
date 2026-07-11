@@ -60,6 +60,7 @@ async function main() {
       facilitatorPrivateKey: config.facilitatorPrivateKey,
       easAddress: config.easAddress,
       reputationStorageAddress: config.reputationStorageAddress,
+      directAdapterAddress: config.directAdapterAddress,
     });
   }
 

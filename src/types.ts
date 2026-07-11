@@ -354,5 +354,21 @@ export interface StoredChallenge {
   // revisions overwrite. Used by the public activity feed to deep-link to
   // the canonical attestation on an EAS explorer.
   confirmationAttestationUid: Hex | null;
+  // Which settlement rail this challenge runs on:
+  //   'daski'    — the gateway's own facilitator submits X402Adapter.settle
+  //                (structured nonce, split runs in the same tx).
+  //   'external' — an external x402 facilitator (CDP) settles the EIP-3009
+  //                transfer; the gateway then attributes the split via
+  //                DirectTransferAdapter. Used by the Bazaar-listable route.
+  rail: "daski" | "external";
+  // External rail only: the client-chosen EIP-3009 nonce from the payment
+  // payload. (walletAddress, authNonce) is the idempotency key for paid
+  // retries — external clients don't know Daski serviceRefs.
+  authNonce: Hex | null;
+  // External rail only: tx hash of the external facilitator's settle
+  // (the bare transferWithAuthorization that moved buyer funds into the
+  // router). Persisted before the attribution tx so a crash between the
+  // two is recoverable. `transactionHash` holds the attribution tx.
+  externalSettleTx: Hex | null;
 }
 

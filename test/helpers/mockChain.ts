@@ -4,6 +4,7 @@ import type {
   ChainReader,
   ConfirmationDelegationInput,
   ConfirmationResult,
+  DirectAttributionInput,
   PaymentSettledEvent,
   ProviderReputation,
   RegisterBySigInput,
@@ -384,6 +385,39 @@ export class MockChainReader implements ChainReader {
     return this.paymentSettledLogs.filter(
       (l) => l.blockNumber >= fromBlock && l.blockNumber <= toBlock,
     );
+  }
+
+  // ── External-rail attribution mock ─────────────────────────────────
+  //
+  // Same queue discipline as settlePayment: tests stage each outcome via
+  // queueAttribution before triggering the route. Calls are recorded so
+  // tests can assert on the exact adapter args the gateway submitted.
+  private attributionOutcomes: SettlementOutcome[] = [];
+  public attributions: DirectAttributionInput[] = [];
+
+  queueAttribution(outcome: SettlementOutcome): void {
+    this.attributionOutcomes.push(outcome);
+  }
+
+  async attributeDirectTransfer(
+    input: DirectAttributionInput,
+  ): Promise<SettlementResult> {
+    this.attributions.push(input);
+    const outcome = this.attributionOutcomes.shift();
+    if (!outcome) {
+      throw new Error(
+        "MockChainReader.attributeDirectTransfer called with no queued outcome",
+      );
+    }
+    if (outcome.kind === "revert") throw new Error(outcome.reason);
+    // Echo the caller's serviceId when the queued event left it zeroed —
+    // same convenience as settlePayment.
+    const ZERO = "0x" + "00".repeat(32);
+    const event =
+      outcome.event.serviceId.toLowerCase() === ZERO
+        ? { ...outcome.event, serviceId: input.serviceId }
+        : outcome.event;
+    return { transactionHash: outcome.txHash, event };
   }
 
   async settleWithRegistration(

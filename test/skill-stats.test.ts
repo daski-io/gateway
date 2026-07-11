@@ -42,6 +42,9 @@ function makeChallenge(opts: {
     verifiedAt: new Date(),
     confirmationAttestationUid: null,
     createdAt: new Date(),
+    rail: "daski",
+    authNonce: null,
+    externalSettleTx: null,
   };
 }
 

@@ -72,6 +72,9 @@ for the full list with defaults. The most important ones:
 | `WHITELISTED_AGENT_IDS` | Comma-separated ERC-8004 agentIds that discovery is allowed to surface |
 | `DATABASE_URL` | Postgres connection string (must have `pgvector` available) |
 | `PUBLIC_URL` | Externally reachable URL — embedded in payment requirements and discovery responses |
+| `DIRECT_ADAPTER_ADDRESS` | DirectTransferAdapter proxy. Setting it mounts the Bazaar-facing `/x402/services/:tokenId/:skillId` routes (external-facilitator rail). Unset = rail off |
+| `EXTERNAL_FACILITATOR_URL` | External x402 facilitator base URL. Defaults: x402.org (Sepolia), CDP facilitator (mainnet) |
+| `EXTERNAL_FACILITATOR_AUTH_HEADER` | Raw `Authorization` value for the external facilitator — required by CDP for mainnet settles. **Secret.** |
 
 The .env.example ships with the post-audit Base Sepolia deployment addresses
 for the Daski contracts. Replace them when redeploying.
@@ -102,12 +105,41 @@ The repo ships a `Dockerfile` and `railway.json` for Railway deploys; any
 host that can run a Node 20 container with a Postgres + pgvector add-on
 works.
 
+### Enabling the Bazaar rail (external facilitator)
+
+The `/x402/services/:tokenId/:skillId` routes let ANY standard x402 client
+buy fixed-price skills, settled by an external facilitator (Coinbase CDP) —
+which is what gets Daski resources indexed by the
+[x402 Bazaar](https://docs.cdp.coinbase.com/x402/bazaar). The on-chain
+commission split still runs in the Daski PaymentRouter, as a gateway-
+submitted attribution tx right after the external settle. Rollout order:
+
+1. Deploy `DirectTransferAdapter` against the existing stack and wire it —
+   `script/AddDirectAdapter.s.sol` in the contracts repo (see the "Add
+   DirectTransferAdapter" section of its README). Pass the gateway's
+   facilitator wallet as `ATTRIBUTOR_ADDRESS`.
+2. Set `DIRECT_ADAPTER_ADDRESS=<adapter proxy>` (Railway:
+   `railway variables --service gateway --skip-deploys --set …` then
+   `railway redeploy`). This mounts the routes; leaving it unset keeps the
+   rail fully off.
+3. Verify `GET $PUBLIC_URL/x402/services/<agentId>/<skillId>` returns a 402
+   with `accepts[]` and `extensions.bazaar`, and that
+   `/.well-known/x402-services.json` now points at the `/x402/services/…`
+   resources.
+4. Mainnet only: set `EXTERNAL_FACILITATOR_AUTH_HEADER` to a CDP API key
+   JWT — CDP requires it for `/settle`, and only CDP-settled payments are
+   indexed by the Bazaar.
+
+Buyers on this rail must already hold an ERC-8004 identity (the gasless
+`/register` flow); unregistered wallets get a 403 with instructions before
+any funds move.
+
 ## Architecture
 
 - `src/app.ts` — Express wiring, route registration, MCP mount
 - `src/mcp/server.ts` — MCP tool surface (`daski_search_services`, `daski_*`, deprecated aliases for one grace cycle)
 - `src/discovery/` — Agent Card cache + pgvector embedding sync
-- `src/payment/` — x402 challenge / verify / settle, EAS confirmation
+- `src/payment/` — x402 challenge / verify / settle, EAS confirmation, Bazaar-facing external-facilitator rail (`bazaar.ts`, `externalFacilitator.ts`)
 - `src/identity/` — ERC-8004 lookups + gasless registration
 - `src/chain/` — viem-backed reader for the Daski contracts
 - `src/db/` — Postgres pool, migrations, queries

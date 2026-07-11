@@ -21,6 +21,7 @@ import type {
   ChainReader,
   ConfirmationDelegationInput,
   ConfirmationResult,
+  DirectAttributionInput,
   PaymentSettledEvent,
   PaymentSettledEventLog,
   ProviderReputation,
@@ -200,6 +201,39 @@ export class AutoMockChainReader implements ChainReader {
       event: result.event,
       buyerAgentId: result.event.buyerAgentId,
       registered: !existed,
+    };
+  }
+
+  async attributeDirectTransfer(
+    input: DirectAttributionInput,
+  ): Promise<SettlementResult> {
+    // Mirror the on-chain idempotency surface: one attribution per
+    // serviceRef. (The auth nonce is consumed by the EXTERNAL facilitator
+    // in production; the mock has no external settle step to track, so
+    // serviceRef is the useful replay key here.)
+    const key = `attr:${input.serviceRef.toLowerCase()}`;
+    if (this.usedAuthNonces.has(key)) {
+      throw new Error("mock attribute: serviceRef used");
+    }
+    this.usedAuthNonces.add(key);
+
+    const buyerAgentId = this.rememberBuyer(input.from);
+    const paymentId = this.nextPaymentId++;
+    const commission = (input.amount * 5n) / 100n;
+    const event: PaymentSettledEvent = {
+      paymentId,
+      serviceRef: input.serviceRef,
+      serviceId: input.serviceId,
+      buyerAgentId,
+      providerAgentId: input.providerAgentId,
+      token: this.opts.tokenAddress.toLowerCase() as Hex,
+      totalAmount: input.amount,
+      providerAmount: input.amount - commission,
+      commission,
+    };
+    return {
+      transactionHash: txHashForPayment(paymentId),
+      event,
     };
   }
 

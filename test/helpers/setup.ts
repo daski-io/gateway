@@ -76,6 +76,13 @@ export interface TestGatewayOptions {
    * etc.) that the default fixture leaves unset.
    */
   configOverrides?: Partial<Config>;
+  /**
+   * Stub for the EXTERNAL x402 facilitator HTTP client (Bazaar rail).
+   * Receives the /verify and /settle POSTs the gateway would send to the
+   * CDP facilitator. Only reachable when configOverrides sets
+   * directAdapterAddress (which mounts the /x402/services routes).
+   */
+  externalFacilitatorFetch?: typeof fetch;
 }
 
 /**
@@ -213,6 +220,10 @@ export async function startTestGateway(
     easConfirmationSchemaUid: EAS_CONFIRMATION_SCHEMA_UID,
     easOutcomeSchemaUid: EAS_OUTCOME_SCHEMA_UID,
     ipfsGatewayUrl: "https://ipfs.io/ipfs/",
+    // Bazaar rail — never hit over the network in tests; routes are only
+    // mounted when configOverrides also sets directAdapterAddress, and
+    // those tests inject externalFacilitatorFetch.
+    externalFacilitatorUrl: "http://external-facilitator.test",
     ...opts.configOverrides,
   };
 
@@ -255,6 +266,7 @@ export async function startTestGateway(
     startCacheRefreshLoop: false,
     agentCardFetchTimeoutMs: 2000,
     buyerAgentCardFetch,
+    externalFacilitatorFetch: opts.externalFacilitatorFetch,
   });
 
   await bundle.cache.refresh();
