@@ -50,6 +50,29 @@ interface ChallengeRow {
   external_settle_tx: string | null;
 }
 
+// reputation_mirrors row as pg returns it (BIGINT → string, BYTEA →
+// Buffer). See migration 009 for column semantics.
+interface ReputationMirrorDbRow {
+  payment_id: string;
+  attestation_uid: Buffer;
+  provider_agent_id: string | null;
+  feedback_index: string | null;
+  tx_hash: Buffer | null;
+  status: "sent" | "failed";
+  updated_at: Date;
+}
+
+/** Decoded reputation_mirrors row — the mirror module's working shape. */
+export interface ReputationMirrorRow {
+  paymentId: bigint;
+  attestationUid: Hex;
+  providerAgentId: bigint | null;
+  feedbackIndex: bigint | null;
+  txHash: Hex | null;
+  status: "sent" | "failed";
+  updatedAt: Date;
+}
+
 const ZERO_SERVICE_ID = ("0x" + "00".repeat(32)) as Hex;
 
 function rowToChallenge(row: ChallengeRow): StoredChallenge {
@@ -261,6 +284,83 @@ export function createQueries(pool: Pool) {
             SET confirmation_attestation_uid = $1
           WHERE payment_id = $2`,
         [hexToBytea(attestationUid), paymentId.toString()],
+      );
+    },
+
+    /**
+     * Challenge row by paymentId (set once the challenge transitions to
+     * 'paid'). The reputation mirror uses this for cheap off-chain
+     * enrichment (service slug → canonical feedback tag2); null for
+     * payments that didn't come through this gateway.
+     */
+    async getChallengeByPaymentId(
+      paymentId: bigint,
+    ): Promise<StoredChallenge | null> {
+      const res = await pool.query<ChallengeRow>(
+        `SELECT * FROM payment_challenges WHERE payment_id = $1`,
+        [paymentId.toString()],
+      );
+      return res.rows[0] ? rowToChallenge(res.rows[0]) : null;
+    },
+
+    // ── Canonical-feedback mirror bookkeeping ──────────────────────────
+    //
+    // One row per paymentId tracking what the gateway posted to the
+    // canonical ERC-8004 ReputationRegistry (see migration 009). The
+    // registry is the source of truth for the feedback itself; these rows
+    // exist for idempotency (skip re-posting on confirmation retries) and
+    // revisions (feedback_index is what revokeFeedback needs).
+
+    async getReputationMirror(
+      paymentId: bigint,
+    ): Promise<ReputationMirrorRow | null> {
+      const res = await pool.query<ReputationMirrorDbRow>(
+        `SELECT * FROM reputation_mirrors WHERE payment_id = $1`,
+        [paymentId.toString()],
+      );
+      const row = res.rows[0];
+      if (!row) return null;
+      return {
+        paymentId: BigInt(row.payment_id),
+        attestationUid: byteaToHex(row.attestation_uid),
+        providerAgentId:
+          row.provider_agent_id != null ? BigInt(row.provider_agent_id) : null,
+        feedbackIndex:
+          row.feedback_index != null ? BigInt(row.feedback_index) : null,
+        txHash: row.tx_hash ? byteaToHex(row.tx_hash) : null,
+        status: row.status,
+        updatedAt: row.updated_at,
+      };
+    },
+
+    async upsertReputationMirror(row: {
+      paymentId: bigint;
+      attestationUid: Hex;
+      providerAgentId: bigint | null;
+      feedbackIndex: bigint | null;
+      txHash: Hex | null;
+      status: "sent" | "failed";
+    }): Promise<void> {
+      await pool.query(
+        `INSERT INTO reputation_mirrors
+           (payment_id, attestation_uid, provider_agent_id, feedback_index,
+            tx_hash, status, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, now())
+         ON CONFLICT (payment_id) DO UPDATE
+            SET attestation_uid = EXCLUDED.attestation_uid,
+                provider_agent_id = EXCLUDED.provider_agent_id,
+                feedback_index = EXCLUDED.feedback_index,
+                tx_hash = EXCLUDED.tx_hash,
+                status = EXCLUDED.status,
+                updated_at = now()`,
+        [
+          row.paymentId.toString(),
+          hexToBytea(row.attestationUid),
+          row.providerAgentId != null ? row.providerAgentId.toString() : null,
+          row.feedbackIndex != null ? row.feedbackIndex.toString() : null,
+          row.txHash ? hexToBytea(row.txHash) : null,
+          row.status,
+        ],
       );
     },
 

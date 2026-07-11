@@ -140,6 +140,49 @@ export interface ConfirmationResult {
   attestationUid: Hex;
 }
 
+// ── Canonical ERC-8004 ReputationRegistry feedback ───────────────────────
+//
+// The gateway's facilitator wallet acts as the orchestrator-client the
+// ERC-8004 spec allows: after a buyer confirmation lands on EAS, it mirrors
+// the result as public feedback on the canonical per-chain
+// ReputationRegistry (0x8004B…). Field semantics follow the pinned spec:
+// value is int128 scaled by 10^-valueDecimals; tag1/tag2 are free-form
+// filter strings; feedbackURI/feedbackHash bind the entry to off-chain
+// evidence.
+export interface FeedbackInput {
+  /** Provider agentId on the canonical IdentityRegistry. */
+  agentId: bigint;
+  /** int128 — may be negative per spec, Daski uses 0..100. */
+  value: bigint;
+  valueDecimals: number;
+  tag1: string;
+  tag2: string;
+  endpoint: string;
+  feedbackURI: string;
+  feedbackHash: Hex;
+}
+
+export interface FeedbackResult {
+  transactionHash: Hex;
+}
+
+// ── PaymentRouter.getPayment record ──────────────────────────────────────
+//
+// On-chain PaymentRecord for a settled paymentId — the authoritative
+// (buyer, provider, service) tuple. The reader returns null for unknown
+// paymentIds (the contract zero-inits the struct; providerAgentId == 0 is
+// the sentinel since real settles always carry a non-zero provider).
+export interface PaymentRouterRecord {
+  buyerAgentId: bigint;
+  providerAgentId: bigint;
+  serviceId: Hex;
+  token: Hex;
+  amount: bigint;
+  cachedBuyerWallet: Hex;
+  serviceRef: Hex;
+  paidAt: bigint;
+}
+
 // ── ReputationStorage views ──────────────────────────────────────────────
 //
 // Mirrors the (completed, failed, canceled, confirmed, notConfirmed) and
@@ -330,6 +373,32 @@ export interface ChainReader {
   // settled-but-unrefunded payments — the gateway disambiguates against
   // its own challenge row.
   getPaymentRefundedAmount(paymentId: bigint): Promise<bigint>;
+
+  // Full on-chain PaymentRecord from PaymentRouter.getPayment. Null for
+  // unknown paymentIds (zero-init struct detected via providerAgentId == 0).
+  // The reputation mirror uses this as the authoritative provider lookup.
+  getPaymentRecord(paymentId: bigint): Promise<PaymentRouterRecord | null>;
+
+  // ── Canonical ERC-8004 ReputationRegistry (feedback mirror) ────────────
+  // All three throw when REPUTATION_REGISTRY_ADDRESS is unconfigured — the
+  // mirror module gates on config before calling, so an unconfigured
+  // gateway never reaches these.
+
+  // Post public feedback from the facilitator wallet (the ERC-8004
+  // "client"). Reverts on-chain if the facilitator is the agent's
+  // owner/operator/approved/agentWallet (spec arms-length rule).
+  giveFeedback(input: FeedbackInput): Promise<FeedbackResult>;
+
+  // Soft-revoke one of the facilitator's own feedback entries. Reverts
+  // with "no such feedback" / "already revoked" — revision flows call this
+  // best-effort and swallow those.
+  revokeFeedback(agentId: bigint, feedbackIndex: bigint): Promise<FeedbackResult>;
+
+  // Last (1-based) feedback index THE FACILITATOR WALLET has posted for
+  // this agent on the canonical ReputationRegistry; 0n = none yet. The
+  // clientAddress is implicitly the reader's own facilitator account —
+  // the only client identity the gateway writes feedback under.
+  getFeedbackLastIndex(agentId: bigint): Promise<bigint>;
 
   /**
    * Pull `PaymentRouter.PaymentSettled` event logs in a block range. Used

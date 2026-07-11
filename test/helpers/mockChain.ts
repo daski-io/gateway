@@ -5,6 +5,9 @@ import type {
   ConfirmationDelegationInput,
   ConfirmationResult,
   DirectAttributionInput,
+  FeedbackInput,
+  FeedbackResult,
+  PaymentRouterRecord,
   PaymentSettledEvent,
   ProviderReputation,
   RegisterBySigInput,
@@ -365,6 +368,72 @@ export class MockChainReader implements ChainReader {
 
   async getPaymentRefundedAmount(paymentId: bigint): Promise<bigint> {
     return this.paymentRefunds.get(paymentId.toString()) ?? 0n;
+  }
+
+  // Per-paymentId PaymentRouter.getPayment mock. Default null (unknown
+  // payment) mirrors the reader's zero-init detection; tests that exercise
+  // the reputation mirror seed a record via setPaymentRecord.
+  private paymentRecords = new Map<string, PaymentRouterRecord>();
+
+  setPaymentRecord(paymentId: bigint, record: PaymentRouterRecord): void {
+    this.paymentRecords.set(paymentId.toString(), record);
+  }
+
+  async getPaymentRecord(
+    paymentId: bigint,
+  ): Promise<PaymentRouterRecord | null> {
+    return this.paymentRecords.get(paymentId.toString()) ?? null;
+  }
+
+  // ── Canonical ReputationRegistry feedback mock ──────────────────────
+  //
+  // Records every giveFeedback / revokeFeedback call so mirror tests can
+  // assert on the exact args. Default outcome is success (with a 1-based
+  // per-agent index, matching the canonical registry); tests exercising
+  // failure paths queue reverts via queueFeedback / queueFeedbackRevoke.
+  public feedbacks: FeedbackInput[] = [];
+  public feedbackRevokes: Array<{ agentId: bigint; feedbackIndex: bigint }> =
+    [];
+  private feedbackOutcomes: Array<{ kind: "revert"; reason: string }> = [];
+  private feedbackRevokeOutcomes: Array<{ kind: "revert"; reason: string }> =
+    [];
+  private feedbackLastIndex = new Map<string, bigint>();
+
+  queueFeedback(outcome: { kind: "revert"; reason: string }): void {
+    this.feedbackOutcomes.push(outcome);
+  }
+
+  queueFeedbackRevoke(outcome: { kind: "revert"; reason: string }): void {
+    this.feedbackRevokeOutcomes.push(outcome);
+  }
+
+  async giveFeedback(input: FeedbackInput): Promise<FeedbackResult> {
+    this.feedbacks.push(input);
+    const outcome = this.feedbackOutcomes.shift();
+    if (outcome) throw new Error(outcome.reason);
+    const key = input.agentId.toString();
+    const next = (this.feedbackLastIndex.get(key) ?? 0n) + 1n;
+    this.feedbackLastIndex.set(key, next);
+    return {
+      transactionHash: `0xfeed${next.toString(16).padStart(60, "0")}` as Hex,
+    };
+  }
+
+  async revokeFeedback(
+    agentId: bigint,
+    feedbackIndex: bigint,
+  ): Promise<FeedbackResult> {
+    this.feedbackRevokes.push({ agentId, feedbackIndex });
+    const outcome = this.feedbackRevokeOutcomes.shift();
+    if (outcome) throw new Error(outcome.reason);
+    return {
+      transactionHash:
+        `0xdead${feedbackIndex.toString(16).padStart(60, "0")}` as Hex,
+    };
+  }
+
+  async getFeedbackLastIndex(agentId: bigint): Promise<bigint> {
+    return this.feedbackLastIndex.get(agentId.toString()) ?? 0n;
   }
 
   private paymentSettledLogs: PaymentSettledEventLog[] = [];

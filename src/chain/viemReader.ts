@@ -19,6 +19,7 @@ import {
   knownErrorAbis,
   paymentRouterAbi,
   providerRegistryAbi,
+  reputationRegistryAbi,
   reputationStorageAbi,
   usdcAbi,
   x402AdapterAbi,
@@ -30,6 +31,9 @@ import type {
   ConfirmationDelegationInput,
   ConfirmationResult,
   DirectAttributionInput,
+  FeedbackInput,
+  FeedbackResult,
+  PaymentRouterRecord,
   PaymentSettledEvent,
   PaymentSettledEventLog,
   ProviderReputation,
@@ -70,6 +74,10 @@ export interface ViemReaderOptions {
   // site treats null as "no reputation data" and renders the empty state
   // rather than 5xxing.
   reputationStorageAddress?: Hex;
+  // Canonical ERC-8004 ReputationRegistry (0x8004B…). Optional; the
+  // feedback methods (giveFeedback / revokeFeedback / getFeedbackLastIndex)
+  // throw when unset. The mirror module gates on config before calling.
+  reputationRegistryAddress?: Hex;
 }
 
 function chainForId(chainId: ChainId) {
@@ -201,6 +209,16 @@ export function createViemChainReader(opts: ViemReaderOptions): ChainReader {
     "event Attested(address indexed recipient, address indexed attester, bytes32 uid, bytes32 indexed schemaUID)",
   );
 
+  function requireReputationRegistry(): Hex {
+    if (!opts.reputationRegistryAddress) {
+      throw new Error(
+        "REPUTATION_REGISTRY_ADDRESS is not configured — canonical " +
+          "feedback mirroring unavailable",
+      );
+    }
+    return opts.reputationRegistryAddress;
+  }
+
   return {
     async getProviderCount() {
       return (await publicClient.readContract({
@@ -268,6 +286,31 @@ export function createViemChainReader(opts: ViemReaderOptions): ChainReader {
         functionName: "refundedAmount",
         args: [paymentId],
       })) as bigint;
+    },
+
+    async getPaymentRecord(
+      paymentId: bigint,
+    ): Promise<PaymentRouterRecord | null> {
+      const raw = (await publicClient.readContract({
+        address: routerAddress,
+        abi: paymentRouterAbi,
+        functionName: "getPayment",
+        args: [paymentId],
+      })) as {
+        buyerAgentId: bigint;
+        providerAgentId: bigint;
+        serviceId: Hex;
+        token: Hex;
+        amount: bigint;
+        cachedBuyerWallet: Hex;
+        serviceRef: Hex;
+        paidAt: bigint;
+      };
+      // Zero-init struct for unknown paymentIds. Real settles always carry
+      // a non-zero providerAgentId (the router validates the service pair),
+      // so it doubles as the "no such payment" sentinel.
+      if (raw.providerAgentId === 0n) return null;
+      return raw;
     },
 
     async getRegistrationNonce(wallet: Hex) {
@@ -893,6 +936,104 @@ export function createViemChainReader(opts: ViemReaderOptions): ChainReader {
         confirmationTimestamp: raw.confirmationTimestamp,
         outcomeRecorded: raw.outcomeRecorded,
       };
+    },
+
+    // ── Canonical ERC-8004 ReputationRegistry (feedback mirror) ─────────
+
+    async giveFeedback(input: FeedbackInput): Promise<FeedbackResult> {
+      const registry = requireReputationRegistry();
+
+      // Explicit gas for the same sepolia.base.org reason documented in
+      // settlePayment. giveFeedback writes one FeedbackRecord (two string
+      // SSTOREs for tags) plus the first-client list push and emits
+      // NewFeedback with the URI/hash payload — ~120-180k in practice;
+      // 300k leaves headroom for long tags/URIs.
+      //
+      // Simulate first — see settlePayment. The revert worth surfacing
+      // here is the spec's arms-length rule ("owner cannot self-review" /
+      // "operator cannot review" / "agentWallet cannot self-review"): if
+      // the facilitator wallet ever controls the provider agent, the
+      // mirror is EXPECTED to fail — the caller logs and moves on.
+      let feedbackRequest;
+      try {
+        const sim = await publicClient.simulateContract({
+          address: registry,
+          abi: [...reputationRegistryAbi, ...knownErrorAbis],
+          functionName: "giveFeedback",
+          args: [
+            input.agentId,
+            input.value,
+            input.valueDecimals,
+            input.tag1,
+            input.tag2,
+            input.endpoint,
+            input.feedbackURI,
+            input.feedbackHash,
+          ],
+          account,
+          chain,
+          gas: 300_000n,
+        });
+        feedbackRequest = sim.request;
+      } catch (err) {
+        throw new Error(`giveFeedback reverted: ${decodeRevertReason(err)}`);
+      }
+
+      const hash = await walletClient.writeContract(feedbackRequest);
+      const receipt = await publicClient.waitForTransactionReceipt({ hash });
+      if (receipt.status !== "success") {
+        throw new Error(
+          `giveFeedback reverted on broadcast despite passing simulation (tx ${hash})`,
+        );
+      }
+      return { transactionHash: hash };
+    },
+
+    async revokeFeedback(
+      agentId: bigint,
+      feedbackIndex: bigint,
+    ): Promise<FeedbackResult> {
+      const registry = requireReputationRegistry();
+
+      // Soft revoke — flips one bool and emits FeedbackRevoked; 150k is
+      // generous. Simulate first so "no such feedback" / "already revoked"
+      // surface as clean reasons the caller can decide to swallow.
+      let revokeRequest;
+      try {
+        const sim = await publicClient.simulateContract({
+          address: registry,
+          abi: [...reputationRegistryAbi, ...knownErrorAbis],
+          functionName: "revokeFeedback",
+          args: [agentId, feedbackIndex],
+          account,
+          chain,
+          gas: 150_000n,
+        });
+        revokeRequest = sim.request;
+      } catch (err) {
+        throw new Error(`revokeFeedback reverted: ${decodeRevertReason(err)}`);
+      }
+
+      const hash = await walletClient.writeContract(revokeRequest);
+      const receipt = await publicClient.waitForTransactionReceipt({ hash });
+      if (receipt.status !== "success") {
+        throw new Error(
+          `revokeFeedback reverted on broadcast despite passing simulation (tx ${hash})`,
+        );
+      }
+      return { transactionHash: hash };
+    },
+
+    async getFeedbackLastIndex(agentId: bigint): Promise<bigint> {
+      const registry = requireReputationRegistry();
+      // clientAddress is the facilitator wallet — the only identity the
+      // gateway writes canonical feedback under.
+      return (await publicClient.readContract({
+        address: registry,
+        abi: reputationRegistryAbi,
+        functionName: "getLastIndex",
+        args: [agentId, account.address],
+      })) as bigint;
     },
   };
 }

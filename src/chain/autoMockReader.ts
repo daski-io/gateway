@@ -22,6 +22,9 @@ import type {
   ConfirmationDelegationInput,
   ConfirmationResult,
   DirectAttributionInput,
+  FeedbackInput,
+  FeedbackResult,
+  PaymentRouterRecord,
   PaymentSettledEvent,
   PaymentSettledEventLog,
   ProviderReputation,
@@ -327,6 +330,56 @@ export class AutoMockChainReader implements ChainReader {
 
   async getPaymentRefundedAmount(_paymentId: bigint): Promise<bigint> {
     return 0n;
+  }
+
+  /**
+   * Synthetic PaymentRecord for any nonzero paymentId — mirrors the
+   * single-provider mock world (provider = the configured agentId). The
+   * reputation mirror never runs in CHAIN_MODE=mock, so this exists for
+   * interface completeness, not behavior.
+   */
+  async getPaymentRecord(
+    paymentId: bigint,
+  ): Promise<PaymentRouterRecord | null> {
+    if (paymentId === 0n) return null;
+    return {
+      buyerAgentId: this.defaultBuyerAgentId,
+      providerAgentId: this.opts.providerAgentId,
+      serviceId: ZERO_HASH,
+      token: this.opts.tokenAddress.toLowerCase() as Hex,
+      amount: 0n,
+      cachedBuyerWallet: ZERO_ADDR,
+      serviceRef: ZERO_HASH,
+      paidAt: BigInt(Math.floor(Date.now() / 1000)),
+    };
+  }
+
+  // ── Canonical ReputationRegistry feedback (mirror) ──────────────────
+  //
+  // The mirror is disabled in CHAIN_MODE=mock, so these are auto-success
+  // stubs recording calls for completeness/debugging only. Indices are
+  // 1-based per (agentId), matching the canonical registry's semantics.
+
+  public feedbacks: FeedbackInput[] = [];
+  private feedbackIndexByAgent = new Map<string, bigint>();
+
+  async giveFeedback(input: FeedbackInput): Promise<FeedbackResult> {
+    this.feedbacks.push(input);
+    const key = input.agentId.toString();
+    const next = (this.feedbackIndexByAgent.get(key) ?? 0n) + 1n;
+    this.feedbackIndexByAgent.set(key, next);
+    return { transactionHash: deterministicHex("f", next) };
+  }
+
+  async revokeFeedback(
+    _agentId: bigint,
+    feedbackIndex: bigint,
+  ): Promise<FeedbackResult> {
+    return { transactionHash: deterministicHex("v", feedbackIndex) };
+  }
+
+  async getFeedbackLastIndex(agentId: bigint): Promise<bigint> {
+    return this.feedbackIndexByAgent.get(agentId.toString()) ?? 0n;
   }
 
   async getPaymentSettledEvents(

@@ -423,7 +423,7 @@ export async function createApp(options: CreateAppOptions): Promise<AppBundle> {
           "- daski_buy_service — orchestrator (returns plan; accepts paymentPayload for x402 retry)",
           "- daski_submit_task — dispatch task over A2A (two-call for paid skills: no envelopeAuth → returns typed-data → signed retry)",
           "- daski_get_task_status — poll (stream:false) or SSE-stream (stream:true) a provider's A2A task",
-          "- daski_confirm_delivery — buyer-confirmation EAS attestation (two-call: no signature → returns typed-data → signed retry)",
+          "- daski_confirm_delivery — buyer-confirmation EAS attestation (two-call: no signature → returns typed-data → signed retry); when enabled, the gateway also mirrors the result as public ERC-8004 feedback on the canonical ReputationRegistry",
           "",
           "Advanced/manual:",
           "- daski_register_agent — gasless ERC-8004 registration (two-call). Use only when you want an identity without a purchase.",

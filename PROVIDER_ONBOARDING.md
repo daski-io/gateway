@@ -199,6 +199,16 @@ on-chain reputation as ground truth; the marketplace UI ranks providers
 by these counters and providers should expect this to feed into
 discovery sort order over time.
 
+When the gateway is configured with the canonical ERC-8004
+`ReputationRegistry`, each confirmation is additionally mirrored there as
+PUBLIC feedback for your `agentId` (submitted by the gateway's
+facilitator wallet as the orchestrator-client, value 100 = Confirmed /
+0 = NotConfirmed, `tag1 = "daski"`, with the EAS attestation UID as
+`feedbackHash` and an easscan deep-link as `feedbackURI`). That entry is
+portable — any ERC-8004 consumer can read it without knowing Daski's
+contracts — and the registry lets you respond on-chain via
+`appendResponse` from the wallet that controls your agent.
+
 ---
 
 ## 7. Embedding quality (search ranking)

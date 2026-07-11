@@ -61,9 +61,26 @@ async function main() {
       facilitatorPrivateKey: config.facilitatorPrivateKey,
       easAddress: config.easAddress,
       reputationStorageAddress: config.reputationStorageAddress,
+      reputationRegistryAddress: config.reputationRegistryAddress,
       directAdapterAddress: config.directAdapterAddress,
     });
   }
+
+  // Canonical-feedback mirror status — one startup line so operators can
+  // tell at a glance whether buyer confirmations will be mirrored to the
+  // canonical ERC-8004 ReputationRegistry (mirror.ts logs per-call
+  // failures, not per-call disabled states).
+  const mirrorEnabled =
+    chainMode !== "mock" && Boolean(config.reputationRegistryAddress);
+  console.log(
+    mirrorEnabled
+      ? `canonical ERC-8004 feedback mirror enabled (ReputationRegistry ${config.reputationRegistryAddress})`
+      : `canonical ERC-8004 feedback mirror disabled (${
+          chainMode === "mock"
+            ? "CHAIN_MODE=mock"
+            : "REPUTATION_REGISTRY_ADDRESS unset"
+        })`,
+  );
 
   const bundle = await createApp({ config, reader });
 

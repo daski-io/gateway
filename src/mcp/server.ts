@@ -997,7 +997,7 @@ export async function createMcpServer(
           "- First call: `{ eip712TypedData, deadline }`. Sign `eip712TypedData` with the SAME wallet that paid (the EAS attestation must come from that address). Extract `{ v, r, s }`.",
           "- Second call: `{ attestationUid, transactionHash, success: true }`.",
           "",
-          "Next step: done. The provider's `ReputationStorage` counter is now bumped.",
+          "Next step: done. The provider's `ReputationStorage` counter is now bumped, and (when the gateway has the canonical registry configured) the delivery is also mirrored as public ERC-8004 feedback on the canonical ReputationRegistry — portable reputation any ERC-8004 consumer can read.",
         ].join("\n"),
         inputSchema: CONFIRM_DELIVERY_INPUT_SCHEMA,
         annotations: {

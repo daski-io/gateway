@@ -164,6 +164,33 @@ export const paymentRouterAbi = [
     stateMutability: "view",
   },
   {
+    // Full PaymentRecord for one paymentId — the authoritative on-chain
+    // source of (buyer, provider, service) for a settled payment. Unknown
+    // paymentIds return a zero-init struct (providerAgentId == 0); the
+    // reader maps that to null. The canonical-feedback mirror reads this
+    // to resolve which provider to post ERC-8004 feedback against.
+    type: "function",
+    name: "getPayment",
+    inputs: [{ name: "paymentId", type: "uint256" }],
+    outputs: [
+      {
+        name: "",
+        type: "tuple",
+        components: [
+          { name: "buyerAgentId", type: "uint256" },
+          { name: "providerAgentId", type: "uint256" },
+          { name: "serviceId", type: "bytes32" },
+          { name: "token", type: "address" },
+          { name: "amount", type: "uint256" },
+          { name: "cachedBuyerWallet", type: "address" },
+          { name: "serviceRef", type: "bytes32" },
+          { name: "paidAt", type: "uint256" },
+        ],
+      },
+    ],
+    stateMutability: "view",
+  },
+  {
     type: "event",
     name: "PaymentSettled",
     inputs: [
@@ -326,6 +353,59 @@ export const reputationStorageAbi = [
         ],
       },
     ],
+    stateMutability: "view",
+  },
+] as const;
+
+// ── Canonical ERC-8004 ReputationRegistry ───────────────────────────────
+//
+// Public per-chain feedback singleton (0x8004B…), pinned to the same spec
+// commit as the canonical IdentityRegistry. The gateway acts as an
+// orchestrator-client: after a buyer confirmation lands on EAS, the
+// facilitator wallet mirrors it here as public feedback for the provider
+// so Daski reputation is portable across the ERC-8004 ecosystem. Feedback
+// indices are per-(agentId, clientAddress) and 1-based; getLastIndex
+// returns the most recent index this client used (0 = none yet), which is
+// what revokeFeedback needs for revisions.
+
+export const reputationRegistryAbi = [
+  {
+    type: "function",
+    name: "giveFeedback",
+    inputs: [
+      { name: "agentId", type: "uint256" },
+      { name: "value", type: "int128" },
+      { name: "valueDecimals", type: "uint8" },
+      { name: "tag1", type: "string" },
+      { name: "tag2", type: "string" },
+      { name: "endpoint", type: "string" },
+      { name: "feedbackURI", type: "string" },
+      { name: "feedbackHash", type: "bytes32" },
+    ],
+    outputs: [],
+    stateMutability: "nonpayable",
+  },
+  {
+    // Soft revocation — the record stays, isRevoked flips. Reverts with
+    // "no such feedback" / "already revoked"; callers doing best-effort
+    // revoke-before-revise swallow those.
+    type: "function",
+    name: "revokeFeedback",
+    inputs: [
+      { name: "agentId", type: "uint256" },
+      { name: "feedbackIndex", type: "uint64" },
+    ],
+    outputs: [],
+    stateMutability: "nonpayable",
+  },
+  {
+    type: "function",
+    name: "getLastIndex",
+    inputs: [
+      { name: "agentId", type: "uint256" },
+      { name: "clientAddress", type: "address" },
+    ],
+    outputs: [{ name: "", type: "uint64" }],
     stateMutability: "view",
   },
 ] as const;

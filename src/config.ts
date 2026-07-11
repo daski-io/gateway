@@ -37,8 +37,12 @@ export interface Config {
   // but handy for clients that want to advertise which rails are live.
   permitAdapterAddress?: Hex;
   approvalAdapterAddress?: Hex;
-  reputationRegistryAddress?: Hex;
   validationRegistryAddress?: Hex;
+  // Canonical ERC-8004 ReputationRegistry (0x8004B… singleton). When set,
+  // the gateway mirrors every buyer confirmation as public feedback for
+  // the provider (facilitator wallet = the ERC-8004 client, EAS
+  // attestation = evidence). Unset = mirroring off; everything else works.
+  reputationRegistryAddress?: Hex;
   // Daski ReputationStorage — used by the gateway only as a view source.
   // Writes go through EAS; this stays in config so discovery can read
   // aggregate stats for ranking.
