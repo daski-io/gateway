@@ -45,8 +45,9 @@ git clone https://github.com/daski-io/gateway.git
 cd gateway
 npm install
 cp .env.example .env
-# edit .env — set FACILITATOR_PRIVATE_KEY, WHITELISTED_AGENT_IDS,
-# and DATABASE_URL at minimum
+# edit .env — set FACILITATOR_PRIVATE_KEY, AGENT_INDEX_ADDRESS (ships blank;
+# take it from the current deployment), WHITELISTED_AGENT_IDS, and
+# DATABASE_URL at minimum
 
 # Bring up a local pgvector-enabled Postgres (one-time):
 docker run -d --name daski-gateway-pg -p 5433:5432 \
@@ -71,6 +72,8 @@ for the full list with defaults. The most important ones:
 | `FACILITATOR_PRIVATE_KEY` | Signer for x402 settles + delegated EAS attestations. **Secret.** |
 | `WHITELISTED_AGENT_IDS` | Comma-separated ERC-8004 agentIds that discovery is allowed to surface |
 | `DATABASE_URL` | Postgres connection string (must have `pgvector` available) |
+| `AGENT_INDEX_ADDRESS` | Daski AgentIndex proxy — verified wallet→agentId resolution + gasless registration. **Required**; changes on every contract redeploy (ships blank in `.env.example`) |
+| `REPUTATION_REGISTRY_ADDRESS` | Canonical ERC-8004 ReputationRegistry. Set it to mirror confirmed deliveries as public feedback; unset = mirror off |
 | `PUBLIC_URL` | Externally reachable URL — embedded in payment requirements and discovery responses |
 | `DIRECT_ADAPTER_ADDRESS` | DirectTransferAdapter proxy. Setting it mounts the Bazaar-facing `/x402/services/:tokenId/:skillId` routes (external-facilitator rail). Unset = rail off |
 | `EXTERNAL_FACILITATOR_URL` | External x402 facilitator base URL. Defaults: x402.org (Sepolia), CDP facilitator (mainnet) |
@@ -103,7 +106,9 @@ npm start
 
 The repo ships a `Dockerfile` and `railway.json` for Railway deploys; any
 host that can run a Node 20 container with a Postgres + pgvector add-on
-works.
+works. Release coordination (develop→main merges, semver tags, env cascade
+on contract redeploys, DB resets) lives in
+[daski-io/deploy-testnet](https://github.com/daski-io/deploy-testnet).
 
 ### Enabling the Bazaar rail (external facilitator)
 
@@ -112,23 +117,15 @@ buy fixed-price skills, settled by an external facilitator (Coinbase CDP) —
 which is what gets Daski resources indexed by the
 [x402 Bazaar](https://docs.cdp.coinbase.com/x402/bazaar). The on-chain
 commission split still runs in the Daski PaymentRouter, as a gateway-
-submitted attribution tx right after the external settle. Rollout order:
+submitted attribution tx right after the external settle.
 
-1. Deploy `DirectTransferAdapter` against the existing stack and wire it —
-   `script/AddDirectAdapter.s.sol` in the contracts repo (see the "Add
-   DirectTransferAdapter" section of its README). Pass the gateway's
-   facilitator wallet as `ATTRIBUTOR_ADDRESS`.
-2. Set `DIRECT_ADAPTER_ADDRESS=<adapter proxy>` (Railway:
-   `railway variables --service gateway --skip-deploys --set …` then
-   `railway redeploy`). This mounts the routes; leaving it unset keeps the
-   rail fully off.
-3. Verify `GET $PUBLIC_URL/x402/services/<agentId>/<skillId>` returns a 402
-   with `accepts[]` and `extensions.bazaar`, and that
-   `/.well-known/x402-services.json` now points at the `/x402/services/…`
-   resources.
-4. Mainnet only: set `EXTERNAL_FACILITATOR_AUTH_HEADER` to a CDP API key
-   JWT — CDP requires it for `/settle`, and only CDP-settled payments are
-   indexed by the Bazaar.
+The rail is mounted entirely by config: set `DIRECT_ADAPTER_ADDRESS` to a
+DirectTransferAdapter proxy whose attributor whitelist includes this
+gateway's facilitator wallet (unset = rail fully off). Mainnet CDP settles
+additionally need `EXTERNAL_FACILITATOR_AUTH_HEADER` (a CDP API key JWT —
+only CDP-settled payments get Bazaar-indexed). The step-by-step rollout
+(adapter deploy, wiring, verification) lives in the
+[deploy-testnet](https://github.com/daski-io/deploy-testnet) runbooks.
 
 Buyers on this rail must already hold an ERC-8004 identity (the gasless
 `/register` flow); unregistered wallets get a 403 with instructions before
@@ -141,7 +138,10 @@ any funds move.
 - `src/discovery/` — Agent Card cache + pgvector embedding sync
 - `src/payment/` — x402 challenge / verify / settle, EAS confirmation, Bazaar-facing external-facilitator rail (`bazaar.ts`, `externalFacilitator.ts`)
 - `src/identity/` — ERC-8004 lookups + gasless registration
-- `src/chain/` — viem-backed reader for the Daski contracts
+- `src/chain/` — viem-backed reader for the Daski contracts (+ hand-mirrored ABIs in `abis.ts`)
+- `src/indexer/` — `PaymentSettled` event poller feeding `/public/v1/activity`
+- `src/reputation/` — feedback mirror to the canonical ERC-8004 ReputationRegistry
+- `src/auth/` — EIP-712 A2A envelope auth (byte-for-byte shared shape with daski-provider)
 - `src/db/` — Postgres pool, migrations, queries
 - `src/public/` — read-only `/public/v1/*` API
 - [PROVIDER_ONBOARDING.md](PROVIDER_ONBOARDING.md) — what a provider has to
