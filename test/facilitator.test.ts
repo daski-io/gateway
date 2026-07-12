@@ -19,6 +19,16 @@ describe("facilitator endpoints", () => {
           name: "Daski Domain Registration",
           priceUsdcSmallest: "15000000",
           category: "domain-registration",
+          skills: [
+            {
+              id: "default-service",
+              metadata: {
+                paymentRequired: true,
+                serviceSlug: "default-service",
+                baseAmount: "15000000",
+              },
+            },
+          ],
         },
       ],
     });
@@ -28,12 +38,24 @@ describe("facilitator endpoints", () => {
     await gateway.close();
   });
 
-  async function openChallenge(): Promise<{
+  async function openChallenge(buyerTokenId = "5"): Promise<{
     serviceRef: Hex;
     paymentRequirements: PaymentRequirements;
   }> {
+    const quoteRes = await fetch(
+      `${gateway.mockProvider.baseUrl}/quote/default-service`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ skillId: "default-service", serviceArgs: {} }),
+      },
+    );
+    expect(quoteRes.status).toBe(200);
+    const quoteBody = (await quoteRes.json()) as { quote: unknown };
     const { status, json, serviceRef } = await gateway.purchaseChallenge(2n, {
-      buyerTokenId: "5",
+      buyerTokenId,
+      serviceArgs: {},
+      providerQuote: quoteBody.quote,
     });
     expect(status).toBe(402);
     expect(serviceRef).toBeDefined();
@@ -192,7 +214,75 @@ describe("facilitator endpoints", () => {
     expect(body.buyerTokenId).toBe("5");
     expect(body.amount).toBe("15000000");
     expect(body.providerA2AUrl).toMatch(/^http/);
+    const quote = paymentRequirements.extra.daski.quote;
+    expect(quote).toBeDefined();
+    expect(body.quoteId).toBe(quote!.quoteId);
+    expect(body.quoteSignature).toBe(quote!.quoteSignature);
+    const stored = await gateway.bundle.queries.getChallengeByRef(serviceRef);
+    const issuedQuote = gateway.mockProvider.getIssuedQuotes().at(-1);
+    expect(issuedQuote).toBeDefined();
+    expect(stored?.quoteRequestHash).toBe(issuedQuote!.requestHash);
+
+    // A retry is served from the paid challenge without another on-chain
+    // submission and retains the credentials needed for task dispatch.
+    const retry = await fetch(`${gateway.baseUrl}/settle`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        x402Version: 1,
+        paymentPayload,
+        paymentRequirements,
+      }),
+    });
+    expect(retry.status).toBe(200);
+    const retryBody = (await retry.json()) as any;
+    expect(retryBody.transaction).toBe(TEST_TX);
+    expect(retryBody.quoteId).toBe(body.quoteId);
+    expect(retryBody.quoteSignature).toBe(body.quoteSignature);
+    expect(gateway.mockChain.settlements).toHaveLength(1);
   });
+
+  it.each([
+    ["quote_id", "quoteId"],
+    ["quote_signature", "quoteSignature"],
+    ["quote_expires_at", "quoteExpiresAt"],
+    ["quote_request_hash", "quoteRequestHash"],
+  ] as const)(
+    "POST /settle fails closed when the stored %s commitment is missing",
+    async (column, field) => {
+      const { serviceRef, paymentRequirements } = await openChallenge();
+      await gateway.bundle.pool.query(
+        `UPDATE payment_challenges SET ${column} = NULL WHERE service_ref = $1`,
+        [Buffer.from(serviceRef.slice(2), "hex")],
+      );
+      const { signature, authorization } = await gateway.signAuthorization(
+        15_000_000n,
+        NONCE,
+      );
+      const res = await fetch(`${gateway.baseUrl}/settle`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          x402Version: 1,
+          paymentPayload: {
+            x402Version: 1,
+            scheme: "exact",
+            network: "base-sepolia",
+            payload: { signature, authorization },
+          },
+          paymentRequirements,
+        }),
+      });
+
+      expect(res.status).toBe(409);
+      const body = (await res.json()) as any;
+      expect(body.success).toBe(false);
+      expect(body.errorReason).toBe("quote_commitment_missing");
+      expect(body.invalidReason ?? body.errorReason).toBeTruthy();
+      expect(JSON.stringify(body)).toContain(field);
+      expect(gateway.mockChain.settlements).toHaveLength(0);
+    },
+  );
 
   it("POST /settle returns an error body on chain revert", async () => {
     const { serviceRef, paymentRequirements } = await openChallenge();
@@ -228,18 +318,18 @@ describe("facilitator endpoints", () => {
     expect(body.errorReason).toMatch(/unexpected_settle_error/);
     expect(body.paymentId).toBeNull();
     expect(body.serviceRef).toBe(serviceRef);
+    expect(body.quoteId).toBe(paymentRequirements.extra.daski.quote?.quoteId);
+    expect(body.quoteSignature).toBe(
+      paymentRequirements.extra.daski.quote?.quoteSignature,
+    );
   });
 
   // ── /settle atomic register-and-settle ─────────────────────────────────
 
   it("POST /settle with registration runs atomic register-and-settle when buyer has no agent", async () => {
     // Open a challenge with buyerTokenId="0" — i.e. wallet not yet registered.
-    const { json: challengeJson, serviceRef } = await gateway.purchaseChallenge(
-      2n,
-      { buyerTokenId: "0" },
-    );
+    const { serviceRef, paymentRequirements } = await openChallenge("0");
     expect(serviceRef).toBeDefined();
-    const paymentRequirements = challengeJson.accepts[0];
 
     const { signature, authorization } = await gateway.signAuthorization(
       15_000_000n,
@@ -319,10 +409,7 @@ describe("facilitator endpoints", () => {
   });
 
   it("POST /settle returns 400 when challenge needs registration but body omits it", async () => {
-    const { json: challengeJson } = await gateway.purchaseChallenge(2n, {
-      buyerTokenId: "0",
-    });
-    const paymentRequirements = challengeJson.accepts[0];
+    const { paymentRequirements } = await openChallenge("0");
 
     const { signature, authorization } = await gateway.signAuthorization(
       15_000_000n,

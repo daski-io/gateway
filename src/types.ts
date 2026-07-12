@@ -204,6 +204,20 @@ export interface DaskiRequirementsExtra {
      *     atomic tx via X402Adapter.settleWithRegistration.
      */
     settlementMode: "settle-only" | "atomic-register";
+    /**
+     * Provider quote commitment backing this challenge. Present iff the
+     * provider issued a signed quote (all current paid skills). The
+     * serviceRef above IS quote.serviceRef; buyers submitting tasks
+     * directly over A2A (bypassing daski_submit_task, which injects them
+     * automatically) must copy quoteId + quoteSignature into the task's
+     * daski metadata or the provider rejects the paid task.
+     */
+    quote?: {
+      quoteId: string;
+      quoteSignature: Hex;
+      /** ISO timestamp — settle AND submit before this or re-quote. */
+      expiresAt: string;
+    };
   };
 }
 
@@ -306,6 +320,15 @@ export interface SettlementResponse {
      * minted in the same tx as this settlement. Absent or false otherwise.
      */
     registered?: boolean;
+    /**
+     * Provider quote credentials for the settled challenge (audit 1.1).
+     * daski_submit_task injects them automatically; buyers dispatching
+     * tasks directly over A2A must copy them into the task's daski
+     * metadata (`quoteId`, `quoteSignature`) or the provider rejects the
+     * paid task. Absent for challenges without quote enforcement.
+     */
+    quoteId?: string;
+    quoteSignature?: Hex;
   };
 }
 
@@ -370,5 +393,21 @@ export interface StoredChallenge {
   // router). Persisted before the attribution tx so a crash between the
   // two is recoverable. `transactionHash` holds the attribution tx.
   externalSettleTx: Hex | null;
+  // Provider quote commitment (provider audit item 1.1). When set, the
+  // challenge's serviceRef IS the provider's quote commitment hash
+  // (keccak256(canonicalJson(signedQuotePayload))) and these two fields
+  // must be forwarded as A2A metadata.quoteId / metadata.quoteSignature
+  // at task-submit time — the provider rejects paid tasks without them.
+  // Null for providers that don't enforce quote commitments.
+  quoteId: string | null;
+  quoteSignature: Hex | null;
+  // Commitment to the canonical serviceArgs accepted by the provider.
+  // Persisted so retries and submit-time binding checks use the exact
+  // request hash from the signed quote rather than recomputing it from
+  // potentially transformed arguments.
+  quoteRequestHash: Hex | null;
+  // Quote expiry (provider-side TTL, ~120s). Bounds the challenge's own
+  // expiresAt so the gateway never settles a payment whose quote is
+  // already dead — that would capture funds the provider then refuses.
+  quoteExpiresAt: Date | null;
 }
-

@@ -27,6 +27,7 @@ import { xenovaEmbedder, type Embedder } from "./discovery/embeddings.js";
 import type { FetchFn } from "./discovery/cache.js";
 import type { FetchAgentCardOptions } from "./identity/fetch-agent-card.js";
 import { rateLimit, securityHeaders } from "./util/security.js";
+import { safeFetch } from "./util/urlSafety.js";
 
 export interface CreateAppOptions {
   config: Config;
@@ -483,6 +484,10 @@ export async function createApp(options: CreateAppOptions): Promise<AppBundle> {
           authHeader: config.externalFacilitatorAuthHeader,
           fetchFn: options.externalFacilitatorFetch,
         }),
+        // Provider /quote calls (signed quote commitments) ride the same
+        // outbound fetch seam as the MCP layer's A2A traffic.
+        quoteFetch: options.a2aFetch ?? safeFetch,
+        quoteTimeoutMs: options.a2aTimeoutMs,
       }),
     );
   }

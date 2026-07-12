@@ -45,6 +45,10 @@ function makeChallenge(opts: {
     rail: "daski",
     authNonce: null,
     externalSettleTx: null,
+    quoteId: null,
+    quoteSignature: null,
+    quoteExpiresAt: null,
+    quoteRequestHash: null,
   };
 }
 

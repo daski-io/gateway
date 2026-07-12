@@ -76,7 +76,13 @@ function deterministicHex(seed: string, n: bigint): Hex {
 }
 
 export class AutoMockChainReader implements ChainReader {
-  private nextPaymentId = 1n;
+  // Boot-time base rather than 1n: the mock chain restarts with the
+  // gateway, but the PROVIDER's database persists across managed-e2e
+  // runs. Re-issuing paymentId 1 with a fresh serviceRef collides with
+  // the provider's immutable settlement-observation for the previous
+  // run's paymentId 1 ("Settlement identity conflicts with persisted
+  // chain facts"). A millisecond base keeps ids unique across restarts.
+  private nextPaymentId = BigInt(Date.now());
   private confirmationCount = 0n;
   private blockNumber = 1n;
   private usedAuthNonces = new Set<string>();

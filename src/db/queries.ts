@@ -48,6 +48,10 @@ interface ChallengeRow {
   rail: "daski" | "external" | null;
   auth_nonce: string | null;
   external_settle_tx: string | null;
+  quote_id: string | null;
+  quote_signature: string | null;
+  quote_expires_at: Date | null;
+  quote_request_hash: Buffer | null;
 }
 
 // reputation_mirrors row as pg returns it (BIGINT → string, BYTEA →
@@ -108,6 +112,13 @@ function rowToChallenge(row: ChallengeRow): StoredChallenge {
     authNonce: row.auth_nonce != null ? (row.auth_nonce as Hex) : null,
     externalSettleTx:
       row.external_settle_tx != null ? (row.external_settle_tx as Hex) : null,
+    quoteId: row.quote_id ?? null,
+    quoteSignature:
+      row.quote_signature != null ? (row.quote_signature as Hex) : null,
+    quoteExpiresAt: row.quote_expires_at ?? null,
+    quoteRequestHash: row.quote_request_hash
+      ? byteaToHex(row.quote_request_hash)
+      : null,
   };
 }
 
@@ -129,13 +140,22 @@ export function createQueries(pool: Pool) {
       // EIP-3009 nonce. Omitted for the default gateway-settled flow.
       rail?: "daski" | "external";
       authNonce?: Hex | null;
+      // Provider quote commitment backing this challenge (audit 1.1).
+      // When set, serviceRef is the quote's commitment hash and these
+      // credentials are forwarded as A2A metadata at task-submit time.
+      quoteId?: string | null;
+      quoteSignature?: Hex | null;
+      quoteExpiresAt?: Date | null;
+      quoteRequestHash?: Hex | null;
     }): Promise<void> {
       await pool.query(
         `INSERT INTO payment_challenges
            (service_ref, provider_token_id, buyer_token_id, amount, skill_id,
             service_slug, service_version, service_id,
-            provider_a2a_url, wallet_address, expires_at, status, rail, auth_nonce)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'pending', $12, $13)`,
+            provider_a2a_url, wallet_address, expires_at, status, rail, auth_nonce,
+            quote_id, quote_signature, quote_expires_at, quote_request_hash)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'pending', $12, $13,
+                 $14, $15, $16, $17)`,
         [
           hexToBytea(challenge.serviceRef),
           challenge.providerTokenId.toString(),
@@ -150,6 +170,12 @@ export function createQueries(pool: Pool) {
           challenge.expiresAt,
           challenge.rail ?? "daski",
           challenge.authNonce ? challenge.authNonce.toLowerCase() : null,
+          challenge.quoteId ?? null,
+          challenge.quoteSignature ? challenge.quoteSignature.toLowerCase() : null,
+          challenge.quoteExpiresAt ?? null,
+          challenge.quoteRequestHash
+            ? hexToBytea(challenge.quoteRequestHash)
+            : null,
         ],
       );
     },
@@ -176,9 +202,10 @@ export function createQueries(pool: Pool) {
     /**
      * Record the external facilitator's settle tx hash the moment it is
      * known — BEFORE the gateway submits the attribution tx. A crash
-     * between the two leaves a pending row with external_settle_tx set,
-     * which the paid-retry path reads as "funds already moved, go straight
-     * to attribution".
+     * between the two leaves a row with external_settle_tx set, which the
+     * paid-retry path reads as "funds already moved, go straight to
+     * attribution". If the expiry sweep won the race first, recording the
+     * successful external settle restores the row to pending.
      */
     async recordChallengeExternallySettled(
       serviceRef: Hex,
@@ -186,9 +213,12 @@ export function createQueries(pool: Pool) {
     ): Promise<boolean> {
       const res = await pool.query(
         `UPDATE payment_challenges
-            SET external_settle_tx = $1
+            SET external_settle_tx = $1,
+                status = 'pending'
           WHERE service_ref = $2
-            AND status = 'pending'`,
+            AND rail = 'external'
+            AND status IN ('pending', 'expired')
+            AND (external_settle_tx IS NULL OR external_settle_tx = $1)`,
         [normalizeHex(externalSettleTx), hexToBytea(serviceRef)],
       );
       return (res.rowCount ?? 0) > 0;
@@ -211,7 +241,10 @@ export function createQueries(pool: Pool) {
     },
 
     /**
-     * Atomic transition pending → paid only if the row is still pending.
+     * Atomic transition pending → paid only if the row is still pending,
+     * except for an expired external-rail row whose facilitator settlement
+     * was already persisted. Funds have moved in that case, so attribution
+     * must remain recoverable even after the original challenge TTL.
      * The contract enforces single-use of serviceRef, so at most one
      * on-chain submission can succeed; this UPDATE records the winner
      * without racing a concurrent verify request. Returns true if this
@@ -242,7 +275,14 @@ export function createQueries(pool: Pool) {
                   setBuyer ? ",\n                buyer_token_id = $4" : ""
                 }
           WHERE service_ref = $3
-            AND status = 'pending'`,
+            AND (
+              status = 'pending'
+              OR (
+                status = 'expired'
+                AND rail = 'external'
+                AND external_settle_tx IS NOT NULL
+              )
+            )`,
         setBuyer
           ? [
               paymentId.toString(),
@@ -259,7 +299,9 @@ export function createQueries(pool: Pool) {
       const res = await pool.query(
         `UPDATE payment_challenges
             SET status = 'expired'
-          WHERE status = 'pending' AND expires_at < now()`,
+          WHERE status = 'pending'
+            AND expires_at < now()
+            AND external_settle_tx IS NULL`,
       );
       return res.rowCount ?? 0;
     },

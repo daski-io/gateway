@@ -2,9 +2,14 @@ import { Router, type Request, type Response } from "express";
 import type { Config } from "../config.js";
 import { X402_VERSION } from "../config.js";
 import type { ChainReader } from "../chain/reader.js";
+import { computeRequestHash } from "../auth/envelope.js";
 import type { DiscoveryCache } from "../discovery/cache.js";
 import type { Queries } from "../db/queries.js";
-import { issuePaymentRequirements } from "./requirements.js";
+import {
+  issuePaymentRequirements,
+  resolveSkillOffer,
+} from "./requirements.js";
+import { validateProviderQuoteCommitment } from "./providerQuote.js";
 import { verifyAndSettle } from "./verify.js";
 import type {
   Hex,
@@ -79,8 +84,108 @@ export function createPurchaseRouter(deps: PurchaseDeps): Router {
       }
       const walletAddress = walletAddressRaw.toLowerCase() as Hex;
 
+      if (!skillId) {
+        sendError(res, 400, "skillId is required");
+        return;
+      }
+      const serviceArgsRaw = body.serviceArgs;
+      if (
+        serviceArgsRaw !== undefined &&
+        (serviceArgsRaw === null ||
+          typeof serviceArgsRaw !== "object" ||
+          Array.isArray(serviceArgsRaw))
+      ) {
+        sendError(res, 400, "serviceArgs must be a JSON object");
+        return;
+      }
+      const serviceArgs =
+        (serviceArgsRaw as Record<string, unknown> | undefined) ?? {};
+      const provider = deps.cache.get(providerTokenId);
+      const offerResult = resolveSkillOffer(
+        providerTokenId,
+        skillId,
+        deps.cache,
+        { requireFixedAmount: false },
+      );
+      if (!provider || !offerResult.ok) {
+        sendError(
+          res,
+          offerResult.ok ? 404 : offerResult.status,
+          offerResult.ok
+            ? "provider is not whitelisted"
+            : offerResult.message,
+        );
+        return;
+      }
+      const rawQuote = body.providerQuote;
+      const rawQuoteAmount =
+        rawQuote && typeof rawQuote === "object"
+          ? (rawQuote as Record<string, unknown>).amount
+          : undefined;
+      if (typeof rawQuoteAmount !== "string") {
+        sendError(
+          res,
+          400,
+          "providerQuote is required for every paid purchase. Pass the full " +
+            "quote object returned by POST <provider>/quote/:serviceSlug.",
+        );
+        return;
+      }
+      const offer = offerResult.offer;
+      const validation = await validateProviderQuoteCommitment(rawQuote, {
+        skillId,
+        serviceArgs,
+        amount: rawQuoteAmount,
+        expectedSignerAddress: provider.walletAddress,
+        expectedChainId: deps.config.chainId,
+        expectedTokenAddress: deps.config.usdcAddress,
+        expectedServiceSlug: offer.serviceSlug,
+        expectedServiceVersion: offer.serviceVersion,
+      });
+      if (!validation.ok) {
+        sendError(res, 400, `invalid providerQuote: ${validation.message}`);
+        return;
+      }
+      const quote = validation.quote;
+      if (amount !== undefined) {
+        let cap: bigint;
+        try {
+          cap = BigInt(amount);
+        } catch {
+          sendError(res, 400, "amount must be a decimal string");
+          return;
+        }
+        if (BigInt(quote.amount) > cap) {
+          sendError(
+            res,
+            409,
+            `provider quote ${quote.amount} exceeds amount limit ${amount}`,
+          );
+          return;
+        }
+      }
+
       const result = await issuePaymentRequirements(
-        { providerTokenId, buyerTokenId, skillId, amount, resource, walletAddress },
+        {
+          providerTokenId,
+          buyerTokenId,
+          skillId,
+          amount: quote.amount,
+          resource,
+          walletAddress,
+          providerQuote: {
+            quoteId: quote.quoteId,
+            serviceRef: quote.serviceRef,
+            requestHash: quote.requestHash,
+            providerSignature: quote.providerSignature,
+            amount: quote.amount,
+            expiresAt: new Date(quote.expiresAt),
+            skillId: quote.skillId,
+            serviceSlug: quote.serviceSlug,
+            serviceVersion: quote.serviceVersion,
+          },
+          trustQuotedAmount: true,
+        },
         deps.config,
         deps.cache,
         deps.queries,
@@ -117,6 +222,34 @@ export function createPurchaseRouter(deps: PurchaseDeps): Router {
     }
     if (challenge.providerTokenId !== providerTokenId) {
       sendError(res, 400, "serviceRef does not match providerTokenId in URL");
+      return;
+    }
+
+    const serviceArgsRaw = body.serviceArgs;
+    if (
+      serviceArgsRaw === undefined ||
+      serviceArgsRaw === null ||
+      typeof serviceArgsRaw !== "object" ||
+      Array.isArray(serviceArgsRaw)
+    ) {
+      sendError(res, 400, "serviceArgs is required and must be a JSON object");
+      return;
+    }
+    if (!challenge.quoteRequestHash) {
+      sendError(res, 409, "stored challenge is missing its quote requestHash");
+      return;
+    }
+    let requestHash: Hex;
+    try {
+      requestHash = computeRequestHash(
+        serviceArgsRaw as Record<string, unknown>,
+      );
+    } catch {
+      sendError(res, 400, "serviceArgs cannot be canonically encoded");
+      return;
+    }
+    if (requestHash.toLowerCase() !== challenge.quoteRequestHash.toLowerCase()) {
+      sendError(res, 409, "serviceArgs do not match the provider quote requestHash");
       return;
     }
 
