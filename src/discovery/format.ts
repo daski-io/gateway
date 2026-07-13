@@ -161,6 +161,7 @@ const CATEGORY_ALIASES: Record<string, string> = {
   hosting: "infrastructure",
   "llc-formation": "legal",
   "company-formation": "legal",
+  "business-formation": "legal",
   llc: "legal",
   ein: "legal",
   email: "communications",
