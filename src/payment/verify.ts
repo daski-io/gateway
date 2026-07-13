@@ -118,6 +118,15 @@ function failVerify(
   return { ok: false, errorReason, message, status, payer };
 }
 
+function missingQuoteCommitment(challenge: StoredChallenge): string | null {
+  const missing: string[] = [];
+  if (!challenge.quoteId) missing.push("quoteId");
+  if (!challenge.quoteSignature) missing.push("quoteSignature");
+  if (!challenge.quoteExpiresAt) missing.push("quoteExpiresAt");
+  if (!challenge.quoteRequestHash) missing.push("quoteRequestHash");
+  return missing.length > 0 ? missing.join(", ") : null;
+}
+
 /**
  * Validates an x402 `exact` PaymentPayload against a stored challenge
  * without hitting the chain. Covers payload shape, challenge state,
@@ -133,6 +142,15 @@ export async function verifyPaymentPayload(
 ): Promise<VerifyResult> {
   const { payload, challenge } = input;
   const network = config.network;
+
+  const missingQuote = missingQuoteCommitment(challenge);
+  if (missingQuote) {
+    return failVerify(
+      409,
+      "quote_commitment_missing",
+      `stored challenge is missing provider quote commitment fields: ${missingQuote}`,
+    );
+  }
 
   if (payload.x402Version !== 1) {
     return failVerify(
@@ -381,6 +399,16 @@ export async function verifyAndSettle(
   const { challenge } = input;
   const network = config.network;
 
+  const missingQuote = missingQuoteCommitment(challenge);
+  if (missingQuote) {
+    return fail(
+      409,
+      "quote_commitment_missing",
+      `stored challenge is missing provider quote commitment fields: ${missingQuote}`,
+      network,
+    );
+  }
+
   // Short-circuit idempotent already-paid case before running full
   // validation — the stored settlement is canonical.
   if (
@@ -406,6 +434,12 @@ export async function verifyAndSettle(
           buyerTokenId: challenge.buyerTokenId.toString(),
           amount: challenge.amount.toString(),
           providerA2AUrl: challenge.providerA2AUrl,
+          ...(challenge.quoteId && challenge.quoteSignature
+            ? {
+                quoteId: challenge.quoteId,
+                quoteSignature: challenge.quoteSignature,
+              }
+            : {}),
         },
       },
     };
@@ -537,6 +571,12 @@ export async function verifyAndSettle(
         buyerTokenId: challenge.buyerTokenId.toString(),
         amount: event.totalAmount.toString(),
         providerA2AUrl: challenge.providerA2AUrl,
+        ...(challenge.quoteId && challenge.quoteSignature
+          ? {
+              quoteId: challenge.quoteId,
+              quoteSignature: challenge.quoteSignature,
+            }
+          : {}),
       },
     },
   };
@@ -580,6 +620,16 @@ export async function verifyAndSettleWithRegistration(
   const { challenge } = input;
   const network = config.network;
 
+  const missingQuote = missingQuoteCommitment(challenge);
+  if (missingQuote) {
+    return fail(
+      409,
+      "quote_commitment_missing",
+      `stored challenge is missing provider quote commitment fields: ${missingQuote}`,
+      network,
+    );
+  }
+
   // Idempotent already-paid case mirrors verifyAndSettle. If a challenge
   // somehow ends up `paid` here it means a previous atomic settle already
   // completed — return the stored result instead of re-submitting.
@@ -606,6 +656,12 @@ export async function verifyAndSettleWithRegistration(
           buyerTokenId: challenge.buyerTokenId.toString(),
           amount: challenge.amount.toString(),
           providerA2AUrl: challenge.providerA2AUrl,
+          ...(challenge.quoteId && challenge.quoteSignature
+            ? {
+                quoteId: challenge.quoteId,
+                quoteSignature: challenge.quoteSignature,
+              }
+            : {}),
         },
       },
     };
@@ -762,6 +818,12 @@ export async function verifyAndSettleWithRegistration(
         amount: event.totalAmount.toString(),
         providerA2AUrl: challenge.providerA2AUrl,
         registered: settlement.registered,
+        ...(challenge.quoteId && challenge.quoteSignature
+          ? {
+              quoteId: challenge.quoteId,
+              quoteSignature: challenge.quoteSignature,
+            }
+          : {}),
       },
     },
   };

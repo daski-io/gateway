@@ -45,6 +45,36 @@ interface ChallengeRow {
   transaction_hash: string | null;
   verified_at: Date | null;
   confirmation_attestation_uid: Buffer | null;
+  rail: "daski" | "external" | null;
+  auth_nonce: string | null;
+  external_settle_tx: string | null;
+  quote_id: string | null;
+  quote_signature: string | null;
+  quote_expires_at: Date | null;
+  quote_request_hash: Buffer | null;
+}
+
+// reputation_mirrors row as pg returns it (BIGINT → string, BYTEA →
+// Buffer). See migration 009 for column semantics.
+interface ReputationMirrorDbRow {
+  payment_id: string;
+  attestation_uid: Buffer;
+  provider_agent_id: string | null;
+  feedback_index: string | null;
+  tx_hash: Buffer | null;
+  status: "sent" | "failed";
+  updated_at: Date;
+}
+
+/** Decoded reputation_mirrors row — the mirror module's working shape. */
+export interface ReputationMirrorRow {
+  paymentId: bigint;
+  attestationUid: Hex;
+  providerAgentId: bigint | null;
+  feedbackIndex: bigint | null;
+  txHash: Hex | null;
+  status: "sent" | "failed";
+  updatedAt: Date;
 }
 
 const ZERO_SERVICE_ID = ("0x" + "00".repeat(32)) as Hex;
@@ -76,6 +106,19 @@ function rowToChallenge(row: ChallengeRow): StoredChallenge {
     confirmationAttestationUid: row.confirmation_attestation_uid
       ? byteaToHex(row.confirmation_attestation_uid)
       : null,
+    // Rows that pre-date migration 008 have NULL rail — they were all
+    // gateway-settled, so default 'daski'.
+    rail: row.rail ?? "daski",
+    authNonce: row.auth_nonce != null ? (row.auth_nonce as Hex) : null,
+    externalSettleTx:
+      row.external_settle_tx != null ? (row.external_settle_tx as Hex) : null,
+    quoteId: row.quote_id ?? null,
+    quoteSignature:
+      row.quote_signature != null ? (row.quote_signature as Hex) : null,
+    quoteExpiresAt: row.quote_expires_at ?? null,
+    quoteRequestHash: row.quote_request_hash
+      ? byteaToHex(row.quote_request_hash)
+      : null,
   };
 }
 
@@ -93,13 +136,26 @@ export function createQueries(pool: Pool) {
       providerA2AUrl: string;
       walletAddress: Hex;
       expiresAt: Date;
+      // External rail (Bazaar route): rail='external' plus the client's
+      // EIP-3009 nonce. Omitted for the default gateway-settled flow.
+      rail?: "daski" | "external";
+      authNonce?: Hex | null;
+      // Provider quote commitment backing this challenge (audit 1.1).
+      // When set, serviceRef is the quote's commitment hash and these
+      // credentials are forwarded as A2A metadata at task-submit time.
+      quoteId?: string | null;
+      quoteSignature?: Hex | null;
+      quoteExpiresAt?: Date | null;
+      quoteRequestHash?: Hex | null;
     }): Promise<void> {
       await pool.query(
         `INSERT INTO payment_challenges
            (service_ref, provider_token_id, buyer_token_id, amount, skill_id,
             service_slug, service_version, service_id,
-            provider_a2a_url, wallet_address, expires_at, status)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'pending')`,
+            provider_a2a_url, wallet_address, expires_at, status, rail, auth_nonce,
+            quote_id, quote_signature, quote_expires_at, quote_request_hash)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'pending', $12, $13,
+                 $14, $15, $16, $17)`,
         [
           hexToBytea(challenge.serviceRef),
           challenge.providerTokenId.toString(),
@@ -112,8 +168,60 @@ export function createQueries(pool: Pool) {
           challenge.providerA2AUrl,
           challenge.walletAddress.toLowerCase(),
           challenge.expiresAt,
+          challenge.rail ?? "daski",
+          challenge.authNonce ? challenge.authNonce.toLowerCase() : null,
+          challenge.quoteId ?? null,
+          challenge.quoteSignature ? challenge.quoteSignature.toLowerCase() : null,
+          challenge.quoteExpiresAt ?? null,
+          challenge.quoteRequestHash
+            ? hexToBytea(challenge.quoteRequestHash)
+            : null,
         ],
       );
+    },
+
+    /**
+     * External-rail idempotency lookup: resolve a challenge by the buyer
+     * wallet + the client-chosen EIP-3009 nonce from the payment payload.
+     * External x402 clients never learn Daski serviceRefs, so a paid retry
+     * of the same signed payload can only be recognized by this pair
+     * (unique per migration 008's partial index).
+     */
+    async getChallengeByWalletAndNonce(
+      walletAddress: Hex,
+      authNonce: Hex,
+    ): Promise<StoredChallenge | null> {
+      const res = await pool.query<ChallengeRow>(
+        `SELECT * FROM payment_challenges
+          WHERE wallet_address = $1 AND auth_nonce = $2`,
+        [walletAddress.toLowerCase(), authNonce.toLowerCase()],
+      );
+      return res.rows[0] ? rowToChallenge(res.rows[0]) : null;
+    },
+
+    /**
+     * Record the external facilitator's settle tx hash the moment it is
+     * known — BEFORE the gateway submits the attribution tx. A crash
+     * between the two leaves a row with external_settle_tx set, which the
+     * paid-retry path reads as "funds already moved, go straight to
+     * attribution". If the expiry sweep won the race first, recording the
+     * successful external settle restores the row to pending.
+     */
+    async recordChallengeExternallySettled(
+      serviceRef: Hex,
+      externalSettleTx: Hex,
+    ): Promise<boolean> {
+      const res = await pool.query(
+        `UPDATE payment_challenges
+            SET external_settle_tx = $1,
+                status = 'pending'
+          WHERE service_ref = $2
+            AND rail = 'external'
+            AND status IN ('pending', 'expired')
+            AND (external_settle_tx IS NULL OR external_settle_tx = $1)`,
+        [normalizeHex(externalSettleTx), hexToBytea(serviceRef)],
+      );
+      return (res.rowCount ?? 0) > 0;
     },
 
     async getChallengeByRef(serviceRef: Hex): Promise<StoredChallenge | null> {
@@ -133,7 +241,10 @@ export function createQueries(pool: Pool) {
     },
 
     /**
-     * Atomic transition pending → paid only if the row is still pending.
+     * Atomic transition pending → paid only if the row is still pending,
+     * except for an expired external-rail row whose facilitator settlement
+     * was already persisted. Funds have moved in that case, so attribution
+     * must remain recoverable even after the original challenge TTL.
      * The contract enforces single-use of serviceRef, so at most one
      * on-chain submission can succeed; this UPDATE records the winner
      * without racing a concurrent verify request. Returns true if this
@@ -164,7 +275,14 @@ export function createQueries(pool: Pool) {
                   setBuyer ? ",\n                buyer_token_id = $4" : ""
                 }
           WHERE service_ref = $3
-            AND status = 'pending'`,
+            AND (
+              status = 'pending'
+              OR (
+                status = 'expired'
+                AND rail = 'external'
+                AND external_settle_tx IS NOT NULL
+              )
+            )`,
         setBuyer
           ? [
               paymentId.toString(),
@@ -181,7 +299,9 @@ export function createQueries(pool: Pool) {
       const res = await pool.query(
         `UPDATE payment_challenges
             SET status = 'expired'
-          WHERE status = 'pending' AND expires_at < now()`,
+          WHERE status = 'pending'
+            AND expires_at < now()
+            AND external_settle_tx IS NULL`,
       );
       return res.rowCount ?? 0;
     },
@@ -206,6 +326,83 @@ export function createQueries(pool: Pool) {
             SET confirmation_attestation_uid = $1
           WHERE payment_id = $2`,
         [hexToBytea(attestationUid), paymentId.toString()],
+      );
+    },
+
+    /**
+     * Challenge row by paymentId (set once the challenge transitions to
+     * 'paid'). The reputation mirror uses this for cheap off-chain
+     * enrichment (service slug → canonical feedback tag2); null for
+     * payments that didn't come through this gateway.
+     */
+    async getChallengeByPaymentId(
+      paymentId: bigint,
+    ): Promise<StoredChallenge | null> {
+      const res = await pool.query<ChallengeRow>(
+        `SELECT * FROM payment_challenges WHERE payment_id = $1`,
+        [paymentId.toString()],
+      );
+      return res.rows[0] ? rowToChallenge(res.rows[0]) : null;
+    },
+
+    // ── Canonical-feedback mirror bookkeeping ──────────────────────────
+    //
+    // One row per paymentId tracking what the gateway posted to the
+    // canonical ERC-8004 ReputationRegistry (see migration 009). The
+    // registry is the source of truth for the feedback itself; these rows
+    // exist for idempotency (skip re-posting on confirmation retries) and
+    // revisions (feedback_index is what revokeFeedback needs).
+
+    async getReputationMirror(
+      paymentId: bigint,
+    ): Promise<ReputationMirrorRow | null> {
+      const res = await pool.query<ReputationMirrorDbRow>(
+        `SELECT * FROM reputation_mirrors WHERE payment_id = $1`,
+        [paymentId.toString()],
+      );
+      const row = res.rows[0];
+      if (!row) return null;
+      return {
+        paymentId: BigInt(row.payment_id),
+        attestationUid: byteaToHex(row.attestation_uid),
+        providerAgentId:
+          row.provider_agent_id != null ? BigInt(row.provider_agent_id) : null,
+        feedbackIndex:
+          row.feedback_index != null ? BigInt(row.feedback_index) : null,
+        txHash: row.tx_hash ? byteaToHex(row.tx_hash) : null,
+        status: row.status,
+        updatedAt: row.updated_at,
+      };
+    },
+
+    async upsertReputationMirror(row: {
+      paymentId: bigint;
+      attestationUid: Hex;
+      providerAgentId: bigint | null;
+      feedbackIndex: bigint | null;
+      txHash: Hex | null;
+      status: "sent" | "failed";
+    }): Promise<void> {
+      await pool.query(
+        `INSERT INTO reputation_mirrors
+           (payment_id, attestation_uid, provider_agent_id, feedback_index,
+            tx_hash, status, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, now())
+         ON CONFLICT (payment_id) DO UPDATE
+            SET attestation_uid = EXCLUDED.attestation_uid,
+                provider_agent_id = EXCLUDED.provider_agent_id,
+                feedback_index = EXCLUDED.feedback_index,
+                tx_hash = EXCLUDED.tx_hash,
+                status = EXCLUDED.status,
+                updated_at = now()`,
+        [
+          row.paymentId.toString(),
+          hexToBytea(row.attestationUid),
+          row.providerAgentId != null ? row.providerAgentId.toString() : null,
+          row.feedbackIndex != null ? row.feedbackIndex.toString() : null,
+          row.txHash ? hexToBytea(row.txHash) : null,
+          row.status,
+        ],
       );
     },
 

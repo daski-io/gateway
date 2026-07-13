@@ -237,12 +237,14 @@ export function createFacilitatorRouter(deps: FacilitatorDeps): Router {
 
     // Spec base fields: success / errorReason / transaction / network /
     // payer. Daski extension: paymentId, serviceRef, providerTokenId,
-    // buyerTokenId, skillId, amount, providerA2AUrl — flat, not nested.
+    // buyerTokenId, skillId, amount, providerA2AUrl, and provider quote
+    // credentials — flat, not nested.
     // Third-party x402 clients ignore the extras; Daski skills read them.
     if (!result.ok) {
       res.status(result.status).json({
         success: false,
         errorReason: result.errorReason,
+        message: result.message,
         transaction: result.response.transaction,
         network: result.response.network,
         payer: result.response.payer,
@@ -253,6 +255,8 @@ export function createFacilitatorRouter(deps: FacilitatorDeps): Router {
         skillId: challenge.skillId,
         amount: challenge.amount.toString(),
         providerA2AUrl: challenge.providerA2AUrl,
+        quoteId: challenge.quoteId,
+        quoteSignature: challenge.quoteSignature,
       });
       return;
     }
@@ -275,6 +279,8 @@ export function createFacilitatorRouter(deps: FacilitatorDeps): Router {
       providerA2AUrl:
         daski?.providerA2AUrl ?? challenge.providerA2AUrl,
       registered: daski?.registered ?? false,
+      quoteId: daski?.quoteId ?? challenge.quoteId,
+      quoteSignature: daski?.quoteSignature ?? challenge.quoteSignature,
     });
   });
 

@@ -12,11 +12,14 @@ import {
 import { privateKeyToAccount } from "viem/accounts";
 import { base, baseSepolia } from "viem/chains";
 import {
+  agentIndexAbi,
+  directTransferAdapterAbi,
   easAbi,
   identityRegistryAbi,
   knownErrorAbis,
   paymentRouterAbi,
   providerRegistryAbi,
+  reputationRegistryAbi,
   reputationStorageAbi,
   usdcAbi,
   x402AdapterAbi,
@@ -27,6 +30,10 @@ import type {
   ChainReader,
   ConfirmationDelegationInput,
   ConfirmationResult,
+  DirectAttributionInput,
+  FeedbackInput,
+  FeedbackResult,
+  PaymentRouterRecord,
   PaymentSettledEvent,
   PaymentSettledEventLog,
   ProviderReputation,
@@ -45,7 +52,11 @@ import type { ChainId, Hex } from "../types.js";
 export interface ViemReaderOptions {
   rpcUrl: string;
   chainId: ChainId;
+  // Canonical per-chain ERC-8004 IdentityRegistry (0x8004A…).
   identityRegistryAddress: Hex;
+  // Daski AgentIndex proxy — verified wallet→agentId reverse lookup plus
+  // gasless registerWithSig, the two gaps the canonical registry leaves.
+  agentIndexAddress: Hex;
   providerRegistryAddress: Hex;
   paymentRouterAddress: Hex;
   // X402 adapter that the facilitator submits the EIP-3009 settle call to.
@@ -56,10 +67,17 @@ export interface ViemReaderOptions {
   // EAS contract. On Base / Base Sepolia this is the canonical
   // 0x4200000000000000000000000000000000000021.
   easAddress: Hex;
+  // DirectTransferAdapter — attribution entry point for the external-
+  // facilitator rail. Optional; attributeDirectTransfer throws when unset.
+  directAdapterAddress?: Hex;
   // Optional — when unset, the reputation getters return null. The marketing
   // site treats null as "no reputation data" and renders the empty state
   // rather than 5xxing.
   reputationStorageAddress?: Hex;
+  // Canonical ERC-8004 ReputationRegistry (0x8004B…). Optional; the
+  // feedback methods (giveFeedback / revokeFeedback / getFeedbackLastIndex)
+  // throw when unset. The mirror module gates on config before calling.
+  reputationRegistryAddress?: Hex;
 }
 
 function chainForId(chainId: ChainId) {
@@ -191,6 +209,16 @@ export function createViemChainReader(opts: ViemReaderOptions): ChainReader {
     "event Attested(address indexed recipient, address indexed attester, bytes32 uid, bytes32 indexed schemaUID)",
   );
 
+  function requireReputationRegistry(): Hex {
+    if (!opts.reputationRegistryAddress) {
+      throw new Error(
+        "REPUTATION_REGISTRY_ADDRESS is not configured — canonical " +
+          "feedback mirroring unavailable",
+      );
+    }
+    return opts.reputationRegistryAddress;
+  }
+
   return {
     async getProviderCount() {
       return (await publicClient.readContract({
@@ -231,11 +259,13 @@ export function createViemChainReader(opts: ViemReaderOptions): ChainReader {
       })) as string;
     },
 
+    // Resolves via the Daski AgentIndex (verified against the canonical
+    // registry; stale bindings return 0).
     async agentOfWallet(wallet: Hex) {
       return (await publicClient.readContract({
-        address: opts.identityRegistryAddress,
-        abi: identityRegistryAbi,
-        functionName: "agentOfWallet",
+        address: opts.agentIndexAddress,
+        abi: agentIndexAbi,
+        functionName: "resolve",
         args: [wallet],
       })) as bigint;
     },
@@ -258,10 +288,35 @@ export function createViemChainReader(opts: ViemReaderOptions): ChainReader {
       })) as bigint;
     },
 
+    async getPaymentRecord(
+      paymentId: bigint,
+    ): Promise<PaymentRouterRecord | null> {
+      const raw = (await publicClient.readContract({
+        address: routerAddress,
+        abi: paymentRouterAbi,
+        functionName: "getPayment",
+        args: [paymentId],
+      })) as {
+        buyerAgentId: bigint;
+        providerAgentId: bigint;
+        serviceId: Hex;
+        token: Hex;
+        amount: bigint;
+        cachedBuyerWallet: Hex;
+        serviceRef: Hex;
+        paidAt: bigint;
+      };
+      // Zero-init struct for unknown paymentIds. Real settles always carry
+      // a non-zero providerAgentId (the router validates the service pair),
+      // so it doubles as the "no such payment" sentinel.
+      if (raw.providerAgentId === 0n) return null;
+      return raw;
+    },
+
     async getRegistrationNonce(wallet: Hex) {
       return (await publicClient.readContract({
-        address: opts.identityRegistryAddress,
-        abi: identityRegistryAbi,
+        address: opts.agentIndexAddress,
+        abi: agentIndexAbi,
         functionName: "registrationNonce",
         args: [wallet],
       })) as bigint;
@@ -377,12 +432,99 @@ export function createViemChainReader(opts: ViemReaderOptions): ChainReader {
       };
     },
 
+    async attributeDirectTransfer(
+      input: DirectAttributionInput,
+    ): Promise<SettlementResult> {
+      const directAdapter = opts.directAdapterAddress;
+      if (!directAdapter) {
+        throw new Error(
+          "DIRECT_ADAPTER_ADDRESS is not configured — external-rail " +
+            "attribution unavailable",
+        );
+      }
+
+      // Funds already sit on the router (moved by the external
+      // facilitator's bare EIP-3009 transfer); this tx only runs the
+      // split + bookkeeping. Same explicit-gas + simulate-first reasoning
+      // as settlePayment. Common reverts worth surfacing: "authorization
+      // not consumed" (attribution raced ahead of the external settle),
+      // "router under-funded", "serviceRef used" (double attribution).
+      let attributeRequest;
+      try {
+        const sim = await publicClient.simulateContract({
+          address: directAdapter,
+          abi: [...directTransferAdapterAbi, ...knownErrorAbis],
+          functionName: "attribute",
+          args: [
+            usdcAddress,
+            input.amount,
+            input.serviceRef,
+            input.providerAgentId,
+            input.serviceId,
+            input.from,
+            input.authNonce,
+          ],
+          account,
+          chain,
+          gas: 500_000n,
+        });
+        attributeRequest = sim.request;
+      } catch (err) {
+        throw new Error(`attribution reverted: ${decodeRevertReason(err)}`);
+      }
+
+      const hash = await walletClient.writeContract(attributeRequest);
+
+      const receipt = await publicClient.waitForTransactionReceipt({ hash });
+      if (receipt.status !== "success") {
+        throw new Error(
+          `attribution reverted on broadcast despite passing simulation (tx ${hash})`,
+        );
+      }
+
+      const routerLogs = receipt.logs.filter(
+        (l) => l.address.toLowerCase() === routerAddress.toLowerCase(),
+      );
+      const parsed = parseEventLogs({
+        abi: paymentRouterAbi,
+        eventName: "PaymentSettled",
+        logs: routerLogs as any,
+      });
+      const match = parsed.find(
+        (e: any) =>
+          String(e.args.serviceRef).toLowerCase() ===
+          input.serviceRef.toLowerCase(),
+      );
+      if (!match) {
+        throw new Error("PaymentSettled event missing after attribution");
+      }
+
+      const args = (match as any).args as PaymentSettledEvent;
+      return {
+        transactionHash: hash,
+        event: {
+          paymentId: args.paymentId,
+          serviceRef: args.serviceRef,
+          serviceId: args.serviceId,
+          buyerAgentId: args.buyerAgentId,
+          providerAgentId: args.providerAgentId,
+          token: args.token,
+          totalAmount: args.totalAmount,
+          providerAmount: args.providerAmount,
+          commission: args.commission,
+        },
+      };
+    },
+
     async registerBuyer(input: RegisterBySigInput): Promise<RegisterBySigResult> {
-      // Facilitator submits IdentityRegistry.registerBySig. The contract
-      // verifies the buyer's signature and mints to input.agentWallet.
+      // Facilitator submits AgentIndex.registerWithSig. The AgentIndex
+      // verifies the buyer's signature, mints on the CANONICAL registry
+      // (to itself), transfers the NFT to input.agentWallet, and records
+      // the wallet→agentId binding.
       // Same explicit-gas reasoning as settlePayment — sepolia.base.org
-      // rejects estimateGas with the block gas limit; registerBySig burns
-      // ~150-200k in practice; 500k leaves headroom.
+      // rejects estimateGas with the block gas limit. The flow is now
+      // canonical register (~380k) + safeTransferFrom (~60k) + binding
+      // (~50k); 800k leaves headroom without tripping the ~5M per-tx cap.
       //
       // Simulate first — see settlePayment. Common reverts here are
       // expired deadline, wrong nonce, and signature mismatch; all worth
@@ -390,17 +532,17 @@ export function createViemChainReader(opts: ViemReaderOptions): ChainReader {
       let registerRequest;
       try {
         const sim = await publicClient.simulateContract({
-          address: opts.identityRegistryAddress,
-          abi: [...identityRegistryAbi, ...knownErrorAbis],
-          functionName: "registerBySig",
+          address: opts.agentIndexAddress,
+          abi: [...agentIndexAbi, ...knownErrorAbis],
+          functionName: "registerWithSig",
           args: [input.agentURI, input.agentWallet, input.deadline, input.signature],
           account,
           chain,
-          gas: 500_000n,
+          gas: 800_000n,
         });
         registerRequest = sim.request;
       } catch (err) {
-        throw new Error(`registerBySig reverted: ${decodeRevertReason(err)}`);
+        throw new Error(`registerWithSig reverted: ${decodeRevertReason(err)}`);
       }
 
       const hash = await walletClient.writeContract(registerRequest);
@@ -408,26 +550,29 @@ export function createViemChainReader(opts: ViemReaderOptions): ChainReader {
       const receipt = await publicClient.waitForTransactionReceipt({ hash });
       if (receipt.status !== "success") {
         throw new Error(
-          `registerBySig reverted on broadcast despite passing simulation (tx ${hash})`,
+          `registerWithSig reverted on broadcast despite passing simulation (tx ${hash})`,
         );
       }
 
-      // Extract agentId from the Registered event. The event is emitted
-      // by IdentityRegistry itself, indexed on (agentId, owner).
-      const registryLogs = receipt.logs.filter(
-        (l) => l.address.toLowerCase() === opts.identityRegistryAddress.toLowerCase(),
+      // Extract agentId from the AgentRegistered event. The event is
+      // emitted by the AgentIndex itself, indexed on (agentId, wallet).
+      // (The canonical registry's Registered event fires with the
+      // AgentIndex as owner — the mint-then-transfer flow — so it cannot
+      // be matched against the buyer wallet.)
+      const indexLogs = receipt.logs.filter(
+        (l) => l.address.toLowerCase() === opts.agentIndexAddress.toLowerCase(),
       );
       const parsed = parseEventLogs({
-        abi: identityRegistryAbi,
-        eventName: "Registered",
-        logs: registryLogs as any,
+        abi: agentIndexAbi,
+        eventName: "AgentRegistered",
+        logs: indexLogs as any,
       });
       const match = parsed.find(
         (e: any) =>
-          String(e.args.owner).toLowerCase() === input.agentWallet.toLowerCase(),
+          String(e.args.wallet).toLowerCase() === input.agentWallet.toLowerCase(),
       );
       if (!match) {
-        throw new Error("Registered event missing for agentWallet after registerBySig");
+        throw new Error("AgentRegistered event missing for wallet after registerWithSig");
       }
       return {
         agentId: (match as any).args.agentId as bigint,
@@ -448,17 +593,16 @@ export function createViemChainReader(opts: ViemReaderOptions): ChainReader {
         s: input.s,
       } as const;
 
-      // 2M gas budget: real-world atomic register+settle measured at ~713k
-      // on Base Sepolia (registerBySig with _safeMint + ERC721URIStorage
-      // SSTORE for the agentURI ≈ 380k, EIP-3009 transferWithAuthorization
-      // ≈ 100k, router.settle bookkeeping ≈ 230k). The original 600k
-      // estimate undercounted ERC-721 minting and the per-byte cost of
-      // storing dynamic agentURIs, so simulation aborted mid-execution
-      // and surfaced as a bare "execution reverted" with no debuggable
-      // data — exactly the silent-revert footgun this comment used to
-      // claim was impossible. 2M leaves ~1.3M headroom for longer
-      // agentURIs and ERC-1271 contract-wallet signatures (which can
-      // be arbitrary length and pull in extra SignatureChecker gas) and
+      // 2M gas budget: the atomic path now runs AgentIndex.registerWithSig
+      // inside the adapter — canonical-registry register with _safeMint +
+      // ERC721URIStorage SSTORE for the agentURI ≈ 380k, safeTransferFrom
+      // of the fresh NFT to the buyer ≈ 60k, binding SSTOREs ≈ 50k — plus
+      // the EIP-3009 transferWithAuthorization ≈ 100k and router.settle
+      // bookkeeping ≈ 230k. A budget that aborts mid-execution surfaces as
+      // a bare "execution reverted" with no debuggable data (the
+      // silent-revert footgun an earlier 600k budget hit), so 2M keeps
+      // ~1M headroom for longer agentURIs and ERC-1271 contract-wallet
+      // signatures (arbitrary length, extra SignatureChecker gas) and
       // still sits comfortably below Base Sepolia's ~5M per-tx cap.
       //
       // Simulate first — see settlePayment for the rationale. Atomic
@@ -503,8 +647,9 @@ export function createViemChainReader(opts: ViemReaderOptions): ChainReader {
       }
 
       // Pull PaymentSettled out of router logs (same defensive filter as
-      // settlePayment) and the optional Registered event from the registry
-      // (only present when the buyer was actually minted in this tx).
+      // settlePayment) and the optional AgentRegistered event from the
+      // AgentIndex (only present when the buyer was actually minted in
+      // this tx).
       const routerLogs = receipt.logs.filter(
         (l) => l.address.toLowerCase() === routerAddress.toLowerCase(),
       );
@@ -522,16 +667,16 @@ export function createViemChainReader(opts: ViemReaderOptions): ChainReader {
       }
       const settledArgs = (settledMatch as any).args as PaymentSettledEvent;
 
-      const registryLogs = receipt.logs.filter(
-        (l) => l.address.toLowerCase() === opts.identityRegistryAddress.toLowerCase(),
+      const indexLogs = receipt.logs.filter(
+        (l) => l.address.toLowerCase() === opts.agentIndexAddress.toLowerCase(),
       );
       const registered = parseEventLogs({
-        abi: identityRegistryAbi,
-        eventName: "Registered",
-        logs: registryLogs as any,
+        abi: agentIndexAbi,
+        eventName: "AgentRegistered",
+        logs: indexLogs as any,
       });
       const wasRegistered = registered.some(
-        (e: any) => String(e.args.owner).toLowerCase() === input.from.toLowerCase(),
+        (e: any) => String(e.args.wallet).toLowerCase() === input.from.toLowerCase(),
       );
 
       return {
@@ -791,6 +936,104 @@ export function createViemChainReader(opts: ViemReaderOptions): ChainReader {
         confirmationTimestamp: raw.confirmationTimestamp,
         outcomeRecorded: raw.outcomeRecorded,
       };
+    },
+
+    // ── Canonical ERC-8004 ReputationRegistry (feedback mirror) ─────────
+
+    async giveFeedback(input: FeedbackInput): Promise<FeedbackResult> {
+      const registry = requireReputationRegistry();
+
+      // Explicit gas for the same sepolia.base.org reason documented in
+      // settlePayment. giveFeedback writes one FeedbackRecord (two string
+      // SSTOREs for tags) plus the first-client list push and emits
+      // NewFeedback with the URI/hash payload — ~120-180k in practice;
+      // 300k leaves headroom for long tags/URIs.
+      //
+      // Simulate first — see settlePayment. The revert worth surfacing
+      // here is the spec's arms-length rule ("owner cannot self-review" /
+      // "operator cannot review" / "agentWallet cannot self-review"): if
+      // the facilitator wallet ever controls the provider agent, the
+      // mirror is EXPECTED to fail — the caller logs and moves on.
+      let feedbackRequest;
+      try {
+        const sim = await publicClient.simulateContract({
+          address: registry,
+          abi: [...reputationRegistryAbi, ...knownErrorAbis],
+          functionName: "giveFeedback",
+          args: [
+            input.agentId,
+            input.value,
+            input.valueDecimals,
+            input.tag1,
+            input.tag2,
+            input.endpoint,
+            input.feedbackURI,
+            input.feedbackHash,
+          ],
+          account,
+          chain,
+          gas: 300_000n,
+        });
+        feedbackRequest = sim.request;
+      } catch (err) {
+        throw new Error(`giveFeedback reverted: ${decodeRevertReason(err)}`);
+      }
+
+      const hash = await walletClient.writeContract(feedbackRequest);
+      const receipt = await publicClient.waitForTransactionReceipt({ hash });
+      if (receipt.status !== "success") {
+        throw new Error(
+          `giveFeedback reverted on broadcast despite passing simulation (tx ${hash})`,
+        );
+      }
+      return { transactionHash: hash };
+    },
+
+    async revokeFeedback(
+      agentId: bigint,
+      feedbackIndex: bigint,
+    ): Promise<FeedbackResult> {
+      const registry = requireReputationRegistry();
+
+      // Soft revoke — flips one bool and emits FeedbackRevoked; 150k is
+      // generous. Simulate first so "no such feedback" / "already revoked"
+      // surface as clean reasons the caller can decide to swallow.
+      let revokeRequest;
+      try {
+        const sim = await publicClient.simulateContract({
+          address: registry,
+          abi: [...reputationRegistryAbi, ...knownErrorAbis],
+          functionName: "revokeFeedback",
+          args: [agentId, feedbackIndex],
+          account,
+          chain,
+          gas: 150_000n,
+        });
+        revokeRequest = sim.request;
+      } catch (err) {
+        throw new Error(`revokeFeedback reverted: ${decodeRevertReason(err)}`);
+      }
+
+      const hash = await walletClient.writeContract(revokeRequest);
+      const receipt = await publicClient.waitForTransactionReceipt({ hash });
+      if (receipt.status !== "success") {
+        throw new Error(
+          `revokeFeedback reverted on broadcast despite passing simulation (tx ${hash})`,
+        );
+      }
+      return { transactionHash: hash };
+    },
+
+    async getFeedbackLastIndex(agentId: bigint): Promise<bigint> {
+      const registry = requireReputationRegistry();
+      // clientAddress is the facilitator wallet — the only identity the
+      // gateway writes canonical feedback under.
+      return (await publicClient.readContract({
+        address: registry,
+        abi: reputationRegistryAbi,
+        functionName: "getLastIndex",
+        args: [agentId, account.address],
+      })) as bigint;
     },
   };
 }

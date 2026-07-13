@@ -4,6 +4,10 @@ import type {
   ChainReader,
   ConfirmationDelegationInput,
   ConfirmationResult,
+  DirectAttributionInput,
+  FeedbackInput,
+  FeedbackResult,
+  PaymentRouterRecord,
   PaymentSettledEvent,
   ProviderReputation,
   RegisterBySigInput,
@@ -96,8 +100,8 @@ export class MockChainReader implements ChainReader {
     this.agentURIs.set(agentId.toString(), uri);
   }
 
-  // Reverse-index. Tests that care about identity lookups call
-  // setAgentOfWallet; default is 0n (= unregistered).
+  // Reverse-index — mirrors AgentIndex.resolve. Tests that care about
+  // identity lookups call setAgentOfWallet; default is 0n (= unregistered).
   private walletToAgent = new Map<string, bigint>();
 
   setAgentOfWallet(wallet: Hex, agentId: bigint): void {
@@ -200,7 +204,7 @@ export class MockChainReader implements ChainReader {
     return this.nonces.get(attester.toLowerCase()) ?? 0n;
   }
 
-  // ── Registration mock ────────────────────────────────────────────
+  // ── Registration mock (AgentIndex.registerWithSig) ───────────────
   //
   // Mirrors the buyer-confirmation pattern: queue an outcome before each
   // call. Successful registers also auto-update agentOfWallet so any
@@ -366,6 +370,72 @@ export class MockChainReader implements ChainReader {
     return this.paymentRefunds.get(paymentId.toString()) ?? 0n;
   }
 
+  // Per-paymentId PaymentRouter.getPayment mock. Default null (unknown
+  // payment) mirrors the reader's zero-init detection; tests that exercise
+  // the reputation mirror seed a record via setPaymentRecord.
+  private paymentRecords = new Map<string, PaymentRouterRecord>();
+
+  setPaymentRecord(paymentId: bigint, record: PaymentRouterRecord): void {
+    this.paymentRecords.set(paymentId.toString(), record);
+  }
+
+  async getPaymentRecord(
+    paymentId: bigint,
+  ): Promise<PaymentRouterRecord | null> {
+    return this.paymentRecords.get(paymentId.toString()) ?? null;
+  }
+
+  // ── Canonical ReputationRegistry feedback mock ──────────────────────
+  //
+  // Records every giveFeedback / revokeFeedback call so mirror tests can
+  // assert on the exact args. Default outcome is success (with a 1-based
+  // per-agent index, matching the canonical registry); tests exercising
+  // failure paths queue reverts via queueFeedback / queueFeedbackRevoke.
+  public feedbacks: FeedbackInput[] = [];
+  public feedbackRevokes: Array<{ agentId: bigint; feedbackIndex: bigint }> =
+    [];
+  private feedbackOutcomes: Array<{ kind: "revert"; reason: string }> = [];
+  private feedbackRevokeOutcomes: Array<{ kind: "revert"; reason: string }> =
+    [];
+  private feedbackLastIndex = new Map<string, bigint>();
+
+  queueFeedback(outcome: { kind: "revert"; reason: string }): void {
+    this.feedbackOutcomes.push(outcome);
+  }
+
+  queueFeedbackRevoke(outcome: { kind: "revert"; reason: string }): void {
+    this.feedbackRevokeOutcomes.push(outcome);
+  }
+
+  async giveFeedback(input: FeedbackInput): Promise<FeedbackResult> {
+    this.feedbacks.push(input);
+    const outcome = this.feedbackOutcomes.shift();
+    if (outcome) throw new Error(outcome.reason);
+    const key = input.agentId.toString();
+    const next = (this.feedbackLastIndex.get(key) ?? 0n) + 1n;
+    this.feedbackLastIndex.set(key, next);
+    return {
+      transactionHash: `0xfeed${next.toString(16).padStart(60, "0")}` as Hex,
+    };
+  }
+
+  async revokeFeedback(
+    agentId: bigint,
+    feedbackIndex: bigint,
+  ): Promise<FeedbackResult> {
+    this.feedbackRevokes.push({ agentId, feedbackIndex });
+    const outcome = this.feedbackRevokeOutcomes.shift();
+    if (outcome) throw new Error(outcome.reason);
+    return {
+      transactionHash:
+        `0xdead${feedbackIndex.toString(16).padStart(60, "0")}` as Hex,
+    };
+  }
+
+  async getFeedbackLastIndex(agentId: bigint): Promise<bigint> {
+    return this.feedbackLastIndex.get(agentId.toString()) ?? 0n;
+  }
+
   private paymentSettledLogs: PaymentSettledEventLog[] = [];
 
   /**
@@ -384,6 +454,39 @@ export class MockChainReader implements ChainReader {
     return this.paymentSettledLogs.filter(
       (l) => l.blockNumber >= fromBlock && l.blockNumber <= toBlock,
     );
+  }
+
+  // ── External-rail attribution mock ─────────────────────────────────
+  //
+  // Same queue discipline as settlePayment: tests stage each outcome via
+  // queueAttribution before triggering the route. Calls are recorded so
+  // tests can assert on the exact adapter args the gateway submitted.
+  private attributionOutcomes: SettlementOutcome[] = [];
+  public attributions: DirectAttributionInput[] = [];
+
+  queueAttribution(outcome: SettlementOutcome): void {
+    this.attributionOutcomes.push(outcome);
+  }
+
+  async attributeDirectTransfer(
+    input: DirectAttributionInput,
+  ): Promise<SettlementResult> {
+    this.attributions.push(input);
+    const outcome = this.attributionOutcomes.shift();
+    if (!outcome) {
+      throw new Error(
+        "MockChainReader.attributeDirectTransfer called with no queued outcome",
+      );
+    }
+    if (outcome.kind === "revert") throw new Error(outcome.reason);
+    // Echo the caller's serviceId when the queued event left it zeroed —
+    // same convenience as settlePayment.
+    const ZERO = "0x" + "00".repeat(32);
+    const event =
+      outcome.event.serviceId.toLowerCase() === ZERO
+        ? { ...outcome.event, serviceId: input.serviceId }
+        : outcome.event;
+    return { transactionHash: outcome.txHash, event };
   }
 
   async settleWithRegistration(

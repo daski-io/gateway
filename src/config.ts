@@ -14,7 +14,14 @@ export interface Config {
   baseRpcUrl: string;
   chainId: ChainId;
   network: "base" | "base-sepolia";
+  // CANONICAL per-chain ERC-8004 IdentityRegistry (0x8004A… singleton) —
+  // Daski no longer deploys an identity registry of its own.
   identityRegistryAddress: Hex;
+  // Daski AgentIndex proxy — verified wallet→agentId reverse lookup plus
+  // gasless registerWithSig; the companion that fills the canonical
+  // registry's gaps. Also the EIP-712 verifyingContract for the
+  // RegisterAgent typed-data buyers sign.
+  agentIndexAddress: Hex;
   providerRegistryAddress: Hex;
   // ServiceRegistry — service-identity refactor (2026-05). serviceId is
   // computed off-chain from (providerAgentId, skillId, version) and the
@@ -30,8 +37,12 @@ export interface Config {
   // but handy for clients that want to advertise which rails are live.
   permitAdapterAddress?: Hex;
   approvalAdapterAddress?: Hex;
-  reputationRegistryAddress?: Hex;
   validationRegistryAddress?: Hex;
+  // Canonical ERC-8004 ReputationRegistry (0x8004B… singleton). When set,
+  // the gateway mirrors every buyer confirmation as public feedback for
+  // the provider (facilitator wallet = the ERC-8004 client, EAS
+  // attestation = evidence). Unset = mirroring off; everything else works.
+  reputationRegistryAddress?: Hex;
   // Daski ReputationStorage — used by the gateway only as a view source.
   // Writes go through EAS; this stays in config so discovery can read
   // aggregate stats for ranking.
@@ -40,6 +51,20 @@ export interface Config {
   usdcName: string;
   usdcVersion: string;
   facilitatorPrivateKey: Hex;
+  // ── External-facilitator rail (x402 Bazaar listability) ──────────────
+  // DirectTransferAdapter — attributes payments that an EXTERNAL x402
+  // facilitator (CDP) settled as bare EIP-3009 transfers into the router.
+  // The Bazaar-facing resource route is mounted iff this is set.
+  directAdapterAddress?: Hex;
+  // Base URL of the external facilitator's /verify + /settle endpoints.
+  // Defaults per network: x402.org for Base Sepolia (no auth), the CDP
+  // facilitator for Base mainnet. Note that Bazaar INDEXING only happens
+  // for settlements processed by the CDP facilitator.
+  externalFacilitatorUrl: string;
+  // Raw `Authorization` header value for the external facilitator. The CDP
+  // facilitator requires a CDP API key JWT for mainnet /settle; testnet
+  // facilitators are typically unauthenticated. Optional.
+  externalFacilitatorAuthHeader?: string;
   whitelistedAgentIds: bigint[];
   cacheRefreshIntervalSeconds: number;
   challengeTtlSeconds: number;
@@ -144,6 +169,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       "IDENTITY_REGISTRY_ADDRESS",
       env.IDENTITY_REGISTRY_ADDRESS,
     ),
+    agentIndexAddress: requireAddress(
+      "AGENT_INDEX_ADDRESS",
+      env.AGENT_INDEX_ADDRESS,
+    ),
     providerRegistryAddress: requireAddress(
       "PROVIDER_REGISTRY_ADDRESS",
       env.PROVIDER_REGISTRY_ADDRESS,
@@ -199,6 +228,17 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       "FACILITATOR_PRIVATE_KEY",
       env.FACILITATOR_PRIVATE_KEY,
     ),
+    directAdapterAddress: optionalAddress(
+      "DIRECT_ADAPTER_ADDRESS",
+      env.DIRECT_ADAPTER_ADDRESS,
+    ),
+    externalFacilitatorUrl: (
+      env.EXTERNAL_FACILITATOR_URL ??
+      (chainId === 8453
+        ? "https://api.cdp.coinbase.com/platform/v2/x402"
+        : "https://x402.org/facilitator")
+    ).replace(/\/$/, ""),
+    externalFacilitatorAuthHeader: env.EXTERNAL_FACILITATOR_AUTH_HEADER,
     // WHITELISTED_AGENT_IDS is the canonical name; WHITELISTED_TOKEN_IDS is
     // accepted as a deprecated alias for operator continuity.
     whitelistedAgentIds: parseAgentIds(

@@ -4,6 +4,8 @@ import type { Config } from "../config.js";
 import type { ChainReader } from "../chain/reader.js";
 import type { Queries } from "../db/queries.js";
 import type { Hex } from "../types.js";
+import { mirrorConfirmationFeedback } from "../reputation/mirror.js";
+import { logErrorWithId } from "../util/errorWrap.js";
 
 export interface ConfirmDeps {
   config: Config;
@@ -194,6 +196,21 @@ export async function runConfirmDelivery(
     } catch {
       // Swallow — see comment above.
     }
+
+    // Mirror the confirmation as public ERC-8004 feedback for the provider
+    // on the canonical ReputationRegistry (facilitator wallet = the
+    // orchestrator-client, EAS attestation = evidence). Fire-and-forget:
+    // the mirror must NEVER delay or fail the buyer's confirmation
+    // response. mirror.ts handles its own bookkeeping and logging; the
+    // catch here only guards against bugs in the mirror itself.
+    void mirrorConfirmationFeedback(deps, {
+      paymentId,
+      confirmation: input.confirmation,
+      attestationUid: result.attestationUid,
+      refUid: input.refUid ?? null,
+    }).catch((err) => {
+      logErrorWithId("reputationMirror.unhandled", err);
+    });
 
     return {
       ok: true,

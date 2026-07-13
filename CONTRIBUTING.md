@@ -13,3 +13,10 @@ In the meantime:
 If you want to run the gateway locally, see the [README](README.md). All
 tests should pass on a clean clone (`npm test`); please include a regression
 test with any reproducer.
+
+## Branching
+
+`develop` is the integration branch — all work and PRs target `develop`.
+`main` is the release branch: Railway auto-deploys the running service from
+it, so a `develop` → `main` merge IS the deploy action and happens only as a
+deliberate, explicitly authorized release step.

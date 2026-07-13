@@ -102,8 +102,13 @@ Concrete steps:
 3. Open a JSON-RPC `SendMessage` against `providerA2AUrl` directly
    (instead of `daski_submit_task`). Include the daski extension
    metadata exactly as the gateway would: `{ skillId, paymentId,
-   chainId, serviceRef, transactionHash }` under
-   `metadata["https://daski.xyz/a2a/v1"]`.
+   chainId, serviceRef, transactionHash, quoteId, quoteSignature }`
+   under `metadata["https://daski.xyz/a2a/v1"]`. `quoteId` and
+   `quoteSignature` come from the settle response's `daski` block —
+   providers reject paid tasks without them (quote commitment, and the
+   task's `serviceArgs` must be exactly the ones the purchase was quoted
+   with). `daski_submit_task` injects both automatically; direct A2A
+   callers must copy them in themselves.
 4. Poll the provider's `GetTask` (or subscribe via `SubscribeToTask`
    for SSE) directly. Same response envelope as
    `daski_get_task_status`.

@@ -11,7 +11,7 @@ import { toJsonSchemaCompat } from "@modelcontextprotocol/sdk/server/zod-json-sc
 import type { Express, Request } from "express";
 import type { Config } from "../config.js";
 import { DASKI_A2A_EXTENSION_URI, X402_VERSION } from "../config.js";
-import { buildEnvelopeAuth } from "../auth/envelope.js";
+import { buildEnvelopeAuth, computeRequestHash } from "../auth/envelope.js";
 import type { ChainReader } from "../chain/reader.js";
 import type { DiscoveryCache } from "../discovery/cache.js";
 import type { Queries } from "../db/queries.js";
@@ -20,6 +20,7 @@ import type {
   Hex,
   PaymentPayload,
   PaymentRequirements,
+  StoredChallenge,
 } from "../types.js";
 import {
   formatForSkillDiscover,
@@ -32,7 +33,11 @@ import {
 import { syncSkillEmbeddings } from "../discovery/embeddingSync.js";
 import { safeFetch } from "../util/urlSafety.js";
 import { normalizeState, normalizeRole } from "../util/a2aShape.js";
-import { issuePaymentRequirements } from "../payment/requirements.js";
+import {
+  issuePaymentRequirements,
+  resolveSkillOffer,
+} from "../payment/requirements.js";
+import { fetchProviderQuote } from "../payment/providerQuote.js";
 import { verifyAndSettle, verifyAndSettleWithRegistration } from "../payment/verify.js";
 import { runConfirmDelivery } from "../payment/confirm.js";
 import {
@@ -626,7 +631,7 @@ export async function createMcpServer(
           "When NOT to use:",
           "- Anything else. `daski_buy_service` does this and more in one call.",
           "",
-          "Inputs: `providerTokenId`, `buyerTokenId`, `walletAddress`; optional `skillId`, `amount` (atomic USDC units, defaults to skill base).",
+          "Inputs: `providerTokenId`, `buyerTokenId`, `walletAddress`, `skillId`; optional `serviceArgs` and `amount` (a maximum price in atomic USDC units).",
           "Returns: `paymentRequirements` with `extra.daski.eip712TypedData` to sign.",
           "Next step: sign the typed-data, then call `daski_settle_payment`.",
         ].join("\n"),
@@ -641,16 +646,19 @@ export async function createMcpServer(
                 "rejected on-chain. Use the lowercased checksum form your " +
                 "wallet returns.",
             ),
-          skillId: z.string().optional(),
+          skillId: z.string(),
+          serviceArgs: z.record(z.string(), z.unknown()).optional(),
           amount: z
             .string()
             .optional()
-            .describe("Atomic USDC units. Defaults to skill base."),
+            .describe(
+              "Maximum price in atomic USDC units. The provider-signed quote remains the charge.",
+            ),
         },
         annotations: {
           title: "Daski: open payment challenge",
-          readOnlyHint: true,
-          idempotentHint: true,
+          readOnlyHint: false,
+          idempotentHint: false,
           openWorldHint: true,
         },
       },
@@ -667,15 +675,98 @@ export async function createMcpServer(
         if (!parsedBuyer.ok) return parsedBuyer.error;
         const providerTokenId = parsedProvider.value;
         const buyerTokenId = parsedBuyer.value;
+        const provider = deps.cache.get(providerTokenId);
+        if (!provider) {
+          return errorJson({
+            code: "provider_not_found",
+            message: "provider is not whitelisted",
+          });
+        }
+        const offerResult = resolveSkillOffer(
+          providerTokenId,
+          args.skillId,
+          deps.cache,
+          { requireFixedAmount: false },
+        );
+        if (!offerResult.ok) {
+          return errorJson({
+            code: offerResult.code,
+            message: offerResult.message,
+          });
+        }
+        const offer = offerResult.offer;
+        const serviceArgs = args.serviceArgs ?? {};
+        const quoteResult = await fetchProviderQuote({
+          providerA2AUrl: offer.providerA2AUrl,
+          skillId: args.skillId,
+          serviceArgs,
+          expectedSignerAddress: provider.walletAddress,
+          expectedChainId: deps.config.chainId,
+          expectedTokenAddress: deps.config.usdcAddress,
+          expectedServiceSlug: offer.serviceSlug,
+          expectedServiceVersion: offer.serviceVersion,
+          fetchFn: a2aFetch,
+          timeoutMs: a2aTimeoutMs,
+          maxBytes: A2A_RESPONSE_MAX_BYTES,
+        });
+        if (!quoteResult.ok) {
+          return errorJson({
+            code: quoteResult.code,
+            message: quoteResult.message,
+            details:
+              quoteResult.code === "quote_validation_failed"
+                ? { validationErrors: quoteResult.errors ?? [] }
+                : undefined,
+          });
+        }
+        if (!quoteResult.paymentRequired || !quoteResult.quote) {
+          return errorJson({
+            code: "quote_commitment_missing",
+            message:
+              "The provider did not issue a signed commitment for this paid skill.",
+          });
+        }
+        if (args.amount) {
+          let cap: bigint;
+          try {
+            cap = BigInt(args.amount);
+          } catch {
+            return errorJson({
+              code: "BAD_INPUT",
+              message: "amount must be a decimal string (atomic USDC)",
+            });
+          }
+          if (BigInt(quoteResult.amount) > cap) {
+            return errorJson({
+              code: "price_above_limit",
+              message:
+                `provider quote ${quoteResult.amount} exceeds the amount limit ` +
+                args.amount,
+              recoverable: true,
+            });
+          }
+        }
         const resource = `${deps.config.publicUrl}/purchase/${providerTokenId.toString()}`;
         const result = await issuePaymentRequirements(
           {
             providerTokenId,
             buyerTokenId,
             skillId: args.skillId,
-            amount: args.amount,
+            amount: quoteResult.amount,
             resource,
             walletAddress: args.walletAddress.toLowerCase() as Hex,
+            trustQuotedAmount: true,
+            providerQuote: {
+              quoteId: quoteResult.quote.quoteId,
+              serviceRef: quoteResult.quote.serviceRef,
+              requestHash: quoteResult.quote.requestHash,
+              providerSignature: quoteResult.quote.providerSignature,
+              amount: quoteResult.quote.amount,
+              expiresAt: new Date(quoteResult.quote.expiresAt),
+              skillId: quoteResult.quote.skillId,
+              serviceSlug: quoteResult.quote.serviceSlug,
+              serviceVersion: quoteResult.quote.serviceVersion,
+            },
           },
           deps.config,
           deps.cache,
@@ -684,7 +775,10 @@ export async function createMcpServer(
         if (!result.ok) {
           return errorJson({ code: result.code, message: result.message });
         }
-        return json({ paymentRequirements: result.requirements });
+        return json({
+          quoteNotes: quoteResult.notes,
+          paymentRequirements: result.requirements,
+        });
       },
     );
 
@@ -860,6 +954,11 @@ export async function createMcpServer(
           providerA2AUrl: r.daski?.providerA2AUrl ?? null,
           skillId: challenge.skillId,
           registered: r.daski?.registered ?? false,
+          // Provider quote credentials (audit 1.1) — daski_submit_task
+          // injects them automatically; direct-A2A callers copy them
+          // into the task's daski metadata.
+          quoteId: r.daski?.quoteId ?? null,
+          quoteSignature: r.daski?.quoteSignature ?? null,
         });
       },
     );
@@ -997,7 +1096,7 @@ export async function createMcpServer(
           "- First call: `{ eip712TypedData, deadline }`. Sign `eip712TypedData` with the SAME wallet that paid (the EAS attestation must come from that address). Extract `{ v, r, s }`.",
           "- Second call: `{ attestationUid, transactionHash, success: true }`.",
           "",
-          "Next step: done. The provider's `ReputationStorage` counter is now bumped.",
+          "Next step: done. The provider's `ReputationStorage` counter is now bumped, and (when the gateway has the canonical registry configured) the delivery is also mirrored as public ERC-8004 feedback on the canonical ReputationRegistry — portable reputation any ERC-8004 consumer can read.",
         ].join("\n"),
         inputSchema: CONFIRM_DELIVERY_INPUT_SCHEMA,
         annotations: {
@@ -1306,7 +1405,7 @@ export async function createMcpServer(
         .optional()
         .describe(
           "Optional. Auto-derived from `walletAddress` via the on-chain " +
-            "IdentityRegistry when omitted. Pass explicitly only when the " +
+            "AgentIndex when omitted. Pass explicitly only when the " +
             "caller wants a specific agentId for a wallet that holds " +
             "multiple Daski tokens (rare).",
         ),
@@ -1500,16 +1599,110 @@ export async function createMcpServer(
                 cachedSkillMeta.requiresCapability === true
               : args.paymentId !== "0" && args.paymentId !== "";
 
+        let paidChallenge: StoredChallenge | null = null;
+        if (args.serviceRef && !args.taskId) {
+          if (!/^0x[0-9a-fA-F]{64}$/.test(args.serviceRef)) {
+            return errorJson({
+              code: "BAD_INPUT",
+              message: "serviceRef must be a 0x-prefixed 32-byte hex value.",
+            });
+          }
+          try {
+            paidChallenge = await deps.queries.getChallengeByRef(
+              args.serviceRef.toLowerCase() as Hex,
+            );
+          } catch {
+            return errorJson({
+              code: "QUOTE_LOOKUP_FAILED",
+              message:
+                "The gateway could not load the settled quote credentials. " +
+                "No task was dispatched; retry this call.",
+              recoverable: true,
+              next_action: "Retry daski_submit_task with the same arguments.",
+            });
+          }
+          if (!paidChallenge) {
+            return errorJson({
+              code: "PAYMENT_CHALLENGE_NOT_FOUND",
+              message:
+                "No gateway payment challenge matches this serviceRef. " +
+                "No task was dispatched.",
+            });
+          }
+          if (
+            paidChallenge.status !== "paid" ||
+            paidChallenge.paymentId === null ||
+            paidChallenge.transactionHash === null
+          ) {
+            return errorJson({
+              code: "PAYMENT_NOT_SETTLED",
+              message:
+                "The payment challenge has not completed settlement. " +
+                "Settle it before dispatching the task.",
+              recoverable: true,
+            });
+          }
+          const bindingMismatch =
+            paidChallenge.skillId !== args.skillId ||
+            paidChallenge.paymentId.toString() !== args.paymentId ||
+            paidChallenge.providerA2AUrl !== args.providerA2AUrl ||
+            !args.transactionHash ||
+            paidChallenge.transactionHash.toLowerCase() !==
+              args.transactionHash.toLowerCase();
+          if (bindingMismatch) {
+            return errorJson({
+              code: "PAYMENT_BINDING_MISMATCH",
+              message:
+                "serviceRef, paymentId, transactionHash, skillId, and " +
+                "providerA2AUrl must all describe the same settled challenge. " +
+                "No task was dispatched.",
+            });
+          }
+          if (
+            !paidChallenge.quoteId ||
+            !paidChallenge.quoteSignature ||
+            !paidChallenge.quoteRequestHash
+          ) {
+            return errorJson({
+              code: "QUOTE_CREDENTIALS_MISSING",
+              message:
+                "The settled challenge has no complete provider quote " +
+                "commitment. No task was dispatched.",
+            });
+          }
+          let requestHash: Hex;
+          try {
+            requestHash = computeRequestHash(args.serviceArgs ?? {});
+          } catch (error) {
+            return errorJson({
+              code: "BAD_INPUT",
+              message: `serviceArgs cannot be canonically hashed: ${(error as Error).message}`,
+            });
+          }
+          if (
+            requestHash.toLowerCase() !==
+            paidChallenge.quoteRequestHash.toLowerCase()
+          ) {
+            return errorJson({
+              code: "QUOTE_REQUEST_MISMATCH",
+              message:
+                "serviceArgs differ from the request committed by the " +
+                "provider quote. No task was dispatched.",
+            });
+          }
+        }
+
         // First-call branch — return the typed-data the wallet must sign,
         // plus the matching messageId to thread back through. This absorbs
         // the legacy daski_build_envelope_auth flow.
         if (requiresEnvelopeAuth && !args.envelopeAuth) {
           // §1.3 of daski-mcp-gateway-fix-brief.md — auto-derive
           // buyerTokenId from walletAddress when the caller passes one
-          // but not the other. The on-chain IdentityRegistry is the
-          // source of truth; we already use the same call in
-          // daski_buy_service. Saves the agent from parsing tx receipts
-          // when they just settled a payment for the same wallet.
+          // but not the other. The on-chain AgentIndex (verified against
+          // the canonical registry) is the source of truth; we already
+          // use the same call in daski_buy_service. Saves the agent from
+          // parsing tx receipts when they just settled a payment for the
+          // same wallet.
           let buyerTokenId = args.buyerTokenId;
           if (!buyerTokenId && args.walletAddress) {
             if (!HEX_ADDR.test(args.walletAddress)) {
@@ -1541,7 +1734,7 @@ export async function createMcpServer(
               return errorJson({
                 code: "CHAIN_READ_FAILED",
                 message:
-                  `IdentityRegistry.agentOfWallet(${args.walletAddress}) failed: ${(err as Error).message}`,
+                  `AgentIndex.resolve(${args.walletAddress}) failed: ${(err as Error).message}`,
                 recoverable: true,
                 next_action:
                   "Retry, or pass buyerTokenId directly if you already know it.",
@@ -1560,7 +1753,7 @@ export async function createMcpServer(
                 "it's in the daski_buy_service second-call response as " +
                 "`buyerTokenId`. For a wallet you've used before, pass " +
                 "`walletAddress` and the gateway auto-derives via the " +
-                "on-chain IdentityRegistry.",
+                "on-chain AgentIndex.",
               recoverable: true,
               next_action:
                 "Re-call this tool with either `buyerTokenId` or `walletAddress` set.",
@@ -1612,6 +1805,11 @@ export async function createMcpServer(
         if (args.taskId) meta.taskId = args.taskId;
         if (args.capability) meta.capability = args.capability;
         if (args.envelopeAuth) meta.envelopeAuth = args.envelopeAuth;
+
+        if (paidChallenge) {
+          meta.quoteId = paidChallenge.quoteId;
+          meta.quoteSignature = paidChallenge.quoteSignature;
+        }
 
         // When the buyer signs envelopeAuth they commit to a specific
         // messageId. We must thread that same value here — auto-generating
@@ -2489,6 +2687,51 @@ export async function createMcpServer(
           details: { serviceRef: serviceRefRaw },
         });
       }
+      if (args.serviceArgs === undefined) {
+        return errorJson({
+          code: "QUOTE_REQUEST_ARGS_MISSING",
+          message:
+            "serviceArgs is required on a signed retry so the gateway can " +
+            "verify the request still matches the provider quote.",
+          recoverable: true,
+          next_action:
+            "Retry with the same serviceArgs used when the payment challenge was created.",
+        });
+      }
+      if (!challenge.quoteRequestHash) {
+        return errorJson({
+          code: "QUOTE_CREDENTIALS_MISSING",
+          message: "stored challenge is missing its quote requestHash",
+        });
+      }
+      const normalizedRetry = validateAndNormalizeServiceArgs(
+        args.serviceArgs,
+        [],
+      );
+      if (!normalizedRetry.ok) return normalizedRetry.error;
+      let retryRequestHash: Hex;
+      try {
+        retryRequestHash = computeRequestHash(normalizedRetry.args);
+      } catch {
+        return errorJson({
+          code: "BAD_INPUT",
+          message: "serviceArgs cannot be canonically encoded",
+          recoverable: true,
+        });
+      }
+      if (
+        retryRequestHash.toLowerCase() !==
+        challenge.quoteRequestHash.toLowerCase()
+      ) {
+        return errorJson({
+          code: "QUOTE_REQUEST_MISMATCH",
+          message:
+            "serviceArgs do not match the requestHash committed by the provider quote",
+          recoverable: true,
+          next_action:
+            "Retry with the exact serviceArgs used when the payment challenge was created.",
+        });
+      }
       const needsRegistration = challenge.buyerTokenId === 0n;
       if (needsRegistration && !args.registration) {
         return errorJson({
@@ -2900,60 +3143,47 @@ export async function createMcpServer(
     ): Promise<McpToolResult> {
       const { args, provider, providerA2AUrl, serviceArgs, buyerAgentId, buyerName } =
         ctx;
+      const cachedProvider = deps.cache.get(provider.agentId);
+      const offerResult = resolveSkillOffer(
+        provider.agentId,
+        args.skillId,
+        deps.cache,
+        { requireFixedAmount: false },
+      );
+      if (!cachedProvider || !offerResult.ok) {
+        return errorJson({
+          code: offerResult.ok ? "provider_not_found" : offerResult.code,
+          message: offerResult.ok
+            ? "provider disappeared from the discovery cache"
+            : offerResult.message,
+        });
+      }
+      const offer = offerResult.offer;
 
-      // Live-quote the provider before issuing paymentRequirements so
-      // the buyer pays the actual price AND user-input errors (bad
-      // phone, unsupported TLD, missing fields) surface before any
-      // USDC moves. The A2A URL convention is `<base>/a2a[/<slug>]`;
-      // /quote mirrors that shape, so we swap the segment in place.
-      const quoteUrl = providerA2AUrl.replace(/\/a2a(?=\/|$)/, "/quote");
-
-      // Track whether the amount came from THIS request's live /quote.
-      // Caller-supplied args.amount is NOT trusted as a quote — that
-      // would bypass resolveAmount's static floor check (audit P1).
-      let quoteAmount: string | undefined = args.amount;
-      let quoteNotes: string[] = [];
-      let quoteAmountFromLiveQuote = false;
-      if (!args.amount) {
-        type QuoteJson = {
-          ok?: boolean;
-          amount?: string;
-          currency?: string;
-          notes?: string[];
-          errors?: Array<{ field: string; code: string; message: string }>;
-        };
-        const post = await a2aPostJson<QuoteJson>(
-          quoteUrl,
-          { skillId: args.skillId, serviceArgs },
-          {
-            fetch: a2aFetch,
-            timeoutMs: a2aTimeoutMs,
-            maxBytes: A2A_RESPONSE_MAX_BYTES,
-          },
-        );
-        if (!post.ok) {
-          if (post.reason === "timeout") {
-            return errorJson({
-              code: "provider_timeout",
-              message: `quote at ${quoteUrl} failed: ${post.message}`,
-            });
-          }
-          if (post.reason === "unreachable") {
-            return errorJson({
-              code: "provider_unreachable",
-              message: `quote at ${quoteUrl} failed: ${post.message}`,
-            });
-          }
-          if (post.reason === "non_json") {
-            return errorJson({
-              code: "quote_malformed",
-              message: `provider /quote returned non-JSON (status ${post.status})`,
-            });
-          }
-          return providerErrorFromFailure(post, quoteUrl);
-        }
-        const quoteJson = post.body;
-        if (!quoteJson.ok) {
+      // Live-quote the provider before issuing paymentRequirements —
+      // MANDATORY since the provider's quote-commitment hardening (audit
+      // 1.1): every paid settlement must reference a provider-signed
+      // quote, and the challenge must settle under the quote's own
+      // serviceRef (keccak256 of the canonical signed payload). Quoting
+      // also surfaces user-input errors (bad phone, unsupported TLD,
+      // missing fields) before any USDC moves. Caller-supplied
+      // args.amount no longer bypasses the quote — it survives as a
+      // max-price cap on the quoted amount (quote == charge, always).
+      const quoteResult = await fetchProviderQuote({
+        providerA2AUrl,
+        skillId: args.skillId,
+        serviceArgs,
+        expectedSignerAddress: cachedProvider.walletAddress,
+        expectedChainId: deps.config.chainId,
+        expectedTokenAddress: deps.config.usdcAddress,
+        expectedServiceSlug: offer.serviceSlug,
+        expectedServiceVersion: offer.serviceVersion,
+        fetchFn: a2aFetch,
+        timeoutMs: a2aTimeoutMs,
+        maxBytes: A2A_RESPONSE_MAX_BYTES,
+      });
+      if (!quoteResult.ok) {
+        if (quoteResult.code === "quote_validation_failed") {
           // Surface the same "unsupported serviceArgs ignored" hint the
           // success path emits (below), but on the FIRST rejection: a wrapper
           // like officialsByClassification is discarded here too, so naming it
@@ -2971,7 +3201,7 @@ export async function createMcpServer(
                 : "") +
               "Provider rejected the requested args. Fix the listed errors and retry.",
             details: {
-              validationErrors: quoteJson.errors ?? [],
+              validationErrors: quoteResult.errors ?? [],
               ...(ignoredArgWarnings.length > 0
                 ? { warnings: ignoredArgWarnings }
                 : {}),
@@ -2981,15 +3211,64 @@ export async function createMcpServer(
               "Fix the listed validationErrors in serviceArgs and retry daski_buy_service.",
           });
         }
-        if (!quoteJson.amount) {
+        return errorJson({
+          code: quoteResult.code,
+          message: quoteResult.message,
+        });
+      }
+      const quoteAmount = quoteResult.amount;
+      const quoteNotes = quoteResult.notes;
+
+      // Max-price cap: the caller's amount bounds what they are willing
+      // to pay; the charge itself is always the quoted amount.
+      if (args.amount) {
+        let cap: bigint | null = null;
+        try {
+          cap = BigInt(args.amount);
+        } catch {
+          cap = null;
+        }
+        if (cap === null) {
           return errorJson({
-            code: "quote_malformed",
-            message: "provider /quote returned ok=true with no amount",
+            code: "BAD_INPUT",
+            message: "amount must be a decimal string (atomic USDC)",
           });
         }
-        quoteAmount = quoteJson.amount;
-        quoteNotes = quoteJson.notes ?? [];
-        quoteAmountFromLiveQuote = true;
+        if (BigInt(quoteAmount) > cap) {
+          return errorJson({
+            code: "price_above_limit",
+            message:
+              `live quote ${quoteAmount} exceeds your amount limit ` +
+              `${args.amount} (quote == charge; the limit never overrides ` +
+              `the quote).`,
+            details: {
+              quotedAmount: quoteAmount,
+              limit: args.amount,
+              notes: quoteNotes,
+            },
+            recoverable: true,
+            next_action:
+              "Accept the quoted price by re-calling daski_buy_service " +
+              "without `amount`, or with amount >= quotedAmount.",
+          });
+        }
+      }
+
+      if (!quoteResult.quote) {
+        // No signed commitment on a PAID quote — the provider is running
+        // a pre-quote-commitment build. Issuing a challenge anyway would
+        // capture funds the provider then rejects at task-submit time
+        // (-32111 quote_missing), which is exactly the failure mode this
+        // integration exists to prevent. Refuse while the money is still
+        // in the buyer's wallet.
+        return errorJson({
+          code: "quote_commitment_missing",
+          message:
+            "Provider /quote returned no signed quote commitment; paid " +
+            "tasks would be rejected at submit time after capturing " +
+            "funds. The provider needs the quote-commitment build " +
+            "(audit 1.1) — contact the provider operator.",
+        });
       }
 
       const resource = `${deps.config.publicUrl}/purchase/${provider.agentId.toString()}`;
@@ -3001,7 +3280,18 @@ export async function createMcpServer(
           amount: quoteAmount,
           resource,
           walletAddress: args.walletAddress.toLowerCase() as Hex,
-          trustQuotedAmount: quoteAmountFromLiveQuote,
+          trustQuotedAmount: true,
+          providerQuote: {
+            quoteId: quoteResult.quote.quoteId,
+            serviceRef: quoteResult.quote.serviceRef,
+            requestHash: quoteResult.quote.requestHash,
+            providerSignature: quoteResult.quote.providerSignature,
+            amount: quoteResult.quote.amount,
+            expiresAt: new Date(quoteResult.quote.expiresAt),
+            skillId: quoteResult.quote.skillId,
+            serviceSlug: quoteResult.quote.serviceSlug,
+            serviceVersion: quoteResult.quote.serviceVersion,
+          },
         },
         deps.config,
         deps.cache,
@@ -3056,11 +3346,14 @@ export async function createMcpServer(
             nonce: nonce.toString(),
             deadline: deadline.toString(),
             eip712TypedData: {
+              // Domain of the Daski AgentIndex — registerWithSig verifies
+              // the consent signature there (the canonical ERC-8004
+              // registry has no gasless registration of its own).
               domain: {
-                name: "Daski IdentityRegistry",
+                name: "Daski AgentIndex",
                 version: "1",
                 chainId: deps.config.chainId,
-                verifyingContract: deps.config.identityRegistryAddress,
+                verifyingContract: deps.config.agentIndexAddress,
               },
               types: {
                 RegisterAgent: [
@@ -3251,6 +3544,15 @@ export async function createMcpServer(
             network: deps.config.network,
           },
           quoteNotes,
+          // Signed provider quote backing this challenge. The challenge's
+          // serviceRef IS quote.serviceRef; sign + settle + submit before
+          // quoteExpiresAt (provider TTL ~120s) or re-run this tool for a
+          // fresh quote. daski_submit_task forwards the credentials
+          // automatically.
+          quote: {
+            quoteId: quoteResult.quote.quoteId,
+            expiresAt: quoteResult.quote.expiresAt,
+          },
           paymentRequirements: r,
           registrationPrep,
           plan: { steps },
@@ -3495,9 +3797,9 @@ export async function createMcpServer(
         // lookup. Treating "0" as a valid override would route an
         // already-registered wallet down atomic register-and-settle and
         // burn the buyer's USDC re-minting an agentId they already have
-        // (or surface as a bare "execution reverted" when registerBySig
-        // sees a stale nonce). agentOfWallet is the single source of
-        // truth — let it speak.
+        // (or surface as a bare "execution reverted" when registerWithSig
+        // sees a stale nonce). AgentIndex.resolve (via agentOfWallet) is
+        // the single source of truth — let it speak.
         let parsedBuyerTokenId: bigint | null = null;
         if (args.buyerTokenId) {
           const p = parseBigIntArg(args.buyerTokenId, "buyerTokenId");

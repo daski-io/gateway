@@ -21,6 +21,10 @@ import type {
   ChainReader,
   ConfirmationDelegationInput,
   ConfirmationResult,
+  DirectAttributionInput,
+  FeedbackInput,
+  FeedbackResult,
+  PaymentRouterRecord,
   PaymentSettledEvent,
   PaymentSettledEventLog,
   ProviderReputation,
@@ -72,7 +76,13 @@ function deterministicHex(seed: string, n: bigint): Hex {
 }
 
 export class AutoMockChainReader implements ChainReader {
-  private nextPaymentId = 1n;
+  // Boot-time base rather than 1n: the mock chain restarts with the
+  // gateway, but the PROVIDER's database persists across managed-e2e
+  // runs. Re-issuing paymentId 1 with a fresh serviceRef collides with
+  // the provider's immutable settlement-observation for the previous
+  // run's paymentId 1 ("Settlement identity conflicts with persisted
+  // chain facts"). A millisecond base keeps ids unique across restarts.
+  private nextPaymentId = BigInt(Date.now());
   private confirmationCount = 0n;
   private blockNumber = 1n;
   private usedAuthNonces = new Set<string>();
@@ -111,7 +121,7 @@ export class AutoMockChainReader implements ChainReader {
     };
   }
 
-  // ── IdentityRegistry views ─────────────────────────────────────────
+  // ── IdentityRegistry / AgentIndex views ────────────────────────────
 
   async getAgentURI(agentId: bigint): Promise<string> {
     if (agentId === this.opts.providerAgentId) {
@@ -121,6 +131,8 @@ export class AutoMockChainReader implements ChainReader {
     return "";
   }
 
+  // Mirrors AgentIndex.resolve — the in-memory map plays the role of the
+  // verified wallet→agentId binding (no staleness in mock mode).
   async agentOfWallet(wallet: Hex): Promise<bigint> {
     return this.agentByWallet.get(wallet.toLowerCase()) ?? 0n;
   }
@@ -200,6 +212,39 @@ export class AutoMockChainReader implements ChainReader {
       event: result.event,
       buyerAgentId: result.event.buyerAgentId,
       registered: !existed,
+    };
+  }
+
+  async attributeDirectTransfer(
+    input: DirectAttributionInput,
+  ): Promise<SettlementResult> {
+    // Mirror the on-chain idempotency surface: one attribution per
+    // serviceRef. (The auth nonce is consumed by the EXTERNAL facilitator
+    // in production; the mock has no external settle step to track, so
+    // serviceRef is the useful replay key here.)
+    const key = `attr:${input.serviceRef.toLowerCase()}`;
+    if (this.usedAuthNonces.has(key)) {
+      throw new Error("mock attribute: serviceRef used");
+    }
+    this.usedAuthNonces.add(key);
+
+    const buyerAgentId = this.rememberBuyer(input.from);
+    const paymentId = this.nextPaymentId++;
+    const commission = (input.amount * 5n) / 100n;
+    const event: PaymentSettledEvent = {
+      paymentId,
+      serviceRef: input.serviceRef,
+      serviceId: input.serviceId,
+      buyerAgentId,
+      providerAgentId: input.providerAgentId,
+      token: this.opts.tokenAddress.toLowerCase() as Hex,
+      totalAmount: input.amount,
+      providerAmount: input.amount - commission,
+      commission,
+    };
+    return {
+      transactionHash: txHashForPayment(paymentId),
+      event,
     };
   }
 
@@ -291,6 +336,56 @@ export class AutoMockChainReader implements ChainReader {
 
   async getPaymentRefundedAmount(_paymentId: bigint): Promise<bigint> {
     return 0n;
+  }
+
+  /**
+   * Synthetic PaymentRecord for any nonzero paymentId — mirrors the
+   * single-provider mock world (provider = the configured agentId). The
+   * reputation mirror never runs in CHAIN_MODE=mock, so this exists for
+   * interface completeness, not behavior.
+   */
+  async getPaymentRecord(
+    paymentId: bigint,
+  ): Promise<PaymentRouterRecord | null> {
+    if (paymentId === 0n) return null;
+    return {
+      buyerAgentId: this.defaultBuyerAgentId,
+      providerAgentId: this.opts.providerAgentId,
+      serviceId: ZERO_HASH,
+      token: this.opts.tokenAddress.toLowerCase() as Hex,
+      amount: 0n,
+      cachedBuyerWallet: ZERO_ADDR,
+      serviceRef: ZERO_HASH,
+      paidAt: BigInt(Math.floor(Date.now() / 1000)),
+    };
+  }
+
+  // ── Canonical ReputationRegistry feedback (mirror) ──────────────────
+  //
+  // The mirror is disabled in CHAIN_MODE=mock, so these are auto-success
+  // stubs recording calls for completeness/debugging only. Indices are
+  // 1-based per (agentId), matching the canonical registry's semantics.
+
+  public feedbacks: FeedbackInput[] = [];
+  private feedbackIndexByAgent = new Map<string, bigint>();
+
+  async giveFeedback(input: FeedbackInput): Promise<FeedbackResult> {
+    this.feedbacks.push(input);
+    const key = input.agentId.toString();
+    const next = (this.feedbackIndexByAgent.get(key) ?? 0n) + 1n;
+    this.feedbackIndexByAgent.set(key, next);
+    return { transactionHash: deterministicHex("f", next) };
+  }
+
+  async revokeFeedback(
+    _agentId: bigint,
+    feedbackIndex: bigint,
+  ): Promise<FeedbackResult> {
+    return { transactionHash: deterministicHex("v", feedbackIndex) };
+  }
+
+  async getFeedbackLastIndex(agentId: bigint): Promise<bigint> {
+    return this.feedbackIndexByAgent.get(agentId.toString()) ?? 0n;
   }
 
   async getPaymentSettledEvents(

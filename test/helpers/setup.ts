@@ -17,6 +17,7 @@ import {
   type MockTaskState,
 } from "./mockProvider.js";
 import { DASKI_A2A_EXTENSION_URI } from "../../src/config.js";
+import { resolveSkillOffer } from "../../src/payment/requirements.js";
 import type { PaymentSettledEvent } from "../../src/chain/reader.js";
 import type {
   ExactEvmAuthorization,
@@ -25,6 +26,10 @@ import type {
 } from "../../src/types.js";
 
 const IDENTITY_REGISTRY_ADDRESS = "0x000000000000000000000000000000000000a000" as Hex;
+// Daski AgentIndex — reverse lookup + gasless registerWithSig companion of
+// the (canonical) identity registry. Distinct address so tests can assert
+// the RegisterAgent typed-data verifies against the index, not the registry.
+const AGENT_INDEX_ADDRESS = "0x000000000000000000000000000000000000a007" as Hex;
 const REGISTRY_ADDRESS = "0x000000000000000000000000000000000000a001" as Hex;
 const PAYMENT_ROUTER_ADDRESS =
   "0x000000000000000000000000000000000000a002" as Hex;
@@ -76,6 +81,13 @@ export interface TestGatewayOptions {
    * etc.) that the default fixture leaves unset.
    */
   configOverrides?: Partial<Config>;
+  /**
+   * Stub for the EXTERNAL x402 facilitator HTTP client (Bazaar rail).
+   * Receives the /verify and /settle POSTs the gateway would send to the
+   * CDP facilitator. Only reachable when configOverrides sets
+   * directAdapterAddress (which mounts the /x402/services routes).
+   */
+  externalFacilitatorFetch?: typeof fetch;
 }
 
 /**
@@ -196,6 +208,7 @@ export async function startTestGateway(
     chainId: CHAIN_ID,
     network: "base-sepolia",
     identityRegistryAddress: IDENTITY_REGISTRY_ADDRESS,
+    agentIndexAddress: AGENT_INDEX_ADDRESS,
     providerRegistryAddress: REGISTRY_ADDRESS,
     serviceRegistryAddress: SERVICE_REGISTRY_ADDRESS,
     paymentRouterAddress: PAYMENT_ROUTER_ADDRESS,
@@ -213,6 +226,10 @@ export async function startTestGateway(
     easConfirmationSchemaUid: EAS_CONFIRMATION_SCHEMA_UID,
     easOutcomeSchemaUid: EAS_OUTCOME_SCHEMA_UID,
     ipfsGatewayUrl: "https://ipfs.io/ipfs/",
+    // Bazaar rail — never hit over the network in tests; routes are only
+    // mounted when configOverrides also sets directAdapterAddress, and
+    // those tests inject externalFacilitatorFetch.
+    externalFacilitatorUrl: "http://external-facilitator.test",
     ...opts.configOverrides,
   };
 
@@ -255,6 +272,7 @@ export async function startTestGateway(
     startCacheRefreshLoop: false,
     agentCardFetchTimeoutMs: 2000,
     buyerAgentCardFetch,
+    externalFacilitatorFetch: opts.externalFacilitatorFetch,
   });
 
   await bundle.cache.refresh();
@@ -267,6 +285,7 @@ export async function startTestGateway(
   config.publicUrl = baseUrl;
 
   const buyerAccount = privateKeyToAccount(TEST_BUYER_KEY);
+  const serviceArgsByRef = new Map<Hex, Record<string, unknown>>();
 
   async function signAuthorization(
     value: bigint,
@@ -337,6 +356,61 @@ export async function startTestGateway(
         skillId: "default-service",
         ...body,
       };
+      const requestedSkillId = merged.skillId;
+      const cachedProvider = bundle.cache.get(tokenId);
+      if (cachedProvider && typeof requestedSkillId === "string") {
+        const cards = new Set<Record<string, unknown>>([
+          cachedProvider.agentCard,
+          ...(cachedProvider.cards?.map((card) => card.agentCard) ?? []),
+        ]);
+        for (const card of cards) {
+          const listed = Array.isArray(card.skills) ? card.skills : [];
+          if (
+            !listed.some(
+              (skill) =>
+                skill !== null &&
+                typeof skill === "object" &&
+                (skill as Record<string, unknown>).id === requestedSkillId,
+            )
+          ) {
+            listed.push({
+              id: requestedSkillId,
+              name: requestedSkillId,
+              description: `${requestedSkillId} test skill`,
+              metadata: { [DASKI_A2A_EXTENSION_URI]: {} },
+            });
+          }
+          card.skills = listed;
+        }
+      }
+      if (!Object.prototype.hasOwnProperty.call(body, "providerQuote")) {
+        const skillId = merged.skillId;
+        const serviceArgs = merged.serviceArgs ?? {};
+        if (
+          typeof skillId === "string" &&
+          serviceArgs !== null &&
+          typeof serviceArgs === "object" &&
+          !Array.isArray(serviceArgs)
+        ) {
+          const resolved = resolveSkillOffer(tokenId, skillId, bundle.cache, {
+            requireFixedAmount: false,
+          });
+          if (resolved.ok) {
+            const quoteResponse = await fetch(
+              `${mockProvider.baseUrl}/quote/${encodeURIComponent(resolved.offer.serviceSlug)}`,
+              {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ skillId, serviceArgs }),
+              },
+            );
+            const quoteBody = (await quoteResponse.json()) as {
+              quote?: Record<string, unknown>;
+            };
+            if (quoteBody.quote) merged.providerQuote = quoteBody.quote;
+          }
+        }
+      }
       const res = await fetch(`${baseUrl}/purchase/${tokenId.toString()}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -353,6 +427,19 @@ export async function startTestGateway(
         maxAmountRequired = req?.maxAmountRequired;
         payTo = req?.payTo;
       }
+      if (serviceRef) {
+        const serviceArgs = merged.serviceArgs ?? {};
+        if (
+          serviceArgs !== null &&
+          typeof serviceArgs === "object" &&
+          !Array.isArray(serviceArgs)
+        ) {
+          serviceArgsByRef.set(
+            serviceRef,
+            serviceArgs as Record<string, unknown>,
+          );
+        }
+      }
       return { status: res.status, json, serviceRef, maxAmountRequired, payTo };
     },
 
@@ -364,7 +451,11 @@ export async function startTestGateway(
           "Content-Type": "application/json",
           "X-PAYMENT": header,
         },
-        body: JSON.stringify({}),
+        body: JSON.stringify({
+          serviceArgs: payload.serviceRef
+            ? (serviceArgsByRef.get(payload.serviceRef) ?? {})
+            : {},
+        }),
       });
       const json = await res.json();
       const settlementHeader = decodeSettlementHeader(
@@ -459,9 +550,7 @@ function _installProvider(
   const erc8004TokenId = def.erc8004TokenId ?? def.tokenId;
 
   mockChain.addProvider(def.tokenId, {
-    walletAddress:
-      def.walletAddress ??
-      (`0x${def.tokenId.toString(16).padStart(40, "0")}` as Hex),
+    walletAddress: def.walletAddress ?? mockProvider.walletAddress,
     agentId: def.tokenId,
     agentURI,
     registrationTime: 1n,

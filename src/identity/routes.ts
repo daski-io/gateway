@@ -154,16 +154,21 @@ const REGISTER_AGENT_TYPES = {
   ],
 } as const;
 
-const IDENTITY_DOMAIN_NAME = "Daski IdentityRegistry";
-const IDENTITY_DOMAIN_VERSION = "1";
+// EIP-712 domain of the Daski AgentIndex — the contract that verifies the
+// RegisterAgent consent signature (registerWithSig). The struct is
+// unchanged from the retired Daski IdentityRegistry's registerBySig; only
+// the domain (name + verifyingContract) moved.
+const AGENT_INDEX_DOMAIN_NAME = "Daski AgentIndex";
+const AGENT_INDEX_DOMAIN_VERSION = "1";
 
 export function createIdentityRouter(deps: IdentityDeps): Router {
   const router = Router();
 
-  // Reverse lookup: wallet → ERC-8004 agentId. Used to resolve buyerTokenId
-  // from the address the CDP SDK issued. Returns `null` for wallets without
-  // a minted identity; callers surface that to the user as "mint an
-  // identity first".
+  // Reverse lookup: wallet → ERC-8004 agentId, resolved via the Daski
+  // AgentIndex (verified against the canonical registry; stale bindings
+  // read as unregistered). Used to resolve buyerTokenId from the address
+  // the CDP SDK issued. Returns `null` for wallets without a bound
+  // identity; callers surface that to the user as "mint an identity first".
   router.get("/identity/by-wallet/:address", async (req: Request, res: Response) => {
     const raw = String(req.params.address ?? "");
     if (!isHexAddress(raw)) {
@@ -236,8 +241,9 @@ export function createIdentityRouter(deps: IdentityDeps): Router {
   //
   // GET /register-prep returns the EIP-712 RegisterAgent typed-data the
   // wallet should sign. After signing, the agent calls POST /register with
-  // the resulting bytes — the gateway facilitator submits registerBySig
-  // and returns the new agentId.
+  // the resulting bytes — the gateway facilitator submits
+  // AgentIndex.registerWithSig (which mints on the canonical ERC-8004
+  // registry) and returns the new agentId.
   //
   // If the wallet is already registered, /register-prep returns 409 with
   // the existing agentId so the caller can short-circuit.
@@ -335,10 +341,10 @@ export function createIdentityRouter(deps: IdentityDeps): Router {
 
     const typedData: Eip712TypedData = {
       domain: {
-        name: IDENTITY_DOMAIN_NAME,
-        version: IDENTITY_DOMAIN_VERSION,
+        name: AGENT_INDEX_DOMAIN_NAME,
+        version: AGENT_INDEX_DOMAIN_VERSION,
         chainId: deps.config.chainId,
-        verifyingContract: deps.config.identityRegistryAddress,
+        verifyingContract: deps.config.agentIndexAddress,
       },
       types: {
         RegisterAgent: REGISTER_AGENT_TYPES.RegisterAgent.map((f) => ({
@@ -488,7 +494,7 @@ export function createIdentityRouter(deps: IdentityDeps): Router {
         transactionHash: result.transactionHash,
       });
     } catch (err) {
-      const correlationId = logErrorWithId("registerBySig", err);
+      const correlationId = logErrorWithId("registerWithSig", err);
       res.status(502).json({
         error: {
           code: "REGISTER_FAILED",

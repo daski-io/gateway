@@ -1,7 +1,24 @@
 import express, { type Express } from "express";
 import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
+import { keccak256, toBytes } from "viem";
+import { privateKeyToAccount } from "viem/accounts";
+import { canonicalJsonStringify, computeRequestHash } from "../../src/auth/envelope.js";
 import { DASKI_A2A_EXTENSION_URI } from "../../src/config.js";
+import {
+  PROVIDER_QUOTE_VERSION,
+  type ProviderQuoteCommitment,
+} from "../../src/payment/providerQuote.js";
+import type { Hex } from "../../src/types.js";
+
+const MOCK_PROVIDER_PRIVATE_KEY =
+  "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d" as Hex;
+const MOCK_PROVIDER_ACCOUNT = privateKeyToAccount(MOCK_PROVIDER_PRIVATE_KEY);
+export const MOCK_PROVIDER_WALLET_ADDRESS =
+  MOCK_PROVIDER_ACCOUNT.address.toLowerCase() as Hex;
+export const MOCK_PROVIDER_TOKEN_ADDRESS =
+  "0x000000000000000000000000000000000000a003" as Hex;
+export const MOCK_PROVIDER_CHAIN_ID = 84532;
 
 export interface MockProviderOptions {
   agentCards: Record<string, Record<string, unknown>>; // path -> agent card
@@ -36,16 +53,43 @@ export interface MockTaskState {
 /// Tests can scope by skillId (default applies to all). When unset, the
 /// mock returns ok=true with amount=0 (free skills) — matches the
 /// real provider's behaviour for non-paid skills.
+///
+/// Paid outcomes (amount > 0) also mint a signed-quote commitment like the
+/// real provider (audit 1.1): the canonical payload is hashed for serviceRef
+/// and signed with the mock provider's EIP-191 key. Tests read commitments
+/// via getIssuedQuotes() to assert the gateway adopted quote.serviceRef
+/// verbatim and forwarded quoteId/quoteSignature at task-submit time.
+/// Set `omitCommitment: true` to impersonate a pre-audit-1.1 provider.
 export type MockQuoteOutcome =
-  | { ok: true; amount: bigint; currency?: "USDC"; notes?: string[] }
+  | {
+      ok: true;
+      amount: bigint;
+      currency?: "USDC";
+      notes?: string[];
+      omitCommitment?: boolean;
+      /** Override the quote TTL (default 120s, like the real provider). */
+      ttlMs?: number;
+      /** Override the Agent Card-derived slug, including with a bad value. */
+      serviceSlug?: string;
+      /** Override the Agent Card-derived service version. */
+      serviceVersion?: string;
+    }
   | {
       ok: false;
       errors: Array<{ field: string; code: string; message: string }>;
     };
 
+/// Commitment shape the mock's /quote mints for paid outcomes. Mirrors
+/// the wire fields the gateway consumes from ProviderQuoteCommitment.
+export interface MockIssuedQuote extends ProviderQuoteCommitment {
+  serviceArgs: Record<string, unknown>;
+}
+
 export interface MockProviderHandle {
   url: string;
   baseUrl: string;
+  /** Wallet registered on the mock chain and used to sign provider quotes. */
+  walletAddress: Hex;
   setAgentCard(path: string, card: Record<string, unknown>): void;
   setTaskState(state: MockTaskState): void;
   setShouldHang(hang: boolean): void;
@@ -77,6 +121,10 @@ export interface MockProviderHandle {
   /// mock received — lets tests assert what the gateway forwarded
   /// (e.g. metadata.taskId routing for task input).
   getLastSendBody(): Record<string, unknown> | null;
+  /// Every signed-quote commitment the mock /quote endpoint minted, in
+  /// issue order. Tests assert the gateway adopted the last one's
+  /// serviceRef / forwarded its quoteId + providerSignature.
+  getIssuedQuotes(): MockIssuedQuote[];
   close(): Promise<void>;
 }
 
@@ -135,9 +183,78 @@ export async function startMockProvider(
 
   // Quote endpoint: gateway calls this BEFORE issuing PaymentRequirements
   // to get live pricing + pre-validate user input. Match both /quote and
-  // /quote/<slug> shapes.
-  const quoteHandler = (req: express.Request, res: express.Response) => {
+  // /quote/<slug> shapes. Paid quotes use the same commitment derivation
+  // and EIP-191 signing contract as the real provider.
+  const issuedQuotes: MockIssuedQuote[] = [];
+  let quoteCounter = 0;
+  function serviceBinding(skillId: string): {
+    serviceSlug: string;
+    serviceVersion: string;
+  } | null {
+    for (const card of Object.values(cards)) {
+      const skills = card.skills;
+      let listed = false;
+      let metadata: Record<string, unknown> | null = null;
+      if (Array.isArray(skills)) {
+        for (const rawSkill of skills) {
+          if (!rawSkill || typeof rawSkill !== "object") continue;
+          const skill = rawSkill as Record<string, unknown>;
+          if (skill.id !== skillId) continue;
+          listed = true;
+          const meta = skill.metadata;
+          const daskiMeta =
+            meta && typeof meta === "object"
+              ? (meta as Record<string, unknown>)[DASKI_A2A_EXTENSION_URI]
+              : null;
+          if (daskiMeta && typeof daskiMeta === "object") {
+            metadata = daskiMeta as Record<string, unknown>;
+          }
+          break;
+        }
+      }
+      const extensions = card.extensions;
+      const daski =
+        extensions && typeof extensions === "object"
+          ? (extensions as Record<string, unknown>)[DASKI_A2A_EXTENSION_URI]
+          : null;
+      if (!metadata && daski && typeof daski === "object") {
+        const skillMap = (daski as Record<string, unknown>).skills;
+        const mapped =
+          skillMap && typeof skillMap === "object" && !Array.isArray(skillMap)
+            ? (skillMap as Record<string, unknown>)[skillId]
+            : null;
+        if (mapped && typeof mapped === "object") {
+          metadata = mapped as Record<string, unknown>;
+          listed = true;
+        }
+      }
+      if (!listed) continue;
+      return {
+        serviceSlug:
+          typeof metadata?.serviceSlug === "string" && metadata.serviceSlug
+            ? metadata.serviceSlug
+            : skillId,
+        serviceVersion:
+          typeof (metadata?.serviceVersion ?? metadata?.version) === "string" &&
+          (metadata?.serviceVersion ?? metadata?.version)
+            ? ((metadata?.serviceVersion ?? metadata?.version) as string)
+            : "1",
+      };
+    }
+    return null;
+  }
+
+  const quoteHandler = async (
+    req: express.Request,
+    res: express.Response,
+  ) => {
     const skillId = (req.body?.skillId as string | undefined) ?? "";
+    const serviceArgs =
+      req.body?.serviceArgs && typeof req.body.serviceArgs === "object"
+        ? (req.body.serviceArgs as Record<string, unknown>)
+        : {};
+    const routeSlug =
+      (req.params as Record<string, string | undefined>).serviceSlug ?? null;
     const outcome =
       quoteOutcomes.get(skillId) ??
       quoteOutcomes.get("*") ??
@@ -146,12 +263,79 @@ export async function startMockProvider(
       res.status(200).json({ ok: false, errors: outcome.errors, skillId });
       return;
     }
+    if (outcome.amount <= 0n) {
+      // Free skill — the real provider returns paymentRequired:false and
+      // no commitment.
+      res.json({
+        ok: true,
+        amount: outcome.amount.toString(),
+        currency: outcome.currency ?? "USDC",
+        notes: outcome.notes ?? [],
+        skillId,
+        paymentRequired: false,
+      });
+      return;
+    }
+    if (outcome.omitCommitment) {
+      // Impersonate a pre-audit-1.1 provider: paid amount, no commitment.
+      res.json({
+        ok: true,
+        amount: outcome.amount.toString(),
+        currency: outcome.currency ?? "USDC",
+        notes: outcome.notes ?? [],
+        skillId,
+        paymentRequired: true,
+      });
+      return;
+    }
+    quoteCounter += 1;
+    const now = new Date();
+    const expiresAt = new Date(now.getTime() + (outcome.ttlMs ?? 120_000));
+    const binding = serviceBinding(skillId);
+    const serviceSlug =
+      outcome.serviceSlug ?? binding?.serviceSlug ?? routeSlug ?? skillId;
+    const serviceVersion =
+      outcome.serviceVersion ?? binding?.serviceVersion ?? "1";
+    const signedPayload = {
+      quoteId: `mock-quote-${quoteCounter}`,
+      serviceId: `mock-service-row:${serviceSlug}`,
+      serviceSlug,
+      serviceVersion,
+      skillId,
+      requestHash: computeRequestHash(serviceArgs),
+      amount: outcome.amount.toString(),
+      token: MOCK_PROVIDER_TOKEN_ADDRESS,
+      chainId: MOCK_PROVIDER_CHAIN_ID,
+      quoteVersion: PROVIDER_QUOTE_VERSION,
+      issuedAt: now.toISOString(),
+      expiresAt: expiresAt.toISOString(),
+    } satisfies Omit<
+      ProviderQuoteCommitment,
+      "serviceRef" | "providerSignature" | "signerAddress" | "signingKeyId"
+    >;
+    const message = canonicalJsonStringify(signedPayload);
+    const commitment: ProviderQuoteCommitment = {
+      ...signedPayload,
+      serviceRef: keccak256(toBytes(message)),
+      providerSignature: (await MOCK_PROVIDER_ACCOUNT.signMessage({
+        message,
+      })) as Hex,
+      signerAddress: MOCK_PROVIDER_WALLET_ADDRESS,
+      signingKeyId: `provider-wallet-v1:${MOCK_PROVIDER_WALLET_ADDRESS}`,
+    };
+    const quote: MockIssuedQuote = {
+      ...commitment,
+      serviceArgs,
+    };
+    issuedQuotes.push(quote);
     res.json({
       ok: true,
       amount: outcome.amount.toString(),
       currency: outcome.currency ?? "USDC",
       notes: outcome.notes ?? [],
       skillId,
+      paymentRequired: true,
+      quote: commitment,
     });
   };
   app.post("/quote", quoteHandler);
@@ -260,6 +444,7 @@ export async function startMockProvider(
   return {
     url: baseUrl,
     baseUrl,
+    walletAddress: MOCK_PROVIDER_WALLET_ADDRESS,
     setAgentCard(path, card) {
       cards[path] = card;
     },
@@ -283,6 +468,9 @@ export async function startMockProvider(
     },
     getLastSendBody() {
       return lastSendBody;
+    },
+    getIssuedQuotes() {
+      return issuedQuotes;
     },
     async close() {
       await new Promise<void>((resolve, reject) => {

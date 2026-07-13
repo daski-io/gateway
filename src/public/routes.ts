@@ -420,6 +420,15 @@ function chainRowToSkillEnriched(row: ChainActivityRow): SkillEnrichedRow {
       transactionHash: row.txHash,
       verifiedAt: row.settledAt,
       confirmationAttestationUid: row.confirmationAttestationUid,
+      // Synthesized from a chain event — the rail isn't recoverable from
+      // the on-chain record, and it doesn't matter for display purposes.
+      rail: "daski",
+      authNonce: null,
+      externalSettleTx: null,
+      quoteId: null,
+      quoteSignature: null,
+      quoteExpiresAt: null,
+      quoteRequestHash: null,
     },
     record,
     refundedAtomic: row.refundedAtomic,
@@ -1094,6 +1103,7 @@ export function createPublicRouter(deps: PublicRouterDeps): Router {
         providerRegistry: config.providerRegistryAddress,
         serviceRegistry: config.serviceRegistryAddress,
         identityRegistry: config.identityRegistryAddress,
+        agentIndex: config.agentIndexAddress,
         x402Adapter: config.x402AdapterAddress,
         permitAdapter: config.permitAdapterAddress ?? null,
         approvalAdapter: config.approvalAdapterAddress ?? null,
