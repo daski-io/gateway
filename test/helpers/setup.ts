@@ -219,6 +219,7 @@ export async function startTestGateway(
     facilitatorPrivateKey: FACILITATOR_KEY,
     whitelistedAgentIds: whitelist,
     cacheRefreshIntervalSeconds: 60,
+    cacheMaxStalenessSeconds: 86400,
     challengeTtlSeconds: 3600,
     databaseUrl: TEST_DATABASE_URL,
     publicUrl: "http://127.0.0.1:0",

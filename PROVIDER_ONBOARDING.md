@@ -240,6 +240,18 @@ If you change a skill's id you'll temporarily have two embeddings
 (old and new); the old one expires when the next refresh sees it gone.
 Don't churn skill ids unnecessarily.
 
+A failed refresh does not delist you. If your card endpoint is
+unreachable (deploy warm-up 500s, host flake), the gateway keeps
+serving your last-known-good card — annotated with `fetchError` in
+`/discover` — for up to `CACHE_MAX_STALENESS_SECONDS` (default 24 h)
+before degrading you to a card-less entry. If the gateway itself boots
+while your card is unreachable (no last-known-good to serve), it
+retries on a short exponential backoff (15 s, 30 s, …) instead of
+waiting a full refresh interval. Note that purchases still require your
+live signed `/quote`, so being listed while down never captures a
+buyer's funds — their purchase fails at the quote step with a clear
+error.
+
 ---
 
 ## 9. Reference implementation

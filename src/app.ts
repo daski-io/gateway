@@ -88,6 +88,7 @@ export async function createApp(options: CreateAppOptions): Promise<AppBundle> {
     reader,
     whitelist: config.whitelistedAgentIds,
     refreshIntervalSeconds: config.cacheRefreshIntervalSeconds,
+    maxCardStalenessSeconds: config.cacheMaxStalenessSeconds,
     fetch: options.agentCardFetch,
     agentCardFetchTimeoutMs: options.agentCardFetchTimeoutMs,
     // Embeddings are synced lazily inside search_services (when intent
