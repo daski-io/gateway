@@ -501,6 +501,11 @@ export interface BuildAgentCardOpts {
   serviceLifecycle?: "one-shot" | "ongoing";
   variablePricing?: boolean;
   skipExtension?: boolean;
+  legal?: {
+    legalName?: unknown;
+    termsUrl?: unknown;
+    privacyUrl?: unknown;
+  } | null;
   skills?: Array<{
     id: string;
     name: string;
@@ -531,6 +536,15 @@ export function buildAgentCard(
         },
       ],
   };
+  const legal =
+    o.legal === undefined
+      ? {
+          legalName: "Example Provider, LLC",
+          termsUrl: "https://provider.example/terms",
+          privacyUrl: "https://provider.example/privacy",
+        }
+      : o.legal;
+  if (legal !== null) Object.assign(card, legal);
   if (!o.skipExtension) {
     card.extensions = {
       [DASKI_A2A_EXTENSION_URI]: {

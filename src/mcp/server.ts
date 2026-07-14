@@ -69,6 +69,7 @@ import {
   guardProviderUrl,
   providerErrorFromFailure,
 } from "./a2a.js";
+import { MCP_LEGAL_INSTRUCTIONS } from "../legal/purchase.js";
 
 // JSON response cap on provider A2A calls. Real responses are <50 KB; 1 MB
 // is generous enough for unusual artifact payloads while still protecting
@@ -160,6 +161,8 @@ const SERVER_INSTRUCTIONS = [
   "Daski lets your agent buy real-world business services — domain",
   "registration, LLC formation, hosting, email — by paying USDC on Base.",
   "The protocol is non-custodial; the gateway never holds funds.",
+  "",
+  MCP_LEGAL_INSTRUCTIONS,
   "",
   "Canonical workflow:",
   "  1. daski_search_services    — find a provider",
@@ -438,7 +441,7 @@ export async function createMcpServer(
               chainId: deps.config.chainId,
               network: deps.config.network,
             },
-            providers: formatForSkillDiscover(filtered).slice(0, limit),
+            providers: formatForSkillDiscover(filtered, deps.config).slice(0, limit),
             cachedAt: deps.cache.getLastRefresh()?.toISOString() ?? null,
           });
         }
@@ -455,7 +458,7 @@ export async function createMcpServer(
               chainId: deps.config.chainId,
               network: deps.config.network,
             },
-            providers: formatForSkillDiscover(filtered).slice(0, limit),
+            providers: formatForSkillDiscover(filtered, deps.config).slice(0, limit),
             cachedAt: deps.cache.getLastRefresh()?.toISOString() ?? null,
             note: "embedder disabled — returning unranked catalog",
           });
@@ -546,7 +549,7 @@ export async function createMcpServer(
       providers: CachedProvider[],
     ): Map<string, Record<string, unknown>> {
       const index = new Map<string, Record<string, unknown>>();
-      for (const entry of formatForSkillDiscover(providers)) {
+      for (const entry of formatForSkillDiscover(providers, deps.config)) {
         const slug = (entry.serviceSlug as string | null) ?? "";
         index.set(`${entry.tokenId as string}:${slug}`, entry);
       }
@@ -558,7 +561,7 @@ export async function createMcpServer(
       fulfillmentMode: FulfillmentMode,
     ): Set<string> {
       const keys = new Set<string>();
-      for (const entry of formatForSkillDiscover(providers)) {
+      for (const entry of formatForSkillDiscover(providers, deps.config)) {
         const slug = (entry.serviceSlug as string | null) ?? "";
         const cardKey = `${entry.tokenId as string}:${slug}`;
         const skills = Array.isArray(entry.skills) ? entry.skills : [];
@@ -625,7 +628,7 @@ export async function createMcpServer(
           "- You are polling an existing task — use `daski_get_task_status`.",
           "",
           "Inputs: free-text `intent` ranked by vector similarity over the catalog; optional `categoryFamily`, `serviceType`, `jurisdiction`, `fulfillmentMode`, `maxPrice`, and `limit`.",
-          "Returns: ranked services with `categoryFamily`, `serviceType`, `jurisdictions`, provider endpoints, and skills. Each skill includes its `fulfillmentMode`, structured inputs, pricing, and asset/capability flags.",
+          "Returns: ranked services with `categoryFamily`, `serviceType`, `jurisdictions`, provider endpoints, the five-field `legal` object, and skills. Each skill includes its `fulfillmentMode`, structured inputs, pricing, and asset/capability flags.",
           "Next step: `daski_buy_service` for paid skills, or `daski_submit_task` for free read-only skills like `check-availability` or `get-pricing`.",
         ].join("\n"),
         inputSchema: SEARCH_SERVICES_INPUT_SCHEMA,
@@ -692,7 +695,7 @@ export async function createMcpServer(
         }
         // Multi-service providers return one entry per service; the
         // single-entry shape is preserved for single-card providers.
-        const entries = formatForSkillDiscover([provider]);
+        const entries = formatForSkillDiscover([provider], deps.config);
         return json(entries.length === 1 ? entries[0] : entries);
       },
     );
@@ -713,6 +716,7 @@ export async function createMcpServer(
           "**Advanced/manual.** Prefer `daski_buy_service` unless you're managing the payment lifecycle yourself (custom UIs, multi-leg signing flows, dry-run quotes).",
           "",
           "Open an x402 payment challenge for a specific (provider, skill) pair. Returns `paymentRequirements` with inline EIP-712 typed-data to sign. Pair with `daski_settle_payment` to finalize.",
+          "Your Operator is the legal party. Payment authorization after the final purchase notice binds the Operator to the linked Daski and Provider Terms.",
           "",
           "When to use:",
           "- You explicitly want to separate quoting from settlement (e.g. to preview the price before signing).",
@@ -867,6 +871,9 @@ export async function createMcpServer(
         }
         return json({
           quoteNotes: quoteResult.notes,
+          legal: result.requirements.extra.daski.legal,
+          agentAuthority: result.requirements.extra.daski.agentAuthority,
+          purchaseNotice: result.requirements.extra.daski.purchaseNotice,
           paymentRequirements: result.requirements,
         });
       },
@@ -879,6 +886,7 @@ export async function createMcpServer(
           "**Advanced/manual.** Prefer `daski_buy_service` unless you called `daski_purchase` separately.",
           "",
           "Submit a signed x402 paymentPayload on-chain via the gateway facilitator. Atomic with agent registration when the buyer wallet has no ERC-8004 token yet.",
+          "Your Operator is the legal party. Submitting payment authorization after the final purchase notice binds the Operator to the linked Daski and Provider Terms.",
           "",
           "When to use:",
           "- You called `daski_purchase` separately and have a typed-data signature.",
@@ -3643,6 +3651,9 @@ export async function createMcpServer(
             quoteId: quoteResult.quote.quoteId,
             expiresAt: quoteResult.quote.expiresAt,
           },
+          legal: r.extra.daski.legal,
+          agentAuthority: r.extra.daski.agentAuthority,
+          purchaseNotice: r.extra.daski.purchaseNotice,
           paymentRequirements: r,
           registrationPrep,
           plan: { steps },
@@ -3661,6 +3672,7 @@ export async function createMcpServer(
       {
         description: [
           "**Start here for any paid Daski service.** Validates inputs, prepares the USDC payment, and (after wallet signing) settles on-chain. Pair with `daski_submit_task` to dispatch the work — settlement and dispatch are separate calls so a failure in one doesn't half-commit the other.",
+          "Your Operator is the legal party. Payment authorization after the final purchase notice binds the Operator to the linked Daski and Provider Terms.",
           "",
           "When to use:",
           "- You have a `providerTokenId` + `skillId` from `daski_search_services` and want to actually run a paid skill.",
@@ -4017,7 +4029,7 @@ export async function createMcpServer(
         }
         // One entry per service card; single-card providers keep the
         // historical single-object shape.
-        const entries = formatForSkillDiscover([provider]);
+        const entries = formatForSkillDiscover([provider], deps.config);
         const formatted = entries.length === 1 ? entries[0] : entries;
         return {
           contents: [

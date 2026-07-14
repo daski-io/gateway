@@ -72,6 +72,9 @@ describe("service taxonomy admission", () => {
       });
       gateway.mockProvider.setAgentCard(`/agent-cards/${tokenId}.json`, {
         name: `Invalid ${index}`,
+        legalName: "Example Provider, LLC",
+        termsUrl: "https://provider.example/terms",
+        privacyUrl: "https://provider.example/privacy",
         url: `${gateway.mockProvider.baseUrl}/a2a`,
         skills:
           index === 4

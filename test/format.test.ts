@@ -6,6 +6,11 @@ import {
 import { DASKI_A2A_EXTENSION_URI } from "../src/config.js";
 import type { CachedProvider } from "../src/types.js";
 
+const MARKETPLACE_LEGAL = {
+  marketplaceTermsUrl: "https://daski.io/terms-of-use",
+  marketplacePrivacyUrl: "https://daski.io/privacy-policy",
+};
+
 /**
  * Regression tests for the skill-metadata extraction used by
  * daski_discover. Two historical bugs this guards against:
@@ -28,6 +33,11 @@ function makeProvider(
     providerDescription: null,
     providerImage: null,
     providerExternalUrl: null,
+    providerLegal: {
+      legalName: "Example Provider, LLC",
+      termsUrl: "https://provider.example/terms",
+      privacyUrl: "https://provider.example/privacy",
+    },
     lastFetched: new Date(),
     fetchError: null,
   };
@@ -84,7 +94,7 @@ describe("formatForSkillDiscover — skill extraction", () => {
       },
     });
 
-    const [svc] = formatForSkillDiscover([provider]);
+    const [svc] = formatForSkillDiscover([provider], MARKETPLACE_LEGAL);
     const skills = svc.skills as Array<Record<string, unknown>>;
     const byId = new Map(skills.map((s) => [s.id, s]));
 
@@ -141,7 +151,7 @@ describe("formatForSkillDiscover — skill extraction", () => {
       },
     });
 
-    const [svc] = formatForSkillDiscover([provider]);
+    const [svc] = formatForSkillDiscover([provider], MARKETPLACE_LEGAL);
     const skills = svc.skills as Array<Record<string, unknown>>;
     expect(skills).toHaveLength(1);
     expect(skills[0].paymentRequired).toBe(true);
@@ -161,7 +171,7 @@ describe("formatForSkillDiscover — skill extraction", () => {
       },
     });
 
-    const [svc] = formatForSkillDiscover([provider]);
+    const [svc] = formatForSkillDiscover([provider], MARKETPLACE_LEGAL);
     const skills = svc.skills as Array<Record<string, unknown>>;
     expect(skills).toHaveLength(1);
     expect(skills[0].id).toBe("solo");
@@ -228,7 +238,7 @@ describe("formatForSkillDiscover — skill extraction", () => {
       },
     });
 
-    const [svc] = formatForSkillDiscover([provider]);
+    const [svc] = formatForSkillDiscover([provider], MARKETPLACE_LEGAL);
     const skills = svc.skills as Array<Record<string, unknown>>;
     const byId = new Map(skills.map((s) => [s.id, s]));
 
@@ -274,7 +284,7 @@ describe("formatForSkillDiscover — skill extraction", () => {
       },
     });
 
-    const [svc] = formatForSkillDiscover([provider]);
+    const [svc] = formatForSkillDiscover([provider], MARKETPLACE_LEGAL);
     const skills = svc.skills as Array<Record<string, unknown>>;
     expect(typeof skills[0].description).toBe("string");
     expect((skills[0].description as string).length).toBe(3500);
@@ -308,7 +318,7 @@ describe("formatForSkillDiscover — skill extraction", () => {
       },
     });
 
-    const [svc] = formatForSkillDiscover([provider]);
+    const [svc] = formatForSkillDiscover([provider], MARKETPLACE_LEGAL);
     const skills = svc.skills as Array<Record<string, unknown>>;
     expect(skills[0].paymentRequired).toBe(true); // shape A wins
     expect(skills[0].baseAmount).toBe("5.00");

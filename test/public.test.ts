@@ -231,6 +231,13 @@ describe("public v1 — /services", () => {
     expect(acme.pricing.basePrice).toBe("12.00");
     expect(acme.pricing.currency).toBe("USDC");
     expect(acme.pricing.billingModel).toBe("one-time");
+    expect(acme.legal).toEqual({
+      marketplaceTermsUrl: gateway.config.marketplaceTermsUrl,
+      marketplacePrivacyUrl: gateway.config.marketplacePrivacyUrl,
+      providerLegalName: "Example Provider, LLC",
+      providerTermsUrl: "https://provider.example/terms",
+      providerPrivacyUrl: "https://provider.example/privacy",
+    });
     expect(acme.skills).toHaveLength(1);
     expect(acme.skills[0]).toMatchObject({
       id: "register-domain",

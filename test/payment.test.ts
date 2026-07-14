@@ -2,6 +2,11 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { startTestGateway, type TestGateway } from "./helpers/setup.js";
 import type { Hex, PaymentPayload } from "../src/types.js";
 import { computeRequestHash } from "../src/auth/envelope.js";
+import { DASKI_A2A_EXTENSION_URI } from "../src/config.js";
+import {
+  AGENT_AUTHORITY,
+  PURCHASE_NOTICE,
+} from "../src/legal/purchase.js";
 
 const TEST_TX =
   "0x1111111111111111111111111111111111111111111111111111111111111111" as Hex;
@@ -37,6 +42,13 @@ describe("payment", () => {
       await gateway.purchaseChallenge(2n, { buyerTokenId: "5" });
     expect(status).toBe(402);
     expect(json.x402Version).toBe(1);
+    expect(Object.keys(json)).toEqual([
+      "x402Version",
+      "legal",
+      "agentAuthority",
+      "purchaseNotice",
+      "accepts",
+    ]);
     expect(Array.isArray(json.accepts)).toBe(true);
     expect(json.accepts).toHaveLength(1);
 
@@ -44,6 +56,10 @@ describe("payment", () => {
     expect(req.scheme).toBe("exact");
     expect(req.network).toBe("base-sepolia");
     expect(req.maxAmountRequired).toBe("15000000");
+    expect(req.description).toBe(
+      "Daski Domain Registration — Daski Domain Registration description " +
+        "Selected skill (default-service): default-service skill",
+    );
     expect(req.payTo).toBe(gateway.config.paymentRouterAddress);
     expect(req.asset).toBe(gateway.config.usdcAddress);
     expect(req.extra.name).toBe("USDC");
@@ -51,6 +67,23 @@ describe("payment", () => {
     expect(req.extra.daski.providerTokenId).toBe("2");
     expect(req.extra.daski.buyerTokenId).toBe("5");
     expect(/^0x[0-9a-f]{64}$/.test(req.extra.daski.serviceRef)).toBe(true);
+
+    const legal = {
+      marketplaceTermsUrl: gateway.config.marketplaceTermsUrl,
+      marketplacePrivacyUrl: gateway.config.marketplacePrivacyUrl,
+      providerLegalName: "Example Provider, LLC",
+      providerTermsUrl: "https://provider.example/terms",
+      providerPrivacyUrl: "https://provider.example/privacy",
+    };
+    expect(json.legal).toEqual(legal);
+    expect(json.agentAuthority).toEqual(AGENT_AUTHORITY);
+    expect(json.purchaseNotice).toBe(PURCHASE_NOTICE);
+    expect(req.extra.daski.legal).toEqual(legal);
+    expect(req.extra.daski.agentAuthority).toEqual(AGENT_AUTHORITY);
+    expect(req.extra.daski.purchaseNotice).toBe(PURCHASE_NOTICE);
+    expect(String(req.extra.daski.eip712TypedData.message.value)).toBe(
+      req.maxAmountRequired,
+    );
 
     // Informational rail advertisement — x402 always present, others only
     // if a configured adapter address exists. The test harness does not
@@ -117,7 +150,23 @@ describe("payment", () => {
       priceUsdcSmallest: "0",
       categoryFamily: "other",
       serviceType: "other",
-      skipExtension: true,
+    });
+    const cardPath = "/agent-cards/9.json";
+    const card = (await (
+      await fetch(`${gateway.mockProvider.baseUrl}${cardPath}`)
+    ).json()) as Record<string, unknown>;
+    const extensions = card.extensions as Record<string, unknown>;
+    const marketplace = extensions[DASKI_A2A_EXTENSION_URI] as Record<
+      string,
+      unknown
+    >;
+    const { pricing: _pricing, ...withoutPricing } = marketplace;
+    gateway.mockProvider.setAgentCard(cardPath, {
+      ...card,
+      extensions: {
+        ...extensions,
+        [DASKI_A2A_EXTENSION_URI]: withoutPricing,
+      },
     });
     await gateway.refresh();
     const { status, json } = await gateway.purchaseChallenge(9n, {

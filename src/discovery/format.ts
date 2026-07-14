@@ -11,6 +11,8 @@ import {
   type ServiceType,
 } from "../serviceTaxonomy.js";
 import { sanitizeForLlmReflection } from "../util/sanitize.js";
+import { buildServiceLegal } from "../legal/purchase.js";
+import type { MarketplaceLegalUrls } from "../legal/types.js";
 
 // Attempts to extract the daski marketplace extension from an Agent Card.
 // Returns null if the extension is missing or malformed.
@@ -76,6 +78,7 @@ export function cardsOf(provider: CachedProvider): ProviderCard[] {
 }
 
 export function hasMarketplaceService(provider: CachedProvider): boolean {
+  if (!provider.providerLegal) return false;
   return cardsOf(provider).some(
     (card) => extractMarketplaceExtension(card.agentCard) !== null,
   );
@@ -373,11 +376,12 @@ function extractSkills(
  */
 export function formatForSkillDiscover(
   providers: CachedProvider[],
+  marketplace: MarketplaceLegalUrls,
 ): Array<Record<string, unknown>> {
   const out: Array<Record<string, unknown>> = [];
   for (const provider of providers) {
     for (const card of cardsOf(provider)) {
-      const entry = formatCardForSkillDiscover(provider, card);
+      const entry = formatCardForSkillDiscover(provider, card, marketplace);
       if (entry) out.push(entry);
     }
   }
@@ -393,9 +397,10 @@ export function formatForSkillDiscover(
 export function formatCardForSkillDiscover(
   provider: CachedProvider,
   card: ProviderCard,
+  marketplace: MarketplaceLegalUrls,
 ): Record<string, unknown> | null {
     const ext = extractMarketplaceExtension(card.agentCard);
-    if (!ext) return null;
+    if (!ext || !provider.providerLegal) return null;
     const name = extractAgentCardName(card.agentCard);
     const providerA2AUrl = extractAgentCardUrl(card.agentCard);
     const skills = extractSkills(card.agentCard);
@@ -444,6 +449,7 @@ export function formatCardForSkillDiscover(
       // directly without a follow-up fetch.
       agentCardUrl: provider.agentURI,
       providerA2AUrl,
+      legal: buildServiceLegal(marketplace, provider.providerLegal),
       // §1.7 of daski-mcp-gateway-fix-brief.md — skill descriptions
       // (now ~1.5–2.5KB each after the 6-element-template rewrite) were
       // getting clipped at the default 1KB sanitizer cap, hiding the
@@ -461,6 +467,31 @@ export function formatCardForSkillDiscover(
     return entry;
 }
 
+function withCanonicalLegal(
+  agentCard: Record<string, unknown>,
+  legal: ReturnType<typeof buildServiceLegal>,
+): Record<string, unknown> {
+  const extensions =
+    agentCard.extensions && typeof agentCard.extensions === "object"
+      ? (agentCard.extensions as Record<string, unknown>)
+      : {};
+  const daskiExtension =
+    extensions[DASKI_A2A_EXTENSION_URI] &&
+    typeof extensions[DASKI_A2A_EXTENSION_URI] === "object"
+      ? (extensions[DASKI_A2A_EXTENSION_URI] as Record<string, unknown>)
+      : {};
+  return {
+    ...agentCard,
+    extensions: {
+      ...extensions,
+      [DASKI_A2A_EXTENSION_URI]: {
+        ...daskiExtension,
+        legal,
+      },
+    },
+  };
+}
+
 /**
  * Serializes a cached provider for the REST /discover response. BigInts
  * become strings, dates become ISO, agent card is returned as-is.
@@ -469,17 +500,25 @@ export function formatCardForSkillDiscover(
  */
 export function formatForRestDiscover(
   provider: CachedProvider,
+  marketplace: MarketplaceLegalUrls,
 ): Record<string, unknown> {
+  if (!provider.providerLegal) {
+    throw new Error("provider legal metadata is required for discovery");
+  }
+  const legal = buildServiceLegal(marketplace, provider.providerLegal);
+  const primaryAgentCard = withCanonicalLegal(provider.agentCard, legal);
   return {
     tokenId: provider.agentId.toString(),
     agentId: provider.agentId.toString(),
     walletAddress: provider.walletAddress,
     agentURI: provider.agentURI,
-    agentCard: provider.agentCard,
+    agentCard: primaryAgentCard,
+    legal,
     cards: cardsOf(provider).map((c) => ({
       endpoint: c.endpoint,
       serviceSlug: c.serviceSlug,
-      agentCard: c.agentCard,
+      agentCard: withCanonicalLegal(c.agentCard, legal),
+      legal,
     })),
     lastFetched: provider.lastFetched.toISOString(),
     fetchError: provider.fetchError,

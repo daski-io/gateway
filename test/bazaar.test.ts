@@ -4,6 +4,10 @@ import {
   type TestGateway,
 } from "./helpers/setup.js";
 import type { Hex } from "../src/types.js";
+import {
+  AGENT_AUTHORITY,
+  PURCHASE_NOTICE,
+} from "../src/legal/purchase.js";
 
 // ── External-facilitator (Bazaar) rail ────────────────────────────────────
 //
@@ -100,6 +104,16 @@ describe("bazaar rail (/x402/services)", () => {
 
   function resourceUrl(tokenId: bigint, skillId: string): string {
     return `${gw.baseUrl}/x402/services/${tokenId.toString()}/${skillId}`;
+  }
+
+  function expectedLegal() {
+    return {
+      marketplaceTermsUrl: gw.config.marketplaceTermsUrl,
+      marketplacePrivacyUrl: gw.config.marketplacePrivacyUrl,
+      providerLegalName: "Example Provider, LLC",
+      providerTermsUrl: "https://provider.example/terms",
+      providerPrivacyUrl: "https://provider.example/privacy",
+    };
   }
 
   async function fetch402(tokenId: bigint, skillId: string) {
@@ -273,6 +287,8 @@ describe("bazaar rail (/x402/services)", () => {
     const { status, json } = await fetch402(1n, "register-domain");
     expect(status).toBe(402);
     expect(json.x402Version).toBe(2);
+    const acceptsIndex = Object.keys(json).indexOf("accepts");
+    expect(Object.keys(json)[acceptsIndex - 1]).toBe("purchaseNotice");
     expect(json.resource.url).toBe(resourceUrl(1n, "register-domain"));
     expect(json.resource.mimeType).toBe("application/json");
     expect(json.resource.description).toContain("TestRegistrar");
@@ -284,7 +300,13 @@ describe("bazaar rail (/x402/services)", () => {
     expect(accepts.amount).toBe(PRICE.toString());
     expect(accepts.asset).toBe(gw.config.usdcAddress);
     expect(accepts.payTo).toBe(gw.config.paymentRouterAddress);
-    expect(accepts.extra).toEqual({ name: "USDC", version: "2" });
+    expect(accepts.extra).toMatchObject({ name: "USDC", version: "2" });
+    expect(json.legal).toEqual(expectedLegal());
+    expect(json.agentAuthority).toEqual(AGENT_AUTHORITY);
+    expect(json.purchaseNotice).toBe(PURCHASE_NOTICE);
+    expect(accepts.extra.daski.legal).toEqual(expectedLegal());
+    expect(accepts.extra.daski.agentAuthority).toEqual(AGENT_AUTHORITY);
+    expect(accepts.extra.daski.purchaseNotice).toBe(PURCHASE_NOTICE);
     // v2 uses `amount`; the v1 field must not leak in.
     expect(accepts.maxAmountRequired).toBeUndefined();
     expect(accepts.maxTimeoutSeconds).toBe(gw.config.challengeTtlSeconds);
@@ -306,6 +328,14 @@ describe("bazaar rail (/x402/services)", () => {
       serviceArgs,
     );
     expect(status).toBe(402);
+    expect(json.legal).toEqual(expectedLegal());
+    expect(json.agentAuthority).toEqual(AGENT_AUTHORITY);
+    expect(json.purchaseNotice).toBe(PURCHASE_NOTICE);
+    expect(json.accepts[0].extra.daski.legal).toEqual(expectedLegal());
+    expect(json.accepts[0].extra.daski.agentAuthority).toEqual(
+      AGENT_AUTHORITY,
+    );
+    expect(json.accepts[0].extra.daski.purchaseNotice).toBe(PURCHASE_NOTICE);
     const providerQuote = json.accepts[0].extra.daski.providerQuote;
     const issued = gw.mockProvider.getIssuedQuotes();
     const quote = issued[issued.length - 1]!;
@@ -630,6 +660,131 @@ describe("bazaar rail (/x402/services)", () => {
     expect(challenge!.quoteSignature).not.toBeNull();
   });
 
+  it("resumes a pending challenge with no recorded settle tx after legal invalidation", async () => {
+    facilitator.reset();
+    const nonce = freshNonce();
+    const serviceArgs = { domain: "pending-legal-recovery.example" };
+    const { header, paymentRequired } = await quoteAndMakePaymentHeader(
+      PRICE,
+      nonce,
+      serviceArgs,
+    );
+    const accepted = paymentRequired.json.accepts[0] as Record<string, unknown>;
+    const quotesBeforeRecovery = gw.mockProvider.getIssuedQuotes().length;
+
+    facilitator.setSettle({ success: false, errorReason: "broadcast_unknown" });
+    const first = await payWithHeader(
+      1n,
+      "register-domain",
+      header,
+      serviceArgs,
+    );
+    expect(first.status).toBe(402);
+    let pending = await gw.bundle.queries.getChallengeByWalletAndNonce(
+      gw.buyerAddress,
+      nonce,
+    );
+    expect(pending?.status).toBe("pending");
+    expect(pending?.externalSettleTx).toBeNull();
+
+    const cardPath = "/agent-cards/1.json";
+    const originalCard = (await (
+      await fetch(`${gw.mockProvider.baseUrl}${cardPath}`)
+    ).json()) as Record<string, unknown>;
+    gw.mockProvider.setAgentCard(cardPath, {
+      ...originalCard,
+      termsUrl: "http://provider.example/terms",
+    });
+    await gw.refresh();
+    expect(gw.bundle.cache.get(1n)?.providerLegal).toBeNull();
+
+    try {
+      // A new nonce is still a fresh purchase and remains blocked.
+      const freshHeader = await makePaymentHeader(PRICE, freshNonce(), {
+        accepted,
+      });
+      const fresh = await payWithHeader(
+        1n,
+        "register-domain",
+        freshHeader,
+        serviceArgs,
+      );
+      expect(fresh.status).toBe(422);
+      expect(fresh.json.error).toContain("provider_legal_metadata_invalid");
+
+      // Explicit recovery failures cannot issue a replacement 402 because
+      // there is no currently valid legal context to attach to it.
+      facilitator.reset();
+      facilitator.setVerify({ isValid: false, invalidReason: "nonce_unknown" });
+      const verifyFailed = await payWithHeader(
+        1n,
+        "register-domain",
+        header,
+        serviceArgs,
+      );
+      expect(verifyFailed.status).toBe(409);
+      expect(verifyFailed.json.error).toBe(
+        "payment_recovery_verification_failed",
+      );
+      expect(verifyFailed.json.accepts).toBeUndefined();
+
+      facilitator.reset();
+      facilitator.setSettle({ success: false, errorReason: "retry_failed" });
+      const settleFailed = await payWithHeader(
+        1n,
+        "register-domain",
+        header,
+        serviceArgs,
+      );
+      expect(settleFailed.status).toBe(502);
+      expect(settleFailed.json.error).toBe(
+        "payment_recovery_settlement_failed",
+      );
+      expect(settleFailed.json.accepts).toBeUndefined();
+      pending = await gw.bundle.queries.getChallengeByWalletAndNonce(
+        gw.buyerAddress,
+        nonce,
+      );
+      expect(pending?.status).toBe("pending");
+      expect(pending?.externalSettleTx).toBeNull();
+
+      facilitator.reset();
+      gw.mockChain.queueAttribution({
+        kind: "success",
+        txHash: ATTRIBUTION_TX,
+        event: {
+          paymentId: 44n,
+          serviceRef: ("0x" + "00".repeat(32)) as Hex,
+          serviceId: ("0x" + "00".repeat(32)) as Hex,
+          buyerAgentId: BUYER_AGENT_ID,
+          providerAgentId: 1n,
+          token: gw.config.usdcAddress,
+          totalAmount: PRICE,
+          providerAmount: (PRICE * 95n) / 100n,
+          commission: (PRICE * 5n) / 100n,
+        },
+      });
+      const recovered = await payWithHeader(
+        1n,
+        "register-domain",
+        header,
+        serviceArgs,
+      );
+      expect(recovered.status).toBe(200);
+      expect(recovered.json.receipt.paymentId).toBe("44");
+      expect(facilitator.calls.map((call) => call.path)).toEqual([
+        "/verify",
+        "/settle",
+      ]);
+      expect(gw.mockProvider.getIssuedQuotes()).toHaveLength(
+        quotesBeforeRecovery,
+      );
+    } finally {
+      gw.mockProvider.setAgentCard(cardPath, originalCard);
+      await gw.refresh();
+    }
+  });
+
   it("recovers from a failed attribution without re-settling or re-quoting", async () => {
     facilitator.reset();
     const nonce = freshNonce();
@@ -690,12 +845,33 @@ describe("bazaar rail (/x402/services)", () => {
         commission: (PRICE * 5n) / 100n,
       },
     });
-    const second = await payWithHeader(
-      1n,
-      "register-domain",
-      header,
-      serviceArgs,
-    );
+    const cardPath = "/agent-cards/1.json";
+    const originalCard = (await (
+      await fetch(`${gw.mockProvider.baseUrl}${cardPath}`)
+    ).json()) as Record<string, unknown>;
+    gw.mockProvider.setAgentCard(cardPath, {
+      ...originalCard,
+      termsUrl: "http://provider.example/terms",
+    });
+    await gw.refresh();
+    expect(gw.bundle.cache.get(1n)?.providerLegal).toBeNull();
+
+    const second = await (async () => {
+      try {
+        // Legal-invalid providers cannot accept a new purchase, but a
+        // persisted external settlement must still reach attribution so
+        // funds already moved into the router are not stranded.
+        return await payWithHeader(
+          1n,
+          "register-domain",
+          header,
+          serviceArgs,
+        );
+      } finally {
+        gw.mockProvider.setAgentCard(cardPath, originalCard);
+        await gw.refresh();
+      }
+    })();
     expect(second.status).toBe(200);
     expect(second.json.receipt.paymentId).toBe("42");
     // No additional verify/settle — the retry resumed at attribution —

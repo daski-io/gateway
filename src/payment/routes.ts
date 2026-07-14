@@ -196,6 +196,9 @@ export function createPurchaseRouter(deps: PurchaseDeps): Router {
       }
       const body402: PaymentRequirementsResponse = {
         x402Version: X402_VERSION,
+        legal: result.requirements.extra.daski.legal,
+        agentAuthority: result.requirements.extra.daski.agentAuthority,
+        purchaseNotice: result.requirements.extra.daski.purchaseNotice,
         accepts: [result.requirements],
       };
       res.status(402).json(body402);

@@ -11,6 +11,11 @@ import {
   validateUrlForOutbound,
   type ValidatedUrl,
 } from "../util/urlSafety.js";
+import type { ProviderLegalMetadata } from "../legal/types.js";
+import {
+  parseProviderLegalMetadata,
+  ProviderLegalValidationError,
+} from "../legal/validation.js";
 
 // 256 KB is enough for any well-formed Agent Card (largest live one is ~12 KB).
 // A whitelisted-but-malicious provider serving a multi-GB JSON body would
@@ -159,11 +164,13 @@ export class DiscoveryCache {
           providerDescription: resolved.providerDescription,
           providerImage: resolved.providerImage,
           providerExternalUrl: resolved.providerExternalUrl,
+          providerLegal: resolved.providerLegal,
           lastFetched: new Date(),
           fetchError: resolved.partialError,
         });
       } catch (err) {
         const message = (err as Error).message ?? String(err);
+        const hardLegalFailure = err instanceof ProviderLegalValidationError;
         this.logger.warn(
           `[cache] failed to fetch agent card from ${provider.agentURI}: ${message}`,
         );
@@ -179,7 +186,12 @@ export class DiscoveryCache {
           existing !== undefined &&
           Date.now() - existing.lastFetched.getTime() <=
             this.maxCardStalenessMs;
-        if (existing && hasKnownGoodCard && withinStalenessCap) {
+        if (
+          !hardLegalFailure &&
+          existing &&
+          hasKnownGoodCard &&
+          withinStalenessCap
+        ) {
           // Only the provider's HTTP surface failed; the on-chain read
           // succeeded, so keep wallet + agentURI live (payee rotation
           // must propagate even while the card host is down).
@@ -191,11 +203,12 @@ export class DiscoveryCache {
           });
         } else {
           if (hasKnownGoodCard) {
+            const reason = hardLegalFailure
+              ? "provider legal metadata is invalid"
+              : `staleness cap ${this.maxCardStalenessMs / 1000}s exceeded`;
             this.logger.warn(
-              `[cache] agent ${provider.agentId} unreachable since ` +
-                `${existing!.lastFetched.toISOString()} — dropping its ` +
-                `last-known-good card (staleness cap ` +
-                `${this.maxCardStalenessMs / 1000}s exceeded)`,
+              `[cache] dropping agent ${provider.agentId}'s last-known-good ` +
+                `card: ${reason}`,
             );
           }
           nextCache.set(provider.agentId.toString(), {
@@ -208,6 +221,7 @@ export class DiscoveryCache {
             providerDescription: null,
             providerImage: null,
             providerExternalUrl: null,
+            providerLegal: null,
             lastFetched: new Date(),
             fetchError: message,
           });
@@ -241,6 +255,9 @@ export class DiscoveryCache {
       if (o.agentId !== n.agentId) return true;
       if (o.providerName !== n.providerName) return true;
       if (o.providerDescription !== n.providerDescription) return true;
+      if (JSON.stringify(o.providerLegal) !== JSON.stringify(n.providerLegal)) {
+        return true;
+      }
       // Compare the full card set — a provider adding/removing a service
       // is a catalog change even when its first card is untouched.
       if (JSON.stringify(o.cards ?? []) !== JSON.stringify(n.cards ?? [])) {
@@ -284,9 +301,11 @@ export class DiscoveryCache {
     providerDescription: string | null;
     providerImage: string | null;
     providerExternalUrl: string | null;
+    providerLegal: ProviderLegalMetadata;
     partialError: string | null;
   }> {
     const doc = await this.fetchJson(agentURI);
+    const providerLegal = parseProviderLegalMetadata(doc);
 
     const services = doc["services"];
     if (Array.isArray(services)) {
@@ -338,6 +357,7 @@ export class DiscoveryCache {
           providerDescription,
           providerImage,
           providerExternalUrl,
+          providerLegal,
           partialError:
             errors.length > 0 ? `partial card fetch: ${errors.join("; ")}` : null,
         };
@@ -358,6 +378,7 @@ export class DiscoveryCache {
         providerDescription,
         providerImage,
         providerExternalUrl,
+        providerLegal,
         partialError: null,
       };
     }
@@ -377,6 +398,7 @@ export class DiscoveryCache {
       providerDescription: null,
       providerImage: null,
       providerExternalUrl: null,
+      providerLegal,
       partialError: null,
     };
   }

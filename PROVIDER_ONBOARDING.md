@@ -23,6 +23,30 @@ deploys an identity registry of its own:
 
 The agent's `agentURI` MUST resolve to a publicly-reachable Agent Card.
 
+The provider-level ERC-8004 registration document MUST also include the
+contracting entity and stable public legal-document links:
+
+```json
+{
+  "legalName": "Provider's full contracting name",
+  "termsUrl": "https://provider.example/terms",
+  "privacyUrl": "https://provider.example/privacy"
+}
+```
+
+All three fields are required and nonempty. Both URLs must be valid HTTPS URLs
+without embedded credentials. A stable privacy-notice anchor is allowed. Before
+whitelisting, the operator MUST run the one-time unauthenticated reachability
+check; missing or invalid metadata prevents discovery, listing, and purchase:
+
+```bash
+npm run validate-provider-legal -- https://provider.example/.well-known/agent.json
+```
+
+Daski checks syntax at catalog admission and reachability at onboarding only.
+It does not legal-review, approve, interpret, copy, hash, version, archive,
+compare, or continuously monitor Provider documents.
+
 **Payee wallet is mandatory.** After minting you MUST call
 `setAgentWallet` on the canonical registry (or set a per-service
 `serviceWallet` in the Daski `ServiceRegistry`) before any payment can
@@ -35,9 +59,15 @@ wallet → agentId reverse index. Calling `claim(agentId)` on it is
 OPTIONAL for providers — only buyers need a binding there (it is how
 payments are attributed to the paying wallet).
 
-The gateway treats the on-chain whitelist as the source of truth — your
-`agentId` must be in `WHITELISTED_AGENT_IDS` on the gateway's config (or
-admitted via the gateway's admin route) before discovery picks you up.
+The gateway treats its configured whitelist as the admission gate — your
+`agentId` must be in `WHITELISTED_AGENT_IDS` before discovery picks you up.
+
+The Provider is the sole provider and contracting party for its Services. It
+controls scope, delivery, support, refunds, renewals, legal terms, and privacy
+practices; must keep its documents available and current; may place variable
+operational terms in a Service listing or final quote; and must use a secure,
+disclosed intake route for sensitive data. A Provider must not imply that Daski
+reviewed, approved, stores, interprets, or guarantees its legal documents.
 
 > Note: the buyer-side flow is different. Buyers pass an optional `name`
 > to `daski_buy_service` (which auto-registers on first purchase) or to
@@ -73,6 +103,10 @@ A2A spec §4.4. The card MUST declare:
     asset like a domain), `"one-shot"` (no follow-up after delivery),
     or `"long-running"` (multi-step task).
   - `turnaroundEstimate` — human string, e.g. `"5-10 minutes"`.
+  - `legal` — the five-field Service legal object. Provider implementations
+    publish their three Provider values, while the gateway overwrites the two
+    Daski marketplace URLs from deployment configuration before returning a
+    Service to buyers.
   - `pricing` — `{ currency, baseAmount?, model?, variable?,
     billingModel? }`. For live-priced skills omit `baseAmount` and set
     `model: { kind: "live", source: "registrar", hint: "..." }`.

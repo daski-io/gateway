@@ -115,6 +115,11 @@ export interface TestProviderDef {
   cardPath?: string;
   description?: string;
   skipExtension?: boolean;
+  legal?: {
+    legalName?: unknown;
+    termsUrl?: unknown;
+    privacyUrl?: unknown;
+  } | null;
   /**
    * Optional skill metadata to attach to the Agent Card. Each entry lands
    * in the card's `skills[]` array with `metadata[DASKI_A2A_EXTENSION_URI]`
@@ -233,6 +238,8 @@ export async function startTestGateway(
     challengeTtlSeconds: 3600,
     databaseUrl: TEST_DATABASE_URL,
     publicUrl: "http://127.0.0.1:0",
+    marketplaceTermsUrl: "https://daski.io/terms-of-use",
+    marketplacePrivacyUrl: "https://daski.io/privacy-policy",
     easAddress: EAS_ADDRESS,
     easConfirmationSchemaUid: EAS_CONFIRMATION_SCHEMA_UID,
     easOutcomeSchemaUid: EAS_OUTCOME_SCHEMA_UID,
@@ -607,6 +614,7 @@ function _installProvider(
       chainId: CHAIN_ID,
       description: def.description,
       skipExtension: def.skipExtension,
+      legal: def.legal,
       skills,
     }),
   );

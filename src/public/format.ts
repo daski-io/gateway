@@ -13,6 +13,8 @@ import {
   extractMarketplaceExtension,
 } from "../discovery/format.js";
 import { derivePrimaryServiceId } from "../payment/requirements.js";
+import { buildServiceLegal } from "../legal/purchase.js";
+import type { MarketplaceLegalUrls, ServiceLegal } from "../legal/types.js";
 import type {
   CachedProvider,
   Hex,
@@ -104,6 +106,7 @@ export interface PublicService {
    * Null when unset; the website falls back to a category-family icon.
    */
   iconUrl: string | null;
+  legal: ServiceLegal;
   /**
    * Primary on-chain service identity for this provider. With current 1:1
    * cardinality (one provider lists one service), this is the only service;
@@ -896,9 +899,10 @@ function flattenSkills(agentCard: Record<string, unknown>): PublicSkill[] {
 function formatServiceCardForPublic(
   provider: CachedProvider,
   card: ProviderCard,
+  marketplace: MarketplaceLegalUrls,
 ): PublicService | null {
   const ext = extractMarketplaceExtension(card.agentCard);
-  if (!ext) return null;
+  if (!ext || !provider.providerLegal) return null;
 
   const pricingExt = (ext.pricing ?? {}) as Record<string, unknown>;
   const baseAmount = pricingExt.baseAmount;
@@ -942,6 +946,7 @@ function formatServiceCardForPublic(
     providerDescription: provider.providerDescription,
     providerWebsite: provider.providerExternalUrl,
     iconUrl: provider.providerImage,
+    legal: buildServiceLegal(marketplace, provider.providerLegal),
     serviceId: primary?.serviceId ?? null,
     serviceSlug: primary?.serviceSlug ?? null,
     serviceVersion: primary?.serviceVersion ?? null,
@@ -956,10 +961,11 @@ function formatServiceCardForPublic(
  */
 export function formatServicesForPublic(
   provider: CachedProvider,
+  marketplace: MarketplaceLegalUrls,
 ): PublicService[] {
   const out: PublicService[] = [];
   for (const card of cardsOf(provider)) {
-    const formatted = formatServiceCardForPublic(provider, card);
+    const formatted = formatServiceCardForPublic(provider, card, marketplace);
     if (formatted) out.push(formatted);
   }
   return out;
@@ -972,9 +978,10 @@ export function formatServicesForPublic(
  */
 export function formatServiceForPublic(
   provider: CachedProvider,
+  marketplace: MarketplaceLegalUrls,
   serviceSlug?: string | null,
 ): PublicService | null {
-  const all = formatServicesForPublic(provider);
+  const all = formatServicesForPublic(provider, marketplace);
   if (all.length === 0) return null;
   if (serviceSlug) {
     return all.find((s) => s.serviceSlug === serviceSlug) ?? null;

@@ -1,4 +1,5 @@
 import type { ChainId, Hex } from "./types.js";
+import { requireMarketplaceHttpsUrl } from "./legal/validation.js";
 
 export const DASKI_A2A_EXTENSION_URI = "https://daski.xyz/a2a/v1";
 
@@ -77,6 +78,8 @@ export interface Config {
   challengeTtlSeconds: number;
   databaseUrl: string;
   publicUrl: string;
+  marketplaceTermsUrl: string;
+  marketplacePrivacyUrl: string;
   // Public IPFS HTTP gateway used to resolve `ipfs://` agentURIs for
   // optional buyer registration. Trailing slash is required. Override with
   // a self-hosted gateway in production to avoid relying on a public
@@ -256,6 +259,14 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     challengeTtlSeconds: Number(env.CHALLENGE_TTL_SECONDS ?? 3600),
     databaseUrl: requireDatabaseUrl(env.DATABASE_URL),
     publicUrl: env.PUBLIC_URL ?? `http://localhost:${port}`,
+    marketplaceTermsUrl: requireMarketplaceHttpsUrl(
+      "MARKETPLACE_TERMS_URL",
+      env.MARKETPLACE_TERMS_URL,
+    ),
+    marketplacePrivacyUrl: requireMarketplaceHttpsUrl(
+      "MARKETPLACE_PRIVACY_URL",
+      env.MARKETPLACE_PRIVACY_URL,
+    ),
     ipfsGatewayUrl: (env.IPFS_GATEWAY_URL ?? "https://ipfs.io/ipfs/").replace(
       /\/?$/,
       "/",

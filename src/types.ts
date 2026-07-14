@@ -3,6 +3,11 @@ import type {
   FulfillmentMode,
   ServiceType,
 } from "./serviceTaxonomy.js";
+import type {
+  AgentAuthority,
+  ProviderLegalMetadata,
+  ServiceLegal,
+} from "./legal/types.js";
 
 // ── Shared types used across the gateway ──
 
@@ -106,6 +111,8 @@ export interface CachedProvider {
    * `external_url` field (ERC-721/OpenSea convention). Null when unset.
    */
   providerExternalUrl: string | null;
+  /** Required contracting identity and public legal-document links. */
+  providerLegal: ProviderLegalMetadata | null;
   lastFetched: Date;
   fetchError: string | null;
 }
@@ -227,6 +234,9 @@ export interface DaskiRequirementsExtra {
       /** ISO timestamp — settle AND submit before this or re-quote. */
       expiresAt: string;
     };
+    legal: ServiceLegal;
+    agentAuthority: AgentAuthority;
+    purchaseNotice: string;
   };
 }
 
@@ -271,6 +281,9 @@ export interface PaymentRequirements {
 
 export interface PaymentRequirementsResponse {
   x402Version: number;
+  legal: ServiceLegal;
+  agentAuthority: AgentAuthority;
+  purchaseNotice: string;
   accepts: PaymentRequirements[];
   error?: string;
 }

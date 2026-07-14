@@ -26,6 +26,9 @@ function jsonResponse(body: unknown, status = 200): Response {
 function agentCard(name: string): Record<string, unknown> {
   return {
     name,
+    legalName: "Example Provider, LLC",
+    termsUrl: "https://provider.example/terms",
+    privacyUrl: "https://provider.example/privacy",
     url: "http://127.0.0.1:9/a2a",
     skills: [
       {
@@ -156,6 +159,7 @@ describe("DiscoveryCache failure hardening", () => {
     expect(degraded.cards).toEqual([]);
     expect(degraded.agentCard).toEqual({});
     expect(degraded.providerName).toBeNull();
+    expect(degraded.providerLegal).toBeNull();
     expect(degraded.fetchError).toMatch(/HTTP 500/);
   });
 

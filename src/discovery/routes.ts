@@ -120,7 +120,9 @@ export function createDiscoveryRouter(
     const filtered = applyDiscoverFilters(all, parsed);
     res.json({
       acceptedToken: buildAcceptedToken(config),
-      providers: filtered.map(formatForRestDiscover),
+      providers: filtered.map((provider) =>
+        formatForRestDiscover(provider, config),
+      ),
       cachedAt: cache.getLastRefresh()?.toISOString() ?? null,
     });
   });
@@ -149,7 +151,7 @@ export function createDiscoveryRouter(
       });
       return;
     }
-    res.json(formatForRestDiscover(provider));
+    res.json(formatForRestDiscover(provider, config));
   });
 
   return router;

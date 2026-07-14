@@ -22,6 +22,8 @@ import type {
   PaymentRequirements,
   StoredChallenge,
 } from "../types.js";
+import { buildPurchaseLegalContext } from "../legal/purchase.js";
+import { sanitizeForLlmReflection } from "../util/sanitize.js";
 
 // EIP-3009 TransferWithAuthorization — the same struct verifyAndSettle
 // recovers against. Embedded inline in the 402 response so any wallet
@@ -425,9 +427,73 @@ export interface SkillOffer {
   description: string;
 }
 
+function purchaseDescription(
+  providerTokenId: bigint,
+  agentCard: Record<string, unknown>,
+  ext: DaskiMarketplaceExtension,
+  skillId: string,
+): string {
+  const cardName =
+    typeof agentCard.name === "string"
+      ? agentCard.name
+      : `provider ${providerTokenId}`;
+  const serviceDescription =
+    typeof ext.serviceDescription === "string" &&
+    ext.serviceDescription.trim().length > 0
+      ? ext.serviceDescription
+      : typeof agentCard.description === "string" &&
+          agentCard.description.trim().length > 0
+        ? agentCard.description
+        : "Service details are available from the Provider.";
+  let skillDescription = skillId;
+  const skills = agentCard.skills;
+  if (Array.isArray(skills)) {
+    const selected = skills.find(
+      (skill) =>
+        skill !== null &&
+        typeof skill === "object" &&
+        (skill as Record<string, unknown>).id === skillId,
+    ) as Record<string, unknown> | undefined;
+    if (
+      typeof selected?.description === "string" &&
+      selected.description.trim().length > 0
+    ) {
+      skillDescription = selected.description;
+    }
+  }
+  return sanitizeForLlmReflection(
+    `${cardName} — ${serviceDescription} Selected skill (${skillId}): ${skillDescription}`,
+    { stringMax: 500 },
+  );
+}
+
 export type SkillOfferResult =
   | { ok: true; offer: SkillOffer }
   | { ok: false; code: string; message: string; status: number };
+
+function providerLegalAdmissionFailure(provider: CachedProvider): {
+  ok: false;
+  code: string;
+  message: string;
+  status: number;
+} {
+  const explicitlyInvalidLegalMetadata =
+    provider.fetchError === null ||
+    provider.fetchError.startsWith("invalid provider legal metadata:");
+  return explicitlyInvalidLegalMetadata
+    ? {
+        ok: false,
+        code: "provider_legal_metadata_invalid",
+        message: "provider legal metadata is missing or invalid",
+        status: 422,
+      }
+    : {
+        ok: false,
+        code: "provider_not_found",
+        message: "provider is not currently admitted",
+        status: 404,
+      };
+}
 
 /**
  * Resolves the static, fixed-price offer for a (provider, skill) pair —
@@ -463,6 +529,9 @@ export function resolveSkillOffer(
       message: "provider is not whitelisted",
       status: 404,
     };
+  }
+  if (!provider.providerLegal) {
+    return providerLegalAdmissionFailure(provider);
   }
   if (skillId.length === 0 || skillId.length > 64) {
     return {
@@ -543,24 +612,12 @@ export function resolveSkillOffer(
   const serviceVersion = resolveServiceVersion(ext, agentCard, skillId);
   const serviceId = computeServiceId(providerTokenId, serviceSlug, serviceVersion);
 
-  // Provider display name + the skill's own description, bounded to the
-  // CDP facilitator's 500-char description cap.
-  const cardName =
-    typeof (agentCard as { name?: unknown }).name === "string"
-      ? ((agentCard as { name: string }).name as string)
-      : `provider ${providerTokenId}`;
-  let skillDescription = skillId;
-  const skills = agentCard["skills"];
-  if (Array.isArray(skills)) {
-    for (const s of skills) {
-      if (s && typeof s === "object" && (s as Record<string, unknown>).id === skillId) {
-        const d = (s as Record<string, unknown>).description;
-        if (typeof d === "string" && d.length > 0) skillDescription = d;
-        break;
-      }
-    }
-  }
-  const description = `${cardName} — ${skillDescription}`.slice(0, 500);
+  const description = purchaseDescription(
+    providerTokenId,
+    agentCard,
+    ext,
+    skillId,
+  );
 
   return {
     ok: true,
@@ -593,6 +650,10 @@ export async function issuePaymentRequirements(
       status: 404,
     };
   }
+  if (!provider.providerLegal) {
+    return providerLegalAdmissionFailure(provider);
+  }
+  const purchaseLegal = buildPurchaseLegalContext(config, provider.providerLegal);
 
   // Multi-service providers: everything below (pricing extension, A2A
   // endpoint, serviceSlug/serviceId derivation) must come from the CARD
@@ -950,7 +1011,12 @@ export async function issuePaymentRequirements(
     chainId: `eip155:${config.chainId}`,
     maxAmountRequired: amount.toString(),
     resource: params.resource,
-    description: `Daski service purchase (providerTokenId ${params.providerTokenId})${skillId ? ` — skill ${skillId}` : ""}`,
+    description: purchaseDescription(
+      params.providerTokenId,
+      agentCard,
+      ext,
+      skillId,
+    ),
     mimeType: "application/json",
     payTo: config.paymentRouterAddress,
     maxTimeoutSeconds: Math.max(
@@ -987,6 +1053,7 @@ export async function issuePaymentRequirements(
               },
             }
           : {}),
+        ...purchaseLegal,
       },
     },
   };

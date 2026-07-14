@@ -32,6 +32,17 @@ function parseResult<T>(result: unknown): T {
   return JSON.parse(r.content[0]!.text) as T;
 }
 
+function expectedLegal(gateway: TestGateway) {
+  return {
+    marketplaceTermsUrl: gateway.config.marketplaceTermsUrl,
+    marketplacePrivacyUrl: gateway.config.marketplacePrivacyUrl,
+    providerLegalName: "Blue T Group, LLC",
+    providerTermsUrl: "https://bluetgroup.com/service-provider-terms-of-use",
+    providerPrivacyUrl:
+      "https://bluetgroup.com/service-provider-privacy-policy",
+  };
+}
+
 interface SkillDef {
   id: string;
   name: string;
@@ -128,6 +139,9 @@ describe("multi-service providers", () => {
       type: "https://eips.ethereum.org/EIPS/eip-8004#registration-v1",
       name: "Blue T Group, LLC",
       description: "Independent provider serving the AI agent economy.",
+      legalName: "Blue T Group, LLC",
+      termsUrl: "https://bluetgroup.com/service-provider-terms-of-use",
+      privacyUrl: "https://bluetgroup.com/service-provider-privacy-policy",
       services: [
         { name: "A2A", endpoint: `${base}/cards/domains.json`, version: "1.0.0" },
         { name: "A2A", endpoint: `${base}/cards/mailboxes.json`, version: "1.0.0" },
@@ -213,6 +227,16 @@ describe("multi-service providers", () => {
     expect(provider.cards).toHaveLength(2);
     const slugs = provider.cards.map((c: any) => c.serviceSlug).sort();
     expect(slugs).toEqual(["domain-management", "mailboxes"]);
+    expect(provider.legal).toEqual(expectedLegal(gateway));
+    expect(
+      provider.agentCard.extensions[DASKI_A2A_EXTENSION_URI].legal,
+    ).toEqual(expectedLegal(gateway));
+    for (const card of provider.cards) {
+      expect(card.legal).toEqual(expectedLegal(gateway));
+      expect(card.agentCard.extensions[DASKI_A2A_EXTENSION_URI].legal).toEqual(
+        expectedLegal(gateway),
+      );
+    }
     // Back-compat: agentCard remains the first card.
     expect(provider.agentCard.name).toBe("Domain Management");
   });
@@ -230,6 +254,7 @@ describe("multi-service providers", () => {
           name: string;
           serviceSlug: string | null;
           providerA2AUrl: string;
+          legal: Record<string, string>;
           skills: Array<{ id: string }>;
         }>;
       }>(result);
@@ -237,6 +262,9 @@ describe("multi-service providers", () => {
       const mine = body.providers.filter((p) => p.tokenId === "1");
       expect(mine).toHaveLength(2);
       const bySlug = new Map(mine.map((p) => [p.serviceSlug, p]));
+      for (const service of mine) {
+        expect(service.legal).toEqual(expectedLegal(gateway));
+      }
       expect(bySlug.get("domain-management")!.name).toBe("Domain Management");
       expect(bySlug.get("mailboxes")!.name).toBe("Agent Mailboxes");
       expect(bySlug.get("mailboxes")!.providerA2AUrl).toMatch(/\/a2a\/mailboxes$/);
@@ -382,6 +410,9 @@ describe("multi-service providers", () => {
     expect(list.status).toBe(200);
     const listBody: any = await list.json();
     const mine = listBody.services.filter((s: any) => s.agentId === "1");
+    for (const service of mine) {
+      expect(service.legal).toEqual(expectedLegal(gateway));
+    }
     expect(mine.map((s: any) => s.serviceSlug).sort()).toEqual([
       "domain-management",
       "mailboxes",
@@ -412,12 +443,16 @@ describe("multi-service providers", () => {
     const mailbox = mine.find((s: any) => s.skillId === "create-mailbox");
     expect(mailbox.providerA2AUrl).toMatch(/\/a2a\/mailboxes$/);
     expect(mailbox.maxAmountRequired).toBe("9990000");
+    expect(mailbox.legal).toEqual(expectedLegal(gateway));
   });
 
   it("tolerates one broken card without delisting the healthy ones", async () => {
     const base = gateway.mockProvider.baseUrl;
     gateway.mockProvider.setAgentCard("/reg/1.json", {
       name: "Blue T Group, LLC",
+      legalName: "Blue T Group, LLC",
+      termsUrl: "https://bluetgroup.com/service-provider-terms-of-use",
+      privacyUrl: "https://bluetgroup.com/service-provider-privacy-policy",
       services: [
         { name: "A2A", endpoint: `${base}/cards/domains.json`, version: "1.0.0" },
         { name: "A2A", endpoint: "http://127.0.0.1:1/nowhere.json", version: "1.0.0" },

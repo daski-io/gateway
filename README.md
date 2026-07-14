@@ -77,12 +77,25 @@ for the full list with defaults. The most important ones:
 | `AGENT_INDEX_ADDRESS` | Daski AgentIndex proxy — verified wallet→agentId resolution + gasless registration. **Required**; changes on every contract redeploy (ships blank in `.env.example`) |
 | `REPUTATION_REGISTRY_ADDRESS` | Canonical ERC-8004 ReputationRegistry. Set it to mirror confirmed deliveries as public feedback; unset = mirror off |
 | `PUBLIC_URL` | Externally reachable URL — embedded in payment requirements and discovery responses |
+| `MARKETPLACE_TERMS_URL` | Required HTTPS URL for the Daski Terms of Use returned with every service and purchase |
+| `MARKETPLACE_PRIVACY_URL` | Required HTTPS URL for the Daski Privacy Policy returned with every service and purchase |
 | `DIRECT_ADAPTER_ADDRESS` | DirectTransferAdapter proxy. Setting it mounts the Bazaar-facing `/x402/services/:tokenId/:skillId` routes (external-facilitator rail). Unset = rail off |
 | `EXTERNAL_FACILITATOR_URL` | External x402 facilitator base URL. Defaults: x402.org (Sepolia), CDP facilitator (mainnet) |
 | `EXTERNAL_FACILITATOR_AUTH_HEADER` | Raw `Authorization` value for the external facilitator — required by CDP for mainnet settles. **Secret.** |
 
 The .env.example ships with the post-audit Base Sepolia deployment addresses
 for the Daski contracts. Replace them when redeploying.
+
+Before adding an agentId to `WHITELISTED_AGENT_IDS`, run the one-time legal
+metadata and unauthenticated-reachability check against its registration file:
+
+```bash
+npm run validate-provider-legal -- https://provider.example/.well-known/agent.json
+```
+
+This onboarding check is deliberately not part of periodic discovery refreshes;
+the gateway does not archive, compare, or continuously monitor Provider legal
+documents.
 
 ## Tests
 
