@@ -19,6 +19,11 @@ import type {
   ProviderCard,
   StoredChallenge,
 } from "../types.js";
+import type {
+  CategoryFamily,
+  FulfillmentMode,
+  ServiceType,
+} from "../serviceTaxonomy.js";
 
 // ── Value-weighted reputation ───────────────────────────────────────────
 //
@@ -70,7 +75,9 @@ export interface PublicService {
   name: string;
   providerAddress: Hex;
   agentURI: string;
-  category: string | null;
+  categoryFamily: CategoryFamily;
+  serviceType: ServiceType;
+  jurisdictions: string[];
   serviceDescription: string | null;
   serviceLifecycle: string | null;
   turnaroundEstimate: string | null;
@@ -94,7 +101,7 @@ export interface PublicService {
   /**
    * Square icon for the provider's brand mark from the ERC-8004
    * registration file's `image` field (ERC-721 metadata convention).
-   * Null when unset; the website falls back to a category-derived icon.
+   * Null when unset; the website falls back to a category-family icon.
    */
   iconUrl: string | null;
   /**
@@ -144,6 +151,7 @@ export interface PublicSkill {
   pricingModelDetail: PublicSkillPricingModel | null;
   variable: boolean;
   paymentRequired: boolean;
+  fulfillmentMode: FulfillmentMode;
   /** Asset/capability shape — needed by integrators to know what to send. */
   requiredFields: string[] | null;
   requiresAssetOwnership: boolean;
@@ -866,6 +874,9 @@ function flattenSkills(agentCard: Record<string, unknown>): PublicSkill[] {
       pricingModelDetail,
       variable: asBoolean(meta.variablePricing) || asBoolean(meta.variable),
       paymentRequired: meta.paymentRequired !== false, // default true
+      fulfillmentMode: asString(
+        meta.fulfillmentMode ?? ext?.fulfillmentMode,
+      ) as FulfillmentMode,
       requiredFields,
       requiresAssetOwnership: asBoolean(meta.requiresAssetOwnership),
       requiresCapability: asBoolean(meta.requiresCapability),
@@ -920,7 +931,9 @@ function formatServiceCardForPublic(
     name: extractAgentCardName(card.agentCard),
     providerAddress: provider.walletAddress,
     agentURI: provider.agentURI,
-    category: asString(ext.category),
+    categoryFamily: ext.categoryFamily,
+    serviceType: ext.serviceType,
+    jurisdictions: ext.jurisdictions,
     serviceDescription: asString(ext.serviceDescription),
     serviceLifecycle: asString(ext.serviceLifecycle),
     turnaroundEstimate: asString(ext.turnaroundEstimate),

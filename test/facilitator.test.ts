@@ -18,7 +18,8 @@ describe("facilitator endpoints", () => {
           erc8004TokenId: 102n,
           name: "Daski Domain Registration",
           priceUsdcSmallest: "15000000",
-          category: "domain-registration",
+          categoryFamily: "domains-web",
+          serviceType: "domain-management",
           skills: [
             {
               id: "default-service",
@@ -448,7 +449,8 @@ describe("GET /identity/by-wallet", () => {
           tokenId: 2n,
           name: "p",
           priceUsdcSmallest: "1000000",
-          category: "x",
+          categoryFamily: "other",
+          serviceType: "other",
         },
       ],
     });
@@ -492,7 +494,13 @@ describe("GET /supported advertises facilitator endpoints", () => {
   beforeEach(async () => {
     gateway = await startTestGateway({
       providers: [
-        { tokenId: 2n, name: "p", priceUsdcSmallest: "1000000", category: "x" },
+        {
+          tokenId: 2n,
+          name: "p",
+          priceUsdcSmallest: "1000000",
+          categoryFamily: "other",
+          serviceType: "other",
+        },
       ],
     });
   });
@@ -526,7 +534,13 @@ describe("GET /eas/nonce", () => {
   beforeEach(async () => {
     gateway = await startTestGateway({
       providers: [
-        { tokenId: 2n, name: "p", priceUsdcSmallest: "1000000", category: "x" },
+        {
+          tokenId: 2n,
+          name: "p",
+          priceUsdcSmallest: "1000000",
+          categoryFamily: "other",
+          serviceType: "other",
+        },
       ],
     });
   });

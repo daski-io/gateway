@@ -25,7 +25,9 @@ typed-data so any signer (Coinbase AgentKit, CDP Wallet MCP, viem, MetaMask,
   endpoints, and read-only `/public/v1/*`.
 - **Discovery cache** — periodic refresh of provider Agent Cards from
   ERC-8004 + intent-driven semantic search via pgvector + Xenova
-  `all-MiniLM-L6-v2` embeddings.
+  `all-MiniLM-L6-v2` embeddings. Catalog admission enforces the canonical
+  service family/type, jurisdiction, and skill fulfillment metadata in
+  [`src/serviceTaxonomy.ts`](src/serviceTaxonomy.ts).
 - **Provider onboarding spec** — see [PROVIDER_ONBOARDING.md](PROVIDER_ONBOARDING.md)
   for the gateway↔provider wire contract.
 
@@ -136,6 +138,8 @@ any funds move.
 - `src/app.ts` — Express wiring, route registration, MCP mount
 - `src/mcp/server.ts` — MCP tool surface (`daski_search_services`, `daski_*`, deprecated aliases for one grace cycle)
 - `src/discovery/` — Agent Card cache + pgvector embedding sync
+- `src/serviceTaxonomy.ts` — the 16 service families, controlled service
+  types, jurisdiction rules, and fulfillment-mode vocabulary
 - `src/payment/` — x402 challenge / verify / settle, EAS confirmation, Bazaar-facing external-facilitator rail (`bazaar.ts`, `externalFacilitator.ts`)
 - `src/identity/` — ERC-8004 lookups + gasless registration
 - `src/chain/` — viem-backed reader for the Daski contracts (+ hand-mirrored ABIs in `abis.ts`)

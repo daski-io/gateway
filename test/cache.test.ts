@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { DiscoveryCache } from "../src/discovery/cache.js";
 import { MockChainReader } from "./helpers/mockChain.js";
 import type { Hex } from "../src/types.js";
+import { DASKI_A2A_EXTENSION_URI } from "../src/config.js";
 
 // Unit tests for the cache's failure-mode hardening: a failed refresh must
 // keep serving the last-known-good card (bounded by the staleness cap)
@@ -27,8 +28,24 @@ function agentCard(name: string): Record<string, unknown> {
     name,
     url: "http://127.0.0.1:9/a2a",
     skills: [
-      { id: "register-domain", name: "Register Domain", description: "d" },
+      {
+        id: "register-domain",
+        name: "Register Domain",
+        description: "d",
+        metadata: {
+          [DASKI_A2A_EXTENSION_URI]: {
+            fulfillmentMode: "automated",
+          },
+        },
+      },
     ],
+    extensions: {
+      [DASKI_A2A_EXTENSION_URI]: {
+        categoryFamily: "domains-web",
+        serviceType: "domain-management",
+        jurisdictions: ["global"],
+      },
+    },
   };
 }
 

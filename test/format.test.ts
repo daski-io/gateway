@@ -35,7 +35,10 @@ function makeProvider(
 
 const BASE_EXT = {
   pricing: { baseAmount: "10980000", currency: "USDC", variablePricing: true },
-  category: "domain-management",
+  categoryFamily: "domains-web",
+  serviceType: "domain-management",
+  jurisdictions: ["global"],
+  fulfillmentMode: "automated",
   serviceDescription: "Domains",
   serviceLifecycle: "asset-lifecycle",
 };

@@ -1,3 +1,9 @@
+import type {
+  CategoryFamily,
+  FulfillmentMode,
+  ServiceType,
+} from "./serviceTaxonomy.js";
+
 // ── Shared types used across the gateway ──
 
 export type Hex = `0x${string}`;
@@ -20,7 +26,10 @@ export interface DaskiMarketplaceExtension {
     erc8004TokenId: string;
     chainId: ChainId;
   };
-  category: string;
+  categoryFamily: CategoryFamily;
+  serviceType: ServiceType;
+  jurisdictions: string[];
+  fulfillmentMode?: FulfillmentMode;
   serviceDescription: string;
   serviceLifecycle: "one-shot" | "ongoing";
   turnaroundEstimate?: string;
@@ -131,11 +140,11 @@ export interface DaskiRequirementsExtra {
     /**
      * The A2A skill the buyer is invoking (off-chain identifier like
      * `register-domain`). Distinct from `serviceSlug` (the on-chain
-     * product category — one slug can map to many skills).
+     * on-chain service identifier — one slug can map to many skills).
      */
     skillId: string | null;
     /**
-     * On-chain product category — `keccak256(providerAgentId,
+     * On-chain service identifier — `keccak256(providerAgentId,
      * serviceSlug, version)` is the serviceId. Resolved from the
      * skill's daski metadata in the Agent Card; falls back to skillId
      * when the provider hasn't declared a slug yet (legacy 1:1
@@ -341,7 +350,7 @@ export interface StoredChallenge {
   // The A2A skill the buyer requested (off-chain identifier). Distinct
   // from serviceSlug — see DaskiRequirementsExtra.daski.
   skillId: string | null;
-  // The on-chain product category baked into the serviceId hash.
+  // The on-chain service slug baked into the serviceId hash.
   // Resolved from the skill's daski metadata in the provider Agent Card
   // at challenge-issue time; persisted so the (slug, version) tuple
   // that produced this serviceId is fully recoverable for analytics.

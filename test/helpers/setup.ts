@@ -17,6 +17,11 @@ import {
   type MockTaskState,
 } from "./mockProvider.js";
 import { DASKI_A2A_EXTENSION_URI } from "../../src/config.js";
+import type {
+  CategoryFamily,
+  FulfillmentMode,
+  ServiceType,
+} from "../../src/serviceTaxonomy.js";
 import { resolveSkillOffer } from "../../src/payment/requirements.js";
 import type { PaymentSettledEvent } from "../../src/chain/reader.js";
 import type {
@@ -102,7 +107,9 @@ export interface TestProviderDef {
   erc8004TokenId?: bigint;
   walletAddress?: Hex;
   priceUsdcSmallest: string;
-  category: string;
+  categoryFamily: CategoryFamily;
+  serviceType: ServiceType;
+  jurisdictions?: string[];
   name: string;
   a2aPath?: string;
   cardPath?: string;
@@ -152,7 +159,10 @@ export interface TestGateway {
     opts?: { validAfter?: bigint; validBefore?: bigint },
   ): Promise<{ signature: Hex; authorization: ExactEvmAuthorization }>;
   discover(filters?: {
-    category?: string;
+    categoryFamily?: CategoryFamily;
+    serviceType?: ServiceType;
+    jurisdiction?: string;
+    fulfillmentMode?: FulfillmentMode;
     maxPrice?: number;
   }): Promise<{ status: number; json: any }>;
   queueSettlementSuccess(args: {
@@ -378,7 +388,11 @@ export async function startTestGateway(
               id: requestedSkillId,
               name: requestedSkillId,
               description: `${requestedSkillId} test skill`,
-              metadata: { [DASKI_A2A_EXTENSION_URI]: {} },
+              metadata: {
+                [DASKI_A2A_EXTENSION_URI]: {
+                  fulfillmentMode: "automated",
+                },
+              },
             });
           }
           card.skills = listed;
@@ -469,8 +483,14 @@ export async function startTestGateway(
 
     async discover(filters = {}) {
       const params = new URLSearchParams();
-      if (filters.category !== undefined)
-        params.set("category", filters.category);
+      if (filters.categoryFamily !== undefined)
+        params.set("categoryFamily", filters.categoryFamily);
+      if (filters.serviceType !== undefined)
+        params.set("serviceType", filters.serviceType);
+      if (filters.jurisdiction !== undefined)
+        params.set("jurisdiction", filters.jurisdiction);
+      if (filters.fulfillmentMode !== undefined)
+        params.set("fulfillmentMode", filters.fulfillmentMode);
       if (filters.maxPrice !== undefined)
         params.set("maxPrice", String(filters.maxPrice));
       const url =
@@ -558,12 +578,17 @@ function _installProvider(
     isActive: true,
   });
 
-  const skills = def.skills?.map((s) => ({
+  const skills = (def.skills ?? [
+    { id: "default-service", metadata: {} },
+  ]).map((s) => ({
     id: s.id,
     name: s.name ?? s.id,
     description: s.description ?? `${s.id} skill`,
     metadata: {
-      [DASKI_A2A_EXTENSION_URI]: s.metadata ?? {},
+      [DASKI_A2A_EXTENSION_URI]: {
+        fulfillmentMode: "automated",
+        ...(s.metadata ?? {}),
+      },
     },
   }));
 
@@ -573,7 +598,9 @@ function _installProvider(
       name: def.name,
       a2aUrl,
       priceUsdcSmallest: def.priceUsdcSmallest,
-      category: def.category,
+      categoryFamily: def.categoryFamily,
+      serviceType: def.serviceType,
+      jurisdictions: def.jurisdictions,
       registryAddress: REGISTRY_ADDRESS,
       paymentRouterAddress: PAYMENT_ROUTER_ADDRESS,
       erc8004TokenId: erc8004TokenId.toString(),

@@ -23,6 +23,18 @@ import type {
   StoredChallenge,
 } from "../types.js";
 import {
+  CATEGORY_FAMILY_SLUGS,
+  FULFILLMENT_MODES,
+  SERVICE_TYPE_SLUGS,
+  isJurisdiction,
+  isServiceTypeForFamily,
+} from "../serviceTaxonomy.js";
+import type {
+  CategoryFamily,
+  FulfillmentMode,
+  ServiceType,
+} from "../serviceTaxonomy.js";
+import {
   formatForSkillDiscover,
   applyDiscoverFilters,
   cardsOf,
@@ -333,36 +345,60 @@ export async function createMcpServer(
   function registerTools(server: McpServer) {
     // ── Discovery ────────────────────────────────────────────────────
 
-    const SEARCH_SERVICES_INPUT_SCHEMA = {
-      intent: z
-        .string()
-        .optional()
-        .describe(
-          "Free-text description of what the agent wants to do (e.g. " +
-            "'register a .com domain'). Embedded with pgvector; ranked " +
-            "by cosine similarity over every (provider, skill) pair in " +
-            "the catalog.",
-        ),
-      category: z
-        .string()
-        .optional()
-        .describe("Filter by provider category (e.g. domain-registration)."),
-      maxPrice: z
-        .number()
-        .optional()
-        .describe("Filter by max base price in USDC (not smallest units)."),
-      limit: z
-        .number()
-        .int()
-        .min(1)
-        .max(50)
-        .optional()
-        .describe("Max providers to return. Default 10."),
-    };
+    const SEARCH_SERVICES_INPUT_SCHEMA = z
+      .object({
+        intent: z
+          .string()
+          .optional()
+          .describe(
+            "Free-text description of what the agent wants to do (e.g. " +
+              "'register a .com domain'). Embedded with pgvector; ranked " +
+              "by cosine similarity over every (provider, skill) pair in " +
+              "the catalog.",
+          ),
+        categoryFamily: z
+          .enum(CATEGORY_FAMILY_SLUGS)
+          .optional()
+          .describe("Filter by category family (e.g. domains-web)."),
+        serviceType: z
+          .enum(SERVICE_TYPE_SLUGS)
+          .optional()
+          .describe("Filter by controlled service type (e.g. domain-management)."),
+        jurisdiction: z
+          .string()
+          .refine(
+            isJurisdiction,
+            "Must be 'global', an assigned ISO 3166-1 alpha-2 country code, " +
+              "or a recognized ISO 3166-2 subdivision code.",
+          )
+          .optional()
+          .describe("Filter by availability jurisdiction (e.g. US or US-DE)."),
+        fulfillmentMode: z
+          .enum(FULFILLMENT_MODES)
+          .optional()
+          .describe(
+            "Filter to services with an automated, human, or hybrid skill.",
+          ),
+        maxPrice: z
+          .number()
+          .optional()
+          .describe("Filter by max base price in USDC (not smallest units)."),
+        limit: z
+          .number()
+          .int()
+          .min(1)
+          .max(50)
+          .optional()
+          .describe("Max providers to return. Default 10."),
+      })
+      .strict();
 
     type SearchServicesArgs = {
       intent?: string;
-      category?: string;
+      categoryFamily?: CategoryFamily;
+      serviceType?: ServiceType;
+      jurisdiction?: string;
+      fulfillmentMode?: FulfillmentMode;
       maxPrice?: number;
       limit?: number;
     };
@@ -370,10 +406,25 @@ export async function createMcpServer(
     const searchServicesHandler = async (
       args: SearchServicesArgs,
     ): Promise<McpToolResult> => {
+        if (
+          args.categoryFamily &&
+          args.serviceType &&
+          !isServiceTypeForFamily(args.categoryFamily, args.serviceType)
+        ) {
+          return json({
+            error: {
+              code: "INVALID_FILTER",
+              message: "serviceType does not belong to categoryFamily",
+            },
+          });
+        }
         const limit = args?.limit ?? 10;
         const all = deps.cache.getAll();
         const filtered = applyDiscoverFilters(all, {
-          category: args?.category,
+          categoryFamily: args?.categoryFamily,
+          serviceType: args?.serviceType,
+          jurisdiction: args?.jurisdiction,
+          fulfillmentMode: args?.fulfillmentMode,
           maxPrice: args?.maxPrice,
         });
 
@@ -413,7 +464,7 @@ export async function createMcpServer(
         // Lazy-sync `skill_embeddings` against the current cache. Cheap
         // when nothing's changed (one indexed scan, no embeddings
         // recomputed). Keeps tests deterministic and prod self-healing.
-        await syncSkillEmbeddings(deps.pool, filtered, deps.embedder);
+        await syncSkillEmbeddings(deps.pool, all, deps.embedder);
 
         const queryVector = await deps.embedder.embed(args.intent);
         // Pull more skills than we need so a provider that wins on its
@@ -430,15 +481,21 @@ export async function createMcpServer(
         // their own merits instead of the provider's single best skill
         // shadowing every other service it offers.
         const bestByCard = new Map<string, { distance: number; skillId: string }>();
+        const allBestByCard = new Map<
+          string,
+          { distance: number; skillId: string }
+        >();
+        const eligibleSkillKeys = args.fulfillmentMode
+          ? buildEligibleSkillKeys(filtered, args.fulfillmentMode)
+          : null;
         for (const h of hits) {
           const key = `${h.providerAgentId.toString()}:${h.serviceSlug}`;
-          const cur = bestByCard.get(key);
-          if (!cur || h.distance < cur.distance) {
-            bestByCard.set(key, {
-              distance: h.distance,
-              skillId: h.skillId,
-            });
-          }
+          recordBestHit(allBestByCard, key, h.distance, h.skillId);
+          if (
+            eligibleSkillKeys &&
+            !eligibleSkillKeys.has(`${key}:${h.skillId}`)
+          ) continue;
+          recordBestHit(bestByCard, key, h.distance, h.skillId);
         }
 
         const entryByKey = buildEntryIndex(filtered);
@@ -457,14 +514,14 @@ export async function createMcpServer(
 
         // §1.5 of daski-mcp-gateway-fix-brief.md — when filters zero the
         // result but the vector index DID match something, surface the
-        // top-N near misses (ignoring the category/maxPrice filter) so
+        // top-N near misses (ignoring structured/maxPrice filters) so
         // the agent gets a hint instead of an empty list. The agent can
-        // then drop the category, fix a typo, or surface the alternative
+        // then relax the filters or surface the alternative
         // to the user. The flag stays opt-in: regular results don't
         // include this block.
         const nearMissBlock =
-          matches.length === 0 && bestByCard.size > 0
-            ? buildNearMissBlock(bestByCard, all, limit)
+          matches.length === 0 && allBestByCard.size > 0
+            ? buildNearMissBlock(allBestByCard, all, limit)
             : undefined;
 
         return json({
@@ -496,8 +553,41 @@ export async function createMcpServer(
       return index;
     }
 
+    function buildEligibleSkillKeys(
+      providers: CachedProvider[],
+      fulfillmentMode: FulfillmentMode,
+    ): Set<string> {
+      const keys = new Set<string>();
+      for (const entry of formatForSkillDiscover(providers)) {
+        const slug = (entry.serviceSlug as string | null) ?? "";
+        const cardKey = `${entry.tokenId as string}:${slug}`;
+        const skills = Array.isArray(entry.skills) ? entry.skills : [];
+        for (const skill of skills) {
+          if (!skill || typeof skill !== "object") continue;
+          const record = skill as Record<string, unknown>;
+          if (
+            typeof record.id === "string" &&
+            record.fulfillmentMode === fulfillmentMode
+          ) keys.add(`${cardKey}:${record.id}`);
+        }
+      }
+      return keys;
+    }
+
+    function recordBestHit(
+      target: Map<string, { distance: number; skillId: string }>,
+      key: string,
+      distance: number,
+      skillId: string,
+    ): void {
+      const current = target.get(key);
+      if (!current || distance < current.distance) {
+        target.set(key, { distance, skillId });
+      }
+    }
+
     // Helper for §1.5 — surfaces vector-index neighbours that were
-    // filtered out by the caller's category/maxPrice constraints. The
+    // filtered out by the caller's structured/maxPrice constraints. The
     // returned shape mirrors `matches` so agents can render either
     // block with the same code path.
     function buildNearMissBlock(
@@ -534,8 +624,8 @@ export async function createMcpServer(
           "- You already have a `providerTokenId` + `skillId` and just want to execute — go straight to `daski_buy_service`.",
           "- You are polling an existing task — use `daski_get_task_status`.",
           "",
-          "Inputs: free-text `intent` ranked by vector similarity over the catalog; optional `category`, `maxPrice`, `limit`.",
-          "Returns: ranked list of providers. Each entry has `tokenId`, `name`, `category`, `agentCardUrl`, `providerA2AUrl`, and a `skills[]` array. Each skill includes `id`, `description`, `requiredFields[]`, `paymentRequired`, `variablePricing`, and the asset/capability flags you need to plan the next call.",
+          "Inputs: free-text `intent` ranked by vector similarity over the catalog; optional `categoryFamily`, `serviceType`, `jurisdiction`, `fulfillmentMode`, `maxPrice`, and `limit`.",
+          "Returns: ranked services with `categoryFamily`, `serviceType`, `jurisdictions`, provider endpoints, and skills. Each skill includes its `fulfillmentMode`, structured inputs, pricing, and asset/capability flags.",
           "Next step: `daski_buy_service` for paid skills, or `daski_submit_task` for free read-only skills like `check-availability` or `get-pricing`.",
         ].join("\n"),
         inputSchema: SEARCH_SERVICES_INPUT_SCHEMA,

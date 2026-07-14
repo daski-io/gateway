@@ -220,8 +220,8 @@ export const paymentRouterAbi = [
 // off-chain (cheap, deterministic) and PaymentRouter.settle validates that
 // the service belongs to providerAgentId and is active.
 //
-// `serviceSlug` is the on-chain product-category identifier (e.g.
-// "domain-registration"). It is NOT an A2A skill id — one service maps
+// `serviceSlug` is the on-chain service identifier (e.g.
+// "domain-management"). It is NOT an A2A skill id — one service maps
 // to many skills via the off-chain serviceURI JSON. Renamed from
 // `skillId` in the audit refactor (2026-05-12 deploy).
 export const serviceRegistryAbi = [

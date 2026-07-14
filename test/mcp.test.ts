@@ -3,6 +3,10 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { recoverTypedDataAddress, type Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
+import {
+  CATEGORY_FAMILY_SLUGS,
+  SERVICE_TYPE_SLUGS,
+} from "../src/serviceTaxonomy.js";
 import { startTestGateway, type TestGateway } from "./helpers/setup.js";
 
 const TEST_BUYER_KEY =
@@ -39,7 +43,8 @@ describe("hosted MCP — wallet-agnostic surface", () => {
           tokenId: 2n,
           name: "Domain Reg",
           priceUsdcSmallest: "15000000",
-          category: "domain-registration",
+          categoryFamily: "domains-web",
+          serviceType: "domain-management",
           skills: [
             {
               id: "register-domain",
@@ -79,6 +84,15 @@ describe("hosted MCP — wallet-agnostic surface", () => {
           "daski_settle_payment",
         ].sort(),
       );
+      const searchTool = tools.tools.find(
+        (tool) => tool.name === "daski_search_services",
+      );
+      const properties = searchTool?.inputSchema.properties as Record<
+        string,
+        { enum?: string[] }
+      >;
+      expect(properties.categoryFamily.enum).toEqual(CATEGORY_FAMILY_SLUGS);
+      expect(properties.serviceType.enum).toEqual(SERVICE_TYPE_SLUGS);
     } finally {
       await transport.close();
     }
@@ -864,7 +878,8 @@ describe("hosted MCP — wallet-agnostic surface", () => {
       tokenId: 2n,
       name: "Domain Reg",
       priceUsdcSmallest: "15000000",
-      category: "domain-registration",
+      categoryFamily: "domains-web",
+      serviceType: "domain-management",
       skills: [
         {
           id: "register-domain",
@@ -987,7 +1002,8 @@ describe("hosted MCP — wallet-agnostic surface", () => {
       tokenId: 2n,
       name: "Domain Reg",
       priceUsdcSmallest: "15000000",
-      category: "domain-registration",
+      categoryFamily: "domains-web",
+      serviceType: "domain-management",
       skills: [
         {
           id: "set-dns-record",
@@ -1045,7 +1061,8 @@ describe("hosted MCP — wallet-agnostic surface", () => {
       tokenId: 2n,
       name: "Misconfigured Reg",
       priceUsdcSmallest: "15000000",
-      category: "domain-registration",
+      categoryFamily: "domains-web",
+      serviceType: "domain-management",
       skills: [
         {
           id: "set-dns-record",
@@ -1357,7 +1374,8 @@ describe("hosted MCP — wallet-agnostic surface", () => {
       tokenId: 7n,
       name: "Agent Mailboxes",
       priceUsdcSmallest: "9990000",
-      category: "email",
+      categoryFamily: "communications",
+      serviceType: "agent-mailbox",
       skills: [
         {
           id: "change-password",

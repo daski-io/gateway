@@ -143,8 +143,8 @@ function resolveServiceVersion(
  *
  * Per the three-layer identity model (provider / service / skill), a
  * skillId is the off-chain A2A method name (e.g. `register-domain`),
- * while a serviceSlug is the on-chain product category (e.g.
- * `domain-registration`). One service can be implemented by many skills.
+ * while a serviceSlug is the on-chain service identifier (e.g.
+ * `domain-management`). One service can be implemented by many skills.
  *
  * Resolution order:
  *   1. The skill's daski metadata explicitly declares `serviceSlug` —

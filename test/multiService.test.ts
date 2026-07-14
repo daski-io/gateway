@@ -2,6 +2,10 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { DASKI_A2A_EXTENSION_URI } from "../src/config.js";
+import type {
+  CategoryFamily,
+  ServiceType,
+} from "../src/serviceTaxonomy.js";
 import { startTestGateway, type TestGateway } from "./helpers/setup.js";
 
 // Multi-service providers: one ERC-8004 registration file listing SEVERAL
@@ -34,13 +38,16 @@ interface SkillDef {
   description: string;
   paid: boolean;
   baseAmount?: string;
+  fulfillmentMode?: "automated" | "human" | "hybrid";
 }
 
 function buildCard(args: {
   base: string;
   name: string;
   slug: string;
-  category: string;
+  categoryFamily: CategoryFamily;
+  serviceType: ServiceType;
+  jurisdictions?: string[];
   description: string;
   skills: SkillDef[];
 }): Record<string, unknown> {
@@ -69,7 +76,9 @@ function buildCard(args: {
             ? { baseAmount: paidSkills[0].baseAmount }
             : {}),
         },
-        category: args.category,
+        categoryFamily: args.categoryFamily,
+        serviceType: args.serviceType,
+        jurisdictions: args.jurisdictions ?? ["global"],
         serviceDescription: args.description,
         serviceLifecycle: "asset-lifecycle",
         // Shape B skill metadata (what daski-provider serves today).
@@ -83,6 +92,7 @@ function buildCard(args: {
             {
               serviceSlug: args.slug,
               serviceVersion: "1",
+              fulfillmentMode: s.fulfillmentMode ?? "automated",
               paymentRequired: s.paid,
               pricing: {
                 type: "one-time",
@@ -106,7 +116,8 @@ describe("multi-service providers", () => {
           tokenId: 1n,
           name: "Placeholder",
           priceUsdcSmallest: "15000000",
-          category: "infrastructure",
+          categoryFamily: "domains-web",
+          serviceType: "domain-management",
         },
       ],
     });
@@ -131,7 +142,8 @@ describe("multi-service providers", () => {
         base,
         name: "Domain Management",
         slug: "domain-management",
-        category: "infrastructure",
+        categoryFamily: "domains-web",
+        serviceType: "domain-management",
         description: "Register and manage domain names with automated DNS setup.",
         skills: [
           {
@@ -156,9 +168,8 @@ describe("multi-service providers", () => {
         base,
         name: "Agent Mailboxes",
         slug: "mailboxes",
-        // Colloquial label, like the real provider — the gateway must
-        // canonicalize it into the "communications" bucket for filters.
-        category: "email",
+        categoryFamily: "communications",
+        serviceType: "agent-mailbox",
         description: "Working email mailboxes for agents over IMAP and SMTP.",
         skills: [
           {
@@ -167,6 +178,7 @@ describe("multi-service providers", () => {
             description: "Provision an email mailbox with IMAP SMTP credentials.",
             paid: true,
             baseAmount: "9990000",
+            fulfillmentMode: "human",
           },
           {
             // Deliberate skill-id collision with the domains card —
@@ -286,22 +298,80 @@ describe("multi-service providers", () => {
     }
   });
 
-  it("category filter selects individual services of one provider (alias-tolerant both ways)", async () => {
+  it("keeps near misses when structured filters exclude every card", async () => {
     const { client, transport } = await connectClient(gateway.baseUrl);
     try {
-      // Buyer filters by the colloquial label the card itself uses.
-      for (const category of ["email", "communications"]) {
-        const result = await client.callTool({
-          name: "daski_search_services",
-          arguments: { category },
-        });
-        const body = parseResult<{
-          providers: Array<{ tokenId: string; serviceSlug: string | null }>;
-        }>(result);
-        const mine = body.providers.filter((p) => p.tokenId === "1");
-        expect(mine, `category=${category}`).toHaveLength(1);
-        expect(mine[0]!.serviceSlug).toBe("mailboxes");
-      }
+      const result = await client.callTool({
+        name: "daski_search_services",
+        arguments: {
+          intent: "email mailbox imap smtp for my agent",
+          categoryFamily: "compute-ai",
+        },
+      });
+      const body = parseResult<{
+        providers: unknown[];
+        nearMisses: Array<{ serviceSlug: string | null }>;
+      }>(result);
+      expect(body.providers).toEqual([]);
+      expect(body.nearMisses.map((entry) => entry.serviceSlug)).toContain(
+        "mailboxes",
+      );
+    } finally {
+      await transport.close();
+    }
+  });
+
+  it("ranks only skills eligible for the requested fulfillment mode", async () => {
+    const { client, transport } = await connectClient(gateway.baseUrl);
+    try {
+      const result = await client.callTool({
+        name: "daski_search_services",
+        arguments: {
+          intent: "create an email mailbox with imap and smtp",
+          categoryFamily: "communications",
+          fulfillmentMode: "automated",
+        },
+      });
+      const body = parseResult<{
+        providers: Array<{
+          serviceSlug: string | null;
+          match: { bestSkillId: string };
+        }>;
+      }>(result);
+      expect(body.providers[0]!.serviceSlug).toBe("mailboxes");
+      expect(body.providers[0]!.match.bestSkillId).toBe("check-availability");
+    } finally {
+      await transport.close();
+    }
+  });
+
+  it("category-family filter selects individual services of one provider", async () => {
+    const { client, transport } = await connectClient(gateway.baseUrl);
+    try {
+      const result = await client.callTool({
+        name: "daski_search_services",
+        arguments: { categoryFamily: "communications" },
+      });
+      const body = parseResult<{
+        providers: Array<{ tokenId: string; serviceSlug: string | null }>;
+      }>(result);
+      const mine = body.providers.filter((p) => p.tokenId === "1");
+      expect(mine).toHaveLength(1);
+      expect(mine[0]!.serviceSlug).toBe("mailboxes");
+    } finally {
+      await transport.close();
+    }
+  });
+
+  it("rejects the removed MCP category filter", async () => {
+    const { client, transport } = await connectClient(gateway.baseUrl);
+    try {
+      const result = (await client.callTool({
+        name: "daski_search_services",
+        arguments: { category: "email" },
+      })) as ToolResultContent & { isError?: boolean };
+      expect(result.isError).toBe(true);
+      expect(result.content[0]!.text).toMatch(/category/i);
     } finally {
       await transport.close();
     }

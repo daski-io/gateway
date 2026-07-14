@@ -37,7 +37,13 @@ describe("ChainEventsIndexer", () => {
   beforeEach(async () => {
     gateway = await startTestGateway({
       providers: [
-        { tokenId: 1n, name: "Acme", priceUsdcSmallest: "1000000", category: "x" },
+        {
+          tokenId: 1n,
+          name: "Acme",
+          priceUsdcSmallest: "1000000",
+          categoryFamily: "other",
+          serviceType: "other",
+        },
       ],
     });
   });

@@ -62,8 +62,11 @@ A2A spec §4.4. The card MUST declare:
   `{ id, name, description }`.
 - `extensions["https://daski.xyz/a2a/v1"]` — the Daski marketplace
   extension envelope. Required fields:
-  - `category` — one of the gateway's known categories (current set:
-    `infrastructure`, `hosting`, `compute`, `legal`, `email`).
+  - `categoryFamily` — exactly one approved family slug from the table below.
+  - `serviceType` — exactly one controlled type belonging to that family.
+  - `jurisdictions` — a non-empty array containing `"global"`, ISO country
+    codes such as `"US"`, or recognized ISO 3166-2 subdivision codes such as
+    `"US-DE"`.
   - `serviceDescription` — one paragraph of plain prose; the website
     renders this verbatim.
   - `serviceLifecycle` — `"asset-lifecycle"` (you produce a durable
@@ -76,6 +79,10 @@ A2A spec §4.4. The card MUST declare:
   - `skills[<skillId>]` — per-skill metadata, keyed by skill id (NOT a
     nested array). Required keys:
     - `paymentRequired` (default `true`)
+    - `fulfillmentMode` — `"automated"`, `"human"`, or `"hybrid"`.
+      A service-level default may be declared on the extension and overridden
+      per skill. This describes who performs the work; it does not replace or
+      alter `serviceLifecycle`.
     - `variablePricing` (default `false`)
     - `requiredFields[]` — the structured fields the agent must pass
       under `serviceArgs`. The gateway validates these before opening
@@ -88,6 +95,56 @@ A2A spec §4.4. The card MUST declare:
       (e.g. `"domain"`); the gateway uses this to find the buyer's
       prior purchase.
     - For variable-priced skills: `pricingModel: { kind, source, hint }`.
+
+### 2.1 Service taxonomy
+
+The canonical machine-readable source is
+[`src/serviceTaxonomy.ts`](src/serviceTaxonomy.ts). The gateway validates every
+Agent Card when it enters the catalog. A card with a missing or mismatched
+family/type, invalid jurisdiction, no skills, or a skill without an effective
+fulfillment mode is unavailable to discovery, public listings, and purchase.
+The former `category` field is rejected.
+
+| Family | Definition | Currently accepted service types |
+| --- | --- | --- |
+| `business-formation` | Creation and lifecycle administration of legal entities: formation, tax-ID registration connected to formation, registered-agent service, qualification, amendments, corporate records, annual corporate filings, conversion, and dissolution. | `entity-formation`, `llc-formation`, `business-formation-other` |
+| `legal-ip` | Creation, interpretation, protection, or defense of legal rights: legal advice, contracts, trademarks, patents, copyright, licensing, policies, disputes, and legal representation. | `trademark-filing`, `legal-ip-other` |
+| `compliance` | Verification, monitoring, filing, and evidence that requirements are being met: licenses, permits, KYC/KYB, AML, sanctions screening, regulatory reporting, audits, certifications, privacy controls, and trust-and-safety services. | `compliance-other` |
+| `finance` | Financial operation and risk transfer: banking, payments, billing, accounting, bookkeeping, tax preparation and filing, treasury, custody, foreign exchange, financing, valuation, and insurance. | `finance-other` |
+| `domains-web` | Establishing and operating a public web presence: domains, DNS, certificates, website hosting, deployment, CDN, and related web infrastructure. Website and application development remains under Software Development. | `domain-management`, `domains-web-other` |
+| `communications` | Provisioning and maintaining channels through which an agent or entity communicates: email and agent mailboxes, phone numbers, SMS, messaging, and virtual or physical mail channels. Administrative processing after receipt belongs under Operations & Administration. | `agent-mailbox`, `communications-other` |
+| `compute-ai` | Computational capacity and machine-intelligence infrastructure: cloud compute, VPS and serverless capacity, GPU access, model training and inference, model hosting, and closely related runtime resources. | `compute-ai-other` |
+| `data` | Obtaining, enriching, verifying, analyzing, or researching information: search, datasets, data feeds and APIs, market or company intelligence, enrichment, analytics, forecasting, geospatial and scientific data, collection, labeling, and transcription. | `data-other` |
+| `software-dev` | Building or modifying software systems: web, mobile, and application development; APIs and integrations; agent and workflow automation; DevOps; QA and testing; and product engineering. | `software-dev-other` |
+| `design-creative` | Producing creative or experiential assets: brand identity, UX/UI, graphic design, illustration, video, audio, 3D, and other creative production. | `design-creative-other` |
+| `marketing-growth` | Creating awareness and demand: go-to-market strategy, positioning, SEO and agent/search optimization, content strategy, advertising, social media, community, PR, reputation, lifecycle marketing, and conversion optimization. | `marketing-growth-other` |
+| `sales-support` | Acquiring and serving customers: lead generation, prospecting, SDR and outreach, appointment setting, sales operations, proposals, CRM work, commerce operations, customer onboarding, support, success, and retention. | `sales-support-other` |
+| `human-talent` | Acquiring and administering people: recruiting, staffing, contractors, expert networks, employer-of-record services, payroll and benefits connected to workforce administration, HR operations, and training. A person fulfilling another service does not move that service into this family. | `human-talent-other` |
+| `operations-admin` | Running internal business processes not primarily owned by another family: virtual assistance, back-office operations, document processing, records, procurement and vendor administration, project administration, scheduling, travel, events, mailroom processing, and general operational support. | `operations-admin-other` |
+| `logistics-physical` | Moving, producing, storing, or acting on physical assets: courier and freight, warehousing, fulfillment, manufacturing, prototyping, printing, installation, maintenance, real estate and storage, and field services. | `logistics-physical-other` |
+| `other` | Services for which no existing family is defensible. This is a monitored fallback, not a permanent home for services that fit elsewhere. | `other` |
+
+Every substantive family has a controlled `<family>-other` type. A provider
+selecting any Other type must answer all six questions:
+
+1. What outcome is the buyer purchasing?
+2. What inputs are required?
+3. What deliverable or continuing capability is produced?
+4. Does the service create or manage an asset or ongoing relationship?
+5. Which existing family is closest, and why is it insufficient?
+6. What service-type name and search terms does the provider propose?
+
+Other selections are reviewed as demand signals. Daski promotes a new service
+type when multiple credible listings, provider pipeline, or repeated buyer
+searches show that it is recognizable and useful. A new family requires
+evidence of several durable service types and a distinct buyer mental model.
+
+Jurisdiction matching is hierarchical. `global` supply matches any specific
+country or subdivision request. Country-level supply such as `US` matches
+`US-WY`, and a country query includes services limited to one of its
+subdivisions. Two distinct subdivisions such as `US-CA` and `US-WY` do not
+match. A `global` query selects only services that explicitly declare
+`global`. Do not combine `global` with narrower codes in one service.
 
 Sanitization: the gateway strips control characters and BIDI overrides
 from any free-text field before reflecting it to LLM clients. Don't
@@ -215,7 +272,7 @@ contracts — and the registry lets you respond on-chain via
 
 The gateway embeds each skill on cache refresh (Xenova
 `all-MiniLM-L6-v2`, 384-dim, pgvector). The text it embeds includes
-your `name`, `serviceDescription`, `category`, plus per-skill `id`,
+your `name`, `serviceDescription`, `categoryFamily`, `serviceType`, plus per-skill `id`,
 `name`, and `description`. To rank well on intent queries:
 
 - Don't dump SEO keyword soup — the embedder rewards semantic match

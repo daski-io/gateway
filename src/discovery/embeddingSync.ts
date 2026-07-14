@@ -14,14 +14,16 @@ import { cardsOf, extractMarketplaceExtension } from "./format.js";
 function skillSourceText(args: {
   providerName: string;
   serviceDescription: string;
-  category: string;
+  categoryFamily: string;
+  serviceType: string;
   skillId: string;
   skillName: string;
   skillDescription: string;
 }): string {
   return [
     `provider: ${args.providerName}`,
-    `category: ${args.category}`,
+    `category family: ${args.categoryFamily}`,
+    `service type: ${args.serviceType}`,
     `service: ${args.serviceDescription}`,
     `skill: ${args.skillId} — ${args.skillName}`,
     args.skillDescription ? `description: ${args.skillDescription}` : "",
@@ -55,7 +57,6 @@ function collectTargets(providers: CachedProvider[]): SkillEmbeddingTarget[] {
       const providerName = typeof card.name === "string" ? card.name : "";
       const serviceDescription =
         typeof ext.serviceDescription === "string" ? ext.serviceDescription : "";
-      const category = typeof ext.category === "string" ? ext.category : "";
       const serviceSlug = providerCard.serviceSlug ?? "";
 
       for (const skill of card.skills ?? []) {
@@ -71,7 +72,8 @@ function collectTargets(providers: CachedProvider[]): SkillEmbeddingTarget[] {
           sourceText: skillSourceText({
             providerName,
             serviceDescription,
-            category,
+            categoryFamily: ext.categoryFamily,
+            serviceType: ext.serviceType,
             skillId,
             skillName,
             skillDescription,

@@ -1,6 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { startTestGateway, type TestGateway } from "./helpers/setup.js";
-import { computeServiceId } from "../src/payment/requirements.js";
+import {
+  computeServiceId,
+  derivePrimaryServiceId,
+} from "../src/payment/requirements.js";
 import type { Hex } from "../src/types.js";
 
 const PROVIDER_A2A = "http://provider.test/a2a";
@@ -16,10 +19,9 @@ async function seedPaid(
     paymentId: bigint;
     txHash: Hex;
     /**
-     * On-chain serviceId baked into the challenge. Defaults to ZERO so
-     * older tests that don't care continue to pass; tests that exercise
-     * service-scoped queries pass the computed serviceId so the row is
-     * findable via `listRecentPaidByServiceId`.
+     * On-chain serviceId baked into the challenge. Defaults to the cached
+     * provider's primary service; tests for another service pass an explicit
+     * serviceId so the row is scoped to that card.
      */
     serviceId?: Hex;
     serviceSlug?: string;
@@ -33,7 +35,10 @@ async function seedPaid(
   },
 ): Promise<void> {
   const queries = gateway.bundle.queries;
-  const serviceId = args.serviceId ?? (("0x" + "00".repeat(32)) as Hex);
+  const provider = gateway.bundle.cache.get(args.providerAgentId);
+  const primary = provider ? derivePrimaryServiceId(provider) : null;
+  const serviceId =
+    args.serviceId ?? primary?.serviceId ?? (("0x" + "00".repeat(32)) as Hex);
   // Insert as pending, then flip to paid via the same atomic UPDATE the
   // facilitator uses in production. This exercises the real `recordChallengePaid`
   // semantics (single-use service_ref, verified_at populated by SQL).
@@ -43,7 +48,8 @@ async function seedPaid(
     buyerTokenId: args.buyerAgentId,
     amount: args.amountAtomic,
     skillId: args.skillId ?? null,
-    serviceSlug: args.serviceSlug ?? args.skillId ?? "test-service",
+    serviceSlug:
+      args.serviceSlug ?? primary?.serviceSlug ?? args.skillId ?? "test-service",
     serviceVersion: "1",
     serviceId,
     providerA2AUrl: PROVIDER_A2A,
@@ -177,7 +183,8 @@ describe("public v1 — /services", () => {
           tokenId: 1n,
           name: "Acme Domains",
           priceUsdcSmallest: "12000000", // 12 USDC
-          category: "domains",
+          categoryFamily: "domains-web",
+          serviceType: "domain-management",
           skills: [
             {
               id: "register-domain",
@@ -195,7 +202,8 @@ describe("public v1 — /services", () => {
           tokenId: 2n,
           name: "Other Provider",
           priceUsdcSmallest: "5000000",
-          category: "compute",
+          categoryFamily: "compute-ai",
+          serviceType: "compute-ai-other",
         },
       ],
     });
@@ -217,7 +225,9 @@ describe("public v1 — /services", () => {
     const acme = body.services.find((s: any) => s.agentId === "1");
     expect(acme).toBeDefined();
     expect(acme.name).toBe("Acme Domains");
-    expect(acme.category).toBe("domains");
+    expect(acme.categoryFamily).toBe("domains-web");
+    expect(acme.serviceType).toBe("domain-management");
+    expect(acme.jurisdictions).toEqual(["global"]);
     expect(acme.pricing.basePrice).toBe("12.00");
     expect(acme.pricing.currency).toBe("USDC");
     expect(acme.pricing.billingModel).toBe("one-time");
@@ -226,6 +236,7 @@ describe("public v1 — /services", () => {
       id: "register-domain",
       basePrice: "12.00",
       paymentRequired: true,
+      fulfillmentMode: "automated",
       variable: true,
     });
   });
@@ -236,7 +247,8 @@ describe("public v1 — /services", () => {
       tokenId: 5n,
       name: "Rich Metadata Provider",
       priceUsdcSmallest: "0",
-      category: "domains",
+      categoryFamily: "domains-web",
+      serviceType: "domain-management",
       skills: [
         {
           id: "register-domain",
@@ -327,7 +339,8 @@ describe("public v1 — /services", () => {
       tokenId: 99n,
       name: "Plain A2A Provider",
       priceUsdcSmallest: "1000000",
-      category: "ignored",
+      categoryFamily: "other",
+      serviceType: "other",
       skipExtension: true,
     });
     await gateway.refresh();
@@ -348,7 +361,8 @@ describe("public v1 — /services/:agentId", () => {
           tokenId: 1n,
           name: "Acme Domains",
           priceUsdcSmallest: "12000000",
-          category: "domains",
+          categoryFamily: "domains-web",
+          serviceType: "domain-management",
         },
       ],
     });
@@ -533,7 +547,8 @@ describe("public v1 — /services/:agentId", () => {
       tokenId: 9n,
       name: "Fulfillment Stats Provider",
       priceUsdcSmallest: "1000000",
-      category: "domains",
+      categoryFamily: "domains-web",
+      serviceType: "domain-management",
       skills: [
         {
           id: "register-domain",
@@ -613,7 +628,8 @@ describe("public v1 — /services/:agentId", () => {
       tokenId: 11n,
       name: "Spend Stats Provider",
       priceUsdcSmallest: "1000000",
-      category: "domains",
+      categoryFamily: "domains-web",
+      serviceType: "domain-management",
       skills: [
         {
           id: "register-domain",
@@ -682,7 +698,8 @@ describe("public v1 — /services/:agentId", () => {
       tokenId: 10n,
       name: "No Fulfillment Yet",
       priceUsdcSmallest: "1000000",
-      category: "domains",
+      categoryFamily: "domains-web",
+      serviceType: "domain-management",
       skills: [
         {
           id: "register-domain",
@@ -734,7 +751,8 @@ describe("public v1 — /activity", () => {
           tokenId: 1n,
           name: "Acme Domains",
           priceUsdcSmallest: "12000000",
-          category: "domains",
+          categoryFamily: "domains-web",
+          serviceType: "domain-management",
         },
       ],
     });
@@ -785,7 +803,8 @@ describe("public v1 — /activity", () => {
       tokenId: 9n,
       name: "Blue T Services",
       priceUsdcSmallest: "5000000",
-      category: "email",
+      categoryFamily: "communications",
+      serviceType: "agent-mailbox",
       skills: [
         {
           id: "create-mailbox",
@@ -1005,7 +1024,8 @@ describe("public v1 — /stats", () => {
           tokenId: 1n,
           name: "Acme Domains",
           priceUsdcSmallest: "12000000",
-          category: "domains",
+          categoryFamily: "domains-web",
+          serviceType: "domain-management",
         },
       ],
     });
@@ -1072,7 +1092,8 @@ describe("public v1 — /buyers/:agentId", () => {
           tokenId: 1n,
           name: "Acme Domains",
           priceUsdcSmallest: "10000000",
-          category: "domains",
+          categoryFamily: "domains-web",
+          serviceType: "domain-management",
           skills: [
             {
               id: "register-domain",
@@ -1087,7 +1108,8 @@ describe("public v1 — /buyers/:agentId", () => {
           tokenId: 2n,
           name: "Other Provider",
           priceUsdcSmallest: "5000000",
-          category: "compute",
+          categoryFamily: "compute-ai",
+          serviceType: "compute-ai-other",
         },
       ],
     });
@@ -1295,7 +1317,8 @@ describe("public v1 — /buyers (leaderboard)", () => {
           tokenId: 1n,
           name: "Acme Domains",
           priceUsdcSmallest: "10000000",
-          category: "domains",
+          categoryFamily: "domains-web",
+          serviceType: "domain-management",
         },
       ],
     });

@@ -201,7 +201,8 @@ describe("bazaar rail (/x402/services)", () => {
         {
           tokenId: 1n,
           priceUsdcSmallest: "1000000",
-          category: "domains",
+          categoryFamily: "domains-web",
+          serviceType: "domain-management",
           name: "TestRegistrar",
           skills: [
             {
@@ -234,7 +235,8 @@ describe("bazaar rail (/x402/services)", () => {
           // live-pricing floor marker, not a price).
           tokenId: 2n,
           priceUsdcSmallest: "0",
-          category: "domains",
+          categoryFamily: "domains-web",
+          serviceType: "domain-management",
           name: "LiveQuoteRegistrar",
           skills: [{ id: "live-priced" }],
         },
@@ -511,7 +513,8 @@ describe("bazaar rail (/x402/services)", () => {
         {
           tokenId: 1n,
           priceUsdcSmallest: "1000000",
-          category: "domains",
+          categoryFamily: "domains-web",
+          serviceType: "domain-management",
           name: "TestRegistrar",
           skills: [
             {

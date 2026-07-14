@@ -4,6 +4,7 @@ import {
 } from "../chain/reader.js";
 import type { CachedProvider, OnChainProvider, ProviderCard } from "../types.js";
 import { extractCardServiceSlug } from "./format.js";
+import { assertValidServiceTaxonomy } from "./taxonomyValidation.js";
 import {
   readBoundedJson,
   safeFetch,
@@ -312,6 +313,7 @@ export class DiscoveryCache {
         for (const entry of a2aEntries) {
           try {
             const agentCard = await this.fetchJson(entry.endpoint);
+            assertValidServiceTaxonomy(agentCard);
             cards.push({
               endpoint: entry.endpoint,
               serviceSlug: extractCardServiceSlug(agentCard),
@@ -340,9 +342,10 @@ export class DiscoveryCache {
             errors.length > 0 ? `partial card fetch: ${errors.join("; ")}` : null,
         };
       }
-      // No A2A endpoint — the registration file itself has no Agent Card to
-      // serve. Return the registration doc so downstream callers at least
-      // see the ERC-8004 metadata.
+      // A registration document without an A2A entry is admitted only if it
+      // is itself a complete marketplace Agent Card. Taxonomy validation
+      // rejects ordinary registration metadata before it reaches the cache.
+      assertValidServiceTaxonomy(doc);
       return {
         cards: [
           {
@@ -361,6 +364,7 @@ export class DiscoveryCache {
 
     // Flat Agent Card (pre-ERC-8004 layout). No registration-level identity
     // is available in this shape.
+    assertValidServiceTaxonomy(doc);
     return {
       cards: [
         {

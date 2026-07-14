@@ -5,6 +5,10 @@ import { keccak256, toBytes } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { canonicalJsonStringify, computeRequestHash } from "../../src/auth/envelope.js";
 import { DASKI_A2A_EXTENSION_URI } from "../../src/config.js";
+import type {
+  CategoryFamily,
+  ServiceType,
+} from "../../src/serviceTaxonomy.js";
 import {
   PROVIDER_QUOTE_VERSION,
   type ProviderQuoteCommitment,
@@ -485,7 +489,9 @@ export interface BuildAgentCardOpts {
   name: string;
   a2aUrl: string;
   priceUsdcSmallest: string;
-  category: string;
+  categoryFamily: CategoryFamily;
+  serviceType: ServiceType;
+  jurisdictions?: string[];
   description?: string;
   registryAddress: `0x${string}`;
   paymentRouterAddress: `0x${string}`;
@@ -510,7 +516,20 @@ export function buildAgentCard(
     name: o.name,
     description: o.description ?? `${o.name} provider`,
     url: o.a2aUrl,
-    skills: o.skills ?? [],
+    skills:
+      o.skills ??
+      [
+        {
+          id: "default-service",
+          name: "Default Service",
+          description: "Default service skill",
+          metadata: {
+            [DASKI_A2A_EXTENSION_URI]: {
+              fulfillmentMode: "automated",
+            },
+          },
+        },
+      ],
   };
   if (!o.skipExtension) {
     card.extensions = {
@@ -527,7 +546,9 @@ export function buildAgentCard(
           erc8004TokenId: o.erc8004TokenId,
           chainId: o.chainId,
         },
-        category: o.category,
+        categoryFamily: o.categoryFamily,
+        serviceType: o.serviceType,
+        jurisdictions: o.jurisdictions ?? ["global"],
         serviceDescription: o.description ?? `${o.name} description`,
         serviceLifecycle: o.serviceLifecycle ?? "one-shot",
         turnaroundEstimate: o.turnaround ?? "PT10M",

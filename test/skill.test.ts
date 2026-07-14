@@ -7,7 +7,13 @@ describe("hosted SKILL.md", () => {
   beforeEach(async () => {
     gateway = await startTestGateway({
       providers: [
-        { tokenId: 2n, name: "p", priceUsdcSmallest: "1000000", category: "x" },
+        {
+          tokenId: 2n,
+          name: "p",
+          priceUsdcSmallest: "1000000",
+          categoryFamily: "other",
+          serviceType: "other",
+        },
       ],
     });
   });

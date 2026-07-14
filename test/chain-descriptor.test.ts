@@ -7,7 +7,13 @@ describe("GET /.well-known/daski-chain.json", () => {
   beforeEach(async () => {
     gateway = await startTestGateway({
       providers: [
-        { tokenId: 2n, name: "p", priceUsdcSmallest: "1000000", category: "x" },
+        {
+          tokenId: 2n,
+          name: "p",
+          priceUsdcSmallest: "1000000",
+          categoryFamily: "other",
+          serviceType: "other",
+        },
       ],
     });
   });
@@ -57,7 +63,13 @@ describe("GET /.well-known/daski-chain.json", () => {
     await gateway.close();
     gateway = await startTestGateway({
       providers: [
-        { tokenId: 2n, name: "p", priceUsdcSmallest: "1000000", category: "x" },
+        {
+          tokenId: 2n,
+          name: "p",
+          priceUsdcSmallest: "1000000",
+          categoryFamily: "other",
+          serviceType: "other",
+        },
       ],
       configOverrides: {
         permitAdapterAddress: "0x000000000000000000000000000000000000b001",

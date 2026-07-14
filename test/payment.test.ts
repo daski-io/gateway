@@ -19,7 +19,8 @@ describe("payment", () => {
           erc8004TokenId: 102n,
           name: "Daski Domain Registration",
           priceUsdcSmallest: "15000000",
-          category: "domain-registration",
+          categoryFamily: "domains-web",
+          serviceType: "domain-management",
         },
       ],
     });
@@ -114,7 +115,8 @@ describe("payment", () => {
       erc8004TokenId: 109n,
       name: "No extension",
       priceUsdcSmallest: "0",
-      category: "whatever",
+      categoryFamily: "other",
+      serviceType: "other",
       skipExtension: true,
     });
     await gateway.refresh();
@@ -534,7 +536,8 @@ describe("payment", () => {
       erc8004TokenId: 142n,
       name: "Three-layer test provider",
       priceUsdcSmallest: "15000000",
-      category: "domain-registration",
+      categoryFamily: "domains-web",
+      serviceType: "domain-management",
       skills: [
         {
           id: "register-domain",
@@ -592,7 +595,8 @@ describe("payment", () => {
       erc8004TokenId: 143n,
       name: "Legacy single-skill provider",
       priceUsdcSmallest: "15000000",
-      category: "domain-registration",
+      categoryFamily: "domains-web",
+      serviceType: "domain-management",
       skills: [
         {
           id: "register-domain",
