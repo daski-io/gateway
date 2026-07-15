@@ -47,7 +47,7 @@ export interface MockTaskState {
     parts: Array<{
       type: string;
       text?: string;
-      file?: { url: string; mimeType?: string };
+      file?: { url?: string; bytes?: string; name?: string; mimeType?: string };
       data?: unknown;
     }>;
   }>;

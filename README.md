@@ -14,8 +14,9 @@ typed-data so any signer (Coinbase AgentKit, CDP Wallet MCP, viem, MetaMask,
 
 - **MCP server** at `/mcp` — `daski_search_services`, `daski_buy_service`
   (orchestrator), `daski_submit_task`, `daski_get_task_status`,
-  `daski_confirm_delivery` (all public); `daski_register_agent`,
-  `daski_purchase`, `daski_settle_payment` (advanced). Pre-refactor names
+  `daski_fetch_artifact`, `daski_confirm_delivery` (all public);
+  `daski_register_agent`, `daski_purchase`, `daski_settle_payment` (advanced).
+  Pre-refactor names
   (`search_services`, `daski_prepare_confirm`, etc.) remain callable for a
   one-release-cycle grace period as deprecated aliases. Two-call patterns
   collapse the old "prepare → submit" pairs into a single tool whose first

@@ -69,6 +69,7 @@ import {
   guardProviderUrl,
   providerErrorFromFailure,
 } from "./a2a.js";
+import { registerArtifactTool } from "./artifact.js";
 import { MCP_LEGAL_INSTRUCTIONS } from "../legal/purchase.js";
 
 // JSON response cap on provider A2A calls. Real responses are <50 KB; 1 MB
@@ -169,7 +170,8 @@ const SERVER_INSTRUCTIONS = [
   "  2. daski_buy_service        — pay (auto-registers fresh wallets; pass `name` to pick your display name)",
   "  3. daski_submit_task        — dispatch the work (or for free skills, call directly)",
   "  4. daski_get_task_status    — poll until 'completed' or 'failed'",
-  "  5. daski_confirm_delivery   — leave an on-chain attestation (optional)",
+  "  5. daski_fetch_artifact     — retrieve bytes behind a gated artifact URL",
+  "  6. daski_confirm_delivery   — leave an on-chain attestation (optional)",
   "",
   "Other tools (daski_register_agent, daski_purchase, daski_settle_payment)",
   "are advanced/manual paths. Use them only when daski_buy_service doesn't fit.",
@@ -346,6 +348,11 @@ export async function createMcpServer(
   const a2aTimeoutMs = deps.a2aTimeoutMs ?? 10_000;
 
   function registerTools(server: McpServer) {
+    registerArtifactTool(server, {
+      fetch: a2aFetch,
+      timeoutMs: a2aTimeoutMs,
+    });
+
     // ── Discovery ────────────────────────────────────────────────────
 
     const SEARCH_SERVICES_INPUT_SCHEMA = z
@@ -1687,6 +1694,87 @@ export async function createMcpServer(
           ("paymentRequired" in cachedSkillMeta ||
             "requiresAssetOwnership" in cachedSkillMeta ||
             "requiresCapability" in cachedSkillMeta);
+        let paidChallenge: StoredChallenge | null = null;
+
+        // A paid envelope binds paymentId and serviceArgs, while the paid-path
+        // routing fields live alongside it. Recover omitted routing fields on
+        // a signed retry from the gateway's settled challenge so the provider
+        // never receives a request that can only fail as "not paid path".
+        if (
+          !args.taskId &&
+          args.envelopeAuth &&
+          cachedSkillMeta?.paymentRequired === true &&
+          (!args.serviceRef || !args.transactionHash)
+        ) {
+          if (!DEC_POSITIVE.test(args.paymentId)) {
+            return errorJson({
+              code: "PAYMENT_ID_INVALID",
+              message:
+                "A paid signed retry needs the positive decimal paymentId " +
+                "returned by settlement. No task was dispatched.",
+            });
+          }
+          try {
+            paidChallenge = await deps.queries.getChallengeByPaymentId(
+              BigInt(args.paymentId),
+            );
+          } catch {
+            return errorJson({
+              code: "QUOTE_LOOKUP_FAILED",
+              message:
+                "The gateway could not restore serviceRef and transactionHash " +
+                "from this settled payment. No task was dispatched; re-add " +
+                "both fields from daski_settle_payment and resend the same " +
+                "signed retry — do not re-sign.",
+              recoverable: true,
+              next_action:
+                "Re-call with the same envelopeAuth/messageId plus the original " +
+                "serviceRef and transactionHash.",
+            });
+          }
+          if (
+            !paidChallenge ||
+            paidChallenge.status !== "paid" ||
+            paidChallenge.paymentId === null ||
+            paidChallenge.transactionHash === null
+          ) {
+            return errorJson({
+              code: "PAID_PATH_CREDENTIALS_NOT_FOUND",
+              message:
+                "No settled gateway payment matches this paymentId, so " +
+                "serviceRef and transactionHash could not be restored. No " +
+                "task was dispatched; re-add both settlement fields and " +
+                "resend the same signed retry — do not re-sign.",
+              recoverable: true,
+              next_action:
+                "Re-call with the same envelopeAuth/messageId plus the original " +
+                "serviceRef and transactionHash.",
+            });
+          }
+          const restoredBindingMismatch =
+            paidChallenge.skillId !== args.skillId ||
+            paidChallenge.providerA2AUrl !== args.providerA2AUrl ||
+            paidChallenge.buyerTokenId.toString() !==
+              args.envelopeAuth.authorization.buyerTokenId ||
+            (args.serviceRef !== undefined &&
+              paidChallenge.serviceRef.toLowerCase() !==
+                args.serviceRef.toLowerCase()) ||
+            (args.transactionHash !== undefined &&
+              paidChallenge.transactionHash.toLowerCase() !==
+                args.transactionHash.toLowerCase());
+          if (restoredBindingMismatch) {
+            return errorJson({
+              code: "PAYMENT_BINDING_MISMATCH",
+              message:
+                "The signed retry conflicts with the settled payment's " +
+                "serviceRef, transactionHash, skill, provider, or buyer. No " +
+                "task was dispatched.",
+            });
+          }
+          args.serviceRef = paidChallenge.serviceRef;
+          args.transactionHash = paidChallenge.transactionHash;
+        }
+
         const requiresEnvelopeAuth = args.taskId
           ? false
           : args.serviceRef !== undefined && args.transactionHash !== undefined
@@ -1697,7 +1785,6 @@ export async function createMcpServer(
                 cachedSkillMeta.requiresCapability === true
               : args.paymentId !== "0" && args.paymentId !== "";
 
-        let paidChallenge: StoredChallenge | null = null;
         if (args.serviceRef && !args.taskId) {
           if (!/^0x[0-9a-fA-F]{64}$/.test(args.serviceRef)) {
             return errorJson({
@@ -1705,19 +1792,21 @@ export async function createMcpServer(
               message: "serviceRef must be a 0x-prefixed 32-byte hex value.",
             });
           }
-          try {
-            paidChallenge = await deps.queries.getChallengeByRef(
-              args.serviceRef.toLowerCase() as Hex,
-            );
-          } catch {
-            return errorJson({
-              code: "QUOTE_LOOKUP_FAILED",
-              message:
-                "The gateway could not load the settled quote credentials. " +
-                "No task was dispatched; retry this call.",
-              recoverable: true,
-              next_action: "Retry daski_submit_task with the same arguments.",
-            });
+          if (!paidChallenge) {
+            try {
+              paidChallenge = await deps.queries.getChallengeByRef(
+                args.serviceRef.toLowerCase() as Hex,
+              );
+            } catch {
+              return errorJson({
+                code: "QUOTE_LOOKUP_FAILED",
+                message:
+                  "The gateway could not load the settled quote credentials. " +
+                  "No task was dispatched; retry this call.",
+                recoverable: true,
+                next_action: "Retry daski_submit_task with the same arguments.",
+              });
+            }
           }
           if (!paidChallenge) {
             return errorJson({
@@ -1874,8 +1963,10 @@ export async function createMcpServer(
             eip712TypedData: envelope.eip712TypedData,
             hint:
               "Sign eip712TypedData with the buyer agent wallet, then " +
-              "call this tool again with envelopeAuth: { signature, " +
-              "authorization } and the SAME messageId.",
+              "make the second call as this first call's EXACT arguments " +
+              "plus envelopeAuth: { signature, authorization } and the SAME " +
+              "messageId — remove nothing, including serviceRef and " +
+              "transactionHash for a paid skill.",
           });
         }
 
@@ -2080,7 +2171,8 @@ export async function createMcpServer(
               "daski_submit_task again with capability: { signature, " +
               "authorization }, envelopeAuth from THIS challenge, " +
               "messageId set to THIS challenge's messageId, the same " +
-              "serviceArgs and paymentId, and the returned contextId.",
+              "first-call arguments (including serviceRef and " +
+              "transactionHash for paid skills), and the returned contextId.",
           };
         }
         return json(flattened);
@@ -2107,7 +2199,7 @@ export async function createMcpServer(
           "Inputs:",
           "- Open free skill: `skillId`, `providerA2AUrl`, `chainId`, `paymentId: \"0\"`, `serviceArgs`.",
           "- Gated skill (paid or free), first call (no signature): `skillId`, `providerA2AUrl`, `chainId`, `paymentId`, `buyerTokenId` (or `walletAddress`), `serviceArgs`; paid skills additionally `serviceRef` + `transactionHash`. Returns the envelope-auth typed-data to sign.",
-          "- Gated skill, signed retry: the SAME inputs (INCLUDING `serviceRef` + `transactionHash` for paid skills — do NOT drop them on the retry) plus `envelopeAuth: { signature, authorization }` and the matching `messageId`. Omitting serviceRef/transactionHash on a paid skill returns PROVIDER_ERROR 'must be called through the paid path'.",
+          "- Gated skill, signed retry: second call = the first call's EXACT arguments + `envelopeAuth: { signature, authorization }` + the matching `messageId`, NOTHING REMOVED. Paid retries must keep `serviceRef` + `transactionHash`. The gateway restores accidentally omitted values when it can verify the settled payment; if it cannot, re-add the original two fields and resend the SAME signed retry — do not re-sign.",
           "- Task input (answering `input-required` on an existing task): `skillId`, `providerA2AUrl`, `chainId`, `paymentId`, `taskId`, `serviceArgs` — the FULL corrected payload, not a delta (providers persist requests redacted, so a delta can't be merged; the task's status message says exactly which fields were rejected). NO serviceRef/transactionHash/envelopeAuth. The first call returns a PROVIDER_ERROR with `details.data.capabilityChallenge` (ready-to-sign, action=\"input\"): sign its `eip712TypedData` with the buyer's agent wallet, then re-call the same inputs plus `capability: { signature, authorization }` (echo `capabilityChallenge.authorization` verbatim).",
           "",
           "Returns:",
@@ -2225,7 +2317,7 @@ export async function createMcpServer(
           "- `state === 'completed'`: optionally `daski_confirm_delivery`.",
           "- `state === 'working' | 'submitted'`: poll again after a short delay (5–10 seconds for fast skills, 30+ for slow ones). A task can sit in `working` longer when the provider holds it for human review — keep polling patiently.",
           "- `state === 'input-required'`: the task is asking for corrected/additional input — the status message lists exactly what was rejected. Call `daski_submit_task` with `taskId` set to THIS task's id and the corrected `serviceArgs` (resend the FULL payload, not a delta — providers persist requests redacted and cannot merge partials). Expect one CAPABILITY_REQUIRED round-trip: sign the returned `capabilityChallenge.eip712TypedData` (action=\"input\") with the buyer wallet and re-call with `capability`.",
-          "- `PROVIDER_ERROR` with `rpcCode: -32107` (\"Capability required\"): the provider gates task reads behind a per-task signature. This is NOT transient — the same poll fails identically. The error's `details.data.capabilityChallenge` carries ready-to-sign `eip712TypedData`: sign it with the buyer's agent wallet, then re-call this tool with `capability: { signature, authorization }` where `authorization` echoes `capabilityChallenge.authorization` verbatim.",
+          "- `PROVIDER_ERROR` with `rpcCode: -32107` (\"Capability required\"): every gated poll must include a TaskAccessAuthorization. This is NOT transient — the same unsigned poll fails identically. Sign `details.data.capabilityChallenge.eip712TypedData`, then re-call with `capability: { signature, authorization }`, echoing the authorization verbatim. Keep passing that signed capability on later polls and reuse it until `authorization.expiry`; omitting it triggers a fresh challenge and needless signature.",
         ].join("\n"),
         inputSchema: {
           providerA2AUrl: z.string(),
@@ -2344,13 +2436,23 @@ export async function createMcpServer(
         for (const a of result.artifacts ?? []) {
           for (const p of a.parts ?? []) {
             const k = partKind(p);
-            if (k === "file" && p.file?.url) {
-              artifacts.push({
-                type: "file",
-                name: a.name ?? "(unnamed)",
-                url: p.file.url,
-                mimeType: p.file.mimeType,
-              });
+            if (k === "file" && p.file) {
+              if (typeof p.file.url === "string") {
+                artifacts.push({
+                  type: "file",
+                  name: a.name ?? p.file.name ?? "(unnamed)",
+                  url: p.file.url,
+                  mimeType: p.file.mimeType,
+                });
+              } else if (typeof p.file.bytes === "string") {
+                artifacts.push({
+                  type: "file",
+                  name: a.name ?? p.file.name ?? "(unnamed)",
+                  bytes: p.file.bytes,
+                  encoding: "base64",
+                  mimeType: p.file.mimeType,
+                });
+              }
             } else if (k === "data" && p.data != null) {
               artifacts.push({
                 type: "data",
@@ -3684,8 +3786,9 @@ export async function createMcpServer(
           "- You are submitting a buyer attestation — use `daski_confirm_delivery`.",
           "",
           "Inputs:",
-          "- First call (no signature): `providerTokenId`, `skillId`, `serviceArgs` (per the skill's `requiredFields`), `walletAddress`; optional `name` — on a fresh wallet this becomes the display name of the agentId minted with the purchase.",
+          "- First call (no signature): `providerTokenId`, `skillId`, `serviceArgs` (per the skill's `requiredFields`), `walletAddress`; optional `name` — on a fresh wallet this becomes the permanent display name of the agentId minted with the purchase. Decide it BEFORE signing either typed-data block. Renames are unsupported; omit `name` on later purchases from an already-registered wallet.",
           "- Second call (signed retry): the same inputs plus `paymentPayload`, `paymentRequirements`, and (for fresh wallets) `registration`.",
+          "- Entity formation: `managementType` and the matching `members` / `managers` arrays are TOP-LEVEL `serviceArgs` keys. There is NO `officials` or `officialsByClassification` wrapper; nesting them silently discards the fields and the quote rejects them as missing. Flat-or-nested normalization applies ONLY to contact roles (`registrant` / `admin` / `tech` / `billing`).",
           "",
           "Returns:",
           "- First call: `paymentRequirements` (contains `extra.daski.eip712TypedData` to sign) plus an optional `registrationPrep` block (sign this too on first-ever purchase from a fresh wallet) and a `plan[]` outlining the remaining tool calls.",
@@ -3739,10 +3842,13 @@ export async function createMcpServer(
             .describe(
               "Skill-specific arguments. Per-skill required fields are " +
                 "advertised in daski_search_services under " +
-                "skills[].requiredFields. Contact fields (firstName, " +
+                "skills[].requiredFields. For entity formation, " +
+                "`managementType` and `members`/`managers` MUST be top-level; " +
+                "never put them under `officials` or " +
+                "`officialsByClassification`. Contact fields ONLY (firstName, " +
                 "lastName, email, …) accept either flat keys or a nested " +
                 "object under `registrant`/`admin`/`tech`/`billing` — the " +
-                "gateway normalizes both shapes. " +
+                "gateway normalizes both contact shapes. " +
                 "Phone numbers (e.g. `registrantPhone`) MUST be E.164 with " +
                 "no separators — pattern `^\\+[1-9]\\d{1,14}$` (e.g. " +
                 "`+15555550100`, NOT `+1.555.555.0100` or `(555) 555-0100`). " +

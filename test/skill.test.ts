@@ -36,6 +36,10 @@ describe("hosted SKILL.md", () => {
     expect(text).toMatch(/eip712TypedData/);
     expect(text).toMatch(/daski_buy_service/);
     expect(text).toMatch(/daski_settle_payment/);
+    expect(text).toMatch(/daski_fetch_artifact/);
+    expect(text).toContain('rpcCode `-32110`');
+    expect(text).toContain("reuse it until its");
+    expect(text).toContain("second call =");
   });
 
   it("also serves at /SKILL.md and /.well-known/skill.md", async () => {
