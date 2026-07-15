@@ -4,7 +4,15 @@ import type {
   DaskiMarketplaceExtension,
   ProviderCard,
 } from "../types.js";
+import {
+  jurisdictionsOverlap,
+  type CategoryFamily,
+  type FulfillmentMode,
+  type ServiceType,
+} from "../serviceTaxonomy.js";
 import { sanitizeForLlmReflection } from "../util/sanitize.js";
+import { buildServiceLegal } from "../legal/purchase.js";
+import type { MarketplaceLegalUrls } from "../legal/types.js";
 
 // Attempts to extract the daski marketplace extension from an Agent Card.
 // Returns null if the extension is missing or malformed.
@@ -67,6 +75,13 @@ export function cardsOf(provider: CachedProvider): ProviderCard[] {
       agentCard: provider.agentCard,
     },
   ];
+}
+
+export function hasMarketplaceService(provider: CachedProvider): boolean {
+  if (!provider.providerLegal) return false;
+  return cardsOf(provider).some(
+    (card) => extractMarketplaceExtension(card.agentCard) !== null,
+  );
 }
 
 /**
@@ -145,72 +160,52 @@ export function findCardForSkill(
 }
 
 export interface DiscoverFilters {
-  category?: string;
+  categoryFamily?: CategoryFamily;
+  serviceType?: ServiceType;
+  jurisdiction?: string;
+  fulfillmentMode?: FulfillmentMode;
   maxPrice?: number; // Human-readable USDC (e.g. 100 for 100 USDC)
-}
-
-// §1.6 of daski-mcp-gateway-fix-brief.md — agents guess category strings
-// from user intent ("domain-registration", "register a domain", …) but
-// providers register under one of the canonical buckets. Map common
-// alternates → canonical so the filter doesn't zero out results that
-// the agent obviously meant to include. New aliases extend cheaply.
-const CATEGORY_ALIASES: Record<string, string> = {
-  "domain-registration": "infrastructure",
-  domains: "infrastructure",
-  dns: "infrastructure",
-  hosting: "infrastructure",
-  "llc-formation": "legal",
-  "company-formation": "legal",
-  llc: "legal",
-  ein: "legal",
-  email: "communications",
-  sms: "communications",
-  messaging: "communications",
-  banking: "finance",
-  cards: "finance",
-  payments: "finance",
-  filings: "compliance",
-  tax: "compliance",
-};
-
-/** Map a buyer-supplied category string to its canonical bucket. The
- *  canonical bucket falls through unchanged. Comparison is case- and
- *  whitespace-insensitive. */
-export function canonicalizeCategory(input: string): string {
-  const norm = input.trim().toLowerCase();
-  return CATEGORY_ALIASES[norm] ?? input;
 }
 
 export function applyDiscoverFilters(
   providers: CachedProvider[],
   filters: DiscoverFilters,
 ): CachedProvider[] {
-  if (!filters.category && filters.maxPrice === undefined) {
+  if (
+    !filters.categoryFamily &&
+    !filters.serviceType &&
+    !filters.jurisdiction &&
+    !filters.fulfillmentMode &&
+    filters.maxPrice === undefined
+  ) {
     return providers;
   }
-  // §1.6 — match accepts either the buyer-supplied label OR its
-  // canonical bucket. Both sides of the alias work so we don't break
-  // providers that still register under the colloquial name (e.g.
-  // `domain-registration`) before adopting the canonical enum.
-  const acceptedCategories = filters.category
-    ? new Set([filters.category, canonicalizeCategory(filters.category)])
-    : null;
 
   const cardMatches = (card: ProviderCard): boolean => {
     const ext = extractMarketplaceExtension(card.agentCard);
     if (!ext) return false; // Cards without the extension are excluded from filtered queries
-    if (acceptedCategories) {
-      const providerCategory =
-        typeof ext.category === "string" ? ext.category : "";
-      // Canonicalize BOTH sides: a provider registering under the
-      // colloquial label ("email") must match a buyer filtering by the
-      // canonical bucket ("communications") and vice versa.
-      if (
-        !acceptedCategories.has(providerCategory) &&
-        !acceptedCategories.has(canonicalizeCategory(providerCategory))
-      ) {
-        return false;
-      }
+    if (
+      filters.categoryFamily &&
+      ext.categoryFamily !== filters.categoryFamily
+    ) {
+      return false;
+    }
+    if (filters.serviceType && ext.serviceType !== filters.serviceType) {
+      return false;
+    }
+    if (
+      filters.jurisdiction &&
+      !jurisdictionsOverlap(ext.jurisdictions, filters.jurisdiction)
+    ) {
+      return false;
+    }
+    if (
+      filters.fulfillmentMode &&
+      !extractSkills(card.agentCard).some(
+        (skill) => skill.fulfillmentMode === filters.fulfillmentMode,
+      )
+    ) {
+      return false;
     }
     if (filters.maxPrice !== undefined) {
       // Live-priced services advertise no fixed baseAmount — exclude
@@ -220,7 +215,9 @@ export function applyDiscoverFilters(
       const baseAmount = ext.pricing?.baseAmount;
       if (baseAmount === undefined || baseAmount === null) return false;
       const priceUsdc = Number(baseAmount) / 1_000_000;
-      if (!Number.isFinite(priceUsdc) || priceUsdc > filters.maxPrice) return false;
+      if (!Number.isFinite(priceUsdc) || priceUsdc > filters.maxPrice) {
+        return false;
+      }
     }
     return true;
   };
@@ -347,6 +344,7 @@ function extractSkills(
           ? (Number(baseAmount) / 1_000_000).toFixed(2)
           : undefined,
       requiredFields: meta.requiredFields,
+      fulfillmentMode: meta.fulfillmentMode ?? ext?.fulfillmentMode,
       // §3.2 of daski-mcp-gateway-fix-brief.md — surface the manifest's
       // optionalFields and the two-call callPhases block so agents can
       // schema-validate before paying for a round-trip. The provider
@@ -378,11 +376,12 @@ function extractSkills(
  */
 export function formatForSkillDiscover(
   providers: CachedProvider[],
+  marketplace: MarketplaceLegalUrls,
 ): Array<Record<string, unknown>> {
   const out: Array<Record<string, unknown>> = [];
   for (const provider of providers) {
     for (const card of cardsOf(provider)) {
-      const entry = formatCardForSkillDiscover(provider, card);
+      const entry = formatCardForSkillDiscover(provider, card, marketplace);
       if (entry) out.push(entry);
     }
   }
@@ -398,9 +397,10 @@ export function formatForSkillDiscover(
 export function formatCardForSkillDiscover(
   provider: CachedProvider,
   card: ProviderCard,
+  marketplace: MarketplaceLegalUrls,
 ): Record<string, unknown> | null {
     const ext = extractMarketplaceExtension(card.agentCard);
-    if (!ext) return null;
+    if (!ext || !provider.providerLegal) return null;
     const name = extractAgentCardName(card.agentCard);
     const providerA2AUrl = extractAgentCardUrl(card.agentCard);
     const skills = extractSkills(card.agentCard);
@@ -435,7 +435,9 @@ export function formatCardForSkillDiscover(
       // fields below pass through unchanged.
       name: sanitizeForLlmReflection(name),
       serviceDescription: sanitizeForLlmReflection(ext.serviceDescription),
-      category: sanitizeForLlmReflection(ext.category),
+      categoryFamily: ext.categoryFamily,
+      serviceType: ext.serviceType,
+      jurisdictions: ext.jurisdictions,
       currency: pricing.currency,
       variablePricing,
       billingModel: pricing.billingModel,
@@ -447,6 +449,7 @@ export function formatCardForSkillDiscover(
       // directly without a follow-up fetch.
       agentCardUrl: provider.agentURI,
       providerA2AUrl,
+      legal: buildServiceLegal(marketplace, provider.providerLegal),
       // §1.7 of daski-mcp-gateway-fix-brief.md — skill descriptions
       // (now ~1.5–2.5KB each after the 6-element-template rewrite) were
       // getting clipped at the default 1KB sanitizer cap, hiding the
@@ -464,6 +467,31 @@ export function formatCardForSkillDiscover(
     return entry;
 }
 
+function withCanonicalLegal(
+  agentCard: Record<string, unknown>,
+  legal: ReturnType<typeof buildServiceLegal>,
+): Record<string, unknown> {
+  const extensions =
+    agentCard.extensions && typeof agentCard.extensions === "object"
+      ? (agentCard.extensions as Record<string, unknown>)
+      : {};
+  const daskiExtension =
+    extensions[DASKI_A2A_EXTENSION_URI] &&
+    typeof extensions[DASKI_A2A_EXTENSION_URI] === "object"
+      ? (extensions[DASKI_A2A_EXTENSION_URI] as Record<string, unknown>)
+      : {};
+  return {
+    ...agentCard,
+    extensions: {
+      ...extensions,
+      [DASKI_A2A_EXTENSION_URI]: {
+        ...daskiExtension,
+        legal,
+      },
+    },
+  };
+}
+
 /**
  * Serializes a cached provider for the REST /discover response. BigInts
  * become strings, dates become ISO, agent card is returned as-is.
@@ -472,17 +500,25 @@ export function formatCardForSkillDiscover(
  */
 export function formatForRestDiscover(
   provider: CachedProvider,
+  marketplace: MarketplaceLegalUrls,
 ): Record<string, unknown> {
+  if (!provider.providerLegal) {
+    throw new Error("provider legal metadata is required for discovery");
+  }
+  const legal = buildServiceLegal(marketplace, provider.providerLegal);
+  const primaryAgentCard = withCanonicalLegal(provider.agentCard, legal);
   return {
     tokenId: provider.agentId.toString(),
     agentId: provider.agentId.toString(),
     walletAddress: provider.walletAddress,
     agentURI: provider.agentURI,
-    agentCard: provider.agentCard,
+    agentCard: primaryAgentCard,
+    legal,
     cards: cardsOf(provider).map((c) => ({
       endpoint: c.endpoint,
       serviceSlug: c.serviceSlug,
-      agentCard: c.agentCard,
+      agentCard: withCanonicalLegal(c.agentCard, legal),
+      legal,
     })),
     lastFetched: provider.lastFetched.toISOString(),
     fetchError: provider.fetchError,

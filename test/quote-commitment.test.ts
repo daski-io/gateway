@@ -72,7 +72,8 @@ describe("provider quote-commitment integration", () => {
           tokenId: 2n,
           name: "Domain Reg",
           priceUsdcSmallest: PRICE.toString(),
-          category: "domain-registration",
+          categoryFamily: "domains-web",
+          serviceType: "domain-management",
           skills: [
             {
               id: "register-domain",

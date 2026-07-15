@@ -780,6 +780,7 @@ async function loadEnrichmentFor(
  */
 function buildServiceNameResolver(
   cache: DiscoveryCache,
+  config: Config,
 ): (
   providerAgentId: bigint,
   serviceId: Hex | null,
@@ -789,7 +790,7 @@ function buildServiceNameResolver(
   const bySlug = new Map<string, string>();
   for (const provider of cache.getAll()) {
     const aid = provider.agentId.toString();
-    for (const svc of formatServicesForPublic(provider)) {
+    for (const svc of formatServicesForPublic(provider, config)) {
       if (svc.serviceId) byServiceId.set(svc.serviceId.toLowerCase(), svc.name);
       if (svc.serviceSlug) bySlug.set(`${aid}:${svc.serviceSlug}`, svc.name);
     }
@@ -913,7 +914,7 @@ export function createPublicRouter(deps: PublicRouterDeps): Router {
     // serviceId, so the site renders them as distinct offerings.
     const services: PublicService[] = [];
     for (const provider of cache.getAll()) {
-      services.push(...formatServicesForPublic(provider));
+      services.push(...formatServicesForPublic(provider, config));
     }
     res.json({
       services,
@@ -943,7 +944,11 @@ export function createPublicRouter(deps: PublicRouterDeps): Router {
         typeof req.query.service === "string" && req.query.service.length > 0
           ? req.query.service
           : null;
-      const formatted = formatServiceForPublic(provider, serviceSlugParam);
+      const formatted = formatServiceForPublic(
+        provider,
+        config,
+        serviceSlugParam,
+      );
       if (!formatted) {
         notFound(res, "unknown service");
         return;
@@ -1056,7 +1061,7 @@ export function createPublicRouter(deps: PublicRouterDeps): Router {
       );
     }
 
-    const resolveServiceName = buildServiceNameResolver(cache);
+    const resolveServiceName = buildServiceNameResolver(cache, config);
 
     const buyerNames = await mapWithLimit(
       rows,
@@ -1084,7 +1089,7 @@ export function createPublicRouter(deps: PublicRouterDeps): Router {
     const providers = cache.getAll();
     let serviceCount = 0;
     for (const provider of providers) {
-      serviceCount += formatServicesForPublic(provider).length;
+      serviceCount += formatServicesForPublic(provider, config).length;
     }
     res.json({
       chain: {
@@ -1166,7 +1171,7 @@ export function createPublicRouter(deps: PublicRouterDeps): Router {
         buyerProfileCache.get(agentId),
         buyerIdentityCache.get(agentId),
       ]);
-      const resolveServiceName = buildServiceNameResolver(cache);
+      const resolveServiceName = buildServiceNameResolver(cache, config);
       const recentPurchases = profile.recentPurchases.map((r) =>
         formatChainActivityRow(
           r,

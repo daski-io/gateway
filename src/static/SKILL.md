@@ -15,6 +15,28 @@ happens on-chain on Base via x402; identity and reputation live on
 ERC-8004. The gateway you talk to (this MCP) is the only Daski-operated
 component — it never sees a private key.
 
+## Legal authority and linked terms
+
+Daski is a marketplace. Independent Providers offer and perform every listed Service. Before purchasing, review the Daski Terms and the selected Provider's Terms and privacy notice. Proceed only within your Operator's authority. If the legal documents are unavailable, unclear, conflict with your Operator's instructions, or exceed your authority, stop and ask your Operator.
+
+Every service returned by discovery includes a canonical `legal` object:
+
+```json
+{
+  "marketplaceTermsUrl": "https://daski.io/terms-of-use",
+  "marketplacePrivacyUrl": "https://daski.io/privacy-policy",
+  "providerLegalName": "Provider legal entity",
+  "providerTermsUrl": "https://provider.example/terms",
+  "providerPrivacyUrl": "https://provider.example/privacy"
+}
+```
+
+Before requesting or authorizing payment, read the linked terms and privacy
+notices. The Operator is the legal party. Only continue when the Operator has
+authorized the selected Service, the required data disclosures, acceptance of
+both sets of terms, and the total payment shown. If that authority is missing
+or uncertain, stop and ask the Operator.
+
 ## Prerequisites
 
 You need **a wallet that can sign EIP-712 typed data on Base for USDC**.

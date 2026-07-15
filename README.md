@@ -25,7 +25,9 @@ typed-data so any signer (Coinbase AgentKit, CDP Wallet MCP, viem, MetaMask,
   endpoints, and read-only `/public/v1/*`.
 - **Discovery cache** — periodic refresh of provider Agent Cards from
   ERC-8004 + intent-driven semantic search via pgvector + Xenova
-  `all-MiniLM-L6-v2` embeddings.
+  `all-MiniLM-L6-v2` embeddings. Catalog admission enforces the canonical
+  service family/type, jurisdiction, and skill fulfillment metadata in
+  [`src/serviceTaxonomy.ts`](src/serviceTaxonomy.ts).
 - **Provider onboarding spec** — see [PROVIDER_ONBOARDING.md](PROVIDER_ONBOARDING.md)
   for the gateway↔provider wire contract.
 
@@ -75,12 +77,25 @@ for the full list with defaults. The most important ones:
 | `AGENT_INDEX_ADDRESS` | Daski AgentIndex proxy — verified wallet→agentId resolution + gasless registration. **Required**; changes on every contract redeploy (ships blank in `.env.example`) |
 | `REPUTATION_REGISTRY_ADDRESS` | Canonical ERC-8004 ReputationRegistry. Set it to mirror confirmed deliveries as public feedback; unset = mirror off |
 | `PUBLIC_URL` | Externally reachable URL — embedded in payment requirements and discovery responses |
+| `MARKETPLACE_TERMS_URL` | Required HTTPS URL for the Daski Terms of Use returned with every service and purchase |
+| `MARKETPLACE_PRIVACY_URL` | Required HTTPS URL for the Daski Privacy Policy returned with every service and purchase |
 | `DIRECT_ADAPTER_ADDRESS` | DirectTransferAdapter proxy. Setting it mounts the Bazaar-facing `/x402/services/:tokenId/:skillId` routes (external-facilitator rail). Unset = rail off |
 | `EXTERNAL_FACILITATOR_URL` | External x402 facilitator base URL. Defaults: x402.org (Sepolia), CDP facilitator (mainnet) |
 | `EXTERNAL_FACILITATOR_AUTH_HEADER` | Raw `Authorization` value for the external facilitator — required by CDP for mainnet settles. **Secret.** |
 
 The .env.example ships with the post-audit Base Sepolia deployment addresses
 for the Daski contracts. Replace them when redeploying.
+
+Before adding an agentId to `WHITELISTED_AGENT_IDS`, run the one-time legal
+metadata and unauthenticated-reachability check against its registration file:
+
+```bash
+npm run validate-provider-legal -- https://provider.example/.well-known/agent.json
+```
+
+This onboarding check is deliberately not part of periodic discovery refreshes;
+the gateway does not archive, compare, or continuously monitor Provider legal
+documents.
 
 ## Tests
 
@@ -136,6 +151,8 @@ any funds move.
 - `src/app.ts` — Express wiring, route registration, MCP mount
 - `src/mcp/server.ts` — MCP tool surface (`daski_search_services`, `daski_*`, deprecated aliases for one grace cycle)
 - `src/discovery/` — Agent Card cache + pgvector embedding sync
+- `src/serviceTaxonomy.ts` — the 16 service families, controlled service
+  types, jurisdiction rules, and fulfillment-mode vocabulary
 - `src/payment/` — x402 challenge / verify / settle, EAS confirmation, Bazaar-facing external-facilitator rail (`bazaar.ts`, `externalFacilitator.ts`)
 - `src/identity/` — ERC-8004 lookups + gasless registration
 - `src/chain/` — viem-backed reader for the Daski contracts (+ hand-mirrored ABIs in `abis.ts`)

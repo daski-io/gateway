@@ -23,6 +23,30 @@ deploys an identity registry of its own:
 
 The agent's `agentURI` MUST resolve to a publicly-reachable Agent Card.
 
+The provider-level ERC-8004 registration document MUST also include the
+contracting entity and stable public legal-document links:
+
+```json
+{
+  "legalName": "Provider's full contracting name",
+  "termsUrl": "https://provider.example/terms",
+  "privacyUrl": "https://provider.example/privacy"
+}
+```
+
+All three fields are required and nonempty. Both URLs must be valid HTTPS URLs
+without embedded credentials. A stable privacy-notice anchor is allowed. Before
+whitelisting, the operator MUST run the one-time unauthenticated reachability
+check; missing or invalid metadata prevents discovery, listing, and purchase:
+
+```bash
+npm run validate-provider-legal -- https://provider.example/.well-known/agent.json
+```
+
+Daski checks syntax at catalog admission and reachability at onboarding only.
+It does not legal-review, approve, interpret, copy, hash, version, archive,
+compare, or continuously monitor Provider documents.
+
 **Payee wallet is mandatory.** After minting you MUST call
 `setAgentWallet` on the canonical registry (or set a per-service
 `serviceWallet` in the Daski `ServiceRegistry`) before any payment can
@@ -35,9 +59,15 @@ wallet → agentId reverse index. Calling `claim(agentId)` on it is
 OPTIONAL for providers — only buyers need a binding there (it is how
 payments are attributed to the paying wallet).
 
-The gateway treats the on-chain whitelist as the source of truth — your
-`agentId` must be in `WHITELISTED_AGENT_IDS` on the gateway's config (or
-admitted via the gateway's admin route) before discovery picks you up.
+The gateway treats its configured whitelist as the admission gate — your
+`agentId` must be in `WHITELISTED_AGENT_IDS` before discovery picks you up.
+
+The Provider is the sole provider and contracting party for its Services. It
+controls scope, delivery, support, refunds, renewals, legal terms, and privacy
+practices; must keep its documents available and current; may place variable
+operational terms in a Service listing or final quote; and must use a secure,
+disclosed intake route for sensitive data. A Provider must not imply that Daski
+reviewed, approved, stores, interprets, or guarantees its legal documents.
 
 > Note: the buyer-side flow is different. Buyers pass an optional `name`
 > to `daski_buy_service` (which auto-registers on first purchase) or to
@@ -62,20 +92,31 @@ A2A spec §4.4. The card MUST declare:
   `{ id, name, description }`.
 - `extensions["https://daski.xyz/a2a/v1"]` — the Daski marketplace
   extension envelope. Required fields:
-  - `category` — one of the gateway's known categories (current set:
-    `infrastructure`, `hosting`, `compute`, `legal`, `email`).
+  - `categoryFamily` — exactly one approved family slug from the table below.
+  - `serviceType` — exactly one controlled type belonging to that family.
+  - `jurisdictions` — a non-empty array containing `"global"`, ISO country
+    codes such as `"US"`, or recognized ISO 3166-2 subdivision codes such as
+    `"US-DE"`.
   - `serviceDescription` — one paragraph of plain prose; the website
     renders this verbatim.
   - `serviceLifecycle` — `"asset-lifecycle"` (you produce a durable
     asset like a domain), `"one-shot"` (no follow-up after delivery),
     or `"long-running"` (multi-step task).
   - `turnaroundEstimate` — human string, e.g. `"5-10 minutes"`.
+  - `legal` — the five-field Service legal object. Provider implementations
+    publish their three Provider values, while the gateway overwrites the two
+    Daski marketplace URLs from deployment configuration before returning a
+    Service to buyers.
   - `pricing` — `{ currency, baseAmount?, model?, variable?,
     billingModel? }`. For live-priced skills omit `baseAmount` and set
     `model: { kind: "live", source: "registrar", hint: "..." }`.
   - `skills[<skillId>]` — per-skill metadata, keyed by skill id (NOT a
     nested array). Required keys:
     - `paymentRequired` (default `true`)
+    - `fulfillmentMode` — `"automated"`, `"human"`, or `"hybrid"`.
+      A service-level default may be declared on the extension and overridden
+      per skill. This describes who performs the work; it does not replace or
+      alter `serviceLifecycle`.
     - `variablePricing` (default `false`)
     - `requiredFields[]` — the structured fields the agent must pass
       under `serviceArgs`. The gateway validates these before opening
@@ -88,6 +129,56 @@ A2A spec §4.4. The card MUST declare:
       (e.g. `"domain"`); the gateway uses this to find the buyer's
       prior purchase.
     - For variable-priced skills: `pricingModel: { kind, source, hint }`.
+
+### 2.1 Service taxonomy
+
+The canonical machine-readable source is
+[`src/serviceTaxonomy.ts`](src/serviceTaxonomy.ts). The gateway validates every
+Agent Card when it enters the catalog. A card with a missing or mismatched
+family/type, invalid jurisdiction, no skills, or a skill without an effective
+fulfillment mode is unavailable to discovery, public listings, and purchase.
+The former `category` field is rejected.
+
+| Family | Definition | Currently accepted service types |
+| --- | --- | --- |
+| `business-formation` | Creation and lifecycle administration of legal entities: formation, tax-ID registration connected to formation, registered-agent service, qualification, amendments, corporate records, annual corporate filings, conversion, and dissolution. | `entity-formation`, `llc-formation`, `business-formation-other` |
+| `legal-ip` | Creation, interpretation, protection, or defense of legal rights: legal advice, contracts, trademarks, patents, copyright, licensing, policies, disputes, and legal representation. | `trademark-filing`, `legal-ip-other` |
+| `compliance` | Verification, monitoring, filing, and evidence that requirements are being met: licenses, permits, KYC/KYB, AML, sanctions screening, regulatory reporting, audits, certifications, privacy controls, and trust-and-safety services. | `compliance-other` |
+| `finance` | Financial operation and risk transfer: banking, payments, billing, accounting, bookkeeping, tax preparation and filing, treasury, custody, foreign exchange, financing, valuation, and insurance. | `finance-other` |
+| `domains-web` | Establishing and operating a public web presence: domains, DNS, certificates, website hosting, deployment, CDN, and related web infrastructure. Website and application development remains under Software Development. | `domain-management`, `domains-web-other` |
+| `communications` | Provisioning and maintaining channels through which an agent or entity communicates: email and agent mailboxes, phone numbers, SMS, messaging, and virtual or physical mail channels. Administrative processing after receipt belongs under Operations & Administration. | `agent-mailbox`, `communications-other` |
+| `compute-ai` | Computational capacity and machine-intelligence infrastructure: cloud compute, VPS and serverless capacity, GPU access, model training and inference, model hosting, and closely related runtime resources. | `compute-ai-other` |
+| `data` | Obtaining, enriching, verifying, analyzing, or researching information: search, datasets, data feeds and APIs, market or company intelligence, enrichment, analytics, forecasting, geospatial and scientific data, collection, labeling, and transcription. | `data-other` |
+| `software-dev` | Building or modifying software systems: web, mobile, and application development; APIs and integrations; agent and workflow automation; DevOps; QA and testing; and product engineering. | `software-dev-other` |
+| `design-creative` | Producing creative or experiential assets: brand identity, UX/UI, graphic design, illustration, video, audio, 3D, and other creative production. | `design-creative-other` |
+| `marketing-growth` | Creating awareness and demand: go-to-market strategy, positioning, SEO and agent/search optimization, content strategy, advertising, social media, community, PR, reputation, lifecycle marketing, and conversion optimization. | `marketing-growth-other` |
+| `sales-support` | Acquiring and serving customers: lead generation, prospecting, SDR and outreach, appointment setting, sales operations, proposals, CRM work, commerce operations, customer onboarding, support, success, and retention. | `sales-support-other` |
+| `human-talent` | Acquiring and administering people: recruiting, staffing, contractors, expert networks, employer-of-record services, payroll and benefits connected to workforce administration, HR operations, and training. A person fulfilling another service does not move that service into this family. | `human-talent-other` |
+| `operations-admin` | Running internal business processes not primarily owned by another family: virtual assistance, back-office operations, document processing, records, procurement and vendor administration, project administration, scheduling, travel, events, mailroom processing, and general operational support. | `operations-admin-other` |
+| `logistics-physical` | Moving, producing, storing, or acting on physical assets: courier and freight, warehousing, fulfillment, manufacturing, prototyping, printing, installation, maintenance, real estate and storage, and field services. | `logistics-physical-other` |
+| `other` | Services for which no existing family is defensible. This is a monitored fallback, not a permanent home for services that fit elsewhere. | `other` |
+
+Every substantive family has a controlled `<family>-other` type. A provider
+selecting any Other type must answer all six questions:
+
+1. What outcome is the buyer purchasing?
+2. What inputs are required?
+3. What deliverable or continuing capability is produced?
+4. Does the service create or manage an asset or ongoing relationship?
+5. Which existing family is closest, and why is it insufficient?
+6. What service-type name and search terms does the provider propose?
+
+Other selections are reviewed as demand signals. Daski promotes a new service
+type when multiple credible listings, provider pipeline, or repeated buyer
+searches show that it is recognizable and useful. A new family requires
+evidence of several durable service types and a distinct buyer mental model.
+
+Jurisdiction matching is hierarchical. `global` supply matches any specific
+country or subdivision request. Country-level supply such as `US` matches
+`US-WY`, and a country query includes services limited to one of its
+subdivisions. Two distinct subdivisions such as `US-CA` and `US-WY` do not
+match. A `global` query selects only services that explicitly declare
+`global`. Do not combine `global` with narrower codes in one service.
 
 Sanitization: the gateway strips control characters and BIDI overrides
 from any free-text field before reflecting it to LLM clients. Don't
@@ -215,7 +306,7 @@ contracts — and the registry lets you respond on-chain via
 
 The gateway embeds each skill on cache refresh (Xenova
 `all-MiniLM-L6-v2`, 384-dim, pgvector). The text it embeds includes
-your `name`, `serviceDescription`, `category`, plus per-skill `id`,
+your `name`, `serviceDescription`, `categoryFamily`, `serviceType`, plus per-skill `id`,
 `name`, and `description`. To rank well on intent queries:
 
 - Don't dump SEO keyword soup — the embedder rewards semantic match
@@ -239,6 +330,18 @@ refresh cycle, and in search results on the next intent query.
 If you change a skill's id you'll temporarily have two embeddings
 (old and new); the old one expires when the next refresh sees it gone.
 Don't churn skill ids unnecessarily.
+
+A failed refresh does not delist you. If your card endpoint is
+unreachable (deploy warm-up 500s, host flake), the gateway keeps
+serving your last-known-good card — annotated with `fetchError` in
+`/discover` — for up to `CACHE_MAX_STALENESS_SECONDS` (default 24 h)
+before degrading you to a card-less entry. If the gateway itself boots
+while your card is unreachable (no last-known-good to serve), it
+retries on a short exponential backoff (15 s, 30 s, …) instead of
+waiting a full refresh interval. Note that purchases still require your
+live signed `/quote`, so being listed while down never captures a
+buyer's funds — their purchase fails at the quote step with a clear
+error.
 
 ---
 

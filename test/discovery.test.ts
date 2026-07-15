@@ -13,21 +13,33 @@ describe("discovery", () => {
           erc8004TokenId: 101n,
           name: "Daski LLC Formation",
           priceUsdcSmallest: "250000000", // 250 USDC
-          category: "llc-formation",
+          categoryFamily: "business-formation",
+          serviceType: "llc-formation",
+          jurisdictions: ["US"],
+          skills: [
+            {
+              id: "form-llc",
+              metadata: { fulfillmentMode: "hybrid" },
+            },
+          ],
         },
         {
           tokenId: 2n,
           erc8004TokenId: 102n,
           name: "Daski Domain Registration",
           priceUsdcSmallest: "15000000", // 15 USDC
-          category: "domain-registration",
+          categoryFamily: "domains-web",
+          serviceType: "domain-management",
+          jurisdictions: ["global"],
         },
         {
           tokenId: 3n,
           erc8004TokenId: 103n,
           name: "Daski Website Hosting",
           priceUsdcSmallest: "10000000", // 10 USDC
-          category: "website-hosting",
+          categoryFamily: "domains-web",
+          serviceType: "domains-web-other",
+          jurisdictions: ["US"],
         },
       ],
     });
@@ -52,13 +64,47 @@ describe("discovery", () => {
     expect(llc.fetchError).toBeNull();
   });
 
-  it("filters by category", async () => {
+  it("filters by category family", async () => {
     const { status, json } = await gateway.discover({
-      category: "domain-registration",
+      categoryFamily: "domains-web",
     });
     expect(status).toBe(200);
-    expect(json.providers).toHaveLength(1);
-    expect(json.providers[0].tokenId).toBe("2");
+    expect(json.providers.map((provider: any) => provider.tokenId).sort()).toEqual([
+      "2",
+      "3",
+    ]);
+  });
+
+  it("filters by controlled service type", async () => {
+    const { status, json } = await gateway.discover({
+      serviceType: "domain-management",
+    });
+    expect(status).toBe(200);
+    expect(json.providers.map((provider: any) => provider.tokenId)).toEqual(["2"]);
+  });
+
+  it("treats global services as available in any jurisdiction", async () => {
+    const canada = await gateway.discover({ jurisdiction: "CA" });
+    expect(canada.status).toBe(200);
+    expect(canada.json.providers.map((provider: any) => provider.tokenId)).toEqual([
+      "2",
+    ]);
+
+    const wyoming = await gateway.discover({ jurisdiction: "US-WY" });
+    expect(
+      wyoming.json.providers.map((provider: any) => provider.tokenId).sort(),
+    ).toEqual(["1", "2", "3"]);
+
+    const explicitlyGlobal = await gateway.discover({ jurisdiction: "global" });
+    expect(
+      explicitlyGlobal.json.providers.map((provider: any) => provider.tokenId),
+    ).toEqual(["2"]);
+  });
+
+  it("filters by effective skill fulfillment mode", async () => {
+    const { status, json } = await gateway.discover({ fulfillmentMode: "hybrid" });
+    expect(status).toBe(200);
+    expect(json.providers.map((provider: any) => provider.tokenId)).toEqual(["1"]);
   });
 
   it("filters by maxPrice", async () => {
@@ -68,12 +114,18 @@ describe("discovery", () => {
     expect(tokens).toEqual(["2", "3"]);
   });
 
-  it("returns an empty list when filters match nothing", async () => {
-    const { status, json } = await gateway.discover({
-      category: "nope",
-    });
-    expect(status).toBe(200);
-    expect(json.providers).toEqual([]);
+  it("rejects unknown category families", async () => {
+    const res = await fetch(`${gateway.baseUrl}/discover?categoryFamily=nope`);
+    expect(res.status).toBe(400);
+    const body: any = await res.json();
+    expect(body.error.code).toBe("INVALID_FILTER");
+  });
+
+  it("rejects the removed category filter instead of broadening the query", async () => {
+    const res = await fetch(`${gateway.baseUrl}/discover?category=domains`);
+    expect(res.status).toBe(400);
+    const body: any = await res.json();
+    expect(body.error.message).toMatch(/categoryFamily/);
   });
 
   it("rejects malformed maxPrice", async () => {
@@ -148,26 +200,24 @@ describe("discovery", () => {
     expect(broken.fetchError).toBeTruthy();
   });
 
-  it("excludes providers with no marketplace extension from filtered queries", async () => {
+  it("does not admit providers with no marketplace extension", async () => {
     // Register a 4th provider WITHOUT the extension.
     gateway.registerProvider({
       tokenId: 4n,
       erc8004TokenId: 104n,
       name: "Plain",
       priceUsdcSmallest: "0",
-      category: "whatever",
+      categoryFamily: "other",
+      serviceType: "other",
       skipExtension: true,
     });
     await gateway.refresh();
 
-    // unfiltered returns it
+    // Invalid cards do not appear even on the raw, unfiltered surface.
     const all = await gateway.discover();
-    expect(all.json.providers.find((p: any) => p.tokenId === "4")).toBeDefined();
-
-    // filtered excludes it
-    const filtered = await gateway.discover({ maxPrice: 1_000_000 });
     expect(
-      filtered.json.providers.find((p: any) => p.tokenId === "4"),
+      all.json.providers.find((p: any) => p.tokenId === "4"),
     ).toBeUndefined();
   });
+
 });

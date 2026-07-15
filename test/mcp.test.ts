@@ -3,7 +3,16 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { recoverTypedDataAddress, type Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
+import {
+  CATEGORY_FAMILY_SLUGS,
+  SERVICE_TYPE_SLUGS,
+} from "../src/serviceTaxonomy.js";
 import { startTestGateway, type TestGateway } from "./helpers/setup.js";
+import {
+  AGENT_AUTHORITY,
+  MCP_LEGAL_INSTRUCTIONS,
+  PURCHASE_NOTICE,
+} from "../src/legal/purchase.js";
 
 const TEST_BUYER_KEY =
   "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80" as Hex;
@@ -29,6 +38,16 @@ function parseResult<T>(result: unknown): T {
   return JSON.parse(r.content[0].text) as T;
 }
 
+function expectedLegal(gateway: TestGateway) {
+  return {
+    marketplaceTermsUrl: gateway.config.marketplaceTermsUrl,
+    marketplacePrivacyUrl: gateway.config.marketplacePrivacyUrl,
+    providerLegalName: "Example Provider, LLC",
+    providerTermsUrl: "https://provider.example/terms",
+    providerPrivacyUrl: "https://provider.example/privacy",
+  };
+}
+
 describe("hosted MCP — wallet-agnostic surface", () => {
   let gateway: TestGateway;
 
@@ -39,7 +58,8 @@ describe("hosted MCP — wallet-agnostic surface", () => {
           tokenId: 2n,
           name: "Domain Reg",
           priceUsdcSmallest: "15000000",
-          category: "domain-registration",
+          categoryFamily: "domains-web",
+          serviceType: "domain-management",
           skills: [
             {
               id: "register-domain",
@@ -79,6 +99,25 @@ describe("hosted MCP — wallet-agnostic surface", () => {
           "daski_settle_payment",
         ].sort(),
       );
+      const searchTool = tools.tools.find(
+        (tool) => tool.name === "daski_search_services",
+      );
+      const properties = searchTool?.inputSchema.properties as Record<
+        string,
+        { enum?: string[] }
+      >;
+      expect(properties.categoryFamily.enum).toEqual(CATEGORY_FAMILY_SLUGS);
+      expect(properties.serviceType.enum).toEqual(SERVICE_TYPE_SLUGS);
+      expect(client.getInstructions()).toContain(MCP_LEGAL_INSTRUCTIONS);
+      for (const toolName of [
+        "daski_purchase",
+        "daski_settle_payment",
+        "daski_buy_service",
+      ]) {
+        const tool = tools.tools.find((entry) => entry.name === toolName);
+        expect(tool?.description).toContain("Operator is the legal party");
+        expect(tool?.description).toContain("binds the Operator");
+      }
     } finally {
       await transport.close();
     }
@@ -123,10 +162,15 @@ describe("hosted MCP — wallet-agnostic surface", () => {
         arguments: {},
       });
       const body = parseResult<{
-        providers: Array<{ tokenId: string; agentCardUrl: string }>;
+        providers: Array<{
+          tokenId: string;
+          agentCardUrl: string;
+          legal: Record<string, string>;
+        }>;
       }>(result);
       expect(body.providers.length).toBe(1);
       expect(body.providers[0].tokenId).toBe("2");
+      expect(body.providers[0].legal).toEqual(expectedLegal(gateway));
     } finally {
       await transport.close();
     }
@@ -140,11 +184,16 @@ describe("hosted MCP — wallet-agnostic surface", () => {
         arguments: {},
       });
       const body = parseResult<{
-        providers: Array<{ tokenId: string; agentCardUrl: string }>;
+        providers: Array<{
+          tokenId: string;
+          agentCardUrl: string;
+          legal: Record<string, string>;
+        }>;
       }>(result);
       expect(body.providers.length).toBe(1);
       expect(body.providers[0].tokenId).toBe("2");
       expect(body.providers[0].agentCardUrl).toMatch(/^http/);
+      expect(body.providers[0].legal).toEqual(expectedLegal(gateway));
     } finally {
       await transport.close();
     }
@@ -195,9 +244,11 @@ describe("hosted MCP — wallet-agnostic surface", () => {
       const parsed = JSON.parse(first.text ?? "{}") as {
         tokenId: string;
         agentId: string;
+        legal: Record<string, string>;
       };
       expect(parsed.tokenId).toBe("2");
       expect(parsed.agentId).toBe("2");
+      expect(parsed.legal).toEqual(expectedLegal(gateway));
     } finally {
       await transport.close();
     }
@@ -228,12 +279,39 @@ describe("hosted MCP — wallet-agnostic surface", () => {
         },
       });
       const body = parseResult<{
+        legal: Record<string, string>;
+        agentAuthority: typeof AGENT_AUTHORITY;
+        purchaseNotice: string;
         paymentRequirements: {
           maxAmountRequired: string;
-          extra: { daski: { eip712TypedData: any; serviceRef: string } };
+          extra: {
+            daski: {
+              eip712TypedData: any;
+              serviceRef: string;
+              legal: Record<string, string>;
+              agentAuthority: typeof AGENT_AUTHORITY;
+              purchaseNotice: string;
+            };
+          };
         };
       }>(result);
+      expect(Object.keys(body).slice(-2)).toEqual([
+        "purchaseNotice",
+        "paymentRequirements",
+      ]);
       expect(body.paymentRequirements.maxAmountRequired).toBe("15000000");
+      expect(body.legal).toEqual(expectedLegal(gateway));
+      expect(body.agentAuthority).toEqual(AGENT_AUTHORITY);
+      expect(body.purchaseNotice).toBe(PURCHASE_NOTICE);
+      expect(body.paymentRequirements.extra.daski.legal).toEqual(
+        expectedLegal(gateway),
+      );
+      expect(body.paymentRequirements.extra.daski.agentAuthority).toEqual(
+        AGENT_AUTHORITY,
+      );
+      expect(body.paymentRequirements.extra.daski.purchaseNotice).toBe(
+        PURCHASE_NOTICE,
+      );
       const td = body.paymentRequirements.extra.daski.eip712TypedData;
       expect(td.primaryType).toBe("TransferWithAuthorization");
       expect(td.message.from.toLowerCase()).toBe(gateway.buyerAddress);
@@ -275,10 +353,18 @@ describe("hosted MCP — wallet-agnostic surface", () => {
       });
       const body = parseResult<{
         kind: string;
+        legal: Record<string, string>;
+        agentAuthority: typeof AGENT_AUTHORITY;
+        purchaseNotice: string;
         paymentRequirements: { extra: { daski: { eip712TypedData: any } } };
         plan: { steps: Array<{ toolName: string }> };
       }>(result);
       expect(body.kind).toBe("paid");
+      const paymentIndex = Object.keys(body).indexOf("paymentRequirements");
+      expect(Object.keys(body)[paymentIndex - 1]).toBe("purchaseNotice");
+      expect(body.legal).toEqual(expectedLegal(gateway));
+      expect(body.agentAuthority).toEqual(AGENT_AUTHORITY);
+      expect(body.purchaseNotice).toBe(PURCHASE_NOTICE);
       expect(body.paymentRequirements.extra.daski.eip712TypedData).toBeDefined();
       // Plan now uses the daski_confirm_delivery two-call pattern in place
       // of the deprecated daski_prepare_confirm + daski_confirm_delivery
@@ -864,7 +950,8 @@ describe("hosted MCP — wallet-agnostic surface", () => {
       tokenId: 2n,
       name: "Domain Reg",
       priceUsdcSmallest: "15000000",
-      category: "domain-registration",
+      categoryFamily: "domains-web",
+      serviceType: "domain-management",
       skills: [
         {
           id: "register-domain",
@@ -987,7 +1074,8 @@ describe("hosted MCP — wallet-agnostic surface", () => {
       tokenId: 2n,
       name: "Domain Reg",
       priceUsdcSmallest: "15000000",
-      category: "domain-registration",
+      categoryFamily: "domains-web",
+      serviceType: "domain-management",
       skills: [
         {
           id: "set-dns-record",
@@ -1045,7 +1133,8 @@ describe("hosted MCP — wallet-agnostic surface", () => {
       tokenId: 2n,
       name: "Misconfigured Reg",
       priceUsdcSmallest: "15000000",
-      category: "domain-registration",
+      categoryFamily: "domains-web",
+      serviceType: "domain-management",
       skills: [
         {
           id: "set-dns-record",
@@ -1357,7 +1446,8 @@ describe("hosted MCP — wallet-agnostic surface", () => {
       tokenId: 7n,
       name: "Agent Mailboxes",
       priceUsdcSmallest: "9990000",
-      category: "email",
+      categoryFamily: "communications",
+      serviceType: "agent-mailbox",
       skills: [
         {
           id: "change-password",

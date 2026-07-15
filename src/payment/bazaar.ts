@@ -14,6 +14,8 @@ import {
 import type { ExternalFacilitatorClient } from "./externalFacilitator.js";
 import type { Fetcher } from "../mcp/a2a.js";
 import type { ExactEvmAuthorization, Hex, StoredChallenge } from "../types.js";
+import { buildPurchaseLegalContext } from "../legal/purchase.js";
+import type { PurchaseLegalContext } from "../legal/types.js";
 
 /**
  * Bazaar-facing x402 resource routes — one paid HTTP resource per
@@ -234,6 +236,7 @@ function buildPaymentRequired(
   config: Config,
   resourceUrl: string,
   maxTimeoutSeconds: number,
+  purchaseLegal: PurchaseLegalContext,
   providerQuote?: ProviderQuoteCommitment,
   error?: string,
 ) {
@@ -245,6 +248,9 @@ function buildPaymentRequired(
       description: offer.description,
       mimeType: "application/json",
     },
+    legal: purchaseLegal.legal,
+    agentAuthority: purchaseLegal.agentAuthority,
+    purchaseNotice: purchaseLegal.purchaseNotice,
     accepts: [
       {
         scheme: "exact",
@@ -256,9 +262,10 @@ function buildPaymentRequired(
         extra: {
           name: config.usdcName,
           version: config.usdcVersion,
-          ...(providerQuote
-            ? { daski: { providerQuote } }
-            : {}),
+          daski: {
+            ...(providerQuote ? { providerQuote } : {}),
+            ...purchaseLegal,
+          },
         },
       },
     ],
@@ -500,6 +507,7 @@ export function createBazaarRouter(deps: BazaarDeps): Router {
       requireFixedAmount: false,
     });
     let offer: SkillOffer;
+    let recoveryChallenge: StoredChallenge | null = null;
     if (resolved.ok) {
       offer = resolved.offer;
     } else {
@@ -524,6 +532,7 @@ export function createBazaarRouter(deps: BazaarDeps): Router {
         });
         return;
       }
+      recoveryChallenge = persisted;
       // Recovery after funds moved must not depend on mutable Agent Card
       // data. Resume with the immutable identity stored on the challenge.
       offer = {
@@ -538,6 +547,18 @@ export function createBazaarRouter(deps: BazaarDeps): Router {
       };
     }
     const resourceUrl = `${config.publicUrl}/x402/services/${providerTokenId.toString()}/${skillId}`;
+    const providerLegal = cache.get(providerTokenId)?.providerLegal;
+    const purchaseLegal = providerLegal
+      ? buildPurchaseLegalContext(config, providerLegal)
+      : null;
+    if (!purchaseLegal && !recoveryChallenge) {
+      res.status(422).json({
+        x402Version: 2,
+        error:
+          "provider_legal_metadata_invalid: provider legal metadata is missing or invalid",
+      });
+      return;
+    }
     const serviceArgs = serviceArgsFrom(req);
     let serviceArgsHash: Hex;
     try {
@@ -555,6 +576,14 @@ export function createBazaarRouter(deps: BazaarDeps): Router {
     // card price is sufficient for crawlers; the actual purchase starts
     // with POST so its 402 can carry the signed, argument-bound quote.
     if (!paymentHeader) {
+      if (!purchaseLegal) {
+        res.status(422).json({
+          x402Version: 2,
+          error:
+            "provider_legal_metadata_invalid: provider legal metadata is missing or invalid",
+        });
+        return;
+      }
       if (req.method === "GET") {
         if (offer.amount === null) {
           res.status(422).json({
@@ -572,6 +601,7 @@ export function createBazaarRouter(deps: BazaarDeps): Router {
             config,
             resourceUrl,
             config.challengeTtlSeconds,
+            purchaseLegal,
           ),
         );
         return;
@@ -593,6 +623,7 @@ export function createBazaarRouter(deps: BazaarDeps): Router {
           config,
           resourceUrl,
           timeout,
+          purchaseLegal,
           quoted.quote,
         ),
       );
@@ -724,6 +755,17 @@ export function createBazaarRouter(deps: BazaarDeps): Router {
 
     let buyerAgentId = challenge?.buyerTokenId ?? 0n;
     if (!challenge) {
+      if (!purchaseLegal) {
+        res.status(409).json({
+          x402Version: core.version,
+          error: "payment_recovery_state_missing",
+          message:
+            "The persisted purchase state disappeared during recovery. No new " +
+            "payment requirements were issued because the Provider's legal " +
+            "metadata is currently invalid.",
+        });
+        return;
+      }
       try {
         buyerAgentId = await reader.agentOfWallet(from);
       } catch (err) {
@@ -793,6 +835,7 @@ export function createBazaarRouter(deps: BazaarDeps): Router {
               config,
               resourceUrl,
               timeout,
+              purchaseLegal,
               replacement.quote,
               `payment header does not carry the valid quote from the prior ` +
                 `402 (${validation.message}); sign the replacement requirements`,
@@ -824,6 +867,7 @@ export function createBazaarRouter(deps: BazaarDeps): Router {
             config,
             resourceUrl,
             timeout,
+            purchaseLegal,
             quoted.quote,
             `authorization value ${auth.value} does not match the quoted ` +
               `amount ${quoted.amount.toString()}`,
@@ -883,6 +927,18 @@ export function createBazaarRouter(deps: BazaarDeps): Router {
         return;
       }
       if (!verify.isValid) {
+        if (!purchaseLegal) {
+          res.status(409).json({
+            x402Version: core.version,
+            error: "payment_recovery_verification_failed",
+            message:
+              "The external facilitator rejected the persisted payment " +
+              `authorization (${verify.invalidReason ?? "invalid"}). The ` +
+              "existing challenge remains available for reconciliation; no " +
+              "new payment requirements were issued.",
+          });
+          return;
+        }
         res.status(402).json(
           buildPaymentRequired(
             offer,
@@ -890,6 +946,7 @@ export function createBazaarRouter(deps: BazaarDeps): Router {
             config,
             resourceUrl,
             timeoutSeconds,
+            purchaseLegal,
             undefined,
             `external facilitator rejected the payment: ${verify.invalidReason ?? "invalid"}`,
           ),
@@ -965,6 +1022,18 @@ export function createBazaarRouter(deps: BazaarDeps): Router {
         return;
       }
       if (!settle.success) {
+        if (!purchaseLegal) {
+          res.status(502).json({
+            x402Version: core.version,
+            error: "payment_recovery_settlement_failed",
+            message:
+              "The external facilitator could not settle the persisted " +
+              `payment (${settle.errorReason ?? "unknown"}). The existing ` +
+              "challenge remains available for reconciliation; no new " +
+              "payment requirements were issued.",
+          });
+          return;
+        }
         res.status(402).json(
           buildPaymentRequired(
             offer,
@@ -972,6 +1041,7 @@ export function createBazaarRouter(deps: BazaarDeps): Router {
             config,
             resourceUrl,
             timeoutSeconds,
+            purchaseLegal,
             undefined,
             `external facilitator settle failed: ${settle.errorReason ?? "unknown"}`,
           ),

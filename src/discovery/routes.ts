@@ -2,8 +2,16 @@ import { Router, type Request, type Response } from "express";
 import type { Config } from "../config.js";
 import type { DiscoveryCache } from "./cache.js";
 import {
+  isCategoryFamily,
+  isFulfillmentMode,
+  isJurisdiction,
+  isServiceType,
+  isServiceTypeForFamily,
+} from "../serviceTaxonomy.js";
+import {
   applyDiscoverFilters,
   formatForRestDiscover,
+  hasMarketplaceService,
   type DiscoverFilters,
 } from "./format.js";
 
@@ -31,10 +39,55 @@ export function buildAcceptedToken(config: Config): AcceptedToken {
 
 function parseFilters(req: Request): DiscoverFilters | { error: string } {
   const filters: DiscoverFilters = {};
-  if (typeof req.query.category === "string") {
-    filters.category = req.query.category;
-  } else if (req.query.category !== undefined) {
-    return { error: "category must be a string" };
+  if (req.query.category !== undefined) {
+    return {
+      error: "category is not supported; use categoryFamily and serviceType",
+    };
+  }
+  if (typeof req.query.categoryFamily === "string") {
+    if (!isCategoryFamily(req.query.categoryFamily)) {
+      return { error: "categoryFamily must be an approved family slug" };
+    }
+    filters.categoryFamily = req.query.categoryFamily;
+  } else if (req.query.categoryFamily !== undefined) {
+    return { error: "categoryFamily must be a string" };
+  }
+  if (typeof req.query.serviceType === "string") {
+    if (!isServiceType(req.query.serviceType)) {
+      return { error: "serviceType must be an accepted service type" };
+    }
+    filters.serviceType = req.query.serviceType;
+  } else if (req.query.serviceType !== undefined) {
+    return { error: "serviceType must be a string" };
+  }
+  if (
+    filters.categoryFamily &&
+    filters.serviceType &&
+    !isServiceTypeForFamily(filters.categoryFamily, filters.serviceType)
+  ) {
+    return { error: "serviceType does not belong to categoryFamily" };
+  }
+  if (typeof req.query.jurisdiction === "string") {
+    if (!isJurisdiction(req.query.jurisdiction)) {
+      return {
+        error:
+          "jurisdiction must be 'global', an assigned ISO 3166-1 alpha-2 " +
+          "country code, or a recognized ISO 3166-2 subdivision code",
+      };
+    }
+    filters.jurisdiction = req.query.jurisdiction;
+  } else if (req.query.jurisdiction !== undefined) {
+    return { error: "jurisdiction must be a string" };
+  }
+  if (typeof req.query.fulfillmentMode === "string") {
+    if (!isFulfillmentMode(req.query.fulfillmentMode)) {
+      return {
+        error: "fulfillmentMode must be automated, human, or hybrid",
+      };
+    }
+    filters.fulfillmentMode = req.query.fulfillmentMode;
+  } else if (req.query.fulfillmentMode !== undefined) {
+    return { error: "fulfillmentMode must be a string" };
   }
   if (req.query.maxPrice !== undefined) {
     if (typeof req.query.maxPrice !== "string") {
@@ -63,11 +116,13 @@ export function createDiscoveryRouter(
       });
       return;
     }
-    const all = cache.getAll();
+    const all = cache.getAll().filter(hasMarketplaceService);
     const filtered = applyDiscoverFilters(all, parsed);
     res.json({
       acceptedToken: buildAcceptedToken(config),
-      providers: filtered.map(formatForRestDiscover),
+      providers: filtered.map((provider) =>
+        formatForRestDiscover(provider, config),
+      ),
       cachedAt: cache.getLastRefresh()?.toISOString() ?? null,
     });
   });
@@ -87,7 +142,7 @@ export function createDiscoveryRouter(
       return;
     }
     const provider = cache.get(tokenId);
-    if (!provider) {
+    if (!provider || !hasMarketplaceService(provider)) {
       res.status(404).json({
         error: {
           code: "PROVIDER_NOT_FOUND",
@@ -96,7 +151,7 @@ export function createDiscoveryRouter(
       });
       return;
     }
-    res.json(formatForRestDiscover(provider));
+    res.json(formatForRestDiscover(provider, config));
   });
 
   return router;

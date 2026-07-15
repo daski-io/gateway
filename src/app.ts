@@ -28,6 +28,7 @@ import type { FetchFn } from "./discovery/cache.js";
 import type { FetchAgentCardOptions } from "./identity/fetch-agent-card.js";
 import { rateLimit, securityHeaders } from "./util/security.js";
 import { safeFetch } from "./util/urlSafety.js";
+import { buildServiceLegal } from "./legal/purchase.js";
 
 export interface CreateAppOptions {
   config: Config;
@@ -88,6 +89,7 @@ export async function createApp(options: CreateAppOptions): Promise<AppBundle> {
     reader,
     whitelist: config.whitelistedAgentIds,
     refreshIntervalSeconds: config.cacheRefreshIntervalSeconds,
+    maxCardStalenessSeconds: config.cacheMaxStalenessSeconds,
     fetch: options.agentCardFetch,
     agentCardFetchTimeoutMs: options.agentCardFetchTimeoutMs,
     // Embeddings are synced lazily inside search_services (when intent
@@ -298,8 +300,10 @@ export async function createApp(options: CreateAppOptions): Promise<AppBundle> {
   app.get("/.well-known/x402-services.json", (_req, res) => {
     // One pass per (provider, card): multi-service providers advertise
     // every service's paid skills, each with its own A2A endpoint.
-    const services = cache.getAll().flatMap((p) =>
-      cardsOf(p).flatMap((providerCard) => {
+    const services = cache.getAll().flatMap((p) => {
+      if (!p.providerLegal) return [];
+      const legal = buildServiceLegal(config, p.providerLegal);
+      return cardsOf(p).flatMap((providerCard) => {
       const skills = Array.isArray(
         (providerCard.agentCard as { skills?: unknown }).skills,
       )
@@ -361,11 +365,12 @@ export async function createApp(options: CreateAppOptions): Promise<AppBundle> {
             providerTokenId: p.agentId.toString(),
             skillId: s.id,
             providerA2AUrl,
+            legal,
           },
         ];
       });
-      }),
-    );
+      });
+    });
     res.json({
       x402Version: 1,
       services,

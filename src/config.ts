@@ -1,4 +1,5 @@
 import type { ChainId, Hex } from "./types.js";
+import { requireMarketplaceHttpsUrl } from "./legal/validation.js";
 
 export const DASKI_A2A_EXTENSION_URI = "https://daski.xyz/a2a/v1";
 
@@ -67,9 +68,18 @@ export interface Config {
   externalFacilitatorAuthHeader?: string;
   whitelistedAgentIds: bigint[];
   cacheRefreshIntervalSeconds: number;
+  // How long the discovery cache keeps serving a provider's last-known-good
+  // Agent Card when refresh fetches fail (provider restarting, card host
+  // down). Past the cap the provider degrades to a card-less catalog entry
+  // until a fetch succeeds again. Safe to keep generous: paid flows still
+  // require a live signed /quote from the provider, so a stale card can't
+  // capture funds while the provider is unreachable.
+  cacheMaxStalenessSeconds: number;
   challengeTtlSeconds: number;
   databaseUrl: string;
   publicUrl: string;
+  marketplaceTermsUrl: string;
+  marketplacePrivacyUrl: string;
   // Public IPFS HTTP gateway used to resolve `ipfs://` agentURIs for
   // optional buyer registration. Trailing slash is required. Override with
   // a self-hosted gateway in production to avoid relying on a public
@@ -245,9 +255,18 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       env.WHITELISTED_AGENT_IDS ?? env.WHITELISTED_TOKEN_IDS,
     ),
     cacheRefreshIntervalSeconds: Number(env.CACHE_REFRESH_INTERVAL ?? 300),
+    cacheMaxStalenessSeconds: Number(env.CACHE_MAX_STALENESS_SECONDS ?? 86400),
     challengeTtlSeconds: Number(env.CHALLENGE_TTL_SECONDS ?? 3600),
     databaseUrl: requireDatabaseUrl(env.DATABASE_URL),
     publicUrl: env.PUBLIC_URL ?? `http://localhost:${port}`,
+    marketplaceTermsUrl: requireMarketplaceHttpsUrl(
+      "MARKETPLACE_TERMS_URL",
+      env.MARKETPLACE_TERMS_URL,
+    ),
+    marketplacePrivacyUrl: requireMarketplaceHttpsUrl(
+      "MARKETPLACE_PRIVACY_URL",
+      env.MARKETPLACE_PRIVACY_URL,
+    ),
     ipfsGatewayUrl: (env.IPFS_GATEWAY_URL ?? "https://ipfs.io/ipfs/").replace(
       /\/?$/,
       "/",

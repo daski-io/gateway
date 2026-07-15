@@ -24,7 +24,8 @@ describe("POST /confirm/:paymentId", () => {
           tokenId: 2n,
           name: "Daski Test",
           priceUsdcSmallest: "1000000",
-          category: "test",
+          categoryFamily: "other",
+          serviceType: "other",
         },
       ],
     });

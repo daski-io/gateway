@@ -13,12 +13,19 @@ import {
   extractMarketplaceExtension,
 } from "../discovery/format.js";
 import { derivePrimaryServiceId } from "../payment/requirements.js";
+import { buildServiceLegal } from "../legal/purchase.js";
+import type { MarketplaceLegalUrls, ServiceLegal } from "../legal/types.js";
 import type {
   CachedProvider,
   Hex,
   ProviderCard,
   StoredChallenge,
 } from "../types.js";
+import type {
+  CategoryFamily,
+  FulfillmentMode,
+  ServiceType,
+} from "../serviceTaxonomy.js";
 
 // ── Value-weighted reputation ───────────────────────────────────────────
 //
@@ -70,7 +77,9 @@ export interface PublicService {
   name: string;
   providerAddress: Hex;
   agentURI: string;
-  category: string | null;
+  categoryFamily: CategoryFamily;
+  serviceType: ServiceType;
+  jurisdictions: string[];
   serviceDescription: string | null;
   serviceLifecycle: string | null;
   turnaroundEstimate: string | null;
@@ -94,9 +103,10 @@ export interface PublicService {
   /**
    * Square icon for the provider's brand mark from the ERC-8004
    * registration file's `image` field (ERC-721 metadata convention).
-   * Null when unset; the website falls back to a category-derived icon.
+   * Null when unset; the website falls back to a category-family icon.
    */
   iconUrl: string | null;
+  legal: ServiceLegal;
   /**
    * Primary on-chain service identity for this provider. With current 1:1
    * cardinality (one provider lists one service), this is the only service;
@@ -144,6 +154,7 @@ export interface PublicSkill {
   pricingModelDetail: PublicSkillPricingModel | null;
   variable: boolean;
   paymentRequired: boolean;
+  fulfillmentMode: FulfillmentMode;
   /** Asset/capability shape — needed by integrators to know what to send. */
   requiredFields: string[] | null;
   requiresAssetOwnership: boolean;
@@ -866,6 +877,9 @@ function flattenSkills(agentCard: Record<string, unknown>): PublicSkill[] {
       pricingModelDetail,
       variable: asBoolean(meta.variablePricing) || asBoolean(meta.variable),
       paymentRequired: meta.paymentRequired !== false, // default true
+      fulfillmentMode: asString(
+        meta.fulfillmentMode ?? ext?.fulfillmentMode,
+      ) as FulfillmentMode,
       requiredFields,
       requiresAssetOwnership: asBoolean(meta.requiresAssetOwnership),
       requiresCapability: asBoolean(meta.requiresCapability),
@@ -885,9 +899,10 @@ function flattenSkills(agentCard: Record<string, unknown>): PublicSkill[] {
 function formatServiceCardForPublic(
   provider: CachedProvider,
   card: ProviderCard,
+  marketplace: MarketplaceLegalUrls,
 ): PublicService | null {
   const ext = extractMarketplaceExtension(card.agentCard);
-  if (!ext) return null;
+  if (!ext || !provider.providerLegal) return null;
 
   const pricingExt = (ext.pricing ?? {}) as Record<string, unknown>;
   const baseAmount = pricingExt.baseAmount;
@@ -920,7 +935,9 @@ function formatServiceCardForPublic(
     name: extractAgentCardName(card.agentCard),
     providerAddress: provider.walletAddress,
     agentURI: provider.agentURI,
-    category: asString(ext.category),
+    categoryFamily: ext.categoryFamily,
+    serviceType: ext.serviceType,
+    jurisdictions: ext.jurisdictions,
     serviceDescription: asString(ext.serviceDescription),
     serviceLifecycle: asString(ext.serviceLifecycle),
     turnaroundEstimate: asString(ext.turnaroundEstimate),
@@ -929,6 +946,7 @@ function formatServiceCardForPublic(
     providerDescription: provider.providerDescription,
     providerWebsite: provider.providerExternalUrl,
     iconUrl: provider.providerImage,
+    legal: buildServiceLegal(marketplace, provider.providerLegal),
     serviceId: primary?.serviceId ?? null,
     serviceSlug: primary?.serviceSlug ?? null,
     serviceVersion: primary?.serviceVersion ?? null,
@@ -943,10 +961,11 @@ function formatServiceCardForPublic(
  */
 export function formatServicesForPublic(
   provider: CachedProvider,
+  marketplace: MarketplaceLegalUrls,
 ): PublicService[] {
   const out: PublicService[] = [];
   for (const card of cardsOf(provider)) {
-    const formatted = formatServiceCardForPublic(provider, card);
+    const formatted = formatServiceCardForPublic(provider, card, marketplace);
     if (formatted) out.push(formatted);
   }
   return out;
@@ -959,9 +978,10 @@ export function formatServicesForPublic(
  */
 export function formatServiceForPublic(
   provider: CachedProvider,
+  marketplace: MarketplaceLegalUrls,
   serviceSlug?: string | null,
 ): PublicService | null {
-  const all = formatServicesForPublic(provider);
+  const all = formatServicesForPublic(provider, marketplace);
   if (all.length === 0) return null;
   if (serviceSlug) {
     return all.find((s) => s.serviceSlug === serviceSlug) ?? null;

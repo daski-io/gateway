@@ -18,7 +18,8 @@ describe("PaymentRequirements inline eip712TypedData", () => {
           tokenId: 2n,
           name: "Domain Reg",
           priceUsdcSmallest: "15000000",
-          category: "domain-registration",
+          categoryFamily: "domains-web",
+          serviceType: "domain-management",
         },
       ],
     });
@@ -154,7 +155,13 @@ describe("GET /confirm-prep/:paymentId", () => {
   beforeEach(async () => {
     gateway = await startTestGateway({
       providers: [
-        { tokenId: 2n, name: "p", priceUsdcSmallest: "1000000", category: "x" },
+        {
+          tokenId: 2n,
+          name: "p",
+          priceUsdcSmallest: "1000000",
+          categoryFamily: "other",
+          serviceType: "other",
+        },
       ],
     });
   });

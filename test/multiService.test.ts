@@ -2,6 +2,10 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { DASKI_A2A_EXTENSION_URI } from "../src/config.js";
+import type {
+  CategoryFamily,
+  ServiceType,
+} from "../src/serviceTaxonomy.js";
 import { startTestGateway, type TestGateway } from "./helpers/setup.js";
 
 // Multi-service providers: one ERC-8004 registration file listing SEVERAL
@@ -28,19 +32,33 @@ function parseResult<T>(result: unknown): T {
   return JSON.parse(r.content[0]!.text) as T;
 }
 
+function expectedLegal(gateway: TestGateway) {
+  return {
+    marketplaceTermsUrl: gateway.config.marketplaceTermsUrl,
+    marketplacePrivacyUrl: gateway.config.marketplacePrivacyUrl,
+    providerLegalName: "Blue T Group, LLC",
+    providerTermsUrl: "https://bluetgroup.com/service-provider-terms-of-use",
+    providerPrivacyUrl:
+      "https://bluetgroup.com/service-provider-privacy-policy",
+  };
+}
+
 interface SkillDef {
   id: string;
   name: string;
   description: string;
   paid: boolean;
   baseAmount?: string;
+  fulfillmentMode?: "automated" | "human" | "hybrid";
 }
 
 function buildCard(args: {
   base: string;
   name: string;
   slug: string;
-  category: string;
+  categoryFamily: CategoryFamily;
+  serviceType: ServiceType;
+  jurisdictions?: string[];
   description: string;
   skills: SkillDef[];
 }): Record<string, unknown> {
@@ -69,7 +87,9 @@ function buildCard(args: {
             ? { baseAmount: paidSkills[0].baseAmount }
             : {}),
         },
-        category: args.category,
+        categoryFamily: args.categoryFamily,
+        serviceType: args.serviceType,
+        jurisdictions: args.jurisdictions ?? ["global"],
         serviceDescription: args.description,
         serviceLifecycle: "asset-lifecycle",
         // Shape B skill metadata (what daski-provider serves today).
@@ -83,6 +103,7 @@ function buildCard(args: {
             {
               serviceSlug: args.slug,
               serviceVersion: "1",
+              fulfillmentMode: s.fulfillmentMode ?? "automated",
               paymentRequired: s.paid,
               pricing: {
                 type: "one-time",
@@ -106,7 +127,8 @@ describe("multi-service providers", () => {
           tokenId: 1n,
           name: "Placeholder",
           priceUsdcSmallest: "15000000",
-          category: "infrastructure",
+          categoryFamily: "domains-web",
+          serviceType: "domain-management",
         },
       ],
     });
@@ -117,6 +139,9 @@ describe("multi-service providers", () => {
       type: "https://eips.ethereum.org/EIPS/eip-8004#registration-v1",
       name: "Blue T Group, LLC",
       description: "Independent provider serving the AI agent economy.",
+      legalName: "Blue T Group, LLC",
+      termsUrl: "https://bluetgroup.com/service-provider-terms-of-use",
+      privacyUrl: "https://bluetgroup.com/service-provider-privacy-policy",
       services: [
         { name: "A2A", endpoint: `${base}/cards/domains.json`, version: "1.0.0" },
         { name: "A2A", endpoint: `${base}/cards/mailboxes.json`, version: "1.0.0" },
@@ -131,7 +156,8 @@ describe("multi-service providers", () => {
         base,
         name: "Domain Management",
         slug: "domain-management",
-        category: "infrastructure",
+        categoryFamily: "domains-web",
+        serviceType: "domain-management",
         description: "Register and manage domain names with automated DNS setup.",
         skills: [
           {
@@ -156,9 +182,8 @@ describe("multi-service providers", () => {
         base,
         name: "Agent Mailboxes",
         slug: "mailboxes",
-        // Colloquial label, like the real provider — the gateway must
-        // canonicalize it into the "communications" bucket for filters.
-        category: "email",
+        categoryFamily: "communications",
+        serviceType: "agent-mailbox",
         description: "Working email mailboxes for agents over IMAP and SMTP.",
         skills: [
           {
@@ -167,6 +192,7 @@ describe("multi-service providers", () => {
             description: "Provision an email mailbox with IMAP SMTP credentials.",
             paid: true,
             baseAmount: "9990000",
+            fulfillmentMode: "human",
           },
           {
             // Deliberate skill-id collision with the domains card —
@@ -201,6 +227,16 @@ describe("multi-service providers", () => {
     expect(provider.cards).toHaveLength(2);
     const slugs = provider.cards.map((c: any) => c.serviceSlug).sort();
     expect(slugs).toEqual(["domain-management", "mailboxes"]);
+    expect(provider.legal).toEqual(expectedLegal(gateway));
+    expect(
+      provider.agentCard.extensions[DASKI_A2A_EXTENSION_URI].legal,
+    ).toEqual(expectedLegal(gateway));
+    for (const card of provider.cards) {
+      expect(card.legal).toEqual(expectedLegal(gateway));
+      expect(card.agentCard.extensions[DASKI_A2A_EXTENSION_URI].legal).toEqual(
+        expectedLegal(gateway),
+      );
+    }
     // Back-compat: agentCard remains the first card.
     expect(provider.agentCard.name).toBe("Domain Management");
   });
@@ -218,6 +254,7 @@ describe("multi-service providers", () => {
           name: string;
           serviceSlug: string | null;
           providerA2AUrl: string;
+          legal: Record<string, string>;
           skills: Array<{ id: string }>;
         }>;
       }>(result);
@@ -225,6 +262,9 @@ describe("multi-service providers", () => {
       const mine = body.providers.filter((p) => p.tokenId === "1");
       expect(mine).toHaveLength(2);
       const bySlug = new Map(mine.map((p) => [p.serviceSlug, p]));
+      for (const service of mine) {
+        expect(service.legal).toEqual(expectedLegal(gateway));
+      }
       expect(bySlug.get("domain-management")!.name).toBe("Domain Management");
       expect(bySlug.get("mailboxes")!.name).toBe("Agent Mailboxes");
       expect(bySlug.get("mailboxes")!.providerA2AUrl).toMatch(/\/a2a\/mailboxes$/);
@@ -286,22 +326,80 @@ describe("multi-service providers", () => {
     }
   });
 
-  it("category filter selects individual services of one provider (alias-tolerant both ways)", async () => {
+  it("keeps near misses when structured filters exclude every card", async () => {
     const { client, transport } = await connectClient(gateway.baseUrl);
     try {
-      // Buyer filters by the colloquial label the card itself uses.
-      for (const category of ["email", "communications"]) {
-        const result = await client.callTool({
-          name: "daski_search_services",
-          arguments: { category },
-        });
-        const body = parseResult<{
-          providers: Array<{ tokenId: string; serviceSlug: string | null }>;
-        }>(result);
-        const mine = body.providers.filter((p) => p.tokenId === "1");
-        expect(mine, `category=${category}`).toHaveLength(1);
-        expect(mine[0]!.serviceSlug).toBe("mailboxes");
-      }
+      const result = await client.callTool({
+        name: "daski_search_services",
+        arguments: {
+          intent: "email mailbox imap smtp for my agent",
+          categoryFamily: "compute-ai",
+        },
+      });
+      const body = parseResult<{
+        providers: unknown[];
+        nearMisses: Array<{ serviceSlug: string | null }>;
+      }>(result);
+      expect(body.providers).toEqual([]);
+      expect(body.nearMisses.map((entry) => entry.serviceSlug)).toContain(
+        "mailboxes",
+      );
+    } finally {
+      await transport.close();
+    }
+  });
+
+  it("ranks only skills eligible for the requested fulfillment mode", async () => {
+    const { client, transport } = await connectClient(gateway.baseUrl);
+    try {
+      const result = await client.callTool({
+        name: "daski_search_services",
+        arguments: {
+          intent: "create an email mailbox with imap and smtp",
+          categoryFamily: "communications",
+          fulfillmentMode: "automated",
+        },
+      });
+      const body = parseResult<{
+        providers: Array<{
+          serviceSlug: string | null;
+          match: { bestSkillId: string };
+        }>;
+      }>(result);
+      expect(body.providers[0]!.serviceSlug).toBe("mailboxes");
+      expect(body.providers[0]!.match.bestSkillId).toBe("check-availability");
+    } finally {
+      await transport.close();
+    }
+  });
+
+  it("category-family filter selects individual services of one provider", async () => {
+    const { client, transport } = await connectClient(gateway.baseUrl);
+    try {
+      const result = await client.callTool({
+        name: "daski_search_services",
+        arguments: { categoryFamily: "communications" },
+      });
+      const body = parseResult<{
+        providers: Array<{ tokenId: string; serviceSlug: string | null }>;
+      }>(result);
+      const mine = body.providers.filter((p) => p.tokenId === "1");
+      expect(mine).toHaveLength(1);
+      expect(mine[0]!.serviceSlug).toBe("mailboxes");
+    } finally {
+      await transport.close();
+    }
+  });
+
+  it("rejects the removed MCP category filter", async () => {
+    const { client, transport } = await connectClient(gateway.baseUrl);
+    try {
+      const result = (await client.callTool({
+        name: "daski_search_services",
+        arguments: { category: "email" },
+      })) as ToolResultContent & { isError?: boolean };
+      expect(result.isError).toBe(true);
+      expect(result.content[0]!.text).toMatch(/category/i);
     } finally {
       await transport.close();
     }
@@ -312,6 +410,9 @@ describe("multi-service providers", () => {
     expect(list.status).toBe(200);
     const listBody: any = await list.json();
     const mine = listBody.services.filter((s: any) => s.agentId === "1");
+    for (const service of mine) {
+      expect(service.legal).toEqual(expectedLegal(gateway));
+    }
     expect(mine.map((s: any) => s.serviceSlug).sort()).toEqual([
       "domain-management",
       "mailboxes",
@@ -342,12 +443,16 @@ describe("multi-service providers", () => {
     const mailbox = mine.find((s: any) => s.skillId === "create-mailbox");
     expect(mailbox.providerA2AUrl).toMatch(/\/a2a\/mailboxes$/);
     expect(mailbox.maxAmountRequired).toBe("9990000");
+    expect(mailbox.legal).toEqual(expectedLegal(gateway));
   });
 
   it("tolerates one broken card without delisting the healthy ones", async () => {
     const base = gateway.mockProvider.baseUrl;
     gateway.mockProvider.setAgentCard("/reg/1.json", {
       name: "Blue T Group, LLC",
+      legalName: "Blue T Group, LLC",
+      termsUrl: "https://bluetgroup.com/service-provider-terms-of-use",
+      privacyUrl: "https://bluetgroup.com/service-provider-privacy-policy",
       services: [
         { name: "A2A", endpoint: `${base}/cards/domains.json`, version: "1.0.0" },
         { name: "A2A", endpoint: "http://127.0.0.1:1/nowhere.json", version: "1.0.0" },
