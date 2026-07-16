@@ -29,7 +29,7 @@ typed-data so any signer (Coinbase AgentKit, CDP Wallet MCP, viem, MetaMask,
   `all-MiniLM-L6-v2` embeddings. Catalog admission enforces the canonical
   service family/type, jurisdiction, and skill fulfillment metadata in
   [`src/serviceTaxonomy.ts`](src/serviceTaxonomy.ts).
-- **Provider onboarding spec** — see [PROVIDER_ONBOARDING.md](PROVIDER_ONBOARDING.md)
+- **Provider onboarding guide** — see [PROVIDER_ONBOARDING.md](PROVIDER_ONBOARDING.md)
   for the gateway↔provider wire contract.
 
 ## Prerequisites
