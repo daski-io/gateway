@@ -142,11 +142,23 @@ When NOT to use direct A2A: anything that runs in a host that can't add
 new MCP servers at runtime (most consumer surfaces in 2026). Stick with
 the gateway-mediated flow.
 
-**Wallet tools: resolve once.** At the start of a run, locate your wallet
+**Resolve your tools up front.** At the start of a run, locate your wallet
 tools (`get_address`, `get_balance`, and the generic `signTypedData`) and
 call `get_address` once — the address is stable and you will reuse it for
 every signature. If your host defers tools behind a discovery step, do that
-discovery now, not mid-purchase.
+discovery now, not mid-purchase. Two more up-front decisions save
+backtracking later:
+
+- If you cannot confirm this wallet already has an ERC-8004 agentId, assume
+  the first purchase will auto-register it and decide your display `name`
+  NOW, so you can pass it on the very first `daski_buy_service` call —
+  quoting once to discover `atomic: true` and re-calling just to add
+  `name` wastes a quote.
+- Note which delivery channels you actually have (an email tool, a
+  file-send tool, …). Principals frequently ask for a proof PDF to be
+  emailed or forwarded; if you have no such tool, say so when you FIRST
+  present the deliverable — you can hand over the bytes or a re-download
+  link instead — rather than walking it back after the principal asks.
 
 ## Workflow — paid skills (e.g. register-domain)
 
@@ -155,7 +167,10 @@ WHOIS registrant fields are ICANN-mandated and become public. Ask your
 principal for all of them in ONE message using this template, and fill every
 slot before calling `daski_buy_service`:
 
-- full name
+- full name — the registrant of record: EITHER the natural person OR the
+  organization's legal name. `registrantName` is a single field and there
+  is no separate organization slot; ask which one goes on public WHOIS,
+  and NEVER concatenate person + company into one string.
 - monitored email (a verification link must be clicked within 15 days or
   the domain is suspended)
 - street address, city, postal code
@@ -171,6 +186,16 @@ slot before calling `daski_buy_service`:
 
 If any field is genuinely not applicable, ask the principal how to fill it
 rather than guessing or sending it blank.
+
+**create-mailbox on a domain that already has DNS: pre-flight the conflict
+check.** Run the free `check-availability` on the mailbox address FIRST and
+inspect `domain.dns`: `purchasable: false` with
+`purchaseBlockers: ["dns_conflict"]` means existing MX/SPF records clash
+with the mail service, and the provider will NOT overwrite records it did
+not create. Reconcile DNS to the returned `requiredRecords` (via
+`set-dns-record`) BEFORE paying — a mailbox bought onto conflicting DNS
+fails at provisioning, and you will have to ride out the refund and pay
+again after fixing DNS anyway.
 
 **form-entity (entity formation): collect everything BEFORE the first
 purchase call.** Ask your principal in ONE message for all of it, and file
@@ -250,7 +275,12 @@ step 9 below.
      not required). Omitted, it defaults to `buyer-<last6>` from the
      wallet address (`registrationPrep.resolvedName` echoes the final
      value either way). Renames are not supported yet, so decide before
-     signing — the name is baked into the typed-data of step 5.
+     signing — the name is baked into the typed-data of step 5. Pass
+     `name` on the VERY FIRST call whenever the wallet might be fresh:
+     don't quote once to check `atomic` and then re-call to add it (that
+     re-quotes). If the wallet turns out to be registered already, `name`
+     is ignored with a harmless `name was ignored` warning — omit it on
+     purchases you KNOW come from a registered wallet.
    - `kind: "free"` + a `plan` for ownership-gated skills (see below).
 3. If `missing_fields` error: prompt the user for the listed fields and
    retry.
@@ -306,15 +336,19 @@ step 9 below.
      provider is holding them for a human. Keep polling patiently;
      they complete (or fail) when the review resolves.
    - `Capability required … TaskAccessAuthorization (action="get")`
-     (rpcCode `-32107`): every gated poll must carry a capability. NOT
-     transient — do not re-issue the same unsigned poll. Sign the error's
-     `details.data.capabilityChallenge.eip712TypedData` with the buyer
-     wallet and re-call `daski_get_task_status` with
+     (rpcCode `-32107`): on ownership-gated tasks (entity formation and
+     friends) your FIRST poll ALWAYS lands here — it is the expected
+     handshake, not a failure. Every gated poll must carry a capability;
+     NOT transient — do not re-issue the same unsigned poll. Sign the
+     error's `details.data.capabilityChallenge.eip712TypedData` with the
+     buyer wallet and re-call `daski_get_task_status` with
      `capability: { signature, authorization }` (echo
      `capabilityChallenge.authorization` verbatim). Keep passing that same
      signed capability on later polls and reuse it until its
-     `authorization.expiry`; omitting it produces a fresh challenge and an
-     unnecessary new signature.
+     `authorization.expiry` — including across principal turns: carry it
+     forward instead of re-signing a fresh challenge every time you check
+     the task. Omitting it produces a fresh challenge and an unnecessary
+     new signature.
    Surface artifacts (e.g., the registered domain certificate) and
    messages to the user.
    - A third branch for LONG-RUNNING tasks (entity formation and other
@@ -348,7 +382,11 @@ step 9 below.
 An artifact URL can be one-time, short-lived, and audience-bound. A bare GET
 returns a signing challenge rather than the document. When a principal asks
 for durable proof, retrieve and store the bytes; never describe the URL itself
-as durable proof and never claim delivery before retrieval succeeds.
+as durable proof and never claim delivery before retrieval succeeds. When you
+do hand the principal a link, frame it as ephemeral in the same breath and
+lead with the durable copy — e.g. "the attached file (SHA-256 …) is your
+permanent proof; this link re-downloads it for ~15 minutes" — never under a
+heading like "Working download link" with the caveats buried below.
 
 1. Call `daski_fetch_artifact` with the artifact `url` and the `taskId` that
    returned that URL. Omit `capability` on this first call.
