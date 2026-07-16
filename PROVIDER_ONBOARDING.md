@@ -6,7 +6,7 @@ that lives at `daski-provider`; this doc captures the wire contract so
 new providers can be implemented without reading the reference code
 line-by-line.
 
-This is a normative spec for the gateway↔provider boundary. Anything
+This is the normative contract for the gateway↔provider boundary. Anything
 the gateway depends on is here; anything that's an implementation detail
 of the reference provider is not.
 
