@@ -167,10 +167,11 @@ WHOIS registrant fields are ICANN-mandated and become public. Ask your
 principal for all of them in ONE message using this template, and fill every
 slot before calling `daski_buy_service`:
 
-- full name — the registrant of record: EITHER the natural person OR the
-  organization's legal name. `registrantName` is a single field and there
-  is no separate organization slot; ask which one goes on public WHOIS,
-  and NEVER concatenate person + company into one string.
+- full name — the natural-person contact for the registrant of record
+  (`registrantName`). If the registrant is an organization, pass its
+  legal name in the optional `registrantOrganization` field (it becomes
+  the public WHOIS Organization) and keep `registrantName` as the human
+  contact — NEVER concatenate person + company into one string.
 - monitored email (a verification link must be clicked within 15 days or
   the domain is suspended)
 - street address, city, postal code
