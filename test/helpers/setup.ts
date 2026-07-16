@@ -70,6 +70,8 @@ const TEST_DATABASE_URL =
 export interface TestGatewayOptions {
   providers?: Array<TestProviderDef>;
   initialTaskState?: MockTaskState;
+  /** Outbound provider/artifact fetch seam used by the MCP server. */
+  a2aFetch?: typeof fetch;
   /**
    * Optional override for the buyer agentURI fetcher
    * (`/register-prep` + `/register`). Defaults to a stub that returns
@@ -289,6 +291,7 @@ export async function startTestGateway(
     embedder: stubEmbedder(),
     startCacheRefreshLoop: false,
     agentCardFetchTimeoutMs: 2000,
+    a2aFetch: opts.a2aFetch,
     buyerAgentCardFetch,
     externalFacilitatorFetch: opts.externalFacilitatorFetch,
   });

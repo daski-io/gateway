@@ -243,8 +243,9 @@ step 9 below.
      + a longer `plan` — wallet has no agentId yet; the gateway will
      mint one in the same on-chain tx as the USDC settlement, so the
      payment is the Sybil tax for the new agentId. Buyer pays no gas.
-     Pass an optional `name` on this first call to choose the display
-     name minted with the new agentId — pick the name you want to be
+     Decide the name BEFORE either signature. Pass an optional `name` on
+     this first call to choose the display name minted with the new agentId
+     — pick the name you want to be
      known by on receipts and the marketplace (max 64 chars, uniqueness
      not required). Omitted, it defaults to `buyer-<last6>` from the
      wallet address (`registrationPrep.resolvedName` echoes the final
@@ -287,7 +288,12 @@ step 9 below.
    `transactionHash`, `chainId`, `buyerTokenId`, and the `serviceArgs`
    you'll submit. Sign the returned `eip712TypedData` with the wallet to
    produce the envelope signature.
-8. Call `daski_submit_task` AGAIN with the same inputs plus
+8. Call `daski_submit_task` AGAIN. The positive rule is: **second call =
+   first call's exact arguments + `envelopeAuth` + `messageId`, nothing
+   removed.** In particular, keep `serviceRef` and `transactionHash` for a
+   paid skill. If either was omitted and the gateway cannot restore it,
+   re-add both from settlement and resend the same signed retry — do not
+   re-sign. Pass
    `envelopeAuth: { signature: <from wallet>, authorization: <from step 7> }`
    and the SAME `messageId`. It returns a `taskId`.
 9. Poll `daski_get_task_status` every 2–5 seconds with `providerA2AUrl`
@@ -300,12 +306,15 @@ step 9 below.
      provider is holding them for a human. Keep polling patiently;
      they complete (or fail) when the review resolves.
    - `Capability required … TaskAccessAuthorization (action="get")`
-     (rpcCode `-32107`): the provider gates status reads per task. NOT
-     transient — do not re-issue the same poll. Sign the error's
+     (rpcCode `-32107`): every gated poll must carry a capability. NOT
+     transient — do not re-issue the same unsigned poll. Sign the error's
      `details.data.capabilityChallenge.eip712TypedData` with the buyer
      wallet and re-call `daski_get_task_status` with
      `capability: { signature, authorization }` (echo
-     `capabilityChallenge.authorization` verbatim).
+     `capabilityChallenge.authorization` verbatim). Keep passing that same
+     signed capability on later polls and reuse it until its
+     `authorization.expiry`; omitting it produces a fresh challenge and an
+     unnecessary new signature.
    Surface artifacts (e.g., the registered domain certificate) and
    messages to the user.
    - A third branch for LONG-RUNNING tasks (entity formation and other
@@ -321,7 +330,9 @@ step 9 below.
      `eip712TypedData` with the buyer wallet and re-call with
      `capability: { signature, authorization }`. The task then resumes
      — keep polling. No new payment is involved.
-10. After the task completes, two-call `daski_confirm_delivery`:
+10. After the task completes, retrieve any gated artifacts as described
+    below so you can inspect the actual deliverable. Then two-call
+    `daski_confirm_delivery`:
     first call WITHOUT `signature` (just `paymentId`, `attester`,
     `confirmation`) returns the EAS Attest typed-data. Wallet signs.
     Second call passes `{v,r,s}` plus the `deadline` echoed from the
@@ -331,6 +342,26 @@ step 9 below.
     the provider's reputation counters update from it. Skip this step only
     if the user explicitly says they don't want to leave a review — every
     completed task should normally produce one.
+
+### Downloading a gated artifact
+
+An artifact URL can be one-time, short-lived, and audience-bound. A bare GET
+returns a signing challenge rather than the document. When a principal asks
+for durable proof, retrieve and store the bytes; never describe the URL itself
+as durable proof and never claim delivery before retrieval succeeds.
+
+1. Call `daski_fetch_artifact` with the artifact `url` and the `taskId` that
+   returned that URL. Omit `capability` on this first call.
+2. Sign the returned `eip712TypedData` with the buyer agent wallet.
+3. Re-call `daski_fetch_artifact` with the exact same `url` + `taskId` and
+   `capability: { signature, authorization }`, echoing the returned
+   `authorization` verbatim. The tool sends the base64url-encoded
+   `X-Daski-Task-Capability` header and returns size-capped, MIME-verified
+   bytes as `artifact.bytesBase64`.
+4. Decode/store or attach those bytes before telling the principal you hold
+   the document. If the signed retry returns a fresh challenge, the old one
+   expired or was rejected; sign the fresh typed-data and retry. A formation
+   document link can be re-minted with `download-entity-document` when needed.
 
 ### Standalone registration (no purchase)
 
@@ -433,6 +464,12 @@ will reflect this.
   a fresh one and re-sign), `serviceArgs` mutated between sign and
   submit (rebuild + re-sign), or the wallet signing is not the agent
   wallet on file for the buyerTokenId.
+- rpcCode `-32110`, "The signed request does not match this request" — the
+  submitted `serviceArgs` differ from the body bound into the envelope
+  signature. Submit EXACTLY the args you signed. A common trap is adding an
+  optional field after signing (for example `ttl`) even though the provider
+  would have applied its own default. Either resend the exact signed args, or
+  build and sign a fresh envelope over the changed body.
 - `invalid_exact_evm_payload_signature` from `daski_settle_payment` —
   the wallet signed against a different `from` address than the one
   baked into the typed-data. Check that the wallet you're using for

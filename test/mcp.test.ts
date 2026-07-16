@@ -80,16 +80,17 @@ describe("hosted MCP — wallet-agnostic surface", () => {
     await gateway.close();
   });
 
-  it("tools/list returns 5 public + 3 advanced by default (deprecated hidden)", async () => {
+  it("tools/list returns 6 public + 3 advanced by default (deprecated hidden)", async () => {
     const { client, transport } = await connectClient(gateway.baseUrl);
     try {
       const tools = await client.listTools();
       const names = tools.tools.map((t) => t.name).sort();
       expect(names).toEqual(
         [
-          // Public (5)
+          // Public (6)
           "daski_buy_service",
           "daski_confirm_delivery",
+          "daski_fetch_artifact",
           "daski_get_task_status",
           "daski_search_services",
           "daski_submit_task",
@@ -118,6 +119,22 @@ describe("hosted MCP — wallet-agnostic surface", () => {
         expect(tool?.description).toContain("Operator is the legal party");
         expect(tool?.description).toContain("binds the Operator");
       }
+      expect(
+        tools.tools.find((tool) => tool.name === "daski_buy_service")
+          ?.description,
+      ).toContain("TOP-LEVEL `serviceArgs` keys");
+      expect(
+        tools.tools.find((tool) => tool.name === "daski_buy_service")
+          ?.description,
+      ).toContain("There is NO `officials`");
+      expect(
+        tools.tools.find((tool) => tool.name === "daski_submit_task")
+          ?.description,
+      ).toContain("NOTHING REMOVED");
+      expect(
+        tools.tools.find((tool) => tool.name === "daski_get_task_status")
+          ?.description,
+      ).toContain("reuse it until `authorization.expiry`");
     } finally {
       await transport.close();
     }
@@ -1277,6 +1294,93 @@ describe("hosted MCP — wallet-agnostic surface", () => {
       expect(body.authorization.paymentId).toBe("42");
       expect(body.messageId).toBe(body.authorization.messageId);
       expect(body.hint).toMatch(/Sign eip712TypedData/);
+    } finally {
+      await transport.close();
+    }
+  });
+
+  it("daski_submit_task restores paid-path fields on a signed retry", async () => {
+    const serviceArgs = { domain: "restored-paid-path.xyz" };
+    const transactionHash = `0x${"cd".repeat(32)}` as Hex;
+    const paymentId = "4242";
+    const { client, transport } = await connectClient(gateway.baseUrl);
+    try {
+      const purchase = parseResult<{
+        paymentRequirements: {
+          extra: { daski: { serviceRef: Hex } };
+        };
+      }>(
+        await client.callTool({
+          name: "daski_buy_service",
+          arguments: {
+            skillId: "register-domain",
+            providerTokenId: "2",
+            buyerTokenId: "5",
+            walletAddress: gateway.buyerAddress,
+            serviceArgs,
+          },
+        }),
+      );
+      const serviceRef = purchase.paymentRequirements.extra.daski.serviceRef;
+      expect(
+        await gateway.bundle.queries.recordChallengePaid(
+          serviceRef,
+          BigInt(paymentId),
+          transactionHash,
+        ),
+      ).toBe(true);
+
+      const firstArgs = {
+        providerA2AUrl: gateway.mockProvider.baseUrl + "/a2a",
+        skillId: "register-domain",
+        paymentId,
+        chainId: 84532,
+        buyerTokenId: "5",
+        serviceArgs,
+      };
+      const first = parseResult<{
+        messageId: string;
+        authorization: {
+          buyerTokenId: string;
+          skillId: string;
+          paymentId: string;
+          chainId: number;
+          messageId: string;
+          requestHash: string;
+          issuedAt: string;
+        };
+      }>(
+        await client.callTool({
+          name: "daski_submit_task",
+          arguments: firstArgs,
+        }),
+      );
+
+      const result = parseResult<{ taskId: string; state: string }>(
+        await client.callTool({
+          name: "daski_submit_task",
+          arguments: {
+            ...firstArgs,
+            messageId: first.messageId,
+            envelopeAuth: {
+              signature: `0x${"ab".repeat(65)}`,
+              authorization: first.authorization,
+            },
+          },
+        }),
+      );
+      expect(result.taskId).toBeDefined();
+      expect(result.state).toBe("submitted");
+
+      const sent = gateway.mockProvider.getLastSendBody();
+      const params = sent?.params as {
+        message: { metadata: Record<string, Record<string, unknown>> };
+      };
+      const metadata = Object.values(params.message.metadata)[0]!;
+      expect(metadata.serviceRef).toBe(serviceRef);
+      expect(metadata.transactionHash).toBe(transactionHash);
+      expect(metadata.quoteId).toBeDefined();
+      expect(metadata.quoteSignature).toBeDefined();
     } finally {
       await transport.close();
     }
