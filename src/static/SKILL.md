@@ -347,7 +347,12 @@ step 9 below.
    re-add both from settlement and resend the same signed retry — do not
    re-sign. Pass
    `envelopeAuth: { signature: <from wallet>, authorization: <from step 7> }`
-   and the SAME `messageId`. It returns a `taskId`.
+   and the SAME `messageId`. It returns a `taskId`. Long-running
+   submissions (`submitted`/`working`) also bundle a
+   `task_access_challenge` artifact — a ready-to-sign `action: "get"`
+   capability for polling this task. Sign it NOW and include
+   `capability: { signature, authorization }` on your first status poll
+   (step 9) to skip the first-poll `-32107` handshake entirely.
 9. Poll `daski_get_task_status` every 2–5 seconds with `providerA2AUrl`
    and `taskId` until `status` is `"completed"` or `"failed"`. For
    long-running tasks (domain registration regularly takes 30–120s),
@@ -364,8 +369,11 @@ step 9 below.
      patiently; the task completes (or fails) when the review resolves.
    - `Capability required … TaskAccessAuthorization (action="get")`
      (rpcCode `-32107`): on ownership-gated tasks (entity formation and
-     friends) your FIRST poll ALWAYS lands here — it is the expected
-     handshake, not a failure. Every gated poll must carry a capability;
+     friends) an UNSIGNED first poll lands here — it is the expected
+     handshake, not a failure. Skip it entirely when step 8 bundled a
+     `task_access_challenge` artifact: sign that typed-data up front and
+     pass `capability` on the very first poll. Every gated poll must
+     carry a capability;
      NOT transient — do not re-issue the same unsigned poll. Sign the
      error's `details.data.capabilityChallenge.eip712TypedData` with the
      buyer wallet and re-call `daski_get_task_status` with
