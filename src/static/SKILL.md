@@ -154,18 +154,29 @@ backtracking later:
   NOW, so you can pass it on the very first `daski_buy_service` call —
   quoting once to discover `atomic: true` and re-calling just to add
   `name` wastes a quote.
-- Note which delivery channels you actually have (an email tool, a
-  file-send tool, …). Principals frequently ask for a proof PDF to be
-  emailed or forwarded; if you have no such tool, say so when you FIRST
-  present the deliverable — you can hand over the bytes or a re-download
-  link instead — rather than walking it back after the principal asks.
+- Confirm which delivery channels you actually have (an email tool, a
+  file-send tool, …) at the START of the run. NEVER offer to "send",
+  "email", or "forward" a deliverable unless you have already confirmed a
+  matching tool exists — offering and then discovering you can't costs a
+  walk-back roundtrip with your principal. When you FIRST present a proof
+  artifact, state the channels you CAN use ("I can output the bytes/base64
+  here or hand you a re-download link; I have no email tool") instead of
+  asking an open-ended "where should I send it?".
 
 ## Workflow — paid skills (e.g. register-domain)
 
 **register-domain: collect everything BEFORE the first purchase call.** The
-WHOIS registrant fields are ICANN-mandated and become public. Ask your
-principal for all of them in ONE message using this template, and fill every
-slot before calling `daski_buy_service`:
+WHOIS registrant fields are ICANN-mandated and become public. For the price,
+use the free `check-availability` result — it already returns it. Do NOT call
+`get-pricing` before you have the WHOIS fields: register-domain's get-pricing
+validates the registrant contact and returns a wall of `missing` errors until
+every field is present, adding a noisy roundtrip for a number
+check-availability gave you for free. And if the wallet might be fresh, pass
+your chosen display `name` on the VERY FIRST `daski_buy_service` call (per
+"Resolve your tools up front" above) — don't quote once to discover
+`atomic: true` and then re-quote just to add it. Ask your principal for all
+of the fields in ONE message using this template, and fill every slot before
+calling `daski_buy_service`:
 
 - full name — the natural-person contact for the registrant of record
   (`registrantName`). If the registrant is an organization, pass its
@@ -179,7 +190,10 @@ slot before calling `daski_buy_service`:
   genuinely has none, re-use the city name; NEVER send an empty string and
   NEVER invent a region the principal did not give you — when unsure, ask.
 - country (ISO-3166 alpha-2, e.g. `PL` not `POL`)
-- phone (E.164, e.g. `+14155551234` — no dots/spaces/dashes)
+- phone (E.164, e.g. `+14155551234` — no dots/spaces/dashes). If the
+  principal supplies separators (e.g. `+48.221234567`), strip them — and
+  echo the exact normalized value you will submit back to the principal,
+  so a mis-parse gets caught before it lands on public WHOIS
 - WHOIS privacy yes/no — pass `whoisPrivacy: true` to request it (free
   where the TLD supports it). The `registration_details` artifact reports
   `"enabled" | "unavailable" | "not_requested"`; relay "unavailable" to the
@@ -197,6 +211,13 @@ not create. Reconcile DNS to the returned `requiredRecords` (via
 `set-dns-record`) BEFORE paying — a mailbox bought onto conflicting DNS
 fails at provisioning, and you will have to ride out the refund and pay
 again after fixing DNS anyway.
+
+**Mailbox attributes that are NOT server-configurable.** The mailbox
+provider exposes only create/renew/get-info/change-password/delete — there
+is no server-side "From" display-name / friendly-name setting. If a
+principal asks to set a mailbox display name, explain that it is configured
+per mail client (the From header on outgoing mail), not via Daski — don't
+go searching for a skill that doesn't exist.
 
 **form-entity (entity formation): collect everything BEFORE the first
 purchase call.** Ask your principal in ONE message for all of it, and file
@@ -326,20 +347,33 @@ step 9 below.
    re-add both from settlement and resend the same signed retry — do not
    re-sign. Pass
    `envelopeAuth: { signature: <from wallet>, authorization: <from step 7> }`
-   and the SAME `messageId`. It returns a `taskId`.
+   and the SAME `messageId`. It returns a `taskId`. Long-running
+   submissions (`submitted`/`working`) also bundle a
+   `task_access_challenge` artifact — a ready-to-sign `action: "get"`
+   capability for polling this task. Sign it NOW and include
+   `capability: { signature, authorization }` on your first status poll
+   (step 9) to skip the first-poll `-32107` handshake entirely.
 9. Poll `daski_get_task_status` every 2–5 seconds with `providerA2AUrl`
    and `taskId` until `status` is `"completed"` or `"failed"`. For
    long-running tasks (domain registration regularly takes 30–120s),
    pass `stream: true` to subscribe via SSE — but not all providers
    implement SubscribeToTask; on `streaming_unsupported`, fall back to
    plain polling as the error instructs. Two poll branches to know:
-   - Some tasks sit in `working` with "pending human review" — the
-     provider is holding them for a human. Keep polling patiently;
-     they complete (or fail) when the review resolves.
+   - Some tasks sit in `working` with a neutral review message (e.g.
+     "This request requires additional review before processing. No
+     action is needed.") — the provider is holding them for a human.
+     Relay the provider's message to your principal VERBATIM and do NOT
+     speculate about the reason (no guessing "sanctions screening",
+     "compliance flag", or the like) — you cannot see why the provider
+     is holding it, and a guess can alarm or mislead. Keep polling
+     patiently; the task completes (or fails) when the review resolves.
    - `Capability required … TaskAccessAuthorization (action="get")`
      (rpcCode `-32107`): on ownership-gated tasks (entity formation and
-     friends) your FIRST poll ALWAYS lands here — it is the expected
-     handshake, not a failure. Every gated poll must carry a capability;
+     friends) an UNSIGNED first poll lands here — it is the expected
+     handshake, not a failure. Skip it entirely when step 8 bundled a
+     `task_access_challenge` artifact: sign that typed-data up front and
+     pass `capability` on the very first poll. Every gated poll must
+     carry a capability;
      NOT transient — do not re-issue the same unsigned poll. Sign the
      error's `details.data.capabilityChallenge.eip712TypedData` with the
      buyer wallet and re-call `daski_get_task_status` with
@@ -349,7 +383,10 @@ step 9 below.
      `authorization.expiry` — including across principal turns: carry it
      forward instead of re-signing a fresh challenge every time you check
      the task. Omitting it produces a fresh challenge and an unnecessary
-     new signature.
+     new signature. (Advanced: you can skip the first-poll error too by
+     self-constructing the `action: "get"` authorization before polling —
+     the `daski_get_task_status` tool description carries the exact
+     template; read-style capabilities never burn nonces.)
    Surface artifacts (e.g., the registered domain certificate) and
    messages to the user.
    - A third branch for LONG-RUNNING tasks (entity formation and other

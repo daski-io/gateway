@@ -1608,7 +1608,11 @@ export async function createMcpServer(
             "ready-to-sign `capabilityChallenge` (action=\"input\"): sign " +
             "it with the buyer's agent wallet and re-call with " +
             "`capability: { signature, authorization }`. Do NOT combine " +
-            "with serviceRef/transactionHash/envelopeAuth.",
+            "with serviceRef/transactionHash/envelopeAuth — and NEVER set " +
+            "taskId on a capability-gated WRITE resubmit (input-required " +
+            "WITH a capability_challenge artifact, e.g. set-dns-record): " +
+            "that flow keeps the same contextId and rejects taskId as " +
+            "BAD_INPUT.",
         ),
     };
 
@@ -1657,18 +1661,36 @@ export async function createMcpServer(
           args.taskId &&
           (args.serviceRef || args.transactionHash || args.envelopeAuth)
         ) {
+          // Two distinct caller mistakes land here. With an envelopeAuth
+          // the caller is almost certainly mid-capability-gated-write
+          // (contextId flow) and wrongly added taskId; without one they
+          // are doing task input and wrongly added paid-skill refs. Give
+          // each the fix for ITS flow — the old one-size message told
+          // capability-flow callers to keep taskId, the opposite of the fix.
+          const inCapabilityFlow = Boolean(args.envelopeAuth);
           return errorJson({
             code: "BAD_INPUT",
-            message:
-              "taskId marks this call as task input to an existing task — " +
-              "do not combine it with serviceRef/transactionHash/" +
-              "envelopeAuth. Pass providerA2AUrl, skillId, paymentId, " +
-              "chainId, taskId and serviceArgs (the corrected payload); " +
-              "after the CAPABILITY_REQUIRED challenge, add capability.",
+            message: inCapabilityFlow
+              ? "You sent envelopeAuth, which marks this as a " +
+                "capability-gated write resubmit (input-required WITH a " +
+                "capability_challenge artifact) — that flow addresses the " +
+                "task via contextId. REMOVE taskId and resubmit with the " +
+                "same contextId, the fresh envelopeAuth + its messageId, " +
+                "capability, and serviceArgs. Only send taskId — with NO " +
+                "envelopeAuth/serviceRef/transactionHash — when answering " +
+                "a long-running task that went input-required WITHOUT a " +
+                "capability_challenge artifact."
+              : "taskId marks this call as task input to an existing " +
+                "task — do not combine it with serviceRef/transactionHash. " +
+                "Pass providerA2AUrl, skillId, paymentId, chainId, taskId " +
+                "and serviceArgs (the corrected payload); after the " +
+                "CAPABILITY_REQUIRED challenge, add capability.",
             recoverable: true,
-            next_action:
-              "Re-call with taskId + serviceArgs only (+ capability after " +
-              "signing the returned challenge).",
+            next_action: inCapabilityFlow
+              ? "Drop taskId; re-call with contextId + envelopeAuth + " +
+                "messageId + capability + serviceArgs."
+              : "Re-call with taskId + serviceArgs only (+ capability " +
+                "after signing the returned challenge).",
           });
         }
 
@@ -2205,12 +2227,13 @@ export async function createMcpServer(
           "Returns:",
           "- First call on a gated skill: `{ eip712TypedData, authorization, messageId, hint }`. Sign `eip712TypedData` with the buyer's agent wallet, then call again with `envelopeAuth: { signature, authorization }` and the SAME `messageId`.",
           "- Otherwise: `{ taskId, contextId, state, artifacts, statusMessage }`. `state` is one of `submitted | working | input-required | completed | failed`. `completed` and `failed` are terminal.",
-          "- Capability-gated skills (`set-dns-record`, `delete-dns-record`, `transfer-domain-out`, `change-password`, `delete-mailbox`) return `state: 'input-required'` with a `capability_challenge` artifact plus `nextEnvelopeAuthChallenge` (a pre-minted FRESH envelope — envelopes are single-use). Sign BOTH typed-datas, then resubmit with `capability`, the fresh `envelopeAuth` + its `messageId`, and the same `contextId`. Budget 3 signatures per gated write (initial envelope, capability, fresh envelope) — changing N records costs 3×N.",
+          "- Non-terminal (`submitted`/`working`) responses may bundle a `task_access_challenge` artifact: a ready-to-sign action=\"get\" TaskAccessAuthorization for THIS task. Sign its `eip712TypedData` with the buyer wallet right away and pass `capability: { signature, authorization }` on your very first `daski_get_task_status` poll — that skips the otherwise-guaranteed first-poll -32107 handshake. Reuse the same signed capability on every later poll until `authorization.expiry`.",
+          "- Capability-gated skills (`set-dns-record`, `delete-dns-record`, `transfer-domain-out`, `change-password`, `delete-mailbox`) return `state: 'input-required'` with a `capability_challenge` artifact plus `nextEnvelopeAuthChallenge` (a pre-minted FRESH envelope — envelopes are single-use). Sign BOTH typed-datas, then resubmit with `capability`, the fresh `envelopeAuth` + its `messageId`, and the same `contextId` — NOT `taskId` (mixing `taskId` into this resubmit is rejected as BAD_INPUT). Budget 3 signatures per gated write (initial envelope, capability, fresh envelope) — changing N records costs 3×N.",
           "",
           "Next step:",
           "- `state === 'completed'`: read `artifacts`, then optionally `daski_confirm_delivery`.",
-          "- `state === 'working' | 'submitted'`: poll with `daski_get_task_status`.",
-          "- `state === 'input-required'` WITH a `capability_challenge` artifact: sign the capability + the bundled fresh envelope, resubmit with the same `contextId` (capability-gated skill, two-call pattern).",
+          "- `state === 'working' | 'submitted'`: poll with `daski_get_task_status`. If the response bundled a `task_access_challenge` artifact, sign it first and include `capability` on that first poll.",
+          "- `state === 'input-required'` WITH a `capability_challenge` artifact (capability-gated write like `set-dns-record`): resubmit with the same `contextId`, the fresh `envelopeAuth` + its `messageId`, and `capability`. Do NOT set `taskId` and do NOT include `serviceRef`/`transactionHash` — passing `taskId` here is rejected as BAD_INPUT. Only the long-running correction branch (next bullet) uses `taskId`.",
           "- `state === 'input-required'` WITHOUT a `capability_challenge` artifact (a long-running task asking for corrected input): re-call with `taskId` set to the returned taskId and the FULL corrected `serviceArgs`; expect one CAPABILITY_REQUIRED round-trip (see Inputs, task input).",
           "- `state === 'failed'`: read `statusMessage`, optionally `daski_confirm_delivery` with `confirmation: 'NotConfirmed'`.",
           "- On PROVIDER_TIMEOUT or a provider-side error AFTER you submitted a signed envelope: the envelope may already be consumed. Never re-send the same messageId/envelope (ENVELOPE_REPLAY). Confirm actual state with a read-only skill first; if you must retry, start from a fresh first call (new messageId).",
@@ -2305,7 +2328,7 @@ export async function createMcpServer(
           "When to use:",
           "- After `daski_submit_task` returned a non-terminal state (`submitted` or `working`).",
           "- The user asks \"is the domain registered yet?\" or similar.",
-          "- You want live progress updates for a long-running task (set `stream: true`).",
+          "- You want live progress updates for a long-running task (set `stream: true`). NOTE: many providers do not implement SubscribeToTask (the current entity-formation provider does not) — a `streaming_unsupported` error means switch to `stream: false` polling; when you don't know a provider supports SSE, plain polling is the cheaper first choice.",
           "",
           "When NOT to use:",
           "- You haven't dispatched a task yet — call `daski_submit_task` first.",
@@ -2317,7 +2340,9 @@ export async function createMcpServer(
           "- `state === 'completed'`: optionally `daski_confirm_delivery`.",
           "- `state === 'working' | 'submitted'`: poll again after a short delay (5–10 seconds for fast skills, 30+ for slow ones). A task can sit in `working` longer when the provider holds it for human review — keep polling patiently.",
           "- `state === 'input-required'`: the task is asking for corrected/additional input — the status message lists exactly what was rejected. Call `daski_submit_task` with `taskId` set to THIS task's id and the corrected `serviceArgs` (resend the FULL payload, not a delta — providers persist requests redacted and cannot merge partials). Expect one CAPABILITY_REQUIRED round-trip: sign the returned `capabilityChallenge.eip712TypedData` (action=\"input\") with the buyer wallet and re-call with `capability`.",
-          "- `PROVIDER_ERROR` with `rpcCode: -32107` (\"Capability required\"): expect your FIRST poll on an ownership-gated task (e.g. entity formation) to land here — it is the normal handshake, not a failure. Every gated poll must include a TaskAccessAuthorization. This is NOT transient — the same unsigned poll fails identically. Sign `details.data.capabilityChallenge.eip712TypedData`, then re-call with `capability: { signature, authorization }`, echoing the authorization verbatim. Keep passing that signed capability on later polls and reuse it until `authorization.expiry` — including across conversation turns; re-signing a fresh challenge on every check needlessly doubles your signature count.",
+          "- BEFORE the first poll of a gated task: if the `daski_submit_task` response bundled a `task_access_challenge` artifact, sign its `eip712TypedData` and pass `capability` on the FIRST poll — no error roundtrip at all. The -32107 handshake below is the fallback for submissions without that artifact or after the capability expired.",
+          "- `PROVIDER_ERROR` with `rpcCode: -32107` (\"Capability required\"): expect an UNSIGNED first poll on an ownership-gated task (e.g. entity formation) to land here — it is the normal handshake, not a failure. Every gated poll must include a TaskAccessAuthorization. This is NOT transient — the same unsigned poll fails identically. Sign `details.data.capabilityChallenge.eip712TypedData`, then re-call with `capability: { signature, authorization }`, echoing the authorization verbatim. Keep passing that signed capability on later polls and reuse it until `authorization.expiry` — including across conversation turns; re-signing a fresh challenge on every check needlessly doubles your signature count.",
+          "- ADVANCED — no bundled `task_access_challenge` and you still want to skip the first-poll error: for reads you may CONSTRUCT the authorization yourself instead of waiting for the challenge. Sign typed-data with message `{ buyerTokenId, taskId, action: \"get\", nonce: <any fresh 0x + 64-hex-char value>, expiry: <unix seconds, at most 15 min ahead> }`, types `TaskAccessAuthorization { buyerTokenId: uint256, taskId: string, action: string, nonce: bytes32, expiry: uint256 }`, and the domain copied VERBATIM from your envelope-auth typed-data (same name/version/chainId/verifyingContract) — then pass it as `capability` on the very first poll. Read-style `action: \"get\"` never burns nonces, so a made-up nonce is fine and the same signed capability stays reusable until expiry. If a self-built capability is rejected (BAD_SIGNATURE / FIELD_MISMATCH), fall back to signing the challenge from the -32107 error — that path always works.",
         ].join("\n"),
         inputSchema: {
           providerA2AUrl: z.string(),
@@ -2330,10 +2355,16 @@ export async function createMcpServer(
             .optional()
             .describe(
               "TaskAccessAuthorization for providers that gate GetTask " +
-                "(rpcCode -32107). Sign the failed poll's " +
+                "(rpcCode -32107). Best source: the `task_access_challenge` " +
+                "artifact bundled in the daski_submit_task response — sign " +
+                "it and pass it here on the FIRST poll. Otherwise sign the " +
+                "failed poll's " +
                 "details.data.capabilityChallenge.eip712TypedData with the " +
                 "buyer wallet, pass its hex signature here and echo " +
-                "capabilityChallenge.authorization verbatim.",
+                "capabilityChallenge.authorization verbatim. Reuse until " +
+                "authorization.expiry. You may also self-construct an " +
+                "action=\"get\" authorization to skip the first-poll error " +
+                "— see the ADVANCED bullet in the tool description.",
             ),
           stream: z
             .boolean()
