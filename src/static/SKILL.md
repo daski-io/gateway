@@ -171,12 +171,15 @@ use the free `check-availability` result — it already returns it. Do NOT call
 `get-pricing` before you have the WHOIS fields: register-domain's get-pricing
 validates the registrant contact and returns a wall of `missing` errors until
 every field is present, adding a noisy roundtrip for a number
-check-availability gave you for free. And if the wallet might be fresh, pass
-your chosen display `name` on the VERY FIRST `daski_buy_service` call (per
-"Resolve your tools up front" above) — don't quote once to discover
-`atomic: true` and then re-quote just to add it. Ask your principal for all
-of the fields in ONE message using this template, and fill every slot before
-calling `daski_buy_service`:
+check-availability gave you for free. ALWAYS pass your chosen display `name`
+on the VERY FIRST `daski_buy_service` call for a wallet unless you have
+CONFIRMED it is already registered — an already-registered wallet ignores it
+harmlessly, and quoting once to discover `atomic: true` and then re-quoting
+just to add it discards the first quote. Derive the name from your
+PRINCIPAL's business (ask if unclear), never from the provider or any
+counterparty — it permanently names YOUR buyer identity. Ask your principal
+for all of the fields in ONE message using this template, and fill every
+slot before calling `daski_buy_service`:
 
 - full name — the natural-person contact for the registrant of record
   (`registrantName`). If the registrant is an organization, pass its
@@ -192,8 +195,10 @@ calling `daski_buy_service`:
 - country (ISO-3166 alpha-2, e.g. `PL` not `POL`)
 - phone (E.164, e.g. `+14155551234` — no dots/spaces/dashes). If the
   principal supplies separators (e.g. `+48.221234567`), strip them — and
-  echo the exact normalized value you will submit back to the principal,
-  so a mis-parse gets caught before it lands on public WHOIS
+  you MUST echo the exact normalized value back to the principal and get
+  their confirmation BEFORE the purchase call. The echo exists to catch
+  mis-parses before they land on public WHOIS; a silent normalization
+  defeats it
 - WHOIS privacy yes/no — pass `whoisPrivacy: true` to request it (free
   where the TLD supports it). The `registration_details` artifact reports
   `"enabled" | "unavailable" | "not_requested"`; relay "unavailable" to the
@@ -210,7 +215,12 @@ with the mail service, and the provider will NOT overwrite records it did
 not create. Reconcile DNS to the returned `requiredRecords` (via
 `set-dns-record`) BEFORE paying — a mailbox bought onto conflicting DNS
 fails at provisioning, and you will have to ride out the refund and pay
-again after fixing DNS anyway.
+again after fixing DNS anyway. BUT: if reconciling means REPLACING an MX
+(or other mail record) that was deliberately configured — by the principal,
+or by you earlier in this session at their request — confirm with the
+principal before overwriting. "Add a mailbox" does not imply "re-route the
+domain's mail"; changing a domain-wide MX silently redirects ALL existing
+mail flow.
 
 **Mailbox attributes that are NOT server-configurable.** The mailbox
 provider exposes only create/renew/get-info/change-password/delete — there
@@ -231,7 +241,10 @@ with your principal before paying):
   do not defer it, or you'll force a second roundtrip right before payment.
 - the **contact person**: full legal name, phone (E.164, no separators),
   date of birth (`YYYY-MM-DD` — used only for sanctions screening, never
-  published), and full address `{ line1, city, state, postalCode, country }`
+  published), and full address `{ line1, city, state, postalCode, country }`.
+  This is typically a member, manager, or officer the principal designates
+  to receive filings correspondence — ask WHO it should be; don't invent
+  the role or offer speculative options
 - the **company principal address** and **mailing address** (often the same)
 - the **management structure** — pass `managementType` as a TOP-LEVEL
   field in `serviceArgs` (a sibling of `companyName`/`contactEmail`, NOT
@@ -243,7 +256,12 @@ with your principal before paying):
   fields silently ignored and then rejected as missing.
 - **every member/manager/officer**: natural persons as
   `{ firstName, lastName, dob, address }`; company parties as
-  `{ isCompany: true, companyName }` (companies have no DOB)
+  `{ isCompany: true, companyName }` (companies have no DOB). Ownership
+  percentages / splits are NOT formation fields — a stated split (e.g.
+  50/50) lives in the operating agreement, not in `serviceArgs`, and
+  unknown keys on member entries (e.g. an invented `ownershipPercentage`)
+  are silently ignored, so do not attach them expecting effect; tell the
+  principal where the split actually gets recorded
 - the **state** as a 2-letter code (`"WY"`, not `"Wyoming"`) and the
   **entityType** as the full catalog label (`"Limited Liability Company"`,
   not `"LLC"`) — get both from `get-pricing`: call it with
@@ -272,6 +290,15 @@ serviceArgs = {
 }
 ```
 
+**Sanity-check party data BEFORE paying.** Before the purchase call, scan
+what the principal gave you: DOBs that imply a minor or an implausible age,
+phone numbers that don't normalize, incomplete addresses, duplicate or
+missing parties. Query the principal about anomalies ("this DOB makes the
+member 15 — is that a typo?") and get the correction FIRST — a bad value
+caught pre-purchase costs one question; the same value caught by the state
+parks the PAID filing `input-required` and you ride out a full correction
+round trip.
+
 Formation is long-running: after payment the task stays `working` through
 state processing (minutes to weeks) and may go `input-required` with a
 message naming the exact fields to correct — see the correction branch in
@@ -297,12 +324,15 @@ step 9 below.
      not required). Omitted, it defaults to `buyer-<last6>` from the
      wallet address (`registrationPrep.resolvedName` echoes the final
      value either way). Renames are not supported yet, so decide before
-     signing — the name is baked into the typed-data of step 5. Pass
-     `name` on the VERY FIRST call whenever the wallet might be fresh:
-     don't quote once to check `atomic` and then re-call to add it (that
-     re-quotes). If the wallet turns out to be registered already, `name`
-     is ignored with a harmless `name was ignored` warning — omit it on
-     purchases you KNOW come from a registered wallet.
+     signing — the name is baked into the typed-data of step 5. ALWAYS
+     pass `name` on the VERY FIRST call unless you have CONFIRMED the
+     wallet is already registered: don't quote once to check `atomic` and
+     then re-call to add it (that re-quotes and discards the first
+     answer). If the wallet turns out to be registered already, `name` is
+     ignored with a harmless `name was ignored` warning. Derive the name
+     from your PRINCIPAL's business — ask if unclear — never from the
+     provider or counterparty you are buying from: this permanently names
+     YOUR buyer identity on receipts and the marketplace.
    - `kind: "free"` + a `plan` for ownership-gated skills (see below).
 3. If `missing_fields` error: prompt the user for the listed fields and
    retry.
@@ -362,11 +392,18 @@ step 9 below.
    - Some tasks sit in `working` with a neutral review message (e.g.
      "This request requires additional review before processing. No
      action is needed.") — the provider is holding them for a human.
-     Relay the provider's message to your principal VERBATIM and do NOT
-     speculate about the reason (no guessing "sanctions screening",
-     "compliance flag", or the like) — you cannot see why the provider
-     is holding it, and a guess can alarm or mislead. Keep polling
-     patiently; the task completes (or fails) when the review resolves.
+     Such status messages may carry a data part with
+     `relay_verbatim: true` / `no_speculation: true`: that flag is
+     binding. Relay the provider's message text to your principal
+     VERBATIM — a good relay is "The provider says: '<message text>'.
+     I'll keep checking and tell you the moment it moves." — and add
+     NOTHING of your own: no guessed reason ("sanctions screening",
+     "compliance flag"), no likelihood ("these usually clear"), and no
+     invented timeline. If the principal asks how long, say that no
+     completion estimate is available — NEVER state a duration that no
+     returned data contains, and never attribute one to the quote or
+     provider. Keep polling patiently; the task completes (or fails)
+     when the review resolves.
    - `Capability required … TaskAccessAuthorization (action="get")`
      (rpcCode `-32107`): on ownership-gated tasks (entity formation and
      friends) an UNSIGNED first poll lands here — it is the expected
@@ -424,7 +461,12 @@ as durable proof and never claim delivery before retrieval succeeds. When you
 do hand the principal a link, frame it as ephemeral in the same breath and
 lead with the durable copy — e.g. "the attached file (SHA-256 …) is your
 permanent proof; this link re-downloads it for ~15 minutes" — never under a
-heading like "Working download link" with the caveats buried below.
+heading like "Working download link" with the caveats buried below. If the
+principal explicitly asks for a "working download link", do not mirror
+their words back and disclaim afterwards: state up front what the link
+really is ("these links are single-use and expire in ~15 minutes — I've
+retrieved the document itself as your permanent copy, and I can mint a
+fresh link any time you want to re-download").
 
 1. Call `daski_fetch_artifact` with the artifact `url` and the `taskId` that
    returned that URL. Omit `capability` on this first call.
@@ -509,7 +551,10 @@ destructive or credential writes) authorize the action.
    `daski_submit_task` once more with
    `capability: { signature, authorization }`, `envelopeAuth` from the
    fresh challenge, its `messageId`, the same `serviceArgs`/`paymentId`,
-   and the `contextId` returned in step 4.
+   and the `contextId` returned in step 4. "Same `serviceArgs`" means
+   BYTE-IDENTICAL to what you signed: adding, dropping, normalizing, or
+   defaulting any field after signing (the classic is appending `ttl`)
+   changes the canonical hash and fails with -32110.
 6. Poll `daski_get_task_status` (or pass `stream: true`) until completion.
 
 Open free skills (`check-availability`, `get-pricing`) skip the
