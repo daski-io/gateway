@@ -134,17 +134,42 @@ async function readArtifact(
           "The response claimed application/pdf but did not contain a PDF header.",
       });
     }
-    return mcpJson({
+    const base64 = Buffer.from(bytes).toString("base64");
+    const filename = parseFilename(res.headers.get("content-disposition"));
+    const result = mcpJson({
       taskId: args.taskId,
       artifact: {
-        bytesBase64: Buffer.from(bytes).toString("base64"),
+        bytesBase64: base64,
         encoding: "base64",
         mimeType: actual,
-        filename: parseFilename(res.headers.get("content-disposition")),
+        filename,
         sizeBytes: bytes.byteLength,
         sha256: createHash("sha256").update(bytes).digest("hex"),
       },
+      delivery: {
+        principalUsable: true,
+        kind: "embedded_file",
+        filename: filename ?? "artifact",
+        note:
+          "The document is attached to this result as an MCP embedded " +
+          "resource — a real file, not just JSON. Hand THAT (or the decoded " +
+          "bytes) to your principal; retrieval alone is not delivery.",
+      },
     });
+    // The embedded resource makes the document principal-usable directly:
+    // MCP clients render/save resource blocks, where JSON base64 is only
+    // ever agent-readable.
+    result.content.push({
+      type: "resource",
+      resource: {
+        uri:
+          `daski-artifact://${encodeURIComponent(args.taskId)}/` +
+          encodeURIComponent(filename ?? "artifact"),
+        mimeType: actual,
+        blob: base64,
+      },
+    });
+    return result;
   } catch (error) {
     return mcpError({
       code: readErrorCode(error, "ARTIFACT_READ_FAILED"),

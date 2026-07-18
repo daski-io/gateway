@@ -54,6 +54,7 @@ import { verifyAndSettle, verifyAndSettleWithRegistration } from "../payment/ver
 import { runConfirmDelivery } from "../payment/confirm.js";
 import {
   buildBuyerAgentURI,
+  checkPhoneConfirmation,
   checkPhoneFields,
   defaultBuyerName,
   findUnknownServiceArgKeys,
@@ -1694,6 +1695,48 @@ export async function createMcpServer(
           });
         }
 
+        // Stateless drift check: when the caller supplies a signed
+        // envelope, the serviceArgs they send MUST canonically hash to the
+        // requestHash inside it. Catching the mismatch here turns the
+        // provider's post-roundtrip -32110 into an instant local error
+        // (classic drift: appending a defaulted `ttl` to a capability
+        // resubmit after signing — both domain scenarios tripped it).
+        if (args.envelopeAuth?.authorization?.requestHash) {
+          let sentHash: Hex;
+          try {
+            sentHash = computeRequestHash(args.serviceArgs ?? {});
+          } catch (error) {
+            return errorJson({
+              code: "BAD_INPUT",
+              message: `serviceArgs cannot be canonically hashed: ${(error as Error).message}`,
+            });
+          }
+          if (
+            sentHash.toLowerCase() !==
+            args.envelopeAuth.authorization.requestHash.toLowerCase()
+          ) {
+            return errorJson({
+              code: "REQUEST_HASH_MISMATCH",
+              message:
+                "serviceArgs do not hash to envelopeAuth.authorization" +
+                ".requestHash — the body changed AFTER the envelope was " +
+                "signed (classic: appending a field the provider would " +
+                "have defaulted, like `ttl`, on a capability resubmit; " +
+                "authorization fields such as recordTtl are signature " +
+                "bindings, never serviceArgs fields). Nothing was sent to " +
+                "the provider. Resend the EXACT serviceArgs object the " +
+                "envelope was built from — same fields, same values, no " +
+                "additions — keeping the SAME signatures; or start a " +
+                "fresh envelope challenge for the genuinely new body.",
+              recoverable: true,
+              next_action:
+                "Retry with the original serviceArgs unchanged (same " +
+                "envelopeAuth + capability), or request a new envelope " +
+                "challenge if you intend different args.",
+            });
+          }
+        }
+
         // Envelope-auth is needed for every paid skill and every
         // ownership-/capability-gated free skill. The skill's advertised
         // gating in the discovery cache is the source of truth: agents
@@ -2335,7 +2378,8 @@ export async function createMcpServer(
           "- The task is already `completed` or `failed` — those are terminal; just read the `artifacts` you already have.",
           "",
           "Inputs: `providerA2AUrl`, `taskId`; optional `capability` (see below); optional `stream` (default `false`); optional `streamingTimeoutMs` (default `120000`, i.e. 2 min).",
-          "Returns: `{ state, artifacts, messages }`. `state` is one of `submitted | working | input-required | completed | failed`. `completed` and `failed` are terminal — stop polling.",
+          "Returns: `{ state, artifacts, messages, replyPolicy? }`. `state` is one of `submitted | working | input-required | completed | failed`. `completed` and `failed` are terminal — stop polling. `messages` preserves provider status parts: entries carry `content` (text) or `data` (structured flags).",
+          "replyPolicy: when present with `mode: \"verbatim_only\"`, `replyPolicy.text` IS the complete principal-facing update. It is BINDING: add no reason, likelihood, timeline, or next-step prediction of your own — even when the principal explicitly asks for \"your read\", \"why?\", or \"what happens next\" (those requests do not lift it). Beyond the verbatim text you may state only what the response contains: the state, that the message is unchanged, and that no completion estimate is available.",
           "Next step:",
           "- `state === 'completed'`: optionally `daski_confirm_delivery`.",
           "- `state === 'working' | 'submitted'`: poll again after a short delay (5–10 seconds for fast skills, 30+ for slow ones). A task can sit in `working` longer when the provider holds it for human review — keep polling patiently.",
@@ -2493,23 +2537,48 @@ export async function createMcpServer(
             }
           }
         }
+        // Status-message DATA parts carry provider reply policy (e.g. the
+        // verbatim-hold flags {relay_verbatim, no_speculation}). Dropping
+        // them here is what let agents speculate on review holds: the flag
+        // arrived once on the submit response and then vanished on the
+        // very poll that preceded the violation. Preserve every part, and
+        // lift a recognized policy to a top-level `replyPolicy` the agent
+        // cannot miss.
         const messages: Array<Record<string, unknown>> = [];
+        const statusRole = normalizeRole(result.status?.message?.role) ?? "agent";
+        const statusTexts: string[] = [];
+        let policyFlags: Record<string, unknown> | null = null;
         for (const p of result.status?.message?.parts ?? []) {
           if (partKind(p) === "text" && typeof p.text === "string") {
+            statusTexts.push(p.text);
             messages.push({
               // Provider may send ROLE_USER/ROLE_AGENT (v1.0) or
               // user/agent (legacy). MCP consumers expect lowercase.
-              role: normalizeRole(result.status?.message?.role) ?? "agent",
+              role: statusRole,
               content: p.text,
             });
+          } else if (partKind(p) === "data" && p.data != null) {
+            messages.push({ role: statusRole, data: p.data });
+            const d = p.data as Record<string, unknown>;
+            if (d.relay_verbatim === true || d.no_speculation === true) {
+              policyFlags = d;
+            }
           }
         }
+        const replyPolicy = policyFlags
+          ? {
+              mode: "verbatim_only" as const,
+              text: statusTexts.join("\n") || null,
+              flags: policyFlags,
+            }
+          : null;
         return json({
           taskId: typeof result.id === "string" ? result.id : args.taskId,
           contextId: result.contextId ?? null,
           status: normalizeState(result.status?.state) ?? "unknown",
           artifacts,
           messages,
+          ...(replyPolicy ? { replyPolicy } : {}),
         });
     }
 
@@ -3885,6 +3954,17 @@ export async function createMcpServer(
                 "`+15555550100`, NOT `+1.555.555.0100` or `(555) 555-0100`). " +
                 "Most provider-side validators reject formatted strings.",
             ),
+          confirmationToken: z
+            .string()
+            .optional()
+            .describe(
+              "Required whenever serviceArgs carry phone field(s): the " +
+                "first call fails with PHONE_CONFIRMATION_REQUIRED and a " +
+                "token bound to the exact values. Echo the phone value(s) " +
+                "to your principal (showing any normalization you applied), " +
+                "get an explicit confirmation, then retry the SAME call " +
+                "with this token. Changing a phone value invalidates it.",
+            ),
           amount: z.string().optional(),
           paymentId: z
             .string()
@@ -4030,6 +4110,16 @@ export async function createMcpServer(
         // digits, no separators.
         const phoneError = checkPhoneFields(serviceArgs);
         if (phoneError) return phoneError;
+
+        // Format above, CONFIRMATION here: a validly-E.164 number the
+        // agent normalized silently is exactly what lands wrong on public
+        // WHOIS. Plan path only — the x402 retry returned earlier, so a
+        // signed payment is never blocked behind this gate.
+        const confirmError = checkPhoneConfirmation(
+          serviceArgs,
+          args.confirmationToken,
+        );
+        if (confirmError) return confirmError;
 
         // Resolve buyerAgentId. A non-zero caller-supplied value wins;
         // missing OR an explicit "0" both fall through to the on-chain

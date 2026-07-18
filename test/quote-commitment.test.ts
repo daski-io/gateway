@@ -5,6 +5,7 @@ import { privateKeyToAccount } from "viem/accounts";
 import { encodeAbiParameters, keccak256 } from "viem";
 import type { Hex } from "viem";
 import { startTestGateway, type TestGateway } from "./helpers/setup.js";
+import { computeRequestHash } from "../src/auth/envelope.js";
 
 // ── Provider quote-commitment integration (provider audit 1.1) ──────────
 //
@@ -616,7 +617,9 @@ describe("provider quote-commitment integration", () => {
                 paymentId: settled.paymentId,
                 chainId: 84532,
                 messageId,
-                requestHash: ("0x" + "00".repeat(32)) as string,
+                // Must be the true canonical hash of the serviceArgs above —
+                // the gateway now rejects body/envelope drift before dispatch.
+                requestHash: computeRequestHash({ domain: "quoted.xyz" }),
                 issuedAt: "1",
               },
             },

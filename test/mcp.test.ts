@@ -8,6 +8,8 @@ import {
   SERVICE_TYPE_SLUGS,
 } from "../src/serviceTaxonomy.js";
 import { startTestGateway, type TestGateway } from "./helpers/setup.js";
+import { computeRequestHash } from "../src/auth/envelope.js";
+import { expectedPhoneConfirmationToken } from "../src/mcp/util.js";
 import {
   AGENT_AUTHORITY,
   MCP_LEGAL_INSTRUCTIONS,
@@ -915,6 +917,12 @@ describe("hosted MCP — wallet-agnostic surface", () => {
             domain: "atomic.xyz",
             registrantPhone: "+15555550100",
           },
+          // Phone-bearing buys must pass the confirmation gate before any
+          // /quote roundtrip; this test targets provider-side quote errors,
+          // so satisfy the gate up front.
+          confirmationToken: expectedPhoneConfirmationToken([
+            { field: "registrantPhone", value: "+15555550100" },
+          ]),
         },
       });
       const r = result as ToolResultContent;
@@ -1693,7 +1701,9 @@ describe("hosted MCP — wallet-agnostic surface", () => {
                 paymentId: "5",
                 chainId: 84532,
                 messageId: "msg-used-1",
-                requestHash: ("0x" + "00".repeat(32)) as string,
+                // Must be the true canonical hash of the serviceArgs below —
+                // the gateway now rejects body/envelope drift before dispatch.
+                requestHash: computeRequestHash({ address: "pawel@uat.example" }),
                 issuedAt: "1",
               },
             },

@@ -1,3 +1,4 @@
+import { createHmac, randomBytes } from "node:crypto";
 import type { Hex } from "../types.js";
 
 // ── Default buyer agentURI (ERC-8004 §2.2 conformance) ─────────────────────
@@ -150,9 +151,21 @@ export interface McpErrorPayload {
 // Index signature mirrors the SDK's CallToolResult shape (which extends
 // Result and therefore allows arbitrary string-keyed extensions); without
 // it TypeScript rejects passing this value where the SDK expects its
-// inferred return type.
+// inferred return type. Content is text-first; tools that hand real files
+// to the caller (artifact fetch) append an MCP embedded-resource block so
+// clients can render/save the document instead of re-parsing JSON base64.
 export interface McpToolResult {
-  content: Array<{ type: "text"; text: string }>;
+  content: Array<
+    | { type: "text"; text: string }
+    | {
+        type: "resource";
+        // Mirrors the SDK's EmbeddedResource union exactly: text XOR blob,
+        // each required in its branch.
+        resource:
+          | { uri: string; text: string; mimeType?: string }
+          | { uri: string; blob: string; mimeType?: string };
+      }
+  >;
   isError?: boolean;
   _meta?: Record<string, unknown>;
   [key: string]: unknown;
@@ -279,6 +292,80 @@ export function checkPhoneFields(
 ): McpToolResult | null {
   const bad = findInvalidPhoneField(args);
   return bad ? phoneFormatError(bad) : null;
+}
+
+// ── Phone confirmation gate ────────────────────────────────────────────────
+//
+// The E.164 check above catches FORMAT; it cannot catch a wrong-but-valid
+// number. Live runs showed agents silently normalizing a principal's
+// dotted phone and paying without ever echoing the result — numbers that
+// land verbatim on public WHOIS. This gate makes the first plan-building
+// call that carries phone fields fail with PHONE_CONFIRMATION_REQUIRED
+// and a token HMAC-bound to the exact values; the caller is instructed to
+// echo the numbers to the principal and retry with the token. No stateless
+// scheme can PROVE the principal answered — the token's job is to make
+// skipping the confirm turn a deliberate act instead of an accident, and
+// to invalidate the confirmation whenever a value changes. The secret is
+// per-process: after a restart (or on a sibling instance) the token
+// simply re-issues, costing one extra roundtrip, never blocking.
+const PHONE_CONFIRMATION_SECRET = randomBytes(32);
+
+export function presentPhoneFields(
+  args: Record<string, unknown>,
+): Array<{ field: string; value: string }> {
+  const out: Array<{ field: string; value: string }> = [];
+  for (const f of PHONE_FIELDS) {
+    const v = args[f];
+    if (typeof v === "string" && v !== "") out.push({ field: f, value: v });
+  }
+  return out;
+}
+
+export function expectedPhoneConfirmationToken(
+  phones: Array<{ field: string; value: string }>,
+): string {
+  const canonical = phones
+    .map(({ field, value }) => `${field}=${value}`)
+    .sort()
+    .join("&");
+  return createHmac("sha256", PHONE_CONFIRMATION_SECRET)
+    .update(canonical)
+    .digest("hex")
+    .slice(0, 32);
+}
+
+export function checkPhoneConfirmation(
+  args: Record<string, unknown>,
+  confirmationToken: string | undefined,
+): McpToolResult | null {
+  const phones = presentPhoneFields(args);
+  if (phones.length === 0) return null;
+  const expected = expectedPhoneConfirmationToken(phones);
+  if (confirmationToken === expected) return null;
+  return mcpError({
+    code: "PHONE_CONFIRMATION_REQUIRED",
+    message:
+      "Phone number(s) in serviceArgs need your principal's explicit " +
+      "confirmation before a payment plan is prepared: " +
+      phones.map(({ field, value }) => `${field}='${value}'`).join(", ") +
+      ". They will appear on public WHOIS exactly as sent. Echo the EXACT " +
+      "value(s) back to your principal — if you normalized the number " +
+      "(stripped dots/spaces/dashes), show the normalized form and say you " +
+      "did (e.g. \"I'll register with phone +48221234567, normalized from " +
+      "+48.221234567 — confirm or correct\"). Only after an explicit yes, " +
+      "retry this same call with `confirmationToken` added.",
+    details: {
+      phones: Object.fromEntries(phones.map(({ field, value }) => [field, value])),
+      confirmationToken: expected,
+      tokenBinding:
+        "bound to these exact field=value pairs — changing any phone value " +
+        "re-requires confirmation",
+    },
+    recoverable: true,
+    next_action:
+      "Echo the exact phone value(s) to the principal, get an explicit " +
+      "confirmation, then retry with confirmationToken.",
+  });
 }
 
 // Top-level serviceArgs keys that are always legitimate even though no

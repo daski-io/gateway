@@ -160,8 +160,15 @@ backtracking later:
   matching tool exists — offering and then discovering you can't costs a
   walk-back roundtrip with your principal. When you FIRST present a proof
   artifact, state the channels you CAN use ("I can output the bytes/base64
-  here or hand you a re-download link; I have no email tool") instead of
-  asking an open-ended "where should I send it?".
+  here or hand you a re-download link; I have no email tool") — and name
+  what you CANNOT. Open-ended offers are promises too: do not close with
+  "let me know if you want it saved/emailed anywhere" unless you hold a
+  tool that can do exactly that. Two traps that have burned agents:
+  Daski's mailbox service only PROVISIONS mailboxes (IMAP/SMTP
+  credentials) — having it in the catalog gives you NO send capability;
+  and the PROVIDER's own emails are only what a returned receipt says
+  they are (see `emailDelivery` on formation completion) — never assert a
+  provider emailed a document unless a returned field explicitly says so.
 
 ## Workflow — paid skills (e.g. register-domain)
 
@@ -198,7 +205,12 @@ slot before calling `daski_buy_service`:
   you MUST echo the exact normalized value back to the principal and get
   their confirmation BEFORE the purchase call. The echo exists to catch
   mis-parses before they land on public WHOIS; a silent normalization
-  defeats it
+  defeats it. This is now ENFORCED: the first `daski_buy_service` call
+  carrying a phone fails with `PHONE_CONFIRMATION_REQUIRED` and a
+  `confirmationToken` bound to the exact value — do the echo-confirm turn
+  with your principal, then retry the same call with the token. Passing
+  the token back without having asked defeats a safeguard that exists to
+  protect your principal's public record
 - WHOIS privacy yes/no — pass `whoisPrivacy: true` to request it (free
   where the TLD supports it). The `registration_details` artifact reports
   `"enabled" | "unavailable" | "not_requested"`; relay "unavailable" to the
@@ -256,12 +268,20 @@ with your principal before paying):
   fields silently ignored and then rejected as missing.
 - **every member/manager/officer**: natural persons as
   `{ firstName, lastName, dob, address }`; company parties as
-  `{ isCompany: true, companyName }` (companies have no DOB). Ownership
-  percentages / splits are NOT formation fields — a stated split (e.g.
-  50/50) lives in the operating agreement, not in `serviceArgs`, and
-  unknown keys on member entries (e.g. an invented `ownershipPercentage`)
-  are silently ignored, so do not attach them expecting effect; tell the
-  principal where the split actually gets recorded
+  `{ isCompany: true, companyName }` (companies have no DOB). These
+  shapes are STRICT: unknown keys on party objects (an invented
+  `ownershipPercentage`, a member `phone` — phone belongs to the contact
+  person only) are REJECTED with the exact path (e.g.
+  `members[0].ownershipPercentage`) at quote time, before any payment.
+  Ownership percentages / splits are NOT formation fields — a stated
+  split (e.g. 50/50) lives in the operating agreement. If the principal
+  states one, acknowledge it once as operating-agreement data (a real
+  business fact — don't erase it) and keep it out of `serviceArgs` and
+  out of your filing summary. Every party must also be an adult: a DOB
+  implying someone under 18 is a known provider hard-reject ("entity
+  parties must be adults"), so if the principal insists on a DOB you
+  flagged as implausible, say the filing is expected to bounce and let
+  them decide — proceeding is their call to make, not yours to refuse
 - the **state** as a 2-letter code (`"WY"`, not `"Wyoming"`) and the
   **entityType** as the full catalog label (`"Limited Liability Company"`,
   not `"LLC"`) — get both from `get-pricing`: call it with
@@ -392,18 +412,22 @@ step 9 below.
    - Some tasks sit in `working` with a neutral review message (e.g.
      "This request requires additional review before processing. No
      action is needed.") — the provider is holding them for a human.
-     Such status messages may carry a data part with
-     `relay_verbatim: true` / `no_speculation: true`: that flag is
+     Such polls return a top-level `replyPolicy` (`mode:
+     "verbatim_only"`) and the flags ride the status message's data part
+     (`relay_verbatim: true` / `no_speculation: true`): that policy is
      binding. Relay the provider's message text to your principal
      VERBATIM — a good relay is "The provider says: '<message text>'.
      I'll keep checking and tell you the moment it moves." — and add
      NOTHING of your own: no guessed reason ("sanctions screening",
      "compliance flag"), no likelihood ("these usually clear"), and no
-     invented timeline. If the principal asks how long, say that no
-     completion estimate is available — NEVER state a duration that no
-     returned data contains, and never attribute one to the quote or
-     provider. Keep polling patiently; the task completes (or fails)
-     when the review resolves.
+     invented timeline. This holds EVEN WHEN the principal explicitly
+     asks for "your read", "why?", or "what happens next" — those
+     requests do not lift the policy. Answer them with only what the
+     response contains: the state, that the message is unchanged, and
+     that no completion estimate is available — NEVER state a duration
+     that no returned data contains, and never attribute one to the
+     quote or provider. Keep polling patiently; the task completes (or
+     fails) when the review resolves.
    - `Capability required … TaskAccessAuthorization (action="get")`
      (rpcCode `-32107`): on ownership-gated tasks (entity formation and
      friends) an UNSIGNED first poll lands here — it is the expected
@@ -455,7 +479,11 @@ step 9 below.
 ### Downloading a gated artifact
 
 An artifact URL can be one-time, short-lived, and audience-bound. A bare GET
-returns a signing challenge rather than the document. When a principal asks
+returns a signing challenge rather than the document — a challenge only the
+BUYER WALLET can satisfy (the sole browser access is provider-administrator
+staff tooling, NOT a buyer/principal Daski login). Never hand a raw artifact
+URL to a principal expecting it to open in their browser, and never invent
+an access path a returned field doesn't name. When a principal asks
 for durable proof, retrieve and store the bytes; never describe the URL itself
 as durable proof and never claim delivery before retrieval succeeds. When you
 do hand the principal a link, frame it as ephemeral in the same breath and
@@ -476,10 +504,18 @@ fresh link any time you want to re-download").
    `authorization` verbatim. The tool sends the base64url-encoded
    `X-Daski-Task-Capability` header and returns size-capped, MIME-verified
    bytes as `artifact.bytesBase64`.
-4. Decode/store or attach those bytes before telling the principal you hold
-   the document. If the signed retry returns a fresh challenge, the old one
-   expired or was rejected; sign the fresh typed-data and retry. A formation
-   document link can be re-minted with `download-entity-document` when needed.
+4. The signed retry ALSO attaches the document to the tool result as an MCP
+   embedded resource — a real file your client can render or save. Hand THAT
+   (or the decoded bytes) to your principal before telling them you hold the
+   document; `delivery.principalUsable` refers to the embedded file, and
+   retrieval alone is not delivery. If the signed retry returns a fresh
+   challenge, the old one expired or was rejected; sign the fresh typed-data
+   and retry. A formation document link can be re-minted with
+   `download-entity-document` when needed. Formation completions also carry
+   an `emailDelivery` receipt for the provider's own completion email (a
+   capability-gated LINK, never an attachment): state only what that receipt
+   supports — "sent" means the provider's outbound send succeeded, not that
+   the PDF is sitting in anyone's inbox.
 
 ### Standalone registration (no purchase)
 

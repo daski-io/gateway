@@ -22,8 +22,9 @@ export function registerArtifactTool(
         "",
         "Returns:",
         "- First call: `{ requiresSignature, eip712TypedData, authorization, capabilityChallenge }`.",
-        "- Signed retry: `{ artifact: { bytesBase64, encoding, mimeType, filename, sizeBytes, sha256 } }`, capped at 5 MiB and verified against the expected content type. Decode/store the base64 bytes before claiming delivery.",
+        "- Signed retry: `{ artifact: { bytesBase64, encoding, mimeType, filename, sizeBytes, sha256 }, delivery }`, capped at 5 MiB and verified against the expected content type — PLUS the document attached to the result as an MCP embedded resource (a real file your client can render/save, not just JSON). `delivery.principalUsable: true` refers to THAT file: hand it (or the decoded bytes) to your principal, then report delivery. Retrieval alone is not delivery — say \"retrieved, not yet handed over\" until you actually have.",
         "- If the challenge expired before the retry, the tool returns a fresh challenge. Sign that new typed-data; do not reuse the expired authorization.",
+        "- The challenge is satisfiable ONLY by the buyer wallet that owns the purchase (plus provider-administrator staff tooling). There is no principal-facing browser login for artifact URLs — never hand a raw URL to a principal expecting it to open.",
       ].join("\n"),
       inputSchema: {
         url: z.string().url().describe("Short-lived URL from a Daski artifact."),
