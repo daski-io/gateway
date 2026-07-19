@@ -67,6 +67,7 @@ describe("legal metadata admission and representation", () => {
 
     const payment = await gateway.purchaseChallenge(51n, {
       buyerTokenId: "5",
+      serviceSlug: "domain-management",
     });
     expect(payment.status).toBe(422);
     expect(payment.json.error).toMatch(/legal metadata/i);

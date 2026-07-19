@@ -46,39 +46,47 @@ export function createPool(opts: CreatePoolOptions): Pool {
 export async function runMigrations(pool: Pool): Promise<void> {
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
   const migrationsDir = path.join(__dirname, "migrations");
+  const client = await pool.connect();
+  try {
+    await client.query(
+      "SELECT pg_advisory_lock(hashtextextended($1, 0))",
+      ["daski-gateway:migrations"],
+    );
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS _migrations (
+        name TEXT PRIMARY KEY,
+        applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      )
+    `);
+    const applied = await client.query<{ name: string }>(
+      "SELECT name FROM _migrations ORDER BY name",
+    );
+    const appliedSet = new Set(applied.rows.map((r) => r.name));
+    const files = fs
+      .readdirSync(migrationsDir)
+      .filter((f) => f.endsWith(".sql"))
+      .sort();
 
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS _migrations (
-      name TEXT PRIMARY KEY,
-      applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
-    )
-  `);
-
-  const applied = await pool.query<{ name: string }>(
-    "SELECT name FROM _migrations ORDER BY name",
-  );
-  const appliedSet = new Set(applied.rows.map((r) => r.name));
-
-  const files = fs
-    .readdirSync(migrationsDir)
-    .filter((f) => f.endsWith(".sql"))
-    .sort();
-
-  for (const file of files) {
-    if (appliedSet.has(file)) continue;
-    const sql = fs.readFileSync(path.join(migrationsDir, file), "utf-8");
-    const client = await pool.connect();
-    try {
+    for (const file of files) {
+      if (appliedSet.has(file)) continue;
+      const sql = fs.readFileSync(path.join(migrationsDir, file), "utf-8");
       await client.query("BEGIN");
-      await client.query(sql);
-      await client.query("INSERT INTO _migrations (name) VALUES ($1)", [file]);
-      await client.query("COMMIT");
-      logger.info("database migration applied", { migration: file });
-    } catch (err) {
-      await client.query("ROLLBACK");
-      throw err;
-    } finally {
-      client.release();
+      try {
+        await client.query(sql);
+        await client.query("INSERT INTO _migrations (name) VALUES ($1)", [file]);
+        await client.query("COMMIT");
+        logger.info("database migration applied", { migration: file });
+      } catch (err) {
+        await client.query("ROLLBACK");
+        throw err;
+      }
     }
+  } finally {
+    await client
+      .query("SELECT pg_advisory_unlock(hashtextextended($1, 0))", [
+        "daski-gateway:migrations",
+      ])
+      .catch(() => undefined);
+    client.release();
   }
 }

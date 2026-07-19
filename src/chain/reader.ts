@@ -39,6 +39,17 @@ export interface SettlementResult {
   event: PaymentSettledEvent;
 }
 
+export type BroadcastObserver = (
+  transactionHash: Hex,
+) => Promise<void> | void;
+
+export class SettlementTransactionRevertedError extends Error {
+  constructor(transactionHash: Hex) {
+    super(`settlement transaction reverted (${transactionHash})`);
+    this.name = "SettlementTransactionRevertedError";
+  }
+}
+
 // ── External-rail attribution (DirectTransferAdapter) ────────────────────
 //
 // Used by the Bazaar-facing route after an EXTERNAL x402 facilitator (CDP)
@@ -278,7 +289,10 @@ export interface ChainReader {
   // waits for a confirmation, and returns the decoded PaymentSettled event
   // (emitted by the PaymentRouter, not the adapter). Throws if the
   // transaction reverts or no matching event is emitted.
-  settlePayment(input: SettlementInput): Promise<SettlementResult>;
+  settlePayment(
+    input: SettlementInput,
+    onBroadcast?: BroadcastObserver,
+  ): Promise<SettlementResult>;
 
   // Gasless registration — submits AgentIndex.registerWithSig from the
   // facilitator wallet. The AgentIndex mints on the canonical registry and
@@ -292,6 +306,7 @@ export interface ChainReader {
   // USDC payment the Sybil tax for fresh-wallet registrations.
   settleWithRegistration(
     input: SettleWithRegistrationInput,
+    onBroadcast?: BroadcastObserver,
   ): Promise<SettleWithRegistrationResult>;
 
   // External-rail attribution — submits DirectTransferAdapter.attribute
@@ -301,6 +316,14 @@ export interface ChainReader {
   // tx reverts, or no matching event is found.
   attributeDirectTransfer(
     input: DirectAttributionInput,
+    onBroadcast?: BroadcastObserver,
+  ): Promise<SettlementResult>;
+
+  // Resume a previously broadcast settlement or attribution transaction.
+  // Waits for its receipt and returns the matching router event.
+  getSettlementByTransaction(
+    transactionHash: Hex,
+    serviceRef: Hex,
   ): Promise<SettlementResult>;
 
   // Confirmation submission — submits EAS.attestByDelegation on the buyer's
@@ -354,6 +377,10 @@ export interface ChainReader {
   // so buyer agents minted via AgentIndex.registerWithSig read as
   // address(0) here; callers must tolerate 0 for buyers.
   getAgentWallet(agentId: bigint): Promise<Hex>;
+
+  // Canonical ERC-721 owner. Buyer control accepts either this address or
+  // getAgentWallet(agentId), matching PaymentRouter's authorization rule.
+  getAgentOwner(agentId: bigint): Promise<Hex>;
 
   // Cumulative refunded amount (atomic USDC) for one paymentId from
   // PaymentRouter.refundedAmount. Returns 0n for both unknown and

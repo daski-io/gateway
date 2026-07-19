@@ -86,18 +86,18 @@ export function extractCardServiceSlug(
 }
 
 /**
- * The card that offers `skillId`, for skill-scoped flows (payment
- * requirements, buy). Skill ids are only unique WITHIN a service, so the
- * first card listing the skill wins — in practice cross-card collisions
- * are free utility skills (check-availability, get-pricing) that never
- * reach the paid path. Falls back to null when no card lists the skill.
+ * The card that offers `skillId` within one explicitly selected service.
+ * Skill ids are only unique within a service, so payment flows must never
+ * select a card by skill id alone.
  */
 export function findCardForSkill(
   provider: CachedProvider,
   skillId: string | null | undefined,
+  serviceSlug: string,
 ): Record<string, unknown> | null {
   if (!skillId) return null;
   for (const card of cardsOf(provider)) {
+    if (card.serviceSlug !== serviceSlug) continue;
     const skills = card.agentCard["skills"];
     if (Array.isArray(skills)) {
       const listed = skills.some(

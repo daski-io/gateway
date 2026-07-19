@@ -50,16 +50,19 @@ export function createPublicRouter(deps: PublicRouterDeps): Router {
       deps.queries,
       AGGREGATE_SAMPLE_LIMIT,
       deps.reputationCacheTtlMs,
+      deps.config.publicCacheMaxEntries,
     ),
     serviceReputationCache: new ServiceReputationCache(
       deps.reader,
       deps.queries,
       deps.reputationCacheTtlMs,
+      deps.config.publicCacheMaxEntries,
     ),
     serviceAggregatesCache: new ServiceAggregatesCache(
       deps.queries,
       AGGREGATE_SAMPLE_LIMIT,
       deps.serviceAggregatesCacheTtlMs,
+      deps.config.publicCacheMaxEntries,
     ),
     buyerIdentityCache: new BuyerIdentityCache(
       deps.reader,
@@ -69,11 +72,13 @@ export function createPublicRouter(deps: PublicRouterDeps): Router {
         fetchFn: deps.buyerAgentCardFetch,
       },
       deps.buyerNameCacheTtlMs,
+      deps.config.publicCacheMaxEntries,
     ),
     buyerProfileCache: new BuyerProfileCache(
       deps.queries,
       10,
       deps.buyerProfileCacheTtlMs,
+      deps.config.publicCacheMaxEntries,
     ),
     buyerLeaderboardCache: new BuyerLeaderboardCache(
       deps.queries,

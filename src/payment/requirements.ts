@@ -341,6 +341,7 @@ export function resolveSkillOffer(
   skillId: string,
   cache: DiscoveryCache,
   opts: {
+    serviceSlug: string;
     /**
      * Default true: live-priced skills (no static baseAmount) fail with
      * `not_fixed_price`. The Bazaar route passes false since it now
@@ -348,7 +349,7 @@ export function resolveSkillOffer(
      * offer's amount is then null and the quote is the price.
      */
     requireFixedAmount?: boolean;
-  } = {},
+  },
 ): SkillOfferResult {
   const provider = cache.get(providerTokenId);
   if (!provider) {
@@ -371,7 +372,7 @@ export function resolveSkillOffer(
     };
   }
 
-  const agentCard = findCardForSkill(provider, skillId);
+  const agentCard = findCardForSkill(provider, skillId, opts.serviceSlug);
   if (!agentCard) {
     return {
       ok: false,
@@ -438,6 +439,16 @@ export function resolveSkillOffer(
       status: 422,
     };
   }
+  if (serviceSlug !== opts.serviceSlug) {
+    return {
+      ok: false,
+      code: "service_not_found",
+      message:
+        `provider ${providerTokenId} does not list skill '${skillId}' ` +
+        `under service '${opts.serviceSlug}'`,
+      status: 404,
+    };
+  }
   const serviceVersion = resolveServiceVersion(agentCard, skillId);
   const serviceId = computeServiceId(providerTokenId, serviceSlug, serviceVersion);
 
@@ -487,7 +498,11 @@ export async function issuePaymentRequirements(
   // Multi-service providers: everything below (pricing extension, A2A
   // endpoint, serviceSlug/serviceId derivation) must come from the CARD
   // that offers the requested skill.
-  const agentCard = findCardForSkill(provider, params.skillId);
+  const agentCard = findCardForSkill(
+    provider,
+    params.skillId,
+    params.providerQuote.serviceSlug,
+  );
   if (!agentCard) {
     return {
       ok: false,

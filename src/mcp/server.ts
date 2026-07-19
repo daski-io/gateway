@@ -20,6 +20,7 @@ import { normalizeState } from "../util/a2aShape.js";
 import { createQuotedChallenge } from "../payment/quotedChallenge.js";
 import { settleChallenge } from "../payment/settlementCoordinator.js";
 import { prepareRegistration } from "../identity/service.js";
+import { walletControlsAgent } from "../identity/control.js";
 import {
   checkPhoneConfirmation,
   checkPhoneFields,
@@ -1052,8 +1053,8 @@ export async function createMcpServer(
     // ── daski_buy_service path helpers ────────────────────────────────
     //
     // The orchestrator splits cleanly into three named paths:
-    //   1. x402 retry — when paymentPayload arrives, run verify+settle+
-    //      submit in one round-trip instead of returning a plan.
+    //   1. x402 retry — when paymentPayload arrives, verify and settle,
+    //      then return the context required by daski_submit_task.
     //   2. Free skill — open-free (synchronous direct dispatch) or
     //      ownership-gated (multi-step plan).
     //   3. Paid skill — live /quote against the provider, then
@@ -1065,6 +1066,7 @@ export async function createMcpServer(
 
     interface BuyServiceArgs {
       skillId: string;
+      serviceSlug: string;
       walletAddress: string;
       name?: string;
       buyerTokenId?: string;
@@ -1108,7 +1110,11 @@ export async function createMcpServer(
     ):
       | { ok: true; provider: ProviderMatch }
       | { ok: false; error: McpToolResult } {
-      const matches = findProvidersOfferingSkill(deps.cache, args.skillId);
+      const matches = findProvidersOfferingSkill(
+        deps.cache,
+        args.skillId,
+        args.serviceSlug,
+      );
       if (args.providerTokenId) {
         const parsed = parseBigIntArg(args.providerTokenId, "providerTokenId");
         if (!parsed.ok) return { ok: false, error: parsed.error };
@@ -1593,6 +1599,7 @@ export async function createMcpServer(
           buyerAgentId,
           walletAddress: args.walletAddress.toLowerCase() as Hex,
           skillId: args.skillId,
+          serviceSlug: args.serviceSlug,
           serviceArgs,
           amountLimit: args.amount,
         },
@@ -1600,6 +1607,7 @@ export async function createMcpServer(
           config: deps.config,
           cache: deps.cache,
           queries: deps.queries,
+          reader: deps.reader,
           fetch: a2aFetch,
           timeoutMs: a2aTimeoutMs,
           maxResponseBytes: A2A_RESPONSE_MAX_BYTES,
@@ -1860,7 +1868,7 @@ export async function createMcpServer(
           "- You are submitting a buyer attestation — use `daski_confirm_delivery`.",
           "",
           "Inputs:",
-          "- First call (no signature): `providerTokenId`, `skillId`, `serviceArgs` (per the skill's `requiredFields`), `walletAddress`, and `name`. ALWAYS pass `name` on the first call for a wallet unless you have CONFIRMED it is already registered: an already-registered wallet ignores it with a harmless `name was ignored` warning, while omitting it on a fresh wallet and adding it after seeing `atomic: true` forces a wasteful second quote. On a fresh wallet `name` becomes registration-time metadata for the agentId minted with the purchase — derive it from your PRINCIPAL's business (ask if unclear), never from the provider or any counterparty.",
+          "- First call (no signature): `providerTokenId`, `serviceSlug`, `skillId`, `serviceArgs` (per the skill's `requiredFields`), `walletAddress`, and `name`. ALWAYS pass `name` on the first call for a wallet unless you have CONFIRMED it is already registered: an already-registered wallet ignores it with a harmless `name was ignored` warning, while omitting it on a fresh wallet and adding it after seeing `atomic: true` forces a wasteful second quote. On a fresh wallet `name` becomes registration-time metadata for the agentId minted with the purchase — derive it from your PRINCIPAL's business (ask if unclear), never from the provider or any counterparty.",
           "- Second call (signed retry): the same inputs plus `paymentPayload`, `paymentRequirements`, and (for fresh wallets) `registration`.",
           "- Entity formation: `managementType` and the matching `members` / `managers` arrays are TOP-LEVEL `serviceArgs` keys. There is NO `officials` or `officialsByClassification` wrapper; nesting them silently discards the fields and the quote rejects them as missing. Flat-or-nested normalization applies ONLY to contact roles (`registrant` / `admin` / `tech` / `billing`).",
           "",
@@ -1874,6 +1882,12 @@ export async function createMcpServer(
         ].join("\n"),
         inputSchema: {
           skillId: z.string(),
+          serviceSlug: z
+            .string()
+            .describe(
+              "Required service identifier from daski_search_services. " +
+                "Skill IDs are only unique within a service.",
+            ),
           walletAddress: z
             .string()
             .describe(
@@ -1948,11 +1962,9 @@ export async function createMcpServer(
                 "original asset purchase (e.g. register-domain).",
             ),
           // ── x402 paywalled-tool retry path (§1.1) ──────────────────────
-          // When set, the gateway runs verify+settle and dispatches the
-          // task in one tool call instead of returning a plan. Equivalent
-          // to chaining daski_settle_payment + daski_submit_task. Also
-          // accepted via request _meta["x402/payment"] (base64) for
-          // x402-mcp interop.
+          // When set, the gateway verifies and settles the payment, then
+          // returns the context required by daski_submit_task. Also accepted
+          // via request _meta["x402/payment"] (base64) for x402-mcp interop.
           paymentPayload: z
             .object({
               x402Version: z
@@ -1981,7 +1993,7 @@ export async function createMcpServer(
             .describe(
               "Signed x402 PaymentPayload returned to the gateway after the " +
                 "wallet signs paymentRequirements.extra.daski.eip712TypedData. " +
-                "Triggers atomic verify+settle+submit. Required when retrying " +
+                "Triggers verify+settle only. Required when retrying " +
                 "after a paymentRequirements challenge.",
             ),
           paymentRequirements: z
@@ -2030,8 +2042,8 @@ export async function createMcpServer(
         }
 
         // §1.1 x402 retry path. When paymentPayload arrives (arg or
-        // _meta["x402/payment"]), verify+settle+submit runs in one
-        // round-trip. The helper returns null on the read-only first
+        // _meta["x402/payment"]), verify+settle runs before returning the
+        // dispatch context. The helper returns null on the read-only first
         // leg so we fall through to plan-building.
         const retry = await runBuyServiceX402Retry(args, extra);
         if (retry !== null) return retry;
@@ -2158,6 +2170,22 @@ export async function createMcpServer(
 
         const paymentRequired =
           provider.skillMeta.paymentRequired !== false;
+        if (
+          !paymentRequired &&
+          parsedBuyerTokenId !== null &&
+          parsedBuyerTokenId !== 0n &&
+          !(await walletControlsAgent(
+            deps.reader,
+            parsedBuyerTokenId,
+            args.walletAddress.toLowerCase() as Hex,
+          ))
+        ) {
+          return errorJson({
+            code: "buyer_agent_not_controlled",
+            message:
+              "walletAddress does not control the supplied buyerTokenId",
+          });
+        }
         return paymentRequired
           ? runBuyServicePaidPath(ctx)
           : runBuyServiceFreePath(ctx);

@@ -1,7 +1,10 @@
 import { hexToBytes, recoverTypedDataAddress, type Address } from "viem";
 import type { Config } from "../config.js";
-import type { ChainReader } from "../chain/reader.js";
-import type { PaymentSettledEvent } from "../chain/reader.js";
+import {
+  SettlementTransactionRevertedError,
+  type ChainReader,
+  type PaymentSettledEvent,
+} from "../chain/reader.js";
 import type { Queries } from "../db/queries.js";
 import {
   AgentCardFetchError,
@@ -146,7 +149,7 @@ function storedSettlementResult(
   };
 }
 
-function validateSettlementEvent(
+export function validateSettlementEvent(
   challenge: StoredChallenge,
   event: PaymentSettledEvent,
   enforceBuyer: boolean,
@@ -157,16 +160,22 @@ function validateSettlementEvent(
   if (enforceBuyer && event.buyerAgentId !== challenge.buyerTokenId) {
     return "event buyerAgentId does not match challenge";
   }
+  if (event.serviceRef.toLowerCase() !== challenge.serviceRef.toLowerCase()) {
+    return "event serviceRef does not match challenge";
+  }
   if (event.serviceId.toLowerCase() !== challenge.serviceId.toLowerCase()) {
     return "event serviceId does not match challenge";
   }
-  if (event.totalAmount < challenge.amount) {
-    return "event totalAmount is less than challenge amount";
+  if (event.totalAmount !== challenge.amount) {
+    return "event totalAmount does not match challenge amount";
+  }
+  if (event.providerAmount + event.commission !== event.totalAmount) {
+    return "event providerAmount and commission do not equal totalAmount";
   }
   return null;
 }
 
-async function persistSettlementEvent(
+export async function persistSettlementEvent(
   queries: Queries,
   challenge: StoredChallenge,
   event: PaymentSettledEvent,
@@ -234,6 +243,36 @@ function successfulSettlementResult(args: {
   };
 }
 
+async function broadcastFailureResult(
+  queries: Queries,
+  challenge: StoredChallenge,
+  error: unknown,
+  network: Config["network"],
+  payer: Hex,
+  context: string,
+): Promise<SettleResult | null> {
+  const latest = await queries.getChallengeByRef(challenge.serviceRef);
+  if (!latest?.transactionHash) return null;
+  if (error instanceof SettlementTransactionRevertedError) {
+    await queries.clearChallengeTransactionBroadcast(
+      challenge.serviceRef,
+      latest.transactionHash,
+    );
+    return null;
+  }
+  return fail(
+    503,
+    "settlement_confirmation_pending",
+    publicErrorMessage(
+      context,
+      error,
+      "settlement was broadcast and is awaiting confirmation",
+    ),
+    network,
+    payer,
+  );
+}
+
 function missingQuoteCommitment(challenge: StoredChallenge): string | null {
   const missing: string[] = [];
   if (!challenge.quoteId) missing.push("quoteId");
@@ -255,6 +294,7 @@ export async function verifyPaymentPayload(
   config: Config,
   reader: ChainReader,
   now: Date = new Date(),
+  options: { allowBroadcastRecovery?: boolean } = {},
 ): Promise<VerifyResult> {
   const { payload, challenge } = input;
   const network = config.network;
@@ -427,6 +467,14 @@ export async function verifyPaymentPayload(
       settleArgs: { v, r, s, validAfter, validBefore, nonce: auth.nonce },
     };
   }
+  if (options.allowBroadcastRecovery && challenge.transactionHash) {
+    return {
+      ok: true,
+      alreadyPaid: false,
+      payer,
+      settleArgs: { v, r, s, validAfter, validBefore, nonce: auth.nonce },
+    };
+  }
   if (challenge.status === "expired" || challenge.expiresAt < now) {
     return failVerify(
       410,
@@ -518,7 +566,9 @@ async function verifyAndSettleUnlocked(
     );
   }
 
-  const verified = await verifyPaymentPayload(input, config, reader, now);
+  const verified = await verifyPaymentPayload(input, config, reader, now, {
+    allowBroadcastRecovery: Boolean(challenge.transactionHash),
+  });
   if (!verified.ok) {
     return fail(
       verified.status,
@@ -533,24 +583,95 @@ async function verifyAndSettleUnlocked(
   if (verified.alreadyPaid) {
     return storedSettlementResult(challenge, network, payer);
   }
+  if (challenge.transactionHash) {
+    let recovered;
+    try {
+      recovered = await reader.getSettlementByTransaction(
+        challenge.transactionHash,
+        challenge.serviceRef,
+      );
+    } catch (err) {
+      return fail(
+        503,
+        "settlement_confirmation_pending",
+        publicErrorMessage(
+          "verifyAndSettle.recoverBroadcast",
+          err,
+          "settlement was broadcast and is awaiting confirmation",
+        ),
+        network,
+        payer,
+      );
+    }
+    const eventError = validateSettlementEvent(
+      challenge,
+      recovered.event,
+      true,
+    );
+    if (eventError) {
+      return fail(500, "unexpected_settle_error", eventError, network, payer);
+    }
+    const recorded = await persistSettlementEvent(
+      queries,
+      challenge,
+      recovered.event,
+      recovered.transactionHash,
+    );
+    if (!recorded) {
+      return fail(
+        500,
+        "settlement_persistence_conflict",
+        "on-chain settlement conflicts with the stored challenge",
+        network,
+        payer,
+      );
+    }
+    return successfulSettlementResult({
+      challenge,
+      event: recovered.event,
+      transactionHash: recovered.transactionHash,
+      network,
+      payer,
+    });
+  }
 
   let settlement;
   try {
-    settlement = await reader.settlePayment({
-      // Wire-level `providerTokenId` on the challenge is the ERC-8004 agentId.
-      providerAgentId: challenge.providerTokenId,
-      serviceId: challenge.serviceId,
-      amount: challenge.amount,
-      serviceRef: challenge.serviceRef,
-      from: payer,
-      validAfter: settleArgs.validAfter,
-      validBefore: settleArgs.validBefore,
-      nonce: settleArgs.nonce,
-      v: settleArgs.v,
-      r: settleArgs.r,
-      s: settleArgs.s,
-    });
+    settlement = await reader.settlePayment(
+      {
+        // Wire-level `providerTokenId` on the challenge is the ERC-8004 agentId.
+        providerAgentId: challenge.providerTokenId,
+        serviceId: challenge.serviceId,
+        amount: challenge.amount,
+        serviceRef: challenge.serviceRef,
+        from: payer,
+        validAfter: settleArgs.validAfter,
+        validBefore: settleArgs.validBefore,
+        nonce: settleArgs.nonce,
+        v: settleArgs.v,
+        r: settleArgs.r,
+        s: settleArgs.s,
+      },
+      async (transactionHash) => {
+        const recorded = await queries.recordChallengeTransactionBroadcast(
+          challenge.serviceRef,
+          transactionHash,
+        );
+        if (!recorded) {
+          throw new Error("unable to persist broadcast settlement transaction");
+        }
+      },
+    );
   } catch (err) {
+    const pending = await broadcastFailureResult(
+      queries,
+      challenge,
+      err,
+      network,
+      payer,
+      "verifyAndSettle.settlePayment",
+    );
+    if (pending) return pending;
     return fail(
       402,
       "unexpected_settle_error",
@@ -673,7 +794,9 @@ async function verifyAndSettleWithRegistrationUnlocked(
     );
   }
 
-  const verified = await verifyPaymentPayload(input, config, reader, now);
+  const verified = await verifyPaymentPayload(input, config, reader, now, {
+    allowBroadcastRecovery: Boolean(challenge.transactionHash),
+  });
   if (!verified.ok) {
     return fail(verified.status, verified.errorReason, verified.message, network, verified.payer);
   }
@@ -681,28 +804,101 @@ async function verifyAndSettleWithRegistrationUnlocked(
   if (verified.alreadyPaid) {
     return storedSettlementResult(challenge, network, payer);
   }
+  if (challenge.transactionHash) {
+    let recovered;
+    try {
+      recovered = await reader.getSettlementByTransaction(
+        challenge.transactionHash,
+        challenge.serviceRef,
+      );
+    } catch (err) {
+      return fail(
+        503,
+        "settlement_confirmation_pending",
+        publicErrorMessage(
+          "verifyAndSettleWithRegistration.recoverBroadcast",
+          err,
+          "atomic settlement was broadcast and is awaiting confirmation",
+        ),
+        network,
+        payer,
+      );
+    }
+    const eventError = validateSettlementEvent(
+      challenge,
+      recovered.event,
+      false,
+    );
+    if (eventError) {
+      return fail(500, "unexpected_settle_error", eventError, network, payer);
+    }
+    const recorded = await persistSettlementEvent(
+      queries,
+      challenge,
+      recovered.event,
+      recovered.transactionHash,
+      recovered.event.buyerAgentId,
+    );
+    if (!recorded) {
+      return fail(
+        500,
+        "settlement_persistence_conflict",
+        "on-chain settlement conflicts with the stored challenge",
+        network,
+        payer,
+      );
+    }
+    return successfulSettlementResult({
+      challenge,
+      event: recovered.event,
+      transactionHash: recovered.transactionHash,
+      network,
+      payer,
+      registered: true,
+    });
+  }
 
   let settlement;
   try {
-    settlement = await reader.settleWithRegistration({
-      providerAgentId: challenge.providerTokenId,
-      serviceId: challenge.serviceId,
-      amount: challenge.amount,
-      serviceRef: challenge.serviceRef,
-      from: payer,
-      validAfter: settleArgs.validAfter,
-      validBefore: settleArgs.validBefore,
-      nonce: settleArgs.nonce,
-      v: settleArgs.v,
-      r: settleArgs.r,
-      s: settleArgs.s,
-      registration: {
-        agentURI: registration.agentURI,
-        deadline: registration.deadline,
-        signature: registration.signature,
+    settlement = await reader.settleWithRegistration(
+      {
+        providerAgentId: challenge.providerTokenId,
+        serviceId: challenge.serviceId,
+        amount: challenge.amount,
+        serviceRef: challenge.serviceRef,
+        from: payer,
+        validAfter: settleArgs.validAfter,
+        validBefore: settleArgs.validBefore,
+        nonce: settleArgs.nonce,
+        v: settleArgs.v,
+        r: settleArgs.r,
+        s: settleArgs.s,
+        registration: {
+          agentURI: registration.agentURI,
+          deadline: registration.deadline,
+          signature: registration.signature,
+        },
       },
-    });
+      async (transactionHash) => {
+        const recorded = await queries.recordChallengeTransactionBroadcast(
+          challenge.serviceRef,
+          transactionHash,
+        );
+        if (!recorded) {
+          throw new Error("unable to persist atomic settlement transaction");
+        }
+      },
+    );
   } catch (err) {
+    const pending = await broadcastFailureResult(
+      queries,
+      challenge,
+      err,
+      network,
+      payer,
+      "verifyAndSettle.settleWithRegistration",
+    );
+    if (pending) return pending;
     return fail(
       402,
       "unexpected_settle_error",

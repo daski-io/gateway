@@ -6,11 +6,14 @@ import type { Queries } from "../db/queries.js";
 import { issuePaymentRequirements, resolveSkillOffer } from "./requirements.js";
 import { validateProviderQuoteCommitment } from "./providerQuote.js";
 import type { Hex, PaymentRequirementsResponse } from "../types.js";
+import type { ChainReader } from "../chain/reader.js";
+import { walletControlsAgent } from "../identity/control.js";
 
 export interface PurchaseDeps {
   config: Config;
   cache: DiscoveryCache;
   queries: Queries;
+  reader: ChainReader;
 }
 
 function sendError(res: Response, status: number, message: string) {
@@ -41,6 +44,8 @@ export function createPurchaseRouter(deps: PurchaseDeps): Router {
     }
     const body = req.body ?? {};
     const skillId = typeof body.skillId === "string" ? body.skillId : undefined;
+    const serviceSlug =
+      typeof body.serviceSlug === "string" ? body.serviceSlug : undefined;
     const amount = typeof body.amount === "string" ? body.amount : undefined;
     const resource = `${deps.config.publicUrl}/purchase/${providerTokenId.toString()}`;
 
@@ -72,6 +77,17 @@ export function createPurchaseRouter(deps: PurchaseDeps): Router {
       sendError(res, 400, "skillId is required");
       return;
     }
+    if (!serviceSlug) {
+      sendError(res, 400, "serviceSlug is required");
+      return;
+    }
+    if (
+      buyerTokenId !== 0n &&
+      !(await walletControlsAgent(deps.reader, buyerTokenId, walletAddress))
+    ) {
+      sendError(res, 403, "walletAddress does not control buyerTokenId");
+      return;
+    }
     const serviceArgsRaw = body.serviceArgs;
     if (
       serviceArgsRaw !== undefined &&
@@ -86,6 +102,7 @@ export function createPurchaseRouter(deps: PurchaseDeps): Router {
     const provider = deps.cache.get(providerTokenId);
     const offerResult = resolveSkillOffer(providerTokenId, skillId, deps.cache, {
       requireFixedAmount: false,
+      serviceSlug,
     });
     if (!provider || !offerResult.ok) {
       sendError(

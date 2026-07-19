@@ -8,6 +8,7 @@ import type { CachedProvider, ProviderCard } from "../types.js";
 
 export interface ProviderMatch {
   agentId: bigint;
+  serviceSlug: string;
   skillMeta: Record<string, unknown>;
   agentCard: Record<string, unknown>;
 }
@@ -25,13 +26,15 @@ export interface CatalogSkillEndpoint extends CatalogA2AEndpoint {
 export function findProvidersOfferingSkill(
   cache: DiscoveryCache,
   skillId: string,
+  serviceSlug: string,
 ): ProviderMatch[] {
   const matches: ProviderMatch[] = [];
   for (const provider of cache.getAll()) {
-    const found = findSkillMeta(provider, skillId);
+    const found = findSkillMeta(provider, skillId, serviceSlug);
     if (found === null) continue;
     matches.push({
       agentId: provider.agentId,
+      serviceSlug,
       skillMeta: found.skillMeta,
       agentCard: found.agentCard,
     });
@@ -42,11 +45,13 @@ export function findProvidersOfferingSkill(
 export function findSkillMeta(
   provider: CachedProvider,
   skillId: string,
+  serviceSlug?: string,
 ): {
   skillMeta: Record<string, unknown>;
   agentCard: Record<string, unknown>;
 } | null {
   for (const card of cardsOf(provider)) {
+    if (serviceSlug !== undefined && card.serviceSlug !== serviceSlug) continue;
     const skillMeta = skillMetaFromCard(card.agentCard, skillId);
     if (skillMeta !== null) {
       return { skillMeta, agentCard: card.agentCard };

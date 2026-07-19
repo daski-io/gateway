@@ -39,7 +39,7 @@ export function buildX402Catalog(
         if (!amount) return [];
 
         const resource = config.directAdapterAddress
-          ? `${config.publicUrl}/x402/services/${provider.agentId.toString()}/${skill.id}`
+          ? `${config.publicUrl}/x402/services/${provider.agentId.toString()}/${encodeURIComponent(providerCard.serviceSlug)}/${encodeURIComponent(skill.id)}`
           : `${config.publicUrl}/purchase/${provider.agentId.toString()}`;
         return [
           {
@@ -51,6 +51,7 @@ export function buildX402Catalog(
             maxAmountRequired: amount,
             description: `${card.name ?? "provider"} — ${skill.id}`,
             providerTokenId: provider.agentId.toString(),
+            serviceSlug: providerCard.serviceSlug,
             skillId: skill.id,
             providerA2AUrl,
             legal,

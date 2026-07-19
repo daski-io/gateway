@@ -1,6 +1,9 @@
 import type { Request, RequestHandler, Response } from "express";
 import type { Config } from "../config.js";
-import type { ChainReader } from "../chain/reader.js";
+import {
+  SettlementTransactionRevertedError,
+  type ChainReader,
+} from "../chain/reader.js";
 import type { DiscoveryCache } from "../discovery/cache.js";
 import type { Queries } from "../db/queries.js";
 import { computeRequestHash } from "../auth/envelope.js";
@@ -25,6 +28,7 @@ import {
   setSettlementHeaders,
 } from "./bazaarResponse.js";
 import { quoteBazaarProvider } from "./bazaarQuote.js";
+import { validateSettlementEvent } from "./verify.js";
 
 /**
  * Bazaar-facing x402 resource routes — one paid HTTP resource per
@@ -114,11 +118,13 @@ export function createBazaarSettlementHandler(deps: BazaarDeps): RequestHandler 
       return;
     }
     const skillId = String(req.params.skillId ?? "");
+    const serviceSlug = String(req.params.serviceSlug ?? "");
     const paymentHeader =
       req.header("payment-signature") ?? req.header("payment") ?? req.header("x-payment");
 
     const resolved = resolveSkillOffer(providerTokenId, skillId, cache, {
       requireFixedAmount: false,
+      serviceSlug,
     });
     let offer: SkillOffer;
     let recoveryChallenge: StoredChallenge | null = null;
@@ -138,6 +144,7 @@ export function createBazaarSettlementHandler(deps: BazaarDeps): RequestHandler 
       if (
         !persisted ||
         persisted.providerTokenId !== providerTokenId ||
+        persisted.serviceSlug !== serviceSlug ||
         persisted.skillId !== skillId
       ) {
         res.status(resolved.status).json({
@@ -160,7 +167,9 @@ export function createBazaarSettlementHandler(deps: BazaarDeps): RequestHandler 
         description: `Daski service ${skillId}`,
       };
     }
-    const resourceUrl = `${config.publicUrl}/x402/services/${providerTokenId.toString()}/${skillId}`;
+    const resourceUrl =
+      `${config.publicUrl}/x402/services/${providerTokenId.toString()}/` +
+      `${encodeURIComponent(serviceSlug)}/${encodeURIComponent(skillId)}`;
     const providerLegal = cache.get(providerTokenId)?.providerLegal;
     const purchaseLegal = providerLegal ? buildPurchaseLegalContext(config, providerLegal) : null;
     if (!purchaseLegal && !recoveryChallenge) {
@@ -299,22 +308,16 @@ export function createBazaarSettlementHandler(deps: BazaarDeps): RequestHandler 
       });
       return;
     }
-    if (validAfter > nowSec || validBefore <= nowSec + VALID_BEFORE_BUFFER_SEC) {
-      res.status(400).json({
-        x402Version: core.version,
-        error: "authorization is not currently valid (validAfter/validBefore window)",
-      });
-      return;
-    }
-
     let challenge: StoredChallenge | null = await queries.getChallengeByWalletAndNonce(
       from,
       authNonce,
     );
     let quoted: { amount: bigint; quote: ProviderQuoteCommitment } | null = null;
+    let authorizationConsumed = false;
     if (challenge) {
       const mismatch =
         challenge.providerTokenId !== providerTokenId ||
+        challenge.serviceSlug !== serviceSlug ||
         challenge.skillId !== skillId ||
         challenge.amount !== value;
       if (mismatch) {
@@ -368,7 +371,29 @@ export function createBazaarSettlementHandler(deps: BazaarDeps): RequestHandler 
         );
         return;
       }
-      if (challenge.status === "expired" && !challenge.externalSettleTx) {
+      if (!challenge.externalSettleTx) {
+        try {
+          authorizationConsumed = await reader.authorizationUsed(
+            from,
+            authNonce,
+          );
+        } catch (err) {
+          res.status(503).json({
+            x402Version: core.version,
+            error: publicErrorMessage(
+              "bazaar.authorizationUsed",
+              err,
+              "unable to determine whether the payment was settled",
+            ),
+          });
+          return;
+        }
+      }
+      if (
+        challenge.status === "expired" &&
+        !challenge.externalSettleTx &&
+        !authorizationConsumed
+      ) {
         res.status(410).json({
           x402Version: core.version,
           error:
@@ -377,6 +402,18 @@ export function createBazaarSettlementHandler(deps: BazaarDeps): RequestHandler 
         });
         return;
       }
+    }
+    if (
+      !authorizationConsumed &&
+      (validAfter > nowSec ||
+        validBefore <= nowSec + VALID_BEFORE_BUFFER_SEC)
+    ) {
+      res.status(400).json({
+        x402Version: core.version,
+        error:
+          "authorization is not currently valid (validAfter/validBefore window)",
+      });
+      return;
     }
 
     let buyerAgentId = challenge?.buyerTokenId ?? 0n;
@@ -511,7 +548,8 @@ export function createBazaarSettlementHandler(deps: BazaarDeps): RequestHandler 
       ? (challenge.quoteExpiresAt?.getTime() ?? Number.POSITIVE_INFINITY)
       : Date.parse(quoted!.quote.expiresAt);
     const quoteRunway = Math.floor((quoteExpiresAtMs - Date.now()) / 1000);
-    const needsExternalSettle = !challenge?.externalSettleTx;
+    let needsExternalSettle =
+      !challenge?.externalSettleTx && !authorizationConsumed;
     if (needsExternalSettle && quoteRunway < 15) {
       res.status(410).json({
         x402Version: core.version,
@@ -557,6 +595,29 @@ export function createBazaarSettlementHandler(deps: BazaarDeps): RequestHandler 
         return;
       }
       if (!verify.isValid) {
+        if (challenge) {
+          try {
+            authorizationConsumed = await reader.authorizationUsed(
+              from,
+              authNonce,
+            );
+            if (authorizationConsumed) {
+              needsExternalSettle = false;
+            }
+          } catch (err) {
+            res.status(503).json({
+              x402Version: core.version,
+              error: publicErrorMessage(
+                "bazaar.authorizationUsedAfterVerify",
+                err,
+                "unable to reconcile the rejected payment authorization",
+              ),
+            });
+            return;
+          }
+        }
+      }
+      if (!verify.isValid && needsExternalSettle) {
         if (!purchaseLegal) {
           res.status(409).json({
             x402Version: core.version,
@@ -636,76 +697,77 @@ export function createBazaarSettlementHandler(deps: BazaarDeps): RequestHandler 
         }
       }
 
-      let settle;
-      try {
-        settle = await facilitator.settle(facilitatorBody);
-      } catch (err) {
-        // Unknown whether the facilitator broadcast before failing. The
-        // challenge stays pending; a retry re-runs verify (which reports
-        // a consumed nonce if the settle actually landed) — no funds are
-        // lost either way, and the authorization can't be double-spent.
-        res.status(502).json({
-          x402Version: core.version,
-          error: publicErrorMessage(
-            "bazaar.externalSettle",
-            err,
-            "external payment settlement failed",
-          ),
-        });
-        return;
-      }
-      if (!settle.success) {
-        if (!purchaseLegal) {
+      if (needsExternalSettle) {
+        let settle;
+        try {
+          settle = await facilitator.settle(facilitatorBody);
+        } catch (err) {
+          // The response may be lost after the facilitator broadcasts.
+          // The persisted challenge lets a retry or the reconciler check
+          // the nonce on-chain and resume attribution without re-charging.
           res.status(502).json({
             x402Version: core.version,
-            error: "payment_recovery_settlement_failed",
-            message:
-              "The external facilitator could not settle the persisted " +
-              `payment (${settle.errorReason ?? "unknown"}). The existing ` +
-              "challenge remains available for reconciliation; no new " +
-              "payment requirements were issued.",
+            error: publicErrorMessage(
+              "bazaar.externalSettle",
+              err,
+              "external payment settlement failed",
+            ),
           });
           return;
         }
-        res
-          .status(402)
-          .json(
-            buildPaymentRequired(
-              offer,
-              effectiveAmount,
-              config,
-              resourceUrl,
-              timeoutSeconds,
-              purchaseLegal,
-              undefined,
-              `external facilitator settle failed: ${settle.errorReason ?? "unknown"}`,
-            ),
-          );
-        return;
-      }
-      const settleTx = (settle.transaction ?? "") as Hex;
-      if (settleTx) {
-        const recorded = await queries.recordChallengeExternallySettled(
-          challenge.serviceRef,
-          settleTx,
-        );
-        if (!recorded) {
-          challenge = await queries.getChallengeByRef(challenge.serviceRef);
-          if (!challenge?.externalSettleTx) {
-            res.status(409).json({
+        if (!settle.success) {
+          if (!purchaseLegal) {
+            res.status(502).json({
               x402Version: core.version,
-              error:
-                "payment settled externally but the challenge state changed; " +
-                "retry this exact request to resume attribution",
+              error: "payment_recovery_settlement_failed",
+              message:
+                "The external facilitator could not settle the persisted " +
+                `payment (${settle.errorReason ?? "unknown"}). The existing ` +
+                "challenge remains available for reconciliation; no new " +
+                "payment requirements were issued.",
             });
             return;
           }
-        } else {
-          challenge = {
-            ...challenge,
-            status: "pending",
-            externalSettleTx: settleTx,
-          };
+          res
+            .status(402)
+            .json(
+              buildPaymentRequired(
+                offer,
+                effectiveAmount,
+                config,
+                resourceUrl,
+                timeoutSeconds,
+                purchaseLegal,
+                undefined,
+                `external facilitator settle failed: ${settle.errorReason ?? "unknown"}`,
+              ),
+            );
+          return;
+        }
+        const settleTx = (settle.transaction ?? "") as Hex;
+        if (settleTx) {
+          const recorded = await queries.recordChallengeExternallySettled(
+            challenge.serviceRef,
+            settleTx,
+          );
+          if (!recorded) {
+            challenge = await queries.getChallengeByRef(challenge.serviceRef);
+            if (!challenge?.externalSettleTx) {
+              res.status(409).json({
+                x402Version: core.version,
+                error:
+                  "payment settled externally but the challenge state changed; " +
+                  "retry this exact request to resume attribution",
+              });
+              return;
+            }
+          } else {
+            challenge = {
+              ...challenge,
+              status: "pending",
+              externalSettleTx: settleTx,
+            };
+          }
         }
       }
     }
@@ -723,17 +785,48 @@ export function createBazaarSettlementHandler(deps: BazaarDeps): RequestHandler 
     // Funds are on the router. Attribute: run the split + payment record
     // under the QUOTE's serviceRef, which is what the provider validates
     // at task-submit time.
+    const persistedChallenge = challenge;
     let attribution;
     try {
-      attribution = await reader.attributeDirectTransfer({
-        providerAgentId: challenge.providerTokenId,
-        serviceId: challenge.serviceId,
-        amount: challenge.amount,
-        serviceRef: challenge.serviceRef,
-        from,
-        authNonce,
-      });
+      attribution = persistedChallenge.transactionHash
+        ? await reader.getSettlementByTransaction(
+            persistedChallenge.transactionHash,
+            persistedChallenge.serviceRef,
+          )
+        : await reader.attributeDirectTransfer(
+            {
+              providerAgentId: persistedChallenge.providerTokenId,
+              serviceId: persistedChallenge.serviceId,
+              amount: persistedChallenge.amount,
+              serviceRef: persistedChallenge.serviceRef,
+              from,
+              authNonce,
+            },
+            async (transactionHash) => {
+              const recorded =
+                await queries.recordChallengeTransactionBroadcast(
+                  persistedChallenge.serviceRef,
+                  transactionHash,
+                );
+              if (!recorded) {
+                throw new Error(
+                  "unable to persist attribution transaction broadcast",
+                );
+              }
+            },
+          );
     } catch (err) {
+      if (err instanceof SettlementTransactionRevertedError) {
+        const latest = await queries.getChallengeByRef(
+          persistedChallenge.serviceRef,
+        );
+        if (latest?.transactionHash) {
+          await queries.clearChallengeTransactionBroadcast(
+            persistedChallenge.serviceRef,
+            latest.transactionHash,
+          );
+        }
+      }
       // The buyer HAS paid (external settle succeeded); only the split is
       // pending. Persisted external_settle_tx makes this retryable: the
       // same request skips the external settle and lands back here.
@@ -745,13 +838,26 @@ export function createBazaarSettlementHandler(deps: BazaarDeps): RequestHandler 
           err,
           "payment settled on-chain but the commission split has not run",
         )}. Retry this exact request — the gateway resumes at attribution without re-charging.`,
-        settlementTransaction: challenge.externalSettleTx,
-        serviceRef: challenge.serviceRef,
+        settlementTransaction: persistedChallenge.externalSettleTx,
+        serviceRef: persistedChallenge.serviceRef,
       });
       return;
     }
 
     const event = attribution.event;
+    const eventError = validateSettlementEvent(
+      persistedChallenge,
+      event,
+      true,
+    );
+    if (eventError) {
+      res.status(500).json({
+        x402Version: core.version,
+        error: "unexpected_settlement_event",
+        message: eventError,
+      });
+      return;
+    }
     const recorded = await queries.recordChallengePaid(
       challenge.serviceRef,
       event.paymentId,
@@ -804,7 +910,8 @@ export function createBazaarSettlementHandler(deps: BazaarDeps): RequestHandler 
           providerTokenId: challenge.providerTokenId.toString(),
           buyerTokenId: event.buyerAgentId.toString(),
           amount: event.totalAmount.toString(),
-          settlementTransaction: challenge.externalSettleTx,
+          settlementTransaction:
+            challenge.externalSettleTx ?? attribution.transactionHash,
           attributionTransaction: attribution.transactionHash,
           quoteId: challenge.quoteId,
           quoteSignature: challenge.quoteSignature,

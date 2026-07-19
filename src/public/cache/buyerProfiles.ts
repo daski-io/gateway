@@ -3,6 +3,7 @@ import {
   derivePublicBuyerReputation,
   type PublicBuyerReputation,
 } from "../format.js";
+import { BoundedCache } from "./bounded.js";
 
 export interface BuyerProfileValue {
   reputation: PublicBuyerReputation;
@@ -33,16 +34,16 @@ const EMPTY_PROFILE: BuyerProfileValue = {
 };
 
 export class BuyerProfileCache {
-  private readonly entries = new Map<
-    string,
-    { value: BuyerProfileValue; fetchedAt: number }
-  >();
+  private readonly entries: BoundedCache<string, BuyerProfileValue>;
 
   constructor(
     private readonly queries: Queries,
     private readonly recentLimit: number,
     private readonly ttlMs = 60_000,
-  ) {}
+    maxEntries = 1000,
+  ) {
+    this.entries = new BoundedCache(maxEntries);
+  }
 
   async get(agentId: bigint): Promise<BuyerProfileValue> {
     const key = agentId.toString();
@@ -63,7 +64,7 @@ export class BuyerProfileCache {
         lastPurchaseAt: aggregate.lastSettledAt,
         recentPurchases,
       };
-      this.entries.set(key, { value, fetchedAt: now });
+      this.entries.set(key, value, now);
       return value;
     } catch {
       return hit?.value ?? EMPTY_PROFILE;
@@ -72,18 +73,18 @@ export class BuyerProfileCache {
 }
 
 export class BuyerLeaderboardCache {
-  private readonly entries = new Map<
+  private readonly entries: BoundedCache<
     number,
-    {
-      value: Awaited<ReturnType<Queries["listBuyersByVolume"]>>;
-      fetchedAt: number;
-    }
-  >();
+    Awaited<ReturnType<Queries["listBuyersByVolume"]>>
+  >;
 
   constructor(
     private readonly queries: Queries,
     private readonly ttlMs = 60_000,
-  ) {}
+    maxEntries = 100,
+  ) {
+    this.entries = new BoundedCache(maxEntries);
+  }
 
   async get(limit: number) {
     const now = Date.now();
@@ -91,7 +92,7 @@ export class BuyerLeaderboardCache {
     if (hit && now - hit.fetchedAt < this.ttlMs) return hit.value;
     try {
       const value = await this.queries.listBuyersByVolume(limit);
-      this.entries.set(limit, { value, fetchedAt: now });
+      this.entries.set(limit, value, now);
       return value;
     } catch {
       return hit?.value ?? [];

@@ -54,6 +54,7 @@ describe("facilitator endpoints", () => {
     const quoteBody = (await quoteRes.json()) as { quote: unknown };
     const { status, json, serviceRef } = await gateway.purchaseChallenge(2n, {
       buyerTokenId,
+      serviceSlug: "default-service",
       serviceArgs: {},
       providerQuote: quoteBody.quote,
     });

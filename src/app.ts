@@ -1,5 +1,4 @@
 import express, { type ErrorRequestHandler, type Express } from "express";
-import cors from "cors";
 import type { Config } from "./config.js";
 import type { ChainReader } from "./chain/reader.js";
 import { DiscoveryCache, type FetchFn } from "./discovery/cache.js";
@@ -17,11 +16,12 @@ import { createQueries, type Queries } from "./db/queries.js";
 import { createPool, runMigrations, type Pool } from "./db/pool.js";
 import { xenovaEmbedder, type Embedder } from "./discovery/embeddings.js";
 import type { FetchAgentCardOptions } from "./identity/fetch-agent-card.js";
-import { rateLimit, securityHeaders } from "./util/security.js";
 import { safeFetch } from "./util/urlSafety.js";
 import { logErrorWithId } from "./util/errorWrap.js";
 import { createMetaRouter } from "./http/metaRoutes.js";
 import { logger } from "./util/logger.js";
+import { reconcileExternalSettlements } from "./payment/externalReconciler.js";
+import { configureMiddleware } from "./http/middleware.js";
 
 export interface CreateAppOptions {
   config: Config;
@@ -49,73 +49,8 @@ export interface AppBundle {
   embedder: Embedder | null;
   mcp: McpWiring | null;
   expireInterval: NodeJS.Timeout | null;
+  reconcileInterval: NodeJS.Timeout | null;
   shutdown(): Promise<void>;
-}
-
-function configureMiddleware(app: Express, queries: Queries, config: Config): void {
-  app.set("trust proxy", config.trustProxy);
-  app.use(securityHeaders);
-  app.use(cors({ origin: "*" }));
-  app.use(express.json({ limit: "1mb" }));
-
-  if (config.nodeEnv === "test") return;
-  const stateChangePaths = [
-    "/purchase",
-    "/verify",
-    "/settle",
-    "/confirm",
-    "/register",
-    "/register-prep",
-    "/x402",
-  ];
-  app.use(
-    stateChangePaths,
-    rateLimit({
-      windowMs: 60_000,
-      max: 30,
-      namespace: "state-change",
-      store: queries,
-    }),
-  );
-  app.use(
-    stateChangePaths,
-    rateLimit({
-      windowMs: 60_000,
-      max: config.stateChangeGlobalMaxPerMinute,
-      namespace: "state-change-global",
-      keyScope: "global",
-      store: queries,
-    }),
-  );
-  const rpcReadPaths = ["/identity/by-wallet", "/eas/nonce", "/confirm-prep"];
-  app.use(
-    rpcReadPaths,
-    rateLimit({
-      windowMs: 60_000,
-      max: 60,
-      namespace: "rpc-read",
-      store: queries,
-    }),
-  );
-  app.use(
-    rpcReadPaths,
-    rateLimit({
-      windowMs: 60_000,
-      max: config.rpcReadMaxPerMinute,
-      namespace: "rpc-read-global",
-      keyScope: "global",
-      store: queries,
-    }),
-  );
-  app.post(
-    config.mcpPath,
-    rateLimit({
-      windowMs: 60_000,
-      max: 60,
-      namespace: "mcp",
-      store: queries,
-    }),
-  );
 }
 
 export async function createApp(options: CreateAppOptions): Promise<AppBundle> {
@@ -145,7 +80,7 @@ export async function createApp(options: CreateAppOptions): Promise<AppBundle> {
   configureMiddleware(app, queries, config);
   app.use(createMetaRouter({ config, cache, embedder }));
   app.use(createDiscoveryRouter(cache, config));
-  app.use(createPurchaseRouter({ config, cache, queries }));
+  app.use(createPurchaseRouter({ config, cache, queries, reader }));
 
   if (config.directAdapterAddress) {
     app.use(
@@ -226,6 +161,7 @@ export async function createApp(options: CreateAppOptions): Promise<AppBundle> {
   app.use(errorHandler);
 
   let expireInterval: NodeJS.Timeout | null = null;
+  let reconcileInterval: NodeJS.Timeout | null = null;
   if (options.startCacheRefreshLoop !== false) {
     expireInterval = setInterval(
       () => {
@@ -241,11 +177,21 @@ export async function createApp(options: CreateAppOptions): Promise<AppBundle> {
       },
       5 * 60 * 1000,
     );
+    if (config.directAdapterAddress) {
+      const reconcile = () => {
+        void reconcileExternalSettlements(reader, queries).catch((err) => {
+          logErrorWithId("reconcileExternalSettlements", err);
+        });
+      };
+      reconcile();
+      reconcileInterval = setInterval(reconcile, 30_000);
+    }
     cache.start();
   }
 
   async function shutdown(): Promise<void> {
     if (expireInterval) clearInterval(expireInterval);
+    if (reconcileInterval) clearInterval(reconcileInterval);
     cache.stop();
     await mcp?.close().catch((err) => {
       logErrorWithId("mcp.shutdown", err);
@@ -265,6 +211,7 @@ export async function createApp(options: CreateAppOptions): Promise<AppBundle> {
     embedder,
     mcp,
     expireInterval,
+    reconcileInterval,
     shutdown,
   };
 }

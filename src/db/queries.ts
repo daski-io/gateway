@@ -201,6 +201,23 @@ export function createQueries(pool: Pool) {
       return (res.rowCount ?? 0) > 0;
     },
 
+    async listUnresolvedExternalChallenges(
+      limit = 20,
+    ): Promise<StoredChallenge[]> {
+      const result = await pool.query<ChallengeRow>(
+        `SELECT * FROM payment_challenges
+          WHERE rail = 'external'
+            AND status IN ('pending', 'expired')
+            AND external_settle_tx IS NULL
+            AND auth_nonce IS NOT NULL
+            AND created_at < now() - interval '30 seconds'
+          ORDER BY created_at
+          LIMIT $1`,
+        [limit],
+      );
+      return result.rows.map(rowToChallenge);
+    },
+
     async getChallengeByRef(serviceRef: Hex): Promise<StoredChallenge | null> {
       const res = await pool.query<ChallengeRow>(
         `SELECT * FROM payment_challenges WHERE service_ref = $1`,
@@ -215,6 +232,36 @@ export function createQueries(pool: Pool) {
         [normalizeHex(txHash)],
       );
       return res.rows[0] ? rowToChallenge(res.rows[0]) : null;
+    },
+
+    async recordChallengeTransactionBroadcast(
+      serviceRef: Hex,
+      transactionHash: Hex,
+    ): Promise<boolean> {
+      const res = await pool.query(
+        `UPDATE payment_challenges
+            SET transaction_hash = $1
+          WHERE service_ref = $2
+            AND status IN ('pending', 'expired')
+            AND (transaction_hash IS NULL OR transaction_hash = $1)`,
+        [normalizeHex(transactionHash), hexToBytea(serviceRef)],
+      );
+      return (res.rowCount ?? 0) > 0;
+    },
+
+    async clearChallengeTransactionBroadcast(
+      serviceRef: Hex,
+      transactionHash: Hex,
+    ): Promise<boolean> {
+      const res = await pool.query(
+        `UPDATE payment_challenges
+            SET transaction_hash = NULL
+          WHERE service_ref = $1
+            AND status IN ('pending', 'expired')
+            AND transaction_hash = $2`,
+        [hexToBytea(serviceRef), normalizeHex(transactionHash)],
+      );
+      return (res.rowCount ?? 0) > 0;
     },
 
     /**

@@ -53,6 +53,16 @@ export function createAggregateQueries(pool: Pool) {
   return {
     getPaidAggregate: () => aggregate(),
 
+    async buyerHasChainActivity(buyerAgentId: bigint): Promise<boolean> {
+      const result = await pool.query<{ exists: boolean }>(
+        `SELECT EXISTS (
+           SELECT 1 FROM chain_events WHERE buyer_agent_id = $1
+         ) AS exists`,
+        [buyerAgentId.toString()],
+      );
+      return result.rows[0]?.exists ?? false;
+    },
+
     getProviderSpend: (providerAgentId: bigint) =>
       aggregate("WHERE provider_agent_id = $1", [
         providerAgentId.toString(),

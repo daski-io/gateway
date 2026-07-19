@@ -308,6 +308,7 @@ describe("hosted MCP — wallet-agnostic surface", () => {
         name: "daski_purchase",
         arguments: {
           providerTokenId: "2",
+          serviceSlug: "domain-management",
           buyerTokenId: "5",
           walletAddress: gateway.buyerAddress,
           skillId: "register-domain",
@@ -362,6 +363,7 @@ describe("hosted MCP — wallet-agnostic surface", () => {
         name: "daski_purchase",
         arguments: {
           providerTokenId: "2",
+          serviceSlug: "domain-management",
           buyerTokenId: "5",
           // walletAddress omitted
         },
@@ -387,6 +389,7 @@ describe("hosted MCP — wallet-agnostic surface", () => {
           name: "daski_purchase",
           arguments: {
             providerTokenId: "2",
+            serviceSlug: "domain-management",
             skillId: "register-domain",
             ...buyer,
           },
@@ -409,6 +412,7 @@ describe("hosted MCP — wallet-agnostic surface", () => {
         arguments: {
           skillId: "register-domain",
           providerTokenId: "2",
+          serviceSlug: "domain-management",
           buyerTokenId: "5",
           walletAddress: gateway.buyerAddress,
           serviceArgs: { domain: "smoke.xyz" },
@@ -458,10 +462,11 @@ describe("hosted MCP — wallet-agnostic surface", () => {
           name: "daski_purchase",
           arguments: {
             providerTokenId: "2",
+            serviceSlug: "domain-management",
             buyerTokenId: "5",
             walletAddress: gateway.buyerAddress,
             // post-service-identity-refactor: skillId is required so the
-            // gateway can derive serviceId from (providerAgentId, skillId,
+            // gateway can derive serviceId from (providerAgentId, serviceSlug,
             // version) and bind the EIP-3009 nonce accordingly.
             skillId: "register-domain",
           },
@@ -575,7 +580,34 @@ describe("hosted MCP — wallet-agnostic surface", () => {
   });
 
   it("daski_register_agent second call (with signature) submits via the facilitator", async () => {
-    const fresh = "0xabcd000000000000000000000000000000000002" as Hex;
+    const account = privateKeyToAccount(
+      ("0x" + "22".repeat(32)) as Hex,
+    );
+    const fresh = account.address.toLowerCase() as Hex;
+    const deadline = BigInt(Math.floor(Date.now() / 1000) + 600);
+    const signature = await account.signTypedData({
+      domain: {
+        name: "Daski AgentIndex",
+        version: "1",
+        chainId: gateway.config.chainId,
+        verifyingContract: gateway.config.agentIndexAddress,
+      },
+      types: {
+        RegisterAgent: [
+          { name: "agentURI", type: "string" },
+          { name: "agentWallet", type: "address" },
+          { name: "nonce", type: "uint256" },
+          { name: "deadline", type: "uint256" },
+        ],
+      },
+      primaryType: "RegisterAgent",
+      message: {
+        agentURI: "ipfs://buyer",
+        agentWallet: fresh,
+        nonce: 0n,
+        deadline,
+      },
+    });
     gateway.mockChain.queueRegistration({
       kind: "success",
       agentId: 88n,
@@ -594,8 +626,8 @@ describe("hosted MCP — wallet-agnostic surface", () => {
           arguments: {
             walletAddress: fresh,
             agentURI: "ipfs://buyer",
-            deadline: String(Math.floor(Date.now() / 1000) + 600),
-            signature: ("0x" + "11".repeat(65)) as Hex,
+            deadline: deadline.toString(),
+            signature,
           },
         }),
       );
@@ -628,6 +660,7 @@ describe("hosted MCP — wallet-agnostic surface", () => {
           arguments: {
             skillId: "register-domain",
             providerTokenId: "2",
+            serviceSlug: "domain-management",
             walletAddress: fresh,
             // buyerTokenId omitted on purpose — orchestrator should look it up.
             serviceArgs: { domain: "atomic.xyz" },
@@ -675,6 +708,7 @@ describe("hosted MCP — wallet-agnostic surface", () => {
           arguments: {
             skillId: "register-domain",
             providerTokenId: "2",
+            serviceSlug: "domain-management",
             walletAddress: fresh,
             serviceArgs: { domain: "atomic.xyz" },
           },
@@ -722,6 +756,7 @@ describe("hosted MCP — wallet-agnostic surface", () => {
           arguments: {
             skillId: "register-domain",
             providerTokenId: "2",
+            serviceSlug: "domain-management",
             walletAddress: fresh,
             name: "  Acme Procurement Bot ",
             serviceArgs: { domain: "atomic.xyz" },
@@ -764,6 +799,7 @@ describe("hosted MCP — wallet-agnostic surface", () => {
         arguments: {
           skillId: "register-domain",
           providerTokenId: "2",
+          serviceSlug: "domain-management",
           walletAddress: fresh,
           name: "x".repeat(65),
           serviceArgs: { domain: "atomic.xyz" },
@@ -794,6 +830,7 @@ describe("hosted MCP — wallet-agnostic surface", () => {
           arguments: {
             skillId: "register-domain",
             providerTokenId: "2",
+            serviceSlug: "domain-management",
             walletAddress: gateway.buyerAddress,
             name: "Acme Procurement Bot",
             serviceArgs: { domain: "smoke.xyz" },
@@ -860,6 +897,7 @@ describe("hosted MCP — wallet-agnostic surface", () => {
           arguments: {
             skillId: "register-domain",
             providerTokenId: "2",
+            serviceSlug: "domain-management",
             buyerTokenId: "5",
             walletAddress: gateway.buyerAddress,
             serviceArgs: { domain: "atomic.xyz" },
@@ -902,6 +940,7 @@ describe("hosted MCP — wallet-agnostic surface", () => {
         arguments: {
           skillId: "register-domain",
           providerTokenId: "2",
+          serviceSlug: "domain-management",
           buyerTokenId: "5",
           walletAddress: gateway.buyerAddress,
           serviceArgs: {
@@ -939,6 +978,7 @@ describe("hosted MCP — wallet-agnostic surface", () => {
         arguments: {
           skillId: "register-domain",
           providerTokenId: "2",
+          serviceSlug: "domain-management",
           buyerTokenId: "5",
           walletAddress: gateway.buyerAddress,
           serviceArgs: {
@@ -1011,6 +1051,7 @@ describe("hosted MCP — wallet-agnostic surface", () => {
           arguments: {
             skillId: "check-availability",
             providerTokenId: "2",
+            serviceSlug: "domain-management",
             walletAddress: fresh,
             serviceArgs: { domain: "smoke.xyz" },
           },
@@ -1137,6 +1178,7 @@ describe("hosted MCP — wallet-agnostic surface", () => {
         arguments: {
           skillId: "set-dns-record",
           providerTokenId: "2",
+          serviceSlug: "domain-management",
           walletAddress: gateway.buyerAddress,
           buyerTokenId: "5",
           serviceArgs: {
@@ -1195,6 +1237,7 @@ describe("hosted MCP — wallet-agnostic surface", () => {
           arguments: {
             skillId: "set-dns-record",
             providerTokenId: "2",
+            serviceSlug: "domain-management",
             walletAddress: gateway.buyerAddress,
             buyerTokenId: "5",
             paymentId: "42",
@@ -1230,6 +1273,7 @@ describe("hosted MCP — wallet-agnostic surface", () => {
           arguments: {
             skillId: "register-domain",
             providerTokenId: "2",
+            serviceSlug: "domain-management",
             walletAddress: fresh,
             serviceArgs: { domain: "atomic-settle.xyz" },
           },
@@ -1335,6 +1379,7 @@ describe("hosted MCP — wallet-agnostic surface", () => {
           arguments: {
             skillId: "register-domain",
             providerTokenId: "2",
+            serviceSlug: "domain-management",
             buyerTokenId: "5",
             walletAddress: gateway.buyerAddress,
             serviceArgs,

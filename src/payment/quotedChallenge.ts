@@ -9,12 +9,15 @@ import {
   type SkillOffer,
 } from "./requirements.js";
 import { fetchProviderQuote } from "./providerQuote.js";
+import type { ChainReader } from "../chain/reader.js";
+import { walletControlsAgent } from "../identity/control.js";
 
 export interface QuotedChallengeInput {
   providerAgentId: bigint;
   buyerAgentId: bigint;
   walletAddress: Hex;
   skillId: string;
+  serviceSlug: string;
   serviceArgs: Record<string, unknown>;
   amountLimit?: string;
 }
@@ -23,6 +26,7 @@ export interface QuotedChallengeDeps {
   config: Config;
   cache: DiscoveryCache;
   queries: Queries;
+  reader: ChainReader;
   fetch: Fetcher;
   timeoutMs: number;
   maxResponseBytes: number;
@@ -69,12 +73,28 @@ export async function createQuotedChallenge(
     input.providerAgentId,
     input.skillId,
     deps.cache,
-    { requireFixedAmount: false },
+    {
+      requireFixedAmount: false,
+      serviceSlug: input.serviceSlug,
+    },
   );
   if (!offerResult.ok) {
     return fail(offerResult.code, offerResult.message);
   }
   const offer = offerResult.offer;
+  if (
+    input.buyerAgentId !== 0n &&
+    !(await walletControlsAgent(
+      deps.reader,
+      input.buyerAgentId,
+      input.walletAddress,
+    ))
+  ) {
+    return fail(
+      "buyer_agent_not_controlled",
+      "walletAddress does not control buyerTokenId",
+    );
+  }
   const quoteResult = await fetchProviderQuote({
     providerA2AUrl: offer.providerA2AUrl,
     skillId: input.skillId,

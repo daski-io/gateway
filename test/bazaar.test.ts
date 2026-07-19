@@ -31,6 +31,7 @@ interface FakeFacilitator {
   calls: Array<{ path: "/verify" | "/settle"; body: any }>;
   setVerify(response: unknown, status?: number): void;
   setSettle(response: unknown, status?: number): void;
+  setSettleError(error: Error): void;
   reset(): void;
 }
 
@@ -45,6 +46,7 @@ function makeFakeFacilitator(): FakeFacilitator {
     payer: null,
   };
   let settleStatus = 200;
+  let settleError: Error | null = null;
 
   const fetchFn = (async (input: any, init?: any) => {
     const url = String(input);
@@ -58,6 +60,7 @@ function makeFakeFacilitator(): FakeFacilitator {
     }
     if (url.endsWith("/settle")) {
       calls.push({ path: "/settle", body });
+      if (settleError) throw settleError;
       return new Response(JSON.stringify(settleResponse), {
         status: settleStatus,
         headers: { "content-type": "application/json" },
@@ -76,6 +79,10 @@ function makeFakeFacilitator(): FakeFacilitator {
     setSettle(response, status = 200) {
       settleResponse = response;
       settleStatus = status;
+      settleError = null;
+    },
+    setSettleError(error) {
+      settleError = error;
     },
     reset() {
       calls.length = 0;
@@ -88,6 +95,7 @@ function makeFakeFacilitator(): FakeFacilitator {
         payer: null,
       };
       settleStatus = 200;
+      settleError = null;
     },
   };
 }
@@ -103,7 +111,9 @@ describe("bazaar rail (/x402/services)", () => {
   }
 
   function resourceUrl(tokenId: bigint, skillId: string): string {
-    return `${gw.baseUrl}/x402/services/${tokenId.toString()}/${skillId}`;
+    const serviceSlug =
+      tokenId === 1n ? "domain-registration" : "domain-management";
+    return `${gw.baseUrl}/x402/services/${tokenId.toString()}/${serviceSlug}/${skillId}`;
   }
 
   function expectedLegal() {
@@ -404,7 +414,7 @@ describe("bazaar rail (/x402/services)", () => {
     const json = (await res.json()) as any;
     const resources = json.services.map((s: any) => s.resource);
     expect(resources).toContain(
-      `${gw.baseUrl}/x402/services/1/register-domain`,
+      `${gw.baseUrl}/x402/services/1/domain-registration/register-domain`,
     );
   });
 
@@ -572,7 +582,7 @@ describe("bazaar rail (/x402/services)", () => {
         }),
       ).toString("base64");
       const res = await fetch(
-        `${unregistered.baseUrl}/x402/services/1/register-domain`,
+        `${unregistered.baseUrl}/x402/services/1/domain-management/register-domain`,
         { method: "POST", headers: { "payment-signature": header } },
       );
       const json = (await res.json()) as any;
@@ -658,6 +668,62 @@ describe("bazaar rail (/x402/services)", () => {
     // The pending row already carries the quote binding for the retry.
     expect(challenge!.quoteId).not.toBeNull();
     expect(challenge!.quoteSignature).not.toBeNull();
+  });
+
+  it("recovers when the external payment landed but the facilitator response was lost", async () => {
+    facilitator.reset();
+    const attributionsBefore = gw.mockChain.attributions.length;
+    facilitator.setSettleError(new Error("connection closed after broadcast"));
+    const nonce = freshNonce();
+    const serviceArgs = { domain: "lost-response.example" };
+    const { header } = await quoteAndMakePaymentHeader(
+      PRICE,
+      nonce,
+      serviceArgs,
+    );
+
+    const first = await payWithHeader(
+      1n,
+      "register-domain",
+      header,
+      serviceArgs,
+    );
+    expect(first.status).toBe(502);
+    const pending = await gw.bundle.queries.getChallengeByWalletAndNonce(
+      gw.buyerAddress,
+      nonce,
+    );
+    expect(pending?.status).toBe("pending");
+    expect(pending?.externalSettleTx).toBeNull();
+
+    gw.mockChain.setAuthorizationUsed(gw.buyerAddress, nonce, true);
+    gw.mockChain.queueAttribution({
+      kind: "success",
+      txHash: ATTRIBUTION_TX,
+      event: {
+        paymentId: 45n,
+        serviceRef: ("0x" + "00".repeat(32)) as Hex,
+        serviceId: ("0x" + "00".repeat(32)) as Hex,
+        buyerAgentId: BUYER_AGENT_ID,
+        providerAgentId: 1n,
+        token: gw.config.usdcAddress,
+        totalAmount: PRICE,
+        providerAmount: (PRICE * 95n) / 100n,
+        commission: (PRICE * 5n) / 100n,
+      },
+    });
+    const callsBeforeRetry = facilitator.calls.length;
+    const retry = await payWithHeader(
+      1n,
+      "register-domain",
+      header,
+      serviceArgs,
+    );
+    expect(retry.status).toBe(200);
+    expect(retry.json.receipt.paymentId).toBe("45");
+    expect(retry.json.receipt.settlementTransaction).toBe(ATTRIBUTION_TX);
+    expect(facilitator.calls).toHaveLength(callsBeforeRetry);
+    expect(gw.mockChain.attributions).toHaveLength(attributionsBefore + 1);
   });
 
   it("resumes a pending challenge with no recorded settle tx after legal invalidation", async () => {
@@ -882,6 +948,61 @@ describe("bazaar rail (/x402/services)", () => {
       "/settle",
     ]);
     expect(gw.mockProvider.getIssuedQuotes().length).toBe(quotesBefore);
+  });
+
+  it("recovers attribution from its persisted broadcast transaction", async () => {
+    facilitator.reset();
+    const attributionsBefore = gw.mockChain.attributions.length;
+    const nonce = freshNonce();
+    const serviceArgs = { domain: "attribution-broadcast.example" };
+    const { header } = await quoteAndMakePaymentHeader(
+      PRICE,
+      nonce,
+      serviceArgs,
+    );
+    gw.mockChain.queueAttribution({
+      kind: "broadcast-error",
+      txHash: ATTRIBUTION_TX,
+      reason: "receipt RPC timed out",
+      event: {
+        paymentId: 46n,
+        serviceRef: ("0x" + "00".repeat(32)) as Hex,
+        serviceId: ("0x" + "00".repeat(32)) as Hex,
+        buyerAgentId: BUYER_AGENT_ID,
+        providerAgentId: 1n,
+        token: gw.config.usdcAddress,
+        totalAmount: PRICE,
+        providerAmount: (PRICE * 95n) / 100n,
+        commission: (PRICE * 5n) / 100n,
+      },
+    });
+
+    const first = await payWithHeader(
+      1n,
+      "register-domain",
+      header,
+      serviceArgs,
+    );
+    expect(first.status).toBe(502);
+    const pending = await gw.bundle.queries.getChallengeByWalletAndNonce(
+      gw.buyerAddress,
+      nonce,
+    );
+    expect(pending?.transactionHash).toBe(ATTRIBUTION_TX);
+
+    const retry = await payWithHeader(
+      1n,
+      "register-domain",
+      header,
+      serviceArgs,
+    );
+    expect(retry.status).toBe(200);
+    expect(retry.json.receipt.paymentId).toBe("46");
+    expect(gw.mockChain.attributions).toHaveLength(attributionsBefore + 1);
+    expect(facilitator.calls.map((call) => call.path)).toEqual([
+      "/verify",
+      "/settle",
+    ]);
   });
 
   it("409s when the same nonce is replayed against a different purchase", async () => {

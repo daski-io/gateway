@@ -4,6 +4,7 @@ import type { Queries } from "../db/queries.js";
 import type { Eip712TypedData, Hex } from "../types.js";
 import { buildBuyerAgentURI, defaultBuyerName, sanitizeBuyerName } from "./name.js";
 import { logErrorWithId } from "../util/errorWrap.js";
+import { verifyTypedData } from "viem";
 import {
   AgentCardFetchError,
   fetchAgentCard,
@@ -224,6 +225,11 @@ export async function submitRegistration(
   }
 
   const walletAddress = input.walletAddress.toLowerCase() as Hex;
+  const deadline = BigInt(input.deadline);
+  const now = BigInt(Math.floor(Date.now() / 1000));
+  if (deadline <= now) {
+    return fail(400, "BAD_DEADLINE", "registration signature has expired");
+  }
   let existingAgentId: bigint;
   try {
     existingAgentId = await deps.reader.agentOfWallet(walletAddress);
@@ -236,6 +242,48 @@ export async function submitRegistration(
     return fail(409, "ALREADY_REGISTERED", "wallet is already registered", {
       agentId: existingAgentId.toString(),
     });
+  }
+
+  let nonce: bigint;
+  try {
+    nonce = await deps.reader.getRegistrationNonce(walletAddress);
+  } catch (err) {
+    return fail(502, "CHAIN_READ_FAILED", "chain read failed", {
+      correlationId: logErrorWithId(
+        "submitRegistration.registrationNonce",
+        err,
+      ),
+    });
+  }
+  let validSignature = false;
+  try {
+    validSignature = await verifyTypedData({
+      address: walletAddress,
+      domain: {
+        name: "Daski AgentIndex",
+        version: "1",
+        chainId: deps.config.chainId,
+        verifyingContract: deps.config.agentIndexAddress,
+      },
+      types: REGISTER_AGENT_TYPES,
+      primaryType: "RegisterAgent",
+      message: {
+        agentURI: input.agentURI,
+        agentWallet: walletAddress,
+        nonce,
+        deadline,
+      },
+      signature: input.signature,
+    });
+  } catch {
+    validSignature = false;
+  }
+  if (!validSignature) {
+    return fail(
+      400,
+      "BAD_SIGNATURE",
+      "signature does not authorize this registration payload",
+    );
   }
 
   let resolvedName: string;
@@ -286,7 +334,7 @@ export async function submitRegistration(
     const result = await deps.reader.registerBuyer({
       agentURI: input.agentURI,
       agentWallet: walletAddress,
-      deadline: BigInt(input.deadline),
+      deadline,
       signature: input.signature,
     });
     try {

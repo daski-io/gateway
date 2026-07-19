@@ -9,6 +9,7 @@ import {
 } from "../format.js";
 import { chainRowToSkillEnriched } from "./serviceAggregates.js";
 import type { Hex } from "../../types.js";
+import { BoundedCache } from "./bounded.js";
 
 export class BlockNumberCache {
   private value = 0n;
@@ -35,17 +36,20 @@ export class BlockNumberCache {
 }
 
 export class ProviderReputationCache {
-  private readonly entries = new Map<
+  private readonly entries: BoundedCache<
     string,
-    { value: PublicServiceReputation | null; fetchedAt: number }
-  >();
+    PublicServiceReputation | null
+  >;
 
   constructor(
     private readonly reader: ChainReader,
     private readonly queries: Queries,
     private readonly sampleLimit: number,
     private readonly ttlMs = 30_000,
-  ) {}
+    maxEntries = 1000,
+  ) {
+    this.entries = new BoundedCache(maxEntries);
+  }
 
   async get(agentId: bigint): Promise<PublicServiceReputation | null> {
     const key = agentId.toString();
@@ -70,7 +74,7 @@ export class ProviderReputationCache {
             ),
           )
         : null;
-      this.entries.set(key, { value, fetchedAt: now });
+      this.entries.set(key, value, now);
       return value;
     } catch {
       return hit?.value ?? null;
@@ -79,16 +83,19 @@ export class ProviderReputationCache {
 }
 
 export class ServiceReputationCache {
-  private readonly entries = new Map<
+  private readonly entries: BoundedCache<
     string,
-    { value: PublicServiceLevelReputation | null; fetchedAt: number }
-  >();
+    PublicServiceLevelReputation | null
+  >;
 
   constructor(
     private readonly reader: ChainReader,
     private readonly queries: Queries,
     private readonly ttlMs = 30_000,
-  ) {}
+    maxEntries = 1000,
+  ) {
+    this.entries = new BoundedCache(maxEntries);
+  }
 
   async get(serviceId: Hex): Promise<PublicServiceLevelReputation | null> {
     const key = serviceId.toLowerCase();
@@ -103,7 +110,7 @@ export class ServiceReputationCache {
       const value = raw
         ? deriveServiceReputation(raw, serviceId, undefined, spend.totalAtomic)
         : null;
-      this.entries.set(key, { value, fetchedAt: now });
+      this.entries.set(key, value, now);
       return value;
     } catch {
       return hit?.value ?? null;

@@ -41,10 +41,14 @@ export function registerBuyerRoutes(router: Router, context: PublicRouteContext)
       });
       return;
     }
-    const [profile, identity] = await Promise.all([
-      context.buyerProfileCache.get(agentId),
-      context.buyerIdentityCache.get(agentId),
-    ]);
+    const identity = await context.buyerIdentityCache.get(agentId);
+    if (!identity && !(await context.queries.buyerHasChainActivity(agentId))) {
+      res.status(404).json({
+        error: { code: "BUYER_NOT_FOUND", message: "unknown buyer" },
+      });
+      return;
+    }
+    const profile = await context.buyerProfileCache.get(agentId);
     const serviceName = buildServiceNameResolver(cache, config);
     const recentPurchases = profile.recentPurchases.map((row) => {
       const provider = cache.get(row.providerAgentId);

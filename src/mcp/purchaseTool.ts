@@ -37,6 +37,7 @@ export function registerPurchaseTool(
       ].join("\n"),
       inputSchema: {
         providerTokenId: z.string(),
+        serviceSlug: z.string(),
         buyerTokenId: z.string().describe("Buyer's ERC-8004 agentId."),
         walletAddress: z
           .string()
@@ -76,6 +77,7 @@ export function registerPurchaseTool(
           buyerAgentId: buyer.value,
           walletAddress: args.walletAddress.toLowerCase() as Hex,
           skillId: args.skillId,
+          serviceSlug: args.serviceSlug,
           serviceArgs: args.serviceArgs ?? {},
           amountLimit: args.amount,
         },
@@ -83,6 +85,7 @@ export function registerPurchaseTool(
           config: deps.config,
           cache: deps.cache,
           queries: deps.queries,
+          reader: deps.reader,
           fetch: transport.fetch,
           timeoutMs: transport.timeoutMs,
           maxResponseBytes: transport.maxResponseBytes,

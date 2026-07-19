@@ -7,6 +7,7 @@ import {
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { base, baseSepolia } from "viem/chains";
+import { SettlementTransactionRevertedError } from "./reader.js";
 import {
   agentIndexAbi,
   directTransferAdapterAbi,
@@ -18,6 +19,7 @@ import {
 import type {
   ChainReader,
   DirectAttributionInput,
+  BroadcastObserver,
   PaymentRouterRecord,
   PaymentSettledEvent,
   PaymentSettledEventLog,
@@ -85,6 +87,49 @@ export function createViemChainReader(opts: ViemReaderOptions): ChainReader {
   const usdcAddress = opts.usdcAddress;
   const reputationStorageAddress = opts.reputationStorageAddress;
 
+  async function settlementFromTransaction(
+    transactionHash: Hex,
+    serviceRef: Hex,
+  ): Promise<SettlementResult> {
+    const receipt = await publicClient.waitForTransactionReceipt({
+      hash: transactionHash,
+    });
+    if (receipt.status !== "success") {
+      throw new SettlementTransactionRevertedError(transactionHash);
+    }
+    const routerLogs = receipt.logs.filter(
+      (log) => log.address.toLowerCase() === routerAddress.toLowerCase(),
+    );
+    const parsed = parseEventLogs({
+      abi: paymentRouterAbi,
+      eventName: "PaymentSettled",
+      logs: routerLogs as any,
+    });
+    const match = parsed.find(
+      (event: any) =>
+        String(event.args.serviceRef).toLowerCase() ===
+        serviceRef.toLowerCase(),
+    );
+    if (!match) {
+      throw new Error("PaymentSettled event missing from transaction");
+    }
+    const args = (match as any).args as PaymentSettledEvent;
+    return {
+      transactionHash,
+      event: {
+        paymentId: args.paymentId,
+        serviceRef: args.serviceRef,
+        serviceId: args.serviceId,
+        buyerAgentId: args.buyerAgentId,
+        providerAgentId: args.providerAgentId,
+        token: args.token,
+        totalAmount: args.totalAmount,
+        providerAmount: args.providerAmount,
+        commission: args.commission,
+      },
+    };
+  }
+
   return {
     ...createIdentityMethods(publicClient, opts),
 
@@ -130,7 +175,10 @@ export function createViemChainReader(opts: ViemReaderOptions): ChainReader {
       })) as boolean;
     },
 
-    async settlePayment(input: SettlementInput): Promise<SettlementResult> {
+    async settlePayment(
+      input: SettlementInput,
+      onBroadcast?: BroadcastObserver,
+    ): Promise<SettlementResult> {
       const auth = {
         from: input.from,
         validAfter: input.validAfter,
@@ -182,57 +230,13 @@ export function createViemChainReader(opts: ViemReaderOptions): ChainReader {
       }
 
       const hash = await walletClient.writeContract(settleRequest);
-
-      const receipt = await publicClient.waitForTransactionReceipt({ hash });
-      if (receipt.status !== "success") {
-        // Rare: simulation passed but on-chain state changed between
-        // simulation and broadcast (e.g. the buyer's balance dropped
-        // mid-flight). The receipt doesn't carry the revert string, so
-        // include the tx hash for follow-up via a block explorer.
-        throw new Error(
-          `adapter settle reverted on broadcast despite passing simulation (tx ${hash})`,
-        );
-      }
-
-      // Filter logs to only those emitted by the router — defense in depth
-      // against a malicious contract emitting a fake PaymentSettled shape.
-      const routerLogs = receipt.logs.filter(
-        (l) => l.address.toLowerCase() === routerAddress.toLowerCase(),
-      );
-      const parsed = parseEventLogs({
-        abi: paymentRouterAbi,
-        eventName: "PaymentSettled",
-        logs: routerLogs as any,
-      });
-
-      const match = parsed.find(
-        (e: any) =>
-          String(e.args.serviceRef).toLowerCase() ===
-          input.serviceRef.toLowerCase(),
-      );
-      if (!match) {
-        throw new Error("PaymentSettled event missing after settle");
-      }
-
-      const args = (match as any).args as PaymentSettledEvent;
-      return {
-        transactionHash: hash,
-        event: {
-          paymentId: args.paymentId,
-          serviceRef: args.serviceRef,
-          serviceId: args.serviceId,
-          buyerAgentId: args.buyerAgentId,
-          providerAgentId: args.providerAgentId,
-          token: args.token,
-          totalAmount: args.totalAmount,
-          providerAmount: args.providerAmount,
-          commission: args.commission,
-        },
-      };
+      await onBroadcast?.(hash);
+      return settlementFromTransaction(hash, input.serviceRef);
     },
 
     async attributeDirectTransfer(
       input: DirectAttributionInput,
+      onBroadcast?: BroadcastObserver,
     ): Promise<SettlementResult> {
       const directAdapter = opts.directAdapterAddress;
       if (!directAdapter) {
@@ -273,46 +277,8 @@ export function createViemChainReader(opts: ViemReaderOptions): ChainReader {
       }
 
       const hash = await walletClient.writeContract(attributeRequest);
-
-      const receipt = await publicClient.waitForTransactionReceipt({ hash });
-      if (receipt.status !== "success") {
-        throw new Error(
-          `attribution reverted on broadcast despite passing simulation (tx ${hash})`,
-        );
-      }
-
-      const routerLogs = receipt.logs.filter(
-        (l) => l.address.toLowerCase() === routerAddress.toLowerCase(),
-      );
-      const parsed = parseEventLogs({
-        abi: paymentRouterAbi,
-        eventName: "PaymentSettled",
-        logs: routerLogs as any,
-      });
-      const match = parsed.find(
-        (e: any) =>
-          String(e.args.serviceRef).toLowerCase() ===
-          input.serviceRef.toLowerCase(),
-      );
-      if (!match) {
-        throw new Error("PaymentSettled event missing after attribution");
-      }
-
-      const args = (match as any).args as PaymentSettledEvent;
-      return {
-        transactionHash: hash,
-        event: {
-          paymentId: args.paymentId,
-          serviceRef: args.serviceRef,
-          serviceId: args.serviceId,
-          buyerAgentId: args.buyerAgentId,
-          providerAgentId: args.providerAgentId,
-          token: args.token,
-          totalAmount: args.totalAmount,
-          providerAmount: args.providerAmount,
-          commission: args.commission,
-        },
-      };
+      await onBroadcast?.(hash);
+      return settlementFromTransaction(hash, input.serviceRef);
     },
 
     async registerBuyer(input: RegisterBySigInput): Promise<RegisterBySigResult> {
@@ -381,6 +347,7 @@ export function createViemChainReader(opts: ViemReaderOptions): ChainReader {
 
     async settleWithRegistration(
       input: SettleWithRegistrationInput,
+      onBroadcast?: BroadcastObserver,
     ): Promise<SettleWithRegistrationResult> {
       const auth = {
         from: input.from,
@@ -437,12 +404,11 @@ export function createViemChainReader(opts: ViemReaderOptions): ChainReader {
       }
 
       const hash = await walletClient.writeContract(settleRequest);
+      await onBroadcast?.(hash);
 
       const receipt = await publicClient.waitForTransactionReceipt({ hash });
       if (receipt.status !== "success") {
-        throw new Error(
-          `settleWithRegistration reverted on broadcast despite passing simulation (tx ${hash})`,
-        );
+        throw new SettlementTransactionRevertedError(hash);
       }
 
       // Pull PaymentSettled out of router logs (same defensive filter as
@@ -495,6 +461,8 @@ export function createViemChainReader(opts: ViemReaderOptions): ChainReader {
         registered: wasRegistered,
       };
     },
+
+    getSettlementByTransaction: settlementFromTransaction,
 
     ...createConfirmationMethods({
       publicClient,

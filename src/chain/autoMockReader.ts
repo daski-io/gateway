@@ -36,6 +36,7 @@ import type {
   SettleWithRegistrationResult,
   SettlementInput,
   SettlementResult,
+  BroadcastObserver,
 } from "./reader.js";
 
 const ZERO_HASH = ("0x" + "00".repeat(32)) as Hex;
@@ -86,6 +87,7 @@ export class AutoMockChainReader implements ChainReader {
   private confirmationCount = 0n;
   private blockNumber = 1n;
   private usedAuthNonces = new Set<string>();
+  private settlementResults = new Map<string, SettlementResult>();
   private agentByWallet = new Map<string, bigint>();
   private readonly defaultBuyerAgentId: bigint;
 
@@ -147,6 +149,10 @@ export class AutoMockChainReader implements ChainReader {
     return ZERO_ADDR;
   }
 
+  async getAgentOwner(agentId: bigint): Promise<Hex> {
+    return this.getAgentWallet(agentId);
+  }
+
   async getRegistrationNonce(_wallet: Hex): Promise<bigint> {
     return 0n;
   }
@@ -173,7 +179,10 @@ export class AutoMockChainReader implements ChainReader {
     return id;
   }
 
-  async settlePayment(input: SettlementInput): Promise<SettlementResult> {
+  async settlePayment(
+    input: SettlementInput,
+    onBroadcast?: BroadcastObserver,
+  ): Promise<SettlementResult> {
     const key = `${input.from.toLowerCase()}:${input.nonce.toLowerCase()}`;
     if (this.usedAuthNonces.has(key)) {
       throw new Error("mock settle: authorization nonce already used");
@@ -196,17 +205,21 @@ export class AutoMockChainReader implements ChainReader {
     };
     // Payment tx hashes encode paymentId directly so the provider's mock
     // paymentVerifier can recover it via `BigInt(transactionHash)`.
-    return {
+    const result = {
       transactionHash: txHashForPayment(paymentId),
       event,
     };
+    this.settlementResults.set(result.transactionHash.toLowerCase(), result);
+    await onBroadcast?.(result.transactionHash);
+    return result;
   }
 
   async settleWithRegistration(
     input: SettleWithRegistrationInput,
+    onBroadcast?: BroadcastObserver,
   ): Promise<SettleWithRegistrationResult> {
     const existed = this.agentByWallet.has(input.from.toLowerCase());
-    const result = await this.settlePayment(input);
+    const result = await this.settlePayment(input, onBroadcast);
     return {
       transactionHash: result.transactionHash,
       event: result.event,
@@ -217,6 +230,7 @@ export class AutoMockChainReader implements ChainReader {
 
   async attributeDirectTransfer(
     input: DirectAttributionInput,
+    onBroadcast?: BroadcastObserver,
   ): Promise<SettlementResult> {
     // Mirror the on-chain idempotency surface: one attribution per
     // serviceRef. (The auth nonce is consumed by the EXTERNAL facilitator
@@ -242,10 +256,24 @@ export class AutoMockChainReader implements ChainReader {
       providerAmount: input.amount - commission,
       commission,
     };
-    return {
+    const result = {
       transactionHash: txHashForPayment(paymentId),
       event,
     };
+    this.settlementResults.set(result.transactionHash.toLowerCase(), result);
+    await onBroadcast?.(result.transactionHash);
+    return result;
+  }
+
+  async getSettlementByTransaction(
+    transactionHash: Hex,
+    serviceRef: Hex,
+  ): Promise<SettlementResult> {
+    const result = this.settlementResults.get(transactionHash.toLowerCase());
+    if (!result || result.event.serviceRef.toLowerCase() !== serviceRef.toLowerCase()) {
+      throw new Error("mock settlement transaction not found");
+    }
+    return result;
   }
 
   async registerBuyer(input: RegisterBySigInput): Promise<RegisterBySigResult> {

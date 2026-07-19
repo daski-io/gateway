@@ -194,6 +194,10 @@ export async function startTestGateway(opts: TestGatewayOptions = {}): Promise<T
     challengeRetentionSeconds: 7 * 24 * 60 * 60,
     rpcReadMaxPerMinute: 1_000,
     stateChangeGlobalMaxPerMinute: 1_000,
+    mcpGlobalMaxPerMinute: 1_000,
+    publicReadMaxPerMinute: 1_000,
+    publicReadGlobalMaxPerMinute: 1_000,
+    publicCacheMaxEntries: 1_000,
     discoveryMaxA2AEntries: 16,
     discoveryFetchConcurrency: 4,
     discoveryRefreshDeadlineMs: 30_000,
@@ -292,6 +296,7 @@ export async function startTestGateway(opts: TestGatewayOptions = {}): Promise<T
   config.publicUrl = baseUrl;
 
   const buyerAccount = privateKeyToAccount(TEST_BUYER_KEY);
+  mockChain.setAgentOwner(5n, buyerAccount.address.toLowerCase() as Hex);
   const requirementsByProvider = new Map<string, Record<string, unknown>>();
 
   async function signAuthorization(
@@ -357,8 +362,26 @@ export async function startTestGateway(opts: TestGatewayOptions = {}): Promise<T
       const requestedSkillId = merged.skillId;
       const cachedProvider = bundle.cache.get(tokenId);
       if (cachedProvider && typeof requestedSkillId === "string") {
+        if (!Object.prototype.hasOwnProperty.call(body, "serviceSlug")) {
+          const selectedCard =
+            cachedProvider.cards.find((card) => {
+              const skills = card.agentCard.skills;
+              return (
+                Array.isArray(skills) &&
+                skills.some(
+                  (skill) =>
+                    skill !== null &&
+                    typeof skill === "object" &&
+                    (skill as Record<string, unknown>).id === requestedSkillId,
+                )
+              );
+            }) ?? cachedProvider.cards[0];
+          if (selectedCard) merged.serviceSlug = selectedCard.serviceSlug;
+        }
         const cards = new Set<Record<string, unknown>>(
-          cachedProvider.cards.map((card) => card.agentCard),
+          cachedProvider.cards
+            .filter((card) => card.serviceSlug === merged.serviceSlug)
+            .map((card) => card.agentCard),
         );
         for (const card of cards) {
           const listed = Array.isArray(card.skills) ? card.skills : [];
@@ -394,6 +417,7 @@ export async function startTestGateway(opts: TestGatewayOptions = {}): Promise<T
           !Array.isArray(serviceArgs)
         ) {
           const resolved = resolveSkillOffer(tokenId, skillId, bundle.cache, {
+            serviceSlug: String(merged.serviceSlug),
             requireFixedAmount: false,
           });
           if (resolved.ok) {

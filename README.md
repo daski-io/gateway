@@ -79,11 +79,15 @@ for the full list with defaults. The most important ones:
 | `TRUST_PROXY` | Explicit number of trusted reverse-proxy hops; default `0` prevents forged forwarded IPs |
 | `MARKETPLACE_TERMS_URL` | Required HTTPS URL for the Daski Terms of Use returned with every service and purchase |
 | `MARKETPLACE_PRIVACY_URL` | Required HTTPS URL for the Daski Privacy Policy returned with every service and purchase |
-| `DIRECT_ADAPTER_ADDRESS` | DirectTransferAdapter proxy. Setting it mounts the Bazaar-facing `/x402/services/:agentId/:skillId` routes (external-facilitator rail). Unset = rail off |
+| `DIRECT_ADAPTER_ADDRESS` | DirectTransferAdapter proxy. Setting it mounts the Bazaar-facing `/x402/services/:agentId/:serviceSlug/:skillId` routes (external-facilitator rail). Unset = rail off |
 | `REGISTRATION_SPONSOR_MAX_PER_HOUR` | Global facilitator-funded standalone registration budget. Set `0` to disable; default `20` |
 | `CHALLENGE_RETENTION_SECONDS` | Retention window for expired payment challenges before bounded deletion |
 | `RPC_READ_MAX_PER_MINUTE` | Aggregate RPC-backed read budget across clients and replicas |
 | `STATE_CHANGE_GLOBAL_MAX_PER_MINUTE` | Aggregate state-changing request budget across clients and replicas |
+| `MCP_GLOBAL_MAX_PER_MINUTE` | Aggregate request budget for all MCP traffic across clients and replicas |
+| `PUBLIC_READ_MAX_PER_MINUTE` | Per-client budget for public read routes |
+| `PUBLIC_READ_GLOBAL_MAX_PER_MINUTE` | Aggregate public-read budget across clients and replicas |
+| `PUBLIC_CACHE_MAX_ENTRIES` | Maximum entries retained by each keyed public read cache |
 | `EXTERNAL_FACILITATOR_URL` | External x402 facilitator base URL. Defaults: x402.org (Sepolia), CDP facilitator (mainnet) |
 | `EXTERNAL_FACILITATOR_AUTH_HEADER` | Raw `Authorization` value for the external facilitator — required by CDP for mainnet settles. **Secret.** |
 
@@ -131,7 +135,7 @@ on contract redeploys, DB resets) lives in
 
 ### Enabling the Bazaar rail (external facilitator)
 
-The `/x402/services/:agentId/:skillId` routes let ANY standard x402 client
+The `/x402/services/:agentId/:serviceSlug/:skillId` routes let ANY standard x402 client
 buy fixed-price skills, settled by an external facilitator (Coinbase CDP) —
 which is what gets Daski resources indexed by the
 [x402 Bazaar](https://docs.cdp.coinbase.com/x402/bazaar). The on-chain

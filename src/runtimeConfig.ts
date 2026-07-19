@@ -10,6 +10,10 @@ export interface RuntimeConfig {
   challengeRetentionSeconds: number;
   rpcReadMaxPerMinute: number;
   stateChangeGlobalMaxPerMinute: number;
+  mcpGlobalMaxPerMinute: number;
+  publicReadMaxPerMinute: number;
+  publicReadGlobalMaxPerMinute: number;
+  publicCacheMaxEntries: number;
   discoveryMaxA2AEntries: number;
   discoveryFetchConcurrency: number;
   discoveryRefreshDeadlineMs: number;
@@ -83,6 +87,26 @@ export function loadRuntimeConfig(env: NodeJS.ProcessEnv): RuntimeConfig {
       "STATE_CHANGE_GLOBAL_MAX_PER_MINUTE",
       env.STATE_CHANGE_GLOBAL_MAX_PER_MINUTE,
       300,
+    ),
+    mcpGlobalMaxPerMinute: integer(
+      "MCP_GLOBAL_MAX_PER_MINUTE",
+      env.MCP_GLOBAL_MAX_PER_MINUTE,
+      300,
+    ),
+    publicReadMaxPerMinute: integer(
+      "PUBLIC_READ_MAX_PER_MINUTE",
+      env.PUBLIC_READ_MAX_PER_MINUTE,
+      120,
+    ),
+    publicReadGlobalMaxPerMinute: integer(
+      "PUBLIC_READ_GLOBAL_MAX_PER_MINUTE",
+      env.PUBLIC_READ_GLOBAL_MAX_PER_MINUTE,
+      1200,
+    ),
+    publicCacheMaxEntries: integer(
+      "PUBLIC_CACHE_MAX_ENTRIES",
+      env.PUBLIC_CACHE_MAX_ENTRIES,
+      1000,
     ),
     discoveryMaxA2AEntries: integer("DISCOVERY_MAX_A2A_ENTRIES", env.DISCOVERY_MAX_A2A_ENTRIES, 16),
     discoveryFetchConcurrency: integer(

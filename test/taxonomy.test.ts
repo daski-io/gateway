@@ -120,6 +120,7 @@ describe("service taxonomy admission", () => {
           walletAddress: gateway.buyerAddress,
           buyerTokenId: "5",
           skillId: "register-domain",
+          serviceSlug: "domain-management",
           serviceArgs: {},
         }),
       });

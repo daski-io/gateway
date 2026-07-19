@@ -327,8 +327,10 @@ step 9 below.
 1. Use the wallet address you resolved at the start (see "Wallet tools:
    resolve once" above). Remember it — every signature in this flow comes
    from that same wallet.
-2. Call `daski_buy_service` with `skillId`, `walletAddress`, and
-   `serviceArgs` (the structured fields the skill requires). You may also
+2. Call `daski_buy_service` with `serviceSlug`, `skillId`, `walletAddress`,
+   and `serviceArgs` (the structured fields the skill requires). Copy
+   `serviceSlug` from the selected search result; skill IDs are only unique
+   within a service. You may also
    pass an explicit `buyerTokenId`; if you don't, the orchestrator looks
    up the wallet's ERC-8004 agentId for you. It returns either:
    - `kind: "paid", atomic: false` + `paymentRequirements` + a `plan` —
@@ -551,9 +553,9 @@ destructive or credential writes) authorize the action.
    `register-domain` payment that bought the domain, or the
    `create-mailbox` payment that bought the mailbox). Ask the user or
    look it up.
-2. Call `daski_buy_service` with the target `skillId`, `buyerTokenId`,
-   `walletAddress`, `paymentId`, and `serviceArgs` matching the skill's
-   `requiredFields`. It returns `kind: "free"` + a plan. The plan tells
+2. Call `daski_buy_service` with the target `serviceSlug`, `skillId`,
+   `buyerTokenId`, `walletAddress`, `paymentId`, and `serviceArgs` matching
+   the skill's `requiredFields`. It returns `kind: "free"` + a plan. The plan tells
    you exactly which steps to run; the items below describe the shape.
 3. Call `daski_submit_task` WITHOUT `envelopeAuth` — pass `skillId`,
    `providerA2AUrl`, `paymentId`, `chainId`, `buyerTokenId`, and the
@@ -662,6 +664,7 @@ User: "Register example.xyz for me."
 2. daski_search_services({ intent: "register a .xyz domain" })
    → { providers: [{ agentId: "1", ... }] }
 3. daski_buy_service({
+     serviceSlug: "domain-management",
      skillId: "register-domain",
      providerTokenId: "1",
      walletAddress: "0xabc...",

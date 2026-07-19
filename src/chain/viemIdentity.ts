@@ -18,6 +18,7 @@ type IdentityMethods = Pick<
   | "getAgentURI"
   | "agentOfWallet"
   | "getAgentWallet"
+  | "getAgentOwner"
   | "getRegistrationNonce"
 >;
 
@@ -79,6 +80,15 @@ export function createIdentityMethods(
         address: addresses.identityRegistryAddress,
         abi: identityRegistryAbi,
         functionName: "getAgentWallet",
+        args: [agentId],
+      })) as Hex;
+    },
+
+    async getAgentOwner(agentId: bigint) {
+      return (await publicClient.readContract({
+        address: addresses.identityRegistryAddress,
+        abi: identityRegistryAbi,
+        functionName: "ownerOf",
         args: [agentId],
       })) as Hex;
     },

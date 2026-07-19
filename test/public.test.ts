@@ -1094,37 +1094,11 @@ describe("public v1 — /buyers/:agentId", () => {
     await gateway.close();
   });
 
-  it("returns a zeroed shape (200) for buyers with no activity", async () => {
-    // Marketing site can deep-link to any agentId without 404 branching —
-    // unknown buyers render as "no activity yet" rather than an error.
+  it("returns 404 for a buyer with neither an on-chain identity nor activity", async () => {
     const res = await fetch(`${gateway.baseUrl}/public/v1/buyers/999`);
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(404);
     const body = (await res.json()) as any;
-
-    expect(body.agentId).toBe("999");
-    expect(body.firstPurchaseAt).toBeNull();
-    expect(body.lastPurchaseAt).toBeNull();
-    expect(body.reputation).toMatchObject({
-      transactions: 0,
-      confirmedCount: 0,
-      notConfirmedCount: 0,
-      pendingConfirmationCount: 0,
-      attestationRate: null,
-      attestationCoverage: null,
-      completedCount: 0,
-      failedCount: 0,
-      canceledCount: 0,
-      completionRate: null,
-      totalSpentUsdc: "0.00",
-      averageTransactionUsdc: "0.00",
-      totalRefundedUsdc: "0.00",
-      refundReceivedRate: null,
-      uniqueProviderCount: 0,
-      uniqueSkillCount: 0,
-      averageFulfillmentSeconds: null,
-      fulfillmentSampleSize: 0,
-    });
-    expect(body.recentPurchases).toEqual([]);
+    expect(body.error.code).toBe("BUYER_NOT_FOUND");
   });
 
   it("returns 404 for unparseable agentIds", async () => {

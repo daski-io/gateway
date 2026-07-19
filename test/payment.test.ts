@@ -4,6 +4,7 @@ import type { Hex, PaymentPayload } from "../src/types.js";
 import { computeRequestHash } from "../src/auth/envelope.js";
 import { DASKI_A2A_EXTENSION_URI } from "../src/config.js";
 import { AGENT_AUTHORITY, PURCHASE_NOTICE } from "../src/legal/purchase.js";
+import { makePaymentSettledEvent } from "./helpers/mockChain.js";
 
 const TEST_TX = "0x1111111111111111111111111111111111111111111111111111111111111111" as Hex;
 const NONCE = "0xaaaa000000000000000000000000000000000000000000000000000000000001" as Hex;
@@ -126,9 +127,40 @@ describe("payment", () => {
     expect(json.error).toMatch(/buyerTokenId/);
   });
 
+  it("rejects a buyer token not controlled by the requesting wallet", async () => {
+    gateway.mockChain.setAgentOwner(
+      5n,
+      "0x00000000000000000000000000000000000000ff" as Hex,
+    );
+    const res = await fetch(`${gateway.baseUrl}/purchase/2`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        buyerTokenId: "5",
+        walletAddress: gateway.buyerAddress,
+        skillId: "default-service",
+        serviceSlug: "domain-management",
+      }),
+    });
+    expect(res.status).toBe(403);
+    expect((await res.json() as any).error).toContain(
+      "does not control buyerTokenId",
+    );
+  });
+
+  it("does not select a service by skill id when serviceSlug mismatches", async () => {
+    const { status, json } = await gateway.purchaseChallenge(2n, {
+      buyerTokenId: "5",
+      serviceSlug: "some-other-service",
+    });
+    expect(status).toBe(404);
+    expect(json.error).toContain("does not list skill");
+  });
+
   it("returns 404 when provider is not whitelisted", async () => {
     const { status, json } = await gateway.purchaseChallenge(999n, {
       buyerTokenId: "5",
+      serviceSlug: "domain-management",
     });
     expect(status).toBe(404);
     expect(json.error).toMatch(/not whitelisted/);
@@ -410,6 +442,40 @@ describe("payment", () => {
     expect(second.status).toBe(200);
     expect(gateway.mockChain.settlements).toHaveLength(1);
     expect(second.json.transaction).toBe(first.json.transaction);
+  });
+
+  it("recovers a settlement whose transaction was broadcast before receipt polling failed", async () => {
+    const { serviceRef } = await gateway.purchaseChallenge(2n, {
+      buyerTokenId: "5",
+    });
+    gateway.mockChain.queueSettlement({
+      kind: "broadcast-error",
+      txHash: TEST_TX,
+      reason: "receipt RPC timed out",
+      event: makePaymentSettledEvent({
+        paymentId: 9n,
+        serviceRef: serviceRef!,
+        buyerAgentId: 5n,
+        providerAgentId: 2n,
+        totalAmount: 15_000_000n,
+        token: gateway.config.usdcAddress,
+      }),
+    });
+    const payload = await signAndBuildPayload(15_000_000n);
+
+    const first = await gateway.purchaseSettle(2n, payload);
+    expect(first.status).toBe(503);
+    expect(first.json.errorReason).toBe("settlement_confirmation_pending");
+    expect(
+      (await gateway.bundle.queries.getChallengeByRef(serviceRef!))
+        ?.transactionHash,
+    ).toBe(TEST_TX);
+
+    const retry = await gateway.purchaseSettle(2n, payload);
+    expect(retry.status).toBe(200);
+    expect(retry.json.transaction).toBe(TEST_TX);
+    expect(retry.json.paymentId).toBe("9");
+    expect(gateway.mockChain.settlements).toHaveLength(1);
   });
 
   it("expires stale challenges via the background job helper", async () => {

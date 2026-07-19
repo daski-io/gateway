@@ -57,7 +57,7 @@ function fullDocs(config: Config, cache: DiscoveryCache): string {
     "## HTTP surface",
     "",
     "- POST /purchase/:agentId",
-    "- GET/POST /x402/services/:agentId/:skillId",
+    "- GET/POST /x402/services/:agentId/:serviceSlug/:skillId",
     "- POST /verify, /settle, /confirm/:paymentId, /register",
     "- GET /register-prep, /confirm-prep/:paymentId, /discover",
     "- GET /public/v1/services, /public/v1/buyers, /public/v1/activity",

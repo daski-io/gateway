@@ -12,6 +12,7 @@ import {
   type ServiceWeightedSatisfaction,
   type SkillEnrichedRow,
 } from "../format.js";
+import { BoundedCache } from "./bounded.js";
 
 export interface ServiceAggregatesValue {
   fulfillment: {
@@ -98,16 +99,16 @@ const EMPTY: ServiceAggregatesValue = {
 };
 
 export class ServiceAggregatesCache {
-  private readonly entries = new Map<
-    string,
-    { value: ServiceAggregatesValue; fetchedAt: number }
-  >();
+  private readonly entries: BoundedCache<string, ServiceAggregatesValue>;
 
   constructor(
     private readonly queries: Queries,
     private readonly sampleLimit: number,
     private readonly ttlMs = 60_000,
-  ) {}
+    maxEntries = 1000,
+  ) {
+    this.entries = new BoundedCache(maxEntries);
+  }
 
   async get(serviceId: Hex): Promise<ServiceAggregatesValue> {
     const key = serviceId.toLowerCase();
@@ -143,7 +144,7 @@ export class ServiceAggregatesCache {
       weightedSatisfaction: deriveServiceWeightedSatisfaction(rows),
       skillStats: deriveSkillStats(rows),
     };
-    this.entries.set(key, { value, fetchedAt: now });
+    this.entries.set(key, value, now);
     return value;
   }
 }

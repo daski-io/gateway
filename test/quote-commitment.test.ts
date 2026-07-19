@@ -91,6 +91,7 @@ describe("provider quote-commitment integration", () => {
     });
     // Registered buyer — the quote flow itself is what's under test.
     gateway.mockChain.setAgentOfWallet(gateway.buyerAddress, 5n);
+    gateway.mockChain.setAgentOwner(6n, gateway.buyerAddress);
   });
 
   afterEach(async () => {
@@ -106,6 +107,7 @@ describe("provider quote-commitment integration", () => {
       arguments: {
         skillId: "register-domain",
         providerTokenId: "2",
+        serviceSlug: "domain-management",
         buyerTokenId: "5",
         walletAddress: gateway.buyerAddress,
         serviceArgs: { domain: "quoted.xyz" },
@@ -167,6 +169,7 @@ describe("provider quote-commitment integration", () => {
       buyerTokenId: "5",
       walletAddress: gateway.buyerAddress,
       skillId: "register-domain",
+      serviceSlug: "domain-management",
       serviceArgs,
     };
 
@@ -220,6 +223,7 @@ describe("provider quote-commitment integration", () => {
       buyerTokenId: "5",
       walletAddress: gateway.buyerAddress,
       skillId: "register-domain",
+      serviceSlug: "domain-management",
       serviceArgs,
       providerQuote,
     });
@@ -362,6 +366,7 @@ describe("provider quote-commitment integration", () => {
           name: "daski_purchase",
           arguments: {
             providerTokenId: "2",
+            serviceSlug: "domain-management",
             buyerTokenId: "5",
             walletAddress: gateway.buyerAddress,
             skillId: "register-domain",

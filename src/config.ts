@@ -29,7 +29,7 @@ export interface Config extends RuntimeConfig {
   agentIndexAddress: Hex;
   providerRegistryAddress: Hex;
   // ServiceRegistry — service-identity refactor (2026-05). serviceId is
-  // computed off-chain from (providerAgentId, skillId, version) and the
+  // computed off-chain from (providerAgentId, serviceSlug, version) and the
   // gateway threads it through the EIP-3009 nonce binding and into
   // PaymentRouter.settle so each payment is bound to a specific catalog row.
   serviceRegistryAddress: Hex;

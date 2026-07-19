@@ -1,13 +1,54 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { startTestGateway, type TestGateway } from "./helpers/setup.js";
 import type { Hex } from "../src/types.js";
+import { privateKeyToAccount } from "viem/accounts";
 
-const FRESH_WALLET = "0xcccc000000000000000000000000000000000001" as Hex;
+const FRESH_ACCOUNT = privateKeyToAccount(
+  ("0x" + "22".repeat(32)) as Hex,
+);
+const SECOND_ACCOUNT = privateKeyToAccount(
+  ("0x" + "33".repeat(32)) as Hex,
+);
+const FRESH_WALLET = FRESH_ACCOUNT.address.toLowerCase() as Hex;
 const KNOWN_AGENT_WALLET =
   "0xdddd000000000000000000000000000000000002" as Hex;
-const STUB_SIG = ("0x" + "11".repeat(65)) as Hex;
+const WELL_FORMED_SIGNATURE = ("0x" + "11".repeat(65)) as Hex;
 const REG_TX =
   "0x3333333333333333333333333333333333333333333333333333333333333333" as Hex;
+
+async function signedRegistration(
+  gateway: TestGateway,
+  agentURI: string,
+  account = FRESH_ACCOUNT,
+) {
+  const walletAddress = account.address.toLowerCase() as Hex;
+  const nonce = await gateway.mockChain.getRegistrationNonce(walletAddress);
+  const deadline = BigInt(Math.floor(Date.now() / 1000) + 600);
+  const signature = await account.signTypedData({
+    domain: {
+      name: "Daski AgentIndex",
+      version: "1",
+      chainId: gateway.config.chainId,
+      verifyingContract: gateway.config.agentIndexAddress,
+    },
+    types: {
+      RegisterAgent: [
+        { name: "agentURI", type: "string" },
+        { name: "agentWallet", type: "address" },
+        { name: "nonce", type: "uint256" },
+        { name: "deadline", type: "uint256" },
+      ],
+    },
+    primaryType: "RegisterAgent",
+    message: { agentURI, agentWallet: walletAddress, nonce, deadline },
+  });
+  return {
+    walletAddress,
+    agentURI,
+    deadline: deadline.toString(),
+    signature,
+  };
+}
 
 function dataUri(card: Record<string, unknown>): string {
   const b64 = Buffer.from(JSON.stringify(card)).toString("base64");
@@ -102,12 +143,9 @@ describe("POST /register", () => {
     const res = await fetch(`${gateway.baseUrl}/register`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        walletAddress: FRESH_WALLET,
-        agentURI: "ipfs://abc",
-        deadline: String(Math.floor(Date.now() / 1000) + 600),
-        signature: STUB_SIG,
-      }),
+      body: JSON.stringify(
+        await signedRegistration(gateway, "ipfs://abc"),
+      ),
     });
     expect(res.status).toBe(200);
     const body = (await res.json()) as any;
@@ -128,7 +166,7 @@ describe("POST /register", () => {
         walletAddress: KNOWN_AGENT_WALLET,
         agentURI: "ipfs://abc",
         deadline: String(Math.floor(Date.now() / 1000) + 600),
-        signature: STUB_SIG,
+        signature: WELL_FORMED_SIGNATURE,
       }),
     });
     expect(res.status).toBe(409);
@@ -155,6 +193,39 @@ describe("POST /register", () => {
     expect(body.error.code).toBe("BAD_SIGNATURE");
   });
 
+  it("rejects a well-formed signature from another wallet without consuming sponsor budget", async () => {
+    gateway.config.registrationSponsorMaxPerHour = 1;
+    const wrongSigner = await signedRegistration(
+      gateway,
+      "ipfs://abc",
+      SECOND_ACCOUNT,
+    );
+    const rejected = await fetch(`${gateway.baseUrl}/register`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ...wrongSigner,
+        walletAddress: FRESH_WALLET,
+      }),
+    });
+    expect(rejected.status).toBe(400);
+    expect((await rejected.json() as any).error.code).toBe("BAD_SIGNATURE");
+
+    gateway.mockChain.queueRegistration({
+      kind: "success",
+      agentId: 99n,
+      txHash: REG_TX,
+    });
+    const valid = await fetch(`${gateway.baseUrl}/register`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(
+        await signedRegistration(gateway, "ipfs://abc"),
+      ),
+    });
+    expect(valid.status).toBe(200);
+  });
+
   it("returns 502 when the chain reader throws", async () => {
     gateway.mockChain.queueRegistration({
       kind: "revert",
@@ -164,12 +235,9 @@ describe("POST /register", () => {
     const res = await fetch(`${gateway.baseUrl}/register`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        walletAddress: FRESH_WALLET,
-        agentURI: "ipfs://abc",
-        deadline: String(Math.floor(Date.now() / 1000) + 600),
-        signature: STUB_SIG,
-      }),
+      body: JSON.stringify(
+        await signedRegistration(gateway, "ipfs://abc"),
+      ),
     });
     expect(res.status).toBe(502);
     const body = (await res.json()) as any;
@@ -191,12 +259,12 @@ describe("POST /register", () => {
       const res = await fetch(`${broken.baseUrl}/register`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          walletAddress: FRESH_WALLET,
-          agentURI: "https://card.example/missing.json",
-          deadline: String(Math.floor(Date.now() / 1000) + 600),
-          signature: STUB_SIG,
-        }),
+        body: JSON.stringify(
+          await signedRegistration(
+            broken,
+            "https://card.example/missing.json",
+          ),
+        ),
       });
       expect(res.status).toBe(400);
       expect((await res.json() as any).error.code).toBe(
@@ -215,22 +283,19 @@ describe("POST /register", () => {
       agentId: 99n,
       txHash: REG_TX,
     });
-    const submit = (walletAddress: Hex) =>
+    const submit = async (
+      account: typeof FRESH_ACCOUNT,
+    ) =>
       fetch(`${gateway.baseUrl}/register`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          walletAddress,
-          agentURI: "ipfs://abc",
-          deadline: String(Math.floor(Date.now() / 1000) + 600),
-          signature: STUB_SIG,
-        }),
+        body: JSON.stringify(
+          await signedRegistration(gateway, "ipfs://abc", account),
+        ),
       });
 
-    expect((await submit(FRESH_WALLET)).status).toBe(200);
-    const secondWallet =
-      "0xcccc000000000000000000000000000000000003" as Hex;
-    const second = await submit(secondWallet);
+    expect((await submit(FRESH_ACCOUNT)).status).toBe(200);
+    const second = await submit(SECOND_ACCOUNT);
     expect(second.status).toBe(429);
     expect((await second.json() as any).error.code).toBe(
       "REGISTRATION_SPONSOR_BUDGET_EXHAUSTED",
@@ -480,12 +545,9 @@ describe("POST /register — buyer naming", () => {
     const res = await fetch(`${gateway.baseUrl}/register`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        walletAddress: FRESH_WALLET,
-        agentURI: uri,
-        deadline: String(Math.floor(Date.now() / 1000) + 600),
-        signature: STUB_SIG,
-      }),
+      body: JSON.stringify(
+        await signedRegistration(gateway, uri),
+      ),
     });
     expect(res.status).toBe(200);
     const body = (await res.json()) as any;
