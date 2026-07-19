@@ -1,14 +1,8 @@
-import {
-  McpServer,
-  ResourceTemplate,
-} from "@modelcontextprotocol/sdk/server/mcp.js";
+import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { Config } from "../config.js";
 import type { DiscoveryCache } from "../discovery/cache.js";
-import {
-  cardsOf,
-  extractAgentCardName,
-  formatForSkillDiscover,
-} from "../discovery/format.js";
+import { cardsOf, extractAgentCardName, formatForSkillDiscover } from "../discovery/format.js";
+import { sanitizeProviderValue } from "./providerReflection.js";
 
 export function registerProviderResource(
   server: McpServer,
@@ -17,15 +11,17 @@ export function registerProviderResource(
 ): void {
   server.registerResource(
     "daski-provider",
-    new ResourceTemplate("daski://provider/{tokenId}", {
+    new ResourceTemplate("daski://provider/{agentId}", {
       list: async () => ({
         resources: cache.getAll().map((provider) => ({
           uri: `daski://provider/${provider.agentId.toString()}`,
           name:
-            cardsOf(provider)
-              .map((card) => extractAgentCardName(card.agentCard))
-              .filter((name) => name !== "(unnamed)")
-              .join(" + ") || `provider#${provider.agentId.toString()}`,
+            sanitizeProviderValue(
+              cardsOf(provider)
+                .map((card) => extractAgentCardName(card.agentCard))
+                .filter((name) => name !== "(unnamed)")
+                .join(" + "),
+            ) || `provider#${provider.agentId.toString()}`,
           description: `Daski provider Agent Card (${provider.agentId.toString()})`,
           mimeType: "application/json",
         })),
@@ -33,13 +29,12 @@ export function registerProviderResource(
     }),
     {
       title: "Daski provider",
-      description:
-        "Full Agent Card and skill metadata for one ERC-8004 provider.",
+      description: "Full Agent Card and skill metadata for one ERC-8004 provider.",
     },
     async (uri, variables) => {
-      let tokenId: bigint;
+      let agentId: bigint;
       try {
-        tokenId = BigInt(String(variables.tokenId));
+        agentId = BigInt(String(variables.agentId));
       } catch {
         return {
           contents: [
@@ -47,16 +42,14 @@ export function registerProviderResource(
               uri: uri.href,
               mimeType: "application/json",
               text: JSON.stringify({
-                error: "tokenId must be a numeric string",
+                error: "agentId must be a numeric string",
               }),
             },
           ],
         };
       }
-      const provider = cache.get(tokenId);
-      const entries = provider
-        ? formatForSkillDiscover([provider], config)
-        : null;
+      const provider = cache.get(agentId);
+      const entries = provider ? formatForSkillDiscover([provider], config) : null;
       const value =
         !entries || entries.length === 0
           ? { error: "provider is not whitelisted or not in cache" }

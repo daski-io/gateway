@@ -18,7 +18,7 @@ import { extractAgentCardUrl } from "../discovery/format.js";
 import { safeFetch } from "../util/urlSafety.js";
 import { normalizeState } from "../util/a2aShape.js";
 import { createQuotedChallenge } from "../payment/quotedChallenge.js";
-import { verifyAndSettle, verifyAndSettleWithRegistration } from "../payment/verify.js";
+import { settleChallenge } from "../payment/settlementCoordinator.js";
 import { prepareRegistration } from "../identity/service.js";
 import {
   checkPhoneConfirmation,
@@ -27,10 +27,10 @@ import {
   mcpError,
   mcpJson,
   parseBigIntArg,
-  sanitizeBuyerName,
   validateAndNormalizeServiceArgs,
   type McpToolResult,
 } from "./util.js";
+import { sanitizeBuyerName } from "../identity/name.js";
 import {
   a2aPostJson,
   providerErrorFromFailure,
@@ -316,8 +316,7 @@ export async function createMcpServer(
         .describe(
           "Omit on the first call for a paid / ownership-gated / " +
             "capability-gated skill to get back the typed-data the gateway " +
-            "will accept on the retry; this replaces the deprecated " +
-            "`daski_build_envelope_auth` flow. On the retry, pass " +
+            "will accept on the retry. On the retry, pass " +
             "`{ signature, authorization }` alongside the matching `messageId`.",
         ),
       contextId: z
@@ -686,12 +685,10 @@ export async function createMcpServer(
         }
 
         // First-call branch — return the typed-data the wallet must sign,
-        // plus the matching messageId to thread back through. This absorbs
-        // the legacy daski_build_envelope_auth flow.
+        // plus the matching messageId to thread back through.
         if (requiresEnvelopeAuth && !args.envelopeAuth) {
-          // §1.3 of daski-mcp-gateway-fix-brief.md — auto-derive
-          // buyerTokenId from walletAddress when the caller passes one
-          // but not the other. The on-chain AgentIndex (verified against
+          // Auto-derive buyerTokenId when the caller passes a wallet but
+          // not its agent id. The on-chain AgentIndex (verified against
           // the canonical registry) is the source of truth; we already
           // use the same call in daski_buy_service. Saves the agent from
           // parsing tx receipts when they just settled a payment for the
@@ -739,10 +736,8 @@ export async function createMcpServer(
             }
           }
           if (!buyerTokenId) {
-            // §1.4 of daski-mcp-gateway-fix-brief.md — the legacy error
-            // sent agents to daski_search_services, which returns
-            // PROVIDER tokenIds, not the buyer's. Point them at the
-            // right place instead.
+            // Point callers at buyer identity sources rather than the
+            // provider catalog.
             return errorJson({
               code: "BAD_INPUT",
               message:
@@ -1182,9 +1177,7 @@ export async function createMcpServer(
       const reqs = args.paymentRequirements as
         | PaymentRequirements
         | undefined;
-      const serviceRefRaw =
-        reqs?.extra?.daski?.serviceRef ??
-        (inboundPayload as { serviceRef?: string }).serviceRef;
+      const serviceRefRaw = reqs?.extra?.daski?.serviceRef;
       if (typeof serviceRefRaw !== "string" || !HEX_32.test(serviceRefRaw)) {
         return errorJson({
           code: "BAD_INPUT",
@@ -1251,8 +1244,20 @@ export async function createMcpServer(
             "Retry with the exact serviceArgs used when the payment challenge was created.",
         });
       }
-      const needsRegistration = challenge.buyerTokenId === 0n;
-      if (needsRegistration && !args.registration) {
+      const coordinated = await settleChallenge(
+        {
+          config: deps.config,
+          reader: deps.reader,
+          queries: deps.queries,
+          fetchAgentCardFn: deps.buyerAgentCardFetch,
+        },
+        {
+          challenge,
+          paymentPayload: inboundPayload,
+          registration: args.registration,
+        },
+      );
+      if (coordinated.kind === "registration-required") {
         return errorJson({
           code: "registration_required",
           message:
@@ -1265,27 +1270,13 @@ export async function createMcpServer(
             "Sign registrationPrep.eip712TypedData and pass the signature in `registration`.",
         });
       }
-
-      const settleResult = needsRegistration
-        ? await verifyAndSettleWithRegistration(
-            { payload: inboundPayload, challenge },
-            {
-              agentURI: args.registration!.agentURI,
-              deadline: BigInt(args.registration!.deadline),
-              signature: args.registration!.signature as Hex,
-            },
-            deps.config,
-            deps.reader,
-            deps.queries,
-            new Date(),
-            { fetchAgentCardFn: deps.buyerAgentCardFetch },
-          )
-        : await verifyAndSettle(
-            { payload: inboundPayload, challenge },
-            deps.config,
-            deps.reader,
-            deps.queries,
-          );
+      if (coordinated.kind === "invalid-registration") {
+        return errorJson({
+          code: "invalid_registration",
+          message: coordinated.message,
+        });
+      }
+      const settleResult = coordinated.result;
 
       if (!settleResult.ok) {
         return errorJson({
@@ -1308,16 +1299,8 @@ export async function createMcpServer(
         "x402/paymentResponse": paymentResponseB64,
       };
 
-      // §1.2 of daski-mcp-gateway-fix-brief.md — Option A (settle-only).
-      // The gateway used to try to dispatch the A2A task in the same
-      // call, but the provider's paid-skill handler now requires an
-      // envelopeAuth signature that this endpoint's schema never
-      // accepted. Every paid first-purchase therefore produced a
-      // `submit_failed_after_settle` failure mode. Dispatch is owned
-      // by daski_submit_task, which already builds the envelope-auth
-      // challenge → sign → execute handshake. We return the settle
-      // context (including the fresh-mint buyerTokenId, §1.1) so the
-      // agent can call submit_task immediately.
+      // Task dispatch remains a separate signed-envelope step owned by
+      // daski_submit_task. Return the settlement context it needs.
       return json(
         {
           success: true,
@@ -1360,35 +1343,12 @@ export async function createMcpServer(
         },
       );
       if (!post.ok) {
-        // Map the helper's reason codes to the legacy direct-dispatch
-        // error envelope (lowercase `provider_*`) so on-chain free
-        // skills keep their existing agent-facing surface.
-        if (post.reason === "timeout") {
-          return errorJson({
-            code: "provider_timeout",
-            message: `${ctx.args.skillId} at ${targetUrl} failed: ${post.message}`,
-          });
-        }
-        if (post.reason === "unreachable") {
-          return errorJson({
-            code: "provider_unreachable",
-            message: `${ctx.args.skillId} at ${targetUrl} failed: ${post.message}`,
-          });
-        }
-        if (post.reason === "non_json") {
-          return errorJson({
-            code: "provider_error",
-            message: `${ctx.args.skillId} returned non-JSON (status ${post.status})`,
-          });
-        }
         return providerErrorFromFailure(post, targetUrl);
       }
       const body = sanitizeProviderValue(post.body);
       if (!post.raw.ok) {
         return errorJson({
-          code:
-            (body.error as { code?: string } | undefined)?.code ??
-            "provider_error",
+          code: "PROVIDER_ERROR",
           message:
             (body.error as { message?: string } | undefined)?.message ??
             `${ctx.args.skillId} returned HTTP ${post.status}`,
@@ -2116,8 +2076,7 @@ export async function createMcpServer(
         if (!validated.ok) return validated.error;
         const serviceArgs = validated.args;
 
-        // §1.8 of daski-mcp-gateway-fix-brief.md — fast-fail E.164
-        // phone validation. The provider's quote endpoint rejects
+        // Fast-fail E.164 phone validation. The provider's quote endpoint rejects
         // formatted phones too, but catching them in the gateway saves
         // a network round-trip and produces a clearer agent-side error.
         // Strict E.164: leading `+`, country code 1-9, then 1-14

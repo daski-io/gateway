@@ -3,15 +3,10 @@ import { startTestGateway, type TestGateway } from "./helpers/setup.js";
 import type { Hex, PaymentPayload } from "../src/types.js";
 import { computeRequestHash } from "../src/auth/envelope.js";
 import { DASKI_A2A_EXTENSION_URI } from "../src/config.js";
-import {
-  AGENT_AUTHORITY,
-  PURCHASE_NOTICE,
-} from "../src/legal/purchase.js";
+import { AGENT_AUTHORITY, PURCHASE_NOTICE } from "../src/legal/purchase.js";
 
-const TEST_TX =
-  "0x1111111111111111111111111111111111111111111111111111111111111111" as Hex;
-const NONCE =
-  "0xaaaa000000000000000000000000000000000000000000000000000000000001" as Hex;
+const TEST_TX = "0x1111111111111111111111111111111111111111111111111111111111111111" as Hex;
+const NONCE = "0xaaaa000000000000000000000000000000000000000000000000000000000001" as Hex;
 
 describe("payment", () => {
   let gateway: TestGateway;
@@ -21,7 +16,6 @@ describe("payment", () => {
       providers: [
         {
           tokenId: 2n,
-          erc8004TokenId: 102n,
           name: "Daski Domain Registration",
           priceUsdcSmallest: "15000000",
           categoryFamily: "domains-web",
@@ -38,8 +32,10 @@ describe("payment", () => {
   // ── Challenge phase (402 + PaymentRequirements) ─────────────────────
 
   it("issues a 402 with a spec-shaped PaymentRequirements", async () => {
-    const { status, json, serviceRef, maxAmountRequired, payTo } =
-      await gateway.purchaseChallenge(2n, { buyerTokenId: "5" });
+    const { status, json, serviceRef, maxAmountRequired, payTo } = await gateway.purchaseChallenge(
+      2n,
+      { buyerTokenId: "5" },
+    );
     expect(status).toBe(402);
     expect(json.x402Version).toBe(1);
     expect(Object.keys(json)).toEqual([
@@ -81,9 +77,7 @@ describe("payment", () => {
     expect(req.extra.daski.legal).toEqual(legal);
     expect(req.extra.daski.agentAuthority).toEqual(AGENT_AUTHORITY);
     expect(req.extra.daski.purchaseNotice).toBe(PURCHASE_NOTICE);
-    expect(String(req.extra.daski.eip712TypedData.message.value)).toBe(
-      req.maxAmountRequired,
-    );
+    expect(String(req.extra.daski.eip712TypedData.message.value)).toBe(req.maxAmountRequired);
 
     // Informational rail advertisement — x402 always present, others only
     // if a configured adapter address exists. The test harness does not
@@ -104,10 +98,8 @@ describe("payment", () => {
   });
 
   it("adds permit and approval rails when those adapters are configured", async () => {
-    const permitAdapter =
-      "0x000000000000000000000000000000000000b001" as Hex;
-    const approvalAdapter =
-      "0x000000000000000000000000000000000000b002" as Hex;
+    const permitAdapter = "0x000000000000000000000000000000000000b001" as Hex;
+    const approvalAdapter = "0x000000000000000000000000000000000000b002" as Hex;
     gateway.config.permitAdapterAddress = permitAdapter;
     gateway.config.approvalAdapterAddress = approvalAdapter;
 
@@ -145,7 +137,6 @@ describe("payment", () => {
   it("returns 422 when pricing is missing", async () => {
     gateway.registerProvider({
       tokenId: 9n,
-      erc8004TokenId: 109n,
       name: "No extension",
       priceUsdcSmallest: "0",
       categoryFamily: "other",
@@ -156,10 +147,7 @@ describe("payment", () => {
       await fetch(`${gateway.mockProvider.baseUrl}${cardPath}`)
     ).json()) as Record<string, unknown>;
     const extensions = card.extensions as Record<string, unknown>;
-    const marketplace = extensions[DASKI_A2A_EXTENSION_URI] as Record<
-      string,
-      unknown
-    >;
+    const marketplace = extensions[DASKI_A2A_EXTENSION_URI] as Record<string, unknown>;
     const { pricing: _pricing, ...withoutPricing } = marketplace;
     gateway.mockProvider.setAgentCard(cardPath, {
       ...card,
@@ -176,22 +164,14 @@ describe("payment", () => {
     expect(json.error).toMatch(/pricing/i);
   });
 
-  // ── Settlement phase (X-PAYMENT header) ─────────────────────────────
+  // ── Canonical facilitator settlement phase ──────────────────────────
 
-  async function signAndBuildPayload(
-    serviceRef: Hex,
-    amount: bigint,
-    nonce: Hex = NONCE,
-  ): Promise<PaymentPayload> {
-    const { signature, authorization } = await gateway.signAuthorization(
-      amount,
-      nonce,
-    );
+  async function signAndBuildPayload(amount: bigint, nonce: Hex = NONCE): Promise<PaymentPayload> {
+    const { signature, authorization } = await gateway.signAuthorization(amount, nonce);
     return {
       x402Version: 1,
       scheme: "exact",
       network: "base-sepolia",
-      serviceRef,
       payload: { signature, authorization },
     };
   }
@@ -206,196 +186,145 @@ describe("payment", () => {
       txHash: TEST_TX,
       paymentId: 7n,
       serviceRef: serviceRef!,
-      providerTokenId: 2n,
-      buyerTokenId: 5n,
+      providerAgentId: 2n,
+      buyerAgentId: 5n,
       totalAmount: 15_000_000n,
     });
 
-    const payload = await signAndBuildPayload(serviceRef!, 15_000_000n);
-    const { status, json, settlementHeader } = await gateway.purchaseSettle(
-      2n,
-      payload,
-    );
+    const payload = await signAndBuildPayload(15_000_000n);
+    const { status, json } = await gateway.purchaseSettle(2n, payload);
 
     expect(status).toBe(200);
-    expect(json.settlement.success).toBe(true);
-    expect(json.settlement.transaction).toBe(TEST_TX);
-    expect(json.settlement.network).toBe("base-sepolia");
-    expect(json.settlement.payer).toBe(gateway.buyerAddress);
-    expect(json.settlement.daski.paymentId).toBe("7");
-    expect(json.settlement.daski.amount).toBe("15000000");
-
-    // X-PAYMENT-RESPONSE header carries the settlement response
-    expect(settlementHeader).toBeDefined();
-    expect(settlementHeader.success).toBe(true);
-    expect(settlementHeader.transaction).toBe(TEST_TX);
+    expect(json.success).toBe(true);
+    expect(json.transaction).toBe(TEST_TX);
+    expect(json.network).toBe("base-sepolia");
+    expect(json.payer).toBe(gateway.buyerAddress);
+    expect(json.paymentId).toBe("7");
+    expect(json.amount).toBe("15000000");
   });
 
   it("rejects wrong scheme", async () => {
     const { serviceRef } = await gateway.purchaseChallenge(2n, {
       buyerTokenId: "5",
     });
-    const payload = await signAndBuildPayload(serviceRef!, 15_000_000n);
+    const payload = await signAndBuildPayload(15_000_000n);
     (payload as any).scheme = "upto";
 
-    const { status, settlementHeader } = await gateway.purchaseSettle(
-      2n,
-      payload,
-    );
+    const { status, json } = await gateway.purchaseSettle(2n, payload);
     expect(status).toBe(400);
-    expect(settlementHeader.errorReason).toBe("invalid_scheme");
+    expect(json.errorReason).toBe("invalid_scheme");
   });
 
   it("rejects wrong network", async () => {
     const { serviceRef } = await gateway.purchaseChallenge(2n, {
       buyerTokenId: "5",
     });
-    const payload = await signAndBuildPayload(serviceRef!, 15_000_000n);
+    const payload = await signAndBuildPayload(15_000_000n);
     (payload as any).network = "base";
 
-    const { status, settlementHeader } = await gateway.purchaseSettle(
-      2n,
-      payload,
-    );
+    const { status, json } = await gateway.purchaseSettle(2n, payload);
     expect(status).toBe(400);
-    expect(settlementHeader.errorReason).toBe("invalid_network");
+    expect(json.errorReason).toBe("invalid_network");
   });
 
   it("rejects insufficient authorization value", async () => {
     const { serviceRef } = await gateway.purchaseChallenge(2n, {
       buyerTokenId: "5",
     });
-    const payload = await signAndBuildPayload(serviceRef!, 1_000_000n);
+    const payload = await signAndBuildPayload(1_000_000n);
 
-    const { status, settlementHeader } = await gateway.purchaseSettle(
-      2n,
-      payload,
-    );
+    const { status, json } = await gateway.purchaseSettle(2n, payload);
     expect(status).toBe(402);
-    expect(settlementHeader.errorReason).toBe(
-      "invalid_exact_evm_payload_authorization_value",
-    );
+    expect(json.errorReason).toBe("invalid_exact_evm_payload_authorization_value");
   });
 
   it("rejects mismatched recipient", async () => {
-    const { serviceRef } = await gateway.purchaseChallenge(2n, {
+    await gateway.purchaseChallenge(2n, {
       buyerTokenId: "5",
     });
-    const { signature, authorization } = await gateway.signAuthorization(
-      15_000_000n,
-      NONCE,
-    );
+    const { signature, authorization } = await gateway.signAuthorization(15_000_000n, NONCE);
     // Tamper: change `to` to something that's not the router. Signature is
     // over the original `to`, so recovery will fail first — but we also want
     // to exercise the recipient check explicitly, so sign a fresh one.
-    const tampered = { ...authorization, to: "0xdead000000000000000000000000000000000000" as Hex };
+    const tampered = {
+      ...authorization,
+      to: "0xdead000000000000000000000000000000000000" as Hex,
+    };
     const payload: PaymentPayload = {
       x402Version: 1,
       scheme: "exact",
       network: "base-sepolia",
-      serviceRef: serviceRef!,
       payload: { signature, authorization: tampered },
     };
 
-    const { status, settlementHeader } = await gateway.purchaseSettle(
-      2n,
-      payload,
-    );
+    const { status, json } = await gateway.purchaseSettle(2n, payload);
     expect(status).toBe(402);
     // Either recipient_mismatch or bad_signature (since the signature was over
     // the original `to`). Both are acceptable failure modes.
     expect([
       "invalid_exact_evm_payload_recipient_mismatch",
       "invalid_exact_evm_payload_signature",
-    ]).toContain(settlementHeader.errorReason);
+    ]).toContain(json.errorReason);
   });
 
   it("rejects expired authorization", async () => {
-    const { serviceRef } = await gateway.purchaseChallenge(2n, {
+    await gateway.purchaseChallenge(2n, {
       buyerTokenId: "5",
     });
-    const { signature, authorization } = await gateway.signAuthorization(
-      15_000_000n,
-      NONCE,
-      {
-        validBefore: BigInt(Math.floor(Date.now() / 1000) - 10),
-      },
-    );
+    const { signature, authorization } = await gateway.signAuthorization(15_000_000n, NONCE, {
+      validBefore: BigInt(Math.floor(Date.now() / 1000) - 10),
+    });
     const payload: PaymentPayload = {
       x402Version: 1,
       scheme: "exact",
       network: "base-sepolia",
-      serviceRef: serviceRef!,
       payload: { signature, authorization },
     };
-    const { status, settlementHeader } = await gateway.purchaseSettle(
-      2n,
-      payload,
-    );
+    const { status, json } = await gateway.purchaseSettle(2n, payload);
     expect(status).toBe(402);
-    expect(settlementHeader.errorReason).toBe(
-      "invalid_exact_evm_payload_authorization_valid_before",
-    );
+    expect(json.errorReason).toBe("invalid_exact_evm_payload_authorization_valid_before");
   });
 
   it("rejects a tampered signature", async () => {
-    const { serviceRef } = await gateway.purchaseChallenge(2n, {
+    await gateway.purchaseChallenge(2n, {
       buyerTokenId: "5",
     });
-    const { authorization } = await gateway.signAuthorization(
-      15_000_000n,
-      NONCE,
-    );
+    const { authorization } = await gateway.signAuthorization(15_000_000n, NONCE);
     // Well-formed 65-byte sig that doesn't correspond to the buyer.
     const bad = ("0x" + "11".repeat(65)) as Hex;
     const payload: PaymentPayload = {
       x402Version: 1,
       scheme: "exact",
       network: "base-sepolia",
-      serviceRef: serviceRef!,
       payload: { signature: bad, authorization },
     };
 
-    const { status, settlementHeader } = await gateway.purchaseSettle(
-      2n,
-      payload,
-    );
+    const { status, json } = await gateway.purchaseSettle(2n, payload);
     expect(status).toBe(402);
-    expect(settlementHeader.errorReason).toBe(
-      "invalid_exact_evm_payload_signature",
-    );
+    expect(json.errorReason).toBe("invalid_exact_evm_payload_signature");
   });
 
   it("rejects a nonce already used on-chain", async () => {
     const { serviceRef } = await gateway.purchaseChallenge(2n, {
       buyerTokenId: "5",
     });
-    gateway.mockChain.setAuthorizationUsed(
-      gateway.buyerAddress,
-      NONCE,
-      true,
-    );
-    const payload = await signAndBuildPayload(serviceRef!, 15_000_000n);
-    const { status, settlementHeader } = await gateway.purchaseSettle(
-      2n,
-      payload,
-    );
+    gateway.mockChain.setAuthorizationUsed(gateway.buyerAddress, NONCE, true);
+    const payload = await signAndBuildPayload(15_000_000n);
+    const { status, json } = await gateway.purchaseSettle(2n, payload);
     expect(status).toBe(402);
-    expect(settlementHeader.errorReason).toMatch(/authorization|payload/);
+    expect(json.errorReason).toMatch(/authorization|payload/);
   });
 
   it("returns CHALLENGE_NOT_FOUND when serviceRef is unknown", async () => {
-    const bogusRef =
-      "0xdead000000000000000000000000000000000000000000000000000000000000" as Hex;
-    const payload = await signAndBuildPayload(bogusRef, 15_000_000n);
-    const { status, json } = await gateway.purchaseSettle(2n, payload);
+    const bogusRef = "0xdead000000000000000000000000000000000000000000000000000000000000" as Hex;
+    const payload = await signAndBuildPayload(15_000_000n);
+    const { status, json } = await gateway.purchaseSettle(2n, payload, bogusRef);
     expect(status).toBe(404);
-    expect(json.error).toMatch(/no challenge/);
+    expect(json.errorReason).toMatch(/no challenge/);
   });
 
   it("rejects expired challenges", async () => {
-    const expiredRef =
-      "0xfeed000000000000000000000000000000000000000000000000000000000001" as Hex;
+    const expiredRef = "0xfeed000000000000000000000000000000000000000000000000000000000001" as Hex;
     await gateway.bundle.queries.insertChallenge({
       serviceRef: expiredRef,
       providerTokenId: 2n,
@@ -413,13 +342,10 @@ describe("payment", () => {
       quoteExpiresAt: new Date(Date.now() - 60_000),
       quoteRequestHash: computeRequestHash({}),
     });
-    const payload = await signAndBuildPayload(expiredRef, 15_000_000n);
-    const { status, settlementHeader } = await gateway.purchaseSettle(
-      2n,
-      payload,
-    );
+    const payload = await signAndBuildPayload(15_000_000n);
+    const { status, json } = await gateway.purchaseSettle(2n, payload, expiredRef);
     expect(status).toBe(410);
-    expect(settlementHeader.errorReason).toBe("authorization_expired");
+    expect(json.errorReason).toBe("authorization_expired");
   });
 
   it("is idempotent: a second settle with the same challenge returns the stored result", async () => {
@@ -431,23 +357,19 @@ describe("payment", () => {
       txHash: TEST_TX,
       paymentId: 7n,
       serviceRef: serviceRef!,
-      providerTokenId: 2n,
-      buyerTokenId: 5n,
+      providerAgentId: 2n,
+      buyerAgentId: 5n,
       totalAmount: 15_000_000n,
     });
 
-    const payload = await signAndBuildPayload(serviceRef!, 15_000_000n);
+    const payload = await signAndBuildPayload(15_000_000n);
     const first = await gateway.purchaseSettle(2n, payload);
     const second = await gateway.purchaseSettle(2n, payload);
 
     expect(first.status).toBe(200);
     expect(second.status).toBe(200);
-    expect(second.json.settlement.transaction).toBe(
-      first.json.settlement.transaction,
-    );
-    expect(second.json.settlement.daski.paymentId).toBe(
-      first.json.settlement.daski.paymentId,
-    );
+    expect(second.json.transaction).toBe(first.json.transaction);
+    expect(second.json.paymentId).toBe(first.json.paymentId);
     // Only one on-chain submit happened (the mock would throw on a second).
     expect(gateway.mockChain.settlements.length).toBe(1);
 
@@ -464,7 +386,7 @@ describe("payment", () => {
     };
     const rejected = await gateway.purchaseSettle(2n, forged);
     expect(rejected.status).toBe(402);
-    expect(rejected.json.error).toMatch(/signature|wallet/i);
+    expect(rejected.json.message).toMatch(/signature|wallet/i);
   });
 
   it("serializes concurrent settlement retries before broadcasting", async () => {
@@ -475,11 +397,11 @@ describe("payment", () => {
       txHash: TEST_TX,
       paymentId: 8n,
       serviceRef: serviceRef!,
-      providerTokenId: 2n,
-      buyerTokenId: 5n,
+      providerAgentId: 2n,
+      buyerAgentId: 5n,
       totalAmount: 15_000_000n,
     });
-    const payload = await signAndBuildPayload(serviceRef!, 15_000_000n);
+    const payload = await signAndBuildPayload(15_000_000n);
     const [first, second] = await Promise.all([
       gateway.purchaseSettle(2n, payload),
       gateway.purchaseSettle(2n, payload),
@@ -487,14 +409,11 @@ describe("payment", () => {
     expect(first.status).toBe(200);
     expect(second.status).toBe(200);
     expect(gateway.mockChain.settlements).toHaveLength(1);
-    expect(second.json.settlement.transaction).toBe(
-      first.json.settlement.transaction,
-    );
+    expect(second.json.transaction).toBe(first.json.transaction);
   });
 
   it("expires stale challenges via the background job helper", async () => {
-    const ref =
-      "0xfeed000000000000000000000000000000000000000000000000000000000002" as Hex;
+    const ref = "0xfeed000000000000000000000000000000000000000000000000000000000002" as Hex;
     await gateway.bundle.queries.insertChallenge({
       serviceRef: ref,
       providerTokenId: 2n,
@@ -514,11 +433,30 @@ describe("payment", () => {
     expect(stored?.status).toBe("expired");
   });
 
+  it("deletes expired challenges after the retention window", async () => {
+    const ref = "0xfeed000000000000000000000000000000000000000000000000000000000004" as Hex;
+    await gateway.bundle.queries.insertChallenge({
+      serviceRef: ref,
+      providerTokenId: 2n,
+      buyerTokenId: 5n,
+      amount: 15_000_000n,
+      skillId: null,
+      serviceSlug: "test-service",
+      serviceVersion: "1",
+      serviceId: ("0x" + "00".repeat(32)) as Hex,
+      providerA2AUrl: `${gateway.mockProvider.baseUrl}/a2a`,
+      walletAddress: gateway.buyerAddress,
+      expiresAt: new Date(Date.now() - 60_000),
+    });
+    await gateway.bundle.queries.expireStaleChallenges();
+
+    expect(await gateway.bundle.queries.deleteExpiredChallenges(1, 10)).toBe(1);
+    expect(await gateway.bundle.queries.getChallengeByRef(ref)).toBeNull();
+  });
+
   it("does not expire a challenge after an external facilitator settled it", async () => {
-    const ref =
-      "0xfeed000000000000000000000000000000000000000000000000000000000003" as Hex;
-    const settleTx =
-      "0x3333333333333333333333333333333333333333333333333333333333333333" as Hex;
+    const ref = "0xfeed000000000000000000000000000000000000000000000000000000000003" as Hex;
+    const settleTx = "0x3333333333333333333333333333333333333333333333333333333333333333" as Hex;
     await gateway.bundle.queries.insertChallenge({
       serviceRef: ref,
       providerTokenId: 2n,
@@ -535,12 +473,7 @@ describe("payment", () => {
       authNonce: ("0x" + "33".repeat(32)) as Hex,
     });
 
-    expect(
-      await gateway.bundle.queries.recordChallengeExternallySettled(
-        ref,
-        settleTx,
-      ),
-    ).toBe(true);
+    expect(await gateway.bundle.queries.recordChallengeExternallySettled(ref, settleTx)).toBe(true);
     expect(await gateway.bundle.queries.expireStaleChallenges()).toBe(0);
 
     const stored = await gateway.bundle.queries.getChallengeByRef(ref);
@@ -549,10 +482,8 @@ describe("payment", () => {
   });
 
   it("recovers an external-settlement expiry race through attribution", async () => {
-    const ref =
-      "0xfeed000000000000000000000000000000000000000000000000000000000004" as Hex;
-    const settleTx =
-      "0x4444444444444444444444444444444444444444444444444444444444444444" as Hex;
+    const ref = "0xfeed000000000000000000000000000000000000000000000000000000000004" as Hex;
+    const settleTx = "0x4444444444444444444444444444444444444444444444444444444444444444" as Hex;
     const attributionTx =
       "0x5555555555555555555555555555555555555555555555555555555555555555" as Hex;
     await gateway.bundle.queries.insertChallenge({
@@ -572,15 +503,8 @@ describe("payment", () => {
     });
 
     expect(await gateway.bundle.queries.expireStaleChallenges()).toBe(1);
-    expect(
-      await gateway.bundle.queries.recordChallengeExternallySettled(
-        ref,
-        settleTx,
-      ),
-    ).toBe(true);
-    expect(
-      (await gateway.bundle.queries.getChallengeByRef(ref))?.status,
-    ).toBe("pending");
+    expect(await gateway.bundle.queries.recordChallengeExternallySettled(ref, settleTx)).toBe(true);
+    expect((await gateway.bundle.queries.getChallengeByRef(ref))?.status).toBe("pending");
 
     // Model an already-deployed sweeper (or a tight concurrent update)
     // that left the externally-settled row expired. Attribution must still
@@ -589,13 +513,7 @@ describe("payment", () => {
       `UPDATE payment_challenges SET status = 'expired' WHERE service_ref = $1`,
       [Buffer.from(ref.slice(2), "hex")],
     );
-    expect(
-      await gateway.bundle.queries.recordChallengePaid(
-        ref,
-        91n,
-        attributionTx,
-      ),
-    ).toBe(true);
+    expect(await gateway.bundle.queries.recordChallengePaid(ref, 91n, attributionTx)).toBe(true);
 
     const stored = await gateway.bundle.queries.getChallengeByRef(ref);
     expect(stored?.status).toBe("paid");
@@ -621,7 +539,6 @@ describe("payment", () => {
   it("resolves serviceSlug from skill metadata; two skills rolling up to one service share serviceId", async () => {
     gateway.registerProvider({
       tokenId: 42n,
-      erc8004TokenId: 142n,
       name: "Three-layer test provider",
       priceUsdcSmallest: "15000000",
       categoryFamily: "domains-web",
@@ -673,5 +590,4 @@ describe("payment", () => {
     expect(aDaski.skillId).toBe("register-domain");
     expect(bDaski.skillId).toBe("renew-domain");
   });
-
 });

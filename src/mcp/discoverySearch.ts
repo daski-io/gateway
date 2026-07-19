@@ -133,7 +133,7 @@ function entryIndex(
   const index = new Map<string, Record<string, unknown>>();
   for (const entry of formatForSkillDiscover(providers, config)) {
     const slug = (entry.serviceSlug as string | null) ?? "";
-    index.set(`${entry.tokenId as string}:${slug}`, entry);
+    index.set(`${entry.agentId as string}:${slug}`, entry);
   }
   return index;
 }
@@ -145,7 +145,7 @@ function eligibleSkillKeys(
 ): Set<string> {
   const keys = new Set<string>();
   for (const entry of formatForSkillDiscover(providers, config)) {
-    const cardKey = `${entry.tokenId as string}:${
+    const cardKey = `${entry.agentId as string}:${
       (entry.serviceSlug as string | null) ?? ""
     }`;
     const skills = Array.isArray(entry.skills) ? entry.skills : [];

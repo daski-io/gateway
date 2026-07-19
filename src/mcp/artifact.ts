@@ -16,7 +16,7 @@ export function registerArtifactTool(
         "Retrieve the actual bytes behind a Daski artifact URL, including audience-bound formation PDFs. This is a two-call wallet-signature flow; do not hand a short-lived artifact URL to the principal as durable proof.",
         "",
         "Inputs:",
-        "- First call: `url` from the provider artifact and that artifact's `taskId`; omit `capability`. The taskId is verified against the audience-bound challenge.",
+        "- First call: `url` from the provider artifact and that artifact's `taskId`; omit `capability`. The exact URL and taskId are verified against the audience-bound challenge.",
         "- Signed retry: the exact same `url` + `taskId`, plus `capability: { signature, authorization }`. Sign the returned `eip712TypedData` and echo `authorization` verbatim.",
         "- `expectedMimeType` defaults to `application/pdf`; pass the artifact's advertised mimeType for another format.",
         "",
@@ -46,8 +46,8 @@ export function registerArtifactTool(
           })
           .optional()
           .describe(
-            "Signed TaskAccessAuthorization from this URL's first-call " +
-              "challenge. Echo authorization verbatim.",
+            "Signed TaskAccessAuthorization bound to this exact URL and " +
+              "taskId. Echo authorization verbatim.",
           ),
       },
       annotations: {

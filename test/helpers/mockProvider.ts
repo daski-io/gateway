@@ -538,7 +538,6 @@ export interface BuildAgentCardOpts {
   description?: string;
   registryAddress: `0x${string}`;
   paymentRouterAddress: `0x${string}`;
-  erc8004TokenId: string;
   chainId: 8453 | 84532 | 31337;
   turnaround?: string;
   serviceLifecycle?: "one-shot" | "ongoing";
@@ -611,7 +610,6 @@ export function buildAgentCard(
         onChainReferences: {
           registryAddress: o.registryAddress,
           paymentRouterAddress: o.paymentRouterAddress,
-          erc8004TokenId: o.erc8004TokenId,
           chainId: o.chainId,
         },
         categoryFamily: o.categoryFamily,

@@ -1,9 +1,7 @@
 import type { ChainReader } from "../../chain/reader.js";
 import type { Queries } from "../../db/queries.js";
-import {
-  fetchAgentCard,
-  type FetchAgentCardOptions,
-} from "../../identity/fetch-agent-card.js";
+import { fetchAgentCard, type FetchAgentCardOptions } from "../../identity/fetch-agent-card.js";
+import { sanitizeBuyerName } from "../../identity/name.js";
 import type { Hex } from "../../types.js";
 
 export interface BuyerIdentity {
@@ -13,14 +11,8 @@ export interface BuyerIdentity {
 }
 
 export class BuyerIdentityCache {
-  private readonly entries = new Map<
-    string,
-    { value: BuyerIdentity | null; fetchedAt: number }
-  >();
-  private readonly inflight = new Map<
-    string,
-    Promise<BuyerIdentity | null>
-  >();
+  private readonly entries = new Map<string, { value: BuyerIdentity | null; fetchedAt: number }>();
+  private readonly inflight = new Map<string, Promise<BuyerIdentity | null>>();
 
   constructor(
     private readonly reader: ChainReader,
@@ -53,8 +45,9 @@ export class BuyerIdentityCache {
     try {
       const stored = await this.queries.getBuyerIdentity(agentId);
       if (stored) {
+        const storedName = sanitizeBuyerName(stored.resolvedName);
         return {
-          name: stored.resolvedName,
+          name: storedName.ok ? storedName.name : null,
           walletAddress: stored.walletAddress,
           agentURI: stored.agentURI || null,
         };
@@ -68,16 +61,15 @@ export class BuyerIdentityCache {
       this.reader.getAgentWallet(agentId).catch(() => null),
     ]);
     const usableWallet =
-      walletAddress &&
-      walletAddress !== "0x0000000000000000000000000000000000000000"
+      walletAddress && walletAddress !== "0x0000000000000000000000000000000000000000"
         ? walletAddress
         : null;
     let name: string | null = null;
     if (agentURI) {
       try {
-        name = (
-          await fetchAgentCard(agentURI, this.fetchOptions)
-        ).name;
+        const fetched = await fetchAgentCard(agentURI, this.fetchOptions);
+        const fetchedName = sanitizeBuyerName(fetched.name);
+        name = fetchedName.ok ? fetchedName.name : null;
       } catch {
         // Wallet-derived names keep the public API usable if metadata fails.
       }

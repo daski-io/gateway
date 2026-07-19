@@ -3,12 +3,8 @@ import type { Config } from "../config.js";
 import type { ChainReader } from "../chain/reader.js";
 import type { Queries } from "../db/queries.js";
 import type { FetchAgentCardOptions } from "../identity/fetch-agent-card.js";
-import {
-  verifyAndSettle,
-  verifyAndSettleWithRegistration,
-  verifyPaymentPayload,
-  type RegistrationDelegation,
-} from "./verify.js";
+import { verifyPaymentPayload } from "./verify.js";
+import { settleChallenge } from "./settlementCoordinator.js";
 import type { Hex, PaymentPayload, PaymentRequirements } from "../types.js";
 
 export interface FacilitatorDeps {
@@ -42,42 +38,13 @@ interface FacilitatorBody {
   };
 }
 
-function parseRegistrationDelegation(
-  raw: FacilitatorBody["registration"],
-): RegistrationDelegation | { error: string } {
-  if (!raw || typeof raw !== "object") {
-    return { error: "registration must be an object" };
-  }
-  const agentURI = typeof raw.agentURI === "string" ? raw.agentURI : "";
-  if (typeof raw.deadline !== "string" || !/^[1-9][0-9]*$/.test(raw.deadline)) {
-    return { error: "registration.deadline must be a positive decimal string" };
-  }
-  if (
-    typeof raw.signature !== "string" ||
-    !/^0x([0-9a-fA-F]{2})+$/.test(raw.signature) ||
-    raw.signature.length < 4
-  ) {
-    return { error: "registration.signature must be a non-empty hex string" };
-  }
-  return {
-    agentURI,
-    deadline: BigInt(raw.deadline),
-    signature: raw.signature as Hex,
-  };
-}
-
 function isHex32(x: unknown): x is Hex {
   return typeof x === "string" && /^0x[0-9a-fA-F]{64}$/.test(x);
 }
 
-function parseOptionalProviderTokenId(
-  value: unknown,
-): bigint | null | { error: string } {
+function parseOptionalProviderTokenId(value: unknown): bigint | null | { error: string } {
   if (value == null || value === "") return null;
-  if (
-    (typeof value !== "string" && typeof value !== "number") ||
-    !/^[0-9]+$/.test(String(value))
-  ) {
+  if ((typeof value !== "string" && typeof value !== "number") || !/^[0-9]+$/.test(String(value))) {
     return { error: "paymentRequirements providerTokenId must be numeric" };
   }
   try {
@@ -115,10 +82,7 @@ export function createFacilitatorRouter(deps: FacilitatorDeps): Router {
 
     const serviceRef = extractServiceRef(body);
     if (!serviceRef) {
-      badRequest(
-        res,
-        "paymentRequirements.extra.daski.serviceRef missing or malformed",
-      );
+      badRequest(res, "paymentRequirements.extra.daski.serviceRef missing or malformed");
       return;
     }
 
@@ -163,8 +127,7 @@ export function createFacilitatorRouter(deps: FacilitatorDeps): Router {
     if (!serviceRef) {
       res.status(400).json({
         success: false,
-        errorReason:
-          "paymentRequirements.extra.daski.serviceRef missing or malformed",
+        errorReason: "paymentRequirements.extra.daski.serviceRef missing or malformed",
       });
       return;
     }
@@ -180,39 +143,37 @@ export function createFacilitatorRouter(deps: FacilitatorDeps): Router {
     // Defence-in-depth: the URL segment is gone under this endpoint, so
     // bind the challenge to the providerTokenId advertised in the
     // paymentRequirements extra block.
-    const rawRequirementsProviderId =
-      body.paymentRequirements?.extra?.daski?.providerTokenId;
-    const requirementsProviderId = parseOptionalProviderTokenId(
-      rawRequirementsProviderId,
-    );
-    if (
-      requirementsProviderId !== null &&
-      typeof requirementsProviderId === "object"
-    ) {
+    const rawRequirementsProviderId = body.paymentRequirements?.extra?.daski?.providerTokenId;
+    const requirementsProviderId = parseOptionalProviderTokenId(rawRequirementsProviderId);
+    if (requirementsProviderId !== null && typeof requirementsProviderId === "object") {
       res.status(400).json({
         success: false,
         errorReason: requirementsProviderId.error,
       });
       return;
     }
-    if (
-      requirementsProviderId !== null &&
-      requirementsProviderId !== challenge.providerTokenId
-    ) {
+    if (requirementsProviderId !== null && requirementsProviderId !== challenge.providerTokenId) {
       res.status(400).json({
         success: false,
-        errorReason:
-          "paymentRequirements providerTokenId does not match stored challenge",
+        errorReason: "paymentRequirements providerTokenId does not match stored challenge",
       });
       return;
     }
 
-    // Atomic register-and-settle path: the challenge has buyerTokenId=0
-    // (the gateway didn't know the buyer's agentId at issuance time
-    // because they weren't registered yet) AND the agent provided a
-    // registration signature. Validate registration + route accordingly.
-    const needsRegistration = challenge.buyerTokenId === 0n;
-    if (needsRegistration && !body.registration) {
+    const coordinated = await settleChallenge(
+      {
+        config: deps.config,
+        reader: deps.reader,
+        queries: deps.queries,
+        fetchAgentCardFn: deps.fetchAgentCardFn,
+      },
+      {
+        challenge,
+        paymentPayload: body.paymentPayload,
+        registration: body.registration,
+      },
+    );
+    if (coordinated.kind === "registration-required") {
       res.status(400).json({
         success: false,
         errorReason: "registration_required",
@@ -222,38 +183,15 @@ export function createFacilitatorRouter(deps: FacilitatorDeps): Router {
       });
       return;
     }
-
-    const result = needsRegistration
-      ? await (async () => {
-          const reg = parseRegistrationDelegation(body.registration);
-          if ("error" in reg) {
-            res.status(400).json({
-              success: false,
-              errorReason: "invalid_registration",
-              message: reg.error,
-            });
-            return null;
-          }
-          return verifyAndSettleWithRegistration(
-            { payload: body.paymentPayload!, challenge },
-            reg,
-            deps.config,
-            deps.reader,
-            deps.queries,
-            new Date(),
-            { fetchAgentCardFn: deps.fetchAgentCardFn },
-          );
-        })()
-      : await verifyAndSettle(
-          { payload: body.paymentPayload, challenge },
-          deps.config,
-          deps.reader,
-          deps.queries,
-        );
-
-    // The atomic branch above sends its own 400 on bad registration
-    // shape and returns null — bail without writing a second response.
-    if (result === null) return;
+    if (coordinated.kind === "invalid-registration") {
+      res.status(400).json({
+        success: false,
+        errorReason: "invalid_registration",
+        message: coordinated.message,
+      });
+      return;
+    }
+    const result = coordinated.result;
 
     // Spec base fields: success / errorReason / transaction / network /
     // payer. Daski extension: paymentId, serviceRef, providerTokenId,
@@ -290,14 +228,11 @@ export function createFacilitatorRouter(deps: FacilitatorDeps): Router {
       payer: result.response.payer,
       paymentId: daski?.paymentId ?? null,
       serviceRef: daski?.serviceRef ?? serviceRef,
-      providerTokenId:
-        daski?.providerTokenId ?? challenge.providerTokenId.toString(),
-      buyerTokenId:
-        daski?.buyerTokenId ?? challenge.buyerTokenId.toString(),
+      providerTokenId: daski?.providerTokenId ?? challenge.providerTokenId.toString(),
+      buyerTokenId: daski?.buyerTokenId ?? challenge.buyerTokenId.toString(),
       skillId: challenge.skillId,
       amount: daski?.amount ?? challenge.amount.toString(),
-      providerA2AUrl:
-        daski?.providerA2AUrl ?? challenge.providerA2AUrl,
+      providerA2AUrl: daski?.providerA2AUrl ?? challenge.providerA2AUrl,
       registered: daski?.registered ?? false,
       quoteId: daski?.quoteId ?? challenge.quoteId,
       quoteSignature: daski?.quoteSignature ?? challenge.quoteSignature,

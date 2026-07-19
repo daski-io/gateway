@@ -1,11 +1,15 @@
 import type { ChainId, Hex } from "./types.js";
 import { requireMarketplaceHttpsUrl } from "./legal/validation.js";
+import {
+  loadRuntimeConfig,
+  type RuntimeConfig,
+} from "./runtimeConfig.js";
 
 export const DASKI_A2A_EXTENSION_URI = "https://daski.xyz/a2a/v1";
 
 export const X402_VERSION = 1;
 
-export interface Config {
+export interface Config extends RuntimeConfig {
   port: number;
   // Hosted MCP transport at this path (default /mcp). The MCP is the
   // wallet-agnostic tool surface; signing happens in the agent's wallet,
@@ -169,6 +173,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const chainId = parseChainId(env.CHAIN_ID);
   const port = Number(env.PORT ?? 3000);
   return {
+    ...loadRuntimeConfig(env),
     port,
     mcpEnabled: (env.MCP_ENABLED ?? "true") !== "false",
     mcpPath: env.MCP_PATH ?? "/mcp",

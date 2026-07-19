@@ -1,14 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { normalizeRole, normalizeState } from "../util/a2aShape.js";
-import {
-  a2aPostJson,
-  providerErrorFromFailure,
-  type Fetcher,
-} from "./a2a.js";
+import { a2aPostJson, providerErrorFromFailure, type Fetcher } from "./a2a.js";
 import { mcpError, mcpJson, type McpToolResult } from "./util.js";
 import { sanitizeProviderValue } from "./providerReflection.js";
 
-export interface PollTaskStatusArgs {
+interface PollTaskStatusArgs {
   providerA2AUrl: string;
   taskId: string;
   capability?: {
@@ -70,13 +66,11 @@ export async function pollTaskStatus(
     const rpcError = post.body.error;
     return mcpError({
       code: "PROVIDER_ERROR",
-      message: rpcError.message ?? "JSON-RPC error",
+      message: sanitizeProviderValue(rpcError.message ?? "JSON-RPC error"),
       ...(rpcError.code !== undefined || rpcError.data !== undefined
         ? {
             details: {
-              ...(rpcError.code !== undefined
-                ? { rpcCode: rpcError.code }
-                : {}),
+              ...(rpcError.code !== undefined ? { rpcCode: rpcError.code } : {}),
               ...(rpcError.data !== undefined
                 ? { data: sanitizeProviderValue(rpcError.data) }
                 : {}),
@@ -112,18 +106,14 @@ function extractArtifacts(
         if (typeof file.url === "string") {
           artifacts.push({
             type: "file",
-            name: sanitizeProviderValue(
-              artifact.name ?? file.name ?? "(unnamed)",
-            ),
+            name: sanitizeProviderValue(artifact.name ?? file.name ?? "(unnamed)"),
             url: file.url,
             mimeType: sanitizeProviderValue(file.mimeType),
           });
         } else if (typeof file.bytes === "string") {
           artifacts.push({
             type: "file",
-            name: sanitizeProviderValue(
-              artifact.name ?? file.name ?? "(unnamed)",
-            ),
+            name: sanitizeProviderValue(artifact.name ?? file.name ?? "(unnamed)"),
             bytes: file.bytes,
             encoding: "base64",
             mimeType: sanitizeProviderValue(file.mimeType),
@@ -141,9 +131,7 @@ function extractArtifacts(
   return artifacts;
 }
 
-function extractMessages(
-  message: StatusMessage | undefined,
-): Array<Record<string, unknown>> {
+function extractMessages(message: StatusMessage | undefined): Array<Record<string, unknown>> {
   if (!message) return [];
   const messages: Array<Record<string, unknown>> = [];
   const role = normalizeRole(message.role) ?? "agent";

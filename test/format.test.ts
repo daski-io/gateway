@@ -190,8 +190,7 @@ describe("formatForSkillDiscover — skill extraction", () => {
     expect(skills[0].requiresCapability).toBe(false);
   });
 
-  // §3.2 of daski-mcp-gateway-fix-brief.md — surface optionalFields and
-  // the two-call callPhases block from the provider's per-skill metadata.
+  // Surface optional fields and two-call phases from per-skill metadata.
   it("surfaces optionalFields and callPhases when the provider declares them", () => {
     const provider = makeProvider({
       name: "Two-call provider",
@@ -270,11 +269,8 @@ describe("formatForSkillDiscover — skill extraction", () => {
     expect(renew.callPhases).toBeUndefined();
   });
 
-  // §1.7 of daski-mcp-gateway-fix-brief.md — the default 1KB string cap
-  // was clipping the 6-element-template skill descriptions. We raise the
-  // per-string cap inside the skills array specifically so the
-  // operational detail (When NOT to use, capability flow, Returns, Next
-  // step) survives the round-trip.
+  // Skill descriptions use a larger bounded limit so operational detail
+  // survives the round trip.
   it("preserves long skill descriptions past the default 1KB cap", () => {
     const longDescription = "x".repeat(3500);
     const provider = makeProvider({

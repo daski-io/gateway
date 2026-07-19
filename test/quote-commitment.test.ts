@@ -143,10 +143,7 @@ describe("provider quote-commitment integration", () => {
     };
   }
 
-  async function retryPurchase(
-    serviceRef: string,
-    body: Record<string, unknown>,
-  ) {
+  async function retryPurchase(serviceRef: string) {
     const paymentPayload = Buffer.from(
       JSON.stringify({ serviceRef }),
     ).toString("base64");
@@ -156,7 +153,7 @@ describe("provider quote-commitment integration", () => {
         "Content-Type": "application/json",
         "X-PAYMENT": paymentPayload,
       },
-      body: JSON.stringify(body),
+      body: JSON.stringify({}),
     });
     return {
       status: response.status,
@@ -216,7 +213,7 @@ describe("provider quote-commitment integration", () => {
     expect(rebound.json.error).toContain("quote is already bound");
   });
 
-  it("REST signed retry rejects missing or changed serviceArgs before settlement", async () => {
+  it("REST resource route rejects the retired X-PAYMENT settlement flow", async () => {
     const serviceArgs = { domain: "rest-retry.xyz" };
     const providerQuote = await requestProviderQuote(serviceArgs);
     const opened = await postPurchase({
@@ -229,15 +226,9 @@ describe("provider quote-commitment integration", () => {
     expect(opened.status).toBe(402);
     const serviceRef = opened.json.accepts[0].extra.daski.serviceRef as Hex;
 
-    const missing = await retryPurchase(serviceRef, {});
-    expect(missing.status).toBe(400);
-    expect(missing.json.error).toContain("serviceArgs is required");
-
-    const changed = await retryPurchase(serviceRef, {
-      serviceArgs: { domain: "changed-after-signing.xyz" },
-    });
-    expect(changed.status).toBe(409);
-    expect(changed.json.error).toContain("provider quote requestHash");
+    const retired = await retryPurchase(serviceRef);
+    expect(retired.status).toBe(410);
+    expect(retired.json.error).toContain("/settle");
 
     const challenge = await gateway.bundle.queries.getChallengeByRef(serviceRef);
     expect(challenge?.status).toBe("pending");
@@ -309,7 +300,6 @@ describe("provider quote-commitment integration", () => {
         x402Version: 1,
         scheme: "exact",
         network: "base-sepolia",
-        serviceRef: paymentRequirements.extra.daski.serviceRef,
         payload: { signature: "0x", authorization: {} },
       };
 

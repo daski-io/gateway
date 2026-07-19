@@ -40,6 +40,7 @@ describe("MCP artifact delivery", () => {
         buyerTokenId: "5",
         taskId,
         action: "document-download",
+        resource: artifactUrl,
         nonce,
         expiry: "9999999999",
       };
@@ -157,6 +158,42 @@ describe("MCP artifact delivery", () => {
       });
       expect(fetched.artifact.sha256).toMatch(/^[0-9a-f]{64}$/);
       expect(calls).toBe(3);
+    } finally {
+      await transport.close();
+    }
+  });
+
+  it("rejects an artifact challenge that is not bound to the exact URL", async () => {
+    const requestedUrl = "https://artifacts.example/requested.pdf";
+    const a2aFetch: typeof fetch = async () =>
+      Response.json(
+        {
+          capabilityChallenge: {
+            authorization: {
+              taskId: "task-document-2",
+              action: "document-download",
+              resource: "https://artifacts.example/different.pdf",
+            },
+            eip712TypedData: {
+              primaryType: "TaskAccessAuthorization",
+            },
+          },
+        },
+        { status: 401 },
+      );
+    const gateway = await startTestGateway({ a2aFetch });
+    gateways.push(gateway);
+    const { client, transport } = await connectClient(gateway.baseUrl);
+    try {
+      const result = await client.callTool({
+        name: "daski_fetch_artifact",
+        arguments: {
+          url: requestedUrl,
+          taskId: "task-document-2",
+        },
+      });
+      const body = parseResult<{ code: string }>(result);
+      expect(body.code).toBe("ARTIFACT_CHALLENGE_MISMATCH");
     } finally {
       await transport.close();
     }

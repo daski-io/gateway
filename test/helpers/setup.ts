@@ -7,10 +7,7 @@ import { createApp, type AppBundle } from "../../src/app.js";
 import { createPool, type Pool } from "../../src/db/pool.js";
 import type { Embedder } from "../../src/discovery/embeddings.js";
 import { stubEmbedder } from "./stubEmbedder.js";
-import {
-  MockChainReader,
-  makePaymentSettledEvent,
-} from "./mockChain.js";
+import { MockChainReader, makePaymentSettledEvent } from "./mockChain.js";
 import {
   buildAgentCard,
   startMockProvider,
@@ -18,18 +15,10 @@ import {
   type MockTaskState,
 } from "./mockProvider.js";
 import { DASKI_A2A_EXTENSION_URI } from "../../src/config.js";
-import type {
-  CategoryFamily,
-  FulfillmentMode,
-  ServiceType,
-} from "../../src/serviceTaxonomy.js";
+import type { CategoryFamily, FulfillmentMode, ServiceType } from "../../src/serviceTaxonomy.js";
 import { resolveSkillOffer } from "../../src/payment/requirements.js";
 import type { PaymentSettledEvent } from "../../src/chain/reader.js";
-import type {
-  ExactEvmAuthorization,
-  Hex,
-  PaymentPayload,
-} from "../../src/types.js";
+import type { ExactEvmAuthorization, Hex, PaymentPayload } from "../../src/types.js";
 
 const IDENTITY_REGISTRY_ADDRESS = "0x000000000000000000000000000000000000a000" as Hex;
 // Daski AgentIndex — reverse lookup + gasless registerWithSig companion of
@@ -37,25 +26,21 @@ const IDENTITY_REGISTRY_ADDRESS = "0x000000000000000000000000000000000000a000" a
 // the RegisterAgent typed-data verifies against the index, not the registry.
 const AGENT_INDEX_ADDRESS = "0x000000000000000000000000000000000000a007" as Hex;
 const REGISTRY_ADDRESS = "0x000000000000000000000000000000000000a001" as Hex;
-const PAYMENT_ROUTER_ADDRESS =
-  "0x000000000000000000000000000000000000a002" as Hex;
+const PAYMENT_ROUTER_ADDRESS = "0x000000000000000000000000000000000000a002" as Hex;
 const USDC_ADDRESS = "0x000000000000000000000000000000000000a003" as Hex;
 const X402_ADAPTER_ADDRESS = "0x000000000000000000000000000000000000a004" as Hex;
 const EAS_ADDRESS = "0x000000000000000000000000000000000000a005" as Hex;
-const SERVICE_REGISTRY_ADDRESS =
-  "0x000000000000000000000000000000000000a006" as Hex;
+const SERVICE_REGISTRY_ADDRESS = "0x000000000000000000000000000000000000a006" as Hex;
 const EAS_OUTCOME_SCHEMA_UID =
   "0xaa00000000000000000000000000000000000000000000000000000000000001" as Hex;
 const EAS_CONFIRMATION_SCHEMA_UID =
   "0xaa00000000000000000000000000000000000000000000000000000000000002" as Hex;
 
 // Facilitator: random key, the contents don't matter (tests mock the chain).
-const FACILITATOR_KEY =
-  "0x1111111111111111111111111111111111111111111111111111111111111111" as Hex;
+const FACILITATOR_KEY = "0x1111111111111111111111111111111111111111111111111111111111111111" as Hex;
 
 // Buyer: fixed keypair so tests can sign EIP-3009 authorizations.
-const TEST_BUYER_KEY =
-  "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80" as Hex;
+const TEST_BUYER_KEY = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80" as Hex;
 
 const CHAIN_ID = 84532;
 
@@ -80,10 +65,7 @@ export interface TestGatewayOptions {
    * `{ name: "buyer-test" }` for any URL — enough to satisfy callers that
    * don't assert on the resolved name.
    */
-  buyerAgentCardFetch?: (
-    url: string,
-    init?: RequestInit,
-  ) => Promise<Response>;
+  buyerAgentCardFetch?: (url: string, init?: RequestInit) => Promise<Response>;
   /**
    * Shallow overrides applied on top of the default test Config. Use this
    * to populate optional fields (permitAdapterAddress, reputationStorageAddress,
@@ -99,16 +81,9 @@ export interface TestGatewayOptions {
   externalFacilitatorFetch?: typeof fetch;
 }
 
-/**
- * Test-facing provider definition. `tokenId` is the ERC-8004 agentId used
- * by the gateway. The optional `erc8004TokenId` is no longer a separate
- * on-chain value (it was a placeholder in the legacy DaskiIdentity world);
- * if supplied it just overrides the value written into the Agent Card's
- * `onChainReferences.erc8004TokenId` wire field. Defaults to `tokenId`.
- */
+/** Test-facing provider definition. `tokenId` is the ERC-8004 agentId. */
 export interface TestProviderDef {
   tokenId: bigint;
-  erc8004TokenId?: bigint;
   walletAddress?: Hex;
   priceUsdcSmallest: string;
   categoryFamily: CategoryFamily;
@@ -154,14 +129,12 @@ export interface TestGateway {
   mockChain: MockChainReader;
   mockProvider: MockProviderHandle;
   buyerAddress: Hex;
-  purchaseChallenge(
-    tokenId: bigint,
-    body: Record<string, unknown>,
-  ): Promise<PurchaseChallenge>;
+  purchaseChallenge(tokenId: bigint, body: Record<string, unknown>): Promise<PurchaseChallenge>;
   purchaseSettle(
     tokenId: bigint,
     payload: PaymentPayload,
-  ): Promise<{ status: number; json: any; settlementHeader?: any }>;
+    serviceRef?: Hex,
+  ): Promise<{ status: number; json: any }>;
   signAuthorization(
     value: bigint,
     nonce: Hex,
@@ -178,12 +151,8 @@ export interface TestGateway {
     txHash: Hex;
     paymentId: bigint;
     serviceRef: Hex;
-    // Accept both old (tokenId) and new (agentId) naming so existing tests
-    // compile without a touch-every-file rename.
-    providerAgentId?: bigint;
-    buyerAgentId?: bigint;
-    providerTokenId?: bigint;
-    buyerTokenId?: bigint;
+    providerAgentId: bigint;
+    buyerAgentId: bigint;
     totalAmount: bigint;
   }): void;
   registerProvider(def: TestProviderDef): void;
@@ -202,9 +171,7 @@ const TRANSFER_WITH_AUTHORIZATION_TYPES = {
   ],
 } as const;
 
-export async function startTestGateway(
-  opts: TestGatewayOptions = {},
-): Promise<TestGateway> {
+export async function startTestGateway(opts: TestGatewayOptions = {}): Promise<TestGateway> {
   const mockProvider = await startMockProvider({
     agentCards: {},
     initialTaskState: opts.initialTaskState,
@@ -220,6 +187,20 @@ export async function startTestGateway(
   }
 
   const config: Config = {
+    nodeEnv: "test",
+    chainMode: "live",
+    trustProxy: 0,
+    registrationSponsorMaxPerHour: 1_000,
+    challengeRetentionSeconds: 7 * 24 * 60 * 60,
+    rpcReadMaxPerMinute: 1_000,
+    stateChangeGlobalMaxPerMinute: 1_000,
+    discoveryMaxA2AEntries: 16,
+    discoveryFetchConcurrency: 4,
+    discoveryRefreshDeadlineMs: 30_000,
+    mockProviderWalletAddress: "0x1111111111111111111111111111111111111111",
+    mockProviderAgentId: 1n,
+    mockProviderAgentUri: "http://localhost:4040/.well-known/agent.json",
+    mockBuyerAgentId: 99n,
     port: 0,
     mcpEnabled: true,
     mcpPath: "/mcp",
@@ -285,10 +266,8 @@ export async function startTestGateway(
         status: 200,
         headers: { "content-type": "application/json" },
       }));
-  const localProviderFetch = (
-    input: string | URL | Request,
-    init?: RequestInit,
-  ) => fetch(input, init);
+  const localProviderFetch = (input: string | URL | Request, init?: RequestInit) =>
+    fetch(input, init);
 
   const bundle = await createApp({
     config,
@@ -313,7 +292,7 @@ export async function startTestGateway(
   config.publicUrl = baseUrl;
 
   const buyerAccount = privateKeyToAccount(TEST_BUYER_KEY);
-  const serviceArgsByRef = new Map<Hex, Record<string, unknown>>();
+  const requirementsByProvider = new Map<string, Record<string, unknown>>();
 
   async function signAuthorization(
     value: bigint,
@@ -350,15 +329,6 @@ export async function startTestGateway(
       },
     })) as Hex;
     return { signature, authorization };
-  }
-
-  function decodeSettlementHeader(headerValue: string | null): any {
-    if (!headerValue) return undefined;
-    try {
-      return JSON.parse(Buffer.from(headerValue, "base64").toString("utf8"));
-    } catch {
-      return undefined;
-    }
   }
 
   const gateway: TestGateway = {
@@ -457,42 +427,27 @@ export async function startTestGateway(
         serviceRef = req?.extra?.daski?.serviceRef;
         maxAmountRequired = req?.maxAmountRequired;
         payTo = req?.payTo;
-      }
-      if (serviceRef) {
-        const serviceArgs = merged.serviceArgs ?? {};
-        if (
-          serviceArgs !== null &&
-          typeof serviceArgs === "object" &&
-          !Array.isArray(serviceArgs)
-        ) {
-          serviceArgsByRef.set(
-            serviceRef,
-            serviceArgs as Record<string, unknown>,
-          );
-        }
+        requirementsByProvider.set(tokenId.toString(), req);
       }
       return { status: res.status, json, serviceRef, maxAmountRequired, payTo };
     },
 
-    async purchaseSettle(tokenId, payload) {
-      const header = Buffer.from(JSON.stringify(payload)).toString("base64");
-      const res = await fetch(`${baseUrl}/purchase/${tokenId.toString()}`, {
+    async purchaseSettle(tokenId, payload, serviceRef) {
+      const requirements =
+        requirementsByProvider.get(tokenId.toString()) ??
+        (serviceRef ? { extra: { daski: { serviceRef } } } : undefined);
+      const res = await fetch(`${baseUrl}/settle`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "X-PAYMENT": header,
         },
         body: JSON.stringify({
-          serviceArgs: payload.serviceRef
-            ? (serviceArgsByRef.get(payload.serviceRef) ?? {})
-            : {},
+          paymentPayload: payload,
+          paymentRequirements: requirements,
         }),
       });
       const json = await res.json();
-      const settlementHeader = decodeSettlementHeader(
-        res.headers.get("x-payment-response"),
-      );
-      return { status: res.status, json, settlementHeader };
+      return { status: res.status, json };
     },
 
     signAuthorization,
@@ -501,34 +456,23 @@ export async function startTestGateway(
       const params = new URLSearchParams();
       if (filters.categoryFamily !== undefined)
         params.set("categoryFamily", filters.categoryFamily);
-      if (filters.serviceType !== undefined)
-        params.set("serviceType", filters.serviceType);
-      if (filters.jurisdiction !== undefined)
-        params.set("jurisdiction", filters.jurisdiction);
+      if (filters.serviceType !== undefined) params.set("serviceType", filters.serviceType);
+      if (filters.jurisdiction !== undefined) params.set("jurisdiction", filters.jurisdiction);
       if (filters.fulfillmentMode !== undefined)
         params.set("fulfillmentMode", filters.fulfillmentMode);
-      if (filters.maxPrice !== undefined)
-        params.set("maxPrice", String(filters.maxPrice));
-      const url =
-        params.size > 0 ? `${baseUrl}/discover?${params}` : `${baseUrl}/discover`;
+      if (filters.maxPrice !== undefined) params.set("maxPrice", String(filters.maxPrice));
+      const url = params.size > 0 ? `${baseUrl}/discover?${params}` : `${baseUrl}/discover`;
       const res = await fetch(url);
       const json = await res.json();
       return { status: res.status, json };
     },
 
     queueSettlementSuccess(args) {
-      const buyerAgentId = args.buyerAgentId ?? args.buyerTokenId;
-      const providerAgentId = args.providerAgentId ?? args.providerTokenId;
-      if (buyerAgentId === undefined || providerAgentId === undefined) {
-        throw new Error(
-          "queueSettlementSuccess requires buyer*/provider* AgentId or TokenId",
-        );
-      }
       const event: PaymentSettledEvent = makePaymentSettledEvent({
         paymentId: args.paymentId,
         serviceRef: args.serviceRef,
-        buyerAgentId,
-        providerAgentId,
+        buyerAgentId: args.buyerAgentId,
+        providerAgentId: args.providerAgentId,
         totalAmount: args.totalAmount,
         token: USDC_ADDRESS,
       });
@@ -585,8 +529,6 @@ function _installProvider(
   const a2aUrl = `${mockProvider.baseUrl}${a2aPath}`;
   const registrationPath = `/agent-registrations/${def.tokenId}.json`;
   const agentURI = `${mockProvider.baseUrl}${registrationPath}`;
-  const erc8004TokenId = def.erc8004TokenId ?? def.tokenId;
-
   mockChain.addProvider(def.tokenId, {
     walletAddress: def.walletAddress ?? mockProvider.walletAddress,
     agentId: def.tokenId,
@@ -595,9 +537,7 @@ function _installProvider(
     isActive: true,
   });
 
-  const skills = (def.skills ?? [
-    { id: "default-service", metadata: {} },
-  ]).map((s) => ({
+  const skills = (def.skills ?? [{ id: "default-service", metadata: {} }]).map((s) => ({
     id: s.id,
     name: s.name ?? s.id,
     description: s.description ?? `${s.id} skill`,
@@ -620,7 +560,6 @@ function _installProvider(
       jurisdictions: def.jurisdictions,
       registryAddress: REGISTRY_ADDRESS,
       paymentRouterAddress: PAYMENT_ROUTER_ADDRESS,
-      erc8004TokenId: erc8004TokenId.toString(),
       chainId: CHAIN_ID,
       description: def.description,
       skipExtension: def.skipExtension,

@@ -5,10 +5,7 @@ import type { DiscoveryCache } from "../discovery/cache.js";
 import type { Queries } from "../db/queries.js";
 import { computeRequestHash } from "../auth/envelope.js";
 import { resolveSkillOffer, type SkillOffer } from "./requirements.js";
-import {
-  validateProviderQuoteCommitment,
-  type ProviderQuoteCommitment,
-} from "./providerQuote.js";
+import { validateProviderQuoteCommitment, type ProviderQuoteCommitment } from "./providerQuote.js";
 import type { ExternalFacilitatorClient } from "./externalFacilitator.js";
 import type { Fetcher } from "../mcp/a2a.js";
 import type { Hex, StoredChallenge } from "../types.js";
@@ -80,16 +77,10 @@ export interface BazaarDeps {
 const VALID_BEFORE_BUFFER_SEC = 10n;
 
 function isUniqueViolation(err: unknown): boolean {
-  return (
-    typeof err === "object" &&
-    err !== null &&
-    (err as { code?: string }).code === "23505"
-  );
+  return typeof err === "object" && err !== null && (err as { code?: string }).code === "23505";
 }
 
-export function createBazaarSettlementHandler(
-  deps: BazaarDeps,
-): RequestHandler {
+export function createBazaarSettlementHandler(deps: BazaarDeps): RequestHandler {
   const { config, cache, queries, reader, facilitator } = deps;
 
   async function quoteOrRespond(
@@ -117,16 +108,14 @@ export function createBazaarSettlementHandler(
   const handler = async (req: Request, res: Response) => {
     let providerTokenId: bigint;
     try {
-      providerTokenId = BigInt(String(req.params.tokenId));
+      providerTokenId = BigInt(String(req.params.agentId));
     } catch {
       res.status(404).json({ x402Version: 2, error: "invalid provider token id" });
       return;
     }
     const skillId = String(req.params.skillId ?? "");
     const paymentHeader =
-      req.header("payment-signature") ??
-      req.header("payment") ??
-      req.header("x-payment");
+      req.header("payment-signature") ?? req.header("payment") ?? req.header("x-payment");
 
     const resolved = resolveSkillOffer(providerTokenId, skillId, cache, {
       requireFixedAmount: false,
@@ -173,14 +162,11 @@ export function createBazaarSettlementHandler(
     }
     const resourceUrl = `${config.publicUrl}/x402/services/${providerTokenId.toString()}/${skillId}`;
     const providerLegal = cache.get(providerTokenId)?.providerLegal;
-    const purchaseLegal = providerLegal
-      ? buildPurchaseLegalContext(config, providerLegal)
-      : null;
+    const purchaseLegal = providerLegal ? buildPurchaseLegalContext(config, providerLegal) : null;
     if (!purchaseLegal && !recoveryChallenge) {
       res.status(422).json({
         x402Version: 2,
-        error:
-          "provider_legal_metadata_invalid: provider legal metadata is missing or invalid",
+        error: "provider_legal_metadata_invalid: provider legal metadata is missing or invalid",
       });
       return;
     }
@@ -204,8 +190,7 @@ export function createBazaarSettlementHandler(
       if (!purchaseLegal) {
         res.status(422).json({
           x402Version: 2,
-          error:
-            "provider_legal_metadata_invalid: provider legal metadata is missing or invalid",
+          error: "provider_legal_metadata_invalid: provider legal metadata is missing or invalid",
         });
         return;
       }
@@ -219,16 +204,18 @@ export function createBazaarSettlementHandler(
           });
           return;
         }
-        res.status(402).json(
-          buildPaymentRequired(
-            offer,
-            offer.amount,
-            config,
-            resourceUrl,
-            config.challengeTtlSeconds,
-            purchaseLegal,
-          ),
-        );
+        res
+          .status(402)
+          .json(
+            buildPaymentRequired(
+              offer,
+              offer.amount,
+              config,
+              resourceUrl,
+              config.challengeTtlSeconds,
+              purchaseLegal,
+            ),
+          );
         return;
       }
       const quoted = await quoteOrRespond(res, offer, skillId, serviceArgs);
@@ -241,17 +228,19 @@ export function createBazaarSettlementHandler(
         });
         return;
       }
-      res.status(402).json(
-        buildPaymentRequired(
-          offer,
-          quoted.amount,
-          config,
-          resourceUrl,
-          timeout,
-          purchaseLegal,
-          quoted.quote,
-        ),
-      );
+      res
+        .status(402)
+        .json(
+          buildPaymentRequired(
+            offer,
+            quoted.amount,
+            config,
+            resourceUrl,
+            timeout,
+            purchaseLegal,
+            quoted.quote,
+          ),
+        );
       return;
     }
 
@@ -291,7 +280,10 @@ export function createBazaarSettlementHandler(
     try {
       value = BigInt(auth.value);
     } catch {
-      res.status(400).json({ x402Version: core.version, error: "authorization value must be a decimal string" });
+      res.status(400).json({
+        x402Version: core.version,
+        error: "authorization value must be a decimal string",
+      });
       return;
     }
     const nowSec = BigInt(Math.floor(Date.now() / 1000));
@@ -301,7 +293,10 @@ export function createBazaarSettlementHandler(
       validAfter = BigInt(auth.validAfter);
       validBefore = BigInt(auth.validBefore);
     } catch {
-      res.status(400).json({ x402Version: core.version, error: "authorization time bounds must be decimal strings" });
+      res.status(400).json({
+        x402Version: core.version,
+        error: "authorization time bounds must be decimal strings",
+      });
       return;
     }
     if (validAfter > nowSec || validBefore <= nowSec + VALID_BEFORE_BUFFER_SEC) {
@@ -312,8 +307,10 @@ export function createBazaarSettlementHandler(
       return;
     }
 
-    let challenge: StoredChallenge | null =
-      await queries.getChallengeByWalletAndNonce(from, authNonce);
+    let challenge: StoredChallenge | null = await queries.getChallengeByWalletAndNonce(
+      from,
+      authNonce,
+    );
     let quoted: { amount: bigint; quote: ProviderQuoteCommitment } | null = null;
     if (challenge) {
       const mismatch =
@@ -336,8 +333,7 @@ export function createBazaarSettlementHandler(
         res.status(409).json({
           x402Version: core.version,
           error:
-            "serviceArgs differ from the request bound to this authorization's " +
-            "provider quote",
+            "serviceArgs differ from the request bound to this authorization's " + "provider quote",
         });
         return;
       }
@@ -349,21 +345,26 @@ export function createBazaarSettlementHandler(
           payer: from,
         });
         res.status(200).json(
-          receiptBody(core.version, config, {
-            skillId: challenge.skillId ?? skillId,
-            providerA2AUrl: challenge.providerA2AUrl,
-          }, {
-            paymentId: challenge.paymentId.toString(),
-            serviceRef: challenge.serviceRef,
-            providerTokenId: challenge.providerTokenId.toString(),
-            buyerTokenId: challenge.buyerTokenId.toString(),
-            amount: challenge.amount.toString(),
-            settlementTransaction: challenge.externalSettleTx,
-            attributionTransaction: challenge.transactionHash,
-            quoteId: challenge.quoteId,
-            quoteSignature: challenge.quoteSignature,
-            serviceArgs,
-          }),
+          receiptBody(
+            core.version,
+            config,
+            {
+              skillId: challenge.skillId ?? skillId,
+              providerA2AUrl: challenge.providerA2AUrl,
+            },
+            {
+              paymentId: challenge.paymentId.toString(),
+              serviceRef: challenge.serviceRef,
+              providerTokenId: challenge.providerTokenId.toString(),
+              buyerTokenId: challenge.buyerTokenId.toString(),
+              amount: challenge.amount.toString(),
+              settlementTransaction: challenge.externalSettleTx,
+              attributionTransaction: challenge.transactionHash,
+              quoteId: challenge.quoteId,
+              quoteSignature: challenge.quoteSignature,
+              serviceArgs,
+            },
+          ),
         );
         return;
       }
@@ -442,12 +443,7 @@ export function createBazaarSettlementHandler(
               })
             : { ok: false as const, message: "accepted quote is missing" };
         if (!validation.ok) {
-          const replacement = await quoteOrRespond(
-            res,
-            offer,
-            skillId,
-            serviceArgs,
-          );
+          const replacement = await quoteOrRespond(res, offer, skillId, serviceArgs);
           if (!replacement) return;
           const timeout = boundedTimeoutSeconds(config, replacement.quote);
           if (timeout === null) {
@@ -457,19 +453,21 @@ export function createBazaarSettlementHandler(
             });
             return;
           }
-          res.status(402).json(
-            buildPaymentRequired(
-              offer,
-              replacement.amount,
-              config,
-              resourceUrl,
-              timeout,
-              purchaseLegal,
-              replacement.quote,
-              `payment header does not carry the valid quote from the prior ` +
-                `402 (${validation.message}); sign the replacement requirements`,
-            ),
-          );
+          res
+            .status(402)
+            .json(
+              buildPaymentRequired(
+                offer,
+                replacement.amount,
+                config,
+                resourceUrl,
+                timeout,
+                purchaseLegal,
+                replacement.quote,
+                `payment header does not carry the valid quote from the prior ` +
+                  `402 (${validation.message}); sign the replacement requirements`,
+              ),
+            );
           return;
         }
         quoted = {
@@ -489,19 +487,21 @@ export function createBazaarSettlementHandler(
           });
           return;
         }
-        res.status(402).json(
-          buildPaymentRequired(
-            offer,
-            quoted.amount,
-            config,
-            resourceUrl,
-            timeout,
-            purchaseLegal,
-            quoted.quote,
-            `authorization value ${auth.value} does not match the quoted ` +
-              `amount ${quoted.amount.toString()}`,
-          ),
-        );
+        res
+          .status(402)
+          .json(
+            buildPaymentRequired(
+              offer,
+              quoted.amount,
+              config,
+              resourceUrl,
+              timeout,
+              purchaseLegal,
+              quoted.quote,
+              `authorization value ${auth.value} does not match the quoted ` +
+                `amount ${quoted.amount.toString()}`,
+            ),
+          );
         return;
       }
     }
@@ -521,10 +521,7 @@ export function createBazaarSettlementHandler(
       });
       return;
     }
-    const timeoutSeconds = Math.max(
-      1,
-      Math.min(config.challengeTtlSeconds, quoteRunway),
-    );
+    const timeoutSeconds = Math.max(1, Math.min(config.challengeTtlSeconds, quoteRunway));
     const forwardedPayload = buildForwardedPayload(core, offer, resourceUrl);
     const facilitatorBody = {
       x402Version: core.version,
@@ -572,18 +569,20 @@ export function createBazaarSettlementHandler(
           });
           return;
         }
-        res.status(402).json(
-          buildPaymentRequired(
-            offer,
-            effectiveAmount,
-            config,
-            resourceUrl,
-            timeoutSeconds,
-            purchaseLegal,
-            undefined,
-            `external facilitator rejected the payment: ${verify.invalidReason ?? "invalid"}`,
-          ),
-        );
+        res
+          .status(402)
+          .json(
+            buildPaymentRequired(
+              offer,
+              effectiveAmount,
+              config,
+              resourceUrl,
+              timeoutSeconds,
+              purchaseLegal,
+              undefined,
+              `external facilitator rejected the payment: ${verify.invalidReason ?? "invalid"}`,
+            ),
+          );
         return;
       }
 
@@ -594,10 +593,7 @@ export function createBazaarSettlementHandler(
         // fulfill (quote_expired at consume time).
         const quote = quoted!.quote;
         const expiresAt = new Date(
-          Math.min(
-            Date.now() + config.challengeTtlSeconds * 1000,
-            Date.parse(quote.expiresAt),
-          ),
+          Math.min(Date.now() + config.challengeTtlSeconds * 1000, Date.parse(quote.expiresAt)),
         );
         try {
           await queries.insertChallenge({
@@ -671,18 +667,20 @@ export function createBazaarSettlementHandler(
           });
           return;
         }
-        res.status(402).json(
-          buildPaymentRequired(
-            offer,
-            effectiveAmount,
-            config,
-            resourceUrl,
-            timeoutSeconds,
-            purchaseLegal,
-            undefined,
-            `external facilitator settle failed: ${settle.errorReason ?? "unknown"}`,
-          ),
-        );
+        res
+          .status(402)
+          .json(
+            buildPaymentRequired(
+              offer,
+              effectiveAmount,
+              config,
+              resourceUrl,
+              timeoutSeconds,
+              purchaseLegal,
+              undefined,
+              `external facilitator settle failed: ${settle.errorReason ?? "unknown"}`,
+            ),
+          );
         return;
       }
       const settleTx = (settle.transaction ?? "") as Hex;
@@ -703,7 +701,11 @@ export function createBazaarSettlementHandler(
             return;
           }
         } else {
-          challenge = { ...challenge, status: "pending", externalSettleTx: settleTx };
+          challenge = {
+            ...challenge,
+            status: "pending",
+            externalSettleTx: settleTx,
+          };
         }
       }
     }
@@ -760,8 +762,7 @@ export function createBazaarSettlementHandler(
       res.status(500).json({
         x402Version: core.version,
         error: "settlement_persistence_conflict",
-        message:
-          "on-chain settlement conflicts with the stored payment challenge",
+        message: "on-chain settlement conflicts with the stored payment challenge",
         serviceRef: challenge.serviceRef,
       });
       return;
@@ -790,21 +791,26 @@ export function createBazaarSettlementHandler(
       payer: from,
     });
     res.status(200).json(
-      receiptBody(core.version, config, {
-        skillId: challenge.skillId ?? skillId,
-        providerA2AUrl: challenge.providerA2AUrl,
-      }, {
-        paymentId: event.paymentId.toString(),
-        serviceRef: challenge.serviceRef,
-        providerTokenId: challenge.providerTokenId.toString(),
-        buyerTokenId: event.buyerAgentId.toString(),
-        amount: event.totalAmount.toString(),
-        settlementTransaction: challenge.externalSettleTx,
-        attributionTransaction: attribution.transactionHash,
-        quoteId: challenge.quoteId,
-        quoteSignature: challenge.quoteSignature,
-        serviceArgs,
-      }),
+      receiptBody(
+        core.version,
+        config,
+        {
+          skillId: challenge.skillId ?? skillId,
+          providerA2AUrl: challenge.providerA2AUrl,
+        },
+        {
+          paymentId: event.paymentId.toString(),
+          serviceRef: challenge.serviceRef,
+          providerTokenId: challenge.providerTokenId.toString(),
+          buyerTokenId: event.buyerAgentId.toString(),
+          amount: event.totalAmount.toString(),
+          settlementTransaction: challenge.externalSettleTx,
+          attributionTransaction: attribution.transactionHash,
+          quoteId: challenge.quoteId,
+          quoteSignature: challenge.quoteSignature,
+          serviceArgs,
+        },
+      ),
     );
   };
 

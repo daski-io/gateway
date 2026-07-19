@@ -329,6 +329,28 @@ export function createQueries(pool: Pool) {
       return res.rowCount ?? 0;
     },
 
+    async deleteExpiredChallenges(
+      retentionSeconds: number,
+      batchSize = 500,
+    ): Promise<number> {
+      const res = await pool.query(
+        `WITH candidates AS (
+           SELECT service_ref
+             FROM payment_challenges
+            WHERE status = 'expired'
+              AND expires_at < now() - ($1 * interval '1 second')
+            ORDER BY expires_at
+            LIMIT $2
+            FOR UPDATE SKIP LOCKED
+         )
+         DELETE FROM payment_challenges AS challenge
+          USING candidates
+          WHERE challenge.service_ref = candidates.service_ref`,
+        [retentionSeconds, batchSize],
+      );
+      return res.rowCount ?? 0;
+    },
+
     /**
      * Persist the EAS attestation UID for a successful buyer confirmation.
      * Match by paymentId (unique across the table). No-op when the

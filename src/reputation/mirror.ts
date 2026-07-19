@@ -79,7 +79,7 @@ export async function mirrorConfirmationFeedback(
   // startup, so per-call we stay quiet.
   if (
     !deps.config.reputationRegistryAddress ||
-    (process.env.CHAIN_MODE ?? "live") === "mock"
+    deps.config.chainMode === "mock"
   ) {
     return { mirrored: false, reason: "disabled" };
   }

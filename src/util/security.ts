@@ -41,6 +41,8 @@ export interface RateLimitOptions {
   statusCode?: number;
   /** Namespace prevents unrelated endpoint groups sharing a bucket. */
   namespace?: string;
+  /** Global buckets cap aggregate work across clients and replicas. */
+  keyScope?: "client" | "global";
   /** Shared store used by multi-replica deployments. */
   store?: {
     consumeRateLimitBucket(
@@ -112,7 +114,10 @@ export function rateLimit(opts: RateLimitOptions) {
     res: Response,
     next: NextFunction,
   ): void {
-    const clientKey = req.ip ?? req.socket.remoteAddress ?? "unknown";
+    const clientKey =
+      opts.keyScope === "global"
+        ? "global"
+        : (req.ip ?? req.socket.remoteAddress ?? "unknown");
     const key = `${opts.namespace ?? "default"}:${clientKey}`;
     if (opts.store) {
       void opts.store

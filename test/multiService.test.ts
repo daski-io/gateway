@@ -222,7 +222,7 @@ describe("multi-service providers", () => {
   it("caches every advertised card (REST /discover exposes cards[])", async () => {
     const { status, json } = await gateway.discover();
     expect(status).toBe(200);
-    const provider = json.providers.find((p: any) => p.tokenId === "1");
+    const provider = json.providers.find((p: any) => p.agentId === "1");
     expect(provider.fetchError).toBeNull();
     expect(provider.cards).toHaveLength(2);
     const slugs = provider.cards.map((c: any) => c.serviceSlug).sort();
@@ -237,7 +237,7 @@ describe("multi-service providers", () => {
         expectedLegal(gateway),
       );
     }
-    // Back-compat: agentCard remains the first card.
+    // Registration order remains stable in the cards array.
     expect(provider.cards[0].agentCard.name).toBe("Domain Management");
   });
 
@@ -250,7 +250,7 @@ describe("multi-service providers", () => {
       });
       const body = parseResult<{
         providers: Array<{
-          tokenId: string;
+          agentId: string;
           name: string;
           serviceSlug: string | null;
           providerA2AUrl: string;
@@ -259,7 +259,7 @@ describe("multi-service providers", () => {
         }>;
       }>(result);
 
-      const mine = body.providers.filter((p) => p.tokenId === "1");
+      const mine = body.providers.filter((p) => p.agentId === "1");
       expect(mine).toHaveLength(2);
       const bySlug = new Map(mine.map((p) => [p.serviceSlug, p]));
       for (const service of mine) {
@@ -305,7 +305,7 @@ describe("multi-service providers", () => {
       });
       const body = parseResult<{
         providers: Array<{
-          tokenId: string;
+          agentId: string;
           serviceSlug: string | null;
           match: { distance: number; bestSkillId: string };
         }>;
@@ -316,7 +316,7 @@ describe("multi-service providers", () => {
       // the same provider's domain service (pre-fix, the provider
       // collapsed to one entry dominated by the domain card).
       const first = body.providers[0]!;
-      expect(first.tokenId).toBe("1");
+      expect(first.agentId).toBe("1");
       expect(first.serviceSlug).toBe("mailboxes");
       expect(["create-mailbox", "check-availability"]).toContain(
         first.match.bestSkillId,
@@ -381,9 +381,9 @@ describe("multi-service providers", () => {
         arguments: { categoryFamily: "communications" },
       });
       const body = parseResult<{
-        providers: Array<{ tokenId: string; serviceSlug: string | null }>;
+        providers: Array<{ agentId: string; serviceSlug: string | null }>;
       }>(result);
-      const mine = body.providers.filter((p) => p.tokenId === "1");
+      const mine = body.providers.filter((p) => p.agentId === "1");
       expect(mine).toHaveLength(1);
       expect(mine[0]!.serviceSlug).toBe("mailboxes");
     } finally {
@@ -463,7 +463,7 @@ describe("multi-service providers", () => {
     await gateway.refresh();
 
     const { json } = await gateway.discover();
-    const provider = json.providers.find((p: any) => p.tokenId === "1");
+    const provider = json.providers.find((p: any) => p.agentId === "1");
     expect(provider.cards).toHaveLength(1);
     expect(provider.cards[0].serviceSlug).toBe("domain-management");
     expect(provider.fetchError).toMatch(/partial card fetch/);

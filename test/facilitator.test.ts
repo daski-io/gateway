@@ -15,7 +15,6 @@ describe("facilitator endpoints", () => {
       providers: [
         {
           tokenId: 2n,
-          erc8004TokenId: 102n,
           name: "Daski Domain Registration",
           priceUsdcSmallest: "15000000",
           categoryFamily: "domains-web",

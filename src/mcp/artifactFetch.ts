@@ -1,8 +1,5 @@
 import { createHash } from "node:crypto";
-import {
-  readBoundedBody,
-  UrlSafetyError,
-} from "../util/urlSafety.js";
+import { readBoundedBody, UrlSafetyError } from "../util/urlSafety.js";
 import { mcpError, mcpJson, type McpToolResult } from "./util.js";
 import {
   challengeResponse,
@@ -13,6 +10,7 @@ import {
   validateCapability,
   type ArtifactCapability,
 } from "./artifactProtocol.js";
+import { sanitizeProviderValue } from "./providerReflection.js";
 
 const ARTIFACT_MAX_BYTES = 5 * 1024 * 1024;
 const ERROR_MAX_BYTES = 64 * 1024;
@@ -44,7 +42,9 @@ async function artifactErrorResponse(res: Response): Promise<McpToolResult> {
   let details: Record<string, unknown> = { status: res.status };
   try {
     const body = parseJson(await readBoundedBody(res, ERROR_MAX_BYTES));
-    if (body !== null) details = { ...details, body };
+    if (body !== null) {
+      details = { ...details, body: sanitizeProviderValue(body) };
+    }
   } catch (error) {
     if ((error as Error).name === "AbortError") {
       return mcpError({
@@ -90,9 +90,12 @@ async function getArtifactResponse(
     clearTimeout(timer);
     const timedOut = controller.signal.aborted;
     return mcpError({
-      code: error instanceof UrlSafetyError ? error.code : timedOut
-        ? "ARTIFACT_TIMEOUT"
-        : "ARTIFACT_UNREACHABLE",
+      code:
+        error instanceof UrlSafetyError
+          ? error.code
+          : timedOut
+            ? "ARTIFACT_TIMEOUT"
+            : "ARTIFACT_UNREACHABLE",
       message: timedOut
         ? `Artifact GET timed out after ${options.timeoutMs}ms.`
         : `Artifact GET failed: ${(error as Error).message}`,
@@ -101,16 +104,11 @@ async function getArtifactResponse(
   }
 }
 
-function isActiveResponse(
-  value: ActiveResponse | McpToolResult,
-): value is ActiveResponse {
+function isActiveResponse(value: ActiveResponse | McpToolResult): value is ActiveResponse {
   return "response" in value;
 }
 
-async function readArtifact(
-  res: Response,
-  args: ArtifactFetchArgs,
-): Promise<McpToolResult> {
+async function readArtifact(res: Response, args: ArtifactFetchArgs): Promise<McpToolResult> {
   const expected = mediaType(args.expectedMimeType ?? "application/pdf");
   const actual = mediaType(res.headers.get("content-type"));
   if (!actual || actual !== expected) {
@@ -130,8 +128,7 @@ async function readArtifact(
     ) {
       return mcpError({
         code: "ARTIFACT_CONTENT_INVALID",
-        message:
-          "The response claimed application/pdf but did not contain a PDF header.",
+        message: "The response claimed application/pdf but did not contain a PDF header.",
       });
     }
     const base64 = Buffer.from(bytes).toString("base64");
@@ -184,7 +181,7 @@ export async function fetchArtifact(
   options: ArtifactFetchOptions,
 ): Promise<McpToolResult> {
   if (args.capability) {
-    const invalid = validateCapability(args.capability, args.taskId);
+    const invalid = validateCapability(args.capability, args.taskId, args.url);
     if (invalid) return invalid;
   }
   const result = await getArtifactResponse(args, options);
@@ -196,7 +193,7 @@ export async function fetchArtifact(
         const body = parseJson(await readBoundedBody(res, ERROR_MAX_BYTES));
         const challenge = extractChallenge(body);
         if (challenge) {
-          return challengeResponse(challenge, args.taskId, !!args.capability);
+          return challengeResponse(challenge, args.taskId, args.url, !!args.capability);
         }
       } catch (error) {
         return mcpError({
@@ -208,8 +205,7 @@ export async function fetchArtifact(
       return mcpError({
         code: "ARTIFACT_AUTH_FAILED",
         message:
-          "Artifact server required authorization but returned no usable " +
-          "capabilityChallenge.",
+          "Artifact server required authorization but returned no usable " + "capabilityChallenge.",
       });
     }
     if (!res.ok) return artifactErrorResponse(res);

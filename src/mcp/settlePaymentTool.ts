@@ -1,24 +1,14 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import {
-  verifyAndSettle,
-  verifyAndSettleWithRegistration,
-} from "../payment/verify.js";
-import type {
-  Hex,
-  PaymentPayload,
-  PaymentRequirements,
-} from "../types.js";
+import { settleChallenge } from "../payment/settlementCoordinator.js";
+import type { Hex, PaymentPayload, PaymentRequirements } from "../types.js";
 import type { McpDeps } from "./server.js";
 import { mcpError, mcpJson, type McpToolResult } from "./util.js";
 
 const HEX_32 = /^0x[0-9a-fA-F]{64}$/;
 const SUPPORTED_NETWORKS = ["base", "base-sepolia"] as const;
 
-export function registerSettlePaymentTool(
-  server: McpServer,
-  deps: McpDeps,
-): void {
+export function registerSettlePaymentTool(server: McpServer, deps: McpDeps): void {
   server.registerTool(
     "daski_settle_payment",
     {
@@ -60,21 +50,16 @@ export function registerSettlePaymentTool(
       },
     },
     async (args): Promise<McpToolResult> => {
-      const requirements =
-        args.paymentRequirements as unknown as PaymentRequirements;
-      const serviceRef = (
-        requirements?.extra as { daski?: { serviceRef?: string } } | undefined
-      )?.daski?.serviceRef;
+      const requirements = args.paymentRequirements as unknown as PaymentRequirements;
+      const serviceRef = (requirements?.extra as { daski?: { serviceRef?: string } } | undefined)
+        ?.daski?.serviceRef;
       if (typeof serviceRef !== "string" || !HEX_32.test(serviceRef)) {
         return mcpError({
           code: "BAD_INPUT",
-          message:
-            "paymentRequirements.extra.daski.serviceRef missing or malformed",
+          message: "paymentRequirements.extra.daski.serviceRef missing or malformed",
         });
       }
-      const challenge = await deps.queries.getChallengeByRef(
-        serviceRef.toLowerCase() as Hex,
-      );
+      const challenge = await deps.queries.getChallengeByRef(serviceRef.toLowerCase() as Hex);
       if (!challenge) {
         return mcpError({
           code: "CHALLENGE_NOT_FOUND",
@@ -82,44 +67,36 @@ export function registerSettlePaymentTool(
         });
       }
 
-      const needsRegistration = challenge.buyerTokenId === 0n;
-      if (needsRegistration && !args.registration) {
+      const coordinated = await settleChallenge(
+        {
+          config: deps.config,
+          reader: deps.reader,
+          queries: deps.queries,
+          fetchAgentCardFn: deps.buyerAgentCardFetch,
+        },
+        {
+          paymentPayload: args.paymentPayload as unknown as PaymentPayload,
+          challenge,
+          registration: args.registration,
+        },
+      );
+      if (coordinated.kind === "registration-required") {
         return mcpError({
           code: "registration_required",
           message:
             "this challenge was issued for an unregistered wallet. Pass a " +
             "signed RegisterAgent payload in registration.",
           recoverable: true,
-          next_action:
-            "Sign the RegisterAgent typed-data with the paying wallet and retry.",
+          next_action: "Sign the RegisterAgent typed-data with the paying wallet and retry.",
         });
       }
-      const result = needsRegistration
-        ? await verifyAndSettleWithRegistration(
-            {
-              payload: args.paymentPayload as unknown as PaymentPayload,
-              challenge,
-            },
-            {
-              agentURI: args.registration!.agentURI,
-              deadline: BigInt(args.registration!.deadline),
-              signature: args.registration!.signature as Hex,
-            },
-            deps.config,
-            deps.reader,
-            deps.queries,
-            new Date(),
-            { fetchAgentCardFn: deps.buyerAgentCardFetch },
-          )
-        : await verifyAndSettle(
-            {
-              payload: args.paymentPayload as unknown as PaymentPayload,
-              challenge,
-            },
-            deps.config,
-            deps.reader,
-            deps.queries,
-          );
+      if (coordinated.kind === "invalid-registration") {
+        return mcpError({
+          code: "invalid_registration",
+          message: coordinated.message,
+        });
+      }
+      const result = coordinated.result;
       if (!result.ok) {
         return mcpError({
           code: result.errorReason,

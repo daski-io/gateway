@@ -26,9 +26,6 @@ export interface DaskiMarketplaceExtension {
   onChainReferences: {
     registryAddress: Hex;
     paymentRouterAddress: Hex;
-    // ERC-8004 agentId. Wire-level name retained for compatibility with
-    // existing Agent Cards / clients; value is the same.
-    erc8004TokenId: string;
     chainId: ChainId;
   };
   categoryFamily: CategoryFamily;
@@ -288,12 +285,6 @@ export interface PaymentPayload {
   scheme: "exact";
   network: "base" | "base-sepolia";
   payload: ExactEvmPayload;
-  // Legacy Daski extension used by the X-PAYMENT-header purchase flow:
-  // the serviceRef travels with the payload so the gateway can look up
-  // the stored challenge. For the canonical x402 facilitator flow
-  // (/verify + /settle), serviceRef comes from paymentRequirements's
-  // extra block, not here — keep it optional so both shapes parse.
-  serviceRef?: Hex;
 }
 
 export interface SettlementResponse {

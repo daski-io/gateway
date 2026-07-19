@@ -4,17 +4,18 @@ import { publicErrorMessage } from "../util/errorWrap.js";
 import { readBoundedJson } from "../util/urlSafety.js";
 import { guardProviderUrl, type Fetcher } from "./a2a.js";
 import { mcpError, mcpJson, type McpToolResult } from "./util.js";
-import {
-  sanitizeProviderTaskEvent,
-  sanitizeProviderValue,
-} from "./providerReflection.js";
+import { sanitizeProviderTaskEvent, sanitizeProviderValue } from "./providerReflection.js";
 
 const STREAM_MAX_BYTES = 4 * 1024 * 1024;
 const STREAM_MAX_EVENTS = 1000;
 
-export interface StreamTaskStatusArgs {
+interface StreamTaskStatusArgs {
   providerA2AUrl: string;
   taskId: string;
+  capability?: {
+    signature: string;
+    authorization: Record<string, unknown>;
+  };
   streamingTimeoutMs?: number;
 }
 
@@ -41,10 +42,7 @@ export async function streamTaskStatus(
   extra: ProgressSink,
   transport: StreamTaskStatusTransport,
 ): Promise<McpToolResult> {
-  const guard = await guardProviderUrl(
-    args.providerA2AUrl,
-    transport.enforceUrlSafety,
-  );
+  const guard = await guardProviderUrl(args.providerA2AUrl, transport.enforceUrlSafety);
   if (guard) return guard;
 
   const timeoutMs = args.streamingTimeoutMs ?? 120_000;
@@ -62,7 +60,10 @@ export async function streamTaskStatus(
         jsonrpc: "2.0",
         id: randomUUID(),
         method: "SubscribeToTask",
-        params: { id: args.taskId },
+        params: {
+          id: args.taskId,
+          ...(args.capability ? { capability: args.capability } : {}),
+        },
       }),
       signal: controller.signal,
       redirect: "manual",
@@ -76,17 +77,16 @@ export async function streamTaskStatus(
           : "PROVIDER_UNREACHABLE",
       message: `Provider unreachable at ${args.providerA2AUrl}`,
       recoverable: true,
-      next_action:
-        "Retry streaming or use daski_get_task_status with stream:false.",
+      next_action: "Retry streaming or use daski_get_task_status with stream:false.",
     });
   }
 
   if (!response.ok) {
     clearTimeout(timer);
-    return unsupported(
-      `Provider returned HTTP ${response.status} on SubscribeToTask`,
-      { status: response.status, providerA2AUrl: args.providerA2AUrl },
-    );
+    return unsupported(`Provider returned HTTP ${response.status} on SubscribeToTask`, {
+      status: response.status,
+      providerA2AUrl: args.providerA2AUrl,
+    });
   }
   const contentType = response.headers.get("content-type") ?? "";
   if (!contentType.toLowerCase().includes("text/event-stream")) {
@@ -118,12 +118,12 @@ export async function streamTaskStatus(
         });
       }
       buffer += decoder.decode(chunk.value, { stream: true });
-      let separator: number;
-      while ((separator = buffer.indexOf("\n\n")) >= 0) {
-        const rawEvent = buffer.slice(0, separator);
-        buffer = buffer.slice(separator + 2);
+      let boundary: EventBoundary | null;
+      while ((boundary = findEventBoundary(buffer)) !== null) {
+        const rawEvent = buffer.slice(0, boundary.index);
+        buffer = buffer.slice(boundary.index + boundary.length);
         const data = rawEvent
-          .split("\n")
+          .split(/\r\n|\r|\n/)
           .filter((line) => line.startsWith("data:"))
           .map((line) => line.slice(5).trimStart())
           .join("\n");
@@ -133,7 +133,7 @@ export async function streamTaskStatus(
         if (parsed.error) {
           return mcpError({
             code: "PROVIDER_ERROR",
-            message: parsed.error.message ?? "stream error",
+            message: sanitizeProviderValue(parsed.error.message ?? "stream error"),
             ...(parsed.error.data !== undefined
               ? {
                   details: {
@@ -164,11 +164,7 @@ export async function streamTaskStatus(
     if ((error as { name?: string }).name !== "AbortError") {
       return mcpError({
         code: "PROVIDER_ERROR",
-        message: publicErrorMessage(
-          "mcp.taskStatus.sse",
-          error,
-          "provider event stream failed",
-        ),
+        message: publicErrorMessage("mcp.taskStatus.sse", error, "provider event stream failed"),
       });
     }
   } finally {
@@ -186,6 +182,16 @@ type StreamEvent = {
   result?: Record<string, unknown>;
   error?: { message?: string; data?: unknown };
 };
+
+interface EventBoundary {
+  index: number;
+  length: number;
+}
+
+function findEventBoundary(buffer: string): EventBoundary | null {
+  const match = /(?:(?:\r\n)|\r|\n){2}/.exec(buffer);
+  return match ? { index: match.index, length: match[0].length } : null;
+}
 
 function parseEvent(data: string): StreamEvent | null {
   try {
@@ -210,15 +216,13 @@ async function nonSseResponse(
     clearTimeout(timer);
   }
   return unsupported(
-    rpc.error?.message ??
-      `Provider returned non-SSE content-type: ${contentType}`,
+    sanitizeProviderValue(
+      rpc.error?.message ?? `Provider returned non-SSE content-type: ${contentType}`,
+    ),
   );
 }
 
-function unsupported(
-  message: string,
-  details?: Record<string, unknown>,
-): McpToolResult {
+function unsupported(message: string, details?: Record<string, unknown>): McpToolResult {
   return mcpError({
     code: "streaming_unsupported",
     message,
@@ -236,9 +240,7 @@ async function emitProgress(
   const token = extra._meta?.progressToken;
   if (token === undefined) return;
   const status = isRecord(event.status) ? event.status : {};
-  const state = normalizeState(
-    typeof status.state === "string" ? status.state : undefined,
-  );
+  const state = normalizeState(typeof status.state === "string" ? status.state : undefined);
   try {
     await extra.sendNotification({
       method: "notifications/progress",
@@ -262,12 +264,10 @@ function streamResult(
   const status = event && isRecord(event.status) ? event.status : {};
   return mcpJson({
     taskId,
-    contextId:
-      event && typeof event.contextId === "string" ? event.contextId : null,
+    contextId: event && typeof event.contextId === "string" ? event.contextId : null,
     state:
-      normalizeState(
-        typeof status.state === "string" ? status.state : undefined,
-      ) ?? (timedOut ? "unknown" : "completed"),
+      normalizeState(typeof status.state === "string" ? status.state : undefined) ??
+      (timedOut ? "unknown" : "completed"),
     finalEvent: sanitizeProviderTaskEvent(event),
     eventCount,
     ...(timedOut ? { timedOut: true } : {}),

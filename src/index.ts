@@ -4,7 +4,6 @@ import { AutoMockChainReader } from "./chain/autoMockReader.js";
 import { createApp } from "./app.js";
 import { ChainEventsIndexer } from "./indexer/chainEvents.js";
 import type { ChainReader } from "./chain/reader.js";
-import type { Hex } from "./types.js";
 import { logger } from "./util/logger.js";
 
 async function main() {
@@ -17,19 +16,12 @@ async function main() {
   // runtimeConfig.LOCAL_PLACEHOLDER_CONTRACTS so EIP-712 signatures the
   // buyer produces verify against the same domain the gateway bakes into
   // PaymentRequirements.
-  const chainMode = process.env.CHAIN_MODE ?? "live";
   let reader: ChainReader;
-  if (chainMode === "mock") {
-    const providerWallet =
-      (process.env.MOCK_PROVIDER_WALLET_ADDRESS as Hex | undefined) ??
-      (("0x" + "11".repeat(20)) as Hex);
-    const providerAgentId = BigInt(process.env.MOCK_PROVIDER_AGENT_ID ?? "1");
-    const providerAgentUri =
-      process.env.MOCK_PROVIDER_AGENT_URI ??
-      "http://localhost:4040/.well-known/agent.json";
-    const defaultBuyerAgentId = BigInt(
-      process.env.MOCK_BUYER_AGENT_ID ?? "99",
-    );
+  if (config.chainMode === "mock") {
+    const providerWallet = config.mockProviderWalletAddress;
+    const providerAgentId = config.mockProviderAgentId;
+    const providerAgentUri = config.mockProviderAgentUri;
+    const defaultBuyerAgentId = config.mockBuyerAgentId;
     reader = new AutoMockChainReader({
       tokenAddress: config.usdcAddress,
       providerWalletAddress: providerWallet,
@@ -72,12 +64,12 @@ async function main() {
   // canonical ERC-8004 ReputationRegistry (mirror.ts logs per-call
   // failures, not per-call disabled states).
   const mirrorEnabled =
-    chainMode !== "mock" && Boolean(config.reputationRegistryAddress);
+    config.chainMode !== "mock" && Boolean(config.reputationRegistryAddress);
   logger.info(
     mirrorEnabled
       ? `canonical ERC-8004 feedback mirror enabled (ReputationRegistry ${config.reputationRegistryAddress})`
       : `canonical ERC-8004 feedback mirror disabled (${
-          chainMode === "mock"
+          config.chainMode === "mock"
             ? "CHAIN_MODE=mock"
             : "REPUTATION_REGISTRY_ADDRESS unset"
         })`,

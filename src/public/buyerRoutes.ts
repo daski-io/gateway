@@ -5,38 +5,26 @@ import {
   type PublicBuyerDetail,
   type PublicBuyerSummary,
 } from "./format.js";
-import {
-  buildServiceNameResolver,
-  mapWithLimit,
-  parseLimit,
-} from "./routeHelpers.js";
+import { buildServiceNameResolver, mapWithLimit, parseLimit } from "./routeHelpers.js";
 import type { PublicRouteContext } from "./context.js";
+import { sanitizeBuyerName } from "../identity/name.js";
 
 const NAME_CONCURRENCY = 8;
 
-export function registerBuyerRoutes(
-  router: Router,
-  context: PublicRouteContext,
-): void {
+export function registerBuyerRoutes(router: Router, context: PublicRouteContext): void {
   const { cache, config } = context;
   router.get("/public/v1/buyers", async (req, res) => {
-    const rows = await context.buyerLeaderboardCache.get(
-      parseLimit(req.query.limit, 25, 100),
-    );
-    const names = await mapWithLimit(
-      rows,
-      NAME_CONCURRENCY,
-      (row) =>
-        row.resolvedName
-          ? Promise.resolve(row.resolvedName)
-          : context.buyerIdentityCache.getName(row.agentId),
-    );
+    const rows = await context.buyerLeaderboardCache.get(parseLimit(req.query.limit, 25, 100));
+    const names = await mapWithLimit(rows, NAME_CONCURRENCY, (row) => {
+      const storedName = sanitizeBuyerName(row.resolvedName);
+      return storedName.ok
+        ? Promise.resolve(storedName.name)
+        : context.buyerIdentityCache.getName(row.agentId);
+    });
     const buyers: PublicBuyerSummary[] = rows.map((row, index) => ({
       agentId: row.agentId.toString(),
       name: names[index] ?? null,
-      totalSpentUsdc: (
-        Number(row.totalSpentAtomic) / 1_000_000
-      ).toFixed(2),
+      totalSpentUsdc: (Number(row.totalSpentAtomic) / 1_000_000).toFixed(2),
       transactionCount: row.transactionCount,
       lastPurchaseAt: row.lastSettledAt.toISOString(),
     }));
@@ -62,14 +50,8 @@ export function registerBuyerRoutes(
       const provider = cache.get(row.providerAgentId);
       return formatChainActivityRow(
         row,
-        provider?.cards.length
-          ? extractAgentCardName(cardsOf(provider)[0]!.agentCard)
-          : null,
-        serviceName(
-          row.providerAgentId,
-          row.serviceId,
-          row.serviceSlug,
-        ),
+        provider?.cards.length ? extractAgentCardName(cardsOf(provider)[0]!.agentCard) : null,
+        serviceName(row.providerAgentId, row.serviceId, row.serviceSlug),
         identity?.name ?? null,
       );
     });

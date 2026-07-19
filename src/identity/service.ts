@@ -2,11 +2,7 @@ import type { ChainReader } from "../chain/reader.js";
 import type { Config } from "../config.js";
 import type { Queries } from "../db/queries.js";
 import type { Eip712TypedData, Hex } from "../types.js";
-import {
-  buildBuyerAgentURI,
-  defaultBuyerName,
-  sanitizeBuyerName,
-} from "../mcp/util.js";
+import { buildBuyerAgentURI, defaultBuyerName, sanitizeBuyerName } from "./name.js";
 import { logErrorWithId } from "../util/errorWrap.js";
 import {
   AgentCardFetchError,
@@ -43,11 +39,7 @@ function isHexAddress(value: unknown): value is Hex {
 }
 
 function isHexBytes(value: unknown): value is Hex {
-  return (
-    typeof value === "string" &&
-    /^0x([0-9a-fA-F]{2})+$/.test(value) &&
-    value.length >= 4
-  );
+  return typeof value === "string" && /^0x([0-9a-fA-F]{2})+$/.test(value) && value.length >= 4;
 }
 
 function fail(
@@ -74,11 +66,7 @@ async function resolveIdentity(
   const hasName = name != null && name !== "";
   const hasAgentURI = agentURI != null && agentURI !== "";
   if (hasName && hasAgentURI) {
-    return fail(
-      400,
-      "NAME_AGENT_URI_CONFLICT",
-      "Pass either 'name' or 'agentURI', not both.",
-    );
+    return fail(400, "NAME_AGENT_URI_CONFLICT", "Pass either 'name' or 'agentURI', not both.");
   }
   if (hasAgentURI) {
     if (typeof agentURI !== "string") {
@@ -89,9 +77,13 @@ async function resolveIdentity(
         ipfsGatewayUrl: deps.config.ipfsGatewayUrl,
         fetchFn: deps.fetchAgentCardFn,
       });
+      const sanitized = sanitizeBuyerName(card.name);
+      if (!sanitized.ok) {
+        return fail(400, "BAD_NAME", sanitized.error);
+      }
       return {
         ok: true,
-        value: { agentURI, resolvedName: card.name },
+        value: { agentURI, resolvedName: sanitized.name },
       };
     } catch (err) {
       if (err instanceof AgentCardFetchError) {
@@ -136,21 +128,12 @@ export async function prepareRegistration(
   now = new Date(),
 ): Promise<IdentityServiceResult<Record<string, unknown>>> {
   if (!isHexAddress(input.walletAddress)) {
-    return fail(
-      400,
-      "BAD_WALLET",
-      "walletAddress must be a 20-byte hex string",
-    );
+    return fail(400, "BAD_WALLET", "walletAddress must be a 20-byte hex string");
   }
   const walletAddress = input.walletAddress.toLowerCase() as Hex;
-  const deadlineSeconds =
-    input.deadlineSeconds == null ? 3600 : Number(input.deadlineSeconds);
+  const deadlineSeconds = input.deadlineSeconds == null ? 3600 : Number(input.deadlineSeconds);
   if (!Number.isSafeInteger(deadlineSeconds) || deadlineSeconds <= 0) {
-    return fail(
-      400,
-      "BAD_DEADLINE",
-      "deadlineSeconds must be a positive integer",
-    );
+    return fail(400, "BAD_DEADLINE", "deadlineSeconds must be a positive integer");
   }
 
   let existingAgentId: bigint;
@@ -167,12 +150,7 @@ export async function prepareRegistration(
     });
   }
 
-  const identity = await resolveIdentity(
-    walletAddress,
-    input.name,
-    input.agentURI,
-    deps,
-  );
+  const identity = await resolveIdentity(walletAddress, input.name, input.agentURI, deps);
   if (!identity.ok) return identity;
 
   let nonce: bigint;
@@ -180,15 +158,11 @@ export async function prepareRegistration(
     nonce = await deps.reader.getRegistrationNonce(walletAddress);
   } catch (err) {
     return fail(502, "CHAIN_READ_FAILED", "chain read failed", {
-      correlationId: logErrorWithId(
-        "prepareRegistration.registrationNonce",
-        err,
-      ),
+      correlationId: logErrorWithId("prepareRegistration.registrationNonce", err),
     });
   }
 
-  const deadline =
-    BigInt(Math.floor(now.getTime() / 1000)) + BigInt(deadlineSeconds);
+  const deadline = BigInt(Math.floor(now.getTime() / 1000)) + BigInt(deadlineSeconds);
   const typedData: Eip712TypedData = {
     domain: {
       name: "Daski AgentIndex",
@@ -242,22 +216,11 @@ export async function submitRegistration(
   if (typeof input.agentURI !== "string") {
     return fail(400, "BAD_AGENT_URI", "agentURI must be a string");
   }
-  if (
-    typeof input.deadline !== "string" ||
-    !/^[1-9][0-9]*$/.test(input.deadline)
-  ) {
-    return fail(
-      400,
-      "BAD_DEADLINE",
-      "deadline must be a positive decimal string",
-    );
+  if (typeof input.deadline !== "string" || !/^[1-9][0-9]*$/.test(input.deadline)) {
+    return fail(400, "BAD_DEADLINE", "deadline must be a positive decimal string");
   }
   if (!isHexBytes(input.signature)) {
-    return fail(
-      400,
-      "BAD_SIGNATURE",
-      "signature must be a non-empty hex string",
-    );
+    return fail(400, "BAD_SIGNATURE", "signature must be a non-empty hex string");
   }
 
   const walletAddress = input.walletAddress.toLowerCase() as Hex;
@@ -275,15 +238,48 @@ export async function submitRegistration(
     });
   }
 
-  let resolvedName: string | null = null;
+  let resolvedName: string;
   try {
     const card = await fetchAgentCard(input.agentURI, {
       ipfsGatewayUrl: deps.config.ipfsGatewayUrl,
       fetchFn: deps.fetchAgentCardFn,
     });
-    resolvedName = card.name;
+    const sanitized = sanitizeBuyerName(card.name);
+    if (!sanitized.ok) {
+      return fail(400, "BAD_NAME", sanitized.error);
+    }
+    resolvedName = sanitized.name;
   } catch (err) {
-    logErrorWithId("submitRegistration.resolveName", err);
+    if (err instanceof AgentCardFetchError) {
+      return fail(400, err.code, err.message);
+    }
+    return fail(502, "AGENT_URI_FETCH_FAILED", "agentURI validation failed", {
+      correlationId: logErrorWithId("submitRegistration.resolveName", err),
+    });
+  }
+
+  try {
+    const budget = await deps.queries.consumeRateLimitBucket(
+      "registration-sponsor:global",
+      60 * 60 * 1000,
+    );
+    if (budget.count > deps.config.registrationSponsorMaxPerHour) {
+      return fail(
+        429,
+        "REGISTRATION_SPONSOR_BUDGET_EXHAUSTED",
+        "The gateway registration sponsorship budget is temporarily exhausted.",
+        { retryAt: budget.resetAt.toISOString() },
+      );
+    }
+  } catch (err) {
+    return fail(
+      503,
+      "REGISTRATION_SPONSOR_UNAVAILABLE",
+      "Registration sponsorship is temporarily unavailable.",
+      {
+        correlationId: logErrorWithId("submitRegistration.reserveSponsorship", err),
+      },
+    );
   }
 
   try {
@@ -293,17 +289,15 @@ export async function submitRegistration(
       deadline: BigInt(input.deadline),
       signature: input.signature,
     });
-    if (resolvedName) {
-      try {
-        await deps.queries.upsertBuyerIdentity({
-          agentId: result.agentId,
-          walletAddress,
-          resolvedName,
-          agentURI: input.agentURI,
-        });
-      } catch (err) {
-        logErrorWithId("submitRegistration.persistIdentity", err);
-      }
+    try {
+      await deps.queries.upsertBuyerIdentity({
+        agentId: result.agentId,
+        walletAddress,
+        resolvedName,
+        agentURI: input.agentURI,
+      });
+    } catch (err) {
+      logErrorWithId("submitRegistration.persistIdentity", err);
     }
     return {
       ok: true,

@@ -46,4 +46,29 @@ describe("rateLimit", () => {
       1000,
     );
   });
+
+  it("uses one shared key for a global budget", async () => {
+    const consumeRateLimitBucket = vi.fn().mockResolvedValue({
+      count: 1,
+      resetAt: new Date(Date.now() + 1000),
+    });
+    const middleware = rateLimit({
+      windowMs: 1000,
+      max: 2,
+      namespace: "global-test",
+      keyScope: "global",
+      store: { consumeRateLimitBucket },
+    });
+    const request = {
+      ip: "203.0.113.7",
+      socket: {},
+    } as Request;
+    const next = vi.fn() as unknown as NextFunction;
+    middleware(request, responseStub().response, next);
+    await vi.waitFor(() => expect(next).toHaveBeenCalledOnce());
+    expect(consumeRateLimitBucket).toHaveBeenCalledWith(
+      "global-test:global",
+      1000,
+    );
+  });
 });

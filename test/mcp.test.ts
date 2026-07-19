@@ -152,13 +152,13 @@ describe("hosted MCP — wallet-agnostic surface", () => {
       });
       const body = parseResult<{
         providers: Array<{
-          tokenId: string;
+          agentId: string;
           agentCardUrl: string;
           legal: Record<string, string>;
         }>;
       }>(result);
       expect(body.providers.length).toBe(1);
-      expect(body.providers[0].tokenId).toBe("2");
+      expect(body.providers[0].agentId).toBe("2");
       expect(body.providers[0].agentCardUrl).toMatch(/^http/);
       expect(body.providers[0].legal).toEqual(expectedLegal(gateway));
     } finally {
@@ -180,13 +180,13 @@ describe("hosted MCP — wallet-agnostic surface", () => {
       const body = parseResult<{
         intent: string;
         providers: Array<{
-          tokenId: string;
+          agentId: string;
           match: { distance: number; bestSkillId: string };
         }>;
       }>(result);
       expect(body.intent).toBe("register a domain");
       expect(body.providers.length).toBeGreaterThanOrEqual(1);
-      expect(body.providers[0].tokenId).toBe("2");
+      expect(body.providers[0].agentId).toBe("2");
       expect(body.providers[0].match.distance).toBeLessThanOrEqual(2);
       expect(typeof body.providers[0].match.bestSkillId).toBe("string");
     } finally {
@@ -279,11 +279,9 @@ describe("hosted MCP — wallet-agnostic surface", () => {
       const first = read.contents[0] as { mimeType?: string; text?: string };
       expect(first.mimeType).toBe("application/json");
       const parsed = JSON.parse(first.text ?? "{}") as {
-        tokenId: string;
         agentId: string;
         legal: Record<string, string>;
       };
-      expect(parsed.tokenId).toBe("2");
       expect(parsed.agentId).toBe("2");
       expect(parsed.legal).toEqual(expectedLegal(gateway));
     } finally {
@@ -291,7 +289,7 @@ describe("hosted MCP — wallet-agnostic surface", () => {
     }
   });
 
-  it("returns a structured error when the resource tokenId is unknown", async () => {
+  it("returns a structured error when the resource agentId is unknown", async () => {
     const { client, transport } = await connectClient(gateway.baseUrl);
     try {
       const read = await client.readResource({ uri: "daski://provider/999" });

@@ -181,6 +181,62 @@ describe("POST /register", () => {
     expect(body.error.message).toBe("registration submission failed");
     expect(typeof body.error.correlationId).toBe("string");
   });
+
+  it("fails closed when the signed agentURI cannot be validated", async () => {
+    const broken = await startTestGateway({
+      buyerAgentCardFetch: async () =>
+        new Response("not found", { status: 404 }),
+    });
+    try {
+      const res = await fetch(`${broken.baseUrl}/register`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          walletAddress: FRESH_WALLET,
+          agentURI: "https://card.example/missing.json",
+          deadline: String(Math.floor(Date.now() / 1000) + 600),
+          signature: STUB_SIG,
+        }),
+      });
+      expect(res.status).toBe(400);
+      expect((await res.json() as any).error.code).toBe(
+        "AGENT_URI_FETCH_FAILED",
+      );
+      expect(broken.mockChain.registrations).toHaveLength(0);
+    } finally {
+      await broken.close();
+    }
+  });
+
+  it("enforces the global registration sponsorship budget", async () => {
+    gateway.config.registrationSponsorMaxPerHour = 1;
+    gateway.mockChain.queueRegistration({
+      kind: "success",
+      agentId: 99n,
+      txHash: REG_TX,
+    });
+    const submit = (walletAddress: Hex) =>
+      fetch(`${gateway.baseUrl}/register`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          walletAddress,
+          agentURI: "ipfs://abc",
+          deadline: String(Math.floor(Date.now() / 1000) + 600),
+          signature: STUB_SIG,
+        }),
+      });
+
+    expect((await submit(FRESH_WALLET)).status).toBe(200);
+    const secondWallet =
+      "0xcccc000000000000000000000000000000000003" as Hex;
+    const second = await submit(secondWallet);
+    expect(second.status).toBe(429);
+    expect((await second.json() as any).error.code).toBe(
+      "REGISTRATION_SPONSOR_BUDGET_EXHAUSTED",
+    );
+    expect(gateway.mockChain.registrations).toHaveLength(1);
+  });
 });
 
 // ── Buyer naming spec — resolution rules ─────────────────────────────────

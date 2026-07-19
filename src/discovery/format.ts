@@ -305,10 +305,8 @@ function extractSkills(
           : undefined,
       requiredFields: meta.requiredFields,
       fulfillmentMode: meta.fulfillmentMode ?? ext?.fulfillmentMode,
-      // §3.2 of daski-mcp-gateway-fix-brief.md — surface the manifest's
-      // optionalFields and the two-call callPhases block so agents can
-      // schema-validate before paying for a round-trip. The provider
-      // already emits both under extensions[uri].skills[skillId].
+      // Surface optional fields and two-call phase metadata so agents can
+      // validate inputs before paying for a provider round trip.
       ...(meta.optionalFields !== undefined && meta.optionalFields !== null
         ? { optionalFields: meta.optionalFields }
         : {}),
@@ -330,9 +328,6 @@ function extractSkills(
  * Flattens a cached provider + its Agent Card into the compact shape the
  * skill's search_services action returns. Drops providers without the
  * marketplace extension.
- *
- * Note: the response key is `tokenId` (historical); the value is the
- * ERC-8004 agentId.
  */
 export function formatForSkillDiscover(
   providers: CachedProvider[],
@@ -350,7 +345,7 @@ export function formatForSkillDiscover(
 
 /**
  * One search/catalog entry per (provider, card). A multi-service provider
- * therefore surfaces once per service — same `tokenId`, distinct `name`,
+ * therefore surfaces once per service — same `agentId`, distinct `name`,
  * `serviceSlug`, `skills[]`, and `providerA2AUrl`. Returns null for cards
  * without the marketplace extension.
  */
@@ -381,7 +376,6 @@ export function formatCardForSkillDiscover(
       false;
 
     const entry: Record<string, unknown> = {
-      tokenId: provider.agentId.toString(),
       agentId: provider.agentId.toString(),
       // Which of the provider's services this entry describes. Skill ids
       // are only unique within a service — pair skillId with this slug
@@ -409,13 +403,8 @@ export function formatCardForSkillDiscover(
       agentCardUrl: provider.agentURI,
       providerA2AUrl,
       legal: buildServiceLegal(marketplace, provider.providerLegal),
-      // §1.7 of daski-mcp-gateway-fix-brief.md — skill descriptions
-      // (now ~1.5–2.5KB each after the 6-element-template rewrite) were
-      // getting clipped at the default 1KB sanitizer cap, hiding the
-      // inputs / capability-flow / next-step blocks that exist for the
-      // agent. Raise the per-string cap inside the skills array so the
-      // operational detail makes it through. Top-level fields keep the
-      // default cap.
+      // Skill descriptions carry operational input and capability-flow
+      // detail, so they use a larger bounded reflection limit.
       skills: sanitizeForLlmReflection(skills, { stringMax: 4000 }),
     };
     if (pricingModel) {
@@ -466,7 +455,6 @@ export function formatForRestDiscover(
   }
   const legal = buildServiceLegal(marketplace, provider.providerLegal);
   return {
-    tokenId: provider.agentId.toString(),
     agentId: provider.agentId.toString(),
     walletAddress: provider.walletAddress,
     agentURI: provider.agentURI,

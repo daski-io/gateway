@@ -127,11 +127,11 @@ export function createDiscoveryRouter(
     });
   });
 
-  router.get("/providers/:tokenId", (req: Request, res: Response) => {
-    let tokenId: bigint;
-    const raw = req.params.tokenId;
+  router.get("/providers/:agentId", (req: Request, res: Response) => {
+    let agentId: bigint;
+    const raw = req.params.agentId;
     try {
-      tokenId = BigInt(String(raw));
+      agentId = BigInt(String(raw));
     } catch {
       res.status(404).json({
         error: {
@@ -141,7 +141,7 @@ export function createDiscoveryRouter(
       });
       return;
     }
-    const provider = cache.get(tokenId);
+    const provider = cache.get(agentId);
     if (!provider || !hasMarketplaceService(provider)) {
       res.status(404).json({
         error: {

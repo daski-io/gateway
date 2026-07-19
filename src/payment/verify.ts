@@ -8,6 +8,7 @@ import {
   fetchAgentCard,
   type FetchAgentCardOptions,
 } from "../identity/fetch-agent-card.js";
+import { sanitizeBuyerName } from "../identity/name.js";
 import { logErrorWithId, publicErrorMessage } from "../util/errorWrap.js";
 import type {
   Hex,
@@ -767,10 +768,14 @@ async function verifyAndSettleWithRegistrationUnlocked(
         ipfsGatewayUrl: config.ipfsGatewayUrl,
         fetchFn: opts.fetchAgentCardFn,
       });
+      const name = sanitizeBuyerName(card.name);
+      if (!name.ok) {
+        throw new Error(`buyer Agent Card name is invalid: ${name.error}`);
+      }
       await queries.upsertBuyerIdentity({
         agentId: event.buyerAgentId,
         walletAddress: payer,
-        resolvedName: card.name,
+        resolvedName: name.name,
         agentURI: registration.agentURI,
       });
     } catch (err) {

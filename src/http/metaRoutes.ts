@@ -28,10 +28,7 @@ function fullDocs(config: Config, cache: DiscoveryCache): string {
     .getAll()
     .map((provider) => {
       const names = cardsOf(provider)
-        .map(
-          (card) =>
-            (card.agentCard as { name?: string }).name ?? "(unnamed)",
-        )
+        .map((card) => (card.agentCard as { name?: string }).name ?? "(unnamed)")
         .join(" + ");
       return `- agentId ${provider.agentId.toString()}: ${names || "(unnamed)"}`;
     })
@@ -55,12 +52,12 @@ function fullDocs(config: Config, cache: DiscoveryCache): string {
     "- daski_settle_payment — settle a signed x402 payload",
     "",
     "Resource:",
-    "- daski://provider/{tokenId} — provider Agent Card and skill metadata",
+    "- daski://provider/{agentId} — provider Agent Card and skill metadata",
     "",
     "## HTTP surface",
     "",
-    "- POST /purchase/:tokenId",
-    "- GET/POST /x402/services/:tokenId/:skillId",
+    "- POST /purchase/:agentId",
+    "- GET/POST /x402/services/:agentId/:skillId",
     "- POST /verify, /settle, /confirm/:paymentId, /register",
     "- GET /register-prep, /confirm-prep/:paymentId, /discover",
     "- GET /public/v1/services, /public/v1/buyers, /public/v1/activity",
@@ -78,22 +75,18 @@ export function createMetaRouter(deps: MetaRoutesDeps): Router {
   const router = Router();
   const skillPath = findSkillPath();
 
-  router.get(
-    ["/skill.md", "/SKILL.md", "/.well-known/skill.md"],
-    (_req, res) => {
-      if (!skillPath) {
-        res.status(500).type("text/plain").send("SKILL.md not bundled");
-        return;
-      }
-      res.type("text/markdown").sendFile(skillPath);
-    },
-  );
+  router.get(["/skill.md", "/SKILL.md", "/.well-known/skill.md"], (_req, res) => {
+    if (!skillPath) {
+      res.status(500).type("text/plain").send("SKILL.md not bundled");
+      return;
+    }
+    res.type("text/markdown").sendFile(skillPath);
+  });
 
   router.get("/health", (_req, res) => {
-    const embedderStatus =
-      embedder?.getStatus?.() ?? {
-        state: embedder ? ("unknown" as const) : ("disabled" as const),
-      };
+    const embedderStatus = embedder?.getStatus?.() ?? {
+      state: embedder ? ("unknown" as const) : ("disabled" as const),
+    };
     res.json({
       status: embedderStatus.state === "degraded" ? "degraded" : "ok",
       version: GATEWAY_VERSION,
@@ -137,9 +130,7 @@ export function createMetaRouter(deps: MetaRoutesDeps): Router {
         serviceRegistry: config.serviceRegistryAddress,
         paymentRouter: config.paymentRouterAddress,
         x402Adapter: config.x402AdapterAddress,
-        ...(config.permitAdapterAddress
-          ? { permitAdapter: config.permitAdapterAddress }
-          : {}),
+        ...(config.permitAdapterAddress ? { permitAdapter: config.permitAdapterAddress } : {}),
         ...(config.approvalAdapterAddress
           ? { approvalAdapter: config.approvalAdapterAddress }
           : {}),
@@ -152,9 +143,7 @@ export function createMetaRouter(deps: MetaRoutesDeps): Router {
         ...(config.validationRegistryAddress
           ? { validationRegistry: config.validationRegistryAddress }
           : {}),
-        ...(config.directAdapterAddress
-          ? { directAdapter: config.directAdapterAddress }
-          : {}),
+        ...(config.directAdapterAddress ? { directAdapter: config.directAdapterAddress } : {}),
         usdc: config.usdcAddress,
         eas: config.easAddress,
       },
@@ -175,21 +164,23 @@ export function createMetaRouter(deps: MetaRoutesDeps): Router {
   });
 
   router.get("/llms.txt", (_req, res) => {
-    res.type("text/markdown").send(
-      [
-        "# Daski Gateway",
-        "",
-        "Daski is a decentralized marketplace where agents pay providers in USDC over A2A.",
-        "",
-        `- MCP endpoint: ${config.publicUrl}${config.mcpPath}`,
-        `- x402 services: ${config.publicUrl}/.well-known/x402-services.json`,
-        `- Chain descriptor: ${config.publicUrl}/.well-known/daski-chain.json`,
-        `- Skill prompt: ${config.publicUrl}/skill.md`,
-        `- Full docs: ${config.publicUrl}/llms-full.txt`,
-        `- Network: ${config.network} (chainId ${config.chainId})`,
-        "",
-      ].join("\n"),
-    );
+    res
+      .type("text/markdown")
+      .send(
+        [
+          "# Daski Gateway",
+          "",
+          "Daski is a decentralized marketplace where agents pay providers in USDC over A2A.",
+          "",
+          `- MCP endpoint: ${config.publicUrl}${config.mcpPath}`,
+          `- x402 services: ${config.publicUrl}/.well-known/x402-services.json`,
+          `- Chain descriptor: ${config.publicUrl}/.well-known/daski-chain.json`,
+          `- Skill prompt: ${config.publicUrl}/skill.md`,
+          `- Full docs: ${config.publicUrl}/llms-full.txt`,
+          `- Network: ${config.network} (chainId ${config.chainId})`,
+          "",
+        ].join("\n"),
+      );
   });
 
   router.get("/llms-full.txt", (_req, res) => {

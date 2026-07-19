@@ -1,7 +1,4 @@
-import express, {
-  type ErrorRequestHandler,
-  type Express,
-} from "express";
+import express, { type ErrorRequestHandler, type Express } from "express";
 import cors from "cors";
 import type { Config } from "./config.js";
 import type { ChainReader } from "./chain/reader.js";
@@ -55,35 +52,58 @@ export interface AppBundle {
   shutdown(): Promise<void>;
 }
 
-function configureMiddleware(
-  app: Express,
-  queries: Queries,
-  config: Config,
-): void {
-  const trustProxy = Number(process.env.TRUST_PROXY ?? 0);
-  if (!Number.isInteger(trustProxy) || trustProxy < 0) {
-    throw new Error("TRUST_PROXY must be a non-negative integer");
-  }
-  app.set("trust proxy", trustProxy);
+function configureMiddleware(app: Express, queries: Queries, config: Config): void {
+  app.set("trust proxy", config.trustProxy);
   app.use(securityHeaders);
   app.use(cors({ origin: "*" }));
   app.use(express.json({ limit: "1mb" }));
 
-  if (process.env.NODE_ENV === "test") return;
+  if (config.nodeEnv === "test") return;
+  const stateChangePaths = [
+    "/purchase",
+    "/verify",
+    "/settle",
+    "/confirm",
+    "/register",
+    "/register-prep",
+    "/x402",
+  ];
   app.use(
-    [
-      "/purchase",
-      "/verify",
-      "/settle",
-      "/confirm",
-      "/register",
-      "/register-prep",
-      "/x402",
-    ],
+    stateChangePaths,
     rateLimit({
       windowMs: 60_000,
       max: 30,
       namespace: "state-change",
+      store: queries,
+    }),
+  );
+  app.use(
+    stateChangePaths,
+    rateLimit({
+      windowMs: 60_000,
+      max: config.stateChangeGlobalMaxPerMinute,
+      namespace: "state-change-global",
+      keyScope: "global",
+      store: queries,
+    }),
+  );
+  const rpcReadPaths = ["/identity/by-wallet", "/eas/nonce", "/confirm-prep"];
+  app.use(
+    rpcReadPaths,
+    rateLimit({
+      windowMs: 60_000,
+      max: 60,
+      namespace: "rpc-read",
+      store: queries,
+    }),
+  );
+  app.use(
+    rpcReadPaths,
+    rateLimit({
+      windowMs: 60_000,
+      max: config.rpcReadMaxPerMinute,
+      namespace: "rpc-read-global",
+      keyScope: "global",
       store: queries,
     }),
   );
@@ -100,15 +120,11 @@ function configureMiddleware(
 
 export async function createApp(options: CreateAppOptions): Promise<AppBundle> {
   const { config, reader } = options;
-  const pool =
-    options.pool ?? createPool({ connectionString: config.databaseUrl });
+  const pool = options.pool ?? createPool({ connectionString: config.databaseUrl });
   const ownsPool = options.pool === undefined;
   await runMigrations(pool);
   const queries = createQueries(pool);
-  const embedder =
-    options.embedder === null
-      ? null
-      : (options.embedder ?? xenovaEmbedder());
+  const embedder = options.embedder === null ? null : (options.embedder ?? xenovaEmbedder());
   const cache = new DiscoveryCache({
     reader,
     whitelist: config.whitelistedAgentIds,
@@ -116,6 +132,9 @@ export async function createApp(options: CreateAppOptions): Promise<AppBundle> {
     maxCardStalenessSeconds: config.cacheMaxStalenessSeconds,
     fetch: options.agentCardFetch,
     agentCardFetchTimeoutMs: options.agentCardFetchTimeoutMs,
+    maxA2AEntries: config.discoveryMaxA2AEntries,
+    fetchConcurrency: config.discoveryFetchConcurrency,
+    refreshDeadlineMs: config.discoveryRefreshDeadlineMs,
     logger,
   });
   void embedder?.warmup?.().catch((error) => {
@@ -126,7 +145,7 @@ export async function createApp(options: CreateAppOptions): Promise<AppBundle> {
   configureMiddleware(app, queries, config);
   app.use(createMetaRouter({ config, cache, embedder }));
   app.use(createDiscoveryRouter(cache, config));
-  app.use(createPurchaseRouter({ config, cache, queries, reader }));
+  app.use(createPurchaseRouter({ config, cache, queries }));
 
   if (config.directAdapterAddress) {
     app.use(
@@ -208,14 +227,20 @@ export async function createApp(options: CreateAppOptions): Promise<AppBundle> {
 
   let expireInterval: NodeJS.Timeout | null = null;
   if (options.startCacheRefreshLoop !== false) {
-    expireInterval = setInterval(() => {
-      void queries.expireStaleChallenges().catch((err) => {
-        logErrorWithId("expireStaleChallenges", err);
-      });
-      void queries.pruneRateLimitBuckets().catch((err) => {
-        logErrorWithId("pruneRateLimitBuckets", err);
-      });
-    }, 5 * 60 * 1000);
+    expireInterval = setInterval(
+      () => {
+        void queries
+          .expireStaleChallenges()
+          .then(() => queries.deleteExpiredChallenges(config.challengeRetentionSeconds))
+          .catch((err) => {
+            logErrorWithId("maintainPaymentChallenges", err);
+          });
+        void queries.pruneRateLimitBuckets().catch((err) => {
+          logErrorWithId("pruneRateLimitBuckets", err);
+        });
+      },
+      5 * 60 * 1000,
+    );
     cache.start();
   }
 

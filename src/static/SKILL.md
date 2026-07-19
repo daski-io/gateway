@@ -599,7 +599,7 @@ will reflect this.
   `daski_search_services` (with or without an `intent` query) to see
   what's available; the user may have asked for something the
   marketplace doesn't carry yet. For full provider details, read the
-  `daski://provider/{tokenId}` MCP resource.
+  `daski://provider/{agentId}` MCP resource.
 - `payment_id_required` — you tried a free ownership-gated skill without
   a `paymentId`. Ask the user which prior purchase this operates on.
 - `MESSAGE_ID_REQUIRED` / `MESSAGE_ID_MISMATCH` from `daski_submit_task`
@@ -660,7 +660,7 @@ User: "Register example.xyz for me."
 ```
 1. wallet.getAddress() → 0xabc...
 2. daski_search_services({ intent: "register a .xyz domain" })
-   → { providers: [{ tokenId: "1", ... }] }
+   → { providers: [{ agentId: "1", ... }] }
 3. daski_buy_service({
      skillId: "register-domain",
      providerTokenId: "1",
