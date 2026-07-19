@@ -244,16 +244,8 @@ notifications.
 
 ---
 
-## 4. Sibling endpoints (optional)
+## 4. Quote endpoint
 
-Two sibling endpoints earn their slot when wrapping the work in the
-A2A task lifecycle is overkill:
-
-- `POST /availability/<serviceSlug>` — synchronous lookup mirror of the
-  `check-availability` skill. Same shape as the A2A path, no JSON-RPC
-  envelope. The gateway's legacy `/availability` proxy targets this.
-  Optional; if you don't ship it, agents reach `check-availability`
-  through `daski_submit_task`.
 - `POST /quote/<serviceSlug>` — live-pricing quote endpoint. Required
   for any skill that advertises `pricingModel.kind: "live"`. The
   gateway's `daski_buy_service` calls this before opening a payment
@@ -261,23 +253,17 @@ A2A task lifecycle is overkill:
 
 ---
 
-## 5. Capability prep (free A2A skill)
+## 5. Capability challenges
 
-If your service has any skill with `requiresCapability: true`, you MUST
-also expose a `prepare-*-capability` free A2A skill that returns the
-EIP-712 typed-data for that capability. The reference provider's
-`prepare-dns-capability` skill is the template:
+If a skill has `requiresCapability: true`, its first unsigned request
+MUST return an in-band capability challenge containing the EIP-712
+typed-data and pre-filled authorization:
 
-- Takes the same fields the capability-gated skill takes.
-- Returns `eip712TypedData` (full struct) + a `capabilityTemplate`
-  (pre-filled `authorization`) in artifacts.
-- Stores no state; the buyer's wallet signs it; the signed pair flows
-  back through the capability-gated skill where you verify it.
-
-The gateway used to host the typed-data builder (legacy
-`/capability-prep/dns` route, removed 2026-05). New providers should
-NOT expect a centralized prep endpoint — the schema lives with the
-skill it authorizes.
+- Return the challenge in the provider error's structured `data`.
+- The buyer signs `eip712TypedData` with its agent wallet.
+- The buyer retries the same request with
+  `capability: { signature, authorization }`.
+- Keep the schema and verification logic with the skill it authorizes.
 
 ---
 
@@ -359,6 +345,3 @@ the canonical example. Read order if you're building a new provider:
    implement this.
 4. `src/db/migrations/` — schema for services, skills, tasks, assets,
    capability nonces.
-
-A future "provider scaffolder" CLI would generate (1) and (4)
-automatically; for now it's a copy-paste-and-rename.

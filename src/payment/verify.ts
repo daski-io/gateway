@@ -15,6 +15,11 @@ import type {
   SettlementResponse,
   StoredChallenge,
 } from "../types.js";
+import {
+  isHex32,
+  isHexAddress,
+  TRANSFER_WITH_AUTHORIZATION_TYPES,
+} from "./protocol.js";
 
 export interface SettleInput {
   payload: PaymentPayload;
@@ -58,17 +63,6 @@ export type VerifyResult =
       payer: Hex;
     };
 
-const TRANSFER_WITH_AUTHORIZATION_TYPES = {
-  TransferWithAuthorization: [
-    { name: "from", type: "address" },
-    { name: "to", type: "address" },
-    { name: "value", type: "uint256" },
-    { name: "validAfter", type: "uint256" },
-    { name: "validBefore", type: "uint256" },
-    { name: "nonce", type: "bytes32" },
-  ],
-} as const;
-
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000" as Hex;
 
 // 10-second safety margin: if the buyer's signed authorization is about to
@@ -84,14 +78,6 @@ function parseSignature(sig: Hex): { v: number; r: Hex; s: Hex } {
   let v = bytes[64];
   if (v < 27) v += 27;
   return { v, r, s };
-}
-
-function isHex66(x: string): x is Hex {
-  return /^0x[0-9a-fA-F]{64}$/.test(x);
-}
-
-function isHex42(x: string): x is Hex {
-  return /^0x[0-9a-fA-F]{40}$/.test(x);
 }
 
 function fail(
@@ -309,9 +295,9 @@ export async function verifyPaymentPayload(
     return failVerify(400, "invalid_payload", "missing authorization or signature");
   }
   if (
-    !isHex42(auth.from) ||
-    !isHex42(auth.to) ||
-    !isHex66(auth.nonce) ||
+    !isHexAddress(auth.from) ||
+    !isHexAddress(auth.to) ||
+    !isHex32(auth.nonce) ||
     typeof auth.value !== "string" ||
     typeof auth.validAfter !== "string" ||
     typeof auth.validBefore !== "string"

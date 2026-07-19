@@ -24,21 +24,7 @@ import {
   resolveServiceSlug,
   resolveServiceVersion,
 } from "../discovery/serviceIdentity.js";
-
-// EIP-3009 TransferWithAuthorization — the same struct verifyAndSettle
-// recovers against. Embedded inline in the 402 response so any wallet
-// that supports generic EIP-712 signing can sign without knowing Daski's
-// schemas.
-const TRANSFER_WITH_AUTHORIZATION_TYPES = {
-  TransferWithAuthorization: [
-    { name: "from", type: "address" },
-    { name: "to", type: "address" },
-    { name: "value", type: "uint256" },
-    { name: "validAfter", type: "uint256" },
-    { name: "validBefore", type: "uint256" },
-    { name: "nonce", type: "bytes32" },
-  ],
-} as const;
+import { TRANSFER_WITH_AUTHORIZATION_TYPES } from "./protocol.js";
 
 /**
  * Builds the informational rail list advertised to buyers. X402 is always
@@ -562,9 +548,8 @@ export async function issuePaymentRequirements(
           `Skill '${params.skillId}' is free (ownership-gated). Do not ` +
           `issue a new payment. Reuse the paymentId from the original ` +
           `asset purchase (e.g. register-domain) and call daski_submit_task ` +
-          `directly — if the skill's requiresCapability flag is set, first ` +
-          `fetch and sign the EIP-712 capability via the provider's ` +
-          `'prepare-dns-capability' (or equivalent) free A2A skill.`,
+          `directly. If requiresCapability is set, the first authenticated ` +
+          `submission returns an in-band EIP-712 capability challenge to sign.`,
         status: 400,
       };
     }

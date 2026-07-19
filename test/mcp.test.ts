@@ -1008,6 +1008,24 @@ describe("hosted MCP — wallet-agnostic surface", () => {
   // the test below exercises that flow.
 
   it("daski_submit_task passes inline artifacts + statusMessage through (open-free sync path)", async () => {
+    gateway.registerProvider({
+      tokenId: 2n,
+      name: "Domain Reg",
+      priceUsdcSmallest: "15000000",
+      categoryFamily: "domains-web",
+      serviceType: "domain-management",
+      skills: [
+        {
+          id: "check-availability",
+          metadata: {
+            paymentRequired: false,
+            requiresAssetOwnership: false,
+            requiresCapability: false,
+          },
+        },
+      ],
+    });
+    await gateway.refresh();
     gateway.mockProvider.setSyncResult({
       id: "qa-test-1",
       statusMessage: {
@@ -1115,12 +1133,10 @@ describe("hosted MCP — wallet-agnostic surface", () => {
     }
   });
 
-  it("daski_buy_service: refuses to emit a plan when requiresCapability=true but capabilityType is missing", async () => {
-    // Regression for the audit finding: previously the plan-builder
-    // silently omitted the prepare-capability step when the provider
-    // declared `requiresCapability: true` without a `capabilityType`,
-    // leaving the buyer with a plan that says "pass capability" but
-    // no upstream step to produce one.
+  it("daski_buy_service builds an in-band capability plan without catalog capabilityType", async () => {
+    // The provider returns the authoritative typed-data in its in-band
+    // capability challenge, so the catalog does not need to duplicate
+    // the capability's Solidity primary type.
     gateway.registerProvider({
       tokenId: 2n,
       name: "Misconfigured Reg",
@@ -1134,7 +1150,6 @@ describe("hosted MCP — wallet-agnostic surface", () => {
             paymentRequired: false,
             requiresAssetOwnership: true,
             requiresCapability: true,
-            // capabilityType deliberately omitted to exercise the guard.
             requiredFields: ["domain", "recordType", "recordName", "recordContent"],
           },
         },
@@ -1144,29 +1159,33 @@ describe("hosted MCP — wallet-agnostic surface", () => {
 
     const { client, transport } = await connectClient(gateway.baseUrl);
     try {
-      const result = await client.callTool({
-        name: "daski_buy_service",
-        arguments: {
-          skillId: "set-dns-record",
-          providerTokenId: "2",
-          walletAddress: gateway.buyerAddress,
-          buyerTokenId: "5",
-          paymentId: "42",
-          serviceArgs: {
-            domain: "owned.xyz",
-            recordType: "A",
-            recordName: "@",
-            recordContent: "1.2.3.4",
+      const body = parseResult<{
+        kind: string;
+        requiresCapability: boolean;
+        plan: { steps: Array<{ hint: string }> };
+      }>(
+        await client.callTool({
+          name: "daski_buy_service",
+          arguments: {
+            skillId: "set-dns-record",
+            providerTokenId: "2",
+            walletAddress: gateway.buyerAddress,
+            buyerTokenId: "5",
+            paymentId: "42",
+            serviceArgs: {
+              domain: "owned.xyz",
+              recordType: "A",
+              recordName: "@",
+              recordContent: "1.2.3.4",
+            },
           },
-        },
-      });
-      const r = result as ToolResultContent;
-      expect(r.isError).toBe(true);
-      const err = JSON.parse(
-        (r.content[0]! as { type: "text"; text: string }).text,
+        }),
       );
-      expect(err.code).toBe("provider_missing_capability_type");
-      expect(err.details.skillId).toBe("set-dns-record");
+      expect(body.kind).toBe("free");
+      expect(body.requiresCapability).toBe(true);
+      expect(body.plan.steps.some((step) =>
+        step.hint.includes("provider-issued capability"),
+      )).toBe(true);
     } finally {
       await transport.close();
     }
@@ -1574,6 +1593,24 @@ describe("hosted MCP — wallet-agnostic surface", () => {
     // The provider's ENVELOPE_AUTH_REQUIRED error embeds a ready-to-sign
     // envelopeAuthChallenge in error.data; dropping it strands the agent
     // with a message that references a payload it can't see.
+    gateway.registerProvider({
+      tokenId: 2n,
+      name: "Domain Reg",
+      priceUsdcSmallest: "15000000",
+      categoryFamily: "domains-web",
+      serviceType: "domain-management",
+      skills: [
+        {
+          id: "check-availability",
+          metadata: {
+            paymentRequired: false,
+            requiresAssetOwnership: false,
+            requiresCapability: false,
+          },
+        },
+      ],
+    });
+    await gateway.refresh();
     gateway.mockProvider.setNextA2AError({
       code: -32011,
       message:
@@ -1617,6 +1654,25 @@ describe("hosted MCP — wallet-agnostic surface", () => {
     // challenge needs a NEW envelope. The gateway pre-mints it so the
     // agent signs capability + next envelope in one pass instead of
     // discovering ENVELOPE_REPLAY the hard way.
+    gateway.registerProvider({
+      tokenId: 2n,
+      name: "Agent Mailboxes",
+      priceUsdcSmallest: "9990000",
+      categoryFamily: "communications",
+      serviceType: "agent-mailbox",
+      skills: [
+        {
+          id: "change-password",
+          metadata: {
+            paymentRequired: false,
+            requiresAssetOwnership: true,
+            requiresCapability: true,
+            capabilityType: "MailboxPasswordResetAuthorization",
+          },
+        },
+      ],
+    });
+    await gateway.refresh();
     gateway.mockProvider.setSyncResult({
       id: "task-cap-1",
       state: "input-required",

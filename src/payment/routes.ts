@@ -17,6 +17,7 @@ import type {
   PaymentRequirementsResponse,
   SettlementResponse,
 } from "../types.js";
+import { decodeBase64JsonObject } from "./protocol.js";
 
 export interface PurchaseDeps {
   config: Config;
@@ -27,14 +28,6 @@ export interface PurchaseDeps {
 
 function encodePaymentResponse(response: SettlementResponse): string {
   return Buffer.from(JSON.stringify(response)).toString("base64");
-}
-
-function decodePaymentHeader(header: string): PaymentPayload | null {
-  try {
-    return JSON.parse(Buffer.from(header, "base64").toString("utf8")) as PaymentPayload;
-  } catch {
-    return null;
-  }
 }
 
 function sendError(res: Response, status: number, message: string) {
@@ -206,7 +199,7 @@ export function createPurchaseRouter(deps: PurchaseDeps): Router {
     }
 
     // ── Path B: X-PAYMENT present → verify + settle ────────────────
-    const payload = decodePaymentHeader(xPayment);
+    const payload = decodeBase64JsonObject(xPayment) as PaymentPayload | null;
     if (!payload) {
       sendError(res, 400, "X-PAYMENT header is not valid base64 JSON");
       return;

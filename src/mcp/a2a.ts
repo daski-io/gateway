@@ -117,6 +117,7 @@ export async function a2aPostJson<T>(
       validated,
     );
   } catch (err) {
+    clearTimeout(timer);
     const e = err as { name?: string };
     const timedOut = e.name === "AbortError";
     return {
@@ -126,11 +127,10 @@ export async function a2aPostJson<T>(
         ? "provider request timed out"
         : "provider request failed",
     };
-  } finally {
-    clearTimeout(timer);
   }
 
   if (opts.failOnNonOk && !res.ok) {
+    clearTimeout(timer);
     return {
       ok: false,
       reason: "http_error",
@@ -143,10 +143,19 @@ export async function a2aPostJson<T>(
   try {
     body = await readBoundedJson<T>(res, opts.maxBytes);
   } catch (err) {
+    if ((err as { name?: string }).name === "AbortError") {
+      return {
+        ok: false,
+        reason: "timeout",
+        message: "provider request timed out",
+        status: res.status,
+      };
+    }
     if (err instanceof UrlSafetyError) {
       return {
         ok: false,
-        reason: "oversized",
+        reason:
+          err.code === "RESPONSE_TOO_LARGE" ? "oversized" : "non_json",
         message: err.message,
         status: res.status,
       };
@@ -157,6 +166,8 @@ export async function a2aPostJson<T>(
       message: `non-JSON body (status ${res.status})`,
       status: res.status,
     };
+  } finally {
+    clearTimeout(timer);
   }
   return { ok: true, status: res.status, body, raw: res };
 }

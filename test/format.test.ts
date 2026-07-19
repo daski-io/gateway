@@ -77,8 +77,10 @@ describe("formatForSkillDiscover — skill extraction", () => {
             "register-domain": {
               paymentRequired: true,
               variablePricing: true,
-              baseAmount: 10980000,
-              priceList: { ".xyz": 2980000, ".io": 39990000 },
+              pricing: {
+                baseAmount: 10980000,
+                priceList: { ".xyz": 2980000, ".io": 39990000 },
+              },
               requiredFields: ["domain"],
               requiresAssetOwnership: false,
               requiresCapability: false,
@@ -320,7 +322,10 @@ describe("formatForSkillDiscover — skill extraction", () => {
         [DASKI_A2A_EXTENSION_URI]: {
           ...BASE_EXT,
           skills: {
-            conflict: { paymentRequired: false, baseAmount: 999999 },
+            conflict: {
+              paymentRequired: false,
+              pricing: { baseAmount: 999999 },
+            },
           },
         },
       },

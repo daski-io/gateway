@@ -1,10 +1,6 @@
 import {
-  BaseError,
-  ContractFunctionRevertedError,
-  ContractFunctionZeroDataError,
   createPublicClient,
   createWalletClient,
-  decodeEventLog,
   http,
   parseAbiItem,
   parseEventLogs,
@@ -14,40 +10,31 @@ import { base, baseSepolia } from "viem/chains";
 import {
   agentIndexAbi,
   directTransferAdapterAbi,
-  easAbi,
-  identityRegistryAbi,
   knownErrorAbis,
   paymentRouterAbi,
-  providerRegistryAbi,
-  reputationRegistryAbi,
-  reputationStorageAbi,
   usdcAbi,
   x402AdapterAbi,
 } from "./abis.js";
 import type {
-  BuyerConfirmationLabel,
-  BuyerReputation,
   ChainReader,
-  ConfirmationDelegationInput,
-  ConfirmationResult,
   DirectAttributionInput,
-  FeedbackInput,
-  FeedbackResult,
   PaymentRouterRecord,
   PaymentSettledEvent,
   PaymentSettledEventLog,
-  ProviderReputation,
   RegisterBySigInput,
   RegisterBySigResult,
-  ReputationRecord,
-  ServiceReputation,
   SettleWithRegistrationInput,
   SettleWithRegistrationResult,
   SettlementInput,
   SettlementResult,
-  TransactionOutcome,
 } from "./reader.js";
 import type { ChainId, Hex } from "../types.js";
+import { decodeRevertReason } from "./viemErrors.js";
+import { createIdentityMethods } from "./viemIdentity.js";
+import { createReputationReadMethods } from "./viemReputationRead.js";
+import { createFeedbackMethods } from "./viemFeedback.js";
+import { createConfirmationMethods } from "./viemConfirmation.js";
+export { decodeRevertReason } from "./viemErrors.js";
 
 export interface ViemReaderOptions {
   rpcUrl: string;
@@ -84,110 +71,7 @@ function chainForId(chainId: ChainId) {
   return chainId === 8453 ? base : baseSepolia;
 }
 
-/**
- * Pull the Solidity revert reason out of a viem error.
- *
- * Without this, every on-chain failure surfaces as the generic message
- * the caller threw (e.g. "adapter settle reverted") with no hint at the
- * underlying cause. ContractFunctionRevertedError carries:
- *   - `reason`        — Solidity require/revert STRING
- *   - `data`          — decoded custom error { errorName, args } when the
- *                       error fragment is in the simulate-time ABI
- *                       (see knownErrorAbis)
- *   - `signature`/`raw` — the 4-byte selector / raw bytes when the ABI
- *                       didn't include a matching error fragment
- *   - `shortMessage`  — viem's prose summary, sometimes already names a
- *                       decoded custom error
- *
- * We prefer the most specific available form. Walking the BaseError cause
- * chain finds the revert even when nested inside
- * ContractFunctionExecutionError or EstimateGasExecutionError.
- *
- * ZeroData reverts (out-of-gas, bare `revert()`, missing returndata) used
- * to fall through here as the bare cause-chain message. We surface them
- * explicitly so the caller can distinguish "the contract told us no" from
- * "the EVM ran out of gas mid-call".
- *
- * Falls back to shortMessage / message for non-revert chain errors
- * (RPC outage, signer issues) so callers always get *something* useful.
- */
-export function decodeRevertReason(err: unknown): string {
-  if (err instanceof BaseError) {
-    const revert = err.walk(
-      (e) =>
-        e instanceof ContractFunctionRevertedError ||
-        e instanceof ContractFunctionZeroDataError,
-    );
-    if (revert instanceof ContractFunctionRevertedError) {
-      // Solidity require / revert("reason") — clearest form.
-      if (revert.reason) return revert.reason;
-      // Custom error decoded against the simulate-time ABI. Format as
-      // `ErrorName(arg1, arg2)` so the caller sees a typed name instead
-      // of "execution reverted".
-      const data = revert.data;
-      if (data?.errorName) {
-        const args = data.args
-          ? Array.from(data.args).map(formatErrorArg).join(", ")
-          : "";
-        return args ? `${data.errorName}(${args})` : `${data.errorName}()`;
-      }
-      // No matching error fragment in the ABI but we do have raw bytes:
-      // surface the 4-byte selector at least, so the caller can grep.
-      if (revert.signature) return `unknown error ${revert.signature}`;
-      if (revert.raw && revert.raw !== "0x")
-        return `unknown error ${revert.raw.slice(0, 10)}`;
-      // ContractFunctionRevertedError with no reason / data / signature /
-      // raw is the shape viem produces when simulation hits the supplied
-      // gas budget mid-call (the EVM returns empty returndata). Every
-      // entrypoint in this file passes an explicit `gas` arg, so this
-      // case is almost always "the budget was too low for this code
-      // path", not "the contract genuinely reverted with no message".
-      // Naming OOG explicitly saves the next debugger from chasing
-      // signature mismatches that aren't there.
-      return "execution reverted with no data (likely out-of-gas — the simulation gas budget was too low for this call)";
-    }
-    if (revert instanceof ContractFunctionZeroDataError) {
-      // Bare revert() or out-of-gas — the call returned no data so there
-      // is no string to decode. Common with OOG on tight gas budgets.
-      return "execution reverted with no data (out-of-gas or bare revert)";
-    }
-    // No typed revert in the cause chain. This is what happens when an
-    // RPC returns an error response that viem wraps as a generic
-    // ContractFunctionExecutionError or CallExecutionError without a
-    // decodable revert payload — common on Base Sepolia's public RPC
-    // when the upstream node truncates returndata. shortMessage alone
-    // here is usually the bare phrase "Execution reverted." with no
-    // hint. Append err.details (the raw RPC error string) and the
-    // cause's message when present so the caller still has something
-    // to grep / paste into a tracer.
-    const short = err.shortMessage ?? err.message;
-    const details = (err as { details?: unknown }).details;
-    const cause = (err as { cause?: { message?: string } }).cause;
-    const extras: string[] = [];
-    if (typeof details === "string" && details && details !== short) {
-      extras.push(details);
-    }
-    if (cause?.message && cause.message !== short && cause.message !== details) {
-      extras.push(cause.message);
-    }
-    return extras.length > 0 ? `${short} (${extras.join("; ")})` : short;
-  }
-  return err instanceof Error ? err.message : String(err);
-}
-
-function formatErrorArg(arg: unknown): string {
-  if (typeof arg === "bigint") return arg.toString();
-  if (typeof arg === "string") return arg;
-  if (arg === null || arg === undefined) return String(arg);
-  try {
-    return JSON.stringify(arg, (_k, v) =>
-      typeof v === "bigint" ? v.toString() : v,
-    );
-  } catch {
-    return String(arg);
-  }
-}
-
+/** Compose the contract-specific viem adapters into the ChainReader API. */
 export function createViemChainReader(opts: ViemReaderOptions): ChainReader {
   const chain = chainForId(opts.chainId);
   const transport = http(opts.rpcUrl);
@@ -199,85 +83,10 @@ export function createViemChainReader(opts: ViemReaderOptions): ChainReader {
   const routerAddress = opts.paymentRouterAddress;
   const adapterAddress = opts.x402AdapterAddress;
   const usdcAddress = opts.usdcAddress;
-  const easAddress = opts.easAddress;
   const reputationStorageAddress = opts.reputationStorageAddress;
 
-  // EAS's Attested event — referenced to pull the UID out of the receipt.
-  // Signature is the canonical one from eas-contracts (indexed recipient,
-  // attester, uid; non-indexed schema).
-  const EAS_ATTESTED_EVENT = parseAbiItem(
-    "event Attested(address indexed recipient, address indexed attester, bytes32 uid, bytes32 indexed schemaUID)",
-  );
-
-  function requireReputationRegistry(): Hex {
-    if (!opts.reputationRegistryAddress) {
-      throw new Error(
-        "REPUTATION_REGISTRY_ADDRESS is not configured — canonical " +
-          "feedback mirroring unavailable",
-      );
-    }
-    return opts.reputationRegistryAddress;
-  }
-
   return {
-    async getProviderCount() {
-      return (await publicClient.readContract({
-        address: opts.providerRegistryAddress,
-        abi: providerRegistryAbi,
-        functionName: "getProviderCount",
-      })) as bigint;
-    },
-
-    async getProviderIdAt(index: bigint) {
-      return (await publicClient.readContract({
-        address: opts.providerRegistryAddress,
-        abi: providerRegistryAbi,
-        functionName: "providerIds",
-        args: [index],
-      })) as bigint;
-    },
-
-    async getProvider(agentId: bigint) {
-      return (await publicClient.readContract({
-        address: opts.providerRegistryAddress,
-        abi: providerRegistryAbi,
-        functionName: "getProvider",
-        args: [agentId],
-      })) as {
-        agentId: bigint;
-        registrationTime: bigint;
-        isActive: boolean;
-      };
-    },
-
-    async getAgentURI(agentId: bigint) {
-      return (await publicClient.readContract({
-        address: opts.identityRegistryAddress,
-        abi: identityRegistryAbi,
-        functionName: "tokenURI",
-        args: [agentId],
-      })) as string;
-    },
-
-    // Resolves via the Daski AgentIndex (verified against the canonical
-    // registry; stale bindings return 0).
-    async agentOfWallet(wallet: Hex) {
-      return (await publicClient.readContract({
-        address: opts.agentIndexAddress,
-        abi: agentIndexAbi,
-        functionName: "resolve",
-        args: [wallet],
-      })) as bigint;
-    },
-
-    async getAgentWallet(agentId: bigint) {
-      return (await publicClient.readContract({
-        address: opts.identityRegistryAddress,
-        abi: identityRegistryAbi,
-        functionName: "getAgentWallet",
-        args: [agentId],
-      })) as Hex;
-    },
+    ...createIdentityMethods(publicClient, opts),
 
     async getPaymentRefundedAmount(paymentId: bigint) {
       return (await publicClient.readContract({
@@ -311,15 +120,6 @@ export function createViemChainReader(opts: ViemReaderOptions): ChainReader {
       // so it doubles as the "no such payment" sentinel.
       if (raw.providerAgentId === 0n) return null;
       return raw;
-    },
-
-    async getRegistrationNonce(wallet: Hex) {
-      return (await publicClient.readContract({
-        address: opts.agentIndexAddress,
-        abi: agentIndexAbi,
-        functionName: "registrationNonce",
-        args: [wallet],
-      })) as bigint;
     },
 
     async authorizationUsed(authorizer: Hex, nonce: Hex) {
@@ -697,104 +497,13 @@ export function createViemChainReader(opts: ViemReaderOptions): ChainReader {
       };
     },
 
-    async submitBuyerConfirmation(
-      input: ConfirmationDelegationInput,
-    ): Promise<ConfirmationResult> {
-      const request = {
-        schema: input.schema,
-        data: {
-          recipient: input.recipient,
-          expirationTime: input.expirationTime,
-          revocable: input.revocable,
-          refUID: input.refUID,
-          data: input.data,
-          value: input.value,
-        },
-        signature: {
-          v: input.signature.v,
-          r: input.signature.r,
-          s: input.signature.s,
-        },
-        attester: input.attester,
-        deadline: input.deadline,
-      } as const;
-
-      // Explicit gas for the same sepolia.base.org RPC reason documented
-      // above (see settlePayment). attestByDelegation fits comfortably in
-      // 500k; the resolver hop adds at most ~100k on top of the EAS attest.
-      //
-      // Simulate first — see settlePayment. Common reverts here are
-      // resolver-side checks (paymentId not settled, attester != buyer,
-      // double-attest) and EAS-side signature/deadline failures; the
-      // resolver's revert string is genuinely useful for the caller.
-      let attestRequest;
-      try {
-        const sim = await publicClient.simulateContract({
-          address: easAddress,
-          abi: [...easAbi, ...knownErrorAbis],
-          functionName: "attestByDelegation",
-          args: [request],
-          account,
-          chain,
-          gas: 600_000n,
-        });
-        attestRequest = sim.request;
-      } catch (err) {
-        throw new Error(
-          `EAS.attestByDelegation reverted: ${decodeRevertReason(err)}`,
-        );
-      }
-
-      const hash = await walletClient.writeContract(attestRequest);
-
-      const receipt = await publicClient.waitForTransactionReceipt({ hash });
-      if (receipt.status !== "success") {
-        throw new Error(
-          `EAS.attestByDelegation reverted on broadcast despite passing simulation (tx ${hash})`,
-        );
-      }
-
-      // Pull the UID out of the EAS Attested event emitted in the same tx.
-      const easLogs = receipt.logs.filter(
-        (l) => l.address.toLowerCase() === easAddress.toLowerCase(),
-      );
-      let uid: Hex | null = null;
-      for (const log of easLogs) {
-        try {
-          const decoded = decodeEventLog({
-            abi: [EAS_ATTESTED_EVENT],
-            data: log.data,
-            topics: log.topics as [Hex, ...Hex[]],
-          }) as { args: { uid: Hex; attester: Hex; schemaUID: Hex } };
-          if (
-            decoded.args.attester.toLowerCase() === input.attester.toLowerCase() &&
-            decoded.args.schemaUID.toLowerCase() === input.schema.toLowerCase()
-          ) {
-            uid = decoded.args.uid;
-            break;
-          }
-        } catch {
-          // not an Attested event; keep scanning
-        }
-      }
-      if (!uid) {
-        throw new Error("EAS Attested event not found after attestByDelegation");
-      }
-
-      return {
-        transactionHash: hash,
-        attestationUid: uid,
-      };
-    },
-
-    async getEasAttesterNonce(attester: Hex): Promise<bigint> {
-      return (await publicClient.readContract({
-        address: easAddress,
-        abi: easAbi,
-        functionName: "getNonce",
-        args: [attester],
-      })) as bigint;
-    },
+    ...createConfirmationMethods({
+      publicClient,
+      walletClient,
+      account,
+      chain,
+      easAddress: opts.easAddress,
+    }),
 
     async getBlockNumber(): Promise<bigint> {
       return await publicClient.getBlockNumber();
@@ -843,212 +552,13 @@ export function createViemChainReader(opts: ViemReaderOptions): ChainReader {
       });
     },
 
-    async getProviderReputation(
-      agentId: bigint,
-    ): Promise<ProviderReputation | null> {
-      if (!reputationStorageAddress) return null;
-      const result = (await publicClient.readContract({
-        address: reputationStorageAddress,
-        abi: reputationStorageAbi,
-        functionName: "getProviderStats",
-        args: [agentId],
-      })) as readonly [bigint, bigint, bigint, bigint, bigint];
-      return {
-        completed: result[0],
-        failed: result[1],
-        canceled: result[2],
-        confirmed: result[3],
-        notConfirmed: result[4],
-      };
-    },
-
-    async getBuyerReputation(
-      agentId: bigint,
-    ): Promise<BuyerReputation | null> {
-      if (!reputationStorageAddress) return null;
-      const result = (await publicClient.readContract({
-        address: reputationStorageAddress,
-        abi: reputationStorageAbi,
-        functionName: "getBuyerStats",
-        args: [agentId],
-      })) as readonly [bigint, bigint, bigint];
-      return {
-        transactions: result[0],
-        confirmed: result[1],
-        notConfirmed: result[2],
-      };
-    },
-
-    async getServiceReputation(
-      serviceId: Hex,
-    ): Promise<ServiceReputation | null> {
-      if (!reputationStorageAddress) return null;
-      const result = (await publicClient.readContract({
-        address: reputationStorageAddress,
-        abi: reputationStorageAbi,
-        functionName: "getServiceStats",
-        args: [serviceId],
-      })) as readonly [bigint, bigint, bigint, bigint, bigint, bigint];
-      return {
-        completed: result[0],
-        failed: result[1],
-        canceled: result[2],
-        confirmed: result[3],
-        notConfirmed: result[4],
-        totalRefunded: result[5],
-      };
-    },
-
-    async getReputationRecord(
-      paymentId: bigint,
-    ): Promise<ReputationRecord | null> {
-      if (!reputationStorageAddress) return null;
-      const raw = (await publicClient.readContract({
-        address: reputationStorageAddress,
-        abi: reputationStorageAbi,
-        functionName: "getRecord",
-        args: [paymentId],
-      })) as {
-        paymentId: bigint;
-        providerAgentId: bigint;
-        buyerAgentId: bigint;
-        serviceId: Hex;
-        outcome: number;
-        confirmation: number;
-        fulfillmentTime: bigint;
-        outcomeTimestamp: bigint;
-        confirmationTimestamp: bigint;
-        outcomeRecorded: boolean;
-      };
-      // Contract returns a zero-init struct for unknown paymentIds rather
-      // than reverting. Distinguish "no record" from "record exists, no
-      // outcome yet" so callers don't have to.
-      if (raw.paymentId === 0n) return null;
-      return {
-        paymentId: raw.paymentId,
-        providerAgentId: raw.providerAgentId,
-        buyerAgentId: raw.buyerAgentId,
-        serviceId: raw.serviceId,
-        outcome: raw.outcomeRecorded ? OUTCOME_LABELS[raw.outcome] ?? null : null,
-        confirmation: CONFIRMATION_LABELS[raw.confirmation] ?? "Pending",
-        fulfillmentSeconds: raw.outcomeRecorded ? raw.fulfillmentTime : null,
-        outcomeTimestamp: raw.outcomeTimestamp,
-        confirmationTimestamp: raw.confirmationTimestamp,
-        outcomeRecorded: raw.outcomeRecorded,
-      };
-    },
-
-    // ── Canonical ERC-8004 ReputationRegistry (feedback mirror) ─────────
-
-    async giveFeedback(input: FeedbackInput): Promise<FeedbackResult> {
-      const registry = requireReputationRegistry();
-
-      // Explicit gas for the same sepolia.base.org reason documented in
-      // settlePayment. giveFeedback writes one FeedbackRecord (two string
-      // SSTOREs for tags) plus the first-client list push and emits
-      // NewFeedback with the URI/hash payload — ~120-180k in practice;
-      // 300k leaves headroom for long tags/URIs.
-      //
-      // Simulate first — see settlePayment. The revert worth surfacing
-      // here is the spec's arms-length rule ("owner cannot self-review" /
-      // "operator cannot review" / "agentWallet cannot self-review"): if
-      // the facilitator wallet ever controls the provider agent, the
-      // mirror is EXPECTED to fail — the caller logs and moves on.
-      let feedbackRequest;
-      try {
-        const sim = await publicClient.simulateContract({
-          address: registry,
-          abi: [...reputationRegistryAbi, ...knownErrorAbis],
-          functionName: "giveFeedback",
-          args: [
-            input.agentId,
-            input.value,
-            input.valueDecimals,
-            input.tag1,
-            input.tag2,
-            input.endpoint,
-            input.feedbackURI,
-            input.feedbackHash,
-          ],
-          account,
-          chain,
-          gas: 300_000n,
-        });
-        feedbackRequest = sim.request;
-      } catch (err) {
-        throw new Error(`giveFeedback reverted: ${decodeRevertReason(err)}`);
-      }
-
-      const hash = await walletClient.writeContract(feedbackRequest);
-      const receipt = await publicClient.waitForTransactionReceipt({ hash });
-      if (receipt.status !== "success") {
-        throw new Error(
-          `giveFeedback reverted on broadcast despite passing simulation (tx ${hash})`,
-        );
-      }
-      return { transactionHash: hash };
-    },
-
-    async revokeFeedback(
-      agentId: bigint,
-      feedbackIndex: bigint,
-    ): Promise<FeedbackResult> {
-      const registry = requireReputationRegistry();
-
-      // Soft revoke — flips one bool and emits FeedbackRevoked; 150k is
-      // generous. Simulate first so "no such feedback" / "already revoked"
-      // surface as clean reasons the caller can decide to swallow.
-      let revokeRequest;
-      try {
-        const sim = await publicClient.simulateContract({
-          address: registry,
-          abi: [...reputationRegistryAbi, ...knownErrorAbis],
-          functionName: "revokeFeedback",
-          args: [agentId, feedbackIndex],
-          account,
-          chain,
-          gas: 150_000n,
-        });
-        revokeRequest = sim.request;
-      } catch (err) {
-        throw new Error(`revokeFeedback reverted: ${decodeRevertReason(err)}`);
-      }
-
-      const hash = await walletClient.writeContract(revokeRequest);
-      const receipt = await publicClient.waitForTransactionReceipt({ hash });
-      if (receipt.status !== "success") {
-        throw new Error(
-          `revokeFeedback reverted on broadcast despite passing simulation (tx ${hash})`,
-        );
-      }
-      return { transactionHash: hash };
-    },
-
-    async getFeedbackLastIndex(agentId: bigint): Promise<bigint> {
-      const registry = requireReputationRegistry();
-      // clientAddress is the facilitator wallet — the only identity the
-      // gateway writes canonical feedback under.
-      return (await publicClient.readContract({
-        address: registry,
-        abi: reputationRegistryAbi,
-        functionName: "getLastIndex",
-        args: [agentId, account.address],
-      })) as bigint;
-    },
+    ...createReputationReadMethods(publicClient, reputationStorageAddress),
+    ...createFeedbackMethods({
+      publicClient,
+      walletClient,
+      account,
+      chain,
+      reputationRegistryAddress: opts.reputationRegistryAddress,
+    }),
   };
 }
-
-// Index aligns with the Solidity enum ordinals in ReputationStorage. Keep in
-// lock-step with the contract — reordering the enum without updating these
-// is a silent correctness bug.
-const OUTCOME_LABELS: Record<number, TransactionOutcome> = {
-  0: "Completed",
-  1: "Failed",
-  2: "Canceled",
-};
-
-const CONFIRMATION_LABELS: Record<number, BuyerConfirmationLabel> = {
-  0: "Pending",
-  1: "Confirmed",
-  2: "NotConfirmed",
-};

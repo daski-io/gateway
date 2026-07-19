@@ -6,6 +6,12 @@ import type { Queries } from "../db/queries.js";
 import type { Hex } from "../types.js";
 import { mirrorConfirmationFeedback } from "../reputation/mirror.js";
 import { logErrorWithId, publicErrorMessage } from "../util/errorWrap.js";
+import {
+  CONFIRMATION_CODE,
+  isHex32,
+  isHexAddress,
+  type ConfirmationLabel,
+} from "./protocol.js";
 
 export interface ConfirmDeps {
   config: Config;
@@ -16,12 +22,6 @@ export interface ConfirmDeps {
 // ReputationStorage.sol BuyerConfirmation enum values. Keep these in lock-step
 // with the Solidity enum order (0=Pending, 1=Confirmed, 2=NotConfirmed) —
 // the resolver rejects Pending attestations outright.
-const CONFIRMATION_CODE = {
-  Confirmed: 1,
-  NotConfirmed: 2,
-} as const;
-type ConfirmationLabel = keyof typeof CONFIRMATION_CODE;
-
 const CONFIRMATION_PAYLOAD_TYPES = parseAbiParameters(
   "uint256 paymentId, uint8 confirmation",
 );
@@ -52,14 +52,6 @@ export type ConfirmResult =
       status: number;
       error: { code: string; message: string };
     };
-
-function isHexAddress(x: unknown): x is Hex {
-  return typeof x === "string" && /^0x[0-9a-fA-F]{40}$/.test(x);
-}
-
-function isHex32(x: unknown): x is Hex {
-  return typeof x === "string" && /^0x[0-9a-fA-F]{64}$/.test(x);
-}
 
 function parseInput(body: unknown): ConfirmInput | { ok: false; message: string } {
   if (!body || typeof body !== "object") {

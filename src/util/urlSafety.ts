@@ -101,9 +101,9 @@ export async function validateUrlForOutbound(
   } catch {
     throw new UrlSafetyError(`invalid URL: ${rawUrl}`, "URL_INVALID");
   }
-  if (url.protocol !== "http:" && url.protocol !== "https:") {
+  if (url.protocol !== "https:") {
     throw new UrlSafetyError(
-      `URL scheme '${url.protocol}' not allowed (only http/https)`,
+      `URL scheme '${url.protocol}' not allowed (HTTPS is required)`,
       "URL_SCHEME_BLOCKED",
     );
   }

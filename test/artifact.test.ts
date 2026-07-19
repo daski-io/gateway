@@ -165,6 +165,15 @@ describe("MCP artifact delivery", () => {
   it("preserves inline FilePart bytes from task status", async () => {
     const bytes = Buffer.from("%PDF-1.7\ninline").toString("base64");
     const gateway = await startTestGateway({
+      providers: [
+        {
+          tokenId: 1n,
+          name: "Formation Provider",
+          priceUsdcSmallest: "1000000",
+          categoryFamily: "business-formation",
+          serviceType: "entity-formation",
+        },
+      ],
       initialTaskState: {
         id: "task-inline-file",
         state: "completed",

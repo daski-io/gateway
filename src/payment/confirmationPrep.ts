@@ -3,6 +3,7 @@ import type { Config } from "../config.js";
 import type { ChainReader } from "../chain/reader.js";
 import type { Eip712TypedData, Hex } from "../types.js";
 import { logErrorWithId } from "../util/errorWrap.js";
+import { CONFIRMATION_CODE } from "./protocol.js";
 
 export interface ConfirmationPrepDeps {
   config: Config;
@@ -36,8 +37,6 @@ const ZERO_BYTES32 = `0x${"00".repeat(32)}` as Hex;
 const PAYLOAD_TYPES = parseAbiParameters(
   "uint256 paymentId, uint8 confirmation",
 );
-const CONFIRMATION_CODE = { Confirmed: 1, NotConfirmed: 2 } as const;
-
 function fail(
   code: string,
   message: string,

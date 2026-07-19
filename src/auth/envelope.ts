@@ -73,12 +73,17 @@ export function canonicalJsonStringify(value: unknown): string {
   return JSON.stringify(canonicalize(value));
 }
 
+const UNSAFE_OBJECT_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+
 function canonicalize(value: unknown): unknown {
   if (value === null || typeof value !== "object") return value;
   if (Array.isArray(value)) return value.map(canonicalize);
   const obj = value as Record<string, unknown>;
-  const sorted: Record<string, unknown> = {};
+  const sorted: Record<string, unknown> = Object.create(null);
   for (const key of Object.keys(obj).sort()) {
+    if (UNSAFE_OBJECT_KEYS.has(key)) {
+      throw new TypeError(`unsafe object key in signed JSON: ${key}`);
+    }
     const v = obj[key];
     if (v === undefined) continue;
     sorted[key] = canonicalize(v);

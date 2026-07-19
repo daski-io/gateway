@@ -25,6 +25,7 @@ describe("outbound URL safety", () => {
     "http://[::1]/resource",
     "http://[::ffff:7f00:1]/resource",
     "http://240.0.0.1/resource",
+    "http://example.com/resource",
     "https://user:password@example.com/resource",
     "ftp://example.com/resource",
   ])("rejects blocked target %s even under NODE_ENV=test", async (url) => {
@@ -64,7 +65,7 @@ describe("outbound URL safety", () => {
       resolvedAddrs: ["93.184.216.34"],
     };
     await expect(
-      safeFetch("http://127.0.0.1/private", undefined, validated),
+      safeFetch("https://127.0.0.1/private", undefined, validated),
     ).rejects.toMatchObject({ code: "URL_PRIVATE_HOST" });
   });
 });

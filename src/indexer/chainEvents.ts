@@ -195,7 +195,10 @@ export class ChainEventsIndexer {
   private async refreshPending(): Promise<void> {
     const intervalMs = this.opts.refreshIntervalMs ?? 60_000;
     const batchSize = this.opts.refreshBatchSize ?? 20;
-    const cutoff = new Date(Date.now() - intervalMs);
+    const cutoff =
+      intervalMs === 0
+        ? new Date(8_640_000_000_000_000)
+        : new Date(Date.now() - intervalMs);
     const stale = await this.queries.listStaleChainEvents(cutoff, batchSize);
     if (stale.length === 0) return;
 

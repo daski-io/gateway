@@ -274,10 +274,6 @@ function extractSkills(
   for (const skill of parseAgentSkills(agentCard)) {
     const { id, name, description, metadata: meta } = skill;
 
-    // baseAmount/priceList live at the metadata top level in older cards,
-    // but daski-provider nests them under meta.pricing (the translated
-    // per-skill pricing block). A nested "0" is the live-priced floor,
-    // not a price — treat it as absent.
     const nestedPricing =
       meta.pricing && typeof meta.pricing === "object"
         ? (meta.pricing as Record<string, unknown>)
@@ -288,8 +284,8 @@ function extractSkills(
       String(nestedPricing.baseAmount) !== "0"
         ? nestedPricing.baseAmount
         : undefined;
-    const baseAmount = meta.baseAmount ?? nestedBase;
-    const priceList = meta.priceList ?? nestedPricing?.priceList;
+    const baseAmount = nestedBase;
+    const priceList = nestedPricing?.priceList;
 
     out.push({
       id,
