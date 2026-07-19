@@ -373,6 +373,34 @@ describe("hosted MCP — wallet-agnostic surface", () => {
     }
   });
 
+  it("rejects self-purchases by provider agent or provider wallet", async () => {
+    const { client, transport } = await connectClient(gateway.baseUrl);
+    try {
+      for (const buyer of [
+        { buyerTokenId: "2", walletAddress: gateway.buyerAddress },
+        {
+          buyerTokenId: "5",
+          walletAddress: gateway.mockProvider.walletAddress,
+        },
+      ]) {
+        const result = await client.callTool({
+          name: "daski_purchase",
+          arguments: {
+            providerTokenId: "2",
+            skillId: "register-domain",
+            ...buyer,
+          },
+        });
+        const response = result as ToolResultContent;
+        expect(response.isError).toBe(true);
+        const error = parseResult<{ code: string }>(result);
+        expect(error.code).toBe("self_purchase_not_allowed");
+      }
+    } finally {
+      await transport.close();
+    }
+  });
+
   it("daski_buy_service returns a paid plan with paymentRequirements + steps", async () => {
     const { client, transport } = await connectClient(gateway.baseUrl);
     try {

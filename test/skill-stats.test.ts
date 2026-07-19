@@ -69,6 +69,7 @@ function makeRecord(opts: {
     outcomeTimestamp: 0n,
     confirmationTimestamp: 0n,
     outcomeRecorded: opts.outcomeRecorded ?? true,
+    reputationEligible: true,
   };
 }
 

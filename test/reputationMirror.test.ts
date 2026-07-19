@@ -27,7 +27,10 @@ const SIG = {
   s: "0x2222222222222222222222222222222222222222222222222222222222222222" as Hex,
 };
 
-function paymentRecord(providerAgentId: bigint) {
+function paymentRecord(
+  providerAgentId: bigint,
+  reputationEligible = true,
+) {
   return {
     buyerAgentId: 7n,
     providerAgentId,
@@ -35,8 +38,13 @@ function paymentRecord(providerAgentId: bigint) {
     token: "0x000000000000000000000000000000000000a003" as Hex,
     amount: 1_000_000n,
     cachedBuyerWallet: BUYER,
+    cachedProviderOwner:
+      "0x000000000000000000000000000000000000c001" as Hex,
+    cachedProviderWallet:
+      "0x000000000000000000000000000000000000c002" as Hex,
     serviceRef: ("0x" + "ab".repeat(32)) as Hex,
     paidAt: BigInt(Math.floor(Date.now() / 1000)),
+    reputationEligible,
   };
 }
 
@@ -332,9 +340,7 @@ describe("canonical ReputationRegistry feedback mirror", () => {
     });
   });
 
-  it("falls back to the local challenge row when the router has no record", async () => {
-    // No setPaymentRecord — getPaymentRecord returns null; the challenge
-    // row supplies both the provider and the tag2 slug.
+  it("does not mirror without an authoritative router record", async () => {
     await seedPaidChallenge(gateway, "domain-mgmt");
     gateway.mockChain.queueConfirmation({
       kind: "success",
@@ -343,11 +349,47 @@ describe("canonical ReputationRegistry feedback mirror", () => {
     });
 
     await postConfirm(gateway, {});
+    await vi.waitFor(async () => {
+      const row = await gateway.bundle.queries.getReputationMirror(PAYMENT_ID);
+      expect(row?.status).toBe("failed");
+    });
+    expect(gateway.mockChain.feedbacks).toHaveLength(0);
+  });
+
+  it("does not mirror an ineligible payment", async () => {
+    gateway.mockChain.setPaymentRecord(
+      PAYMENT_ID,
+      paymentRecord(PROVIDER_AGENT_ID, false),
+    );
+    gateway.mockChain.queueConfirmation({
+      kind: "success",
+      txHash: TX_HASH,
+      attestationUid: ATTEST_UID,
+    });
+
+    const res = await postConfirm(gateway, {});
+    expect(res.status).toBe(200);
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(gateway.mockChain.feedbacks).toHaveLength(0);
+    expect(
+      await gateway.bundle.queries.getReputationMirror(PAYMENT_ID),
+    ).toBeNull();
+  });
+
+  it("supports canonical provider agent ID zero", async () => {
+    gateway.mockChain.setPaymentRecord(PAYMENT_ID, paymentRecord(0n));
+    gateway.mockChain.queueConfirmation({
+      kind: "success",
+      txHash: TX_HASH,
+      attestationUid: ATTEST_UID,
+    });
+
+    const res = await postConfirm(gateway, {});
+    expect(res.status).toBe(200);
     await vi.waitFor(() => {
       expect(gateway.mockChain.feedbacks).toHaveLength(1);
     });
-    expect(gateway.mockChain.feedbacks[0]!.agentId).toBe(PROVIDER_AGENT_ID);
-    expect(gateway.mockChain.feedbacks[0]!.tag2).toBe("domain-mgmt");
+    expect(gateway.mockChain.feedbacks[0]!.agentId).toBe(0n);
   });
 });
 

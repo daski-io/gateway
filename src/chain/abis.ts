@@ -166,9 +166,8 @@ export const paymentRouterAbi = [
   {
     // Full PaymentRecord for one paymentId — the authoritative on-chain
     // source of (buyer, provider, service) for a settled payment. Unknown
-    // paymentIds return a zero-init struct (providerAgentId == 0); the
-    // reader maps that to null. The canonical-feedback mirror reads this
-    // to resolve which provider to post ERC-8004 feedback against.
+    // paymentIds revert. The canonical-feedback mirror reads this to resolve
+    // both the provider and whether feedback is reputation-eligible.
     type: "function",
     name: "getPayment",
     inputs: [{ name: "paymentId", type: "uint256" }],
@@ -183,8 +182,11 @@ export const paymentRouterAbi = [
           { name: "token", type: "address" },
           { name: "amount", type: "uint256" },
           { name: "cachedBuyerWallet", type: "address" },
+          { name: "cachedProviderOwner", type: "address" },
+          { name: "cachedProviderWallet", type: "address" },
           { name: "serviceRef", type: "bytes32" },
           { name: "paidAt", type: "uint256" },
+          { name: "reputationEligible", type: "bool" },
         ],
       },
     ],
@@ -230,6 +232,7 @@ export const reputationStorageAbi = [
       { name: "canceled", type: "uint256" },
       { name: "confirmed", type: "uint256" },
       { name: "notConfirmed_", type: "uint256" },
+      { name: "transactions", type: "uint256" },
     ],
     stateMutability: "view",
   },
@@ -258,6 +261,7 @@ export const reputationStorageAbi = [
       { name: "confirmed", type: "uint256" },
       { name: "notConfirmed_", type: "uint256" },
       { name: "totalRefunded", type: "uint256" },
+      { name: "transactions", type: "uint256" },
     ],
     stateMutability: "view",
   },
@@ -287,6 +291,8 @@ export const reputationStorageAbi = [
           { name: "outcomeTimestamp", type: "uint256" },
           { name: "confirmationTimestamp", type: "uint256" },
           { name: "outcomeRecorded", type: "bool" },
+          { name: "currentConfirmationUid", type: "bytes32" },
+          { name: "reputationEligible", type: "bool" },
         ],
       },
     ],

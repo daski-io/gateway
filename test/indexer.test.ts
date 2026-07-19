@@ -224,6 +224,7 @@ describe("ChainEventsIndexer", () => {
       outcomeTimestamp: 1_700_000_500n,
       confirmationTimestamp: 1_700_000_600n,
       outcomeRecorded: true,
+      reputationEligible: true,
     });
     gateway.mockChain.setPaymentRefundedAmount(42n, 100_000n);
 

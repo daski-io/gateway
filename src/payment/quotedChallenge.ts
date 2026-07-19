@@ -55,6 +55,16 @@ export async function createQuotedChallenge(
   if (!provider) {
     return fail("provider_not_found", "provider is not whitelisted");
   }
+  const sameWallet =
+    input.walletAddress.toLowerCase() === provider.walletAddress.toLowerCase();
+  const sameRegisteredAgent =
+    input.buyerAgentId !== 0n && input.buyerAgentId === provider.agentId;
+  if (sameWallet || sameRegisteredAgent) {
+    return fail(
+      "self_purchase_not_allowed",
+      "A provider cannot purchase its own service.",
+    );
+  }
   const offerResult = resolveSkillOffer(
     input.providerAgentId,
     input.skillId,

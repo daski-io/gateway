@@ -331,6 +331,7 @@ export class AutoMockChainReader implements ChainReader {
       outcomeTimestamp: BigInt(Math.floor(Date.now() / 1000)),
       confirmationTimestamp: 0n,
       outcomeRecorded: true,
+      reputationEligible: true,
     };
   }
 
@@ -355,8 +356,11 @@ export class AutoMockChainReader implements ChainReader {
       token: this.opts.tokenAddress.toLowerCase() as Hex,
       amount: 0n,
       cachedBuyerWallet: ZERO_ADDR,
+      cachedProviderOwner: this.opts.providerWalletAddress,
+      cachedProviderWallet: this.opts.providerWalletAddress,
       serviceRef: ZERO_HASH,
       paidAt: BigInt(Math.floor(Date.now() / 1000)),
+      reputationEligible: true,
     };
   }
 

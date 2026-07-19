@@ -40,7 +40,7 @@ export function createReputationReadMethods(
         abi: reputationStorageAbi,
         functionName: "getProviderStats",
         args: [agentId],
-      })) as readonly [bigint, bigint, bigint, bigint, bigint];
+      })) as readonly [bigint, bigint, bigint, bigint, bigint, bigint];
       return {
         completed: result[0],
         failed: result[1],
@@ -72,7 +72,15 @@ export function createReputationReadMethods(
         abi: reputationStorageAbi,
         functionName: "getServiceStats",
         args: [serviceId],
-      })) as readonly [bigint, bigint, bigint, bigint, bigint, bigint];
+      })) as readonly [
+        bigint,
+        bigint,
+        bigint,
+        bigint,
+        bigint,
+        bigint,
+        bigint,
+      ];
       return {
         completed: result[0],
         failed: result[1],
@@ -101,6 +109,8 @@ export function createReputationReadMethods(
         outcomeTimestamp: bigint;
         confirmationTimestamp: bigint;
         outcomeRecorded: boolean;
+        currentConfirmationUid: Hex;
+        reputationEligible: boolean;
       };
       if (raw.paymentId === 0n) return null;
       return {
@@ -116,6 +126,7 @@ export function createReputationReadMethods(
         outcomeTimestamp: raw.outcomeTimestamp,
         confirmationTimestamp: raw.confirmationTimestamp,
         outcomeRecorded: raw.outcomeRecorded,
+        reputationEligible: raw.reputationEligible,
       };
     },
   };

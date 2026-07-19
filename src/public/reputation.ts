@@ -59,10 +59,10 @@ function atomicToUsdc(atomic: string | number | bigint): string {
  *
  * Rates are 0..1 floats, or null when the denominator is zero — null encodes
  * "no data" cleanly for the UI's empty state. `totalTransactions` is the
- * combined outcome count (completed + failed + canceled), which is what the
- * whitepaper §Trust Model labels "Volume" and what discovery ranking weights
- * with. It is NOT confirmed + notConfirmed: a buyer can confirm later or
- * never, so a transaction can exist without a confirmation pair.
+ * combined outcome count (completed + failed + canceled), which the
+ * whitepaper §Trust Model labels "Volume". It is NOT confirmed +
+ * notConfirmed: a buyer can confirm later or never, so a transaction can
+ * exist without a confirmation pair.
  */
 export interface PublicServiceReputation {
   totalTransactions: number;

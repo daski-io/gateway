@@ -112,13 +112,12 @@ export function createViemChainReader(opts: ViemReaderOptions): ChainReader {
         token: Hex;
         amount: bigint;
         cachedBuyerWallet: Hex;
+        cachedProviderOwner: Hex;
+        cachedProviderWallet: Hex;
         serviceRef: Hex;
         paidAt: bigint;
+        reputationEligible: boolean;
       };
-      // Zero-init struct for unknown paymentIds. Real settles always carry
-      // a non-zero providerAgentId (the router validates the service pair),
-      // so it doubles as the "no such payment" sentinel.
-      if (raw.providerAgentId === 0n) return null;
       return raw;
     },
 

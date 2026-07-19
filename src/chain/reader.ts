@@ -154,8 +154,7 @@ export interface FeedbackResult {
 //
 // On-chain PaymentRecord for a settled paymentId — the authoritative
 // (buyer, provider, service) tuple. The reader returns null for unknown
-// paymentIds (the contract zero-inits the struct; providerAgentId == 0 is
-// the sentinel since real settles always carry a non-zero provider).
+// paymentIds. Agent ID zero is valid and must never be used as a sentinel.
 export interface PaymentRouterRecord {
   buyerAgentId: bigint;
   providerAgentId: bigint;
@@ -163,8 +162,11 @@ export interface PaymentRouterRecord {
   token: Hex;
   amount: bigint;
   cachedBuyerWallet: Hex;
+  cachedProviderOwner: Hex;
+  cachedProviderWallet: Hex;
   serviceRef: Hex;
   paidAt: bigint;
+  reputationEligible: boolean;
 }
 
 // ── ReputationStorage views ──────────────────────────────────────────────
@@ -231,6 +233,7 @@ export interface ReputationRecord {
   /** Block-timestamp seconds of the latest confirmation; 0 until attested. */
   confirmationTimestamp: bigint;
   outcomeRecorded: boolean;
+  reputationEligible: boolean;
 }
 
 // Wraps every chain read AND write the gateway performs. Tests inject a
@@ -359,8 +362,8 @@ export interface ChainReader {
   getPaymentRefundedAmount(paymentId: bigint): Promise<bigint>;
 
   // Full on-chain PaymentRecord from PaymentRouter.getPayment. Null for
-  // unknown paymentIds (zero-init struct detected via providerAgentId == 0).
-  // The reputation mirror uses this as the authoritative provider lookup.
+  // unknown paymentIds. The reputation mirror uses this as the authoritative
+  // provider and eligibility lookup.
   getPaymentRecord(paymentId: bigint): Promise<PaymentRouterRecord | null>;
 
   // ── Canonical ERC-8004 ReputationRegistry (feedback mirror) ────────────

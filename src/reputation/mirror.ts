@@ -55,7 +55,10 @@ export interface MirrorArgs {
 /** Returned for observability/tests; the confirm path ignores it. */
 export type MirrorOutcome =
   | { mirrored: true; feedbackIndex: bigint; transactionHash: Hex }
-  | { mirrored: false; reason: "disabled" | "duplicate" | "failed" };
+  | {
+      mirrored: false;
+      reason: "disabled" | "duplicate" | "ineligible" | "failed";
+    };
 
 const FEEDBACK_TAG1 = "daski";
 const CONFIRMED_VALUE = 100n;
@@ -100,22 +103,21 @@ export async function mirrorConfirmationFeedback(
   }
 
   try {
-    // Resolve the provider. The router's PaymentRecord is authoritative
-    // (works for payments settled by other gateways too); the local
-    // challenge row is both the fallback and the cheap source of the
-    // service slug for tag2.
+    // The router record is authoritative for both provider identity and
+    // reputation eligibility. The local challenge only supplies tag2.
     const [record, challenge] = await Promise.all([
       deps.reader.getPaymentRecord(args.paymentId),
       deps.queries.getChallengeByPaymentId(args.paymentId),
     ]);
-    const providerAgentId =
-      record?.providerAgentId ?? challenge?.providerTokenId ?? null;
-    if (providerAgentId == null || providerAgentId === 0n) {
+    if (!record) {
       throw new Error(
-        `payment ${args.paymentId} has no resolvable provider ` +
-          "(router returned no record and no local challenge row exists)",
+        `payment ${args.paymentId} has no authoritative router record`,
       );
     }
+    if (!record.reputationEligible) {
+      return { mirrored: false, reason: "ineligible" };
+    }
+    const providerAgentId = record.providerAgentId;
     const tag2 = challenge?.serviceSlug ?? "";
 
     // Revision: EAS confirmations revise in place via refUID chains, but

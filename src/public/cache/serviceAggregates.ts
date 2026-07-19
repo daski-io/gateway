@@ -82,6 +82,7 @@ export function chainRowToSkillEnriched(
     outcomeTimestamp: 0n,
     confirmationTimestamp: 0n,
     outcomeRecorded: row.outcomeCode != null,
+    reputationEligible: true,
   };
   return {
     challenge: syntheticChallenge(row),
