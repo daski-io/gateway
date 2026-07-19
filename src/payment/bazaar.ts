@@ -16,6 +16,7 @@ import type { Fetcher } from "../mcp/a2a.js";
 import type { ExactEvmAuthorization, Hex, StoredChallenge } from "../types.js";
 import { buildPurchaseLegalContext } from "../legal/purchase.js";
 import type { PurchaseLegalContext } from "../legal/types.js";
+import { publicErrorMessage } from "../util/errorWrap.js";
 
 /**
  * Bazaar-facing x402 resource routes — one paid HTTP resource per
@@ -771,7 +772,11 @@ export function createBazaarRouter(deps: BazaarDeps): Router {
       } catch (err) {
         res.status(503).json({
           x402Version: core.version,
-          error: `unable to resolve buyer identity: ${(err as Error).message}`,
+          error: publicErrorMessage(
+            "bazaar.agentOfWallet",
+            err,
+            "unable to resolve buyer identity",
+          ),
         });
         return;
       }
@@ -922,7 +927,11 @@ export function createBazaarRouter(deps: BazaarDeps): Router {
       } catch (err) {
         res.status(502).json({
           x402Version: core.version,
-          error: (err as Error).message,
+          error: publicErrorMessage(
+            "bazaar.externalVerify",
+            err,
+            "external payment verification failed",
+          ),
         });
         return;
       }
@@ -1017,7 +1026,11 @@ export function createBazaarRouter(deps: BazaarDeps): Router {
         // lost either way, and the authorization can't be double-spent.
         res.status(502).json({
           x402Version: core.version,
-          error: (err as Error).message,
+          error: publicErrorMessage(
+            "bazaar.externalSettle",
+            err,
+            "external payment settlement failed",
+          ),
         });
         return;
       }
@@ -1101,10 +1114,11 @@ export function createBazaarRouter(deps: BazaarDeps): Router {
       res.status(502).json({
         x402Version: core.version,
         error: "attribution_pending",
-        message:
-          `payment settled on-chain but the commission split has not run ` +
-          `yet (${(err as Error).message}). Retry this exact request — ` +
-          `the gateway resumes at attribution without re-charging.`,
+        message: `${publicErrorMessage(
+          "bazaar.attributeDirectTransfer",
+          err,
+          "payment settled on-chain but the commission split has not run",
+        )}. Retry this exact request — the gateway resumes at attribution without re-charging.`,
         settlementTransaction: challenge.externalSettleTx,
         serviceRef: challenge.serviceRef,
       });

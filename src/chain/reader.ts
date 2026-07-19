@@ -1,19 +1,5 @@
 import type { Hex, OnChainProvider } from "../types.js";
 
-export interface ChainLog {
-  address: Hex;
-  topics: readonly Hex[];
-  data: Hex;
-  logIndex?: number;
-}
-
-export interface ChainTransactionReceipt {
-  transactionHash: Hex;
-  status: "success" | "reverted";
-  to: Hex | null;
-  logs: ChainLog[];
-}
-
 export interface PaymentSettledEvent {
   paymentId: bigint;
   serviceRef: Hex;

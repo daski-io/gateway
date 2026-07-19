@@ -211,69 +211,6 @@ export const paymentRouterAbi = [
   },
 ] as const;
 
-// ── Daski ServiceRegistry ───────────────────────────────────────────────
-//
-// Per-provider service catalog introduced in the service-identity refactor.
-// `serviceId = keccak256(abi.encode(uint256 providerAgentId, string serviceSlug, string version))`
-// — matches the contract's `_computeServiceId` (standard ABI encoding, not
-// packed, since the audit refactor). Gateway computes it
-// off-chain (cheap, deterministic) and PaymentRouter.settle validates that
-// the service belongs to providerAgentId and is active.
-//
-// `serviceSlug` is the on-chain service identifier (e.g.
-// "domain-management"). It is NOT an A2A skill id — one service maps
-// to many skills via the off-chain serviceURI JSON. Renamed from
-// `skillId` in the audit refactor (2026-05-12 deploy).
-export const serviceRegistryAbi = [
-  {
-    type: "function",
-    name: "getService",
-    inputs: [{ name: "serviceId", type: "bytes32" }],
-    outputs: [
-      {
-        name: "",
-        type: "tuple",
-        components: [
-          { name: "providerAgentId", type: "uint256" },
-          { name: "serviceId", type: "bytes32" },
-          { name: "serviceSlug", type: "string" },
-          { name: "version", type: "string" },
-          { name: "serviceURI", type: "string" },
-          { name: "serviceWallet", type: "address" },
-          { name: "createdAt", type: "uint64" },
-          { name: "active", type: "bool" },
-        ],
-      },
-    ],
-    stateMutability: "view",
-  },
-  {
-    type: "function",
-    name: "isActive",
-    inputs: [{ name: "serviceId", type: "bytes32" }],
-    outputs: [{ name: "", type: "bool" }],
-    stateMutability: "view",
-  },
-  {
-    type: "function",
-    name: "exists",
-    inputs: [{ name: "serviceId", type: "bytes32" }],
-    outputs: [{ name: "", type: "bool" }],
-    stateMutability: "view",
-  },
-  {
-    type: "function",
-    name: "computeServiceId",
-    inputs: [
-      { name: "providerAgentId", type: "uint256" },
-      { name: "serviceSlug", type: "string" },
-      { name: "version", type: "string" },
-    ],
-    outputs: [{ name: "", type: "bytes32" }],
-    stateMutability: "pure",
-  },
-] as const;
-
 // ── Daski ReputationStorage ─────────────────────────────────────────────
 //
 // EAS schema resolver that maintains aggregate counters per

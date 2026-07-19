@@ -1,5 +1,8 @@
 import dns from "node:dns/promises";
+import http from "node:http";
+import https from "node:https";
 import net from "node:net";
+import { Readable } from "node:stream";
 
 // SSRF guard for outbound fetches. Two failure modes we close:
 //
@@ -10,14 +13,11 @@ import net from "node:net";
 //   2) A reachable but malicious endpoint serves a multi-GB JSON body and
 //      OOMs the gateway (default Node fetch's `res.json()` is unbounded).
 //
-// `validateUrlForOutbound` parses and resolves the URL host before we open
-// a connection, rejects anything in private/loopback/link-local space, and
-// pins the resolved IP so a TOCTOU between resolve and fetch can't move
-// the target. `readBoundedJson` enforces a hard byte cap before parsing.
-//
-// Tests pass mock fetch handlers and use `127.0.0.1` URLs; the private-IP
-// check is skipped when `NODE_ENV === "test"` (vitest sets this) so the
-// test fixtures don't have to fight the guard.
+// `validateUrlForOutbound` parses and resolves the URL host before a
+// connection is opened, rejects private/loopback/link-local space, and
+// returns the approved addresses. `safeFetch` connects directly to one of
+// those addresses while preserving the original HTTP Host header and TLS
+// server name, closing the DNS-rebinding window.
 
 export class UrlSafetyError extends Error {
   constructor(
@@ -52,8 +52,17 @@ const IPV4_BLOCKED: RegExp[] = [
   /^100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\./,
   /^22[4-9]\./,
   /^23[0-9]\./,
-  /^255\.255\.255\.255$/,
+  /^24[0-9]\./,
+  /^25[0-5]\./,
 ];
+
+const IPV6_BLOCKED = new net.BlockList();
+IPV6_BLOCKED.addAddress("::", "ipv6");
+IPV6_BLOCKED.addAddress("::1", "ipv6");
+IPV6_BLOCKED.addSubnet("fc00::", 7, "ipv6");
+IPV6_BLOCKED.addSubnet("fe80::", 10, "ipv6");
+IPV6_BLOCKED.addSubnet("ff00::", 8, "ipv6");
+IPV6_BLOCKED.addSubnet("::ffff:0:0", 96, "ipv6");
 
 function isPrivateIPv4(ip: string): boolean {
   if (!net.isIPv4(ip)) return false;
@@ -62,31 +71,19 @@ function isPrivateIPv4(ip: string): boolean {
 
 function isPrivateIPv6(ip: string): boolean {
   if (!net.isIPv6(ip)) return false;
-  const lower = ip.toLowerCase();
-  if (lower === "::1" || lower === "::") return true;
-  // ULA (fc00::/7) and link-local (fe80::/10).
-  if (lower.startsWith("fc") || lower.startsWith("fd")) return true;
-  if (lower.startsWith("fe80:") || lower.startsWith("fe9") || lower.startsWith("fea") || lower.startsWith("feb")) {
-    return true;
-  }
-  // Multicast (ff00::/8).
-  if (lower.startsWith("ff")) return true;
-  // IPv4-mapped IPv6: ::ffff:1.2.3.4
-  const m = lower.match(/^::ffff:([\d.]+)$/);
-  if (m && isPrivateIPv4(m[1])) return true;
-  return false;
-}
-
-function privateChecksDisabled(): boolean {
-  // vitest sets NODE_ENV=test by default; tests run mock providers on
-  // 127.0.0.1 and need the validator to short-circuit. Production never
-  // sets this and the full check applies.
-  return process.env.NODE_ENV === "test";
+  // Reject all IPv4-mapped IPv6 literals. They are unnecessary for provider
+  // endpoints and otherwise create alternate spellings of blocked IPv4 hosts.
+  return IPV6_BLOCKED.check(ip, "ipv6");
 }
 
 export interface ValidatedUrl {
   url: URL;
   resolvedAddrs: string[];
+}
+
+export function isPrivateOrLocalAddress(ip: string): boolean {
+  const normalized = ip.replace(/^::ffff:/, "");
+  return isPrivateIPv4(normalized) || isPrivateIPv6(ip);
 }
 
 /**
@@ -116,12 +113,10 @@ export async function validateUrlForOutbound(
     throw new UrlSafetyError("URL has no hostname", "URL_INVALID");
   }
 
-  if (privateChecksDisabled()) {
-    return { url, resolvedAddrs: [] };
-  }
-
   // Strip IPv6 zone-id (`fe80::1%eth0`) and brackets before resolving.
-  const cleanHost = hostname.replace(/%.+$/, "");
+  const cleanHost = hostname
+    .replace(/^\[|\]$/g, "")
+    .replace(/%.+$/, "");
   let addrs: string[];
   if (net.isIP(cleanHost)) {
     addrs = [cleanHost];
@@ -136,8 +131,14 @@ export async function validateUrlForOutbound(
       );
     }
   }
+  if (url.username || url.password) {
+    throw new UrlSafetyError(
+      "URL credentials are not allowed",
+      "URL_INVALID",
+    );
+  }
   for (const addr of addrs) {
-    if (isPrivateIPv4(addr) || isPrivateIPv6(addr)) {
+    if (isPrivateOrLocalAddress(addr)) {
       throw new UrlSafetyError(
         `URL host resolves to a private/loopback address (${addr})`,
         "URL_PRIVATE_HOST",
@@ -215,29 +216,115 @@ export async function readBoundedJson<T = unknown>(
 }
 
 /**
- * Outbound fetch with the SSRF host-validation guard applied. Validates the
- * URL host (or accepts a pre-validated handle) and then delegates to the
- * platform fetch.
- *
- * NOTE: an earlier revision of this function used `undici.Agent` with a
- * custom `connect.lookup` to also pin the resolved IP at the dial layer
- * (closing the DNS-rebinding TOCTOU between validate and connect). That
- * variant returned `fetch failed` in the Railway runtime — undici 7's
- * connect-options surface needs more digging before we can re-enable it.
- * The host-validation check still runs on every call, so a malicious
- * agentURI cannot point at a private/loopback/IMDS host. Re-introducing
- * the IP-pinning is tracked as a follow-up.
+ * Converts the Fetch API request shape used by the gateway into a bounded
+ * Node HTTP request that connects to an already-approved address.
+ */
+async function requestPinned(
+  validated: ValidatedUrl,
+  init?: RequestInit,
+): Promise<Response> {
+  const request = new Request(validated.url, init);
+  const method = request.method.toUpperCase();
+  const body =
+    method === "GET" || method === "HEAD"
+      ? null
+      : Buffer.from(await request.arrayBuffer());
+  const headers = Object.fromEntries(request.headers.entries());
+  headers.host = validated.url.host;
+
+  let lastError: unknown;
+  for (const address of validated.resolvedAddrs) {
+    try {
+      return await new Promise<Response>((resolve, reject) => {
+        const transport = validated.url.protocol === "https:" ? https : http;
+        const req = transport.request(
+          {
+            protocol: validated.url.protocol,
+            hostname: address,
+            port:
+              validated.url.port ||
+              (validated.url.protocol === "https:" ? 443 : 80),
+            path: `${validated.url.pathname}${validated.url.search}`,
+            method,
+            headers,
+            signal: request.signal,
+            ...(validated.url.protocol === "https:"
+              ? {
+                  servername: net.isIP(
+                    validated.url.hostname.replace(/^\[|\]$/g, ""),
+                  )
+                    ? undefined
+                    : validated.url.hostname,
+                }
+              : {}),
+          },
+          (incoming) => {
+            const responseHeaders = new Headers();
+            for (const [name, value] of Object.entries(incoming.headers)) {
+              if (Array.isArray(value)) {
+                for (const item of value) responseHeaders.append(name, item);
+              } else if (value != null) {
+                responseHeaders.set(name, value);
+              }
+            }
+            const status = incoming.statusCode ?? 502;
+            const responseBody =
+              method === "HEAD" ||
+              status === 204 ||
+              status === 205 ||
+              status === 304
+                ? null
+                : (Readable.toWeb(incoming) as ReadableStream<Uint8Array>);
+            resolve(
+              new Response(responseBody, {
+                status,
+                statusText: incoming.statusMessage,
+                headers: responseHeaders,
+              }),
+            );
+          },
+        );
+        req.once("error", reject);
+        if (body) req.end(body);
+        else req.end();
+      });
+    } catch (err) {
+      lastError = err;
+      if (request.signal.aborted) throw err;
+    }
+  }
+  throw lastError instanceof Error
+    ? lastError
+    : new Error("outbound connection failed");
+}
+
+/**
+ * Outbound fetch with DNS-rebinding protection. The host is resolved and
+ * checked once, then the socket is connected directly to an approved IP.
+ * Redirects are intentionally returned to the caller so every new target
+ * must be independently validated.
  */
 export async function safeFetch(
-  url: string,
+  rawUrl: string,
   init?: RequestInit,
   preValidated?: ValidatedUrl,
 ): Promise<Response> {
-  // Run validation for the side effect (it throws on private hosts). The
-  // resolved address list is no longer used here; preserved on the type
-  // for the eventual IP-pinning re-introduction.
-  if (!preValidated) {
-    await validateUrlForOutbound(url);
+  let parsed: URL | null = null;
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    // Let the validator return a stable UrlSafetyError instead of leaking the
+    // runtime-specific URL parser exception.
   }
-  return fetch(url, init);
+  const validated =
+    preValidated && parsed && preValidated.url.href === parsed.href
+      ? preValidated
+      : await validateUrlForOutbound(rawUrl);
+  if (validated.resolvedAddrs.length === 0) {
+    throw new UrlSafetyError(
+      "URL resolved to no usable addresses",
+      "URL_DNS_FAILED",
+    );
+  }
+  return requestPinned(validated, { ...init, redirect: "manual" });
 }

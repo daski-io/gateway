@@ -283,6 +283,10 @@ export async function startTestGateway(
         status: 200,
         headers: { "content-type": "application/json" },
       }));
+  const localProviderFetch = (
+    input: string | URL | Request,
+    init?: RequestInit,
+  ) => fetch(input, init);
 
   const bundle = await createApp({
     config,
@@ -290,8 +294,9 @@ export async function startTestGateway(
     pool,
     embedder: stubEmbedder(),
     startCacheRefreshLoop: false,
+    agentCardFetch: localProviderFetch,
     agentCardFetchTimeoutMs: 2000,
-    a2aFetch: opts.a2aFetch,
+    a2aFetch: opts.a2aFetch ?? localProviderFetch,
     buyerAgentCardFetch,
     externalFacilitatorFetch: opts.externalFacilitatorFetch,
   });

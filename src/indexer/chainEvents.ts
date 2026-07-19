@@ -233,6 +233,3 @@ const CONFIRMATION_TO_CODE: Record<"Pending" | "Confirmed" | "NotConfirmed", num
   Confirmed: 1,
   NotConfirmed: 2,
 };
-
-export const OUTCOME_CODE_TO_LABEL = ["Completed", "Failed", "Canceled"] as const;
-export const CONFIRMATION_CODE_TO_LABEL = ["Pending", "Confirmed", "NotConfirmed"] as const;

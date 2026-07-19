@@ -249,11 +249,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
         : "https://x402.org/facilitator")
     ).replace(/\/$/, ""),
     externalFacilitatorAuthHeader: env.EXTERNAL_FACILITATOR_AUTH_HEADER,
-    // WHITELISTED_AGENT_IDS is the canonical name; WHITELISTED_TOKEN_IDS is
-    // accepted as a deprecated alias for operator continuity.
-    whitelistedAgentIds: parseAgentIds(
-      env.WHITELISTED_AGENT_IDS ?? env.WHITELISTED_TOKEN_IDS,
-    ),
+    whitelistedAgentIds: parseAgentIds(env.WHITELISTED_AGENT_IDS),
     cacheRefreshIntervalSeconds: Number(env.CACHE_REFRESH_INTERVAL ?? 300),
     cacheMaxStalenessSeconds: Number(env.CACHE_MAX_STALENESS_SECONDS ?? 86400),
     challengeTtlSeconds: Number(env.CHALLENGE_TTL_SECONDS ?? 3600),

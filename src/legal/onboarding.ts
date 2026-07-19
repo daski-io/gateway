@@ -1,4 +1,4 @@
-import { readBoundedJson, safeFetch, validateUrlForOutbound } from "../util/urlSafety.js";
+import { readBoundedJson, safeFetch } from "../util/urlSafety.js";
 import type { ProviderLegalMetadata } from "./types.js";
 import { parseHttpsUrl, parseProviderLegalMetadata } from "./validation.js";
 
@@ -17,7 +17,6 @@ async function fetchReachable(
 ): Promise<void> {
   let url = parseHttpsUrl(rawUrl, field);
   for (let attempt = 0; attempt < 2; attempt++) {
-    await validateUrlForOutbound(url);
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), REACHABILITY_TIMEOUT_MS);
     try {

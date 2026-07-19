@@ -188,17 +188,19 @@ async function fetchHttp(
   timeoutMs: number,
   maxBytes: number,
 ): Promise<Record<string, unknown>> {
-  let validated: ValidatedUrl;
-  try {
-    validated = await validateUrlForOutbound(url);
-  } catch (err) {
-    if (err instanceof UrlSafetyError) {
-      throw new AgentCardFetchError(
-        `Failed to fetch agentURI: ${err.message}`,
-        "AGENT_URI_FETCH_FAILED",
-      );
+  let validated: ValidatedUrl | undefined;
+  if (fetchFn === safeFetch) {
+    try {
+      validated = await validateUrlForOutbound(url);
+    } catch (err) {
+      if (err instanceof UrlSafetyError) {
+        throw new AgentCardFetchError(
+          `Failed to fetch agentURI: ${err.message}`,
+          "AGENT_URI_FETCH_FAILED",
+        );
+      }
+      throw err;
     }
-    throw err;
   }
 
   const controller = new AbortController();

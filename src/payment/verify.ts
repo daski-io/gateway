@@ -7,7 +7,7 @@ import {
   fetchAgentCard,
   type FetchAgentCardOptions,
 } from "../identity/fetch-agent-card.js";
-import { logErrorWithId } from "../util/errorWrap.js";
+import { logErrorWithId, publicErrorMessage } from "../util/errorWrap.js";
 import type {
   Hex,
   PaymentPayload,
@@ -324,7 +324,11 @@ export async function verifyPaymentPayload(
     return failVerify(
       402,
       "invalid_exact_evm_payload_signature",
-      `signature recovery failed: ${(err as Error).message}`,
+      publicErrorMessage(
+        "verifyPaymentPayload.recoverSignature",
+        err,
+        "signature recovery failed",
+      ),
       payer,
     );
   }
@@ -357,7 +361,11 @@ export async function verifyPaymentPayload(
     return failVerify(
       503,
       "rpc_unavailable",
-      `unable to verify authorization nonce: ${(err as Error).message}`,
+      publicErrorMessage(
+        "verifyPaymentPayload.authorizationUsed",
+        err,
+        "unable to verify authorization nonce",
+      ),
       payer,
     );
   }
@@ -369,7 +377,7 @@ export async function verifyPaymentPayload(
     return failVerify(
       400,
       "invalid_payload",
-      `malformed signature: ${(err as Error).message}`,
+      "malformed signature",
       payer,
     );
   }
@@ -389,7 +397,7 @@ export async function verifyPaymentPayload(
  * Idempotent: if the challenge is already paid, returns the stored
  * confirmation without hitting the chain again.
  */
-export async function verifyAndSettle(
+async function verifyAndSettleUnlocked(
   input: SettleInput,
   config: Config,
   reader: ChainReader,
@@ -478,7 +486,11 @@ export async function verifyAndSettle(
     return fail(
       402,
       "unexpected_settle_error",
-      `on-chain settlement reverted: ${(err as Error).message}`,
+      publicErrorMessage(
+        "verifyAndSettle.settlePayment",
+        err,
+        "on-chain settlement failed",
+      ),
       network,
       payer,
     );
@@ -582,6 +594,30 @@ export async function verifyAndSettle(
   };
 }
 
+export async function verifyAndSettle(
+  input: SettleInput,
+  config: Config,
+  reader: ChainReader,
+  queries: Queries,
+  now: Date = new Date(),
+): Promise<SettleResult> {
+  return queries.withChallengeSettlementLock(
+    input.challenge.serviceRef,
+    async () => {
+      const challenge =
+        (await queries.getChallengeByRef(input.challenge.serviceRef)) ??
+        input.challenge;
+      return verifyAndSettleUnlocked(
+        { ...input, challenge },
+        config,
+        reader,
+        queries,
+        now,
+      );
+    },
+  );
+}
+
 // ── Atomic register-and-settle ───────────────────────────────────────────
 //
 // Used when the challenge was issued for a buyer that didn't yet have an
@@ -608,7 +644,7 @@ export interface VerifyAndSettleWithRegistrationOptions {
   fetchAgentCardFn?: FetchAgentCardOptions["fetchFn"];
 }
 
-export async function verifyAndSettleWithRegistration(
+async function verifyAndSettleWithRegistrationUnlocked(
   input: SettleInput,
   registration: RegistrationDelegation,
   config: Config,
@@ -697,7 +733,11 @@ export async function verifyAndSettleWithRegistration(
     return fail(
       402,
       "unexpected_settle_error",
-      `on-chain atomic register-and-settle reverted: ${(err as Error).message}`,
+      publicErrorMessage(
+        "verifyAndSettle.settleWithRegistration",
+        err,
+        "on-chain atomic register-and-settle failed",
+      ),
       network,
       payer,
     );
@@ -827,4 +867,32 @@ export async function verifyAndSettleWithRegistration(
       },
     },
   };
+}
+
+export async function verifyAndSettleWithRegistration(
+  input: SettleInput,
+  registration: RegistrationDelegation,
+  config: Config,
+  reader: ChainReader,
+  queries: Queries,
+  now: Date = new Date(),
+  opts: VerifyAndSettleWithRegistrationOptions = {},
+): Promise<SettleResult> {
+  return queries.withChallengeSettlementLock(
+    input.challenge.serviceRef,
+    async () => {
+      const challenge =
+        (await queries.getChallengeByRef(input.challenge.serviceRef)) ??
+        input.challenge;
+      return verifyAndSettleWithRegistrationUnlocked(
+        { ...input, challenge },
+        registration,
+        config,
+        reader,
+        queries,
+        now,
+        opts,
+      );
+    },
+  );
 }

@@ -343,8 +343,9 @@ step 9 below.
      known by on receipts and the marketplace (max 64 chars, uniqueness
      not required). Omitted, it defaults to `buyer-<last6>` from the
      wallet address (`registrationPrep.resolvedName` echoes the final
-     value either way). Renames are not supported yet, so decide before
-     signing — the name is baked into the typed-data of step 5. ALWAYS
+     value either way). The gateway treats this as registration-time
+     metadata, so decide before signing — the name is baked into the
+     typed-data of step 5. ALWAYS
      pass `name` on the VERY FIRST call unless you have CONFIRMED the
      wallet is already registered: don't quote once to check `atomic` and
      then re-call to add it (that re-quotes and discards the first

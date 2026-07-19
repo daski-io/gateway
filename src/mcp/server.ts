@@ -1,14 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
-import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import {
-  isInitializeRequest,
-  ListToolsRequestSchema,
-} from "@modelcontextprotocol/sdk/types.js";
-import { normalizeObjectSchema } from "@modelcontextprotocol/sdk/server/zod-compat.js";
-import { toJsonSchemaCompat } from "@modelcontextprotocol/sdk/server/zod-json-schema-compat.js";
-import type { Express, Request } from "express";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { Express } from "express";
 import type { Config } from "../config.js";
 import { DASKI_A2A_EXTENSION_URI, X402_VERSION } from "../config.js";
 import { buildEnvelopeAuth, computeRequestHash } from "../auth/envelope.js";
@@ -38,7 +31,6 @@ import {
   formatForSkillDiscover,
   applyDiscoverFilters,
   cardsOf,
-  extractAgentCardName,
   extractAgentCardUrl,
   extractMarketplaceExtension,
 } from "../discovery/format.js";
@@ -52,11 +44,14 @@ import {
 import { fetchProviderQuote } from "../payment/providerQuote.js";
 import { verifyAndSettle, verifyAndSettleWithRegistration } from "../payment/verify.js";
 import { runConfirmDelivery } from "../payment/confirm.js";
+import { prepareConfirmation } from "../payment/confirmationPrep.js";
 import {
-  buildBuyerAgentURI,
+  prepareRegistration,
+  submitRegistration,
+} from "../identity/service.js";
+import {
   checkPhoneConfirmation,
   checkPhoneFields,
-  defaultBuyerName,
   findUnknownServiceArgKeys,
   mcpError,
   mcpJson,
@@ -72,6 +67,13 @@ import {
 } from "./a2a.js";
 import { registerArtifactTool } from "./artifact.js";
 import { MCP_LEGAL_INSTRUCTIONS } from "../legal/purchase.js";
+import {
+  mountMcpHttpTransport,
+  type McpWiring,
+} from "./httpTransport.js";
+import { GATEWAY_VERSION } from "../version.js";
+import { publicErrorMessage } from "../util/errorWrap.js";
+import { registerProviderResource } from "./providerResource.js";
 
 // JSON response cap on provider A2A calls. Real responses are <50 KB; 1 MB
 // is generous enough for unusual artifact payloads while still protecting
@@ -107,17 +109,12 @@ export interface McpDeps {
    * `buyer_identities` without a network call.
    */
   buyerAgentCardFetch?: import("../identity/fetch-agent-card.js").FetchAgentCardOptions["fetchFn"];
+  maxSessions?: number;
+  sessionIdleTtlMs?: number;
+  sessionSweepIntervalMs?: number;
 }
 
-export interface McpWiring {
-  sessionCount(): number;
-  close(): Promise<void>;
-}
-
-interface Session {
-  server: McpServer;
-  transport: StreamableHTTPServerTransport;
-}
+export type { McpWiring } from "./httpTransport.js";
 
 const HEX_ADDR = /^0x[0-9a-fA-F]{40}$/;
 const HEX_32 = /^0x[0-9a-fA-F]{64}$/;
@@ -153,7 +150,6 @@ function unknownServiceArgWarnings(
 const SUPPORTED_CHAIN_IDS = [8453, 84532] as const;
 const SUPPORTED_NETWORKS = ["base", "base-sepolia"] as const;
 const SUPPORTED_SCHEMES = ["exact"] as const;
-const SUPPORTED_X402_VERSIONS = [1] as const;
 
 // Server-level instructions — planted in the MCP `initialize` response and
 // surfaced by Anthropic clients before any individual tool description. The
@@ -182,121 +178,6 @@ const SERVER_INSTRUCTIONS = [
   "batch of service categories goes live.",
 ].join("\n");
 
-// Per-session marker carried on the McpServer instance so the tools/list
-// override knows whether deprecated aliases should be visible. The
-// /mcp POST handler reads `?include=deprecated=1` or
-// `X-Daski-Include-Deprecated: 1` from the inbound request and sets this
-// before `buildSession()` registers tools.
-type DeprecationFlag = { includeDeprecated: boolean };
-
-function requestWantsDeprecated(req: Request): boolean {
-  const headerRaw = req.headers["x-daski-include-deprecated"];
-  const header = Array.isArray(headerRaw) ? headerRaw[0] : headerRaw;
-  if (typeof header === "string" && header.trim() !== "" && header !== "0") {
-    return true;
-  }
-  const q = req.query?.include;
-  const qStr = Array.isArray(q) ? q[0] : q;
-  if (typeof qStr === "string") {
-    // Accept any of `?include=deprecated`, `?include=deprecated,foo`,
-    // or `?include=1` — keep the matcher permissive so URL-typing slips
-    // don't lock callers out.
-    if (qStr.split(",").map((s) => s.trim()).includes("deprecated")) {
-      return true;
-    }
-  }
-  return false;
-}
-
-// Names of the deprecated tools — kept in one place so the
-// tools/list filter, the deprecation-warning logger, and any future
-// telemetry stay in sync.
-const DEPRECATED_TOOL_NAMES = new Set<string>([
-  "search_services",
-  "daski_get_provider",
-  "daski_build_envelope_auth",
-  "daski_prepare_registration",
-  "daski_register_buyer",
-  "daski_prepare_confirm",
-]);
-
-// Replacement table emitted in the deprecation log so dashboards can
-// aggregate "callers still on X" without parsing the log message.
-const DEPRECATED_TOOL_REPLACEMENTS: Record<string, string> = {
-  search_services: "daski_search_services",
-  daski_get_provider: "daski://provider/{tokenId} (MCP Resource)",
-  daski_build_envelope_auth: "daski_submit_task (first call without envelopeAuth)",
-  daski_prepare_registration: "daski_register_agent (first call without signature)",
-  daski_register_buyer: "daski_register_agent (second call with signature)",
-  daski_prepare_confirm: "daski_confirm_delivery (first call without signature)",
-};
-
-function logDeprecatedToolCall(name: string): void {
-  console.log(
-    JSON.stringify({
-      timestamp: new Date().toISOString(),
-      level: "warn",
-      event: "deprecated_tool_call",
-      tool: name,
-      replacement: DEPRECATED_TOOL_REPLACEMENTS[name] ?? null,
-    }),
-  );
-}
-
-// Mirrors the SDK's auto-generated `tools/list` payload using its own
-// serialization helpers, so the override produced by `buildSession` matches
-// the SDK's shape byte-for-byte. The SDK doesn't expose a public iterator
-// over registered tools, so we read its private `_registeredTools` table
-// directly — pinned by the SDK's semver range in package.json.
-function listRegisteredTools(server: McpServer): Array<{
-  name: string;
-  title?: string;
-  description?: string;
-  inputSchema?: unknown;
-  annotations?: unknown;
-  _meta?: Record<string, unknown>;
-}> {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const registered = (server as any)._registeredTools as
-    | Record<
-        string,
-        {
-          enabled: boolean;
-          title?: string;
-          description?: string;
-          inputSchema?: unknown;
-          annotations?: unknown;
-          _meta?: Record<string, unknown>;
-        }
-      >
-    | undefined;
-  if (!registered) return [];
-  const EMPTY_OBJECT_JSON_SCHEMA = { type: "object", properties: {} };
-  return Object.entries(registered)
-    .filter(([, tool]) => tool.enabled)
-    .map(([name, tool]) => {
-      let inputSchema: unknown = EMPTY_OBJECT_JSON_SCHEMA;
-      if (tool.inputSchema) {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const normalized = normalizeObjectSchema(tool.inputSchema as any);
-        if (normalized) {
-          inputSchema = toJsonSchemaCompat(normalized, {
-            strictUnions: true,
-            pipeStrategy: "input",
-          });
-        }
-      }
-      return {
-        name,
-        title: tool.title,
-        description: tool.description,
-        inputSchema,
-        annotations: tool.annotations,
-        _meta: tool._meta,
-      };
-    });
-}
-
 // JSON-result wrappers — `mcpJson` and `mcpError` enforce the standardized
 // MCP `CallToolResult` shape (content[0].type:"text", text:JSON.stringify(...))
 // and the standardized error envelope `{ code, message, details?,
@@ -309,35 +190,10 @@ const errorJson = (
   meta?: Record<string, unknown>,
 ): McpToolResult => mcpError(error, meta);
 
-// Translates an HTTP error body of the shape `{ error: { code, message, ... } }`
-// (used by /register-prep, /confirm-prep, /capability-prep, /register) into
-// the standardized MCP error envelope. Falls back to a generic UPSTREAM_ERROR
-// when the body shape is unexpected.
-const upstreamErrorJson = (body: unknown): McpToolResult => {
-  const err = (body as { error?: { code?: unknown; message?: unknown } } | undefined)?.error;
-  const code = typeof err?.code === "string" ? err.code : "UPSTREAM_ERROR";
-  const message =
-    typeof err?.message === "string"
-      ? err.message
-      : "upstream gateway endpoint returned a non-OK response";
-  const details: Record<string, unknown> = {};
-  if (err && typeof err === "object") {
-    for (const [k, v] of Object.entries(err)) {
-      if (k !== "code" && k !== "message") details[k] = v;
-    }
-  }
-  return errorJson({
-    code,
-    message,
-    ...(Object.keys(details).length > 0 ? { details } : {}),
-  });
-};
-
 export async function createMcpServer(
   app: Express,
   deps: McpDeps,
 ): Promise<McpWiring> {
-  const sessions = new Map<string, Session>();
   // Default to safeFetch (validates host + pins resolved IP at connect).
   // Tests inject deps.fetch with a mock that ignores SSRF; the loose
   // signature means a `(url, init) => Promise<Response>` mock satisfies
@@ -346,7 +202,14 @@ export async function createMcpServer(
     u: string,
     i?: RequestInit,
   ) => Promise<Response> = deps.fetch ?? safeFetch;
+  const enforceUrlSafety = deps.fetch === undefined;
   const a2aTimeoutMs = deps.a2aTimeoutMs ?? 10_000;
+  const identityDeps = {
+    config: deps.config,
+    reader: deps.reader,
+    queries: deps.queries,
+    fetchAgentCardFn: deps.buyerAgentCardFetch,
+  };
 
   function registerTools(server: McpServer) {
     registerArtifactTool(server, {
@@ -650,72 +513,12 @@ export async function createMcpServer(
       searchServicesHandler,
     );
 
-    // Deprecated alias — kept callable through the grace period so agents
-    // that hardcoded the legacy name keep working while they migrate.
-    // Hidden from `tools/list` unless the client opts in via
-    // `?include=deprecated` or `X-Daski-Include-Deprecated: 1`.
-    server.registerTool(
-      "search_services",
-      {
-        description:
-          "Deprecated alias for `daski_search_services`. Use the new name.",
-        inputSchema: SEARCH_SERVICES_INPUT_SCHEMA,
-        annotations: {
-          title: "[Deprecated] Search Daski services",
-          readOnlyHint: true,
-          idempotentHint: true,
-          openWorldHint: false,
-        },
-      },
-      async (args) => {
-        logDeprecatedToolCall("search_services");
-        return searchServicesHandler(args);
-      },
-    );
-
-    server.registerTool(
-      "daski_get_provider",
-      {
-        description:
-          "Deprecated alias. Read the MCP Resource `daski://provider/{tokenId}` " +
-          "instead — same shape, no tool-budget cost. Kept callable for one " +
-          "release cycle.",
-        inputSchema: {
-          providerTokenId: z.string(),
-        },
-        annotations: {
-          title: "[Deprecated] Get Daski provider by tokenId",
-          readOnlyHint: true,
-          idempotentHint: true,
-          openWorldHint: false,
-        },
-      },
-      async (args) => {
-        logDeprecatedToolCall("daski_get_provider");
-        const parsed = parseBigIntArg(args.providerTokenId, "providerTokenId");
-        if (!parsed.ok) return parsed.error;
-        const provider = deps.cache.get(parsed.value);
-        if (!provider) {
-          return errorJson({
-            code: "PROVIDER_NOT_FOUND",
-            message: "provider is not whitelisted or not in cache",
-          });
-        }
-        // Multi-service providers return one entry per service; the
-        // single-entry shape is preserved for single-card providers.
-        const entries = formatForSkillDiscover([provider], deps.config);
-        return json(entries.length === 1 ? entries[0] : entries);
-      },
-    );
-
     // ── Purchase / settle / confirm ──────────────────────────────────
     //
     // Note: daski_check_availability was removed in v4. Agents reach
     // check-availability via daski_submit_task → provider's free A2A
     // skill (synchronous; the gateway's submit_task flattens artifacts
-    // inline, so the answer arrives in one round trip). The gateway's
-    // /availability HTTP route is preserved as a back-compat sibling
-    // channel for legacy callers.
+    // inline, so the answer arrives in one round trip).
 
     server.registerTool(
       "daski_purchase",
@@ -1130,26 +933,25 @@ export async function createMcpServer(
       // Same shape as the legacy daski_prepare_confirm tool. The buyer
       // re-calls with `signature` + `deadline` to submit the attestation.
       if (!args.signature) {
-        if (!HEX_ADDR.test(args.attester)) {
+        const prepared = await prepareConfirmation(
+          { config: deps.config, reader: deps.reader },
+          {
+            paymentId: args.paymentId,
+            confirmation: args.confirmation,
+            attester: args.attester,
+            deadlineSeconds: args.deadlineSeconds,
+            refUid: args.refUid,
+          },
+        );
+        if (!prepared.ok) {
+          const { code, message, ...details } = prepared.error;
           return errorJson({
-            code: "BAD_ATTESTER",
-            message: "attester must be a 20-byte hex address",
+            code,
+            message,
+            ...(Object.keys(details).length > 0 ? { details } : {}),
           });
         }
-        const qs = new URLSearchParams({
-          confirmation: args.confirmation,
-          attester: args.attester,
-        });
-        if (args.deadlineSeconds != null) {
-          qs.set("deadlineSeconds", String(args.deadlineSeconds));
-        }
-        if (args.refUid) qs.set("refUid", args.refUid);
-        const res = await fetch(
-          `${deps.config.publicUrl}/confirm-prep/${encodeURIComponent(args.paymentId)}?${qs}`,
-        );
-        const body = await res.json();
-        if (!res.ok) return upstreamErrorJson(body);
-        return json(body);
+        return json(prepared.value);
       }
 
       // Second call (signature present) → submit the EAS attestation.
@@ -1247,16 +1049,21 @@ export async function createMcpServer(
       }
       // First call (no signature) → return typed-data.
       if (!args.signature) {
-        const qs = new URLSearchParams({ walletAddress: args.walletAddress });
-        if (args.name != null) qs.set("name", args.name);
-        if (args.agentURI != null) qs.set("agentURI", args.agentURI);
-        if (args.deadlineSeconds != null) {
-          qs.set("deadlineSeconds", String(args.deadlineSeconds));
+        const prepared = await prepareRegistration(identityDeps, {
+          walletAddress: args.walletAddress,
+          name: args.name,
+          agentURI: args.agentURI,
+          deadlineSeconds: args.deadlineSeconds,
+        });
+        if (!prepared.ok) {
+          const { code, message, ...details } = prepared.error;
+          return errorJson({
+            code,
+            message,
+            ...(Object.keys(details).length > 0 ? { details } : {}),
+          });
         }
-        const res = await fetch(`${deps.config.publicUrl}/register-prep?${qs}`);
-        const body = await res.json();
-        if (!res.ok) return upstreamErrorJson(body);
-        return json(body);
+        return json(prepared.value);
       }
       // Second call → submit signed registration.
       if (!args.agentURI || !args.deadline) {
@@ -1268,19 +1075,21 @@ export async function createMcpServer(
             "typed-data matches what the registry expects.",
         });
       }
-      const res = await fetch(`${deps.config.publicUrl}/register`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
+      const submitted = await submitRegistration(identityDeps, {
           walletAddress: args.walletAddress,
           agentURI: args.agentURI,
           deadline: args.deadline,
           signature: args.signature,
-        }),
       });
-      const body = await res.json();
-      if (!res.ok) return upstreamErrorJson(body);
-      return json(body);
+      if (!submitted.ok) {
+        const { code, message, ...details } = submitted.error;
+        return errorJson({
+          code,
+          message,
+          ...(Object.keys(details).length > 0 ? { details } : {}),
+        });
+      }
+      return json(submitted.value);
     };
 
     server.registerTool(
@@ -1371,103 +1180,6 @@ export async function createMcpServer(
         },
       },
       registerAgentHandler,
-    );
-
-    server.registerTool(
-      "daski_prepare_registration",
-      {
-        description:
-          "Deprecated alias. Call `daski_register_agent` without `signature` " +
-          "to receive the RegisterAgent typed-data. Kept callable for one " +
-          "release cycle.",
-        inputSchema: {
-          walletAddress: z.string(),
-          name: z.string().optional(),
-          agentURI: z.string().optional(),
-          deadlineSeconds: z.number().optional(),
-        },
-        annotations: {
-          title: "[Deprecated] Get RegisterAgent typed-data",
-          readOnlyHint: true,
-          idempotentHint: false,
-          openWorldHint: false,
-        },
-      },
-      async (args) => {
-        logDeprecatedToolCall("daski_prepare_registration");
-        return registerAgentHandler({
-          walletAddress: args.walletAddress,
-          name: args.name,
-          agentURI: args.agentURI,
-          deadlineSeconds: args.deadlineSeconds,
-        });
-      },
-    );
-
-    server.registerTool(
-      "daski_register_buyer",
-      {
-        description:
-          "Deprecated alias. Call `daski_register_agent` with `signature` " +
-          "(plus the `agentURI` and `deadline` returned by the first call) " +
-          "to submit the registration. Kept callable for one release cycle.",
-        inputSchema: {
-          walletAddress: z.string(),
-          agentURI: z.string(),
-          deadline: z.string(),
-          signature: z.string(),
-        },
-        annotations: {
-          title: "[Deprecated] Register an ERC-8004 agent (gasless)",
-          readOnlyHint: false,
-          destructiveHint: false,
-          idempotentHint: true,
-          openWorldHint: true,
-        },
-      },
-      async (args) => {
-        logDeprecatedToolCall("daski_register_buyer");
-        return registerAgentHandler({
-          walletAddress: args.walletAddress,
-          agentURI: args.agentURI,
-          deadline: args.deadline,
-          signature: args.signature,
-        });
-      },
-    );
-
-    server.registerTool(
-      "daski_prepare_confirm",
-      {
-        description:
-          "Deprecated alias. Call `daski_confirm_delivery` without " +
-          "`signature` to receive the same typed-data, then call it again " +
-          "with the signed `{v,r,s}` to submit. Kept callable for one " +
-          "release cycle.",
-        inputSchema: {
-          paymentId: z.string(),
-          confirmation: z.enum(["Confirmed", "NotConfirmed"]),
-          attester: z.string(),
-          deadlineSeconds: z.number().optional(),
-          refUid: z.string().optional(),
-        },
-        annotations: {
-          title: "[Deprecated] Get EAS Attest typed-data for confirmation",
-          readOnlyHint: true,
-          idempotentHint: false,
-          openWorldHint: false,
-        },
-      },
-      async (args) => {
-        logDeprecatedToolCall("daski_prepare_confirm");
-        return confirmDeliveryHandler({
-          paymentId: args.paymentId,
-          confirmation: args.confirmation,
-          attester: args.attester,
-          deadlineSeconds: args.deadlineSeconds,
-          refUid: args.refUid,
-        });
-      },
     );
 
     // Note: daski_prepare_dns_capability was removed in v4. The DNS
@@ -1986,7 +1698,11 @@ export async function createMcpServer(
               return errorJson({
                 code: "CHAIN_READ_FAILED",
                 message:
-                  `AgentIndex.resolve(${args.walletAddress}) failed: ${(err as Error).message}`,
+                  publicErrorMessage(
+                    "mcp.submitTask.agentOfWallet",
+                    err,
+                    "buyer identity lookup failed",
+                  ),
                 recoverable: true,
                 next_action:
                   "Retry, or pass buyerTokenId directly if you already know it.",
@@ -2299,58 +2015,6 @@ export async function createMcpServer(
       submitTaskHandler,
     );
 
-    server.registerTool(
-      "daski_build_envelope_auth",
-      {
-        description:
-          "Deprecated alias. Call `daski_submit_task` without `envelopeAuth` " +
-          "on a paid / ownership-gated / capability-gated skill — the " +
-          "gateway returns the same typed-data, plus the matching " +
-          "`messageId` for the signed retry. Kept callable for one release " +
-          "cycle.",
-        inputSchema: {
-          skillId: z.string(),
-          paymentId: z.string(),
-          chainId: z.number(),
-          buyerTokenId: z.string(),
-          serviceArgs: z.record(z.string(), z.unknown()).optional(),
-          messageId: z.string().optional(),
-          issuedAt: z.number().optional(),
-        },
-        annotations: {
-          title: "[Deprecated] Build envelope-auth typed-data",
-          readOnlyHint: true,
-          openWorldHint: false,
-        },
-      },
-      async (args) => {
-        logDeprecatedToolCall("daski_build_envelope_auth");
-        const envelope = buildEnvelopeAuth({
-          skillId: args.skillId,
-          paymentId: args.paymentId,
-          chainId: args.chainId,
-          buyerTokenId: args.buyerTokenId,
-          identityRegistryAddress: deps.config.identityRegistryAddress,
-          serviceArgs: args.serviceArgs ?? {},
-          messageId: args.messageId,
-          issuedAt: args.issuedAt,
-        });
-        return json({
-          messageId: envelope.messageId,
-          requestHash: envelope.requestHash,
-          issuedAt: envelope.issuedAt,
-          authorization: envelope.authorization,
-          eip712TypedData: envelope.eip712TypedData,
-          hint:
-            "Deprecated. Sign eip712TypedData with the buyer's agent " +
-            "wallet, then call daski_submit_task with envelopeAuth + the " +
-            "SAME messageId. The same handshake now happens automatically " +
-            "if you call daski_submit_task without envelopeAuth on the " +
-            "first attempt.",
-        });
-      },
-    );
-
     // ── A2A task status (polling or SSE streaming) ───────────────────
     //
     // §3.7 — domain registrations regularly take 30-120s. Polling every
@@ -2597,7 +2261,10 @@ export async function createMcpServer(
           | number
           | undefined;
 
-        const guard = await guardProviderUrl(args.providerA2AUrl);
+        const guard = await guardProviderUrl(
+          args.providerA2AUrl,
+          enforceUrlSafety,
+        );
         if (guard) return guard;
 
         const controller = new AbortController();
@@ -2804,7 +2471,11 @@ export async function createMcpServer(
           if (e.name !== "AbortError") {
             return errorJson({
               code: "PROVIDER_ERROR",
-              message: `SSE read failed: ${(err as Error).message}`,
+              message: publicErrorMessage(
+                "mcp.taskStatus.sse",
+                err,
+                "provider event stream failed",
+              ),
             });
           }
           // AbortError = our overallTimer fired → return latest known state.
@@ -2866,14 +2537,9 @@ export async function createMcpServer(
       buyerName?: string;
     }
 
-    // Synchronous free skills (open-free, single round-trip, answer
-    // inline). Driven off `skillMeta.directEndpoint`; older provider
-    // deployments that haven't migrated still dispatch `check-availability`
-    // to /availability via the legacy fallback so the audit refactor
-    // doesn't force a coordinated provider deploy.
+    // Synchronous free skills are explicitly declared by the provider.
     function resolveSynchronousDispatch(
       skillMeta: Record<string, unknown>,
-      skillId: string,
     ): { endpoint: string; kind: string } | null {
       const direct = skillMeta["directEndpoint"];
       if (typeof direct === "string" && direct.startsWith("/")) {
@@ -2882,9 +2548,6 @@ export async function createMcpServer(
             ? (skillMeta["directResultKind"] as string)
             : "direct";
         return { endpoint: direct, kind };
-      }
-      if (skillId === "check-availability") {
-        return { endpoint: "/availability", kind: "availability" };
       }
       return null;
     }
@@ -3394,14 +3057,9 @@ export async function createMcpServer(
         });
       }
 
-      // Synchronous direct-dispatch (open-free + declared
-      // `directEndpoint`, or the legacy `check-availability` fallback).
-      // The provider's response fields land inline; no plan steps.
+      // Synchronous direct-dispatch requires a declared directEndpoint.
       if (isOpenFree) {
-        const sync = resolveSynchronousDispatch(
-          provider.skillMeta,
-          args.skillId,
-        );
+        const sync = resolveSynchronousDispatch(provider.skillMeta);
         if (sync) return runSynchronousFreeSkill(ctx, sync.endpoint, sync.kind);
       }
 
@@ -3612,77 +3270,24 @@ export async function createMcpServer(
       // out of the try block so the plan step below can reference it.
       let registrationName: string | null = null;
       if (isAtomic) {
-        try {
-          const wallet = args.walletAddress.toLowerCase() as Hex;
-          const nonce = await deps.reader.getRegistrationNonce(wallet);
-          const nowSec = BigInt(Math.floor(Date.now() / 1000));
-          const deadline = nowSec + 3600n;
-          // ERC-8004 §2.2 conformance: default to a non-empty data: URI
-          // resolving to a minimal buyer card so reputation queries and
-          // Bazaar / agentic.market indexers can fetch agent metadata.
-          const agentURI = buildBuyerAgentURI(wallet, buyerName);
-          registrationName = buyerName ?? defaultBuyerName(wallet);
-          registrationPrep = {
-            walletAddress: args.walletAddress.toLowerCase(),
-            agentURI,
-            // Display name that will be minted with the new agentId —
-            // shown on receipts, buyer profiles, and the marketplace UI.
-            resolvedName: registrationName,
-            // The name is embedded in the typed-data the wallet signs, so
-            // the moment to pick one is BEFORE signing — surface that here,
-            // where the default is applied, not just in the tool docs.
-            ...(buyerName
-              ? {}
-              : {
-                  hint:
-                    `No display name was provided, so this wallet will be ` +
-                    `registered as '${registrationName}'. To use a real name ` +
-                    `on receipts and the Daski marketplace, re-call ` +
-                    `daski_buy_service with a \`name\` argument (max 64 chars, ` +
-                    `uniqueness not required) before signing — pick whatever ` +
-                    `name you want to be known by. Renames are not supported ` +
-                    `yet, so the name signed here sticks.`,
-                }),
-            nonce: nonce.toString(),
-            deadline: deadline.toString(),
-            eip712TypedData: {
-              // Domain of the Daski AgentIndex — registerWithSig verifies
-              // the consent signature there (the canonical ERC-8004
-              // registry has no gasless registration of its own).
-              domain: {
-                name: "Daski AgentIndex",
-                version: "1",
-                chainId: deps.config.chainId,
-                verifyingContract: deps.config.agentIndexAddress,
-              },
-              types: {
-                RegisterAgent: [
-                  { name: "agentURI", type: "string" },
-                  { name: "agentWallet", type: "address" },
-                  { name: "nonce", type: "uint256" },
-                  { name: "deadline", type: "uint256" },
-                ],
-              },
-              primaryType: "RegisterAgent",
-              message: {
-                agentURI,
-                agentWallet: args.walletAddress.toLowerCase(),
-                nonce: nonce.toString(),
-                deadline: deadline.toString(),
-              },
-            },
-            submitTemplate: {
-              walletAddress: args.walletAddress.toLowerCase(),
-              agentURI,
-              deadline: deadline.toString(),
-            },
-          };
-        } catch (err) {
+        const prepared = await prepareRegistration(identityDeps, {
+          walletAddress: args.walletAddress,
+          name: buyerName,
+          deadlineSeconds: 3600,
+        });
+        if (!prepared.ok) {
+          const { code, message, ...details } = prepared.error;
           return errorJson({
-            code: "CHAIN_READ_FAILED",
-            message: `registrationNonce reverted: ${(err as Error).message}`,
+            code,
+            message,
+            ...(Object.keys(details).length > 0 ? { details } : {}),
           });
         }
+        registrationPrep = prepared.value;
+        registrationName =
+          typeof prepared.value.resolvedName === "string"
+            ? prepared.value.resolvedName
+            : null;
       }
 
       const steps: Array<{ toolName: string; hint: string; args: unknown }> = [];
@@ -3822,7 +3427,7 @@ export async function createMcpServer(
         paidArgWarnings.push(
           `\`name\` was ignored — this wallet is already registered as ` +
             `agentId ${buyerAgentId.toString()}, and display-name changes ` +
-            `after registration are not supported yet.`,
+            `after registration are outside the gateway registration flow.`,
         );
       }
       return json(
@@ -3886,7 +3491,7 @@ export async function createMcpServer(
           "- You are submitting a buyer attestation — use `daski_confirm_delivery`.",
           "",
           "Inputs:",
-          "- First call (no signature): `providerTokenId`, `skillId`, `serviceArgs` (per the skill's `requiredFields`), `walletAddress`, and `name`. ALWAYS pass `name` on the first call for a wallet unless you have CONFIRMED it is already registered: an already-registered wallet ignores it with a harmless `name was ignored` warning, while omitting it on a fresh wallet and adding it after seeing `atomic: true` forces a wasteful second quote. On a fresh wallet `name` becomes the PERMANENT display name of the agentId minted with the purchase (renames unsupported) — derive it from your PRINCIPAL's business (ask if unclear), never from the provider or any counterparty.",
+          "- First call (no signature): `providerTokenId`, `skillId`, `serviceArgs` (per the skill's `requiredFields`), `walletAddress`, and `name`. ALWAYS pass `name` on the first call for a wallet unless you have CONFIRMED it is already registered: an already-registered wallet ignores it with a harmless `name was ignored` warning, while omitting it on a fresh wallet and adding it after seeing `atomic: true` forces a wasteful second quote. On a fresh wallet `name` becomes registration-time metadata for the agentId minted with the purchase — derive it from your PRINCIPAL's business (ask if unclear), never from the provider or any counterparty.",
           "- Second call (signed retry): the same inputs plus `paymentPayload`, `paymentRequirements`, and (for fresh wallets) `registration`.",
           "- Entity formation: `managementType` and the matching `members` / `managers` arrays are TOP-LEVEL `serviceArgs` keys. There is NO `officials` or `officialsByClassification` wrapper; nesting them silently discards the fields and the quote rejects them as missing. Flat-or-nested normalization applies ONLY to contact roles (`registrant` / `admin` / `tech` / `billing`).",
           "",
@@ -3896,7 +3501,7 @@ export async function createMcpServer(
           "",
           "Next step: `daski_submit_task` with the returned `serviceRef`, `transactionHash`, `paymentId`, and the `buyerTokenId` from THIS response — carry it forward explicitly. (Fallback if you lost it: pass `walletAddress` and the gateway auto-derives from the on-chain AgentIndex. Omitting BOTH is the most common BAD_INPUT cause on dispatch.)",
           "",
-          "Fresh-wallet note: a wallet with no ERC-8004 agentId auto-registers on first purchase via a second signature, bundled into the same on-chain tx as the USDC payment. Watch for `registrationPrep` in the first response and sign both typed-data blocks before retrying. The newly-minted `buyerTokenId` comes back in the second-call response. Pass `name` on the first call to choose the display name minted with that registration — otherwise it defaults to `buyer-<last6>` derived from the wallet address, and renames are not supported yet.",
+          "Fresh-wallet note: a wallet with no ERC-8004 agentId auto-registers on first purchase via a second signature, bundled into the same on-chain tx as the USDC payment. Watch for `registrationPrep` in the first response and sign both typed-data blocks before retrying. The newly-minted `buyerTokenId` comes back in the second-call response. Pass `name` on the first call to choose the registration-time display name — otherwise it defaults to `buyer-<last6>` derived from the wallet address.",
         ].join("\n"),
         inputSchema: {
           skillId: z.string(),
@@ -3918,7 +3523,7 @@ export async function createMcpServer(
                 "Daski marketplace (max 64 chars, free-form, uniqueness " +
                 "not required). Defaults to `buyer-<last6>` derived from " +
                 "the wallet address. Ignored when the wallet already has " +
-                "an agentId — renames are not supported yet, so set it on " +
+                "an agentId — this gateway only sets registration-time names, so set it on " +
                 "the first purchase.",
             ),
           buyerTokenId: z
@@ -4146,7 +3751,11 @@ export async function createMcpServer(
           } catch (err) {
             return errorJson({
               code: "CHAIN_READ_FAILED",
-              message: `agentOfWallet reverted: ${(err as Error).message}`,
+              message: publicErrorMessage(
+                "mcp.buyService.agentOfWallet",
+                err,
+                "buyer identity lookup failed",
+              ),
             });
           }
         }
@@ -4191,102 +3800,15 @@ export async function createMcpServer(
   // ── Resources ────────────────────────────────────────────────────────
   //
   // §5 — agents that already know a providerTokenId (from search_services)
-  // can read the full Agent Card via a Resource URI instead of a tool
-  // call. The shape is identical to one entry of search_services, served
-  // lazily so it doesn't enter the tool budget.
-
-  function registerResources(server: McpServer) {
-    server.registerResource(
-      "daski-provider",
-      new ResourceTemplate("daski://provider/{tokenId}", {
-        list: async () => ({
-          resources: deps.cache.getAll().map((p) => ({
-            uri: `daski://provider/${p.agentId.toString()}`,
-            // Multi-service providers list every service name on the one
-            // resource ("Domain Management + Agent Mailboxes").
-            name:
-              cardsOf(p)
-                .map((c) => extractAgentCardName(c.agentCard))
-                .filter((n) => n !== "(unnamed)")
-                .join(" + ") || `provider#${p.agentId}`,
-            description: `Daski provider agent card (tokenId ${p.agentId.toString()}).`,
-            mimeType: "application/json",
-          })),
-        }),
-      }),
-      {
-        title: "Daski provider",
-        description:
-          "Full agent card + skill metadata for a single Daski provider, " +
-          "addressed by ERC-8004 agentId. Same shape as one entry of " +
-          "search_services. Read this when the agent already has a " +
-          "tokenId in hand and just needs the details.",
-      },
-      async (uri, variables) => {
-        const tokenId = String(variables.tokenId);
-        let id: bigint;
-        try {
-          id = BigInt(tokenId);
-        } catch {
-          return {
-            contents: [
-              {
-                uri: uri.href,
-                mimeType: "application/json",
-                text: JSON.stringify({
-                  error: "tokenId must be a numeric string",
-                }),
-              },
-            ],
-          };
-        }
-        const provider = deps.cache.get(id);
-        if (!provider) {
-          return {
-            contents: [
-              {
-                uri: uri.href,
-                mimeType: "application/json",
-                text: JSON.stringify({
-                  error: "provider is not whitelisted or not in cache",
-                }),
-              },
-            ],
-          };
-        }
-        // One entry per service card; single-card providers keep the
-        // historical single-object shape.
-        const entries = formatForSkillDiscover([provider], deps.config);
-        const formatted = entries.length === 1 ? entries[0] : entries;
-        return {
-          contents: [
-            {
-              uri: uri.href,
-              mimeType: "application/json",
-              text: JSON.stringify(formatted, null, 2),
-            },
-          ],
-        };
-      },
-    );
-  }
-
-  // ── Session lifecycle ────────────────────────────────────────────────
-
-  function buildSession(flag: DeprecationFlag): Promise<Session> {
+  function buildServer(): McpServer {
     const server = new McpServer(
-      { name: "daski-gateway", version: "0.2.0" },
+      { name: "daski-gateway", version: GATEWAY_VERSION },
       {
         capabilities: {
           tools: { listChanged: false },
           prompts: { listChanged: false },
-          // §5 — provider details are exposed as MCP Resources
-          // (`daski://provider/{tokenId}`) so MCP-aware UIs (Claude Code
-          // `@`-mention, Cursor) can lazy-load full Agent Cards without
-          // costing a tool slot. The legacy `daski_get_provider` tool
-          // remains callable during the deprecation grace period and is
-          // surfaced in `tools/list` only when the client opts in via
-          // `?include=deprecated` or `X-Daski-Include-Deprecated`.
+          // Provider details are exposed as MCP Resources so clients can
+          // lazy-load full Agent Cards without costing a tool slot.
           resources: { listChanged: false },
         },
         // Planted in the `initialize` response so the model sees the
@@ -4295,121 +3817,18 @@ export async function createMcpServer(
       },
     );
     registerTools(server);
-    registerResources(server);
-
-    // Override the McpServer's auto-generated `tools/list` handler so
-    // deprecated aliases are hidden by default. Deprecated tools stay
-    // *callable* — the override only touches the listing.
-    server.server.setRequestHandler(ListToolsRequestSchema, async () => {
-      const allTools = listRegisteredTools(server);
-      const visible = flag.includeDeprecated
-        ? allTools
-        : allTools.filter((t) => !DEPRECATED_TOOL_NAMES.has(t.name));
-      return { tools: visible };
-    });
-
-    const transport = new StreamableHTTPServerTransport({
-      sessionIdGenerator: () => randomUUID(),
-      onsessioninitialized: (sid) => {
-        sessions.set(sid, { server, transport });
-      },
-    });
-    transport.onclose = () => {
-      const sid = transport.sessionId;
-      if (sid) sessions.delete(sid);
-    };
-    return server.connect(transport).then(() => ({ server, transport }));
+    registerProviderResource(server, deps.cache, deps.config);
+    return server;
   }
 
-  app.post(deps.config.mcpPath, async (req, res) => {
-    try {
-      const sessionId = req.headers["mcp-session-id"] as string | undefined;
-      const existing = sessionId ? sessions.get(sessionId) : undefined;
-      if (existing) {
-        await existing.transport.handleRequest(req, res, req.body);
-        return;
-      }
-      if (!sessionId && isInitializeRequest(req.body)) {
-        const includeDeprecated = requestWantsDeprecated(req);
-        const fresh = await buildSession({ includeDeprecated });
-        await fresh.transport.handleRequest(req, res, req.body);
-        return;
-      }
-      res.status(404).json({
-        jsonrpc: "2.0",
-        error: { code: -32600, message: "Unknown MCP session" },
-        id: null,
-      });
-    } catch (err) {
-      console.error("[mcp POST]", err);
-      if (!res.headersSent) {
-        res.status(500).json({
-          jsonrpc: "2.0",
-          error: { code: -32603, message: "Internal server error" },
-          id: null,
-        });
-      }
-    }
+  return mountMcpHttpTransport({
+    app,
+    path: deps.config.mcpPath,
+    createServer: buildServer,
+    maxSessions: deps.maxSessions,
+    idleTtlMs: deps.sessionIdleTtlMs,
+    sweepIntervalMs: deps.sessionSweepIntervalMs,
   });
-
-  app.get(deps.config.mcpPath, async (req, res) => {
-    const sessionId = req.headers["mcp-session-id"] as string | undefined;
-    const existing = sessionId ? sessions.get(sessionId) : undefined;
-    if (!existing) {
-      res.status(404).json({
-        jsonrpc: "2.0",
-        error: { code: -32600, message: "Unknown MCP session" },
-        id: null,
-      });
-      return;
-    }
-    try {
-      await existing.transport.handleRequest(req, res);
-    } catch (err) {
-      console.error("[mcp GET]", err);
-      if (!res.headersSent) res.status(500).end();
-    }
-  });
-
-  app.delete(deps.config.mcpPath, async (req, res) => {
-    const sessionId = req.headers["mcp-session-id"] as string | undefined;
-    const existing = sessionId ? sessions.get(sessionId) : undefined;
-    if (!existing) {
-      res.status(404).json({
-        jsonrpc: "2.0",
-        error: { code: -32600, message: "Unknown MCP session" },
-        id: null,
-      });
-      return;
-    }
-    try {
-      await existing.transport.handleRequest(req, res);
-    } catch (err) {
-      console.error("[mcp DELETE]", err);
-      if (!res.headersSent) res.status(500).end();
-    }
-  });
-
-  return {
-    sessionCount() {
-      return sessions.size;
-    },
-    async close() {
-      for (const session of sessions.values()) {
-        try {
-          await session.transport.close();
-        } catch {
-          /* ignore */
-        }
-        try {
-          await session.server.close();
-        } catch {
-          /* ignore */
-        }
-      }
-      sessions.clear();
-    },
-  };
 }
 
 // ── Provider matching helpers (kept local so MCP doesn't import buyService) ──

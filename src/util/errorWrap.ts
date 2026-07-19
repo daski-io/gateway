@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { logger } from "./logger.js";
 
 // Logs a server-side error and returns a short correlation id that's safe
 // to surface to the client. Replaces the previous pattern of echoing
@@ -9,7 +10,15 @@ import { randomUUID } from "node:crypto";
 
 export function logErrorWithId(context: string, err: unknown): string {
   const correlationId = randomUUID();
-  // eslint-disable-next-line no-console
-  console.error(`[${context} ${correlationId}]`, err);
+  logger.error(`${context} failed`, { correlationId, error: err });
   return correlationId;
+}
+
+export function publicErrorMessage(
+  context: string,
+  err: unknown,
+  message: string,
+): string {
+  const correlationId = logErrorWithId(context, err);
+  return `${message} (reference: ${correlationId})`;
 }

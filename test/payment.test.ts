@@ -452,6 +452,31 @@ describe("payment", () => {
     expect(gateway.mockChain.settlements.length).toBe(1);
   });
 
+  it("serializes concurrent settlement retries before broadcasting", async () => {
+    const { serviceRef } = await gateway.purchaseChallenge(2n, {
+      buyerTokenId: "5",
+    });
+    gateway.queueSettlementSuccess({
+      txHash: TEST_TX,
+      paymentId: 8n,
+      serviceRef: serviceRef!,
+      providerTokenId: 2n,
+      buyerTokenId: 5n,
+      totalAmount: 15_000_000n,
+    });
+    const payload = await signAndBuildPayload(serviceRef!, 15_000_000n);
+    const [first, second] = await Promise.all([
+      gateway.purchaseSettle(2n, payload),
+      gateway.purchaseSettle(2n, payload),
+    ]);
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(200);
+    expect(gateway.mockChain.settlements).toHaveLength(1);
+    expect(second.json.settlement.transaction).toBe(
+      first.json.settlement.transaction,
+    );
+  });
+
   it("expires stale challenges via the background job helper", async () => {
     const ref =
       "0xfeed000000000000000000000000000000000000000000000000000000000002" as Hex;

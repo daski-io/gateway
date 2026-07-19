@@ -1,8 +1,10 @@
 import { mcpError, type McpToolResult } from "./util.js";
 import {
   readBoundedJson,
+  safeFetch,
   UrlSafetyError,
   validateUrlForOutbound,
+  type ValidatedUrl,
 } from "../util/urlSafety.js";
 
 // ── Outbound A2A POST helper ────────────────────────────────────────────
@@ -21,6 +23,7 @@ import {
 export type Fetcher = (
   url: string,
   init?: RequestInit,
+  preValidated?: ValidatedUrl,
 ) => Promise<Response>;
 
 export type A2APostFailureReason =
@@ -78,40 +81,50 @@ export async function a2aPostJson<T>(
   jsonBody: unknown,
   opts: A2APostOptions,
 ): Promise<A2APostResult<T>> {
-  try {
-    await validateUrlForOutbound(url);
-  } catch (err) {
-    if (err instanceof UrlSafetyError) {
-      return {
-        ok: false,
-        reason: "url_blocked",
-        message: err.message,
-        urlSafetyCode: err.code,
-      };
+  let validated: ValidatedUrl | undefined;
+  if (opts.fetch === safeFetch) {
+    try {
+      validated = await validateUrlForOutbound(url);
+    } catch (err) {
+      if (err instanceof UrlSafetyError) {
+        return {
+          ok: false,
+          reason: "url_blocked",
+          message: err.message,
+          urlSafetyCode: err.code,
+        };
+      }
+      throw err;
     }
-    throw err;
   }
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), opts.timeoutMs);
   let res: Response;
   try {
-    res = await opts.fetch(url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...(opts.extraHeaders ?? {}),
+    res = await opts.fetch(
+      url,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(opts.extraHeaders ?? {}),
+        },
+        body: JSON.stringify(jsonBody),
+        signal: controller.signal,
+        redirect: "manual",
       },
-      body: JSON.stringify(jsonBody),
-      signal: controller.signal,
-      redirect: "manual",
-    });
+      validated,
+    );
   } catch (err) {
     const e = err as { name?: string };
+    const timedOut = e.name === "AbortError";
     return {
       ok: false,
-      reason: e.name === "AbortError" ? "timeout" : "unreachable",
-      message: (err as Error).message,
+      reason: timedOut ? "timeout" : "unreachable",
+      message: timedOut
+        ? "provider request timed out"
+        : "provider request failed",
     };
   } finally {
     clearTimeout(timer);
@@ -156,7 +169,9 @@ export async function a2aPostJson<T>(
 
 export async function guardProviderUrl(
   url: string,
+  enabled = true,
 ): Promise<McpToolResult | null> {
+  if (!enabled) return null;
   try {
     await validateUrlForOutbound(url);
     return null;

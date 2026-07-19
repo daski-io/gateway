@@ -70,7 +70,11 @@ describe("validateAndNormalizeServiceArgs empty-vs-absent", () => {
     );
     expect(r.ok).toBe(false);
     if (r.ok) return;
-    const payload = JSON.parse(r.error.content[0].text) as {
+    const content = r.error.content[0];
+    if (content?.type !== "text") {
+      throw new Error("expected a text validation error");
+    }
+    const payload = JSON.parse(content.text) as {
       details: { missingFields: string[]; emptyFields: string[]; hint?: string };
       next_action: string;
     };
@@ -84,7 +88,11 @@ describe("validateAndNormalizeServiceArgs empty-vs-absent", () => {
     const r = validateAndNormalizeServiceArgs({ registrantState: "CO" }, required);
     expect(r.ok).toBe(false);
     if (r.ok) return;
-    const payload = JSON.parse(r.error.content[0].text) as {
+    const content = r.error.content[0];
+    if (content?.type !== "text") {
+      throw new Error("expected a text validation error");
+    }
+    const payload = JSON.parse(content.text) as {
       details: { missingFields: string[]; emptyFields: string[] };
     };
     expect(payload.details.missingFields).toEqual(["domain"]);

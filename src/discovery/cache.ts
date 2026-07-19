@@ -16,6 +16,7 @@ import {
   parseProviderLegalMetadata,
   ProviderLegalValidationError,
 } from "../legal/validation.js";
+import { logger as defaultLogger, type GatewayLogger } from "../util/logger.js";
 
 // 256 KB is enough for any well-formed Agent Card (largest live one is ~12 KB).
 // A whitelisted-but-malicious provider serving a multi-GB JSON body would
@@ -66,7 +67,7 @@ export interface CacheOptions {
     oldProviders: CachedProvider[],
     newProviders: CachedProvider[],
   ) => void;
-  logger?: Pick<Console, "log" | "warn" | "error">;
+  logger?: Pick<GatewayLogger, "log" | "warn" | "error">;
 }
 
 export class DiscoveryCache {
@@ -83,7 +84,7 @@ export class DiscoveryCache {
     oldProviders: CachedProvider[],
     newProviders: CachedProvider[],
   ) => void;
-  private readonly logger: Pick<Console, "log" | "warn" | "error">;
+  private readonly logger: Pick<GatewayLogger, "log" | "warn" | "error">;
   private timer: NodeJS.Timeout | null = null;
   private running = false;
   private fastRetryDelayMs = FAST_RETRY_BASE_MS;
@@ -102,7 +103,7 @@ export class DiscoveryCache {
     this.fetchFn = opts.fetch ?? safeFetch;
     this.agentCardFetchTimeoutMs = opts.agentCardFetchTimeoutMs ?? 5000;
     this.onCatalogChanged = opts.onCatalogChanged;
-    this.logger = opts.logger ?? console;
+    this.logger = opts.logger ?? defaultLogger;
   }
 
   setOnCatalogChanged(
@@ -409,7 +410,10 @@ export class DiscoveryCache {
     // RPC ports, internal services). A whitelisted-but-malicious provider
     // who controls their on-chain `agentURI` could otherwise pivot the
     // gateway's outbound fetch into the cluster's internal network.
-    const validated = await validateUrlForOutbound(uri);
+    const validated =
+      this.fetchFn === safeFetch
+        ? await validateUrlForOutbound(uri)
+        : undefined;
 
     const controller = new AbortController();
     const timeout = setTimeout(
@@ -417,11 +421,9 @@ export class DiscoveryCache {
       this.agentCardFetchTimeoutMs,
     );
     try {
-      // `redirect: "manual"` so a 30x to a private host doesn't slip past
-      // the validator. Tests inject `fetchFn` and use 127.0.0.1 URLs;
-      // urlSafety short-circuits the host check when NODE_ENV=test. The
-      // validated URL is forwarded to safeFetch so it can pin the connect
-      // to the IP we already resolved (no second DNS lookup).
+      // `redirect: "manual"` keeps each production redirect behind its own
+      // validation and pinned connection. Injected transports are trusted
+      // test doubles and do not open real network sockets.
       const res = await this.fetchFn(
         uri,
         { signal: controller.signal, redirect: "manual" },
@@ -431,7 +433,10 @@ export class DiscoveryCache {
         const loc = res.headers.get("location");
         if (loc) {
           const next = new URL(loc, uri).toString();
-          const nextValidated = await validateUrlForOutbound(next);
+          const nextValidated =
+            this.fetchFn === safeFetch
+              ? await validateUrlForOutbound(next)
+              : undefined;
           // Single redirect hop only: real Agent Card hosts don't need
           // chains, and longer chains are an attacker's preferred way to
           // smuggle a private-host target in.

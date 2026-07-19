@@ -5,7 +5,7 @@ import type { ChainReader } from "../chain/reader.js";
 import type { Queries } from "../db/queries.js";
 import type { Hex } from "../types.js";
 import { mirrorConfirmationFeedback } from "../reputation/mirror.js";
-import { logErrorWithId } from "../util/errorWrap.js";
+import { logErrorWithId, publicErrorMessage } from "../util/errorWrap.js";
 
 export interface ConfirmDeps {
   config: Config;
@@ -157,13 +157,13 @@ export async function runConfirmDelivery(
       typeof input.deadline === "number"
         ? BigInt(input.deadline)
         : BigInt(input.deadline);
-  } catch (err) {
+  } catch {
     return {
       ok: false,
       status: 400,
       error: {
         code: "bad_input",
-        message: `deadline could not be parsed as bigint: ${(err as Error).message}`,
+        message: "deadline could not be parsed as an integer",
       },
     };
   }
@@ -221,14 +221,20 @@ export async function runConfirmDelivery(
       refUid: input.refUid ?? null,
     };
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
     // EAS reverts on signature invalid / nonce mismatch / deadline expired;
     // the resolver reverts on unauthorized attester / duplicate confirmation
     // without refUID. All of these surface as a chain-level reverted call.
     return {
       ok: false,
       status: 400,
-      error: { code: "submit_failed", message },
+      error: {
+        code: "submit_failed",
+        message: publicErrorMessage(
+          "runConfirmDelivery.submit",
+          err,
+          "confirmation submission failed",
+        ),
+      },
     };
   }
 }

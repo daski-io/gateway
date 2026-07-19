@@ -16,11 +16,9 @@ typed-data so any signer (Coinbase AgentKit, CDP Wallet MCP, viem, MetaMask,
   (orchestrator), `daski_submit_task`, `daski_get_task_status`,
   `daski_fetch_artifact`, `daski_confirm_delivery` (all public);
   `daski_register_agent`, `daski_purchase`, `daski_settle_payment` (advanced).
-  Pre-refactor names
-  (`search_services`, `daski_prepare_confirm`, etc.) remain callable for a
-  one-release-cycle grace period as deprecated aliases. Two-call patterns
-  collapse the old "prepare → submit" pairs into a single tool whose first
-  call returns typed-data and second call submits the signed payload.
+  Two-call patterns collapse "prepare → submit" pairs into a single tool
+  whose first call returns typed-data and second call submits the signed
+  payload.
 - **REST API** — `/purchase/:tokenId` (x402 paywalled), `/verify` + `/settle`
   (x402 facilitator), `/discover`, `/confirm/:paymentId`, gasless register
   endpoints, and read-only `/public/v1/*`.
@@ -78,6 +76,7 @@ for the full list with defaults. The most important ones:
 | `AGENT_INDEX_ADDRESS` | Daski AgentIndex proxy — verified wallet→agentId resolution + gasless registration. **Required**; changes on every contract redeploy (ships blank in `.env.example`) |
 | `REPUTATION_REGISTRY_ADDRESS` | Canonical ERC-8004 ReputationRegistry. Set it to mirror confirmed deliveries as public feedback; unset = mirror off |
 | `PUBLIC_URL` | Externally reachable URL — embedded in payment requirements and discovery responses |
+| `TRUST_PROXY` | Explicit number of trusted reverse-proxy hops; default `0` prevents forged forwarded IPs |
 | `MARKETPLACE_TERMS_URL` | Required HTTPS URL for the Daski Terms of Use returned with every service and purchase |
 | `MARKETPLACE_PRIVACY_URL` | Required HTTPS URL for the Daski Privacy Policy returned with every service and purchase |
 | `DIRECT_ADAPTER_ADDRESS` | DirectTransferAdapter proxy. Setting it mounts the Bazaar-facing `/x402/services/:tokenId/:skillId` routes (external-facilitator rail). Unset = rail off |
@@ -150,7 +149,7 @@ any funds move.
 ## Architecture
 
 - `src/app.ts` — Express wiring, route registration, MCP mount
-- `src/mcp/server.ts` — MCP tool surface (`daski_search_services`, `daski_*`, deprecated aliases for one grace cycle)
+- `src/mcp/` — MCP tools plus bounded HTTP session lifecycle
 - `src/discovery/` — Agent Card cache + pgvector embedding sync
 - `src/serviceTaxonomy.ts` — the 16 service families, controlled service
   types, jurisdiction rules, and fulfillment-mode vocabulary
@@ -162,6 +161,7 @@ any funds move.
 - `src/auth/` — EIP-712 A2A envelope auth (byte-for-byte shared shape with daski-provider)
 - `src/db/` — Postgres pool, migrations, queries
 - `src/public/` — read-only `/public/v1/*` API
+- `src/http/` — health, discovery metadata, and crawler-facing documents
 - [PROVIDER_ONBOARDING.md](PROVIDER_ONBOARDING.md) — what a provider has to
   ship to be reachable from this gateway
 

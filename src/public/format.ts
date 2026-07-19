@@ -1014,11 +1014,9 @@ export function formatServiceForPublic(
  * PaymentRouter.refundedAmount (always-readable; defaults to 0n).
  */
 /**
- * Sibling formatter for chain-events sourced rows. Same wire shape as
- * `formatActivityRow` so the UI doesn't need to branch — the only
- * substantive difference is skillId/confirmationAttestationUid can be
- * null for chain-only rows (settled outside this gateway, no DB join
- * row to enrich from). The UI already renders `-` for null skill.
+ * Formatter for chain-events sourced rows. skillId and
+ * confirmationAttestationUid can be null for chain-only rows settled
+ * outside this gateway, without a database row to enrich from.
  *
  * Outcome / confirmation codes (0/1/2) map to the Solidity enum order
  * used by ReputationStorage. See indexer/chainEvents.ts for the
@@ -1058,44 +1056,5 @@ export function formatChainActivityRow(
     fulfillmentSeconds: row.fulfillmentSeconds,
     refundedUsdc: atomicToUsdc(row.refundedAtomic),
     confirmationAttestationUid: row.confirmationAttestationUid,
-  };
-}
-
-export function formatActivityRow(
-  challenge: StoredChallenge,
-  providerName: string | null,
-  buyerName: string | null,
-  record: ReputationRecord | null,
-  refundedAtomic: bigint,
-): PublicActivityRow {
-  // Defensive: if a non-paid row leaks through, fall back to createdAt for
-  // the timestamp. Better than emitting `null` and breaking the UI.
-  const timestamp = (challenge.verifiedAt ?? challenge.createdAt).toISOString();
-  return {
-    txHash: (challenge.transactionHash ?? "0x") as Hex,
-    buyerAgentId: challenge.buyerTokenId.toString(),
-    providerAgentId: challenge.providerTokenId.toString(),
-    providerName,
-    // Legacy accessor (no discovery-cache access here); the chain-events
-    // path in formatChainActivityRow is what resolves these for real.
-    serviceName: null,
-    serviceSlug: challenge.serviceSlug || null,
-    serviceId:
-      challenge.serviceId && challenge.serviceId !== ZERO_SERVICE_ID
-        ? challenge.serviceId
-        : null,
-    buyerName,
-    amount: atomicToUsdc(challenge.amount),
-    skillId: challenge.skillId,
-    timestamp,
-    outcome: record?.outcome ?? null,
-    confirmation: record?.confirmation ?? "Pending",
-    // bigint → number coercion is safe: fulfillmentSeconds is a wall-clock
-    // delta capped by realistic provider turnaround (hours to days), well
-    // within Number.MAX_SAFE_INTEGER.
-    fulfillmentSeconds:
-      record?.fulfillmentSeconds != null ? Number(record.fulfillmentSeconds) : null,
-    refundedUsdc: atomicToUsdc(refundedAtomic),
-    confirmationAttestationUid: challenge.confirmationAttestationUid,
   };
 }

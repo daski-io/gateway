@@ -5,6 +5,7 @@ import { createApp } from "./app.js";
 import { ChainEventsIndexer } from "./indexer/chainEvents.js";
 import type { ChainReader } from "./chain/reader.js";
 import type { Hex } from "./types.js";
+import { logger } from "./util/logger.js";
 
 async function main() {
   const config = loadConfig();
@@ -43,7 +44,7 @@ async function main() {
     if (config.whitelistedAgentIds.length === 0) {
       config.whitelistedAgentIds.push(providerAgentId);
     }
-    console.log(
+    logger.info(
       `daski-gateway CHAIN_MODE=mock — using AutoMockChainReader ` +
         `(provider agentId=${providerAgentId}, agentURI=${providerAgentUri}, ` +
         `buyer agentId=${defaultBuyerAgentId})`,
@@ -72,7 +73,7 @@ async function main() {
   // failures, not per-call disabled states).
   const mirrorEnabled =
     chainMode !== "mock" && Boolean(config.reputationRegistryAddress);
-  console.log(
+  logger.info(
     mirrorEnabled
       ? `canonical ERC-8004 feedback mirror enabled (ReputationRegistry ${config.reputationRegistryAddress})`
       : `canonical ERC-8004 feedback mirror disabled (${
@@ -90,7 +91,7 @@ async function main() {
   try {
     await bundle.cache.refresh();
   } catch (err) {
-    console.error("initial cache refresh failed:", err);
+    logger.error("initial cache refresh failed", err);
   }
 
   // Chain-events indexer: mirrors PaymentSettled events into the gateway
@@ -101,7 +102,7 @@ async function main() {
   indexer.start();
 
   const server = bundle.app.listen(config.port, () => {
-    console.log(
+    logger.info(
       `daski-gateway listening on :${config.port} (chain ${config.chainId}, mcp ${
         config.mcpEnabled ? config.mcpPath : "off"
       })`,
@@ -109,7 +110,7 @@ async function main() {
   });
 
   const shutdown = async (signal: string) => {
-    console.log(`received ${signal}, shutting down`);
+    logger.info(`received ${signal}, shutting down`);
     indexer.stop();
     server.close();
     await bundle.shutdown();
@@ -121,6 +122,6 @@ async function main() {
 }
 
 main().catch((err) => {
-  console.error("fatal:", err);
+  logger.error("fatal startup failure", err);
   process.exit(1);
 });

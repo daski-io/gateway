@@ -166,6 +166,26 @@ describe("facilitator endpoints", () => {
 
   // ── /settle ────────────────────────────────────────────────────────────
 
+  it("rejects malformed providerTokenId without destabilizing the server", async () => {
+    const { paymentRequirements } = await openChallenge();
+    paymentRequirements.extra.daski.providerTokenId = "not-a-number";
+    const res = await fetch(`${gateway.baseUrl}/settle`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        x402Version: 1,
+        paymentPayload: {},
+        paymentRequirements,
+      }),
+    });
+    expect(res.status).toBe(400);
+    expect((await res.json()) as any).toMatchObject({
+      success: false,
+      errorReason: expect.stringMatching(/providerTokenId.*numeric/),
+    });
+    expect((await fetch(`${gateway.baseUrl}/health`)).status).toBe(200);
+  });
+
   it("POST /settle submits on-chain and returns the flat Daski-extended body", async () => {
     const { serviceRef, paymentRequirements } = await openChallenge();
 

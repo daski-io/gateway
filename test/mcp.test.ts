@@ -82,7 +82,7 @@ describe("hosted MCP — wallet-agnostic surface", () => {
     await gateway.close();
   });
 
-  it("tools/list returns 6 public + 3 advanced by default (deprecated hidden)", async () => {
+  it("tools/list returns the 6 public and 3 advanced tools", async () => {
     const { client, transport } = await connectClient(gateway.baseUrl);
     try {
       const tools = await client.listTools();
@@ -137,59 +137,6 @@ describe("hosted MCP — wallet-agnostic surface", () => {
         tools.tools.find((tool) => tool.name === "daski_get_task_status")
           ?.description,
       ).toContain("reuse it until `authorization.expiry`");
-    } finally {
-      await transport.close();
-    }
-  });
-
-  it("tools/list includes deprecated aliases when X-Daski-Include-Deprecated is set", async () => {
-    // Re-open a session with the include-deprecated header so we exercise
-    // the per-session toggle that buildSession() reads off the inbound
-    // initialize request.
-    const transport = new StreamableHTTPClientTransport(
-      new URL(`${gateway.baseUrl}/mcp`),
-      {
-        requestInit: { headers: { "X-Daski-Include-Deprecated": "1" } },
-      },
-    );
-    const client = new Client({ name: "test-client", version: "0.0.0" });
-    await client.connect(transport);
-    try {
-      const tools = await client.listTools();
-      const names = tools.tools.map((t) => t.name).sort();
-      // Public + advanced + 6 deprecated.
-      expect(names).toContain("daski_search_services");
-      expect(names).toContain("search_services");
-      expect(names).toContain("daski_get_provider");
-      expect(names).toContain("daski_build_envelope_auth");
-      expect(names).toContain("daski_prepare_registration");
-      expect(names).toContain("daski_register_buyer");
-      expect(names).toContain("daski_prepare_confirm");
-    } finally {
-      await transport.close();
-    }
-  });
-
-  it("deprecated tool names remain callable even when hidden", async () => {
-    // Default session has no X-Daski-Include-Deprecated header, so the
-    // deprecated alias is hidden from tools/list — but the call still
-    // works (logged as deprecated_tool_call).
-    const { client, transport } = await connectClient(gateway.baseUrl);
-    try {
-      const result = await client.callTool({
-        name: "search_services",
-        arguments: {},
-      });
-      const body = parseResult<{
-        providers: Array<{
-          tokenId: string;
-          agentCardUrl: string;
-          legal: Record<string, string>;
-        }>;
-      }>(result);
-      expect(body.providers.length).toBe(1);
-      expect(body.providers[0].tokenId).toBe("2");
-      expect(body.providers[0].legal).toEqual(expectedLegal(gateway));
     } finally {
       await transport.close();
     }
@@ -385,9 +332,7 @@ describe("hosted MCP — wallet-agnostic surface", () => {
       expect(body.agentAuthority).toEqual(AGENT_AUTHORITY);
       expect(body.purchaseNotice).toBe(PURCHASE_NOTICE);
       expect(body.paymentRequirements.extra.daski.eip712TypedData).toBeDefined();
-      // Plan now uses the daski_confirm_delivery two-call pattern in place
-      // of the deprecated daski_prepare_confirm + daski_confirm_delivery
-      // pair. The first daski_confirm_delivery step is the unsigned
+      // The first daski_confirm_delivery step is the unsigned
       // typed-data request; the second is the signed retry.
       expect(body.plan.steps.map((s) => s.toolName)).toEqual([
         "<your-wallet>.signTypedData",
@@ -561,57 +506,6 @@ describe("hosted MCP — wallet-agnostic surface", () => {
       expect(body.agentId).toBe("88");
       expect(body.transactionHash).toMatch(/^0x3{64}$/);
       expect(gateway.mockChain.registrations).toHaveLength(1);
-    } finally {
-      await transport.close();
-    }
-  });
-
-  it("deprecated daski_prepare_registration alias still returns typed-data", async () => {
-    const fresh = "0xabcd000000000000000000000000000000000011" as Hex;
-    gateway.mockChain.setRegistrationNonce(fresh, 7n);
-
-    const { client, transport } = await connectClient(gateway.baseUrl);
-    try {
-      const body = parseResult<{
-        walletAddress: string;
-        nonce: string;
-        eip712TypedData: { primaryType: string };
-      }>(
-        await client.callTool({
-          name: "daski_prepare_registration",
-          arguments: { walletAddress: fresh, agentURI: "ipfs://buyer" },
-        }),
-      );
-      expect(body.nonce).toBe("7");
-      expect(body.eip712TypedData.primaryType).toBe("RegisterAgent");
-    } finally {
-      await transport.close();
-    }
-  });
-
-  it("deprecated daski_register_buyer alias still submits the registration", async () => {
-    const fresh = "0xabcd000000000000000000000000000000000012" as Hex;
-    gateway.mockChain.queueRegistration({
-      kind: "success",
-      agentId: 99n,
-      txHash: ("0x" + "44".repeat(32)) as Hex,
-    });
-
-    const { client, transport } = await connectClient(gateway.baseUrl);
-    try {
-      const body = parseResult<{ agentId: string; transactionHash: string }>(
-        await client.callTool({
-          name: "daski_register_buyer",
-          arguments: {
-            walletAddress: fresh,
-            agentURI: "ipfs://buyer",
-            deadline: String(Math.floor(Date.now() / 1000) + 600),
-            signature: ("0x" + "22".repeat(65)) as Hex,
-          },
-        }),
-      );
-      expect(body.agentId).toBe("99");
-      expect(body.transactionHash).toMatch(/^0x4{64}$/);
     } finally {
       await transport.close();
     }
@@ -989,6 +883,8 @@ describe("hosted MCP — wallet-agnostic surface", () => {
             requiresAssetOwnership: false,
             requiresCapability: false,
             requiredFields: ["domain"],
+            directEndpoint: "/availability",
+            directResultKind: "availability",
           },
         },
       ],
@@ -1726,34 +1622,6 @@ describe("hosted MCP — wallet-agnostic surface", () => {
     }
   });
 
-  it("deprecated daski_build_envelope_auth alias still returns the typed-data", async () => {
-    const { client, transport } = await connectClient(gateway.baseUrl);
-    try {
-      const body = parseResult<{
-        eip712TypedData: { primaryType: string };
-        authorization: { paymentId: string };
-        messageId: string;
-      }>(
-        await client.callTool({
-          name: "daski_build_envelope_auth",
-          arguments: {
-            skillId: "register-domain",
-            paymentId: "42",
-            chainId: 84532,
-            buyerTokenId: "5",
-            serviceArgs: { domain: "envelope.xyz" },
-          },
-        }),
-      );
-      expect(body.eip712TypedData.primaryType).toBe(
-        "A2ARequestAuthorization",
-      );
-      expect(body.authorization.paymentId).toBe("42");
-      expect(body.messageId).toBeDefined();
-    } finally {
-      await transport.close();
-    }
-  });
 });
 
 interface PaymentRequirementsLite {

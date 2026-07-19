@@ -70,6 +70,23 @@ function isHex32(x: unknown): x is Hex {
   return typeof x === "string" && /^0x[0-9a-fA-F]{64}$/.test(x);
 }
 
+function parseOptionalProviderTokenId(
+  value: unknown,
+): bigint | null | { error: string } {
+  if (value == null || value === "") return null;
+  if (
+    (typeof value !== "string" && typeof value !== "number") ||
+    !/^[0-9]+$/.test(String(value))
+  ) {
+    return { error: "paymentRequirements providerTokenId must be numeric" };
+  }
+  try {
+    return BigInt(value);
+  } catch {
+    return { error: "paymentRequirements providerTokenId is out of range" };
+  }
+}
+
 function badRequest(res: Response, message: string) {
   res.status(400).json({
     isValid: false,
@@ -173,11 +190,24 @@ export function createFacilitatorRouter(deps: FacilitatorDeps): Router {
     // Defence-in-depth: the URL segment is gone under this endpoint, so
     // bind the challenge to the providerTokenId advertised in the
     // paymentRequirements extra block.
-    const requirementsProviderId =
+    const rawRequirementsProviderId =
       body.paymentRequirements?.extra?.daski?.providerTokenId;
+    const requirementsProviderId = parseOptionalProviderTokenId(
+      rawRequirementsProviderId,
+    );
     if (
-      requirementsProviderId &&
-      BigInt(requirementsProviderId) !== challenge.providerTokenId
+      requirementsProviderId !== null &&
+      typeof requirementsProviderId === "object"
+    ) {
+      res.status(400).json({
+        success: false,
+        errorReason: requirementsProviderId.error,
+      });
+      return;
+    }
+    if (
+      requirementsProviderId !== null &&
+      requirementsProviderId !== challenge.providerTokenId
     ) {
       res.status(400).json({
         success: false,
