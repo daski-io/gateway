@@ -3,10 +3,8 @@ import type { Hex, OnChainProvider } from "../types.js";
 export interface PaymentSettledEvent {
   paymentId: bigint;
   serviceRef: Hex;
-  // serviceId — 32-byte hex. The post-refactor router (PaymentRouter v2)
-  // emits this as the third indexed topic so subgraphs can cheap-filter
-  // per-service. Always set on new settlements; legacy events read as
-  // bytes32(0).
+  // serviceId — 32-byte hex. PaymentRouter emits this as the third indexed
+  // topic so subgraphs can cheaply filter per service.
   serviceId: Hex;
   buyerAgentId: bigint;
   providerAgentId: bigint;

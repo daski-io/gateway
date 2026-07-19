@@ -488,7 +488,7 @@ describe("bazaar rail (/x402/services)", () => {
     expect(receipt.quote.quoteSignature).toBe(lastQuote.providerSignature);
     expect(receipt.serviceArgs).toEqual(serviceArgs);
     expect(res.paymentResponse).toBeTruthy();
-    expect(res.legacyPaymentResponse).toBe(res.paymentResponse);
+    expect(res.legacyPaymentResponse).toBeNull();
     const settlement = JSON.parse(
       Buffer.from(res.paymentResponse!, "base64").toString("utf8"),
     );
@@ -687,12 +687,12 @@ describe("bazaar rail (/x402/services)", () => {
     expect(pending?.status).toBe("pending");
     expect(pending?.externalSettleTx).toBeNull();
 
-    const cardPath = "/agent-cards/1.json";
-    const originalCard = (await (
-      await fetch(`${gw.mockProvider.baseUrl}${cardPath}`)
+    const registrationPath = "/agent-registrations/1.json";
+    const originalRegistration = (await (
+      await fetch(`${gw.mockProvider.baseUrl}${registrationPath}`)
     ).json()) as Record<string, unknown>;
-    gw.mockProvider.setAgentCard(cardPath, {
-      ...originalCard,
+    gw.mockProvider.setAgentCard(registrationPath, {
+      ...originalRegistration,
       termsUrl: "http://provider.example/terms",
     });
     await gw.refresh();
@@ -780,7 +780,7 @@ describe("bazaar rail (/x402/services)", () => {
         quotesBeforeRecovery,
       );
     } finally {
-      gw.mockProvider.setAgentCard(cardPath, originalCard);
+      gw.mockProvider.setAgentCard(registrationPath, originalRegistration);
       await gw.refresh();
     }
   });
@@ -845,12 +845,12 @@ describe("bazaar rail (/x402/services)", () => {
         commission: (PRICE * 5n) / 100n,
       },
     });
-    const cardPath = "/agent-cards/1.json";
-    const originalCard = (await (
-      await fetch(`${gw.mockProvider.baseUrl}${cardPath}`)
+    const registrationPath = "/agent-registrations/1.json";
+    const originalRegistration = (await (
+      await fetch(`${gw.mockProvider.baseUrl}${registrationPath}`)
     ).json()) as Record<string, unknown>;
-    gw.mockProvider.setAgentCard(cardPath, {
-      ...originalCard,
+    gw.mockProvider.setAgentCard(registrationPath, {
+      ...originalRegistration,
       termsUrl: "http://provider.example/terms",
     });
     await gw.refresh();
@@ -868,7 +868,7 @@ describe("bazaar rail (/x402/services)", () => {
           serviceArgs,
         );
       } finally {
-        gw.mockProvider.setAgentCard(cardPath, originalCard);
+        gw.mockProvider.setAgentCard(registrationPath, originalRegistration);
         await gw.refresh();
       }
     })();

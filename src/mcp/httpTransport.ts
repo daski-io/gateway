@@ -9,6 +9,7 @@ interface Session {
   server: McpServer;
   transport: StreamableHTTPServerTransport;
   lastSeenAt: number;
+  clientKey: string;
 }
 
 export interface McpWiring {
@@ -21,12 +22,15 @@ export interface McpHttpTransportOptions {
   path: string;
   createServer(): McpServer;
   maxSessions?: number;
+  maxSessionsPerClient?: number;
   idleTtlMs?: number;
   sweepIntervalMs?: number;
+  allowedOrigins?: string[];
 }
 
 const DEFAULT_MAX_SESSIONS = 100;
-const DEFAULT_IDLE_TTL_MS = 30 * 60 * 1000;
+const DEFAULT_MAX_SESSIONS_PER_CLIENT = 10;
+const DEFAULT_IDLE_TTL_MS = 10 * 60 * 1000;
 const DEFAULT_SWEEP_INTERVAL_MS = 60 * 1000;
 
 function sessionId(req: Request): string | undefined {
@@ -42,18 +46,28 @@ function unknownSession(res: Response): void {
   });
 }
 
+function clientKey(req: Request): string {
+  return req.ip ?? req.socket.remoteAddress ?? "unknown";
+}
+
 export function mountMcpHttpTransport(
   options: McpHttpTransportOptions,
 ): McpWiring {
   const sessions = new Map<string, Session>();
   const closing = new Set<string>();
   const maxSessions = options.maxSessions ?? DEFAULT_MAX_SESSIONS;
+  const maxSessionsPerClient =
+    options.maxSessionsPerClient ??
+    Math.min(DEFAULT_MAX_SESSIONS_PER_CLIENT, maxSessions);
   const idleTtlMs = options.idleTtlMs ?? DEFAULT_IDLE_TTL_MS;
   const sweepIntervalMs =
     options.sweepIntervalMs ?? DEFAULT_SWEEP_INTERVAL_MS;
   if (
     !Number.isInteger(maxSessions) ||
     maxSessions <= 0 ||
+    !Number.isInteger(maxSessionsPerClient) ||
+    maxSessionsPerClient <= 0 ||
+    maxSessionsPerClient > maxSessions ||
     !Number.isFinite(idleTtlMs) ||
     idleTtlMs <= 0 ||
     !Number.isFinite(sweepIntervalMs) ||
@@ -62,6 +76,23 @@ export function mountMcpHttpTransport(
     throw new Error("MCP session limits and timeouts must be positive");
   }
   let pendingInitializations = 0;
+  const pendingByClient = new Map<string, number>();
+
+  function originAllowed(req: Request): boolean {
+    const origin = req.header("origin");
+    if (!origin) return true;
+    return (options.allowedOrigins ?? []).includes(origin);
+  }
+
+  function rejectDisallowedOrigin(req: Request, res: Response): boolean {
+    if (originAllowed(req)) return false;
+    res.status(403).json({
+      jsonrpc: "2.0",
+      error: { code: -32000, message: "Origin is not allowed" },
+      id: null,
+    });
+    return true;
+  }
 
   async function closeSession(id: string, session: Session): Promise<void> {
     if (closing.has(id)) return;
@@ -94,7 +125,7 @@ export function mountMcpHttpTransport(
   }, sweepIntervalMs);
   sweep.unref?.();
 
-  function buildSession(): {
+  function buildSession(ownerKey: string): {
     server: McpServer;
     transport: StreamableHTTPServerTransport;
   } {
@@ -102,7 +133,12 @@ export function mountMcpHttpTransport(
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: () => randomUUID(),
       onsessioninitialized: (id) => {
-        sessions.set(id, { server, transport, lastSeenAt: Date.now() });
+        sessions.set(id, {
+          server,
+          transport,
+          lastSeenAt: Date.now(),
+          clientKey: ownerKey,
+        });
       },
     });
     transport.onclose = () => {
@@ -122,6 +158,7 @@ export function mountMcpHttpTransport(
 
   options.app.post(options.path, async (req, res) => {
     try {
+      if (rejectDisallowedOrigin(req, res)) return;
       const id = sessionId(req);
       const existing = id ? sessions.get(id) : undefined;
       if (existing) {
@@ -131,6 +168,7 @@ export function mountMcpHttpTransport(
       }
       if (!id && isInitializeRequest(req.body)) {
         await removeExpired();
+        const ownerKey = clientKey(req);
         if (sessions.size + pendingInitializations >= maxSessions) {
           res.status(503).json({
             jsonrpc: "2.0",
@@ -143,7 +181,23 @@ export function mountMcpHttpTransport(
           });
           return;
         }
+        const activeForClient = [...sessions.values()].filter(
+          (session) => session.clientKey === ownerKey,
+        ).length;
+        const pendingForClient = pendingByClient.get(ownerKey) ?? 0;
+        if (activeForClient + pendingForClient >= maxSessionsPerClient) {
+          res.status(429).json({
+            jsonrpc: "2.0",
+            error: {
+              code: -32000,
+              message: "MCP session limit reached for this client",
+            },
+            id: (req.body as { id?: unknown } | undefined)?.id ?? null,
+          });
+          return;
+        }
         pendingInitializations += 1;
+        pendingByClient.set(ownerKey, pendingForClient + 1);
         let fresh:
           | {
               server: McpServer;
@@ -151,11 +205,14 @@ export function mountMcpHttpTransport(
             }
           | undefined;
         try {
-          fresh = buildSession();
+          fresh = buildSession(ownerKey);
           await fresh.server.connect(fresh.transport);
           await fresh.transport.handleRequest(req, res, req.body);
         } finally {
           pendingInitializations -= 1;
+          const remaining = (pendingByClient.get(ownerKey) ?? 1) - 1;
+          if (remaining > 0) pendingByClient.set(ownerKey, remaining);
+          else pendingByClient.delete(ownerKey);
           if (fresh && !fresh.transport.sessionId) {
             await fresh.transport.close().catch(() => undefined);
             await fresh.server.close().catch(() => undefined);
@@ -177,6 +234,7 @@ export function mountMcpHttpTransport(
   });
 
   async function handleExisting(req: Request, res: Response): Promise<void> {
+    if (rejectDisallowedOrigin(req, res)) return;
     const id = sessionId(req);
     const existing = id ? sessions.get(id) : undefined;
     if (!existing) {

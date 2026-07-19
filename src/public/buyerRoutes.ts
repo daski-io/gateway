@@ -1,5 +1,5 @@
 import type { Router } from "express";
-import { extractAgentCardName } from "../discovery/format.js";
+import { cardsOf, extractAgentCardName } from "../discovery/format.js";
 import {
   formatChainActivityRow,
   type PublicBuyerDetail,
@@ -62,7 +62,9 @@ export function registerBuyerRoutes(
       const provider = cache.get(row.providerAgentId);
       return formatChainActivityRow(
         row,
-        provider ? extractAgentCardName(provider.agentCard) : null,
+        provider?.cards.length
+          ? extractAgentCardName(cardsOf(provider)[0]!.agentCard)
+          : null,
         serviceName(
           row.providerAgentId,
           row.serviceId,

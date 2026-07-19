@@ -1,16 +1,11 @@
-import {
-  encodeAbiParameters,
-  keccak256,
-  parseAbiParameters,
-} from "viem";
+import { encodeAbiParameters, keccak256 } from "viem";
 import type { Config } from "../config.js";
-import { DASKI_A2A_EXTENSION_URI } from "../config.js";
 import type { DiscoveryCache } from "../discovery/cache.js";
 import {
-  cardsOf,
   extractAgentCardUrl,
   extractMarketplaceExtension,
   findCardForSkill,
+  parseAgentSkills,
 } from "../discovery/format.js";
 import type { Queries } from "../db/queries.js";
 import type {
@@ -24,6 +19,11 @@ import type {
 } from "../types.js";
 import { buildPurchaseLegalContext } from "../legal/purchase.js";
 import { sanitizeForLlmReflection } from "../util/sanitize.js";
+import {
+  computeServiceId,
+  resolveServiceSlug,
+  resolveServiceVersion,
+} from "../discovery/serviceIdentity.js";
 
 // EIP-3009 TransferWithAuthorization — the same struct verifyAndSettle
 // recovers against. Embedded inline in the 402 response so any wallet
@@ -114,172 +114,15 @@ export type IssueResult =
   | { ok: true; requirements: PaymentRequirements; challenge: StoredChallenge }
   | { ok: false; code: string; message: string; status: number };
 
-/**
- * Default version used when the provider's Agent Card does not advertise
- * one. Matches the convention documented on the contract
- * (`registerService(.., version="1", ..)`). Free-form, but providers and
- * the gateway must agree — the version is part of the serviceId hash.
- */
-const DEFAULT_SERVICE_VERSION = "1";
-
-/**
- * Pulls the per-skill `version` field out of the provider's Agent Card.
- * Looks in the same two locations as findSkillMetaForPricing — falls back
- * to "1" when missing or non-string.
- */
-function resolveServiceVersion(
-  ext: DaskiMarketplaceExtension,
-  agentCard: Record<string, unknown>,
-  skillId: string,
-): string {
-  const meta = findSkillMetaForPricing(ext, agentCard, skillId);
-  const raw = meta?.["serviceVersion"] ?? meta?.["version"];
-  if (typeof raw === "string" && raw.length > 0 && raw.length <= 32) {
-    return raw;
-  }
-  return DEFAULT_SERVICE_VERSION;
-}
-
-/**
- * Resolves the **on-chain serviceSlug** for a given A2A skillId.
- *
- * Per the three-layer identity model (provider / service / skill), a
- * skillId is the off-chain A2A method name (e.g. `register-domain`),
- * while a serviceSlug is the on-chain service identifier (e.g.
- * `domain-management`). One service can be implemented by many skills.
- *
- * Resolution order:
- *   1. The skill's daski metadata explicitly declares `serviceSlug` —
- *      provider follows the corrected convention.
- *   2. Fallback: use the skillId itself as the slug. Preserves
- *      backwards compat with providers whose Agent Card was authored
- *      under the pre-fix model (one service per skill — wrong
- *      cardinality, but functionally correct so payments still settle).
- *
- * The fallback path will leave provider reputation fragmented across
- * skills; the right answer is for providers to declare serviceSlug in
- * their Agent Card. Until they do, we don't synthesize a wrong slug.
- */
-function resolveServiceSlug(
-  ext: DaskiMarketplaceExtension,
-  agentCard: Record<string, unknown>,
-  skillId: string,
-): string {
-  const meta = findSkillMetaForPricing(ext, agentCard, skillId);
-  const raw = meta?.["serviceSlug"];
-  if (typeof raw === "string" && raw.length > 0 && raw.length <= 64) {
-    return raw;
-  }
-  // Fallback: skillId becomes the slug. Legacy 1:1 cardinality.
-  return skillId;
-}
-
-/**
- * Off-chain serviceId derivation. Mirrors
- * `ServiceRegistry._computeServiceId`:
- *   keccak256(abi.encode(uint256 providerAgentId, string serviceSlug, string version))
- * Standard ABI encoding (NOT packed) — the contract switched to
- * `abi.encode` in the audit refactor, so the gateway must match byte-for
- * -byte. Off-chain identity is critical — the X402Adapter rejects any
- * settle whose EIP-3009 nonce isn't bound to the same `(serviceRef,
- * providerAgentId, serviceId)` 3-tuple, so a mismatch here surfaces as
- * "auth not bound to call" at settlement time.
- */
-export function computeServiceId(
-  providerAgentId: bigint,
-  serviceSlug: string,
-  version: string,
-): Hex {
-  return keccak256(
-    encodeAbiParameters(parseAbiParameters("uint256, string, string"), [
-      providerAgentId,
-      serviceSlug,
-      version,
-    ]),
-  ) as Hex;
-}
-
-/**
- * Resolves the **primary service triple** for a cached provider — i.e. the
- * (serviceSlug, version, serviceId) that the provider's first listed skill
- * rolls up to on-chain. Picks the first skill with valid metadata.
- *
- * With current 1:1 cardinality (one provider lists one service), this is
- * also the only service. Once providers list multiple services we'd return
- * an array; for now this is what the public detail route uses to scope
- * service-level reputation reads without changing the URL shape.
- *
- * Returns null when the provider has no skills, no marketplace extension,
- * or no skill whose slug passes the contract's 1–64-byte bound.
- */
-export function derivePrimaryServiceId(
-  provider: CachedProvider,
-): { serviceSlug: string; serviceVersion: string; serviceId: Hex } | null {
-  // Multi-service providers: the FIRST card that yields a valid slug is
-  // the "primary" service (registration-file order — providers list
-  // their flagship first). Callers that need a specific service should
-  // resolve per skill via findCardForSkill instead.
-  for (const card of cardsOf(provider)) {
-    const ext = extractMarketplaceExtension(card.agentCard);
-    if (!ext) continue;
-    const skills = card.agentCard["skills"];
-    if (!Array.isArray(skills) || skills.length === 0) continue;
-    for (const skill of skills) {
-      if (!skill || typeof skill !== "object") continue;
-      const id = (skill as Record<string, unknown>).id;
-      if (typeof id !== "string" || id.length === 0) continue;
-      const serviceSlug = resolveServiceSlug(ext, card.agentCard, id);
-      if (serviceSlug.length === 0 || serviceSlug.length > 64) continue;
-      const serviceVersion = resolveServiceVersion(ext, card.agentCard, id);
-      const serviceId = computeServiceId(
-        provider.agentId,
-        serviceSlug,
-        serviceVersion,
-      );
-      return { serviceSlug, serviceVersion, serviceId };
-    }
-  }
-  return null;
-}
-
-/**
- * Pulls the daski marketplace skill metadata for a given skillId from an
- * Agent Card. Supports both publishing shapes observed in the wild:
- *   A) `skills[i].metadata[DASKI_A2A_EXTENSION_URI]`
- *   B) `extensions[DASKI_A2A_EXTENSION_URI].skills[skillId]` (what
- *      daski-provider serves today)
- * Returns null when the skill is not listed or its metadata is missing.
- */
+/** Return current marketplace metadata for a listed skill. */
 function findSkillMetaForPricing(
-  ext: DaskiMarketplaceExtension,
   agentCard: Record<string, unknown>,
   skillId: string,
 ): Record<string, unknown> | null {
-  const skills = agentCard["skills"];
-  if (Array.isArray(skills)) {
-    for (const skill of skills) {
-      if (!skill || typeof skill !== "object") continue;
-      if ((skill as Record<string, unknown>)["id"] !== skillId) continue;
-      const meta = (skill as Record<string, unknown>)["metadata"];
-      if (meta && typeof meta === "object") {
-        const daskiMeta = (meta as Record<string, unknown>)[
-          DASKI_A2A_EXTENSION_URI
-        ];
-        if (daskiMeta && typeof daskiMeta === "object") {
-          return daskiMeta as Record<string, unknown>;
-        }
-      }
-      break;
-    }
-  }
-  const skillMap = (ext as unknown as { skills?: unknown })?.skills;
-  if (skillMap && typeof skillMap === "object" && !Array.isArray(skillMap)) {
-    const meta = (skillMap as Record<string, unknown>)[skillId];
-    if (meta && typeof meta === "object") {
-      return meta as Record<string, unknown>;
-    }
-  }
-  return null;
+  return (
+    parseAgentSkills(agentCard).find((skill) => skill.id === skillId)
+      ?.metadata ?? null
+  );
 }
 
 function parsePriceList(raw: unknown): Map<string, bigint> {
@@ -322,7 +165,7 @@ function resolveAmount(
   | { ok: true; amount: bigint }
   | { ok: false; code: string; message: string; status: number } {
   const skillMeta = skillId
-    ? findSkillMetaForPricing(ext, agentCard, skillId)
+    ? findSkillMetaForPricing(agentCard, skillId)
     : null;
 
   let skillBaseAmount: bigint | null = null;
@@ -563,7 +406,7 @@ export function resolveSkillOffer(
     };
   }
 
-  const skillMeta = findSkillMetaForPricing(ext, agentCard, skillId);
+  const skillMeta = findSkillMetaForPricing(agentCard, skillId);
   if (skillMeta && skillMeta["paymentRequired"] === false) {
     return {
       ok: false,
@@ -600,16 +443,16 @@ export function resolveSkillOffer(
     };
   }
 
-  const serviceSlug = resolveServiceSlug(ext, agentCard, skillId);
-  if (serviceSlug.length === 0 || serviceSlug.length > 64) {
+  const serviceSlug = resolveServiceSlug(agentCard, skillId);
+  if (!serviceSlug) {
     return {
       ok: false,
       code: "bad_service_slug",
-      message: `resolved serviceSlug '${serviceSlug}' must be 1–64 bytes`,
+      message: "skill metadata must declare a 1–64 byte serviceSlug",
       status: 422,
     };
   }
-  const serviceVersion = resolveServiceVersion(ext, agentCard, skillId);
+  const serviceVersion = resolveServiceVersion(agentCard, skillId);
   const serviceId = computeServiceId(providerTokenId, serviceSlug, serviceVersion);
 
   const description = purchaseDescription(
@@ -657,12 +500,16 @@ export async function issuePaymentRequirements(
 
   // Multi-service providers: everything below (pricing extension, A2A
   // endpoint, serviceSlug/serviceId derivation) must come from the CARD
-  // that offers the requested skill, not the provider's first card.
-  // Falls back to the first card when the skill isn't found (the
-  // downstream skill checks surface the real error) or when no skillId
-  // was supplied (legacy /purchase without one).
-  const agentCard =
-    findCardForSkill(provider, params.skillId) ?? provider.agentCard;
+  // that offers the requested skill.
+  const agentCard = findCardForSkill(provider, params.skillId);
+  if (!agentCard) {
+    return {
+      ok: false,
+      code: "skill_not_found",
+      message: "skillId does not identify a skill in the provider catalog",
+      status: 404,
+    };
+  }
 
   const ext = extractMarketplaceExtension(agentCard);
   const providerA2AUrl = extractAgentCardUrl(agentCard);
@@ -706,11 +553,7 @@ export async function issuePaymentRequirements(
   // paid-skill path. Agents hit this when they mistake a free skill
   // (set-dns-record, list-dns-records) for a paid one.
   if (params.skillId) {
-    const skillMeta = findSkillMetaForPricing(
-      ext,
-      agentCard,
-      params.skillId,
-    );
+    const skillMeta = findSkillMetaForPricing(agentCard, params.skillId);
     if (skillMeta && skillMeta["paymentRequired"] === false) {
       return {
         ok: false,
@@ -761,12 +604,8 @@ export async function issuePaymentRequirements(
     amount = amountResult.amount;
   }
 
-  // Service-identity refactor: every paid settle binds to a row in
-  // ServiceRegistry. We resolve the on-chain serviceSlug from the
-  // skill's daski metadata (the new three-layer model); providers that
-  // haven't declared serviceSlug yet fall back to skillId-as-slug to
-  // preserve backwards compat. Either way, the resulting serviceSlug
-  // must be 1–64 bytes (contract enforces this on registerService).
+  // Every paid settle binds to a ServiceRegistry row. The provider card
+  // must declare the on-chain serviceSlug for the selected skill.
   const skillId = params.skillId ?? null;
   if (!skillId || skillId.length === 0 || skillId.length > 64) {
     return {
@@ -779,18 +618,17 @@ export async function issuePaymentRequirements(
       status: 400,
     };
   }
-  const serviceSlug = resolveServiceSlug(ext, agentCard, skillId);
-  if (serviceSlug.length === 0 || serviceSlug.length > 64) {
+  const serviceSlug = resolveServiceSlug(agentCard, skillId);
+  if (!serviceSlug) {
     return {
       ok: false,
       code: "bad_service_slug",
       message:
-        `resolved serviceSlug '${serviceSlug}' must be 1–64 bytes; check ` +
-        `the provider's Agent Card skill metadata for the daski extension.`,
+        "skill metadata must declare a 1–64 byte serviceSlug in the Daski extension.",
       status: 400,
     };
   }
-  const serviceVersion = resolveServiceVersion(ext, agentCard, skillId);
+  const serviceVersion = resolveServiceVersion(agentCard, skillId);
   const serviceId = computeServiceId(
     params.providerTokenId,
     serviceSlug,

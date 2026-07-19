@@ -290,13 +290,6 @@ export function createPurchaseRouter(deps: PurchaseDeps): Router {
         verify: "/verify",
         settle: "/settle",
       },
-      // Top-level legacy fields: `chainId` is numeric (existing clients),
-      // `chainIdCaip2` is the CAIP-2 string. Inside `kinds[]`, `chainId`
-      // is the CAIP-2 string (matching the v2 schema where the kind entry
-      // replaces v1's `network` enum).
-      chainId: deps.config.chainId,
-      chainIdCaip2: caip2,
-      network: deps.config.network,
       identityRegistryAddress: deps.config.identityRegistryAddress,
       paymentRouterAddress: deps.config.paymentRouterAddress,
       usdcAddress: deps.config.usdcAddress,

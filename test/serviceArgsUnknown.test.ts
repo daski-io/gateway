@@ -5,8 +5,8 @@ import {
 } from "../src/mcp/util.js";
 
 // Unknown-key detection behind the buy_service `warnings` field. Must be
-// conservative: contact containers, dotted-field prefixes, and legacy
-// aliases are all legitimate — only genuinely unconsumed keys may warn
+// conservative: contact containers and dotted-field prefixes are
+// legitimate — only genuinely unconsumed keys may warn
 // (observed incident: `displayName` silently dropped by create-mailbox).
 
 const REQUIRED = ["domain", "registrantName", "registrantEmail"];
@@ -23,14 +23,14 @@ describe("findUnknownServiceArgKeys", () => {
     ).toEqual(["displayName"]);
   });
 
-  it("accepts required, optional, alias, and contact-container keys", () => {
+  it("accepts required, optional, and contact-container keys", () => {
     expect(
       findUnknownServiceArgKeys(
         {
           domain: "x.info",
           registrantName: "Ola",
           term: 1,
-          years: 1, // legacy alias
+          years: 1,
           whoisPrivacy: true,
           registrant: { firstName: "Ola" }, // nested contact shape
           admin: {},
@@ -38,7 +38,7 @@ describe("findUnknownServiceArgKeys", () => {
         REQUIRED,
         OPTIONAL,
       ),
-    ).toEqual([]);
+    ).toEqual(["years"]);
   });
 
   it("whitelists the container of dotted field names", () => {

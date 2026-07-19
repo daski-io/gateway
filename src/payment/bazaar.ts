@@ -58,8 +58,8 @@ export interface BazaarDeps {
   queries: Queries;
   reader: ChainReader;
   facilitator: ExternalFacilitatorClient;
-  /** Fetcher for the provider's /quote endpoint (test seam). */
-  quoteFetch?: Fetcher;
+  /** SSRF-safe fetcher for the provider's /quote endpoint. */
+  quoteFetch: Fetcher;
   quoteTimeoutMs?: number;
 }
 
@@ -386,10 +386,7 @@ function setSettlementHeaders(
   settlement: Record<string, unknown>,
 ) {
   const encoded = Buffer.from(JSON.stringify(settlement)).toString("base64");
-  // v2 transport header plus the v1 legacy name — clients read whichever
-  // generation they speak.
   res.setHeader("PAYMENT-RESPONSE", encoded);
-  res.setHeader("X-PAYMENT-RESPONSE", encoded);
 }
 
 function isUniqueViolation(err: unknown): boolean {
@@ -1126,12 +1123,22 @@ export function createBazaarRouter(deps: BazaarDeps): Router {
     }
 
     const event = attribution.event;
-    await queries.recordChallengePaid(
+    const recorded = await queries.recordChallengePaid(
       challenge.serviceRef,
       event.paymentId,
       attribution.transactionHash,
       event.buyerAgentId,
     );
+    if (!recorded) {
+      res.status(500).json({
+        x402Version: core.version,
+        error: "settlement_persistence_conflict",
+        message:
+          "on-chain settlement conflicts with the stored payment challenge",
+        serviceRef: challenge.serviceRef,
+      });
+      return;
+    }
     // Mirror into chain_events so /activity reflects the purchase
     // immediately (same as the daski-rail settle path).
     await queries.upsertChainEvent({

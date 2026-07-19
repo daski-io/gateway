@@ -1,5 +1,5 @@
 import type { Router } from "express";
-import { extractAgentCardName } from "../discovery/format.js";
+import { cardsOf, extractAgentCardName } from "../discovery/format.js";
 import {
   formatChainActivityRow,
   formatServicesForPublic,
@@ -27,7 +27,9 @@ export function registerActivityRoutes(
         .getAll()
         .map((provider) => [
           provider.agentId.toString(),
-          extractAgentCardName(provider.agentCard),
+          provider.cards.length
+            ? extractAgentCardName(cardsOf(provider)[0]!.agentCard)
+            : "(unnamed)",
         ]),
     );
     const serviceName = buildServiceNameResolver(cache, config);

@@ -95,21 +95,11 @@ function badRequest(res: Response, message: string) {
   });
 }
 
-/**
- * Pulls the serviceRef out of the facilitator body. The x402 spec doesn't
- * carry Daski's serviceRef natively, so we accept it at either location:
- *   - paymentRequirements.extra.daski.serviceRef (canonical — the same
- *     field the 402 response advertises)
- *   - paymentPayload.serviceRef (belt-and-braces — the old Buyer MCP
- *     used to set this at the top level)
- */
+/** Pull the Daski serviceRef from the canonical requirements extension. */
 function extractServiceRef(body: FacilitatorBody): Hex | null {
   const req = body.paymentRequirements;
   const fromRequirements = req?.extra?.daski?.serviceRef;
   if (isHex32(fromRequirements)) return fromRequirements.toLowerCase() as Hex;
-  const fromPayload = (body.paymentPayload as { serviceRef?: unknown } | undefined)
-    ?.serviceRef;
-  if (isHex32(fromPayload)) return (fromPayload as Hex).toLowerCase() as Hex;
   return null;
 }
 

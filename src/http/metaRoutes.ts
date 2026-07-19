@@ -4,6 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Config } from "../config.js";
 import type { DiscoveryCache } from "../discovery/cache.js";
+import type { Embedder } from "../discovery/embeddings.js";
 import { cardsOf } from "../discovery/format.js";
 import { GATEWAY_VERSION } from "../version.js";
 import { buildX402Catalog } from "./x402Catalog.js";
@@ -11,6 +12,7 @@ import { buildX402Catalog } from "./x402Catalog.js";
 export interface MetaRoutesDeps {
   config: Config;
   cache: DiscoveryCache;
+  embedder: Embedder | null;
 }
 
 function findSkillPath(): string | undefined {
@@ -72,7 +74,7 @@ function fullDocs(config: Config, cache: DiscoveryCache): string {
 }
 
 export function createMetaRouter(deps: MetaRoutesDeps): Router {
-  const { config, cache } = deps;
+  const { config, cache, embedder } = deps;
   const router = Router();
   const skillPath = findSkillPath();
 
@@ -88,14 +90,19 @@ export function createMetaRouter(deps: MetaRoutesDeps): Router {
   );
 
   router.get("/health", (_req, res) => {
+    const embedderStatus =
+      embedder?.getStatus?.() ?? {
+        state: embedder ? ("unknown" as const) : ("disabled" as const),
+      };
     res.json({
-      status: "ok",
+      status: embedderStatus.state === "degraded" ? "degraded" : "ok",
       version: GATEWAY_VERSION,
       chain: { chainId: config.chainId, network: config.network },
       cache: {
         providers: cache.getAll().length,
         lastRefresh: cache.getLastRefresh()?.toISOString() ?? null,
       },
+      embedder: embedderStatus,
     });
   });
 

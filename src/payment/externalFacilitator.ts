@@ -1,3 +1,5 @@
+import { readBoundedJson } from "../util/urlSafety.js";
+
 /**
  * Thin HTTP client for an EXTERNAL x402 facilitator's /verify + /settle
  * endpoints (CDP facilitator on Base mainnet, x402.org on Base Sepolia).
@@ -88,7 +90,7 @@ export function createExternalFacilitatorClient(
     // JSON to interpret.
     let json: unknown = null;
     try {
-      json = await res.json();
+      json = await readBoundedJson(res);
     } catch {
       // fall through
     }

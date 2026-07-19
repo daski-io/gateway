@@ -49,6 +49,7 @@ describe("provider quote validation", () => {
       expectedTokenAddress: MOCK_PROVIDER_TOKEN_ADDRESS,
       expectedServiceSlug: SERVICE_SLUG,
       expectedServiceVersion: SERVICE_VERSION,
+      fetchFn: fetch,
     };
   }
 

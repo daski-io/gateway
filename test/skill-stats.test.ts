@@ -15,7 +15,6 @@ import type { Hex, StoredChallenge } from "../src/types.js";
 
 // ── Test fixture helpers ───────────────────────────────────────────────
 
-const ZERO_HEX = ("0x" + "00".repeat(32)) as Hex;
 const ZERO_BYTES = ("0x" + "00".repeat(32)) as Hex;
 
 function makeChallenge(opts: {

@@ -1,6 +1,7 @@
 import { hexToBytes, recoverTypedDataAddress, type Address } from "viem";
 import type { Config } from "../config.js";
 import type { ChainReader } from "../chain/reader.js";
+import type { PaymentSettledEvent } from "../chain/reader.js";
 import type { Queries } from "../db/queries.js";
 import {
   AgentCardFetchError,
@@ -118,6 +119,134 @@ function failVerify(
   return { ok: false, errorReason, message, status, payer };
 }
 
+function storedSettlementResult(
+  challenge: StoredChallenge,
+  network: Config["network"],
+  payer: Hex,
+): SettleResult {
+  if (challenge.paymentId == null || !challenge.transactionHash) {
+    return fail(
+      500,
+      "paid_challenge_incomplete",
+      "paid challenge is missing its canonical settlement",
+      network,
+      payer,
+    );
+  }
+  return {
+    ok: true,
+    response: {
+      success: true,
+      transaction: challenge.transactionHash,
+      network,
+      payer,
+      daski: {
+        paymentId: challenge.paymentId.toString(),
+        serviceRef: challenge.serviceRef,
+        serviceId: challenge.serviceId,
+        providerTokenId: challenge.providerTokenId.toString(),
+        buyerTokenId: challenge.buyerTokenId.toString(),
+        amount: challenge.amount.toString(),
+        providerA2AUrl: challenge.providerA2AUrl,
+        ...(challenge.quoteId && challenge.quoteSignature
+          ? {
+              quoteId: challenge.quoteId,
+              quoteSignature: challenge.quoteSignature,
+            }
+          : {}),
+      },
+    },
+  };
+}
+
+function validateSettlementEvent(
+  challenge: StoredChallenge,
+  event: PaymentSettledEvent,
+  enforceBuyer: boolean,
+): string | null {
+  if (event.providerAgentId !== challenge.providerTokenId) {
+    return "event providerAgentId does not match challenge";
+  }
+  if (enforceBuyer && event.buyerAgentId !== challenge.buyerTokenId) {
+    return "event buyerAgentId does not match challenge";
+  }
+  if (event.serviceId.toLowerCase() !== challenge.serviceId.toLowerCase()) {
+    return "event serviceId does not match challenge";
+  }
+  if (event.totalAmount < challenge.amount) {
+    return "event totalAmount is less than challenge amount";
+  }
+  return null;
+}
+
+async function persistSettlementEvent(
+  queries: Queries,
+  challenge: StoredChallenge,
+  event: PaymentSettledEvent,
+  transactionHash: Hex,
+  buyerAgentId?: bigint,
+): Promise<boolean> {
+  const recorded = await queries.recordChallengePaid(
+    challenge.serviceRef,
+    event.paymentId,
+    transactionHash,
+    buyerAgentId,
+  );
+  if (!recorded) return false;
+  await queries.upsertChainEvent({
+    paymentId: event.paymentId,
+    txHash: transactionHash,
+    blockNumber: 0n,
+    serviceId: event.serviceId,
+    buyerAgentId: event.buyerAgentId,
+    providerAgentId: event.providerAgentId,
+    amountAtomic: event.totalAmount,
+    settledAt: new Date(),
+    outcomeCode: null,
+    confirmationCode: 0,
+    fulfillmentSeconds: null,
+    refundedAtomic: 0n,
+  });
+  return true;
+}
+
+function successfulSettlementResult(args: {
+  challenge: StoredChallenge;
+  event: PaymentSettledEvent;
+  transactionHash: Hex;
+  network: Config["network"];
+  payer: Hex;
+  registered?: boolean;
+}): SettleResult {
+  return {
+    ok: true,
+    response: {
+      success: true,
+      transaction: args.transactionHash,
+      network: args.network,
+      payer: args.payer,
+      daski: {
+        paymentId: args.event.paymentId.toString(),
+        serviceRef: args.challenge.serviceRef,
+        serviceId: args.event.serviceId,
+        providerTokenId: args.challenge.providerTokenId.toString(),
+        buyerTokenId: args.event.buyerAgentId.toString(),
+        amount: args.event.totalAmount.toString(),
+        providerA2AUrl: args.challenge.providerA2AUrl,
+        ...(args.registered !== undefined
+          ? { registered: args.registered }
+          : {}),
+        ...(args.challenge.quoteId && args.challenge.quoteSignature
+          ? {
+              quoteId: args.challenge.quoteId,
+              quoteSignature: args.challenge.quoteSignature,
+            }
+          : {}),
+      },
+    },
+  };
+}
+
 function missingQuoteCommitment(challenge: StoredChallenge): string | null {
   const missing: string[] = [];
   if (!challenge.quoteId) missing.push("quoteId");
@@ -192,42 +321,6 @@ export async function verifyPaymentPayload(
 
   const payer = auth.from.toLowerCase() as Hex;
 
-  // Idempotent: an already-paid challenge is considered valid. The /verify
-  // endpoint returns isValid=true here; /settle short-circuits to the
-  // stored settlement response rather than re-submitting.
-  if (challenge.status === "paid") {
-    let validAfter: bigint;
-    let validBefore: bigint;
-    try {
-      validAfter = BigInt(auth.validAfter);
-      validBefore = BigInt(auth.validBefore);
-    } catch {
-      validAfter = 0n;
-      validBefore = 0n;
-    }
-    return {
-      ok: true,
-      alreadyPaid: true,
-      payer,
-      settleArgs: {
-        v: 0,
-        r: ("0x" + "00".repeat(32)) as Hex,
-        s: ("0x" + "00".repeat(32)) as Hex,
-        validAfter,
-        validBefore,
-        nonce: auth.nonce,
-      },
-    };
-  }
-  if (challenge.status === "expired" || challenge.expiresAt < now) {
-    return failVerify(
-      410,
-      "authorization_expired",
-      "the payment challenge has expired",
-      payer,
-    );
-  }
-
   let value: bigint;
   let validAfter: bigint;
   let validBefore: bigint;
@@ -281,24 +374,6 @@ export async function verifyPaymentPayload(
     );
   }
 
-  const nowSec = BigInt(Math.floor(now.getTime() / 1000));
-  if (validAfter >= nowSec) {
-    return failVerify(
-      402,
-      "invalid_exact_evm_payload_authorization_valid_after",
-      "authorization is not yet valid",
-      payer,
-    );
-  }
-  if (validBefore <= nowSec + VALID_BEFORE_BUFFER_SEC) {
-    return failVerify(
-      402,
-      "invalid_exact_evm_payload_authorization_valid_before",
-      "authorization is expired or too close to expiry",
-      payer,
-    );
-  }
-
   let recovered: Address;
   try {
     recovered = await recoverTypedDataAddress({
@@ -341,6 +416,57 @@ export async function verifyPaymentPayload(
     );
   }
 
+  let v: number, r: Hex, s: Hex;
+  try {
+    ({ v, r, s } = parseSignature(signature as Hex));
+  } catch {
+    return failVerify(
+      400,
+      "invalid_payload",
+      "malformed signature",
+      payer,
+    );
+  }
+
+  // Idempotent retries still have to prove possession of the original
+  // authorization. Time and nonce checks are intentionally skipped after
+  // signature and challenge binding succeed because a settled authorization
+  // is necessarily consumed and may be retried after its validity window.
+  if (challenge.status === "paid") {
+    return {
+      ok: true,
+      alreadyPaid: true,
+      payer,
+      settleArgs: { v, r, s, validAfter, validBefore, nonce: auth.nonce },
+    };
+  }
+  if (challenge.status === "expired" || challenge.expiresAt < now) {
+    return failVerify(
+      410,
+      "authorization_expired",
+      "the payment challenge has expired",
+      payer,
+    );
+  }
+
+  const nowSec = BigInt(Math.floor(now.getTime() / 1000));
+  if (validAfter >= nowSec) {
+    return failVerify(
+      402,
+      "invalid_exact_evm_payload_authorization_valid_after",
+      "authorization is not yet valid",
+      payer,
+    );
+  }
+  if (validBefore <= nowSec + VALID_BEFORE_BUFFER_SEC) {
+    return failVerify(
+      402,
+      "invalid_exact_evm_payload_authorization_valid_before",
+      "authorization is expired or too close to expiry",
+      payer,
+    );
+  }
+
   // Pre-flight nonce check: refuse to forward to the chain if the
   // authorization was already consumed. Previously this swallowed RPC
   // errors and fell through, which let an attacker amplify facilitator
@@ -366,18 +492,6 @@ export async function verifyPaymentPayload(
         err,
         "unable to verify authorization nonce",
       ),
-      payer,
-    );
-  }
-
-  let v: number, r: Hex, s: Hex;
-  try {
-    ({ v, r, s } = parseSignature(signature as Hex));
-  } catch (err) {
-    return failVerify(
-      400,
-      "invalid_payload",
-      "malformed signature",
       payer,
     );
   }
@@ -417,42 +531,6 @@ async function verifyAndSettleUnlocked(
     );
   }
 
-  // Short-circuit idempotent already-paid case before running full
-  // validation — the stored settlement is canonical.
-  if (
-    challenge.status === "paid" &&
-    challenge.paymentId != null &&
-    challenge.transactionHash
-  ) {
-    const payer =
-      (input.payload.payload?.authorization?.from?.toLowerCase() as Hex) ??
-      ZERO_ADDRESS;
-    return {
-      ok: true,
-      response: {
-        success: true,
-        transaction: challenge.transactionHash,
-        network,
-        payer,
-        daski: {
-          paymentId: challenge.paymentId.toString(),
-          serviceRef: challenge.serviceRef,
-          serviceId: challenge.serviceId,
-          providerTokenId: challenge.providerTokenId.toString(),
-          buyerTokenId: challenge.buyerTokenId.toString(),
-          amount: challenge.amount.toString(),
-          providerA2AUrl: challenge.providerA2AUrl,
-          ...(challenge.quoteId && challenge.quoteSignature
-            ? {
-                quoteId: challenge.quoteId,
-                quoteSignature: challenge.quoteSignature,
-              }
-            : {}),
-        },
-      },
-    };
-  }
-
   const verified = await verifyPaymentPayload(input, config, reader, now);
   if (!verified.ok) {
     return fail(
@@ -465,6 +543,9 @@ async function verifyAndSettleUnlocked(
   }
 
   const { payer, settleArgs } = verified;
+  if (verified.alreadyPaid) {
+    return storedSettlementResult(challenge, network, payer);
+  }
 
   let settlement;
   try {
@@ -497,101 +578,40 @@ async function verifyAndSettleUnlocked(
   }
 
   const event = settlement.event;
-  if (event.providerAgentId !== challenge.providerTokenId) {
+  const eventError = validateSettlementEvent(challenge, event, true);
+  if (eventError) {
     return fail(
       500,
       "unexpected_settle_error",
-      "event providerAgentId does not match challenge",
-      network,
-      payer,
-    );
-  }
-  if (event.buyerAgentId !== challenge.buyerTokenId) {
-    return fail(
-      500,
-      "unexpected_settle_error",
-      "event buyerAgentId does not match challenge",
-      network,
-      payer,
-    );
-  }
-  // Cross-check serviceId against the value the gateway computed at
-  // challenge issuance. The contract enforces consistency too (settle
-  // reverts if the serviceId argument doesn't match a registered service
-  // for the provider), but a mismatch here would mean the adapter call
-  // args were tampered between simulate and broadcast — surface as a
-  // 500 rather than silently trusting the event.
-  if (
-    event.serviceId.toLowerCase() !== challenge.serviceId.toLowerCase()
-  ) {
-    return fail(
-      500,
-      "unexpected_settle_error",
-      "event serviceId does not match challenge",
-      network,
-      payer,
-    );
-  }
-  if (event.totalAmount < challenge.amount) {
-    return fail(
-      500,
-      "unexpected_settle_error",
-      "event totalAmount is less than challenge amount",
+      eventError,
       network,
       payer,
     );
   }
 
-  await queries.recordChallengePaid(
-    challenge.serviceRef,
-    event.paymentId,
+  const recorded = await persistSettlementEvent(
+    queries,
+    challenge,
+    event,
     settlement.transactionHash,
   );
-
-  // Mirror the freshly-settled event into chain_events directly. The
-  // chain-events indexer would catch this on its next forward poll
-  // anyway, but writing here makes the row visible to /activity on
-  // the very next request — no polling latency. Idempotent UPSERT
-  // means the indexer's later poll is a no-op for this paymentId.
-  await queries.upsertChainEvent({
-    paymentId: event.paymentId,
-    txHash: settlement.transactionHash,
-    blockNumber: 0n, // unknown at this point; indexer fills in on refresh
-    serviceId: event.serviceId,
-    buyerAgentId: event.buyerAgentId,
-    providerAgentId: event.providerAgentId,
-    amountAtomic: event.totalAmount,
-    settledAt: new Date(),
-    outcomeCode: null,
-    confirmationCode: 0,
-    fulfillmentSeconds: null,
-    refundedAtomic: 0n,
-  });
-
-  return {
-    ok: true,
-    response: {
-      success: true,
-      transaction: settlement.transactionHash,
+  if (!recorded) {
+    return fail(
+      500,
+      "settlement_persistence_conflict",
+      "on-chain settlement conflicts with the stored challenge",
       network,
       payer,
-      daski: {
-        paymentId: event.paymentId.toString(),
-        serviceRef: challenge.serviceRef,
-        serviceId: event.serviceId,
-        providerTokenId: challenge.providerTokenId.toString(),
-        buyerTokenId: challenge.buyerTokenId.toString(),
-        amount: event.totalAmount.toString(),
-        providerA2AUrl: challenge.providerA2AUrl,
-        ...(challenge.quoteId && challenge.quoteSignature
-          ? {
-              quoteId: challenge.quoteId,
-              quoteSignature: challenge.quoteSignature,
-            }
-          : {}),
-      },
-    },
-  };
+    );
+  }
+
+  return successfulSettlementResult({
+    challenge,
+    event,
+    transactionHash: settlement.transactionHash,
+    network,
+    payer,
+  });
 }
 
 export async function verifyAndSettle(
@@ -666,48 +686,14 @@ async function verifyAndSettleWithRegistrationUnlocked(
     );
   }
 
-  // Idempotent already-paid case mirrors verifyAndSettle. If a challenge
-  // somehow ends up `paid` here it means a previous atomic settle already
-  // completed — return the stored result instead of re-submitting.
-  if (
-    challenge.status === "paid" &&
-    challenge.paymentId != null &&
-    challenge.transactionHash
-  ) {
-    const payer =
-      (input.payload.payload?.authorization?.from?.toLowerCase() as Hex) ??
-      ZERO_ADDRESS;
-    return {
-      ok: true,
-      response: {
-        success: true,
-        transaction: challenge.transactionHash,
-        network,
-        payer,
-        daski: {
-          paymentId: challenge.paymentId.toString(),
-          serviceRef: challenge.serviceRef,
-          serviceId: challenge.serviceId,
-          providerTokenId: challenge.providerTokenId.toString(),
-          buyerTokenId: challenge.buyerTokenId.toString(),
-          amount: challenge.amount.toString(),
-          providerA2AUrl: challenge.providerA2AUrl,
-          ...(challenge.quoteId && challenge.quoteSignature
-            ? {
-                quoteId: challenge.quoteId,
-                quoteSignature: challenge.quoteSignature,
-              }
-            : {}),
-        },
-      },
-    };
-  }
-
   const verified = await verifyPaymentPayload(input, config, reader, now);
   if (!verified.ok) {
     return fail(verified.status, verified.errorReason, verified.message, network, verified.payer);
   }
   const { payer, settleArgs } = verified;
+  if (verified.alreadyPaid) {
+    return storedSettlementResult(challenge, network, payer);
+  }
 
   let settlement;
   try {
@@ -748,31 +734,12 @@ async function verifyAndSettleWithRegistrationUnlocked(
   // for atomic flows the challenge stores 0n (unknown) and the on-chain
   // event carries the freshly minted ID. Provider/amount/serviceId checks
   // still hold.
-  if (event.providerAgentId !== challenge.providerTokenId) {
+  const eventError = validateSettlementEvent(challenge, event, false);
+  if (eventError) {
     return fail(
       500,
       "unexpected_settle_error",
-      "event providerAgentId does not match challenge",
-      network,
-      payer,
-    );
-  }
-  if (
-    event.serviceId.toLowerCase() !== challenge.serviceId.toLowerCase()
-  ) {
-    return fail(
-      500,
-      "unexpected_settle_error",
-      "event serviceId does not match challenge",
-      network,
-      payer,
-    );
-  }
-  if (event.totalAmount < challenge.amount) {
-    return fail(
-      500,
-      "unexpected_settle_error",
-      "event totalAmount is less than challenge amount",
+      eventError,
       network,
       payer,
     );
@@ -784,30 +751,22 @@ async function verifyAndSettleWithRegistrationUnlocked(
   // forever, the activity feed renders `agent#0`, and the public buyer-name
   // resolver has nothing to look up. Safe for settle-only too (where the
   // value already matches), but the atomic path is the case that needs it.
-  await queries.recordChallengePaid(
-    challenge.serviceRef,
-    event.paymentId,
+  const recorded = await persistSettlementEvent(
+    queries,
+    challenge,
+    event,
     settlement.transactionHash,
     event.buyerAgentId,
   );
-
-  // Same chain_events mirror as the settle-only path — make the row
-  // visible to /activity immediately rather than waiting on the
-  // indexer's next forward poll.
-  await queries.upsertChainEvent({
-    paymentId: event.paymentId,
-    txHash: settlement.transactionHash,
-    blockNumber: 0n,
-    serviceId: event.serviceId,
-    buyerAgentId: event.buyerAgentId,
-    providerAgentId: event.providerAgentId,
-    amountAtomic: event.totalAmount,
-    settledAt: new Date(),
-    outcomeCode: null,
-    confirmationCode: 0,
-    fulfillmentSeconds: null,
-    refundedAtomic: 0n,
-  });
+  if (!recorded) {
+    return fail(
+      500,
+      "settlement_persistence_conflict",
+      "on-chain settlement conflicts with the stored challenge",
+      network,
+      payer,
+    );
+  }
 
   // Mirror the buyer-name resolution that the /register flow does, so
   // the atomic register-and-settle path also populates buyer_identities.
@@ -840,33 +799,14 @@ async function verifyAndSettleWithRegistrationUnlocked(
     }
   }
 
-  return {
-    ok: true,
-    response: {
-      success: true,
-      transaction: settlement.transactionHash,
-      network,
-      payer,
-      daski: {
-        paymentId: event.paymentId.toString(),
-        serviceRef: challenge.serviceRef,
-        serviceId: event.serviceId,
-        providerTokenId: challenge.providerTokenId.toString(),
-        // Use the freshly-minted ID from the event when the buyer was
-        // registered atomically; otherwise echo the challenge value.
-        buyerTokenId: event.buyerAgentId.toString(),
-        amount: event.totalAmount.toString(),
-        providerA2AUrl: challenge.providerA2AUrl,
-        registered: settlement.registered,
-        ...(challenge.quoteId && challenge.quoteSignature
-          ? {
-              quoteId: challenge.quoteId,
-              quoteSignature: challenge.quoteSignature,
-            }
-          : {}),
-      },
-    },
-  };
+  return successfulSettlementResult({
+    challenge,
+    event,
+    transactionHash: settlement.transactionHash,
+    network,
+    payer,
+    registered: settlement.registered,
+  });
 }
 
 export async function verifyAndSettleWithRegistration(

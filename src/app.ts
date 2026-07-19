@@ -1,4 +1,7 @@
-import express, { type Express } from "express";
+import express, {
+  type ErrorRequestHandler,
+  type Express,
+} from "express";
 import cors from "cors";
 import type { Config } from "./config.js";
 import type { ChainReader } from "./chain/reader.js";
@@ -36,6 +39,7 @@ export interface CreateAppOptions {
   buyerAgentCardFetch?: FetchAgentCardOptions["fetchFn"];
   externalFacilitatorFetch?: typeof fetch;
   mcpMaxSessions?: number;
+  mcpMaxSessionsPerClient?: number;
   mcpSessionIdleTtlMs?: number;
   mcpSessionSweepIntervalMs?: number;
 }
@@ -114,10 +118,13 @@ export async function createApp(options: CreateAppOptions): Promise<AppBundle> {
     agentCardFetchTimeoutMs: options.agentCardFetchTimeoutMs,
     logger,
   });
+  void embedder?.warmup?.().catch((error) => {
+    logErrorWithId("embedder.warmup", error);
+  });
 
   const app = express();
   configureMiddleware(app, queries, config);
-  app.use(createMetaRouter({ config, cache }));
+  app.use(createMetaRouter({ config, cache, embedder }));
   app.use(createDiscoveryRouter(cache, config));
   app.use(createPurchaseRouter({ config, cache, queries, reader }));
 
@@ -178,10 +185,26 @@ export async function createApp(options: CreateAppOptions): Promise<AppBundle> {
         a2aTimeoutMs: options.a2aTimeoutMs,
         buyerAgentCardFetch: options.buyerAgentCardFetch,
         maxSessions: options.mcpMaxSessions,
+        maxSessionsPerClient: options.mcpMaxSessionsPerClient,
         sessionIdleTtlMs: options.mcpSessionIdleTtlMs,
         sessionSweepIntervalMs: options.mcpSessionSweepIntervalMs,
       })
     : null;
+  const errorHandler: ErrorRequestHandler = (error, _req, res, next) => {
+    if (res.headersSent) {
+      next(error);
+      return;
+    }
+    const correlationId = logErrorWithId("http.request", error);
+    res.status(500).json({
+      error: {
+        code: "INTERNAL_ERROR",
+        message: "Internal server error",
+        correlationId,
+      },
+    });
+  };
+  app.use(errorHandler);
 
   let expireInterval: NodeJS.Timeout | null = null;
   if (options.startCacheRefreshLoop !== false) {

@@ -2,7 +2,6 @@ import type { Router } from "express";
 import type { Hex } from "../types.js";
 import {
   formatChainActivityRow,
-  formatServiceForPublic,
   formatServicesForPublic,
   type PublicService,
 } from "./format.js";
@@ -44,7 +43,12 @@ export function registerServiceRoutes(
       typeof req.query.service === "string" && req.query.service
         ? req.query.service
         : null;
-    const service = formatServiceForPublic(provider, config, serviceSlug);
+    const providerServices = formatServicesForPublic(provider, config);
+    const service = serviceSlug
+      ? providerServices.find((entry) => entry.serviceSlug === serviceSlug)
+      : providerServices.length === 1
+        ? providerServices[0]
+        : null;
     if (!service) {
       serviceNotFound(res);
       return;

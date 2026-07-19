@@ -5,6 +5,7 @@ import { privateKeyToAccount } from "viem/accounts";
 import type { Config } from "../../src/config.js";
 import { createApp, type AppBundle } from "../../src/app.js";
 import { createPool, type Pool } from "../../src/db/pool.js";
+import type { Embedder } from "../../src/discovery/embeddings.js";
 import { stubEmbedder } from "./stubEmbedder.js";
 import {
   MockChainReader,
@@ -70,6 +71,7 @@ const TEST_DATABASE_URL =
 export interface TestGatewayOptions {
   providers?: Array<TestProviderDef>;
   initialTaskState?: MockTaskState;
+  embedder?: Embedder;
   /** Outbound provider/artifact fetch seam used by the MCP server. */
   a2aFetch?: typeof fetch;
   /**
@@ -292,7 +294,7 @@ export async function startTestGateway(
     config,
     reader: mockChain,
     pool,
-    embedder: stubEmbedder(),
+    embedder: opts.embedder ?? stubEmbedder(),
     startCacheRefreshLoop: false,
     agentCardFetch: localProviderFetch,
     agentCardFetchTimeoutMs: 2000,
@@ -385,10 +387,9 @@ export async function startTestGateway(
       const requestedSkillId = merged.skillId;
       const cachedProvider = bundle.cache.get(tokenId);
       if (cachedProvider && typeof requestedSkillId === "string") {
-        const cards = new Set<Record<string, unknown>>([
-          cachedProvider.agentCard,
-          ...(cachedProvider.cards?.map((card) => card.agentCard) ?? []),
-        ]);
+        const cards = new Set<Record<string, unknown>>(
+          cachedProvider.cards.map((card) => card.agentCard),
+        );
         for (const card of cards) {
           const listed = Array.isArray(card.skills) ? card.skills : [];
           if (
@@ -582,7 +583,8 @@ function _installProvider(
   const cardPath = def.cardPath ?? `/agent-cards/${def.tokenId}.json`;
   const a2aPath = def.a2aPath ?? "/a2a";
   const a2aUrl = `${mockProvider.baseUrl}${a2aPath}`;
-  const agentURI = `${mockProvider.baseUrl}${cardPath}`;
+  const registrationPath = `/agent-registrations/${def.tokenId}.json`;
+  const agentURI = `${mockProvider.baseUrl}${registrationPath}`;
   const erc8004TokenId = def.erc8004TokenId ?? def.tokenId;
 
   mockChain.addProvider(def.tokenId, {
@@ -626,6 +628,25 @@ function _installProvider(
       skills,
     }),
   );
+  const legal =
+    def.legal === undefined
+      ? {
+          legalName: "Example Provider, LLC",
+          termsUrl: "https://provider.example/terms",
+          privacyUrl: "https://provider.example/privacy",
+        }
+      : def.legal;
+  mockProvider.setAgentCard(registrationPath, {
+    name: def.name,
+    description: def.description ?? `${def.name} provider`,
+    ...(legal ?? {}),
+    services: [
+      {
+        name: "A2A",
+        endpoint: `${mockProvider.baseUrl}${cardPath}`,
+      },
+    ],
+  });
 
   // Default quote outcome — gateway's daski_buy_service calls /quote
   // before issuing PaymentRequirements. Match the agent-card's

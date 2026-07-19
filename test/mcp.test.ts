@@ -15,6 +15,7 @@ import {
   MCP_LEGAL_INSTRUCTIONS,
   PURCHASE_NOTICE,
 } from "../src/legal/purchase.js";
+import type { Embedder } from "../src/discovery/embeddings.js";
 
 const TEST_BUYER_KEY =
   "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80" as Hex;
@@ -190,6 +191,76 @@ describe("hosted MCP — wallet-agnostic surface", () => {
       expect(typeof body.providers[0].match.bestSkillId).toBe("string");
     } finally {
       await transport.close();
+    }
+  });
+
+  it("degrades intent search to the filtered catalog and reports health", async () => {
+    const unavailableEmbedder: Embedder = {
+      dim: 384,
+      async embed() {
+        throw new Error("upstream model details must stay private");
+      },
+      async embedMany() {
+        throw new Error("upstream model details must stay private");
+      },
+      async warmup() {
+        throw new Error("upstream model details must stay private");
+      },
+      getStatus() {
+        return { state: "degraded", reason: "model_load_failed" };
+      },
+    };
+    const degradedGateway = await startTestGateway({
+      embedder: unavailableEmbedder,
+      providers: [
+        {
+          tokenId: 91n,
+          name: "Fallback Domains",
+          priceUsdcSmallest: "15000000",
+          categoryFamily: "domains-web",
+          serviceType: "domain-management",
+          skills: [
+            {
+              id: "register-domain",
+              name: "Register Domain",
+              metadata: {
+                paymentRequired: true,
+                baseAmount: "15000000",
+              },
+            },
+          ],
+        },
+      ],
+    });
+    const { client, transport } = await connectClient(degradedGateway.baseUrl);
+    try {
+      const result = await client.callTool({
+        name: "daski_search_services",
+        arguments: { intent: "register a domain" },
+      });
+      const body = parseResult<{
+        ranking: string;
+        warning: string;
+        providers: unknown[];
+      }>(result);
+      expect(body.ranking).toBe("unavailable");
+      expect(body.providers).toHaveLength(1);
+      expect(body.warning).not.toContain("upstream model details");
+
+      const health = (await (
+        await fetch(`${degradedGateway.baseUrl}/health`)
+      ).json()) as {
+        status: string;
+        embedder: { state: string; reason?: string };
+      };
+      expect(health.status).toBe("degraded");
+      expect(health.embedder).toEqual({
+        state: "degraded",
+        reason: "model_load_failed",
+      });
+    } finally {
+      await transport.close();
+      await degradedGateway.close();
     }
   });
 

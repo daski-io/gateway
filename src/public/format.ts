@@ -1,4 +1,3 @@
-import { DASKI_A2A_EXTENSION_URI } from "../config.js";
 import type {
   BuyerConfirmationLabel,
   ProviderReputation,
@@ -11,8 +10,9 @@ import {
   extractAgentCardName,
   extractAgentCardUrl,
   extractMarketplaceExtension,
+  parseAgentSkills,
 } from "../discovery/format.js";
-import { derivePrimaryServiceId } from "../payment/requirements.js";
+import { derivePrimaryServiceId } from "../discovery/serviceIdentity.js";
 import { buildServiceLegal } from "../legal/purchase.js";
 import type { MarketplaceLegalUrls, ServiceLegal } from "../legal/types.js";
 import type {
@@ -146,11 +146,6 @@ export interface PublicSkill {
   description: string | null;
   /** USDC, two-decimal string. Null when the skill uses live pricing. */
   basePrice: string | null;
-  /**
-   * Legacy field — kept for back-compat. New consumers should read
-   * `pricingModelDetail` for the structured form.
-   */
-  pricingModel: string | null;
   pricingModelDetail: PublicSkillPricingModel | null;
   variable: boolean;
   paymentRequired: boolean;
@@ -699,16 +694,15 @@ export interface PublicActivityRow {
    * provider's service catalog by the row's on-chain `serviceId` (falling
    * back to `serviceSlug`). A provider may offer several services; this
    * names the one actually bought. Null when the service is no longer in
-   * the discovery cache or the row predates service-identity tracking.
+   * the discovery cache.
    */
   serviceName: string | null;
   /** Slug of the purchased service — stable id within the provider, pairs
    *  with `providerAgentId` to deep-link the service page. Null for
    *  chain-only rows with no resolvable service. */
   serviceSlug: string | null;
-  /** 32-byte on-chain serviceId of the purchased service; null when the
-   *  row carries the all-zero sentinel (no recorded serviceId). */
-  serviceId: Hex | null;
+  /** 32-byte on-chain serviceId of the purchased service. */
+  serviceId: Hex;
   /**
    * Display name resolved from the buyer's ERC-8004 IdentityRegistry
    * tokenURI metadata (`metadata.name`). Null when the buyer's NFT has no
@@ -761,10 +755,6 @@ function atomicToUsdc(atomic: string | number | bigint): string {
   return (Number(atomic) / 1_000_000).toFixed(2);
 }
 
-/** All-zero 32-byte serviceId sentinel — chain_events / challenge rows with
- *  no recorded serviceId carry this; surfaced as null on public rows. */
-const ZERO_SERVICE_ID = ("0x" + "00".repeat(32)) as Hex;
-
 function asString(v: unknown): string | null {
   return typeof v === "string" ? v : null;
 }
@@ -773,57 +763,15 @@ function asBoolean(v: unknown): boolean {
   return v === true;
 }
 
-interface RawSkill {
-  id?: unknown;
-  name?: unknown;
-  description?: unknown;
-  metadata?: unknown;
-}
-
-/**
- * Pulls per-skill metadata using the same dual-shape strategy as
- * `discovery/format.ts:extractSkills`:
- *   A) skill.metadata[DASKI_A2A_EXTENSION_URI]
- *   B) extension.skills[skillId]
- * Skills present in the card but with no metadata are still emitted so the
- * UI can show their existence.
- */
+/** Build the public skill view from the canonical card parser. */
 function flattenSkills(agentCard: Record<string, unknown>): PublicSkill[] {
-  const skills = agentCard["skills"];
-  if (!Array.isArray(skills)) return [];
-
   const ext = extractMarketplaceExtension(agentCard) as
     | (Record<string, unknown> & { skills?: unknown })
     | null;
-  const shapeBMap =
-    ext?.skills && typeof ext.skills === "object" && !Array.isArray(ext.skills)
-      ? (ext.skills as Record<string, unknown>)
-      : null;
 
-  // Avoid hardcoding the extension URI here — the discovery formatter
-  // imports it; we walk skill.metadata at runtime to find any object-typed
-  // entry that looks like marketplace metadata.
   const out: PublicSkill[] = [];
-  for (const raw of skills as RawSkill[]) {
-    if (!raw || typeof raw !== "object") continue;
-    const id = asString(raw.id);
-    if (!id) continue;
-
-    let meta: Record<string, unknown> = {};
-    if (raw.metadata && typeof raw.metadata === "object") {
-      const shapeA = (raw.metadata as Record<string, unknown>)[
-        DASKI_A2A_EXTENSION_URI
-      ];
-      if (shapeA && typeof shapeA === "object") {
-        meta = shapeA as Record<string, unknown>;
-      }
-    }
-    if (Object.keys(meta).length === 0 && shapeBMap) {
-      const shapeB = shapeBMap[id];
-      if (shapeB && typeof shapeB === "object") {
-        meta = shapeB as Record<string, unknown>;
-      }
-    }
+  for (const raw of parseAgentSkills(agentCard)) {
+    const { id, metadata: meta } = raw;
 
     // baseAmount lives at the metadata top level in older cards, but
     // daski-provider nests it under meta.pricing (the translated per-skill
@@ -840,20 +788,14 @@ function flattenSkills(agentCard: Record<string, unknown>): PublicSkill[] {
         ? nestedPricing.baseAmount
         : undefined;
     const baseAmount = meta.baseAmount ?? nestedBase;
-    // pricingModel may be a flat string (legacy) or a structured object
-    // (current). Surface both: legacy string for back-compat, structured
-    // detail (kind/source/hint) so the website can render integrator
-    // hints like "live · quoted by registrar at purchase".
+    // Structured pricing metadata lets clients describe quote-driven
+    // services without overloading the fixed base-price field.
     const pricingModelRaw = meta.pricingModel;
-    let pricingModelString: string | null = null;
     let pricingModelDetail: PublicSkillPricingModel | null = null;
-    if (typeof pricingModelRaw === "string") {
-      pricingModelString = pricingModelRaw;
-    } else if (pricingModelRaw && typeof pricingModelRaw === "object") {
+    if (pricingModelRaw && typeof pricingModelRaw === "object") {
       const pm = pricingModelRaw as Record<string, unknown>;
       const kind = typeof pm.kind === "string" ? pm.kind : null;
       if (kind) {
-        pricingModelString = kind;
         pricingModelDetail = {
           kind,
           source: typeof pm.source === "string" ? pm.source : null,
@@ -873,7 +815,6 @@ function flattenSkills(agentCard: Record<string, unknown>): PublicSkill[] {
         baseAmount !== undefined && baseAmount !== null
           ? atomicToUsdc(baseAmount as string | number | bigint)
           : null,
-      pricingModel: pricingModelString,
       pricingModelDetail,
       variable: asBoolean(meta.variablePricing) || asBoolean(meta.variable),
       paymentRequired: meta.paymentRequired !== false, // default true
@@ -926,7 +867,6 @@ function formatServiceCardForPublic(
   // derivation per-service on multi-service providers.
   const primary = derivePrimaryServiceId({
     ...provider,
-    agentCard: card.agentCard,
     cards: [card],
   });
 
@@ -972,24 +912,6 @@ export function formatServicesForPublic(
 }
 
 /**
- * Back-compat single-service accessor: the card matching `serviceSlug`
- * when given, else the provider's first (primary) card. Null when the
- * provider surfaces no public services at all.
- */
-export function formatServiceForPublic(
-  provider: CachedProvider,
-  marketplace: MarketplaceLegalUrls,
-  serviceSlug?: string | null,
-): PublicService | null {
-  const all = formatServicesForPublic(provider, marketplace);
-  if (all.length === 0) return null;
-  if (serviceSlug) {
-    return all.find((s) => s.serviceSlug === serviceSlug) ?? null;
-  }
-  return all[0]!;
-}
-
-/**
  * Activity row for /public/v1/activity and the per-service `recentPurchases`
  * tail. Only paid challenges should be passed in — the formatter assumes
  * `transactionHash` and `verifiedAt` are populated.
@@ -1005,8 +927,7 @@ export function formatServiceForPublic(
  * `record` is the on-chain ReputationStorage.getRecord lookup for the
  * challenge's paymentId. Pass null when:
  *   - the gateway has no ReputationStorage configured
- *   - the challenge has no paymentId (pre-paid legacy rows shouldn't reach
- *     this formatter, but be defensive)
+ *   - the challenge has no paymentId
  *   - the provider hasn't attested an outcome yet (contract returns a
  *     zero-init struct; the reader converts that to null)
  *
@@ -1045,8 +966,7 @@ export function formatChainActivityRow(
     providerName,
     serviceName,
     serviceSlug: row.serviceSlug,
-    serviceId:
-      row.serviceId && row.serviceId !== ZERO_SERVICE_ID ? row.serviceId : null,
+    serviceId: row.serviceId,
     buyerName,
     amount: atomicToUsdc(row.amountAtomic),
     skillId: row.skillId,

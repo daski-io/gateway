@@ -6,6 +6,7 @@ import {
   isJurisdiction,
   isServiceTypeForFamily,
 } from "../serviceTaxonomy.js";
+import { parseAgentSkills } from "./format.js";
 
 export class ServiceTaxonomyValidationError extends Error {
   constructor(errors: string[]) {
@@ -18,19 +19,6 @@ function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : null;
-}
-
-function skillMetadata(
-  skill: Record<string, unknown>,
-  extensionSkills: Record<string, unknown> | null,
-): Record<string, unknown> | null {
-  const id = skill.id;
-  const metadata = asRecord(skill.metadata);
-  const inline = metadata
-    ? asRecord(metadata[DASKI_A2A_EXTENSION_URI])
-    : null;
-  if (inline) return inline;
-  return typeof id === "string" ? asRecord(extensionSkills?.[id]) : null;
 }
 
 function validateJurisdictions(value: unknown, errors: string[]): void {
@@ -72,15 +60,16 @@ function validateSkillModes(
     errors.push("skills must be a non-empty array");
     return;
   }
-  const extensionSkills = asRecord(extension.skills);
+  const metadataById = new Map(
+    parseAgentSkills(card).map((skill) => [skill.id, skill.metadata]),
+  );
   for (const skill of skills) {
     const record = asRecord(skill);
     if (!record || typeof record.id !== "string" || record.id.length === 0) {
       errors.push("every skill must have a non-empty id");
       continue;
     }
-    const metadata = skillMetadata(record, extensionSkills);
-    const override = metadata?.fulfillmentMode;
+    const override = metadataById.get(record.id)?.fulfillmentMode;
     if (override !== undefined && !isFulfillmentMode(override)) {
       errors.push(
         `skill '${record.id}' fulfillmentMode must be automated, human, or hybrid`,

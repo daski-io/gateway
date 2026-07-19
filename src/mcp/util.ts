@@ -368,11 +368,6 @@ export function checkPhoneConfirmation(
   });
 }
 
-// Top-level serviceArgs keys that are always legitimate even though no
-// skill lists them: the nested contact containers (hoisted by
-// normalizeContactFields) and cross-skill legacy aliases.
-const SERVICE_ARG_ALIASES = ["years"]; // legacy alias for `term`
-
 /**
  * Keys in the buyer's raw serviceArgs that no advertised field consumes —
  * the skill will silently ignore them (observed: an agent passed
@@ -387,7 +382,7 @@ export function findUnknownServiceArgKeys(
   optionalFields: readonly string[],
 ): string[] {
   if (!rawArgs) return [];
-  const allowed = new Set<string>([...CONTACT_ROLES, ...SERVICE_ARG_ALIASES]);
+  const allowed = new Set<string>(CONTACT_ROLES);
   for (const f of [...requiredFields, ...optionalFields]) {
     allowed.add(f);
     const dot = f.indexOf(".");

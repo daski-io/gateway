@@ -450,6 +450,21 @@ describe("payment", () => {
     );
     // Only one on-chain submit happened (the mock would throw on a second).
     expect(gateway.mockChain.settlements.length).toBe(1);
+
+    const forged: PaymentPayload = {
+      ...payload,
+      payload: {
+        ...payload.payload,
+        signature: ("0x" + "00".repeat(65)) as Hex,
+        authorization: {
+          ...payload.payload.authorization,
+          from: "0x00000000000000000000000000000000000000ff",
+        },
+      },
+    };
+    const rejected = await gateway.purchaseSettle(2n, forged);
+    expect(rejected.status).toBe(402);
+    expect(rejected.json.error).toMatch(/signature|wallet/i);
   });
 
   it("serializes concurrent settlement retries before broadcasting", async () => {
@@ -592,12 +607,11 @@ describe("payment", () => {
     const res = await fetch(`${gateway.baseUrl}/supported`);
     const body: any = await res.json();
     expect(res.status).toBe(200);
-    // §1.2 — CAIP-2 dual-emit: kinds entries carry both v1 `network`
-    // and v2 `chainId` ("eip155:84532").
+    // The current x402 kind entry carries the CAIP-2 chain identifier.
     expect(body.kinds).toEqual([
       { scheme: "exact", network: "base-sepolia", chainId: "eip155:84532" },
     ]);
-    expect(body.chainIdCaip2).toBe("eip155:84532");
+    expect(body).not.toHaveProperty("chainIdCaip2");
   });
 
   // Three-layer identity regression: when the Agent Card declares
@@ -660,33 +674,4 @@ describe("payment", () => {
     expect(bDaski.skillId).toBe("renew-domain");
   });
 
-  // Fallback: when the skill has no daski `serviceSlug` metadata, the
-  // gateway uses skillId-as-slug. Preserves backwards compat with
-  // providers that haven't migrated their Agent Card.
-  it("falls back to skillId-as-slug when the agent card omits serviceSlug", async () => {
-    gateway.registerProvider({
-      tokenId: 43n,
-      erc8004TokenId: 143n,
-      name: "Legacy single-skill provider",
-      priceUsdcSmallest: "15000000",
-      categoryFamily: "domains-web",
-      serviceType: "domain-management",
-      skills: [
-        {
-          id: "register-domain",
-          // No serviceSlug declared — legacy cardinality.
-          metadata: { paymentRequired: true, baseAmount: "15000000" },
-        },
-      ],
-    });
-    await gateway.refresh();
-
-    const { json } = await gateway.purchaseChallenge(43n, {
-      buyerTokenId: "5",
-      skillId: "register-domain",
-    });
-    const daski = json.accepts[0].extra.daski;
-    expect(daski.serviceSlug).toBe("register-domain");
-    expect(daski.skillId).toBe("register-domain");
-  });
 });

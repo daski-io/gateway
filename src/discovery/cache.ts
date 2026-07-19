@@ -159,7 +159,6 @@ export class DiscoveryCache {
           agentId: provider.agentId,
           walletAddress: provider.walletAddress,
           agentURI: provider.agentURI,
-          agentCard: resolved.cards[0]!.agentCard,
           cards: resolved.cards,
           providerName: resolved.providerName,
           providerDescription: resolved.providerDescription,
@@ -180,9 +179,7 @@ export class DiscoveryCache {
         // failed tick doesn't delist a provider that was purchasable
         // seconds earlier — but only up to the staleness cap.
         const hasKnownGoodCard =
-          existing !== undefined &&
-          ((existing.cards?.length ?? 0) > 0 ||
-            Object.keys(existing.agentCard).length > 0);
+          existing !== undefined && existing.cards.length > 0;
         const withinStalenessCap =
           existing !== undefined &&
           Date.now() - existing.lastFetched.getTime() <=
@@ -216,7 +213,6 @@ export class DiscoveryCache {
             agentId: provider.agentId,
             walletAddress: provider.walletAddress,
             agentURI: provider.agentURI,
-            agentCard: {},
             cards: [],
             providerName: null,
             providerDescription: null,
@@ -261,10 +257,7 @@ export class DiscoveryCache {
       }
       // Compare the full card set — a provider adding/removing a service
       // is a catalog change even when its first card is untouched.
-      if (JSON.stringify(o.cards ?? []) !== JSON.stringify(n.cards ?? [])) {
-        return true;
-      }
-      if (JSON.stringify(o.agentCard) !== JSON.stringify(n.agentCard)) {
+      if (JSON.stringify(o.cards) !== JSON.stringify(n.cards)) {
         return true;
       }
     }
@@ -289,12 +282,6 @@ export class DiscoveryCache {
    * throws (the caller keeps serving the previous snapshot, with
    * fetchError set, until the staleness cap expires).
    *
-   * For backwards compatibility with pre-ERC-8004 providers that serve a
-   * flat Agent Card directly at agentURI, we treat the response as a
-   * single card when it does NOT look like a registration file —
-   * specifically when it lacks a `services` array or no A2A entry is
-   * present. In that legacy shape we have no separate provider identity,
-   * so providerName / providerDescription are null.
    */
   private async resolveAgentCard(agentURI: string): Promise<{
     cards: ProviderCard[];
@@ -334,9 +321,13 @@ export class DiscoveryCache {
           try {
             const agentCard = await this.fetchJson(entry.endpoint);
             assertValidServiceTaxonomy(agentCard);
+            const serviceSlug = extractCardServiceSlug(agentCard);
+            if (!serviceSlug) {
+              throw new Error("agent card is missing daski serviceSlug metadata");
+            }
             cards.push({
               endpoint: entry.endpoint,
-              serviceSlug: extractCardServiceSlug(agentCard),
+              serviceSlug,
               agentCard,
             });
           } catch (err) {
@@ -363,45 +354,9 @@ export class DiscoveryCache {
             errors.length > 0 ? `partial card fetch: ${errors.join("; ")}` : null,
         };
       }
-      // A registration document without an A2A entry is admitted only if it
-      // is itself a complete marketplace Agent Card. Taxonomy validation
-      // rejects ordinary registration metadata before it reaches the cache.
-      assertValidServiceTaxonomy(doc);
-      return {
-        cards: [
-          {
-            endpoint: agentURI,
-            serviceSlug: extractCardServiceSlug(doc),
-            agentCard: doc,
-          },
-        ],
-        providerName,
-        providerDescription,
-        providerImage,
-        providerExternalUrl,
-        providerLegal,
-        partialError: null,
-      };
+      throw new Error("registration file has no A2A service endpoint");
     }
-
-    // Flat Agent Card (pre-ERC-8004 layout). No registration-level identity
-    // is available in this shape.
-    assertValidServiceTaxonomy(doc);
-    return {
-      cards: [
-        {
-          endpoint: agentURI,
-          serviceSlug: extractCardServiceSlug(doc),
-          agentCard: doc,
-        },
-      ],
-      providerName: null,
-      providerDescription: null,
-      providerImage: null,
-      providerExternalUrl: null,
-      providerLegal,
-      partialError: null,
-    };
+    throw new Error("agent registration file must contain a services array");
   }
 
   private async fetchJson(uri: string): Promise<Record<string, unknown>> {
@@ -538,10 +493,7 @@ export class DiscoveryCache {
   private hasProviderAwaitingFirstCard(): boolean {
     if (this.lastRefresh === null) return true;
     for (const p of this.cache.values()) {
-      if (
-        (p.cards?.length ?? 0) === 0 &&
-        Object.keys(p.agentCard).length === 0
-      ) {
+      if (p.cards.length === 0) {
         return true;
       }
     }

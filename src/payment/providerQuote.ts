@@ -332,7 +332,7 @@ export interface FetchProviderQuoteArgs {
   expectedTokenAddress: Hex;
   expectedServiceSlug: string;
   expectedServiceVersion: string;
-  fetchFn?: Fetcher;
+  fetchFn: Fetcher;
   timeoutMs?: number;
   maxBytes?: number;
 }
@@ -357,7 +357,7 @@ export async function fetchProviderQuote(
     url,
     { skillId: args.skillId, serviceArgs: args.serviceArgs },
     {
-      fetch: args.fetchFn ?? (globalThis.fetch as Fetcher),
+      fetch: args.fetchFn,
       timeoutMs: args.timeoutMs ?? DEFAULT_TIMEOUT_MS,
       maxBytes: args.maxBytes ?? DEFAULT_MAX_BYTES,
     },

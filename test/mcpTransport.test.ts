@@ -17,8 +17,10 @@ afterEach(async () => {
 
 async function startTransport(options: {
   maxSessions?: number;
+  maxSessionsPerClient?: number;
   idleTtlMs?: number;
   sweepIntervalMs?: number;
+  allowedOrigins?: string[];
 }) {
   const app = express();
   app.use(express.json());
@@ -59,6 +61,44 @@ describe("MCP HTTP session lifecycle", () => {
     await expect(connect(url)).rejects.toThrow(/503|capacity/i);
     expect(wiring.sessionCount()).toBe(1);
     await first.transport.close();
+  });
+
+  it("prevents one client from exhausting the global session pool", async () => {
+    const { wiring, url } = await startTransport({
+      maxSessions: 3,
+      maxSessionsPerClient: 1,
+    });
+    const first = await connect(url);
+    await expect(connect(url)).rejects.toThrow(/429|client/i);
+    expect(wiring.sessionCount()).toBe(1);
+    await first.transport.close();
+  });
+
+  it("rejects browser requests from origins outside the allowlist", async () => {
+    const { url } = await startTransport({
+      allowedOrigins: ["https://gateway.example"],
+    });
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        origin: "https://attacker.example",
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: {
+          protocolVersion: "2025-03-26",
+          capabilities: {},
+          clientInfo: { name: "origin-test", version: "1.0.0" },
+        },
+      }),
+    });
+    expect(response.status).toBe(403);
+    expect(await response.json()).toMatchObject({
+      error: { message: "Origin is not allowed" },
+    });
   });
 
   it("closes idle sessions during the sweep", async () => {

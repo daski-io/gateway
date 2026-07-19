@@ -33,12 +33,6 @@ export function extractAgentCardName(
   return typeof name === "string" ? name : "(unnamed)";
 }
 
-// A2A v1.0 moved the primary endpoint into `supportedInterfaces[0].url`;
-// v0.3 cards still carry it at the top level as `url`. Gateway sees both
-// in the wild (one provider can update ahead of another), so we read the
-// v1 location first and fall back to v0.3 — don't drop the legacy branch
-// without auditing every provider that landed before the v1.0 cutover.
-//
 // Provider-level identity (icon, website) deliberately is NOT read from
 // the AgentCard. It lives on the ERC-8004 registration file (image /
 // external_url) and is sourced via DiscoveryCache.resolveAgentCard so a
@@ -54,27 +48,11 @@ export function extractAgentCardUrl(
       if (typeof url === "string" && url.length > 0) return url;
     }
   }
-  const legacy = agentCard["url"];
-  return typeof legacy === "string" ? legacy : null;
+  return null;
 }
 
-/**
- * The provider's cards, tolerating cache entries built before the
- * multi-card refactor (tests, or a deploy race): a provider without a
- * `cards` array is treated as a single-card provider wrapping its
- * legacy `agentCard`.
- */
 export function cardsOf(provider: CachedProvider): ProviderCard[] {
-  if (Array.isArray(provider.cards) && provider.cards.length > 0) {
-    return provider.cards;
-  }
-  return [
-    {
-      endpoint: provider.agentURI,
-      serviceSlug: extractCardServiceSlug(provider.agentCard),
-      agentCard: provider.agentCard,
-    },
-  ];
+  return provider.cards;
 }
 
 export function hasMarketplaceService(provider: CachedProvider): boolean {
@@ -87,8 +65,8 @@ export function hasMarketplaceService(provider: CachedProvider): boolean {
 /**
  * The on-chain service slug a card represents. Cards are per-service, so
  * every skill carries the same `serviceSlug` in its daski metadata — read
- * it off the first skill that declares one (either publishing shape).
- * Null for legacy cards with no declared slug.
+ * it off the first skill that declares one.
+ * Null when card metadata is incomplete.
  */
 export function extractCardServiceSlug(
   agentCard: Record<string, unknown>,
@@ -101,18 +79,6 @@ export function extractCardServiceSlug(
     for (const meta of Object.values(shapeB as Record<string, unknown>)) {
       if (!meta || typeof meta !== "object") continue;
       const slug = (meta as Record<string, unknown>)["serviceSlug"];
-      if (typeof slug === "string" && slug.length > 0) return slug;
-    }
-  }
-  const skills = agentCard["skills"];
-  if (Array.isArray(skills)) {
-    for (const skill of skills) {
-      if (!skill || typeof skill !== "object") continue;
-      const meta = (skill as Record<string, unknown>)["metadata"];
-      if (!meta || typeof meta !== "object") continue;
-      const daski = (meta as Record<string, unknown>)[DASKI_A2A_EXTENSION_URI];
-      if (!daski || typeof daski !== "object") continue;
-      const slug = (daski as Record<string, unknown>)["serviceSlug"];
       if (typeof slug === "string" && slug.length > 0) return slug;
     }
   }
@@ -222,45 +188,63 @@ export function applyDiscoverFilters(
     return true;
   };
 
-  // Filter per CARD: a multi-service provider survives with the subset
-  // of its cards that match; drops out only when none do. The pruned
-  // provider keeps `agentCard` pointed at its first surviving card so
-  // legacy single-card readers stay coherent.
+  // Filter per card: a multi-service provider survives with the subset
+  // of its cards that match and drops out only when none do.
   const out: CachedProvider[] = [];
   for (const p of providers) {
     const surviving = cardsOf(p).filter(cardMatches);
     if (surviving.length === 0) continue;
-    out.push({ ...p, agentCard: surviving[0]!.agentCard, cards: surviving });
+    out.push({ ...p, cards: surviving });
   }
   return out;
 }
 
-/**
- * Extracts skill-level metadata from an Agent Card. Supports both
- * publishing shapes observed in the wild:
- *   A) `skills[i].metadata[DASKI_A2A_EXTENSION_URI]` — per-skill metadata.
- *   B) `extensions[DASKI_A2A_EXTENSION_URI].skills[skillId]` — map keyed
- *      by skillId inside the marketplace extension (what daski-provider
- *      actually serves today).
- * When a skill is listed in `skills[]` but only has metadata under shape B,
- * we still emit it in the result so callers see the skill. Skills with no
- * metadata at all are still emitted with metadata fields undefined so
- * agents can at least see their existence.
- */
-function extractSkills(
+export interface ParsedAgentSkill {
+  id: string;
+  name: unknown;
+  description: unknown;
+  metadata: Record<string, unknown>;
+}
+
+/** Parse the current marketplace skill publishing shape. */
+export function parseAgentSkills(
   agentCard: Record<string, unknown>,
-): Array<Record<string, unknown>> {
+): ParsedAgentSkill[] {
   const skills = agentCard["skills"];
   if (!Array.isArray(skills)) return [];
-
-  // Shape B lookup: single extension read, reused per skill below.
   const ext = extractMarketplaceExtension(agentCard) as
     | (Record<string, unknown> & { skills?: unknown })
     | null;
-  const shapeBMap =
+  const metadataBySkill =
     ext?.skills && typeof ext.skills === "object" && !Array.isArray(ext.skills)
       ? (ext.skills as Record<string, unknown>)
-      : null;
+      : {};
+  const parsed: ParsedAgentSkill[] = [];
+  for (const skill of skills) {
+    if (!skill || typeof skill !== "object") continue;
+    const record = skill as Record<string, unknown>;
+    if (typeof record.id !== "string") continue;
+    const metadata = metadataBySkill[record.id];
+    parsed.push({
+      id: record.id,
+      name: record.name,
+      description: record.description,
+      metadata:
+        metadata && typeof metadata === "object"
+          ? (metadata as Record<string, unknown>)
+          : {},
+    });
+  }
+  return parsed;
+}
+
+/** Extract skill-level metadata for the discovery response. */
+function extractSkills(
+  agentCard: Record<string, unknown>,
+): Array<Record<string, unknown>> {
+  const ext = extractMarketplaceExtension(agentCard) as
+    | (Record<string, unknown> & { skills?: unknown })
+    | null;
 
   const formatPriceList = (raw: unknown): unknown => {
     if (!raw) return undefined;
@@ -287,28 +271,8 @@ function extractSkills(
   };
 
   const out: Array<Record<string, unknown>> = [];
-  for (const skill of skills) {
-    if (!skill || typeof skill !== "object") continue;
-    const s = skill as Record<string, unknown>;
-    const id = s.id;
-    if (typeof id !== "string") continue;
-
-    // Prefer shape A if present (per-skill metadata is more authoritative);
-    // fall back to shape B; if neither, still emit the skill with the basic
-    // fields so it's at least discoverable.
-    const shapeAMeta =
-      s.metadata &&
-      typeof s.metadata === "object" &&
-      (s.metadata as Record<string, unknown>)[DASKI_A2A_EXTENSION_URI];
-    const shapeBMeta = shapeBMap?.[id];
-    const meta =
-      (shapeAMeta && typeof shapeAMeta === "object"
-        ? (shapeAMeta as Record<string, unknown>)
-        : null) ??
-      (shapeBMeta && typeof shapeBMeta === "object"
-        ? (shapeBMeta as Record<string, unknown>)
-        : null) ??
-      {};
+  for (const skill of parseAgentSkills(agentCard)) {
+    const { id, name, description, metadata: meta } = skill;
 
     // baseAmount/priceList live at the metadata top level in older cards,
     // but daski-provider nests them under meta.pricing (the translated
@@ -329,8 +293,8 @@ function extractSkills(
 
     out.push({
       id,
-      name: s.name,
-      description: s.description,
+      name,
+      description,
       paymentRequired: meta.paymentRequired ?? true,
       variablePricing: meta.variablePricing ?? false,
       // Pass through the live-pricing marker when present; otherwise
@@ -410,8 +374,8 @@ export function formatCardForSkillDiscover(
     //     → emit pricingModel, omit basePrice
     //   - fixed: baseAmount present
     //     → emit basePrice as USDC string
-    // Provider's generator ALSO emits both `variable` (canonical) and
-    // `variablePricing` (back-compat) for the boolean flag. Read both.
+    // Normalize the two service-level variability fields used by the
+    // marketplace extension and public pricing schema.
     const pricing = (ext.pricing ?? {}) as Record<string, unknown>;
     const pricingModel = pricing.model;
     const baseAmountRaw = pricing.baseAmount;
@@ -425,8 +389,7 @@ export function formatCardForSkillDiscover(
       agentId: provider.agentId.toString(),
       // Which of the provider's services this entry describes. Skill ids
       // are only unique within a service — pair skillId with this slug
-      // when disambiguating across a multi-service provider. Null for
-      // legacy cards that don't declare one.
+      // when disambiguating across a multi-service provider.
       serviceSlug: card.serviceSlug,
       // Provider-supplied free-text fields are reflected to LLM clients
       // via search_services / Resource reads. Strip control chars + BIDI
@@ -496,7 +459,7 @@ function withCanonicalLegal(
  * Serializes a cached provider for the REST /discover response. BigInts
  * become strings, dates become ISO, agent card is returned as-is.
  * `cards` is the multi-service surface (one entry per advertised
- * service); `agentCard` remains the first card for back-compat.
+ * service).
  */
 export function formatForRestDiscover(
   provider: CachedProvider,
@@ -506,13 +469,11 @@ export function formatForRestDiscover(
     throw new Error("provider legal metadata is required for discovery");
   }
   const legal = buildServiceLegal(marketplace, provider.providerLegal);
-  const primaryAgentCard = withCanonicalLegal(provider.agentCard, legal);
   return {
     tokenId: provider.agentId.toString(),
     agentId: provider.agentId.toString(),
     walletAddress: provider.walletAddress,
     agentURI: provider.agentURI,
-    agentCard: primaryAgentCard,
     legal,
     cards: cardsOf(provider).map((c) => ({
       endpoint: c.endpoint,

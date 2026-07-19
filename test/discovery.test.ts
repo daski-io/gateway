@@ -57,8 +57,8 @@ describe("discovery", () => {
     expect(tokens).toEqual(["1", "2", "3"]);
 
     const llc = json.providers.find((p: any) => p.tokenId === "1");
-    expect(llc.agentCard.name).toBe("Daski LLC Formation");
-    expect(llc.agentCard.extensions[DASKI_A2A_EXTENSION_URI].pricing.baseAmount).toBe(
+    expect(llc.cards[0].agentCard.name).toBe("Daski LLC Formation");
+    expect(llc.cards[0].agentCard.extensions[DASKI_A2A_EXTENSION_URI].pricing.baseAmount).toBe(
       "250000000",
     );
     expect(llc.fetchError).toBeNull();
@@ -147,7 +147,7 @@ describe("discovery", () => {
     expect(res.status).toBe(200);
     const body: any = await res.json();
     expect(body.tokenId).toBe("2");
-    expect(body.agentCard.name).toBe("Daski Domain Registration");
+    expect(body.cards[0].agentCard.name).toBe("Daski Domain Registration");
   });
 
   it("ignores non-whitelisted providers even if they are on-chain", async () => {

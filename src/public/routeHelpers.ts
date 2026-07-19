@@ -4,8 +4,6 @@ import type { DiscoveryCache } from "../discovery/cache.js";
 import { formatServicesForPublic } from "./format.js";
 import type { Hex } from "../types.js";
 
-const ZERO_HEX = `0x${"00".repeat(32)}` as Hex;
-
 export async function mapWithLimit<T, R>(
   items: readonly T[],
   limit: number,
@@ -46,13 +44,11 @@ export function buildServiceNameResolver(
   }
   return (
     providerAgentId: bigint,
-    serviceId: Hex | null,
+    serviceId: Hex,
     serviceSlug: string | null,
   ): string | null => {
-    if (serviceId && serviceId !== ZERO_HEX) {
-      const name = byServiceId.get(serviceId.toLowerCase());
-      if (name) return name;
-    }
+    const name = byServiceId.get(serviceId.toLowerCase());
+    if (name) return name;
     return serviceSlug
       ? (bySlug.get(`${providerAgentId.toString()}:${serviceSlug}`) ?? null)
       : null;

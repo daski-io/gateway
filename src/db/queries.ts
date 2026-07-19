@@ -4,16 +4,13 @@ import { vectorLiteral } from "../discovery/embeddings.js";
 
 export interface SkillSearchHit {
   providerAgentId: bigint;
-  /** The service (card) the skill belongs to; '' for legacy single-card
-   *  providers without a declared slug. Skill ids are only unique within
-   *  a service, so aggregation keys on (provider, serviceSlug). */
+  /** Skill ids are unique within a service, so aggregation keys on
+   *  (provider, serviceSlug). */
   serviceSlug: string;
   skillId: string;
   /** Cosine distance in [0, 2]; lower is more similar. */
   distance: number;
 }
-
-const ZERO_WALLET = "0x0000000000000000000000000000000000000000" as Hex;
 
 function hexToBytea(hex: Hex): Buffer {
   return Buffer.from(hex.slice(2), "hex");
@@ -77,7 +74,12 @@ export interface ReputationMirrorRow {
   updatedAt: Date;
 }
 
-const ZERO_SERVICE_ID = ("0x" + "00".repeat(32)) as Hex;
+function requiredColumn<T>(value: T | null, column: string): T {
+  if (value === null) {
+    throw new Error(`payment challenge is missing required column ${column}`);
+  }
+  return value;
+}
 
 function rowToChallenge(row: ChallengeRow): StoredChallenge {
   return {
@@ -86,16 +88,14 @@ function rowToChallenge(row: ChallengeRow): StoredChallenge {
     buyerTokenId: BigInt(row.buyer_token_id),
     amount: BigInt(row.amount),
     skillId: row.skill_id ?? null,
-    // Pre-refactor rows have NULL service_slug / service_version /
-    // service_id (legacy before migrations 003 + 004). Surface a
-    // sensible default for each so callers don't special-case the
-    // absence — settlement on those was completed under the old
-    // contract anyway.
-    serviceSlug: row.service_slug ?? (row.skill_id ?? ""),
-    serviceVersion: row.service_version ?? "1",
-    serviceId: row.service_id ? byteaToHex(row.service_id) : ZERO_SERVICE_ID,
+    serviceSlug: requiredColumn(row.service_slug, "service_slug"),
+    serviceVersion: requiredColumn(row.service_version, "service_version"),
+    serviceId: byteaToHex(requiredColumn(row.service_id, "service_id")),
     providerA2AUrl: row.provider_a2a_url,
-    walletAddress: (row.wallet_address as Hex) ?? ZERO_WALLET,
+    walletAddress: requiredColumn(
+      row.wallet_address,
+      "wallet_address",
+    ) as Hex,
     createdAt: row.created_at,
     expiresAt: row.expires_at,
     status: row.status,
@@ -106,9 +106,7 @@ function rowToChallenge(row: ChallengeRow): StoredChallenge {
     confirmationAttestationUid: row.confirmation_attestation_uid
       ? byteaToHex(row.confirmation_attestation_uid)
       : null,
-    // Rows that pre-date migration 008 have NULL rail — they were all
-    // gateway-settled, so default 'daski'.
-    rail: row.rail ?? "daski",
+    rail: requiredColumn(row.rail, "rail"),
     authNonce: row.auth_nonce != null ? (row.auth_nonce as Hex) : null,
     externalSettleTx:
       row.external_settle_tx != null ? (row.external_settle_tx as Hex) : null,
@@ -123,7 +121,7 @@ function rowToChallenge(row: ChallengeRow): StoredChallenge {
 }
 
 export function createQueries(pool: Pool) {
-  let settlementGate: Promise<void> = Promise.resolve();
+  const settlementGates = new Map<string, Promise<void>>();
 
   return {
     async consumeRateLimitBucket(
@@ -295,15 +293,16 @@ export function createQueries(pool: Pool) {
       serviceRef: Hex,
       action: () => Promise<T>,
     ): Promise<T> {
+      const lockKey = serviceRef.toLowerCase();
       let releaseGate!: () => void;
-      const previous = settlementGate;
-      settlementGate = new Promise<void>((resolve) => {
+      const previous = settlementGates.get(lockKey) ?? Promise.resolve();
+      const gate = new Promise<void>((resolve) => {
         releaseGate = resolve;
       });
+      settlementGates.set(lockKey, gate);
       await previous;
       try {
         const client = await pool.connect();
-        const lockKey = serviceRef.toLowerCase();
         let locked = false;
         try {
           await client.query(
@@ -326,14 +325,16 @@ export function createQueries(pool: Pool) {
         }
       } finally {
         releaseGate();
+        if (settlementGates.get(lockKey) === gate) {
+          settlementGates.delete(lockKey);
+        }
       }
     },
 
     /**
-     * Atomic transition pending → paid only if the row is still pending,
-     * except for an expired external-rail row whose facilitator settlement
-     * was already persisted. Funds have moved in that case, so attribution
-     * must remain recoverable even after the original challenge TTL.
+     * Atomic transition pending/expired → paid after an on-chain settlement.
+     * A challenge can cross its TTL while the transaction is pending, so the
+     * expiry sweep must not prevent persistence after funds have moved.
      * The contract enforces single-use of serviceRef, so at most one
      * on-chain submission can succeed; this UPDATE records the winner
      * without racing a concurrent verify request. Returns true if this
@@ -365,11 +366,11 @@ export function createQueries(pool: Pool) {
                 }
           WHERE service_ref = $3
             AND (
-              status = 'pending'
+              status IN ('pending', 'expired')
               OR (
-                status = 'expired'
-                AND rail = 'external'
-                AND external_settle_tx IS NOT NULL
+                status = 'paid'
+                AND payment_id = $1
+                AND transaction_hash = $2
               )
             )`,
         setBuyer

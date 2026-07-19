@@ -34,7 +34,6 @@ function skillSourceText(args: {
 
 interface SkillEmbeddingTarget {
   providerAgentId: bigint;
-  /** '' for legacy cards without a declared slug — matches the DB default. */
   serviceSlug: string;
   skillId: string;
   sourceText: string;
@@ -57,7 +56,7 @@ function collectTargets(providers: CachedProvider[]): SkillEmbeddingTarget[] {
       const providerName = typeof card.name === "string" ? card.name : "";
       const serviceDescription =
         typeof ext.serviceDescription === "string" ? ext.serviceDescription : "";
-      const serviceSlug = providerCard.serviceSlug ?? "";
+      const serviceSlug = providerCard.serviceSlug;
 
       for (const skill of card.skills ?? []) {
         const skillId = typeof skill.id === "string" ? skill.id : "";

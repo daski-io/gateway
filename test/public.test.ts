@@ -3,7 +3,7 @@ import { startTestGateway, type TestGateway } from "./helpers/setup.js";
 import {
   computeServiceId,
   derivePrimaryServiceId,
-} from "../src/payment/requirements.js";
+} from "../src/discovery/serviceIdentity.js";
 import type { Hex } from "../src/types.js";
 
 const PROVIDER_A2A = "http://provider.test/a2a";
@@ -139,38 +139,6 @@ async function patchChainEvent(
     `UPDATE chain_events SET ${sets.join(", ")} WHERE payment_id = $${i}`,
     args,
   );
-}
-
-async function seedChainOnly(
-  gateway: TestGateway,
-  args: {
-    paymentId: bigint;
-    txHash: Hex;
-    serviceId: Hex;
-    buyerAgentId: bigint;
-    providerAgentId: bigint;
-    amountAtomic: bigint;
-    settledAt?: Date;
-    outcomeCode?: number | null;
-    confirmationCode?: number;
-    fulfillmentSeconds?: number | null;
-    refundedAtomic?: bigint;
-  },
-): Promise<void> {
-  await gateway.bundle.queries.upsertChainEvent({
-    paymentId: args.paymentId,
-    txHash: args.txHash,
-    blockNumber: 1n,
-    serviceId: args.serviceId,
-    buyerAgentId: args.buyerAgentId,
-    providerAgentId: args.providerAgentId,
-    amountAtomic: args.amountAtomic,
-    settledAt: args.settledAt ?? new Date(),
-    outcomeCode: args.outcomeCode ?? null,
-    confirmationCode: args.confirmationCode ?? 0,
-    fulfillmentSeconds: args.fulfillmentSeconds ?? null,
-    refundedAtomic: args.refundedAtomic ?? 0n,
-  });
 }
 
 describe("public v1 — /services", () => {
@@ -309,7 +277,7 @@ describe("public v1 — /services", () => {
     ]);
     expect(reg!.requiresAssetOwnership).toBe(false);
     expect(reg!.requiresCapability).toBe(false);
-    expect(reg!.pricingModel).toBe("live");
+    expect(reg).not.toHaveProperty("pricingModel");
     expect(reg!.pricingModelDetail).toEqual({
       kind: "live",
       source: "registrar",

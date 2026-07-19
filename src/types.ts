@@ -45,9 +45,8 @@ export interface OnChainProvider {
   agentId: bigint;
   walletAddress: Hex;
   // Resolved from IdentityRegistry.tokenURI(agentId); points to the ERC-8004
-  // registration JSON file. The Agent Card endpoint is derived from the
-  // `services` array inside that file (or falls back to the registration
-  // file itself for backwards-compat with the flat Agent Card scheme).
+  // registration JSON file. Agent Card endpoints are derived from its
+  // `services` array.
   agentURI: string;
   registrationTime: bigint;
   isActive: boolean;
@@ -65,11 +64,9 @@ export interface ProviderCard {
   endpoint: string;
   /**
    * The on-chain service slug this card represents, extracted from the
-   * card's per-skill daski metadata (`serviceSlug`). Null for legacy
-   * cards that don't declare one — those fall back to skillId-as-slug
-   * semantics downstream.
+   * card's per-skill daski metadata (`serviceSlug`).
    */
-  serviceSlug: string | null;
+  serviceSlug: string;
   agentCard: Record<string, unknown>;
 }
 
@@ -77,33 +74,19 @@ export interface CachedProvider {
   agentId: bigint;
   walletAddress: Hex;
   agentURI: string;
-  /**
-   * Back-compat convenience: the FIRST successfully fetched card. Skill-
-   * scoped consumers should resolve the right card via
-   * `findCardForSkill`; catalog-scoped consumers iterate `cards`.
-   */
-  agentCard: Record<string, unknown>;
-  /**
-   * Every Agent Card the provider advertises (one per service). Set by
-   * the discovery cache on every successful fetch; mirrors `agentCard`
-   * for single-card providers and legacy flat-card layouts. Optional so
-   * hand-built fixtures (tests) can stay single-card — consumers go
-   * through `cardsOf()`, which falls back to wrapping `agentCard`.
-   */
-  cards?: ProviderCard[];
+  /** Every Agent Card the provider advertises, one per service. */
+  cards: ProviderCard[];
   /**
    * Top-level name/description from the ERC-8004 registration file at
    * `agentURI`. These describe the *provider* (operating entity); the
    * agent card's `name`/`description` describe the service offering.
-   * Null when the provider serves a flat agent card (pre-ERC-8004) or
-   * the registration file omits the field.
+   * Null when the registration file omits the field.
    */
   providerName: string | null;
   providerDescription: string | null;
   /**
    * Provider brand mark from the ERC-8004 registration file's `image`
-   * field (ERC-721 metadata convention). Null when unset or when the
-   * provider serves a flat agent card.
+   * field (ERC-721 metadata convention). Null when unset.
    */
   providerImage: string | null;
   /**
@@ -152,10 +135,8 @@ export interface DaskiRequirementsExtra {
     skillId: string | null;
     /**
      * On-chain service identifier — `keccak256(providerAgentId,
-     * serviceSlug, version)` is the serviceId. Resolved from the
-     * skill's daski metadata in the Agent Card; falls back to skillId
-     * when the provider hasn't declared a slug yet (legacy 1:1
-     * cardinality).
+     * serviceSlug, version)` is the serviceId. Resolved from the skill's
+     * Daski metadata in the Agent Card.
      */
     serviceSlug: string;
     /**
@@ -327,12 +308,10 @@ export interface SettlementResponse {
     paymentId: string;
     serviceRef: Hex;
     /**
-     * 32-byte hex serviceId, echoed from the on-chain PaymentSettled
-     * event so providers / clients see exactly which service row was
-     * paid for. Absent only on legacy responses; new settlements always
-     * carry it.
+     * 32-byte hex serviceId, echoed from the on-chain PaymentSettled event
+     * so providers and clients see exactly which service row was paid for.
      */
-    serviceId?: Hex;
+    serviceId: Hex;
     providerTokenId: string;
     buyerTokenId: string;
     amount: string;

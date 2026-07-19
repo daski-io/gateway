@@ -1,5 +1,5 @@
 import { keccak256, toBytes, type Hex } from "viem";
-import { randomUUID, randomBytes } from "node:crypto";
+import { randomUUID } from "node:crypto";
 
 // EIP-712 A2A envelope authentication. Shared shape with daski-provider's
 // src/core/auth/envelope.ts — must be kept in sync (the schema is on-chain
@@ -143,6 +143,3 @@ export function buildEnvelopeAuth(input: BuildEnvelopeInput): BuiltEnvelope {
     },
   };
 }
-
-// Silence unused-import warning when randomBytes isn't needed at runtime.
-void randomBytes;

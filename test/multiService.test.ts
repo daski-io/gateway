@@ -229,7 +229,7 @@ describe("multi-service providers", () => {
     expect(slugs).toEqual(["domain-management", "mailboxes"]);
     expect(provider.legal).toEqual(expectedLegal(gateway));
     expect(
-      provider.agentCard.extensions[DASKI_A2A_EXTENSION_URI].legal,
+      provider.cards[0].agentCard.extensions[DASKI_A2A_EXTENSION_URI].legal,
     ).toEqual(expectedLegal(gateway));
     for (const card of provider.cards) {
       expect(card.legal).toEqual(expectedLegal(gateway));
@@ -238,7 +238,7 @@ describe("multi-service providers", () => {
       );
     }
     // Back-compat: agentCard remains the first card.
-    expect(provider.agentCard.name).toBe("Domain Management");
+    expect(provider.cards[0].agentCard.name).toBe("Domain Management");
   });
 
   it("catalog mode surfaces one entry per service with its own A2A endpoint", async () => {
@@ -427,10 +427,9 @@ describe("multi-service providers", () => {
     expect(svc.serviceSlug).toBe("mailboxes");
     expect(svc.name).toBe("Agent Mailboxes");
 
-    // Default (no query) stays the primary card — existing links keep working.
-    const primary = await fetch(`${gateway.baseUrl}/public/v1/services/1`);
-    const primarySvc: any = await primary.json();
-    expect(primarySvc.serviceSlug).toBe("domain-management");
+    // Multi-service detail requests must identify the service explicitly.
+    const ambiguous = await fetch(`${gateway.baseUrl}/public/v1/services/1`);
+    expect(ambiguous.status).toBe(404);
   });
 
   it("x402-services.json advertises paid skills from every card", async () => {

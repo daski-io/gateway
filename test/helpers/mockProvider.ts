@@ -53,6 +53,56 @@ export interface MockTaskState {
   }>;
 }
 
+const TASK_STATE_TO_PROTO = {
+  submitted: "TASK_STATE_SUBMITTED",
+  working: "TASK_STATE_WORKING",
+  "input-required": "TASK_STATE_INPUT_REQUIRED",
+  completed: "TASK_STATE_COMPLETED",
+  failed: "TASK_STATE_FAILED",
+  canceled: "TASK_STATE_CANCELED",
+} as const satisfies Record<MockTaskState["state"], string>;
+
+function protoTaskState(state: MockTaskState["state"]): string {
+  return TASK_STATE_TO_PROTO[state];
+}
+
+function protoMessage(
+  message: MockTaskState["message"] | undefined,
+): Record<string, unknown> | undefined {
+  if (!message) return undefined;
+  return {
+    ...message,
+    role: message.role === "agent" ? "ROLE_AGENT" : "ROLE_USER",
+    parts: message.parts.map(protoPart),
+  };
+}
+
+function protoPart(part: unknown): unknown {
+  if (!part || typeof part !== "object" || Array.isArray(part)) return part;
+  const { type, ...current } = part as Record<string, unknown>;
+  return {
+    ...current,
+    ...(typeof current.kind !== "string" && typeof type === "string"
+      ? { kind: type }
+      : {}),
+  };
+}
+
+function protoArtifacts(artifacts: unknown[]): unknown[] {
+  return artifacts.map((artifact) => {
+    if (!artifact || typeof artifact !== "object" || Array.isArray(artifact)) {
+      return artifact;
+    }
+    const current = artifact as Record<string, unknown>;
+    return {
+      ...current,
+      ...(Array.isArray(current.parts)
+        ? { parts: current.parts.map(protoPart) }
+        : {}),
+    };
+  });
+}
+
 /// Per-skill quote outcome the mock provider returns for /quote requests.
 /// Tests can scope by skillId (default applies to all). When unset, the
 /// mock returns ok=true with amount=0 (free skills) — matches the
@@ -176,7 +226,11 @@ export async function startMockProvider(
   }>();
 
   // Agent card serving: one generic handler that looks up the path.
-  app.get("*", (req, res, next) => {
+  app.use((req, res, next) => {
+    if (req.method !== "GET") {
+      next();
+      return;
+    }
     const card = cards[req.path];
     if (card) {
       res.json(card);
@@ -197,31 +251,22 @@ export async function startMockProvider(
   } | null {
     for (const card of Object.values(cards)) {
       const skills = card.skills;
-      let listed = false;
-      let metadata: Record<string, unknown> | null = null;
-      if (Array.isArray(skills)) {
-        for (const rawSkill of skills) {
-          if (!rawSkill || typeof rawSkill !== "object") continue;
-          const skill = rawSkill as Record<string, unknown>;
-          if (skill.id !== skillId) continue;
-          listed = true;
-          const meta = skill.metadata;
-          const daskiMeta =
-            meta && typeof meta === "object"
-              ? (meta as Record<string, unknown>)[DASKI_A2A_EXTENSION_URI]
-              : null;
-          if (daskiMeta && typeof daskiMeta === "object") {
-            metadata = daskiMeta as Record<string, unknown>;
-          }
-          break;
-        }
-      }
+      const listed =
+        Array.isArray(skills) &&
+        skills.some(
+          (skill) =>
+            skill !== null &&
+            typeof skill === "object" &&
+            (skill as Record<string, unknown>).id === skillId,
+        );
+      if (!listed) continue;
       const extensions = card.extensions;
       const daski =
         extensions && typeof extensions === "object"
           ? (extensions as Record<string, unknown>)[DASKI_A2A_EXTENSION_URI]
           : null;
-      if (!metadata && daski && typeof daski === "object") {
+      let metadata: Record<string, unknown> | null = null;
+      if (daski && typeof daski === "object") {
         const skillMap = (daski as Record<string, unknown>).skills;
         const mapped =
           skillMap && typeof skillMap === "object" && !Array.isArray(skillMap)
@@ -229,10 +274,8 @@ export async function startMockProvider(
             : null;
         if (mapped && typeof mapped === "object") {
           metadata = mapped as Record<string, unknown>;
-          listed = true;
         }
       }
-      if (!listed) continue;
       return {
         serviceSlug:
           typeof metadata?.serviceSlug === "string" && metadata.serviceSlug
@@ -380,22 +423,22 @@ export async function startMockProvider(
       res.json({ jsonrpc: "2.0", id: rpcId, error: err });
       return;
     }
-    if (body?.method === "tasks/get" || body?.method === "GetTask") {
+    if (body?.method === "GetTask") {
       res.json({
         jsonrpc: "2.0",
         id: rpcId,
         result: {
           id: taskState.id,
           status: {
-            state: taskState.state,
-            message: taskState.message,
+            state: protoTaskState(taskState.state),
+            message: protoMessage(taskState.message),
           },
-          artifacts: taskState.artifacts ?? [],
+          artifacts: protoArtifacts(taskState.artifacts ?? []),
         },
       });
       return;
     }
-    if (body?.method === "message/send" || body?.method === "SendMessage") {
+    if (body?.method === "SendMessage") {
       lastSendBody = body as Record<string, unknown>;
       // Synchronous-completion path (mirrors real provider's open-free
       // skill handler): when configured, the mock returns a fully
@@ -408,10 +451,10 @@ export async function startMockProvider(
           result: {
             id: syncResult.id ?? "qa-mock-1",
             status: {
-              state: syncResult.state ?? "completed",
-              message: syncResult.statusMessage,
+              state: protoTaskState(syncResult.state ?? "completed"),
+              message: protoMessage(syncResult.statusMessage),
             },
-            artifacts: syncResult.artifacts ?? [],
+            artifacts: protoArtifacts(syncResult.artifacts ?? []),
           },
         });
         return;
@@ -422,10 +465,10 @@ export async function startMockProvider(
         result: {
           id: taskState.id,
           status: {
-            state: "submitted",
+            state: "TASK_STATE_SUBMITTED",
             message: {
-              role: "agent",
-              parts: [{ type: "text", text: "Task received" }],
+              role: "ROLE_AGENT",
+              parts: [{ kind: "text", text: "Task received" }],
             },
           },
         },
@@ -517,24 +560,35 @@ export interface BuildAgentCardOpts {
 export function buildAgentCard(
   o: BuildAgentCardOpts,
 ): Record<string, unknown> {
+  const skillDefinitions =
+    o.skills ??
+    [
+      {
+        id: "default-service",
+        name: "Default Service",
+        description: "Default service skill",
+        metadata: {
+          [DASKI_A2A_EXTENSION_URI]: {
+            fulfillmentMode: "automated",
+          },
+        },
+      },
+    ];
   const card: Record<string, unknown> = {
     name: o.name,
     description: o.description ?? `${o.name} provider`,
-    url: o.a2aUrl,
-    skills:
-      o.skills ??
-      [
-        {
-          id: "default-service",
-          name: "Default Service",
-          description: "Default service skill",
-          metadata: {
-            [DASKI_A2A_EXTENSION_URI]: {
-              fulfillmentMode: "automated",
-            },
-          },
-        },
-      ],
+    supportedInterfaces: [
+      {
+        url: o.a2aUrl,
+        protocolBinding: "JSONRPC",
+        protocolVersion: "1.0",
+      },
+    ],
+    skills: skillDefinitions.map(({ id, name, description }) => ({
+      id,
+      name,
+      description,
+    })),
   };
   const legal =
     o.legal === undefined
@@ -566,6 +620,25 @@ export function buildAgentCard(
         serviceDescription: o.description ?? `${o.name} description`,
         serviceLifecycle: o.serviceLifecycle ?? "one-shot",
         turnaroundEstimate: o.turnaround ?? "PT10M",
+        skills: Object.fromEntries(
+          skillDefinitions.map((skill) => {
+            const metadata = skill.metadata[DASKI_A2A_EXTENSION_URI];
+            const current =
+              metadata && typeof metadata === "object"
+                ? (metadata as Record<string, unknown>)
+                : {};
+            return [
+              skill.id,
+              {
+                ...current,
+                serviceSlug:
+                  typeof current.serviceSlug === "string"
+                    ? current.serviceSlug
+                    : o.serviceType,
+              },
+            ];
+          }),
+        ),
       },
     };
   }

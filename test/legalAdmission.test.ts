@@ -43,12 +43,12 @@ describe("legal metadata admission and representation", () => {
         },
       ],
     });
-    const cardPath = "/agent-cards/51.json";
-    const card = (await (
-      await fetch(`${gateway.mockProvider.baseUrl}${cardPath}`)
+    const registrationPath = "/agent-registrations/51.json";
+    const registration = (await (
+      await fetch(`${gateway.mockProvider.baseUrl}${registrationPath}`)
     ).json()) as Record<string, unknown>;
-    gateway.mockProvider.setAgentCard(cardPath, {
-      ...card,
+    gateway.mockProvider.setAgentCard(registrationPath, {
+      ...registration,
       termsUrl: "http://provider.example/terms",
     });
     await gateway.refresh();
@@ -130,7 +130,7 @@ describe("legal metadata admission and representation", () => {
     const provider = discover.json.providers[0];
     expect(provider.legal).toEqual(expected);
     expect(
-      provider.agentCard.extensions[DASKI_A2A_EXTENSION_URI].legal,
+      provider.cards[0].agentCard.extensions[DASKI_A2A_EXTENSION_URI].legal,
     ).toEqual(expected);
     expect(provider.cards[0].legal).toEqual(expected);
     expect(

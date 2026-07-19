@@ -242,11 +242,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       "DIRECT_ADAPTER_ADDRESS",
       env.DIRECT_ADAPTER_ADDRESS,
     ),
-    externalFacilitatorUrl: (
+    externalFacilitatorUrl: requireMarketplaceHttpsUrl(
+      "EXTERNAL_FACILITATOR_URL",
       env.EXTERNAL_FACILITATOR_URL ??
-      (chainId === 8453
-        ? "https://api.cdp.coinbase.com/platform/v2/x402"
-        : "https://x402.org/facilitator")
+        (chainId === 8453
+          ? "https://api.cdp.coinbase.com/platform/v2/x402"
+          : "https://x402.org/facilitator"),
     ).replace(/\/$/, ""),
     externalFacilitatorAuthHeader: env.EXTERNAL_FACILITATOR_AUTH_HEADER,
     whitelistedAgentIds: parseAgentIds(env.WHITELISTED_AGENT_IDS),
