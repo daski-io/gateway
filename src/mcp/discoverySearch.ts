@@ -1,6 +1,5 @@
 import type { Config } from "../config.js";
 import type { Queries } from "../db/queries.js";
-import { syncSkillEmbeddings } from "../discovery/embeddingSync.js";
 import {
   applyDiscoverFilters,
   formatForSkillDiscover,
@@ -56,7 +55,7 @@ export async function searchServices(
 
   let hits: Awaited<ReturnType<Queries["searchSkillsByEmbedding"]>>;
   try {
-    await syncSkillEmbeddings(deps.pool, all, deps.embedder);
+    await deps.embeddingSync?.waitForIdle();
     const vector = await deps.embedder.embed(args.intent);
     hits = await deps.queries.searchSkillsByEmbedding(
       vector,

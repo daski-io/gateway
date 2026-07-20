@@ -20,13 +20,11 @@ import { decodeRevertReason } from "./viemErrors.js";
 type SupportedChain = typeof base | typeof baseSepolia;
 type FeedbackMethods = Pick<
   ChainReader,
-  | "giveFeedback"
   | "prepareFeedback"
   | "submitPreparedFeedback"
   | "getFeedbackByTransaction"
   | "getFacilitatorTransactionCount"
   | "revokeFeedback"
-  | "getFeedbackLastIndex"
 >;
 
 export interface FeedbackDeps {
@@ -183,11 +181,6 @@ export function createFeedbackMethods(deps: FeedbackDeps): FeedbackMethods {
       );
     },
 
-    async giveFeedback(input: FeedbackInput): Promise<FeedbackResult> {
-      const prepared = await this.prepareFeedback(input);
-      return this.submitPreparedFeedback(prepared, input);
-    },
-
     async revokeFeedback(
       agentId: bigint,
       feedbackIndex: bigint,
@@ -219,13 +212,5 @@ export function createFeedbackMethods(deps: FeedbackDeps): FeedbackMethods {
       return { transactionHash: hash };
     },
 
-    async getFeedbackLastIndex(agentId: bigint): Promise<bigint> {
-      return (await deps.publicClient.readContract({
-        address: registry(),
-        abi: reputationRegistryAbi,
-        functionName: "getLastIndex",
-        args: [agentId, deps.account.address],
-      })) as bigint;
-    },
   };
 }

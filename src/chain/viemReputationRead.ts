@@ -11,7 +11,6 @@ import type { Hex } from "../types.js";
 type ReputationReadMethods = Pick<
   ChainReader,
   | "getProviderReputation"
-  | "getBuyerReputation"
   | "getServiceReputation"
   | "getReputationRecord"
 >;
@@ -47,21 +46,6 @@ export function createReputationReadMethods(
         canceled: result[2],
         confirmed: result[3],
         notConfirmed: result[4],
-      };
-    },
-
-    async getBuyerReputation(agentId: bigint) {
-      if (!reputationStorageAddress) return null;
-      const result = (await publicClient.readContract({
-        address: reputationStorageAddress,
-        abi: reputationStorageAbi,
-        functionName: "getBuyerStats",
-        args: [agentId],
-      })) as readonly [bigint, bigint, bigint];
-      return {
-        transactions: result[0],
-        confirmed: result[1],
-        notConfirmed: result[2],
       };
     },
 

@@ -163,7 +163,7 @@ export function buildRequirementResponse(input: RequirementResponseInput): {
     walletAddress: input.walletAddress.toLowerCase() as Hex,
     createdAt: input.now,
     expiresAt: input.effectiveExpiresAt,
-    status: "pending",
+    settlementState: "pending",
     paymentId: null,
     transactionHash: null,
     verifiedAt: null,

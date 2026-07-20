@@ -63,6 +63,9 @@ export function loadRuntimeConfig(env: NodeJS.ProcessEnv): RuntimeConfig {
   if (nodeEnv === "production" && chainMode === "mock") {
     throw new Error("CHAIN_MODE=mock is forbidden when NODE_ENV=production");
   }
+  if (nodeEnv === "production" && env.TRUST_PROXY === undefined) {
+    throw new Error("TRUST_PROXY must be set explicitly in production");
+  }
 
   return {
     nodeEnv,

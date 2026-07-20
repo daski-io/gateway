@@ -32,8 +32,7 @@ export async function reconcileExternalSettlements(
           );
           if (
             !challenge ||
-            challenge.status === "paid" ||
-            challenge.externalSettleTx ||
+            challenge.settlementState === "paid" ||
             !challenge.authNonce
           ) {
             return false;
@@ -43,6 +42,16 @@ export async function reconcileExternalSettlements(
             challenge.authNonce,
           );
           if (!consumed) return false;
+          if (
+            challenge.settlementState === "pending" ||
+            challenge.settlementState === "expired"
+          ) {
+            const recorded =
+              await queries.recordChallengeExternalAuthorizationConsumed(
+                challenge.serviceRef,
+              );
+            if (!recorded) return false;
+          }
 
           let settlement;
           try {

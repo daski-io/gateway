@@ -145,24 +145,6 @@ describe("provider quote-commitment integration", () => {
     };
   }
 
-  async function retryPurchase(serviceRef: string) {
-    const paymentPayload = Buffer.from(
-      JSON.stringify({ serviceRef }),
-    ).toString("base64");
-    const response = await fetch(`${gateway.baseUrl}/purchase/2`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-PAYMENT": paymentPayload,
-      },
-      body: JSON.stringify({}),
-    });
-    return {
-      status: response.status,
-      json: (await response.json()) as any,
-    };
-  }
-
   it("REST /purchase validates the signed quote and only reuses an exact binding", async () => {
     const serviceArgs = { domain: "rest-quoted.xyz" };
     const baseRequest = {
@@ -214,29 +196,6 @@ describe("provider quote-commitment integration", () => {
     });
     expect(rebound.status).toBe(409);
     expect(rebound.json.error).toContain("quote is already bound");
-  });
-
-  it("REST resource route rejects the retired X-PAYMENT settlement flow", async () => {
-    const serviceArgs = { domain: "rest-retry.xyz" };
-    const providerQuote = await requestProviderQuote(serviceArgs);
-    const opened = await postPurchase({
-      buyerTokenId: "5",
-      walletAddress: gateway.buyerAddress,
-      skillId: "register-domain",
-      serviceSlug: "domain-management",
-      serviceArgs,
-      providerQuote,
-    });
-    expect(opened.status).toBe(402);
-    const serviceRef = opened.json.accepts[0].extra.daski.serviceRef as Hex;
-
-    const retired = await retryPurchase(serviceRef);
-    expect(retired.status).toBe(410);
-    expect(retired.json.error).toContain("/settle");
-
-    const challenge = await gateway.bundle.queries.getChallengeByRef(serviceRef);
-    expect(challenge?.status).toBe("pending");
-    expect(gateway.mockChain.settlements).toHaveLength(0);
   });
 
   it("daski_buy_service adopts quote.serviceRef and persists the credentials", async () => {
@@ -328,7 +287,7 @@ describe("provider quote-commitment integration", () => {
       const challenge = await gateway.bundle.queries.getChallengeByRef(
         paymentRequirements.extra.daski.serviceRef as Hex,
       );
-      expect(challenge?.status).toBe("pending");
+      expect(challenge?.settlementState).toBe("pending");
       expect(gateway.mockChain.settlements).toHaveLength(0);
 
       const nestedArgs = {

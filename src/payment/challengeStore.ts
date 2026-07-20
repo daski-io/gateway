@@ -31,7 +31,7 @@ function matchesBinding(
   now: Date,
 ): boolean {
   return (
-    existing.status === "pending" &&
+    existing.settlementState === "pending" &&
     existing.expiresAt.getTime() > now.getTime() + 15_000 &&
     existing.providerTokenId === binding.providerTokenId &&
     existing.buyerTokenId === binding.buyerTokenId &&

@@ -47,6 +47,7 @@ export interface McpDeps {
   reader: ChainReader;
   reputationWorker: ReputationMirrorWorker;
   pool: import("../db/pool.js").Pool;
+  embeddingSync?: import("../discovery/embeddingSync.js").CatalogEmbeddingSynchronizer | null;
   embedder?: import("../discovery/embeddings.js").Embedder | null;
   fetch?: typeof fetch;
   a2aTimeoutMs?: number;
@@ -70,8 +71,16 @@ export type { McpWiring } from "./httpTransport.js";
 // surfaced by Anthropic clients before any individual tool description. The
 // canonical workflow lives here so the model has the map before it sees the
 // individual tool surface.
-const SERVER_INSTRUCTIONS = [
-  "Daski lets your agent buy real-world business services — domain",
+function serverInstructions(config: Config): string {
+  const networkInstructions =
+    config.chainId === 84532
+      ? [
+          "This gateway uses Base Sepolia testnet (chainId 84532). Faucet USDC:",
+          "https://faucet.circle.com/.",
+        ]
+      : ["This gateway uses Base mainnet (chainId 8453). Payments use real USDC."];
+  return [
+    "Daski lets your agent buy real-world business services — domain",
   "registration, LLC formation, hosting, email — by paying USDC on Base.",
   "The protocol is non-custodial; the gateway never holds funds.",
   "",
@@ -88,10 +97,9 @@ const SERVER_INSTRUCTIONS = [
   "Other tools (daski_register_agent, daski_purchase, daski_settle_payment)",
   "are advanced/manual paths. Use them only when daski_buy_service doesn't fit.",
   "",
-  "Sandbox runs on Base Sepolia testnet (chainId 84532). Faucet USDC:",
-  "https://faucet.circle.com/. Mainnet (chainId 8453) launches after the next",
-  "batch of service categories goes live.",
-].join("\n");
+    ...networkInstructions,
+  ].join("\n");
+}
 
 export async function createMcpServer(
   app: Express,
@@ -171,7 +179,7 @@ export async function createMcpServer(
         },
         // Planted in the `initialize` response so the model sees the
         // canonical workflow before any individual tool description.
-        instructions: SERVER_INSTRUCTIONS,
+        instructions: serverInstructions(deps.config),
       },
     );
     instrumentToolCalls(server);

@@ -63,7 +63,7 @@ export interface ViemReaderOptions {
   // rather than 5xxing.
   reputationStorageAddress?: Hex;
   // Canonical ERC-8004 ReputationRegistry (0x8004B…). Optional; the
-  // feedback methods (giveFeedback / revokeFeedback / getFeedbackLastIndex)
+  // feedback preparation, submission, recovery, and revocation methods
   // throw when unset. The mirror module gates on config before calling.
   reputationRegistryAddress?: Hex;
 }

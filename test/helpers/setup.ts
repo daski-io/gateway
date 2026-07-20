@@ -510,7 +510,6 @@ export async function startTestGateway(opts: TestGatewayOptions = {}): Promise<T
       if (!config.whitelistedAgentIds.includes(def.tokenId)) {
         config.whitelistedAgentIds.push(def.tokenId);
       }
-      bundle.cache.setWhitelist(config.whitelistedAgentIds);
     },
 
     async refresh() {

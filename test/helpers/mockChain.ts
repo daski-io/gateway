@@ -1,6 +1,5 @@
 import type { PaymentSettledEventLog } from "../../src/chain/reader.js";
 import type {
-  BuyerReputation,
   ChainReader,
   ConfirmationDelegationInput,
   ConfirmationResult,
@@ -324,18 +323,12 @@ export class MockChainReader implements ChainReader {
   // ReputationStorage is wired into the gateway. Tests that exercise
   // the reputation surface set explicit values via the setters.
   private providerReputations = new Map<string, ProviderReputation>();
-  private buyerReputations = new Map<string, BuyerReputation>();
   private serviceReputations = new Map<string, ServiceReputation>();
   private reputationConfigured = false;
 
   setProviderReputation(agentId: bigint, value: ProviderReputation): void {
     this.reputationConfigured = true;
     this.providerReputations.set(agentId.toString(), value);
-  }
-
-  setBuyerReputation(agentId: bigint, value: BuyerReputation): void {
-    this.reputationConfigured = true;
-    this.buyerReputations.set(agentId.toString(), value);
   }
 
   setServiceReputation(serviceId: Hex, value: ServiceReputation): void {
@@ -352,19 +345,6 @@ export class MockChainReader implements ChainReader {
         completed: 0n,
         failed: 0n,
         canceled: 0n,
-        confirmed: 0n,
-        notConfirmed: 0n,
-      }
-    );
-  }
-
-  async getBuyerReputation(
-    agentId: bigint,
-  ): Promise<BuyerReputation | null> {
-    if (!this.reputationConfigured) return null;
-    return (
-      this.buyerReputations.get(agentId.toString()) ?? {
-        transactions: 0n,
         confirmed: 0n,
         notConfirmed: 0n,
       }
@@ -459,11 +439,6 @@ export class MockChainReader implements ChainReader {
     this.feedbackRevokeOutcomes.push(outcome);
   }
 
-  async giveFeedback(input: FeedbackInput): Promise<FeedbackResult> {
-    const prepared = await this.prepareFeedback(input);
-    return this.submitPreparedFeedback(prepared, input);
-  }
-
   async prepareFeedback(
     _input: FeedbackInput,
   ): Promise<PreparedFeedbackTransaction> {
@@ -528,10 +503,6 @@ export class MockChainReader implements ChainReader {
     };
     await onBroadcast?.(result.transactionHash);
     return result;
-  }
-
-  async getFeedbackLastIndex(agentId: bigint): Promise<bigint> {
-    return this.feedbackLastIndex.get(agentId.toString()) ?? 0n;
   }
 
   private paymentSettledLogs: PaymentSettledEventLog[] = [];

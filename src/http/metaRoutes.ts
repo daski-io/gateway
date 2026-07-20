@@ -5,11 +5,11 @@ import { fileURLToPath } from "node:url";
 import type { Config } from "../config.js";
 import type { DiscoveryCache } from "../discovery/cache.js";
 import type { Embedder } from "../discovery/embeddings.js";
-import { cardsOf } from "../discovery/format.js";
 import { GATEWAY_VERSION } from "../version.js";
 import type { Pool } from "../db/pool.js";
 import type { ChainEventsIndexer } from "../indexer/chainEvents.js";
 import type { ReputationMirrorWorker } from "../reputation/worker.js";
+import { DatabaseReadinessProbe } from "./readiness.js";
 
 export interface MetaRoutesDeps {
   config: Config;
@@ -28,16 +28,7 @@ function findSkillPath(): string | undefined {
   ].find((candidate) => fs.existsSync(candidate));
 }
 
-function fullDocs(config: Config, cache: DiscoveryCache): string {
-  const providers = cache
-    .getAll()
-    .map((provider) => {
-      const names = cardsOf(provider)
-        .map((card) => (card.agentCard as { name?: string }).name ?? "(unnamed)")
-        .join(" + ");
-      return `- agentId ${provider.agentId.toString()}: ${names || "(unnamed)"}`;
-    })
-    .join("\n");
+function fullDocs(config: Config): string {
   return [
     "# Daski Gateway — full surface",
     "",
@@ -67,9 +58,10 @@ function fullDocs(config: Config, cache: DiscoveryCache): string {
     "- GET /register-prep, /confirm-prep/:paymentId, /discover",
     "- GET /public/v1/services, /public/v1/buyers, /public/v1/activity",
     "",
-    "## Providers (live)",
+    "## Provider discovery",
     "",
-    providers || "(none in cache)",
+    `- REST catalog: ${config.publicUrl}/discover`,
+    "- MCP catalog: daski_search_services",
     "",
     `Network: ${config.network} (chainId ${config.chainId})`,
   ].join("\n");
@@ -79,6 +71,7 @@ export function createMetaRouter(deps: MetaRoutesDeps): Router {
   const { config, cache, embedder } = deps;
   const router = Router();
   const skillPath = findSkillPath();
+  const database = new DatabaseReadinessProbe(deps.pool);
 
   router.get(["/skill.md", "/SKILL.md", "/.well-known/skill.md"], (_req, res) => {
     if (!skillPath) {
@@ -100,18 +93,8 @@ export function createMetaRouter(deps: MetaRoutesDeps): Router {
       state: embedder ? ("unknown" as const) : ("disabled" as const),
     };
     const cacheStatus = cache.status();
-    const indexerStatus = deps.indexer.status();
     const mirrorStatus = deps.reputationWorker.status();
-    let databaseReady = false;
-    let databaseError: string | null = null;
-    const databaseStartedAt = Date.now();
-    try {
-      await deps.pool.query("SELECT 1");
-      databaseReady = true;
-    } catch (error) {
-      databaseError =
-        error instanceof Error ? error.message : "database query failed";
-    }
+    const databaseReady = await database.isReady();
     const indexerReady = deps.indexer.isFresh();
     const ready = databaseReady && cacheStatus.chainFresh && indexerReady;
     const degraded =
@@ -121,31 +104,6 @@ export function createMetaRouter(deps: MetaRoutesDeps): Router {
     res.status(ready ? 200 : 503).json({
       status: ready ? (degraded ? "degraded" : "ready") : "unready",
       version: GATEWAY_VERSION,
-      chain: { chainId: config.chainId, network: config.network },
-      database: {
-        ready: databaseReady,
-        latencyMs: Date.now() - databaseStartedAt,
-        error: databaseError,
-      },
-      cache: {
-        ready: cacheStatus.chainFresh,
-        providers: cache.getAll().length,
-        lastRefresh: cache.getLastRefresh()?.toISOString() ?? null,
-        lastCycleAt: cacheStatus.lastCycleAt?.toISOString() ?? null,
-        lastChainSuccessAt:
-          cacheStatus.lastChainSuccessAt?.toISOString() ?? null,
-        chainError: cacheStatus.lastChainError,
-        cardFailureCount: cacheStatus.cardFailureCount,
-      },
-      indexer: {
-        ready: indexerReady,
-        lastIndexedBlock:
-          indexerStatus.lastIndexedBlock?.toString() ?? null,
-        lastSuccessAt: indexerStatus.lastSuccessAt?.toISOString() ?? null,
-        lastError: indexerStatus.lastError,
-      },
-      reputationMirror: mirrorStatus,
-      embedder: embedderStatus,
     });
   });
 
@@ -225,7 +183,7 @@ export function createMetaRouter(deps: MetaRoutesDeps): Router {
   });
 
   router.get("/llms-full.txt", (_req, res) => {
-    res.type("text/markdown").send(fullDocs(config, cache));
+    res.type("text/markdown").send(fullDocs(config));
   });
   return router;
 }

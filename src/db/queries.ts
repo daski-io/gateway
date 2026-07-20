@@ -36,7 +36,12 @@ interface ChallengeRow {
   wallet_address: string;
   created_at: Date;
   expires_at: Date;
-  status: "pending" | "paid" | "expired";
+  settlement_state:
+    | "pending"
+    | "external_settled"
+    | "attribution_broadcast"
+    | "paid"
+    | "expired";
   payment_id: string | null;
   transaction_hash: string | null;
   verified_at: Date | null;
@@ -74,7 +79,7 @@ function rowToChallenge(row: ChallengeRow): StoredChallenge {
     ) as Hex,
     createdAt: row.created_at,
     expiresAt: row.expires_at,
-    status: row.status,
+    settlementState: row.settlement_state,
     paymentId: row.payment_id != null ? BigInt(row.payment_id) : null,
     transactionHash:
       row.transaction_hash != null ? (row.transaction_hash as Hex) : null,
@@ -131,7 +136,7 @@ export function createQueries(pool: Pool) {
         `INSERT INTO payment_challenges
            (service_ref, provider_token_id, buyer_token_id, amount, skill_id,
             service_slug, service_version, service_id,
-            provider_a2a_url, wallet_address, expires_at, status, rail, auth_nonce,
+            provider_a2a_url, wallet_address, expires_at, settlement_state, rail, auth_nonce,
             quote_id, quote_signature, quote_expires_at, quote_request_hash)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'pending', $12, $13,
                  $14, $15, $16, $17)`,
@@ -193,12 +198,26 @@ export function createQueries(pool: Pool) {
       const res = await pool.query(
         `UPDATE payment_challenges
             SET external_settle_tx = $1,
-                status = 'pending'
+                settlement_state = 'external_settled'
           WHERE service_ref = $2
             AND rail = 'external'
-            AND status IN ('pending', 'expired')
+            AND settlement_state IN ('pending', 'expired', 'external_settled')
             AND (external_settle_tx IS NULL OR external_settle_tx = $1)`,
         [normalizeHex(externalSettleTx), hexToBytea(serviceRef)],
+      );
+      return (res.rowCount ?? 0) > 0;
+    },
+
+    async recordChallengeExternalAuthorizationConsumed(
+      serviceRef: Hex,
+    ): Promise<boolean> {
+      const res = await pool.query(
+        `UPDATE payment_challenges
+            SET settlement_state = 'external_settled'
+          WHERE service_ref = $1
+            AND rail = 'external'
+            AND settlement_state IN ('pending', 'expired', 'external_settled')`,
+        [hexToBytea(serviceRef)],
       );
       return (res.rowCount ?? 0) > 0;
     },
@@ -209,8 +228,12 @@ export function createQueries(pool: Pool) {
       const result = await pool.query<ChallengeRow>(
         `SELECT * FROM payment_challenges
           WHERE rail = 'external'
-            AND status IN ('pending', 'expired')
-            AND external_settle_tx IS NULL
+            AND settlement_state IN (
+              'pending',
+              'expired',
+              'external_settled',
+              'attribution_broadcast'
+            )
             AND auth_nonce IS NOT NULL
             AND created_at < now() - interval '30 seconds'
           ORDER BY created_at
@@ -242,9 +265,15 @@ export function createQueries(pool: Pool) {
     ): Promise<boolean> {
       const res = await pool.query(
         `UPDATE payment_challenges
-            SET transaction_hash = $1
+            SET transaction_hash = $1,
+                settlement_state = 'attribution_broadcast'
           WHERE service_ref = $2
-            AND status IN ('pending', 'expired')
+            AND settlement_state IN (
+              'pending',
+              'external_settled',
+              'expired',
+              'attribution_broadcast'
+            )
             AND (transaction_hash IS NULL OR transaction_hash = $1)`,
         [normalizeHex(transactionHash), hexToBytea(serviceRef)],
       );
@@ -257,9 +286,13 @@ export function createQueries(pool: Pool) {
     ): Promise<boolean> {
       const res = await pool.query(
         `UPDATE payment_challenges
-            SET transaction_hash = NULL
+            SET transaction_hash = NULL,
+                settlement_state = CASE
+                  WHEN rail = 'external' THEN 'external_settled'
+                  ELSE 'pending'
+                END
           WHERE service_ref = $1
-            AND status IN ('pending', 'expired')
+            AND settlement_state = 'attribution_broadcast'
             AND transaction_hash = $2`,
         [hexToBytea(serviceRef), normalizeHex(transactionHash)],
       );
@@ -340,7 +373,7 @@ export function createQueries(pool: Pool) {
       const setBuyer = buyerAgentId !== undefined;
       const res = await pool.query(
         `UPDATE payment_challenges
-            SET status = 'paid',
+            SET settlement_state = 'paid',
                 payment_id = $1,
                 transaction_hash = $2,
                 verified_at = now()${
@@ -348,9 +381,14 @@ export function createQueries(pool: Pool) {
                 }
           WHERE service_ref = $3
             AND (
-              status IN ('pending', 'expired')
+              settlement_state IN (
+                'pending',
+                'external_settled',
+                'attribution_broadcast',
+                'expired'
+              )
               OR (
-                status = 'paid'
+                settlement_state = 'paid'
                 AND payment_id = $1
                 AND transaction_hash = $2
               )
@@ -370,8 +408,8 @@ export function createQueries(pool: Pool) {
     async expireStaleChallenges(): Promise<number> {
       const res = await pool.query(
         `UPDATE payment_challenges
-            SET status = 'expired'
-          WHERE status = 'pending'
+            SET settlement_state = 'expired'
+          WHERE settlement_state = 'pending'
             AND expires_at < now()
             AND external_settle_tx IS NULL`,
       );
@@ -386,7 +424,7 @@ export function createQueries(pool: Pool) {
         `WITH candidates AS (
            SELECT service_ref
              FROM payment_challenges
-            WHERE status = 'expired'
+            WHERE settlement_state = 'expired'
               AND expires_at < now() - ($1 * interval '1 second')
             ORDER BY expires_at
             LIMIT $2

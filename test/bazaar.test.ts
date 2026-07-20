@@ -512,7 +512,7 @@ describe("bazaar rail (/x402/services)", () => {
     );
     expect(challenge).not.toBeNull();
     expect(challenge!.rail).toBe("external");
-    expect(challenge!.status).toBe("paid");
+    expect(challenge!.settlementState).toBe("paid");
     expect(challenge!.paymentId).toBe(41n);
     expect(challenge!.externalSettleTx).toBe(EXTERNAL_SETTLE_TX);
     expect(challenge!.transactionHash).toBe(ATTRIBUTION_TX);
@@ -664,7 +664,7 @@ describe("bazaar rail (/x402/services)", () => {
       nonce,
     );
     expect(challenge).not.toBeNull();
-    expect(challenge!.status).toBe("pending");
+    expect(challenge!.settlementState).toBe("pending");
     expect(challenge!.externalSettleTx).toBeNull();
     // The pending row already carries the quote binding for the retry.
     expect(challenge!.quoteId).not.toBeNull();
@@ -694,7 +694,7 @@ describe("bazaar rail (/x402/services)", () => {
       gw.buyerAddress,
       nonce,
     );
-    expect(pending?.status).toBe("pending");
+    expect(pending?.settlementState).toBe("pending");
     expect(pending?.externalSettleTx).toBeNull();
 
     gw.mockChain.setAuthorizationUsed(gw.buyerAddress, nonce, true);
@@ -751,7 +751,7 @@ describe("bazaar rail (/x402/services)", () => {
       gw.buyerAddress,
       nonce,
     );
-    expect(pending?.status).toBe("pending");
+    expect(pending?.settlementState).toBe("pending");
     expect(pending?.externalSettleTx).toBeNull();
 
     const registrationPath = "/agent-registrations/1.json";
@@ -812,7 +812,7 @@ describe("bazaar rail (/x402/services)", () => {
         gw.buyerAddress,
         nonce,
       );
-      expect(pending?.status).toBe("pending");
+      expect(pending?.settlementState).toBe("pending");
       expect(pending?.externalSettleTx).toBeNull();
 
       facilitator.reset();
@@ -888,7 +888,7 @@ describe("bazaar rail (/x402/services)", () => {
     expect(pending?.externalSettleTx).toBe(EXTERNAL_SETTLE_TX);
     await gw.bundle.pool.query(
       `UPDATE payment_challenges
-         SET status = 'expired',
+         SET settlement_state = 'expired',
              expires_at = NOW() - INTERVAL '1 minute',
              quote_expires_at = NOW() - INTERVAL '1 minute'
        WHERE service_ref = $1`,

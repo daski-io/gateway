@@ -58,6 +58,7 @@ describe("startup configuration validation", () => {
       loadConfig({
         ...VALID_CONFIG_ENV,
         NODE_ENV: "production",
+        TRUST_PROXY: "1",
         PUBLIC_URL: "http://gateway.example",
       }),
     ).toThrow(/PUBLIC_URL must use HTTPS/);
@@ -65,6 +66,7 @@ describe("startup configuration validation", () => {
       loadConfig({
         ...VALID_CONFIG_ENV,
         NODE_ENV: "production",
+        TRUST_PROXY: "1",
         PUBLIC_URL: "https://gateway.example",
         BASE_RPC_URL: "http://rpc.example",
       }),

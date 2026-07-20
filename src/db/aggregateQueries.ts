@@ -111,7 +111,7 @@ export function createAggregateQueries(pool: Pool) {
            FROM chain_events ce
            LEFT JOIN payment_challenges pc
                   ON pc.payment_id = ce.payment_id
-                 AND pc.status = 'paid'
+                 AND pc.settlement_state = 'paid'
           WHERE ce.buyer_agent_id = $1`,
         [buyerAgentId.toString()],
       );

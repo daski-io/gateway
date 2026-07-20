@@ -11,6 +11,23 @@ describe("loadRuntimeConfig", () => {
     ).toThrow(/forbidden/);
   });
 
+  it("requires an explicit proxy trust boundary in production", () => {
+    expect(() =>
+      loadRuntimeConfig({
+        NODE_ENV: "production",
+        CHAIN_MODE: "live",
+      }),
+    ).toThrow(/TRUST_PROXY must be set explicitly/);
+
+    expect(
+      loadRuntimeConfig({
+        NODE_ENV: "production",
+        CHAIN_MODE: "live",
+        TRUST_PROXY: "1",
+      }).trustProxy,
+    ).toBe(1);
+  });
+
   it("validates aggregate security budgets", () => {
     expect(() =>
       loadRuntimeConfig({

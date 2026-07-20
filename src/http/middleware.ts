@@ -78,9 +78,21 @@ export function configureMiddleware(
   app.set("trust proxy", config.trustProxy);
   app.use(securityHeaders);
   app.use(cors({ origin: "*" }));
-  app.use(express.json({ limit: "1mb" }));
 
-  if (config.nodeEnv === "test") return;
+  if (config.nodeEnv !== "test") {
+    configurePreParserRateLimits(app, queries, config);
+  }
+  app.use(express.json({ limit: "1mb" }));
+  if (config.nodeEnv !== "test") {
+    configureParsedMcpRateLimits(app, queries, config);
+  }
+}
+
+function configurePreParserRateLimits(
+  app: Express,
+  queries: Queries,
+  config: Config,
+): void {
   addRateLimits(
     app,
     [
@@ -109,22 +121,39 @@ export function configureMiddleware(
       store: queries,
     },
   );
-  addRateLimits(app, ["/public"], {
-    namespace: "public-read",
-    perClient: config.publicReadMaxPerMinute,
-    global: config.publicReadGlobalMaxPerMinute,
+  addRateLimits(
+    app,
+    [
+      "/public",
+      "/discover",
+      "/providers",
+      "/skill.md",
+      "/SKILL.md",
+      "/.well-known",
+      "/llms.txt",
+      "/llms-full.txt",
+      "/health/ready",
+    ],
+    {
+      namespace: "public-read",
+      perClient: config.publicReadMaxPerMinute,
+      global: config.publicReadGlobalMaxPerMinute,
+      store: queries,
+    },
+  );
+  addRateLimits(app, [config.mcpPath], {
+    namespace: "mcp",
+    perClient: 60,
+    global: config.mcpGlobalMaxPerMinute,
     store: queries,
   });
+}
 
-  app.post(
-    config.mcpPath,
-    rateLimit({
-      windowMs: 60_000,
-      max: 60,
-      namespace: "mcp",
-      store: queries,
-    }),
-  );
+function configureParsedMcpRateLimits(
+  app: Express,
+  queries: Queries,
+  config: Config,
+): void {
   app.post(
     config.mcpPath,
     forMcpStateChange(
@@ -147,15 +176,5 @@ export function configureMiddleware(
         store: queries,
       }),
     ),
-  );
-  app.post(
-    config.mcpPath,
-    rateLimit({
-      windowMs: 60_000,
-      max: config.mcpGlobalMaxPerMinute,
-      namespace: "mcp-global",
-      keyScope: "global",
-      store: queries,
-    }),
   );
 }

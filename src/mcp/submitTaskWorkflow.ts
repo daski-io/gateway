@@ -58,16 +58,17 @@ export async function runSubmitTask(
     deps.queries,
   );
   if (!paymentContext.ok) return paymentContext.result;
+  const normalizedArgs = paymentContext.args;
 
   const envelope = await prepareSubmitTaskEnvelope(
-    args,
+    normalizedArgs,
     paymentContext.requiresEnvelopeAuth,
     deps,
   );
   if (envelope) return envelope;
 
   return dispatchSubmitTask({
-    args,
+    args: normalizedArgs,
     paidChallenge: paymentContext.paidChallenge,
     config: deps.config,
     transport,

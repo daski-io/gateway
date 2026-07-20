@@ -35,7 +35,7 @@ function makeChallenge(opts: {
     providerA2AUrl: "http://provider.test/a2a",
     walletAddress: "0x0000000000000000000000000000000000000001" as Hex,
     expiresAt: new Date(Date.now() + 3600 * 1000),
-    status: "paid",
+    settlementState: "paid",
     paymentId: opts.paymentId === undefined ? 1n : opts.paymentId,
     transactionHash: ZERO_BYTES,
     verifiedAt: new Date(),

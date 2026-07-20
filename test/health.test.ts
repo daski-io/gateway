@@ -19,21 +19,17 @@ describe("health surfaces", () => {
 
     const beforeIndexer = await fetch(`${gateway.baseUrl}/health/ready`);
     expect(beforeIndexer.status).toBe(503);
-    expect(await beforeIndexer.json()).toMatchObject({
+    expect(await beforeIndexer.json()).toEqual({
       status: "unready",
-      database: { ready: true },
-      cache: { ready: true },
-      indexer: { ready: false },
+      version: expect.any(String),
     });
 
     await gateway.bundle.indexer.tick();
     const ready = await fetch(`${gateway.baseUrl}/health/ready`);
     expect(ready.status).toBe(200);
-    expect(await ready.json()).toMatchObject({
+    expect(await ready.json()).toEqual({
       status: "ready",
-      database: { ready: true },
-      cache: { ready: true },
-      indexer: { ready: true },
+      version: expect.any(String),
     });
   });
 

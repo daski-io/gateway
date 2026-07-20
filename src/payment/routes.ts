@@ -33,16 +33,6 @@ export function createPurchaseRouter(deps: PurchaseDeps): Router {
       return;
     }
 
-    const xPayment = req.header("X-PAYMENT") ?? req.header("x-payment");
-    if (xPayment) {
-      sendError(
-        res,
-        410,
-        "X-PAYMENT settlement is no longer supported on the resource route; " +
-          "submit paymentPayload and paymentRequirements to /settle",
-      );
-      return;
-    }
     const body = req.body ?? {};
     const skillId = typeof body.skillId === "string" ? body.skillId : undefined;
     const serviceSlug =

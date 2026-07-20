@@ -13,9 +13,6 @@ const FRESH_WALLET = FRESH_ACCOUNT.address.toLowerCase() as Hex;
 const KNOWN_AGENT_WALLET =
   "0xdddd000000000000000000000000000000000002" as Hex;
 const WELL_FORMED_SIGNATURE = ("0x" + "11".repeat(65)) as Hex;
-const REG_TX =
-  "0x3333333333333333333333333333333333333333333333333333333333333333" as Hex;
-
 async function signedRegistration(
   gateway: TestGateway,
   agentURI: string,

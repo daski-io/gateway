@@ -15,6 +15,7 @@ import { createPublicRouter } from "./public/routes.js";
 import { createQueries, type Queries } from "./db/queries.js";
 import { createPool, runMigrations, type Pool } from "./db/pool.js";
 import { xenovaEmbedder, type Embedder } from "./discovery/embeddings.js";
+import { CatalogEmbeddingSynchronizer } from "./discovery/embeddingSync.js";
 import type { FetchAgentCardOptions } from "./identity/fetch-agent-card.js";
 import { safeFetch } from "./util/urlSafety.js";
 import { logErrorWithId } from "./util/errorWrap.js";
@@ -22,6 +23,7 @@ import { createMetaRouter } from "./http/metaRoutes.js";
 import { logger } from "./util/logger.js";
 import { reconcileExternalSettlements } from "./payment/externalReconciler.js";
 import { configureMiddleware } from "./http/middleware.js";
+import { sendBodyParserError } from "./http/bodyErrors.js";
 import { ReputationMirrorWorker } from "./reputation/worker.js";
 import { ChainEventsIndexer } from "./indexer/chainEvents.js";
 
@@ -70,6 +72,9 @@ export async function createApp(options: CreateAppOptions): Promise<AppBundle> {
   });
   const indexer = new ChainEventsIndexer(reader, queries);
   const embedder = options.embedder === null ? null : (options.embedder ?? xenovaEmbedder());
+  const embeddingSync = embedder
+    ? new CatalogEmbeddingSynchronizer(pool, embedder)
+    : null;
   const cache = new DiscoveryCache({
     reader,
     whitelist: config.whitelistedAgentIds,
@@ -80,6 +85,9 @@ export async function createApp(options: CreateAppOptions): Promise<AppBundle> {
     maxA2AEntries: config.discoveryMaxA2AEntries,
     fetchConcurrency: config.discoveryFetchConcurrency,
     refreshDeadlineMs: config.discoveryRefreshDeadlineMs,
+    onCatalogChanged: (_oldProviders, newProviders) => {
+      embeddingSync?.schedule(newProviders);
+    },
     logger,
   });
   void embedder?.warmup?.().catch((error) => {
@@ -156,6 +164,7 @@ export async function createApp(options: CreateAppOptions): Promise<AppBundle> {
         reputationWorker,
         pool,
         embedder,
+        embeddingSync,
         fetch: options.a2aFetch,
         a2aTimeoutMs: options.a2aTimeoutMs,
         buyerAgentCardFetch: options.buyerAgentCardFetch,
@@ -170,6 +179,7 @@ export async function createApp(options: CreateAppOptions): Promise<AppBundle> {
       next(error);
       return;
     }
+    if (sendBodyParserError(error, res)) return;
     const correlationId = logErrorWithId("http.request", error);
     res.status(500).json({
       error: {
@@ -221,6 +231,7 @@ export async function createApp(options: CreateAppOptions): Promise<AppBundle> {
     await mcp?.close().catch((err) => {
       logErrorWithId("mcp.shutdown", err);
     });
+    await embeddingSync?.waitForIdle();
     if (ownsPool) {
       await pool.end().catch((err) => {
         logErrorWithId("pool.shutdown", err);

@@ -50,7 +50,7 @@ function syntheticChallenge(row: ChainActivityRow): StoredChallenge {
     walletAddress: row.walletAddress ?? ZERO_ADDRESS,
     createdAt: row.settledAt,
     expiresAt: row.settledAt,
-    status: "paid",
+    settlementState: "paid",
     paymentId: row.paymentId,
     transactionHash: row.txHash,
     verifiedAt: row.settledAt,

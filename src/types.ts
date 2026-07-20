@@ -8,6 +8,10 @@ import type {
   ProviderLegalMetadata,
   ServiceLegal,
 } from "./legal/types.js";
+export type {
+  SettlementState,
+  StoredChallenge,
+} from "./payment/challengeTypes.js";
 
 // ── Shared types used across the gateway ──
 
@@ -322,84 +326,4 @@ export interface SettlementResponse {
     quoteId?: string;
     quoteSignature?: Hex;
   };
-}
-
-// ── Persisted challenge row (internal, not on the wire) ──
-
-export interface StoredChallenge {
-  serviceRef: Hex;
-  providerTokenId: bigint;
-  buyerTokenId: bigint;
-  // The A2A skill the buyer requested (off-chain identifier). Distinct
-  // from serviceSlug — see DaskiRequirementsExtra.daski.
-  skillId: string | null;
-  // The on-chain service slug baked into the serviceId hash.
-  // Resolved from the skill's daski metadata in the provider Agent Card
-  // at challenge-issue time; persisted so the (slug, version) tuple
-  // that produced this serviceId is fully recoverable for analytics.
-  serviceSlug: string;
-  // The version baked into the serviceId hash. Stored alongside
-  // serviceSlug so the gateway can re-derive serviceId without a
-  // contract round-trip.
-  serviceVersion: string;
-  // 32-byte hex serviceId — `keccak256(abi.encode(providerAgentId, serviceSlug, version))`.
-  // Persisted on the challenge so /verify can cross-check the on-chain
-  // PaymentSettled event's serviceId field rather than trusting the
-  // adapter call args alone.
-  serviceId: Hex;
-  amount: bigint;
-  providerA2AUrl: string;
-  // Wallet address that the gateway baked into the EIP-712 typed-data's
-  // `from` field at challenge issuance. /verify enforces that the
-  // submitted authorization's `from` matches — closes a cross-wallet
-  // settlement window (an unrelated wallet whose signature would settle
-  // on-chain but leave the original challenge dangling).
-  walletAddress: Hex;
-  createdAt: Date;
-  expiresAt: Date;
-  status: "pending" | "paid" | "expired";
-  paymentId: bigint | null;
-  transactionHash: Hex | null;
-  // Set when status transitions pending → paid. Used as the "settled at"
-  // timestamp for the public activity feed.
-  verifiedAt: Date | null;
-  // 32-byte UID of the buyer's EAS confirmation attestation, persisted by
-  // /confirm/:paymentId on success. Null when no confirmation has landed,
-  // or for rows that pre-date migration 005. Latest UID wins — confirmation
-  // revisions overwrite. Used by the public activity feed to deep-link to
-  // the canonical attestation on an EAS explorer.
-  confirmationAttestationUid: Hex | null;
-  // Which settlement rail this challenge runs on:
-  //   'daski'    — the gateway's own facilitator submits X402Adapter.settle
-  //                (structured nonce, split runs in the same tx).
-  //   'external' — an external x402 facilitator (CDP) settles the EIP-3009
-  //                transfer; the gateway then attributes the split via
-  //                DirectTransferAdapter. Used by the Bazaar-listable route.
-  rail: "daski" | "external";
-  // External rail only: the client-chosen EIP-3009 nonce from the payment
-  // payload. (walletAddress, authNonce) is the idempotency key for paid
-  // retries — external clients don't know Daski serviceRefs.
-  authNonce: Hex | null;
-  // External rail only: tx hash of the external facilitator's settle
-  // (the bare transferWithAuthorization that moved buyer funds into the
-  // router). Persisted before the attribution tx so a crash between the
-  // two is recoverable. `transactionHash` holds the attribution tx.
-  externalSettleTx: Hex | null;
-  // Provider quote commitment (provider audit item 1.1). When set, the
-  // challenge's serviceRef IS the provider's quote commitment hash
-  // (keccak256(canonicalJson(signedQuotePayload))) and these two fields
-  // must be forwarded as A2A metadata.quoteId / metadata.quoteSignature
-  // at task-submit time — the provider rejects paid tasks without them.
-  // Null for providers that don't enforce quote commitments.
-  quoteId: string | null;
-  quoteSignature: Hex | null;
-  // Commitment to the canonical serviceArgs accepted by the provider.
-  // Persisted so retries and submit-time binding checks use the exact
-  // request hash from the signed quote rather than recomputing it from
-  // potentially transformed arguments.
-  quoteRequestHash: Hex | null;
-  // Quote expiry (provider-side TTL, ~120s). Bounds the challenge's own
-  // expiresAt so the gateway never settles a payment whose quote is
-  // already dead — that would capture funds the provider then refuses.
-  quoteExpiresAt: Date | null;
 }

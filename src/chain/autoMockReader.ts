@@ -17,7 +17,6 @@
  */
 import type { Hex } from "../types.js";
 import type {
-  BuyerReputation,
   ChainReader,
   ConfirmationDelegationInput,
   ConfirmationResult,
@@ -314,12 +313,6 @@ export class AutoMockChainReader implements ChainReader {
     };
   }
 
-  async getBuyerReputation(
-    _agentId: bigint,
-  ): Promise<BuyerReputation | null> {
-    return { transactions: 0n, confirmed: 0n, notConfirmed: 0n };
-  }
-
   async getServiceReputation(
     _serviceId: Hex,
   ): Promise<ServiceReputation | null> {
@@ -395,11 +388,6 @@ export class AutoMockChainReader implements ChainReader {
   public feedbacks: FeedbackInput[] = [];
   private feedbackIndexByAgent = new Map<string, bigint>();
 
-  async giveFeedback(input: FeedbackInput): Promise<FeedbackResult> {
-    const prepared = await this.prepareFeedback(input);
-    return this.submitPreparedFeedback(prepared, input);
-  }
-
   async prepareFeedback(
     _input: FeedbackInput,
   ): Promise<PreparedFeedbackTransaction> {
@@ -446,10 +434,6 @@ export class AutoMockChainReader implements ChainReader {
     const result = { transactionHash: deterministicHex("v", feedbackIndex) };
     await onBroadcast?.(result.transactionHash);
     return result;
-  }
-
-  async getFeedbackLastIndex(agentId: bigint): Promise<bigint> {
-    return this.feedbackIndexByAgent.get(agentId.toString()) ?? 0n;
   }
 
   async getPaymentSettledEvents(

@@ -7,6 +7,7 @@ import { mcpError, type McpToolResult } from "./util.js";
 type PaymentContextResult =
   | {
       ok: true;
+      args: SubmitTaskArgs;
       paidChallenge: StoredChallenge | null;
       requiresEnvelopeAuth: boolean;
     }
@@ -28,9 +29,43 @@ function requestHash(args: SubmitTaskArgs): Hex | null {
   }
 }
 
+type SettledChallenge = StoredChallenge & {
+  paymentId: bigint;
+  transactionHash: Hex;
+};
+
+function isSettled(
+  challenge: StoredChallenge | null,
+): challenge is SettledChallenge {
+  return Boolean(
+    challenge &&
+      challenge.settlementState === "paid" &&
+      challenge.paymentId !== null &&
+      challenge.transactionHash !== null,
+  );
+}
+
+function envelopeRequired(
+  args: SubmitTaskArgs,
+  skillMeta: Record<string, unknown>,
+): boolean {
+  if (args.taskId) return false;
+  if (args.serviceRef && args.transactionHash) return true;
+  const declaresGating =
+    "paymentRequired" in skillMeta ||
+    "requiresAssetOwnership" in skillMeta ||
+    "requiresCapability" in skillMeta;
+  if (!declaresGating) return args.paymentId !== "0" && args.paymentId !== "";
+  return (
+    skillMeta.paymentRequired === true ||
+    skillMeta.requiresAssetOwnership === true ||
+    skillMeta.requiresCapability === true
+  );
+}
+
 /**
  * Restores and validates the gateway payment binding before provider dispatch.
- * The input is mutable so omitted signed-retry routing fields can be restored.
+ * Omitted signed-retry routing fields are restored into a normalized copy.
  */
 export async function resolveSubmitTaskPayment(
   args: SubmitTaskArgs,
@@ -62,6 +97,7 @@ export async function resolveSubmitTaskPayment(
   }
 
   let paidChallenge: StoredChallenge | null = null;
+  let normalizedArgs = { ...args };
   const isPaidSignedRetry =
     !args.taskId &&
     Boolean(args.envelopeAuth) &&
@@ -94,10 +130,7 @@ export async function resolveSubmitTaskPayment(
       );
     }
     if (
-      !paidChallenge ||
-      paidChallenge.status !== "paid" ||
-      paidChallenge.paymentId === null ||
-      paidChallenge.transactionHash === null
+      !isSettled(paidChallenge)
     ) {
       return fail(
         "PAID_PATH_CREDENTIALS_NOT_FOUND",
@@ -127,28 +160,24 @@ export async function resolveSubmitTaskPayment(
           "No task was dispatched.",
       );
     }
-    args.serviceRef = paidChallenge.serviceRef;
-    args.transactionHash = paidChallenge.transactionHash;
+    normalizedArgs = {
+      ...normalizedArgs,
+      serviceRef: paidChallenge.serviceRef,
+      transactionHash: paidChallenge.transactionHash!,
+    };
   }
 
-  const metaDeclaresGating =
-    "paymentRequired" in skillMeta ||
-    "requiresAssetOwnership" in skillMeta ||
-    "requiresCapability" in skillMeta;
-  const requiresEnvelopeAuth = args.taskId
-    ? false
-    : args.serviceRef !== undefined && args.transactionHash !== undefined
-      ? true
-      : metaDeclaresGating
-        ? skillMeta.paymentRequired === true ||
-          skillMeta.requiresAssetOwnership === true ||
-          skillMeta.requiresCapability === true
-        : args.paymentId !== "0" && args.paymentId !== "";
+  const requiresEnvelopeAuth = envelopeRequired(normalizedArgs, skillMeta);
 
-  if (!args.serviceRef || args.taskId) {
-    return { ok: true, paidChallenge, requiresEnvelopeAuth };
+  if (!normalizedArgs.serviceRef || normalizedArgs.taskId) {
+    return {
+      ok: true,
+      args: normalizedArgs,
+      paidChallenge,
+      requiresEnvelopeAuth,
+    };
   }
-  if (!/^0x[0-9a-fA-F]{64}$/.test(args.serviceRef)) {
+  if (!/^0x[0-9a-fA-F]{64}$/.test(normalizedArgs.serviceRef)) {
     return fail(
       "BAD_INPUT",
       "serviceRef must be a 0x-prefixed 32-byte hex value.",
@@ -157,7 +186,7 @@ export async function resolveSubmitTaskPayment(
   if (!paidChallenge) {
     try {
       paidChallenge = await queries.getChallengeByRef(
-        args.serviceRef.toLowerCase() as Hex,
+        normalizedArgs.serviceRef.toLowerCase() as Hex,
       );
     } catch {
       return fail(
@@ -177,9 +206,7 @@ export async function resolveSubmitTaskPayment(
     );
   }
   if (
-    paidChallenge.status !== "paid" ||
-    paidChallenge.paymentId === null ||
-    paidChallenge.transactionHash === null
+    !isSettled(paidChallenge)
   ) {
     return fail(
       "PAYMENT_NOT_SETTLED",
@@ -188,12 +215,12 @@ export async function resolveSubmitTaskPayment(
     );
   }
   const bindingMismatch =
-    paidChallenge.skillId !== args.skillId ||
-    paidChallenge.paymentId.toString() !== args.paymentId ||
-    paidChallenge.providerA2AUrl !== args.providerA2AUrl ||
-    !args.transactionHash ||
+    paidChallenge.skillId !== normalizedArgs.skillId ||
+    paidChallenge.paymentId!.toString() !== normalizedArgs.paymentId ||
+    paidChallenge.providerA2AUrl !== normalizedArgs.providerA2AUrl ||
+    !normalizedArgs.transactionHash ||
     paidChallenge.transactionHash.toLowerCase() !==
-      args.transactionHash.toLowerCase();
+      normalizedArgs.transactionHash.toLowerCase();
   if (bindingMismatch) {
     return fail(
       "PAYMENT_BINDING_MISMATCH",
@@ -211,7 +238,7 @@ export async function resolveSubmitTaskPayment(
       "The settled challenge has no complete provider quote commitment.",
     );
   }
-  const committedRequestHash = requestHash(args);
+  const committedRequestHash = requestHash(normalizedArgs);
   if (!committedRequestHash) {
     return fail("BAD_INPUT", "serviceArgs cannot be canonically hashed");
   }
@@ -224,5 +251,10 @@ export async function resolveSubmitTaskPayment(
       "serviceArgs differ from the request committed by the provider quote.",
     );
   }
-  return { ok: true, paidChallenge, requiresEnvelopeAuth };
+  return {
+    ok: true,
+    args: normalizedArgs,
+    paidChallenge,
+    requiresEnvelopeAuth,
+  };
 }

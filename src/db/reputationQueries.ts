@@ -247,7 +247,7 @@ export function createReputationQueries(pool: Pool) {
            FROM payment_challenges AS challenge
            LEFT JOIN reputation_mirrors AS mirror
              ON mirror.payment_id = challenge.payment_id
-          WHERE challenge.status = 'paid'
+          WHERE challenge.settlement_state = 'paid'
             AND challenge.payment_id IS NOT NULL
             AND challenge.confirmation_attestation_uid IS NOT NULL
             AND (

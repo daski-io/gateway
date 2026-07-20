@@ -54,7 +54,7 @@ const ACTIVITY_SELECT = `
     FROM chain_events ce
     LEFT JOIN payment_challenges pc
            ON pc.payment_id = ce.payment_id
-          AND pc.status = 'paid'
+          AND pc.settlement_state = 'paid'
 `;
 
 const bytea = (hex: Hex): Buffer => Buffer.from(hex.slice(2), "hex");

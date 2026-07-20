@@ -67,10 +67,8 @@ export function acceptedProviderQuote(payment: BazaarPayment): unknown {
 }
 
 export function buildFacilitatorRequirements(
-  offer: SkillOffer,
   amount: bigint,
   config: Config,
-  resourceUrl: string,
   maxTimeoutSeconds: number,
 ): Record<string, unknown> {
   return {

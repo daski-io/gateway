@@ -252,13 +252,8 @@ describe("hosted MCP — wallet-agnostic surface", () => {
         await fetch(`${degradedGateway.baseUrl}/health/ready`)
       ).json()) as {
         status: string;
-        embedder: { state: string; reason?: string };
       };
       expect(health.status).toBe("degraded");
-      expect(health.embedder).toEqual({
-        state: "degraded",
-        reason: "model_load_failed",
-      });
     } finally {
       await transport.close();
       await degradedGateway.close();

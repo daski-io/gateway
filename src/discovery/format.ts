@@ -442,7 +442,7 @@ function withCanonicalLegal(
 
 /**
  * Serializes a cached provider for the REST /discover response. BigInts
- * become strings, dates become ISO, agent card is returned as-is.
+ * become strings, dates become ISO, and untrusted Agent Card text is sanitized.
  * `cards` is the multi-service surface (one entry per advertised
  * service).
  */
@@ -462,7 +462,10 @@ export function formatForRestDiscover(
     cards: cardsOf(provider).map((c) => ({
       endpoint: c.endpoint,
       serviceSlug: c.serviceSlug,
-      agentCard: withCanonicalLegal(c.agentCard, legal),
+      agentCard: sanitizeForLlmReflection(
+        withCanonicalLegal(c.agentCard, legal),
+        { stringMax: 4000, maxDepth: 12 },
+      ),
       legal,
     })),
     lastFetched: provider.lastFetched.toISOString(),

@@ -1,4 +1,7 @@
-import { fetchOnChainProviders, type ChainReader } from "../chain/reader.js";
+import {
+  fetchOnChainProviders,
+  type ProviderDiscoveryReader,
+} from "../chain/reader.js";
 import type { CachedProvider, OnChainProvider, ProviderCard } from "../types.js";
 import { extractCardServiceSlug } from "./format.js";
 import { assertValidServiceTaxonomy } from "./taxonomyValidation.js";
@@ -47,7 +50,7 @@ export type FetchFn = (
 ) => Promise<Response>;
 
 interface CacheOptions {
-  reader: ChainReader;
+  reader: ProviderDiscoveryReader;
   whitelist: bigint[];
   refreshIntervalSeconds: number;
   /**
@@ -74,9 +77,8 @@ export class DiscoveryCache {
   private lastChainSuccessAt: Date | null = null;
   private lastChainError: { message: string; at: Date } | null = null;
   private cardFailureCount = 0;
-  private readonly reader: ChainReader;
-  // Owned copy of the whitelist — callers must use setWhitelist() to mutate it.
-  private whitelist: bigint[];
+  private readonly reader: ProviderDiscoveryReader;
+  private readonly whitelist: bigint[];
   private readonly refreshIntervalMs: number;
   private readonly maxCardStalenessMs: number;
   private readonly fetchFn: FetchFn;
@@ -91,11 +93,12 @@ export class DiscoveryCache {
   private readonly logger: Pick<GatewayLogger, "log" | "warn" | "error">;
   private timer: NodeJS.Timeout | null = null;
   private running = false;
+  private catalogInitialized = false;
   private fastRetryDelayMs = FAST_RETRY_BASE_MS;
 
   constructor(opts: CacheOptions) {
     this.reader = opts.reader;
-    this.whitelist = [...opts.whitelist];
+    this.whitelist = opts.whitelist;
     this.refreshIntervalMs = opts.refreshIntervalSeconds * 1000;
     this.maxCardStalenessMs =
       (opts.maxCardStalenessSeconds ?? DEFAULT_MAX_CARD_STALENESS_SECONDS) * 1000;
@@ -120,20 +123,6 @@ export class DiscoveryCache {
     }
     this.onCatalogChanged = opts.onCatalogChanged;
     this.logger = opts.logger ?? defaultLogger;
-  }
-
-  setOnCatalogChanged(
-    cb: (oldProviders: CachedProvider[], newProviders: CachedProvider[]) => void,
-  ): void {
-    this.onCatalogChanged = cb;
-  }
-
-  setWhitelist(ids: bigint[]): void {
-    this.whitelist = [...ids];
-  }
-
-  getWhitelist(): bigint[] {
-    return [...this.whitelist];
   }
 
   getAll(): CachedProvider[] {
@@ -268,13 +257,17 @@ export class DiscoveryCache {
     this.lastRefresh = this.lastCycleAt;
 
     const newSnapshot = this.getAll();
-    if (this.onCatalogChanged && this.hasChanged(oldSnapshot, newSnapshot)) {
+    if (
+      this.onCatalogChanged &&
+      (!this.catalogInitialized || this.hasChanged(oldSnapshot, newSnapshot))
+    ) {
       try {
         this.onCatalogChanged(oldSnapshot, newSnapshot);
       } catch (err) {
         this.logger.error(`[cache] onCatalogChanged callback threw: ${(err as Error).message}`);
       }
     }
+    this.catalogInitialized = true;
   }
 
   private hasChanged(oldProviders: CachedProvider[], newProviders: CachedProvider[]): boolean {
