@@ -1,5 +1,6 @@
 import type { ChainReader, PaymentSettledEventLog } from "../chain/reader.js";
 import type { Queries } from "../db/queries.js";
+import { logger } from "../util/logger.js";
 
 /**
  * Chain-events indexer. Polls `PaymentRouter.PaymentSettled` events in
@@ -81,12 +82,19 @@ export class ChainEventsIndexer {
       await this.poll();
       await this.refreshPending();
       this.lastSuccessAt = new Date();
+      if (this.lastError) {
+        logger.info("chain events indexer recovered");
+      }
       this.lastError = null;
     } catch (err) {
+      const firstFailure = this.lastError === null;
       this.lastError = {
         message: err instanceof Error ? err.message : String(err),
         at: new Date(),
       };
+      if (firstFailure) {
+        logger.error("chain events indexer became unhealthy", this.lastError);
+      }
     } finally {
       this.running = false;
     }
@@ -103,6 +111,14 @@ export class ChainEventsIndexer {
       lastSuccessAt: this.lastSuccessAt,
       lastError: this.lastError,
     };
+  }
+
+  isFresh(now = Date.now()): boolean {
+    const maximumAge = (this.opts.pollIntervalMs ?? 5_000) * 6;
+    return (
+      this.lastSuccessAt !== null &&
+      now - this.lastSuccessAt.getTime() <= maximumAge
+    );
   }
 
   // ── Internals ──────────────────────────────────────────────────────

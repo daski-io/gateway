@@ -294,7 +294,9 @@ describe("bazaar rail (/x402/services)", () => {
 
   it("serves a spec-shaped x402 v2 402 with the Bazaar extension", async () => {
     const quotesBefore = gw.mockProvider.getIssuedQuotes().length;
-    const { status, json } = await fetch402(1n, "register-domain");
+    const { status, json } = await fetchPost402(1n, "register-domain", {
+      domain: "catalog.example",
+    });
     expect(status).toBe(402);
     expect(json.x402Version).toBe(2);
     const acceptsIndex = Object.keys(json).indexOf("accepts");
@@ -319,8 +321,9 @@ describe("bazaar rail (/x402/services)", () => {
     expect(accepts.extra.daski.purchaseNotice).toBe(PURCHASE_NOTICE);
     // v2 uses `amount`; the v1 field must not leak in.
     expect(accepts.maxAmountRequired).toBeUndefined();
-    expect(accepts.maxTimeoutSeconds).toBe(gw.config.challengeTtlSeconds);
-    expect(gw.mockProvider.getIssuedQuotes()).toHaveLength(quotesBefore);
+    expect(accepts.maxTimeoutSeconds).toBeGreaterThanOrEqual(15);
+    expect(accepts.maxTimeoutSeconds).toBeLessThanOrEqual(120);
+    expect(gw.mockProvider.getIssuedQuotes()).toHaveLength(quotesBefore + 1);
 
     const bazaar = json.extensions?.bazaar;
     expect(bazaar).toBeDefined();
@@ -409,13 +412,9 @@ describe("bazaar rail (/x402/services)", () => {
     }
   });
 
-  it("advertises the bazaar resource URLs in /.well-known/x402-services.json", async () => {
+  it("retires the unofficial well-known x402 catalog", async () => {
     const res = await fetch(`${gw.baseUrl}/.well-known/x402-services.json`);
-    const json = (await res.json()) as any;
-    const resources = json.services.map((s: any) => s.resource);
-    expect(resources).toContain(
-      `${gw.baseUrl}/x402/services/1/domain-registration/register-domain`,
-    );
+    expect(res.status).toBe(404);
   });
 
   // ── Paid retry: happy path ───────────────────────────────────────────
@@ -589,6 +588,8 @@ describe("bazaar rail (/x402/services)", () => {
       expect(res.status).toBe(403);
       expect(json.error).toBe("buyer_not_registered");
       expect(json.register.prep).toContain("/register-prep");
+      expect(json.register.transaction).toContain("/register-transaction");
+      expect(json.register.gasPaidBy).toBe("buyer");
       // Nothing was forwarded — the authorization is still unspent.
       expect(facilitator.calls).toHaveLength(0);
     } finally {
@@ -1022,37 +1023,13 @@ describe("bazaar rail (/x402/services)", () => {
     expect(res.json.error).toContain("already bound");
   });
 
-  it("handles v1-generation payloads and facilitator bodies", async () => {
+  it("rejects deprecated Bazaar v1 payment payloads", async () => {
     facilitator.reset();
     const nonce = freshNonce();
     const header = await makePaymentHeader(PRICE, nonce, { version: 1 });
-    gw.mockChain.queueAttribution({
-      kind: "success",
-      txHash: ATTRIBUTION_TX,
-      event: {
-        paymentId: 43n,
-        serviceRef: ("0x" + "00".repeat(32)) as Hex,
-        serviceId: ("0x" + "00".repeat(32)) as Hex,
-        buyerAgentId: BUYER_AGENT_ID,
-        providerAgentId: 1n,
-        token: gw.config.usdcAddress,
-        totalAmount: PRICE,
-        providerAmount: (PRICE * 95n) / 100n,
-        commission: (PRICE * 5n) / 100n,
-      },
-    });
     const res = await payWithHeader(1n, "register-domain", header);
-    expect(res.status).toBe(200);
-    expect(res.json.x402Version).toBe(1);
-    // v1 facilitator requirements: maxAmountRequired + flat resource URL.
-    const verifyBody = facilitator.calls[0]!.body;
-    expect(verifyBody.x402Version).toBe(1);
-    expect(verifyBody.paymentRequirements.maxAmountRequired).toBe(
-      PRICE.toString(),
-    );
-    expect(verifyBody.paymentRequirements.resource).toBe(
-      resourceUrl(1n, "register-domain"),
-    );
-    expect(verifyBody.paymentRequirements.network).toBe("base-sepolia");
+    expect(res.status).toBe(400);
+    expect(res.json.error).toContain("x402 v2");
+    expect(facilitator.calls).toHaveLength(0);
   });
 });

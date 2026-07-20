@@ -7,7 +7,7 @@ import {
 import type { DiscoveryCache } from "../discovery/cache.js";
 import type { Queries } from "../db/queries.js";
 import { computeRequestHash } from "../auth/envelope.js";
-import { resolveSkillOffer, type SkillOffer } from "./requirements.js";
+import { resolveSkillOffer, type SkillOffer } from "./skillOffer.js";
 import { validateProviderQuoteCommitment, type ProviderQuoteCommitment } from "./providerQuote.js";
 import type { ExternalFacilitatorClient } from "./externalFacilitator.js";
 import type { Fetcher } from "../mcp/a2a.js";
@@ -61,7 +61,7 @@ import { validateSettlementEvent } from "./verify.js";
  * Buyers on this rail must already hold an ERC-8004 identity: the router
  * requires a non-zero buyerAgentId and external facilitators cannot carry
  * Daski's atomic register-and-settle signature. Unregistered wallets get
- * a 403 pointing at the gasless /register flow BEFORE any funds move.
+ * a 403 pointing at the self-funded registration flow BEFORE funds move.
  */
 
 export interface BazaarDeps {
@@ -123,7 +123,6 @@ export function createBazaarSettlementHandler(deps: BazaarDeps): RequestHandler 
       req.header("payment-signature") ?? req.header("payment") ?? req.header("x-payment");
 
     const resolved = resolveSkillOffer(providerTokenId, skillId, cache, {
-      requireFixedAmount: false,
       serviceSlug,
     });
     let offer: SkillOffer;
@@ -159,7 +158,6 @@ export function createBazaarSettlementHandler(deps: BazaarDeps): RequestHandler 
       offer = {
         providerTokenId: persisted.providerTokenId,
         skillId,
-        amount: persisted.amount,
         serviceSlug: persisted.serviceSlug,
         serviceVersion: persisted.serviceVersion,
         serviceId: persisted.serviceId,
@@ -191,10 +189,8 @@ export function createBazaarSettlementHandler(deps: BazaarDeps): RequestHandler 
       return;
     }
 
-    // GET is catalog discovery only: it has no request body and therefore
-    // cannot produce a quote bound to argument-requiring skills. A fixed
-    // card price is sufficient for crawlers; the actual purchase starts
-    // with POST so its 402 can carry the signed, argument-bound quote.
+    // GET cannot produce an argument-bound signed quote. Bazaar discovery
+    // comes from the v2 response extension on POST, never static card price.
     if (!paymentHeader) {
       if (!purchaseLegal) {
         res.status(422).json({
@@ -204,27 +200,12 @@ export function createBazaarSettlementHandler(deps: BazaarDeps): RequestHandler 
         return;
       }
       if (req.method === "GET") {
-        if (offer.amount === null) {
-          res.status(422).json({
-            x402Version: 2,
-            error:
-              "serviceArgs_required: POST this resource with body.serviceArgs " +
-              "to obtain an argument-bound live quote",
-          });
-          return;
-        }
-        res
-          .status(402)
-          .json(
-            buildPaymentRequired(
-              offer,
-              offer.amount,
-              config,
-              resourceUrl,
-              config.challengeTtlSeconds,
-              purchaseLegal,
-            ),
-          );
+        res.status(422).json({
+          x402Version: 2,
+          error:
+            "serviceArgs_required: POST this resource with body.serviceArgs " +
+            "to obtain an argument-bound signed quote",
+        });
         return;
       }
       const quoted = await quoteOrRespond(res, offer, skillId, serviceArgs);
@@ -267,7 +248,7 @@ export function createBazaarSettlementHandler(deps: BazaarDeps): RequestHandler 
       res.status(400).json({
         x402Version: 2,
         error:
-          "payment header is not base64-encoded x402 v1/v2 JSON with an " +
+          "payment header is not base64-encoded x402 v2 JSON with an " +
           "exact-scheme EVM authorization",
       });
       return;
@@ -349,7 +330,6 @@ export function createBazaarSettlementHandler(deps: BazaarDeps): RequestHandler 
         });
         res.status(200).json(
           receiptBody(
-            core.version,
             config,
             {
               skillId: challenge.skillId ?? skillId,
@@ -448,18 +428,20 @@ export function createBazaarSettlementHandler(deps: BazaarDeps): RequestHandler 
           error: "buyer_not_registered",
           message:
             "This wallet has no Daski (ERC-8004) identity. Register first — " +
-            "gasless: GET /register-prep then POST /register on this gateway, " +
-            "or the daski_register_agent MCP tool — then retry the payment.",
+            "prepare the signature with GET /register-prep, build a " +
+            "self-funded transaction with POST /register-transaction (or " +
+            "daski_register_agent), submit it from this wallet, then retry.",
           register: {
             prep: `${config.publicUrl}/register-prep`,
-            submit: `${config.publicUrl}/register`,
+            transaction: `${config.publicUrl}/register-transaction`,
             mcp: `${config.publicUrl}${config.mcpPath}`,
+            gasPaidBy: "buyer",
           },
         });
         return;
       }
 
-      if (core.version === 2) {
+      {
         const rawQuote = acceptedProviderQuote(core);
         const rawAmount =
           rawQuote && typeof rawQuote === "object"
@@ -511,9 +493,6 @@ export function createBazaarSettlementHandler(deps: BazaarDeps): RequestHandler 
           amount: BigInt(validation.quote.amount),
           quote: validation.quote,
         };
-      } else {
-        quoted = await quoteOrRespond(res, offer, skillId, serviceArgs);
-        if (!quoted) return;
       }
       if (value !== quoted.amount) {
         const timeout = boundedTimeoutSeconds(config, quoted.quote);
@@ -565,7 +544,6 @@ export function createBazaarSettlementHandler(deps: BazaarDeps): RequestHandler 
       x402Version: core.version,
       paymentPayload: forwardedPayload,
       paymentRequirements: buildFacilitatorRequirements(
-        core.version,
         offer,
         effectiveAmount,
         config,
@@ -793,27 +771,30 @@ export function createBazaarSettlementHandler(deps: BazaarDeps): RequestHandler 
             persistedChallenge.transactionHash,
             persistedChallenge.serviceRef,
           )
-        : await reader.attributeDirectTransfer(
-            {
-              providerAgentId: persistedChallenge.providerTokenId,
-              serviceId: persistedChallenge.serviceId,
-              amount: persistedChallenge.amount,
-              serviceRef: persistedChallenge.serviceRef,
-              from,
-              authNonce,
-            },
-            async (transactionHash) => {
-              const recorded =
-                await queries.recordChallengeTransactionBroadcast(
-                  persistedChallenge.serviceRef,
-                  transactionHash,
-                );
-              if (!recorded) {
-                throw new Error(
-                  "unable to persist attribution transaction broadcast",
-                );
-              }
-            },
+        : await queries.withFacilitatorTransactionLock((release) =>
+            reader.attributeDirectTransfer(
+              {
+                providerAgentId: persistedChallenge.providerTokenId,
+                serviceId: persistedChallenge.serviceId,
+                amount: persistedChallenge.amount,
+                serviceRef: persistedChallenge.serviceRef,
+                from,
+                authNonce,
+              },
+              async (transactionHash) => {
+                const recorded =
+                  await queries.recordChallengeTransactionBroadcast(
+                    persistedChallenge.serviceRef,
+                    transactionHash,
+                  );
+                if (!recorded) {
+                  throw new Error(
+                    "unable to persist attribution transaction broadcast",
+                  );
+                }
+                await release();
+              },
+            ),
           );
     } catch (err) {
       if (err instanceof SettlementTransactionRevertedError) {
@@ -898,7 +879,6 @@ export function createBazaarSettlementHandler(deps: BazaarDeps): RequestHandler 
     });
     res.status(200).json(
       receiptBody(
-        core.version,
         config,
         {
           skillId: challenge.skillId ?? skillId,

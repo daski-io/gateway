@@ -6,7 +6,6 @@ export interface RuntimeConfig {
   nodeEnv: string;
   chainMode: ChainMode;
   trustProxy: number;
-  registrationSponsorMaxPerHour: number;
   challengeRetentionSeconds: number;
   rpcReadMaxPerMinute: number;
   stateChangeGlobalMaxPerMinute: number;
@@ -71,12 +70,6 @@ export function loadRuntimeConfig(env: NodeJS.ProcessEnv): RuntimeConfig {
     trustProxy: integer("TRUST_PROXY", env.TRUST_PROXY, 0, {
       allowZero: true,
     }),
-    registrationSponsorMaxPerHour: integer(
-      "REGISTRATION_SPONSOR_MAX_PER_HOUR",
-      env.REGISTRATION_SPONSOR_MAX_PER_HOUR,
-      20,
-      { allowZero: true },
-    ),
     challengeRetentionSeconds: integer(
       "CHALLENGE_RETENTION_SECONDS",
       env.CHALLENGE_RETENTION_SECONDS,

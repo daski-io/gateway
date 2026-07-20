@@ -2,6 +2,7 @@ import {
   createPublicClient,
   createWalletClient,
   http,
+  nonceManager,
   parseAbiItem,
   parseEventLogs,
 } from "viem";
@@ -23,8 +24,6 @@ import type {
   PaymentRouterRecord,
   PaymentSettledEvent,
   PaymentSettledEventLog,
-  RegisterBySigInput,
-  RegisterBySigResult,
   SettleWithRegistrationInput,
   SettleWithRegistrationResult,
   SettlementInput,
@@ -44,7 +43,7 @@ export interface ViemReaderOptions {
   // Canonical per-chain ERC-8004 IdentityRegistry (0x8004A…).
   identityRegistryAddress: Hex;
   // Daski AgentIndex proxy — verified wallet→agentId reverse lookup plus
-  // gasless registerWithSig, the two gaps the canonical registry leaves.
+  // delegated registerWithSig, the two gaps the canonical registry leaves.
   agentIndexAddress: Hex;
   providerRegistryAddress: Hex;
   paymentRouterAddress: Hex;
@@ -79,7 +78,9 @@ export function createViemChainReader(opts: ViemReaderOptions): ChainReader {
   const transport = http(opts.rpcUrl);
   const publicClient = createPublicClient({ chain, transport });
 
-  const account = privateKeyToAccount(opts.facilitatorPrivateKey);
+  const account = privateKeyToAccount(opts.facilitatorPrivateKey, {
+    nonceManager,
+  });
   const walletClient = createWalletClient({ account, chain, transport });
 
   const routerAddress = opts.paymentRouterAddress;
@@ -279,70 +280,6 @@ export function createViemChainReader(opts: ViemReaderOptions): ChainReader {
       const hash = await walletClient.writeContract(attributeRequest);
       await onBroadcast?.(hash);
       return settlementFromTransaction(hash, input.serviceRef);
-    },
-
-    async registerBuyer(input: RegisterBySigInput): Promise<RegisterBySigResult> {
-      // Facilitator submits AgentIndex.registerWithSig. The AgentIndex
-      // verifies the buyer's signature, mints on the CANONICAL registry
-      // (to itself), transfers the NFT to input.agentWallet, and records
-      // the wallet→agentId binding.
-      // Same explicit-gas reasoning as settlePayment — sepolia.base.org
-      // rejects estimateGas with the block gas limit. The flow is now
-      // canonical register (~380k) + safeTransferFrom (~60k) + binding
-      // (~50k); 800k leaves headroom without tripping the ~5M per-tx cap.
-      //
-      // Simulate first — see settlePayment. Common reverts here are
-      // expired deadline, wrong nonce, and signature mismatch; all worth
-      // surfacing to the buyer rather than hiding behind "reverted".
-      let registerRequest;
-      try {
-        const sim = await publicClient.simulateContract({
-          address: opts.agentIndexAddress,
-          abi: [...agentIndexAbi, ...knownErrorAbis],
-          functionName: "registerWithSig",
-          args: [input.agentURI, input.agentWallet, input.deadline, input.signature],
-          account,
-          chain,
-          gas: 800_000n,
-        });
-        registerRequest = sim.request;
-      } catch (err) {
-        throw new Error(`registerWithSig reverted: ${decodeRevertReason(err)}`);
-      }
-
-      const hash = await walletClient.writeContract(registerRequest);
-
-      const receipt = await publicClient.waitForTransactionReceipt({ hash });
-      if (receipt.status !== "success") {
-        throw new Error(
-          `registerWithSig reverted on broadcast despite passing simulation (tx ${hash})`,
-        );
-      }
-
-      // Extract agentId from the AgentRegistered event. The event is
-      // emitted by the AgentIndex itself, indexed on (agentId, wallet).
-      // (The canonical registry's Registered event fires with the
-      // AgentIndex as owner — the mint-then-transfer flow — so it cannot
-      // be matched against the buyer wallet.)
-      const indexLogs = receipt.logs.filter(
-        (l) => l.address.toLowerCase() === opts.agentIndexAddress.toLowerCase(),
-      );
-      const parsed = parseEventLogs({
-        abi: agentIndexAbi,
-        eventName: "AgentRegistered",
-        logs: indexLogs as any,
-      });
-      const match = parsed.find(
-        (e: any) =>
-          String(e.args.wallet).toLowerCase() === input.agentWallet.toLowerCase(),
-      );
-      if (!match) {
-        throw new Error("AgentRegistered event missing for wallet after registerWithSig");
-      }
-      return {
-        agentId: (match as any).args.agentId as bigint,
-        transactionHash: hash,
-      };
     },
 
     async settleWithRegistration(

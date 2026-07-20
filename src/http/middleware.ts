@@ -88,7 +88,7 @@ export function configureMiddleware(
       "/verify",
       "/settle",
       "/confirm",
-      "/register",
+      "/register-transaction",
       "/register-prep",
       "/x402",
     ],

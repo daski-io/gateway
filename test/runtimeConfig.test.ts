@@ -14,16 +14,15 @@ describe("loadRuntimeConfig", () => {
   it("validates aggregate security budgets", () => {
     expect(() =>
       loadRuntimeConfig({
-        REGISTRATION_SPONSOR_MAX_PER_HOUR: "-1",
+        STATE_CHANGE_GLOBAL_MAX_PER_MINUTE: "-1",
       }),
-    ).toThrow(/REGISTRATION_SPONSOR_MAX_PER_HOUR/);
+    ).toThrow(/STATE_CHANGE_GLOBAL_MAX_PER_MINUTE/);
   });
 
-  it("allows standalone registration sponsorship to be disabled", () => {
-    expect(
-      loadRuntimeConfig({
-        REGISTRATION_SPONSOR_MAX_PER_HOUR: "0",
-      }).registrationSponsorMaxPerHour,
-    ).toBe(0);
+  it("has no standalone registration sponsorship setting", () => {
+    const config = loadRuntimeConfig({
+      REGISTRATION_SPONSOR_MAX_PER_HOUR: "20",
+    });
+    expect("registrationSponsorMaxPerHour" in config).toBe(false);
   });
 });

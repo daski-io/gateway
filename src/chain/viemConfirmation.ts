@@ -40,6 +40,7 @@ export function createConfirmationMethods(
   return {
     async submitBuyerConfirmation(
       input: ConfirmationDelegationInput,
+      onBroadcast,
     ): Promise<ConfirmationResult> {
       const delegation = {
         schema: input.schema,
@@ -73,6 +74,7 @@ export function createConfirmationMethods(
         );
       }
       const hash = await deps.walletClient.writeContract(request);
+      await onBroadcast?.(hash);
       const receipt = await deps.publicClient.waitForTransactionReceipt({
         hash,
       });

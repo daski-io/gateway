@@ -24,12 +24,11 @@ import type {
   DirectAttributionInput,
   FeedbackInput,
   FeedbackResult,
+  PreparedFeedbackTransaction,
   PaymentRouterRecord,
   PaymentSettledEvent,
   PaymentSettledEventLog,
   ProviderReputation,
-  RegisterBySigInput,
-  RegisterBySigResult,
   ReputationRecord,
   ServiceReputation,
   SettleWithRegistrationInput,
@@ -276,24 +275,19 @@ export class AutoMockChainReader implements ChainReader {
     return result;
   }
 
-  async registerBuyer(input: RegisterBySigInput): Promise<RegisterBySigResult> {
-    const agentId = this.rememberBuyer(input.agentWallet);
-    return {
-      agentId,
-      transactionHash: deterministicHex("r", agentId),
-    };
-  }
-
   // ── Buyer confirmation (delegated EAS) ──────────────────────────────
 
   async submitBuyerConfirmation(
     _input: ConfirmationDelegationInput,
+    onBroadcast?: BroadcastObserver,
   ): Promise<ConfirmationResult> {
     this.confirmationCount++;
-    return {
+    const result = {
       transactionHash: deterministicHex("c", this.confirmationCount),
       attestationUid: deterministicHex("a", this.confirmationCount),
     };
+    await onBroadcast?.(result.transactionHash);
+    return result;
   }
 
   async getEasAttesterNonce(_attester: Hex): Promise<bigint> {
@@ -402,18 +396,56 @@ export class AutoMockChainReader implements ChainReader {
   private feedbackIndexByAgent = new Map<string, bigint>();
 
   async giveFeedback(input: FeedbackInput): Promise<FeedbackResult> {
+    const prepared = await this.prepareFeedback(input);
+    return this.submitPreparedFeedback(prepared, input);
+  }
+
+  async prepareFeedback(
+    _input: FeedbackInput,
+  ): Promise<PreparedFeedbackTransaction> {
+    const nonce = BigInt(this.feedbacks.length);
+    return {
+      nonce,
+      transactionHash: deterministicHex("f", nonce + 1n),
+      serializedTransaction: deterministicHex("e", nonce + 1n),
+    };
+  }
+
+  async submitPreparedFeedback(
+    prepared: PreparedFeedbackTransaction,
+    input: FeedbackInput,
+    onBroadcast?: import("./reader.js").BroadcastObserver,
+  ): Promise<FeedbackResult> {
     this.feedbacks.push(input);
     const key = input.agentId.toString();
     const next = (this.feedbackIndexByAgent.get(key) ?? 0n) + 1n;
     this.feedbackIndexByAgent.set(key, next);
-    return { transactionHash: deterministicHex("f", next) };
+    await onBroadcast?.(prepared.transactionHash);
+    return {
+      transactionHash: prepared.transactionHash,
+      feedbackIndex: next,
+    };
+  }
+
+  async getFeedbackByTransaction(
+    _transactionHash: Hex,
+    _input: FeedbackInput,
+  ): Promise<FeedbackResult | null> {
+    return null;
+  }
+
+  async getFacilitatorTransactionCount(): Promise<bigint> {
+    return BigInt(this.feedbacks.length);
   }
 
   async revokeFeedback(
     _agentId: bigint,
     feedbackIndex: bigint,
+    onBroadcast?: BroadcastObserver,
   ): Promise<FeedbackResult> {
-    return { transactionHash: deterministicHex("v", feedbackIndex) };
+    const result = { transactionHash: deterministicHex("v", feedbackIndex) };
+    await onBroadcast?.(result.transactionHash);
+    return result;
   }
 
   async getFeedbackLastIndex(agentId: bigint): Promise<bigint> {

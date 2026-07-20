@@ -5,7 +5,7 @@ import {
   fetchProviderQuote,
   type ProviderQuoteCommitment,
 } from "./providerQuote.js";
-import type { SkillOffer } from "./requirements.js";
+import type { SkillOffer } from "./skillOffer.js";
 import { boundedTimeoutSeconds } from "./bazaarResponse.js";
 
 export type BazaarQuoteResult =

@@ -2,7 +2,7 @@ import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import {
   prepareRegistration,
-  submitRegistration,
+  buildRegistrationTransaction,
 } from "../identity/service.js";
 import type { McpDeps } from "./server.js";
 import { mcpError, mcpJson, type McpToolResult } from "./util.js";
@@ -27,7 +27,7 @@ export function registerAgentTool(server: McpServer, deps: McpDeps): void {
         "Most buyers should use daski_buy_service, which registers fresh wallets atomically.",
         "",
         "First call with walletAddress and optional name or agentURI returns EIP-712 typed-data.",
-        "Second call repeats walletAddress with the returned agentURI, deadline, and wallet signature.",
+        "Second call validates the signature and returns a self-funded registerWithSig transaction.",
       ].join("\n"),
       inputSchema: {
         walletAddress: z
@@ -108,7 +108,7 @@ async function registerAgent(
         "values returned by the first call.",
     });
   }
-  const submitted = await submitRegistration(identityDeps, {
+  const submitted = await buildRegistrationTransaction(identityDeps, {
     walletAddress: args.walletAddress,
     agentURI: args.agentURI,
     deadline: args.deadline,

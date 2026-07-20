@@ -102,7 +102,12 @@ async function confirmDelivery(
     });
   }
   const result = await runConfirmDelivery(
-    { config: deps.config, reader: deps.reader, queries: deps.queries },
+    {
+      config: deps.config,
+      reader: deps.reader,
+      queries: deps.queries,
+      reputationWorker: deps.reputationWorker,
+    },
     args.paymentId,
     {
       confirmation: args.confirmation,

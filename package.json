@@ -25,6 +25,7 @@
     "zod": "^3.25.76"
   },
   "overrides": {
+    "axios": "^1.18.1",
     "protobufjs": "^7.6.3"
   },
   "devDependencies": {

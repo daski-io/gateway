@@ -3,7 +3,7 @@ import type { Hex } from "../types.js";
 import { logErrorWithId } from "../util/errorWrap.js";
 import {
   prepareRegistration,
-  submitRegistration,
+  buildRegistrationTransaction,
   type IdentityServiceDeps,
 } from "./service.js";
 
@@ -90,9 +90,9 @@ export function createIdentityRouter(deps: IdentityDeps): Router {
     res.json(result.value);
   });
 
-  router.post("/register", async (req: Request, res: Response) => {
+  router.post("/register-transaction", async (req: Request, res: Response) => {
     const body = (req.body ?? {}) as Record<string, unknown>;
-    const result = await submitRegistration(deps, body);
+    const result = await buildRegistrationTransaction(deps, body);
     if (!result.ok) {
       res.status(result.status).json({ error: result.error });
       return;

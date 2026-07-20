@@ -70,6 +70,10 @@ interface CacheOptions {
 export class DiscoveryCache {
   private cache: Map<string, CachedProvider> = new Map();
   private lastRefresh: Date | null = null;
+  private lastCycleAt: Date | null = null;
+  private lastChainSuccessAt: Date | null = null;
+  private lastChainError: { message: string; at: Date } | null = null;
+  private cardFailureCount = 0;
   private readonly reader: ChainReader;
   // Owned copy of the whitelist — callers must use setWhitelist() to mutate it.
   private whitelist: bigint[];
@@ -146,6 +150,25 @@ export class DiscoveryCache {
     return this.lastRefresh;
   }
 
+  status(): {
+    lastCycleAt: Date | null;
+    lastChainSuccessAt: Date | null;
+    lastChainError: { message: string; at: Date } | null;
+    cardFailureCount: number;
+    chainFresh: boolean;
+  } {
+    const freshForMs = Math.max(this.refreshIntervalMs * 3, 120_000);
+    return {
+      lastCycleAt: this.lastCycleAt,
+      lastChainSuccessAt: this.lastChainSuccessAt,
+      lastChainError: this.lastChainError,
+      cardFailureCount: this.cardFailureCount,
+      chainFresh:
+        this.lastChainSuccessAt !== null &&
+        Date.now() - this.lastChainSuccessAt.getTime() <= freshForMs,
+    };
+  }
+
   async refresh(): Promise<void> {
     const deadlineAt = Date.now() + this.refreshDeadlineMs;
     const oldSnapshot = this.getAll();
@@ -153,11 +176,23 @@ export class DiscoveryCache {
     try {
       onChain = await fetchOnChainProviders(this.reader, this.whitelist);
     } catch (err) {
-      this.logger.error(`[cache] failed to read provider registry: ${(err as Error).message}`);
+      const message = (err as Error).message;
+      const wasHealthy = this.lastChainError === null;
+      this.lastCycleAt = new Date();
+      this.lastChainError = { message, at: this.lastCycleAt };
+      if (wasHealthy) {
+        this.logger.error(`[cache] provider registry became unavailable: ${message}`);
+      }
       return;
     }
+    if (this.lastChainError) {
+      this.logger.log("[cache] provider registry recovered");
+    }
+    this.lastChainSuccessAt = new Date();
+    this.lastChainError = null;
 
     const nextCache = new Map<string, CachedProvider>();
+    let cardFailureCount = 0;
 
     for (const provider of onChain) {
       const existing = this.cache.get(provider.agentId.toString());
@@ -177,6 +212,7 @@ export class DiscoveryCache {
           fetchError: resolved.partialError,
         });
       } catch (err) {
+        cardFailureCount += 1;
         const message = (err as Error).message ?? String(err);
         const hardLegalFailure = err instanceof ProviderLegalValidationError;
         this.logger.warn(
@@ -227,7 +263,9 @@ export class DiscoveryCache {
     }
 
     this.cache = nextCache;
-    this.lastRefresh = new Date();
+    this.cardFailureCount = cardFailureCount;
+    this.lastCycleAt = new Date();
+    this.lastRefresh = this.lastCycleAt;
 
     const newSnapshot = this.getAll();
     if (this.onCatalogChanged && this.hasChanged(oldSnapshot, newSnapshot)) {

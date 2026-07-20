@@ -9,7 +9,7 @@ import {
 } from "../src/serviceTaxonomy.js";
 import { startTestGateway, type TestGateway } from "./helpers/setup.js";
 import { computeRequestHash } from "../src/auth/envelope.js";
-import { expectedPhoneConfirmationToken } from "../src/mcp/util.js";
+import { expectedPhoneAcknowledgementToken } from "../src/mcp/util.js";
 import {
   AGENT_AUTHORITY,
   MCP_LEGAL_INSTRUCTIONS,
@@ -247,8 +247,9 @@ describe("hosted MCP — wallet-agnostic surface", () => {
       expect(body.providers).toHaveLength(1);
       expect(body.warning).not.toContain("upstream model details");
 
+      await degradedGateway.bundle.indexer.tick();
       const health = (await (
-        await fetch(`${degradedGateway.baseUrl}/health`)
+        await fetch(`${degradedGateway.baseUrl}/health/ready`)
       ).json()) as {
         status: string;
         embedder: { state: string; reason?: string };
@@ -551,7 +552,7 @@ describe("hosted MCP — wallet-agnostic surface", () => {
     }
   });
 
-  // ── Gasless registration MCP surface ─────────────────────────────────
+  // ── Self-funded registration MCP surface ─────────────────────────────
 
   it("daski_register_agent first call returns RegisterAgent typed-data", async () => {
     const fresh = "0xabcd000000000000000000000000000000000001" as Hex;
@@ -579,7 +580,7 @@ describe("hosted MCP — wallet-agnostic surface", () => {
     }
   });
 
-  it("daski_register_agent second call (with signature) submits via the facilitator", async () => {
+  it("daski_register_agent second call returns self-funded transaction data", async () => {
     const account = privateKeyToAccount(
       ("0x" + "22".repeat(32)) as Hex,
     );
@@ -608,18 +609,11 @@ describe("hosted MCP — wallet-agnostic surface", () => {
         deadline,
       },
     });
-    gateway.mockChain.queueRegistration({
-      kind: "success",
-      agentId: 88n,
-      txHash: ("0x" + "33".repeat(32)) as Hex,
-    });
-
     const { client, transport } = await connectClient(gateway.baseUrl);
     try {
       const body = parseResult<{
         walletAddress: string;
-        agentId: string;
-        transactionHash: string;
+        transaction: { chainId: number; to: string; data: string; value: string };
       }>(
         await client.callTool({
           name: "daski_register_agent",
@@ -632,9 +626,11 @@ describe("hosted MCP — wallet-agnostic surface", () => {
         }),
       );
       expect(body.walletAddress).toBe(fresh);
-      expect(body.agentId).toBe("88");
-      expect(body.transactionHash).toMatch(/^0x3{64}$/);
-      expect(gateway.mockChain.registrations).toHaveLength(1);
+      expect(body.transaction.chainId).toBe(gateway.config.chainId);
+      expect(body.transaction.to).toBe(gateway.config.agentIndexAddress);
+      expect(body.transaction.data).toMatch(/^0x[0-9a-f]+$/i);
+      expect(body.transaction.value).toBe("0");
+      expect(gateway.mockChain.registrations).toHaveLength(0);
     } finally {
       await transport.close();
     }
@@ -950,7 +946,7 @@ describe("hosted MCP — wallet-agnostic surface", () => {
           // Phone-bearing buys must pass the confirmation gate before any
           // /quote roundtrip; this test targets provider-side quote errors,
           // so satisfy the gate up front.
-          confirmationToken: expectedPhoneConfirmationToken([
+          phoneAcknowledgementToken: expectedPhoneAcknowledgementToken([
             { field: "registrantPhone", value: "+15555550100" },
           ]),
         },

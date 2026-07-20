@@ -1,10 +1,10 @@
 import type { Config } from "../config.js";
 import type { ExactEvmAuthorization, Hex } from "../types.js";
 import { decodeBase64JsonObject, isHex32, isHexAddress } from "./protocol.js";
-import type { SkillOffer } from "./requirements.js";
+import type { SkillOffer } from "./skillOffer.js";
 
 export interface BazaarPayment {
-  version: number;
+  version: 2;
   signature: Hex;
   authorization: ExactEvmAuthorization;
   raw: Record<string, unknown>;
@@ -17,7 +17,7 @@ export function decodeBazaarPayment(header: string): BazaarPayment | null {
     typeof decoded.x402Version === "number"
       ? decoded.x402Version
       : Number.NaN;
-  if (version !== 1 && version !== 2) return null;
+  if (version !== 2) return null;
 
   const payload = decoded.payload;
   if (!payload || typeof payload !== "object") return null;
@@ -67,27 +67,12 @@ export function acceptedProviderQuote(payment: BazaarPayment): unknown {
 }
 
 export function buildFacilitatorRequirements(
-  version: number,
   offer: SkillOffer,
   amount: bigint,
   config: Config,
   resourceUrl: string,
   maxTimeoutSeconds: number,
 ): Record<string, unknown> {
-  if (version === 1) {
-    return {
-      scheme: "exact",
-      network: config.network,
-      maxAmountRequired: amount.toString(),
-      resource: resourceUrl,
-      description: offer.description,
-      mimeType: "application/json",
-      payTo: config.paymentRouterAddress,
-      maxTimeoutSeconds,
-      asset: config.usdcAddress,
-      extra: { name: config.usdcName, version: config.usdcVersion },
-    };
-  }
   return {
     scheme: "exact",
     network: `eip155:${config.chainId}`,
@@ -105,7 +90,7 @@ export function buildForwardedPayload(
   resourceUrl: string,
 ): Record<string, unknown> {
   const forwarded: Record<string, unknown> = { ...payment.raw };
-  if (payment.version === 2 && forwarded.resource === undefined) {
+  if (forwarded.resource === undefined) {
     forwarded.resource = {
       url: resourceUrl,
       description: offer.description,

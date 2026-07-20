@@ -4,7 +4,7 @@ import type { Config } from "../config.js";
 import type { ChainReader } from "../chain/reader.js";
 import type { Queries } from "../db/queries.js";
 import type { Hex } from "../types.js";
-import { mirrorConfirmationFeedback } from "../reputation/mirror.js";
+import type { ReputationMirrorWorker } from "../reputation/worker.js";
 import { logErrorWithId, publicErrorMessage } from "../util/errorWrap.js";
 import {
   CONFIRMATION_CODE,
@@ -17,6 +17,7 @@ export interface ConfirmDeps {
   config: Config;
   reader: ChainReader;
   queries: Queries;
+  reputationWorker: ReputationMirrorWorker;
 }
 
 // ReputationStorage.sol BuyerConfirmation enum values. Keep these in lock-step
@@ -161,22 +162,28 @@ export async function runConfirmDelivery(
   }
 
   try {
-    const result = await deps.reader.submitBuyerConfirmation({
-      attester: input.attester,
-      schema: deps.config.easConfirmationSchemaUid,
-      recipient: ("0x" + "00".repeat(20)) as Hex,
-      expirationTime: 0n,
-      revocable: true,
-      refUID: input.refUid ?? BYTES32_ZERO,
-      data: payload,
-      value: 0n,
-      deadline: deadlineBig,
-      signature: {
-        v: input.signature.v,
-        r: input.signature.r,
-        s: input.signature.s,
-      },
-    });
+    const result = await deps.queries.withFacilitatorTransactionLock(
+      (release) =>
+        deps.reader.submitBuyerConfirmation(
+          {
+            attester: input.attester,
+            schema: deps.config.easConfirmationSchemaUid,
+            recipient: ("0x" + "00".repeat(20)) as Hex,
+            expirationTime: 0n,
+            revocable: true,
+            refUID: input.refUid ?? BYTES32_ZERO,
+            data: payload,
+            value: 0n,
+            deadline: deadlineBig,
+            signature: {
+              v: input.signature.v,
+              r: input.signature.r,
+              s: input.signature.s,
+            },
+          },
+          release,
+        ),
+    );
 
     // Best-effort persist the UID on the matching challenge row. Failure
     // doesn't invalidate the on-chain attestation (EAS is canonical), so
@@ -185,17 +192,17 @@ export async function runConfirmDelivery(
     // shows null for this row until the next confirmation revises it.
     try {
       await deps.queries.recordConfirmation(paymentId, result.attestationUid);
-    } catch {
-      // Swallow — see comment above.
+    } catch (error) {
+      logErrorWithId("confirmation.record", error);
     }
 
     // Mirror the confirmation as public ERC-8004 feedback for the provider
     // on the canonical ReputationRegistry (facilitator wallet = the
     // orchestrator-client, EAS attestation = evidence). Fire-and-forget:
     // the mirror must NEVER delay or fail the buyer's confirmation
-    // response. mirror.ts handles its own bookkeeping and logging; the
+    // response. The durable worker handles its own bookkeeping and logging; the
     // catch here only guards against bugs in the mirror itself.
-    void mirrorConfirmationFeedback(deps, {
+    void deps.reputationWorker.enqueue({
       paymentId,
       confirmation: input.confirmation,
       attestationUid: result.attestationUid,

@@ -17,11 +17,11 @@ typed-data so any signer (Coinbase AgentKit, CDP Wallet MCP, viem, MetaMask,
   `daski_fetch_artifact`, `daski_confirm_delivery` (all public);
   `daski_register_agent`, `daski_purchase`, `daski_settle_payment` (advanced).
   Two-call patterns collapse "prepare → submit" pairs into a single tool
-  whose first call returns typed-data and second call submits the signed
-  payload.
+  whose first call returns typed-data and second call validates or submits
+  the signed payload, depending on the operation.
 - **REST API** — `/purchase/:agentId` payment challenges, `/verify` + `/settle`
-  (x402 facilitator), `/discover`, `/confirm/:paymentId`, gasless register
-  endpoints, and read-only `/public/v1/*`.
+  (x402 facilitator), `/discover`, `/confirm/:paymentId`, self-funded
+  registration builders, and read-only `/public/v1/*`.
 - **Discovery cache** — periodic refresh of provider Agent Cards from
   ERC-8004 + intent-driven semantic search via pgvector + Xenova
   `all-MiniLM-L6-v2` embeddings. Catalog admission enforces the canonical
@@ -73,14 +73,13 @@ for the full list with defaults. The most important ones:
 | `FACILITATOR_PRIVATE_KEY` | Signer for x402 settles + delegated EAS attestations. **Secret.** |
 | `WHITELISTED_AGENT_IDS` | Comma-separated ERC-8004 agentIds that discovery is allowed to surface |
 | `DATABASE_URL` | Postgres connection string (must have `pgvector` available) |
-| `AGENT_INDEX_ADDRESS` | Daski AgentIndex proxy — verified wallet→agentId resolution + gasless registration. **Required**; changes on every contract redeploy (ships blank in `.env.example`) |
+| `AGENT_INDEX_ADDRESS` | Daski AgentIndex proxy — verified wallet→agentId resolution + delegated registration. **Required**; changes on every contract redeploy |
 | `REPUTATION_REGISTRY_ADDRESS` | Canonical ERC-8004 ReputationRegistry. Set it to mirror confirmed deliveries as public feedback; unset = mirror off |
 | `PUBLIC_URL` | Externally reachable URL — embedded in payment requirements and discovery responses |
 | `TRUST_PROXY` | Explicit number of trusted reverse-proxy hops; default `0` prevents forged forwarded IPs |
 | `MARKETPLACE_TERMS_URL` | Required HTTPS URL for the Daski Terms of Use returned with every service and purchase |
 | `MARKETPLACE_PRIVACY_URL` | Required HTTPS URL for the Daski Privacy Policy returned with every service and purchase |
 | `DIRECT_ADAPTER_ADDRESS` | DirectTransferAdapter proxy. Setting it mounts the Bazaar-facing `/x402/services/:agentId/:serviceSlug/:skillId` routes (external-facilitator rail). Unset = rail off |
-| `REGISTRATION_SPONSOR_MAX_PER_HOUR` | Global facilitator-funded standalone registration budget. Set `0` to disable; default `20` |
 | `CHALLENGE_RETENTION_SECONDS` | Retention window for expired payment challenges before bounded deletion |
 | `RPC_READ_MAX_PER_MINUTE` | Aggregate RPC-backed read budget across clients and replicas |
 | `STATE_CHANGE_GLOBAL_MAX_PER_MINUTE` | Aggregate state-changing request budget across clients and replicas |
@@ -88,8 +87,8 @@ for the full list with defaults. The most important ones:
 | `PUBLIC_READ_MAX_PER_MINUTE` | Per-client budget for public read routes |
 | `PUBLIC_READ_GLOBAL_MAX_PER_MINUTE` | Aggregate public-read budget across clients and replicas |
 | `PUBLIC_CACHE_MAX_ENTRIES` | Maximum entries retained by each keyed public read cache |
-| `EXTERNAL_FACILITATOR_URL` | External x402 facilitator base URL. Defaults: x402.org (Sepolia), CDP facilitator (mainnet) |
-| `EXTERNAL_FACILITATOR_AUTH_HEADER` | Raw `Authorization` value for the external facilitator — required by CDP for mainnet settles. **Secret.** |
+| `EXTERNAL_FACILITATOR_URL` | External x402 facilitator base URL. Defaults to CDP for Base and Base Sepolia so settlements are Bazaar-indexed. |
+| `EXTERNAL_FACILITATOR_AUTH_HEADER` | Raw `Authorization` value for the CDP facilitator on either network. **Secret.** |
 
 The .env.example ships with the post-audit Base Sepolia deployment addresses
 for the Daski contracts. Replace them when redeploying.
@@ -150,9 +149,9 @@ only CDP-settled payments get Bazaar-indexed). The step-by-step rollout
 (adapter deploy, wiring, verification) lives in the
 [deploy-testnet](https://github.com/daski-io/deploy-testnet) runbooks.
 
-Buyers on this rail must already hold an ERC-8004 identity (the gasless
-`/register` flow); unregistered wallets get a 403 with instructions before
-any funds move.
+Buyers on this rail must already hold an ERC-8004 identity. Standalone
+registration is self-funded; unregistered wallets get a 403 with
+transaction-building instructions before any funds move.
 
 ## Architecture
 
@@ -162,7 +161,7 @@ any funds move.
 - `src/serviceTaxonomy.ts` — the 16 service families, controlled service
   types, jurisdiction rules, and fulfillment-mode vocabulary
 - `src/payment/` — x402 challenge / verify / settle, EAS confirmation, Bazaar-facing external-facilitator rail (`bazaar.ts`, `externalFacilitator.ts`)
-- `src/identity/` — ERC-8004 lookups + gasless registration
+- `src/identity/` — ERC-8004 lookups + self-funded registration building
 - `src/chain/` — viem-backed reader for the Daski contracts (+ hand-mirrored ABIs in `abis.ts`)
 - `src/indexer/` — `PaymentSettled` event poller feeding `/public/v1/activity`
 - `src/reputation/` — feedback mirror to the canonical ERC-8004 ReputationRegistry

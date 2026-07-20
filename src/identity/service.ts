@@ -1,10 +1,11 @@
 import type { ChainReader } from "../chain/reader.js";
 import type { Config } from "../config.js";
-import type { Queries } from "../db/queries.js";
 import type { Eip712TypedData, Hex } from "../types.js";
 import { buildBuyerAgentURI, defaultBuyerName, sanitizeBuyerName } from "./name.js";
 import { logErrorWithId } from "../util/errorWrap.js";
 import { verifyTypedData } from "viem";
+import { encodeFunctionData } from "viem";
+import { agentIndexAbi } from "../chain/abis.js";
 import {
   AgentCardFetchError,
   fetchAgentCard,
@@ -14,7 +15,6 @@ import {
 export interface IdentityServiceDeps {
   config: Config;
   reader: ChainReader;
-  queries: Queries;
   fetchAgentCardFn?: FetchAgentCardOptions["fetchFn"];
 }
 
@@ -202,7 +202,7 @@ export async function prepareRegistration(
   };
 }
 
-export async function submitRegistration(
+export async function buildRegistrationTransaction(
   deps: IdentityServiceDeps,
   input: {
     walletAddress?: unknown;
@@ -235,7 +235,10 @@ export async function submitRegistration(
     existingAgentId = await deps.reader.agentOfWallet(walletAddress);
   } catch (err) {
     return fail(502, "CHAIN_READ_FAILED", "chain read failed", {
-      correlationId: logErrorWithId("submitRegistration.agentOfWallet", err),
+      correlationId: logErrorWithId(
+        "buildRegistrationTransaction.agentOfWallet",
+        err,
+      ),
     });
   }
   if (existingAgentId !== 0n) {
@@ -250,7 +253,7 @@ export async function submitRegistration(
   } catch (err) {
     return fail(502, "CHAIN_READ_FAILED", "chain read failed", {
       correlationId: logErrorWithId(
-        "submitRegistration.registrationNonce",
+        "buildRegistrationTransaction.registrationNonce",
         err,
       ),
     });
@@ -302,64 +305,32 @@ export async function submitRegistration(
       return fail(400, err.code, err.message);
     }
     return fail(502, "AGENT_URI_FETCH_FAILED", "agentURI validation failed", {
-      correlationId: logErrorWithId("submitRegistration.resolveName", err),
+      correlationId: logErrorWithId(
+        "buildRegistrationTransaction.resolveName",
+        err,
+      ),
     });
   }
 
-  try {
-    const budget = await deps.queries.consumeRateLimitBucket(
-      "registration-sponsor:global",
-      60 * 60 * 1000,
-    );
-    if (budget.count > deps.config.registrationSponsorMaxPerHour) {
-      return fail(
-        429,
-        "REGISTRATION_SPONSOR_BUDGET_EXHAUSTED",
-        "The gateway registration sponsorship budget is temporarily exhausted.",
-        { retryAt: budget.resetAt.toISOString() },
-      );
-    }
-  } catch (err) {
-    return fail(
-      503,
-      "REGISTRATION_SPONSOR_UNAVAILABLE",
-      "Registration sponsorship is temporarily unavailable.",
-      {
-        correlationId: logErrorWithId("submitRegistration.reserveSponsorship", err),
-      },
-    );
-  }
-
-  try {
-    const result = await deps.reader.registerBuyer({
+  const data = encodeFunctionData({
+    abi: agentIndexAbi,
+    functionName: "registerWithSig",
+    args: [input.agentURI, walletAddress, deadline, input.signature],
+  });
+  return {
+    ok: true,
+    value: {
+      walletAddress,
       agentURI: input.agentURI,
-      agentWallet: walletAddress,
-      deadline,
-      signature: input.signature,
-    });
-    try {
-      await deps.queries.upsertBuyerIdentity({
-        agentId: result.agentId,
-        walletAddress,
-        resolvedName,
-        agentURI: input.agentURI,
-      });
-    } catch (err) {
-      logErrorWithId("submitRegistration.persistIdentity", err);
-    }
-    return {
-      ok: true,
-      value: {
-        walletAddress,
-        agentId: result.agentId.toString(),
-        agentURI: input.agentURI,
-        resolvedName,
-        transactionHash: result.transactionHash,
+      resolvedName,
+      transaction: {
+        chainId: deps.config.chainId,
+        to: deps.config.agentIndexAddress,
+        data,
+        value: "0",
       },
-    };
-  } catch (err) {
-    return fail(502, "REGISTER_FAILED", "registration submission failed", {
-      correlationId: logErrorWithId("submitRegistration.register", err),
-    });
-  }
+      instructions:
+        "Send this transaction from the registration wallet and pay its network gas.",
+    },
+  };
 }

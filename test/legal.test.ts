@@ -37,6 +37,50 @@ const VALID_CONFIG_ENV: NodeJS.ProcessEnv = {
   MARKETPLACE_PRIVACY_URL: "https://daski.io/privacy-policy",
 };
 
+describe("startup configuration validation", () => {
+  it("rejects malformed numeric and path settings", () => {
+    expect(() => loadConfig({ ...VALID_CONFIG_ENV, PORT: "NaN" })).toThrow(
+      /PORT/,
+    );
+    expect(() =>
+      loadConfig({ ...VALID_CONFIG_ENV, CACHE_REFRESH_INTERVAL: "1.5" }),
+    ).toThrow(/CACHE_REFRESH_INTERVAL/);
+    expect(() =>
+      loadConfig({ ...VALID_CONFIG_ENV, MCP_PATH: "mcp" }),
+    ).toThrow(/MCP_PATH/);
+    expect(() =>
+      loadConfig({ ...VALID_CONFIG_ENV, MCP_ENABLED: "yes" }),
+    ).toThrow(/MCP_ENABLED/);
+  });
+
+  it("requires HTTPS public and RPC URLs in production", () => {
+    expect(() =>
+      loadConfig({
+        ...VALID_CONFIG_ENV,
+        NODE_ENV: "production",
+        PUBLIC_URL: "http://gateway.example",
+      }),
+    ).toThrow(/PUBLIC_URL must use HTTPS/);
+    expect(() =>
+      loadConfig({
+        ...VALID_CONFIG_ENV,
+        NODE_ENV: "production",
+        PUBLIC_URL: "https://gateway.example",
+        BASE_RPC_URL: "http://rpc.example",
+      }),
+    ).toThrow(/BASE_RPC_URL must use HTTPS/);
+  });
+
+  it("defaults both supported networks to the Bazaar-indexing CDP facilitator", () => {
+    const expected = "https://api.cdp.coinbase.com/platform/v2/x402";
+    expect(loadConfig(VALID_CONFIG_ENV).externalFacilitatorUrl).toBe(expected);
+    expect(
+      loadConfig({ ...VALID_CONFIG_ENV, CHAIN_ID: "8453" })
+        .externalFacilitatorUrl,
+    ).toBe(expected);
+  });
+});
+
 describe("legal metadata validation", () => {
   it("keeps the approved Agent-facing legal contract exact", () => {
     expect(PURCHASE_NOTICE).toBe(EXPECTED_PURCHASE_NOTICE);

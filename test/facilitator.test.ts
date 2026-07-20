@@ -38,6 +38,39 @@ describe("facilitator endpoints", () => {
     await gateway.close();
   });
 
+  it("serializes facilitator wallet writes across unrelated operations", async () => {
+    let enterFirst!: () => void;
+    const firstEntered = new Promise<void>((resolve) => {
+      enterFirst = resolve;
+    });
+    let unblockFirst!: () => void;
+    const firstBlocked = new Promise<void>((resolve) => {
+      unblockFirst = resolve;
+    });
+    let secondEntered = false;
+
+    const first = gateway.bundle.queries.withFacilitatorTransactionLock(
+      async (release) => {
+        enterFirst();
+        await firstBlocked;
+        await release();
+      },
+    );
+    await firstEntered;
+    const second = gateway.bundle.queries.withFacilitatorTransactionLock(
+      async (release) => {
+        secondEntered = true;
+        await release();
+      },
+    );
+
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(secondEntered).toBe(false);
+    unblockFirst();
+    await Promise.all([first, second]);
+    expect(secondEntered).toBe(true);
+  });
+
   async function openChallenge(buyerTokenId = "5"): Promise<{
     serviceRef: Hex;
     paymentRequirements: PaymentRequirements;
@@ -183,7 +216,7 @@ describe("facilitator endpoints", () => {
       success: false,
       errorReason: expect.stringMatching(/providerTokenId.*numeric/),
     });
-    expect((await fetch(`${gateway.baseUrl}/health`)).status).toBe(200);
+    expect((await fetch(`${gateway.baseUrl}/health/live`)).status).toBe(200);
   });
 
   it("POST /settle submits on-chain and returns the flat Daski-extended body", async () => {
@@ -406,7 +439,7 @@ describe("facilitator endpoints", () => {
     expect(gateway.mockChain.settlements).toHaveLength(1);
 
     // Atomic path must mirror the same `buyer_identities` upsert that the
-    // explicit /register endpoint does — pre-fix, the cache stayed empty
+    // standalone registration flow does — pre-fix, the cache stayed empty
     // for any buyer whose first action was a purchase rather than a bare
     // registration. The test gateway's default agent-card fetcher returns
     // `{ name: "buyer-test" }`, so the resolved name lands here.

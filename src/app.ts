@@ -22,6 +22,8 @@ import { createMetaRouter } from "./http/metaRoutes.js";
 import { logger } from "./util/logger.js";
 import { reconcileExternalSettlements } from "./payment/externalReconciler.js";
 import { configureMiddleware } from "./http/middleware.js";
+import { ReputationMirrorWorker } from "./reputation/worker.js";
+import { ChainEventsIndexer } from "./indexer/chainEvents.js";
 
 export interface CreateAppOptions {
   config: Config;
@@ -50,6 +52,8 @@ export interface AppBundle {
   mcp: McpWiring | null;
   expireInterval: NodeJS.Timeout | null;
   reconcileInterval: NodeJS.Timeout | null;
+  reputationWorker: ReputationMirrorWorker;
+  indexer: ChainEventsIndexer;
   shutdown(): Promise<void>;
 }
 
@@ -59,6 +63,12 @@ export async function createApp(options: CreateAppOptions): Promise<AppBundle> {
   const ownsPool = options.pool === undefined;
   await runMigrations(pool);
   const queries = createQueries(pool);
+  const reputationWorker = new ReputationMirrorWorker({
+    config,
+    reader,
+    queries,
+  });
+  const indexer = new ChainEventsIndexer(reader, queries);
   const embedder = options.embedder === null ? null : (options.embedder ?? xenovaEmbedder());
   const cache = new DiscoveryCache({
     reader,
@@ -78,7 +88,16 @@ export async function createApp(options: CreateAppOptions): Promise<AppBundle> {
 
   const app = express();
   configureMiddleware(app, queries, config);
-  app.use(createMetaRouter({ config, cache, embedder }));
+  app.use(
+    createMetaRouter({
+      config,
+      cache,
+      embedder,
+      pool,
+      indexer,
+      reputationWorker,
+    }),
+  );
   app.use(createDiscoveryRouter(cache, config));
   app.use(createPurchaseRouter({ config, cache, queries, reader }));
 
@@ -99,7 +118,9 @@ export async function createApp(options: CreateAppOptions): Promise<AppBundle> {
       }),
     );
   }
-  app.use(createConfirmRouter({ config, reader, queries }));
+  app.use(
+    createConfirmRouter({ config, reader, queries, reputationWorker }),
+  );
   app.use(
     createFacilitatorRouter({
       config,
@@ -113,7 +134,6 @@ export async function createApp(options: CreateAppOptions): Promise<AppBundle> {
     createIdentityRouter({
       config,
       reader,
-      queries,
       fetchAgentCardFn: options.buyerAgentCardFetch,
     }),
   );
@@ -133,6 +153,7 @@ export async function createApp(options: CreateAppOptions): Promise<AppBundle> {
         cache,
         queries,
         reader,
+        reputationWorker,
         pool,
         embedder,
         fetch: options.a2aFetch,
@@ -187,12 +208,16 @@ export async function createApp(options: CreateAppOptions): Promise<AppBundle> {
       reconcileInterval = setInterval(reconcile, 30_000);
     }
     cache.start();
+    indexer.start();
+    reputationWorker.start();
   }
 
   async function shutdown(): Promise<void> {
     if (expireInterval) clearInterval(expireInterval);
     if (reconcileInterval) clearInterval(reconcileInterval);
     cache.stop();
+    indexer.stop();
+    reputationWorker.stop();
     await mcp?.close().catch((err) => {
       logErrorWithId("mcp.shutdown", err);
     });
@@ -212,6 +237,8 @@ export async function createApp(options: CreateAppOptions): Promise<AppBundle> {
     mcp,
     expireInterval,
     reconcileInterval,
+    reputationWorker,
+    indexer,
     shutdown,
   };
 }

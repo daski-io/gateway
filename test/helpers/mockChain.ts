@@ -7,11 +7,10 @@ import type {
   DirectAttributionInput,
   FeedbackInput,
   FeedbackResult,
+  PreparedFeedbackTransaction,
   PaymentRouterRecord,
   PaymentSettledEvent,
   ProviderReputation,
-  RegisterBySigInput,
-  RegisterBySigResult,
   ReputationRecord,
   ServiceReputation,
   SettleWithRegistrationInput,
@@ -27,6 +26,13 @@ interface MockProviderEntry {
   agentId: bigint;
   registrationTime: bigint;
   isActive: boolean;
+}
+
+interface QueuedRegistrationInput {
+  agentURI: string;
+  agentWallet: Hex;
+  deadline: bigint;
+  signature: Hex;
 }
 
 export type SettlementOutcome =
@@ -229,6 +235,7 @@ export class MockChainReader implements ChainReader {
 
   async submitBuyerConfirmation(
     input: ConfirmationDelegationInput,
+    onBroadcast?: BroadcastObserver,
   ): Promise<ConfirmationResult> {
     this.confirmations.push(input);
     const outcome = this.confirmationOutcomes.shift();
@@ -238,6 +245,7 @@ export class MockChainReader implements ChainReader {
       );
     }
     if (outcome.kind === "revert") throw new Error(outcome.reason);
+    await onBroadcast?.(outcome.txHash);
     return { transactionHash: outcome.txHash, attestationUid: outcome.attestationUid };
   }
 
@@ -255,7 +263,7 @@ export class MockChainReader implements ChainReader {
     | { kind: "success"; agentId: bigint; txHash: Hex }
     | { kind: "revert"; reason: string }
   > = [];
-  public registrations: RegisterBySigInput[] = [];
+  public registrations: QueuedRegistrationInput[] = [];
 
   setRegistrationNonce(wallet: Hex, nonce: bigint): void {
     this.registrationNonces.set(wallet.toLowerCase(), nonce);
@@ -273,12 +281,12 @@ export class MockChainReader implements ChainReader {
     return this.registrationNonces.get(wallet.toLowerCase()) ?? 0n;
   }
 
-  async registerBuyer(input: RegisterBySigInput): Promise<RegisterBySigResult> {
+  private async applyQueuedRegistration(input: QueuedRegistrationInput) {
     this.registrations.push(input);
     const outcome = this.registrationOutcomes.shift();
     if (!outcome) {
       throw new Error(
-        "MockChainReader.registerBuyer called with no queued outcome",
+        "MockChainReader registration called with no queued outcome",
       );
     }
     if (outcome.kind === "revert") throw new Error(outcome.reason);
@@ -439,6 +447,9 @@ export class MockChainReader implements ChainReader {
   private feedbackRevokeOutcomes: Array<{ kind: "revert"; reason: string }> =
     [];
   private feedbackLastIndex = new Map<string, bigint>();
+  private feedbackTransactions = new Map<string, FeedbackResult>();
+  private feedbackNonce = 0n;
+  private feedbackBroadcastNonce = 0n;
 
   queueFeedback(outcome: { kind: "revert"; reason: string }): void {
     this.feedbackOutcomes.push(outcome);
@@ -449,28 +460,74 @@ export class MockChainReader implements ChainReader {
   }
 
   async giveFeedback(input: FeedbackInput): Promise<FeedbackResult> {
+    const prepared = await this.prepareFeedback(input);
+    return this.submitPreparedFeedback(prepared, input);
+  }
+
+  async prepareFeedback(
+    _input: FeedbackInput,
+  ): Promise<PreparedFeedbackTransaction> {
+    const nonce = this.feedbackNonce++;
+    return {
+      nonce,
+      transactionHash:
+        `0xfade${nonce.toString(16).padStart(60, "0")}` as Hex,
+      serializedTransaction:
+        `0x02${nonce.toString(16).padStart(2, "0")}` as Hex,
+    };
+  }
+
+  async submitPreparedFeedback(
+    prepared: PreparedFeedbackTransaction,
+    input: FeedbackInput,
+    onBroadcast?: BroadcastObserver,
+  ): Promise<FeedbackResult> {
     this.feedbacks.push(input);
     const outcome = this.feedbackOutcomes.shift();
     if (outcome) throw new Error(outcome.reason);
     const key = input.agentId.toString();
     const next = (this.feedbackLastIndex.get(key) ?? 0n) + 1n;
     this.feedbackLastIndex.set(key, next);
-    return {
-      transactionHash: `0xfeed${next.toString(16).padStart(60, "0")}` as Hex,
+    const result = {
+      transactionHash: prepared.transactionHash,
+      feedbackIndex: next,
     };
+    this.feedbackTransactions.set(
+      prepared.transactionHash.toLowerCase(),
+      result,
+    );
+    if (prepared.nonce >= this.feedbackBroadcastNonce) {
+      this.feedbackBroadcastNonce = prepared.nonce + 1n;
+    }
+    await onBroadcast?.(prepared.transactionHash);
+    return result;
+  }
+
+  async getFeedbackByTransaction(
+    transactionHash: Hex,
+    _input: FeedbackInput,
+  ): Promise<FeedbackResult | null> {
+    return this.feedbackTransactions.get(transactionHash.toLowerCase()) ?? null;
+  }
+
+  async getFacilitatorTransactionCount(): Promise<bigint> {
+    return this.feedbackBroadcastNonce;
   }
 
   async revokeFeedback(
     agentId: bigint,
     feedbackIndex: bigint,
+    onBroadcast?: BroadcastObserver,
   ): Promise<FeedbackResult> {
     this.feedbackRevokes.push({ agentId, feedbackIndex });
     const outcome = this.feedbackRevokeOutcomes.shift();
     if (outcome) throw new Error(outcome.reason);
-    return {
+    const result = {
       transactionHash:
         `0xdead${feedbackIndex.toString(16).padStart(60, "0")}` as Hex,
     };
+    await onBroadcast?.(result.transactionHash);
+    return result;
   }
 
   async getFeedbackLastIndex(agentId: bigint): Promise<bigint> {
@@ -552,7 +609,7 @@ export class MockChainReader implements ChainReader {
     let registered = false;
     const existing = await this.agentOfWallet(input.from);
     if (existing === 0n) {
-      const reg = await this.registerBuyer({
+      const reg = await this.applyQueuedRegistration({
         agentURI: input.registration.agentURI,
         agentWallet: input.from,
         deadline: input.registration.deadline,

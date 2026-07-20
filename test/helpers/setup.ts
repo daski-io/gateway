@@ -16,12 +16,12 @@ import {
 } from "./mockProvider.js";
 import { DASKI_A2A_EXTENSION_URI } from "../../src/config.js";
 import type { CategoryFamily, FulfillmentMode, ServiceType } from "../../src/serviceTaxonomy.js";
-import { resolveSkillOffer } from "../../src/payment/requirements.js";
+import { resolveSkillOffer } from "../../src/payment/skillOffer.js";
 import type { PaymentSettledEvent } from "../../src/chain/reader.js";
 import type { ExactEvmAuthorization, Hex, PaymentPayload } from "../../src/types.js";
 
 const IDENTITY_REGISTRY_ADDRESS = "0x000000000000000000000000000000000000a000" as Hex;
-// Daski AgentIndex — reverse lookup + gasless registerWithSig companion of
+// Daski AgentIndex — reverse lookup + delegated registerWithSig companion of
 // the (canonical) identity registry. Distinct address so tests can assert
 // the RegisterAgent typed-data verifies against the index, not the registry.
 const AGENT_INDEX_ADDRESS = "0x000000000000000000000000000000000000a007" as Hex;
@@ -61,7 +61,7 @@ export interface TestGatewayOptions {
   a2aFetch?: typeof fetch;
   /**
    * Optional override for the buyer agentURI fetcher
-   * (`/register-prep` + `/register`). Defaults to a stub that returns
+   * (`/register-prep` + `/register-transaction`). Defaults to a stub that returns
    * `{ name: "buyer-test" }` for any URL — enough to satisfy callers that
    * don't assert on the resolved name.
    */
@@ -190,7 +190,6 @@ export async function startTestGateway(opts: TestGatewayOptions = {}): Promise<T
     nodeEnv: "test",
     chainMode: "live",
     trustProxy: 0,
-    registrationSponsorMaxPerHour: 1_000,
     challengeRetentionSeconds: 7 * 24 * 60 * 60,
     rpcReadMaxPerMinute: 1_000,
     stateChangeGlobalMaxPerMinute: 1_000,
@@ -257,7 +256,7 @@ export async function startTestGateway(opts: TestGatewayOptions = {}): Promise<T
   });
 
   // Default stub for the buyer-side agentURI fetcher used by
-  // /register-prep + /register. Returns `{ name: "buyer-test" }` for any
+  // /register-prep + /register-transaction. Returns `{ name: "buyer-test" }` for any
   // URI tests don't otherwise care about, lets ipfs:// and https:// URIs
   // pass without going to the network. Tests that need to assert on the
   // resolved name should override the test gateway's `buyerAgentCardFetch`
@@ -418,7 +417,6 @@ export async function startTestGateway(opts: TestGatewayOptions = {}): Promise<T
         ) {
           const resolved = resolveSkillOffer(tokenId, skillId, bundle.cache, {
             serviceSlug: String(merged.serviceSlug),
-            requireFixedAmount: false,
           });
           if (resolved.ok) {
             const quoteResponse = await fetch(

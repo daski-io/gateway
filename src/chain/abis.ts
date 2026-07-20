@@ -5,7 +5,7 @@
 //
 // Daski no longer deploys an identity registry of its own — agents live in
 // the CANONICAL ERC-8004 IdentityRegistry (0x8004A… per chain). The
-// canonical surface has no reverse lookup and no gasless registration;
+// canonical surface has no reverse lookup or delegated registration;
 // those gaps are filled by the Daski AgentIndex (agentIndexAbi below).
 
 export const identityRegistryAbi = [
@@ -57,7 +57,7 @@ export const identityRegistryAbi = [
 // Fills the two gaps the canonical registry leaves open: a VERIFIED
 // wallet → agentId reverse lookup (`resolve`, re-checked against the
 // canonical registry on every read; stale bindings self-heal to 0) and
-// gasless onboarding (`registerWithSig` mints on the canonical registry,
+// delegated onboarding (`registerWithSig` mints on the canonical registry,
 // transfers the NFT to the wallet, records the binding — one tx).
 
 export const agentIndexAbi = [
@@ -73,7 +73,7 @@ export const agentIndexAbi = [
   },
   {
     // Per-wallet nonce for registerWithSig. Buyer reads this when building
-    // the EIP-712 RegisterAgent typed-data; bumps each successful relay.
+    // the EIP-712 RegisterAgent typed-data; bumps after each registration.
     type: "function",
     name: "registrationNonce",
     inputs: [{ name: "wallet", type: "address" }],
@@ -81,9 +81,10 @@ export const agentIndexAbi = [
     stateMutability: "view",
   },
   {
-    // Gasless registration: the buyer signs an EIP-712 RegisterAgent struct
-    // off-chain (domain: name "Daski AgentIndex", verifyingContract = the
-    // AgentIndex proxy), the gateway facilitator submits it. The AgentIndex
+    // Delegated registration: the buyer signs an EIP-712 RegisterAgent
+    // struct off-chain (domain: name "Daski AgentIndex", verifyingContract
+    // = the AgentIndex proxy). The buyer can submit it directly, or the
+    // payment adapter can include it in an atomic purchase. The AgentIndex
     // mints on the canonical registry, transfers the NFT to `wallet`, and
     // records the wallet → agentId binding.
     type: "function",
@@ -319,6 +320,23 @@ export const reputationStorageAbi = [
 // what revokeFeedback needs for revisions.
 
 export const reputationRegistryAbi = [
+  {
+    type: "event",
+    name: "NewFeedback",
+    inputs: [
+      { name: "agentId", type: "uint256", indexed: true },
+      { name: "clientAddress", type: "address", indexed: true },
+      { name: "feedbackIndex", type: "uint64", indexed: false },
+      { name: "value", type: "int128", indexed: false },
+      { name: "valueDecimals", type: "uint8", indexed: false },
+      { name: "indexedTag1", type: "string", indexed: true },
+      { name: "tag1", type: "string", indexed: false },
+      { name: "tag2", type: "string", indexed: false },
+      { name: "endpoint", type: "string", indexed: false },
+      { name: "feedbackURI", type: "string", indexed: false },
+      { name: "feedbackHash", type: "bytes32", indexed: false },
+    ],
+  },
   {
     type: "function",
     name: "giveFeedback",

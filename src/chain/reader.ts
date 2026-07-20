@@ -67,32 +67,11 @@ export interface DirectAttributionInput {
   authNonce: Hex;
 }
 
-// ── Gasless ERC-8004 registration ────────────────────────────────────────
-//
-// The buyer signs an EIP-712 RegisterAgent block over the Daski AgentIndex
-// domain (name "Daski AgentIndex", verifyingContract = the AgentIndex
-// proxy); the gateway facilitator relays it via AgentIndex.registerWithSig().
-// The AgentIndex mints on the CANONICAL ERC-8004 registry and transfers the
-// NFT to the signer — gateway pays gas. The signed payload binds (agentURI,
-// agentWallet, nonce, deadline) so it cannot be replayed across re-registration.
-export interface RegisterBySigInput {
-  agentURI: string;
-  agentWallet: Hex;
-  deadline: bigint;
-  signature: Hex;
-}
-
-export interface RegisterBySigResult {
-  agentId: bigint;
-  transactionHash: Hex;
-}
-
 // ── Atomic register-and-settle ───────────────────────────────────────────
 //
-// Combines RegisterBySigInput with SettlementInput in a single tx via
-// X402Adapter.settleWithRegistration. If the buyer is already registered,
-// the registration sub-call is skipped on-chain and the registration
-// signature is ignored.
+// Combines the buyer's registration authorization with SettlementInput in
+// a single transaction. If the buyer is already registered, the
+// registration sub-call is skipped on-chain.
 export interface SettleWithRegistrationInput extends SettlementInput {
   registration: {
     agentURI: string;
@@ -159,6 +138,14 @@ export interface FeedbackInput {
 
 export interface FeedbackResult {
   transactionHash: Hex;
+  /** Exact per-(agent, client) index decoded from NewFeedback. */
+  feedbackIndex?: bigint;
+}
+
+export interface PreparedFeedbackTransaction {
+  transactionHash: Hex;
+  serializedTransaction: Hex;
+  nonce: bigint;
 }
 
 // ── PaymentRouter.getPayment record ──────────────────────────────────────
@@ -294,12 +281,6 @@ export interface ChainReader {
     onBroadcast?: BroadcastObserver,
   ): Promise<SettlementResult>;
 
-  // Gasless registration — submits AgentIndex.registerWithSig from the
-  // facilitator wallet. The AgentIndex mints on the canonical registry and
-  // transfers the NFT to input.agentWallet, not the relayer. Returns the
-  // new agentId from the AgentRegistered event in the receipt.
-  registerBuyer(input: RegisterBySigInput): Promise<RegisterBySigResult>;
-
   // Atomic register-and-settle. Submits X402Adapter.settleWithRegistration
   // so registration + EIP-3009 transfer + router.settle all live in one
   // tx — either every step succeeds or none do, which is what makes the
@@ -332,6 +313,7 @@ export interface ChainReader {
   // returned UID is parsed out of the EAS Attested event.
   submitBuyerConfirmation(
     input: ConfirmationDelegationInput,
+    onBroadcast?: BroadcastObserver,
   ): Promise<ConfirmationResult>;
 
   // Return the on-chain nonce EAS expects for the next delegated
@@ -403,10 +385,28 @@ export interface ChainReader {
   // owner/operator/approved/agentWallet (spec arms-length rule).
   giveFeedback(input: FeedbackInput): Promise<FeedbackResult>;
 
+  // Durable mirror path: sign locally before broadcasting so the raw
+  // transaction can be persisted and safely resumed after a crash.
+  prepareFeedback(input: FeedbackInput): Promise<PreparedFeedbackTransaction>;
+  submitPreparedFeedback(
+    prepared: PreparedFeedbackTransaction,
+    input: FeedbackInput,
+    onBroadcast?: BroadcastObserver,
+  ): Promise<FeedbackResult>;
+  getFeedbackByTransaction(
+    transactionHash: Hex,
+    input: FeedbackInput,
+  ): Promise<FeedbackResult | null>;
+  getFacilitatorTransactionCount(): Promise<bigint>;
+
   // Soft-revoke one of the facilitator's own feedback entries. Reverts
   // with "no such feedback" / "already revoked" — revision flows call this
   // best-effort and swallow those.
-  revokeFeedback(agentId: bigint, feedbackIndex: bigint): Promise<FeedbackResult>;
+  revokeFeedback(
+    agentId: bigint,
+    feedbackIndex: bigint,
+    onBroadcast?: BroadcastObserver,
+  ): Promise<FeedbackResult>;
 
   // Last (1-based) feedback index THE FACILITATOR WALLET has posted for
   // this agent on the canonical ReputationRegistry; 0n = none yet. The

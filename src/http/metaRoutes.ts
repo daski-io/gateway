@@ -7,12 +7,17 @@ import type { DiscoveryCache } from "../discovery/cache.js";
 import type { Embedder } from "../discovery/embeddings.js";
 import { cardsOf } from "../discovery/format.js";
 import { GATEWAY_VERSION } from "../version.js";
-import { buildX402Catalog } from "./x402Catalog.js";
+import type { Pool } from "../db/pool.js";
+import type { ChainEventsIndexer } from "../indexer/chainEvents.js";
+import type { ReputationMirrorWorker } from "../reputation/worker.js";
 
 export interface MetaRoutesDeps {
   config: Config;
   cache: DiscoveryCache;
   embedder: Embedder | null;
+  pool: Pool;
+  indexer: ChainEventsIndexer;
+  reputationWorker: ReputationMirrorWorker;
 }
 
 function findSkillPath(): string | undefined {
@@ -58,7 +63,7 @@ function fullDocs(config: Config, cache: DiscoveryCache): string {
     "",
     "- POST /purchase/:agentId",
     "- GET/POST /x402/services/:agentId/:serviceSlug/:skillId",
-    "- POST /verify, /settle, /confirm/:paymentId, /register",
+    "- POST /verify, /settle, /confirm/:paymentId, /register-transaction",
     "- GET /register-prep, /confirm-prep/:paymentId, /discover",
     "- GET /public/v1/services, /public/v1/buyers, /public/v1/activity",
     "",
@@ -83,18 +88,63 @@ export function createMetaRouter(deps: MetaRoutesDeps): Router {
     res.type("text/markdown").sendFile(skillPath);
   });
 
-  router.get("/health", (_req, res) => {
+  router.get("/health/live", (_req, res) => {
+    res.json({
+      status: "alive",
+      version: GATEWAY_VERSION,
+    });
+  });
+
+  router.get("/health/ready", async (_req, res) => {
     const embedderStatus = embedder?.getStatus?.() ?? {
       state: embedder ? ("unknown" as const) : ("disabled" as const),
     };
-    res.json({
-      status: embedderStatus.state === "degraded" ? "degraded" : "ok",
+    const cacheStatus = cache.status();
+    const indexerStatus = deps.indexer.status();
+    const mirrorStatus = deps.reputationWorker.status();
+    let databaseReady = false;
+    let databaseError: string | null = null;
+    const databaseStartedAt = Date.now();
+    try {
+      await deps.pool.query("SELECT 1");
+      databaseReady = true;
+    } catch (error) {
+      databaseError =
+        error instanceof Error ? error.message : "database query failed";
+    }
+    const indexerReady = deps.indexer.isFresh();
+    const ready = databaseReady && cacheStatus.chainFresh && indexerReady;
+    const degraded =
+      embedderStatus.state === "degraded" ||
+      cacheStatus.cardFailureCount > 0 ||
+      mirrorStatus.lastError !== null;
+    res.status(ready ? 200 : 503).json({
+      status: ready ? (degraded ? "degraded" : "ready") : "unready",
       version: GATEWAY_VERSION,
       chain: { chainId: config.chainId, network: config.network },
+      database: {
+        ready: databaseReady,
+        latencyMs: Date.now() - databaseStartedAt,
+        error: databaseError,
+      },
       cache: {
+        ready: cacheStatus.chainFresh,
         providers: cache.getAll().length,
         lastRefresh: cache.getLastRefresh()?.toISOString() ?? null,
+        lastCycleAt: cacheStatus.lastCycleAt?.toISOString() ?? null,
+        lastChainSuccessAt:
+          cacheStatus.lastChainSuccessAt?.toISOString() ?? null,
+        chainError: cacheStatus.lastChainError,
+        cardFailureCount: cacheStatus.cardFailureCount,
       },
+      indexer: {
+        ready: indexerReady,
+        lastIndexedBlock:
+          indexerStatus.lastIndexedBlock?.toString() ?? null,
+        lastSuccessAt: indexerStatus.lastSuccessAt?.toISOString() ?? null,
+        lastError: indexerStatus.lastError,
+      },
+      reputationMirror: mirrorStatus,
       embedder: embedderStatus,
     });
   });
@@ -155,14 +205,6 @@ export function createMetaRouter(deps: MetaRoutesDeps): Router {
     });
   });
 
-  router.get("/.well-known/x402-services.json", (_req, res) => {
-    res.json({
-      x402Version: 1,
-      services: buildX402Catalog(config, cache),
-      generatedAt: new Date().toISOString(),
-    });
-  });
-
   router.get("/llms.txt", (_req, res) => {
     res
       .type("text/markdown")
@@ -173,7 +215,6 @@ export function createMetaRouter(deps: MetaRoutesDeps): Router {
           "Daski is a decentralized marketplace where agents pay providers in USDC over A2A.",
           "",
           `- MCP endpoint: ${config.publicUrl}${config.mcpPath}`,
-          `- x402 services: ${config.publicUrl}/.well-known/x402-services.json`,
           `- Chain descriptor: ${config.publicUrl}/.well-known/daski-chain.json`,
           `- Skill prompt: ${config.publicUrl}/skill.md`,
           `- Full docs: ${config.publicUrl}/llms-full.txt`,

@@ -206,8 +206,9 @@ slot before calling `daski_buy_service`:
   their confirmation BEFORE the purchase call. The echo exists to catch
   mis-parses before they land on public WHOIS; a silent normalization
   defeats it. This is now ENFORCED: the first `daski_buy_service` call
-  carrying a phone fails with `PHONE_CONFIRMATION_REQUIRED` and a
-  `confirmationToken` bound to the exact value — do the echo-confirm turn
+  carrying a phone fails with `PHONE_ACKNOWLEDGEMENT_REQUIRED` and a
+  `phoneAcknowledgementToken` bound to the exact value — acknowledge the
+  public value and retry. This token is not proof of principal consent.
   with your principal, then retry the same call with the token. Passing
   the token back without having asked defeats a safeguard that exists to
   protect your principal's public record
@@ -513,8 +514,8 @@ fresh link any time you want to re-download").
 
 For the rare case where the buyer wants an ERC-8004 agentId without an
 immediate purchase (e.g. to read their reputation first), use the explicit
-register flow instead of the atomic one. This costs the gateway a small
-amount of gas but the buyer still pays nothing:
+register flow instead of the atomic one. The buyer wallet submits the
+returned transaction and pays the network gas:
 
 1. `daski_register_agent { walletAddress, name? }` (no `signature`) →
    returns `eip712TypedData` to sign, plus `resolvedName` (and a `hint`
@@ -527,10 +528,9 @@ amount of gas but the buyer still pays nothing:
    `agentId` are your true identity.
 2. Wallet signs the typed-data.
 3. `daski_register_agent { walletAddress, agentURI, deadline, signature }`
-   (echo `agentURI` + `deadline` from the first call) → gateway
-   facilitator submits, returns the new `agentId` plus the cached
-   `resolvedName`. The gateway reads `name` from the signed agentURI and
-   stores it for receipts/dashboard use.
+   (echo `agentURI` + `deadline` from the first call) → returns validated
+   `registerWithSig` transaction data. Submit it from `walletAddress` and
+   pay the Base network gas, then wait for confirmation.
 
 #### Advanced: hosting your own Agent Card
 

@@ -54,7 +54,7 @@ export interface RateLimitOptions {
 
 /**
  * Per-IP token bucket. Use on POST endpoints whose work costs facilitator
- * gas (`/register`, `/confirm/:paymentId`) so a
+ * gas, including confirmation and settlement, so a
  * single hostile client can't drain operator funds via a tight loop.
  */
 export function rateLimit(opts: RateLimitOptions) {

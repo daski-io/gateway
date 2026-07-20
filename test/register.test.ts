@@ -120,7 +120,7 @@ describe("GET /register-prep", () => {
   });
 });
 
-describe("POST /register", () => {
+describe("POST /register-transaction", () => {
   let gateway: TestGateway;
 
   beforeEach(async () => {
@@ -133,14 +133,8 @@ describe("POST /register", () => {
     await gateway.close();
   });
 
-  it("submits via the facilitator and returns agentId + tx hash", async () => {
-    gateway.mockChain.queueRegistration({
-      kind: "success",
-      agentId: 99n,
-      txHash: REG_TX,
-    });
-
-    const res = await fetch(`${gateway.baseUrl}/register`, {
+  it("returns a self-funded registerWithSig transaction", async () => {
+    const res = await fetch(`${gateway.baseUrl}/register-transaction`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(
@@ -150,16 +144,15 @@ describe("POST /register", () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as any;
     expect(body.walletAddress).toBe(FRESH_WALLET);
-    expect(body.agentId).toBe("99");
-    expect(body.transactionHash).toBe(REG_TX);
-
-    // Mock recorded the call.
-    expect(gateway.mockChain.registrations).toHaveLength(1);
-    expect(gateway.mockChain.registrations[0]!.agentWallet).toBe(FRESH_WALLET);
+    expect(body.transaction.chainId).toBe(gateway.config.chainId);
+    expect(body.transaction.to).toBe(gateway.config.agentIndexAddress);
+    expect(body.transaction.data).toMatch(/^0x[0-9a-f]+$/i);
+    expect(body.transaction.value).toBe("0");
+    expect(gateway.mockChain.registrations).toHaveLength(0);
   });
 
   it("returns 409 if the wallet was already registered when the call arrives", async () => {
-    const res = await fetch(`${gateway.baseUrl}/register`, {
+    const res = await fetch(`${gateway.baseUrl}/register-transaction`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -173,12 +166,12 @@ describe("POST /register", () => {
     const body = (await res.json()) as any;
     expect(body.error.code).toBe("ALREADY_REGISTERED");
     expect(body.error.agentId).toBe("42");
-    // Did NOT call the chain registerBuyer because the pre-check intercepted.
+    // No transaction data is built after the registration pre-check.
     expect(gateway.mockChain.registrations).toHaveLength(0);
   });
 
   it("returns 400 for a malformed signature", async () => {
-    const res = await fetch(`${gateway.baseUrl}/register`, {
+    const res = await fetch(`${gateway.baseUrl}/register-transaction`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -193,14 +186,13 @@ describe("POST /register", () => {
     expect(body.error.code).toBe("BAD_SIGNATURE");
   });
 
-  it("rejects a well-formed signature from another wallet without consuming sponsor budget", async () => {
-    gateway.config.registrationSponsorMaxPerHour = 1;
+  it("rejects a well-formed signature from another wallet", async () => {
     const wrongSigner = await signedRegistration(
       gateway,
       "ipfs://abc",
       SECOND_ACCOUNT,
     );
-    const rejected = await fetch(`${gateway.baseUrl}/register`, {
+    const rejected = await fetch(`${gateway.baseUrl}/register-transaction`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -211,12 +203,7 @@ describe("POST /register", () => {
     expect(rejected.status).toBe(400);
     expect((await rejected.json() as any).error.code).toBe("BAD_SIGNATURE");
 
-    gateway.mockChain.queueRegistration({
-      kind: "success",
-      agentId: 99n,
-      txHash: REG_TX,
-    });
-    const valid = await fetch(`${gateway.baseUrl}/register`, {
+    const valid = await fetch(`${gateway.baseUrl}/register-transaction`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(
@@ -226,28 +213,16 @@ describe("POST /register", () => {
     expect(valid.status).toBe(200);
   });
 
-  it("returns 502 when the chain reader throws", async () => {
-    gateway.mockChain.queueRegistration({
-      kind: "revert",
-      reason: "wallet already registered",
-    });
-
-    const res = await fetch(`${gateway.baseUrl}/register`, {
+  it("rejects an expired signed registration before building calldata", async () => {
+    const signed = await signedRegistration(gateway, "ipfs://abc");
+    const res = await fetch(`${gateway.baseUrl}/register-transaction`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(
-        await signedRegistration(gateway, "ipfs://abc"),
-      ),
+      body: JSON.stringify({ ...signed, deadline: "1" }),
     });
-    expect(res.status).toBe(502);
+    expect(res.status).toBe(400);
     const body = (await res.json()) as any;
-    expect(body.error.code).toBe("REGISTER_FAILED");
-    // Handler returns a generic message and a correlationId for log
-    // lookup — chain-side reasons (e.g. "wallet already registered")
-    // are kept out of the public response to avoid leaking internal
-    // contract revert text.
-    expect(body.error.message).toBe("registration submission failed");
-    expect(typeof body.error.correlationId).toBe("string");
+    expect(body.error.code).toBe("BAD_DEADLINE");
   });
 
   it("fails closed when the signed agentURI cannot be validated", async () => {
@@ -256,7 +231,7 @@ describe("POST /register", () => {
         new Response("not found", { status: 404 }),
     });
     try {
-      const res = await fetch(`${broken.baseUrl}/register`, {
+      const res = await fetch(`${broken.baseUrl}/register-transaction`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(
@@ -276,17 +251,11 @@ describe("POST /register", () => {
     }
   });
 
-  it("enforces the global registration sponsorship budget", async () => {
-    gateway.config.registrationSponsorMaxPerHour = 1;
-    gateway.mockChain.queueRegistration({
-      kind: "success",
-      agentId: 99n,
-      txHash: REG_TX,
-    });
+  it("allows independent wallets to build transactions without sponsorship", async () => {
     const submit = async (
       account: typeof FRESH_ACCOUNT,
     ) =>
-      fetch(`${gateway.baseUrl}/register`, {
+      fetch(`${gateway.baseUrl}/register-transaction`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(
@@ -296,11 +265,8 @@ describe("POST /register", () => {
 
     expect((await submit(FRESH_ACCOUNT)).status).toBe(200);
     const second = await submit(SECOND_ACCOUNT);
-    expect(second.status).toBe(429);
-    expect((await second.json() as any).error.code).toBe(
-      "REGISTRATION_SPONSOR_BUDGET_EXHAUSTED",
-    );
-    expect(gateway.mockChain.registrations).toHaveLength(1);
+    expect(second.status).toBe(200);
+    expect(gateway.mockChain.registrations).toHaveLength(0);
   });
 });
 
@@ -521,7 +487,7 @@ describe("GET /register-prep — buyer naming", () => {
   });
 });
 
-describe("POST /register — buyer naming", () => {
+describe("POST /register-transaction — buyer naming", () => {
   let gateway: TestGateway;
 
   beforeEach(async () => {
@@ -533,16 +499,10 @@ describe("POST /register — buyer naming", () => {
     await gateway?.close();
   });
 
-  it("caches resolved_name in DB after successful registration", async () => {
-    gateway.mockChain.queueRegistration({
-      kind: "success",
-      agentId: 7n,
-      txHash: REG_TX,
-    });
-
+  it("returns the resolved name without claiming the transaction landed", async () => {
     const card = { name: "Eve", type: "buyer" };
     const uri = dataUri(card);
-    const res = await fetch(`${gateway.baseUrl}/register`, {
+    const res = await fetch(`${gateway.baseUrl}/register-transaction`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(
@@ -551,12 +511,10 @@ describe("POST /register — buyer naming", () => {
     });
     expect(res.status).toBe(200);
     const body = (await res.json()) as any;
-    expect(body.agentId).toBe("7");
     expect(body.resolvedName).toBe("Eve");
+    expect(body.transaction.to).toBe(gateway.config.agentIndexAddress);
 
     const cached = await gateway.bundle.queries.getBuyerIdentity(7n);
-    expect(cached?.resolvedName).toBe("Eve");
-    expect(cached?.walletAddress.toLowerCase()).toBe(FRESH_WALLET.toLowerCase());
-    expect(cached?.agentURI).toBe(uri);
+    expect(cached).toBeNull();
   });
 });

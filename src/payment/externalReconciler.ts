@@ -51,27 +51,30 @@ export async function reconcileExternalSettlements(
                   challenge.transactionHash,
                   challenge.serviceRef,
                 )
-              : await reader.attributeDirectTransfer(
-                  {
-                    providerAgentId: challenge.providerTokenId,
-                    serviceId: challenge.serviceId,
-                    amount: challenge.amount,
-                    serviceRef: challenge.serviceRef,
-                    from: challenge.walletAddress,
-                    authNonce: challenge.authNonce,
-                  },
-                  async (transactionHash) => {
-                    const recorded =
-                      await queries.recordChallengeTransactionBroadcast(
-                        challenge.serviceRef,
-                        transactionHash,
-                      );
-                    if (!recorded) {
-                      throw new Error(
-                        "unable to persist reconciled attribution broadcast",
-                      );
-                    }
-                  },
+              : await queries.withFacilitatorTransactionLock((release) =>
+                  reader.attributeDirectTransfer(
+                    {
+                      providerAgentId: challenge.providerTokenId,
+                      serviceId: challenge.serviceId,
+                      amount: challenge.amount,
+                      serviceRef: challenge.serviceRef,
+                      from: challenge.walletAddress,
+                      authNonce: challenge.authNonce!,
+                    },
+                    async (transactionHash) => {
+                      const recorded =
+                        await queries.recordChallengeTransactionBroadcast(
+                          challenge.serviceRef,
+                          transactionHash,
+                        );
+                      if (!recorded) {
+                        throw new Error(
+                          "unable to persist reconciled attribution broadcast",
+                        );
+                      }
+                      await release();
+                    },
+                  ),
                 );
           } catch (error) {
             if (

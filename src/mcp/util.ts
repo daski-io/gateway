@@ -210,21 +210,21 @@ export function checkPhoneFields(
   return bad ? phoneFormatError(bad) : null;
 }
 
-// ── Phone confirmation gate ────────────────────────────────────────────────
+// ── Phone acknowledgement gate ─────────────────────────────────────────────
 //
 // The E.164 check above catches FORMAT; it cannot catch a wrong-but-valid
 // number. Live runs showed agents silently normalizing a principal's
 // dotted phone and paying without ever echoing the result — numbers that
 // land verbatim on public WHOIS. This gate makes the first plan-building
-// call that carries phone fields fail with PHONE_CONFIRMATION_REQUIRED
+// call that carries phone fields fail with PHONE_ACKNOWLEDGEMENT_REQUIRED
 // and a token HMAC-bound to the exact values; the caller is instructed to
 // echo the numbers to the principal and retry with the token. No stateless
-// scheme can PROVE the principal answered — the token's job is to make
-// skipping the confirm turn a deliberate act instead of an accident, and
-// to invalidate the confirmation whenever a value changes. The secret is
+// scheme can prove the principal answered — the token only records that
+// the caller acknowledged the exact public value, and invalidates that
+// acknowledgement whenever a value changes. The secret is
 // per-process: after a restart (or on a sibling instance) the token
 // simply re-issues, costing one extra roundtrip, never blocking.
-const PHONE_CONFIRMATION_SECRET = randomBytes(32);
+const PHONE_ACKNOWLEDGEMENT_SECRET = randomBytes(32);
 
 export function presentPhoneFields(
   args: Record<string, unknown>,
@@ -237,50 +237,51 @@ export function presentPhoneFields(
   return out;
 }
 
-export function expectedPhoneConfirmationToken(
+export function expectedPhoneAcknowledgementToken(
   phones: Array<{ field: string; value: string }>,
 ): string {
   const canonical = phones
     .map(({ field, value }) => `${field}=${value}`)
     .sort()
     .join("&");
-  return createHmac("sha256", PHONE_CONFIRMATION_SECRET)
+  return createHmac("sha256", PHONE_ACKNOWLEDGEMENT_SECRET)
     .update(canonical)
     .digest("hex")
     .slice(0, 32);
 }
 
-export function checkPhoneConfirmation(
+export function checkPhoneAcknowledgement(
   args: Record<string, unknown>,
-  confirmationToken: string | undefined,
+  acknowledgementToken: string | undefined,
 ): McpToolResult | null {
   const phones = presentPhoneFields(args);
   if (phones.length === 0) return null;
-  const expected = expectedPhoneConfirmationToken(phones);
-  if (confirmationToken === expected) return null;
+  const expected = expectedPhoneAcknowledgementToken(phones);
+  if (acknowledgementToken === expected) return null;
   return mcpError({
-    code: "PHONE_CONFIRMATION_REQUIRED",
+    code: "PHONE_ACKNOWLEDGEMENT_REQUIRED",
     message:
       "Phone number(s) in serviceArgs need your principal's explicit " +
-      "confirmation before a payment plan is prepared: " +
+      "acknowledgement before a payment plan is prepared: " +
       phones.map(({ field, value }) => `${field}='${value}'`).join(", ") +
       ". They will appear on public WHOIS exactly as sent. Echo the EXACT " +
       "value(s) back to your principal — if you normalized the number " +
       "(stripped dots/spaces/dashes), show the normalized form and say you " +
       "did (e.g. \"I'll register with phone +48221234567, normalized from " +
       "+48.221234567 — confirm or correct\"). Only after an explicit yes, " +
-      "retry this same call with `confirmationToken` added.",
+      "retry this same call with `phoneAcknowledgementToken` added. This " +
+      "token records an acknowledgement, not proof of principal consent.",
     details: {
       phones: Object.fromEntries(phones.map(({ field, value }) => [field, value])),
-      confirmationToken: expected,
+      phoneAcknowledgementToken: expected,
       tokenBinding:
         "bound to these exact field=value pairs — changing any phone value " +
-        "re-requires confirmation",
+        "requires a new acknowledgement",
     },
     recoverable: true,
     next_action:
       "Echo the exact phone value(s) to the principal, get an explicit " +
-      "confirmation, then retry with confirmationToken.",
+      "acknowledgement, then retry with phoneAcknowledgementToken.",
   });
 }
 

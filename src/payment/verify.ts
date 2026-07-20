@@ -552,6 +552,10 @@ async function verifyAndSettleUnlocked(
   reader: ChainReader,
   queries: Queries,
   now: Date = new Date(),
+  atomic?: {
+    registration: RegistrationDelegation;
+    options: VerifyAndSettleWithRegistrationOptions;
+  },
 ): Promise<SettleResult> {
   const { challenge } = input;
   const network = config.network;
@@ -583,6 +587,8 @@ async function verifyAndSettleUnlocked(
   if (verified.alreadyPaid) {
     return storedSettlementResult(challenge, network, payer);
   }
+
+  const buyerMustMatchChallenge = atomic === undefined;
   if (challenge.transactionHash) {
     let recovered;
     try {
@@ -593,9 +599,11 @@ async function verifyAndSettleUnlocked(
     } catch (err) {
       return fail(
         503,
-        "settlement_confirmation_pending",
-        publicErrorMessage(
-          "verifyAndSettle.recoverBroadcast",
+          "settlement_confirmation_pending",
+          publicErrorMessage(
+          atomic
+            ? "verifyAndSettleWithRegistration.recoverBroadcast"
+            : "verifyAndSettle.recoverBroadcast",
           err,
           "settlement was broadcast and is awaiting confirmation",
         ),
@@ -606,7 +614,7 @@ async function verifyAndSettleUnlocked(
     const eventError = validateSettlementEvent(
       challenge,
       recovered.event,
-      true,
+      buyerMustMatchChallenge,
     );
     if (eventError) {
       return fail(500, "unexpected_settle_error", eventError, network, payer);
@@ -616,6 +624,7 @@ async function verifyAndSettleUnlocked(
       challenge,
       recovered.event,
       recovered.transactionHash,
+      atomic ? recovered.event.buyerAgentId : undefined,
     );
     if (!recorded) {
       return fail(
@@ -632,34 +641,48 @@ async function verifyAndSettleUnlocked(
       transactionHash: recovered.transactionHash,
       network,
       payer,
+      ...(atomic ? { registered: true } : {}),
     });
   }
 
-  let settlement;
+  let settlement: Awaited<ReturnType<ChainReader["settlePayment"]>> & {
+    registered?: boolean;
+  };
   try {
-    settlement = await reader.settlePayment(
+    settlement = await queries.withFacilitatorTransactionLock((release) =>
       {
-        // Wire-level `providerTokenId` on the challenge is the ERC-8004 agentId.
-        providerAgentId: challenge.providerTokenId,
-        serviceId: challenge.serviceId,
-        amount: challenge.amount,
-        serviceRef: challenge.serviceRef,
-        from: payer,
-        validAfter: settleArgs.validAfter,
-        validBefore: settleArgs.validBefore,
-        nonce: settleArgs.nonce,
-        v: settleArgs.v,
-        r: settleArgs.r,
-        s: settleArgs.s,
-      },
-      async (transactionHash) => {
-        const recorded = await queries.recordChallengeTransactionBroadcast(
-          challenge.serviceRef,
-          transactionHash,
-        );
-        if (!recorded) {
-          throw new Error("unable to persist broadcast settlement transaction");
-        }
+        const settlementInput = {
+          providerAgentId: challenge.providerTokenId,
+          serviceId: challenge.serviceId,
+          amount: challenge.amount,
+          serviceRef: challenge.serviceRef,
+          from: payer,
+          validAfter: settleArgs.validAfter,
+          validBefore: settleArgs.validBefore,
+          nonce: settleArgs.nonce,
+          v: settleArgs.v,
+          r: settleArgs.r,
+          s: settleArgs.s,
+        };
+        const onBroadcast = async (transactionHash: Hex) => {
+          const recorded = await queries.recordChallengeTransactionBroadcast(
+            challenge.serviceRef,
+            transactionHash,
+          );
+          if (!recorded) {
+            throw new Error("unable to persist broadcast settlement transaction");
+          }
+          await release();
+        };
+        return atomic
+          ? reader.settleWithRegistration(
+              {
+                ...settlementInput,
+                registration: atomic.registration,
+              },
+              onBroadcast,
+            )
+          : reader.settlePayment(settlementInput, onBroadcast);
       },
     );
   } catch (err) {
@@ -669,16 +692,22 @@ async function verifyAndSettleUnlocked(
       err,
       network,
       payer,
-      "verifyAndSettle.settlePayment",
+      atomic
+        ? "verifyAndSettle.settleWithRegistration"
+        : "verifyAndSettle.settlePayment",
     );
     if (pending) return pending;
     return fail(
       402,
-      "unexpected_settle_error",
-      publicErrorMessage(
-        "verifyAndSettle.settlePayment",
+        "unexpected_settle_error",
+        publicErrorMessage(
+        atomic
+          ? "verifyAndSettle.settleWithRegistration"
+          : "verifyAndSettle.settlePayment",
         err,
-        "on-chain settlement failed",
+        atomic
+          ? "on-chain atomic register-and-settle failed"
+          : "on-chain settlement failed",
       ),
       network,
       payer,
@@ -686,7 +715,11 @@ async function verifyAndSettleUnlocked(
   }
 
   const event = settlement.event;
-  const eventError = validateSettlementEvent(challenge, event, true);
+  const eventError = validateSettlementEvent(
+    challenge,
+    event,
+    buyerMustMatchChallenge,
+  );
   if (eventError) {
     return fail(
       500,
@@ -702,6 +735,7 @@ async function verifyAndSettleUnlocked(
     challenge,
     event,
     settlement.transactionHash,
+    atomic ? event.buyerAgentId : undefined,
   );
   if (!recorded) {
     return fail(
@@ -713,12 +747,24 @@ async function verifyAndSettleUnlocked(
     );
   }
 
+  if (atomic && settlement.registered) {
+    await cacheRegisteredBuyer(
+      atomic.registration,
+      atomic.options,
+      config,
+      queries,
+      event.buyerAgentId,
+      payer,
+    );
+  }
+
   return successfulSettlementResult({
     challenge,
     event,
     transactionHash: settlement.transactionHash,
     network,
     payer,
+    ...(atomic ? { registered: settlement.registered ?? true } : {}),
   });
 }
 
@@ -772,228 +818,37 @@ export interface VerifyAndSettleWithRegistrationOptions {
   fetchAgentCardFn?: FetchAgentCardOptions["fetchFn"];
 }
 
-async function verifyAndSettleWithRegistrationUnlocked(
-  input: SettleInput,
+async function cacheRegisteredBuyer(
   registration: RegistrationDelegation,
+  opts: VerifyAndSettleWithRegistrationOptions,
   config: Config,
-  reader: ChainReader,
   queries: Queries,
-  now: Date = new Date(),
-  opts: VerifyAndSettleWithRegistrationOptions = {},
-): Promise<SettleResult> {
-  const { challenge } = input;
-  const network = config.network;
-
-  const missingQuote = missingQuoteCommitment(challenge);
-  if (missingQuote) {
-    return fail(
-      409,
-      "quote_commitment_missing",
-      `stored challenge is missing provider quote commitment fields: ${missingQuote}`,
-      network,
-    );
-  }
-
-  const verified = await verifyPaymentPayload(input, config, reader, now, {
-    allowBroadcastRecovery: Boolean(challenge.transactionHash),
-  });
-  if (!verified.ok) {
-    return fail(verified.status, verified.errorReason, verified.message, network, verified.payer);
-  }
-  const { payer, settleArgs } = verified;
-  if (verified.alreadyPaid) {
-    return storedSettlementResult(challenge, network, payer);
-  }
-  if (challenge.transactionHash) {
-    let recovered;
-    try {
-      recovered = await reader.getSettlementByTransaction(
-        challenge.transactionHash,
-        challenge.serviceRef,
-      );
-    } catch (err) {
-      return fail(
-        503,
-        "settlement_confirmation_pending",
-        publicErrorMessage(
-          "verifyAndSettleWithRegistration.recoverBroadcast",
-          err,
-          "atomic settlement was broadcast and is awaiting confirmation",
-        ),
-        network,
-        payer,
-      );
-    }
-    const eventError = validateSettlementEvent(
-      challenge,
-      recovered.event,
-      false,
-    );
-    if (eventError) {
-      return fail(500, "unexpected_settle_error", eventError, network, payer);
-    }
-    const recorded = await persistSettlementEvent(
-      queries,
-      challenge,
-      recovered.event,
-      recovered.transactionHash,
-      recovered.event.buyerAgentId,
-    );
-    if (!recorded) {
-      return fail(
-        500,
-        "settlement_persistence_conflict",
-        "on-chain settlement conflicts with the stored challenge",
-        network,
-        payer,
-      );
-    }
-    return successfulSettlementResult({
-      challenge,
-      event: recovered.event,
-      transactionHash: recovered.transactionHash,
-      network,
-      payer,
-      registered: true,
-    });
-  }
-
-  let settlement;
+  agentId: bigint,
+  walletAddress: Hex,
+): Promise<void> {
   try {
-    settlement = await reader.settleWithRegistration(
-      {
-        providerAgentId: challenge.providerTokenId,
-        serviceId: challenge.serviceId,
-        amount: challenge.amount,
-        serviceRef: challenge.serviceRef,
-        from: payer,
-        validAfter: settleArgs.validAfter,
-        validBefore: settleArgs.validBefore,
-        nonce: settleArgs.nonce,
-        v: settleArgs.v,
-        r: settleArgs.r,
-        s: settleArgs.s,
-        registration: {
-          agentURI: registration.agentURI,
-          deadline: registration.deadline,
-          signature: registration.signature,
-        },
-      },
-      async (transactionHash) => {
-        const recorded = await queries.recordChallengeTransactionBroadcast(
-          challenge.serviceRef,
-          transactionHash,
-        );
-        if (!recorded) {
-          throw new Error("unable to persist atomic settlement transaction");
-        }
-      },
-    );
-  } catch (err) {
-    const pending = await broadcastFailureResult(
-      queries,
-      challenge,
-      err,
-      network,
-      payer,
-      "verifyAndSettle.settleWithRegistration",
-    );
-    if (pending) return pending;
-    return fail(
-      402,
-      "unexpected_settle_error",
-      publicErrorMessage(
-        "verifyAndSettle.settleWithRegistration",
-        err,
-        "on-chain atomic register-and-settle failed",
-      ),
-      network,
-      payer,
-    );
-  }
-
-  const event = settlement.event;
-  // We DO NOT enforce event.buyerAgentId === challenge.buyerTokenId here:
-  // for atomic flows the challenge stores 0n (unknown) and the on-chain
-  // event carries the freshly minted ID. Provider/amount/serviceId checks
-  // still hold.
-  const eventError = validateSettlementEvent(challenge, event, false);
-  if (eventError) {
-    return fail(
-      500,
-      "unexpected_settle_error",
-      eventError,
-      network,
-      payer,
-    );
-  }
-
-  // Backfill buyer_token_id with the freshly-minted agentId from the
-  // PaymentSettled event. The challenge was opened with `buyer_token_id = 0`
-  // (atomic-register placeholder); without this update the row stays at 0
-  // forever, the activity feed renders `agent#0`, and the public buyer-name
-  // resolver has nothing to look up. Safe for settle-only too (where the
-  // value already matches), but the atomic path is the case that needs it.
-  const recorded = await persistSettlementEvent(
-    queries,
-    challenge,
-    event,
-    settlement.transactionHash,
-    event.buyerAgentId,
-  );
-  if (!recorded) {
-    return fail(
-      500,
-      "settlement_persistence_conflict",
-      "on-chain settlement conflicts with the stored challenge",
-      network,
-      payer,
-    );
-  }
-
-  // Mirror the buyer-name resolution that the /register flow does, so
-  // the atomic register-and-settle path also populates buyer_identities.
-  // Without this, every fresh-wallet purchase mints an agent on-chain but
-  // leaves the cache empty — receipts and dashboards then fall back to
-  // walletAddress display until the buyer manually re-registers.
-  // Best-effort: failures here log + continue, never block the on-chain
-  // settlement that already succeeded.
-  if (settlement.registered) {
-    try {
-      const card = await fetchAgentCard(registration.agentURI, {
-        ipfsGatewayUrl: config.ipfsGatewayUrl,
-        fetchFn: opts.fetchAgentCardFn,
-      });
-      const name = sanitizeBuyerName(card.name);
-      if (!name.ok) {
-        throw new Error(`buyer Agent Card name is invalid: ${name.error}`);
-      }
-      await queries.upsertBuyerIdentity({
-        agentId: event.buyerAgentId,
-        walletAddress: payer,
-        resolvedName: name.name,
-        agentURI: registration.agentURI,
-      });
-    } catch (err) {
-      if (err instanceof AgentCardFetchError) {
-        // Couldn't resolve a name — agentURI is malformed, unreachable,
-        // or missing the `name` field. Log so operators notice if this
-        // is hitting every atomic settle, but don't block.
-        logErrorWithId("upsertBuyerIdentityOnAtomic.fetch", err);
-      } else {
-        logErrorWithId("upsertBuyerIdentityOnAtomic", err);
-      }
+    const card = await fetchAgentCard(registration.agentURI, {
+      ipfsGatewayUrl: config.ipfsGatewayUrl,
+      fetchFn: opts.fetchAgentCardFn,
+    });
+    const name = sanitizeBuyerName(card.name);
+    if (!name.ok) {
+      throw new Error(`buyer Agent Card name is invalid: ${name.error}`);
     }
+    await queries.upsertBuyerIdentity({
+      agentId,
+      walletAddress,
+      resolvedName: name.name,
+      agentURI: registration.agentURI,
+    });
+  } catch (error) {
+    logErrorWithId(
+      error instanceof AgentCardFetchError
+        ? "upsertBuyerIdentityOnAtomic.fetch"
+        : "upsertBuyerIdentityOnAtomic",
+      error,
+    );
   }
-
-  return successfulSettlementResult({
-    challenge,
-    event,
-    transactionHash: settlement.transactionHash,
-    network,
-    payer,
-    registered: settlement.registered,
-  });
 }
 
 export async function verifyAndSettleWithRegistration(
@@ -1011,14 +866,13 @@ export async function verifyAndSettleWithRegistration(
       const challenge =
         (await queries.getChallengeByRef(input.challenge.serviceRef)) ??
         input.challenge;
-      return verifyAndSettleWithRegistrationUnlocked(
+      return verifyAndSettleUnlocked(
         { ...input, challenge },
-        registration,
         config,
         reader,
         queries,
         now,
-        opts,
+        { registration, options: opts },
       );
     },
   );

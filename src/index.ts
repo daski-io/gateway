@@ -2,7 +2,6 @@ import { loadConfig } from "./config.js";
 import { createViemChainReader } from "./chain/viemReader.js";
 import { AutoMockChainReader } from "./chain/autoMockReader.js";
 import { createApp } from "./app.js";
-import { ChainEventsIndexer } from "./indexer/chainEvents.js";
 import type { ChainReader } from "./chain/reader.js";
 import { logger } from "./util/logger.js";
 
@@ -77,7 +76,7 @@ async function main() {
 
   const bundle = await createApp({ config, reader });
 
-  // Await an initial discovery refresh so /health and /discover have data
+  // Await an initial discovery refresh so readiness and /discover have data
   // before we accept any HTTP traffic. We log on failure but still start
   // listening — the periodic refresh loop inside the cache may recover.
   try {
@@ -85,13 +84,6 @@ async function main() {
   } catch (err) {
     logger.error("initial cache refresh failed", err);
   }
-
-  // Chain-events indexer: mirrors PaymentSettled events into the gateway
-  // DB so /activity and per-service recentPurchases include transactions
-  // that settled outside this gateway. First tick fires synchronously
-  // inside start(); the interval continues at 5s cadence.
-  const indexer = new ChainEventsIndexer(reader, bundle.queries);
-  indexer.start();
 
   const server = bundle.app.listen(config.port, () => {
     logger.info(
@@ -103,7 +95,6 @@ async function main() {
 
   const shutdown = async (signal: string) => {
     logger.info(`received ${signal}, shutting down`);
-    indexer.stop();
     server.close();
     await bundle.shutdown();
     process.exit(0);

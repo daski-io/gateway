@@ -6,6 +6,7 @@ import { createChainEventQueries } from "./chainEventQueries.js";
 import { createRateLimitQueries } from "./rateLimitQueries.js";
 import { createReputationQueries } from "./reputationQueries.js";
 import { createSkillQueries } from "./skillQueries.js";
+import { createFacilitatorLockQueries } from "./facilitatorLockQueries.js";
 export type { SkillSearchHit } from "./skillQueries.js";
 export type { ChainActivityRow } from "./chainEventQueries.js";
 export type { ReputationMirrorRow } from "./reputationQueries.js";
@@ -99,6 +100,7 @@ export function createQueries(pool: Pool) {
   const settlementGates = new Map<string, Promise<void>>();
 
   return {
+    ...createFacilitatorLockQueries(pool),
     ...createRateLimitQueries(pool),
 
     async insertChallenge(challenge: {

@@ -3,11 +3,8 @@ import type { Queries } from "../db/queries.js";
 import type { DiscoveryCache } from "../discovery/cache.js";
 import type { Fetcher } from "../mcp/a2a.js";
 import type { Hex, PaymentRequirements, StoredChallenge } from "../types.js";
-import {
-  issuePaymentRequirements,
-  resolveSkillOffer,
-  type SkillOffer,
-} from "./requirements.js";
+import { issuePaymentRequirements } from "./requirements.js";
+import { resolveSkillOffer, type SkillOffer } from "./skillOffer.js";
 import { fetchProviderQuote } from "./providerQuote.js";
 import type { ChainReader } from "../chain/reader.js";
 import { walletControlsAgent } from "../identity/control.js";
@@ -74,7 +71,6 @@ export async function createQuotedChallenge(
     input.skillId,
     deps.cache,
     {
-      requireFixedAmount: false,
       serviceSlug: input.serviceSlug,
     },
   );
@@ -160,10 +156,8 @@ export async function createQuotedChallenge(
       providerTokenId: input.providerAgentId,
       buyerTokenId: input.buyerAgentId,
       skillId: input.skillId,
-      amount: quoteResult.amount,
       resource: `${deps.config.publicUrl}/purchase/${input.providerAgentId}`,
       walletAddress: input.walletAddress,
-      trustQuotedAmount: true,
       providerQuote: {
         quoteId: quote.quoteId,
         serviceRef: quote.serviceRef,

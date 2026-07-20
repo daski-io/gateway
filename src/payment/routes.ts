@@ -3,7 +3,8 @@ import type { Config } from "../config.js";
 import { X402_VERSION } from "../config.js";
 import type { DiscoveryCache } from "../discovery/cache.js";
 import type { Queries } from "../db/queries.js";
-import { issuePaymentRequirements, resolveSkillOffer } from "./requirements.js";
+import { issuePaymentRequirements } from "./requirements.js";
+import { resolveSkillOffer } from "./skillOffer.js";
 import { validateProviderQuoteCommitment } from "./providerQuote.js";
 import type { Hex, PaymentRequirementsResponse } from "../types.js";
 import type { ChainReader } from "../chain/reader.js";
@@ -101,7 +102,6 @@ export function createPurchaseRouter(deps: PurchaseDeps): Router {
     const serviceArgs = (serviceArgsRaw as Record<string, unknown> | undefined) ?? {};
     const provider = deps.cache.get(providerTokenId);
     const offerResult = resolveSkillOffer(providerTokenId, skillId, deps.cache, {
-      requireFixedAmount: false,
       serviceSlug,
     });
     if (!provider || !offerResult.ok) {
@@ -161,7 +161,6 @@ export function createPurchaseRouter(deps: PurchaseDeps): Router {
         providerTokenId,
         buyerTokenId,
         skillId,
-        amount: quote.amount,
         resource,
         walletAddress,
         providerQuote: {
@@ -175,7 +174,6 @@ export function createPurchaseRouter(deps: PurchaseDeps): Router {
           serviceSlug: quote.serviceSlug,
           serviceVersion: quote.serviceVersion,
         },
-        trustQuotedAmount: true,
       },
       deps.config,
       deps.cache,

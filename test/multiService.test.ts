@@ -432,17 +432,9 @@ describe("multi-service providers", () => {
     expect(ambiguous.status).toBe(404);
   });
 
-  it("x402-services.json advertises paid skills from every card", async () => {
+  it("does not expose the retired unofficial x402 catalog", async () => {
     const res = await fetch(`${gateway.baseUrl}/.well-known/x402-services.json`);
-    expect(res.status).toBe(200);
-    const body: any = await res.json();
-    const mine = body.services.filter((s: any) => s.providerTokenId === "1");
-    const skillIds = mine.map((s: any) => s.skillId).sort();
-    expect(skillIds).toEqual(["create-mailbox", "register-domain"]);
-    const mailbox = mine.find((s: any) => s.skillId === "create-mailbox");
-    expect(mailbox.providerA2AUrl).toMatch(/\/a2a\/mailboxes$/);
-    expect(mailbox.maxAmountRequired).toBe("9990000");
-    expect(mailbox.legal).toEqual(expectedLegal(gateway));
+    expect(res.status).toBe(404);
   });
 
   it("tolerates one broken card without delisting the healthy ones", async () => {

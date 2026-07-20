@@ -3,7 +3,7 @@ import type { Config } from "../config.js";
 import type { Hex } from "../types.js";
 import type { PurchaseLegalContext } from "../legal/types.js";
 import type { ProviderQuoteCommitment } from "./providerQuote.js";
-import type { SkillOffer } from "./requirements.js";
+import type { SkillOffer } from "./skillOffer.js";
 
 export function serviceArgsFrom(req: Request): Record<string, unknown> {
   const body = req.body;
@@ -71,7 +71,6 @@ export function buildPaymentRequired(
 }
 
 export function receiptBody(
-  version: number,
   config: Config,
   offer: Pick<SkillOffer, "skillId" | "providerA2AUrl">,
   fields: {
@@ -89,7 +88,7 @@ export function receiptBody(
 ) {
   const { quoteId, quoteSignature, serviceArgs, ...rest } = fields;
   return {
-    x402Version: version,
+    x402Version: 2,
     receipt: {
       ...rest,
       skillId: offer.skillId,
