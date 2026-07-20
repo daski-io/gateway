@@ -8,6 +8,8 @@ import { sanitizeProviderTaskEvent, sanitizeProviderValue } from "./providerRefl
 
 const STREAM_MAX_BYTES = 4 * 1024 * 1024;
 const STREAM_MAX_EVENTS = 1000;
+const STREAM_MIN_TIMEOUT_MS = 1_000;
+const STREAM_MAX_TIMEOUT_MS = 120_000;
 
 interface StreamTaskStatusArgs {
   providerA2AUrl: string;
@@ -20,6 +22,7 @@ interface StreamTaskStatusArgs {
 }
 
 export interface ProgressSink {
+  signal?: AbortSignal;
   _meta?: { progressToken?: string | number };
   sendNotification(payload: {
     method: "notifications/progress";
@@ -45,9 +48,32 @@ export async function streamTaskStatus(
   const guard = await guardProviderUrl(args.providerA2AUrl, transport.enforceUrlSafety);
   if (guard) return guard;
 
-  const timeoutMs = args.streamingTimeoutMs ?? 120_000;
+  const timeoutMs = args.streamingTimeoutMs ?? STREAM_MAX_TIMEOUT_MS;
+  if (
+    !Number.isSafeInteger(timeoutMs) ||
+    timeoutMs < STREAM_MIN_TIMEOUT_MS ||
+    timeoutMs > STREAM_MAX_TIMEOUT_MS
+  ) {
+    return mcpError({
+      code: "BAD_INPUT",
+      message: "streamingTimeoutMs must be an integer from 1000 to 120000.",
+    });
+  }
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  let abortReason: "timeout" | "client" | null = null;
+  const abort = (reason: "timeout" | "client") => {
+    if (controller.signal.aborted) return;
+    abortReason = reason;
+    controller.abort();
+  };
+  const timer = setTimeout(() => abort("timeout"), timeoutMs);
+  const onClientAbort = () => abort("client");
+  if (extra.signal?.aborted) onClientAbort();
+  else extra.signal?.addEventListener("abort", onClientAbort, { once: true });
+  const cleanupAbort = () => {
+    clearTimeout(timer);
+    extra.signal?.removeEventListener("abort", onClientAbort);
+  };
   let response: Response;
   try {
     response = await transport.fetch(args.providerA2AUrl, {
@@ -69,20 +95,25 @@ export async function streamTaskStatus(
       redirect: "manual",
     });
   } catch (error) {
-    clearTimeout(timer);
+    cleanupAbort();
     return mcpError({
       code:
-        (error as { name?: string }).name === "AbortError"
-          ? "streaming_timeout"
-          : "PROVIDER_UNREACHABLE",
-      message: `Provider unreachable at ${args.providerA2AUrl}`,
+        abortReason === "client"
+          ? "REQUEST_CANCELLED"
+          : (error as { name?: string }).name === "AbortError"
+            ? "streaming_timeout"
+            : "PROVIDER_UNREACHABLE",
+      message:
+        abortReason === "client"
+          ? "Task-status stream cancelled by the client."
+          : `Provider unreachable at ${args.providerA2AUrl}`,
       recoverable: true,
       next_action: "Retry streaming or use daski_get_task_status with stream:false.",
     });
   }
 
   if (!response.ok) {
-    clearTimeout(timer);
+    cleanupAbort();
     return unsupported(`Provider returned HTTP ${response.status} on SubscribeToTask`, {
       status: response.status,
       providerA2AUrl: args.providerA2AUrl,
@@ -90,12 +121,12 @@ export async function streamTaskStatus(
   }
   const contentType = response.headers.get("content-type") ?? "";
   if (!contentType.toLowerCase().includes("text/event-stream")) {
-    return nonSseResponse(response, contentType, timer, transport);
+    return nonSseResponse(response, contentType, cleanupAbort, transport);
   }
 
   const reader = response.body?.getReader();
   if (!reader) {
-    clearTimeout(timer);
+    cleanupAbort();
     return unsupported("Provider returned an empty SSE stream");
   }
 
@@ -146,7 +177,14 @@ export async function streamTaskStatus(
         if (!parsed.result) continue;
         lastEvent = parsed.result;
         eventCount += 1;
-        await emitProgress(extra, eventCount, parsed.result);
+        if (!(await emitProgress(extra, eventCount, parsed.result))) {
+          abortReason = "client";
+          return mcpError({
+            code: "REQUEST_CANCELLED",
+            message: "Task-status stream cancelled by the client.",
+            recoverable: true,
+          });
+        }
         if (eventCount > STREAM_MAX_EVENTS) {
           return mcpError({
             code: "PROVIDER_TOO_MANY_EVENTS",
@@ -167,8 +205,15 @@ export async function streamTaskStatus(
         message: publicErrorMessage("mcp.taskStatus.sse", error, "provider event stream failed"),
       });
     }
+    if (abortReason === "client") {
+      return mcpError({
+        code: "REQUEST_CANCELLED",
+        message: "Task-status stream cancelled by the client.",
+        recoverable: true,
+      });
+    }
   } finally {
-    clearTimeout(timer);
+    cleanupAbort();
     try {
       await reader.cancel();
     } catch {
@@ -204,7 +249,7 @@ function parseEvent(data: string): StreamEvent | null {
 async function nonSseResponse(
   response: Response,
   contentType: string,
-  timer: ReturnType<typeof setTimeout>,
+  cleanupAbort: () => void,
   transport: StreamTaskStatusTransport,
 ): Promise<McpToolResult> {
   let rpc: { error?: { code?: number; message?: string } } = {};
@@ -213,7 +258,7 @@ async function nonSseResponse(
   } catch {
     // The generic unsupported response below covers malformed bodies.
   } finally {
-    clearTimeout(timer);
+    cleanupAbort();
   }
   return unsupported(
     sanitizeProviderValue(
@@ -236,9 +281,9 @@ async function emitProgress(
   extra: ProgressSink,
   progress: number,
   event: Record<string, unknown>,
-): Promise<void> {
+): Promise<boolean> {
   const token = extra._meta?.progressToken;
-  if (token === undefined) return;
+  if (token === undefined) return true;
   const status = isRecord(event.status) ? event.status : {};
   const state = normalizeState(typeof status.state === "string" ? status.state : undefined);
   try {
@@ -250,8 +295,9 @@ async function emitProgress(
         message: state ? `state=${state}` : "update",
       },
     });
+    return true;
   } catch {
-    // A detached transport does not need progress notifications.
+    return false;
   }
 }
 

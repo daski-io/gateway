@@ -1,8 +1,9 @@
-import { extractAgentCardUrl } from "../discovery/format.js";
+import { extractAgentCardUrl } from "../discovery/agentCard.js";
 import { walletControlsAgent } from "../identity/control.js";
 import { sanitizeBuyerName } from "../identity/name.js";
 import type { Hex } from "../types.js";
 import { publicErrorMessage } from "../util/errorWrap.js";
+import { isHexAddress } from "../util/evmValidation.js";
 import type { Fetcher } from "./a2a.js";
 import { runBuyServiceFreePath } from "./buyServiceFree.js";
 import { runBuyServicePaidPath } from "./buyServicePaid.js";
@@ -31,7 +32,7 @@ export async function runBuyService(
   deps: McpDeps,
   transport: BuyServiceTransport,
 ): Promise<McpToolResult> {
-  if (!/^0x[0-9a-fA-F]{40}$/.test(args.walletAddress)) {
+  if (!isHexAddress(args.walletAddress)) {
     return mcpError({
       code: "BAD_INPUT",
       message: "walletAddress must be a 20-byte hex address",

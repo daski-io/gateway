@@ -4,7 +4,7 @@ import {
   parseAbiParameters,
 } from "viem";
 import type { CachedProvider, Hex } from "../types.js";
-import { cardsOf, parseAgentSkills } from "./format.js";
+import { cardsOf, parseAgentSkills } from "./agentCard.js";
 
 const DEFAULT_SERVICE_VERSION = "1";
 

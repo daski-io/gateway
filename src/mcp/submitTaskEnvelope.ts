@@ -3,6 +3,7 @@ import type { ChainReader } from "../chain/reader.js";
 import type { Config } from "../config.js";
 import type { Hex } from "../types.js";
 import { publicErrorMessage } from "../util/errorWrap.js";
+import { isHexAddress } from "../util/evmValidation.js";
 import type { SubmitTaskArgs } from "./submitTaskTypes.js";
 import {
   mcpError,
@@ -28,7 +29,7 @@ export async function prepareSubmitTaskEnvelope(
 
   let buyerTokenId = args.buyerTokenId;
   if (!buyerTokenId && args.walletAddress) {
-    if (!/^0x[0-9a-fA-F]{40}$/.test(args.walletAddress)) {
+    if (!isHexAddress(args.walletAddress)) {
       return mcpError({
         code: "BAD_INPUT",
         message: "walletAddress must be a 0x-prefixed 20-byte hex address.",

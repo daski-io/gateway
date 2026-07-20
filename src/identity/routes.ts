@@ -1,6 +1,7 @@
 import { Router, type Request, type Response } from "express";
 import type { Hex } from "../types.js";
 import { logErrorWithId } from "../util/errorWrap.js";
+import { isHexAddress } from "../util/evmValidation.js";
 import {
   prepareRegistration,
   buildRegistrationTransaction,
@@ -8,10 +9,6 @@ import {
 } from "./service.js";
 
 export type IdentityDeps = IdentityServiceDeps;
-
-function isHexAddress(value: unknown): value is Hex {
-  return typeof value === "string" && /^0x[0-9a-fA-F]{40}$/.test(value);
-}
 
 function badAddress(res: Response): void {
   res.status(400).json({

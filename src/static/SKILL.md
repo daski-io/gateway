@@ -489,17 +489,19 @@ really is ("these links are single-use and expire in ~15 minutes — I've
 retrieved the document itself as your permanent copy, and I can mint a
 fresh link any time you want to re-download").
 
-1. Call `daski_fetch_artifact` with the artifact `url` and the `taskId` that
-   returned that URL. Omit `capability` on this first call.
+1. Call `daski_fetch_artifact` with the artifact `url`, the `taskId` that
+   returned that URL, and the cataloged `providerA2AUrl` used for the task.
+   Omit `capability` on this first call. The URL must use the provider origin
+   or an `artifactOrigins` entry advertised by its Agent Card.
 2. Sign the returned `eip712TypedData` with the buyer agent wallet.
-3. Re-call `daski_fetch_artifact` with the exact same `url` + `taskId` and
+3. Re-call `daski_fetch_artifact` with the exact same `url` + `taskId` +
+   `providerA2AUrl` and
    `capability: { signature, authorization }`, echoing the returned
    `authorization` verbatim. The tool sends the base64url-encoded
    `X-Daski-Task-Capability` header and returns size-capped, MIME-verified
-   bytes as `artifact.bytesBase64`.
-4. The signed retry ALSO attaches the document to the tool result as an MCP
-   embedded resource — a real file your client can render or save. Hand THAT
-   (or the decoded bytes) to your principal before telling them you hold the
+   metadata alongside the document as an MCP embedded resource.
+4. The embedded resource is the byte-bearing result — a real file your client
+   can render or save. Hand that file to your principal before telling them you hold the
    document; `delivery.principalUsable` refers to the embedded file, and
    retrieval alone is not delivery. If the signed retry returns a fresh
    challenge, the old one expired or was rejected; sign the fresh typed-data

@@ -3,7 +3,7 @@ import type { PoolClient } from "pg";
 import type { CachedProvider } from "../types.js";
 import { logErrorWithId } from "../util/errorWrap.js";
 import { type Embedder, vectorLiteral } from "./embeddings.js";
-import { cardsOf, extractMarketplaceExtension } from "./format.js";
+import { cardsOf, extractMarketplaceExtension } from "./agentCard.js";
 
 /**
  * Build the canonical source text for a skill embedding. Stable order so a
@@ -91,7 +91,7 @@ function collectTargets(providers: CachedProvider[]): SkillEmbeddingTarget[] {
  * skills whose source text changed; deletes rows for providers/skills no
  * longer present. Rows are keyed (provider, serviceSlug, skillId).
  */
-export async function syncSkillEmbeddings(
+async function syncSkillEmbeddings(
   pool: Pick<PoolClient, "query">,
   providers: CachedProvider[],
   embedder: Embedder,

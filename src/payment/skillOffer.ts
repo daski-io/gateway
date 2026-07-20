@@ -4,7 +4,7 @@ import {
   extractMarketplaceExtension,
   findCardForSkill,
   parseAgentSkills,
-} from "../discovery/format.js";
+} from "../discovery/agentCard.js";
 import {
   computeServiceId,
   resolveServiceSlug,

@@ -1,4 +1,5 @@
 import type { Hex } from "./types.js";
+import { isHexAddress } from "./util/evmValidation.js";
 
 export type ChainMode = "live" | "mock";
 
@@ -48,7 +49,7 @@ function bigintValue(name: string, raw: string | undefined, fallback: string): b
 
 function mockWallet(raw: string | undefined): Hex {
   const value = raw ?? `0x${"11".repeat(20)}`;
-  if (!/^0x[0-9a-fA-F]{40}$/.test(value)) {
+  if (!isHexAddress(value)) {
     throw new Error("MOCK_PROVIDER_WALLET_ADDRESS must be a 20-byte address");
   }
   return value.toLowerCase() as Hex;

@@ -1,13 +1,20 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { DiscoveryCache } from "../discovery/cache.js";
 import {
   fetchArtifact,
   type ArtifactFetchOptions,
 } from "./artifactFetch.js";
+import { ConcurrencyLimiter } from "./concurrencyLimiter.js";
+import { isCatalogArtifactUrl } from "./providerCatalog.js";
+import { mcpError } from "./util.js";
+import { activeRequestKey, activeRequestSignal } from "./requestContext.js";
 
 export function registerArtifactTool(
   server: McpServer,
+  cache: DiscoveryCache,
   options: ArtifactFetchOptions,
+  limiter: ConcurrencyLimiter,
 ): void {
   server.registerTool(
     "daski_fetch_artifact",
@@ -16,18 +23,22 @@ export function registerArtifactTool(
         "Retrieve the actual bytes behind a Daski artifact URL, including audience-bound formation PDFs. This is a two-call wallet-signature flow; do not hand a short-lived artifact URL to the principal as durable proof.",
         "",
         "Inputs:",
-        "- First call: `url` from the provider artifact and that artifact's `taskId`; omit `capability`. The exact URL and taskId are verified against the audience-bound challenge.",
-        "- Signed retry: the exact same `url` + `taskId`, plus `capability: { signature, authorization }`. Sign the returned `eip712TypedData` and echo `authorization` verbatim.",
+        "- First call: `url` from the provider artifact, that artifact's `taskId`, and the cataloged `providerA2AUrl`; omit `capability`. The URL must use the provider origin or an artifact origin advertised by its Agent Card.",
+        "- Signed retry: the exact same `url` + `taskId` + `providerA2AUrl`, plus `capability: { signature, authorization }`. Sign the returned `eip712TypedData` and echo `authorization` verbatim.",
         "- `expectedMimeType` defaults to `application/pdf`; pass the artifact's advertised mimeType for another format.",
         "",
         "Returns:",
         "- First call: `{ requiresSignature, eip712TypedData, authorization, capabilityChallenge }`.",
-        "- Signed retry: `{ artifact: { bytesBase64, encoding, mimeType, filename, sizeBytes, sha256 }, delivery }`, capped at 5 MiB and verified against the expected content type — PLUS the document attached to the result as an MCP embedded resource (a real file your client can render/save, not just JSON). `delivery.principalUsable: true` refers to THAT file: hand it (or the decoded bytes) to your principal, then report delivery. Retrieval alone is not delivery — say \"retrieved, not yet handed over\" until you actually have.",
+        "- Signed retry: `{ artifact: { mimeType, filename, sizeBytes, sha256 }, delivery }`, capped at 5 MiB and verified against the expected content type, plus the document attached as an MCP embedded resource. `delivery.principalUsable: true` refers to that file; retrieval alone is not delivery.",
         "- If the challenge expired before the retry, the tool returns a fresh challenge. Sign that new typed-data; do not reuse the expired authorization.",
         "- The challenge is satisfiable ONLY by the buyer wallet that owns the purchase (plus provider-administrator staff tooling). There is no principal-facing browser login for artifact URLs — never hand a raw URL to a principal expecting it to open.",
       ].join("\n"),
       inputSchema: {
         url: z.string().url().describe("Short-lived URL from a Daski artifact."),
+        providerA2AUrl: z
+          .string()
+          .url()
+          .describe("Cataloged provider endpoint that produced the artifact."),
         taskId: z
           .string()
           .min(1)
@@ -58,6 +69,30 @@ export function registerArtifactTool(
         openWorldHint: true,
       },
     },
-    (args) => fetchArtifact(args, options),
+    async (args, extra) => {
+      if (!isCatalogArtifactUrl(cache, args.providerA2AUrl, args.url)) {
+        return mcpError({
+          code: "ARTIFACT_ENDPOINT_NOT_CATALOGED",
+          message:
+            "The artifact URL is not on the provider origin or an artifact " +
+            "origin advertised by the cataloged provider. No request was made.",
+        });
+      }
+      const release = limiter.tryAcquire(
+        activeRequestKey(extra.sessionId ?? "sessionless"),
+      );
+      if (!release) {
+        return mcpError({
+          code: "ARTIFACT_CAPACITY_REACHED",
+          message: "Artifact download capacity reached; retry later.",
+          recoverable: true,
+        });
+      }
+      try {
+        return await fetchArtifact(args, options, activeRequestSignal(extra.signal));
+      } finally {
+        release();
+      }
+    },
   );
 }

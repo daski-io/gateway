@@ -6,7 +6,7 @@ import {
   isJurisdiction,
   isServiceTypeForFamily,
 } from "../serviceTaxonomy.js";
-import { parseAgentSkills } from "./format.js";
+import { parseAgentSkills } from "./agentCard.js";
 
 export class ServiceTaxonomyValidationError extends Error {
   constructor(errors: string[]) {
@@ -82,6 +82,34 @@ function validateSkillModes(
   }
 }
 
+function validateArtifactOrigins(value: unknown, errors: string[]): void {
+  if (value === undefined) return;
+  if (!Array.isArray(value) || value.length > 8) {
+    errors.push("artifactOrigins must be an array with at most 8 entries");
+    return;
+  }
+  for (const origin of value) {
+    if (typeof origin !== "string") {
+      errors.push("artifactOrigins entries must be absolute HTTPS origins");
+      continue;
+    }
+    try {
+      const parsed = new URL(origin);
+      const normalized = origin.endsWith("/") ? origin.slice(0, -1) : origin;
+      if (
+        parsed.protocol !== "https:" ||
+        parsed.username ||
+        parsed.password ||
+        parsed.origin !== normalized
+      ) {
+        throw new Error("invalid origin");
+      }
+    } catch {
+      errors.push("artifactOrigins entries must be absolute HTTPS origins");
+    }
+  }
+}
+
 /**
  * Enforces the marketplace classification contract at catalog admission.
  * Invalid cards never enter the cache, so discovery, public listings,
@@ -114,6 +142,7 @@ export function assertValidServiceTaxonomy(
   }
   validateJurisdictions(extension.jurisdictions, errors);
   validateSkillModes(card, extension, errors);
+  validateArtifactOrigins(extension.artifactOrigins, errors);
 
   if (errors.length > 0) {
     throw new ServiceTaxonomyValidationError(errors);

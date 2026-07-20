@@ -4,7 +4,7 @@ import type { Hex } from "../types.js";
 
 const CONFIRMED_VALUE = 100n;
 
-export function easscanAttestationUrl(chainId: number, uid: Hex): string {
+function easscanAttestationUrl(chainId: number, uid: Hex): string {
   const host =
     chainId === 8453 ? "base.easscan.org" : "base-sepolia.easscan.org";
   return `https://${host}/attestation/view/${uid}`;

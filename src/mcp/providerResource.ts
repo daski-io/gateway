@@ -1,7 +1,8 @@
 import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { Config } from "../config.js";
 import type { DiscoveryCache } from "../discovery/cache.js";
-import { cardsOf, extractAgentCardName, formatForSkillDiscover } from "../discovery/format.js";
+import { cardsOf, extractAgentCardName } from "../discovery/agentCard.js";
+import { formatForSkillDiscover } from "../discovery/skillPresentation.js";
 import { sanitizeProviderValue } from "./providerReflection.js";
 
 export function registerProviderResource(

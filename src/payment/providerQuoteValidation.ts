@@ -1,8 +1,8 @@
 import { keccak256, toBytes, verifyMessage, type Address } from "viem";
 import { canonicalJsonStringify, computeRequestHash } from "../auth/envelope.js";
 import type { Hex } from "../types.js";
+import { isHexAddress } from "../util/evmValidation.js";
 import {
-  isAddress,
   isPositiveAtomicAmount,
   parseProviderQuote,
 } from "./providerQuoteParser.js";
@@ -17,10 +17,10 @@ export async function validateProviderQuoteCommitment(
   raw: unknown,
   expectations: ProviderQuoteExpectations,
 ): Promise<ProviderQuoteValidationResult> {
-  if (!isAddress(expectations.expectedSignerAddress)) {
+  if (!isHexAddress(expectations.expectedSignerAddress)) {
     return invalid("expected provider signer is not a 20-byte address");
   }
-  if (!isAddress(expectations.expectedTokenAddress)) {
+  if (!isHexAddress(expectations.expectedTokenAddress)) {
     return invalid("expected token is not a 20-byte address");
   }
   const parsed = parseProviderQuote(raw);

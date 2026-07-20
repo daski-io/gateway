@@ -1,7 +1,8 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { startTestGateway, type TestGateway } from "./helpers/setup.js";
+import { parseFilename } from "../src/mcp/artifactProtocol.js";
 
 interface ToolResultContent {
   content: Array<{ type: string; text: string }>;
@@ -93,8 +94,12 @@ describe("MCP artifact delivery", () => {
         },
       });
     };
-    const gateway = await startTestGateway({ a2aFetch });
+    const gateway = await startTestGateway({
+      a2aFetch,
+      providers: [artifactProvider()],
+    });
     gateways.push(gateway);
+    const providerA2AUrl = `${gateway.mockProvider.baseUrl}/a2a`;
     const { client, transport } = await connectClient(gateway.baseUrl);
     try {
       const first = parseResult<{
@@ -103,7 +108,7 @@ describe("MCP artifact delivery", () => {
       }>(
         await client.callTool({
           name: "daski_fetch_artifact",
-          arguments: { url: artifactUrl, taskId },
+          arguments: { url: artifactUrl, taskId, providerA2AUrl },
         }),
       );
       expect(first.eip712TypedData.primaryType).toBe("TaskAccessAuthorization");
@@ -117,6 +122,7 @@ describe("MCP artifact delivery", () => {
           arguments: {
             url: artifactUrl,
             taskId,
+            providerA2AUrl,
             capability: {
               signature: `0x${"ab".repeat(65)}`,
               authorization: first.authorization,
@@ -127,36 +133,37 @@ describe("MCP artifact delivery", () => {
       expect(refreshed.authorization.nonce).toBe(nonce2);
       expect(refreshed.hint).toContain("fresh");
 
+      const fetchedResult = await client.callTool({
+        name: "daski_fetch_artifact",
+        arguments: {
+          url: artifactUrl,
+          taskId,
+          providerA2AUrl,
+          capability: {
+            signature: `0x${"cd".repeat(65)}`,
+            authorization: refreshed.authorization,
+          },
+        },
+      });
       const fetched = parseResult<{
         artifact: {
-          bytesBase64: string;
           mimeType: string;
           filename: string;
           sizeBytes: number;
           sha256: string;
         };
-      }>(
-        await client.callTool({
-          name: "daski_fetch_artifact",
-          arguments: {
-            url: artifactUrl,
-            taskId,
-            capability: {
-              signature: `0x${"cd".repeat(65)}`,
-              authorization: refreshed.authorization,
-            },
-          },
-        }),
-      );
-      expect(Buffer.from(fetched.artifact.bytesBase64, "base64")).toEqual(
-        Buffer.from(pdf),
-      );
+      }>(fetchedResult);
       expect(fetched.artifact).toMatchObject({
         mimeType: "application/pdf",
         filename: "formation.pdf",
         sizeBytes: pdf.byteLength,
       });
+      expect(fetched.artifact).not.toHaveProperty("bytesBase64");
       expect(fetched.artifact.sha256).toMatch(/^[0-9a-f]{64}$/);
+      const resource = (fetchedResult.content as Array<any>).find(
+        (entry) => entry.type === "resource",
+      );
+      expect(Buffer.from(resource.resource.blob, "base64")).toEqual(Buffer.from(pdf));
       expect(calls).toBe(3);
     } finally {
       await transport.close();
@@ -181,8 +188,12 @@ describe("MCP artifact delivery", () => {
         },
         { status: 401 },
       );
-    const gateway = await startTestGateway({ a2aFetch });
+    const gateway = await startTestGateway({
+      a2aFetch,
+      providers: [artifactProvider()],
+    });
     gateways.push(gateway);
+    const providerA2AUrl = `${gateway.mockProvider.baseUrl}/a2a`;
     const { client, transport } = await connectClient(gateway.baseUrl);
     try {
       const result = await client.callTool({
@@ -190,6 +201,7 @@ describe("MCP artifact delivery", () => {
         arguments: {
           url: requestedUrl,
           taskId: "task-document-2",
+          providerA2AUrl,
         },
       });
       const body = parseResult<{ code: string }>(result);
@@ -255,5 +267,54 @@ describe("MCP artifact delivery", () => {
     } finally {
       await transport.close();
     }
+  });
+
+  it("rejects artifact origins that the provider did not advertise", async () => {
+    const a2aFetch = vi.fn<typeof fetch>();
+    const gateway = await startTestGateway({
+      a2aFetch,
+      providers: [artifactProvider([])],
+    });
+    gateways.push(gateway);
+    const { client, transport } = await connectClient(gateway.baseUrl);
+    try {
+      const result = parseResult<{ code: string }>(
+        await client.callTool({
+          name: "daski_fetch_artifact",
+          arguments: {
+            url: "https://unrelated.example/document.pdf",
+            taskId: "task-untrusted-origin",
+            providerA2AUrl: `${gateway.mockProvider.baseUrl}/a2a`,
+          },
+        }),
+      );
+      expect(result.code).toBe("ARTIFACT_ENDPOINT_NOT_CATALOGED");
+      expect(a2aFetch).not.toHaveBeenCalled();
+    } finally {
+      await transport.close();
+    }
+  });
+});
+
+function artifactProvider(artifactOrigins = ["https://artifacts.example"]) {
+  return {
+    tokenId: 1n,
+    name: "Formation Provider",
+    priceUsdcSmallest: "1000000",
+    categoryFamily: "business-formation" as const,
+    serviceType: "entity-formation" as const,
+    artifactOrigins,
+  };
+}
+
+describe("artifact filename parsing", () => {
+  it("removes path traversal, reserved names, and control characters", () => {
+    expect(parseFilename('attachment; filename="../../formation.pdf"')).toBe(
+      "formation.pdf",
+    );
+    expect(parseFilename('attachment; filename="CON.txt"')).toBe("_CON.txt");
+    expect(parseFilename("attachment; filename*=UTF-8''..%2Fsecret%00.pdf")).toBe(
+      "secret_.pdf",
+    );
   });
 });

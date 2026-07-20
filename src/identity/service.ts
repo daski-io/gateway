@@ -3,6 +3,7 @@ import type { Config } from "../config.js";
 import type { Eip712TypedData, Hex } from "../types.js";
 import { buildBuyerAgentURI, defaultBuyerName, sanitizeBuyerName } from "./name.js";
 import { logErrorWithId } from "../util/errorWrap.js";
+import { isHexAddress, isHexBytes } from "../util/evmValidation.js";
 import { verifyTypedData } from "viem";
 import { encodeFunctionData } from "viem";
 import { agentIndexAbi } from "../chain/abis.js";
@@ -34,14 +35,6 @@ const REGISTER_AGENT_TYPES = {
     { name: "deadline", type: "uint256" },
   ],
 } as const;
-
-function isHexAddress(value: unknown): value is Hex {
-  return typeof value === "string" && /^0x[0-9a-fA-F]{40}$/.test(value);
-}
-
-function isHexBytes(value: unknown): value is Hex {
-  return typeof value === "string" && /^0x([0-9a-fA-F]{2})+$/.test(value) && value.length >= 4;
-}
 
 function fail(
   status: number,

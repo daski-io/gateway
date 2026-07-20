@@ -542,6 +542,7 @@ export interface BuildAgentCardOpts {
   turnaround?: string;
   serviceLifecycle?: "one-shot" | "ongoing";
   variablePricing?: boolean;
+  artifactOrigins?: string[];
   skipExtension?: boolean;
   legal?: {
     legalName?: unknown;
@@ -618,6 +619,7 @@ export function buildAgentCard(
         serviceDescription: o.description ?? `${o.name} description`,
         serviceLifecycle: o.serviceLifecycle ?? "one-shot",
         turnaroundEstimate: o.turnaround ?? "PT10M",
+        ...(o.artifactOrigins ? { artifactOrigins: o.artifactOrigins } : {}),
         skills: Object.fromEntries(
           skillDefinitions.map((skill) => {
             const metadata = skill.metadata[DASKI_A2A_EXTENSION_URI];

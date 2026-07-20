@@ -39,6 +39,8 @@ export interface DaskiMarketplaceExtension {
   serviceDescription: string;
   serviceLifecycle: "one-shot" | "ongoing";
   turnaroundEstimate?: string;
+  /** Additional HTTPS origins allowed to host artifacts for this service. */
+  artifactOrigins?: string[];
 }
 
 export interface OnChainProvider {

@@ -3,6 +3,7 @@ import type { Config } from "../config.js";
 import type { ChainReader } from "../chain/reader.js";
 import type { Eip712TypedData, Hex } from "../types.js";
 import { logErrorWithId } from "../util/errorWrap.js";
+import { isHex32, isHexAddress } from "../util/evmValidation.js";
 import { CONFIRMATION_CODE } from "./protocol.js";
 
 export interface ConfirmationPrepDeps {
@@ -71,16 +72,12 @@ export async function prepareConfirmation(
       'confirmation must be "Confirmed" or "NotConfirmed"',
     );
   }
-  if (
-    typeof input.attester !== "string" ||
-    !/^0x[0-9a-fA-F]{40}$/.test(input.attester)
-  ) {
+  if (!isHexAddress(input.attester)) {
     return fail("BAD_ATTESTER", "attester must be a 20-byte hex address");
   }
   if (
     input.refUid != null &&
-    (typeof input.refUid !== "string" ||
-      !/^0x[0-9a-fA-F]{64}$/.test(input.refUid))
+    !isHex32(input.refUid)
   ) {
     return fail("BAD_REFUID", "refUid must be a 32-byte hex string");
   }

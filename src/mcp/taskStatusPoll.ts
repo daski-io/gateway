@@ -90,13 +90,14 @@ export async function pollTaskStatus(
     taskId: typeof result.id === "string" ? result.id : args.taskId,
     contextId: result.contextId ?? null,
     status: normalizeState(result.status?.state) ?? "unknown",
-    artifacts: extractArtifacts(result.artifacts ?? []),
+    artifacts: extractArtifacts(result.artifacts ?? [], args.providerA2AUrl),
     messages: extractMessages(result.status?.message),
   });
 }
 
 function extractArtifacts(
   source: NonNullable<CheckRpc["result"]>["artifacts"],
+  providerA2AUrl: string,
 ): Array<Record<string, unknown>> {
   const artifacts: Array<Record<string, unknown>> = [];
   for (const artifact of source ?? []) {
@@ -108,6 +109,7 @@ function extractArtifacts(
             type: "file",
             name: sanitizeProviderValue(artifact.name ?? file.name ?? "(unnamed)"),
             url: file.url,
+            providerA2AUrl,
             mimeType: sanitizeProviderValue(file.mimeType),
           });
         } else if (typeof file.bytes === "string") {

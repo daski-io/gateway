@@ -6,8 +6,7 @@ import {
 } from "../identity/service.js";
 import type { McpDeps } from "./server.js";
 import { mcpError, mcpJson, type McpToolResult } from "./util.js";
-
-const HEX_ADDRESS = /^0x[0-9a-fA-F]{40}$/;
+import { isHexAddress } from "../util/evmValidation.js";
 
 interface RegisterAgentArgs {
   walletAddress: string;
@@ -71,7 +70,7 @@ async function registerAgent(
   args: RegisterAgentArgs,
   deps: McpDeps,
 ): Promise<McpToolResult> {
-  if (!HEX_ADDRESS.test(args.walletAddress)) {
+  if (!isHexAddress(args.walletAddress)) {
     return mcpError({
       code: "BAD_WALLET",
       message: "walletAddress must be a 20-byte hex address",

@@ -13,8 +13,7 @@ import type { Hex, StoredChallenge } from "../types.js";
 // attestation Sybil attack: an attacker who spends < $0.25 contributes
 // zero signal, and above the floor the log curve gives diminishing
 // marginal weight so a single deep-pocketed attester can't single-handedly
-// dictate a provider's rate. See reputation_brief.md for the full
-// justification.
+// dictate a provider's rate.
 //
 // Floor: $0.25 USDC (250_000 atomic). Curve: log2(1 + amount / floor).
 //   - $0.0001 → 0 (below floor)

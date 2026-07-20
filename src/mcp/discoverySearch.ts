@@ -1,9 +1,7 @@
 import type { Config } from "../config.js";
 import type { Queries } from "../db/queries.js";
-import {
-  applyDiscoverFilters,
-  formatForSkillDiscover,
-} from "../discovery/format.js";
+import { applyDiscoverFilters } from "../discovery/filters.js";
+import { formatForSkillDiscover } from "../discovery/skillPresentation.js";
 import type {
   CategoryFamily,
   FulfillmentMode,

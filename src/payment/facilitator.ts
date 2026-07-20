@@ -6,6 +6,7 @@ import type { FetchAgentCardOptions } from "../identity/fetch-agent-card.js";
 import { verifyPaymentPayload } from "./verify.js";
 import { settleChallenge } from "./settlementCoordinator.js";
 import type { Hex, PaymentPayload, PaymentRequirements } from "../types.js";
+import { isHex32 } from "../util/evmValidation.js";
 
 export interface FacilitatorDeps {
   config: Config;
@@ -36,10 +37,6 @@ interface FacilitatorBody {
     deadline?: string;
     signature?: string;
   };
-}
-
-function isHex32(x: unknown): x is Hex {
-  return typeof x === "string" && /^0x[0-9a-fA-F]{64}$/.test(x);
 }
 
 function parseOptionalProviderTokenId(value: unknown): bigint | null | { error: string } {

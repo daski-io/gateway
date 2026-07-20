@@ -9,6 +9,7 @@ import { validateProviderQuoteCommitment } from "./providerQuote.js";
 import type { Hex, PaymentRequirementsResponse } from "../types.js";
 import type { ChainReader } from "../chain/reader.js";
 import { walletControlsAgent } from "../identity/control.js";
+import { isHexAddress } from "../util/evmValidation.js";
 
 export interface PurchaseDeps {
   config: Config;
@@ -58,7 +59,7 @@ export function createPurchaseRouter(deps: PurchaseDeps): Router {
     // typed-data with the correct `from` field. Wallet-agnostic: any
     // signer that lands on this address will produce a recoverable sig.
     const walletAddressRaw = body.walletAddress;
-    if (typeof walletAddressRaw !== "string" || !/^0x[0-9a-fA-F]{40}$/.test(walletAddressRaw)) {
+    if (!isHexAddress(walletAddressRaw)) {
       sendError(res, 400, "walletAddress is required (20-byte hex)");
       return;
     }

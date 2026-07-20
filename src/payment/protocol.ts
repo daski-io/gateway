@@ -1,4 +1,4 @@
-import type { Hex } from "../types.js";
+export { isHex32, isHexAddress } from "../util/evmValidation.js";
 
 export const TRANSFER_WITH_AUTHORIZATION_TYPES = {
   TransferWithAuthorization: [
@@ -17,14 +17,6 @@ export const CONFIRMATION_CODE = {
 } as const;
 
 export type ConfirmationLabel = keyof typeof CONFIRMATION_CODE;
-
-export function isHexAddress(value: unknown): value is Hex {
-  return typeof value === "string" && /^0x[0-9a-fA-F]{40}$/.test(value);
-}
-
-export function isHex32(value: unknown): value is Hex {
-  return typeof value === "string" && /^0x[0-9a-fA-F]{64}$/.test(value);
-}
 
 export function decodeBase64JsonObject(
   header: string,

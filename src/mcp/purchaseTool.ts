@@ -4,14 +4,13 @@ import type { Hex } from "../types.js";
 import { createQuotedChallenge } from "../payment/quotedChallenge.js";
 import type { Fetcher } from "./a2a.js";
 import type { McpDeps } from "./server.js";
+import { isHexAddress } from "../util/evmValidation.js";
 import {
   mcpError,
   mcpJson,
   parseBigIntArg,
   type McpToolResult,
 } from "./util.js";
-
-const HEX_ADDRESS = /^0x[0-9a-fA-F]{40}$/;
 
 export interface PurchaseToolTransport {
   fetch: Fetcher;
@@ -57,7 +56,7 @@ export function registerPurchaseTool(
       },
     },
     async (args): Promise<McpToolResult> => {
-      if (!HEX_ADDRESS.test(args.walletAddress)) {
+      if (!isHexAddress(args.walletAddress)) {
         return mcpError({
           code: "BAD_INPUT",
           message: "walletAddress must be a 20-byte hex address",

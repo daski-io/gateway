@@ -97,7 +97,7 @@ export function computeRequestHash(serviceArgs: Record<string, unknown>): Hex {
 
 /** Mint a fresh A2A messageId. UUID v4 is fine; the provider only insists
  *  it be unique per (buyerTokenId, messageId). */
-export function newMessageId(): string {
+function newMessageId(): string {
   return randomUUID();
 }
 

@@ -18,6 +18,7 @@ const CAPABILITY_HEADER = "X-Daski-Task-Capability";
 
 export interface ArtifactFetchArgs {
   url: string;
+  providerA2AUrl: string;
   taskId: string;
   expectedMimeType?: string;
   capability?: ArtifactCapability;
@@ -66,9 +67,17 @@ async function artifactErrorResponse(res: Response): Promise<McpToolResult> {
 async function getArtifactResponse(
   args: ArtifactFetchArgs,
   options: ArtifactFetchOptions,
+  requestSignal?: AbortSignal,
 ): Promise<ActiveResponse | McpToolResult> {
   const controller = new AbortController();
+  const onRequestAbort = () => controller.abort();
+  if (requestSignal?.aborted) onRequestAbort();
+  else requestSignal?.addEventListener("abort", onRequestAbort, { once: true });
   const timer = setTimeout(() => controller.abort(), options.timeoutMs);
+  const cleanup = () => {
+    clearTimeout(timer);
+    requestSignal?.removeEventListener("abort", onRequestAbort);
+  };
   try {
     const headers = new Headers({
       Accept: args.expectedMimeType ?? "application/pdf",
@@ -85,19 +94,24 @@ async function getArtifactResponse(
       redirect: "error",
       signal: controller.signal,
     });
-    return { response, clearTimeout: () => clearTimeout(timer) };
+    return { response, clearTimeout: cleanup };
   } catch (error) {
-    clearTimeout(timer);
+    cleanup();
+    const requestCancelled = requestSignal?.aborted === true;
     const timedOut = controller.signal.aborted;
     return mcpError({
       code:
-        error instanceof UrlSafetyError
+        requestCancelled
+          ? "REQUEST_CANCELLED"
+          : error instanceof UrlSafetyError
           ? error.code
           : timedOut
             ? "ARTIFACT_TIMEOUT"
             : "ARTIFACT_UNREACHABLE",
       message: timedOut
-        ? `Artifact GET timed out after ${options.timeoutMs}ms.`
+        ? requestCancelled
+          ? "Artifact retrieval cancelled by the client."
+          : `Artifact GET timed out after ${options.timeoutMs}ms.`
         : `Artifact GET failed: ${(error as Error).message}`,
       recoverable: true,
     });
@@ -108,7 +122,11 @@ function isActiveResponse(value: ActiveResponse | McpToolResult): value is Activ
   return "response" in value;
 }
 
-async function readArtifact(res: Response, args: ArtifactFetchArgs): Promise<McpToolResult> {
+async function readArtifact(
+  res: Response,
+  args: ArtifactFetchArgs,
+  requestSignal?: AbortSignal,
+): Promise<McpToolResult> {
   const expected = mediaType(args.expectedMimeType ?? "application/pdf");
   const actual = mediaType(res.headers.get("content-type"));
   if (!actual || actual !== expected) {
@@ -136,8 +154,6 @@ async function readArtifact(res: Response, args: ArtifactFetchArgs): Promise<Mcp
     const result = mcpJson({
       taskId: args.taskId,
       artifact: {
-        bytesBase64: base64,
-        encoding: "base64",
         mimeType: actual,
         filename,
         sizeBytes: bytes.byteLength,
@@ -149,13 +165,11 @@ async function readArtifact(res: Response, args: ArtifactFetchArgs): Promise<Mcp
         filename: filename ?? "artifact",
         note:
           "The document is attached to this result as an MCP embedded " +
-          "resource — a real file, not just JSON. Hand THAT (or the decoded " +
-          "bytes) to your principal; retrieval alone is not delivery.",
+          "resource — a real file, not just JSON. Hand that file to your " +
+          "principal; retrieval alone is not delivery.",
       },
     });
-    // The embedded resource makes the document principal-usable directly:
-    // MCP clients render/save resource blocks, where JSON base64 is only
-    // ever agent-readable.
+    // The embedded resource is the single byte-bearing representation.
     result.content.push({
       type: "resource",
       resource: {
@@ -168,6 +182,13 @@ async function readArtifact(res: Response, args: ArtifactFetchArgs): Promise<Mcp
     });
     return result;
   } catch (error) {
+    if (requestSignal?.aborted) {
+      return mcpError({
+        code: "REQUEST_CANCELLED",
+        message: "Artifact retrieval cancelled by the client.",
+        recoverable: true,
+      });
+    }
     return mcpError({
       code: readErrorCode(error, "ARTIFACT_READ_FAILED"),
       message: `Could not read artifact bytes: ${(error as Error).message}`,
@@ -179,12 +200,13 @@ async function readArtifact(res: Response, args: ArtifactFetchArgs): Promise<Mcp
 export async function fetchArtifact(
   args: ArtifactFetchArgs,
   options: ArtifactFetchOptions,
+  requestSignal?: AbortSignal,
 ): Promise<McpToolResult> {
   if (args.capability) {
     const invalid = validateCapability(args.capability, args.taskId, args.url);
     if (invalid) return invalid;
   }
-  const result = await getArtifactResponse(args, options);
+  const result = await getArtifactResponse(args, options, requestSignal);
   if (!isActiveResponse(result)) return result;
   const res = result.response;
   try {
@@ -209,7 +231,7 @@ export async function fetchArtifact(
       });
     }
     if (!res.ok) return artifactErrorResponse(res);
-    return readArtifact(res, args);
+    return readArtifact(res, args, requestSignal);
   } finally {
     result.clearTimeout();
   }

@@ -1,5 +1,10 @@
 import type { Hex } from "../types.js";
 import {
+  isHex32,
+  isHexAddress,
+  isHexSignature,
+} from "../util/evmValidation.js";
+import {
   PROVIDER_QUOTE_VERSION,
   type ProviderQuoteCommitment,
 } from "./providerQuoteTypes.js";
@@ -27,16 +32,16 @@ export function parseProviderQuote(raw: unknown): ParsedProviderQuote {
       return invalid(`${name} must be a non-empty string`);
     }
   }
-  if (!isBytes32(raw.requestHash)) {
+  if (!isHex32(raw.requestHash)) {
     return invalid("requestHash must be a 32-byte hex value");
   }
-  if (!isBytes32(raw.serviceRef)) {
+  if (!isHex32(raw.serviceRef)) {
     return invalid("serviceRef must be a 32-byte hex value");
   }
   if (!isPositiveAtomicAmount(raw.amount)) {
     return invalid("quote amount must be a positive atomic-unit integer");
   }
-  if (!isAddress(raw.token)) {
+  if (!isHexAddress(raw.token)) {
     return invalid("quote token must be a 20-byte address");
   }
   if (
@@ -49,10 +54,10 @@ export function parseProviderQuote(raw: unknown): ParsedProviderQuote {
   if (raw.quoteVersion !== PROVIDER_QUOTE_VERSION) {
     return invalid(`quoteVersion must be '${PROVIDER_QUOTE_VERSION}'`);
   }
-  if (!isSignature(raw.providerSignature)) {
+  if (!isHexSignature(raw.providerSignature)) {
     return invalid("providerSignature must be a 65-byte hex signature");
   }
-  if (!isAddress(raw.signerAddress)) {
+  if (!isHexAddress(raw.signerAddress)) {
     return invalid("signerAddress must be a 20-byte address");
   }
   if (typeof raw.signingKeyId !== "string" || raw.signingKeyId.length === 0) {
@@ -92,24 +97,12 @@ export function parseProviderQuote(raw: unknown): ParsedProviderQuote {
   };
 }
 
-export function isAddress(value: unknown): value is Hex {
-  return typeof value === "string" && /^0x[0-9a-fA-F]{40}$/.test(value);
-}
-
 export function isPositiveAtomicAmount(value: unknown): value is string {
   return typeof value === "string" && /^[1-9][0-9]*$/.test(value);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-
-function isBytes32(value: unknown): value is Hex {
-  return typeof value === "string" && /^0x[0-9a-fA-F]{64}$/.test(value);
-}
-
-function isSignature(value: unknown): value is Hex {
-  return typeof value === "string" && /^0x[0-9a-fA-F]{130}$/.test(value);
 }
 
 function timestampMs(value: unknown): number | null {

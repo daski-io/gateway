@@ -4,7 +4,7 @@ import {
   extractAgentCardUrl,
   extractMarketplaceExtension,
   findCardForSkill,
-} from "../discovery/format.js";
+} from "../discovery/agentCard.js";
 import type { Queries } from "../db/queries.js";
 import type {
   Hex,

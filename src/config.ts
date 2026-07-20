@@ -1,5 +1,6 @@
 import type { ChainId, Hex } from "./types.js";
 import { requireMarketplaceHttpsUrl } from "./legal/validation.js";
+import { isHex32, isHexAddress } from "./util/evmValidation.js";
 import {
   loadRuntimeConfig,
   type RuntimeConfig,
@@ -188,7 +189,7 @@ function mcpPath(raw: string | undefined): string {
 
 function optionalAddress(name: string, raw: string | undefined): Hex | undefined {
   if (!raw) return undefined;
-  if (!/^0x[0-9a-fA-F]{40}$/.test(raw)) {
+  if (!isHexAddress(raw)) {
     throw new Error(`${name} must be a 20-byte hex address, got: ${raw}`);
   }
   return raw.toLowerCase() as Hex;
@@ -196,7 +197,7 @@ function optionalAddress(name: string, raw: string | undefined): Hex | undefined
 
 function requireBytes32(name: string, raw: string | undefined): Hex {
   if (!raw) throw new Error(`${name} env var is required`);
-  if (!/^0x[0-9a-fA-F]{64}$/.test(raw)) {
+  if (!isHex32(raw)) {
     throw new Error(`${name} must be a 32-byte hex value, got: ${raw}`);
   }
   return raw.toLowerCase() as Hex;
@@ -204,7 +205,7 @@ function requireBytes32(name: string, raw: string | undefined): Hex {
 
 function requireAddress(name: string, raw: string | undefined): Hex {
   if (!raw) throw new Error(`${name} env var is required`);
-  if (!/^0x[0-9a-fA-F]{40}$/.test(raw)) {
+  if (!isHexAddress(raw)) {
     throw new Error(`${name} must be a 20-byte hex address, got: ${raw}`);
   }
   return raw.toLowerCase() as Hex;

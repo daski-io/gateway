@@ -2,64 +2,28 @@ import {
   fetchOnChainProviders,
   type ProviderDiscoveryReader,
 } from "../chain/reader.js";
-import type { CachedProvider, OnChainProvider, ProviderCard } from "../types.js";
-import { extractCardServiceSlug } from "./format.js";
-import { assertValidServiceTaxonomy } from "./taxonomyValidation.js";
-import {
-  readBoundedJson,
-  safeFetch,
-  validateUrlForOutbound,
-  type ValidatedUrl,
-} from "../util/urlSafety.js";
-import type { ProviderLegalMetadata } from "../legal/types.js";
-import { parseProviderLegalMetadata, ProviderLegalValidationError } from "../legal/validation.js";
+import { ProviderLegalValidationError } from "../legal/validation.js";
+import type { CachedProvider } from "../types.js";
 import { logger as defaultLogger, type GatewayLogger } from "../util/logger.js";
+import {
+  AgentCardFetcher,
+  type AgentCardFetchFn,
+} from "./agentCardFetcher.js";
+import { catalogChanged } from "./catalogSnapshot.js";
+import { ProviderCardResolver } from "./providerCardResolver.js";
+import { DiscoveryRefreshScheduler } from "./refreshScheduler.js";
 
-// 256 KB is enough for any well-formed Agent Card (largest live one is ~12 KB).
-// A whitelisted-but-malicious provider serving a multi-GB JSON body would
-// otherwise OOM the gateway via `res.json()` on every refresh.
-const AGENT_CARD_MAX_BYTES = 256 * 1024;
-
-// How long a provider's last-known-good cards keep being served after the
-// most recent successful fetch. Serving stale is safe for paid flows — a
-// purchase still requires a live signed /quote from the provider, so a
-// stale card can't take a buyer's money while the provider is down. The
-// cap exists so a provider that has been unreachable for a long time
-// eventually stops appearing purchasable in the catalog.
 const DEFAULT_MAX_CARD_STALENESS_SECONDS = 24 * 60 * 60;
-
-// First-retry delay while a whitelisted provider has no resolvable card
-// yet (typically: the gateway booted while the provider was still warming
-// up and its card endpoint 500'd). Doubles on every cardless tick until it
-// reaches the regular refresh interval, so a provider that stays dead
-// costs a handful of extra fetches, not a hot loop.
-const FAST_RETRY_BASE_MS = 15_000;
 const DEFAULT_MAX_A2A_ENTRIES = 16;
 const DEFAULT_FETCH_CONCURRENCY = 4;
 const DEFAULT_REFRESH_DEADLINE_MS = 30_000;
 
-function strField(doc: Record<string, unknown>, key: string): string | null {
-  const v = doc[key];
-  return typeof v === "string" && v.length > 0 ? v : null;
-}
-
-export type FetchFn = (
-  url: string,
-  init?: RequestInit,
-  preValidated?: ValidatedUrl,
-) => Promise<Response>;
+export type FetchFn = AgentCardFetchFn;
 
 interface CacheOptions {
   reader: ProviderDiscoveryReader;
   whitelist: bigint[];
   refreshIntervalSeconds: number;
-  /**
-   * Staleness cap for last-known-good serving: when a refresh fails, the
-   * previously fetched cards keep being served until they are older than
-   * this. Past the cap the provider degrades to a card-less placeholder
-   * (visible in /discover with fetchError, absent from search, not
-   * purchasable) until a fetch succeeds again. Default 24h.
-   */
   maxCardStalenessSeconds?: number;
   fetch?: FetchFn;
   agentCardFetchTimeoutMs?: number;
@@ -71,30 +35,22 @@ interface CacheOptions {
 }
 
 export class DiscoveryCache {
-  private cache: Map<string, CachedProvider> = new Map();
+  private cache = new Map<string, CachedProvider>();
   private lastRefresh: Date | null = null;
   private lastCycleAt: Date | null = null;
   private lastChainSuccessAt: Date | null = null;
   private lastChainError: { message: string; at: Date } | null = null;
   private cardFailureCount = 0;
+  private catalogInitialized = false;
   private readonly reader: ProviderDiscoveryReader;
   private readonly whitelist: bigint[];
   private readonly refreshIntervalMs: number;
   private readonly maxCardStalenessMs: number;
-  private readonly fetchFn: FetchFn;
-  private readonly agentCardFetchTimeoutMs: number;
-  private readonly maxA2AEntries: number;
-  private readonly fetchConcurrency: number;
   private readonly refreshDeadlineMs: number;
-  private onCatalogChanged?: (
-    oldProviders: CachedProvider[],
-    newProviders: CachedProvider[],
-  ) => void;
+  private readonly resolver: ProviderCardResolver;
+  private readonly scheduler: DiscoveryRefreshScheduler;
+  private readonly onCatalogChanged?: CacheOptions["onCatalogChanged"];
   private readonly logger: Pick<GatewayLogger, "log" | "warn" | "error">;
-  private timer: NodeJS.Timeout | null = null;
-  private running = false;
-  private catalogInitialized = false;
-  private fastRetryDelayMs = FAST_RETRY_BASE_MS;
 
   constructor(opts: CacheOptions) {
     this.reader = opts.reader;
@@ -102,27 +58,28 @@ export class DiscoveryCache {
     this.refreshIntervalMs = opts.refreshIntervalSeconds * 1000;
     this.maxCardStalenessMs =
       (opts.maxCardStalenessSeconds ?? DEFAULT_MAX_CARD_STALENESS_SECONDS) * 1000;
-    // Default to safeFetch in production: validates the host AND pins the
-    // resolved IP at connect time so a hostile DNS server can't flip an A
-    // record between validate and dial. Tests inject their own fetchFn
-    // (mockProvider on 127.0.0.1) which is unaffected.
-    this.fetchFn = opts.fetch ?? safeFetch;
-    this.agentCardFetchTimeoutMs = opts.agentCardFetchTimeoutMs ?? 5000;
-    this.maxA2AEntries = opts.maxA2AEntries ?? DEFAULT_MAX_A2A_ENTRIES;
-    this.fetchConcurrency = opts.fetchConcurrency ?? DEFAULT_FETCH_CONCURRENCY;
     this.refreshDeadlineMs = opts.refreshDeadlineMs ?? DEFAULT_REFRESH_DEADLINE_MS;
-    if (
-      !Number.isSafeInteger(this.maxA2AEntries) ||
-      this.maxA2AEntries <= 0 ||
-      !Number.isSafeInteger(this.fetchConcurrency) ||
-      this.fetchConcurrency <= 0 ||
-      !Number.isSafeInteger(this.refreshDeadlineMs) ||
-      this.refreshDeadlineMs <= 0
-    ) {
-      throw new Error("discovery limits must be positive integers");
+    if (!Number.isSafeInteger(this.refreshDeadlineMs) || this.refreshDeadlineMs <= 0) {
+      throw new Error("discovery refresh deadline must be a positive integer");
     }
     this.onCatalogChanged = opts.onCatalogChanged;
     this.logger = opts.logger ?? defaultLogger;
+    const fetcher = new AgentCardFetcher({
+      fetch: opts.fetch,
+      timeoutMs: opts.agentCardFetchTimeoutMs,
+    });
+    this.resolver = new ProviderCardResolver({
+      fetcher,
+      maxA2AEntries: opts.maxA2AEntries ?? DEFAULT_MAX_A2A_ENTRIES,
+      fetchConcurrency: opts.fetchConcurrency ?? DEFAULT_FETCH_CONCURRENCY,
+      logger: this.logger,
+    });
+    this.scheduler = new DiscoveryRefreshScheduler({
+      refreshIntervalMs: this.refreshIntervalMs,
+      refresh: () => this.refresh(),
+      awaitingFirstCard: () => this.hasProviderAwaitingFirstCard(),
+      logger: this.logger,
+    });
   }
 
   getAll(): CachedProvider[] {
@@ -139,13 +96,7 @@ export class DiscoveryCache {
     return this.lastRefresh;
   }
 
-  status(): {
-    lastCycleAt: Date | null;
-    lastChainSuccessAt: Date | null;
-    lastChainError: { message: string; at: Date } | null;
-    cardFailureCount: number;
-    chainFresh: boolean;
-  } {
+  status() {
     const freshForMs = Math.max(this.refreshIntervalMs * 3, 120_000);
     return {
       lastCycleAt: this.lastCycleAt,
@@ -161,11 +112,11 @@ export class DiscoveryCache {
   async refresh(): Promise<void> {
     const deadlineAt = Date.now() + this.refreshDeadlineMs;
     const oldSnapshot = this.getAll();
-    let onChain: OnChainProvider[];
+    let onChain;
     try {
       onChain = await fetchOnChainProviders(this.reader, this.whitelist);
-    } catch (err) {
-      const message = (err as Error).message;
+    } catch (error) {
+      const message = (error as Error).message;
       const wasHealthy = this.lastChainError === null;
       this.lastCycleAt = new Date();
       this.lastChainError = { message, at: this.lastCycleAt };
@@ -174,51 +125,37 @@ export class DiscoveryCache {
       }
       return;
     }
-    if (this.lastChainError) {
-      this.logger.log("[cache] provider registry recovered");
-    }
+    if (this.lastChainError) this.logger.log("[cache] provider registry recovered");
     this.lastChainSuccessAt = new Date();
     this.lastChainError = null;
 
     const nextCache = new Map<string, CachedProvider>();
     let cardFailureCount = 0;
-
     for (const provider of onChain) {
       const existing = this.cache.get(provider.agentId.toString());
       try {
-        const resolved = await this.resolveAgentCard(provider.agentURI, deadlineAt);
+        const resolved = await this.resolver.resolve(provider.agentURI, deadlineAt);
+        const { partialError, ...providerCards } = resolved;
         nextCache.set(provider.agentId.toString(), {
           agentId: provider.agentId,
           walletAddress: provider.walletAddress,
           agentURI: provider.agentURI,
-          cards: resolved.cards,
-          providerName: resolved.providerName,
-          providerDescription: resolved.providerDescription,
-          providerImage: resolved.providerImage,
-          providerExternalUrl: resolved.providerExternalUrl,
-          providerLegal: resolved.providerLegal,
+          ...providerCards,
           lastFetched: new Date(),
-          fetchError: resolved.partialError,
+          fetchError: partialError,
         });
-      } catch (err) {
+      } catch (error) {
         cardFailureCount += 1;
-        const message = (err as Error).message ?? String(err);
-        const hardLegalFailure = err instanceof ProviderLegalValidationError;
+        const message = (error as Error).message ?? String(error);
+        const hardLegalFailure = error instanceof ProviderLegalValidationError;
         this.logger.warn(
           `[cache] failed to fetch agent card from ${provider.agentURI}: ${message}`,
         );
-        // Serve the last-known-good cards through transient provider
-        // outages (deploy warm-up 500s, card-host flake) so a single
-        // failed tick doesn't delist a provider that was purchasable
-        // seconds earlier — but only up to the staleness cap.
         const hasKnownGoodCard = existing !== undefined && existing.cards.length > 0;
         const withinStalenessCap =
           existing !== undefined &&
           Date.now() - existing.lastFetched.getTime() <= this.maxCardStalenessMs;
         if (!hardLegalFailure && existing && hasKnownGoodCard && withinStalenessCap) {
-          // Only the provider's HTTP surface failed; the on-chain read
-          // succeeded, so keep wallet + agentURI live (payee rotation
-          // must propagate even while the card host is down).
           nextCache.set(provider.agentId.toString(), {
             ...existing,
             walletAddress: provider.walletAddress,
@@ -231,7 +168,7 @@ export class DiscoveryCache {
               ? "provider legal metadata is invalid"
               : `staleness cap ${this.maxCardStalenessMs / 1000}s exceeded`;
             this.logger.warn(
-              `[cache] dropping agent ${provider.agentId}'s last-known-good ` + `card: ${reason}`,
+              `[cache] dropping agent ${provider.agentId}'s last-known-good card: ${reason}`,
             );
           }
           nextCache.set(provider.agentId.toString(), {
@@ -255,303 +192,34 @@ export class DiscoveryCache {
     this.cardFailureCount = cardFailureCount;
     this.lastCycleAt = new Date();
     this.lastRefresh = this.lastCycleAt;
-
     const newSnapshot = this.getAll();
     if (
       this.onCatalogChanged &&
-      (!this.catalogInitialized || this.hasChanged(oldSnapshot, newSnapshot))
+      (!this.catalogInitialized || catalogChanged(oldSnapshot, newSnapshot))
     ) {
       try {
         this.onCatalogChanged(oldSnapshot, newSnapshot);
-      } catch (err) {
-        this.logger.error(`[cache] onCatalogChanged callback threw: ${(err as Error).message}`);
+      } catch (error) {
+        this.logger.error(
+          `[cache] onCatalogChanged callback threw: ${(error as Error).message}`,
+        );
       }
     }
     this.catalogInitialized = true;
   }
 
-  private hasChanged(oldProviders: CachedProvider[], newProviders: CachedProvider[]): boolean {
-    if (oldProviders.length !== newProviders.length) return true;
-    for (let i = 0; i < oldProviders.length; i++) {
-      const o = oldProviders[i];
-      const n = newProviders[i];
-      if (o.agentId !== n.agentId) return true;
-      if (o.providerName !== n.providerName) return true;
-      if (o.providerDescription !== n.providerDescription) return true;
-      if (JSON.stringify(o.providerLegal) !== JSON.stringify(n.providerLegal)) {
-        return true;
-      }
-      // Compare the full card set — a provider adding/removing a service
-      // is a catalog change even when its first card is untouched.
-      if (JSON.stringify(o.cards) !== JSON.stringify(n.cards)) {
-        return true;
-      }
-    }
-    return false;
-  }
-
-  /**
-   * Resolves a provider's Agent Cards from its ERC-8004 agentURI, alongside
-   * the provider-level name/description on the registration file.
-   *
-   * The spec says agentURI points to the agent registration file (JSON with
-   * a `services` array). A multi-service provider lists ONE entry named
-   * "A2A" per service — every entry is fetched and becomes a card in the
-   * catalog. Top-level `name` and `description` on the registration file
-   * describe the *provider* (operating entity) and are kept separately so
-   * callers can render provider identity without re-fetching.
-   *
-   * Per-card fetch failures are tolerated as long as at least one card
-   * resolves: the failing endpoint is skipped and recorded in
-   * `partialError` so operators can see the gap without one broken
-   * service delisting the provider's healthy ones. Zero resolvable cards
-   * throws (the caller keeps serving the previous snapshot, with
-   * fetchError set, until the staleness cap expires).
-   *
-   */
-  private async resolveAgentCard(
-    agentURI: string,
-    deadlineAt: number,
-  ): Promise<{
-    cards: ProviderCard[];
-    providerName: string | null;
-    providerDescription: string | null;
-    providerImage: string | null;
-    providerExternalUrl: string | null;
-    providerLegal: ProviderLegalMetadata;
-    partialError: string | null;
-  }> {
-    const doc = await this.fetchJson(agentURI, deadlineAt);
-    const providerLegal = parseProviderLegalMetadata(doc);
-
-    const services = doc["services"];
-    if (Array.isArray(services)) {
-      const providerName = strField(doc, "name");
-      const providerDescription = strField(doc, "description");
-      // ERC-8004 §registration-v1 / ERC-721 metadata. `image` is the
-      // canonical icon slot; `external_url` is the ERC-721/OpenSea
-      // convention for a project homepage. Both are SHOULD-level, so
-      // null is the steady state for providers who haven't filled them.
-      const providerImage = strField(doc, "image");
-      const providerExternalUrl = strField(doc, "external_url");
-      const a2aEntries = services.filter(
-        (s: any) =>
-          s &&
-          typeof s === "object" &&
-          s.name === "A2A" &&
-          typeof s.endpoint === "string" &&
-          s.endpoint.length > 0,
-      ) as Array<{ endpoint: string }>;
-
-      if (a2aEntries.length > 0) {
-        if (a2aEntries.length > this.maxA2AEntries) {
-          throw new Error(
-            `registration file advertises ${a2aEntries.length} A2A entries; ` +
-              `maximum is ${this.maxA2AEntries}`,
-          );
-        }
-        const outcomes = await mapWithConcurrency(
-          a2aEntries,
-          this.fetchConcurrency,
-          async (entry) => {
-            try {
-              const agentCard = await this.fetchJson(entry.endpoint, deadlineAt);
-              assertValidServiceTaxonomy(agentCard);
-              const serviceSlug = extractCardServiceSlug(agentCard);
-              if (!serviceSlug) {
-                throw new Error("agent card is missing daski serviceSlug metadata");
-              }
-              return {
-                ok: true as const,
-                card: {
-                  endpoint: entry.endpoint,
-                  serviceSlug,
-                  agentCard,
-                },
-              };
-            } catch (err) {
-              const message = (err as Error).message ?? String(err);
-              this.logger.warn(
-                `[cache] failed to fetch agent card from ${entry.endpoint}: ${message}`,
-              );
-              return {
-                ok: false as const,
-                error: `${entry.endpoint}: ${message}`,
-              };
-            }
-          },
-        );
-        const cards = outcomes.flatMap((outcome) => (outcome.ok ? [outcome.card] : []));
-        const errors = outcomes.flatMap((outcome) => (outcome.ok ? [] : [outcome.error]));
-        if (cards.length === 0) {
-          throw new Error(
-            `all ${a2aEntries.length} agent card endpoint(s) failed: ${errors.join("; ")}`,
-          );
-        }
-        return {
-          cards,
-          providerName,
-          providerDescription,
-          providerImage,
-          providerExternalUrl,
-          providerLegal,
-          partialError: errors.length > 0 ? `partial card fetch: ${errors.join("; ")}` : null,
-        };
-      }
-      throw new Error("registration file has no A2A service endpoint");
-    }
-    throw new Error("agent registration file must contain a services array");
-  }
-
-  private async fetchJson(uri: string, deadlineAt: number): Promise<Record<string, unknown>> {
-    // Pre-flight: reject schemes other than http/https and hostnames that
-    // resolve to private/loopback/link-local space (AWS IMDS, localhost
-    // RPC ports, internal services). A whitelisted-but-malicious provider
-    // who controls their on-chain `agentURI` could otherwise pivot the
-    // gateway's outbound fetch into the cluster's internal network.
-    const validated = this.fetchFn === safeFetch ? await validateUrlForOutbound(uri) : undefined;
-
-    const remainingMs = deadlineAt - Date.now();
-    if (remainingMs <= 0) {
-      throw new Error("discovery refresh deadline exceeded");
-    }
-    const requestTimeoutMs = Math.min(this.agentCardFetchTimeoutMs, remainingMs);
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), requestTimeoutMs);
-    try {
-      // `redirect: "manual"` keeps each production redirect behind its own
-      // validation and pinned connection. Injected transports are trusted
-      // test doubles and do not open real network sockets.
-      const res = await this.fetchFn(
-        uri,
-        { signal: controller.signal, redirect: "manual" },
-        validated,
-      );
-      if (res.status >= 300 && res.status < 400) {
-        const loc = res.headers.get("location");
-        if (loc) {
-          const next = new URL(loc, uri).toString();
-          const nextValidated =
-            this.fetchFn === safeFetch ? await validateUrlForOutbound(next) : undefined;
-          // Single redirect hop only: real Agent Card hosts don't need
-          // chains, and longer chains are an attacker's preferred way to
-          // smuggle a private-host target in.
-          const innerController = new AbortController();
-          const innerRemainingMs = deadlineAt - Date.now();
-          if (innerRemainingMs <= 0) {
-            throw new Error("discovery refresh deadline exceeded");
-          }
-          const innerTimer = setTimeout(
-            () => innerController.abort(),
-            Math.min(this.agentCardFetchTimeoutMs, innerRemainingMs),
-          );
-          try {
-            const followed = await this.fetchFn(
-              next,
-              { signal: innerController.signal, redirect: "manual" },
-              nextValidated,
-            );
-            if (!followed.ok) {
-              throw new Error(`HTTP ${followed.status}`);
-            }
-            const json = await readBoundedJson<Record<string, unknown>>(
-              followed,
-              AGENT_CARD_MAX_BYTES,
-            );
-            if (typeof json !== "object" || json === null) {
-              throw new Error("Agent card is not an object");
-            }
-            return json;
-          } finally {
-            clearTimeout(innerTimer);
-          }
-        }
-      }
-      if (!res.ok) {
-        throw new Error(`HTTP ${res.status}`);
-      }
-      const json = await readBoundedJson<Record<string, unknown>>(res, AGENT_CARD_MAX_BYTES);
-      if (typeof json !== "object" || json === null) {
-        throw new Error("Agent card is not an object");
-      }
-      return json;
-    } finally {
-      clearTimeout(timeout);
-    }
-  }
-
   start(): void {
-    if (this.running) return;
-    this.running = true;
-    this.scheduleNextRefresh();
+    this.scheduler.start();
   }
 
   stop(): void {
-    this.running = false;
-    if (this.timer) {
-      clearTimeout(this.timer);
-      this.timer = null;
-    }
+    this.scheduler.stop();
   }
 
-  /**
-   * Self-scheduling refresh loop. Unlike the previous setInterval, the
-   * next tick is armed only after the current refresh finishes, so a slow
-   * provider can never stack overlapping refreshes. While any whitelisted
-   * provider has never yielded a card this process (gateway boot racing a
-   * provider deploy — there is no last-known-good to serve yet), the next
-   * tick comes on a short exponential-backoff fuse instead of a full
-   * refresh interval, shrinking the deploy-day catalog gap from minutes
-   * to seconds.
-   */
-  private scheduleNextRefresh(): void {
-    if (!this.running) return;
-    let delayMs = this.refreshIntervalMs;
-    if (this.hasProviderAwaitingFirstCard()) {
-      delayMs = Math.min(this.fastRetryDelayMs, this.refreshIntervalMs);
-      this.fastRetryDelayMs = Math.min(this.fastRetryDelayMs * 2, this.refreshIntervalMs);
-    } else {
-      this.fastRetryDelayMs = FAST_RETRY_BASE_MS;
-    }
-    this.timer = setTimeout(() => {
-      void this.refresh()
-        .catch((err) => {
-          // refresh() contains its own error handling; this guard only
-          // exists so an unexpected throw can't kill the loop.
-          this.logger.error(`[cache] refresh threw: ${(err as Error).message}`);
-        })
-        .finally(() => this.scheduleNextRefresh());
-    }, delayMs);
-  }
-
-  /** True while the registry has never been read, or any cached provider
-   *  is a card-less placeholder (no successful card fetch to fall back
-   *  on — the case the fast-retry fuse exists for). */
   private hasProviderAwaitingFirstCard(): boolean {
-    if (this.lastRefresh === null) return true;
-    for (const p of this.cache.values()) {
-      if (p.cards.length === 0) {
-        return true;
-      }
-    }
-    return false;
+    return (
+      this.lastRefresh === null ||
+      [...this.cache.values()].some((provider) => provider.cards.length === 0)
+    );
   }
-}
-
-async function mapWithConcurrency<T, R>(
-  items: T[],
-  concurrency: number,
-  action: (item: T) => Promise<R>,
-): Promise<R[]> {
-  const results = new Array<R>(items.length);
-  let nextIndex = 0;
-  const workers = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
-    while (nextIndex < items.length) {
-      const index = nextIndex;
-      nextIndex += 1;
-      results[index] = await action(items[index]);
-    }
-  });
-  await Promise.all(workers);
-  return results;
 }

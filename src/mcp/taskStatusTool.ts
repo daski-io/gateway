@@ -12,10 +12,14 @@ import {
 } from "./taskStatusStream.js";
 import type { McpDeps } from "./server.js";
 import { mcpError } from "./util.js";
+import type { ConcurrencyLimiter } from "./concurrencyLimiter.js";
+import { activeRequestKey, activeRequestSignal } from "./requestContext.js";
 
 export interface TaskStatusToolTransport
   extends TaskStatusTransport,
-    StreamTaskStatusTransport {}
+    StreamTaskStatusTransport {
+  streamLimiter: ConcurrencyLimiter;
+}
 
 export function registerTaskStatusTool(
   server: McpServer,
@@ -50,8 +54,11 @@ export function registerTaskStatusTool(
           .describe("Subscribe via SSE when true; otherwise poll once."),
         streamingTimeoutMs: z
           .number()
+          .int()
+          .min(1_000)
+          .max(120_000)
           .optional()
-          .describe("Maximum SSE duration. Default 120000 milliseconds."),
+          .describe("Maximum SSE duration from 1000 to 120000 milliseconds."),
       },
       annotations: {
         title: "Check a Daski task",
@@ -70,7 +77,29 @@ export function registerTaskStatusTool(
         });
       }
       if (args.stream) {
-        return streamTaskStatus(args, extra as ProgressSink, transport);
+        const release = transport.streamLimiter.tryAcquire(
+          activeRequestKey(extra.sessionId ?? "sessionless"),
+        );
+        if (!release) {
+          return mcpError({
+            code: "STREAM_CAPACITY_REACHED",
+            message: "Task-status stream capacity reached; retry later or poll once.",
+            recoverable: true,
+          });
+        }
+        try {
+          return await streamTaskStatus(
+            args,
+            {
+              signal: activeRequestSignal(extra.signal),
+              _meta: extra._meta,
+              sendNotification: extra.sendNotification,
+            } as ProgressSink,
+            transport,
+          );
+        } finally {
+          release();
+        }
       }
       return pollTaskStatus(args, transport);
     },

@@ -41,12 +41,26 @@ export function parseFilename(value: string | null): string | null {
   const encoded = value.match(/filename\*=UTF-8''([^;]+)/i)?.[1];
   if (encoded) {
     try {
-      return decodeURIComponent(encoded);
+      return sanitizeFilename(decodeURIComponent(encoded));
     } catch {
-      return encoded;
+      return sanitizeFilename(encoded);
     }
   }
-  return value.match(/filename="?([^";]+)"?/i)?.[1]?.trim() ?? null;
+  const plain = value.match(/filename="?([^";]+)"?/i)?.[1]?.trim();
+  return plain ? sanitizeFilename(plain) : null;
+}
+
+export function sanitizeFilename(value: string): string | null {
+  const basename = value.normalize("NFKC").split(/[\\/]/).pop() ?? "";
+  const cleaned = basename
+    .replace(/[\u0000-\u001f\u007f<>:"|?*]/g, "_")
+    .replace(/[. ]+$/g, "")
+    .trim();
+  if (!cleaned || cleaned === "." || cleaned === "..") return null;
+  const limited = Array.from(cleaned).slice(0, 160).join("");
+  return /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(limited)
+    ? `_${limited}`
+    : limited;
 }
 
 export function challengeResponse(

@@ -4,6 +4,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import { logErrorWithId } from "../util/errorWrap.js";
+import { withRequestDisconnectSignal } from "./requestContext.js";
 
 interface Session {
   server: McpServer;
@@ -163,7 +164,9 @@ export function mountMcpHttpTransport(
       const existing = id ? sessions.get(id) : undefined;
       if (existing) {
         existing.lastSeenAt = Date.now();
-        await existing.transport.handleRequest(req, res, req.body);
+        await withRequestDisconnectSignal(req, res, () =>
+          existing.transport.handleRequest(req, res, req.body),
+        );
         return;
       }
       if (!id && isInitializeRequest(req.body)) {
@@ -205,9 +208,12 @@ export function mountMcpHttpTransport(
             }
           | undefined;
         try {
-          fresh = buildSession(ownerKey);
-          await fresh.server.connect(fresh.transport);
-          await fresh.transport.handleRequest(req, res, req.body);
+          const initialized = buildSession(ownerKey);
+          fresh = initialized;
+          await initialized.server.connect(initialized.transport);
+          await withRequestDisconnectSignal(req, res, () =>
+            initialized.transport.handleRequest(req, res, req.body),
+          );
         } finally {
           pendingInitializations -= 1;
           const remaining = (pendingByClient.get(ownerKey) ?? 1) - 1;
@@ -243,7 +249,9 @@ export function mountMcpHttpTransport(
     }
     existing.lastSeenAt = Date.now();
     try {
-      await existing.transport.handleRequest(req, res);
+      await withRequestDisconnectSignal(req, res, () =>
+        existing.transport.handleRequest(req, res),
+      );
     } catch (err) {
       logErrorWithId(`mcp.${req.method.toLowerCase()}`, err);
       if (!res.headersSent) res.status(500).end();

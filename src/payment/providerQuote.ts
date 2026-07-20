@@ -21,7 +21,7 @@ export {
 const DEFAULT_TIMEOUT_MS = 15_000;
 const DEFAULT_MAX_BYTES = 256 * 1024;
 
-export function quoteUrlFor(providerA2AUrl: string): string {
+function quoteUrlFor(providerA2AUrl: string): string {
   return providerA2AUrl.replace(/\/a2a(?=\/|$)/, "/quote");
 }
 

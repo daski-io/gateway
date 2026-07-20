@@ -108,10 +108,25 @@ describe("hosted MCP — wallet-agnostic surface", () => {
       );
       const properties = searchTool?.inputSchema.properties as Record<
         string,
-        { enum?: string[] }
+        { enum?: string[]; minimum?: number; maximum?: number }
       >;
       expect(properties.categoryFamily.enum).toEqual(CATEGORY_FAMILY_SLUGS);
       expect(properties.serviceType.enum).toEqual(SERVICE_TYPE_SLUGS);
+      const statusTool = tools.tools.find(
+        (tool) => tool.name === "daski_get_task_status",
+      );
+      const statusProperties = statusTool?.inputSchema.properties as Record<
+        string,
+        { minimum?: number; maximum?: number }
+      >;
+      expect(statusProperties.streamingTimeoutMs).toMatchObject({
+        minimum: 1_000,
+        maximum: 120_000,
+      });
+      const artifactTool = tools.tools.find(
+        (tool) => tool.name === "daski_fetch_artifact",
+      );
+      expect(artifactTool?.inputSchema.required).toContain("providerA2AUrl");
       expect(client.getInstructions()).toContain(MCP_LEGAL_INSTRUCTIONS);
       for (const toolName of [
         "daski_purchase",

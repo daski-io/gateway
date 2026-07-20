@@ -27,6 +27,7 @@ import { registerSubmitTaskTool } from "./submitTaskTool.js";
 import { registerBuyServiceTool } from "./buyServiceTool.js";
 import { runBuyService } from "./buyServiceWorkflow.js";
 import { runSubmitTask } from "./submitTaskWorkflow.js";
+import { ConcurrencyLimiter } from "./concurrencyLimiter.js";
 
 // JSON response cap on provider A2A calls. Real responses are <50 KB; 1 MB
 // is generous enough for unusual artifact payloads while still protecting
@@ -115,11 +116,18 @@ export async function createMcpServer(
   ) => Promise<Response> = deps.fetch ?? safeFetch;
   const enforceUrlSafety = deps.fetch === undefined;
   const a2aTimeoutMs = deps.a2aTimeoutMs ?? 10_000;
+  const artifactLimiter = new ConcurrencyLimiter(8, 1);
+  const streamLimiter = new ConcurrencyLimiter(20, 2);
   function registerTools(server: McpServer) {
-    registerArtifactTool(server, {
-      fetch: a2aFetch,
-      timeoutMs: a2aTimeoutMs,
-    });
+    registerArtifactTool(
+      server,
+      deps.cache,
+      {
+        fetch: a2aFetch,
+        timeoutMs: a2aTimeoutMs,
+      },
+      artifactLimiter,
+    );
     registerDiscoveryTool(server, deps);
 
     registerPurchaseTool(server, deps, {
@@ -149,6 +157,7 @@ export async function createMcpServer(
       timeoutMs: a2aTimeoutMs,
       enforceUrlSafety,
       maxResponseBytes: A2A_RESPONSE_MAX_BYTES,
+      streamLimiter,
     });
 
     registerBuyServiceTool(

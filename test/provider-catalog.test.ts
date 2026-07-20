@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   findCatalogA2AEndpoint,
+  isCatalogArtifactUrl,
   normalizeA2AUrl,
   skillMetaFromCard,
 } from "../src/mcp/providerCatalog.js";
@@ -13,6 +14,7 @@ const CARD = {
   skills: [{ id: "listed-skill" }],
   extensions: {
     [DASKI_A2A_EXTENSION_URI]: {
+      artifactOrigins: ["https://cdn.provider.test"],
       skills: {
         "listed-skill": { paymentRequired: true },
       },
@@ -52,6 +54,30 @@ describe("provider catalog endpoint binding", () => {
     expect(normalizeA2AUrl("https://provider.test/A2A?tenant=1")).not.toBe(
       normalizeA2AUrl("https://provider.test/A2A?tenant=2"),
     );
+  });
+
+  it("allows only provider and explicitly advertised artifact origins", () => {
+    expect(
+      isCatalogArtifactUrl(
+        CACHE,
+        "https://provider.test/A2A",
+        "https://provider.test/files/result.pdf",
+      ),
+    ).toBe(true);
+    expect(
+      isCatalogArtifactUrl(
+        CACHE,
+        "https://provider.test/A2A",
+        "https://cdn.provider.test/result.pdf",
+      ),
+    ).toBe(true);
+    expect(
+      isCatalogArtifactUrl(
+        CACHE,
+        "https://provider.test/A2A",
+        "https://unrelated.test/result.pdf",
+      ),
+    ).toBe(false);
   });
 
   it("resolves skills only from the matched card", () => {

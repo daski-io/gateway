@@ -8,12 +8,9 @@ import {
   isServiceType,
   isServiceTypeForFamily,
 } from "../serviceTaxonomy.js";
-import {
-  applyDiscoverFilters,
-  formatForRestDiscover,
-  hasMarketplaceService,
-  type DiscoverFilters,
-} from "./format.js";
+import { hasMarketplaceService } from "./agentCard.js";
+import { applyDiscoverFilters, type DiscoverFilters } from "./filters.js";
+import { formatForRestDiscover } from "./restPresentation.js";
 
 /// Wallet-facing description of which ERC-20 the gateway settles in. Surfaced
 /// at the top of /discover so agents can pre-check balance against the right

@@ -93,6 +93,7 @@ export interface TestProviderDef {
   a2aPath?: string;
   cardPath?: string;
   description?: string;
+  artifactOrigins?: string[];
   skipExtension?: boolean;
   legal?: {
     legalName?: unknown;
@@ -583,6 +584,7 @@ function _installProvider(
       paymentRouterAddress: PAYMENT_ROUTER_ADDRESS,
       chainId: CHAIN_ID,
       description: def.description,
+      artifactOrigins: def.artifactOrigins,
       skipExtension: def.skipExtension,
       legal: def.legal,
       skills,

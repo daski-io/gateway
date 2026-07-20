@@ -1,5 +1,5 @@
 import type { Router } from "express";
-import { cardsOf, extractAgentCardName } from "../discovery/format.js";
+import { cardsOf, extractAgentCardName } from "../discovery/agentCard.js";
 import {
   formatChainActivityRow,
   formatServicesForPublic,

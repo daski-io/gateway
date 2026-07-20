@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   extractAgentCardUrl,
-  formatForSkillDiscover,
-} from "../src/discovery/format.js";
+} from "../src/discovery/agentCard.js";
+import { formatForSkillDiscover } from "../src/discovery/skillPresentation.js";
 import { DASKI_A2A_EXTENSION_URI } from "../src/config.js";
 import type { CachedProvider } from "../src/types.js";
 

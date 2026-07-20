@@ -2,8 +2,9 @@ import type { DiscoveryCache } from "../discovery/cache.js";
 import {
   cardsOf,
   extractAgentCardUrl,
+  extractMarketplaceExtension,
   parseAgentSkills,
-} from "../discovery/format.js";
+} from "../discovery/agentCard.js";
 import type { CachedProvider, ProviderCard } from "../types.js";
 
 export interface ProviderMatch {
@@ -42,7 +43,7 @@ export function findProvidersOfferingSkill(
   return matches;
 }
 
-export function findSkillMeta(
+function findSkillMeta(
   provider: CachedProvider,
   skillId: string,
   serviceSlug?: string,
@@ -105,6 +106,35 @@ export function findCatalogSkillAtA2AEndpoint(
     }
   }
   return null;
+}
+
+export function isCatalogArtifactUrl(
+  cache: DiscoveryCache,
+  providerA2AUrl: string,
+  artifactUrl: string,
+): boolean {
+  const match = findCatalogA2AEndpoint(cache, providerA2AUrl);
+  if (!match) return false;
+  try {
+    const providerEndpoint = new URL(match.url);
+    const target = new URL(artifactUrl);
+    if (
+      (target.protocol !== "http:" && target.protocol !== "https:") ||
+      target.username ||
+      target.password
+    ) {
+      return false;
+    }
+    const allowedOrigins = new Set([providerEndpoint.origin]);
+    const advertised = extractMarketplaceExtension(match.card.agentCard)
+      ?.artifactOrigins;
+    for (const origin of advertised ?? []) {
+      allowedOrigins.add(new URL(origin).origin);
+    }
+    return allowedOrigins.has(target.origin);
+  } catch {
+    return false;
+  }
 }
 
 export function normalizeA2AUrl(rawUrl: string): string | null {

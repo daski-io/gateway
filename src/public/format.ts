@@ -8,7 +8,7 @@ import {
   extractAgentCardUrl,
   extractMarketplaceExtension,
   parseAgentSkills,
-} from "../discovery/format.js";
+} from "../discovery/agentCard.js";
 import { derivePrimaryServiceId } from "../discovery/serviceIdentity.js";
 import { buildServiceLegal } from "../legal/purchase.js";
 import type { MarketplaceLegalUrls } from "../legal/types.js";
