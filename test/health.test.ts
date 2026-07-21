@@ -22,6 +22,7 @@ describe("health surfaces", () => {
     expect(await beforeIndexer.json()).toEqual({
       status: "unready",
       version: expect.any(String),
+      dependencies: { paymentScreening: "ready" },
     });
 
     await gateway.bundle.indexer.tick();
@@ -30,6 +31,7 @@ describe("health surfaces", () => {
     expect(await ready.json()).toEqual({
       status: "ready",
       version: expect.any(String),
+      dependencies: { paymentScreening: "ready" },
     });
   });
 

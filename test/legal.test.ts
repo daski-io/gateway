@@ -27,6 +27,8 @@ const VALID_CONFIG_ENV: NodeJS.ProcessEnv = {
   PROVIDER_REGISTRY_ADDRESS: "0x0000000000000000000000000000000000000003",
   SERVICE_REGISTRY_ADDRESS: "0x0000000000000000000000000000000000000004",
   PAYMENT_ROUTER_ADDRESS: "0x0000000000000000000000000000000000000005",
+  SANCTIONS_ORACLE_ADDRESS: "0x0000000000000000000000000000000000000008",
+  SANCTIONS_ORACLE_MODE: "mock",
   X402_ADAPTER_ADDRESS: "0x0000000000000000000000000000000000000006",
   USDC_ADDRESS: "0x0000000000000000000000000000000000000007",
   FACILITATOR_PRIVATE_KEY: `0x${"1".repeat(64)}`,
@@ -59,6 +61,7 @@ describe("startup configuration validation", () => {
         ...VALID_CONFIG_ENV,
         NODE_ENV: "production",
         TRUST_PROXY: "1",
+        SANCTIONS_ORACLE_MODE: "production",
         PUBLIC_URL: "http://gateway.example",
       }),
     ).toThrow(/PUBLIC_URL must use HTTPS/);
@@ -67,19 +70,30 @@ describe("startup configuration validation", () => {
         ...VALID_CONFIG_ENV,
         NODE_ENV: "production",
         TRUST_PROXY: "1",
+        SANCTIONS_ORACLE_MODE: "production",
         PUBLIC_URL: "https://gateway.example",
         BASE_RPC_URL: "http://rpc.example",
       }),
     ).toThrow(/BASE_RPC_URL must use HTTPS/);
   });
 
-  it("defaults both supported networks to the Bazaar-indexing CDP facilitator", () => {
-    const expected = "https://api.cdp.coinbase.com/platform/v2/x402";
-    expect(loadConfig(VALID_CONFIG_ENV).externalFacilitatorUrl).toBe(expected);
-    expect(
-      loadConfig({ ...VALID_CONFIG_ENV, CHAIN_ID: "8453" })
-        .externalFacilitatorUrl,
-    ).toBe(expected);
+  it("pins mainnet sanctions configuration and forbids production mock mode", () => {
+    expect(() =>
+      loadConfig({
+        ...VALID_CONFIG_ENV,
+        CHAIN_ID: "8453",
+        SANCTIONS_ORACLE_MODE: "production",
+      }),
+    ).toThrow(/Base mainnet SANCTIONS_ORACLE_ADDRESS/);
+    expect(() =>
+      loadConfig({
+        ...VALID_CONFIG_ENV,
+        NODE_ENV: "production",
+        TRUST_PROXY: "1",
+        PUBLIC_URL: "https://gateway.example",
+        BASE_RPC_URL: "https://rpc.example",
+      }),
+    ).toThrow(/SANCTIONS_ORACLE_MODE=mock/);
   });
 });
 

@@ -10,17 +10,15 @@ import { createDiscoveryRouter } from "../discovery/routes.js";
 import type { FetchAgentCardOptions } from "../identity/fetch-agent-card.js";
 import { createIdentityRouter } from "../identity/routes.js";
 import { createMcpServer, type McpWiring } from "../mcp/server.js";
-import { createBazaarRouter } from "../payment/bazaar.js";
 import { createConfirmRouter } from "../payment/confirm.js";
-import { createExternalFacilitatorClient } from "../payment/externalFacilitator.js";
 import { createFacilitatorRouter } from "../payment/facilitator.js";
 import { createPrepRouter } from "../payment/prep.js";
 import { createPurchaseRouter } from "../payment/routes.js";
+import type { PaymentScreeningReadinessProbe } from "../payment/screeningReadiness.js";
 import { createPublicRouter } from "../public/routes.js";
 import type { ReputationMirrorWorker } from "../reputation/worker.js";
 import type { ChainEventsIndexer } from "../indexer/chainEvents.js";
 import { logErrorWithId } from "../util/errorWrap.js";
-import { safeFetch } from "../util/urlSafety.js";
 import { sendBodyParserError } from "./bodyErrors.js";
 import { createMetaRouter } from "./metaRoutes.js";
 import { configureMiddleware } from "./middleware.js";
@@ -35,10 +33,10 @@ export interface GatewayHttpOptions {
   pool: Pool;
   embedder: Embedder | null;
   embeddingSync: CatalogEmbeddingSynchronizer | null;
+  screeningReadiness: PaymentScreeningReadinessProbe;
   a2aFetch?: typeof fetch;
   a2aTimeoutMs?: number;
   buyerAgentCardFetch?: FetchAgentCardOptions["fetchFn"];
-  externalFacilitatorFetch?: typeof fetch;
   mcpMaxSessions?: number;
   mcpMaxSessionsPerClient?: number;
   mcpSessionIdleTtlMs?: number;
@@ -59,33 +57,26 @@ export async function createGatewayHttp(
       pool: options.pool,
       indexer: options.indexer,
       reputationWorker,
+      screeningReadiness: options.screeningReadiness,
     }),
   );
   app.use(createDiscoveryRouter(cache, config));
-  app.use(createPurchaseRouter({ config, cache, queries, reader }));
-  if (config.directAdapterAddress) {
-    app.use(
-      createBazaarRouter({
-        config,
-        cache,
-        queries,
-        reader,
-        facilitator: createExternalFacilitatorClient({
-          baseUrl: config.externalFacilitatorUrl,
-          authHeader: config.externalFacilitatorAuthHeader,
-          fetchFn: options.externalFacilitatorFetch,
-        }),
-        quoteFetch: options.a2aFetch ?? safeFetch,
-        quoteTimeoutMs: options.a2aTimeoutMs,
-      }),
-    );
-  }
+  app.use(
+    createPurchaseRouter({
+      config,
+      cache,
+      queries,
+      reader,
+      screeningReadiness: options.screeningReadiness,
+    }),
+  );
   app.use(createConfirmRouter({ config, reader, queries, reputationWorker }));
   app.use(
     createFacilitatorRouter({
       config,
       queries,
       reader,
+      screeningReadiness: options.screeningReadiness,
       fetchAgentCardFn: options.buyerAgentCardFetch,
     }),
   );
@@ -112,6 +103,7 @@ export async function createGatewayHttp(
         cache,
         queries,
         reader,
+        screeningReadiness: options.screeningReadiness,
         reputationWorker,
         pool: options.pool,
         embedder: options.embedder,

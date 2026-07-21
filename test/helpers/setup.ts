@@ -27,6 +27,7 @@ const IDENTITY_REGISTRY_ADDRESS = "0x000000000000000000000000000000000000a000" a
 const AGENT_INDEX_ADDRESS = "0x000000000000000000000000000000000000a007" as Hex;
 const REGISTRY_ADDRESS = "0x000000000000000000000000000000000000a001" as Hex;
 const PAYMENT_ROUTER_ADDRESS = "0x000000000000000000000000000000000000a002" as Hex;
+const SANCTIONS_ORACLE_ADDRESS = "0x000000000000000000000000000000000000a008" as Hex;
 const USDC_ADDRESS = "0x000000000000000000000000000000000000a003" as Hex;
 const X402_ADAPTER_ADDRESS = "0x000000000000000000000000000000000000a004" as Hex;
 const EAS_ADDRESS = "0x000000000000000000000000000000000000a005" as Hex;
@@ -72,13 +73,6 @@ export interface TestGatewayOptions {
    * etc.) that the default fixture leaves unset.
    */
   configOverrides?: Partial<Config>;
-  /**
-   * Stub for the EXTERNAL x402 facilitator HTTP client (Bazaar rail).
-   * Receives the /verify and /settle POSTs the gateway would send to the
-   * CDP facilitator. Only reachable when configOverrides sets
-   * directAdapterAddress (which mounts the /x402/services routes).
-   */
-  externalFacilitatorFetch?: typeof fetch;
 }
 
 /** Test-facing provider definition. `tokenId` is the ERC-8004 agentId. */
@@ -216,6 +210,8 @@ export async function startTestGateway(opts: TestGatewayOptions = {}): Promise<T
     providerRegistryAddress: REGISTRY_ADDRESS,
     serviceRegistryAddress: SERVICE_REGISTRY_ADDRESS,
     paymentRouterAddress: PAYMENT_ROUTER_ADDRESS,
+    sanctionsOracleAddress: SANCTIONS_ORACLE_ADDRESS,
+    sanctionsOracleMode: "mock",
     x402AdapterAddress: X402_ADAPTER_ADDRESS,
     usdcAddress: USDC_ADDRESS,
     usdcName: "USDC",
@@ -233,10 +229,6 @@ export async function startTestGateway(opts: TestGatewayOptions = {}): Promise<T
     easConfirmationSchemaUid: EAS_CONFIRMATION_SCHEMA_UID,
     easOutcomeSchemaUid: EAS_OUTCOME_SCHEMA_UID,
     ipfsGatewayUrl: "https://ipfs.io/ipfs/",
-    // Bazaar rail — never hit over the network in tests; routes are only
-    // mounted when configOverrides also sets directAdapterAddress, and
-    // those tests inject externalFacilitatorFetch.
-    externalFacilitatorUrl: "http://external-facilitator.test",
     ...opts.configOverrides,
   };
 
@@ -283,7 +275,6 @@ export async function startTestGateway(opts: TestGatewayOptions = {}): Promise<T
     agentCardFetchTimeoutMs: 2000,
     a2aFetch: opts.a2aFetch ?? localProviderFetch,
     buyerAgentCardFetch,
-    externalFacilitatorFetch: opts.externalFacilitatorFetch,
   });
 
   await bundle.cache.refresh();

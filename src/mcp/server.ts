@@ -28,6 +28,7 @@ import { registerBuyServiceTool } from "./buyServiceTool.js";
 import { runBuyService } from "./buyServiceWorkflow.js";
 import { runSubmitTask } from "./submitTaskWorkflow.js";
 import { ConcurrencyLimiter } from "./concurrencyLimiter.js";
+import type { PaymentScreeningReadinessProbe } from "../payment/screeningReadiness.js";
 
 // JSON response cap on provider A2A calls. Real responses are <50 KB; 1 MB
 // is generous enough for unusual artifact payloads while still protecting
@@ -46,6 +47,7 @@ export interface McpDeps {
   cache: DiscoveryCache;
   queries: Queries;
   reader: ChainReader;
+  screeningReadiness: PaymentScreeningReadinessProbe;
   reputationWorker: ReputationMirrorWorker;
   pool: import("../db/pool.js").Pool;
   embeddingSync?: import("../discovery/embeddingSync.js").CatalogEmbeddingSynchronizer | null;

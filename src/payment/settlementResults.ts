@@ -5,6 +5,7 @@ import {
 } from "../chain/reader.js";
 import type { Queries } from "../db/queries.js";
 import type { Hex, StoredChallenge } from "../types.js";
+import type { SettlementScreeningFailure } from "../chain/sanctionsErrors.js";
 import { publicErrorMessage } from "../util/errorWrap.js";
 import type { SettleResult } from "./verifyTypes.js";
 
@@ -16,13 +17,24 @@ export function settlementFailure(
   message: string,
   network: Config["network"],
   payer: Hex = ZERO_ADDRESS,
+  screeningFailure?: SettlementScreeningFailure,
 ): SettleResult {
   return {
     ok: false,
     errorReason,
     message,
     status,
-    response: { success: false, errorReason, transaction: "", network, payer },
+    response: {
+      success: false,
+      errorReason,
+      transaction: "",
+      network,
+      payer,
+      ...(screeningFailure
+        ? { retryable: screeningFailure.retryable }
+        : {}),
+    },
+    ...(screeningFailure ? { screeningFailure } : {}),
   };
 }
 

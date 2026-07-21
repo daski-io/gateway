@@ -5,7 +5,6 @@ import { computeRequestHash } from "../src/auth/envelope.js";
 import { DASKI_A2A_EXTENSION_URI } from "../src/config.js";
 import { AGENT_AUTHORITY, PURCHASE_NOTICE } from "../src/legal/purchase.js";
 import { makePaymentSettledEvent } from "./helpers/mockChain.js";
-import { reconcileExternalSettlements } from "../src/payment/externalReconciler.js";
 
 const TEST_TX = "0x1111111111111111111111111111111111111111111111111111111111111111" as Hex;
 const NONCE = "0xaaaa000000000000000000000000000000000000000000000000000000000001" as Hex;
@@ -519,130 +518,6 @@ describe("payment", () => {
 
     expect(await gateway.bundle.queries.deleteExpiredChallenges(1, 10)).toBe(1);
     expect(await gateway.bundle.queries.getChallengeByRef(ref)).toBeNull();
-  });
-
-  it("does not expire a challenge after an external facilitator settled it", async () => {
-    const ref = "0xfeed000000000000000000000000000000000000000000000000000000000003" as Hex;
-    const settleTx = "0x3333333333333333333333333333333333333333333333333333333333333333" as Hex;
-    await gateway.bundle.queries.insertChallenge({
-      serviceRef: ref,
-      providerTokenId: 2n,
-      buyerTokenId: 5n,
-      amount: 15_000_000n,
-      skillId: "default-service",
-      serviceSlug: "test-service",
-      serviceVersion: "1",
-      serviceId: ("0x" + "00".repeat(32)) as Hex,
-      providerA2AUrl: `${gateway.mockProvider.baseUrl}/a2a`,
-      walletAddress: gateway.buyerAddress,
-      expiresAt: new Date(Date.now() - 60_000),
-      rail: "external",
-      authNonce: ("0x" + "33".repeat(32)) as Hex,
-    });
-
-    expect(await gateway.bundle.queries.recordChallengeExternallySettled(ref, settleTx)).toBe(true);
-    expect(await gateway.bundle.queries.expireStaleChallenges()).toBe(0);
-
-    const stored = await gateway.bundle.queries.getChallengeByRef(ref);
-    expect(stored?.settlementState).toBe("external_settled");
-    expect(stored?.externalSettleTx).toBe(settleTx);
-  });
-
-  it("reconciles an explicitly external-settled challenge without a client retry", async () => {
-    const ref = "0xfeed000000000000000000000000000000000000000000000000000000000005" as Hex;
-    const nonce = ("0x" + "55".repeat(32)) as Hex;
-    const settleTx = ("0x" + "66".repeat(32)) as Hex;
-    const attributionTx = ("0x" + "77".repeat(32)) as Hex;
-    const serviceId = ("0x" + "88".repeat(32)) as Hex;
-    await gateway.bundle.queries.insertChallenge({
-      serviceRef: ref,
-      providerTokenId: 2n,
-      buyerTokenId: 5n,
-      amount: 15_000_000n,
-      skillId: "default-service",
-      serviceSlug: "test-service",
-      serviceVersion: "1",
-      serviceId,
-      providerA2AUrl: `${gateway.mockProvider.baseUrl}/a2a`,
-      walletAddress: gateway.buyerAddress,
-      expiresAt: new Date(Date.now() + 60_000),
-      rail: "external",
-      authNonce: nonce,
-    });
-    await gateway.bundle.queries.recordChallengeExternallySettled(ref, settleTx);
-    await gateway.bundle.pool.query(
-      `UPDATE payment_challenges
-          SET created_at = now() - interval '1 minute'
-        WHERE service_ref = $1`,
-      [Buffer.from(ref.slice(2), "hex")],
-    );
-    gateway.mockChain.setAuthorizationUsed(gateway.buyerAddress, nonce, true);
-    gateway.mockChain.queueAttribution({
-      kind: "success",
-      txHash: attributionTx,
-      event: makePaymentSettledEvent({
-        paymentId: 92n,
-        serviceRef: ref,
-        serviceId,
-        buyerAgentId: 5n,
-        providerAgentId: 2n,
-        totalAmount: 15_000_000n,
-      }),
-    });
-
-    expect(
-      await reconcileExternalSettlements(
-        gateway.mockChain,
-        gateway.bundle.queries,
-      ),
-    ).toEqual({ scanned: 1, recovered: 1 });
-    expect(
-      (await gateway.bundle.queries.getChallengeByRef(ref))?.settlementState,
-    ).toBe("paid");
-  });
-
-  it("recovers an external-settlement expiry race through attribution", async () => {
-    const ref = "0xfeed000000000000000000000000000000000000000000000000000000000004" as Hex;
-    const settleTx = "0x4444444444444444444444444444444444444444444444444444444444444444" as Hex;
-    const attributionTx =
-      "0x5555555555555555555555555555555555555555555555555555555555555555" as Hex;
-    await gateway.bundle.queries.insertChallenge({
-      serviceRef: ref,
-      providerTokenId: 2n,
-      buyerTokenId: 5n,
-      amount: 15_000_000n,
-      skillId: "default-service",
-      serviceSlug: "test-service",
-      serviceVersion: "1",
-      serviceId: ("0x" + "00".repeat(32)) as Hex,
-      providerA2AUrl: `${gateway.mockProvider.baseUrl}/a2a`,
-      walletAddress: gateway.buyerAddress,
-      expiresAt: new Date(Date.now() - 60_000),
-      rail: "external",
-      authNonce: ("0x" + "44".repeat(32)) as Hex,
-    });
-
-    expect(await gateway.bundle.queries.expireStaleChallenges()).toBe(1);
-    expect(await gateway.bundle.queries.recordChallengeExternallySettled(ref, settleTx)).toBe(true);
-    expect(
-      (await gateway.bundle.queries.getChallengeByRef(ref))?.settlementState,
-    ).toBe("external_settled");
-
-    // Model an already-deployed sweeper (or a tight concurrent update)
-    // that left the externally-settled row expired. Attribution must still
-    // be able to finish because the buyer's funds have already moved.
-    await gateway.bundle.pool.query(
-      `UPDATE payment_challenges
-          SET settlement_state = 'expired'
-        WHERE service_ref = $1`,
-      [Buffer.from(ref.slice(2), "hex")],
-    );
-    expect(await gateway.bundle.queries.recordChallengePaid(ref, 91n, attributionTx)).toBe(true);
-
-    const stored = await gateway.bundle.queries.getChallengeByRef(ref);
-    expect(stored?.settlementState).toBe("paid");
-    expect(stored?.paymentId).toBe(91n);
-    expect(stored?.transactionHash).toBe(attributionTx);
   });
 
   it("/supported advertises the exact scheme on base-sepolia", async () => {

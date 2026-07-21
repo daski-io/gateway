@@ -66,6 +66,19 @@ export function registerSettlePaymentTool(server: McpServer, deps: McpDeps): voi
           message: "no challenge found for the given serviceRef",
         });
       }
+      if (
+        challenge.settlementState !== "paid" &&
+        challenge.settlementState !== "sanctions_rejected" &&
+        !(await deps.screeningReadiness.isReady())
+      ) {
+        return mcpError({
+          code: "payment_screening_unready",
+          message: "Payment cannot be processed right now. Please try again later.",
+          retryable: true,
+          recoverable: true,
+          next_action: "Retry later while payment screening is available.",
+        });
+      }
 
       const coordinated = await settleChallenge(
         {
@@ -101,11 +114,19 @@ export function registerSettlePaymentTool(server: McpServer, deps: McpDeps): voi
         return mcpError({
           code: result.errorReason,
           message: result.message,
+          ...(result.screeningFailure
+            ? {
+                retryable: result.screeningFailure.retryable,
+                recoverable: result.screeningFailure.retryable,
+                next_action: result.screeningFailure.retryable
+                  ? "Retry later while the provider quote remains valid."
+                  : "Do not retry this unchanged payment. Request a fresh quote only after the participant issue is resolved.",
+              }
+            : { recoverable: false }),
           details: {
             transaction: result.response.transaction,
             payer: result.response.payer,
           },
-          recoverable: false,
         });
       }
       const response = result.response;

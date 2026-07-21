@@ -296,6 +296,7 @@ export interface PaymentPayload {
 export interface SettlementResponse {
   success: boolean;
   errorReason?: string;
+  retryable?: boolean;
   transaction: string; // tx hash or empty string on failure
   network: "base" | "base-sepolia";
   payer: Hex;

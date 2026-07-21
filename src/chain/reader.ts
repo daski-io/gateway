@@ -50,23 +50,6 @@ export class SettlementTransactionRevertedError extends Error {
   }
 }
 
-// ── External-rail attribution (DirectTransferAdapter) ────────────────────
-//
-// Used by the Bazaar-facing route after an EXTERNAL x402 facilitator (CDP)
-// settled the buyer's EIP-3009 authorization as a bare transfer into the
-// router. The gateway then submits DirectTransferAdapter.attribute to run
-// the commission split + payment record for funds that already arrived.
-// `authNonce` is the client-chosen EIP-3009 nonce — the adapter requires
-// authorizationState(from, authNonce) == true as defense-in-depth.
-export interface DirectAttributionInput {
-  providerAgentId: bigint;
-  serviceId: Hex;
-  amount: bigint;
-  serviceRef: Hex;
-  from: Hex;
-  authNonce: Hex;
-}
-
 // ── Atomic register-and-settle ───────────────────────────────────────────
 //
 // Combines the buyer's registration authorization with SettlementInput in
@@ -256,10 +239,6 @@ export interface PaymentChainGateway {
     input: SettleWithRegistrationInput,
     onBroadcast?: BroadcastObserver,
   ): Promise<SettleWithRegistrationResult>;
-  attributeDirectTransfer(
-    input: DirectAttributionInput,
-    onBroadcast?: BroadcastObserver,
-  ): Promise<SettlementResult>;
   getSettlementByTransaction(
     transactionHash: Hex,
     serviceRef: Hex,
@@ -278,6 +257,12 @@ export interface ConfirmationRelayer {
 
 export interface ChainStatusReader {
   getBlockNumber(): Promise<bigint>;
+  verifySanctionsReadiness(input: {
+    oracleAddress: Hex;
+    guardedContracts: readonly Hex[];
+    probeAccount: Hex;
+    chainId: number;
+  }): Promise<boolean>;
 }
 
 export interface ReputationReader {

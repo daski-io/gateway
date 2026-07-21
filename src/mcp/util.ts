@@ -59,6 +59,7 @@ export function isFieldPresent(
 export interface McpErrorPayload {
   code: string;
   message: string;
+  retryable?: boolean;
   details?: Record<string, unknown>;
   recoverable?: boolean;
   next_action?: string;

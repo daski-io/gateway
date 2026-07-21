@@ -2,6 +2,7 @@ import type { PaymentChainGateway } from "../chain/reader.js";
 import type { Config } from "../config.js";
 import type { Queries } from "../db/queries.js";
 import type { Hex } from "../types.js";
+import { SettlementScreeningError } from "../chain/sanctionsErrors.js";
 import { publicErrorMessage } from "../util/errorWrap.js";
 import { cacheRegisteredBuyer } from "./buyerRegistrationCache.js";
 import {
@@ -14,6 +15,11 @@ import {
   validateSettlementEvent,
 } from "./settlementResults.js";
 import { verifyPaymentPayload } from "./verifyPayload.js";
+import { recoverBroadcastSettlement } from "./settlementRecovery.js";
+import {
+  handleSettlementScreeningError,
+  screeningFailureResult,
+} from "./screeningFailure.js";
 import type {
   AtomicSettlementOptions,
   SettleInput,
@@ -29,6 +35,23 @@ export async function verifyAndSettleUnlocked(
   atomic?: AtomicSettlementOptions,
 ): Promise<SettleResult> {
   const { challenge } = input;
+  const operation = atomic
+    ? ("settle_with_registration" as const)
+    : ("settle" as const);
+  if (challenge.settlementState === "sanctions_rejected") {
+    const stored = await queries.getTerminalSettlementScreeningFailure(
+      challenge.serviceRef,
+    );
+    return stored
+      ? screeningFailureResult(stored, config, challenge.walletAddress)
+      : settlementFailure(
+          500,
+          "screening_evidence_missing",
+          "terminal settlement screening evidence is missing",
+          config.network,
+          challenge.walletAddress,
+        );
+  }
   const missingQuote = missingQuoteCommitment(challenge);
   if (missingQuote) {
     return settlementFailure(
@@ -56,8 +79,8 @@ export async function verifyAndSettleUnlocked(
   }
   const enforceBuyer = atomic === undefined;
   if (challenge.transactionHash) {
-    return recoverBroadcast(
-      input,
+    return recoverBroadcastSettlement(
+      challenge,
       config,
       reader,
       queries,
@@ -102,6 +125,16 @@ export async function verifyAndSettleUnlocked(
         : reader.settlePayment(settlementInput, onBroadcast);
     });
   } catch (error) {
+    if (error instanceof SettlementScreeningError) {
+      return handleSettlementScreeningError(
+        error,
+        challenge,
+        config,
+        queries,
+        payer,
+        operation,
+      );
+    }
     const context = atomic
       ? "verifyAndSettle.settleWithRegistration"
       : "verifyAndSettle.settlePayment";
@@ -175,76 +208,5 @@ export async function verifyAndSettleUnlocked(
     network: config.network,
     payer,
     ...(atomic ? { registered: settlement.registered ?? true } : {}),
-  });
-}
-
-async function recoverBroadcast(
-  input: SettleInput,
-  config: Config,
-  reader: PaymentChainGateway,
-  queries: Queries,
-  payer: Hex,
-  enforceBuyer: boolean,
-  atomic: boolean,
-): Promise<SettleResult> {
-  const challenge = input.challenge;
-  let recovered: Awaited<ReturnType<PaymentChainGateway["getSettlementByTransaction"]>>;
-  try {
-    recovered = await reader.getSettlementByTransaction(
-      challenge.transactionHash!,
-      challenge.serviceRef,
-    );
-  } catch (error) {
-    return settlementFailure(
-      503,
-      "settlement_confirmation_pending",
-      publicErrorMessage(
-        atomic
-          ? "verifyAndSettleWithRegistration.recoverBroadcast"
-          : "verifyAndSettle.recoverBroadcast",
-        error,
-        "settlement was broadcast and is awaiting confirmation",
-      ),
-      config.network,
-      payer,
-    );
-  }
-  const eventError = validateSettlementEvent(
-    challenge,
-    recovered.event,
-    enforceBuyer,
-  );
-  if (eventError) {
-    return settlementFailure(
-      500,
-      "unexpected_settle_error",
-      eventError,
-      config.network,
-      payer,
-    );
-  }
-  const recorded = await persistSettlementEvent(
-    queries,
-    challenge,
-    recovered.event,
-    recovered.transactionHash,
-    atomic ? recovered.event.buyerAgentId : undefined,
-  );
-  if (!recorded) {
-    return settlementFailure(
-      500,
-      "settlement_persistence_conflict",
-      "on-chain settlement conflicts with the stored challenge",
-      config.network,
-      payer,
-    );
-  }
-  return successfulSettlementResult({
-    challenge,
-    event: recovered.event,
-    transactionHash: recovered.transactionHash,
-    network: config.network,
-    payer,
-    ...(atomic ? { registered: true } : {}),
   });
 }

@@ -88,6 +88,7 @@ export function registerPurchaseTool(
           fetch: transport.fetch,
           timeoutMs: transport.timeoutMs,
           maxResponseBytes: transport.maxResponseBytes,
+          screeningReadiness: deps.screeningReadiness,
         },
       );
       if (!result.ok) {

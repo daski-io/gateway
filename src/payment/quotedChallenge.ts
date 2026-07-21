@@ -8,6 +8,7 @@ import { resolveSkillOffer, type SkillOffer } from "./skillOffer.js";
 import { fetchProviderQuote } from "./providerQuote.js";
 import type { ChainReader } from "../chain/reader.js";
 import { walletControlsAgent } from "../identity/control.js";
+import type { PaymentScreeningReadinessProbe } from "./screeningReadiness.js";
 
 export interface QuotedChallengeInput {
   providerAgentId: bigint;
@@ -27,6 +28,7 @@ export interface QuotedChallengeDeps {
   fetch: Fetcher;
   timeoutMs: number;
   maxResponseBytes: number;
+  screeningReadiness: PaymentScreeningReadinessProbe;
 }
 
 export interface QuotedChallengeValue {
@@ -52,6 +54,17 @@ export async function createQuotedChallenge(
   input: QuotedChallengeInput,
   deps: QuotedChallengeDeps,
 ): Promise<QuotedChallengeResult> {
+  if (!(await deps.screeningReadiness.isReady())) {
+    return {
+      ok: false,
+      error: {
+        code: "payment_screening_unready",
+        message: "Payment cannot be processed right now. Please try again later.",
+        recoverable: true,
+        nextAction: "Retry later while payment screening is available.",
+      },
+    };
+  }
   const provider = deps.cache.get(input.providerAgentId);
   if (!provider) {
     return fail("provider_not_found", "provider is not whitelisted");

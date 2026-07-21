@@ -15,17 +15,14 @@ export interface ChallengeRow {
   expires_at: Date;
   settlement_state:
     | "pending"
-    | "external_settled"
-    | "attribution_broadcast"
+    | "settlement_broadcast"
     | "paid"
-    | "expired";
+    | "expired"
+    | "sanctions_rejected";
   payment_id: string | null;
   transaction_hash: string | null;
   verified_at: Date | null;
   confirmation_attestation_uid: Buffer | null;
-  rail: "daski" | "external" | null;
-  auth_nonce: string | null;
-  external_settle_tx: string | null;
   quote_id: string | null;
   quote_signature: string | null;
   quote_expires_at: Date | null;
@@ -73,10 +70,6 @@ export function rowToChallenge(row: ChallengeRow): StoredChallenge {
     confirmationAttestationUid: row.confirmation_attestation_uid
       ? byteaToHex(row.confirmation_attestation_uid)
       : null,
-    rail: requiredColumn(row.rail, "rail"),
-    authNonce: row.auth_nonce != null ? (row.auth_nonce as Hex) : null,
-    externalSettleTx:
-      row.external_settle_tx != null ? (row.external_settle_tx as Hex) : null,
     quoteId: row.quote_id ?? null,
     quoteSignature:
       row.quote_signature != null ? (row.quote_signature as Hex) : null,

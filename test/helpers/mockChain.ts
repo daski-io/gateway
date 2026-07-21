@@ -3,7 +3,6 @@ import type {
   ChainReader,
   ConfirmationDelegationInput,
   ConfirmationResult,
-  DirectAttributionInput,
   FeedbackInput,
   FeedbackResult,
   PreparedFeedbackTransaction,
@@ -19,6 +18,11 @@ import type {
   BroadcastObserver,
 } from "../../src/chain/reader.js";
 import type { Hex } from "../../src/types.js";
+import {
+  SettlementScreeningError,
+  type ScreeningDetectionSource,
+  type SettlementScreeningFailure,
+} from "../../src/chain/sanctionsErrors.js";
 
 interface MockProviderEntry {
   walletAddress: Hex;
@@ -42,6 +46,12 @@ export type SettlementOutcome =
       txHash: Hex;
       reason: string;
     }
+  | {
+      kind: "screening-error";
+      failure: SettlementScreeningFailure;
+      detectionSource: ScreeningDetectionSource;
+      transactionHash?: Hex | null;
+    }
   | { kind: "revert"; reason: string };
 
 /**
@@ -49,6 +59,7 @@ export type SettlementOutcome =
  * scripted sequence of settlement outcomes.
  */
 export class MockChainReader implements ChainReader {
+  private sanctionsReady = true;
   private providers = new Map<string, MockProviderEntry>();
   private providerOrder: bigint[] = [];
   // agentURI stored separately to mirror the IdentityRegistry lookup.
@@ -56,6 +67,7 @@ export class MockChainReader implements ChainReader {
   private authStates = new Map<string, boolean>();
   private outcomes: SettlementOutcome[] = [];
   private settlementResults = new Map<string, SettlementResult>();
+  private settlementRecoveryErrors = new Map<string, Error>();
 
   public settlements: SettlementInput[] = [];
 
@@ -78,6 +90,10 @@ export class MockChainReader implements ChainReader {
   /** Queue the next settlement outcome. Tests call this before every submit. */
   queueSettlement(outcome: SettlementOutcome): void {
     this.outcomes.push(outcome);
+  }
+
+  setSettlementRecoveryError(transactionHash: Hex, error: Error): void {
+    this.settlementRecoveryErrors.set(transactionHash.toLowerCase(), error);
   }
 
   // ── ChainReader implementation ──────────────────────────────
@@ -181,6 +197,13 @@ export class MockChainReader implements ChainReader {
       );
     }
     if (outcome.kind === "revert") throw new Error(outcome.reason);
+    if (outcome.kind === "screening-error") {
+      throw new SettlementScreeningError(
+        outcome.failure,
+        outcome.detectionSource,
+        outcome.transactionHash,
+      );
+    }
     this.setAuthorizationUsed(input.from, input.nonce, true);
     // If the test didn't bother setting a serviceId on the queued event
     // (the default is bytes32(0) from makePaymentSettledEvent), echo the
@@ -315,6 +338,14 @@ export class MockChainReader implements ChainReader {
 
   async getBlockNumber(): Promise<bigint> {
     return this.blockNumber;
+  }
+
+  setSanctionsReady(ready: boolean): void {
+    this.sanctionsReady = ready;
+  }
+
+  async verifySanctionsReadiness(): Promise<boolean> {
+    return this.sanctionsReady;
   }
 
   // ── Reputation mock ──────────────────────────────────────────────
@@ -525,53 +556,6 @@ export class MockChainReader implements ChainReader {
     );
   }
 
-  // ── External-rail attribution mock ─────────────────────────────────
-  //
-  // Same queue discipline as settlePayment: tests stage each outcome via
-  // queueAttribution before triggering the route. Calls are recorded so
-  // tests can assert on the exact adapter args the gateway submitted.
-  private attributionOutcomes: SettlementOutcome[] = [];
-  public attributions: DirectAttributionInput[] = [];
-
-  queueAttribution(outcome: SettlementOutcome): void {
-    this.attributionOutcomes.push(outcome);
-  }
-
-  async attributeDirectTransfer(
-    input: DirectAttributionInput,
-    onBroadcast?: BroadcastObserver,
-  ): Promise<SettlementResult> {
-    this.attributions.push(input);
-    const outcome = this.attributionOutcomes.shift();
-    if (!outcome) {
-      throw new Error(
-        "MockChainReader.attributeDirectTransfer called with no queued outcome",
-      );
-    }
-    if (outcome.kind === "revert") throw new Error(outcome.reason);
-    // Echo caller-bound identifiers when the queued event leaves them
-    // zeroed, matching the values emitted by the real adapter.
-    const ZERO = "0x" + "00".repeat(32);
-    const event = {
-      ...outcome.event,
-      serviceId:
-        outcome.event.serviceId.toLowerCase() === ZERO
-          ? input.serviceId
-          : outcome.event.serviceId,
-      serviceRef:
-        outcome.event.serviceRef.toLowerCase() === ZERO
-          ? input.serviceRef
-          : outcome.event.serviceRef,
-    };
-    const result = { transactionHash: outcome.txHash, event };
-    this.settlementResults.set(outcome.txHash.toLowerCase(), result);
-    await onBroadcast?.(outcome.txHash);
-    if (outcome.kind === "broadcast-error") {
-      throw new Error(outcome.reason);
-    }
-    return result;
-  }
-
   async settleWithRegistration(
     input: SettleWithRegistrationInput,
     onBroadcast?: BroadcastObserver,
@@ -604,6 +588,10 @@ export class MockChainReader implements ChainReader {
     transactionHash: Hex,
     serviceRef: Hex,
   ): Promise<SettlementResult> {
+    const recoveryError = this.settlementRecoveryErrors.get(
+      transactionHash.toLowerCase(),
+    );
+    if (recoveryError) throw recoveryError;
     const result = this.settlementResults.get(transactionHash.toLowerCase());
     if (!result || result.event.serviceRef.toLowerCase() !== serviceRef.toLowerCase()) {
       throw new Error("mock settlement transaction not found");

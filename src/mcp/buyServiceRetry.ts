@@ -3,6 +3,7 @@ import type { ChainReader } from "../chain/reader.js";
 import type { Config } from "../config.js";
 import type { Queries } from "../db/queries.js";
 import type { FetchAgentCardOptions } from "../identity/fetch-agent-card.js";
+import type { PaymentScreeningReadinessProbe } from "../payment/screeningReadiness.js";
 import { settleChallenge } from "../payment/settlementCoordinator.js";
 import type {
   Hex,
@@ -21,6 +22,7 @@ interface RetryDeps {
   config: Config;
   reader: ChainReader;
   queries: Queries;
+  screeningReadiness: PaymentScreeningReadinessProbe;
   fetchAgentCardFn?: FetchAgentCardOptions["fetchFn"];
 }
 
@@ -73,6 +75,19 @@ export async function runBuyServiceX402Retry(
       code: "CHALLENGE_NOT_FOUND",
       message: "no challenge found for the given serviceRef",
       details: { serviceRef },
+    });
+  }
+  if (
+    challenge.settlementState !== "paid" &&
+    challenge.settlementState !== "sanctions_rejected" &&
+    !(await deps.screeningReadiness.isReady())
+  ) {
+    return mcpError({
+      code: "payment_screening_unready",
+      message: "Payment cannot be processed right now. Please try again later.",
+      retryable: true,
+      recoverable: true,
+      next_action: "Retry later while payment screening is available.",
     });
   }
   if (args.serviceArgs === undefined) {
@@ -142,6 +157,15 @@ export async function runBuyServiceX402Retry(
     return mcpError({
       code: failure.errorReason,
       message: failure.message,
+      ...(failure.screeningFailure
+        ? {
+            retryable: failure.screeningFailure.retryable,
+            recoverable: failure.screeningFailure.retryable,
+            next_action: failure.screeningFailure.retryable
+              ? "Retry later while the provider quote remains valid."
+              : "Do not retry this unchanged payment.",
+          }
+        : {}),
       details: {
         transaction: failure.response.transaction,
         payer: failure.response.payer,

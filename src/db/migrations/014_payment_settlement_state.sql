@@ -1,5 +1,5 @@
--- Make the payment lifecycle explicit instead of inferring it from status
--- plus the two transaction-hash columns.
+-- Make the native payment lifecycle explicit instead of inferring a
+-- broadcast from status plus transaction_hash.
 
 ALTER TABLE payment_challenges
   DROP CONSTRAINT payment_challenges_status_check;
@@ -9,9 +9,7 @@ ALTER TABLE payment_challenges
 UPDATE payment_challenges
    SET settlement_state = CASE
      WHEN settlement_state = 'paid' THEN 'paid'
-     WHEN transaction_hash IS NOT NULL THEN 'attribution_broadcast'
-     WHEN rail = 'external' AND external_settle_tx IS NOT NULL
-       THEN 'external_settled'
+     WHEN transaction_hash IS NOT NULL THEN 'settlement_broadcast'
      WHEN settlement_state = 'expired' THEN 'expired'
      ELSE 'pending'
    END;
@@ -21,14 +19,8 @@ ALTER TABLE payment_challenges
   CHECK (
     settlement_state IN (
       'pending',
-      'external_settled',
-      'attribution_broadcast',
+      'settlement_broadcast',
       'paid',
       'expired'
     )
   );
-
-CREATE INDEX idx_challenges_unresolved_external
-  ON payment_challenges(created_at)
-  WHERE rail = 'external'
-    AND settlement_state IN ('pending', 'external_settled', 'attribution_broadcast');

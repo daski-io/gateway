@@ -1,38 +1,24 @@
-import type { Hex } from "../types.js";
+import type { Hex, StoredChallenge } from "../types.js";
 import type { Pool } from "./pool.js";
-import { hexToBytea, normalizeHex } from "./paymentChallengeCodec.js";
+import {
+  hexToBytea,
+  normalizeHex,
+  rowToChallenge,
+  type ChallengeRow,
+} from "./paymentChallengeCodec.js";
 
 export function createPaymentChallengeStateQueries(pool: Pool) {
   return {
-    async recordChallengeExternallySettled(
-      serviceRef: Hex,
-      externalSettleTx: Hex,
-    ): Promise<boolean> {
-      const res = await pool.query(
-        `UPDATE payment_challenges
-            SET external_settle_tx = $1,
-                settlement_state = 'external_settled'
-          WHERE service_ref = $2
-            AND rail = 'external'
-            AND settlement_state IN ('pending', 'expired', 'external_settled')
-            AND (external_settle_tx IS NULL OR external_settle_tx = $1)`,
-        [normalizeHex(externalSettleTx), hexToBytea(serviceRef)],
+    async listBroadcastChallenges(limit = 100): Promise<StoredChallenge[]> {
+      const result = await pool.query<ChallengeRow>(
+        `SELECT *
+           FROM payment_challenges
+          WHERE settlement_state = 'settlement_broadcast'
+          ORDER BY created_at
+          LIMIT $1`,
+        [limit],
       );
-      return (res.rowCount ?? 0) > 0;
-    },
-
-    async recordChallengeExternalAuthorizationConsumed(
-      serviceRef: Hex,
-    ): Promise<boolean> {
-      const res = await pool.query(
-        `UPDATE payment_challenges
-            SET settlement_state = 'external_settled'
-          WHERE service_ref = $1
-            AND rail = 'external'
-            AND settlement_state IN ('pending', 'expired', 'external_settled')`,
-        [hexToBytea(serviceRef)],
-      );
-      return (res.rowCount ?? 0) > 0;
+      return result.rows.map(rowToChallenge);
     },
 
     async recordChallengeTransactionBroadcast(
@@ -42,11 +28,9 @@ export function createPaymentChallengeStateQueries(pool: Pool) {
       const res = await pool.query(
         `UPDATE payment_challenges
             SET transaction_hash = $1,
-                settlement_state = 'attribution_broadcast'
+                settlement_state = 'settlement_broadcast'
           WHERE service_ref = $2
-            AND settlement_state IN (
-              'pending', 'external_settled', 'expired', 'attribution_broadcast'
-            )
+            AND settlement_state IN ('pending', 'expired', 'settlement_broadcast')
             AND (transaction_hash IS NULL OR transaction_hash = $1)`,
         [normalizeHex(transactionHash), hexToBytea(serviceRef)],
       );
@@ -60,12 +44,9 @@ export function createPaymentChallengeStateQueries(pool: Pool) {
       const res = await pool.query(
         `UPDATE payment_challenges
             SET transaction_hash = NULL,
-                settlement_state = CASE
-                  WHEN rail = 'external' THEN 'external_settled'
-                  ELSE 'pending'
-                END
+                settlement_state = 'pending'
           WHERE service_ref = $1
-            AND settlement_state = 'attribution_broadcast'
+            AND settlement_state = 'settlement_broadcast'
             AND transaction_hash = $2`,
         [hexToBytea(serviceRef), normalizeHex(transactionHash)],
       );
@@ -90,7 +71,7 @@ export function createPaymentChallengeStateQueries(pool: Pool) {
           WHERE service_ref = $3
             AND (
               settlement_state IN (
-                'pending', 'external_settled', 'attribution_broadcast', 'expired'
+                'pending', 'settlement_broadcast', 'expired'
               )
               OR (
                 settlement_state = 'paid'
@@ -116,7 +97,7 @@ export function createPaymentChallengeStateQueries(pool: Pool) {
             SET settlement_state = 'expired'
           WHERE settlement_state = 'pending'
             AND expires_at < now()
-            AND external_settle_tx IS NULL`,
+        `,
       );
       return res.rowCount ?? 0;
     },

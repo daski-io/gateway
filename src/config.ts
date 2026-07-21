@@ -10,6 +10,11 @@ export const DASKI_A2A_EXTENSION_URI = "https://daski.xyz/a2a/v1";
 
 export const X402_VERSION = 1;
 
+export const BASE_MAINNET_SANCTIONS_ORACLE =
+  "0x3a91a31cb3dc49b4db9ce721f50a9d076c8d739b" as Hex;
+
+export type SanctionsOracleMode = "production" | "mock";
+
 export interface Config extends RuntimeConfig {
   port: number;
   // Hosted MCP transport at this path (default /mcp). The MCP is the
@@ -35,6 +40,8 @@ export interface Config extends RuntimeConfig {
   // PaymentRouter.settle so each payment is bound to a specific catalog row.
   serviceRegistryAddress: Hex;
   paymentRouterAddress: Hex;
+  sanctionsOracleAddress: Hex;
+  sanctionsOracleMode: SanctionsOracleMode;
   // The x402 (EIP-3009) adapter is what the facilitator actually submits
   // settle calls to. The router emits the PaymentSettled event but no longer
   // exposes a rail-specific entry point.
@@ -57,20 +64,6 @@ export interface Config extends RuntimeConfig {
   usdcName: string;
   usdcVersion: string;
   facilitatorPrivateKey: Hex;
-  // ── External-facilitator rail (x402 Bazaar listability) ──────────────
-  // DirectTransferAdapter — attributes payments that an EXTERNAL x402
-  // facilitator (CDP) settled as bare EIP-3009 transfers into the router.
-  // The Bazaar-facing resource route is mounted iff this is set.
-  directAdapterAddress?: Hex;
-  // Base URL of the external facilitator's /verify + /settle endpoints.
-  // The CDP facilitator supports both Base and Base Sepolia. Bazaar indexing
-  // only happens for settlements processed by this facilitator.
-  externalFacilitatorUrl: string;
-  // Raw `Authorization` header value for the external facilitator. The CDP
-  // facilitator requires CDP API-key authentication on both supported
-  // networks. Optional only when a different unauthenticated facilitator
-  // is configured explicitly.
-  externalFacilitatorAuthHeader?: string;
   whitelistedAgentIds: bigint[];
   cacheRefreshIntervalSeconds: number;
   // How long the discovery cache keeps serving a provider's last-known-good
@@ -211,6 +204,15 @@ function requireAddress(name: string, raw: string | undefined): Hex {
   return raw.toLowerCase() as Hex;
 }
 
+function sanctionsOracleMode(
+  raw: string | undefined,
+): SanctionsOracleMode {
+  if (raw === "production" || raw === "mock") return raw;
+  throw new Error(
+    "SANCTIONS_ORACLE_MODE must be explicitly set to production or mock",
+  );
+}
+
 function requireDatabaseUrl(raw: string | undefined): string {
   if (!raw) {
     throw new Error(
@@ -248,6 +250,25 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     env.PUBLIC_URL ?? `http://localhost:${port}`,
     { requireHttps: production },
   );
+  const oracleAddress = requireAddress(
+    "SANCTIONS_ORACLE_ADDRESS",
+    env.SANCTIONS_ORACLE_ADDRESS,
+  );
+  const oracleMode = sanctionsOracleMode(env.SANCTIONS_ORACLE_MODE);
+  if (
+    chainId === 8453 &&
+    oracleAddress !== BASE_MAINNET_SANCTIONS_ORACLE
+  ) {
+    throw new Error(
+      `Base mainnet SANCTIONS_ORACLE_ADDRESS must be ${BASE_MAINNET_SANCTIONS_ORACLE}`,
+    );
+  }
+  if (chainId === 8453 && oracleMode !== "production") {
+    throw new Error("Base mainnet SANCTIONS_ORACLE_MODE must be production");
+  }
+  if (runtime.nodeEnv === "production" && oracleMode === "mock") {
+    throw new Error("SANCTIONS_ORACLE_MODE=mock is forbidden in production");
+  }
   return {
     ...runtime,
     port,
@@ -280,6 +301,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       "PAYMENT_ROUTER_ADDRESS",
       env.PAYMENT_ROUTER_ADDRESS,
     ),
+    sanctionsOracleAddress: oracleAddress,
+    sanctionsOracleMode: oracleMode,
     x402AdapterAddress: requireAddress(
       "X402_ADAPTER_ADDRESS",
       env.X402_ADAPTER_ADDRESS,
@@ -323,16 +346,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       "FACILITATOR_PRIVATE_KEY",
       env.FACILITATOR_PRIVATE_KEY,
     ),
-    directAdapterAddress: optionalAddress(
-      "DIRECT_ADAPTER_ADDRESS",
-      env.DIRECT_ADAPTER_ADDRESS,
-    ),
-    externalFacilitatorUrl: requireMarketplaceHttpsUrl(
-      "EXTERNAL_FACILITATOR_URL",
-      env.EXTERNAL_FACILITATOR_URL ??
-        "https://api.cdp.coinbase.com/platform/v2/x402",
-    ).replace(/\/$/, ""),
-    externalFacilitatorAuthHeader: env.EXTERNAL_FACILITATOR_AUTH_HEADER,
     whitelistedAgentIds: parseAgentIds(env.WHITELISTED_AGENT_IDS),
     cacheRefreshIntervalSeconds: positiveInteger(
       "CACHE_REFRESH_INTERVAL",

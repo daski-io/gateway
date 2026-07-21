@@ -54,7 +54,6 @@ async function main() {
       easAddress: config.easAddress,
       reputationStorageAddress: config.reputationStorageAddress,
       reputationRegistryAddress: config.reputationRegistryAddress,
-      directAdapterAddress: config.directAdapterAddress,
     });
   }
 

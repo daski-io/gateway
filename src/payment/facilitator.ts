@@ -7,11 +7,13 @@ import { verifyPaymentPayload } from "./verify.js";
 import { settleChallenge } from "./settlementCoordinator.js";
 import type { Hex, PaymentPayload, PaymentRequirements } from "../types.js";
 import { isHex32 } from "../util/evmValidation.js";
+import type { PaymentScreeningReadinessProbe } from "./screeningReadiness.js";
 
 export interface FacilitatorDeps {
   config: Config;
   queries: Queries;
   reader: ChainReader;
+  screeningReadiness: PaymentScreeningReadinessProbe;
   /**
    * Optional test seam for the buyer-side agentURI fetcher used by the
    * atomic register-and-settle path. The default `safeFetch` is right
@@ -88,7 +90,6 @@ export function createFacilitatorRouter(deps: FacilitatorDeps): Router {
       badRequest(res, "no challenge found for the given serviceRef");
       return;
     }
-
     const result = await verifyPaymentPayload(
       { payload: body.paymentPayload, challenge },
       deps.config,
@@ -134,6 +135,22 @@ export function createFacilitatorRouter(deps: FacilitatorDeps): Router {
       res.status(404).json({
         success: false,
         errorReason: "no challenge found for the given serviceRef",
+      });
+      return;
+    }
+    if (
+      challenge.settlementState !== "paid" &&
+      challenge.settlementState !== "sanctions_rejected" &&
+      !(await deps.screeningReadiness.isReady())
+    ) {
+      res.status(503).json({
+        success: false,
+        errorReason: "payment_screening_unready",
+        message: "Payment cannot be processed right now. Please try again later.",
+        retryable: true,
+        transaction: challenge.transactionHash ?? "",
+        network: deps.config.network,
+        payer: challenge.walletAddress,
       });
       return;
     }
@@ -200,6 +217,9 @@ export function createFacilitatorRouter(deps: FacilitatorDeps): Router {
         success: false,
         errorReason: result.errorReason,
         message: result.message,
+        ...(result.screeningFailure
+          ? { retryable: result.screeningFailure.retryable }
+          : {}),
         transaction: result.response.transaction,
         network: result.response.network,
         payer: result.response.payer,

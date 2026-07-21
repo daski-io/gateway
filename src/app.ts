@@ -12,6 +12,7 @@ import { ChainEventsIndexer } from "./indexer/chainEvents.js";
 import type { McpWiring } from "./mcp/server.js";
 import { ReputationMirrorWorker } from "./reputation/worker.js";
 import { startBackgroundRuntime } from "./runtime/backgroundRuntime.js";
+import { PaymentScreeningReadinessProbe } from "./payment/screeningReadiness.js";
 import { logErrorWithId } from "./util/errorWrap.js";
 import { logger } from "./util/logger.js";
 
@@ -26,7 +27,6 @@ export interface CreateAppOptions {
   startCacheRefreshLoop?: boolean;
   agentCardFetchTimeoutMs?: number;
   buyerAgentCardFetch?: FetchAgentCardOptions["fetchFn"];
-  externalFacilitatorFetch?: typeof fetch;
   mcpMaxSessions?: number;
   mcpMaxSessionsPerClient?: number;
   mcpSessionIdleTtlMs?: number;
@@ -41,9 +41,10 @@ export interface AppBundle {
   embedder: Embedder | null;
   mcp: McpWiring | null;
   expireInterval: NodeJS.Timeout | null;
-  reconcileInterval: NodeJS.Timeout | null;
+  settlementReconcileInterval: NodeJS.Timeout | null;
   reputationWorker: ReputationMirrorWorker;
   indexer: ChainEventsIndexer;
+  screeningReadiness: PaymentScreeningReadinessProbe;
   shutdown(): Promise<void>;
 }
 
@@ -55,6 +56,7 @@ export async function createApp(options: CreateAppOptions): Promise<AppBundle> {
   const queries = createQueries(pool);
   const reputationWorker = new ReputationMirrorWorker({ config, reader, queries });
   const indexer = new ChainEventsIndexer(reader, queries);
+  const screeningReadiness = new PaymentScreeningReadinessProbe(config, reader);
   const embedder = options.embedder === null ? null : (options.embedder ?? xenovaEmbedder());
   const embeddingSync = embedder ? new CatalogEmbeddingSynchronizer(pool, embedder) : null;
   const cache = new DiscoveryCache({
@@ -80,6 +82,7 @@ export async function createApp(options: CreateAppOptions): Promise<AppBundle> {
     embeddingSync,
     reputationWorker,
     indexer,
+    screeningReadiness,
   });
   const background = startBackgroundRuntime({
     enabled: options.startCacheRefreshLoop !== false,
@@ -108,9 +111,10 @@ export async function createApp(options: CreateAppOptions): Promise<AppBundle> {
     embedder,
     mcp,
     expireInterval: background.expireInterval,
-    reconcileInterval: background.reconcileInterval,
+    settlementReconcileInterval: background.settlementReconcileInterval,
     reputationWorker,
     indexer,
+    screeningReadiness,
     shutdown,
   };
 }

@@ -10,12 +10,14 @@ import type { Hex, PaymentRequirementsResponse } from "../types.js";
 import type { ChainReader } from "../chain/reader.js";
 import { walletControlsAgent } from "../identity/control.js";
 import { isHexAddress } from "../util/evmValidation.js";
+import type { PaymentScreeningReadinessProbe } from "./screeningReadiness.js";
 
 export interface PurchaseDeps {
   config: Config;
   cache: DiscoveryCache;
   queries: Queries;
   reader: ChainReader;
+  screeningReadiness: PaymentScreeningReadinessProbe;
 }
 
 function sendError(res: Response, status: number, message: string) {
@@ -31,6 +33,14 @@ export function createPurchaseRouter(deps: PurchaseDeps): Router {
       providerTokenId = BigInt(String(req.params.agentId));
     } catch {
       sendError(res, 404, "invalid provider token id");
+      return;
+    }
+    if (!(await deps.screeningReadiness.isReady())) {
+      sendError(
+        res,
+        503,
+        "Payment cannot be processed right now. Please try again later.",
+      );
       return;
     }
 

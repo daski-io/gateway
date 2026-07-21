@@ -10,8 +10,13 @@ import { privateKeyToAccount } from "viem/accounts";
 import { base, baseSepolia } from "viem/chains";
 import { SettlementTransactionRevertedError } from "./reader.js";
 import {
+  classifySettlementScreeningFailure,
+  sanctionsGuardAbi,
+  sanctionsOracleAbi,
+  SettlementScreeningError,
+} from "./sanctionsErrors.js";
+import {
   agentIndexAbi,
-  directTransferAdapterAbi,
   knownErrorAbis,
   paymentRouterAbi,
   usdcAbi,
@@ -19,7 +24,6 @@ import {
 } from "./abis.js";
 import type {
   ChainReader,
-  DirectAttributionInput,
   BroadcastObserver,
   PaymentRouterRecord,
   PaymentSettledEvent,
@@ -55,9 +59,6 @@ export interface ViemReaderOptions {
   // EAS contract. On Base / Base Sepolia this is the canonical
   // 0x4200000000000000000000000000000000000021.
   easAddress: Hex;
-  // DirectTransferAdapter — attribution entry point for the external-
-  // facilitator rail. Optional; attributeDirectTransfer throws when unset.
-  directAdapterAddress?: Hex;
   // Optional — when unset, the reputation getters return null. The marketing
   // site treats null as "no reputation data" and renders the empty state
   // rather than 5xxing.
@@ -96,7 +97,10 @@ export function createViemChainReader(opts: ViemReaderOptions): ChainReader {
       hash: transactionHash,
     });
     if (receipt.status !== "success") {
-      throw new SettlementTransactionRevertedError(transactionHash);
+      throw await classifyRevertedSettlement(
+        transactionHash,
+        receipt.blockNumber,
+      );
     }
     const routerLogs = receipt.logs.filter(
       (log) => log.address.toLowerCase() === routerAddress.toLowerCase(),
@@ -227,57 +231,23 @@ export function createViemChainReader(opts: ViemReaderOptions): ChainReader {
         });
         settleRequest = sim.request;
       } catch (err) {
+        const screening = classifySettlementScreeningFailure(err);
+        if (screening) {
+          throw new SettlementScreeningError(screening, "simulation");
+        }
         throw new Error(`adapter settle reverted: ${decodeRevertReason(err)}`);
       }
 
-      const hash = await walletClient.writeContract(settleRequest);
-      await onBroadcast?.(hash);
-      return settlementFromTransaction(hash, input.serviceRef);
-    },
-
-    async attributeDirectTransfer(
-      input: DirectAttributionInput,
-      onBroadcast?: BroadcastObserver,
-    ): Promise<SettlementResult> {
-      const directAdapter = opts.directAdapterAddress;
-      if (!directAdapter) {
-        throw new Error(
-          "DIRECT_ADAPTER_ADDRESS is not configured — external-rail " +
-            "attribution unavailable",
-        );
-      }
-
-      // Funds already sit on the router (moved by the external
-      // facilitator's bare EIP-3009 transfer); this tx only runs the
-      // split + bookkeeping. Same explicit-gas + simulate-first reasoning
-      // as settlePayment. Common reverts worth surfacing: "authorization
-      // not consumed" (attribution raced ahead of the external settle),
-      // "router under-funded", "serviceRef used" (double attribution).
-      let attributeRequest;
+      let hash: Hex;
       try {
-        const sim = await publicClient.simulateContract({
-          address: directAdapter,
-          abi: [...directTransferAdapterAbi, ...knownErrorAbis],
-          functionName: "attribute",
-          args: [
-            usdcAddress,
-            input.amount,
-            input.serviceRef,
-            input.providerAgentId,
-            input.serviceId,
-            input.from,
-            input.authNonce,
-          ],
-          account,
-          chain,
-          gas: 500_000n,
-        });
-        attributeRequest = sim.request;
-      } catch (err) {
-        throw new Error(`attribution reverted: ${decodeRevertReason(err)}`);
+        hash = await walletClient.writeContract(settleRequest);
+      } catch (error) {
+        const screening = classifySettlementScreeningFailure(error);
+        if (screening) {
+          throw new SettlementScreeningError(screening, "submission");
+        }
+        throw error;
       }
-
-      const hash = await walletClient.writeContract(attributeRequest);
       await onBroadcast?.(hash);
       return settlementFromTransaction(hash, input.serviceRef);
     },
@@ -335,17 +305,30 @@ export function createViemChainReader(opts: ViemReaderOptions): ChainReader {
         });
         settleRequest = sim.request;
       } catch (err) {
+        const screening = classifySettlementScreeningFailure(err);
+        if (screening) {
+          throw new SettlementScreeningError(screening, "simulation");
+        }
         throw new Error(
           `settleWithRegistration reverted: ${decodeRevertReason(err)}`,
         );
       }
 
-      const hash = await walletClient.writeContract(settleRequest);
+      let hash: Hex;
+      try {
+        hash = await walletClient.writeContract(settleRequest);
+      } catch (error) {
+        const screening = classifySettlementScreeningFailure(error);
+        if (screening) {
+          throw new SettlementScreeningError(screening, "submission");
+        }
+        throw error;
+      }
       await onBroadcast?.(hash);
 
       const receipt = await publicClient.waitForTransactionReceipt({ hash });
       if (receipt.status !== "success") {
-        throw new SettlementTransactionRevertedError(hash);
+        throw await classifyRevertedSettlement(hash, receipt.blockNumber);
       }
 
       // Pull PaymentSettled out of router logs (same defensive filter as
@@ -413,6 +396,34 @@ export function createViemChainReader(opts: ViemReaderOptions): ChainReader {
       return await publicClient.getBlockNumber();
     },
 
+    async verifySanctionsReadiness(input): Promise<boolean> {
+      if ((await publicClient.getChainId()) !== input.chainId) return false;
+      const bytecode = await publicClient.getBytecode({
+        address: input.oracleAddress,
+      });
+      if (!bytecode || bytecode === "0x") return false;
+      const probe = await publicClient.readContract({
+        address: input.oracleAddress,
+        abi: sanctionsOracleAbi,
+        functionName: "isSanctioned",
+        args: [input.probeAccount],
+      });
+      if (typeof probe !== "boolean") return false;
+      const configured = await Promise.all(
+        input.guardedContracts.map((address) =>
+          publicClient.readContract({
+            address,
+            abi: sanctionsGuardAbi,
+            functionName: "sanctionsOracle",
+          }),
+        ),
+      );
+      return configured.every(
+        (address) =>
+          String(address).toLowerCase() === input.oracleAddress.toLowerCase(),
+      );
+    },
+
     async getPaymentSettledEvents(
       fromBlock: bigint,
       toBlock: bigint,
@@ -465,4 +476,35 @@ export function createViemChainReader(opts: ViemReaderOptions): ChainReader {
       reputationRegistryAddress: opts.reputationRegistryAddress,
     }),
   };
+
+  async function classifyRevertedSettlement(
+    transactionHash: Hex,
+    blockNumber: bigint,
+  ): Promise<Error> {
+    try {
+      const transaction = await publicClient.getTransaction({
+        hash: transactionHash,
+      });
+      if (!transaction.to) {
+        return new SettlementTransactionRevertedError(transactionHash);
+      }
+      await publicClient.call({
+        account: transaction.from,
+        to: transaction.to,
+        data: transaction.input,
+        value: transaction.value,
+        blockNumber,
+      });
+    } catch (error) {
+      const screening = classifySettlementScreeningFailure(error);
+      if (screening) {
+        return new SettlementScreeningError(
+          screening,
+          "receipt_replay",
+          transactionHash,
+        );
+      }
+    }
+    return new SettlementTransactionRevertedError(transactionHash);
+  }
 }

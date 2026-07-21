@@ -20,7 +20,6 @@ import type {
   ChainReader,
   ConfirmationDelegationInput,
   ConfirmationResult,
-  DirectAttributionInput,
   FeedbackInput,
   FeedbackResult,
   PreparedFeedbackTransaction,
@@ -155,6 +154,10 @@ export class AutoMockChainReader implements ChainReader {
     return 0n;
   }
 
+  async verifySanctionsReadiness(): Promise<boolean> {
+    return true;
+  }
+
   async authorizationUsed(authorizer: Hex, nonce: Hex): Promise<boolean> {
     return this.usedAuthNonces.has(
       `${authorizer.toLowerCase()}:${nonce.toLowerCase()}`,
@@ -224,43 +227,6 @@ export class AutoMockChainReader implements ChainReader {
       buyerAgentId: result.event.buyerAgentId,
       registered: !existed,
     };
-  }
-
-  async attributeDirectTransfer(
-    input: DirectAttributionInput,
-    onBroadcast?: BroadcastObserver,
-  ): Promise<SettlementResult> {
-    // Mirror the on-chain idempotency surface: one attribution per
-    // serviceRef. (The auth nonce is consumed by the EXTERNAL facilitator
-    // in production; the mock has no external settle step to track, so
-    // serviceRef is the useful replay key here.)
-    const key = `attr:${input.serviceRef.toLowerCase()}`;
-    if (this.usedAuthNonces.has(key)) {
-      throw new Error("mock attribute: serviceRef used");
-    }
-    this.usedAuthNonces.add(key);
-
-    const buyerAgentId = this.rememberBuyer(input.from);
-    const paymentId = this.nextPaymentId++;
-    const commission = (input.amount * 5n) / 100n;
-    const event: PaymentSettledEvent = {
-      paymentId,
-      serviceRef: input.serviceRef,
-      serviceId: input.serviceId,
-      buyerAgentId,
-      providerAgentId: input.providerAgentId,
-      token: this.opts.tokenAddress.toLowerCase() as Hex,
-      totalAmount: input.amount,
-      providerAmount: input.amount - commission,
-      commission,
-    };
-    const result = {
-      transactionHash: txHashForPayment(paymentId),
-      event,
-    };
-    this.settlementResults.set(result.transactionHash.toLowerCase(), result);
-    await onBroadcast?.(result.transactionHash);
-    return result;
   }
 
   async getSettlementByTransaction(

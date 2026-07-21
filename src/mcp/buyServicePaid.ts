@@ -8,6 +8,7 @@ import { prepareRegistration } from "../identity/service.js";
 import { createQuotedChallenge } from "../payment/quotedChallenge.js";
 import type { Hex } from "../types.js";
 import type { Fetcher } from "./a2a.js";
+import type { PaymentScreeningReadinessProbe } from "../payment/screeningReadiness.js";
 import type { BuyServiceContext } from "./buyServiceTypes.js";
 import { unknownServiceArgWarnings } from "./serviceArgWarnings.js";
 import {
@@ -25,6 +26,7 @@ interface PaidPathDeps {
   timeoutMs: number;
   maxResponseBytes: number;
   fetchAgentCardFn?: FetchAgentCardOptions["fetchFn"];
+  screeningReadiness: PaymentScreeningReadinessProbe;
 }
 
 export async function runBuyServicePaidPath(
@@ -50,6 +52,7 @@ export async function runBuyServicePaidPath(
       fetch: deps.fetch,
       timeoutMs: deps.timeoutMs,
       maxResponseBytes: deps.maxResponseBytes,
+      screeningReadiness: deps.screeningReadiness,
     },
   );
   if (!result.ok) {

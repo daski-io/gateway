@@ -9,6 +9,7 @@ import { createPaymentChallengeStateQueries } from "./paymentChallengeStateQueri
 import { createRateLimitQueries } from "./rateLimitQueries.js";
 import { createReputationQueries } from "./reputationQueries.js";
 import { createSkillQueries } from "./skillQueries.js";
+import { createSettlementScreeningQueries } from "./settlementScreeningQueries.js";
 
 export type { ChainActivityRow } from "./chainEventQueries.js";
 export type { ReputationMirrorRow } from "./reputationQueries.js";
@@ -26,6 +27,7 @@ export function createQueries(pool: Pool) {
     ...createBuyerIdentityQueries(pool),
     ...createAggregateQueries(pool),
     ...createChainEventQueries(pool),
+    ...createSettlementScreeningQueries(pool),
   };
 }
 

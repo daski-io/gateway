@@ -10,6 +10,7 @@ import type { Pool } from "../db/pool.js";
 import type { ChainEventsIndexer } from "../indexer/chainEvents.js";
 import type { ReputationMirrorWorker } from "../reputation/worker.js";
 import { DatabaseReadinessProbe } from "./readiness.js";
+import type { PaymentScreeningReadinessProbe } from "../payment/screeningReadiness.js";
 
 export interface MetaRoutesDeps {
   config: Config;
@@ -18,6 +19,7 @@ export interface MetaRoutesDeps {
   pool: Pool;
   indexer: ChainEventsIndexer;
   reputationWorker: ReputationMirrorWorker;
+  screeningReadiness: PaymentScreeningReadinessProbe;
 }
 
 function findSkillPath(): string | undefined {
@@ -53,7 +55,6 @@ function fullDocs(config: Config): string {
     "## HTTP surface",
     "",
     "- POST /purchase/:agentId",
-    "- GET/POST /x402/services/:agentId/:serviceSlug/:skillId",
     "- POST /verify, /settle, /confirm/:paymentId, /register-transaction",
     "- GET /register-prep, /confirm-prep/:paymentId, /discover",
     "- GET /public/v1/services, /public/v1/buyers, /public/v1/activity",
@@ -95,8 +96,10 @@ export function createMetaRouter(deps: MetaRoutesDeps): Router {
     const cacheStatus = cache.status();
     const mirrorStatus = deps.reputationWorker.status();
     const databaseReady = await database.isReady();
+    const screeningReady = await deps.screeningReadiness.isReady();
     const indexerReady = deps.indexer.isFresh();
-    const ready = databaseReady && cacheStatus.chainFresh && indexerReady;
+    const ready =
+      databaseReady && cacheStatus.chainFresh && indexerReady && screeningReady;
     const degraded =
       embedderStatus.state === "degraded" ||
       cacheStatus.cardFailureCount > 0 ||
@@ -104,6 +107,9 @@ export function createMetaRouter(deps: MetaRoutesDeps): Router {
     res.status(ready ? 200 : 503).json({
       status: ready ? (degraded ? "degraded" : "ready") : "unready",
       version: GATEWAY_VERSION,
+      dependencies: {
+        paymentScreening: screeningReady ? "ready" : "unready",
+      },
     });
   });
 
@@ -137,6 +143,8 @@ export function createMetaRouter(deps: MetaRoutesDeps): Router {
         providerRegistry: config.providerRegistryAddress,
         serviceRegistry: config.serviceRegistryAddress,
         paymentRouter: config.paymentRouterAddress,
+        sanctionsOracle: config.sanctionsOracleAddress,
+        sanctionsOracleMode: config.sanctionsOracleMode,
         x402Adapter: config.x402AdapterAddress,
         ...(config.permitAdapterAddress ? { permitAdapter: config.permitAdapterAddress } : {}),
         ...(config.approvalAdapterAddress
@@ -151,7 +159,6 @@ export function createMetaRouter(deps: MetaRoutesDeps): Router {
         ...(config.validationRegistryAddress
           ? { validationRegistry: config.validationRegistryAddress }
           : {}),
-        ...(config.directAdapterAddress ? { directAdapter: config.directAdapterAddress } : {}),
         usdc: config.usdcAddress,
         eas: config.easAddress,
       },

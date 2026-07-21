@@ -43,6 +43,7 @@ export async function runBuyService(
     config: deps.config,
     reader: deps.reader,
     queries: deps.queries,
+    screeningReadiness: deps.screeningReadiness,
     fetchAgentCardFn: deps.buyerAgentCardFetch,
   });
   if (retry !== null) return retry;
@@ -159,6 +160,7 @@ export async function runBuyService(
         timeoutMs: transport.timeoutMs,
         maxResponseBytes: transport.maxResponseBytes,
         fetchAgentCardFn: deps.buyerAgentCardFetch,
+        screeningReadiness: deps.screeningReadiness,
       })
     : runBuyServiceFreePath(context, {
         config: deps.config,
