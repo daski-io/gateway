@@ -387,8 +387,16 @@ describe("canonical ReputationRegistry feedback mirror", () => {
       txHash: TX_HASH,
       attestationUid: ATTEST_UID,
     });
+    // Record present at confirm time (required for the resolver recipient),
+    // gone by the time the mirror reads it — the retry scenario that can
+    // still happen under the v0.6.0 recipient rule.
+    gateway.mockChain.setPaymentRecord(
+      PAYMENT_ID,
+      paymentRecord(PROVIDER_AGENT_ID),
+    );
 
     await postConfirm(gateway, {});
+    gateway.mockChain.clearPaymentRecord(PAYMENT_ID);
     await vi.waitFor(async () => {
       const row = await gateway.bundle.queries.getReputationMirror(PAYMENT_ID);
       expect(row?.status).toBe("retry");

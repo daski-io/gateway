@@ -905,6 +905,20 @@ describe("public v1 — /activity", () => {
       txHash,
       attestationUid,
     });
+    // /confirm reads the router record for the resolver-required recipient.
+    gateway.mockChain.setPaymentRecord(203n, {
+      buyerAgentId: 7n,
+      providerAgentId: 2n,
+      serviceId: ("0x" + "cd".repeat(32)) as Hex,
+      token: "0x000000000000000000000000000000000000a003" as Hex,
+      amount: 1_000_000n,
+      cachedBuyerWallet: "0x000000000000000000000000000000000000b001" as Hex,
+      cachedProviderOwner: "0x000000000000000000000000000000000000c001" as Hex,
+      cachedProviderWallet: "0x000000000000000000000000000000000000c002" as Hex,
+      serviceRef: ("0x" + "ab".repeat(32)) as Hex,
+      paidAt: BigInt(Math.floor(Date.now() / 1000)),
+      reputationEligible: true,
+    });
 
     const confirmRes = await fetch(`${gateway.baseUrl}/confirm/203`, {
       method: "POST",

@@ -161,6 +161,32 @@ export async function runConfirmDelivery(
     };
   }
 
+  // Must match the recipient the buyer signed over in prepareConfirmation:
+  // the payment's cached provider wallet (owner fallback) per the v0.6.0
+  // resolver's "wrong reputation recipient" rule.
+  let confirmationRecipient: Hex;
+  try {
+    const record = await deps.reader.getPaymentRecord(paymentId);
+    if (!record) {
+      return {
+        ok: false,
+        status: 404,
+        error: { code: "unknown_payment", message: "no on-chain payment with this id" },
+      };
+    }
+    confirmationRecipient =
+      record.cachedProviderWallet !== ("0x" + "00".repeat(20))
+        ? record.cachedProviderWallet
+        : record.cachedProviderOwner;
+  } catch (err) {
+    logErrorWithId("confirm.paymentRecord", err);
+    return {
+      ok: false,
+      status: 502,
+      error: { code: "chain_read_failed", message: "chain read failed" },
+    };
+  }
+
   try {
     const result = await deps.queries.withFacilitatorTransactionLock(
       (release) =>
@@ -168,7 +194,7 @@ export async function runConfirmDelivery(
           {
             attester: input.attester,
             schema: deps.config.easConfirmationSchemaUid,
-            recipient: ("0x" + "00".repeat(20)) as Hex,
+            recipient: confirmationRecipient,
             expirationTime: 0n,
             revocable: true,
             refUID: input.refUid ?? BYTES32_ZERO,

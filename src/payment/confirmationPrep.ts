@@ -91,6 +91,32 @@ export async function prepareConfirmation(
   }
 
   const attester = input.attester.toLowerCase() as Hex;
+
+  // v0.6.0 resolver rule: confirmation attestations must name the payment's
+  // cached provider wallet (falling back to the cached owner) as recipient —
+  // a zero recipient reverts with "wrong reputation recipient".
+  let recipient: Hex;
+  try {
+    const record = await deps.reader.getPaymentRecord(paymentId);
+    if (!record) {
+      return fail("UNKNOWN_PAYMENT", "no on-chain payment with this id");
+    }
+    recipient =
+      record.cachedProviderWallet !== ZERO_ADDRESS
+        ? record.cachedProviderWallet
+        : record.cachedProviderOwner;
+  } catch (err) {
+    return {
+      ok: false,
+      status: 502,
+      error: {
+        code: "CHAIN_READ_FAILED",
+        message: "chain read failed",
+        correlationId: logErrorWithId("prepareConfirmation.payment", err),
+      },
+    };
+  }
+
   let nonce: bigint;
   try {
     nonce = await deps.reader.getEasAttesterNonce(attester);
@@ -129,7 +155,7 @@ export async function prepareConfirmation(
     primaryType: "Attest",
     message: {
       schema: deps.config.easConfirmationSchemaUid,
-      recipient: ZERO_ADDRESS,
+      recipient,
       expirationTime: "0",
       revocable: true,
       refUID,
