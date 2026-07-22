@@ -301,7 +301,7 @@ export const reputationStorageAbi = [
           { name: "outcome", type: "uint8" },
           // Solidity enum encoded as uint8. 0=Pending, 1=Confirmed, 2=NotConfirmed.
           { name: "confirmation", type: "uint8" },
-          { name: "fulfillmentTime", type: "uint256" },
+          { name: "outcomeAttestationDelay", type: "uint256" },
           { name: "outcomeTimestamp", type: "uint256" },
           { name: "confirmationTimestamp", type: "uint256" },
           { name: "outcomeRecorded", type: "bool" },

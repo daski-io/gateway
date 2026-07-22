@@ -89,7 +89,7 @@ export function createReputationReadMethods(
         serviceId: Hex;
         outcome: number;
         confirmation: number;
-        fulfillmentTime: bigint;
+        outcomeAttestationDelay: bigint;
         outcomeTimestamp: bigint;
         confirmationTimestamp: bigint;
         outcomeRecorded: boolean;
@@ -106,7 +106,7 @@ export function createReputationReadMethods(
           ? OUTCOME_LABELS[raw.outcome] ?? null
           : null,
         confirmation: CONFIRMATION_LABELS[raw.confirmation] ?? "Pending",
-        fulfillmentSeconds: raw.outcomeRecorded ? raw.fulfillmentTime : null,
+        fulfillmentSeconds: raw.outcomeRecorded ? raw.outcomeAttestationDelay : null,
         outcomeTimestamp: raw.outcomeTimestamp,
         confirmationTimestamp: raw.confirmationTimestamp,
         outcomeRecorded: raw.outcomeRecorded,
