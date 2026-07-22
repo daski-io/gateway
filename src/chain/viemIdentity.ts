@@ -67,12 +67,13 @@ export function createIdentityMethods(
     },
 
     async agentOfWallet(wallet: Hex) {
-      return (await publicClient.readContract({
+      const [agentId] = (await publicClient.readContract({
         address: addresses.agentIndexAddress,
         abi: agentIndexAbi,
         functionName: "resolve",
         args: [wallet],
-      })) as bigint;
+      })) as readonly [bigint, boolean];
+      return agentId;
     },
 
     async getAgentWallet(agentId: bigint) {

@@ -350,6 +350,7 @@ export async function startMockProvider(
       serviceVersion,
       skillId,
       requestHash: computeRequestHash(serviceArgs),
+      trustedRequestCountryHash: null,
       amount: outcome.amount.toString(),
       token: MOCK_PROVIDER_TOKEN_ADDRESS,
       chainId: MOCK_PROVIDER_CHAIN_ID,
