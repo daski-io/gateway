@@ -145,8 +145,8 @@ describe("POST /confirm/:paymentId", () => {
         attester: BUYER,
         // Future deadline so the input passes validation and the
         // confirm path reaches the (mocked) chain submit. The chain
-        // mock returns the configured revert; we assert the error
-        // surfaces as `submit_failed` with the chain's reason.
+        // mock returns the configured revert; the response must expose a
+        // reference without reflecting the upstream chain error.
         deadline: String(Math.floor(Date.now() / 1000) + 3600),
         signature: SIG,
       }),
@@ -154,6 +154,9 @@ describe("POST /confirm/:paymentId", () => {
     expect(res.status).toBe(400);
     const body = (await res.json()) as any;
     expect(body.error.code).toBe("submit_failed");
-    expect(body.error.message).toContain("bad signature");
+    expect(body.error.message).toMatch(
+      /^confirmation submission failed \(reference: [0-9a-f-]+\)$/,
+    );
+    expect(body.error.message).not.toContain("bad signature");
   });
 });

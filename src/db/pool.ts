@@ -2,6 +2,7 @@ import pg from "pg";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { logger } from "../util/logger.js";
 
 export type Pool = pg.Pool;
 
@@ -16,20 +17,24 @@ export interface CreatePoolOptions {
 }
 
 export function createPool(opts: CreatePoolOptions): Pool {
-  const pool = new pg.Pool({ connectionString: opts.connectionString });
-  if (opts.searchPath) {
-    const sp = opts.searchPath;
-    pool.on("connect", (client) => {
-      // Quote each name; SET search_path takes a comma-separated list
-      // of identifiers (not literals), so we have to inline.
-      const ident = sp
-        .split(",")
-        .map((s) => `"${s.trim().replace(/"/g, '""')}"`)
-        .join(", ");
-      void client.query(`SET search_path TO ${ident}`);
-    });
+  let options: string | undefined;
+  if (opts.searchPath !== undefined) {
+    const names = opts.searchPath.split(",").map((name) => name.trim());
+    if (
+      names.length === 0 ||
+      names.some((name) => !/^[A-Za-z_][A-Za-z0-9_]*$/.test(name))
+    ) {
+      throw new Error("searchPath contains an invalid schema name");
+    }
+    // Apply the path in PostgreSQL's startup packet. An asynchronous
+    // `pool.on("connect")` query races the caller's first query and pg 9
+    // no longer permits that overlapping use of a newly connected client.
+    options = `-c search_path=${names.join(",")}`;
   }
-  return pool;
+  return new pg.Pool({
+    connectionString: opts.connectionString,
+    ...(options ? { options } : {}),
+  });
 }
 
 /**
@@ -41,45 +46,47 @@ export function createPool(opts: CreatePoolOptions): Pool {
 export async function runMigrations(pool: Pool): Promise<void> {
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
   const migrationsDir = path.join(__dirname, "migrations");
+  const client = await pool.connect();
+  try {
+    await client.query(
+      "SELECT pg_advisory_lock(hashtextextended($1, 0))",
+      ["daski-gateway:migrations"],
+    );
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS _migrations (
+        name TEXT PRIMARY KEY,
+        applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      )
+    `);
+    const applied = await client.query<{ name: string }>(
+      "SELECT name FROM _migrations ORDER BY name",
+    );
+    const appliedSet = new Set(applied.rows.map((r) => r.name));
+    const files = fs
+      .readdirSync(migrationsDir)
+      .filter((f) => f.endsWith(".sql"))
+      .sort();
 
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS _migrations (
-      name TEXT PRIMARY KEY,
-      applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
-    )
-  `);
-
-  const applied = await pool.query<{ name: string }>(
-    "SELECT name FROM _migrations ORDER BY name",
-  );
-  const appliedSet = new Set(applied.rows.map((r) => r.name));
-
-  const files = fs
-    .readdirSync(migrationsDir)
-    .filter((f) => f.endsWith(".sql"))
-    .sort();
-
-  for (const file of files) {
-    if (appliedSet.has(file)) continue;
-    const sql = fs.readFileSync(path.join(migrationsDir, file), "utf-8");
-    const client = await pool.connect();
-    try {
+    for (const file of files) {
+      if (appliedSet.has(file)) continue;
+      const sql = fs.readFileSync(path.join(migrationsDir, file), "utf-8");
       await client.query("BEGIN");
-      await client.query(sql);
-      await client.query("INSERT INTO _migrations (name) VALUES ($1)", [file]);
-      await client.query("COMMIT");
-      console.log(
-        JSON.stringify({
-          timestamp: new Date().toISOString(),
-          level: "info",
-          message: `Migration applied: ${file}`,
-        }),
-      );
-    } catch (err) {
-      await client.query("ROLLBACK");
-      throw err;
-    } finally {
-      client.release();
+      try {
+        await client.query(sql);
+        await client.query("INSERT INTO _migrations (name) VALUES ($1)", [file]);
+        await client.query("COMMIT");
+        logger.info("database migration applied", { migration: file });
+      } catch (err) {
+        await client.query("ROLLBACK");
+        throw err;
+      }
     }
+  } finally {
+    await client
+      .query("SELECT pg_advisory_unlock(hashtextextended($1, 0))", [
+        "daski-gateway:migrations",
+      ])
+      .catch(() => undefined);
+    client.release();
   }
 }

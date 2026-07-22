@@ -5,6 +5,7 @@ import { privateKeyToAccount } from "viem/accounts";
 import { encodeAbiParameters, keccak256 } from "viem";
 import type { Hex } from "viem";
 import { startTestGateway, type TestGateway } from "./helpers/setup.js";
+import { computeRequestHash } from "../src/auth/envelope.js";
 
 // ── Provider quote-commitment integration (provider audit 1.1) ──────────
 //
@@ -90,6 +91,7 @@ describe("provider quote-commitment integration", () => {
     });
     // Registered buyer — the quote flow itself is what's under test.
     gateway.mockChain.setAgentOfWallet(gateway.buyerAddress, 5n);
+    gateway.mockChain.setAgentOwner(6n, gateway.buyerAddress);
   });
 
   afterEach(async () => {
@@ -105,6 +107,7 @@ describe("provider quote-commitment integration", () => {
       arguments: {
         skillId: "register-domain",
         providerTokenId: "2",
+        serviceSlug: "domain-management",
         buyerTokenId: "5",
         walletAddress: gateway.buyerAddress,
         serviceArgs: { domain: "quoted.xyz" },
@@ -142,33 +145,13 @@ describe("provider quote-commitment integration", () => {
     };
   }
 
-  async function retryPurchase(
-    serviceRef: string,
-    body: Record<string, unknown>,
-  ) {
-    const paymentPayload = Buffer.from(
-      JSON.stringify({ serviceRef }),
-    ).toString("base64");
-    const response = await fetch(`${gateway.baseUrl}/purchase/2`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-PAYMENT": paymentPayload,
-      },
-      body: JSON.stringify(body),
-    });
-    return {
-      status: response.status,
-      json: (await response.json()) as any,
-    };
-  }
-
   it("REST /purchase validates the signed quote and only reuses an exact binding", async () => {
     const serviceArgs = { domain: "rest-quoted.xyz" };
     const baseRequest = {
       buyerTokenId: "5",
       walletAddress: gateway.buyerAddress,
       skillId: "register-domain",
+      serviceSlug: "domain-management",
       serviceArgs,
     };
 
@@ -213,34 +196,6 @@ describe("provider quote-commitment integration", () => {
     });
     expect(rebound.status).toBe(409);
     expect(rebound.json.error).toContain("quote is already bound");
-  });
-
-  it("REST signed retry rejects missing or changed serviceArgs before settlement", async () => {
-    const serviceArgs = { domain: "rest-retry.xyz" };
-    const providerQuote = await requestProviderQuote(serviceArgs);
-    const opened = await postPurchase({
-      buyerTokenId: "5",
-      walletAddress: gateway.buyerAddress,
-      skillId: "register-domain",
-      serviceArgs,
-      providerQuote,
-    });
-    expect(opened.status).toBe(402);
-    const serviceRef = opened.json.accepts[0].extra.daski.serviceRef as Hex;
-
-    const missing = await retryPurchase(serviceRef, {});
-    expect(missing.status).toBe(400);
-    expect(missing.json.error).toContain("serviceArgs is required");
-
-    const changed = await retryPurchase(serviceRef, {
-      serviceArgs: { domain: "changed-after-signing.xyz" },
-    });
-    expect(changed.status).toBe(409);
-    expect(changed.json.error).toContain("provider quote requestHash");
-
-    const challenge = await gateway.bundle.queries.getChallengeByRef(serviceRef);
-    expect(challenge?.status).toBe("pending");
-    expect(gateway.mockChain.settlements).toHaveLength(0);
   });
 
   it("daski_buy_service adopts quote.serviceRef and persists the credentials", async () => {
@@ -308,7 +263,6 @@ describe("provider quote-commitment integration", () => {
         x402Version: 1,
         scheme: "exact",
         network: "base-sepolia",
-        serviceRef: paymentRequirements.extra.daski.serviceRef,
         payload: { signature: "0x", authorization: {} },
       };
 
@@ -333,7 +287,7 @@ describe("provider quote-commitment integration", () => {
       const challenge = await gateway.bundle.queries.getChallengeByRef(
         paymentRequirements.extra.daski.serviceRef as Hex,
       );
-      expect(challenge?.status).toBe("pending");
+      expect(challenge?.settlementState).toBe("pending");
       expect(gateway.mockChain.settlements).toHaveLength(0);
 
       const nestedArgs = {
@@ -371,6 +325,7 @@ describe("provider quote-commitment integration", () => {
           name: "daski_purchase",
           arguments: {
             providerTokenId: "2",
+            serviceSlug: "domain-management",
             buyerTokenId: "5",
             walletAddress: gateway.buyerAddress,
             skillId: "register-domain",
@@ -616,7 +571,9 @@ describe("provider quote-commitment integration", () => {
                 paymentId: settled.paymentId,
                 chainId: 84532,
                 messageId,
-                requestHash: ("0x" + "00".repeat(32)) as string,
+                // Must be the true canonical hash of the serviceArgs above —
+                // the gateway now rejects body/envelope drift before dispatch.
+                requestHash: computeRequestHash({ domain: "quoted.xyz" }),
                 issuedAt: "1",
               },
             },

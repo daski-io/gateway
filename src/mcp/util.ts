@@ -1,87 +1,4 @@
-import type { Hex } from "../types.js";
-
-// ── Default buyer agentURI (ERC-8004 §2.2 conformance) ─────────────────────
-//
-// ERC-8004 requires every Identity Registry tokenURI to resolve to an
-// Agent Registration File. Empty URIs leave reputation queries and Bazaar /
-// agentic.market indexers stranded. For fresh buyer wallets that have no
-// off-chain hosting yet, we default to a `data:application/json;base64,...`
-// URI containing a minimal stub. ~200-400 bytes of calldata; on Base
-// Sepolia gas is negligible.
-//
-// `buildBuyerAgentURI` accepts an optional display name; callers that have
-// no name fall back to the wallet-derived `buyer-<last6>` slug. Names are
-// NOT validated/sanitized here — pass pre-sanitized values from
-// `sanitizeBuyerName`.
-export function buildBuyerAgentURI(
-  walletAddress: Hex,
-  name?: string,
-): string {
-  const lower = walletAddress.toLowerCase();
-  const resolvedName = name ?? `buyer-${lower.slice(-6)}`;
-  const card = {
-    name: resolvedName,
-    type: "buyer",
-    wallet: lower,
-    endpoints: {},
-  };
-  const b64 = Buffer.from(JSON.stringify(card)).toString("base64");
-  return `data:application/json;base64,${b64}`;
-}
-
-// Wallet-derived default name. Callers that need to surface "the name we
-// would have picked" without rebuilding the URI can use this directly.
-export function defaultBuyerName(walletAddress: Hex): string {
-  return `buyer-${walletAddress.toLowerCase().slice(-6)}`;
-}
-
-// ── Buyer display-name validation ──────────────────────────────────────────
-//
-// Free-form, NOT enforced unique. We trim whitespace, cap length at 64
-// chars, and reject anything containing C0/C1 control chars. Unicode
-// letters, digits, spaces, common punctuation are all fine. Rationale: see
-// the buyer-naming spec — uniqueness is a stage-3 ENS concern, not ours.
-const BUYER_NAME_MAX_LENGTH = 64;
-
-export interface SanitizedBuyerName {
-  ok: true;
-  name: string;
-}
-export interface SanitizedBuyerNameError {
-  ok: false;
-  error: string;
-}
-
-export function sanitizeBuyerName(
-  raw: unknown,
-): SanitizedBuyerName | SanitizedBuyerNameError {
-  if (typeof raw !== "string") {
-    return { ok: false, error: "name must be a string" };
-  }
-  const trimmed = raw.trim();
-  if (trimmed.length === 0) {
-    return { ok: false, error: "name must not be empty" };
-  }
-  if (trimmed.length > BUYER_NAME_MAX_LENGTH) {
-    return {
-      ok: false,
-      error: `name must be ${BUYER_NAME_MAX_LENGTH} characters or fewer`,
-    };
-  }
-  // Reject C0 (\x00–\x1F) and C1/DEL (\x7F) control characters. These
-  // disrupt downstream display in receipts and CLI output and have no
-  // legitimate use in a display name.
-  for (let i = 0; i < trimmed.length; i++) {
-    const code = trimmed.charCodeAt(i);
-    if (code <= 0x1f || code === 0x7f) {
-      return {
-        ok: false,
-        error: "name must not contain control characters",
-      };
-    }
-  }
-  return { ok: true, name: trimmed };
-}
+import { createHmac, randomBytes } from "node:crypto";
 
 // ── serviceArgs normalization (§3.2 — flat + nested registrant) ────────────
 //
@@ -142,6 +59,7 @@ export function isFieldPresent(
 export interface McpErrorPayload {
   code: string;
   message: string;
+  retryable?: boolean;
   details?: Record<string, unknown>;
   recoverable?: boolean;
   next_action?: string;
@@ -150,9 +68,21 @@ export interface McpErrorPayload {
 // Index signature mirrors the SDK's CallToolResult shape (which extends
 // Result and therefore allows arbitrary string-keyed extensions); without
 // it TypeScript rejects passing this value where the SDK expects its
-// inferred return type.
+// inferred return type. Content is text-first; tools that hand real files
+// to the caller (artifact fetch) append an MCP embedded-resource block so
+// clients can render/save the document instead of re-parsing JSON base64.
 export interface McpToolResult {
-  content: Array<{ type: "text"; text: string }>;
+  content: Array<
+    | { type: "text"; text: string }
+    | {
+        type: "resource";
+        // Mirrors the SDK's EmbeddedResource union exactly: text XOR blob,
+        // each required in its branch.
+        resource:
+          | { uri: string; text: string; mimeType?: string }
+          | { uri: string; blob: string; mimeType?: string };
+      }
+  >;
   isError?: boolean;
   _meta?: Record<string, unknown>;
   [key: string]: unknown;
@@ -281,10 +211,80 @@ export function checkPhoneFields(
   return bad ? phoneFormatError(bad) : null;
 }
 
-// Top-level serviceArgs keys that are always legitimate even though no
-// skill lists them: the nested contact containers (hoisted by
-// normalizeContactFields) and cross-skill legacy aliases.
-const SERVICE_ARG_ALIASES = ["years"]; // legacy alias for `term`
+// ── Phone acknowledgement gate ─────────────────────────────────────────────
+//
+// The E.164 check above catches FORMAT; it cannot catch a wrong-but-valid
+// number. Live runs showed agents silently normalizing a principal's
+// dotted phone and paying without ever echoing the result — numbers that
+// land verbatim on public WHOIS. This gate makes the first plan-building
+// call that carries phone fields fail with PHONE_ACKNOWLEDGEMENT_REQUIRED
+// and a token HMAC-bound to the exact values; the caller is instructed to
+// echo the numbers to the principal and retry with the token. No stateless
+// scheme can prove the principal answered — the token only records that
+// the caller acknowledged the exact public value, and invalidates that
+// acknowledgement whenever a value changes. The secret is
+// per-process: after a restart (or on a sibling instance) the token
+// simply re-issues, costing one extra roundtrip, never blocking.
+const PHONE_ACKNOWLEDGEMENT_SECRET = randomBytes(32);
+
+export function presentPhoneFields(
+  args: Record<string, unknown>,
+): Array<{ field: string; value: string }> {
+  const out: Array<{ field: string; value: string }> = [];
+  for (const f of PHONE_FIELDS) {
+    const v = args[f];
+    if (typeof v === "string" && v !== "") out.push({ field: f, value: v });
+  }
+  return out;
+}
+
+export function expectedPhoneAcknowledgementToken(
+  phones: Array<{ field: string; value: string }>,
+): string {
+  const canonical = phones
+    .map(({ field, value }) => `${field}=${value}`)
+    .sort()
+    .join("&");
+  return createHmac("sha256", PHONE_ACKNOWLEDGEMENT_SECRET)
+    .update(canonical)
+    .digest("hex")
+    .slice(0, 32);
+}
+
+export function checkPhoneAcknowledgement(
+  args: Record<string, unknown>,
+  acknowledgementToken: string | undefined,
+): McpToolResult | null {
+  const phones = presentPhoneFields(args);
+  if (phones.length === 0) return null;
+  const expected = expectedPhoneAcknowledgementToken(phones);
+  if (acknowledgementToken === expected) return null;
+  return mcpError({
+    code: "PHONE_ACKNOWLEDGEMENT_REQUIRED",
+    message:
+      "Phone number(s) in serviceArgs need your principal's explicit " +
+      "acknowledgement before a payment plan is prepared: " +
+      phones.map(({ field, value }) => `${field}='${value}'`).join(", ") +
+      ". They will appear on public WHOIS exactly as sent. Echo the EXACT " +
+      "value(s) back to your principal — if you normalized the number " +
+      "(stripped dots/spaces/dashes), show the normalized form and say you " +
+      "did (e.g. \"I'll register with phone +48221234567, normalized from " +
+      "+48.221234567 — confirm or correct\"). Only after an explicit yes, " +
+      "retry this same call with `phoneAcknowledgementToken` added. This " +
+      "token records an acknowledgement, not proof of principal consent.",
+    details: {
+      phones: Object.fromEntries(phones.map(({ field, value }) => [field, value])),
+      phoneAcknowledgementToken: expected,
+      tokenBinding:
+        "bound to these exact field=value pairs — changing any phone value " +
+        "requires a new acknowledgement",
+    },
+    recoverable: true,
+    next_action:
+      "Echo the exact phone value(s) to the principal, get an explicit " +
+      "acknowledgement, then retry with phoneAcknowledgementToken.",
+  });
+}
 
 /**
  * Keys in the buyer's raw serviceArgs that no advertised field consumes —
@@ -300,7 +300,7 @@ export function findUnknownServiceArgKeys(
   optionalFields: readonly string[],
 ): string[] {
   if (!rawArgs) return [];
-  const allowed = new Set<string>([...CONTACT_ROLES, ...SERVICE_ARG_ALIASES]);
+  const allowed = new Set<string>(CONTACT_ROLES);
   for (const f of [...requiredFields, ...optionalFields]) {
     allowed.add(f);
     const dot = f.indexOf(".");

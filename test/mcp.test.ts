@@ -8,11 +8,14 @@ import {
   SERVICE_TYPE_SLUGS,
 } from "../src/serviceTaxonomy.js";
 import { startTestGateway, type TestGateway } from "./helpers/setup.js";
+import { computeRequestHash } from "../src/auth/envelope.js";
+import { expectedPhoneAcknowledgementToken } from "../src/mcp/util.js";
 import {
   AGENT_AUTHORITY,
   MCP_LEGAL_INSTRUCTIONS,
   PURCHASE_NOTICE,
 } from "../src/legal/purchase.js";
+import type { Embedder } from "../src/discovery/embeddings.js";
 
 const TEST_BUYER_KEY =
   "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80" as Hex;
@@ -80,7 +83,7 @@ describe("hosted MCP — wallet-agnostic surface", () => {
     await gateway.close();
   });
 
-  it("tools/list returns 6 public + 3 advanced by default (deprecated hidden)", async () => {
+  it("tools/list returns the 6 public and 3 advanced tools", async () => {
     const { client, transport } = await connectClient(gateway.baseUrl);
     try {
       const tools = await client.listTools();
@@ -105,10 +108,25 @@ describe("hosted MCP — wallet-agnostic surface", () => {
       );
       const properties = searchTool?.inputSchema.properties as Record<
         string,
-        { enum?: string[] }
+        { enum?: string[]; minimum?: number; maximum?: number }
       >;
       expect(properties.categoryFamily.enum).toEqual(CATEGORY_FAMILY_SLUGS);
       expect(properties.serviceType.enum).toEqual(SERVICE_TYPE_SLUGS);
+      const statusTool = tools.tools.find(
+        (tool) => tool.name === "daski_get_task_status",
+      );
+      const statusProperties = statusTool?.inputSchema.properties as Record<
+        string,
+        { minimum?: number; maximum?: number }
+      >;
+      expect(statusProperties.streamingTimeoutMs).toMatchObject({
+        minimum: 1_000,
+        maximum: 120_000,
+      });
+      const artifactTool = tools.tools.find(
+        (tool) => tool.name === "daski_fetch_artifact",
+      );
+      expect(artifactTool?.inputSchema.required).toContain("providerA2AUrl");
       expect(client.getInstructions()).toContain(MCP_LEGAL_INSTRUCTIONS);
       for (const toolName of [
         "daski_purchase",
@@ -140,59 +158,6 @@ describe("hosted MCP — wallet-agnostic surface", () => {
     }
   });
 
-  it("tools/list includes deprecated aliases when X-Daski-Include-Deprecated is set", async () => {
-    // Re-open a session with the include-deprecated header so we exercise
-    // the per-session toggle that buildSession() reads off the inbound
-    // initialize request.
-    const transport = new StreamableHTTPClientTransport(
-      new URL(`${gateway.baseUrl}/mcp`),
-      {
-        requestInit: { headers: { "X-Daski-Include-Deprecated": "1" } },
-      },
-    );
-    const client = new Client({ name: "test-client", version: "0.0.0" });
-    await client.connect(transport);
-    try {
-      const tools = await client.listTools();
-      const names = tools.tools.map((t) => t.name).sort();
-      // Public + advanced + 6 deprecated.
-      expect(names).toContain("daski_search_services");
-      expect(names).toContain("search_services");
-      expect(names).toContain("daski_get_provider");
-      expect(names).toContain("daski_build_envelope_auth");
-      expect(names).toContain("daski_prepare_registration");
-      expect(names).toContain("daski_register_buyer");
-      expect(names).toContain("daski_prepare_confirm");
-    } finally {
-      await transport.close();
-    }
-  });
-
-  it("deprecated tool names remain callable even when hidden", async () => {
-    // Default session has no X-Daski-Include-Deprecated header, so the
-    // deprecated alias is hidden from tools/list — but the call still
-    // works (logged as deprecated_tool_call).
-    const { client, transport } = await connectClient(gateway.baseUrl);
-    try {
-      const result = await client.callTool({
-        name: "search_services",
-        arguments: {},
-      });
-      const body = parseResult<{
-        providers: Array<{
-          tokenId: string;
-          agentCardUrl: string;
-          legal: Record<string, string>;
-        }>;
-      }>(result);
-      expect(body.providers.length).toBe(1);
-      expect(body.providers[0].tokenId).toBe("2");
-      expect(body.providers[0].legal).toEqual(expectedLegal(gateway));
-    } finally {
-      await transport.close();
-    }
-  });
-
   it("daski_search_services returns the provider catalog with no intent", async () => {
     const { client, transport } = await connectClient(gateway.baseUrl);
     try {
@@ -202,13 +167,13 @@ describe("hosted MCP — wallet-agnostic surface", () => {
       });
       const body = parseResult<{
         providers: Array<{
-          tokenId: string;
+          agentId: string;
           agentCardUrl: string;
           legal: Record<string, string>;
         }>;
       }>(result);
       expect(body.providers.length).toBe(1);
-      expect(body.providers[0].tokenId).toBe("2");
+      expect(body.providers[0].agentId).toBe("2");
       expect(body.providers[0].agentCardUrl).toMatch(/^http/);
       expect(body.providers[0].legal).toEqual(expectedLegal(gateway));
     } finally {
@@ -230,17 +195,83 @@ describe("hosted MCP — wallet-agnostic surface", () => {
       const body = parseResult<{
         intent: string;
         providers: Array<{
-          tokenId: string;
+          agentId: string;
           match: { distance: number; bestSkillId: string };
         }>;
       }>(result);
       expect(body.intent).toBe("register a domain");
       expect(body.providers.length).toBeGreaterThanOrEqual(1);
-      expect(body.providers[0].tokenId).toBe("2");
+      expect(body.providers[0].agentId).toBe("2");
       expect(body.providers[0].match.distance).toBeLessThanOrEqual(2);
       expect(typeof body.providers[0].match.bestSkillId).toBe("string");
     } finally {
       await transport.close();
+    }
+  });
+
+  it("degrades intent search to the filtered catalog and reports health", async () => {
+    const unavailableEmbedder: Embedder = {
+      dim: 384,
+      async embed() {
+        throw new Error("upstream model details must stay private");
+      },
+      async embedMany() {
+        throw new Error("upstream model details must stay private");
+      },
+      async warmup() {
+        throw new Error("upstream model details must stay private");
+      },
+      getStatus() {
+        return { state: "degraded", reason: "model_load_failed" };
+      },
+    };
+    const degradedGateway = await startTestGateway({
+      embedder: unavailableEmbedder,
+      providers: [
+        {
+          tokenId: 91n,
+          name: "Fallback Domains",
+          priceUsdcSmallest: "15000000",
+          categoryFamily: "domains-web",
+          serviceType: "domain-management",
+          skills: [
+            {
+              id: "register-domain",
+              name: "Register Domain",
+              metadata: {
+                paymentRequired: true,
+                baseAmount: "15000000",
+              },
+            },
+          ],
+        },
+      ],
+    });
+    const { client, transport } = await connectClient(degradedGateway.baseUrl);
+    try {
+      const result = await client.callTool({
+        name: "daski_search_services",
+        arguments: { intent: "register a domain" },
+      });
+      const body = parseResult<{
+        ranking: string;
+        warning: string;
+        providers: unknown[];
+      }>(result);
+      expect(body.ranking).toBe("unavailable");
+      expect(body.providers).toHaveLength(1);
+      expect(body.warning).not.toContain("upstream model details");
+
+      await degradedGateway.bundle.indexer.tick();
+      const health = (await (
+        await fetch(`${degradedGateway.baseUrl}/health/ready`)
+      ).json()) as {
+        status: string;
+      };
+      expect(health.status).toBe("degraded");
+    } finally {
+      await transport.close();
+      await degradedGateway.close();
     }
   });
 
@@ -259,11 +290,9 @@ describe("hosted MCP — wallet-agnostic surface", () => {
       const first = read.contents[0] as { mimeType?: string; text?: string };
       expect(first.mimeType).toBe("application/json");
       const parsed = JSON.parse(first.text ?? "{}") as {
-        tokenId: string;
         agentId: string;
         legal: Record<string, string>;
       };
-      expect(parsed.tokenId).toBe("2");
       expect(parsed.agentId).toBe("2");
       expect(parsed.legal).toEqual(expectedLegal(gateway));
     } finally {
@@ -271,7 +300,7 @@ describe("hosted MCP — wallet-agnostic surface", () => {
     }
   });
 
-  it("returns a structured error when the resource tokenId is unknown", async () => {
+  it("returns a structured error when the resource agentId is unknown", async () => {
     const { client, transport } = await connectClient(gateway.baseUrl);
     try {
       const read = await client.readResource({ uri: "daski://provider/999" });
@@ -290,6 +319,7 @@ describe("hosted MCP — wallet-agnostic surface", () => {
         name: "daski_purchase",
         arguments: {
           providerTokenId: "2",
+          serviceSlug: "domain-management",
           buyerTokenId: "5",
           walletAddress: gateway.buyerAddress,
           skillId: "register-domain",
@@ -344,12 +374,42 @@ describe("hosted MCP — wallet-agnostic surface", () => {
         name: "daski_purchase",
         arguments: {
           providerTokenId: "2",
+          serviceSlug: "domain-management",
           buyerTokenId: "5",
           // walletAddress omitted
         },
       });
       const r = result as ToolResultContent;
       expect(r.isError).toBe(true);
+    } finally {
+      await transport.close();
+    }
+  });
+
+  it("rejects self-purchases by provider agent or provider wallet", async () => {
+    const { client, transport } = await connectClient(gateway.baseUrl);
+    try {
+      for (const buyer of [
+        { buyerTokenId: "2", walletAddress: gateway.buyerAddress },
+        {
+          buyerTokenId: "5",
+          walletAddress: gateway.mockProvider.walletAddress,
+        },
+      ]) {
+        const result = await client.callTool({
+          name: "daski_purchase",
+          arguments: {
+            providerTokenId: "2",
+            serviceSlug: "domain-management",
+            skillId: "register-domain",
+            ...buyer,
+          },
+        });
+        const response = result as ToolResultContent;
+        expect(response.isError).toBe(true);
+        const error = parseResult<{ code: string }>(result);
+        expect(error.code).toBe("self_purchase_not_allowed");
+      }
     } finally {
       await transport.close();
     }
@@ -363,6 +423,7 @@ describe("hosted MCP — wallet-agnostic surface", () => {
         arguments: {
           skillId: "register-domain",
           providerTokenId: "2",
+          serviceSlug: "domain-management",
           buyerTokenId: "5",
           walletAddress: gateway.buyerAddress,
           serviceArgs: { domain: "smoke.xyz" },
@@ -383,9 +444,7 @@ describe("hosted MCP — wallet-agnostic surface", () => {
       expect(body.agentAuthority).toEqual(AGENT_AUTHORITY);
       expect(body.purchaseNotice).toBe(PURCHASE_NOTICE);
       expect(body.paymentRequirements.extra.daski.eip712TypedData).toBeDefined();
-      // Plan now uses the daski_confirm_delivery two-call pattern in place
-      // of the deprecated daski_prepare_confirm + daski_confirm_delivery
-      // pair. The first daski_confirm_delivery step is the unsigned
+      // The first daski_confirm_delivery step is the unsigned
       // typed-data request; the second is the signed retry.
       expect(body.plan.steps.map((s) => s.toolName)).toEqual([
         "<your-wallet>.signTypedData",
@@ -414,10 +473,11 @@ describe("hosted MCP — wallet-agnostic surface", () => {
           name: "daski_purchase",
           arguments: {
             providerTokenId: "2",
+            serviceSlug: "domain-management",
             buyerTokenId: "5",
             walletAddress: gateway.buyerAddress,
             // post-service-identity-refactor: skillId is required so the
-            // gateway can derive serviceId from (providerAgentId, skillId,
+            // gateway can derive serviceId from (providerAgentId, serviceSlug,
             // version) and bind the EIP-3009 nonce accordingly.
             skillId: "register-domain",
           },
@@ -502,7 +562,7 @@ describe("hosted MCP — wallet-agnostic surface", () => {
     }
   });
 
-  // ── Gasless registration MCP surface ─────────────────────────────────
+  // ── Self-funded registration MCP surface ─────────────────────────────
 
   it("daski_register_agent first call returns RegisterAgent typed-data", async () => {
     const fresh = "0xabcd000000000000000000000000000000000001" as Hex;
@@ -530,86 +590,57 @@ describe("hosted MCP — wallet-agnostic surface", () => {
     }
   });
 
-  it("daski_register_agent second call (with signature) submits via the facilitator", async () => {
-    const fresh = "0xabcd000000000000000000000000000000000002" as Hex;
-    gateway.mockChain.queueRegistration({
-      kind: "success",
-      agentId: 88n,
-      txHash: ("0x" + "33".repeat(32)) as Hex,
+  it("daski_register_agent second call returns self-funded transaction data", async () => {
+    const account = privateKeyToAccount(
+      ("0x" + "22".repeat(32)) as Hex,
+    );
+    const fresh = account.address.toLowerCase() as Hex;
+    const deadline = BigInt(Math.floor(Date.now() / 1000) + 600);
+    const signature = await account.signTypedData({
+      domain: {
+        name: "Daski AgentIndex",
+        version: "1",
+        chainId: gateway.config.chainId,
+        verifyingContract: gateway.config.agentIndexAddress,
+      },
+      types: {
+        RegisterAgent: [
+          { name: "agentURI", type: "string" },
+          { name: "agentWallet", type: "address" },
+          { name: "nonce", type: "uint256" },
+          { name: "deadline", type: "uint256" },
+        ],
+      },
+      primaryType: "RegisterAgent",
+      message: {
+        agentURI: "ipfs://buyer",
+        agentWallet: fresh,
+        nonce: 0n,
+        deadline,
+      },
     });
-
     const { client, transport } = await connectClient(gateway.baseUrl);
     try {
       const body = parseResult<{
         walletAddress: string;
-        agentId: string;
-        transactionHash: string;
+        transaction: { chainId: number; to: string; data: string; value: string };
       }>(
         await client.callTool({
           name: "daski_register_agent",
           arguments: {
             walletAddress: fresh,
             agentURI: "ipfs://buyer",
-            deadline: String(Math.floor(Date.now() / 1000) + 600),
-            signature: ("0x" + "11".repeat(65)) as Hex,
+            deadline: deadline.toString(),
+            signature,
           },
         }),
       );
       expect(body.walletAddress).toBe(fresh);
-      expect(body.agentId).toBe("88");
-      expect(body.transactionHash).toMatch(/^0x3{64}$/);
-      expect(gateway.mockChain.registrations).toHaveLength(1);
-    } finally {
-      await transport.close();
-    }
-  });
-
-  it("deprecated daski_prepare_registration alias still returns typed-data", async () => {
-    const fresh = "0xabcd000000000000000000000000000000000011" as Hex;
-    gateway.mockChain.setRegistrationNonce(fresh, 7n);
-
-    const { client, transport } = await connectClient(gateway.baseUrl);
-    try {
-      const body = parseResult<{
-        walletAddress: string;
-        nonce: string;
-        eip712TypedData: { primaryType: string };
-      }>(
-        await client.callTool({
-          name: "daski_prepare_registration",
-          arguments: { walletAddress: fresh, agentURI: "ipfs://buyer" },
-        }),
-      );
-      expect(body.nonce).toBe("7");
-      expect(body.eip712TypedData.primaryType).toBe("RegisterAgent");
-    } finally {
-      await transport.close();
-    }
-  });
-
-  it("deprecated daski_register_buyer alias still submits the registration", async () => {
-    const fresh = "0xabcd000000000000000000000000000000000012" as Hex;
-    gateway.mockChain.queueRegistration({
-      kind: "success",
-      agentId: 99n,
-      txHash: ("0x" + "44".repeat(32)) as Hex,
-    });
-
-    const { client, transport } = await connectClient(gateway.baseUrl);
-    try {
-      const body = parseResult<{ agentId: string; transactionHash: string }>(
-        await client.callTool({
-          name: "daski_register_buyer",
-          arguments: {
-            walletAddress: fresh,
-            agentURI: "ipfs://buyer",
-            deadline: String(Math.floor(Date.now() / 1000) + 600),
-            signature: ("0x" + "22".repeat(65)) as Hex,
-          },
-        }),
-      );
-      expect(body.agentId).toBe("99");
-      expect(body.transactionHash).toMatch(/^0x4{64}$/);
+      expect(body.transaction.chainId).toBe(gateway.config.chainId);
+      expect(body.transaction.to).toBe(gateway.config.agentIndexAddress);
+      expect(body.transaction.data).toMatch(/^0x[0-9a-f]+$/i);
+      expect(body.transaction.value).toBe("0");
+      expect(gateway.mockChain.registrations).toHaveLength(0);
     } finally {
       await transport.close();
     }
@@ -635,6 +666,7 @@ describe("hosted MCP — wallet-agnostic surface", () => {
           arguments: {
             skillId: "register-domain",
             providerTokenId: "2",
+            serviceSlug: "domain-management",
             walletAddress: fresh,
             // buyerTokenId omitted on purpose — orchestrator should look it up.
             serviceArgs: { domain: "atomic.xyz" },
@@ -682,6 +714,7 @@ describe("hosted MCP — wallet-agnostic surface", () => {
           arguments: {
             skillId: "register-domain",
             providerTokenId: "2",
+            serviceSlug: "domain-management",
             walletAddress: fresh,
             serviceArgs: { domain: "atomic.xyz" },
           },
@@ -729,6 +762,7 @@ describe("hosted MCP — wallet-agnostic surface", () => {
           arguments: {
             skillId: "register-domain",
             providerTokenId: "2",
+            serviceSlug: "domain-management",
             walletAddress: fresh,
             name: "  Acme Procurement Bot ",
             serviceArgs: { domain: "atomic.xyz" },
@@ -771,6 +805,7 @@ describe("hosted MCP — wallet-agnostic surface", () => {
         arguments: {
           skillId: "register-domain",
           providerTokenId: "2",
+          serviceSlug: "domain-management",
           walletAddress: fresh,
           name: "x".repeat(65),
           serviceArgs: { domain: "atomic.xyz" },
@@ -801,6 +836,7 @@ describe("hosted MCP — wallet-agnostic surface", () => {
           arguments: {
             skillId: "register-domain",
             providerTokenId: "2",
+            serviceSlug: "domain-management",
             walletAddress: gateway.buyerAddress,
             name: "Acme Procurement Bot",
             serviceArgs: { domain: "smoke.xyz" },
@@ -867,6 +903,7 @@ describe("hosted MCP — wallet-agnostic surface", () => {
           arguments: {
             skillId: "register-domain",
             providerTokenId: "2",
+            serviceSlug: "domain-management",
             buyerTokenId: "5",
             walletAddress: gateway.buyerAddress,
             serviceArgs: { domain: "atomic.xyz" },
@@ -909,12 +946,19 @@ describe("hosted MCP — wallet-agnostic surface", () => {
         arguments: {
           skillId: "register-domain",
           providerTokenId: "2",
+          serviceSlug: "domain-management",
           buyerTokenId: "5",
           walletAddress: gateway.buyerAddress,
           serviceArgs: {
             domain: "atomic.xyz",
             registrantPhone: "+15555550100",
           },
+          // Phone-bearing buys must pass the confirmation gate before any
+          // /quote roundtrip; this test targets provider-side quote errors,
+          // so satisfy the gate up front.
+          phoneAcknowledgementToken: expectedPhoneAcknowledgementToken([
+            { field: "registrantPhone", value: "+15555550100" },
+          ]),
         },
       });
       const r = result as ToolResultContent;
@@ -940,6 +984,7 @@ describe("hosted MCP — wallet-agnostic surface", () => {
         arguments: {
           skillId: "register-domain",
           providerTokenId: "2",
+          serviceSlug: "domain-management",
           buyerTokenId: "5",
           walletAddress: gateway.buyerAddress,
           serviceArgs: {
@@ -981,6 +1026,8 @@ describe("hosted MCP — wallet-agnostic surface", () => {
             requiresAssetOwnership: false,
             requiresCapability: false,
             requiredFields: ["domain"],
+            directEndpoint: "/availability",
+            directResultKind: "availability",
           },
         },
       ],
@@ -1010,6 +1057,7 @@ describe("hosted MCP — wallet-agnostic surface", () => {
           arguments: {
             skillId: "check-availability",
             providerTokenId: "2",
+            serviceSlug: "domain-management",
             walletAddress: fresh,
             serviceArgs: { domain: "smoke.xyz" },
           },
@@ -1033,6 +1081,24 @@ describe("hosted MCP — wallet-agnostic surface", () => {
   // the test below exercises that flow.
 
   it("daski_submit_task passes inline artifacts + statusMessage through (open-free sync path)", async () => {
+    gateway.registerProvider({
+      tokenId: 2n,
+      name: "Domain Reg",
+      priceUsdcSmallest: "15000000",
+      categoryFamily: "domains-web",
+      serviceType: "domain-management",
+      skills: [
+        {
+          id: "check-availability",
+          metadata: {
+            paymentRequired: false,
+            requiresAssetOwnership: false,
+            requiresCapability: false,
+          },
+        },
+      ],
+    });
+    await gateway.refresh();
     gateway.mockProvider.setSyncResult({
       id: "qa-test-1",
       statusMessage: {
@@ -1118,6 +1184,7 @@ describe("hosted MCP — wallet-agnostic surface", () => {
         arguments: {
           skillId: "set-dns-record",
           providerTokenId: "2",
+          serviceSlug: "domain-management",
           walletAddress: gateway.buyerAddress,
           buyerTokenId: "5",
           serviceArgs: {
@@ -1140,12 +1207,10 @@ describe("hosted MCP — wallet-agnostic surface", () => {
     }
   });
 
-  it("daski_buy_service: refuses to emit a plan when requiresCapability=true but capabilityType is missing", async () => {
-    // Regression for the audit finding: previously the plan-builder
-    // silently omitted the prepare-capability step when the provider
-    // declared `requiresCapability: true` without a `capabilityType`,
-    // leaving the buyer with a plan that says "pass capability" but
-    // no upstream step to produce one.
+  it("daski_buy_service builds an in-band capability plan without catalog capabilityType", async () => {
+    // The provider returns the authoritative typed-data in its in-band
+    // capability challenge, so the catalog does not need to duplicate
+    // the capability's Solidity primary type.
     gateway.registerProvider({
       tokenId: 2n,
       name: "Misconfigured Reg",
@@ -1159,7 +1224,6 @@ describe("hosted MCP — wallet-agnostic surface", () => {
             paymentRequired: false,
             requiresAssetOwnership: true,
             requiresCapability: true,
-            // capabilityType deliberately omitted to exercise the guard.
             requiredFields: ["domain", "recordType", "recordName", "recordContent"],
           },
         },
@@ -1169,29 +1233,34 @@ describe("hosted MCP — wallet-agnostic surface", () => {
 
     const { client, transport } = await connectClient(gateway.baseUrl);
     try {
-      const result = await client.callTool({
-        name: "daski_buy_service",
-        arguments: {
-          skillId: "set-dns-record",
-          providerTokenId: "2",
-          walletAddress: gateway.buyerAddress,
-          buyerTokenId: "5",
-          paymentId: "42",
-          serviceArgs: {
-            domain: "owned.xyz",
-            recordType: "A",
-            recordName: "@",
-            recordContent: "1.2.3.4",
+      const body = parseResult<{
+        kind: string;
+        requiresCapability: boolean;
+        plan: { steps: Array<{ hint: string }> };
+      }>(
+        await client.callTool({
+          name: "daski_buy_service",
+          arguments: {
+            skillId: "set-dns-record",
+            providerTokenId: "2",
+            serviceSlug: "domain-management",
+            walletAddress: gateway.buyerAddress,
+            buyerTokenId: "5",
+            paymentId: "42",
+            serviceArgs: {
+              domain: "owned.xyz",
+              recordType: "A",
+              recordName: "@",
+              recordContent: "1.2.3.4",
+            },
           },
-        },
-      });
-      const r = result as ToolResultContent;
-      expect(r.isError).toBe(true);
-      const err = JSON.parse(
-        (r.content[0]! as { type: "text"; text: string }).text,
+        }),
       );
-      expect(err.code).toBe("provider_missing_capability_type");
-      expect(err.details.skillId).toBe("set-dns-record");
+      expect(body.kind).toBe("free");
+      expect(body.requiresCapability).toBe(true);
+      expect(body.plan.steps.some((step) =>
+        step.hint.includes("provider-issued capability"),
+      )).toBe(true);
     } finally {
       await transport.close();
     }
@@ -1210,6 +1279,7 @@ describe("hosted MCP — wallet-agnostic surface", () => {
           arguments: {
             skillId: "register-domain",
             providerTokenId: "2",
+            serviceSlug: "domain-management",
             walletAddress: fresh,
             serviceArgs: { domain: "atomic-settle.xyz" },
           },
@@ -1315,6 +1385,7 @@ describe("hosted MCP — wallet-agnostic surface", () => {
           arguments: {
             skillId: "register-domain",
             providerTokenId: "2",
+            serviceSlug: "domain-management",
             buyerTokenId: "5",
             walletAddress: gateway.buyerAddress,
             serviceArgs,
@@ -1599,6 +1670,24 @@ describe("hosted MCP — wallet-agnostic surface", () => {
     // The provider's ENVELOPE_AUTH_REQUIRED error embeds a ready-to-sign
     // envelopeAuthChallenge in error.data; dropping it strands the agent
     // with a message that references a payload it can't see.
+    gateway.registerProvider({
+      tokenId: 2n,
+      name: "Domain Reg",
+      priceUsdcSmallest: "15000000",
+      categoryFamily: "domains-web",
+      serviceType: "domain-management",
+      skills: [
+        {
+          id: "check-availability",
+          metadata: {
+            paymentRequired: false,
+            requiresAssetOwnership: false,
+            requiresCapability: false,
+          },
+        },
+      ],
+    });
+    await gateway.refresh();
     gateway.mockProvider.setNextA2AError({
       code: -32011,
       message:
@@ -1642,6 +1731,25 @@ describe("hosted MCP — wallet-agnostic surface", () => {
     // challenge needs a NEW envelope. The gateway pre-mints it so the
     // agent signs capability + next envelope in one pass instead of
     // discovering ENVELOPE_REPLAY the hard way.
+    gateway.registerProvider({
+      tokenId: 2n,
+      name: "Agent Mailboxes",
+      priceUsdcSmallest: "9990000",
+      categoryFamily: "communications",
+      serviceType: "agent-mailbox",
+      skills: [
+        {
+          id: "change-password",
+          metadata: {
+            paymentRequired: false,
+            requiresAssetOwnership: true,
+            requiresCapability: true,
+            capabilityType: "MailboxPasswordResetAuthorization",
+          },
+        },
+      ],
+    });
+    await gateway.refresh();
     gateway.mockProvider.setSyncResult({
       id: "task-cap-1",
       state: "input-required",
@@ -1693,7 +1801,9 @@ describe("hosted MCP — wallet-agnostic surface", () => {
                 paymentId: "5",
                 chainId: 84532,
                 messageId: "msg-used-1",
-                requestHash: ("0x" + "00".repeat(32)) as string,
+                // Must be the true canonical hash of the serviceArgs below —
+                // the gateway now rejects body/envelope drift before dispatch.
+                requestHash: computeRequestHash({ address: "pawel@uat.example" }),
                 issuedAt: "1",
               },
             },
@@ -1716,34 +1826,6 @@ describe("hosted MCP — wallet-agnostic surface", () => {
     }
   });
 
-  it("deprecated daski_build_envelope_auth alias still returns the typed-data", async () => {
-    const { client, transport } = await connectClient(gateway.baseUrl);
-    try {
-      const body = parseResult<{
-        eip712TypedData: { primaryType: string };
-        authorization: { paymentId: string };
-        messageId: string;
-      }>(
-        await client.callTool({
-          name: "daski_build_envelope_auth",
-          arguments: {
-            skillId: "register-domain",
-            paymentId: "42",
-            chainId: 84532,
-            buyerTokenId: "5",
-            serviceArgs: { domain: "envelope.xyz" },
-          },
-        }),
-      );
-      expect(body.eip712TypedData.primaryType).toBe(
-        "A2ARequestAuthorization",
-      );
-      expect(body.authorization.paymentId).toBe("42");
-      expect(body.messageId).toBeDefined();
-    } finally {
-      await transport.close();
-    }
-  });
 });
 
 interface PaymentRequirementsLite {

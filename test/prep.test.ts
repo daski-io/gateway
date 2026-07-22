@@ -102,8 +102,8 @@ describe("PaymentRequirements inline eip712TypedData", () => {
     expect(recovered.toLowerCase()).toBe(account.address.toLowerCase());
     expect(recovered.toLowerCase()).toBe(td.message.from.toLowerCase());
 
-    // Settle via the X-PAYMENT path — the gateway should accept the agent's
-    // signature over the gateway-baked message.
+    // Settle through the canonical facilitator API using the exact
+    // gateway-baked message.
     gateway.queueSettlementSuccess({
       txHash: ("0x" + "ab".repeat(32)) as Hex,
       paymentId: 7n,
@@ -127,10 +127,9 @@ describe("PaymentRequirements inline eip712TypedData", () => {
           nonce: td.message.nonce,
         },
       },
-      serviceRef: serviceRef!,
     });
     expect(settled.status).toBe(200);
-    expect(settled.json.settlement.success).toBe(true);
+    expect(settled.json.success).toBe(true);
   });
 
   it("rejects /purchase 402 phase when walletAddress is missing", async () => {

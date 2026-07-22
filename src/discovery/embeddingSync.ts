@@ -1,7 +1,9 @@
 import type { Pool } from "../db/pool.js";
+import type { PoolClient } from "pg";
 import type { CachedProvider } from "../types.js";
+import { logErrorWithId } from "../util/errorWrap.js";
 import { type Embedder, vectorLiteral } from "./embeddings.js";
-import { cardsOf, extractMarketplaceExtension } from "./format.js";
+import { cardsOf, extractMarketplaceExtension } from "./agentCard.js";
 
 /**
  * Build the canonical source text for a skill embedding. Stable order so a
@@ -34,7 +36,6 @@ function skillSourceText(args: {
 
 interface SkillEmbeddingTarget {
   providerAgentId: bigint;
-  /** '' for legacy cards without a declared slug — matches the DB default. */
   serviceSlug: string;
   skillId: string;
   sourceText: string;
@@ -57,7 +58,7 @@ function collectTargets(providers: CachedProvider[]): SkillEmbeddingTarget[] {
       const providerName = typeof card.name === "string" ? card.name : "";
       const serviceDescription =
         typeof ext.serviceDescription === "string" ? ext.serviceDescription : "";
-      const serviceSlug = providerCard.serviceSlug ?? "";
+      const serviceSlug = providerCard.serviceSlug;
 
       for (const skill of card.skills ?? []) {
         const skillId = typeof skill.id === "string" ? skill.id : "";
@@ -90,8 +91,8 @@ function collectTargets(providers: CachedProvider[]): SkillEmbeddingTarget[] {
  * skills whose source text changed; deletes rows for providers/skills no
  * longer present. Rows are keyed (provider, serviceSlug, skillId).
  */
-export async function syncSkillEmbeddings(
-  pool: Pool,
+async function syncSkillEmbeddings(
+  pool: Pick<PoolClient, "query">,
   providers: CachedProvider[],
   embedder: Embedder,
 ): Promise<{ inserted: number; updated: number; deleted: number }> {
@@ -168,4 +169,64 @@ export async function syncSkillEmbeddings(
   }
 
   return { inserted, updated, deleted };
+}
+
+export class CatalogEmbeddingSynchronizer {
+  private latest: CachedProvider[] | null = null;
+  private active: Promise<void> | null = null;
+
+  constructor(
+    private readonly pool: Pool,
+    private readonly embedder: Embedder,
+  ) {}
+
+  schedule(providers: CachedProvider[]): void {
+    this.latest = [...providers];
+    if (this.active) return;
+    this.active = this.drain().finally(() => {
+      this.active = null;
+      if (this.latest) this.schedule(this.latest);
+    });
+  }
+
+  async waitForIdle(): Promise<void> {
+    while (this.active) {
+      await this.active;
+    }
+  }
+
+  private async drain(): Promise<void> {
+    while (this.latest) {
+      const providers = this.latest;
+      this.latest = null;
+      try {
+        await this.synchronize(providers);
+      } catch (error) {
+        logErrorWithId("catalogEmbeddingSync", error);
+      }
+    }
+  }
+
+  private async synchronize(providers: CachedProvider[]): Promise<void> {
+    const client = await this.pool.connect();
+    let locked = false;
+    try {
+      const result = await client.query<{ acquired: boolean }>(
+        "SELECT pg_try_advisory_lock(hashtextextended($1, 0)) AS acquired",
+        ["daski-gateway:skill-embeddings"],
+      );
+      locked = result.rows[0]?.acquired === true;
+      if (!locked) return;
+      await syncSkillEmbeddings(client, providers, this.embedder);
+    } finally {
+      if (locked) {
+        await client
+          .query("SELECT pg_advisory_unlock(hashtextextended($1, 0))", [
+            "daski-gateway:skill-embeddings",
+          ])
+          .catch(() => undefined);
+      }
+      client.release();
+    }
+  }
 }

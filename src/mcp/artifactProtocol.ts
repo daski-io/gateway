@@ -5,7 +5,7 @@ export interface ArtifactCapability {
   authorization: Record<string, unknown>;
 }
 
-export interface ArtifactChallenge {
+interface ArtifactChallenge {
   authorization: Record<string, unknown>;
   eip712TypedData: Record<string, unknown>;
 }
@@ -28,9 +28,7 @@ export function extractChallenge(body: unknown): ArtifactChallenge | null {
   const challenge = asRecord(asRecord(body)?.capabilityChallenge);
   const authorization = asRecord(challenge?.authorization);
   const eip712TypedData = asRecord(challenge?.eip712TypedData);
-  return authorization && eip712TypedData
-    ? { authorization, eip712TypedData }
-    : null;
+  return authorization && eip712TypedData ? { authorization, eip712TypedData } : null;
 }
 
 export function mediaType(value: string | null): string | null {
@@ -43,28 +41,44 @@ export function parseFilename(value: string | null): string | null {
   const encoded = value.match(/filename\*=UTF-8''([^;]+)/i)?.[1];
   if (encoded) {
     try {
-      return decodeURIComponent(encoded);
+      return sanitizeFilename(decodeURIComponent(encoded));
     } catch {
-      return encoded;
+      return sanitizeFilename(encoded);
     }
   }
-  return value.match(/filename="?([^";]+)"?/i)?.[1]?.trim() ?? null;
+  const plain = value.match(/filename="?([^";]+)"?/i)?.[1]?.trim();
+  return plain ? sanitizeFilename(plain) : null;
+}
+
+export function sanitizeFilename(value: string): string | null {
+  const basename = value.normalize("NFKC").split(/[\\/]/).pop() ?? "";
+  const cleaned = basename
+    .replace(/[\u0000-\u001f\u007f<>:"|?*]/g, "_")
+    .replace(/[. ]+$/g, "")
+    .trim();
+  if (!cleaned || cleaned === "." || cleaned === "..") return null;
+  const limited = Array.from(cleaned).slice(0, 160).join("");
+  return /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(limited)
+    ? `_${limited}`
+    : limited;
 }
 
 export function challengeResponse(
   challenge: ArtifactChallenge,
   taskId: string,
+  artifactUrl: string,
   refreshed: boolean,
 ): McpToolResult {
   if (
     challenge.authorization.taskId !== taskId ||
-    challenge.authorization.action !== "document-download"
+    challenge.authorization.action !== "document-download" ||
+    challenge.authorization.resource !== artifactUrl
   ) {
     return mcpError({
       code: "ARTIFACT_CHALLENGE_MISMATCH",
       message:
-        "The artifact challenge is not bound to the requested taskId and " +
-        'action="document-download". Refusing to request a signature.',
+        "The artifact challenge is not bound to the requested taskId, URL, " +
+        'and action="document-download". Refusing to request a signature.',
     });
   }
   return mcpJson({
@@ -86,20 +100,21 @@ export function challengeResponse(
 export function validateCapability(
   capability: ArtifactCapability,
   taskId: string,
+  artifactUrl: string,
 ): McpToolResult | null {
   if (
     capability.authorization.taskId === taskId &&
-    capability.authorization.action === "document-download"
+    capability.authorization.action === "document-download" &&
+    capability.authorization.resource === artifactUrl
   ) {
     return null;
   }
   return mcpError({
     code: "ARTIFACT_CAPABILITY_MISMATCH",
     message:
-      "capability.authorization must match this taskId and use " +
+      "capability.authorization must match this taskId and exact URL and use " +
       'action="document-download". Sign the challenge returned for this URL.',
     recoverable: true,
-    next_action:
-      "Call daski_fetch_artifact without capability to obtain a fresh challenge.",
+    next_action: "Call daski_fetch_artifact without capability to obtain a fresh challenge.",
   });
 }

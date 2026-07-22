@@ -1,5 +1,5 @@
 import { keccak256, toBytes, type Hex } from "viem";
-import { randomUUID, randomBytes } from "node:crypto";
+import { randomUUID } from "node:crypto";
 
 // EIP-712 A2A envelope authentication. Shared shape with daski-provider's
 // src/core/auth/envelope.ts — must be kept in sync (the schema is on-chain
@@ -73,12 +73,17 @@ export function canonicalJsonStringify(value: unknown): string {
   return JSON.stringify(canonicalize(value));
 }
 
+const UNSAFE_OBJECT_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+
 function canonicalize(value: unknown): unknown {
   if (value === null || typeof value !== "object") return value;
   if (Array.isArray(value)) return value.map(canonicalize);
   const obj = value as Record<string, unknown>;
-  const sorted: Record<string, unknown> = {};
+  const sorted: Record<string, unknown> = Object.create(null);
   for (const key of Object.keys(obj).sort()) {
+    if (UNSAFE_OBJECT_KEYS.has(key)) {
+      throw new TypeError(`unsafe object key in signed JSON: ${key}`);
+    }
     const v = obj[key];
     if (v === undefined) continue;
     sorted[key] = canonicalize(v);
@@ -92,7 +97,7 @@ export function computeRequestHash(serviceArgs: Record<string, unknown>): Hex {
 
 /** Mint a fresh A2A messageId. UUID v4 is fine; the provider only insists
  *  it be unique per (buyerTokenId, messageId). */
-export function newMessageId(): string {
+function newMessageId(): string {
   return randomUUID();
 }
 
@@ -143,6 +148,3 @@ export function buildEnvelopeAuth(input: BuildEnvelopeInput): BuiltEnvelope {
     },
   };
 }
-
-// Silence unused-import warning when randomBytes isn't needed at runtime.
-void randomBytes;

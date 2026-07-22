@@ -27,6 +27,8 @@ const VALID_CONFIG_ENV: NodeJS.ProcessEnv = {
   PROVIDER_REGISTRY_ADDRESS: "0x0000000000000000000000000000000000000003",
   SERVICE_REGISTRY_ADDRESS: "0x0000000000000000000000000000000000000004",
   PAYMENT_ROUTER_ADDRESS: "0x0000000000000000000000000000000000000005",
+  SANCTIONS_ORACLE_ADDRESS: "0x0000000000000000000000000000000000000008",
+  SANCTIONS_ORACLE_MODE: "mock",
   X402_ADAPTER_ADDRESS: "0x0000000000000000000000000000000000000006",
   USDC_ADDRESS: "0x0000000000000000000000000000000000000007",
   FACILITATOR_PRIVATE_KEY: `0x${"1".repeat(64)}`,
@@ -36,6 +38,64 @@ const VALID_CONFIG_ENV: NodeJS.ProcessEnv = {
   MARKETPLACE_TERMS_URL: "https://daski.io/terms-of-use",
   MARKETPLACE_PRIVACY_URL: "https://daski.io/privacy-policy",
 };
+
+describe("startup configuration validation", () => {
+  it("rejects malformed numeric and path settings", () => {
+    expect(() => loadConfig({ ...VALID_CONFIG_ENV, PORT: "NaN" })).toThrow(
+      /PORT/,
+    );
+    expect(() =>
+      loadConfig({ ...VALID_CONFIG_ENV, CACHE_REFRESH_INTERVAL: "1.5" }),
+    ).toThrow(/CACHE_REFRESH_INTERVAL/);
+    expect(() =>
+      loadConfig({ ...VALID_CONFIG_ENV, MCP_PATH: "mcp" }),
+    ).toThrow(/MCP_PATH/);
+    expect(() =>
+      loadConfig({ ...VALID_CONFIG_ENV, MCP_ENABLED: "yes" }),
+    ).toThrow(/MCP_ENABLED/);
+  });
+
+  it("requires HTTPS public and RPC URLs in production", () => {
+    expect(() =>
+      loadConfig({
+        ...VALID_CONFIG_ENV,
+        NODE_ENV: "production",
+        TRUST_PROXY: "1",
+        SANCTIONS_ORACLE_MODE: "production",
+        PUBLIC_URL: "http://gateway.example",
+      }),
+    ).toThrow(/PUBLIC_URL must use HTTPS/);
+    expect(() =>
+      loadConfig({
+        ...VALID_CONFIG_ENV,
+        NODE_ENV: "production",
+        TRUST_PROXY: "1",
+        SANCTIONS_ORACLE_MODE: "production",
+        PUBLIC_URL: "https://gateway.example",
+        BASE_RPC_URL: "http://rpc.example",
+      }),
+    ).toThrow(/BASE_RPC_URL must use HTTPS/);
+  });
+
+  it("pins mainnet sanctions configuration and forbids production mock mode", () => {
+    expect(() =>
+      loadConfig({
+        ...VALID_CONFIG_ENV,
+        CHAIN_ID: "8453",
+        SANCTIONS_ORACLE_MODE: "production",
+      }),
+    ).toThrow(/Base mainnet SANCTIONS_ORACLE_ADDRESS/);
+    expect(() =>
+      loadConfig({
+        ...VALID_CONFIG_ENV,
+        NODE_ENV: "production",
+        TRUST_PROXY: "1",
+        PUBLIC_URL: "https://gateway.example",
+        BASE_RPC_URL: "https://rpc.example",
+      }),
+    ).toThrow(/SANCTIONS_ORACLE_MODE=mock/);
+  });
+});
 
 describe("legal metadata validation", () => {
   it("keeps the approved Agent-facing legal contract exact", () => {

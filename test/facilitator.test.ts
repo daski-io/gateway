@@ -15,7 +15,6 @@ describe("facilitator endpoints", () => {
       providers: [
         {
           tokenId: 2n,
-          erc8004TokenId: 102n,
           name: "Daski Domain Registration",
           priceUsdcSmallest: "15000000",
           categoryFamily: "domains-web",
@@ -39,6 +38,39 @@ describe("facilitator endpoints", () => {
     await gateway.close();
   });
 
+  it("serializes facilitator wallet writes across unrelated operations", async () => {
+    let enterFirst!: () => void;
+    const firstEntered = new Promise<void>((resolve) => {
+      enterFirst = resolve;
+    });
+    let unblockFirst!: () => void;
+    const firstBlocked = new Promise<void>((resolve) => {
+      unblockFirst = resolve;
+    });
+    let secondEntered = false;
+
+    const first = gateway.bundle.queries.withFacilitatorTransactionLock(
+      async (release) => {
+        enterFirst();
+        await firstBlocked;
+        await release();
+      },
+    );
+    await firstEntered;
+    const second = gateway.bundle.queries.withFacilitatorTransactionLock(
+      async (release) => {
+        secondEntered = true;
+        await release();
+      },
+    );
+
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(secondEntered).toBe(false);
+    unblockFirst();
+    await Promise.all([first, second]);
+    expect(secondEntered).toBe(true);
+  });
+
   async function openChallenge(buyerTokenId = "5"): Promise<{
     serviceRef: Hex;
     paymentRequirements: PaymentRequirements;
@@ -55,6 +87,7 @@ describe("facilitator endpoints", () => {
     const quoteBody = (await quoteRes.json()) as { quote: unknown };
     const { status, json, serviceRef } = await gateway.purchaseChallenge(2n, {
       buyerTokenId,
+      serviceSlug: "default-service",
       serviceArgs: {},
       providerQuote: quoteBody.quote,
     });
@@ -165,6 +198,26 @@ describe("facilitator endpoints", () => {
   });
 
   // ── /settle ────────────────────────────────────────────────────────────
+
+  it("rejects malformed providerTokenId without destabilizing the server", async () => {
+    const { paymentRequirements } = await openChallenge();
+    paymentRequirements.extra.daski.providerTokenId = "not-a-number";
+    const res = await fetch(`${gateway.baseUrl}/settle`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        x402Version: 1,
+        paymentPayload: {},
+        paymentRequirements,
+      }),
+    });
+    expect(res.status).toBe(400);
+    expect((await res.json()) as any).toMatchObject({
+      success: false,
+      errorReason: expect.stringMatching(/providerTokenId.*numeric/),
+    });
+    expect((await fetch(`${gateway.baseUrl}/health/live`)).status).toBe(200);
+  });
 
   it("POST /settle submits on-chain and returns the flat Daski-extended body", async () => {
     const { serviceRef, paymentRequirements } = await openChallenge();
@@ -386,7 +439,7 @@ describe("facilitator endpoints", () => {
     expect(gateway.mockChain.settlements).toHaveLength(1);
 
     // Atomic path must mirror the same `buyer_identities` upsert that the
-    // explicit /register endpoint does — pre-fix, the cache stayed empty
+    // standalone registration flow does — pre-fix, the cache stayed empty
     // for any buyer whose first action was a purchase rather than a bare
     // registration. The test gateway's default agent-card fetcher returns
     // `{ name: "buyer-test" }`, so the resolved name lands here.

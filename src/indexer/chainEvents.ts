@@ -1,5 +1,6 @@
 import type { ChainReader, PaymentSettledEventLog } from "../chain/reader.js";
 import type { Queries } from "../db/queries.js";
+import { logger } from "../util/logger.js";
 
 /**
  * Chain-events indexer. Polls `PaymentRouter.PaymentSettled` events in
@@ -12,7 +13,7 @@ import type { Queries } from "../db/queries.js";
  *
  * Two responsibilities, one loop:
  *   1. **Forward poll**: every tick, scan from `last_indexed_block + 1`
- *      to `head`, paginated under `BLOCK_RANGE_PER_CALL` so even
+ *      to the confirmed head, paginated under `BLOCK_RANGE_PER_CALL` so even
  *      conservative RPC providers (10k-block caps) accept the request.
  *      Sets `last_indexed_block` after each successful page.
  *   2. **Refresh sweep**: also revisits recent / pending rows whose
@@ -25,9 +26,10 @@ import type { Queries } from "../db/queries.js";
  * don't scan all of Base history. Conservative window covers any
  * realistic contract-deploy date for the current Daski stack.
  *
- * Idempotency: UPSERT keyed by paymentId, so re-orgs or duplicate
- * fetches are safe. The `last_refreshed_at` column tracks staleness
- * for the refresh sweep separately from the forward cursor.
+ * Reorg exposure is bounded by a confirmation-depth delay (12 blocks by
+ * default). UPSERT keyed by paymentId makes duplicate fetches safe; a
+ * reorg deeper than the configured confirmation depth still requires
+ * operator reconciliation.
  */
 export class ChainEventsIndexer {
   private timer: NodeJS.Timeout | null = null;
@@ -43,6 +45,8 @@ export class ChainEventsIndexer {
       pollIntervalMs?: number;
       /** Max blocks per getLogs call. RPC-dependent; 2000 is conservative. */
       blockRangePerCall?: bigint;
+      /** Blocks kept behind the RPC head before indexing. Default 12. */
+      confirmationDepthBlocks?: bigint;
       /** Initial backfill on cold start: head - this. Default 1_000_000 (~23d on Base). */
       initialLookbackBlocks?: bigint;
       /** Refresh interval for pending rows (ms). Default 60s. */
@@ -78,12 +82,19 @@ export class ChainEventsIndexer {
       await this.poll();
       await this.refreshPending();
       this.lastSuccessAt = new Date();
+      if (this.lastError) {
+        logger.info("chain events indexer recovered");
+      }
       this.lastError = null;
     } catch (err) {
+      const firstFailure = this.lastError === null;
       this.lastError = {
         message: err instanceof Error ? err.message : String(err),
         at: new Date(),
       };
+      if (firstFailure) {
+        logger.error("chain events indexer became unhealthy", this.lastError);
+      }
     } finally {
       this.running = false;
     }
@@ -102,23 +113,34 @@ export class ChainEventsIndexer {
     };
   }
 
+  isFresh(now = Date.now()): boolean {
+    const maximumAge = (this.opts.pollIntervalMs ?? 5_000) * 6;
+    return (
+      this.lastSuccessAt !== null &&
+      now - this.lastSuccessAt.getTime() <= maximumAge
+    );
+  }
+
   // ── Internals ──────────────────────────────────────────────────────
 
   private cachedCursor: bigint | null = null;
 
   private async poll(): Promise<void> {
     const head = await this.reader.getBlockNumber();
-    const cursor = await this.getOrInitCursor(head);
-    if (cursor >= head) return; // already at tip
+    const confirmationDepth = this.opts.confirmationDepthBlocks ?? 12n;
+    const confirmedHead =
+      head > confirmationDepth ? head - confirmationDepth : 0n;
+    const cursor = await this.getOrInitCursor(confirmedHead);
+    if (cursor >= confirmedHead) return;
 
     const rangePerCall =
       this.opts.blockRangePerCall ?? 2000n;
     let fromBlock = cursor + 1n;
 
-    while (fromBlock <= head) {
+    while (fromBlock <= confirmedHead) {
       const toBlock =
-        fromBlock + rangePerCall - 1n > head
-          ? head
+        fromBlock + rangePerCall - 1n > confirmedHead
+          ? confirmedHead
           : fromBlock + rangePerCall - 1n;
       const events = await this.reader.getPaymentSettledEvents(
         fromBlock,
@@ -195,7 +217,10 @@ export class ChainEventsIndexer {
   private async refreshPending(): Promise<void> {
     const intervalMs = this.opts.refreshIntervalMs ?? 60_000;
     const batchSize = this.opts.refreshBatchSize ?? 20;
-    const cutoff = new Date(Date.now() - intervalMs);
+    const cutoff =
+      intervalMs === 0
+        ? new Date(8_640_000_000_000_000)
+        : new Date(Date.now() - intervalMs);
     const stale = await this.queries.listStaleChainEvents(cutoff, batchSize);
     if (stale.length === 0) return;
 
@@ -233,6 +258,3 @@ const CONFIRMATION_TO_CODE: Record<"Pending" | "Confirmed" | "NotConfirmed", num
   Confirmed: 1,
   NotConfirmed: 2,
 };
-
-export const OUTCOME_CODE_TO_LABEL = ["Completed", "Failed", "Canceled"] as const;
-export const CONFIRMATION_CODE_TO_LABEL = ["Pending", "Confirmed", "NotConfirmed"] as const;

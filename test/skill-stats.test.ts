@@ -15,7 +15,6 @@ import type { Hex, StoredChallenge } from "../src/types.js";
 
 // ── Test fixture helpers ───────────────────────────────────────────────
 
-const ZERO_HEX = ("0x" + "00".repeat(32)) as Hex;
 const ZERO_BYTES = ("0x" + "00".repeat(32)) as Hex;
 
 function makeChallenge(opts: {
@@ -36,15 +35,12 @@ function makeChallenge(opts: {
     providerA2AUrl: "http://provider.test/a2a",
     walletAddress: "0x0000000000000000000000000000000000000001" as Hex,
     expiresAt: new Date(Date.now() + 3600 * 1000),
-    status: "paid",
+    settlementState: "paid",
     paymentId: opts.paymentId === undefined ? 1n : opts.paymentId,
     transactionHash: ZERO_BYTES,
     verifiedAt: new Date(),
     confirmationAttestationUid: null,
     createdAt: new Date(),
-    rail: "daski",
-    authNonce: null,
-    externalSettleTx: null,
     quoteId: null,
     quoteSignature: null,
     quoteExpiresAt: null,
@@ -70,6 +66,7 @@ function makeRecord(opts: {
     outcomeTimestamp: 0n,
     confirmationTimestamp: 0n,
     outcomeRecorded: opts.outcomeRecorded ?? true,
+    reputationEligible: true,
   };
 }
 

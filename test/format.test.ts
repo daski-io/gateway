@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   extractAgentCardUrl,
-  formatForSkillDiscover,
-} from "../src/discovery/format.js";
+} from "../src/discovery/agentCard.js";
+import { formatForSkillDiscover } from "../src/discovery/skillPresentation.js";
 import { DASKI_A2A_EXTENSION_URI } from "../src/config.js";
 import type { CachedProvider } from "../src/types.js";
 
@@ -28,7 +28,13 @@ function makeProvider(
     agentId: 1n,
     walletAddress: "0x0000000000000000000000000000000000000001",
     agentURI: "http://test/agent.json",
-    agentCard,
+    cards: [
+      {
+        endpoint: "https://test.example/a2a",
+        serviceSlug: "test-service",
+        agentCard,
+      },
+    ],
     providerName: null,
     providerDescription: null,
     providerImage: null,
@@ -58,7 +64,7 @@ describe("formatForSkillDiscover — skill extraction", () => {
     const provider = makeProvider({
       name: "Domain Management",
       description: "x",
-      url: "http://test/a2a",
+      supportedInterfaces: [{ url: "http://test/a2a" }],
       skills: [
         { id: "register-domain", name: "Register", description: "r" },
         { id: "set-dns-record", name: "Set DNS", description: "s" },
@@ -71,8 +77,10 @@ describe("formatForSkillDiscover — skill extraction", () => {
             "register-domain": {
               paymentRequired: true,
               variablePricing: true,
-              baseAmount: 10980000,
-              priceList: { ".xyz": 2980000, ".io": 39990000 },
+              pricing: {
+                baseAmount: 10980000,
+                priceList: { ".xyz": 2980000, ".io": 39990000 },
+              },
               requiredFields: ["domain"],
               requiresAssetOwnership: false,
               requiresCapability: false,
@@ -127,11 +135,11 @@ describe("formatForSkillDiscover — skill extraction", () => {
     expect(list.requiresCapability).toBe(false);
   });
 
-  it("still reads Shape A (per-skill metadata) for providers that publish that way", () => {
+  it("ignores obsolete per-skill metadata in favor of extension.skills", () => {
     const provider = makeProvider({
       name: "Shape A Provider",
       description: "x",
-      url: "http://test/a2a",
+      supportedInterfaces: [{ url: "http://test/a2a" }],
       skills: [
         {
           id: "register-domain",
@@ -154,15 +162,17 @@ describe("formatForSkillDiscover — skill extraction", () => {
     const [svc] = formatForSkillDiscover([provider], MARKETPLACE_LEGAL);
     const skills = svc.skills as Array<Record<string, unknown>>;
     expect(skills).toHaveLength(1);
+    // The skill remains discoverable, but obsolete metadata cannot alter
+    // the current marketplace contract.
     expect(skills[0].paymentRequired).toBe(true);
-    expect(skills[0].baseAmount).toBe("10.98");
+    expect(skills[0].baseAmount).toBeUndefined();
   });
 
   it("emits skills with no metadata at all so they remain discoverable", () => {
     const provider = makeProvider({
       name: "Bare",
       description: "x",
-      url: "http://test/a2a",
+      supportedInterfaces: [{ url: "http://test/a2a" }],
       skills: [
         { id: "solo", name: "Solo", description: "s" },
       ],
@@ -180,13 +190,12 @@ describe("formatForSkillDiscover — skill extraction", () => {
     expect(skills[0].requiresCapability).toBe(false);
   });
 
-  // §3.2 of daski-mcp-gateway-fix-brief.md — surface optionalFields and
-  // the two-call callPhases block from the provider's per-skill metadata.
+  // Surface optional fields and two-call phases from per-skill metadata.
   it("surfaces optionalFields and callPhases when the provider declares them", () => {
     const provider = makeProvider({
       name: "Two-call provider",
       description: "x",
-      url: "http://test/a2a",
+      supportedInterfaces: [{ url: "http://test/a2a" }],
       skills: [
         { id: "set-dns-record", name: "Set DNS", description: "s" },
         { id: "renew-domain", name: "Renew", description: "r" },
@@ -260,17 +269,14 @@ describe("formatForSkillDiscover — skill extraction", () => {
     expect(renew.callPhases).toBeUndefined();
   });
 
-  // §1.7 of daski-mcp-gateway-fix-brief.md — the default 1KB string cap
-  // was clipping the 6-element-template skill descriptions. We raise the
-  // per-string cap inside the skills array specifically so the
-  // operational detail (When NOT to use, capability flow, Returns, Next
-  // step) survives the round-trip.
+  // Skill descriptions use a larger bounded limit so operational detail
+  // survives the round trip.
   it("preserves long skill descriptions past the default 1KB cap", () => {
     const longDescription = "x".repeat(3500);
     const provider = makeProvider({
       name: "Verbose",
       description: "x",
-      url: "http://test/a2a",
+      supportedInterfaces: [{ url: "http://test/a2a" }],
       skills: [
         { id: "register-domain", name: "Register", description: longDescription },
       ],
@@ -290,11 +296,11 @@ describe("formatForSkillDiscover — skill extraction", () => {
     expect((skills[0].description as string).length).toBe(3500);
   });
 
-  it("prefers Shape A when both A and B exist (per-skill metadata is authoritative)", () => {
+  it("uses extension.skills when obsolete inline metadata conflicts", () => {
     const provider = makeProvider({
       name: "Both",
       description: "x",
-      url: "http://test/a2a",
+      supportedInterfaces: [{ url: "http://test/a2a" }],
       skills: [
         {
           id: "conflict",
@@ -312,7 +318,10 @@ describe("formatForSkillDiscover — skill extraction", () => {
         [DASKI_A2A_EXTENSION_URI]: {
           ...BASE_EXT,
           skills: {
-            conflict: { paymentRequired: false, baseAmount: 999999 },
+            conflict: {
+              paymentRequired: false,
+              pricing: { baseAmount: 999999 },
+            },
           },
         },
       },
@@ -320,18 +329,12 @@ describe("formatForSkillDiscover — skill extraction", () => {
 
     const [svc] = formatForSkillDiscover([provider], MARKETPLACE_LEGAL);
     const skills = svc.skills as Array<Record<string, unknown>>;
-    expect(skills[0].paymentRequired).toBe(true); // shape A wins
-    expect(skills[0].baseAmount).toBe("5.00");
+    expect(skills[0].paymentRequired).toBe(false);
+    expect(skills[0].baseAmount).toBe("1.00");
   });
 });
 
-describe("AgentCard URL extractor — A2A v1.0/v0.3 dual-read", () => {
-  // Gateway sees both v0.3-shaped cards (`url` at root) and v1.0-shaped
-  // ones (URL under `supportedInterfaces[0]`). These tests pin the
-  // dual-read so a future cleanup that drops the legacy branch won't
-  // quietly orphan pre-v1 providers. Provider-level icon/website are NO
-  // LONGER read from the AgentCard — they live on the ERC-8004
-  // registration file (cache.ts.resolveAgentCard), not here.
+describe("AgentCard URL extractor — A2A v1.0", () => {
   it("reads url from supportedInterfaces[0] when present (A2A v1.0)", () => {
     expect(
       extractAgentCardUrl({
@@ -346,10 +349,8 @@ describe("AgentCard URL extractor — A2A v1.0/v0.3 dual-read", () => {
     ).toBe("https://prov.test/a2a/foo");
   });
 
-  it("falls back to top-level url when supportedInterfaces is absent (A2A v0.3)", () => {
-    expect(extractAgentCardUrl({ url: "https://legacy.test/a2a" })).toBe(
-      "https://legacy.test/a2a",
-    );
+  it("rejects obsolete top-level URL fields", () => {
+    expect(extractAgentCardUrl({ url: "https://legacy.test/a2a" })).toBeNull();
   });
 
   it("returns null when neither shape carries a URL", () => {

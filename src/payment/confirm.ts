@@ -4,24 +4,25 @@ import type { Config } from "../config.js";
 import type { ChainReader } from "../chain/reader.js";
 import type { Queries } from "../db/queries.js";
 import type { Hex } from "../types.js";
-import { mirrorConfirmationFeedback } from "../reputation/mirror.js";
-import { logErrorWithId } from "../util/errorWrap.js";
+import type { ReputationMirrorWorker } from "../reputation/worker.js";
+import { logErrorWithId, publicErrorMessage } from "../util/errorWrap.js";
+import {
+  CONFIRMATION_CODE,
+  isHex32,
+  isHexAddress,
+  type ConfirmationLabel,
+} from "./protocol.js";
 
 export interface ConfirmDeps {
   config: Config;
   reader: ChainReader;
   queries: Queries;
+  reputationWorker: ReputationMirrorWorker;
 }
 
 // ReputationStorage.sol BuyerConfirmation enum values. Keep these in lock-step
 // with the Solidity enum order (0=Pending, 1=Confirmed, 2=NotConfirmed) —
 // the resolver rejects Pending attestations outright.
-const CONFIRMATION_CODE = {
-  Confirmed: 1,
-  NotConfirmed: 2,
-} as const;
-type ConfirmationLabel = keyof typeof CONFIRMATION_CODE;
-
 const CONFIRMATION_PAYLOAD_TYPES = parseAbiParameters(
   "uint256 paymentId, uint8 confirmation",
 );
@@ -52,14 +53,6 @@ export type ConfirmResult =
       status: number;
       error: { code: string; message: string };
     };
-
-function isHexAddress(x: unknown): x is Hex {
-  return typeof x === "string" && /^0x[0-9a-fA-F]{40}$/.test(x);
-}
-
-function isHex32(x: unknown): x is Hex {
-  return typeof x === "string" && /^0x[0-9a-fA-F]{64}$/.test(x);
-}
 
 function parseInput(body: unknown): ConfirmInput | { ok: false; message: string } {
   if (!body || typeof body !== "object") {
@@ -157,34 +150,40 @@ export async function runConfirmDelivery(
       typeof input.deadline === "number"
         ? BigInt(input.deadline)
         : BigInt(input.deadline);
-  } catch (err) {
+  } catch {
     return {
       ok: false,
       status: 400,
       error: {
         code: "bad_input",
-        message: `deadline could not be parsed as bigint: ${(err as Error).message}`,
+        message: "deadline could not be parsed as an integer",
       },
     };
   }
 
   try {
-    const result = await deps.reader.submitBuyerConfirmation({
-      attester: input.attester,
-      schema: deps.config.easConfirmationSchemaUid,
-      recipient: ("0x" + "00".repeat(20)) as Hex,
-      expirationTime: 0n,
-      revocable: true,
-      refUID: input.refUid ?? BYTES32_ZERO,
-      data: payload,
-      value: 0n,
-      deadline: deadlineBig,
-      signature: {
-        v: input.signature.v,
-        r: input.signature.r,
-        s: input.signature.s,
-      },
-    });
+    const result = await deps.queries.withFacilitatorTransactionLock(
+      (release) =>
+        deps.reader.submitBuyerConfirmation(
+          {
+            attester: input.attester,
+            schema: deps.config.easConfirmationSchemaUid,
+            recipient: ("0x" + "00".repeat(20)) as Hex,
+            expirationTime: 0n,
+            revocable: true,
+            refUID: input.refUid ?? BYTES32_ZERO,
+            data: payload,
+            value: 0n,
+            deadline: deadlineBig,
+            signature: {
+              v: input.signature.v,
+              r: input.signature.r,
+              s: input.signature.s,
+            },
+          },
+          release,
+        ),
+    );
 
     // Best-effort persist the UID on the matching challenge row. Failure
     // doesn't invalidate the on-chain attestation (EAS is canonical), so
@@ -193,17 +192,17 @@ export async function runConfirmDelivery(
     // shows null for this row until the next confirmation revises it.
     try {
       await deps.queries.recordConfirmation(paymentId, result.attestationUid);
-    } catch {
-      // Swallow — see comment above.
+    } catch (error) {
+      logErrorWithId("confirmation.record", error);
     }
 
     // Mirror the confirmation as public ERC-8004 feedback for the provider
     // on the canonical ReputationRegistry (facilitator wallet = the
     // orchestrator-client, EAS attestation = evidence). Fire-and-forget:
     // the mirror must NEVER delay or fail the buyer's confirmation
-    // response. mirror.ts handles its own bookkeeping and logging; the
+    // response. The durable worker handles its own bookkeeping and logging; the
     // catch here only guards against bugs in the mirror itself.
-    void mirrorConfirmationFeedback(deps, {
+    void deps.reputationWorker.enqueue({
       paymentId,
       confirmation: input.confirmation,
       attestationUid: result.attestationUid,
@@ -221,14 +220,20 @@ export async function runConfirmDelivery(
       refUid: input.refUid ?? null,
     };
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
     // EAS reverts on signature invalid / nonce mismatch / deadline expired;
     // the resolver reverts on unauthorized attester / duplicate confirmation
     // without refUID. All of these surface as a chain-level reverted call.
     return {
       ok: false,
       status: 400,
-      error: { code: "submit_failed", message },
+      error: {
+        code: "submit_failed",
+        message: publicErrorMessage(
+          "runConfirmDelivery.submit",
+          err,
+          "confirmation submission failed",
+        ),
+      },
     };
   }
 }

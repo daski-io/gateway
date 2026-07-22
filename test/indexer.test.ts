@@ -69,7 +69,7 @@ describe("ChainEventsIndexer", () => {
     const indexer = new ChainEventsIndexer(
       gateway.mockChain,
       gateway.bundle.queries,
-      { initialLookbackBlocks: 1000n },
+      { initialLookbackBlocks: 1000n, confirmationDepthBlocks: 0n },
     );
     await indexer.tick();
 
@@ -97,7 +97,7 @@ describe("ChainEventsIndexer", () => {
     const indexer = new ChainEventsIndexer(
       gateway.mockChain,
       gateway.bundle.queries,
-      { initialLookbackBlocks: 1000n },
+      { initialLookbackBlocks: 1000n, confirmationDepthBlocks: 0n },
     );
     await indexer.tick();
     const cursor1 = await gateway.bundle.queries.getLastIndexedBlock();
@@ -140,7 +140,7 @@ describe("ChainEventsIndexer", () => {
     const indexer = new ChainEventsIndexer(
       gateway.mockChain,
       gateway.bundle.queries,
-      { initialLookbackBlocks: 600_000n },
+      { initialLookbackBlocks: 600_000n, confirmationDepthBlocks: 0n },
     );
     await indexer.tick();
 
@@ -172,7 +172,11 @@ describe("ChainEventsIndexer", () => {
     const indexer = new ChainEventsIndexer(
       gateway.mockChain,
       gateway.bundle.queries,
-      { initialLookbackBlocks: 5_000n, blockRangePerCall: 500n },
+      {
+        initialLookbackBlocks: 5_000n,
+        blockRangePerCall: 500n,
+        confirmationDepthBlocks: 0n,
+      },
     );
     await indexer.tick();
 
@@ -201,6 +205,7 @@ describe("ChainEventsIndexer", () => {
       gateway.bundle.queries,
       {
         initialLookbackBlocks: 1000n,
+        confirmationDepthBlocks: 0n,
         // Set refresh interval to 0 so the second tick re-polls every row.
         refreshIntervalMs: 0,
       },
@@ -224,6 +229,7 @@ describe("ChainEventsIndexer", () => {
       outcomeTimestamp: 1_700_000_500n,
       confirmationTimestamp: 1_700_000_600n,
       outcomeRecorded: true,
+      reputationEligible: true,
     });
     gateway.mockChain.setPaymentRefundedAmount(42n, 100_000n);
 
@@ -236,5 +242,37 @@ describe("ChainEventsIndexer", () => {
     expect(rows[0].confirmationCode).toBe(1); // Confirmed
     expect(rows[0].fulfillmentSeconds).toBe(60);
     expect(rows[0].refundedAtomic).toBe(100_000n);
+  });
+
+  it("waits for the configured confirmation depth before indexing", async () => {
+    gateway.mockChain.setBlockNumber(100n);
+    gateway.mockChain.pushPaymentSettledLog(
+      makeLog({
+        paymentId: 50n,
+        blockNumber: 100n,
+        serviceId: ZERO_HEX,
+        buyerAgentId: 5n,
+        providerAgentId: 1n,
+        amount: 1_000_000n,
+        txHash: ("0x" + "50".repeat(32)) as Hex,
+      }),
+    );
+    const indexer = new ChainEventsIndexer(
+      gateway.mockChain,
+      gateway.bundle.queries,
+      { initialLookbackBlocks: 1000n, confirmationDepthBlocks: 12n },
+    );
+
+    await indexer.tick();
+    expect(
+      await gateway.bundle.queries.listRecentChainActivity(10),
+    ).toHaveLength(0);
+    expect(await gateway.bundle.queries.getLastIndexedBlock()).toBe(88n);
+
+    gateway.mockChain.setBlockNumber(112n);
+    await indexer.tick();
+    expect(
+      await gateway.bundle.queries.listRecentChainActivity(10),
+    ).toHaveLength(1);
   });
 });

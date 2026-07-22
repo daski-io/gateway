@@ -7,11 +7,8 @@ import type { Request, Response, NextFunction } from "express";
 //     frameguard, referrer-policy, and HSTS. We skip CSP because the
 //     gateway serves /skill.md and /llms-full.txt as markdown intended for
 //     LLM crawlers; a CSP would bring no win.
-//   * The rate limiter is a leaky-bucket over `req.ip`, in-memory per
-//     process. A multi-replica deploy will undercount; that's fine for
-//     burst protection (the goal is to make facilitator gas drains
-//     expensive), and the operator can add a CDN/edge layer in front for
-//     a global view.
+//   * The rate limiter uses PostgreSQL when a shared store is supplied and
+//     falls back to process memory for small standalone consumers.
 
 export function securityHeaders(
   _req: Request,
@@ -42,53 +39,64 @@ export interface RateLimitOptions {
   max: number;
   /** Status code returned when over budget. Default 429. */
   statusCode?: number;
+  /** Namespace prevents unrelated endpoint groups sharing a bucket. */
+  namespace?: string;
+  /** Global buckets cap aggregate work across clients and replicas. */
+  keyScope?: "client" | "global";
+  /** Shared store used by multi-replica deployments. */
+  store?: {
+    consumeRateLimitBucket(
+      key: string,
+      windowMs: number,
+    ): Promise<{ count: number; resetAt: Date }>;
+  };
 }
 
 /**
  * Per-IP token bucket. Use on POST endpoints whose work costs facilitator
- * gas (`/register`, `/confirm/:paymentId`) so a
+ * gas, including confirmation and settlement, so a
  * single hostile client can't drain operator funds via a tight loop.
  */
 export function rateLimit(opts: RateLimitOptions) {
+  if (
+    !Number.isFinite(opts.windowMs) ||
+    opts.windowMs <= 0 ||
+    !Number.isInteger(opts.max) ||
+    opts.max <= 0
+  ) {
+    throw new Error("rate-limit windowMs and max must be positive");
+  }
   const buckets = new Map<string, Bucket>();
   const statusCode = opts.statusCode ?? 429;
   // Garbage collect stale buckets every minute to avoid unbounded growth
   // under churning IPs (proxies, mobile NAT).
-  const gc = setInterval(() => {
-    const now = Date.now();
-    for (const [k, v] of buckets) {
-      if (v.resetAt < now) buckets.delete(k);
-    }
-  }, 60_000);
-  // Don't keep the event loop alive just for the GC tick.
-  if (typeof gc.unref === "function") gc.unref();
+  if (!opts.store) {
+    const gc = setInterval(() => {
+      const now = Date.now();
+      for (const [k, v] of buckets) {
+        if (v.resetAt < now) buckets.delete(k);
+      }
+    }, 60_000);
+    gc.unref?.();
+  }
 
-  return function rateLimitMiddleware(
-    req: Request,
+  function finish(
     res: Response,
     next: NextFunction,
+    count: number,
+    resetAt: number,
   ): void {
-    const key = req.ip ?? req.socket.remoteAddress ?? "unknown";
-    const now = Date.now();
-    let bucket = buckets.get(key);
-    if (!bucket || bucket.resetAt < now) {
-      bucket = { count: 0, resetAt: now + opts.windowMs };
-      buckets.set(key, bucket);
-    }
-    bucket.count += 1;
     res.setHeader("X-RateLimit-Limit", String(opts.max));
     res.setHeader(
       "X-RateLimit-Remaining",
-      String(Math.max(0, opts.max - bucket.count)),
+      String(Math.max(0, opts.max - count)),
     );
-    res.setHeader(
-      "X-RateLimit-Reset",
-      String(Math.floor(bucket.resetAt / 1000)),
-    );
-    if (bucket.count > opts.max) {
+    res.setHeader("X-RateLimit-Reset", String(Math.floor(resetAt / 1000)));
+    if (count > opts.max) {
+      const now = Date.now();
       res.setHeader(
         "Retry-After",
-        String(Math.max(1, Math.ceil((bucket.resetAt - now) / 1000))),
+        String(Math.max(1, Math.ceil((resetAt - now) / 1000))),
       );
       res.status(statusCode).json({
         error: {
@@ -99,5 +107,35 @@ export function rateLimit(opts: RateLimitOptions) {
       return;
     }
     next();
+  }
+
+  return function rateLimitMiddleware(
+    req: Request,
+    res: Response,
+    next: NextFunction,
+  ): void {
+    const clientKey =
+      opts.keyScope === "global"
+        ? "global"
+        : (req.ip ?? req.socket.remoteAddress ?? "unknown");
+    const key = `${opts.namespace ?? "default"}:${clientKey}`;
+    if (opts.store) {
+      void opts.store
+        .consumeRateLimitBucket(key, opts.windowMs)
+        .then(({ count, resetAt }) => {
+          finish(res, next, count, resetAt.getTime());
+        })
+        .catch(next);
+      return;
+    }
+
+    const now = Date.now();
+    let bucket = buckets.get(key);
+    if (!bucket || bucket.resetAt < now) {
+      bucket = { count: 0, resetAt: now + opts.windowMs };
+      buckets.set(key, bucket);
+    }
+    bucket.count += 1;
+    finish(res, next, bucket.count, bucket.resetAt);
   };
 }

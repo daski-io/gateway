@@ -1,11 +1,21 @@
 import type { ChainId, Hex } from "./types.js";
 import { requireMarketplaceHttpsUrl } from "./legal/validation.js";
+import { isHex32, isHexAddress } from "./util/evmValidation.js";
+import {
+  loadRuntimeConfig,
+  type RuntimeConfig,
+} from "./runtimeConfig.js";
 
 export const DASKI_A2A_EXTENSION_URI = "https://daski.xyz/a2a/v1";
 
 export const X402_VERSION = 1;
 
-export interface Config {
+export const BASE_MAINNET_SANCTIONS_ORACLE =
+  "0x3a91a31cb3dc49b4db9ce721f50a9d076c8d739b" as Hex;
+
+export type SanctionsOracleMode = "production" | "mock";
+
+export interface Config extends RuntimeConfig {
   port: number;
   // Hosted MCP transport at this path (default /mcp). The MCP is the
   // wallet-agnostic tool surface; signing happens in the agent's wallet,
@@ -19,17 +29,19 @@ export interface Config {
   // Daski no longer deploys an identity registry of its own.
   identityRegistryAddress: Hex;
   // Daski AgentIndex proxy — verified wallet→agentId reverse lookup plus
-  // gasless registerWithSig; the companion that fills the canonical
+  // delegated registerWithSig; the companion that fills the canonical
   // registry's gaps. Also the EIP-712 verifyingContract for the
   // RegisterAgent typed-data buyers sign.
   agentIndexAddress: Hex;
   providerRegistryAddress: Hex;
   // ServiceRegistry — service-identity refactor (2026-05). serviceId is
-  // computed off-chain from (providerAgentId, skillId, version) and the
+  // computed off-chain from (providerAgentId, serviceSlug, version) and the
   // gateway threads it through the EIP-3009 nonce binding and into
   // PaymentRouter.settle so each payment is bound to a specific catalog row.
   serviceRegistryAddress: Hex;
   paymentRouterAddress: Hex;
+  sanctionsOracleAddress: Hex;
+  sanctionsOracleMode: SanctionsOracleMode;
   // The x402 (EIP-3009) adapter is what the facilitator actually submits
   // settle calls to. The router emits the PaymentSettled event but no longer
   // exposes a rail-specific entry point.
@@ -52,20 +64,6 @@ export interface Config {
   usdcName: string;
   usdcVersion: string;
   facilitatorPrivateKey: Hex;
-  // ── External-facilitator rail (x402 Bazaar listability) ──────────────
-  // DirectTransferAdapter — attributes payments that an EXTERNAL x402
-  // facilitator (CDP) settled as bare EIP-3009 transfers into the router.
-  // The Bazaar-facing resource route is mounted iff this is set.
-  directAdapterAddress?: Hex;
-  // Base URL of the external facilitator's /verify + /settle endpoints.
-  // Defaults per network: x402.org for Base Sepolia (no auth), the CDP
-  // facilitator for Base mainnet. Note that Bazaar INDEXING only happens
-  // for settlements processed by the CDP facilitator.
-  externalFacilitatorUrl: string;
-  // Raw `Authorization` header value for the external facilitator. The CDP
-  // facilitator requires a CDP API key JWT for mainnet /settle; testnet
-  // facilitators are typically unauthenticated. Optional.
-  externalFacilitatorAuthHeader?: string;
   whitelistedAgentIds: bigint[];
   cacheRefreshIntervalSeconds: number;
   // How long the discovery cache keeps serving a provider's last-known-good
@@ -107,16 +105,84 @@ function networkForChain(chainId: ChainId): "base" | "base-sepolia" {
 
 function parseAgentIds(raw: string | undefined): bigint[] {
   if (!raw) return [];
-  return raw
-    .split(",")
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0)
-    .map((s) => BigInt(s));
+  try {
+    return raw
+      .split(",")
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0)
+      .map((s) => {
+        const value = BigInt(s);
+        if (value < 0n) throw new Error("negative");
+        return value;
+      });
+  } catch {
+    throw new Error("WHITELISTED_AGENT_IDS must contain unsigned integers");
+  }
+}
+
+function positiveInteger(
+  name: string,
+  raw: string | undefined,
+  fallback: number,
+  maximum = Number.MAX_SAFE_INTEGER,
+): number {
+  const value = Number(raw ?? fallback);
+  if (!Number.isSafeInteger(value) || value <= 0 || value > maximum) {
+    throw new Error(`${name} must be an integer between 1 and ${maximum}`);
+  }
+  return value;
+}
+
+function booleanValue(
+  name: string,
+  raw: string | undefined,
+  fallback: boolean,
+): boolean {
+  if (raw === undefined) return fallback;
+  if (raw === "true") return true;
+  if (raw === "false") return false;
+  throw new Error(`${name} must be either 'true' or 'false'`);
+}
+
+function requireHttpUrl(
+  name: string,
+  raw: string,
+  options: { requireHttps?: boolean } = {},
+): string {
+  let parsed: URL;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    throw new Error(`${name} must be an absolute HTTP(S) URL`);
+  }
+  if (
+    (parsed.protocol !== "http:" && parsed.protocol !== "https:") ||
+    parsed.username ||
+    parsed.password
+  ) {
+    throw new Error(`${name} must be an absolute HTTP(S) URL without credentials`);
+  }
+  if (options.requireHttps && parsed.protocol !== "https:") {
+    throw new Error(`${name} must use HTTPS in production`);
+  }
+  return raw.replace(/\/$/, "");
+}
+
+function mcpPath(raw: string | undefined): string {
+  const value = raw ?? "/mcp";
+  if (
+    !/^\/[A-Za-z0-9/_-]*$/.test(value) ||
+    value.includes("//") ||
+    (value.length > 1 && value.endsWith("/"))
+  ) {
+    throw new Error("MCP_PATH must be a normalized absolute URL path");
+  }
+  return value;
 }
 
 function optionalAddress(name: string, raw: string | undefined): Hex | undefined {
   if (!raw) return undefined;
-  if (!/^0x[0-9a-fA-F]{40}$/.test(raw)) {
+  if (!isHexAddress(raw)) {
     throw new Error(`${name} must be a 20-byte hex address, got: ${raw}`);
   }
   return raw.toLowerCase() as Hex;
@@ -124,7 +190,7 @@ function optionalAddress(name: string, raw: string | undefined): Hex | undefined
 
 function requireBytes32(name: string, raw: string | undefined): Hex {
   if (!raw) throw new Error(`${name} env var is required`);
-  if (!/^0x[0-9a-fA-F]{64}$/.test(raw)) {
+  if (!isHex32(raw)) {
     throw new Error(`${name} must be a 32-byte hex value, got: ${raw}`);
   }
   return raw.toLowerCase() as Hex;
@@ -132,10 +198,19 @@ function requireBytes32(name: string, raw: string | undefined): Hex {
 
 function requireAddress(name: string, raw: string | undefined): Hex {
   if (!raw) throw new Error(`${name} env var is required`);
-  if (!/^0x[0-9a-fA-F]{40}$/.test(raw)) {
+  if (!isHexAddress(raw)) {
     throw new Error(`${name} must be a 20-byte hex address, got: ${raw}`);
   }
   return raw.toLowerCase() as Hex;
+}
+
+function sanctionsOracleMode(
+  raw: string | undefined,
+): SanctionsOracleMode {
+  if (raw === "production" || raw === "mock") return raw;
+  throw new Error(
+    "SANCTIONS_ORACLE_MODE must be explicitly set to production or mock",
+  );
 }
 
 function requireDatabaseUrl(raw: string | undefined): string {
@@ -167,12 +242,43 @@ function requirePrivateKey(name: string, raw: string | undefined): Hex {
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const chainId = parseChainId(env.CHAIN_ID);
-  const port = Number(env.PORT ?? 3000);
+  const runtime = loadRuntimeConfig(env);
+  const production = runtime.nodeEnv === "production";
+  const port = positiveInteger("PORT", env.PORT, 3000, 65535);
+  const publicUrl = requireHttpUrl(
+    "PUBLIC_URL",
+    env.PUBLIC_URL ?? `http://localhost:${port}`,
+    { requireHttps: production },
+  );
+  const oracleAddress = requireAddress(
+    "SANCTIONS_ORACLE_ADDRESS",
+    env.SANCTIONS_ORACLE_ADDRESS,
+  );
+  const oracleMode = sanctionsOracleMode(env.SANCTIONS_ORACLE_MODE);
+  if (
+    chainId === 8453 &&
+    oracleAddress !== BASE_MAINNET_SANCTIONS_ORACLE
+  ) {
+    throw new Error(
+      `Base mainnet SANCTIONS_ORACLE_ADDRESS must be ${BASE_MAINNET_SANCTIONS_ORACLE}`,
+    );
+  }
+  if (chainId === 8453 && oracleMode !== "production") {
+    throw new Error("Base mainnet SANCTIONS_ORACLE_MODE must be production");
+  }
+  if (runtime.nodeEnv === "production" && oracleMode === "mock") {
+    throw new Error("SANCTIONS_ORACLE_MODE=mock is forbidden in production");
+  }
   return {
+    ...runtime,
     port,
-    mcpEnabled: (env.MCP_ENABLED ?? "true") !== "false",
-    mcpPath: env.MCP_PATH ?? "/mcp",
-    baseRpcUrl: env.BASE_RPC_URL ?? "https://mainnet.base.org",
+    mcpEnabled: booleanValue("MCP_ENABLED", env.MCP_ENABLED, true),
+    mcpPath: mcpPath(env.MCP_PATH),
+    baseRpcUrl: requireHttpUrl(
+      "BASE_RPC_URL",
+      env.BASE_RPC_URL ?? "https://mainnet.base.org",
+      { requireHttps: production },
+    ),
     chainId,
     network: networkForChain(chainId),
     identityRegistryAddress: requireAddress(
@@ -195,6 +301,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       "PAYMENT_ROUTER_ADDRESS",
       env.PAYMENT_ROUTER_ADDRESS,
     ),
+    sanctionsOracleAddress: oracleAddress,
+    sanctionsOracleMode: oracleMode,
     x402AdapterAddress: requireAddress(
       "X402_ADAPTER_ADDRESS",
       env.X402_ADAPTER_ADDRESS,
@@ -238,27 +346,24 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       "FACILITATOR_PRIVATE_KEY",
       env.FACILITATOR_PRIVATE_KEY,
     ),
-    directAdapterAddress: optionalAddress(
-      "DIRECT_ADAPTER_ADDRESS",
-      env.DIRECT_ADAPTER_ADDRESS,
+    whitelistedAgentIds: parseAgentIds(env.WHITELISTED_AGENT_IDS),
+    cacheRefreshIntervalSeconds: positiveInteger(
+      "CACHE_REFRESH_INTERVAL",
+      env.CACHE_REFRESH_INTERVAL,
+      300,
     ),
-    externalFacilitatorUrl: (
-      env.EXTERNAL_FACILITATOR_URL ??
-      (chainId === 8453
-        ? "https://api.cdp.coinbase.com/platform/v2/x402"
-        : "https://x402.org/facilitator")
-    ).replace(/\/$/, ""),
-    externalFacilitatorAuthHeader: env.EXTERNAL_FACILITATOR_AUTH_HEADER,
-    // WHITELISTED_AGENT_IDS is the canonical name; WHITELISTED_TOKEN_IDS is
-    // accepted as a deprecated alias for operator continuity.
-    whitelistedAgentIds: parseAgentIds(
-      env.WHITELISTED_AGENT_IDS ?? env.WHITELISTED_TOKEN_IDS,
+    cacheMaxStalenessSeconds: positiveInteger(
+      "CACHE_MAX_STALENESS_SECONDS",
+      env.CACHE_MAX_STALENESS_SECONDS,
+      86400,
     ),
-    cacheRefreshIntervalSeconds: Number(env.CACHE_REFRESH_INTERVAL ?? 300),
-    cacheMaxStalenessSeconds: Number(env.CACHE_MAX_STALENESS_SECONDS ?? 86400),
-    challengeTtlSeconds: Number(env.CHALLENGE_TTL_SECONDS ?? 3600),
+    challengeTtlSeconds: positiveInteger(
+      "CHALLENGE_TTL_SECONDS",
+      env.CHALLENGE_TTL_SECONDS,
+      3600,
+    ),
     databaseUrl: requireDatabaseUrl(env.DATABASE_URL),
-    publicUrl: env.PUBLIC_URL ?? `http://localhost:${port}`,
+    publicUrl,
     marketplaceTermsUrl: requireMarketplaceHttpsUrl(
       "MARKETPLACE_TERMS_URL",
       env.MARKETPLACE_TERMS_URL,
@@ -267,9 +372,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       "MARKETPLACE_PRIVACY_URL",
       env.MARKETPLACE_PRIVACY_URL,
     ),
-    ipfsGatewayUrl: (env.IPFS_GATEWAY_URL ?? "https://ipfs.io/ipfs/").replace(
-      /\/?$/,
-      "/",
-    ),
+    ipfsGatewayUrl:
+      requireHttpUrl(
+        "IPFS_GATEWAY_URL",
+        env.IPFS_GATEWAY_URL ?? "https://ipfs.io/ipfs/",
+        { requireHttps: production },
+      ) + "/",
   };
 }

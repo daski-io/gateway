@@ -188,77 +188,87 @@ async function fetchHttp(
   timeoutMs: number,
   maxBytes: number,
 ): Promise<Record<string, unknown>> {
-  let validated: ValidatedUrl;
-  try {
-    validated = await validateUrlForOutbound(url);
-  } catch (err) {
-    if (err instanceof UrlSafetyError) {
-      throw new AgentCardFetchError(
-        `Failed to fetch agentURI: ${err.message}`,
-        "AGENT_URI_FETCH_FAILED",
-      );
+  let validated: ValidatedUrl | undefined;
+  if (fetchFn === safeFetch) {
+    try {
+      validated = await validateUrlForOutbound(url);
+    } catch (err) {
+      if (err instanceof UrlSafetyError) {
+        throw new AgentCardFetchError(
+          `Failed to fetch agentURI: ${err.message}`,
+          "AGENT_URI_FETCH_FAILED",
+        );
+      }
+      throw err;
     }
-    throw err;
   }
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
-  let res: Response;
   try {
-    res = await fetchFn(
-      url,
-      { signal: controller.signal, redirect: "manual" },
-      validated,
-    );
-  } catch (err) {
-    const e = err as { name?: string; message?: string };
-    if (e?.name === "AbortError") {
-      throw new AgentCardFetchError(
-        `Failed to fetch agentURI: timed out after ${timeoutMs}ms`,
-        "AGENT_URI_TIMEOUT",
+    let res: Response;
+    try {
+      res = await fetchFn(
+        url,
+        { signal: controller.signal, redirect: "manual" },
+        validated,
       );
-    }
-    throw new AgentCardFetchError(
-      `Failed to fetch agentURI: ${e?.message ?? String(err)}`,
-      "AGENT_URI_FETCH_FAILED",
-    );
-  } finally {
-    clearTimeout(timer);
-  }
-
-  if (!res.ok) {
-    throw new AgentCardFetchError(
-      `Failed to fetch agentURI: HTTP ${res.status}`,
-      "AGENT_URI_FETCH_FAILED",
-    );
-  }
-
-  let parsed: unknown;
-  try {
-    parsed = await readBoundedJson(res, maxBytes);
-  } catch (err) {
-    if (err instanceof UrlSafetyError) {
-      if (err.code === "RESPONSE_TOO_LARGE") {
+    } catch (err) {
+      const e = err as { name?: string; message?: string };
+      if (e?.name === "AbortError") {
         throw new AgentCardFetchError(
-          `agentURI body exceeds ${maxBytes} bytes`,
-          "AGENT_URI_TOO_LARGE",
+          `Failed to fetch agentURI: timed out after ${timeoutMs}ms`,
+          "AGENT_URI_TIMEOUT",
         );
       }
       throw new AgentCardFetchError(
-        `agentURI did not return valid JSON: ${err.message}`,
+        `Failed to fetch agentURI: ${e?.message ?? String(err)}`,
+        "AGENT_URI_FETCH_FAILED",
+      );
+    }
+
+    if (!res.ok) {
+      throw new AgentCardFetchError(
+        `Failed to fetch agentURI: HTTP ${res.status}`,
+        "AGENT_URI_FETCH_FAILED",
+      );
+    }
+
+    let parsed: unknown;
+    try {
+      parsed = await readBoundedJson(res, maxBytes);
+    } catch (err) {
+      if ((err as { name?: string }).name === "AbortError") {
+        throw new AgentCardFetchError(
+          `Failed to fetch agentURI: timed out after ${timeoutMs}ms`,
+          "AGENT_URI_TIMEOUT",
+        );
+      }
+      if (err instanceof UrlSafetyError) {
+        if (err.code === "RESPONSE_TOO_LARGE") {
+          throw new AgentCardFetchError(
+            `agentURI body exceeds ${maxBytes} bytes`,
+            "AGENT_URI_TOO_LARGE",
+          );
+        }
+        throw new AgentCardFetchError(
+          `agentURI did not return valid JSON: ${err.message}`,
+          "AGENT_URI_NOT_JSON",
+        );
+      }
+      throw new AgentCardFetchError(
+        `agentURI did not return valid JSON: ${(err as Error).message}`,
         "AGENT_URI_NOT_JSON",
       );
     }
-    throw new AgentCardFetchError(
-      `agentURI did not return valid JSON: ${(err as Error).message}`,
-      "AGENT_URI_NOT_JSON",
-    );
+    if (parsed == null || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new AgentCardFetchError(
+        "agentURI JSON must be an object",
+        "AGENT_URI_NOT_JSON",
+      );
+    }
+    return parsed as Record<string, unknown>;
+  } finally {
+    clearTimeout(timer);
   }
-  if (parsed == null || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new AgentCardFetchError(
-      "agentURI JSON must be an object",
-      "AGENT_URI_NOT_JSON",
-    );
-  }
-  return parsed as Record<string, unknown>;
 }

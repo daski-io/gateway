@@ -2,9 +2,8 @@ import { loadConfig } from "./config.js";
 import { createViemChainReader } from "./chain/viemReader.js";
 import { AutoMockChainReader } from "./chain/autoMockReader.js";
 import { createApp } from "./app.js";
-import { ChainEventsIndexer } from "./indexer/chainEvents.js";
 import type { ChainReader } from "./chain/reader.js";
-import type { Hex } from "./types.js";
+import { logger } from "./util/logger.js";
 
 async function main() {
   const config = loadConfig();
@@ -16,19 +15,12 @@ async function main() {
   // runtimeConfig.LOCAL_PLACEHOLDER_CONTRACTS so EIP-712 signatures the
   // buyer produces verify against the same domain the gateway bakes into
   // PaymentRequirements.
-  const chainMode = process.env.CHAIN_MODE ?? "live";
   let reader: ChainReader;
-  if (chainMode === "mock") {
-    const providerWallet =
-      (process.env.MOCK_PROVIDER_WALLET_ADDRESS as Hex | undefined) ??
-      (("0x" + "11".repeat(20)) as Hex);
-    const providerAgentId = BigInt(process.env.MOCK_PROVIDER_AGENT_ID ?? "1");
-    const providerAgentUri =
-      process.env.MOCK_PROVIDER_AGENT_URI ??
-      "http://localhost:4040/.well-known/agent.json";
-    const defaultBuyerAgentId = BigInt(
-      process.env.MOCK_BUYER_AGENT_ID ?? "99",
-    );
+  if (config.chainMode === "mock") {
+    const providerWallet = config.mockProviderWalletAddress;
+    const providerAgentId = config.mockProviderAgentId;
+    const providerAgentUri = config.mockProviderAgentUri;
+    const defaultBuyerAgentId = config.mockBuyerAgentId;
     reader = new AutoMockChainReader({
       tokenAddress: config.usdcAddress,
       providerWalletAddress: providerWallet,
@@ -43,7 +35,7 @@ async function main() {
     if (config.whitelistedAgentIds.length === 0) {
       config.whitelistedAgentIds.push(providerAgentId);
     }
-    console.log(
+    logger.info(
       `daski-gateway CHAIN_MODE=mock — using AutoMockChainReader ` +
         `(provider agentId=${providerAgentId}, agentURI=${providerAgentUri}, ` +
         `buyer agentId=${defaultBuyerAgentId})`,
@@ -62,7 +54,6 @@ async function main() {
       easAddress: config.easAddress,
       reputationStorageAddress: config.reputationStorageAddress,
       reputationRegistryAddress: config.reputationRegistryAddress,
-      directAdapterAddress: config.directAdapterAddress,
     });
   }
 
@@ -71,12 +62,12 @@ async function main() {
   // canonical ERC-8004 ReputationRegistry (mirror.ts logs per-call
   // failures, not per-call disabled states).
   const mirrorEnabled =
-    chainMode !== "mock" && Boolean(config.reputationRegistryAddress);
-  console.log(
+    config.chainMode !== "mock" && Boolean(config.reputationRegistryAddress);
+  logger.info(
     mirrorEnabled
       ? `canonical ERC-8004 feedback mirror enabled (ReputationRegistry ${config.reputationRegistryAddress})`
       : `canonical ERC-8004 feedback mirror disabled (${
-          chainMode === "mock"
+          config.chainMode === "mock"
             ? "CHAIN_MODE=mock"
             : "REPUTATION_REGISTRY_ADDRESS unset"
         })`,
@@ -84,24 +75,17 @@ async function main() {
 
   const bundle = await createApp({ config, reader });
 
-  // Await an initial discovery refresh so /health and /discover have data
+  // Await an initial discovery refresh so readiness and /discover have data
   // before we accept any HTTP traffic. We log on failure but still start
   // listening — the periodic refresh loop inside the cache may recover.
   try {
     await bundle.cache.refresh();
   } catch (err) {
-    console.error("initial cache refresh failed:", err);
+    logger.error("initial cache refresh failed", err);
   }
 
-  // Chain-events indexer: mirrors PaymentSettled events into the gateway
-  // DB so /activity and per-service recentPurchases include transactions
-  // that settled outside this gateway. First tick fires synchronously
-  // inside start(); the interval continues at 5s cadence.
-  const indexer = new ChainEventsIndexer(reader, bundle.queries);
-  indexer.start();
-
   const server = bundle.app.listen(config.port, () => {
-    console.log(
+    logger.info(
       `daski-gateway listening on :${config.port} (chain ${config.chainId}, mcp ${
         config.mcpEnabled ? config.mcpPath : "off"
       })`,
@@ -109,8 +93,7 @@ async function main() {
   });
 
   const shutdown = async (signal: string) => {
-    console.log(`received ${signal}, shutting down`);
-    indexer.stop();
+    logger.info(`received ${signal}, shutting down`);
     server.close();
     await bundle.shutdown();
     process.exit(0);
@@ -121,6 +104,6 @@ async function main() {
 }
 
 main().catch((err) => {
-  console.error("fatal:", err);
+  logger.error("fatal startup failure", err);
   process.exit(1);
 });

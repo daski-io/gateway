@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { startTestGateway, type TestGateway } from "./helpers/setup.js";
 import type { Hex } from "../src/types.js";
+import { buildFeedbackInput } from "../src/reputation/mirror.js";
 
 // Canonical-feedback mirror (src/reputation/mirror.ts). The mirror is
 // fire-and-forget from POST /confirm — these tests await its side effects
@@ -27,7 +28,10 @@ const SIG = {
   s: "0x2222222222222222222222222222222222222222222222222222222222222222" as Hex,
 };
 
-function paymentRecord(providerAgentId: bigint) {
+function paymentRecord(
+  providerAgentId: bigint,
+  reputationEligible = true,
+) {
   return {
     buyerAgentId: 7n,
     providerAgentId,
@@ -35,8 +39,13 @@ function paymentRecord(providerAgentId: bigint) {
     token: "0x000000000000000000000000000000000000a003" as Hex,
     amount: 1_000_000n,
     cachedBuyerWallet: BUYER,
+    cachedProviderOwner:
+      "0x000000000000000000000000000000000000c001" as Hex,
+    cachedProviderWallet:
+      "0x000000000000000000000000000000000000c002" as Hex,
     serviceRef: ("0x" + "ab".repeat(32)) as Hex,
     paidAt: BigInt(Math.floor(Date.now() / 1000)),
+    reputationEligible,
   };
 }
 
@@ -150,6 +159,45 @@ describe("canonical ReputationRegistry feedback mirror", () => {
     expect(row!.feedbackIndex).toBe(1n);
     expect(row!.attestationUid).toBe(ATTEST_UID);
     expect(row!.txHash).not.toBeNull();
+  });
+
+  it("does not allocate a feedback nonce outside the facilitator lock", async () => {
+    gateway.mockChain.setPaymentRecord(
+      PAYMENT_ID,
+      paymentRecord(PROVIDER_AGENT_ID),
+    );
+    const prepare = vi.spyOn(gateway.mockChain, "prepareFeedback");
+    let lockEntered!: () => void;
+    const entered = new Promise<void>((resolve) => {
+      lockEntered = resolve;
+    });
+    let releaseLock!: () => void;
+    const blocked = new Promise<void>((resolve) => {
+      releaseLock = resolve;
+    });
+    const heldLock = gateway.bundle.queries.withFacilitatorTransactionLock(
+      async (release) => {
+        lockEntered();
+        await blocked;
+        await release();
+      },
+    );
+    await entered;
+
+    await gateway.bundle.reputationWorker.enqueue({
+      paymentId: PAYMENT_ID,
+      confirmation: "Confirmed",
+      attestationUid: ATTEST_UID,
+      refUid: null,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(prepare).not.toHaveBeenCalled();
+
+    releaseLock();
+    await heldLock;
+    await vi.waitFor(() => {
+      expect(prepare).toHaveBeenCalledOnce();
+    });
   });
 
   it("NotConfirmed mirrors as value 0", async () => {
@@ -332,9 +380,7 @@ describe("canonical ReputationRegistry feedback mirror", () => {
     });
   });
 
-  it("falls back to the local challenge row when the router has no record", async () => {
-    // No setPaymentRecord — getPaymentRecord returns null; the challenge
-    // row supplies both the provider and the tag2 slug.
+  it("queues a retry when the authoritative router record is unavailable", async () => {
     await seedPaidChallenge(gateway, "domain-mgmt");
     gateway.mockChain.queueConfirmation({
       kind: "success",
@@ -343,11 +389,81 @@ describe("canonical ReputationRegistry feedback mirror", () => {
     });
 
     await postConfirm(gateway, {});
+    await vi.waitFor(async () => {
+      const row = await gateway.bundle.queries.getReputationMirror(PAYMENT_ID);
+      expect(row?.status).toBe("retry");
+    });
+    expect(gateway.mockChain.feedbacks).toHaveLength(0);
+  });
+
+  it("records an ineligible payment as skipped", async () => {
+    gateway.mockChain.setPaymentRecord(
+      PAYMENT_ID,
+      paymentRecord(PROVIDER_AGENT_ID, false),
+    );
+    gateway.mockChain.queueConfirmation({
+      kind: "success",
+      txHash: TX_HASH,
+      attestationUid: ATTEST_UID,
+    });
+
+    const res = await postConfirm(gateway, {});
+    expect(res.status).toBe(200);
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(gateway.mockChain.feedbacks).toHaveLength(0);
+    const row = await gateway.bundle.queries.getReputationMirror(PAYMENT_ID);
+    expect(row?.status).toBe("skipped");
+  });
+
+  it("supports canonical provider agent ID zero", async () => {
+    gateway.mockChain.setPaymentRecord(PAYMENT_ID, paymentRecord(0n));
+    gateway.mockChain.queueConfirmation({
+      kind: "success",
+      txHash: TX_HASH,
+      attestationUid: ATTEST_UID,
+    });
+
+    const res = await postConfirm(gateway, {});
+    expect(res.status).toBe(200);
     await vi.waitFor(() => {
       expect(gateway.mockChain.feedbacks).toHaveLength(1);
     });
-    expect(gateway.mockChain.feedbacks[0]!.agentId).toBe(PROVIDER_AGENT_ID);
-    expect(gateway.mockChain.feedbacks[0]!.tag2).toBe("domain-mgmt");
+    expect(gateway.mockChain.feedbacks[0]!.agentId).toBe(0n);
+  });
+
+  it("rebroadcasts the identical prepared transaction after a worker crash", async () => {
+    gateway.mockChain.setPaymentRecord(
+      PAYMENT_ID,
+      paymentRecord(PROVIDER_AGENT_ID),
+    );
+    await gateway.bundle.queries.enqueueReputationMirror({
+      paymentId: PAYMENT_ID,
+      confirmation: "Confirmed",
+      attestationUid: ATTEST_UID,
+      refUid: null,
+    });
+    await gateway.bundle.queries.claimReputationMirror(PAYMENT_ID);
+    const feedback = buildFeedbackInput({
+      config: gateway.config,
+      providerAgentId: PROVIDER_AGENT_ID,
+      confirmation: "Confirmed",
+      attestationUid: ATTEST_UID,
+      serviceSlug: "",
+    });
+    const prepared = await gateway.mockChain.prepareFeedback(feedback);
+    await gateway.bundle.queries.markReputationMirrorPrepared({
+      paymentId: PAYMENT_ID,
+      transactionHash: prepared.transactionHash,
+      preparedTransaction: prepared.serializedTransaction,
+      transactionNonce: prepared.nonce,
+    });
+
+    await gateway.bundle.reputationWorker.tick();
+
+    const row = await gateway.bundle.queries.getReputationMirror(PAYMENT_ID);
+    expect(row?.status).toBe("sent");
+    expect(row?.txHash).toBe(prepared.transactionHash);
+    expect(gateway.mockChain.feedbacks).toHaveLength(1);
   });
 });
 

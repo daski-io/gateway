@@ -3,18 +3,17 @@ import type { Config } from "../config.js";
 import type { ChainReader } from "../chain/reader.js";
 import type { Queries } from "../db/queries.js";
 import type { FetchAgentCardOptions } from "../identity/fetch-agent-card.js";
-import {
-  verifyAndSettle,
-  verifyAndSettleWithRegistration,
-  verifyPaymentPayload,
-  type RegistrationDelegation,
-} from "./verify.js";
+import { verifyPaymentPayload } from "./verify.js";
+import { settleChallenge } from "./settlementCoordinator.js";
 import type { Hex, PaymentPayload, PaymentRequirements } from "../types.js";
+import { isHex32 } from "../util/evmValidation.js";
+import type { PaymentScreeningReadinessProbe } from "./screeningReadiness.js";
 
 export interface FacilitatorDeps {
   config: Config;
   queries: Queries;
   reader: ChainReader;
+  screeningReadiness: PaymentScreeningReadinessProbe;
   /**
    * Optional test seam for the buyer-side agentURI fetcher used by the
    * atomic register-and-settle path. The default `safeFetch` is right
@@ -42,32 +41,16 @@ interface FacilitatorBody {
   };
 }
 
-function parseRegistrationDelegation(
-  raw: FacilitatorBody["registration"],
-): RegistrationDelegation | { error: string } {
-  if (!raw || typeof raw !== "object") {
-    return { error: "registration must be an object" };
+function parseOptionalProviderTokenId(value: unknown): bigint | null | { error: string } {
+  if (value == null || value === "") return null;
+  if ((typeof value !== "string" && typeof value !== "number") || !/^[0-9]+$/.test(String(value))) {
+    return { error: "paymentRequirements providerTokenId must be numeric" };
   }
-  const agentURI = typeof raw.agentURI === "string" ? raw.agentURI : "";
-  if (typeof raw.deadline !== "string" || !/^[1-9][0-9]*$/.test(raw.deadline)) {
-    return { error: "registration.deadline must be a positive decimal string" };
+  try {
+    return BigInt(value);
+  } catch {
+    return { error: "paymentRequirements providerTokenId is out of range" };
   }
-  if (
-    typeof raw.signature !== "string" ||
-    !/^0x([0-9a-fA-F]{2})+$/.test(raw.signature) ||
-    raw.signature.length < 4
-  ) {
-    return { error: "registration.signature must be a non-empty hex string" };
-  }
-  return {
-    agentURI,
-    deadline: BigInt(raw.deadline),
-    signature: raw.signature as Hex,
-  };
-}
-
-function isHex32(x: unknown): x is Hex {
-  return typeof x === "string" && /^0x[0-9a-fA-F]{64}$/.test(x);
 }
 
 function badRequest(res: Response, message: string) {
@@ -78,21 +61,11 @@ function badRequest(res: Response, message: string) {
   });
 }
 
-/**
- * Pulls the serviceRef out of the facilitator body. The x402 spec doesn't
- * carry Daski's serviceRef natively, so we accept it at either location:
- *   - paymentRequirements.extra.daski.serviceRef (canonical — the same
- *     field the 402 response advertises)
- *   - paymentPayload.serviceRef (belt-and-braces — the old Buyer MCP
- *     used to set this at the top level)
- */
+/** Pull the Daski serviceRef from the canonical requirements extension. */
 function extractServiceRef(body: FacilitatorBody): Hex | null {
   const req = body.paymentRequirements;
   const fromRequirements = req?.extra?.daski?.serviceRef;
   if (isHex32(fromRequirements)) return fromRequirements.toLowerCase() as Hex;
-  const fromPayload = (body.paymentPayload as { serviceRef?: unknown } | undefined)
-    ?.serviceRef;
-  if (isHex32(fromPayload)) return (fromPayload as Hex).toLowerCase() as Hex;
   return null;
 }
 
@@ -108,10 +81,7 @@ export function createFacilitatorRouter(deps: FacilitatorDeps): Router {
 
     const serviceRef = extractServiceRef(body);
     if (!serviceRef) {
-      badRequest(
-        res,
-        "paymentRequirements.extra.daski.serviceRef missing or malformed",
-      );
+      badRequest(res, "paymentRequirements.extra.daski.serviceRef missing or malformed");
       return;
     }
 
@@ -120,7 +90,6 @@ export function createFacilitatorRouter(deps: FacilitatorDeps): Router {
       badRequest(res, "no challenge found for the given serviceRef");
       return;
     }
-
     const result = await verifyPaymentPayload(
       { payload: body.paymentPayload, challenge },
       deps.config,
@@ -156,8 +125,7 @@ export function createFacilitatorRouter(deps: FacilitatorDeps): Router {
     if (!serviceRef) {
       res.status(400).json({
         success: false,
-        errorReason:
-          "paymentRequirements.extra.daski.serviceRef missing or malformed",
+        errorReason: "paymentRequirements.extra.daski.serviceRef missing or malformed",
       });
       return;
     }
@@ -170,29 +138,56 @@ export function createFacilitatorRouter(deps: FacilitatorDeps): Router {
       });
       return;
     }
+    if (
+      challenge.settlementState !== "paid" &&
+      challenge.settlementState !== "sanctions_rejected" &&
+      !(await deps.screeningReadiness.isReady())
+    ) {
+      res.status(503).json({
+        success: false,
+        errorReason: "payment_screening_unready",
+        message: "Payment cannot be processed right now. Please try again later.",
+        retryable: true,
+        transaction: challenge.transactionHash ?? "",
+        network: deps.config.network,
+        payer: challenge.walletAddress,
+      });
+      return;
+    }
     // Defence-in-depth: the URL segment is gone under this endpoint, so
     // bind the challenge to the providerTokenId advertised in the
     // paymentRequirements extra block.
-    const requirementsProviderId =
-      body.paymentRequirements?.extra?.daski?.providerTokenId;
-    if (
-      requirementsProviderId &&
-      BigInt(requirementsProviderId) !== challenge.providerTokenId
-    ) {
+    const rawRequirementsProviderId = body.paymentRequirements?.extra?.daski?.providerTokenId;
+    const requirementsProviderId = parseOptionalProviderTokenId(rawRequirementsProviderId);
+    if (requirementsProviderId !== null && typeof requirementsProviderId === "object") {
       res.status(400).json({
         success: false,
-        errorReason:
-          "paymentRequirements providerTokenId does not match stored challenge",
+        errorReason: requirementsProviderId.error,
+      });
+      return;
+    }
+    if (requirementsProviderId !== null && requirementsProviderId !== challenge.providerTokenId) {
+      res.status(400).json({
+        success: false,
+        errorReason: "paymentRequirements providerTokenId does not match stored challenge",
       });
       return;
     }
 
-    // Atomic register-and-settle path: the challenge has buyerTokenId=0
-    // (the gateway didn't know the buyer's agentId at issuance time
-    // because they weren't registered yet) AND the agent provided a
-    // registration signature. Validate registration + route accordingly.
-    const needsRegistration = challenge.buyerTokenId === 0n;
-    if (needsRegistration && !body.registration) {
+    const coordinated = await settleChallenge(
+      {
+        config: deps.config,
+        reader: deps.reader,
+        queries: deps.queries,
+        fetchAgentCardFn: deps.fetchAgentCardFn,
+      },
+      {
+        challenge,
+        paymentPayload: body.paymentPayload,
+        registration: body.registration,
+      },
+    );
+    if (coordinated.kind === "registration-required") {
       res.status(400).json({
         success: false,
         errorReason: "registration_required",
@@ -202,38 +197,15 @@ export function createFacilitatorRouter(deps: FacilitatorDeps): Router {
       });
       return;
     }
-
-    const result = needsRegistration
-      ? await (async () => {
-          const reg = parseRegistrationDelegation(body.registration);
-          if ("error" in reg) {
-            res.status(400).json({
-              success: false,
-              errorReason: "invalid_registration",
-              message: reg.error,
-            });
-            return null;
-          }
-          return verifyAndSettleWithRegistration(
-            { payload: body.paymentPayload!, challenge },
-            reg,
-            deps.config,
-            deps.reader,
-            deps.queries,
-            new Date(),
-            { fetchAgentCardFn: deps.fetchAgentCardFn },
-          );
-        })()
-      : await verifyAndSettle(
-          { payload: body.paymentPayload, challenge },
-          deps.config,
-          deps.reader,
-          deps.queries,
-        );
-
-    // The atomic branch above sends its own 400 on bad registration
-    // shape and returns null — bail without writing a second response.
-    if (result === null) return;
+    if (coordinated.kind === "invalid-registration") {
+      res.status(400).json({
+        success: false,
+        errorReason: "invalid_registration",
+        message: coordinated.message,
+      });
+      return;
+    }
+    const result = coordinated.result;
 
     // Spec base fields: success / errorReason / transaction / network /
     // payer. Daski extension: paymentId, serviceRef, providerTokenId,
@@ -245,6 +217,9 @@ export function createFacilitatorRouter(deps: FacilitatorDeps): Router {
         success: false,
         errorReason: result.errorReason,
         message: result.message,
+        ...(result.screeningFailure
+          ? { retryable: result.screeningFailure.retryable }
+          : {}),
         transaction: result.response.transaction,
         network: result.response.network,
         payer: result.response.payer,
@@ -270,14 +245,11 @@ export function createFacilitatorRouter(deps: FacilitatorDeps): Router {
       payer: result.response.payer,
       paymentId: daski?.paymentId ?? null,
       serviceRef: daski?.serviceRef ?? serviceRef,
-      providerTokenId:
-        daski?.providerTokenId ?? challenge.providerTokenId.toString(),
-      buyerTokenId:
-        daski?.buyerTokenId ?? challenge.buyerTokenId.toString(),
+      providerTokenId: daski?.providerTokenId ?? challenge.providerTokenId.toString(),
+      buyerTokenId: daski?.buyerTokenId ?? challenge.buyerTokenId.toString(),
       skillId: challenge.skillId,
       amount: daski?.amount ?? challenge.amount.toString(),
-      providerA2AUrl:
-        daski?.providerA2AUrl ?? challenge.providerA2AUrl,
+      providerA2AUrl: daski?.providerA2AUrl ?? challenge.providerA2AUrl,
       registered: daski?.registered ?? false,
       quoteId: daski?.quoteId ?? challenge.quoteId,
       quoteSignature: daski?.quoteSignature ?? challenge.quoteSignature,

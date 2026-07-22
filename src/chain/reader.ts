@@ -1,26 +1,10 @@
 import type { Hex, OnChainProvider } from "../types.js";
 
-export interface ChainLog {
-  address: Hex;
-  topics: readonly Hex[];
-  data: Hex;
-  logIndex?: number;
-}
-
-export interface ChainTransactionReceipt {
-  transactionHash: Hex;
-  status: "success" | "reverted";
-  to: Hex | null;
-  logs: ChainLog[];
-}
-
 export interface PaymentSettledEvent {
   paymentId: bigint;
   serviceRef: Hex;
-  // serviceId — 32-byte hex. The post-refactor router (PaymentRouter v2)
-  // emits this as the third indexed topic so subgraphs can cheap-filter
-  // per-service. Always set on new settlements; legacy events read as
-  // bytes32(0).
+  // serviceId — 32-byte hex. PaymentRouter emits this as the third indexed
+  // topic so subgraphs can cheaply filter per service.
   serviceId: Hex;
   buyerAgentId: bigint;
   providerAgentId: bigint;
@@ -55,49 +39,22 @@ export interface SettlementResult {
   event: PaymentSettledEvent;
 }
 
-// ── External-rail attribution (DirectTransferAdapter) ────────────────────
-//
-// Used by the Bazaar-facing route after an EXTERNAL x402 facilitator (CDP)
-// settled the buyer's EIP-3009 authorization as a bare transfer into the
-// router. The gateway then submits DirectTransferAdapter.attribute to run
-// the commission split + payment record for funds that already arrived.
-// `authNonce` is the client-chosen EIP-3009 nonce — the adapter requires
-// authorizationState(from, authNonce) == true as defense-in-depth.
-export interface DirectAttributionInput {
-  providerAgentId: bigint;
-  serviceId: Hex;
-  amount: bigint;
-  serviceRef: Hex;
-  from: Hex;
-  authNonce: Hex;
-}
+export type BroadcastObserver = (
+  transactionHash: Hex,
+) => Promise<void> | void;
 
-// ── Gasless ERC-8004 registration ────────────────────────────────────────
-//
-// The buyer signs an EIP-712 RegisterAgent block over the Daski AgentIndex
-// domain (name "Daski AgentIndex", verifyingContract = the AgentIndex
-// proxy); the gateway facilitator relays it via AgentIndex.registerWithSig().
-// The AgentIndex mints on the CANONICAL ERC-8004 registry and transfers the
-// NFT to the signer — gateway pays gas. The signed payload binds (agentURI,
-// agentWallet, nonce, deadline) so it cannot be replayed across re-registration.
-export interface RegisterBySigInput {
-  agentURI: string;
-  agentWallet: Hex;
-  deadline: bigint;
-  signature: Hex;
-}
-
-export interface RegisterBySigResult {
-  agentId: bigint;
-  transactionHash: Hex;
+export class SettlementTransactionRevertedError extends Error {
+  constructor(transactionHash: Hex) {
+    super(`settlement transaction reverted (${transactionHash})`);
+    this.name = "SettlementTransactionRevertedError";
+  }
 }
 
 // ── Atomic register-and-settle ───────────────────────────────────────────
 //
-// Combines RegisterBySigInput with SettlementInput in a single tx via
-// X402Adapter.settleWithRegistration. If the buyer is already registered,
-// the registration sub-call is skipped on-chain and the registration
-// signature is ignored.
+// Combines the buyer's registration authorization with SettlementInput in
+// a single transaction. If the buyer is already registered, the
+// registration sub-call is skipped on-chain.
 export interface SettleWithRegistrationInput extends SettlementInput {
   registration: {
     agentURI: string;
@@ -164,14 +121,21 @@ export interface FeedbackInput {
 
 export interface FeedbackResult {
   transactionHash: Hex;
+  /** Exact per-(agent, client) index decoded from NewFeedback. */
+  feedbackIndex?: bigint;
+}
+
+export interface PreparedFeedbackTransaction {
+  transactionHash: Hex;
+  serializedTransaction: Hex;
+  nonce: bigint;
 }
 
 // ── PaymentRouter.getPayment record ──────────────────────────────────────
 //
 // On-chain PaymentRecord for a settled paymentId — the authoritative
 // (buyer, provider, service) tuple. The reader returns null for unknown
-// paymentIds (the contract zero-inits the struct; providerAgentId == 0 is
-// the sentinel since real settles always carry a non-zero provider).
+// paymentIds. Agent ID zero is valid and must never be used as a sentinel.
 export interface PaymentRouterRecord {
   buyerAgentId: bigint;
   providerAgentId: bigint;
@@ -179,8 +143,11 @@ export interface PaymentRouterRecord {
   token: Hex;
   amount: bigint;
   cachedBuyerWallet: Hex;
+  cachedProviderOwner: Hex;
+  cachedProviderWallet: Hex;
   serviceRef: Hex;
   paidAt: bigint;
+  reputationEligible: boolean;
 }
 
 // ── ReputationStorage views ──────────────────────────────────────────────
@@ -194,12 +161,6 @@ export interface ProviderReputation {
   completed: bigint;
   failed: bigint;
   canceled: bigint;
-  confirmed: bigint;
-  notConfirmed: bigint;
-}
-
-export interface BuyerReputation {
-  transactions: bigint;
   confirmed: bigint;
   notConfirmed: bigint;
 }
@@ -247,12 +208,10 @@ export interface ReputationRecord {
   /** Block-timestamp seconds of the latest confirmation; 0 until attested. */
   confirmationTimestamp: bigint;
   outcomeRecorded: boolean;
+  reputationEligible: boolean;
 }
 
-// Wraps every chain read AND write the gateway performs. Tests inject a
-// fake implementation; prod uses the viem-backed one in viemReader.ts.
-export interface ChainReader {
-  // ProviderRegistry reads
+export interface ProviderRegistryReader {
   getProviderCount(): Promise<bigint>;
   getProviderIdAt(index: bigint): Promise<bigint>;
   getProvider(agentId: bigint): Promise<{
@@ -260,161 +219,100 @@ export interface ChainReader {
     registrationTime: bigint;
     isActive: boolean;
   }>;
+}
 
-  // IdentityRegistry / AgentIndex reads
-  /** Returns the agentURI stored at the canonical IdentityRegistry's
-   *  tokenURI(agentId). */
+export interface IdentityReader {
   getAgentURI(agentId: bigint): Promise<string>;
-
-  /**
-   * Reverse lookup: maps an EVM wallet back to the ERC-8004 agentId it
-   * controls. Resolves via the Daski AgentIndex (verified against the
-   * canonical registry; stale bindings return 0). Returns 0 when the
-   * wallet has no bound identity (the skill surfaces this as "you need to
-   * mint a Daski identity first"). Used by GET /identity/by-wallet to
-   * resolve buyer agentId from a CDP-issued address.
-   */
   agentOfWallet(wallet: Hex): Promise<bigint>;
-
-  // Pre-flight: skip settlement if the authorization's nonce has already
-  // been consumed on-chain (USDC rejects duplicates anyway, but a read
-  // is cheaper than a reverted write).
-  authorizationUsed(authorizer: Hex, nonce: Hex): Promise<boolean>;
-
-  // Per-wallet registerWithSig nonce, read from AgentIndex.registrationNonce.
-  // Buyer reads this and embeds it into the EIP-712 RegisterAgent
-  // typed-data; gateway uses it the same way to build the typed-data block
-  // returned by /register-prep.
   getRegistrationNonce(wallet: Hex): Promise<bigint>;
+  getAgentWallet(agentId: bigint): Promise<Hex>;
+  getAgentOwner(agentId: bigint): Promise<Hex>;
+}
 
-  // Settlement — submits X402Adapter.settle from the facilitator wallet,
-  // waits for a confirmation, and returns the decoded PaymentSettled event
-  // (emitted by the PaymentRouter, not the adapter). Throws if the
-  // transaction reverts or no matching event is emitted.
-  settlePayment(input: SettlementInput): Promise<SettlementResult>;
-
-  // Gasless registration — submits AgentIndex.registerWithSig from the
-  // facilitator wallet. The AgentIndex mints on the canonical registry and
-  // transfers the NFT to input.agentWallet, not the relayer. Returns the
-  // new agentId from the AgentRegistered event in the receipt.
-  registerBuyer(input: RegisterBySigInput): Promise<RegisterBySigResult>;
-
-  // Atomic register-and-settle. Submits X402Adapter.settleWithRegistration
-  // so registration + EIP-3009 transfer + router.settle all live in one
-  // tx — either every step succeeds or none do, which is what makes the
-  // USDC payment the Sybil tax for fresh-wallet registrations.
+export interface PaymentChainGateway {
+  authorizationUsed(authorizer: Hex, nonce: Hex): Promise<boolean>;
+  settlePayment(
+    input: SettlementInput,
+    onBroadcast?: BroadcastObserver,
+  ): Promise<SettlementResult>;
   settleWithRegistration(
     input: SettleWithRegistrationInput,
+    onBroadcast?: BroadcastObserver,
   ): Promise<SettleWithRegistrationResult>;
-
-  // External-rail attribution — submits DirectTransferAdapter.attribute
-  // from the facilitator wallet AFTER an external facilitator's settle
-  // moved the funds. Returns the decoded PaymentSettled event (emitted by
-  // the router). Throws when DIRECT_ADAPTER_ADDRESS is unconfigured, the
-  // tx reverts, or no matching event is found.
-  attributeDirectTransfer(
-    input: DirectAttributionInput,
+  getSettlementByTransaction(
+    transactionHash: Hex,
+    serviceRef: Hex,
   ): Promise<SettlementResult>;
+  getPaymentRefundedAmount(paymentId: bigint): Promise<bigint>;
+  getPaymentRecord(paymentId: bigint): Promise<PaymentRouterRecord | null>;
+}
 
-  // Confirmation submission — submits EAS.attestByDelegation on the buyer's
-  // behalf so they pay no gas. The reader does not verify the delegation
-  // signature itself (EAS does); it only forwards the signed payload. The
-  // returned UID is parsed out of the EAS Attested event.
+export interface ConfirmationRelayer {
   submitBuyerConfirmation(
     input: ConfirmationDelegationInput,
+    onBroadcast?: BroadcastObserver,
   ): Promise<ConfirmationResult>;
-
-  // Return the on-chain nonce EAS expects for the next delegated
-  // attestation from this attester. Buyers need this value when signing
-  // the ATTEST typed-data payload.
   getEasAttesterNonce(attester: Hex): Promise<bigint>;
+}
 
-  // Latest known L1 block number. Surfaced by the public /stats endpoint
-  // so the marketing site can show a live "block height" indicator without
-  // needing its own RPC wiring.
+export interface ChainStatusReader {
   getBlockNumber(): Promise<bigint>;
+  verifySanctionsReadiness(input: {
+    oracleAddress: Hex;
+    guardedContracts: readonly Hex[];
+    probeAccount: Hex;
+    chainId: number;
+  }): Promise<boolean>;
+}
 
-  // ── ReputationStorage views ────────────────────────────────────────────
-  // Both return null when the gateway is configured without a
-  // ReputationStorage address (e.g. local dev). When the contract is wired
-  // but the agent has no recorded activity, the counters are all zero —
-  // which is a meaningful "no transaction history yet" signal, not an
-  // error. Callers should distinguish null (not configured) from all-zero
-  // (configured but inactive).
+export interface ReputationReader {
   getProviderReputation(agentId: bigint): Promise<ProviderReputation | null>;
-  getBuyerReputation(agentId: bigint): Promise<BuyerReputation | null>;
-  // Per-service stats. Same null-when-unconfigured contract as the
-  // provider/buyer getters. The all-zero return is "valid service, no
-  // recorded activity yet" — distinct from null (gateway has no
-  // ReputationStorage configured).
   getServiceReputation(serviceId: Hex): Promise<ServiceReputation | null>;
-
-  // Per-paymentId reputation record. Two flavors of null:
-  //   - ReputationStorage not configured (returns null without an RPC call).
-  //   - Record absent: the contract returns a zero-init struct for an
-  //     unknown paymentId; the reader detects `paymentId == 0` and returns
-  //     null so the caller doesn't have to disambiguate.
-  // Use the `fulfillmentSeconds` / `outcome` fields to surface wall-clock
-  // turnaround and provider-attested status on activity rows.
   getReputationRecord(paymentId: bigint): Promise<ReputationRecord | null>;
+}
 
-  // Canonical live agentWallet from the canonical IdentityRegistry.
-  // PaymentRouter resolves payees through this same getter; the audit
-  // refactor removed ProviderRegistry's `walletAddress` field, making this
-  // the sole source of a provider's payee wallet. Returns address(0) when
-  // the agent has no wallet set — callers treat that as "no payee
-  // currently". NOTE: the canonical registry never auto-sets agentWallet,
-  // so buyer agents minted via AgentIndex.registerWithSig read as
-  // address(0) here; callers must tolerate 0 for buyers.
+export interface ProviderDiscoveryReader extends ProviderRegistryReader {
+  getAgentURI(agentId: bigint): Promise<string>;
   getAgentWallet(agentId: bigint): Promise<Hex>;
+}
 
-  // Cumulative refunded amount (atomic USDC) for one paymentId from
-  // PaymentRouter.refundedAmount. Returns 0n for both unknown and
-  // settled-but-unrefunded payments — the gateway disambiguates against
-  // its own challenge row.
-  getPaymentRefundedAmount(paymentId: bigint): Promise<bigint>;
+export interface FeedbackWriter {
+  prepareFeedback(input: FeedbackInput): Promise<PreparedFeedbackTransaction>;
+  submitPreparedFeedback(
+    prepared: PreparedFeedbackTransaction,
+    input: FeedbackInput,
+    onBroadcast?: BroadcastObserver,
+  ): Promise<FeedbackResult>;
+  getFeedbackByTransaction(
+    transactionHash: Hex,
+    input: FeedbackInput,
+  ): Promise<FeedbackResult | null>;
+  getFacilitatorTransactionCount(): Promise<bigint>;
+  revokeFeedback(
+    agentId: bigint,
+    feedbackIndex: bigint,
+    onBroadcast?: BroadcastObserver,
+  ): Promise<FeedbackResult>;
+}
 
-  // Full on-chain PaymentRecord from PaymentRouter.getPayment. Null for
-  // unknown paymentIds (zero-init struct detected via providerAgentId == 0).
-  // The reputation mirror uses this as the authoritative provider lookup.
-  getPaymentRecord(paymentId: bigint): Promise<PaymentRouterRecord | null>;
-
-  // ── Canonical ERC-8004 ReputationRegistry (feedback mirror) ────────────
-  // All three throw when REPUTATION_REGISTRY_ADDRESS is unconfigured — the
-  // mirror module gates on config before calling, so an unconfigured
-  // gateway never reaches these.
-
-  // Post public feedback from the facilitator wallet (the ERC-8004
-  // "client"). Reverts on-chain if the facilitator is the agent's
-  // owner/operator/approved/agentWallet (spec arms-length rule).
-  giveFeedback(input: FeedbackInput): Promise<FeedbackResult>;
-
-  // Soft-revoke one of the facilitator's own feedback entries. Reverts
-  // with "no such feedback" / "already revoked" — revision flows call this
-  // best-effort and swallow those.
-  revokeFeedback(agentId: bigint, feedbackIndex: bigint): Promise<FeedbackResult>;
-
-  // Last (1-based) feedback index THE FACILITATOR WALLET has posted for
-  // this agent on the canonical ReputationRegistry; 0n = none yet. The
-  // clientAddress is implicitly the reader's own facilitator account —
-  // the only client identity the gateway writes feedback under.
-  getFeedbackLastIndex(agentId: bigint): Promise<bigint>;
-
-  /**
-   * Pull `PaymentRouter.PaymentSettled` event logs in a block range. Used
-   * by the chain-events indexer to mirror on-chain settlements into the
-   * gateway DB so /activity reflects all transactions, not just the ones
-   * this gateway issued. Block range inclusive on both ends.
-   *
-   * Returns the decoded event payloads plus per-log positional fields
-   * (blockNumber, transactionHash, blockTimestamp) so the indexer can
-   * upsert directly without re-fetching per-tx context.
-   */
+export interface ChainEventReader {
   getPaymentSettledEvents(
     fromBlock: bigint,
     toBlock: bigint,
   ): Promise<Array<PaymentSettledEventLog>>;
 }
+
+// The composition root supplies one object implementing every capability;
+// individual subsystems depend on the narrow interfaces above.
+export interface ChainReader
+  extends ProviderRegistryReader,
+    IdentityReader,
+    PaymentChainGateway,
+    ConfirmationRelayer,
+    ChainStatusReader,
+    ReputationReader,
+    FeedbackWriter,
+    ChainEventReader {}
 
 /**
  * One decoded `PaymentSettled` event with the chain-context fields the
@@ -433,7 +331,7 @@ export interface PaymentSettledEventLog extends PaymentSettledEvent {
  * the caller can fetch the registration file / Agent Card.
  */
 export async function fetchOnChainProviders(
-  reader: ChainReader,
+  reader: ProviderDiscoveryReader,
   whitelist: bigint[],
 ): Promise<OnChainProvider[]> {
   const count = await reader.getProviderCount();

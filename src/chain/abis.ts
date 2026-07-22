@@ -1,3 +1,5 @@
+import { sanctionsErrorAbi } from "./sanctionsErrors.js";
+
 // Contract ABI fragments — single source of truth for the gateway.
 // Mirrors the on-chain contracts in the `daski` repo.
 
@@ -5,10 +7,17 @@
 //
 // Daski no longer deploys an identity registry of its own — agents live in
 // the CANONICAL ERC-8004 IdentityRegistry (0x8004A… per chain). The
-// canonical surface has no reverse lookup and no gasless registration;
+// canonical surface has no reverse lookup or delegated registration;
 // those gaps are filled by the Daski AgentIndex (agentIndexAbi below).
 
 export const identityRegistryAbi = [
+  {
+    type: "function",
+    name: "ownerOf",
+    inputs: [{ name: "tokenId", type: "uint256" }],
+    outputs: [{ name: "", type: "address" }],
+    stateMutability: "view",
+  },
   {
     type: "function",
     name: "tokenURI",
@@ -50,7 +59,7 @@ export const identityRegistryAbi = [
 // Fills the two gaps the canonical registry leaves open: a VERIFIED
 // wallet → agentId reverse lookup (`resolve`, re-checked against the
 // canonical registry on every read; stale bindings self-heal to 0) and
-// gasless onboarding (`registerWithSig` mints on the canonical registry,
+// delegated onboarding (`registerWithSig` mints on the canonical registry,
 // transfers the NFT to the wallet, records the binding — one tx).
 
 export const agentIndexAbi = [
@@ -66,7 +75,7 @@ export const agentIndexAbi = [
   },
   {
     // Per-wallet nonce for registerWithSig. Buyer reads this when building
-    // the EIP-712 RegisterAgent typed-data; bumps each successful relay.
+    // the EIP-712 RegisterAgent typed-data; bumps after each registration.
     type: "function",
     name: "registrationNonce",
     inputs: [{ name: "wallet", type: "address" }],
@@ -74,9 +83,10 @@ export const agentIndexAbi = [
     stateMutability: "view",
   },
   {
-    // Gasless registration: the buyer signs an EIP-712 RegisterAgent struct
-    // off-chain (domain: name "Daski AgentIndex", verifyingContract = the
-    // AgentIndex proxy), the gateway facilitator submits it. The AgentIndex
+    // Delegated registration: the buyer signs an EIP-712 RegisterAgent
+    // struct off-chain (domain: name "Daski AgentIndex", verifyingContract
+    // = the AgentIndex proxy). The buyer can submit it directly, or the
+    // payment adapter can include it in an atomic purchase. The AgentIndex
     // mints on the canonical registry, transfers the NFT to `wallet`, and
     // records the wallet → agentId binding.
     type: "function",
@@ -166,9 +176,8 @@ export const paymentRouterAbi = [
   {
     // Full PaymentRecord for one paymentId — the authoritative on-chain
     // source of (buyer, provider, service) for a settled payment. Unknown
-    // paymentIds return a zero-init struct (providerAgentId == 0); the
-    // reader maps that to null. The canonical-feedback mirror reads this
-    // to resolve which provider to post ERC-8004 feedback against.
+    // paymentIds revert. The canonical-feedback mirror reads this to resolve
+    // both the provider and whether feedback is reputation-eligible.
     type: "function",
     name: "getPayment",
     inputs: [{ name: "paymentId", type: "uint256" }],
@@ -183,8 +192,11 @@ export const paymentRouterAbi = [
           { name: "token", type: "address" },
           { name: "amount", type: "uint256" },
           { name: "cachedBuyerWallet", type: "address" },
+          { name: "cachedProviderOwner", type: "address" },
+          { name: "cachedProviderWallet", type: "address" },
           { name: "serviceRef", type: "bytes32" },
           { name: "paidAt", type: "uint256" },
+          { name: "reputationEligible", type: "bool" },
         ],
       },
     ],
@@ -211,69 +223,6 @@ export const paymentRouterAbi = [
   },
 ] as const;
 
-// ── Daski ServiceRegistry ───────────────────────────────────────────────
-//
-// Per-provider service catalog introduced in the service-identity refactor.
-// `serviceId = keccak256(abi.encode(uint256 providerAgentId, string serviceSlug, string version))`
-// — matches the contract's `_computeServiceId` (standard ABI encoding, not
-// packed, since the audit refactor). Gateway computes it
-// off-chain (cheap, deterministic) and PaymentRouter.settle validates that
-// the service belongs to providerAgentId and is active.
-//
-// `serviceSlug` is the on-chain service identifier (e.g.
-// "domain-management"). It is NOT an A2A skill id — one service maps
-// to many skills via the off-chain serviceURI JSON. Renamed from
-// `skillId` in the audit refactor (2026-05-12 deploy).
-export const serviceRegistryAbi = [
-  {
-    type: "function",
-    name: "getService",
-    inputs: [{ name: "serviceId", type: "bytes32" }],
-    outputs: [
-      {
-        name: "",
-        type: "tuple",
-        components: [
-          { name: "providerAgentId", type: "uint256" },
-          { name: "serviceId", type: "bytes32" },
-          { name: "serviceSlug", type: "string" },
-          { name: "version", type: "string" },
-          { name: "serviceURI", type: "string" },
-          { name: "serviceWallet", type: "address" },
-          { name: "createdAt", type: "uint64" },
-          { name: "active", type: "bool" },
-        ],
-      },
-    ],
-    stateMutability: "view",
-  },
-  {
-    type: "function",
-    name: "isActive",
-    inputs: [{ name: "serviceId", type: "bytes32" }],
-    outputs: [{ name: "", type: "bool" }],
-    stateMutability: "view",
-  },
-  {
-    type: "function",
-    name: "exists",
-    inputs: [{ name: "serviceId", type: "bytes32" }],
-    outputs: [{ name: "", type: "bool" }],
-    stateMutability: "view",
-  },
-  {
-    type: "function",
-    name: "computeServiceId",
-    inputs: [
-      { name: "providerAgentId", type: "uint256" },
-      { name: "serviceSlug", type: "string" },
-      { name: "version", type: "string" },
-    ],
-    outputs: [{ name: "", type: "bytes32" }],
-    stateMutability: "pure",
-  },
-] as const;
-
 // ── Daski ReputationStorage ─────────────────────────────────────────────
 //
 // EAS schema resolver that maintains aggregate counters per
@@ -293,6 +242,7 @@ export const reputationStorageAbi = [
       { name: "canceled", type: "uint256" },
       { name: "confirmed", type: "uint256" },
       { name: "notConfirmed_", type: "uint256" },
+      { name: "transactions", type: "uint256" },
     ],
     stateMutability: "view",
   },
@@ -321,6 +271,7 @@ export const reputationStorageAbi = [
       { name: "confirmed", type: "uint256" },
       { name: "notConfirmed_", type: "uint256" },
       { name: "totalRefunded", type: "uint256" },
+      { name: "transactions", type: "uint256" },
     ],
     stateMutability: "view",
   },
@@ -350,6 +301,8 @@ export const reputationStorageAbi = [
           { name: "outcomeTimestamp", type: "uint256" },
           { name: "confirmationTimestamp", type: "uint256" },
           { name: "outcomeRecorded", type: "bool" },
+          { name: "currentConfirmationUid", type: "bytes32" },
+          { name: "reputationEligible", type: "bool" },
         ],
       },
     ],
@@ -369,6 +322,23 @@ export const reputationStorageAbi = [
 // what revokeFeedback needs for revisions.
 
 export const reputationRegistryAbi = [
+  {
+    type: "event",
+    name: "NewFeedback",
+    inputs: [
+      { name: "agentId", type: "uint256", indexed: true },
+      { name: "clientAddress", type: "address", indexed: true },
+      { name: "feedbackIndex", type: "uint64", indexed: false },
+      { name: "value", type: "int128", indexed: false },
+      { name: "valueDecimals", type: "uint8", indexed: false },
+      { name: "indexedTag1", type: "string", indexed: true },
+      { name: "tag1", type: "string", indexed: false },
+      { name: "tag2", type: "string", indexed: false },
+      { name: "endpoint", type: "string", indexed: false },
+      { name: "feedbackURI", type: "string", indexed: false },
+      { name: "feedbackHash", type: "bytes32", indexed: false },
+    ],
+  },
   {
     type: "function",
     name: "giveFeedback",
@@ -482,31 +452,6 @@ export const x402AdapterAbi = [
   },
 ] as const;
 
-// ── DirectTransferAdapter (external-facilitator rail) ───────────────────
-//
-// Attribution entry point for payments settled by an EXTERNAL x402
-// facilitator (CDP) as bare EIP-3009 transfers into the router. Gateway-
-// callable only (attributor whitelist); the router emits PaymentSettled
-// in the same tx, exactly like the X402Adapter path.
-
-export const directTransferAdapterAbi = [
-  {
-    type: "function",
-    name: "attribute",
-    inputs: [
-      { name: "token", type: "address" },
-      { name: "amount", type: "uint256" },
-      { name: "serviceRef", type: "bytes32" },
-      { name: "providerAgentId", type: "uint256" },
-      { name: "serviceId", type: "bytes32" },
-      { name: "from", type: "address" },
-      { name: "authNonce", type: "bytes32" },
-    ],
-    outputs: [{ name: "", type: "uint256" }],
-    stateMutability: "nonpayable",
-  },
-] as const;
-
 // ── EAS (subset the gateway uses) ───────────────────────────────────────
 //
 // The gateway acts as the relayer for buyer confirmations: it receives a
@@ -591,6 +536,7 @@ export const usdcAbi = [
 // fallback. Keep this list narrow — only errors actually throwable along
 // the gateway's on-chain paths.
 export const knownErrorAbis = [
+  ...sanctionsErrorAbi,
   // OpenZeppelin ERC721 v5 — the canonical IdentityRegistry mints via
   // _safeMint and AgentIndex.registerWithSig transfers the NFT onward, so
   // the receiver/sender errors are reachable through registerWithSig.

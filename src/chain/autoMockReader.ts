@@ -17,25 +17,23 @@
  */
 import type { Hex } from "../types.js";
 import type {
-  BuyerReputation,
   ChainReader,
   ConfirmationDelegationInput,
   ConfirmationResult,
-  DirectAttributionInput,
   FeedbackInput,
   FeedbackResult,
+  PreparedFeedbackTransaction,
   PaymentRouterRecord,
   PaymentSettledEvent,
   PaymentSettledEventLog,
   ProviderReputation,
-  RegisterBySigInput,
-  RegisterBySigResult,
   ReputationRecord,
   ServiceReputation,
   SettleWithRegistrationInput,
   SettleWithRegistrationResult,
   SettlementInput,
   SettlementResult,
+  BroadcastObserver,
 } from "./reader.js";
 
 const ZERO_HASH = ("0x" + "00".repeat(32)) as Hex;
@@ -86,6 +84,7 @@ export class AutoMockChainReader implements ChainReader {
   private confirmationCount = 0n;
   private blockNumber = 1n;
   private usedAuthNonces = new Set<string>();
+  private settlementResults = new Map<string, SettlementResult>();
   private agentByWallet = new Map<string, bigint>();
   private readonly defaultBuyerAgentId: bigint;
 
@@ -147,8 +146,16 @@ export class AutoMockChainReader implements ChainReader {
     return ZERO_ADDR;
   }
 
+  async getAgentOwner(agentId: bigint): Promise<Hex> {
+    return this.getAgentWallet(agentId);
+  }
+
   async getRegistrationNonce(_wallet: Hex): Promise<bigint> {
     return 0n;
+  }
+
+  async verifySanctionsReadiness(): Promise<boolean> {
+    return true;
   }
 
   async authorizationUsed(authorizer: Hex, nonce: Hex): Promise<boolean> {
@@ -173,7 +180,10 @@ export class AutoMockChainReader implements ChainReader {
     return id;
   }
 
-  async settlePayment(input: SettlementInput): Promise<SettlementResult> {
+  async settlePayment(
+    input: SettlementInput,
+    onBroadcast?: BroadcastObserver,
+  ): Promise<SettlementResult> {
     const key = `${input.from.toLowerCase()}:${input.nonce.toLowerCase()}`;
     if (this.usedAuthNonces.has(key)) {
       throw new Error("mock settle: authorization nonce already used");
@@ -196,17 +206,21 @@ export class AutoMockChainReader implements ChainReader {
     };
     // Payment tx hashes encode paymentId directly so the provider's mock
     // paymentVerifier can recover it via `BigInt(transactionHash)`.
-    return {
+    const result = {
       transactionHash: txHashForPayment(paymentId),
       event,
     };
+    this.settlementResults.set(result.transactionHash.toLowerCase(), result);
+    await onBroadcast?.(result.transactionHash);
+    return result;
   }
 
   async settleWithRegistration(
     input: SettleWithRegistrationInput,
+    onBroadcast?: BroadcastObserver,
   ): Promise<SettleWithRegistrationResult> {
     const existed = this.agentByWallet.has(input.from.toLowerCase());
-    const result = await this.settlePayment(input);
+    const result = await this.settlePayment(input, onBroadcast);
     return {
       transactionHash: result.transactionHash,
       event: result.event,
@@ -215,57 +229,30 @@ export class AutoMockChainReader implements ChainReader {
     };
   }
 
-  async attributeDirectTransfer(
-    input: DirectAttributionInput,
+  async getSettlementByTransaction(
+    transactionHash: Hex,
+    serviceRef: Hex,
   ): Promise<SettlementResult> {
-    // Mirror the on-chain idempotency surface: one attribution per
-    // serviceRef. (The auth nonce is consumed by the EXTERNAL facilitator
-    // in production; the mock has no external settle step to track, so
-    // serviceRef is the useful replay key here.)
-    const key = `attr:${input.serviceRef.toLowerCase()}`;
-    if (this.usedAuthNonces.has(key)) {
-      throw new Error("mock attribute: serviceRef used");
+    const result = this.settlementResults.get(transactionHash.toLowerCase());
+    if (!result || result.event.serviceRef.toLowerCase() !== serviceRef.toLowerCase()) {
+      throw new Error("mock settlement transaction not found");
     }
-    this.usedAuthNonces.add(key);
-
-    const buyerAgentId = this.rememberBuyer(input.from);
-    const paymentId = this.nextPaymentId++;
-    const commission = (input.amount * 5n) / 100n;
-    const event: PaymentSettledEvent = {
-      paymentId,
-      serviceRef: input.serviceRef,
-      serviceId: input.serviceId,
-      buyerAgentId,
-      providerAgentId: input.providerAgentId,
-      token: this.opts.tokenAddress.toLowerCase() as Hex,
-      totalAmount: input.amount,
-      providerAmount: input.amount - commission,
-      commission,
-    };
-    return {
-      transactionHash: txHashForPayment(paymentId),
-      event,
-    };
-  }
-
-  async registerBuyer(input: RegisterBySigInput): Promise<RegisterBySigResult> {
-    const agentId = this.rememberBuyer(input.agentWallet);
-    return {
-      agentId,
-      transactionHash: deterministicHex("r", agentId),
-    };
+    return result;
   }
 
   // ── Buyer confirmation (delegated EAS) ──────────────────────────────
 
   async submitBuyerConfirmation(
     _input: ConfirmationDelegationInput,
+    onBroadcast?: BroadcastObserver,
   ): Promise<ConfirmationResult> {
     this.confirmationCount++;
-    return {
+    const result = {
       transactionHash: deterministicHex("c", this.confirmationCount),
       attestationUid: deterministicHex("a", this.confirmationCount),
     };
+    await onBroadcast?.(result.transactionHash);
+    return result;
   }
 
   async getEasAttesterNonce(_attester: Hex): Promise<bigint> {
@@ -290,12 +277,6 @@ export class AutoMockChainReader implements ChainReader {
       confirmed: 0n,
       notConfirmed: 0n,
     };
-  }
-
-  async getBuyerReputation(
-    _agentId: bigint,
-  ): Promise<BuyerReputation | null> {
-    return { transactions: 0n, confirmed: 0n, notConfirmed: 0n };
   }
 
   async getServiceReputation(
@@ -331,6 +312,7 @@ export class AutoMockChainReader implements ChainReader {
       outcomeTimestamp: BigInt(Math.floor(Date.now() / 1000)),
       confirmationTimestamp: 0n,
       outcomeRecorded: true,
+      reputationEligible: true,
     };
   }
 
@@ -355,8 +337,11 @@ export class AutoMockChainReader implements ChainReader {
       token: this.opts.tokenAddress.toLowerCase() as Hex,
       amount: 0n,
       cachedBuyerWallet: ZERO_ADDR,
+      cachedProviderOwner: this.opts.providerWalletAddress,
+      cachedProviderWallet: this.opts.providerWalletAddress,
       serviceRef: ZERO_HASH,
       paidAt: BigInt(Math.floor(Date.now() / 1000)),
+      reputationEligible: true,
     };
   }
 
@@ -369,23 +354,52 @@ export class AutoMockChainReader implements ChainReader {
   public feedbacks: FeedbackInput[] = [];
   private feedbackIndexByAgent = new Map<string, bigint>();
 
-  async giveFeedback(input: FeedbackInput): Promise<FeedbackResult> {
+  async prepareFeedback(
+    _input: FeedbackInput,
+  ): Promise<PreparedFeedbackTransaction> {
+    const nonce = BigInt(this.feedbacks.length);
+    return {
+      nonce,
+      transactionHash: deterministicHex("f", nonce + 1n),
+      serializedTransaction: deterministicHex("e", nonce + 1n),
+    };
+  }
+
+  async submitPreparedFeedback(
+    prepared: PreparedFeedbackTransaction,
+    input: FeedbackInput,
+    onBroadcast?: import("./reader.js").BroadcastObserver,
+  ): Promise<FeedbackResult> {
     this.feedbacks.push(input);
     const key = input.agentId.toString();
     const next = (this.feedbackIndexByAgent.get(key) ?? 0n) + 1n;
     this.feedbackIndexByAgent.set(key, next);
-    return { transactionHash: deterministicHex("f", next) };
+    await onBroadcast?.(prepared.transactionHash);
+    return {
+      transactionHash: prepared.transactionHash,
+      feedbackIndex: next,
+    };
+  }
+
+  async getFeedbackByTransaction(
+    _transactionHash: Hex,
+    _input: FeedbackInput,
+  ): Promise<FeedbackResult | null> {
+    return null;
+  }
+
+  async getFacilitatorTransactionCount(): Promise<bigint> {
+    return BigInt(this.feedbacks.length);
   }
 
   async revokeFeedback(
     _agentId: bigint,
     feedbackIndex: bigint,
+    onBroadcast?: BroadcastObserver,
   ): Promise<FeedbackResult> {
-    return { transactionHash: deterministicHex("v", feedbackIndex) };
-  }
-
-  async getFeedbackLastIndex(agentId: bigint): Promise<bigint> {
-    return this.feedbackIndexByAgent.get(agentId.toString()) ?? 0n;
+    const result = { transactionHash: deterministicHex("v", feedbackIndex) };
+    await onBroadcast?.(result.transactionHash);
+    return result;
   }
 
   async getPaymentSettledEvents(

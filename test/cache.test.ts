@@ -12,7 +12,8 @@ import { DASKI_A2A_EXTENSION_URI } from "../src/config.js";
 
 const WALLET_A = "0x00000000000000000000000000000000000000aa" as Hex;
 const WALLET_B = "0x00000000000000000000000000000000000000bb" as Hex;
-const AGENT_URI = "http://127.0.0.1:9/agent-cards/1.json";
+const AGENT_URI = "http://127.0.0.1:9/registrations/1.json";
+const CARD_URI = "http://127.0.0.1:9/agent-cards/1.json";
 
 const quietLogger = { log: () => {}, warn: () => {}, error: () => {} };
 
@@ -26,20 +27,18 @@ function jsonResponse(body: unknown, status = 200): Response {
 function agentCard(name: string): Record<string, unknown> {
   return {
     name,
-    legalName: "Example Provider, LLC",
-    termsUrl: "https://provider.example/terms",
-    privacyUrl: "https://provider.example/privacy",
-    url: "http://127.0.0.1:9/a2a",
+    supportedInterfaces: [
+      {
+        url: "http://127.0.0.1:9/a2a",
+        protocolBinding: "JSONRPC",
+        protocolVersion: "1.0",
+      },
+    ],
     skills: [
       {
         id: "register-domain",
         name: "Register Domain",
         description: "d",
-        metadata: {
-          [DASKI_A2A_EXTENSION_URI]: {
-            fulfillmentMode: "automated",
-          },
-        },
       },
     ],
     extensions: {
@@ -47,6 +46,12 @@ function agentCard(name: string): Record<string, unknown> {
         categoryFamily: "domains-web",
         serviceType: "domain-management",
         jurisdictions: ["global"],
+        skills: {
+          "register-domain": {
+            fulfillmentMode: "automated",
+            serviceSlug: "domain-management",
+          },
+        },
       },
     },
   };
@@ -56,6 +61,7 @@ interface Harness {
   cache: DiscoveryCache;
   chain: MockChainReader;
   fetchFn: ReturnType<typeof vi.fn>;
+  maxActiveCardFetches(): number;
   /** Flip to make every subsequent card fetch 500. */
   setFailing(failing: boolean): void;
 }
@@ -63,6 +69,10 @@ interface Harness {
 function buildHarness(opts?: {
   maxCardStalenessSeconds?: number;
   refreshIntervalSeconds?: number;
+  maxA2AEntries?: number;
+  serviceCount?: number;
+  fetchConcurrency?: number;
+  cardDelayMs?: number;
 }): Harness {
   const chain = new MockChainReader();
   chain.addProvider(1n, {
@@ -74,17 +84,38 @@ function buildHarness(opts?: {
   });
 
   let failing = false;
-  const fetchFn = vi.fn(async (_url: string) =>
-    failing
-      ? jsonResponse({ error: "warming up" }, 500)
-      : jsonResponse(agentCard("Domains")),
-  );
+  let activeCardFetches = 0;
+  let maxActiveCardFetches = 0;
+  const fetchFn = vi.fn(async (url: string) => {
+    if (failing) return jsonResponse({ error: "warming up" }, 500);
+    if (url === AGENT_URI) {
+      return jsonResponse({
+        name: "Example Provider",
+        legalName: "Example Provider, LLC",
+        termsUrl: "https://provider.example/terms",
+        privacyUrl: "https://provider.example/privacy",
+        services: Array.from({ length: opts?.serviceCount ?? 1 }, () => ({
+          name: "A2A",
+          endpoint: CARD_URI,
+        })),
+      });
+    }
+    activeCardFetches += 1;
+    maxActiveCardFetches = Math.max(maxActiveCardFetches, activeCardFetches);
+    if (opts?.cardDelayMs) {
+      await new Promise((resolve) => setTimeout(resolve, opts.cardDelayMs));
+    }
+    activeCardFetches -= 1;
+    return jsonResponse(agentCard("Domains"));
+  });
 
   const cache = new DiscoveryCache({
     reader: chain,
     whitelist: [1n],
     refreshIntervalSeconds: opts?.refreshIntervalSeconds ?? 60,
     maxCardStalenessSeconds: opts?.maxCardStalenessSeconds ?? 3600,
+    maxA2AEntries: opts?.maxA2AEntries,
+    fetchConcurrency: opts?.fetchConcurrency,
     fetch: fetchFn,
     logger: quietLogger,
   });
@@ -93,6 +124,9 @@ function buildHarness(opts?: {
     cache,
     chain,
     fetchFn,
+    maxActiveCardFetches() {
+      return maxActiveCardFetches;
+    },
     setFailing(f: boolean) {
       failing = f;
     },
@@ -119,7 +153,7 @@ describe("DiscoveryCache failure hardening", () => {
     // The card survives the failed tick — this is what keeps purchases
     // working through a provider's deploy warm-up.
     expect(kept.cards).toHaveLength(1);
-    expect((kept.agentCard as { name?: string }).name).toBe("Domains");
+    expect((kept.cards[0]!.agentCard as { name?: string }).name).toBe("Domains");
     // lastFetched still marks the last GOOD fetch, not the failed attempt.
     expect(kept.lastFetched.getTime()).toBe(goodFetchTime);
 
@@ -157,7 +191,6 @@ describe("DiscoveryCache failure hardening", () => {
     // Still present (it IS whitelisted on-chain) but no longer offers a
     // stale card: invisible to search, not purchasable, fetchError set.
     expect(degraded.cards).toEqual([]);
-    expect(degraded.agentCard).toEqual({});
     expect(degraded.providerName).toBeNull();
     expect(degraded.providerLegal).toBeNull();
     expect(degraded.fetchError).toMatch(/HTTP 500/);
@@ -169,9 +202,32 @@ describe("DiscoveryCache failure hardening", () => {
     await h.cache.refresh();
     const placeholder = h.cache.get(1n)!;
     expect(placeholder.cards).toEqual([]);
-    expect(placeholder.agentCard).toEqual({});
     expect(placeholder.fetchError).toMatch(/HTTP 500/);
     expect(placeholder.walletAddress).toBe(WALLET_A);
+  });
+
+  it("rejects registration files with excessive A2A fan-out", async () => {
+    const h = buildHarness({
+      maxA2AEntries: 2,
+      serviceCount: 3,
+    });
+    await h.cache.refresh();
+    const placeholder = h.cache.get(1n)!;
+    expect(placeholder.cards).toEqual([]);
+    expect(placeholder.fetchError).toMatch(/maximum is 2/);
+    expect(h.fetchFn).toHaveBeenCalledTimes(1);
+  });
+
+  it("bounds concurrent A2A card fetches", async () => {
+    const h = buildHarness({
+      maxA2AEntries: 4,
+      serviceCount: 4,
+      fetchConcurrency: 2,
+      cardDelayMs: 10,
+    });
+    await h.cache.refresh();
+    expect(h.cache.get(1n)!.cards).toHaveLength(4);
+    expect(h.maxActiveCardFetches()).toBe(2);
   });
 
   it("fast-retries with backoff while a provider awaits its first card, then settles to the normal interval", async () => {
@@ -198,36 +254,36 @@ describe("DiscoveryCache failure hardening", () => {
     expect(h.fetchFn).toHaveBeenCalledTimes(3);
 
     // Provider finishes warming up; next retry (capped at the interval)
-    // resolves the card.
+    // resolves the registration document and its Agent Card.
     h.setFailing(false);
     await vi.advanceTimersByTimeAsync(60_000);
-    expect(h.fetchFn).toHaveBeenCalledTimes(4);
+    expect(h.fetchFn).toHaveBeenCalledTimes(5);
     expect(h.cache.get(1n)!.cards).toHaveLength(1);
     expect(h.cache.get(1n)!.fetchError).toBeNull();
 
     // With a healthy catalog the loop runs at the normal interval again.
     await vi.advanceTimersByTimeAsync(59_999);
-    expect(h.fetchFn).toHaveBeenCalledTimes(4);
-    await vi.advanceTimersByTimeAsync(1);
     expect(h.fetchFn).toHaveBeenCalledTimes(5);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(h.fetchFn).toHaveBeenCalledTimes(7);
 
     // stop() cancels the loop.
     h.cache.stop();
     await vi.advanceTimersByTimeAsync(300_000);
-    expect(h.fetchFn).toHaveBeenCalledTimes(5);
+    expect(h.fetchFn).toHaveBeenCalledTimes(7);
   });
 
   it("healthy catalogs never see the fast fuse (steady state unchanged)", async () => {
     vi.useFakeTimers();
     const h = buildHarness({ refreshIntervalSeconds: 60 });
     await h.cache.refresh();
-    expect(h.fetchFn).toHaveBeenCalledTimes(1);
+    expect(h.fetchFn).toHaveBeenCalledTimes(2);
 
     h.cache.start();
     await vi.advanceTimersByTimeAsync(59_999);
-    expect(h.fetchFn).toHaveBeenCalledTimes(1);
-    await vi.advanceTimersByTimeAsync(1);
     expect(h.fetchFn).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(h.fetchFn).toHaveBeenCalledTimes(4);
     h.cache.stop();
   });
 });
