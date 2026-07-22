@@ -38,6 +38,12 @@ export function parseProviderQuote(raw: unknown): ParsedProviderQuote {
   if (!isHex32(raw.serviceRef)) {
     return invalid("serviceRef must be a 32-byte hex value");
   }
+  if (
+    raw.trustedRequestCountryHash != null &&
+    !isHex32(raw.trustedRequestCountryHash)
+  ) {
+    return invalid("trustedRequestCountryHash must be null or a 32-byte hex value");
+  }
   if (!isPositiveAtomicAmount(raw.amount)) {
     return invalid("quote amount must be a positive atomic-unit integer");
   }
@@ -80,6 +86,10 @@ export function parseProviderQuote(raw: unknown): ParsedProviderQuote {
       quoteId: raw.quoteId as string,
       serviceRef: raw.serviceRef.toLowerCase() as Hex,
       requestHash: raw.requestHash.toLowerCase() as Hex,
+      trustedRequestCountryHash:
+        raw.trustedRequestCountryHash == null
+          ? null
+          : (String(raw.trustedRequestCountryHash).toLowerCase() as Hex),
       amount: raw.amount,
       token: raw.token.toLowerCase() as Hex,
       chainId: raw.chainId,

@@ -7,6 +7,9 @@ export interface ProviderQuoteCommitment {
   quoteId: string;
   serviceRef: Hex;
   requestHash: Hex;
+  // Hash of edge-attested request-country evidence, or null when the
+  // provider saw none. Part of the signed payload since provider v0.11.0.
+  trustedRequestCountryHash: Hex | null;
   amount: string;
   token: Hex;
   chainId: number;

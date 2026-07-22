@@ -70,7 +70,11 @@ export const agentIndexAbi = [
     type: "function",
     name: "resolve",
     inputs: [{ name: "wallet", type: "address" }],
-    outputs: [{ name: "agentId", type: "uint256" }],
+    // v0.6.0 returns (agentId, found); found=false ⇒ agentId is 0.
+    outputs: [
+      { name: "agentId", type: "uint256" },
+      { name: "found", type: "bool" },
+    ],
     stateMutability: "view",
   },
   {

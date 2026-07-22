@@ -57,6 +57,7 @@ export async function validateProviderQuoteCommitment(
     serviceVersion: quote.serviceVersion,
     skillId: quote.skillId,
     requestHash: quote.requestHash,
+    trustedRequestCountryHash: quote.trustedRequestCountryHash,
     amount: quote.amount,
     token: quote.token,
     chainId: quote.chainId,
