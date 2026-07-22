@@ -439,6 +439,10 @@ export class MockChainReader implements ChainReader {
     this.paymentRecords.set(paymentId.toString(), record);
   }
 
+  clearPaymentRecord(paymentId: bigint): void {
+    this.paymentRecords.delete(paymentId.toString());
+  }
+
   async getPaymentRecord(
     paymentId: bigint,
   ): Promise<PaymentRouterRecord | null> {

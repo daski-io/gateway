@@ -163,6 +163,20 @@ describe("GET /confirm-prep/:paymentId", () => {
         },
       ],
     });
+    // Prep reads the router record to fill the resolver-required recipient.
+    for (const paymentId of [42n, 99n]) gateway.mockChain.setPaymentRecord(paymentId, {
+      buyerAgentId: 7n,
+      providerAgentId: 2n,
+      serviceId: ("0x" + "cd".repeat(32)) as Hex,
+      token: "0x000000000000000000000000000000000000a003" as Hex,
+      amount: 1_000_000n,
+      cachedBuyerWallet: "0x000000000000000000000000000000000000b001" as Hex,
+      cachedProviderOwner: "0x000000000000000000000000000000000000c001" as Hex,
+      cachedProviderWallet: "0x000000000000000000000000000000000000c002" as Hex,
+      serviceRef: ("0x" + "ab".repeat(32)) as Hex,
+      paidAt: BigInt(Math.floor(Date.now() / 1000)),
+      reputationEligible: true,
+    });
   });
 
   afterEach(async () => {
@@ -190,7 +204,8 @@ describe("GET /confirm-prep/:paymentId", () => {
     expect(td.domain.chainId).toBe(84532);
     expect(td.domain.verifyingContract).toBe(gateway.config.easAddress);
     expect(td.message.schema).toBe(gateway.config.easConfirmationSchemaUid);
-    expect(td.message.recipient).toBe("0x0000000000000000000000000000000000000000");
+    // Resolver-required recipient: the payment's cached provider wallet.
+    expect(td.message.recipient).toBe("0x000000000000000000000000000000000000c002");
     expect(td.message.expirationTime).toBe("0");
     // Boolean must be a real JSON boolean — viem's signTypedData rejects
     // the string form "true"/"false" for `bool`-typed fields.

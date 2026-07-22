@@ -29,6 +29,22 @@ describe("POST /confirm/:paymentId", () => {
         },
       ],
     });
+    // The v0.6.0 resolver requires the confirmation recipient to be the
+    // payment's cached provider wallet, so /confirm now reads the router
+    // record before building the attestation.
+    gateway.mockChain.setPaymentRecord(42n, {
+      buyerAgentId: 7n,
+      providerAgentId: 2n,
+      serviceId: ("0x" + "cd".repeat(32)) as Hex,
+      token: "0x000000000000000000000000000000000000a003" as Hex,
+      amount: 1_000_000n,
+      cachedBuyerWallet: BUYER,
+      cachedProviderOwner: "0x000000000000000000000000000000000000c001" as Hex,
+      cachedProviderWallet: "0x000000000000000000000000000000000000c002" as Hex,
+      serviceRef: ("0x" + "ab".repeat(32)) as Hex,
+      paidAt: BigInt(Math.floor(Date.now() / 1000)),
+      reputationEligible: true,
+    });
   });
 
   afterEach(async () => {
