@@ -202,8 +202,10 @@ export function createViemChainReader(opts: ViemReaderOptions): ChainReader {
       // Explicit gas: the default viem path runs eth_estimateGas without a
       // ceiling, which asks the RPC with the block gas limit (400M on Base
       // Sepolia). sepolia.base.org caps per-tx gas at ~5M and rejects the
-      // estimate with "intrinsic gas too high". settle() burns ~150-250k
-      // in practice; 500k leaves headroom without tripping the cap.
+      // estimate with "intrinsic gas too high". The v0.6.0 settle path
+      // (per-party sanctions staticcalls + reputation accounting) exceeds
+      // the old 500k ceiling — verified live: 500k reverts bare, 2M
+      // settles. Matches settleWithRegistration below.
       //
       // Simulate first: this is the only place we have a chance to surface
       // the actual Solidity revert string (e.g. "ERC20: transfer amount
@@ -227,7 +229,7 @@ export function createViemChainReader(opts: ViemReaderOptions): ChainReader {
           ],
           account,
           chain,
-          gas: 500_000n,
+          gas: 2_000_000n,
         });
         settleRequest = sim.request;
       } catch (err) {
