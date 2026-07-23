@@ -20,7 +20,7 @@
 //   - Mint a Daski identity for that wallet (out of band).
 //   - Have a Daski gateway running with at least one whitelisted provider
 //     offering `register-domain`. Set:
-//       export DASKI_GATEWAY_URL=https://gateway-sepolia.daski.xyz
+//       export DASKI_GATEWAY_URL=https://sandbox-gateway.daski.io
 //       export DASKI_SKILL_ID=register-domain    (optional; default below)
 //       export DASKI_DOMAIN=smoke-<unix>.xyz     (optional; default below)
 //
