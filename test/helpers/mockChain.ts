@@ -1,4 +1,5 @@
 import type { PaymentSettledEventLog } from "../../src/chain/reader.js";
+import { FeedbackSubmissionError } from "../../src/chain/feedbackErrors.js";
 import type {
   ChainReader,
   ConfirmationDelegationInput,
@@ -458,7 +459,10 @@ export class MockChainReader implements ChainReader {
   public feedbacks: FeedbackInput[] = [];
   public feedbackRevokes: Array<{ agentId: bigint; feedbackIndex: bigint }> =
     [];
-  private feedbackOutcomes: Array<{ kind: "revert"; reason: string }> = [];
+  private feedbackOutcomes: Array<{
+    kind: "permanent" | "transient";
+    reason: string;
+  }> = [];
   private feedbackRevokeOutcomes: Array<{ kind: "revert"; reason: string }> =
     [];
   private feedbackLastIndex = new Map<string, bigint>();
@@ -466,7 +470,10 @@ export class MockChainReader implements ChainReader {
   private feedbackNonce = 0n;
   private feedbackBroadcastNonce = 0n;
 
-  queueFeedback(outcome: { kind: "revert"; reason: string }): void {
+  queueFeedback(outcome: {
+    kind: "permanent" | "transient";
+    reason: string;
+  }): void {
     this.feedbackOutcomes.push(outcome);
   }
 
@@ -494,6 +501,9 @@ export class MockChainReader implements ChainReader {
   ): Promise<FeedbackResult> {
     this.feedbacks.push(input);
     const outcome = this.feedbackOutcomes.shift();
+    if (outcome?.kind === "permanent") {
+      throw new FeedbackSubmissionError("reverted", outcome.reason);
+    }
     if (outcome) throw new Error(outcome.reason);
     const key = input.agentId.toString();
     const next = (this.feedbackLastIndex.get(key) ?? 0n) + 1n;
