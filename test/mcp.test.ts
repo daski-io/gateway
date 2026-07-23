@@ -306,7 +306,7 @@ describe("hosted MCP — wallet-agnostic surface", () => {
       const read = await client.readResource({ uri: "daski://provider/999" });
       const first = read.contents[0] as { text?: string };
       const parsed = JSON.parse(first.text ?? "{}") as { error?: string };
-      expect(parsed.error).toMatch(/not whitelisted|not in cache/);
+      expect(parsed.error).toMatch(/not currently admitted|not in cache/);
     } finally {
       await transport.close();
     }

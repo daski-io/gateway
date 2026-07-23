@@ -211,6 +211,98 @@ describe("MCP artifact delivery", () => {
     }
   });
 
+  it("accepts a TaskAccess-shaped challenge with no resource binding", async () => {
+    // Provider document challenges are TaskAccessChallenges — authorization
+    // binds (buyerTokenId, taskId, action, nonce, expiry) and carries NO
+    // resource field. Demanding one rejected every real download
+    // (agentic run 260723-163533).
+    const requestedUrl = "https://artifacts.example/requested.pdf";
+    const a2aFetch: typeof fetch = async () =>
+      Response.json(
+        {
+          capabilityChallenge: {
+            authorization: {
+              buyerTokenId: "8360",
+              taskId: "task-document-3",
+              action: "document-download",
+              nonce: `0x${"11".repeat(32)}`,
+              expiry: "1784819678",
+            },
+            eip712TypedData: {
+              primaryType: "TaskAccessAuthorization",
+            },
+          },
+        },
+        { status: 401 },
+      );
+    const gateway = await startTestGateway({
+      a2aFetch,
+      providers: [artifactProvider()],
+    });
+    gateways.push(gateway);
+    const providerA2AUrl = `${gateway.mockProvider.baseUrl}/a2a`;
+    const { client, transport } = await connectClient(gateway.baseUrl);
+    try {
+      const result = await client.callTool({
+        name: "daski_fetch_artifact",
+        arguments: {
+          url: requestedUrl,
+          taskId: "task-document-3",
+          providerA2AUrl,
+        },
+      });
+      const body = parseResult<{
+        requiresSignature?: boolean;
+        authorization?: { taskId?: string };
+      }>(result);
+      expect(body.requiresSignature).toBe(true);
+      expect(body.authorization?.taskId).toBe("task-document-3");
+    } finally {
+      await transport.close();
+    }
+  });
+
+  it("names the bound taskId when the challenge belongs to a different task", async () => {
+    const requestedUrl = "https://artifacts.example/requested.pdf";
+    const a2aFetch: typeof fetch = async () =>
+      Response.json(
+        {
+          capabilityChallenge: {
+            authorization: {
+              taskId: "task-document-minter",
+              action: "document-download",
+            },
+            eip712TypedData: {
+              primaryType: "TaskAccessAuthorization",
+            },
+          },
+        },
+        { status: 401 },
+      );
+    const gateway = await startTestGateway({
+      a2aFetch,
+      providers: [artifactProvider()],
+    });
+    gateways.push(gateway);
+    const providerA2AUrl = `${gateway.mockProvider.baseUrl}/a2a`;
+    const { client, transport } = await connectClient(gateway.baseUrl);
+    try {
+      const result = await client.callTool({
+        name: "daski_fetch_artifact",
+        arguments: {
+          url: requestedUrl,
+          taskId: "task-wrong",
+          providerA2AUrl,
+        },
+      });
+      const body = parseResult<{ code: string; message: string }>(result);
+      expect(body.code).toBe("ARTIFACT_CHALLENGE_MISMATCH");
+      expect(body.message).toContain("task-document-minter");
+    } finally {
+      await transport.close();
+    }
+  });
+
   it("preserves inline FilePart bytes from task status", async () => {
     const bytes = Buffer.from("%PDF-1.7\ninline").toString("base64");
     const gateway = await startTestGateway({

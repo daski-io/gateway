@@ -30,12 +30,18 @@ const SEARCH_SERVICES_INPUT_SCHEMA = z
       .describe("Filter by controlled service type."),
     jurisdiction: z
       .string()
-      .refine(
-        isJurisdiction,
-        "Must be global, an assigned ISO country code, or a recognized subdivision.",
-      )
+      .refine(isJurisdiction, (val) => ({
+        message:
+          `Invalid jurisdiction '${val}'. Use 'global', an ISO 3166-1 country ` +
+          "code ('US'), or an ISO 3166-2 subdivision code ('US-WY'). Plain " +
+          "place names like 'Wyoming' are not accepted.",
+      }))
       .optional()
-      .describe("Filter by availability jurisdiction."),
+      .describe(
+        "Filter by availability jurisdiction — ISO code only: 'global', a " +
+          "country ('US'), or a subdivision ('US-WY' for Wyoming). NOT " +
+          "plain place names like 'Wyoming'.",
+      ),
     fulfillmentMode: z
       .enum(FULFILLMENT_MODES)
       .optional()
@@ -65,7 +71,8 @@ export function registerDiscoveryTool(
         "Find a provider on the Daski marketplace for a real-world service paid in USDC.",
         "",
         "Use this before a purchase when the provider and skill are not known.",
-        "Filter by category, service type, jurisdiction, fulfillment mode, or price.",
+        "Filter by category, service type, jurisdiction (ISO code, e.g. US or",
+        "US-WY — not plain names like 'Wyoming'), fulfillment mode, or price.",
         "Returns provider endpoints, legal terms, skills, pricing, and capability flags.",
         "Next: use daski_buy_service for paid skills or daski_submit_task for free skills.",
       ].join("\n"),

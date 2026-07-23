@@ -114,7 +114,7 @@ export async function runBuyService(
   if (!deps.cache.get(provider.agentId)) {
     return mcpError({
       code: "provider_not_found",
-      message: "provider is not whitelisted",
+      message: "provider is not currently admitted",
     });
   }
   const providerA2AUrl = extractAgentCardUrl(provider.agentCard);

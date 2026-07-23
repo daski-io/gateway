@@ -326,9 +326,10 @@ export interface PaymentSettledEventLog extends PaymentSettledEvent {
 }
 
 /**
- * Iterates the ProviderRegistry and returns whitelisted, active providers.
- * Resolves each provider's ERC-8004 agentURI from the Identity Registry so
- * the caller can fetch the registration file / Agent Card.
+ * Iterates the ProviderRegistry and returns active providers admitted by the
+ * configured whitelist. An empty whitelist admits every active provider.
+ * Resolves each provider's ERC-8004 agentURI from the Identity Registry so the
+ * caller can fetch the registration file / Agent Card.
  */
 export async function fetchOnChainProviders(
   reader: ProviderDiscoveryReader,
@@ -336,6 +337,7 @@ export async function fetchOnChainProviders(
 ): Promise<OnChainProvider[]> {
   const count = await reader.getProviderCount();
   const whitelistSet = new Set(whitelist.map((x) => x.toString()));
+  const restrictToWhitelist = whitelistSet.size > 0;
   const providers: OnChainProvider[] = [];
 
   for (let i = 0n; i < count; i++) {
@@ -343,7 +345,7 @@ export async function fetchOnChainProviders(
     const provider = await reader.getProvider(agentId);
 
     if (!provider.isActive) continue;
-    if (!whitelistSet.has(agentId.toString())) continue;
+    if (restrictToWhitelist && !whitelistSet.has(agentId.toString())) continue;
 
     // Read the canonical wallet from the canonical IdentityRegistry. The
     // audit refactor dropped ProviderRegistry's `walletAddress` field
@@ -366,7 +368,6 @@ export async function fetchOnChainProviders(
       agentURI,
       registrationTime: provider.registrationTime,
       isActive: true,
-      isWhitelisted: true,
     });
   }
 

@@ -48,7 +48,7 @@ export async function runSubmitTask(
       code: "SKILL_ENDPOINT_NOT_CATALOGED",
       message:
         "The providerA2AUrl and skillId pair is not advertised by a " +
-        "currently whitelisted provider. No outbound request was made.",
+        "currently admitted provider. No outbound request was made.",
     });
   }
 

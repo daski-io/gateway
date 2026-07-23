@@ -67,7 +67,7 @@ export async function createQuotedChallenge(
   }
   const provider = deps.cache.get(input.providerAgentId);
   if (!provider) {
-    return fail("provider_not_found", "provider is not whitelisted");
+    return fail("provider_not_found", "provider is not currently admitted");
   }
   const sameWallet =
     input.walletAddress.toLowerCase() === provider.walletAddress.toLowerCase();

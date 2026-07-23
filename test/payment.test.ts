@@ -157,13 +157,13 @@ describe("payment", () => {
     expect(json.error).toContain("does not list skill");
   });
 
-  it("returns 404 when provider is not whitelisted", async () => {
+  it("returns 404 when provider is not currently admitted", async () => {
     const { status, json } = await gateway.purchaseChallenge(999n, {
       buyerTokenId: "5",
       serviceSlug: "domain-management",
     });
     expect(status).toBe(404);
-    expect(json.error).toMatch(/not whitelisted/);
+    expect(json.error).toMatch(/not currently admitted/);
   });
 
   it("returns 422 when pricing is missing", async () => {

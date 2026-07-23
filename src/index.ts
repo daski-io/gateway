@@ -28,13 +28,6 @@ async function main() {
       providerAgentUri,
       defaultBuyerAgentId,
     });
-    // The provider's whitelist gate filters /discover; in mock mode the
-    // operator might forget to set WHITELISTED_AGENT_IDS, in which case
-    // /discover would return empty. Auto-allow the mock provider so the
-    // orchestrated e2e finds it without extra env wiring.
-    if (config.whitelistedAgentIds.length === 0) {
-      config.whitelistedAgentIds.push(providerAgentId);
-    }
     logger.info(
       `daski-gateway CHAIN_MODE=mock — using AutoMockChainReader ` +
         `(provider agentId=${providerAgentId}, agentURI=${providerAgentUri}, ` +
