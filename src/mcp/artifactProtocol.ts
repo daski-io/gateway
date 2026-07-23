@@ -69,16 +69,31 @@ export function challengeResponse(
   artifactUrl: string,
   refreshed: boolean,
 ): McpToolResult {
+  // The provider's document challenge is a TaskAccessChallenge whose
+  // authorization binds (buyerTokenId, taskId, action, nonce, expiry) — it
+  // carries NO resource field, so URL equality can only be enforced when a
+  // challenge actually has one. Requiring it unconditionally rejected every
+  // legitimate download (agentic run 260723-163533: 30+ mismatches across
+  // provably correct URL+taskId pairs). Server-side scoping still holds:
+  // the provider binds the token audience to the minting transaction +
+  // buyer, and document tokens are strictly one-time.
   if (
     challenge.authorization.taskId !== taskId ||
     challenge.authorization.action !== "document-download" ||
-    challenge.authorization.resource !== artifactUrl
+    (challenge.authorization.resource !== undefined &&
+      challenge.authorization.resource !== artifactUrl)
   ) {
+    const boundTask = challenge.authorization.taskId;
     return mcpError({
       code: "ARTIFACT_CHALLENGE_MISMATCH",
       message:
-        "The artifact challenge is not bound to the requested taskId, URL, " +
-        'and action="document-download". Refusing to request a signature.',
+        typeof boundTask === "string" && boundTask !== taskId
+          ? `The artifact challenge for this URL is bound to taskId '${boundTask}' ` +
+            `(the task whose response minted the URL), not '${taskId}'. Re-call ` +
+            "with that taskId — do not pass a contextId, documentId, or another " +
+            "task's id."
+          : "The artifact challenge is not bound to the requested taskId, URL, " +
+            'and action="document-download". Refusing to request a signature.',
     });
   }
   return mcpJson({
@@ -105,7 +120,10 @@ export function validateCapability(
   if (
     capability.authorization.taskId === taskId &&
     capability.authorization.action === "document-download" &&
-    capability.authorization.resource === artifactUrl
+    // TaskAccess-shaped authorizations have no resource binding — enforce
+    // URL equality only when the signed authorization carries one.
+    (capability.authorization.resource === undefined ||
+      capability.authorization.resource === artifactUrl)
   ) {
     return null;
   }

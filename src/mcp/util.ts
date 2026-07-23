@@ -271,7 +271,10 @@ export function checkPhoneAcknowledgement(
       "did (e.g. \"I'll register with phone +48221234567, normalized from " +
       "+48.221234567 — confirm or correct\"). Only after an explicit yes, " +
       "retry this same call with `phoneAcknowledgementToken` added. This " +
-      "token records an acknowledgement, not proof of principal consent.",
+      "token records an acknowledgement, not proof of principal consent. " +
+      "To avoid this roundtrip next time: pre-normalize the phone and have " +
+      "your principal confirm the E.164 form in the SAME message where you " +
+      "collect the contact data, BEFORE the first buy call.",
     details: {
       phones: Object.fromEntries(phones.map(({ field, value }) => [field, value])),
       phoneAcknowledgementToken: expected,
