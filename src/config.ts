@@ -64,6 +64,8 @@ export interface Config extends RuntimeConfig {
   usdcName: string;
   usdcVersion: string;
   facilitatorPrivateKey: Hex;
+  // Empty admits every active ProviderRegistry entry on Base Sepolia.
+  // Base mainnet requires at least one explicitly admitted agentId.
   whitelistedAgentIds: bigint[];
   cacheRefreshIntervalSeconds: number;
   // How long the discovery cache keeps serving a provider's last-known-good
@@ -269,6 +271,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   if (runtime.nodeEnv === "production" && oracleMode === "mock") {
     throw new Error("SANCTIONS_ORACLE_MODE=mock is forbidden in production");
   }
+  const whitelistedAgentIds = parseAgentIds(env.WHITELISTED_AGENT_IDS);
+  if (chainId === 8453 && whitelistedAgentIds.length === 0) {
+    throw new Error(
+      "WHITELISTED_AGENT_IDS must contain at least one agentId on Base mainnet",
+    );
+  }
   return {
     ...runtime,
     port,
@@ -346,7 +354,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       "FACILITATOR_PRIVATE_KEY",
       env.FACILITATOR_PRIVATE_KEY,
     ),
-    whitelistedAgentIds: parseAgentIds(env.WHITELISTED_AGENT_IDS),
+    whitelistedAgentIds,
     cacheRefreshIntervalSeconds: positiveInteger(
       "CACHE_REFRESH_INTERVAL",
       env.CACHE_REFRESH_INTERVAL,

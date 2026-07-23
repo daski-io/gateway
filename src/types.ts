@@ -53,7 +53,6 @@ export interface OnChainProvider {
   agentURI: string;
   registrationTime: bigint;
   isActive: boolean;
-  isWhitelisted: boolean;
 }
 
 /**

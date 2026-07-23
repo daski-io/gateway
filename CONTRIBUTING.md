@@ -1,8 +1,8 @@
 # Contributing
 
-Daski is in invite-only testnet, so we're not yet open to broad contributions.
-This file will be expanded with PR guidelines, style, and testing requirements
-once contributions open up.
+Daski runs an open provider testnet on Base Sepolia, but this repository is not
+yet open to broad code contributions. This file will be expanded with PR
+guidelines, style, and testing requirements once contributions open up.
 
 In the meantime:
 

@@ -133,7 +133,7 @@ export function createDiscoveryRouter(
       res.status(404).json({
         error: {
           code: "PROVIDER_NOT_FOUND",
-          message: "provider is not whitelisted or not in the cache",
+          message: "provider is not currently admitted or not in the cache",
         },
       });
       return;
@@ -143,7 +143,7 @@ export function createDiscoveryRouter(
       res.status(404).json({
         error: {
           code: "PROVIDER_NOT_FOUND",
-          message: "provider is not whitelisted or not in the cache",
+          message: "provider is not currently admitted or not in the cache",
         },
       });
       return;

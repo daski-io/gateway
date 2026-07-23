@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
-import { loadConfig } from "../src/config.js";
+import {
+  BASE_MAINNET_SANCTIONS_ORACLE,
+  loadConfig,
+} from "../src/config.js";
 import { validateProviderLegalReachability } from "../src/legal/onboarding.js";
 import {
   AGENT_AUTHORITY,
@@ -40,6 +43,28 @@ const VALID_CONFIG_ENV: NodeJS.ProcessEnv = {
 };
 
 describe("startup configuration validation", () => {
+  it("opens Base Sepolia admission when the provider whitelist is empty", () => {
+    const config = loadConfig(VALID_CONFIG_ENV);
+    expect(config.whitelistedAgentIds).toEqual([]);
+  });
+
+  it("requires an explicit provider whitelist on Base mainnet", () => {
+    const mainnetEnv = {
+      ...VALID_CONFIG_ENV,
+      CHAIN_ID: "8453",
+      SANCTIONS_ORACLE_ADDRESS: BASE_MAINNET_SANCTIONS_ORACLE,
+      SANCTIONS_ORACLE_MODE: "production",
+    };
+
+    expect(() => loadConfig(mainnetEnv)).toThrow(
+      /WHITELISTED_AGENT_IDS.*Base mainnet/,
+    );
+    expect(
+      loadConfig({ ...mainnetEnv, WHITELISTED_AGENT_IDS: "1" })
+        .whitelistedAgentIds,
+    ).toEqual([1n]);
+  });
+
   it("rejects malformed numeric and path settings", () => {
     expect(() => loadConfig({ ...VALID_CONFIG_ENV, PORT: "NaN" })).toThrow(
       /PORT/,

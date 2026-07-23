@@ -650,7 +650,7 @@ will reflect this.
   retry.
 - `ambiguous_provider` — multiple providers offer the skillId. Pick one
   from the returned list and re-call with explicit `providerTokenId`.
-- `skill_not_found` — no whitelisted provider offers this skill. Call
+- `skill_not_found` — no admitted provider offers this skill. Call
   `daski_search_services` (with or without an `intent` query) to see
   what's available; the user may have asked for something the
   marketplace doesn't carry yet. For full provider details, read the

@@ -577,8 +577,8 @@ export interface PublicActivityRow {
   /** Provider's primary Agent Card name. NOTE: for a multi-service
    *  provider this is the headline/primary card, NOT the specific service
    *  bought — use `serviceName` for the actual offering. Null if the
-   *  provider was deregistered or removed from the whitelist since this
-   *  row landed. */
+   *  provider was deregistered or removed from the admitted catalog since
+   *  this row landed. */
   providerName: string | null;
   /**
    * The specific service this purchase settled against, resolved from the

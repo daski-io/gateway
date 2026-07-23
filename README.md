@@ -47,8 +47,8 @@ cd gateway
 npm install
 cp .env.example .env
 # edit .env — set FACILITATOR_PRIVATE_KEY, AGENT_INDEX_ADDRESS (ships blank;
-# take it from the current deployment), WHITELISTED_AGENT_IDS, and
-# DATABASE_URL at minimum
+# take it from the current deployment), and DATABASE_URL at minimum.
+# Base mainnet also requires WHITELISTED_AGENT_IDS.
 
 # Bring up a local pgvector-enabled Postgres (one-time):
 docker run -d --name daski-gateway-pg -p 5433:5432 \
@@ -71,7 +71,7 @@ for the full list with defaults. The most important ones:
 | `CHAIN_ID` | `8453` for Base, `84532` for Base Sepolia |
 | `BASE_RPC_URL` | RPC endpoint for the configured chain |
 | `FACILITATOR_PRIVATE_KEY` | Signer for x402 settles + delegated EAS attestations. **Secret.** |
-| `WHITELISTED_AGENT_IDS` | Comma-separated ERC-8004 agentIds that discovery is allowed to surface |
+| `WHITELISTED_AGENT_IDS` | Optional comma-separated discovery allowlist. Empty on Base Sepolia admits every active registered provider; Base mainnet requires a nonempty list. |
 | `DATABASE_URL` | Postgres connection string (must have `pgvector` available) |
 | `AGENT_INDEX_ADDRESS` | Daski AgentIndex proxy — verified wallet→agentId resolution + delegated registration. **Required**; changes on every contract redeploy |
 | `SANCTIONS_ORACLE_ADDRESS` | Expected sanctions oracle. Base mainnet is pinned to the official Chainalysis oracle; Base Sepolia may use an explicitly marked mock. |
@@ -92,8 +92,9 @@ for the full list with defaults. The most important ones:
 The .env.example ships with the post-audit Base Sepolia deployment addresses
 for the Daski contracts. Replace them when redeploying.
 
-Before adding an agentId to `WHITELISTED_AGENT_IDS`, run the one-time legal
-metadata and unauthenticated-reachability check against its registration file:
+Providers should run the one-time legal metadata and unauthenticated-reachability
+check before registering on Base Sepolia. Marketplace operators must run it
+before adding a provider to the Base mainnet allowlist:
 
 ```bash
 npm run validate-provider-legal -- https://provider.example/.well-known/agent.json
@@ -152,9 +153,10 @@ on contract redeploys, DB resets) lives in
 
 ## Status
 
-Daski is in invite-only testnet on Base Sepolia. The contracts and the
-gateway move together; expect breaking changes until v1 ships on Base
-mainnet.
+Daski runs an open provider testnet on Base Sepolia. Any active provider in the
+ProviderRegistry is discoverable when the testnet gateway allowlist is empty.
+The contracts and gateway move together; expect breaking changes until v1
+ships on Base mainnet.
 
 ## License
 

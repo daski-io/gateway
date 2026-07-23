@@ -109,7 +109,9 @@ export function createPurchaseRouter(deps: PurchaseDeps): Router {
       sendError(
         res,
         offerResult.ok ? 404 : offerResult.status,
-        offerResult.ok ? "provider is not whitelisted" : offerResult.message,
+        offerResult.ok
+          ? "provider is not currently admitted"
+          : offerResult.message,
       );
       return;
     }

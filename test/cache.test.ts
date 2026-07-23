@@ -67,6 +67,7 @@ interface Harness {
 }
 
 function buildHarness(opts?: {
+  whitelist?: bigint[];
   maxCardStalenessSeconds?: number;
   refreshIntervalSeconds?: number;
   maxA2AEntries?: number;
@@ -111,7 +112,7 @@ function buildHarness(opts?: {
 
   const cache = new DiscoveryCache({
     reader: chain,
-    whitelist: [1n],
+    whitelist: opts?.whitelist ?? [1n],
     refreshIntervalSeconds: opts?.refreshIntervalSeconds ?? 60,
     maxCardStalenessSeconds: opts?.maxCardStalenessSeconds ?? 3600,
     maxA2AEntries: opts?.maxA2AEntries,
@@ -136,6 +137,14 @@ function buildHarness(opts?: {
 describe("DiscoveryCache failure hardening", () => {
   afterEach(() => {
     vi.useRealTimers();
+  });
+
+  it("admits active providers when the whitelist is empty", async () => {
+    const h = buildHarness({ whitelist: [] });
+    await h.cache.refresh();
+
+    expect(h.cache.get(1n)).toBeDefined();
+    expect(h.cache.get(1n)!.cards).toHaveLength(1);
   });
 
   it("keeps serving the last-known-good card when a refresh fetch fails", async () => {

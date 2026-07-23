@@ -72,7 +72,7 @@ export function registerTaskStatusTool(
         return mcpError({
           code: "PROVIDER_ENDPOINT_NOT_CATALOGED",
           message:
-            "providerA2AUrl is not advertised by a currently whitelisted " +
+            "providerA2AUrl is not advertised by a currently admitted " +
             "provider. No outbound request was made.",
         });
       }

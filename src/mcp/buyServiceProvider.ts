@@ -44,7 +44,7 @@ export function resolveBuyServiceProvider(
       ok: false,
       error: mcpError({
         code: "skill_not_found",
-        message: `no whitelisted provider offers skill '${args.skillId}'`,
+        message: `no admitted provider offers skill '${args.skillId}'`,
       }),
     };
   }

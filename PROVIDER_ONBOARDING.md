@@ -35,17 +35,20 @@ contracting entity and stable public legal-document links:
 ```
 
 All three fields are required and nonempty. Both URLs must be valid HTTPS URLs
-without embedded credentials. A stable privacy-notice anchor is allowed. Before
-whitelisting, the operator MUST run the one-time unauthenticated reachability
-check; missing or invalid metadata prevents discovery, listing, and purchase:
+without embedded credentials. A stable privacy-notice anchor is allowed.
+Providers SHOULD run the one-time unauthenticated reachability check before
+registering on Base Sepolia. Before mainnet allowlisting, the marketplace
+operator MUST run it. Missing or invalid metadata prevents discovery, listing,
+and purchase:
 
 ```bash
 npm run validate-provider-legal -- https://provider.example/.well-known/agent.json
 ```
 
-Daski checks syntax at catalog admission and reachability at onboarding only.
-It does not legal-review, approve, interpret, copy, hash, version, archive,
-compare, or continuously monitor Provider documents.
+Daski checks syntax at catalog admission. Reachability is a one-time provider
+check on the open testnet and an operator onboarding check before mainnet
+allowlisting. Daski does not legal-review, approve, interpret, copy, hash,
+version, archive, compare, or continuously monitor Provider documents.
 
 **Payee wallet is mandatory.** After minting you MUST call
 `setAgentWallet` on the canonical registry (or set a per-service
@@ -59,8 +62,10 @@ wallet → agentId reverse index. Calling `claim(agentId)` on it is
 OPTIONAL for providers — only buyers need a binding there (it is how
 payments are attributed to the paying wallet).
 
-The gateway treats its configured whitelist as the admission gate — your
-`agentId` must be in `WHITELISTED_AGENT_IDS` before discovery picks you up.
+On Base Sepolia, an empty `WHITELISTED_AGENT_IDS` admits every active provider
+in the Daski `ProviderRegistry`; no operator approval is required. A populated
+value restricts discovery to those agentIds. Base mainnet requires a nonempty
+allowlist and refuses to start without one.
 
 The Provider is the sole provider and contracting party for its Services. It
 controls scope, delivery, support, refunds, renewals, legal terms, and privacy

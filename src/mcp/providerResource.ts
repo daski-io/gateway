@@ -53,7 +53,7 @@ export function registerProviderResource(
       const entries = provider ? formatForSkillDiscover([provider], config) : null;
       const value =
         !entries || entries.length === 0
-          ? { error: "provider is not whitelisted or not in cache" }
+          ? { error: "provider is not currently admitted or not in cache" }
           : entries.length === 1
             ? entries[0]
             : entries;

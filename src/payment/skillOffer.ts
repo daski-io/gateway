@@ -122,7 +122,7 @@ export function resolveSkillOffer(
     return {
       ok: false,
       code: "provider_not_found",
-      message: "provider is not whitelisted",
+      message: "provider is not currently admitted",
       status: 404,
     };
   }

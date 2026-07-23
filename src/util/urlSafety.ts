@@ -6,7 +6,7 @@ import { Readable } from "node:stream";
 
 // SSRF guard for outbound fetches. Two failure modes we close:
 //
-//   1) An on-chain `agentURI` (set by a whitelisted-but-malicious provider)
+//   1) An on-chain `agentURI` (set by a malicious admitted provider)
 //      or a caller-supplied `providerA2AUrl` (MCP tool argument) points the
 //      gateway at AWS IMDS, localhost RPC ports, internal services, or
 //      `file:` schemes.
