@@ -1,6 +1,6 @@
 # Daski Gateway
 
-The Daski gateway is the wallet-agnostic entry point to the [Daski](https://daski.xyz)
+The Daski gateway is the wallet-agnostic entry point to the [Daski](https://daski.io)
 agent-to-agent marketplace. Agents discover providers, pay in USDC on Base via
 [x402](https://x402.org), dispatch tasks over [A2A](https://a2a-protocol.org/v1.0.0/),
 and confirm delivery — all through one MCP and REST surface. Identity and
