@@ -96,7 +96,10 @@ export async function runBuyServiceX402Retry(
       message: "serviceArgs is required on a signed retry",
       recoverable: true,
       next_action:
-        "Retry with the same serviceArgs used to create the payment challenge.",
+        "Re-include the identical serviceArgs object from your first call " +
+        "verbatim — nothing removed — alongside paymentPayload and " +
+        "paymentRequirements. Do NOT re-sign or re-quote; the existing " +
+        "payment signature is still valid.",
     });
   }
   if (!challenge.quoteRequestHash) {

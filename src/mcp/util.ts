@@ -272,9 +272,11 @@ export function checkPhoneAcknowledgement(
       "+48.221234567 — confirm or correct\"). Only after an explicit yes, " +
       "retry this same call with `phoneAcknowledgementToken` added. This " +
       "token records an acknowledgement, not proof of principal consent. " +
-      "To avoid this roundtrip next time: pre-normalize the phone and have " +
-      "your principal confirm the E.164 form in the SAME message where you " +
-      "collect the contact data, BEFORE the first buy call.",
+      "To avoid this roundtrip next time: in the upfront data-collection " +
+      "message, ask for the phone in E.164 (no dots/spaces/dashes) and say " +
+      "you will strip any separators and register the stripped value; then " +
+      "if the principal still sends separators, make your VERY NEXT message " +
+      "the normalized echo-confirm, before the first buy call.",
     details: {
       phones: Object.fromEntries(phones.map(({ field, value }) => [field, value])),
       phoneAcknowledgementToken: expected,
