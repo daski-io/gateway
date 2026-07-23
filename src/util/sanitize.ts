@@ -28,7 +28,11 @@ const STRIP_RE = new RegExp(
 const INSTRUCTION_PATTERNS = [
   /\b(?:ignore|disregard|forget|bypass|override)\b[\s\S]{0,80}\b(?:instructions?|prompts?|polic(?:y|ies)|rules?)\b/giu,
   /\b(?:system|developer|assistant)\s+(?:message|prompt|instructions?)\b/giu,
-  /\b(?:reveal|print|return|send|exfiltrate)\b[\s\S]{0,80}\b(?:seed phrase|private key|password|secret|credential|token)\b/giu,
+  // The free gap must not cross a clause boundary: benign policy prose like
+  // "replays return it for 7 days …; recovery is the change-password skill"
+  // pairs a verb and a secret-noun from unrelated clauses and used to
+  // false-positive here, garbling provider text shown to principals.
+  /\b(?:reveal|print|return|send|exfiltrate)\b[^.;:!?]{0,80}\b(?:seed phrase|private key|password|secret|credential|token)\b/giu,
   /<\/?(?:system|developer|assistant|tool)(?:\s[^>]*)?>/giu,
 ];
 
