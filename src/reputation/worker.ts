@@ -1,3 +1,4 @@
+import { FeedbackSubmissionError } from "../chain/feedbackErrors.js";
 import type {
   ChainReader,
   FeedbackInput,
@@ -6,6 +7,7 @@ import type {
 } from "../chain/reader.js";
 import type { Config } from "../config.js";
 import type { Queries, ReputationMirrorRow } from "../db/queries.js";
+import { REPUTATION_MIRROR_MAX_ATTEMPTS } from "../db/reputationQueries.js";
 import type { Hex } from "../types.js";
 import { logErrorWithId } from "../util/errorWrap.js";
 import { logger } from "../util/logger.js";
@@ -138,7 +140,10 @@ export class ReputationMirrorWorker {
           }
           const result = await this.submit(row, feedback);
           if (result.feedbackIndex == null) {
-            throw new Error("NewFeedback event did not include feedbackIndex");
+            throw new FeedbackSubmissionError(
+              "malformed_event",
+              "NewFeedback event did not include feedbackIndex",
+            );
           }
           await this.deps.queries.markReputationMirrorSent({
             paymentId: row.paymentId,
@@ -226,9 +231,8 @@ export class ReputationMirrorWorker {
     if (error instanceof NonceConsumedError) return;
     const message = error instanceof Error ? error.message : String(error);
     const terminal =
-      row.attempts >= 8 ||
-      message.includes("owner cannot self-review") ||
-      message.includes("not reputation eligible");
+      error instanceof FeedbackSubmissionError ||
+      row.attempts >= REPUTATION_MIRROR_MAX_ATTEMPTS;
     await this.deps.queries.markReputationMirrorResult({
       paymentId: row.paymentId,
       status: terminal ? "failed" : "retry",

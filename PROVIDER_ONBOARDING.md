@@ -291,6 +291,13 @@ portable — any ERC-8004 consumer can read it without knowing Daski's
 contracts — and the registry lets you respond on-chain via
 `appendResponse` from the wallet that controls your agent.
 
+No feedback authorization transaction is required. Do not approve the
+gateway facilitator as an IdentityRegistry operator for your agent: the
+canonical ReputationRegistry rejects feedback submitted by the agent owner or
+an approved operator as self-feedback. IdentityRegistry approvals or wallet
+changes, when otherwise needed, must be sent by the agent NFT owner; they are
+not part of Daski's feedback mirror setup.
+
 ---
 
 ## 7. Embedding quality (search ranking)

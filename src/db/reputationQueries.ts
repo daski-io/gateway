@@ -1,6 +1,8 @@
 import type { Hex } from "../types.js";
 import type { Pool } from "./pool.js";
 
+export const REPUTATION_MIRROR_MAX_ATTEMPTS = 8;
+
 export type ReputationMirrorStatus =
   | "queued"
   | "processing"
@@ -126,10 +128,27 @@ export function createReputationQueries(pool: Pool) {
       paymentId?: bigint,
     ): Promise<ReputationMirrorRow | null> {
       const result = await pool.query<ReputationMirrorDbRow>(
-        `WITH candidate AS (
+        `WITH dead_letter AS (
+           UPDATE reputation_mirrors
+              SET status = 'failed',
+                  next_attempt_at = now(),
+                  last_error = COALESCE(
+                    last_error,
+                    'reputation mirror attempt limit reached'
+                  ),
+                  updated_at = now()
+            WHERE attempts >= $2
+              AND (
+                status IN ('queued', 'prepared', 'broadcast', 'retry')
+                OR (status = 'processing'
+                  AND updated_at < now() - interval '2 minutes')
+              )
+         ),
+         candidate AS (
            SELECT payment_id
              FROM reputation_mirrors
             WHERE ($1::bigint IS NULL OR payment_id = $1)
+              AND attempts < $2
               AND (
                 (status IN ('queued', 'prepared', 'broadcast', 'retry')
                   AND next_attempt_at <= now())
@@ -145,9 +164,12 @@ export function createReputationQueries(pool: Pool) {
                 attempts = attempts + 1,
                 updated_at = now()
            FROM candidate
-          WHERE mirror.payment_id = candidate.payment_id
+         WHERE mirror.payment_id = candidate.payment_id
          RETURNING mirror.*`,
-        [paymentId?.toString() ?? null],
+        [
+          paymentId?.toString() ?? null,
+          REPUTATION_MIRROR_MAX_ATTEMPTS,
+        ],
       );
       return result.rows[0] ? mapRow(result.rows[0]) : null;
     },

@@ -1,14 +1,23 @@
 import {
+  BaseError,
+  ContractFunctionRevertedError,
+  ContractFunctionZeroDataError,
   keccak256,
   parseEventLogs,
   type PrivateKeyAccount,
   type PublicClient,
+  type TransactionReceipt,
   type Transport,
   type WalletClient,
 } from "viem";
 import type { base, baseSepolia } from "viem/chains";
 import type { Hex } from "../types.js";
 import { knownErrorAbis, reputationRegistryAbi } from "./abis.js";
+import {
+  encodeFeedbackCalldata,
+  feedbackArgs,
+} from "./feedbackCalldata.js";
+import { FeedbackSubmissionError } from "./feedbackErrors.js";
 import type {
   ChainReader,
   FeedbackInput,
@@ -35,6 +44,17 @@ export interface FeedbackDeps {
   reputationRegistryAddress?: Hex;
 }
 
+function isContractRevert(error: unknown): boolean {
+  if (!(error instanceof BaseError)) return false;
+  return Boolean(
+    error.walk(
+      (cause) =>
+        cause instanceof ContractFunctionRevertedError ||
+        cause instanceof ContractFunctionZeroDataError,
+    ),
+  );
+}
+
 export function createFeedbackMethods(deps: FeedbackDeps): FeedbackMethods {
   const registry = (): Hex => {
     if (!deps.reputationRegistryAddress) {
@@ -48,12 +68,13 @@ export function createFeedbackMethods(deps: FeedbackDeps): FeedbackMethods {
   const resultFromReceipt = async (
     transactionHash: Hex,
     input: FeedbackInput,
+    receipt: TransactionReceipt,
   ): Promise<FeedbackResult> => {
-    const receipt = await deps.publicClient.waitForTransactionReceipt({
-      hash: transactionHash,
-    });
     if (receipt.status !== "success") {
-      throw new Error(`giveFeedback transaction reverted (${transactionHash})`);
+      throw new FeedbackSubmissionError(
+        "reverted",
+        `giveFeedback transaction reverted (${transactionHash})`,
+      );
     }
     const logs = receipt.logs.filter(
       (log) => log.address.toLowerCase() === registry().toLowerCase(),
@@ -76,13 +97,23 @@ export function createFeedbackMethods(deps: FeedbackDeps): FeedbackMethods {
       );
     });
     if (!match) {
-      throw new Error(
-        `NewFeedback event missing from transaction ${transactionHash}`,
+      throw new FeedbackSubmissionError(
+        "succeeded_without_event",
+        `giveFeedback transaction succeeded without NewFeedback event (${transactionHash})`,
+      );
+    }
+    const feedbackIndex = (match as any).args.feedbackIndex as
+      | bigint
+      | undefined;
+    if (feedbackIndex == null) {
+      throw new FeedbackSubmissionError(
+        "malformed_event",
+        `NewFeedback event omitted feedbackIndex (${transactionHash})`,
       );
     }
     return {
       transactionHash,
-      feedbackIndex: (match as any).args.feedbackIndex as bigint,
+      feedbackIndex,
     };
   };
 
@@ -92,22 +123,19 @@ export function createFeedbackMethods(deps: FeedbackDeps): FeedbackMethods {
         address: registry(),
         abi: [...reputationRegistryAbi, ...knownErrorAbis],
         functionName: "giveFeedback",
-        args: [
-          input.agentId,
-          input.value,
-          input.valueDecimals,
-          input.tag1,
-          input.tag2,
-          input.endpoint,
-          input.feedbackURI,
-          input.feedbackHash,
-        ],
+        args: feedbackArgs(input),
         account: deps.account,
         chain: deps.chain,
         gas: 300_000n,
       });
     } catch (error) {
-      throw new Error(`giveFeedback reverted: ${decodeRevertReason(error)}`);
+      if (isContractRevert(error)) {
+        throw new FeedbackSubmissionError(
+          "reverted",
+          `giveFeedback reverted: ${decodeRevertReason(error)}`,
+        );
+      }
+      throw error;
     }
   };
 
@@ -117,8 +145,11 @@ export function createFeedbackMethods(deps: FeedbackDeps): FeedbackMethods {
     ): Promise<PreparedFeedbackTransaction> {
       const simulation = await simulate(input);
       const request = await (deps.walletClient as any).prepareTransactionRequest({
-        ...simulation.request,
         account: deps.account,
+        chain: deps.chain,
+        to: registry(),
+        data: encodeFeedbackCalldata(input),
+        gas: simulation.request.gas,
       });
       const serializedTransaction = (await deps.account.signTransaction(
         request as any,
@@ -142,7 +173,10 @@ export function createFeedbackMethods(deps: FeedbackDeps): FeedbackMethods {
         throw new Error("RPC returned an unexpected feedback transaction hash");
       }
       await onBroadcast?.(hash);
-      return resultFromReceipt(hash, input);
+      const receipt = await deps.publicClient.waitForTransactionReceipt({
+        hash,
+      });
+      return resultFromReceipt(hash, input, receipt);
     },
 
     async getFeedbackByTransaction(
@@ -154,9 +188,12 @@ export function createFeedbackMethods(deps: FeedbackDeps): FeedbackMethods {
           hash: transactionHash,
         });
         if (receipt.status !== "success") {
-          throw new Error(`giveFeedback transaction reverted (${transactionHash})`);
+          throw new FeedbackSubmissionError(
+            "reverted",
+            `giveFeedback transaction reverted (${transactionHash})`,
+          );
         }
-        return resultFromReceipt(transactionHash, input);
+        return resultFromReceipt(transactionHash, input, receipt);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         if (
@@ -211,6 +248,5 @@ export function createFeedbackMethods(deps: FeedbackDeps): FeedbackMethods {
       }
       return { transactionHash: hash };
     },
-
   };
 }

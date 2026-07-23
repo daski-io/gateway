@@ -234,8 +234,8 @@ describe("canonical ReputationRegistry feedback mirror", () => {
     });
     // The spec's arms-length rule is the expected real-world failure.
     gateway.mockChain.queueFeedback({
-      kind: "revert",
-      reason: "giveFeedback reverted: owner cannot self-review",
+      kind: "permanent",
+      reason: "giveFeedback reverted: Self-feedback not allowed",
     });
 
     const res = await postConfirm(gateway, {});
@@ -252,6 +252,87 @@ describe("canonical ReputationRegistry feedback mirror", () => {
     expect(row!.feedbackIndex).toBeNull();
     // One attempt was made; nothing was recorded as posted.
     expect(gateway.mockChain.feedbacks).toHaveLength(1);
+  });
+
+  it("dead-letters a definitive receipt failure without retrying", async () => {
+    gateway.mockChain.setPaymentRecord(
+      PAYMENT_ID,
+      paymentRecord(PROVIDER_AGENT_ID),
+    );
+    gateway.mockChain.queueFeedback({
+      kind: "permanent",
+      reason: "giveFeedback transaction succeeded without NewFeedback event",
+    });
+
+    await gateway.bundle.reputationWorker.enqueue({
+      paymentId: PAYMENT_ID,
+      confirmation: "Confirmed",
+      attestationUid: ATTEST_UID,
+      refUid: null,
+    });
+
+    await vi.waitFor(async () => {
+      const row = await gateway.bundle.queries.getReputationMirror(PAYMENT_ID);
+      expect(row?.status).toBe("failed");
+    });
+    await gateway.bundle.reputationWorker.tick();
+
+    const row = await gateway.bundle.queries.getReputationMirror(PAYMENT_ID);
+    expect(row?.attempts).toBe(1);
+    expect(gateway.mockChain.feedbacks).toHaveLength(1);
+  });
+
+  it("retries transient RPC failures", async () => {
+    gateway.mockChain.setPaymentRecord(
+      PAYMENT_ID,
+      paymentRecord(PROVIDER_AGENT_ID),
+    );
+    gateway.mockChain.queueFeedback({
+      kind: "transient",
+      reason: "RPC request timed out",
+    });
+
+    await gateway.bundle.reputationWorker.enqueue({
+      paymentId: PAYMENT_ID,
+      confirmation: "Confirmed",
+      attestationUid: ATTEST_UID,
+      refUid: null,
+    });
+
+    await vi.waitFor(async () => {
+      const row = await gateway.bundle.queries.getReputationMirror(PAYMENT_ID);
+      expect(row?.status).toBe("retry");
+    });
+    const row = await gateway.bundle.queries.getReputationMirror(PAYMENT_ID);
+    expect(row?.attempts).toBe(1);
+    expect(gateway.mockChain.feedbacks).toHaveLength(1);
+  });
+
+  it("dead-letters rows after the eight-claim attempt cap", async () => {
+    gateway.mockChain.setPaymentRecord(
+      PAYMENT_ID,
+      paymentRecord(PROVIDER_AGENT_ID),
+    );
+    await gateway.bundle.queries.enqueueReputationMirror({
+      paymentId: PAYMENT_ID,
+      confirmation: "Confirmed",
+      attestationUid: ATTEST_UID,
+      refUid: null,
+    });
+    await gateway.bundle.pool.query(
+      `UPDATE reputation_mirrors
+          SET status = 'retry', attempts = 8, next_attempt_at = now()
+        WHERE payment_id = $1`,
+      [PAYMENT_ID.toString()],
+    );
+
+    await gateway.bundle.reputationWorker.tick();
+
+    const row = await gateway.bundle.queries.getReputationMirror(PAYMENT_ID);
+    expect(row?.status).toBe("failed");
+    expect(row?.attempts).toBe(8);
+    expect(row?.lastError).toBe("reputation mirror attempt limit reached");
+    expect(gateway.mockChain.feedbacks).toHaveLength(0);
   });
 
   it("duplicate confirmation (no refUid) does not post a second feedback", async () => {
