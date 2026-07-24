@@ -227,7 +227,11 @@ export async function fetchArtifact(
       return mcpError({
         code: "ARTIFACT_AUTH_FAILED",
         message:
-          "Artifact server required authorization but returned no usable " + "capabilityChallenge.",
+          "Artifact server required authorization but returned no usable " +
+          "capabilityChallenge — the one-time URL was likely already consumed " +
+          "(a redeemed URL answers later requests without a challenge) or has " +
+          "expired. Do NOT retry this URL: mint a fresh link (for formation " +
+          "documents, re-run download-entity-document) and sign the new challenge.",
       });
     }
     if (!res.ok) return artifactErrorResponse(res);

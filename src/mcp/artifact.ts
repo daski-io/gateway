@@ -31,7 +31,8 @@ export function registerArtifactTool(
         "- First call: `{ requiresSignature, eip712TypedData, authorization, capabilityChallenge }`.",
         "- Signed retry: `{ artifact: { mimeType, filename, sizeBytes, sha256 }, delivery }`, capped at 5 MiB and verified against the expected content type, plus the document attached as an MCP embedded resource. `delivery.principalUsable: true` refers to that file; retrieval alone is not delivery.",
         "- If the challenge expired before the retry, the tool returns a fresh challenge. Sign that new typed-data; do not reuse the expired authorization.",
-        "- The challenge is satisfiable ONLY by the buyer wallet that owns the purchase (plus provider-administrator staff tooling). There is no principal-facing browser login for artifact URLs — never hand a raw URL to a principal expecting it to open.",
+        "- The underlying URL is ONE-TIME. Once redeemed — including by a call that dropped mid-transfer — later fetches of the same URL fail with ARTIFACT_AUTH_FAILED and no challenge. Do not retry a consumed URL: mint a fresh one (for formation documents, re-run download-entity-document) and sign its challenge.",
+        "- The challenge is satisfiable ONLY by the buyer wallet that owns the purchase (plus provider-administrator staff tooling). There is no principal-facing browser login for artifact URLs — never hand a raw URL to a principal expecting it to open. If a principal asks for a \"working download link\", say upfront that no clickable link exists and you will fetch the file bytes on their behalf instead.",
       ].join("\n"),
       inputSchema: {
         url: z.string().url().describe("Short-lived URL from a Daski artifact."),
