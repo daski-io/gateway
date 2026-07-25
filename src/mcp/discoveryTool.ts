@@ -58,7 +58,14 @@ const SEARCH_SERVICES_INPUT_SCHEMA = z
       .optional()
       .describe("Maximum providers to return. Default 10."),
   })
-  .strict();
+  // Blind agents reach for `query`. The bare zod text names the offending key
+  // but not the right one, so recovery is a guess; name `intent` in the error
+  // itself. The `keys` array still ships alongside this message.
+  .strict(
+    "daski_search_services has no free-text 'query' parameter — use 'intent' " +
+      "for natural-language search, or 'categoryFamily' / 'serviceType' / " +
+      "'jurisdiction' / 'fulfillmentMode' / 'maxPrice' for structured filters.",
+  );
 
 export function registerDiscoveryTool(
   server: McpServer,
@@ -71,12 +78,17 @@ export function registerDiscoveryTool(
         "Find a provider on the Daski marketplace for a real-world service paid in USDC.",
         "",
         "Use this before a purchase when the provider and skill are not known.",
+        "Free-text search goes in `intent` — there is NO `query` parameter, and",
+        "passing one fails schema validation with 'Unrecognized key(s)'.",
         "Filter by category, service type, jurisdiction (ISO code, e.g. US or",
         "US-WY — not plain names like 'Wyoming'), fulfillment mode, or price.",
-        "`serviceType` must be a canonical catalog value (e.g. `entity-formation`,",
-        "never descriptive guesses like `llc-formation`); when you don't know the",
-        "canonical value, pass `intent` instead and read `serviceType` off the",
-        "returned match — near-misses are returned too.",
+        "`serviceType` accepts only controlled catalog slugs, but supply is",
+        "uneven: a legal slug can still match nothing (e.g. `llc-formation` is",
+        "valid, yet Wyoming LLC supply lists under `entity-formation`). An empty",
+        "`providers` list therefore carries a `hint` naming the sibling service",
+        "types that do have providers — read it rather than re-guessing. When",
+        "unsure, pass `intent` instead and read `serviceType` off the returned",
+        "match — near-misses are returned too.",
         "Returns provider endpoints, legal terms, skills, pricing, and capability flags.",
         "Next: use daski_buy_service for paid skills or daski_submit_task for free skills.",
       ].join("\n"),

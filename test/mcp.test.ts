@@ -670,6 +670,10 @@ describe("hosted MCP — wallet-agnostic surface", () => {
             walletAddress: fresh,
             // buyerTokenId omitted on purpose — orchestrator should look it up.
             serviceArgs: { domain: "atomic.xyz" },
+            // Naming the buyer is the normal path and skips the
+            // BUYER_NAME_ACKNOWLEDGEMENT_REQUIRED gate; this test is about
+            // atomic routing, not naming.
+            name: "Atomic Routing Co",
           },
         }),
       );
@@ -696,10 +700,33 @@ describe("hosted MCP — wallet-agnostic surface", () => {
     }
   });
 
-  it("daski_buy_service atomic: no name → wallet-derived default + how-to-name hint", async () => {
+  it("daski_buy_service atomic: no name → gated, then wallet-derived default + how-to-name hint", async () => {
     const fresh = "0xabcd000000000000000000000000000000aa39aa" as Hex;
     const { client, transport } = await connectClient(gateway.baseUrl);
     try {
+      // The default name is one-shot and irreversible, so an atomic first
+      // call with no `name` is gated before any plan is prepared.
+      const gated = parseResult<{
+        code: string;
+        details: {
+          resolvedDefaultName: string;
+          buyerNameAcknowledgementToken: string;
+        };
+      }>(
+        await client.callTool({
+          name: "daski_buy_service",
+          arguments: {
+            skillId: "register-domain",
+            providerTokenId: "2",
+            serviceSlug: "domain-management",
+            walletAddress: fresh,
+            serviceArgs: { domain: "atomic.xyz" },
+          },
+        }),
+      );
+      expect(gated.code).toBe("BUYER_NAME_ACKNOWLEDGEMENT_REQUIRED");
+      expect(gated.details.resolvedDefaultName).toBe("buyer-aa39aa");
+
       const body = parseResult<{
         atomic: boolean;
         registrationPrep: {
@@ -717,6 +744,8 @@ describe("hosted MCP — wallet-agnostic surface", () => {
             serviceSlug: "domain-management",
             walletAddress: fresh,
             serviceArgs: { domain: "atomic.xyz" },
+            buyerNameAcknowledgementToken:
+              gated.details.buyerNameAcknowledgementToken,
           },
         }),
       );
@@ -1282,6 +1311,9 @@ describe("hosted MCP — wallet-agnostic surface", () => {
             serviceSlug: "domain-management",
             walletAddress: fresh,
             serviceArgs: { domain: "atomic-settle.xyz" },
+            // Naming the buyer is the normal path and skips the
+            // BUYER_NAME_ACKNOWLEDGEMENT_REQUIRED gate.
+            name: "Atomic Settle Co",
           },
         }),
       );

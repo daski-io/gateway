@@ -171,6 +171,24 @@ export function isServiceType(value: unknown): value is ServiceType {
   return typeof value === "string" && SERVICE_TYPES.has(value);
 }
 
+/**
+ * The other service types in the same family. Every taxonomy slug is a valid
+ * filter, but supply is uneven — an agent that reasonably picks
+ * `llc-formation` for "form an LLC" matches nothing while `entity-formation`
+ * carries the supply, so discovery steers with the siblings rather than
+ * implying the value was wrong.
+ */
+export function siblingServiceTypes(serviceType: string): ServiceType[] {
+  for (const family of SERVICE_TAXONOMY) {
+    const types = family.serviceTypes as readonly string[];
+    if (!types.includes(serviceType)) continue;
+    return types.filter(
+      (candidate) => candidate !== serviceType,
+    ) as ServiceType[];
+  }
+  return [];
+}
+
 export function isFulfillmentMode(value: unknown): value is FulfillmentMode {
   return (
     typeof value === "string" &&

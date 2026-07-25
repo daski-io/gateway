@@ -251,6 +251,55 @@ export function expectedPhoneAcknowledgementToken(
     .slice(0, 32);
 }
 
+/**
+ * Atomic first purchase with no `name`: the wallet-derived default
+ * (`buyer-<last6>`) is baked into the registration typed-data and PERMANENTLY
+ * names the buyer on receipts and in the marketplace. SKILL.md already says
+ * to pass `name`, and `registrationPrep.hint` already echoes the default —
+ * both were ignored in the wild (buyerTokenId 8446 minted as
+ * `buyer-0b83e2` while the principal's entity name was known). Prose can't
+ * fix a one-shot irreversible default, so gate it the same way phone values
+ * are gated: one acknowledgement roundtrip, or pass `name` and skip it.
+ */
+export function checkBuyerNameAcknowledgement(
+  resolvedDefaultName: string,
+  acknowledgementToken: string | undefined,
+): McpToolResult | null {
+  const expected = expectedBuyerNameAcknowledgementToken(resolvedDefaultName);
+  if (acknowledgementToken === expected) return null;
+  return mcpError({
+    code: "BUYER_NAME_ACKNOWLEDGEMENT_REQUIRED",
+    message:
+      "This wallet has no agentId yet, so this call mints one — and with no " +
+      `\`name\` it will be permanently named '${resolvedDefaultName}', ` +
+      "derived from the wallet address. This is baked into the registration " +
+      "typed-data you are about to sign and cannot be changed later. Pass " +
+      "`name` set to your PRINCIPAL's exact stated business/entity name " +
+      "(the normal case), or, if the wallet-derived default really is " +
+      "intended, retry this same call with `buyerNameAcknowledgementToken`.",
+    details: {
+      resolvedDefaultName,
+      buyerNameAcknowledgementToken: expected,
+      tokenBinding:
+        "bound to this exact default name — it does not authorize any other " +
+        "registration name",
+    },
+    recoverable: true,
+    next_action:
+      "Re-call with `name` set to the principal's exact business/entity " +
+      "name, or with buyerNameAcknowledgementToken to accept the default.",
+  });
+}
+
+export function expectedBuyerNameAcknowledgementToken(
+  resolvedDefaultName: string,
+): string {
+  return createHmac("sha256", PHONE_ACKNOWLEDGEMENT_SECRET)
+    .update(`buyer-name=${resolvedDefaultName}`)
+    .digest("hex")
+    .slice(0, 32);
+}
+
 export function checkPhoneAcknowledgement(
   args: Record<string, unknown>,
   acknowledgementToken: string | undefined,

@@ -27,6 +27,10 @@ const INPUT_SCHEMA = {
   phoneAcknowledgementToken: z.string().optional().describe(
     "Acknowledgement token returned when serviceArgs contain phone values.",
   ),
+  buyerNameAcknowledgementToken: z.string().optional().describe(
+    "Acknowledgement token returned when an atomic first purchase would " +
+      "mint the wallet-derived default buyer name. Prefer passing `name`.",
+  ),
   amount: z.string().optional().describe(
     "Optional buyer spend cap; provider pricing still comes from a signed quote.",
   ),

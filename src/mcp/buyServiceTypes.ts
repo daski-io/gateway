@@ -9,6 +9,7 @@ export interface BuyServiceArgs {
   providerTokenId?: string;
   serviceArgs?: Record<string, unknown>;
   phoneAcknowledgementToken?: string;
+  buyerNameAcknowledgementToken?: string;
   amount?: string;
   paymentId?: string;
   paymentPayload?: Record<string, unknown>;

@@ -2,10 +2,11 @@ import type { Config } from "../config.js";
 import type { Queries } from "../db/queries.js";
 import { applyDiscoverFilters } from "../discovery/filters.js";
 import { formatForSkillDiscover } from "../discovery/skillPresentation.js";
-import type {
-  CategoryFamily,
-  FulfillmentMode,
-  ServiceType,
+import {
+  siblingServiceTypes,
+  type CategoryFamily,
+  type FulfillmentMode,
+  type ServiceType,
 } from "../serviceTaxonomy.js";
 import type { CachedProvider } from "../types.js";
 import { logErrorWithId } from "../util/errorWrap.js";
@@ -38,9 +39,16 @@ export async function searchServices(
     cachedAt: deps.cache.getLastRefresh()?.toISOString() ?? null,
   };
   if (!args.intent?.trim()) {
+    const providers = formatForSkillDiscover(filtered, deps.config).slice(
+      0,
+      limit,
+    );
     return {
       ...base,
-      providers: formatForSkillDiscover(filtered, deps.config).slice(0, limit),
+      providers,
+      ...(providers.length === 0
+        ? emptyFilterSteer(args, all, deps.config)
+        : {}),
     };
   }
   if (!deps.embedder) {
@@ -110,6 +118,46 @@ export async function searchServices(
     providers: matches,
     ranking: "vector",
     ...(nearMisses.length > 0 ? { nearMisses } : {}),
+  };
+}
+
+/**
+ * A structured filter matched nothing. Every taxonomy slug is a legal filter
+ * value, so an empty list is not evidence the agent guessed wrong — without a
+ * steer it re-guesses blind. Name the sibling service types that DO have
+ * supply under the same remaining filters, and fall back to `intent`.
+ */
+function emptyFilterSteer(
+  args: SearchServicesArgs,
+  all: CachedProvider[],
+  config: Config,
+): Record<string, unknown> {
+  if (!args.serviceType) {
+    return {
+      hint:
+        "No provider matched these filters. Drop the narrowest filter, or " +
+        "pass `intent` with a free-text description to let the catalog rank " +
+        "the closest services.",
+    };
+  }
+  const siblings = siblingServiceTypes(args.serviceType);
+  const stocked = siblings.filter(
+    (candidate) =>
+      formatForSkillDiscover(
+        applyDiscoverFilters(all, { ...args, serviceType: candidate }),
+        config,
+      ).length > 0,
+  );
+  return {
+    hint:
+      `'${args.serviceType}' is a valid service type but no provider ` +
+      "currently lists under it" +
+      (stocked.length > 0
+        ? `. These service types in the same family have providers: ${stocked.join(", ")}.`
+        : " or under any sibling service type in its family.") +
+      " Or pass `intent` with a free-text description to rank the closest " +
+      "services.",
+    ...(stocked.length > 0 ? { availableServiceTypes: stocked } : {}),
   };
 }
 
