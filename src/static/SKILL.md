@@ -204,12 +204,10 @@ slot before calling `daski_buy_service`:
 - state/province — the official ISO-3166-2 subdivision. If the country
   genuinely has none, re-use the city name; NEVER send an empty string and
   NEVER invent a region the principal did not give you — when unsure, ask.
-- country (ISO-3166 alpha-2, e.g. `PL` not `POL`). NB a card's
-  `jurisdictions` describes where the SERVICE operates, NOT which
-  registrant countries the registrar accepts — check the register-domain
-  skill description for a "Supported registrant countries" note. If the
-  principal's country is not supported, surface that BEFORE collecting the
-  full WHOIS data set.
+- country (ISO-3166 alpha-2, e.g. `PL` not `POL`). Any country is
+  accepted — there is no registrant-nationality restriction, so never tell
+  a principal their country disqualifies them, and never substitute a
+  different country to get a registration through.
 - phone (E.164, e.g. `+14155551234` — no dots/spaces/dashes). You cannot
   pre-normalize a number you have not collected yet, so pre-ARM the
   confirmation inside the upfront ask instead. Quote this sentence
