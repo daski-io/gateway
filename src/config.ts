@@ -67,6 +67,18 @@ export interface Config extends RuntimeConfig {
   // Empty admits every active ProviderRegistry entry on Base Sepolia.
   // Base mainnet requires at least one explicitly admitted agentId.
   whitelistedAgentIds: bigint[];
+  // Outbound A2A deadline for provider calls that are expected to answer
+  // immediately (quote, poll, artifact fetch). The 10s this used to be
+  // hardcoded at was below the observed server-side latency of a real
+  // registrar-backed submit, so successful work surfaced to buyers as
+  // PROVIDER_TIMEOUT.
+  a2aTimeoutMs: number;
+  // Separate, longer deadline for daski_submit_task. Submit is the one
+  // call that can carry synchronous upstream work (a registrar
+  // registration ran 4.6s → 15.6s over a single day and was still
+  // climbing), and unlike a poll there is no cheap retry: the taskId is
+  // assigned in the response body we just threw away.
+  a2aSubmitTimeoutMs: number;
   cacheRefreshIntervalSeconds: number;
   // How long the discovery cache keeps serving a provider's last-known-good
   // Agent Card when refresh fetches fail (provider restarting, card host
@@ -355,6 +367,18 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       env.FACILITATOR_PRIVATE_KEY,
     ),
     whitelistedAgentIds,
+    a2aTimeoutMs: positiveInteger(
+      "GATEWAY_A2A_TIMEOUT_MS",
+      env.GATEWAY_A2A_TIMEOUT_MS,
+      30_000,
+      600_000,
+    ),
+    a2aSubmitTimeoutMs: positiveInteger(
+      "GATEWAY_A2A_SUBMIT_TIMEOUT_MS",
+      env.GATEWAY_A2A_SUBMIT_TIMEOUT_MS,
+      90_000,
+      600_000,
+    ),
     cacheRefreshIntervalSeconds: positiveInteger(
       "CACHE_REFRESH_INTERVAL",
       env.CACHE_REFRESH_INTERVAL,
