@@ -4,6 +4,7 @@ import { X402_VERSION } from "../config.js";
 import type { DiscoveryCache } from "../discovery/cache.js";
 import type { Queries } from "../db/queries.js";
 import type { FetchAgentCardOptions } from "../identity/fetch-agent-card.js";
+import { defaultBuyerName } from "../identity/name.js";
 import { prepareRegistration } from "../identity/service.js";
 import { createQuotedChallenge } from "../payment/quotedChallenge.js";
 import type { Hex } from "../types.js";
@@ -12,6 +13,7 @@ import type { PaymentScreeningReadinessProbe } from "../payment/screeningReadine
 import type { BuyServiceContext } from "./buyServiceTypes.js";
 import { unknownServiceArgWarnings } from "./serviceArgWarnings.js";
 import {
+  checkBuyerNameAcknowledgement,
   mcpError,
   mcpJson,
   type McpToolResult,
@@ -79,6 +81,14 @@ export async function runBuyServicePaidPath(
   const isAtomic = buyerAgentId === 0n;
   let registrationPrep: unknown = null;
   let registrationName: string | null = null;
+  if (isAtomic && !buyerName) {
+    // Only when the name is being defaulted — passing `name` skips the gate.
+    const nameError = checkBuyerNameAcknowledgement(
+      defaultBuyerName(args.walletAddress.toLowerCase() as Hex),
+      args.buyerNameAcknowledgementToken,
+    );
+    if (nameError) return nameError;
+  }
   if (isAtomic) {
     const prepared = await prepareRegistration(
       {
