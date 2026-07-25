@@ -218,6 +218,8 @@ export async function startTestGateway(opts: TestGatewayOptions = {}): Promise<T
     usdcVersion: "2",
     facilitatorPrivateKey: FACILITATOR_KEY,
     whitelistedAgentIds: whitelist,
+    a2aTimeoutMs: 30_000,
+    a2aSubmitTimeoutMs: 90_000,
     cacheRefreshIntervalSeconds: 60,
     cacheMaxStalenessSeconds: 86400,
     challengeTtlSeconds: 3600,

@@ -88,6 +88,16 @@ const DESCRIPTION = [
   "Returns signing material on the first authenticated call. Otherwise returns",
   "taskId, contextId, state, artifacts, and statusMessage. Poll non-terminal",
   "tasks with daski_get_task_status.",
+  "",
+  "PROVIDER_TIMEOUT / PROVIDER_UNREACHABLE does NOT mean the work failed. The",
+  "provider assigns the taskId in the response body, so a timed-out submit",
+  "loses the id even when the task completed and settled server-side. Never",
+  "re-send the same envelope (it is consumed) and never tell your principal the",
+  "purchase failed. If the skill has a read-only companion that reads the same",
+  "asset (e.g. get-domain-info for register-domain, get-mailbox-info for",
+  "create-mailbox, get-entity-status for form-entity), call it first and report",
+  "what it says. If no such oracle exists, report the outcome as UNKNOWN — not",
+  "failed — and say the taskId was lost in transport.",
 ].join("\n");
 
 export function registerSubmitTaskTool(

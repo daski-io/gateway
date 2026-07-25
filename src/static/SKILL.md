@@ -273,17 +273,27 @@ that returns no display-name field. Answer from this paragraph directly;
 call `get-mailbox-info` only when you actually need the mailbox's
 DNS/verification status.
 
-**DNS and mailbox states are REGISTRAR-side reports — never claim public
-resolution.** `set-dns-record` and `create-mailbox` confirm registrar
-configuration only: artifacts carry `publicResolutionVerified: false` and
-`dnsStatus` values like `"propagating"`. NEVER tell the principal a record
-or mailbox is "live", "in place", "resolving", or that mail is "working"
-or "flowing" on that basis — say it was "configured at the registrar;
-public resolution not yet verified", and only claim resolution if a
-returned field explicitly confirms it. This includes the celebratory
-HEADLINE: do NOT open a summary with "✅ … is live!" — lead with
-"✅ Mailbox created — configured at the registrar; public delivery not
-yet verified." The word "live" is the single most common failure here. The same discipline covers invented
+**Claim public resolution only from a field that actually measured it.**
+Read `publicResolutionVerified` rather than assuming: `set-dns-record`
+never queries a resolver, so it is always `false` there; `create-mailbox`
+is `true` only when the required mail records resolved publicly at
+provisioning. When it is `false` (or `dnsStatus` is `"propagating"`),
+NEVER tell the principal a record or mailbox is "live", "in place",
+"resolving", or that mail is "working" or "flowing" — say it was
+"configured at the registrar; public resolution not yet verified". This
+includes the celebratory HEADLINE: do NOT open a summary with
+"✅ … is live!" — lead with "✅ Mailbox created — configured at the
+registrar; public delivery not yet verified." The word "live" is the
+single most common failure here.
+
+The one genuinely public-resolution-backed signal you ever receive is
+`get-mailbox-info`'s `domain.dns` block (`source:
+"public-resolver-query"`): it runs a live DNS query at call time. Its
+`"unverified"` + `missingRecords` result is a FACT you may state plainly —
+"those records do not resolve publicly right now" is correct, not an
+over-claim. Neither value is a delivery test, and
+`supplier.sendingEnabled` is SMTP-submission state at the mail supplier,
+never a deliverability guarantee. The same discipline covers invented
 specifics: the mailbox password is shown ONCE and never stored — relay
 exactly that and do NOT invent a visibility window (there is no "gone
 after ~7 days"). CATEGORICAL closing-summary rule — for domains,
@@ -303,6 +313,28 @@ field. An agent session has no persistent timer: when nothing backs a
 future commitment, say only that the contact email on file receives
 lifecycle notices and that the principal can ask you to renew or file at
 any time.
+
+**Closing a task that CANNOT reach a terminal state in this session.**
+Some work legitimately outlives the conversation: a filing parked for
+review, a registration whose confirmation is still pending, DNS that was
+written but not yet observed resolving. Do not paper over it with a
+contentless sign-off ("all set!", "talk soon 👋") and do not invent a
+follow-up you cannot perform. Close in exactly three beats:
+
+1. **State the last observed status and where it came from** — "the
+   registrar reports the domain active; public resolution not yet
+   verified", "the filing is parked for review; the provider gives no
+   completion estimate". Quote any flagged provider copy verbatim.
+2. **Disclaim background monitoring explicitly** — "I have no timer and I
+   am not watching this in the background; nothing further happens on my
+   side after this message."
+3. **Hand the next move back** — "ask me again any time and I'll re-check
+   with `get-domain-info` / `get-entity-status` / `get-mailbox-info`", plus
+   the contact email on file that receives lifecycle notices.
+
+That close is *always* available, so "the task isn't finished" is never a
+reason to stall, to keep polling a task that is parked, or to promise
+something to fill the silence.
 
 **form-entity (entity formation): collect everything BEFORE the first
 purchase call.** Ask your principal in ONE message for all of it, and file
@@ -627,6 +659,16 @@ fresh link any time you want to re-download").
    emailed them anything, even if a contact email was on the filing; say
    plainly that no email receipt exists.
 
+   **Say it in these words when a receipt IS present.** A receipt is a fact
+   worth reporting, and both directions have gone wrong in live runs: agents
+   dropped a present receipt entirely, and agents upgraded one into "the
+   documents were emailed to you". Use the canonical form —
+   "the provider sent a copy to `<address>`; arrival is not confirmed" —
+   naming the exact address from the receipt. Never "was emailed to",
+   "you should have it", "check your inbox", and never add a delivery
+   window. If the receipt reports a failed or unknown send, say the send
+   did not succeed and hand over the document you already hold instead.
+
 ### Standalone registration (no purchase)
 
 For the rare case where the buyer wants an ERC-8004 agentId without an
@@ -748,8 +790,21 @@ will reflect this.
   envelope — the request MAY have been processed and the envelope is
   consumed either way. Never re-send the same envelope/messageId
   (`ENVELOPE_REPLAY`); verify actual state with a read-only skill
-  (`get-domain-info`, `list-dns-records`, `get-mailbox-info`, …) and only
-  rebuild + re-sign a FRESH envelope if the action didn't take effect.
+  (`get-domain-info`, `list-dns-records`, `get-mailbox-info`,
+  `get-entity-status`, …) and only rebuild + re-sign a FRESH envelope if
+  the action didn't take effect.
+
+  A timed-out submit is NOT a failed purchase. The taskId is assigned by
+  the provider in the response body you never received, so the work can
+  have completed and settled with the id lost in transport — that is
+  exactly what happened to two registrations on 2026-07-24. Report what the
+  read-only oracle says, not "the purchase failed". And the recovery is
+  only as good as the oracle: it works for skills with a read-only
+  companion that reads the same asset, and NOT for skills without one
+  (a `set-dns-record` write, an `order-good-standing` order). With no
+  oracle, report the outcome as UNKNOWN — never as failed — say the taskId
+  was lost in transport, and ask your principal before re-signing anything
+  that could double-charge or double-file.
 - Repeated `PROVIDER_ERROR` with `rpcCode: -32603` ("Internal error
   (ref …)") on the same skill+args, while other skills on the same
   provider succeed — that's a provider-side bug, not your input. Stop

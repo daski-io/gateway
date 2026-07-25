@@ -53,6 +53,8 @@ export interface McpDeps {
   embeddingSync?: import("../discovery/embeddingSync.js").CatalogEmbeddingSynchronizer | null;
   embedder?: import("../discovery/embeddings.js").Embedder | null;
   fetch?: typeof fetch;
+  /** Test seam. Unset in production: the deadlines come from
+   *  `config.a2aTimeoutMs` / `config.a2aSubmitTimeoutMs`. */
   a2aTimeoutMs?: number;
   /**
    * Test seam for the buyer-side agentURI fetcher used by the atomic
@@ -117,7 +119,11 @@ export async function createMcpServer(
     i?: RequestInit,
   ) => Promise<Response> = deps.fetch ?? safeFetch;
   const enforceUrlSafety = deps.fetch === undefined;
-  const a2aTimeoutMs = deps.a2aTimeoutMs ?? 10_000;
+  // Config-driven (GATEWAY_A2A_TIMEOUT_MS / GATEWAY_A2A_SUBMIT_TIMEOUT_MS);
+  // `deps.a2aTimeoutMs` stays the test seam and, when set, overrides both so
+  // a test forcing a timeout still forces it on submit.
+  const a2aTimeoutMs = deps.a2aTimeoutMs ?? deps.config.a2aTimeoutMs;
+  const a2aSubmitTimeoutMs = deps.a2aTimeoutMs ?? deps.config.a2aSubmitTimeoutMs;
   const artifactLimiter = new ConcurrencyLimiter(8, 1);
   const streamLimiter = new ConcurrencyLimiter(20, 2);
   function registerTools(server: McpServer) {
@@ -147,7 +153,7 @@ export async function createMcpServer(
     ): Promise<McpToolResult> => {
       return runSubmitTask(args, deps, {
         fetch: a2aFetch,
-        timeoutMs: a2aTimeoutMs,
+        timeoutMs: a2aSubmitTimeoutMs,
         maxResponseBytes: A2A_RESPONSE_MAX_BYTES,
       });
     };
