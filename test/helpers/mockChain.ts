@@ -1,5 +1,20 @@
 import type { PaymentSettledEventLog } from "../../src/chain/reader.js";
 import { FeedbackSubmissionError } from "../../src/chain/feedbackErrors.js";
+import {
+  ConfirmationSubmitError,
+  type ConfirmationFailureStage,
+} from "../../src/chain/confirmationErrors.js";
+
+export type ConfirmationOutcome =
+  | { kind: "success"; txHash: `0x${string}`; attestationUid: `0x${string}` }
+  | { kind: "revert"; reason: string }
+  | {
+      kind: "stage";
+      stage: ConfirmationFailureStage;
+      reason: string;
+      txHash?: `0x${string}`;
+      needsFreshSignature?: boolean;
+    };
 import type {
   ChainReader,
   ConfirmationDelegationInput,
@@ -237,18 +252,11 @@ export class MockChainReader implements ChainReader {
   //
   // Tests exercise the gateway-side confirm flow without touching a real
   // EAS. Queue a result via queueConfirmation; otherwise the mock throws.
-  private confirmationOutcomes: Array<
-    | { kind: "success"; txHash: Hex; attestationUid: Hex }
-    | { kind: "revert"; reason: string }
-  > = [];
+  private confirmationOutcomes: ConfirmationOutcome[] = [];
   public confirmations: ConfirmationDelegationInput[] = [];
   private nonces = new Map<string, bigint>();
 
-  queueConfirmation(
-    outcome:
-      | { kind: "success"; txHash: Hex; attestationUid: Hex }
-      | { kind: "revert"; reason: string },
-  ): void {
+  queueConfirmation(outcome: ConfirmationOutcome): void {
     this.confirmationOutcomes.push(outcome);
   }
 
@@ -268,6 +276,14 @@ export class MockChainReader implements ChainReader {
       );
     }
     if (outcome.kind === "revert") throw new Error(outcome.reason);
+    // Stage-typed failures exercise the confirm-delivery taxonomy split
+    // (pre-broadcast / reverted / unknown / attested-but-unrecorded).
+    if (outcome.kind === "stage") {
+      throw new ConfirmationSubmitError(outcome.stage, outcome.reason, {
+        transactionHash: outcome.txHash,
+        needsFreshSignature: outcome.needsFreshSignature,
+      });
+    }
     await onBroadcast?.(outcome.txHash);
     return { transactionHash: outcome.txHash, attestationUid: outcome.attestationUid };
   }

@@ -2,10 +2,12 @@ import { Router, type Request, type Response } from "express";
 import { encodeAbiParameters, parseAbiParameters } from "viem";
 import type { Config } from "../config.js";
 import type { ChainReader } from "../chain/reader.js";
+import { ConfirmationSubmitError } from "../chain/confirmationErrors.js";
 import type { Queries } from "../db/queries.js";
 import type { Hex } from "../types.js";
 import type { ReputationMirrorWorker } from "../reputation/worker.js";
 import { logErrorWithId, publicErrorMessage } from "../util/errorWrap.js";
+import { logger } from "../util/logger.js";
 import {
   CONFIRMATION_CODE,
   isHex32,
@@ -51,7 +53,13 @@ export type ConfirmResult =
   | {
       ok: false;
       status: number;
-      error: { code: string; message: string };
+      error: {
+        code: string;
+        message: string;
+        /** True only when resubmitting the SAME signed inputs is safe. */
+        retryable?: boolean;
+        details?: Record<string, unknown>;
+      };
     };
 
 function parseInput(body: unknown): ConfirmInput | { ok: false; message: string } {
@@ -246,21 +254,112 @@ export async function runConfirmDelivery(
       refUid: input.refUid ?? null,
     };
   } catch (err) {
-    // EAS reverts on signature invalid / nonce mismatch / deadline expired;
-    // the resolver reverts on unauthorized attester / duplicate confirmation
-    // without refUID. All of these surface as a chain-level reverted call.
+    return submitFailure(err, paymentId);
+  }
+}
+
+// One `submit_failed` used to cover a reverted eth_call, an in-flight
+// transaction of unknown outcome, and a successful on-chain attestation we
+// failed to read back. Only the first is safe to blind-retry, so the
+// taxonomy is split at the viemConfirmation boundary and mapped here.
+function submitFailure(err: unknown, paymentId: bigint): ConfirmResult {
+  if (
+    err instanceof ConfirmationSubmitError &&
+    err.stage === "attestation"
+  ) {
+    // Divergence between on-chain truth and our records: an attestation
+    // exists that recordConfirmation and the reputation mirror never saw.
+    // Loud on purpose — recovery is manual.
+    logger.error("confirmation attested but not recorded", {
+      paymentId: paymentId.toString(),
+      transactionHash: err.transactionHash,
+    });
+  }
+  const detail = publicErrorMessage(
+    "runConfirmDelivery.submit",
+    err,
+    "confirmation submission failed",
+  );
+  if (!(err instanceof ConfirmationSubmitError)) {
     return {
       ok: false,
       status: 400,
-      error: {
-        code: "submit_failed",
-        message: publicErrorMessage(
-          "runConfirmDelivery.submit",
-          err,
-          "confirmation submission failed",
-        ),
-      },
+      error: { code: "submit_failed", message: detail },
     };
+  }
+  const tx = err.transactionHash
+    ? { transactionHash: err.transactionHash }
+    : {};
+  switch (err.stage) {
+    case "validation":
+      return {
+        ok: false,
+        status: 400,
+        error: {
+          code: "submit_rejected",
+          message:
+            `${detail} — the call was rejected before broadcast, so nothing ` +
+            `was submitted on-chain and your signed attestation was NOT ` +
+            `consumed. ` +
+            (err.needsFreshSignature
+              ? "The rejection concerns the authorization itself (deadline/nonce/signature): " +
+                "request a fresh prepareConfirmation and sign again — resubmitting the same " +
+                "signature will fail identically."
+              : "Fix the cause and retry with the SAME inputs."),
+          retryable: !err.needsFreshSignature,
+          details: {
+            stage: "validation",
+            signatureConsumed: "no",
+            ...(err.needsFreshSignature ? { requiresFreshSignature: true } : {}),
+          },
+        },
+      };
+    case "reverted":
+      return {
+        ok: false,
+        status: 400,
+        error: {
+          code: "submit_reverted",
+          message:
+            `${detail} — the transaction was mined and reverted, so no ` +
+            `attestation was created and your signature was not consumed. It ` +
+            `already passed simulation, so retrying unchanged is unlikely to help.`,
+          retryable: false,
+          details: { stage: "reverted", signatureConsumed: "no", ...tx },
+        },
+      };
+    case "unknown":
+      return {
+        ok: false,
+        status: 502,
+        error: {
+          code: "submit_outcome_unknown",
+          message:
+            `${detail} — the transaction may have been broadcast and its ` +
+            `outcome is unknown to the gateway. Do NOT retry blindly: read ` +
+            `the payment's confirmation state on-chain first, and only ` +
+            `resubmit if no attestation exists.` +
+            (err.transactionHash ? ` Transaction: ${err.transactionHash}.` : ""),
+          retryable: false,
+          details: { stage: "unknown", signatureConsumed: "unknown", ...tx },
+        },
+      };
+    case "attestation":
+      return {
+        ok: false,
+        status: 500,
+        error: {
+          code: "attestation_unrecorded",
+          message:
+            `${detail} — the attestation transaction SUCCEEDED on-chain but ` +
+            `its UID could not be read back, so it is not recorded here. Do ` +
+            `NOT retry: the nonce is consumed and a second attempt would ` +
+            `fail or duplicate. This needs operator recovery.` +
+            (err.transactionHash ? ` Transaction: ${err.transactionHash}.` : ""),
+          retryable: false,
+          details: { stage: "attestation", signatureConsumed: "yes", ...tx },
+        },
+      };
   }
 }
 

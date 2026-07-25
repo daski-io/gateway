@@ -175,4 +175,79 @@ describe("POST /confirm/:paymentId", () => {
     );
     expect(body.error.message).not.toContain("bad signature");
   });
+
+  // The one `submit_failed` code used to cover a pre-broadcast revert, an
+  // in-flight transaction of unknown outcome, and a SUCCESSFUL on-chain
+  // attestation we failed to read back. Only the first is safe to retry
+  // with the same signed inputs, so each stage must say so distinctly.
+  async function postConfirm(): Promise<any> {
+    const res = await fetch(`${gateway.baseUrl}/confirm/42`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        confirmation: "Confirmed",
+        attester: BUYER,
+        deadline: String(Math.floor(Date.now() / 1000) + 3600),
+        signature: SIG,
+      }),
+    });
+    return { status: res.status, body: (await res.json()) as any };
+  }
+
+  it("marks a pre-broadcast revert retryable with the signature unconsumed", async () => {
+    gateway.mockChain.queueConfirmation({
+      kind: "stage",
+      stage: "validation",
+      reason: "EAS.attestByDelegation reverted: NotPayable()",
+    });
+    const { status, body } = await postConfirm();
+    expect(status).toBe(400);
+    expect(body.error.code).toBe("submit_rejected");
+    expect(body.error.retryable).toBe(true);
+    expect(body.error.details.signatureConsumed).toBe("no");
+    expect(body.error.message).toContain("NOT");
+  });
+
+  it("tells a deadline/nonce revert to re-sign instead of retrying", async () => {
+    gateway.mockChain.queueConfirmation({
+      kind: "stage",
+      stage: "validation",
+      reason: "EAS.attestByDelegation reverted: DeadlineExpired()",
+      needsFreshSignature: true,
+    });
+    const { body } = await postConfirm();
+    expect(body.error.code).toBe("submit_rejected");
+    expect(body.error.retryable).toBe(false);
+    expect(body.error.details.requiresFreshSignature).toBe(true);
+    expect(body.error.message).toContain("prepareConfirmation");
+  });
+
+  it("refuses to call a post-broadcast failure retryable", async () => {
+    gateway.mockChain.queueConfirmation({
+      kind: "stage",
+      stage: "unknown",
+      reason: "receipt unavailable",
+      txHash: `0x${"ab".repeat(32)}` as `0x${string}`,
+    });
+    const { status, body } = await postConfirm();
+    expect(status).toBe(502);
+    expect(body.error.code).toBe("submit_outcome_unknown");
+    expect(body.error.retryable).toBe(false);
+    expect(body.error.details.signatureConsumed).toBe("unknown");
+  });
+
+  it("surfaces an attested-but-unrecorded confirmation as its own failure", async () => {
+    gateway.mockChain.queueConfirmation({
+      kind: "stage",
+      stage: "attestation",
+      reason: "Attested event not found",
+      txHash: `0x${"cd".repeat(32)}` as `0x${string}`,
+    });
+    const { status, body } = await postConfirm();
+    expect(status).toBe(500);
+    expect(body.error.code).toBe("attestation_unrecorded");
+    expect(body.error.retryable).toBe(false);
+    expect(body.error.details.signatureConsumed).toBe("yes");
+    expect(body.error.details.transactionHash).toBe(`0x${"cd".repeat(32)}`);
+  });
 });

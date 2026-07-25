@@ -14,6 +14,10 @@ import type {
   ConfirmationResult,
 } from "./reader.js";
 import type { Hex } from "../types.js";
+import {
+  ConfirmationSubmitError,
+  revertInvalidatesSignature,
+} from "./confirmationErrors.js";
 import { decodeRevertReason } from "./viemErrors.js";
 
 type SupportedChain = typeof base | typeof baseSepolia;
@@ -56,6 +60,8 @@ export function createConfirmationMethods(
         attester: input.attester,
         deadline: input.deadline,
       } as const;
+      // Stage 1 — pre-flight eth_call. A revert here broadcasts nothing and
+      // consumes no attester nonce.
       let request;
       try {
         const simulation = await deps.publicClient.simulateContract({
@@ -69,28 +75,63 @@ export function createConfirmationMethods(
         });
         request = simulation.request;
       } catch (error) {
-        throw new Error(
-          `EAS.attestByDelegation reverted: ${decodeRevertReason(error)}`,
+        const reason = decodeRevertReason(error);
+        throw new ConfirmationSubmitError(
+          "validation",
+          `EAS.attestByDelegation reverted: ${reason}`,
+          { needsFreshSignature: revertInvalidatesSignature(reason) },
         );
       }
-      const hash = await deps.walletClient.writeContract(request);
+
+      // Stage 2 — broadcast. Past this point we can no longer prove the
+      // transaction is NOT in flight, so every failure is `unknown`.
+      let hash: Hex;
+      try {
+        hash = await deps.walletClient.writeContract(request);
+      } catch (error) {
+        throw new ConfirmationSubmitError(
+          "unknown",
+          `EAS.attestByDelegation broadcast failed: ${decodeRevertReason(error)}`,
+        );
+      }
       await onBroadcast?.(hash);
-      const receipt = await deps.publicClient.waitForTransactionReceipt({
-        hash,
-      });
-      if (receipt.status !== "success") {
-        throw new Error(
-          `EAS.attestByDelegation reverted after simulation (tx ${hash})`,
+
+      let receipt;
+      try {
+        receipt = await deps.publicClient.waitForTransactionReceipt({ hash });
+      } catch (error) {
+        throw new ConfirmationSubmitError(
+          "unknown",
+          `EAS.attestByDelegation receipt unavailable: ${decodeRevertReason(error)}`,
+          { transactionHash: hash },
         );
       }
-      const uid = findAttestationUid(
-        receipt.logs,
-        deps.easAddress,
-        input.attester,
-        input.schema,
-      );
+      if (receipt.status !== "success") {
+        throw new ConfirmationSubmitError(
+          "reverted",
+          `EAS.attestByDelegation reverted after simulation (tx ${hash})`,
+          { transactionHash: hash },
+        );
+      }
+
+      // Stage 3 — the attestation EXISTS on-chain and the nonce is spent.
+      // Losing the UID here is data loss, not a failed confirmation, so the
+      // strict (attester, schema) match falls back to any Attested event
+      // this EAS emitted in our own receipt — attestByDelegation emits
+      // exactly one.
+      const uid =
+        findAttestationUid(
+          receipt.logs,
+          deps.easAddress,
+          input.attester,
+          input.schema,
+        ) ?? findAttestationUid(receipt.logs, deps.easAddress);
       if (!uid) {
-        throw new Error("EAS Attested event not found after delegation");
+        throw new ConfirmationSubmitError(
+          "attestation",
+          `EAS Attested event not found in a successful attestByDelegation receipt (tx ${hash})`,
+          { transactionHash: hash },
+        );
       }
       return { transactionHash: hash, attestationUid: uid };
     },
@@ -106,11 +147,14 @@ export function createConfirmationMethods(
   };
 }
 
+/** Attester/schema are optional: omitting them relaxes the search to any
+ *  Attested event from this EAS, the recovery path for a receipt we know
+ *  succeeded. */
 function findAttestationUid(
   logs: readonly { address: Hex; data: Hex; topics: readonly Hex[] }[],
   easAddress: Hex,
-  attester: Hex,
-  schema: Hex,
+  attester?: Hex,
+  schema?: Hex,
 ): Hex | null {
   for (const log of logs) {
     if (log.address.toLowerCase() !== easAddress.toLowerCase()) continue;
@@ -121,8 +165,10 @@ function findAttestationUid(
         topics: log.topics as [Hex, ...Hex[]],
       }) as { args: { uid: Hex; attester: Hex; schemaUID: Hex } };
       if (
-        decoded.args.attester.toLowerCase() === attester.toLowerCase() &&
-        decoded.args.schemaUID.toLowerCase() === schema.toLowerCase()
+        (attester === undefined ||
+          decoded.args.attester.toLowerCase() === attester.toLowerCase()) &&
+        (schema === undefined ||
+          decoded.args.schemaUID.toLowerCase() === schema.toLowerCase())
       ) {
         return decoded.args.uid;
       }
