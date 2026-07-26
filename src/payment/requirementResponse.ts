@@ -172,6 +172,8 @@ export function buildRequirementResponse(input: RequirementResponseInput): {
     quoteSignature: input.quote.providerSignature,
     quoteExpiresAt: input.quote.expiresAt,
     quoteRequestHash: input.quote.requestHash,
+    serviceArgs: null,
+    acknowledgements: {},
   };
 
   return { requirements, challenge };

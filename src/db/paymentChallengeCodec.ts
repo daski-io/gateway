@@ -27,6 +27,8 @@ export interface ChallengeRow {
   quote_signature: string | null;
   quote_expires_at: Date | null;
   quote_request_hash: Buffer | null;
+  service_args: Record<string, unknown> | null;
+  acknowledgements: Record<string, unknown> | null;
 }
 
 export function hexToBytea(hex: Hex): Buffer {
@@ -77,5 +79,7 @@ export function rowToChallenge(row: ChallengeRow): StoredChallenge {
     quoteRequestHash: row.quote_request_hash
       ? byteaToHex(row.quote_request_hash)
       : null,
+    serviceArgs: row.service_args ?? null,
+    acknowledgements: row.acknowledgements ?? {},
   };
 }

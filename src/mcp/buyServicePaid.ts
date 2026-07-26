@@ -93,6 +93,30 @@ export async function runBuyServicePaidPath(
   }
 
   const requirements = result.value.requirements;
+  // Flow snapshot (migration 017): persist the canonical serviceArgs the
+  // quote committed to plus the acknowledgements captured on this call,
+  // so continuation calls can omit re-entry and acknowledgements survive
+  // restarts. Best-effort — never fails the purchase.
+  try {
+    await deps.queries.recordFlowState(
+      result.value.challenge.serviceRef,
+      serviceArgs,
+      {
+        ...(args.phoneAcknowledgement
+          ? { phone: args.phoneAcknowledgement.values }
+          : args.phoneAcknowledgementToken
+            ? { phoneTokenUsed: true }
+            : {}),
+        ...(buyerName
+          ? { buyerName }
+          : args.useWalletDerivedName
+            ? { buyerName: "wallet-derived" }
+            : {}),
+      },
+    );
+  } catch {
+    // snapshot only
+  }
   let registrationPrep: unknown = null;
   let registrationName: string | null = null;
   if (isAtomic) {

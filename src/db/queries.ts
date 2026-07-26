@@ -10,6 +10,7 @@ import { createRateLimitQueries } from "./rateLimitQueries.js";
 import { createReputationQueries } from "./reputationQueries.js";
 import { createSkillQueries } from "./skillQueries.js";
 import { createSettlementScreeningQueries } from "./settlementScreeningQueries.js";
+import { createTaskMappingQueries } from "./taskMappingQueries.js";
 
 export type { ChainActivityRow } from "./chainEventQueries.js";
 export type { ReputationMirrorRow } from "./reputationQueries.js";
@@ -28,6 +29,7 @@ export function createQueries(pool: Pool) {
     ...createAggregateQueries(pool),
     ...createChainEventQueries(pool),
     ...createSettlementScreeningQueries(pool),
+    ...createTaskMappingQueries(pool),
   };
 }
 

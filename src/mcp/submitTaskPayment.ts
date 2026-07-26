@@ -72,14 +72,38 @@ export async function resolveSubmitTaskPayment(
   skillMeta: Record<string, unknown>,
   queries: Queries,
 ): Promise<PaymentContextResult> {
-  if (args.envelopeAuth?.authorization.requestHash) {
-    const sentHash = requestHash(args);
+  let normalizedArgs = { ...args };
+
+  // Flow-state restore (migration 017): a continuation call may omit
+  // serviceArgs entirely — the canonical args the quote committed to are
+  // restored from the challenge row. The envelope/quote hash checks below
+  // still run against the restored bytes, so what was signed is exactly
+  // what executes.
+  if (
+    normalizedArgs.serviceArgs === undefined &&
+    normalizedArgs.serviceRef &&
+    /^0x[0-9a-fA-F]{64}$/.test(normalizedArgs.serviceRef)
+  ) {
+    try {
+      const flow = await queries.getChallengeByRef(
+        normalizedArgs.serviceRef.toLowerCase() as Hex,
+      );
+      if (flow?.serviceArgs) {
+        normalizedArgs = { ...normalizedArgs, serviceArgs: flow.serviceArgs };
+      }
+    } catch {
+      // Restore is best-effort; the explicit-args contract still applies.
+    }
+  }
+
+  if (normalizedArgs.envelopeAuth?.authorization.requestHash) {
+    const sentHash = requestHash(normalizedArgs);
     if (!sentHash) {
       return fail("BAD_INPUT", "serviceArgs cannot be canonically hashed");
     }
     if (
       sentHash.toLowerCase() !==
-      args.envelopeAuth.authorization.requestHash.toLowerCase()
+      normalizedArgs.envelopeAuth.authorization.requestHash.toLowerCase()
     ) {
       return fail(
         "REQUEST_HASH_MISMATCH",
@@ -97,7 +121,6 @@ export async function resolveSubmitTaskPayment(
   }
 
   let paidChallenge: StoredChallenge | null = null;
-  let normalizedArgs = { ...args };
   const isPaidSignedRetry =
     !args.taskId &&
     Boolean(args.envelopeAuth) &&

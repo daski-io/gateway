@@ -90,10 +90,22 @@ export async function runBuyServiceX402Retry(
       next_action: "Retry later while payment screening is available.",
     });
   }
-  if (args.serviceArgs === undefined) {
+  // Flow-state restore (migration 017): the canonical serviceArgs the
+  // quote committed to are stored on the challenge row, so the signed
+  // retry may omit them entirely — the hash check below still verifies
+  // the restored bytes against the quote commitment.
+  let effectiveServiceArgs = args.serviceArgs;
+  let restoredFromQuote = false;
+  if (effectiveServiceArgs === undefined && challenge.serviceArgs) {
+    effectiveServiceArgs = challenge.serviceArgs;
+    restoredFromQuote = true;
+  }
+  if (effectiveServiceArgs === undefined) {
     return mcpError({
       code: "QUOTE_REQUEST_ARGS_MISSING",
-      message: "serviceArgs is required on a signed retry",
+      message:
+        "serviceArgs is required on a signed retry for this quote (it " +
+        "predates stored flow state).",
       recoverable: true,
       next_action:
         "Re-include the identical serviceArgs object from your first call " +
@@ -108,7 +120,7 @@ export async function runBuyServiceX402Retry(
       message: "stored challenge is missing its quote requestHash",
     });
   }
-  const normalized = validateAndNormalizeServiceArgs(args.serviceArgs, []);
+  const normalized = validateAndNormalizeServiceArgs(effectiveServiceArgs, []);
   if (!normalized.ok) return normalized.error;
   let retryRequestHash: Hex;
   try {
@@ -186,6 +198,7 @@ export async function runBuyServiceX402Retry(
       success: true,
       kind: "settled",
       settled: true,
+      ...(restoredFromQuote ? { serviceArgsRestored: true } : {}),
       transaction: settlement.transaction,
       network: settlement.network,
       payer: settlement.payer,

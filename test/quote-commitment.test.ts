@@ -266,6 +266,12 @@ describe("provider quote-commitment integration", () => {
         payload: { signature: "0x", authorization: {} },
       };
 
+      // Flow-state restore (migration 017): omitting serviceArgs on the
+      // signed retry is now LEGAL — the canonical args the quote committed
+      // to are restored from the challenge row, so the retry proceeds past
+      // args validation (this fixture's junk payment then fails at
+      // settlement, which is the point: the old QUOTE_REQUEST_ARGS_MISSING
+      // gate no longer fires when a snapshot exists).
       const missing = parseResult<Record<string, unknown>>(
         await buyRegisterDomain(client, {
           serviceArgs: undefined,
@@ -273,7 +279,10 @@ describe("provider quote-commitment integration", () => {
           paymentRequirements,
         }),
       );
-      expect(JSON.stringify(missing)).toContain("QUOTE_REQUEST_ARGS_MISSING");
+      expect(JSON.stringify(missing)).not.toContain(
+        "QUOTE_REQUEST_ARGS_MISSING",
+      );
+      expect(JSON.stringify(missing)).not.toContain("QUOTE_REQUEST_MISMATCH");
 
       const changed = parseResult<Record<string, unknown>>(
         await buyRegisterDomain(client, {

@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import type { Config } from "../config.js";
 import { DASKI_A2A_EXTENSION_URI } from "../config.js";
-import type { StoredChallenge } from "../types.js";
+import type { Queries } from "../db/queries.js";
+import type { Hex, StoredChallenge } from "../types.js";
 import { buildEnvelopeAuth } from "../auth/envelope.js";
 import { normalizeState } from "../util/a2aShape.js";
 import { a2aPostJson, providerErrorFromFailure, type Fetcher } from "./a2a.js";
@@ -31,6 +32,7 @@ interface DispatchInput {
   paidChallenge: StoredChallenge | null;
   config: Config;
   transport: SubmitTaskTransport;
+  queries: Queries;
 }
 
 type SubmitRpc = {
@@ -56,6 +58,7 @@ export async function dispatchSubmitTask({
   paidChallenge,
   config,
   transport,
+  queries,
 }: DispatchInput): Promise<McpToolResult> {
   const parts: Array<Record<string, unknown>> = [
     args.prompt
@@ -103,6 +106,28 @@ export async function dispatchSubmitTask({
 
   const messageId = args.messageId ?? randomUUID();
   const contextId = args.contextId ?? randomUUID();
+  // Durable operation trace, written BEFORE the provider sees the request:
+  // if the response (and with it the provider-assigned taskId) is lost to
+  // a timeout, the contextId row still exists for recovery
+  // (daski_get_task_status accepts contextId/serviceRef). Input resubmits
+  // reference an existing task, so they only update the trace on success.
+  if (!args.taskId) {
+    try {
+      await queries.insertTaskMapping({
+        contextId,
+        messageId,
+        serviceRef:
+          args.serviceRef && /^0x[0-9a-fA-F]{64}$/.test(args.serviceRef)
+            ? (args.serviceRef.toLowerCase() as Hex)
+            : null,
+        providerA2AUrl: args.providerA2AUrl,
+        skillId: args.skillId,
+        buyerTokenId: args.buyerTokenId ?? null,
+      });
+    } catch {
+      // Best-effort trace — never blocks a dispatch.
+    }
+  }
   const body = {
     jsonrpc: "2.0",
     id: randomUUID(),
@@ -171,6 +196,17 @@ export async function dispatchSubmitTask({
 
   const result = rpc.result;
   const status = normalizeState(result.status?.state) ?? "submitted";
+  if (typeof result.id === "string") {
+    try {
+      await queries.completeTaskMapping(
+        result.contextId ?? contextId,
+        result.id,
+        status,
+      );
+    } catch {
+      // Best-effort trace.
+    }
+  }
   const flattened: Record<string, unknown> = {
     taskId: result.id,
     contextId: result.contextId ?? contextId,
