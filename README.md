@@ -21,7 +21,8 @@ typed-data so any signer (Coinbase AgentKit, CDP Wallet MCP, viem, MetaMask,
   the signed payload, depending on the operation.
 - **REST API** — `/purchase/:agentId` payment challenges, `/verify` + `/settle`
   (x402 facilitator), `/discover`, `/confirm/:paymentId`, self-funded
-  registration builders, and read-only `/public/v1/*`.
+  registration builders, read-only `/public/v1/*`, and an x402 discovery
+  document at `/.well-known/x402`.
 - **Discovery cache** — periodic refresh of provider Agent Cards from
   ERC-8004 + intent-driven semantic search via pgvector + Xenova
   `all-MiniLM-L6-v2` embeddings. Catalog admission enforces the canonical

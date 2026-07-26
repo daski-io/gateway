@@ -102,7 +102,6 @@ function configurePreParserRateLimits(
       "/confirm",
       "/register-transaction",
       "/register-prep",
-      "/x402",
     ],
     {
       namespace: "state-change",
