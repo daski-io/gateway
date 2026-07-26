@@ -1,8 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { normalizeRole, normalizeState } from "../util/a2aShape.js";
 import { a2aPostJson, providerErrorFromFailure, type Fetcher } from "./a2a.js";
-import { mcpError, mcpJson, type McpToolResult } from "./util.js";
+import { mcpActionRequired, mcpError, mcpJson, type McpToolResult } from "./util.js";
 import { sanitizeProviderValue } from "./providerReflection.js";
+import { buildPrincipalUpdate } from "./principalUpdate.js";
 import { extractReplyPolicy } from "./replyPolicy.js";
 import { mapProviderRpcError } from "./rpcErrors.js";
 
@@ -67,13 +68,13 @@ export async function pollTaskStatus(
   if (post.body.error) {
     const rpcError = post.body.error;
     const mapped = mapProviderRpcError(rpcError.code);
-    return mcpError({
+    const payload = {
       code: mapped?.code ?? "PROVIDER_ERROR",
       ...(mapped?.recoverable !== undefined
         ? { recoverable: mapped.recoverable }
         : {}),
       ...(mapped?.nextAction ? { next_action: mapped.nextAction } : {}),
-      message: sanitizeProviderValue(rpcError.message ?? "JSON-RPC error"),
+      message: sanitizeProviderValue(rpcError.message ?? "JSON-RPC error") as string,
       ...(rpcError.code !== undefined || rpcError.data !== undefined
         ? {
             details: {
@@ -84,7 +85,12 @@ export async function pollTaskStatus(
             },
           }
         : {}),
-    });
+    };
+    // Authorization steps are expected transitions, not failures.
+    if (mapped?.actionRequired) {
+      return mcpActionRequired(mapped.actionRequired, payload);
+    }
+    return mcpError(payload);
   }
   const result = post.body.result;
   if (!result) {
@@ -94,11 +100,24 @@ export async function pollTaskStatus(
     });
   }
   const replyPolicy = extractReplyPolicy(result.status?.message);
+  const resolvedStatus = normalizeState(result.status?.state) ?? "unknown";
+  const resolvedTaskId =
+    typeof result.id === "string" ? result.id : args.taskId;
+  const extractedArtifacts = extractArtifacts(
+    result.artifacts ?? [],
+    args.providerA2AUrl,
+  );
   return mcpJson({
-    taskId: typeof result.id === "string" ? result.id : args.taskId,
+    taskId: resolvedTaskId,
     contextId: result.contextId ?? null,
-    status: normalizeState(result.status?.state) ?? "unknown",
-    artifacts: extractArtifacts(result.artifacts ?? [], args.providerA2AUrl),
+    status: resolvedStatus,
+    principalUpdate: buildPrincipalUpdate({
+      taskId: resolvedTaskId,
+      status: resolvedStatus,
+      artifacts: extractedArtifacts,
+      replyPolicy,
+    }),
+    artifacts: extractedArtifacts,
     messages: extractMessages(result.status?.message),
     ...(replyPolicy ? { replyPolicy } : {}),
   });

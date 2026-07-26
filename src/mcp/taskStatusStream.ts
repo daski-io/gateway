@@ -5,6 +5,7 @@ import { readBoundedJson } from "../util/urlSafety.js";
 import { guardProviderUrl, type Fetcher } from "./a2a.js";
 import { mcpError, mcpJson, type McpToolResult } from "./util.js";
 import { sanitizeProviderTaskEvent, sanitizeProviderValue } from "./providerReflection.js";
+import { buildPrincipalUpdate } from "./principalUpdate.js";
 import { extractReplyPolicy } from "./replyPolicy.js";
 
 const STREAM_MAX_BYTES = 4 * 1024 * 1024;
@@ -319,6 +320,12 @@ function streamResult(
     status: normalized,
     // Deprecated alias — older clients read `state`; `status` is canonical.
     state: normalized,
+    principalUpdate: buildPrincipalUpdate({
+      taskId,
+      status: normalized,
+      artifacts: event?.artifacts,
+      replyPolicy,
+    }),
     finalEvent: sanitizeProviderTaskEvent(event),
     eventCount,
     ...(replyPolicy ? { replyPolicy } : {}),

@@ -152,6 +152,7 @@ async function readArtifact(
     const base64 = Buffer.from(bytes).toString("base64");
     const filename = parseFilename(res.headers.get("content-disposition"));
     const result = mcpJson({
+      status: "completed",
       taskId: args.taskId,
       artifact: {
         mimeType: actual,

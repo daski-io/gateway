@@ -11,6 +11,12 @@ interface MappedRpcError {
   code: string;
   recoverable?: boolean;
   nextAction?: string;
+  /**
+   * Set when the provider error is really an EXPECTED workflow transition
+   * (an authorization step). Callers return it as a success result with
+   * `status: "action-required"` and this action, not as isError.
+   */
+  actionRequired?: string;
 }
 
 const KNOWN_RPC_ERRORS: Record<number, MappedRpcError> = {
@@ -30,6 +36,7 @@ const KNOWN_RPC_ERRORS: Record<number, MappedRpcError> = {
   [-32107]: {
     code: "CAPABILITY_REQUIRED",
     recoverable: true,
+    actionRequired: "sign_capability",
     nextAction:
       "This is an expected authorization step, not a failure. Sign the " +
       "capability challenge in details.data.capabilityChallenge (or a " +
@@ -47,6 +54,7 @@ const KNOWN_RPC_ERRORS: Record<number, MappedRpcError> = {
   [-32109]: {
     code: "ENVELOPE_AUTH_REQUIRED",
     recoverable: true,
+    actionRequired: "sign_envelope",
     nextAction:
       "Call daski_submit_task WITHOUT envelopeAuth first to receive the " +
       "envelope signing material, sign it exactly, then retry with " +

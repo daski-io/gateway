@@ -4,7 +4,11 @@ import {
 } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 
-const INPUT_SCHEMA = {
+// Exported for the SKILL.md example-validation test — every JSON example
+// in the doc must parse against the live schema, so the doc can never
+// again teach a shape the gateway rejects (the 2026-07-25 demo omitted
+// `name` and taught the exact omission every fresh-wallet agent made).
+export const INPUT_SCHEMA = {
   skillId: z.string(),
   serviceSlug: z.string().describe(
     "Service identifier returned by daski_search_services.",
@@ -13,7 +17,18 @@ const INPUT_SCHEMA = {
     "Wallet that signs payment and any atomic registration.",
   ),
   name: z.string().optional().describe(
-    "Registration-time display name for a fresh wallet.",
+    "REQUIRED CHOICE on the first paid call for a fresh wallet (no " +
+      "agentId yet): the buyer identity minted by that call is permanent. " +
+      "Pass your PRINCIPAL's exact stated business/entity name VERBATIM — " +
+      "no abbreviations or variants — or pass useWalletDerivedName: true " +
+      "instead. Omitting both pauses the call with " +
+      "BUYER_NAME_ACKNOWLEDGEMENT_REQUIRED (nothing is consumed). An " +
+      "already-registered wallet ignores this field harmlessly.",
+  ),
+  useWalletDerivedName: z.literal(true).optional().describe(
+    "The explicit alternative to `name`: accept the permanent " +
+      "wallet-derived default (buyer-<last6>). Pass exactly one of the " +
+      "two on a fresh wallet's first paid call — never both.",
   ),
   buyerTokenId: z.string().optional().describe(
     "Buyer agentId. The gateway resolves it from walletAddress when omitted.",
@@ -24,8 +39,24 @@ const INPUT_SCHEMA = {
   serviceArgs: z.record(z.string(), z.unknown()).optional().describe(
     "Skill-specific fields advertised by the selected catalog skill.",
   ),
+  phoneAcknowledgement: z
+    .object({
+      values: z.record(z.string(), z.string()).describe(
+        "Exact phone field=value pairs as they appear in serviceArgs " +
+          "(post-normalization, no separators).",
+      ),
+      principalConfirmed: z.literal(true),
+    })
+    .optional()
+    .describe(
+      "First-call phone acknowledgement: after echo-confirming the exact " +
+        "normalized number(s) with your principal, bind them here to skip " +
+        "the PHONE_ACKNOWLEDGEMENT_REQUIRED roundtrip. Values must match " +
+        "the serviceArgs phone fields byte-for-byte.",
+    ),
   phoneAcknowledgementToken: z.string().optional().describe(
-    "Acknowledgement token returned when serviceArgs contain phone values.",
+    "Acknowledgement token returned when serviceArgs contain phone values " +
+      "and no matching phoneAcknowledgement object was supplied.",
   ),
   buyerNameAcknowledgementToken: z.string().optional().describe(
     "Acknowledgement token returned when an atomic first purchase would " +
@@ -67,14 +98,15 @@ const INPUT_SCHEMA = {
 const DESCRIPTION = [
   "Start here for a paid Daski service. The first call validates service",
   "arguments and returns a signed provider quote plus payment typed data.",
-  "The second (settlement) call MUST echo the FULL first-call inputs —",
-  "including the exact same serviceArgs used to create the quote — plus",
-  "paymentPayload, paymentRequirements, and registration when the wallet",
-  "is fresh. Omitting serviceArgs on that signed retry fails with",
-  "QUOTE_REQUEST_ARGS_MISSING; recover by re-sending the identical",
-  "serviceArgs — never by re-signing or re-quoting. Alternatively settle",
-  "via daski_settle_payment instead of a second call here: pick ONE settle",
-  "path and never interleave the two.",
+  "FRESH WALLET? The first paid call for a wallet with no agentId mints a",
+  "PERMANENT buyer identity: pass `name` (the principal's exact stated",
+  "business/entity name, verbatim) or `useWalletDerivedName: true` on",
+  "that very first call — exactly one of the two.",
+  "Settle by following the returned plan: sign the payment typed data,",
+  "then call daski_settle_payment (the canonical settle path). A second",
+  "call here with paymentPayload also settles (x402-middleware compat)",
+  "but then serviceArgs MUST byte-match the quoted request — pick ONE",
+  "settle path and never interleave the two.",
   "Entity-formation managementType and members/managers are TOP-LEVEL `serviceArgs` keys.",
   "There is NO `officials` or `officialsByClassification` wrapper. Party objects are",
   "STRICT — accepted keys: firstName, lastName, isCompany, companyName,",

@@ -101,6 +101,8 @@ export function registerPurchaseTool(
         });
       }
       return mcpJson({
+        status: "action-required",
+        action: "sign_payment",
         quoteNotes: result.value.quoteNotes,
         legal: result.value.requirements.extra.daski.legal,
         agentAuthority: result.value.requirements.extra.daski.agentAuthority,

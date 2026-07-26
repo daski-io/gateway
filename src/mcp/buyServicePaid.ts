@@ -42,10 +42,12 @@ export async function runBuyServicePaidPath(
   // 2026-07-25), and the retry needed a full re-quote. Now nothing is
   // consumed — the gate error can truthfully say the retry is free.
   if (isAtomic && !buyerName) {
-    // Only when the name is being defaulted — passing `name` skips the gate.
+    // Only when the name is being defaulted — passing `name` skips the
+    // gate, and `useWalletDerivedName: true` IS the explicit choice.
     const nameError = checkBuyerNameAcknowledgement(
       defaultBuyerName(args.walletAddress.toLowerCase() as Hex),
       args.buyerNameAcknowledgementToken,
+      args.useWalletDerivedName,
     );
     if (nameError) return nameError;
   }
@@ -228,6 +230,8 @@ export async function runBuyServicePaidPath(
 
   return mcpJson(
     {
+      status: "action-required",
+      action: "sign_payment",
       kind: "paid",
       atomic: isAtomic,
       providerTokenId: provider.agentId.toString(),

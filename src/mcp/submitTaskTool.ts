@@ -3,7 +3,7 @@ import { z } from "zod";
 import type { SubmitTaskArgs } from "./submitTaskTypes.js";
 import type { McpToolResult } from "./util.js";
 
-const INPUT_SCHEMA = {
+export const INPUT_SCHEMA = {
   providerA2AUrl: z.string(),
   skillId: z.string(),
   paymentId: z.string().describe(

@@ -95,6 +95,11 @@ export function mcpJson(
   const result: McpToolResult = {
     content: [{ type: "text" as const, text: JSON.stringify(obj) }],
   };
+  // MCP structured tool output (spec 2025-06-18): typed clients read
+  // structuredContent; the text block stays the compatibility fallback.
+  if (isPlainRecord(obj)) {
+    result.structuredContent = obj as Record<string, unknown>;
+  }
   if (meta) result._meta = meta;
   return result;
 }
@@ -106,9 +111,34 @@ export function mcpError(
   const result: McpToolResult = {
     isError: true,
     content: [{ type: "text" as const, text: JSON.stringify(payload) }],
+    structuredContent: payload as unknown as Record<string, unknown>,
   };
   if (meta) result._meta = meta;
   return result;
+}
+
+/**
+ * An EXPECTED workflow transition: the operation is paused on a required
+ * follow-up (a signature, an acknowledgement, a corrected input), not
+ * failed. Returned as a SUCCESS result with a typed top-level
+ * `status`/`action` discriminator — `isError` is reserved for genuine
+ * failures (unreachable provider, invalid signature, malformed input).
+ * Clients and agents retry, alert, or abandon on errors; an expected
+ * transition must not read as one (260725 review, decision log #1).
+ */
+export function mcpActionRequired(
+  action: string,
+  payload: Record<string, unknown>,
+  meta?: Record<string, unknown>,
+): McpToolResult {
+  return mcpJson(
+    { status: "action-required", action, ...payload },
+    meta,
+  );
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
 // ── Tagged-union helpers ───────────────────────────────────────────────────
@@ -264,10 +294,14 @@ export function expectedPhoneAcknowledgementToken(
 export function checkBuyerNameAcknowledgement(
   resolvedDefaultName: string,
   acknowledgementToken: string | undefined,
+  useWalletDerivedName?: boolean,
 ): McpToolResult | null {
+  // `useWalletDerivedName: true` IS the explicit choice — the schema-level
+  // form of the acknowledgement, no token roundtrip needed.
+  if (useWalletDerivedName === true) return null;
   const expected = expectedBuyerNameAcknowledgementToken(resolvedDefaultName);
   if (acknowledgementToken === expected) return null;
-  return mcpError({
+  return mcpActionRequired("choose_buyer_identity", {
     code: "BUYER_NAME_ACKNOWLEDGEMENT_REQUIRED",
     message:
       "This wallet has no agentId yet, so this call mints one — and with no " +
@@ -306,15 +340,32 @@ export function expectedBuyerNameAcknowledgementToken(
     .slice(0, 32);
 }
 
+export interface PhoneAcknowledgementInput {
+  values: Record<string, string>;
+  principalConfirmed: true;
+}
+
 export function checkPhoneAcknowledgement(
   args: Record<string, unknown>,
   acknowledgementToken: string | undefined,
+  acknowledgement?: PhoneAcknowledgementInput,
 ): McpToolResult | null {
   const phones = presentPhoneFields(args);
   if (phones.length === 0) return null;
+  // Schema-level acknowledgement: the agent binds the EXACT normalized
+  // values it echo-confirmed with the principal on the first call — no
+  // token roundtrip. A mismatch on any field falls through to the gate,
+  // which re-states the exact values to confirm.
+  if (
+    acknowledgement &&
+    acknowledgement.principalConfirmed === true &&
+    phones.every(({ field, value }) => acknowledgement.values[field] === value)
+  ) {
+    return null;
+  }
   const expected = expectedPhoneAcknowledgementToken(phones);
   if (acknowledgementToken === expected) return null;
-  return mcpError({
+  return mcpActionRequired("acknowledge_phone", {
     code: "PHONE_ACKNOWLEDGEMENT_REQUIRED",
     message:
       "Phone number(s) in serviceArgs need your principal's explicit " +

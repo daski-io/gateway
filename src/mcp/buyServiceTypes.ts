@@ -5,9 +5,11 @@ export interface BuyServiceArgs {
   serviceSlug: string;
   walletAddress: string;
   name?: string;
+  useWalletDerivedName?: boolean;
   buyerTokenId?: string;
   providerTokenId?: string;
   serviceArgs?: Record<string, unknown>;
+  phoneAcknowledgement?: { values: Record<string, string>; principalConfirmed: true };
   phoneAcknowledgementToken?: string;
   buyerNameAcknowledgementToken?: string;
   amount?: string;

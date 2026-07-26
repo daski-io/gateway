@@ -9,10 +9,12 @@ import {
   sanitizeProviderArtifacts,
   sanitizeProviderValue,
 } from "./providerReflection.js";
-import { extractReplyPolicy } from "./replyPolicy.js";
+import { buildPrincipalUpdate } from "./principalUpdate.js";
+import { extractReplyPolicy, type ReplyPolicy } from "./replyPolicy.js";
 import { mapProviderRpcError } from "./rpcErrors.js";
 import type { SubmitTaskArgs } from "./submitTaskTypes.js";
 import {
+  mcpActionRequired,
   mcpError,
   mcpJson,
   type McpToolResult,
@@ -136,7 +138,7 @@ export async function dispatchSubmitTask({
   const rpc = post.body;
   if (rpc.error) {
     const mapped = mapProviderRpcError(rpc.error.code);
-    return mcpError({
+    const payload = {
       code: mapped?.code ?? "PROVIDER_ERROR",
       message: sanitizeProviderValue(
         rpc.error.message ?? "JSON-RPC error",
@@ -152,7 +154,12 @@ export async function dispatchSubmitTask({
         ? { recoverable: mapped.recoverable }
         : {}),
       ...(mapped?.nextAction ? { next_action: mapped.nextAction } : {}),
-    });
+    };
+    // Authorization steps are expected transitions, not failures.
+    if (mapped?.actionRequired) {
+      return mcpActionRequired(mapped.actionRequired, payload);
+    }
+    return mcpError(payload);
   }
   if (!rpc.result?.id) {
     return mcpError({
@@ -176,11 +183,18 @@ export async function dispatchSubmitTask({
   if (Array.isArray(result.artifacts) && result.artifacts.length > 0) {
     flattened.artifacts = sanitizeProviderArtifacts(result.artifacts);
   }
+  let replyPolicy: ReplyPolicy | null = null;
   if (result.status?.message) {
     flattened.statusMessage = sanitizeProviderValue(result.status.message);
-    const replyPolicy = extractReplyPolicy(result.status.message);
+    replyPolicy = extractReplyPolicy(result.status.message);
     if (replyPolicy) flattened.replyPolicy = replyPolicy;
   }
+  flattened.principalUpdate = buildPrincipalUpdate({
+    taskId: typeof result.id === "string" ? result.id : null,
+    status,
+    artifacts: flattened.artifacts,
+    replyPolicy,
+  });
 
   const capabilityChallengeReturned =
     status === "input-required" &&

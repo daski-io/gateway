@@ -97,6 +97,8 @@ export function challengeResponse(
     });
   }
   return mcpJson({
+    status: "action-required",
+    action: "sign_capability",
     requiresSignature: true,
     taskId,
     capabilityChallenge: challenge,

@@ -182,6 +182,7 @@ export async function runBuyServiceX402Retry(
   );
   return mcpJson(
     {
+      status: "completed",
       success: true,
       kind: "settled",
       settled: true,

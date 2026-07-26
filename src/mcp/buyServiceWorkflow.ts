@@ -50,6 +50,17 @@ export async function runBuyService(
 
   let buyerName: string | undefined;
   if (args.name != null && args.name !== "") {
+    if (args.useWalletDerivedName === true) {
+      return mcpError({
+        code: "BAD_INPUT",
+        message:
+          "Pass exactly ONE of `name` (the principal's exact stated " +
+          "business/entity name) or `useWalletDerivedName: true` — they " +
+          "are mutually exclusive identity choices.",
+        recoverable: true,
+        next_action: "Drop one of the two fields and re-send.",
+      });
+    }
     const sanitized = sanitizeBuyerName(args.name);
     if (!sanitized.ok) {
       return mcpError({
@@ -57,7 +68,8 @@ export async function runBuyService(
         message: `name: ${sanitized.error}`,
         recoverable: true,
         next_action:
-          "Fix name or omit it to accept the wallet-derived default.",
+          "Fix name, or pass useWalletDerivedName: true to accept the " +
+          "wallet-derived default explicitly.",
       });
     }
     buyerName = sanitized.name;
@@ -81,6 +93,7 @@ export async function runBuyService(
   const acknowledgementError = checkPhoneAcknowledgement(
     serviceArgs,
     args.phoneAcknowledgementToken,
+    args.phoneAcknowledgement,
   );
   if (acknowledgementError) return acknowledgementError;
 
