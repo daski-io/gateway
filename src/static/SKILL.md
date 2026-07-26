@@ -645,6 +645,16 @@ really is ("these links are single-use and expire in ~15 minutes — I've
 retrieved the document itself as your permanent copy, and I can mint a
 fresh link any time you want to re-download").
 
+**Check the completed task's `artifacts` first.** If they include a
+`document_download_access_challenge`, the provider already minted your
+challenge: sign its `eip712TypedData` with the buyer agent wallet and go
+straight to step 3, echoing the bundled `authorization` verbatim. That skips
+the unsigned roundtrip in steps 1–2 entirely. The bundled challenge is
+ONE-SHOT and bound to `action: "document-download"` — its nonce is consumed
+when the one-time URL is redeemed, so a later download of the same document
+needs a fresh challenge via steps 1–2. If the task carries no such artifact,
+start at step 1.
+
 1. Call `daski_fetch_artifact` with the artifact `url`, the `taskId` that
    returned that URL, and the cataloged `providerA2AUrl` used for the task.
    Omit `capability` on this first call. The URL must use the provider origin
