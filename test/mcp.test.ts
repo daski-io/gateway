@@ -9,7 +9,6 @@ import {
 } from "../src/serviceTaxonomy.js";
 import { startTestGateway, type TestGateway } from "./helpers/setup.js";
 import { computeRequestHash } from "../src/auth/envelope.js";
-import { expectedPhoneAcknowledgementToken } from "../src/mcp/util.js";
 import {
   AGENT_AUTHORITY,
   MCP_LEGAL_INSTRUCTIONS,
@@ -700,33 +699,12 @@ describe("hosted MCP — wallet-agnostic surface", () => {
     }
   });
 
-  it("daski_buy_service atomic: no name → gated, then wallet-derived default + how-to-name hint", async () => {
+  it("daski_buy_service atomic: no name → wallet-derived default + how-to-name hint", async () => {
     const fresh = "0xabcd000000000000000000000000000000aa39aa" as Hex;
     const { client, transport } = await connectClient(gateway.baseUrl);
     try {
-      // The default name is one-shot and irreversible, so an atomic first
-      // call with no `name` is gated before any plan is prepared.
-      const gated = parseResult<{
-        code: string;
-        details: {
-          resolvedDefaultName: string;
-          buyerNameAcknowledgementToken: string;
-        };
-      }>(
-        await client.callTool({
-          name: "daski_buy_service",
-          arguments: {
-            skillId: "register-domain",
-            providerTokenId: "2",
-            serviceSlug: "domain-management",
-            walletAddress: fresh,
-            serviceArgs: { domain: "atomic.xyz" },
-          },
-        }),
-      );
-      expect(gated.code).toBe("BUYER_NAME_ACKNOWLEDGEMENT_REQUIRED");
-      expect(gated.details.resolvedDefaultName).toBe("buyer-aa39aa");
-
+      // De-scar 260726: no acknowledgement gate — the default applies
+      // directly and the hint/plan text carries the how-to-name nudge.
       const body = parseResult<{
         atomic: boolean;
         registrationPrep: {
@@ -744,8 +722,6 @@ describe("hosted MCP — wallet-agnostic surface", () => {
             serviceSlug: "domain-management",
             walletAddress: fresh,
             serviceArgs: { domain: "atomic.xyz" },
-            buyerNameAcknowledgementToken:
-              gated.details.buyerNameAcknowledgementToken,
           },
         }),
       );
@@ -982,12 +958,6 @@ describe("hosted MCP — wallet-agnostic surface", () => {
             domain: "atomic.xyz",
             registrantPhone: "+15555550100",
           },
-          // Phone-bearing buys must pass the confirmation gate before any
-          // /quote roundtrip; this test targets provider-side quote errors,
-          // so satisfy the gate up front.
-          phoneAcknowledgementToken: expectedPhoneAcknowledgementToken([
-            { field: "registrantPhone", value: "+15555550100" },
-          ]),
         },
       });
       const r = result as ToolResultContent;

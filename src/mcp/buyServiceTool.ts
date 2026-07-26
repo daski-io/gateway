@@ -17,18 +17,17 @@ export const INPUT_SCHEMA = {
     "Wallet that signs payment and any atomic registration.",
   ),
   name: z.string().optional().describe(
-    "REQUIRED CHOICE on the first paid call for a fresh wallet (no " +
-      "agentId yet): the buyer identity minted by that call is permanent. " +
-      "Pass your PRINCIPAL's exact stated business/entity name VERBATIM — " +
-      "no abbreviations or variants — or pass useWalletDerivedName: true " +
-      "instead. Omitting both pauses the call with " +
-      "BUYER_NAME_ACKNOWLEDGEMENT_REQUIRED (nothing is consumed). An " +
+    "Buyer display name minted with the wallet's agentId on its first " +
+      "paid call — permanent once registered. Omitted, the wallet-derived " +
+      "default (buyer-<last6>) applies; the quote result carries a warning " +
+      "when the resolved name diverges from the request's companyName, so " +
+      "it can be corrected before anything is signed. An " +
       "already-registered wallet ignores this field harmlessly.",
   ),
   useWalletDerivedName: z.literal(true).optional().describe(
-    "The explicit alternative to `name`: accept the permanent " +
-      "wallet-derived default (buyer-<last6>). Pass exactly one of the " +
-      "two on a fresh wallet's first paid call — never both.",
+    "Explicitly accept the wallet-derived default name (buyer-<last6>); " +
+      "suppresses the name-divergence warning. Mutually exclusive with " +
+      "`name`.",
   ),
   buyerTokenId: z.string().optional().describe(
     "Buyer agentId. The gateway resolves it from walletAddress when omitted.",
@@ -38,29 +37,6 @@ export const INPUT_SCHEMA = {
   ),
   serviceArgs: z.record(z.string(), z.unknown()).optional().describe(
     "Skill-specific fields advertised by the selected catalog skill.",
-  ),
-  phoneAcknowledgement: z
-    .object({
-      values: z.record(z.string(), z.string()).describe(
-        "Exact phone field=value pairs as they appear in serviceArgs " +
-          "(post-normalization, no separators).",
-      ),
-      principalConfirmed: z.literal(true),
-    })
-    .optional()
-    .describe(
-      "First-call phone acknowledgement: after echo-confirming the exact " +
-        "normalized number(s) with your principal, bind them here to skip " +
-        "the PHONE_ACKNOWLEDGEMENT_REQUIRED roundtrip. Values must match " +
-        "the serviceArgs phone fields byte-for-byte.",
-    ),
-  phoneAcknowledgementToken: z.string().optional().describe(
-    "Acknowledgement token returned when serviceArgs contain phone values " +
-      "and no matching phoneAcknowledgement object was supplied.",
-  ),
-  buyerNameAcknowledgementToken: z.string().optional().describe(
-    "Acknowledgement token returned when an atomic first purchase would " +
-      "mint the wallet-derived default buyer name. Prefer passing `name`.",
   ),
   amount: z.string().optional().describe(
     "Optional buyer spend cap; provider pricing still comes from a signed quote.",
@@ -98,10 +74,12 @@ export const INPUT_SCHEMA = {
 const DESCRIPTION = [
   "Start here for a paid Daski service. The first call validates service",
   "arguments and returns a signed provider quote plus payment typed data.",
-  "FRESH WALLET? The first paid call for a wallet with no agentId mints a",
-  "PERMANENT buyer identity: pass `name` (the principal's exact stated",
-  "business/entity name, verbatim) or `useWalletDerivedName: true` on",
-  "that very first call — exactly one of the two.",
+  "A fresh wallet's first paid call also mints its permanent buyer",
+  "identity: pass `name` to choose it, or the wallet-derived default",
+  "applies (the quote warns if the resolved name diverges from the",
+  "request's companyName — correct it before signing if unintended).",
+  "Phone values in serviceArgs land on public WHOIS exactly as sent; the",
+  "quote result restates them in `warnings`.",
   "Settle by following the returned plan: sign the payment typed data,",
   "then call daski_settle_payment (the canonical settle path). A second",
   "call here with paymentPayload also settles (x402-middleware compat)",

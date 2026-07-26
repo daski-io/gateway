@@ -113,6 +113,15 @@ export function registerSettlePaymentTool(server: McpServer, deps: McpDeps): voi
       }
       const result = coordinated.result;
       if (!result.ok) {
+        // Honest recoverability (de-scar 260726): a blanket
+        // `recoverable: false` here was a lie for the common case — run
+        // 260726-213921 hit `unexpected_settle_error` with an EMPTY
+        // transaction (nothing mined, EIP-3009 nonce not consumed),
+        // retried the identical call, and succeeded. The nonce is only
+        // consumed by an on-chain settlement, so no-transaction failures
+        // are safely retryable; a failure WITH a mined transaction is the
+        // genuinely unrecoverable integrity case.
+        const settledOnChain = Boolean(result.response.transaction);
         return mcpError({
           code: result.errorReason,
           message: result.message,
@@ -124,7 +133,22 @@ export function registerSettlePaymentTool(server: McpServer, deps: McpDeps): voi
                   ? "Retry later while the provider quote remains valid."
                   : "Do not retry this unchanged payment. Request a fresh quote only after the participant issue is resolved.",
               }
-            : { recoverable: false }),
+            : settledOnChain
+              ? {
+                  recoverable: false,
+                  next_action:
+                    "A transaction was mined (details.transaction) but settlement " +
+                    "validation failed — do not re-send; verify the payment state " +
+                    "via daski_get_task_status / chain reads and escalate.",
+                }
+              : {
+                  recoverable: true,
+                  next_action:
+                    "Nothing was settled on-chain (details.transaction is empty) and " +
+                    "the payment authorization's nonce is unconsumed — re-sending " +
+                    "this identical call is safe. If the quote or authorization " +
+                    "deadline has expired, request a fresh quote instead.",
+                }),
           details: {
             transaction: result.response.transaction,
             payer: result.response.payer,

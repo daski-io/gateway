@@ -10,8 +10,6 @@ import {
   sanitizeProviderArtifacts,
   sanitizeProviderValue,
 } from "./providerReflection.js";
-import { buildPrincipalUpdate } from "./principalUpdate.js";
-import { extractReplyPolicy, type ReplyPolicy } from "./replyPolicy.js";
 import { mapProviderRpcError } from "./rpcErrors.js";
 import type { SubmitTaskArgs } from "./submitTaskTypes.js";
 import {
@@ -150,14 +148,24 @@ export async function dispatchSubmitTask({
     failOnNonOk: true,
   });
   if (!post.ok) {
+    // The lost-response loop is CLOSED for paid submits (provider ≥v0.15
+    // deduplicates on the settled serviceRef + signed body + envelope
+    // messageId: an identical re-send returns the existing task without
+    // re-executing). Free-skill and capability envelopes stay single-use.
     return providerErrorFromFailure(post, args.providerA2AUrl, {
       contextId,
-      nextAction:
-        "The request MAY have been processed before the failure and any " +
-        "signed envelope is now consumed — do NOT re-send the same " +
-        "envelope/messageId. First verify actual state with a read-only " +
-        "skill. Only if the action did NOT take effect, request a FRESH " +
-        "envelope and retry with the same contextId.",
+      nextAction: args.serviceRef
+        ? "The provider may or may not have received this submit. " +
+          "Re-sending the IDENTICAL call (same envelope, same messageId) " +
+          "is SAFE for a paid submit: the provider deduplicates and " +
+          "returns the existing task instead of re-executing. If the " +
+          "re-send also fails, verify actual state with a read-only " +
+          "skill before doing anything else."
+        : "The request MAY have been processed before the failure and " +
+          "this envelope is single-use — do NOT re-send the same " +
+          "envelope/messageId for a free skill. Verify actual state with " +
+          "a read-only skill; only if the action did NOT take effect, " +
+          "request a FRESH envelope and retry with the same contextId.",
     });
   }
   const rpc = post.body;
@@ -219,18 +227,9 @@ export async function dispatchSubmitTask({
   if (Array.isArray(result.artifacts) && result.artifacts.length > 0) {
     flattened.artifacts = sanitizeProviderArtifacts(result.artifacts);
   }
-  let replyPolicy: ReplyPolicy | null = null;
   if (result.status?.message) {
     flattened.statusMessage = sanitizeProviderValue(result.status.message);
-    replyPolicy = extractReplyPolicy(result.status.message);
-    if (replyPolicy) flattened.replyPolicy = replyPolicy;
   }
-  flattened.principalUpdate = buildPrincipalUpdate({
-    taskId: typeof result.id === "string" ? result.id : null,
-    status,
-    artifacts: flattened.artifacts,
-    replyPolicy,
-  });
 
   const capabilityChallengeReturned =
     status === "input-required" &&
