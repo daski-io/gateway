@@ -55,6 +55,7 @@ async function runSynchronousFreeSkill(
     });
   }
   return mcpJson({
+    status: "completed",
     ...body,
     kind: responseKind,
     providerTokenId: ctx.provider.agentId.toString(),
@@ -165,6 +166,8 @@ function buildFreeSkillPlan(
     args.serviceArgs,
   );
   return mcpJson({
+    status: "action-required",
+    action: "submit_task",
     kind: "free",
     freeKind: isOpenFree ? "open" : "ownership-gated",
     providerTokenId: provider.agentId.toString(),

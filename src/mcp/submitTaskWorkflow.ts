@@ -72,5 +72,6 @@ export async function runSubmitTask(
     paidChallenge: paymentContext.paidChallenge,
     config: deps.config,
     transport,
+    queries: deps.queries,
   });
 }

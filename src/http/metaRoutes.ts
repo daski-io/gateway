@@ -4,6 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Config } from "../config.js";
 import type { DiscoveryCache } from "../discovery/cache.js";
+import { hasMarketplaceService } from "../discovery/agentCard.js";
 import type { Embedder } from "../discovery/embeddings.js";
 import { GATEWAY_VERSION } from "../version.js";
 import type { Pool } from "../db/pool.js";
@@ -57,6 +58,7 @@ function fullDocs(config: Config): string {
     "- POST /purchase/:agentId",
     "- POST /verify, /settle, /confirm/:paymentId, /register-transaction",
     "- GET /register-prep, /confirm-prep/:paymentId, /discover",
+    "- GET /.well-known/x402",
     "- GET /public/v1/services, /public/v1/buyers, /public/v1/activity",
     "",
     "## Provider discovery",
@@ -170,6 +172,34 @@ export function createMetaRouter(deps: MetaRoutesDeps): Router {
     });
   });
 
+  router.get("/.well-known/x402", (_req, res) => {
+    // x402scan's compatibility-fallback discovery format: flat resource URL
+    // strings plus a guidance string, nothing else. The URLs are the same
+    // values the gateway issues as `resource` in payment requirements. Keep
+    // this byte-conservative — no Daski extension block.
+    const resources = cache
+      .getAll()
+      .filter(hasMarketplaceService)
+      .map(
+        (provider) =>
+          `${config.publicUrl}/purchase/${provider.agentId.toString()}`,
+      );
+    res.json({
+      version: 1,
+      resources,
+      instructions:
+        `Daski is an agent-to-agent marketplace on ${config.network} ` +
+        `(eip155:${config.chainId}). The listed resources are x402 ` +
+        `payment-challenge endpoints; opening a challenge requires a JSON ` +
+        `body (buyerTokenId, walletAddress, skillId, serviceSlug, ` +
+        `providerQuote) — flow documented at ${config.publicUrl}/skill.md. ` +
+        `Programmatic discovery and purchase: MCP endpoint ` +
+        `${config.publicUrl}${config.mcpPath} (streamable-http); REST ` +
+        `catalog ${config.publicUrl}/discover. Facilitator: ` +
+        `${config.publicUrl}/supported.`,
+    });
+  });
+
   router.get("/llms.txt", (_req, res) => {
     res
       .type("text/markdown")
@@ -181,6 +211,7 @@ export function createMetaRouter(deps: MetaRoutesDeps): Router {
           "",
           `- MCP endpoint: ${config.publicUrl}${config.mcpPath}`,
           `- Chain descriptor: ${config.publicUrl}/.well-known/daski-chain.json`,
+          `- x402 discovery: ${config.publicUrl}/.well-known/x402`,
           `- Skill prompt: ${config.publicUrl}/skill.md`,
           `- Full docs: ${config.publicUrl}/llms-full.txt`,
           `- Network: ${config.network} (chainId ${config.chainId})`,

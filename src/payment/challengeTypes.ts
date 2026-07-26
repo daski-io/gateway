@@ -30,4 +30,14 @@ export interface StoredChallenge {
   quoteSignature: Hex | null;
   quoteRequestHash: Hex | null;
   quoteExpiresAt: Date | null;
+  /**
+   * Canonical serviceArgs the quote committed to (migration 017). The
+   * settle retry and task submit restore these when the caller omits
+   * serviceArgs — the request hash still verifies against
+   * quoteRequestHash, so what was signed is what executes. Null on rows
+   * that predate the migration.
+   */
+  serviceArgs: Record<string, unknown> | null;
+  /** Acknowledgements captured at quote time (phone echo, name choice). */
+  acknowledgements: Record<string, unknown>;
 }

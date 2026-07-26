@@ -88,6 +88,8 @@ export async function prepareSubmitTaskEnvelope(
     messageId: args.messageId,
   });
   return mcpJson({
+    status: "action-required",
+    action: "sign_envelope",
     messageId: envelope.messageId,
     requestHash: envelope.requestHash,
     issuedAt: envelope.issuedAt,

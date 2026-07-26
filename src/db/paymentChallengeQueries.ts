@@ -54,6 +54,29 @@ export function createPaymentChallengeQueries(pool: Pool) {
       );
     },
 
+    /**
+     * Persists the flow snapshot for a quoted challenge: the canonical
+     * serviceArgs the quote committed to, and any acknowledgements
+     * captured at quote time. Best-effort by design — callers must never
+     * fail a purchase over a snapshot write.
+     */
+    async recordFlowState(
+      serviceRef: Hex,
+      serviceArgs: Record<string, unknown>,
+      acknowledgements: Record<string, unknown>,
+    ): Promise<void> {
+      await pool.query(
+        `UPDATE payment_challenges
+            SET service_args = $2, acknowledgements = $3
+          WHERE service_ref = $1`,
+        [
+          hexToBytea(serviceRef),
+          JSON.stringify(serviceArgs),
+          JSON.stringify(acknowledgements),
+        ],
+      );
+    },
+
     async getChallengeByRef(serviceRef: Hex): Promise<StoredChallenge | null> {
       const res = await pool.query<ChallengeRow>(
         `SELECT * FROM payment_challenges WHERE service_ref = $1`,

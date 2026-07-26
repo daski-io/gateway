@@ -208,32 +208,29 @@ slot before calling `daski_buy_service`:
   accepted — there is no registrant-nationality restriction, so never tell
   a principal their country disqualifies them, and never substitute a
   different country to get a registration through.
-- phone (E.164, e.g. `+14155551234` — no dots/spaces/dashes). You cannot
-  pre-normalize a number you have not collected yet, so pre-ARM the
-  confirmation inside the upfront ask instead. Quote this sentence
-  VERBATIM in the ask — do NOT compress it to just the format and example,
-  because the separator-stripping clause is the half that pre-arms the
-  acknowledgement:
+- phone (E.164, e.g. `+14155551234` — no dots/spaces/dashes). The value
+  lands on public WHOIS exactly as sent, so the exact normalized number
+  must be confirmed WITH THE PRINCIPAL before any purchase call. The
+  flow: collect the number, normalize it (strip separators), echo the
+  normalized value back ("I'll register with phone +48221234567,
+  normalized from +48.221234567 — confirm or correct"), and after the
+  yes, bind it on the FIRST purchase call:
 
-  > Give me the phone in E.164 with no dots/spaces/dashes (e.g.
-  > +14155551234); if you include any separators I will strip them and
-  > register the stripped value on public WHOIS.
+  ```
+  phoneAcknowledgement: {
+    values: { "registrantPhone": "+48221234567" },
+    principalConfirmed: true
+  }
+  ```
 
-  Shortening this to "Registrant phone (E.164 format, e.g. +14155551234)"
-  is the observed failure and costs the roundtrip below every time. If the
-  principal still replies with separators (e.g. `+48.221234567`), your
-  VERY NEXT message — before the purchase call — must be the normalized
-  echo-confirm: "I'll register with phone +48221234567, normalized from
-  +48.221234567 — confirm or correct." The echo exists to catch
-  mis-parses before they land on public WHOIS; a silent normalization
-  defeats it. This is ENFORCED: the first
-  `daski_buy_service` call carrying a phone fails with
-  `PHONE_ACKNOWLEDGEMENT_REQUIRED` and a `phoneAcknowledgementToken` bound
-  to the exact value — acknowledge the public value with your principal,
-  then retry the same call with the token. The token records an
-  acknowledgement, not proof of principal consent; passing it back without
-  having asked defeats a safeguard that exists to protect your principal's
-  public record
+  With a matching acknowledgement the call proceeds straight to the
+  quote. Without one, the call PAUSES (a success result with
+  `status: "action-required"`, `action: "acknowledge_phone"`, and a
+  `phoneAcknowledgementToken` bound to the exact values) — echo-confirm,
+  then retry with the token. Neither path proves principal consent; both
+  record that YOU confirmed the exact public value, so never fabricate
+  the confirmation — the safeguard protects your principal's public
+  record
 - WHOIS privacy yes/no — pass `whoisPrivacy: true` to request it (free
   where the TLD supports it). The `registration_details` artifact reports
   `"enabled" | "unavailable" | "not_requested"`; relay "unavailable" to the
@@ -302,32 +299,26 @@ over-claim. Neither value is a delivery test, and
 never a deliverability guarantee. The same discipline covers invented
 specifics: the mailbox password is shown ONCE and never stored — relay
 exactly that and do NOT invent a visibility window (there is no "gone
-after ~7 days"). CATEGORICAL closing-summary rule — for domains,
-mailboxes, AND entity work alike: a summary contains ZERO commitments
-about future actions, yours or the provider's, that no returned field or
-held tool backs. Banned unless backed: reminder schedules of any shape
-("T-30/T-7 emails", "renewal reminders at 30/15/7/1 days"); promises to
-monitor or follow up ("I'll flag it again as it approaches", "I'll keep
-an eye on the annual-report deadline", "I'll flag it when it's time");
-offers to "set a reminder" when you hold no scheduler tool; offers to
-perform a future filing yourself ("I can file the annual report when
-it's due", "I can handle that via `file-compliance` closer to the
-date") — a skill existing in the catalog is not a standing engagement,
-and you will not be running when the date arrives; invented delivery
-windows ("the verification email arrives within 24 hours" — the ONLY
-returned fact is `registration_details.verificationDeadlineDays`, a
-confirm deadline, and nothing observes or receipts the send, so no
-arrival time exists to quote); self-derived statutory deadlines (an
-annual-report date you worked out yourself is not backed —
-`get-entity-status.upcomingComplianceEvents` is, and when it comes back
-empty the honest answer is that no upcoming event is listed); and
-provider-notification promises ("the provider will push/email updates as
-it progresses") — a catalog capability line is NOT a per-task receipt,
-so assert provider email only from a returned `emailDelivery`-style
-field. An agent session has no persistent timer: when nothing backs a
-future commitment, say only that the contact email on file receives
-lifecycle notices and that the principal can ask you to renew or file at
-any time.
+after ~7 days").
+
+**Task results carry a `principalUpdate` block — relay it instead of
+authoring your own claims.** Every submit/status result includes
+`principalUpdate` with `summary` (what the provider actually reported,
+hedges included), `nextSteps` (only actions THIS result supports),
+and `monitoring.active: false`. Your close is: the `summary` content,
+the monitoring truth (you have no timer, nothing notifies you, the
+principal can ask you to re-check any time), your own logistics, and
+NOTHING else about the service. An agent session has no persistent
+timer, so a summary contains ZERO commitments about future actions —
+yours or the provider's — that no returned field or held tool backs:
+no reminder schedules, no "I'll keep monitoring/flag you when it
+changes", no future filings on your own initiative, no invented
+delivery windows, no self-derived statutory deadlines
+(`get-entity-status.upcomingComplianceEvents` is the only backed
+source), and no provider-notification promises beyond a returned
+`emailDelivery`-style receipt. When nothing backs a future commitment,
+say only that the contact email on file receives lifecycle notices and
+that the principal can ask you to renew or file at any time.
 
 **Closing a task that CANNOT reach a terminal state in this session.**
 Some work legitimately outlives the conversation: a filing parked for
@@ -408,18 +399,14 @@ with your principal before paying):
   parties must be adults"), so if the principal insists on a DOB you
   flagged as implausible, say the filing is expected to bounce and let
   them decide — proceeding is their call to make, not yours to refuse
-- the **state** as a bare 2-letter code (`"WY"` — NOT `"Wyoming"` and NOT
-  the search-style ISO subdivision `"US-WY"`; search jurisdictions and
-  get-pricing `state` use DIFFERENT formats) and the **entityType** as the
-  full catalog label (`"Limited Liability Company"`, not `"LLC"` or
-  `"llc"`). Do NOT guess either label on your FIRST `get-pricing` call:
-  call it with ONLY `country` + `state` to read back the exact
-  (entityType, product) labels that state accepts, THEN repeat with the
-  copied `entityType` + `product` for the full `requiredFields` contract
-  (including the state's `formData` shape). A guessed label wastes the
-  call — the label you must submit is discovered by the same country+state
-  call you skipped. Narrow your filters — broad, country-wide pricing
-  calls return very large responses.
+- the **state** as a bare 2-letter code (`"WY"` — `"US-WY"` and common
+  entityType aliases like `"LLC"`/`"llc"` are accepted and canonicalized)
+  and the **entityType** as the full catalog label
+  (`"Limited Liability Company"`). `get-pricing` echoes
+  `normalizedLabels` with the canonical (entityType, product, state) it
+  resolved — copy THOSE canonical labels into the formation
+  `serviceArgs`, not your original guess. Narrow your filters — broad,
+  country-wide pricing calls return very large responses.
 
 A ready-to-fill `serviceArgs` skeleton — `managementType`/`members`/
 `managers` are TOP-LEVEL siblings (there is NO `officialsByClassification`
@@ -472,32 +459,19 @@ step 9 below.
      + a longer `plan` — wallet has no agentId yet; the gateway will
      mint one in the same on-chain tx as the USDC settlement, so the
      payment is the Sybil tax for the new agentId. Buyer pays no gas.
-     Decide the name BEFORE either signature. Pass an optional `name` on
-     this first call to choose the display name minted with the new agentId
-     — pick the name you want to be
-     known by on receipts and the marketplace (max 64 chars, uniqueness
-     not required). Omitted, it defaults to `buyer-<last6>` from the
-     wallet address (`registrationPrep.resolvedName` echoes the final
-     value either way). The gateway treats this as registration-time
-     metadata, so decide before signing — the name is baked into the
-     typed-data of step 5. ALWAYS
-     pass `name` on the VERY FIRST call unless you have CONFIRMED the
-     wallet is already registered: don't quote once to check `atomic` and
-     then re-call to add it (that re-quotes and discards the first
-     answer). If the wallet turns out to be registered already, `name` is
-     ignored with a harmless `name was ignored` warning. Derive the name
-     from your PRINCIPAL's business — use the EXACT business/entity name
-     they stated in this task (no invented variants; ask if none is
-     available) — never from the provider or counterparty you are buying
-     from: this permanently names YOUR buyer identity on receipts and
-     the marketplace. This is ENFORCED: an atomic first call with no
-     `name` fails with `BUYER_NAME_ACKNOWLEDGEMENT_REQUIRED`, naming the
-     `buyer-<last6>` default it would otherwise mint. The fix is almost
-     always to re-call with `name`; only pass the returned
-     `buyerNameAcknowledgementToken` if the wallet-derived default really
-     is what you want. The gate exists because the default is one-shot and
-     irreversible — a wallet that registers as `buyer-0b83e2` carries that
-     name forever.
+     The identity choice is part of the FIRST call: pass `name` set to
+     your PRINCIPAL's exact stated business/entity name VERBATIM (no
+     invented variants or abbreviations; ask if none is available — max
+     64 chars, uniqueness not required, and never the provider's name),
+     or pass `useWalletDerivedName: true` to explicitly accept the
+     permanent `buyer-<last6>` default. Exactly one of the two. The name
+     is baked into the registration typed-data and can never change —
+     a wallet that registers as `buyer-0b83e2` carries that name
+     forever. A call with neither choice pauses with
+     `status: "action-required"`, `action: "choose_buyer_identity"`
+     BEFORE any quote is created — nothing is consumed; re-send the
+     identical call with your choice added. If the wallet turns out to
+     be registered already, both fields are ignored harmlessly.
    - `kind: "free"` + a `plan` for ownership-gated skills (see below).
 3. If `missing_fields` error: prompt the user for the listed fields and
    retry.
@@ -529,14 +503,13 @@ step 9 below.
    ```
    Omit `registration` when `atomic` was false. Returns `paymentId`,
    `transaction`, `providerA2AUrl`, and (when applicable) `registered: true`.
-   NB `daski_settle_payment` is ONE of two settle paths — the other is a
-   SECOND `daski_buy_service` call echoing the FULL first-call inputs
-   (including the exact same `serviceArgs`) plus `paymentPayload` /
-   `paymentRequirements` / `registration`. Pick ONE path and stay on it:
-   never embed `paymentPayload` into a `daski_buy_service` call that drops
-   `serviceArgs` (that fails with `QUOTE_REQUEST_ARGS_MISSING` — recover by
-   re-sending the identical `serviceArgs`, never by re-signing), and never
-   follow a successful settle with the other path's settle call.
+   `daski_settle_payment` is the CANONICAL settle path — it locates the
+   quote by `serviceRef` inside `paymentRequirements`, so no serviceArgs
+   echo is needed and nothing can drift. (A second `daski_buy_service`
+   call with `paymentPayload` also settles — it exists for x402
+   middleware that replays the same tool — but there serviceArgs MUST
+   byte-match the quoted request. Pick ONE path and never follow a
+   successful settle with the other path's settle call.)
 7. Call `daski_submit_task` WITHOUT `envelopeAuth` so the gateway returns
    the EIP-712 A2ARequestAuthorization typed-data plus a fresh `messageId`.
    Pass `providerA2AUrl`, `skillId`, `paymentId`, `serviceRef`,
@@ -801,6 +774,18 @@ will reflect this.
 
 ## Errors you'll see
 
+**First, what is NOT an error.** Every gateway tool result carries a
+top-level `status`. `status: "action-required"` + `action` is an EXPECTED
+workflow step returned as a SUCCESS — a signature to produce
+(`sign_payment`, `sign_registration`, `sign_envelope`, `sign_capability`,
+`sign_attestation`), an acknowledgement to complete (`acknowledge_phone`,
+`choose_buyer_identity`), or the next tool to call (`submit_task`).
+Perform the named action and continue; do not treat it as a failure, do
+not restart the flow, and do not re-quote. Genuine failures come back as
+tool errors with a named `code` — provider-side JSON-RPC codes are
+surfaced by name (`CAPABILITY_REQUIRED`, `ENVELOPE_AUTH_REJECTED`,
+`INVALID_PARAMS`, …) with the raw `rpcCode` kept in `details`.
+
 - `missing_fields` — `daski_buy_service` validation failed against the
   skill's `requiredFields`. Prompt the user for each listed field, then
   retry.
@@ -879,44 +864,146 @@ will reflect this.
 
 ## Demo scenario — buy a domain
 
-User: "Register example.xyz for me."
+User (the principal, who runs "Example Studio LLC"): "Register
+example.xyz for me." The principal supplied the full WHOIS contact set
+upfront and confirmed the normalized phone `+15125550142`.
 
+Every JSON block below is a complete, schema-valid tool argument object
+(CI validates them against the live tool schemas — if you copy a shape
+from here, it is the real contract).
+
+1. `wallet.getAddress()` → `0xabc...` (fresh wallet, no agentId yet)
+2. `daski_search_services({ serviceType: "domain-registration" })`
+   → `{ providers: [{ agentId: "1", serviceSlug: "domain-management", ... }] }`
+3. First `daski_buy_service` call — note `name` (the principal's exact
+   business name, because a fresh wallet's first paid call mints the
+   permanent buyer identity; `useWalletDerivedName: true` is the explicit
+   alternative) and `phoneAcknowledgement` (the phone was echo-confirmed
+   with the principal in step 0):
+
+daski_buy_service arguments:
+```json
+{
+  "serviceSlug": "domain-management",
+  "skillId": "register-domain",
+  "providerTokenId": "1",
+  "walletAddress": "0xabc0000000000000000000000000000000000abc",
+  "name": "Example Studio LLC",
+  "phoneAcknowledgement": {
+    "values": { "registrantPhone": "+15125550142" },
+    "principalConfirmed": true
+  },
+  "serviceArgs": {
+    "domain": "example.xyz",
+    "years": 1,
+    "registrantName": "Jane Doe",
+    "registrantEmail": "jane@example-studio.com",
+    "registrantAddress": "100 Main St",
+    "registrantCity": "Austin",
+    "registrantState": "US-TX",
+    "registrantPostalCode": "78701",
+    "registrantCountry": "US",
+    "registrantPhone": "+15125550142",
+    "whoisPrivacy": true
+  }
+}
 ```
-1. wallet.getAddress() → 0xabc...
-2. daski_search_services({ intent: "register a .xyz domain" })
-   → { providers: [{ agentId: "1", ... }] }
-3. daski_buy_service({
-     serviceSlug: "domain-management",
-     skillId: "register-domain",
-     providerTokenId: "1",
-     walletAddress: "0xabc...",
-     serviceArgs: { domain: "example.xyz" }
-   })
-   → { kind: "paid", paymentRequirements, plan: [...] }
-4. wallet.signTypedData(paymentRequirements.extra.daski.eip712TypedData)
-   → "0x123...signature"
-5. daski_buy_service({ ...same args, paymentPayload, paymentRequirements })
-   → { paymentId: "42", transactionHash: "0x...", serviceRef: "0x...",
-       providerA2AUrl: "https://...", buyerTokenId: "5" }
-6. daski_submit_task({                  // first call — no envelopeAuth
-     providerA2AUrl, skillId: "register-domain",
-     paymentId: "42", chainId: 84532, buyerTokenId: "5",
-     serviceRef, transactionHash,
-     serviceArgs: { domain: "example.xyz" }
-   })
-   → { messageId, eip712TypedData, authorization, hint }
-7. wallet.signTypedData(eip712TypedData) → envelope signature
-8. daski_submit_task({                  // second call — signed retry
-     ...same args, messageId,
-     envelopeAuth: { signature: <step 7>, authorization: <step 6> }
-   })
-   → { taskId: "task-7", state: "submitted" }
-9. Loop: daski_get_task_status({ providerA2AUrl, taskId })
-   until state == "completed" (or pass stream:true for SSE)
-10. Surface artifacts. Then two-call daski_confirm_delivery:
-    a. daski_confirm_delivery({ paymentId, attester, confirmation: "Confirmed" })
-       → { eip712TypedData, deadline }
-    b. wallet.signTypedData(eip712TypedData) → { v, r, s }
-    c. daski_confirm_delivery({ ...same args, deadline, signature: { v, r, s } })
-       → { attestationUid, transactionHash, success: true }
+   → `{ status: "action-required", action: "sign_payment", kind: "paid",
+      atomic: true, paymentRequirements, registrationPrep, plan }`
+4. `wallet.signTypedData(paymentRequirements.extra.daski.eip712TypedData)`
+   → payment signature. Atomic wallet: ALSO sign
+   `registrationPrep.eip712TypedData` → registration signature.
+5. Settle via `daski_settle_payment` (the canonical settle path):
+
+daski_settle_payment arguments:
+```json
+{
+  "paymentPayload": {
+    "x402Version": 1,
+    "scheme": "exact",
+    "network": "base-sepolia",
+    "payload": {
+      "signature": "0xpaymentsignature",
+      "authorization": { "from": "0xabc0000000000000000000000000000000000abc" }
+    }
+  },
+  "paymentRequirements": { "extra": { "daski": { "serviceRef": "0xref" } } },
+  "registration": {
+    "agentURI": "https://gateway.example/agents/0xabc.json",
+    "deadline": "1760000000",
+    "signature": "0xregistrationsignature"
+  }
+}
+```
+   → `{ status: "completed", paymentId: "42", transaction: "0x...",
+      serviceRef: "0x...", buyerTokenId: "5", providerA2AUrl, registered: true }`
+6. First `daski_submit_task` call (no envelopeAuth) returns the envelope
+   typed-data to sign:
+
+daski_submit_task arguments:
+```json
+{
+  "providerA2AUrl": "https://provider.example/a2a",
+  "skillId": "register-domain",
+  "paymentId": "42",
+  "chainId": 84532,
+  "buyerTokenId": "5",
+  "serviceRef": "0xref",
+  "transactionHash": "0xsettletx",
+  "serviceArgs": {
+    "domain": "example.xyz",
+    "years": 1,
+    "registrantName": "Jane Doe",
+    "registrantEmail": "jane@example-studio.com",
+    "registrantAddress": "100 Main St",
+    "registrantCity": "Austin",
+    "registrantState": "US-TX",
+    "registrantPostalCode": "78701",
+    "registrantCountry": "US",
+    "registrantPhone": "+15125550142",
+    "whoisPrivacy": true
+  }
+}
+```
+   → `{ status: "action-required", action: "sign_envelope", messageId,
+      eip712TypedData, authorization, hint }`
+7. `wallet.signTypedData(eip712TypedData)` → envelope signature.
+8. Second `daski_submit_task` call = first call's EXACT arguments plus
+   `messageId` + `envelopeAuth` (nothing removed, nothing changed).
+   → `{ taskId: "task-7", status: "submitted", principalUpdate,
+      artifacts: [task_access_challenge] }` — sign the bundled
+   `task_access_challenge` NOW and pass it as `capability` on your first
+   poll to skip the `-32107` handshake.
+9. Poll until terminal (or pass `stream: true` for SSE):
+
+daski_get_task_status arguments:
+```json
+{
+  "providerA2AUrl": "https://provider.example/a2a",
+  "taskId": "task-7",
+  "capability": {
+    "signature": "0xcapabilitysignature",
+    "authorization": { "taskId": "task-7", "action": "get" }
+  }
+}
+```
+   → `{ status: "completed", principalUpdate, artifacts, replyPolicy? }`.
+   Relay `principalUpdate.summary` — do not author your own claims about
+   email delivery, DNS propagation, or timelines.
+10. Deliverable + attestation: `daski_fetch_artifact` for any gated
+    document (hand the embedded file to the principal), then the two-call
+    `daski_confirm_delivery`:
+
+daski_confirm_delivery arguments:
+```json
+{
+  "paymentId": "42",
+  "attester": "0xabc0000000000000000000000000000000000abc",
+  "confirmation": "Confirmed"
+}
+```
+    → `{ status: "action-required", action: "sign_attestation",
+       eip712TypedData, deadline }` — sign, then repeat the call with
+    `deadline` and `signature: { v, r, s }` added
+    → `{ status: "completed", attestationUid, transactionHash, success: true }`
 ```

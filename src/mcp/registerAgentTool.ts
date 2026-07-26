@@ -97,7 +97,11 @@ async function registerAgent(
         ...(Object.keys(details).length > 0 ? { details } : {}),
       });
     }
-    return mcpJson(prepared.value);
+    return mcpJson({
+      status: "action-required",
+      action: "sign_registration",
+      ...prepared.value,
+    });
   }
   if (!args.agentURI || !args.deadline) {
     return mcpError({
@@ -121,5 +125,5 @@ async function registerAgent(
       ...(Object.keys(details).length > 0 ? { details } : {}),
     });
   }
-  return mcpJson(submitted.value);
+  return mcpJson({ status: "completed", ...submitted.value });
 }

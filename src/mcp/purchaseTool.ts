@@ -100,7 +100,18 @@ export function registerPurchaseTool(
           next_action: result.error.nextAction,
         });
       }
+      try {
+        await deps.queries.recordFlowState(
+          result.value.challenge.serviceRef,
+          args.serviceArgs ?? {},
+          {},
+        );
+      } catch {
+        // snapshot only — never fails the quote
+      }
       return mcpJson({
+        status: "action-required",
+        action: "sign_payment",
         quoteNotes: result.value.quoteNotes,
         legal: result.value.requirements.extra.daski.legal,
         agentAuthority: result.value.requirements.extra.daski.agentAuthority,

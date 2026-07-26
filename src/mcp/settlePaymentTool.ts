@@ -8,6 +8,28 @@ import { mcpError, mcpJson, type McpToolResult } from "./util.js";
 const HEX_32 = /^0x[0-9a-fA-F]{64}$/;
 const SUPPORTED_NETWORKS = ["base", "base-sepolia"] as const;
 
+export const SETTLE_PAYMENT_INPUT_SCHEMA = {
+  paymentPayload: z
+    .object({
+      x402Version: z.literal(1),
+      scheme: z.literal("exact"),
+      network: z.enum(SUPPORTED_NETWORKS),
+      payload: z.object({
+        signature: z.string(),
+        authorization: z.record(z.string(), z.unknown()),
+      }),
+    })
+    .passthrough(),
+  paymentRequirements: z.record(z.string(), z.unknown()),
+  registration: z
+    .object({
+      agentURI: z.string(),
+      deadline: z.string(),
+      signature: z.string(),
+    })
+    .optional(),
+};
+
 export function registerSettlePaymentTool(server: McpServer, deps: McpDeps): void {
   server.registerTool(
     "daski_settle_payment",
@@ -20,27 +42,7 @@ export function registerSettlePaymentTool(server: McpServer, deps: McpDeps): voi
         "Fresh wallets may include a signed registration so identity creation and settlement remain atomic.",
         "Returns the payment, transaction, service, provider, and buyer identifiers needed by daski_submit_task.",
       ].join("\n"),
-      inputSchema: {
-        paymentPayload: z
-          .object({
-            x402Version: z.literal(1),
-            scheme: z.literal("exact"),
-            network: z.enum(SUPPORTED_NETWORKS),
-            payload: z.object({
-              signature: z.string(),
-              authorization: z.record(z.string(), z.unknown()),
-            }),
-          })
-          .passthrough(),
-        paymentRequirements: z.record(z.string(), z.unknown()),
-        registration: z
-          .object({
-            agentURI: z.string(),
-            deadline: z.string(),
-            signature: z.string(),
-          })
-          .optional(),
-      },
+      inputSchema: SETTLE_PAYMENT_INPUT_SCHEMA,
       annotations: {
         title: "Daski: settle payment",
         readOnlyHint: false,
@@ -131,6 +133,7 @@ export function registerSettlePaymentTool(server: McpServer, deps: McpDeps): voi
       }
       const response = result.response;
       return mcpJson({
+        status: "completed",
         success: true,
         transaction: response.transaction,
         network: response.network,

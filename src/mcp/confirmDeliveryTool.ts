@@ -15,6 +15,32 @@ interface ConfirmDeliveryArgs {
   signature?: { v: number; r: string; s: string };
 }
 
+export const CONFIRM_DELIVERY_INPUT_SCHEMA = {
+  paymentId: z
+    .string()
+    .describe("On-chain payment identifier returned at settlement."),
+  confirmation: z.enum(["Confirmed", "NotConfirmed"]),
+  attester: z
+    .string()
+    .describe("Buyer wallet that paid for the service."),
+  deadlineSeconds: z
+    .number()
+    .optional()
+    .describe("First-call signature expiry. Default 3600 seconds."),
+  deadline: z
+    .string()
+    .optional()
+    .describe("Second-call deadline returned by the first call."),
+  refUid: z.string().optional(),
+  signature: z
+    .object({
+      v: z.number(),
+      r: z.string(),
+      s: z.string(),
+    })
+    .optional(),
+};
+
 export function registerConfirmDeliveryTool(
   server: McpServer,
   deps: McpDeps,
@@ -30,31 +56,7 @@ export function registerConfirmDeliveryTool(
         "Second call repeats the inputs with deadline and signature {v,r,s}.",
         "Use the same buyer wallet that paid for the service.",
       ].join("\n"),
-      inputSchema: {
-        paymentId: z
-          .string()
-          .describe("On-chain payment identifier returned at settlement."),
-        confirmation: z.enum(["Confirmed", "NotConfirmed"]),
-        attester: z
-          .string()
-          .describe("Buyer wallet that paid for the service."),
-        deadlineSeconds: z
-          .number()
-          .optional()
-          .describe("First-call signature expiry. Default 3600 seconds."),
-        deadline: z
-          .string()
-          .optional()
-          .describe("Second-call deadline returned by the first call."),
-        refUid: z.string().optional(),
-        signature: z
-          .object({
-            v: z.number(),
-            r: z.string(),
-            s: z.string(),
-          })
-          .optional(),
-      },
+      inputSchema: CONFIRM_DELIVERY_INPUT_SCHEMA,
       annotations: {
         title: "Confirm Daski delivery",
         readOnlyHint: false,
@@ -91,7 +93,11 @@ async function confirmDelivery(
         ...(Object.keys(details).length > 0 ? { details } : {}),
       });
     }
-    return mcpJson(prepared.value);
+    return mcpJson({
+      status: "action-required",
+      action: "sign_attestation",
+      ...prepared.value,
+    });
   }
   if (!args.deadline) {
     return mcpError({
@@ -119,5 +125,5 @@ async function confirmDelivery(
   );
   if (!result.ok) return mcpError(result.error);
   const { ok: _ok, ...response } = result;
-  return mcpJson(response);
+  return mcpJson({ status: "completed", ...response });
 }
