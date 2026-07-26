@@ -9,6 +9,8 @@ import {
   sanitizeProviderArtifacts,
   sanitizeProviderValue,
 } from "./providerReflection.js";
+import { extractReplyPolicy } from "./replyPolicy.js";
+import { mapProviderRpcError } from "./rpcErrors.js";
 import type { SubmitTaskArgs } from "./submitTaskTypes.js";
 import {
   mcpError,
@@ -133,8 +135,9 @@ export async function dispatchSubmitTask({
   }
   const rpc = post.body;
   if (rpc.error) {
+    const mapped = mapProviderRpcError(rpc.error.code);
     return mcpError({
-      code: "PROVIDER_ERROR",
+      code: mapped?.code ?? "PROVIDER_ERROR",
       message: sanitizeProviderValue(
         rpc.error.message ?? "JSON-RPC error",
       ) as string,
@@ -145,6 +148,10 @@ export async function dispatchSubmitTask({
           ? { data: sanitizeProviderValue(rpc.error.data) }
           : {}),
       },
+      ...(mapped?.recoverable !== undefined
+        ? { recoverable: mapped.recoverable }
+        : {}),
+      ...(mapped?.nextAction ? { next_action: mapped.nextAction } : {}),
     });
   }
   if (!rpc.result?.id) {
@@ -156,10 +163,14 @@ export async function dispatchSubmitTask({
   }
 
   const result = rpc.result;
+  const status = normalizeState(result.status?.state) ?? "submitted";
   const flattened: Record<string, unknown> = {
     taskId: result.id,
     contextId: result.contextId ?? contextId,
-    state: normalizeState(result.status?.state) ?? "submitted",
+    status,
+    // Deprecated alias — older clients read `state`. Remove after a
+    // deprecation window; `status` is the canonical key on every path.
+    state: status,
     providerA2AUrl: args.providerA2AUrl,
   };
   if (Array.isArray(result.artifacts) && result.artifacts.length > 0) {
@@ -167,10 +178,12 @@ export async function dispatchSubmitTask({
   }
   if (result.status?.message) {
     flattened.statusMessage = sanitizeProviderValue(result.status.message);
+    const replyPolicy = extractReplyPolicy(result.status.message);
+    if (replyPolicy) flattened.replyPolicy = replyPolicy;
   }
 
   const capabilityChallengeReturned =
-    flattened.state === "input-required" &&
+    status === "input-required" &&
     Array.isArray(result.artifacts) &&
     result.artifacts.some(
       (artifact) =>

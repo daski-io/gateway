@@ -275,8 +275,12 @@ export function checkBuyerNameAcknowledgement(
       "derived from the wallet address. This is baked into the registration " +
       "typed-data you are about to sign and cannot be changed later. Pass " +
       "`name` set to your PRINCIPAL's exact stated business/entity name " +
-      "(the normal case), or, if the wallet-derived default really is " +
-      "intended, retry this same call with `buyerNameAcknowledgementToken`.",
+      "VERBATIM — do not abbreviate or coin a variant (if the principal " +
+      "said 'Harbor and Pine Retail LLC', pass that string, not 'Harbor " +
+      "and Pine') — or, if the wallet-derived default really is intended, " +
+      "retry this same call with `buyerNameAcknowledgementToken`. This " +
+      "check ran BEFORE any provider quote was created: nothing was " +
+      "consumed, no re-signing is needed, and the retry is free.",
     details: {
       resolvedDefaultName,
       buyerNameAcknowledgementToken: expected,
@@ -286,8 +290,10 @@ export function checkBuyerNameAcknowledgement(
     },
     recoverable: true,
     next_action:
-      "Re-call with `name` set to the principal's exact business/entity " +
-      "name, or with buyerNameAcknowledgementToken to accept the default.",
+      "Re-send the identical call with `name` set to the principal's exact " +
+      "business/entity name (verbatim), or with " +
+      "buyerNameAcknowledgementToken to accept the default. Nothing was " +
+      "consumed by this check.",
   });
 }
 
@@ -336,7 +342,10 @@ export function checkPhoneAcknowledgement(
     recoverable: true,
     next_action:
       "Echo the exact phone value(s) to the principal, get an explicit " +
-      "acknowledgement, then retry with phoneAcknowledgementToken.",
+      "acknowledgement, then retry with phoneAcknowledgementToken. This " +
+      "is a normal one-time checkpoint, not a rejection — it ran before " +
+      "any quote was created, so nothing was consumed and the retry is " +
+      "free.",
   });
 }
 

@@ -36,6 +36,19 @@ export async function runBuyServicePaidPath(
   deps: PaidPathDeps,
 ): Promise<McpToolResult> {
   const { args, provider, serviceArgs, buyerAgentId, buyerName } = ctx;
+  const isAtomic = buyerAgentId === 0n;
+  // Identity gate runs BEFORE the provider quote is created: a gate hit
+  // used to burn a provider quote per firing (observed 6/6 fresh wallets,
+  // 2026-07-25), and the retry needed a full re-quote. Now nothing is
+  // consumed — the gate error can truthfully say the retry is free.
+  if (isAtomic && !buyerName) {
+    // Only when the name is being defaulted — passing `name` skips the gate.
+    const nameError = checkBuyerNameAcknowledgement(
+      defaultBuyerName(args.walletAddress.toLowerCase() as Hex),
+      args.buyerNameAcknowledgementToken,
+    );
+    if (nameError) return nameError;
+  }
   const result = await createQuotedChallenge(
     {
       providerAgentId: provider.agentId,
@@ -78,17 +91,8 @@ export async function runBuyServicePaidPath(
   }
 
   const requirements = result.value.requirements;
-  const isAtomic = buyerAgentId === 0n;
   let registrationPrep: unknown = null;
   let registrationName: string | null = null;
-  if (isAtomic && !buyerName) {
-    // Only when the name is being defaulted — passing `name` skips the gate.
-    const nameError = checkBuyerNameAcknowledgement(
-      defaultBuyerName(args.walletAddress.toLowerCase() as Hex),
-      args.buyerNameAcknowledgementToken,
-    );
-    if (nameError) return nameError;
-  }
   if (isAtomic) {
     const prepared = await prepareRegistration(
       {
