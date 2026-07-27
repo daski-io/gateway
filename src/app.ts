@@ -10,6 +10,7 @@ import { createGatewayHttp } from "./http/gatewayApp.js";
 import type { FetchAgentCardOptions } from "./identity/fetch-agent-card.js";
 import { ChainEventsIndexer } from "./indexer/chainEvents.js";
 import type { McpWiring } from "./mcp/server.js";
+import { sessionMetrics } from "./mcp/sessionMetrics.js";
 import { ReputationMirrorWorker } from "./reputation/worker.js";
 import { startBackgroundRuntime } from "./runtime/backgroundRuntime.js";
 import { PaymentScreeningReadinessProbe } from "./payment/screeningReadiness.js";
@@ -96,7 +97,13 @@ export async function createApp(options: CreateAppOptions): Promise<AppBundle> {
 
   async function shutdown(): Promise<void> {
     background.stop();
+    // Railway redeploys on every main push — without this, every active
+    // session's telemetry rollup dies with the process.
+    sessionMetrics.stop();
     await mcp?.close().catch((error) => logErrorWithId("mcp.shutdown", error));
+    // Closing the transport can finish in-flight tool calls. Flush only
+    // after they have had a chance to update their session rollups.
+    sessionMetrics.flushAll();
     await embeddingSync?.waitForIdle();
     if (ownsPool) {
       await pool.end().catch((error) => logErrorWithId("pool.shutdown", error));

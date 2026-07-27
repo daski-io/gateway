@@ -9,9 +9,6 @@ export interface BuyServiceArgs {
   buyerTokenId?: string;
   providerTokenId?: string;
   serviceArgs?: Record<string, unknown>;
-  phoneAcknowledgement?: { values: Record<string, string>; principalConfirmed: true };
-  phoneAcknowledgementToken?: string;
-  buyerNameAcknowledgementToken?: string;
   amount?: string;
   paymentId?: string;
   paymentPayload?: Record<string, unknown>;

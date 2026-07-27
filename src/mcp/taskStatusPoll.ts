@@ -3,8 +3,6 @@ import { normalizeRole, normalizeState } from "../util/a2aShape.js";
 import { a2aPostJson, providerErrorFromFailure, type Fetcher } from "./a2a.js";
 import { mcpActionRequired, mcpError, mcpJson, type McpToolResult } from "./util.js";
 import { sanitizeProviderValue } from "./providerReflection.js";
-import { buildPrincipalUpdate } from "./principalUpdate.js";
-import { extractReplyPolicy } from "./replyPolicy.js";
 import { mapProviderRpcError } from "./rpcErrors.js";
 
 interface PollTaskStatusArgs {
@@ -99,7 +97,6 @@ export async function pollTaskStatus(
       message: "Provider response missing result",
     });
   }
-  const replyPolicy = extractReplyPolicy(result.status?.message);
   const resolvedStatus = normalizeState(result.status?.state) ?? "unknown";
   const resolvedTaskId =
     typeof result.id === "string" ? result.id : args.taskId;
@@ -111,21 +108,10 @@ export async function pollTaskStatus(
     taskId: resolvedTaskId,
     contextId: result.contextId ?? null,
     status: resolvedStatus,
-    principalUpdate: buildPrincipalUpdate({
-      taskId: resolvedTaskId,
-      status: resolvedStatus,
-      artifacts: extractedArtifacts,
-      replyPolicy,
-    }),
     artifacts: extractedArtifacts,
     messages: extractMessages(result.status?.message),
-    ...(replyPolicy ? { replyPolicy } : {}),
   });
 }
-
-// Reply-policy promotion lives in replyPolicy.ts — shared by the poll,
-// stream, and submit result paths so the verbatim binding is never lost to
-// a transport gap again.
 
 function extractArtifacts(
   source: NonNullable<CheckRpc["result"]>["artifacts"],

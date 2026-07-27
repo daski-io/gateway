@@ -38,6 +38,8 @@ export interface StoredChallenge {
    * that predate the migration.
    */
   serviceArgs: Record<string, unknown> | null;
-  /** Acknowledgements captured at quote time (phone echo, name choice). */
+  /** Flow context captured at quote time. Only `buyerName` is written
+   *  since the de-scar (260726) removed the acknowledgement gates; the
+   *  Record shape is kept for rows written by earlier releases. */
   acknowledgements: Record<string, unknown>;
 }

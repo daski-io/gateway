@@ -4,7 +4,6 @@ import { X402_VERSION } from "../config.js";
 import type { DiscoveryCache } from "../discovery/cache.js";
 import type { Queries } from "../db/queries.js";
 import type { FetchAgentCardOptions } from "../identity/fetch-agent-card.js";
-import { defaultBuyerName } from "../identity/name.js";
 import { prepareRegistration } from "../identity/service.js";
 import { createQuotedChallenge } from "../payment/quotedChallenge.js";
 import type { Hex } from "../types.js";
@@ -13,9 +12,10 @@ import type { PaymentScreeningReadinessProbe } from "../payment/screeningReadine
 import type { BuyServiceContext } from "./buyServiceTypes.js";
 import { unknownServiceArgWarnings } from "./serviceArgWarnings.js";
 import {
-  checkBuyerNameAcknowledgement,
+  buyerNameMismatchWarning,
   mcpError,
   mcpJson,
+  phoneWhoisWarnings,
   type McpToolResult,
 } from "./util.js";
 
@@ -37,20 +37,6 @@ export async function runBuyServicePaidPath(
 ): Promise<McpToolResult> {
   const { args, provider, serviceArgs, buyerAgentId, buyerName } = ctx;
   const isAtomic = buyerAgentId === 0n;
-  // Identity gate runs BEFORE the provider quote is created: a gate hit
-  // used to burn a provider quote per firing (observed 6/6 fresh wallets,
-  // 2026-07-25), and the retry needed a full re-quote. Now nothing is
-  // consumed — the gate error can truthfully say the retry is free.
-  if (isAtomic && !buyerName) {
-    // Only when the name is being defaulted — passing `name` skips the
-    // gate, and `useWalletDerivedName: true` IS the explicit choice.
-    const nameError = checkBuyerNameAcknowledgement(
-      defaultBuyerName(args.walletAddress.toLowerCase() as Hex),
-      args.buyerNameAcknowledgementToken,
-      args.useWalletDerivedName,
-    );
-    if (nameError) return nameError;
-  }
   const result = await createQuotedChallenge(
     {
       providerAgentId: provider.agentId,
@@ -102,11 +88,6 @@ export async function runBuyServicePaidPath(
       result.value.challenge.serviceRef,
       serviceArgs,
       {
-        ...(args.phoneAcknowledgement
-          ? { phone: args.phoneAcknowledgement.values }
-          : args.phoneAcknowledgementToken
-            ? { phoneTokenUsed: true }
-            : {}),
         ...(buyerName
           ? { buyerName }
           : args.useWalletDerivedName
@@ -242,6 +223,14 @@ export async function runBuyServicePaidPath(
     provider.skillMeta,
     args.serviceArgs,
   );
+  warnings.push(...phoneWhoisWarnings(serviceArgs));
+  if (isAtomic && args.useWalletDerivedName !== true) {
+    // The identity minted with this purchase is permanent — surface a
+    // divergence from the request's own companyName while it can still be
+    // corrected. A warning, never a gate: mismatches can be deliberate.
+    const mismatch = buyerNameMismatchWarning(registrationName, serviceArgs);
+    if (mismatch) warnings.push(mismatch);
+  }
   if (!isAtomic && buyerName) {
     warnings.push(
       `\`name\` was ignored because agentId ${buyerAgentId.toString()} is ` +

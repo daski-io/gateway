@@ -5,8 +5,6 @@ import { readBoundedJson } from "../util/urlSafety.js";
 import { guardProviderUrl, type Fetcher } from "./a2a.js";
 import { mcpError, mcpJson, type McpToolResult } from "./util.js";
 import { sanitizeProviderTaskEvent, sanitizeProviderValue } from "./providerReflection.js";
-import { buildPrincipalUpdate } from "./principalUpdate.js";
-import { extractReplyPolicy } from "./replyPolicy.js";
 
 const STREAM_MAX_BYTES = 4 * 1024 * 1024;
 const STREAM_MAX_EVENTS = 1000;
@@ -313,22 +311,14 @@ function streamResult(
   const normalized =
     normalizeState(typeof status.state === "string" ? status.state : undefined) ??
     (timedOut ? "unknown" : "completed");
-  const replyPolicy = extractReplyPolicy(status.message);
   return mcpJson({
     taskId,
     contextId: event && typeof event.contextId === "string" ? event.contextId : null,
     status: normalized,
     // Deprecated alias — older clients read `state`; `status` is canonical.
     state: normalized,
-    principalUpdate: buildPrincipalUpdate({
-      taskId,
-      status: normalized,
-      artifacts: event?.artifacts,
-      replyPolicy,
-    }),
     finalEvent: sanitizeProviderTaskEvent(event),
     eventCount,
-    ...(replyPolicy ? { replyPolicy } : {}),
     ...(timedOut ? { timedOut: true } : {}),
   });
 }

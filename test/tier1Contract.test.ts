@@ -1,62 +1,66 @@
 import { describe, expect, it } from "vitest";
-import { buildPrincipalUpdate } from "../src/mcp/principalUpdate.js";
 import {
-  checkBuyerNameAcknowledgement,
-  checkPhoneAcknowledgement,
+  buyerNameMismatchWarning,
   mcpJson,
+  phoneWhoisWarnings,
 } from "../src/mcp/util.js";
 
-function payload(result: { content: unknown[] } | null) {
-  const first = result!.content[0] as { type: string; text: string };
-  return JSON.parse(first.type === "text" ? first.text : "{}");
-}
-
-// Decision log #1 (260725): expected transitions are SUCCESS results with
-// a typed status/action discriminator — isError is for genuine failures.
-describe("acknowledgement gates as expected transitions", () => {
-  it("phone gate returns action-required success, not isError", () => {
-    const result = checkPhoneAcknowledgement(
-      { registrantPhone: "+15125550142" },
-      undefined,
-    );
-    expect(result).not.toBeNull();
-    expect(result!.isError).toBeUndefined();
-    const body = payload(result);
-    expect(body.status).toBe("action-required");
-    expect(body.action).toBe("acknowledge_phone");
-    expect(body.code).toBe("PHONE_ACKNOWLEDGEMENT_REQUIRED");
+// De-scar 260726: the acknowledgement gates (phone token/object, buyer
+// name) and the principalUpdate composer are gone. The platform informs —
+// consequential values are restated as quote `warnings` while they can
+// still be corrected — and never gates on, or composes, what the agent
+// says to its principal.
+describe("informational warnings", () => {
+  it("phone values produce one WHOIS-consequence warning", () => {
+    const w = phoneWhoisWarnings({
+      registrantPhone: "+15125550142",
+      domain: "x.xyz",
+    });
+    expect(w).toHaveLength(1);
+    expect(w[0]).toContain("+15125550142");
+    expect(w[0]).toContain("public WHOIS");
   });
 
-  it("phone gate passes with a matching acknowledgement object", () => {
-    const result = checkPhoneAcknowledgement(
-      { registrantPhone: "+15125550142" },
-      undefined,
-      { values: { registrantPhone: "+15125550142" }, principalConfirmed: true },
-    );
-    expect(result).toBeNull();
+  it("no phone fields, no warning", () => {
+    expect(phoneWhoisWarnings({ domain: "x.xyz" })).toHaveLength(0);
   });
 
-  it("phone gate still fires when the acknowledged value drifts", () => {
-    const result = checkPhoneAcknowledgement(
-      { registrantPhone: "+15125550142" },
-      undefined,
-      { values: { registrantPhone: "+15125550199" }, principalConfirmed: true },
-    );
-    expect(result).not.toBeNull();
+  it("a diverging permanent buyer name warns against the companyName", () => {
+    const w = buyerNameMismatchWarning("Harbor and Pine Goods", {
+      companyName: "Sunrise Trading LLC",
+    });
+    expect(w).toContain("Harbor and Pine Goods");
+    expect(w).toContain("Sunrise Trading LLC");
+    expect(w).toContain("permanently");
   });
 
-  it("name gate accepts useWalletDerivedName as the explicit choice", () => {
+  it("a loose match (case/punctuation/prefix) does not warn", () => {
     expect(
-      checkBuyerNameAcknowledgement("buyer-aa39aa", undefined, true),
+      buyerNameMismatchWarning("Example Studio", {
+        companyName: "Example Studio LLC",
+      }),
     ).toBeNull();
   });
 
-  it("name gate returns action-required success otherwise", () => {
-    const result = checkBuyerNameAcknowledgement("buyer-aa39aa", undefined);
-    expect(result!.isError).toBeUndefined();
-    const body = payload(result);
-    expect(body.status).toBe("action-required");
-    expect(body.action).toBe("choose_buyer_identity");
+  it("no stated organization in the request, no warning", () => {
+    expect(
+      buyerNameMismatchWarning("buyer-aa39aa", { domain: "x.xyz" }),
+    ).toBeNull();
+  });
+
+  it("registrantOrganization (domain purchases) is probed too", () => {
+    const w = buyerNameMismatchWarning("buyer-0b83e2", {
+      domain: "x.xyz",
+      registrantOrganization: "Sunrise Trading LLC",
+    });
+    expect(w).toContain("buyer-0b83e2");
+    expect(w).toContain("Sunrise Trading LLC");
+  });
+
+  it("a fully non-alphanumeric organization still warns (no vacuous match)", () => {
+    expect(
+      buyerNameMismatchWarning("buyer-aa39aa", { companyName: "株式会社" }),
+    ).not.toBeNull();
   });
 });
 
@@ -67,82 +71,7 @@ describe("structured tool output", () => {
   });
 });
 
-// principalUpdate: gateway-composed from whitelisted facts — never
-// provider prose in an instruction position.
-describe("principal update composition", () => {
-  it("completed + emailDelivery fact composes the hedged sentence", () => {
-    const update = buildPrincipalUpdate({
-      taskId: "task-1",
-      status: "completed",
-      artifacts: [
-        {
-          type: "data",
-          name: "entity_details",
-          data: {
-            emailDelivery: {
-              status: "sent",
-              to: "office@example.com",
-              attachment: false,
-            },
-          },
-        },
-      ],
-      replyPolicy: null,
-    });
-    expect(update.summary).toContain("completed");
-    expect(update.summary).toContain("Do NOT assert inbox arrival");
-    expect(update.summary).toContain("office@example.com");
-    expect(update.facts?.emailDelivery).toMatchObject({ status: "sent" });
-    expect(update.monitoring.active).toBe(false);
-  });
-
-  it("working status states no estimate and offers only a re-check", () => {
-    const update = buildPrincipalUpdate({
-      taskId: "task-2",
-      status: "working",
-      artifacts: [],
-      replyPolicy: null,
-    });
-    expect(update.summary).toContain("No completion estimate");
-    expect(update.nextSteps.join(" ")).toContain("daski_get_task_status");
-  });
-
-  it("replyPolicy presence defers the wording to the verbatim text", () => {
-    const update = buildPrincipalUpdate({
-      taskId: "task-3",
-      status: "working",
-      artifacts: [],
-      replyPolicy: {
-        mode: "verbatim_only",
-        text: "Provider hold copy.",
-        flags: { relay_verbatim: true },
-        binding: "…",
-      },
-    });
-    expect(update.summary).toContain("relay replyPolicy.text");
-    // The provider's copy itself is NOT duplicated into the summary.
-    expect(update.summary).not.toContain("Provider hold copy.");
-  });
-
-  it("input-required routes to the corrected full-payload resubmit", () => {
-    const update = buildPrincipalUpdate({
-      taskId: "task-4",
-      status: "input-required",
-      artifacts: [],
-      replyPolicy: null,
-    });
-    expect(update.nextSteps.join(" ")).toContain('action="input"');
-  });
-
-  it("dns registrar-only fact bans live claims", () => {
-    const update = buildPrincipalUpdate({
-      taskId: "task-5",
-      status: "completed",
-      artifacts: [
-        { type: "data", name: "dns", data: { publicResolutionVerified: false } },
-      ],
-      replyPolicy: null,
-    });
-    expect(update.summary).toContain("NOT checked");
-  });
-});
+// De-scar 260726: the "principal update composition" suite is gone with
+// buildPrincipalUpdate itself. Provider facts (emailDelivery,
+// publicResolutionVerified, …) flow through `artifacts` untouched — how
+// they are phrased to the principal is the agent's own business.

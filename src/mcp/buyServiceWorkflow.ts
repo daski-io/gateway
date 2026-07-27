@@ -12,7 +12,6 @@ import { runBuyServiceX402Retry } from "./buyServiceRetry.js";
 import type { BuyServiceArgs, BuyServiceContext } from "./buyServiceTypes.js";
 import type { McpDeps } from "./server.js";
 import {
-  checkPhoneAcknowledgement,
   checkPhoneFields,
   mcpError,
   parseBigIntArg,
@@ -90,12 +89,6 @@ export async function runBuyService(
 
   const phoneError = checkPhoneFields(serviceArgs);
   if (phoneError) return phoneError;
-  const acknowledgementError = checkPhoneAcknowledgement(
-    serviceArgs,
-    args.phoneAcknowledgementToken,
-    args.phoneAcknowledgement,
-  );
-  if (acknowledgementError) return acknowledgementError;
 
   let parsedBuyerTokenId: bigint | null = null;
   if (args.buyerTokenId) {

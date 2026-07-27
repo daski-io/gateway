@@ -1,5 +1,3 @@
-import { createHmac, randomBytes } from "node:crypto";
-
 // ── serviceArgs normalization (§3.2 — flat + nested registrant) ────────────
 //
 // Real registrar APIs split between flat (Namecheap: `RegistrantFirstName`)
@@ -241,21 +239,15 @@ export function checkPhoneFields(
   return bad ? phoneFormatError(bad) : null;
 }
 
-// ── Phone acknowledgement gate ─────────────────────────────────────────────
+// ── Informational warnings (de-scar 260726) ───────────────────────────────
 //
-// The E.164 check above catches FORMAT; it cannot catch a wrong-but-valid
-// number. Live runs showed agents silently normalizing a principal's
-// dotted phone and paying without ever echoing the result — numbers that
-// land verbatim on public WHOIS. This gate makes the first plan-building
-// call that carries phone fields fail with PHONE_ACKNOWLEDGEMENT_REQUIRED
-// and a token HMAC-bound to the exact values; the caller is instructed to
-// echo the numbers to the principal and retry with the token. No stateless
-// scheme can prove the principal answered — the token only records that
-// the caller acknowledged the exact public value, and invalidates that
-// acknowledgement whenever a value changes. The secret is
-// per-process: after a restart (or on a sibling instance) the token
-// simply re-issues, costing one extra roundtrip, never blocking.
-const PHONE_ACKNOWLEDGEMENT_SECRET = randomBytes(32);
+// The acknowledgement gates that lived here (PHONE_ACKNOWLEDGEMENT_REQUIRED
+// token roundtrip, then a self-certifiable phoneAcknowledgement object, and
+// BUYER_NAME_ACKNOWLEDGEMENT_REQUIRED) are gone: a model-provided boolean
+// proves nothing, and the platform does not police how an agent talks to
+// its principal. What remains is accurate information at the decision
+// point — the quote result WARNS about consequential values so any caller
+// can correct them before signing. Format validation (E.164 above) stays.
 
 export function presentPhoneFields(
   args: Record<string, unknown>,
@@ -268,136 +260,47 @@ export function presentPhoneFields(
   return out;
 }
 
-export function expectedPhoneAcknowledgementToken(
-  phones: Array<{ field: string; value: string }>,
-): string {
-  const canonical = phones
-    .map(({ field, value }) => `${field}=${value}`)
-    .sort()
-    .join("&");
-  return createHmac("sha256", PHONE_ACKNOWLEDGEMENT_SECRET)
-    .update(canonical)
-    .digest("hex")
-    .slice(0, 32);
+/** WHOIS-consequence note for phone values on a quote — informational. */
+export function phoneWhoisWarnings(args: Record<string, unknown>): string[] {
+  const phones = presentPhoneFields(args);
+  if (phones.length === 0) return [];
+  return [
+    `Phone value(s) ${phones
+      .map(({ field, value }) => `${field}='${value}'`)
+      .join(", ")} will appear on public WHOIS exactly as sent — nothing ` +
+      "further is required, but correct them before signing if wrong.",
+  ];
 }
 
 /**
- * Atomic first purchase with no `name`: the wallet-derived default
- * (`buyer-<last6>`) is baked into the registration typed-data and PERMANENTLY
- * names the buyer on receipts and in the marketplace. SKILL.md already says
- * to pass `name`, and `registrationPrep.hint` already echoes the default —
- * both were ignored in the wild (buyerTokenId 8446 minted as
- * `buyer-0b83e2` while the principal's entity name was known). Prose can't
- * fix a one-shot irreversible default, so gate it the same way phone values
- * are gated: one acknowledgement roundtrip, or pass `name` and skip it.
+ * Buyer-name divergence note for an atomic first purchase: the identity
+ * minted alongside this quote is permanent, so a resolved name that
+ * diverges from the request's own stated organization — `companyName`
+ * (entity formation) or `registrantOrganization` (domain registration,
+ * the shape of the original buyer-0b83e2 incident) — is worth one warning
+ * before anything is signed. A deliberate mismatch (a parent company
+ * buying for a subsidiary) is legitimate — this never blocks.
  */
-export function checkBuyerNameAcknowledgement(
-  resolvedDefaultName: string,
-  acknowledgementToken: string | undefined,
-  useWalletDerivedName?: boolean,
-): McpToolResult | null {
-  // `useWalletDerivedName: true` IS the explicit choice — the schema-level
-  // form of the acknowledgement, no token roundtrip needed.
-  if (useWalletDerivedName === true) return null;
-  const expected = expectedBuyerNameAcknowledgementToken(resolvedDefaultName);
-  if (acknowledgementToken === expected) return null;
-  return mcpActionRequired("choose_buyer_identity", {
-    code: "BUYER_NAME_ACKNOWLEDGEMENT_REQUIRED",
-    message:
-      "This wallet has no agentId yet, so this call mints one — and with no " +
-      `\`name\` it will be permanently named '${resolvedDefaultName}', ` +
-      "derived from the wallet address. This is baked into the registration " +
-      "typed-data you are about to sign and cannot be changed later. Pass " +
-      "`name` set to your PRINCIPAL's exact stated business/entity name " +
-      "VERBATIM — do not abbreviate or coin a variant (if the principal " +
-      "said 'Harbor and Pine Retail LLC', pass that string, not 'Harbor " +
-      "and Pine') — or, if the wallet-derived default really is intended, " +
-      "retry this same call with `buyerNameAcknowledgementToken`. This " +
-      "check ran BEFORE any provider quote was created: nothing was " +
-      "consumed, no re-signing is needed, and the retry is free.",
-    details: {
-      resolvedDefaultName,
-      buyerNameAcknowledgementToken: expected,
-      tokenBinding:
-        "bound to this exact default name — it does not authorize any other " +
-        "registration name",
-    },
-    recoverable: true,
-    next_action:
-      "Re-send the identical call with `name` set to the principal's exact " +
-      "business/entity name (verbatim), or with " +
-      "buyerNameAcknowledgementToken to accept the default. Nothing was " +
-      "consumed by this check.",
-  });
-}
-
-export function expectedBuyerNameAcknowledgementToken(
-  resolvedDefaultName: string,
-): string {
-  return createHmac("sha256", PHONE_ACKNOWLEDGEMENT_SECRET)
-    .update(`buyer-name=${resolvedDefaultName}`)
-    .digest("hex")
-    .slice(0, 32);
-}
-
-export interface PhoneAcknowledgementInput {
-  values: Record<string, string>;
-  principalConfirmed: true;
-}
-
-export function checkPhoneAcknowledgement(
-  args: Record<string, unknown>,
-  acknowledgementToken: string | undefined,
-  acknowledgement?: PhoneAcknowledgementInput,
-): McpToolResult | null {
-  const phones = presentPhoneFields(args);
-  if (phones.length === 0) return null;
-  // Schema-level acknowledgement: the agent binds the EXACT normalized
-  // values it echo-confirmed with the principal on the first call — no
-  // token roundtrip. A mismatch on any field falls through to the gate,
-  // which re-states the exact values to confirm.
-  if (
-    acknowledgement &&
-    acknowledgement.principalConfirmed === true &&
-    phones.every(({ field, value }) => acknowledgement.values[field] === value)
-  ) {
-    return null;
-  }
-  const expected = expectedPhoneAcknowledgementToken(phones);
-  if (acknowledgementToken === expected) return null;
-  return mcpActionRequired("acknowledge_phone", {
-    code: "PHONE_ACKNOWLEDGEMENT_REQUIRED",
-    message:
-      "Phone number(s) in serviceArgs need your principal's explicit " +
-      "acknowledgement before a payment plan is prepared: " +
-      phones.map(({ field, value }) => `${field}='${value}'`).join(", ") +
-      ". They will appear on public WHOIS exactly as sent. Echo the EXACT " +
-      "value(s) back to your principal — if you normalized the number " +
-      "(stripped dots/spaces/dashes), show the normalized form and say you " +
-      "did (e.g. \"I'll register with phone +48221234567, normalized from " +
-      "+48.221234567 — confirm or correct\"). Only after an explicit yes, " +
-      "retry this same call with `phoneAcknowledgementToken` added. This " +
-      "token records an acknowledgement, not proof of principal consent. " +
-      "To avoid this roundtrip next time: in the upfront data-collection " +
-      "message, ask for the phone in E.164 (no dots/spaces/dashes) and say " +
-      "you will strip any separators and register the stripped value; then " +
-      "if the principal still sends separators, make your VERY NEXT message " +
-      "the normalized echo-confirm, before the first buy call.",
-    details: {
-      phones: Object.fromEntries(phones.map(({ field, value }) => [field, value])),
-      phoneAcknowledgementToken: expected,
-      tokenBinding:
-        "bound to these exact field=value pairs — changing any phone value " +
-        "requires a new acknowledgement",
-    },
-    recoverable: true,
-    next_action:
-      "Echo the exact phone value(s) to the principal, get an explicit " +
-      "acknowledgement, then retry with phoneAcknowledgementToken. This " +
-      "is a normal one-time checkpoint, not a rejection — it ran before " +
-      "any quote was created, so nothing was consumed and the retry is " +
-      "free.",
-  });
+export function buyerNameMismatchWarning(
+  resolvedName: string | null,
+  serviceArgs: Record<string, unknown>,
+): string | null {
+  const stated = [serviceArgs.companyName, serviceArgs.registrantOrganization].find(
+    (v): v is string => typeof v === "string" && v.trim() !== "",
+  );
+  if (!resolvedName || !stated) return null;
+  const canon = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, "");
+  const a = canon(resolvedName);
+  const b = canon(stated);
+  // Empty canonical forms (fully non-alphanumeric names) make the
+  // containment test vacuously true — treat as incomparable, warn.
+  if (a !== "" && b !== "" && (a.includes(b) || b.includes(a))) return null;
+  return (
+    `This purchase permanently registers the buyer as '${resolvedName}' ` +
+    `while the request names the organization '${stated}'. If that is ` +
+    "unintended, re-send with the corrected `name` BEFORE signing the " +
+    "registration typed-data — the registered name cannot be changed later."
+  );
 }
 
 /**
