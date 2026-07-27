@@ -100,8 +100,10 @@ export async function createApp(options: CreateAppOptions): Promise<AppBundle> {
     // Railway redeploys on every main push — without this, every active
     // session's telemetry rollup dies with the process.
     sessionMetrics.stop();
-    sessionMetrics.flushAll();
     await mcp?.close().catch((error) => logErrorWithId("mcp.shutdown", error));
+    // Closing the transport can finish in-flight tool calls. Flush only
+    // after they have had a chance to update their session rollups.
+    sessionMetrics.flushAll();
     await embeddingSync?.waitForIdle();
     if (ownsPool) {
       await pool.end().catch((error) => logErrorWithId("pool.shutdown", error));

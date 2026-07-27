@@ -19,18 +19,38 @@ export interface SessionRollup {
   errors: number;
   /** Named error `code`s seen on isError results (parse-best-effort). */
   errorCodes: Record<string, number>;
-  /** Canonical-path settles that completed (daski_settle_payment). */
+  /** Unique payments completed through daski_settle_payment. */
   purchasesSettled: number;
-  /** Delivery attestations submitted on-chain (daski_confirm_delivery). */
+  /** Unique delivery attestations submitted through daski_confirm_delivery. */
   attestationsSubmitted: number;
 }
 
 interface LiveRollup extends SessionRollup {
   lastActivityAtMs: number;
   startedAtMs: number;
+  settledPaymentIds: Set<string>;
+  submittedAttestationUids: Set<string>;
 }
 
 const ERROR_CODE = /"code"\s*:\s*"([A-Za-z0-9_-]{1,64})"/;
+
+function parseResult(resultText: string | null): Record<string, unknown> | null {
+  if (!resultText) return null;
+  try {
+    const result = JSON.parse(resultText) as unknown;
+    return result !== null && typeof result === "object" && !Array.isArray(result)
+      ? (result as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function outcomeId(value: unknown): string | null {
+  if (typeof value === "string" && value.length > 0) return value;
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  return null;
+}
 
 export interface SessionMetricsOptions {
   /** Idle time after which a session's rollup is flushed. */
@@ -82,6 +102,8 @@ export class SessionMetricsRegistry {
         errorCodes: {},
         purchasesSettled: 0,
         attestationsSubmitted: 0,
+        settledPaymentIds: new Set(),
+        submittedAttestationUids: new Set(),
       };
       this.sessions.set(key, s);
     }
@@ -92,16 +114,22 @@ export class SessionMetricsRegistry {
       s.errors++;
       const code = resultText ? ERROR_CODE.exec(resultText)?.[1] : undefined;
       if (code) s.errorCodes[code] = (s.errorCodes[code] ?? 0) + 1;
-    } else if (
-      toolName.endsWith("daski_settle_payment") &&
-      resultText?.includes('"status":"completed"')
-    ) {
-      s.purchasesSettled++;
-    } else if (
-      toolName.endsWith("daski_confirm_delivery") &&
-      resultText?.includes('"attestationUid"')
-    ) {
-      s.attestationsSubmitted++;
+      return;
+    }
+
+    const result = parseResult(resultText);
+    if (toolName.endsWith("daski_settle_payment") && result?.status === "completed") {
+      const paymentId = outcomeId(result.paymentId);
+      if (paymentId) {
+        s.settledPaymentIds.add(paymentId);
+        s.purchasesSettled = s.settledPaymentIds.size;
+      }
+    } else if (toolName.endsWith("daski_confirm_delivery")) {
+      const attestationUid = outcomeId(result?.attestationUid);
+      if (attestationUid) {
+        s.submittedAttestationUids.add(attestationUid);
+        s.attestationsSubmitted = s.submittedAttestationUids.size;
+      }
     }
   }
 
@@ -139,7 +167,13 @@ export class SessionMetricsRegistry {
   }
 
   private emit(s: LiveRollup): void {
-    const { lastActivityAtMs, startedAtMs, ...rollup } = s;
+    const {
+      lastActivityAtMs,
+      startedAtMs,
+      settledPaymentIds,
+      submittedAttestationUids,
+      ...rollup
+    } = s;
     rollup.wallTimeMs = lastActivityAtMs - startedAtMs;
     this.onFlush(rollup);
   }

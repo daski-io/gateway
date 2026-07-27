@@ -77,4 +77,22 @@ describe("session metrics rollup", () => {
     expect(flushed[0]!.errors).toBe(2);
     expect(flushed[0]!.errorCodes).toEqual({});
   });
+
+  it("counts unique payment and attestation outcomes rather than retries", () => {
+    const now = { t: 0 };
+    const flushed: SessionRollup[] = [];
+    const reg = registry(now, flushed);
+
+    reg.record("s", "daski_settle_payment", false, '{"status":"completed","paymentId":"42"}');
+    reg.record("s", "daski_settle_payment", false, '{"status":"completed","paymentId":"42"}');
+    reg.record("s", "daski_settle_payment", false, '{"status":"completed","paymentId":43}');
+    reg.record("s", "daski_confirm_delivery", false, '{"attestationUid":"0xa"}');
+    reg.record("s", "daski_confirm_delivery", false, '{"attestationUid":"0xa"}');
+    reg.record("s", "daski_confirm_delivery", false, '{"attestationUid":"0xb"}');
+
+    reg.flushAll();
+    expect(flushed[0]!.toolCalls).toBe(6);
+    expect(flushed[0]!.purchasesSettled).toBe(2);
+    expect(flushed[0]!.attestationsSubmitted).toBe(2);
+  });
 });
