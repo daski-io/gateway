@@ -275,7 +275,9 @@ export function phoneWhoisWarnings(args: Record<string, unknown>): string[] {
 /**
  * Buyer-name divergence note for an atomic first purchase: the identity
  * minted alongside this quote is permanent, so a resolved name that
- * diverges from the request's own `companyName` is worth one warning
+ * diverges from the request's own stated organization — `companyName`
+ * (entity formation) or `registrantOrganization` (domain registration,
+ * the shape of the original buyer-0b83e2 incident) — is worth one warning
  * before anything is signed. A deliberate mismatch (a parent company
  * buying for a subsidiary) is legitimate — this never blocks.
  */
@@ -283,17 +285,19 @@ export function buyerNameMismatchWarning(
   resolvedName: string | null,
   serviceArgs: Record<string, unknown>,
 ): string | null {
-  const companyName = serviceArgs.companyName;
-  if (!resolvedName || typeof companyName !== "string" || companyName === "") {
-    return null;
-  }
+  const stated = [serviceArgs.companyName, serviceArgs.registrantOrganization].find(
+    (v): v is string => typeof v === "string" && v.trim() !== "",
+  );
+  if (!resolvedName || !stated) return null;
   const canon = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, "");
   const a = canon(resolvedName);
-  const b = canon(companyName);
-  if (a.includes(b) || b.includes(a)) return null;
+  const b = canon(stated);
+  // Empty canonical forms (fully non-alphanumeric names) make the
+  // containment test vacuously true — treat as incomparable, warn.
+  if (a !== "" && b !== "" && (a.includes(b) || b.includes(a))) return null;
   return (
     `This purchase permanently registers the buyer as '${resolvedName}' ` +
-    `while the request's companyName is '${companyName}'. If that is ` +
+    `while the request names the organization '${stated}'. If that is ` +
     "unintended, re-send with the corrected `name` BEFORE signing the " +
     "registration typed-data — the registered name cannot be changed later."
   );

@@ -161,11 +161,17 @@ export async function dispatchSubmitTask({
           "returns the existing task instead of re-executing. If the " +
           "re-send also fails, verify actual state with a read-only " +
           "skill before doing anything else."
-        : "The request MAY have been processed before the failure and " +
-          "this envelope is single-use — do NOT re-send the same " +
-          "envelope/messageId for a free skill. Verify actual state with " +
-          "a read-only skill; only if the action did NOT take effect, " +
-          "request a FRESH envelope and retry with the same contextId.",
+        : args.taskId
+          ? "The provider may or may not have received this corrected " +
+            "input. Re-poll daski_get_task_status for this taskId first: " +
+            "still input-required means the correction did not land — " +
+            "resubmit the corrected FULL payload with the same taskId (a " +
+            "fresh action=\"input\" capability challenge will be issued)."
+          : "The request MAY have been processed before the failure and " +
+            "this envelope is single-use — do NOT re-send the same " +
+            "envelope/messageId for a free skill. Verify actual state with " +
+            "a read-only skill; only if the action did NOT take effect, " +
+            "request a FRESH envelope and retry with the same contextId.",
     });
   }
   const rpc = post.body;

@@ -113,17 +113,20 @@ export function registerSettlePaymentTool(server: McpServer, deps: McpDeps): voi
       }
       const result = coordinated.result;
       if (!result.ok) {
-        // Honest recoverability (de-scar 260726): a blanket
-        // `recoverable: false` here was a lie for the common case — run
-        // 260726-213921 hit `unexpected_settle_error` with an EMPTY
-        // transaction (nothing mined, EIP-3009 nonce not consumed),
-        // retried the identical call, and succeeded. The nonce is only
-        // consumed by an on-chain settlement, so no-transaction failures
-        // are safely retryable; a failure WITH a mined transaction is the
-        // genuinely unrecoverable integrity case.
-        const settledOnChain = Boolean(result.response.transaction);
+        // Honest recoverability (de-scar 260726, corrected in review): the
+        // failure envelope NEVER carries a tx hash (settlementFailure
+        // hard-codes transaction: ""), so mined-vs-unmined cannot be read
+        // off the response — the errorReason is the only discriminator,
+        // and for `unexpected_settle_error` even that is ambiguous (the
+        // same code fires pre-broadcast and post-mine). What IS always
+        // true: re-sending the IDENTICAL signed call can never
+        // double-charge, because the EIP-3009 nonce is single-use
+        // on-chain — a consumed nonce simply rejects. The genuinely
+        // dangerous move after an ambiguous failure is signing a FRESH
+        // quote (new nonce): that CAN double-pay. Say exactly that.
+        const reason = result.errorReason;
         return mcpError({
-          code: result.errorReason,
+          code: reason,
           message: result.message,
           ...(result.screeningFailure
             ? {
@@ -133,22 +136,34 @@ export function registerSettlePaymentTool(server: McpServer, deps: McpDeps): voi
                   ? "Retry later while the provider quote remains valid."
                   : "Do not retry this unchanged payment. Request a fresh quote only after the participant issue is resolved.",
               }
-            : settledOnChain
+            : reason === "settlement_confirmation_pending"
               ? {
-                  recoverable: false,
-                  next_action:
-                    "A transaction was mined (details.transaction) but settlement " +
-                    "validation failed — do not re-send; verify the payment state " +
-                    "via daski_get_task_status / chain reads and escalate.",
-                }
-              : {
                   recoverable: true,
                   next_action:
-                    "Nothing was settled on-chain (details.transaction is empty) and " +
-                    "the payment authorization's nonce is unconsumed — re-sending " +
-                    "this identical call is safe. If the quote or authorization " +
-                    "deadline has expired, request a fresh quote instead.",
-                }),
+                    "A settlement transaction was broadcast and is awaiting " +
+                    "confirmation — do NOT re-send and do NOT re-quote. " +
+                    "Re-check shortly (daski_get_task_status once a paymentId " +
+                    "exists, or retry this call after a short wait to read the " +
+                    "confirmed state).",
+                }
+              : reason === "settlement_persistence_conflict"
+                ? {
+                    recoverable: false,
+                    next_action:
+                      "A concurrent settlement was recorded for this challenge — " +
+                      "verify the payment state before doing anything else; do " +
+                      "not re-quote.",
+                  }
+                : {
+                    recoverable: true,
+                    next_action:
+                      "Re-sending this IDENTICAL signed call is safe: the payment " +
+                      "authorization's nonce is single-use on-chain, so a duplicate " +
+                      "cannot double-charge (an already-consumed nonce is rejected " +
+                      "by name). Do NOT sign a fresh quote after this error until " +
+                      "the original payment's state is verified — a fresh " +
+                      "authorization is a new nonce and CAN double-pay.",
+                  }),
           details: {
             transaction: result.response.transaction,
             payer: result.response.payer,

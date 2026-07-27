@@ -42,10 +42,25 @@ describe("informational warnings", () => {
     ).toBeNull();
   });
 
-  it("no companyName in the request, no warning", () => {
+  it("no stated organization in the request, no warning", () => {
     expect(
       buyerNameMismatchWarning("buyer-aa39aa", { domain: "x.xyz" }),
     ).toBeNull();
+  });
+
+  it("registrantOrganization (domain purchases) is probed too", () => {
+    const w = buyerNameMismatchWarning("buyer-0b83e2", {
+      domain: "x.xyz",
+      registrantOrganization: "Sunrise Trading LLC",
+    });
+    expect(w).toContain("buyer-0b83e2");
+    expect(w).toContain("Sunrise Trading LLC");
+  });
+
+  it("a fully non-alphanumeric organization still warns (no vacuous match)", () => {
+    expect(
+      buyerNameMismatchWarning("buyer-aa39aa", { companyName: "株式会社" }),
+    ).not.toBeNull();
   });
 });
 

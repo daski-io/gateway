@@ -669,9 +669,8 @@ describe("hosted MCP — wallet-agnostic surface", () => {
             walletAddress: fresh,
             // buyerTokenId omitted on purpose — orchestrator should look it up.
             serviceArgs: { domain: "atomic.xyz" },
-            // Naming the buyer is the normal path and skips the
-            // BUYER_NAME_ACKNOWLEDGEMENT_REQUIRED gate; this test is about
-            // atomic routing, not naming.
+            // Naming the buyer explicitly; this test is about atomic
+            // routing, not naming.
             name: "Atomic Routing Co",
           },
         }),
@@ -705,8 +704,11 @@ describe("hosted MCP — wallet-agnostic surface", () => {
     try {
       // De-scar 260726: no acknowledgement gate — the default applies
       // directly and the hint/plan text carries the how-to-name nudge.
+      // The phone value checks the informational-warning wiring: the quote
+      // must restate WHOIS-bound phones in `warnings`.
       const body = parseResult<{
         atomic: boolean;
+        warnings?: string[];
         registrationPrep: {
           agentURI: string;
           resolvedName: string;
@@ -721,12 +723,17 @@ describe("hosted MCP — wallet-agnostic surface", () => {
             providerTokenId: "2",
             serviceSlug: "domain-management",
             walletAddress: fresh,
-            serviceArgs: { domain: "atomic.xyz" },
+            serviceArgs: { domain: "atomic.xyz", registrantPhone: "+15125550142" },
           },
         }),
       );
 
       expect(body.atomic).toBe(true);
+      expect(
+        (body.warnings ?? []).join(" "),
+        "quote warnings must restate WHOIS-bound phone values",
+      ).toContain("+15125550142");
+      expect((body.warnings ?? []).join(" ")).toContain("public WHOIS");
       expect(body.registrationPrep.resolvedName).toBe("buyer-aa39aa");
       // The hint fires exactly where the default is applied, and tells the
       // agent to pick a name itself via re-call before signing.
@@ -1281,8 +1288,6 @@ describe("hosted MCP — wallet-agnostic surface", () => {
             serviceSlug: "domain-management",
             walletAddress: fresh,
             serviceArgs: { domain: "atomic-settle.xyz" },
-            // Naming the buyer is the normal path and skips the
-            // BUYER_NAME_ACKNOWLEDGEMENT_REQUIRED gate.
             name: "Atomic Settle Co",
           },
         }),

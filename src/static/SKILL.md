@@ -229,7 +229,7 @@ No new payment — the original `paymentId` is the receipt binding:
    - Ownership-only reads (`get-domain-info`, `list-dns-records`,
      `get-mailbox-info`, `get-entity-status`, …) execute right there.
    - Capability-gated writes (`set-dns-record`, `delete-dns-record`,
-     `transfer-domain-out`, `change-password`, `delete-mailbox`) return
+     `change-password`, `delete-mailbox`) return
      `state: "input-required"` with a `capability_challenge` artifact
      plus `nextEnvelopeAuthChallenge` (envelopes are single-use — a
      pre-minted fresh one for the execute call). Sign both, re-call with
@@ -242,6 +242,10 @@ No new payment — the original `paymentId` is the receipt binding:
 Open free skills (`check-availability`, `get-pricing`) skip the
 handshake: `daski_submit_task` directly with `paymentId: "0"`, no
 envelopeAuth.
+
+`transfer-domain-out` is the exception among capability-gated skills: it
+is PAID (live registrar pricing) — quote and settle it through the paid
+flow first, then complete its capability step.
 
 ## Standalone registration (advanced)
 
@@ -311,7 +315,7 @@ Every JSON block below is a complete, schema-valid tool argument object
 from here, it is the real contract).
 
 1. `wallet.getAddress()` → `0xabc...` (fresh wallet, no agentId yet)
-2. `daski_search_services({ serviceType: "domain-registration" })`
+2. `daski_search_services({ serviceType: "domain-management" })`
    → `{ providers: [{ agentId: "1", serviceSlug: "domain-management", ... }] }`
 3. First `daski_buy_service` call — `name` chooses the permanent buyer
    identity this first paid call mints:
@@ -326,7 +330,7 @@ daski_buy_service arguments:
   "name": "Example Studio LLC",
   "serviceArgs": {
     "domain": "example.xyz",
-    "years": 1,
+    "term": 1,
     "registrantName": "Jane Doe",
     "registrantEmail": "jane@example-studio.com",
     "registrantAddress": "100 Main St",
