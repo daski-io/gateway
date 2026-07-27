@@ -15,6 +15,7 @@ import {
 import { GATEWAY_VERSION } from "../version.js";
 import { registerProviderResource } from "./providerResource.js";
 import { instrumentToolCalls } from "./instrumentation.js";
+import { sessionMetrics } from "./sessionMetrics.js";
 import { registerDiscoveryTool } from "./discoveryTool.js";
 import { registerPurchaseTool } from "./purchaseTool.js";
 import { registerSettlePaymentTool } from "./settlePaymentTool.js";
@@ -110,6 +111,9 @@ export async function createMcpServer(
   app: Express,
   deps: McpDeps,
 ): Promise<McpWiring> {
+  // Per-session telemetry rollups flush on idle (mcp.session_metrics log
+  // lines) — the production-side replacement for the retired judge loop.
+  sessionMetrics.start();
   // Default to safeFetch (validates host + pins resolved IP at connect).
   // Tests inject deps.fetch with a mock that ignores SSRF; the loose
   // signature means a `(url, init) => Promise<Response>` mock satisfies
