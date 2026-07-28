@@ -17,8 +17,6 @@ import { registerProviderResource } from "./providerResource.js";
 import { instrumentToolCalls } from "./instrumentation.js";
 import { sessionMetrics } from "./sessionMetrics.js";
 import { registerDiscoveryTool } from "./discoveryTool.js";
-import { registerPurchaseTool } from "./purchaseTool.js";
-import { registerSettlePaymentTool } from "./settlePaymentTool.js";
 import { registerConfirmDeliveryTool } from "./confirmDeliveryTool.js";
 import { registerAgentTool } from "./registerAgentTool.js";
 import { registerTaskStatusTool } from "./taskStatusTool.js";
@@ -30,6 +28,7 @@ import { runBuyService } from "./buyServiceWorkflow.js";
 import { runSubmitTask } from "./submitTaskWorkflow.js";
 import { ConcurrencyLimiter } from "./concurrencyLimiter.js";
 import type { PaymentScreeningReadinessProbe } from "../payment/screeningReadiness.js";
+import type { DaskiFacilitatorService } from "../payment/daskiFacilitator.js";
 
 // JSON response cap on provider A2A calls. Real responses are <50 KB; 1 MB
 // is generous enough for unusual artifact payloads while still protecting
@@ -49,6 +48,7 @@ export interface McpDeps {
   queries: Queries;
   reader: ChainReader;
   screeningReadiness: PaymentScreeningReadinessProbe;
+  facilitator: DaskiFacilitatorService;
   reputationWorker: ReputationMirrorWorker;
   pool: import("../db/pool.js").Pool;
   embeddingSync?: import("../discovery/embeddingSync.js").CatalogEmbeddingSynchronizer | null;
@@ -59,8 +59,8 @@ export interface McpDeps {
   a2aTimeoutMs?: number;
   /**
    * Test seam for the buyer-side agentURI fetcher used by the atomic
-   * register-and-settle path inside daski_settle_payment /
-   * daski_buy_service. Defaults to the production safeFetch; the test
+   * register-and-settle path inside daski_buy_service. Defaults to the
+   * production safeFetch; the test
    * gateway plugs in a stub so atomic settles can populate
    * `buyer_identities` without a network call.
    */
@@ -100,8 +100,7 @@ function serverInstructions(config: Config): string {
   "  5. daski_fetch_artifact     — retrieve bytes behind a gated artifact URL",
   "  6. daski_confirm_delivery   — leave an on-chain attestation (optional)",
   "",
-  "Other tools (daski_register_agent, daski_purchase, daski_settle_payment)",
-  "are advanced/manual paths. Use them only when daski_buy_service doesn't fit.",
+  "daski_buy_service is the only payment entry point; x402 retries return to it.",
   "",
     ...networkInstructions,
   ].join("\n");
@@ -141,13 +140,6 @@ export async function createMcpServer(
       artifactLimiter,
     );
     registerDiscoveryTool(server, deps);
-
-    registerPurchaseTool(server, deps, {
-      fetch: a2aFetch,
-      timeoutMs: a2aTimeoutMs,
-      maxResponseBytes: A2A_RESPONSE_MAX_BYTES,
-    });
-    registerSettlePaymentTool(server, deps);
 
     registerConfirmDeliveryTool(server, deps);
     registerAgentTool(server, deps);

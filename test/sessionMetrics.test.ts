@@ -25,7 +25,7 @@ describe("session metrics rollup", () => {
 
     reg.record("s1", "daski_buy_service", false, '{"status":"action-required"}');
     now.t += 100;
-    reg.record("s1", "daski_settle_payment", false, '{"status":"completed","paymentId":"42"}');
+    reg.record("s1", "daski_buy_service", false, '{"status":"completed","paymentId":"42"}');
     reg.record("s1", "daski_get_task_status", true, '{"code":"CAPABILITY_REQUIRED"}');
     reg.record("s1", "daski_confirm_delivery", false, '{"status":"completed","attestationUid":"0xa"}');
     reg.record("s2", "daski_search_services", false, "{}");
@@ -83,9 +83,9 @@ describe("session metrics rollup", () => {
     const flushed: SessionRollup[] = [];
     const reg = registry(now, flushed);
 
-    reg.record("s", "daski_settle_payment", false, '{"status":"completed","paymentId":"42"}');
-    reg.record("s", "daski_settle_payment", false, '{"status":"completed","paymentId":"42"}');
-    reg.record("s", "daski_settle_payment", false, '{"status":"completed","paymentId":43}');
+    reg.record("s", "daski_buy_service", false, '{"status":"completed","paymentId":"42"}');
+    reg.record("s", "daski_buy_service", false, '{"status":"completed","paymentId":"42"}');
+    reg.record("s", "daski_buy_service", false, '{"status":"completed","paymentId":43}');
     reg.record("s", "daski_confirm_delivery", false, '{"attestationUid":"0xa"}');
     reg.record("s", "daski_confirm_delivery", false, '{"attestationUid":"0xa"}');
     reg.record("s", "daski_confirm_delivery", false, '{"attestationUid":"0xb"}');

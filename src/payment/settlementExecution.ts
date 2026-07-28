@@ -48,7 +48,7 @@ export async function verifyAndSettleUnlocked(
           500,
           "screening_evidence_missing",
           "terminal settlement screening evidence is missing",
-          config.network,
+          config.x402Network,
           challenge.walletAddress,
         );
   }
@@ -58,24 +58,25 @@ export async function verifyAndSettleUnlocked(
       409,
       "quote_commitment_missing",
       `stored challenge is missing provider quote commitment fields: ${missingQuote}`,
-      config.network,
+      config.x402Network,
     );
   }
   const verified = await verifyPaymentPayload(input, config, reader, now, {
     allowBroadcastRecovery: Boolean(challenge.transactionHash),
+    queries,
   });
   if (!verified.ok) {
     return settlementFailure(
       verified.status,
       verified.errorReason,
       verified.message,
-      config.network,
+      config.x402Network,
       verified.payer,
     );
   }
   const { payer, settleArgs } = verified;
   if (verified.alreadyPaid) {
-    return storedSettlementResult(challenge, config.network, payer);
+    return storedSettlementResult(challenge, config.x402Network, payer);
   }
   const enforceBuyer = atomic === undefined;
   if (challenge.transactionHash) {
@@ -142,7 +143,7 @@ export async function verifyAndSettleUnlocked(
       queries,
       challenge,
       error,
-      config.network,
+      config.x402Network,
       payer,
       context,
     );
@@ -157,7 +158,7 @@ export async function verifyAndSettleUnlocked(
           ? "on-chain atomic register-and-settle failed"
           : "on-chain settlement failed",
       ),
-      config.network,
+      config.x402Network,
       payer,
     );
   }
@@ -171,7 +172,7 @@ export async function verifyAndSettleUnlocked(
       500,
       "unexpected_settle_error",
       eventError,
-      config.network,
+      config.x402Network,
       payer,
     );
   }
@@ -187,7 +188,7 @@ export async function verifyAndSettleUnlocked(
       500,
       "settlement_persistence_conflict",
       "on-chain settlement conflicts with the stored challenge",
-      config.network,
+      config.x402Network,
       payer,
     );
   }
@@ -201,12 +202,14 @@ export async function verifyAndSettleUnlocked(
       payer,
     );
   }
-  return successfulSettlementResult({
+  const result = successfulSettlementResult({
     challenge,
     event: settlement.event,
     transactionHash: settlement.transactionHash,
-    network: config.network,
+    network: config.x402Network,
     payer,
     ...(atomic ? { registered: settlement.registered ?? true } : {}),
   });
+  await queries.recordSettleResponse(challenge.serviceRef, result.response);
+  return result;
 }

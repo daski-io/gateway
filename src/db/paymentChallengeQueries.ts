@@ -1,4 +1,10 @@
-import type { Hex, StoredChallenge } from "../types.js";
+import type {
+  DaskiX402Declaration,
+  Hex,
+  PaymentRequired,
+  SettlementResponse,
+  StoredChallenge,
+} from "../types.js";
 import type { Pool } from "./pool.js";
 import {
   hexToBytea,
@@ -25,15 +31,23 @@ export function createPaymentChallengeQueries(pool: Pool) {
       quoteSignature?: Hex | null;
       quoteExpiresAt?: Date | null;
       quoteRequestHash?: Hex | null;
+      paymentRequired?: PaymentRequired;
+      requirementsHash?: Hex;
+      resourceUrl?: string;
+      daskiExtension?: DaskiX402Declaration;
+      requestFingerprint?: Hex;
+      registrationDelegation?: StoredChallenge["registrationDelegation"];
     }): Promise<void> {
       await pool.query(
         `INSERT INTO payment_challenges
            (service_ref, provider_token_id, buyer_token_id, amount, skill_id,
             service_slug, service_version, service_id,
             provider_a2a_url, wallet_address, expires_at, settlement_state,
-            quote_id, quote_signature, quote_expires_at, quote_request_hash)
+            quote_id, quote_signature, quote_expires_at, quote_request_hash,
+            x402_version, payment_required, requirements_hash, resource_url,
+            daski_extension, request_fingerprint, registration_delegation)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'pending',
-                 $12, $13, $14, $15)`,
+                 $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)`,
         [
           hexToBytea(challenge.serviceRef),
           challenge.providerTokenId.toString(),
@@ -50,7 +64,91 @@ export function createPaymentChallengeQueries(pool: Pool) {
           challenge.quoteSignature ? challenge.quoteSignature.toLowerCase() : null,
           challenge.quoteExpiresAt ?? null,
           challenge.quoteRequestHash ? hexToBytea(challenge.quoteRequestHash) : null,
+          challenge.paymentRequired ? 2 : null,
+          challenge.paymentRequired
+            ? JSON.stringify(challenge.paymentRequired)
+            : null,
+          challenge.requirementsHash
+            ? hexToBytea(challenge.requirementsHash)
+            : null,
+          challenge.resourceUrl ?? null,
+          challenge.daskiExtension
+            ? JSON.stringify(challenge.daskiExtension)
+            : null,
+          challenge.requestFingerprint
+            ? hexToBytea(challenge.requestFingerprint)
+            : null,
+          challenge.registrationDelegation
+            ? JSON.stringify(challenge.registrationDelegation)
+            : null,
         ],
+      );
+    },
+
+    async bindVerifiedPayment(input: {
+      serviceRef: Hex;
+      payer: Hex;
+      nonce: Hex;
+      payloadFingerprint: Hex;
+      registrationDelegation?: StoredChallenge["registrationDelegation"];
+    }): Promise<"bound" | "idempotent" | "conflict"> {
+      let result;
+      try {
+        result = await pool.query<{
+          accepted_payer: string | null;
+          eip3009_nonce: Buffer | null;
+          payment_payload_fingerprint: Buffer | null;
+        }>(
+          `UPDATE payment_challenges
+            SET accepted_payer = $2,
+                eip3009_nonce = $3,
+                payment_payload_fingerprint = $4,
+                registration_delegation =
+                  COALESCE(registration_delegation, $5::jsonb)
+          WHERE service_ref = $1
+            AND x402_version = 2
+            AND (
+              accepted_payer IS NULL
+              OR (
+                accepted_payer = $2
+                AND eip3009_nonce = $3
+                AND payment_payload_fingerprint = $4
+              )
+            )
+        RETURNING accepted_payer, eip3009_nonce, payment_payload_fingerprint`,
+          [
+            hexToBytea(input.serviceRef),
+            input.payer.toLowerCase(),
+            hexToBytea(input.nonce),
+            hexToBytea(input.payloadFingerprint),
+            input.registrationDelegation
+              ? JSON.stringify(input.registrationDelegation)
+              : null,
+          ],
+        );
+      } catch (error) {
+        if (
+          typeof error === "object" &&
+          error !== null &&
+          (error as { code?: string }).code === "23505"
+        ) {
+          return "conflict";
+        }
+        throw error;
+      }
+      if (result.rowCount === 0) return "conflict";
+      return "bound";
+    },
+
+    async recordSettleResponse(
+      serviceRef: Hex,
+      response: SettlementResponse,
+    ): Promise<void> {
+      await pool.query(
+        `UPDATE payment_challenges
+            SET settle_response = $2
+          WHERE service_ref = $1`,
+        [hexToBytea(serviceRef), JSON.stringify(response)],
       );
     },
 

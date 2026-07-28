@@ -1,4 +1,7 @@
-import type { Config } from "../config.js";
+import {
+  DASKI_X402_EXTENSION_URI,
+  type Config,
+} from "../config.js";
 import {
   SettlementTransactionRevertedError,
   type PaymentSettledEvent,
@@ -15,7 +18,7 @@ export function settlementFailure(
   status: number,
   errorReason: string,
   message: string,
-  network: Config["network"],
+  network: Config["x402Network"],
   payer: Hex = ZERO_ADDRESS,
   screeningFailure?: SettlementScreeningFailure,
 ): SettleResult {
@@ -27,12 +30,10 @@ export function settlementFailure(
     response: {
       success: false,
       errorReason,
+      errorMessage: message,
       transaction: "",
       network,
       payer,
-      ...(screeningFailure
-        ? { retryable: screeningFailure.retryable }
-        : {}),
     },
     ...(screeningFailure ? { screeningFailure } : {}),
   };
@@ -40,9 +41,12 @@ export function settlementFailure(
 
 export function storedSettlementResult(
   challenge: StoredChallenge,
-  network: Config["network"],
+  network: Config["x402Network"],
   payer: Hex,
 ): SettleResult {
+  if (challenge.settleResponse?.success) {
+    return { ok: true, response: challenge.settleResponse };
+  }
   if (challenge.paymentId == null || !challenge.transactionHash) {
     return settlementFailure(
       500,
@@ -132,7 +136,7 @@ export function successfulSettlementResult(args: {
   challenge: StoredChallenge;
   event: PaymentSettledEvent;
   transactionHash: Hex;
-  network: Config["network"];
+  network: Config["x402Network"];
   payer: Hex;
   registered?: boolean;
 }): SettleResult {
@@ -143,21 +147,20 @@ export function successfulSettlementResult(args: {
       transaction: args.transactionHash,
       network: args.network,
       payer: args.payer,
-      daski: {
-        paymentId: args.event.paymentId.toString(),
-        serviceRef: args.challenge.serviceRef,
-        serviceId: args.event.serviceId,
-        providerTokenId: args.challenge.providerTokenId.toString(),
-        buyerTokenId: args.event.buyerAgentId.toString(),
-        amount: args.event.totalAmount.toString(),
-        providerA2AUrl: args.challenge.providerA2AUrl,
-        ...(args.registered !== undefined ? { registered: args.registered } : {}),
-        ...(args.challenge.quoteId && args.challenge.quoteSignature
-          ? {
-              quoteId: args.challenge.quoteId,
-              quoteSignature: args.challenge.quoteSignature,
-            }
-          : {}),
+      amount: args.event.totalAmount.toString(),
+      extensions: {
+        [DASKI_X402_EXTENSION_URI]: {
+          paymentId: args.event.paymentId.toString(),
+          serviceRef: args.challenge.serviceRef,
+          serviceId: args.event.serviceId,
+          providerAgentId: args.challenge.providerTokenId.toString(),
+          buyerAgentId: args.event.buyerAgentId.toString(),
+          skillId: args.challenge.skillId ?? "",
+          providerA2AUrl: args.challenge.providerA2AUrl,
+          registered: args.registered ?? false,
+          quoteId: args.challenge.quoteId ?? "",
+          quoteSignature: args.challenge.quoteSignature ?? "0x",
+        },
       },
     },
   };
@@ -167,7 +170,7 @@ export async function broadcastFailureResult(
   queries: Queries,
   challenge: StoredChallenge,
   error: unknown,
-  network: Config["network"],
+  network: Config["x402Network"],
   payer: Hex,
   context: string,
 ): Promise<SettleResult | null> {

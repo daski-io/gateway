@@ -1,16 +1,22 @@
+import {
+  decodePaymentSignatureHeader,
+  encodePaymentRequiredHeader,
+  encodePaymentResponseHeader,
+} from "@x402/core/http";
 import { Router, type Request, type Response } from "express";
+import type { ChainReader } from "../chain/reader.js";
 import type { Config } from "../config.js";
 import { X402_VERSION } from "../config.js";
-import type { DiscoveryCache } from "../discovery/cache.js";
 import type { Queries } from "../db/queries.js";
-import { issuePaymentRequirements } from "./requirements.js";
-import { resolveSkillOffer } from "./skillOffer.js";
-import { validateProviderQuoteCommitment } from "./providerQuote.js";
-import type { Hex, PaymentRequirementsResponse } from "../types.js";
-import type { ChainReader } from "../chain/reader.js";
-import { walletControlsAgent } from "../identity/control.js";
-import { isHexAddress } from "../util/evmValidation.js";
+import type { DiscoveryCache } from "../discovery/cache.js";
+import type { Hex, PaymentPayload } from "../types.js";
+import { logger } from "../util/logger.js";
 import type { PaymentScreeningReadinessProbe } from "./screeningReadiness.js";
+import type { DaskiFacilitatorService } from "./daskiFacilitator.js";
+import { parsePurchaseRequest } from "./purchaseRequest.js";
+import { hashCanonical } from "./requirementResponse.js";
+import { issuePaymentRequirements } from "./requirements.js";
+import { getDaskiDeclaration, getDaskiReceipt } from "./x402Extension.js";
 
 export interface PurchaseDeps {
   config: Config;
@@ -18,6 +24,8 @@ export interface PurchaseDeps {
   queries: Queries;
   reader: ChainReader;
   screeningReadiness: PaymentScreeningReadinessProbe;
+  facilitator: DaskiFacilitatorService;
+  fetchAgentCardFn?: import("../identity/fetch-agent-card.js").FetchAgentCardOptions["fetchFn"];
 }
 
 function sendError(res: Response, status: number, message: string) {
@@ -28,203 +36,160 @@ export function createPurchaseRouter(deps: PurchaseDeps): Router {
   const router = Router();
 
   router.post("/purchase/:agentId", async (req: Request, res: Response) => {
-    let providerTokenId: bigint;
-    try {
-      providerTokenId = BigInt(String(req.params.agentId));
-    } catch {
+    res.setHeader("Cache-Control", "no-store");
+    if (req.get("X-PAYMENT")) {
+      logger.info("x402.v1_request_rejected", { transport: "http" });
+      sendError(res, 400, "X-PAYMENT is not supported; use PAYMENT-SIGNATURE");
+      return;
+    }
+    const providerTokenId = parseAgentId(req.params.agentId);
+    if (providerTokenId === null) {
       sendError(res, 404, "invalid provider token id");
       return;
     }
-    if (!(await deps.screeningReadiness.isReady())) {
-      sendError(
-        res,
-        503,
-        "Payment cannot be processed right now. Please try again later.",
-      );
-      return;
-    }
 
-    const body = req.body ?? {};
-    const skillId = typeof body.skillId === "string" ? body.skillId : undefined;
-    const serviceSlug =
-      typeof body.serviceSlug === "string" ? body.serviceSlug : undefined;
-    const amount = typeof body.amount === "string" ? body.amount : undefined;
-    const resource = `${deps.config.publicUrl}/purchase/${providerTokenId.toString()}`;
-
-    // Open a payment challenge. Settlement uses the canonical /settle API.
-    const buyerTokenIdRaw = body.buyerTokenId;
-    if (buyerTokenIdRaw == null) {
-      sendError(res, 400, "buyerTokenId is required");
-      return;
-    }
-    let buyerTokenId: bigint;
-    try {
-      buyerTokenId = BigInt(buyerTokenIdRaw);
-    } catch {
-      sendError(res, 400, "buyerTokenId must be a numeric string");
-      return;
-    }
-
-    // walletAddress is required so the gateway can pre-bake the EIP-712
-    // typed-data with the correct `from` field. Wallet-agnostic: any
-    // signer that lands on this address will produce a recoverable sig.
-    const walletAddressRaw = body.walletAddress;
-    if (!isHexAddress(walletAddressRaw)) {
-      sendError(res, 400, "walletAddress is required (20-byte hex)");
-      return;
-    }
-    const walletAddress = walletAddressRaw.toLowerCase() as Hex;
-
-    if (!skillId) {
-      sendError(res, 400, "skillId is required");
-      return;
-    }
-    if (!serviceSlug) {
-      sendError(res, 400, "serviceSlug is required");
-      return;
-    }
-    if (
-      buyerTokenId !== 0n &&
-      !(await walletControlsAgent(deps.reader, buyerTokenId, walletAddress))
-    ) {
-      sendError(res, 403, "walletAddress does not control buyerTokenId");
-      return;
-    }
-    const serviceArgsRaw = body.serviceArgs;
-    if (
-      serviceArgsRaw !== undefined &&
-      (serviceArgsRaw === null ||
-        typeof serviceArgsRaw !== "object" ||
-        Array.isArray(serviceArgsRaw))
-    ) {
-      sendError(res, 400, "serviceArgs must be a JSON object");
-      return;
-    }
-    const serviceArgs = (serviceArgsRaw as Record<string, unknown> | undefined) ?? {};
-    const provider = deps.cache.get(providerTokenId);
-    const offerResult = resolveSkillOffer(providerTokenId, skillId, deps.cache, {
-      serviceSlug,
-    });
-    if (!provider || !offerResult.ok) {
-      sendError(
-        res,
-        offerResult.ok ? 404 : offerResult.status,
-        offerResult.ok
-          ? "provider is not currently admitted"
-          : offerResult.message,
-      );
-      return;
-    }
-    const rawQuote = body.providerQuote;
-    const rawQuoteAmount =
-      rawQuote && typeof rawQuote === "object"
-        ? (rawQuote as Record<string, unknown>).amount
-        : undefined;
-    if (typeof rawQuoteAmount !== "string") {
-      sendError(
-        res,
-        400,
-        "providerQuote is required for every paid purchase. Pass the full " +
-          "quote object returned by POST <provider>/quote/:serviceSlug.",
-      );
-      return;
-    }
-    const offer = offerResult.offer;
-    const validation = await validateProviderQuoteCommitment(rawQuote, {
-      skillId,
-      serviceArgs,
-      amount: rawQuoteAmount,
-      expectedSignerAddress: provider.walletAddress,
-      expectedChainId: deps.config.chainId,
-      expectedTokenAddress: deps.config.usdcAddress,
-      expectedServiceSlug: offer.serviceSlug,
-      expectedServiceVersion: offer.serviceVersion,
-    });
-    if (!validation.ok) {
-      sendError(res, 400, `invalid providerQuote: ${validation.message}`);
-      return;
-    }
-    const quote = validation.quote;
-    if (amount !== undefined) {
-      let cap: bigint;
-      try {
-        cap = BigInt(amount);
-      } catch {
-        sendError(res, 400, "amount must be a decimal string");
-        return;
-      }
-      if (BigInt(quote.amount) > cap) {
-        sendError(res, 409, `provider quote ${quote.amount} exceeds amount limit ${amount}`);
-        return;
-      }
-    }
-
-    const result = await issuePaymentRequirements(
-      {
+    const signatureHeader = req.get("PAYMENT-SIGNATURE");
+    if (signatureHeader) {
+      await handlePaidRetry(
+        deps,
         providerTokenId,
-        buyerTokenId,
-        skillId,
-        resource,
-        walletAddress,
-        providerQuote: {
-          quoteId: quote.quoteId,
-          serviceRef: quote.serviceRef,
-          requestHash: quote.requestHash,
-          providerSignature: quote.providerSignature,
-          amount: quote.amount,
-          expiresAt: new Date(quote.expiresAt),
-          skillId: quote.skillId,
-          serviceSlug: quote.serviceSlug,
-          serviceVersion: quote.serviceVersion,
-        },
-      },
-      deps.config,
-      deps.cache,
-      deps.queries,
-    );
-    if (!result.ok) {
-      sendError(res, result.status, result.message);
+        req.body ?? {},
+        signatureHeader,
+        res,
+      );
       return;
     }
-    const body402: PaymentRequirementsResponse = {
-      x402Version: X402_VERSION,
-      legal: result.requirements.extra.daski.legal,
-      agentAuthority: result.requirements.extra.daski.agentAuthority,
-      purchaseNotice: result.requirements.extra.daski.purchaseNotice,
-      accepts: [result.requirements],
-    };
-    res.status(402).json(body402);
-    return;
-  });
-
-  // x402 facilitator advertisement — `kinds` matches the spec; the
-  // remaining top-level fields are a Daski extension that lets the skill
-  // pick up the canonical EAS / identity registry addresses in one hop.
-  router.get("/supported", (_req: Request, res: Response) => {
-    const caip2 = `eip155:${deps.config.chainId}`;
-    res.json({
-      kinds: [
-        {
-          scheme: "exact",
-          network: deps.config.network,
-          // §1.2 — CAIP-2 dual-emit for x402 v2 facilitators.
-          chainId: caip2,
-        },
-      ],
-      endpoints: {
-        verify: "/verify",
-        settle: "/settle",
-      },
-      identityRegistryAddress: deps.config.identityRegistryAddress,
-      paymentRouterAddress: deps.config.paymentRouterAddress,
-      usdcAddress: deps.config.usdcAddress,
-      eas: {
-        address: deps.config.easAddress,
-        confirmationSchemaUid: deps.config.easConfirmationSchemaUid,
-        outcomeSchemaUid: deps.config.easOutcomeSchemaUid,
-      },
-    });
+    await handleInitialPurchase(deps, providerTokenId, req.body ?? {}, res);
   });
 
   return router;
+}
+
+async function handlePaidRetry(
+  deps: PurchaseDeps,
+  providerTokenId: bigint,
+  body: Record<string, unknown>,
+  signatureHeader: string,
+  res: Response,
+): Promise<void> {
+  let paymentPayload: PaymentPayload;
+  try {
+    paymentPayload = decodePaymentSignatureHeader(signatureHeader);
+  } catch {
+    sendError(res, 400, "malformed PAYMENT-SIGNATURE");
+    return;
+  }
+  const declaration = getDaskiDeclaration(paymentPayload);
+  if (!declaration) {
+    sendError(res, 400, "PAYMENT-SIGNATURE is missing the Daski V2 extension");
+    return;
+  }
+  const challenge = await deps.queries.getChallengeByRef(
+    declaration.info.serviceRef.toLowerCase() as Hex,
+  );
+  if (!challenge || challenge.providerTokenId !== providerTokenId) {
+    sendError(res, 404, "payment challenge not found");
+    return;
+  }
+  if (
+    !challenge.requestFingerprint ||
+    challenge.requestFingerprint.toLowerCase() !==
+      hashCanonical(body).toLowerCase()
+  ) {
+    sendError(res, 400, "paid retry body differs from the original request");
+    return;
+  }
+  if (
+    challenge.settlementState !== "paid" &&
+    challenge.settlementState !== "sanctions_rejected" &&
+    !(await deps.screeningReadiness.isReady())
+  ) {
+    sendError(res, 503, "Payment cannot be processed right now. Please try again later.");
+    return;
+  }
+  const requirements = challenge.paymentRequired?.accepts[0];
+  if (!requirements) {
+    sendError(res, 409, "stored challenge is not canonical x402 V2");
+    return;
+  }
+  const settlement = await deps.facilitator.settle(
+    paymentPayload,
+    requirements,
+  );
+  res.setHeader("PAYMENT-RESPONSE", encodePaymentResponseHeader(settlement));
+  if (!settlement.success) {
+    res
+      .status(
+        settlement.errorReason === "payment_screening_unready" ? 503 : 402,
+      )
+      .json({
+        error: settlement.errorReason,
+        message: settlement.errorMessage,
+      });
+    return;
+  }
+  const receipt = getDaskiReceipt(settlement);
+  res.status(200).json({
+    success: true,
+    receipt,
+    amount: settlement.amount,
+    transactionHash: settlement.transaction,
+    nextAction: "Submit the paid task to the provider A2A endpoint.",
+  });
+}
+
+async function handleInitialPurchase(
+  deps: PurchaseDeps,
+  providerTokenId: bigint,
+  body: Record<string, unknown>,
+  res: Response,
+): Promise<void> {
+  if (!(await deps.screeningReadiness.isReady())) {
+    sendError(res, 503, "Payment cannot be processed right now. Please try again later.");
+    return;
+  }
+  const parsed = await parsePurchaseRequest(deps, providerTokenId, body, res);
+  if (!parsed) return;
+
+  const result = await issuePaymentRequirements(
+    {
+      providerTokenId,
+      buyerTokenId: parsed.buyerTokenId,
+      skillId: parsed.skillId,
+      resource: `${deps.config.publicUrl}/purchase/${providerTokenId}`,
+      walletAddress: parsed.walletAddress,
+      providerQuote: parsed.providerQuote,
+      requestFingerprint: hashCanonical(body),
+      registrationDelegation: parsed.registration,
+    },
+    deps.config,
+    deps.cache,
+    deps.queries,
+  );
+  if (!result.ok) {
+    sendError(res, result.status, result.message);
+    return;
+  }
+  const encoded = encodePaymentRequiredHeader(result.paymentRequired);
+  if (Buffer.byteLength(encoded, "utf8") >= 8192) {
+    logger.warn("x402.header_oversize", { transport: "http" });
+    sendError(res, 500, "payment challenge exceeds the configured header budget");
+    return;
+  }
+  logger.info("x402.payment_required", { transport: "http" });
+  res.setHeader("PAYMENT-REQUIRED", encoded);
+  res.status(402).json({
+    error: "payment_required",
+    legal: result.purchaseLegal.legal,
+    agentAuthority: result.purchaseLegal.agentAuthority,
+    purchaseNotice: result.purchaseLegal.purchaseNotice,
+  });
+}
+
+function parseAgentId(value: unknown): bigint | null {
+  try {
+    return BigInt(String(value));
+  } catch {
+    return null;
+  }
 }

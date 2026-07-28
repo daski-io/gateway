@@ -1,4 +1,5 @@
 import type { ChainId, Hex } from "./types.js";
+import type { Network } from "@x402/core/types";
 import { requireMarketplaceHttpsUrl } from "./legal/validation.js";
 import { isHex32, isHexAddress } from "./util/evmValidation.js";
 import {
@@ -7,8 +8,9 @@ import {
 } from "./runtimeConfig.js";
 
 export const DASKI_A2A_EXTENSION_URI = "https://daski.xyz/a2a/v1";
+export const DASKI_X402_EXTENSION_URI = "https://daski.xyz/x402/v2";
 
-export const X402_VERSION = 1;
+export const X402_VERSION = 2 as const;
 
 export const BASE_MAINNET_SANCTIONS_ORACLE =
   "0x3a91a31cb3dc49b4db9ce721f50a9d076c8d739b" as Hex;
@@ -25,6 +27,7 @@ export interface Config extends RuntimeConfig {
   baseRpcUrl: string;
   chainId: ChainId;
   network: "base" | "base-sepolia";
+  x402Network: Network;
   // CANONICAL per-chain ERC-8004 IdentityRegistry (0x8004A… singleton) —
   // Daski no longer deploys an identity registry of its own.
   identityRegistryAddress: Hex;
@@ -36,8 +39,8 @@ export interface Config extends RuntimeConfig {
   providerRegistryAddress: Hex;
   // ServiceRegistry — service-identity refactor (2026-05). serviceId is
   // computed off-chain from (providerAgentId, serviceSlug, version) and the
-  // gateway threads it through the EIP-3009 nonce binding and into
-  // PaymentRouter.settle so each payment is bound to a specific catalog row.
+  // gateway threads it into PaymentRouter.settle so each payment is bound
+  // to a specific catalog row. The EIP-3009 nonce remains client-random.
   serviceRegistryAddress: Hex;
   paymentRouterAddress: Hex;
   sanctionsOracleAddress: Hex;
@@ -301,6 +304,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     ),
     chainId,
     network: networkForChain(chainId),
+    x402Network: `eip155:${chainId}`,
     identityRegistryAddress: requireAddress(
       "IDENTITY_REGISTRY_ADDRESS",
       env.IDENTITY_REGISTRY_ADDRESS,

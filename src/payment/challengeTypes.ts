@@ -1,4 +1,9 @@
-import type { Hex } from "../types.js";
+import type {
+  DaskiX402Declaration,
+  Hex,
+  PaymentRequired,
+  SettlementResponse,
+} from "../types.js";
 
 export type SettlementState =
   | "pending"
@@ -42,4 +47,19 @@ export interface StoredChallenge {
    *  since the de-scar (260726) removed the acknowledgement gates; the
    *  Record shape is kept for rows written by earlier releases. */
   acknowledgements: Record<string, unknown>;
+  x402Version: number | null;
+  paymentRequired: PaymentRequired | null;
+  requirementsHash: Hex | null;
+  resourceUrl: string | null;
+  daskiExtension: DaskiX402Declaration | null;
+  requestFingerprint: Hex | null;
+  registrationDelegation: {
+    agentURI: string;
+    deadline: string;
+    signature: Hex;
+  } | null;
+  acceptedPayer: Hex | null;
+  eip3009Nonce: Hex | null;
+  paymentPayloadFingerprint: Hex | null;
+  settleResponse: SettlementResponse | null;
 }

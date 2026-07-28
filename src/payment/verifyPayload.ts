@@ -1,25 +1,34 @@
 import { hexToBytes, recoverTypedDataAddress, type Address } from "viem";
 import type { PaymentChainGateway } from "../chain/reader.js";
 import type { Config } from "../config.js";
-import type { Hex } from "../types.js";
+import type { Queries } from "../db/queries.js";
+import type { ExactEvmAuthorization, Hex } from "../types.js";
+import { canonicalJsonStringify } from "../auth/envelope.js";
 import { publicErrorMessage } from "../util/errorWrap.js";
+import { logger } from "../util/logger.js";
 import {
   isHex32,
   isHexAddress,
   TRANSFER_WITH_AUTHORIZATION_TYPES,
 } from "./protocol.js";
 import { missingQuoteCommitment } from "./settlementResults.js";
+import { hashCanonical } from "./requirementResponse.js";
+import { getDaskiDeclaration } from "./x402Extension.js";
 import type { SettleInput, VerifyResult } from "./verifyTypes.js";
 
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000" as Hex;
 const VALID_BEFORE_BUFFER_SEC = 10n;
+const VALID_BEFORE_EXPIRY_TOLERANCE_SEC = 1n;
 
 export async function verifyPaymentPayload(
   input: SettleInput,
   config: Config,
   reader: Pick<PaymentChainGateway, "authorizationUsed">,
   now: Date = new Date(),
-  options: { allowBroadcastRecovery?: boolean } = {},
+  options: {
+    allowBroadcastRecovery?: boolean;
+    queries?: Queries;
+  } = {},
 ): Promise<VerifyResult> {
   const { payload, challenge } = input;
   const missingQuote = missingQuoteCommitment(challenge);
@@ -30,21 +39,51 @@ export async function verifyPaymentPayload(
       `stored challenge is missing provider quote commitment fields: ${missingQuote}`,
     );
   }
-  if (payload.x402Version !== 1) {
+  if (
+    challenge.x402Version !== 2 ||
+    !challenge.paymentRequired ||
+    !challenge.requirementsHash
+  ) {
+    return fail(409, "invalid_stored_challenge", "challenge is not canonical x402 V2");
+  }
+  if (payload.x402Version !== 2) {
     return fail(400, "invalid_x402_version", `unsupported x402Version: ${payload.x402Version}`);
   }
-  if (payload.scheme !== "exact") {
-    return fail(400, "invalid_scheme", `unsupported scheme: ${payload.scheme}`);
+  if (payload.accepted?.scheme !== "exact") {
+    return fail(400, "invalid_scheme", `unsupported scheme: ${payload.accepted?.scheme}`);
   }
-  if (payload.network !== config.network) {
+  if (payload.accepted.network !== config.x402Network) {
     return fail(
       400,
       "invalid_network",
-      `expected network ${config.network}, got ${payload.network}`,
+      `expected network ${config.x402Network}, got ${payload.accepted.network}`,
     );
   }
+  if (
+    hashCanonical(payload.accepted).toLowerCase() !==
+    challenge.requirementsHash.toLowerCase()
+  ) {
+    return fail(400, "payment_requirements_mismatch", "accepted requirements differ from the issued challenge");
+  }
+  if (
+    canonicalJsonStringify(payload.resource) !==
+    canonicalJsonStringify(challenge.paymentRequired.resource)
+  ) {
+    return fail(400, "resource_mismatch", "payment resource differs from the issued challenge");
+  }
+  const issuedDeclaration = getDaskiDeclaration(challenge.paymentRequired);
+  const echoedDeclaration = getDaskiDeclaration(payload);
+  if (
+    !issuedDeclaration ||
+    !echoedDeclaration ||
+    !containsCanonicalInfo(echoedDeclaration.info, issuedDeclaration.info)
+  ) {
+    return fail(400, "extension_echo_mismatch", "payment extensions differ from the issued challenge");
+  }
 
-  const auth = payload.payload?.authorization;
+  const auth = payload.payload?.authorization as
+    | ExactEvmAuthorization
+    | undefined;
   const signature = payload.payload?.signature;
   if (!auth || !signature) {
     return fail(400, "invalid_payload", "missing authorization or signature");
@@ -132,17 +171,38 @@ export async function verifyPaymentPayload(
   } catch {
     return fail(400, "invalid_payload", "malformed signature", payer);
   }
-  const success = (): VerifyResult => ({
-    ok: true,
-    alreadyPaid: challenge.settlementState === "paid",
-    payer,
-    settleArgs: {
-      ...signatureParts,
-      validAfter,
-      validBefore,
-      nonce: auth.nonce,
-    },
-  });
+  const success = async (): Promise<VerifyResult> => {
+    if (options.queries) {
+      const binding = await options.queries.bindVerifiedPayment({
+        serviceRef: challenge.serviceRef,
+        payer,
+        nonce: auth.nonce,
+        payloadFingerprint: hashCanonical(payload),
+      });
+      if (binding === "conflict") {
+        logger.info("x402.challenge_conflict", {
+          reason: "payment_payload_replay_conflict",
+        });
+        return fail(
+          409,
+          "payment_payload_replay_conflict",
+          "challenge is already bound to a different payment authorization",
+          payer,
+        );
+      }
+    }
+    return {
+      ok: true,
+      alreadyPaid: challenge.settlementState === "paid",
+      payer,
+      settleArgs: {
+        ...signatureParts,
+        validAfter,
+        validBefore,
+        nonce: auth.nonce,
+      },
+    };
+  };
   if (challenge.settlementState === "paid") return success();
   if (options.allowBroadcastRecovery && challenge.transactionHash) return success();
   if (challenge.settlementState === "expired" || challenge.expiresAt < now) {
@@ -162,6 +222,17 @@ export async function verifyPaymentPayload(
       402,
       "invalid_exact_evm_payload_authorization_valid_before",
       "authorization is expired or too close to expiry",
+      payer,
+    );
+  }
+  const challengeExpirySec = BigInt(
+    Math.floor(challenge.expiresAt.getTime() / 1000),
+  );
+  if (validBefore > challengeExpirySec + VALID_BEFORE_EXPIRY_TOLERANCE_SEC) {
+    return fail(
+      402,
+      "invalid_exact_evm_payload_authorization_valid_before",
+      "authorization expires after the issued payment challenge",
       payer,
     );
   }
@@ -187,6 +258,35 @@ export async function verifyPaymentPayload(
     );
   }
   return success();
+}
+
+function containsCanonicalInfo(
+  candidate: unknown,
+  required: unknown,
+): boolean {
+  if (required === null || typeof required !== "object") {
+    return canonicalJsonStringify(candidate) === canonicalJsonStringify(required);
+  }
+  if (Array.isArray(required)) {
+    return (
+      Array.isArray(candidate) &&
+      candidate.length === required.length &&
+      required.every((value, index) =>
+        containsCanonicalInfo(candidate[index], value),
+      )
+    );
+  }
+  if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
+    return false;
+  }
+  return Object.entries(required as Record<string, unknown>).every(
+    ([key, value]) =>
+      Object.prototype.hasOwnProperty.call(candidate, key) &&
+      containsCanonicalInfo(
+        (candidate as Record<string, unknown>)[key],
+        value,
+      ),
+  );
 }
 
 function validateAuthorizationBinding(

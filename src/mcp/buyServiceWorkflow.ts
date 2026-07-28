@@ -39,11 +39,9 @@ export async function runBuyService(
   }
 
   const retry = await runBuyServiceX402Retry(args, extra, {
-    config: deps.config,
-    reader: deps.reader,
     queries: deps.queries,
     screeningReadiness: deps.screeningReadiness,
-    fetchAgentCardFn: deps.buyerAgentCardFetch,
+    facilitator: deps.facilitator,
   });
   if (retry !== null) return retry;
 

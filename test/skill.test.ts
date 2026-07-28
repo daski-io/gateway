@@ -33,13 +33,14 @@ describe("hosted SKILL.md", () => {
     // Spot-check a few sections so future edits to SKILL.md don't quietly
     // drop critical content.
     expect(text).toMatch(/Prerequisites/);
-    expect(text).toMatch(/eip712TypedData/);
+    expect(text).toMatch(/x402 V2 MCP client/);
     expect(text).toMatch(/daski_buy_service/);
-    expect(text).toMatch(/daski_settle_payment/);
+    expect(text).toContain('_meta["x402/payment"]');
+    expect(text).toContain('_meta["x402/payment-response"]');
+    expect(text).toMatch(/daski_submit_task/);
     expect(text).toMatch(/daski_fetch_artifact/);
-    expect(text).toContain('rpcCode `-32110`');
-    expect(text).toContain("reuse it until its");
-    expect(text).toContain("second call =");
+    expect(text).not.toContain("daski_purchase arguments");
+    expect(text).not.toContain("daski_settle_payment arguments");
   });
 
   it("also serves at /SKILL.md and /.well-known/skill.md", async () => {

@@ -36,7 +36,7 @@ describe("GET /.well-known/x402", () => {
       resources: string[];
     };
 
-    expect(body.version).toBe(1);
+    expect(body.version).toBe(2);
     expect(body.resources).toEqual([
       `${gateway.config.publicUrl}/purchase/2`,
       `${gateway.config.publicUrl}/purchase/7`,
@@ -83,7 +83,7 @@ describe("GET /.well-known/x402", () => {
     const res = await fetch(`${gateway.baseUrl}/.well-known/x402`);
     expect(res.status).toBe(200);
     const body = (await res.json()) as { version: number; resources: string[] };
-    expect(body.version).toBe(1);
+    expect(body.version).toBe(2);
     expect(body.resources).toEqual([]);
   });
 

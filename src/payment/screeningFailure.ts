@@ -24,7 +24,7 @@ export function screeningFailureResult(
     rejected
       ? "This payment cannot be processed."
       : "Payment cannot be processed right now. Please try again later.",
-    config.network,
+    config.x402Network,
     payer,
     failure,
   );
@@ -109,7 +109,7 @@ export async function handleSettlementScreeningError(
           ? "settlement reverted and is awaiting reconciliation"
           : "payment screening could not be recorded",
       ),
-      config.network,
+      config.x402Network,
       payer,
     );
   }

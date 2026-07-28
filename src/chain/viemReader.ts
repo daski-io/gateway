@@ -180,6 +180,56 @@ export function createViemChainReader(opts: ViemReaderOptions): ChainReader {
       })) as boolean;
     },
 
+    async simulatePayment(input, registration) {
+      const auth = {
+        from: input.from,
+        validAfter: input.validAfter,
+        validBefore: input.validBefore,
+        nonce: input.nonce,
+        v: input.v,
+        r: input.r,
+        s: input.s,
+      } as const;
+      if (registration) {
+        await publicClient.simulateContract({
+          address: adapterAddress,
+          abi: [...x402AdapterAbi, ...knownErrorAbis],
+          functionName: "settleWithRegistration",
+          args: [
+            usdcAddress,
+            input.amount,
+            input.serviceRef,
+            input.providerAgentId,
+            input.serviceId,
+            auth,
+            registration.agentURI,
+            registration.deadline,
+            registration.signature,
+          ],
+          account,
+          chain,
+          gas: 2_000_000n,
+        });
+        return;
+      }
+      await publicClient.simulateContract({
+        address: adapterAddress,
+        abi: [...x402AdapterAbi, ...knownErrorAbis],
+        functionName: "settle",
+        args: [
+          usdcAddress,
+          input.amount,
+          input.serviceRef,
+          input.providerAgentId,
+          input.serviceId,
+          auth,
+        ],
+        account,
+        chain,
+        gas: 2_000_000n,
+      });
+    },
+
     async settlePayment(
       input: SettlementInput,
       onBroadcast?: BroadcastObserver,

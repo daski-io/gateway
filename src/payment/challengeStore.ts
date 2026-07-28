@@ -1,5 +1,10 @@
 import type { Queries } from "../db/queries.js";
-import type { Hex, StoredChallenge } from "../types.js";
+import type {
+  DaskiX402Declaration,
+  Hex,
+  PaymentRequired,
+  StoredChallenge,
+} from "../types.js";
 
 interface ChallengeBinding {
   serviceRef: Hex;
@@ -19,6 +24,12 @@ interface ChallengeBinding {
     expiresAt: Date;
     requestHash: Hex;
   };
+  paymentRequired: PaymentRequired;
+  requirementsHash: Hex;
+  requestFingerprint: Hex;
+  daskiExtension: DaskiX402Declaration;
+  resourceUrl: string;
+  registrationDelegation?: StoredChallenge["registrationDelegation"];
 }
 
 export type ClaimChallengeResult =
@@ -47,7 +58,10 @@ function matchesBinding(
     existing.quoteSignature?.toLowerCase() ===
       binding.quote.providerSignature.toLowerCase() &&
     existing.quoteRequestHash?.toLowerCase() ===
-      binding.quote.requestHash.toLowerCase()
+      binding.quote.requestHash.toLowerCase() &&
+    existing.x402Version === 2 &&
+    existing.requestFingerprint?.toLowerCase() ===
+      binding.requestFingerprint.toLowerCase()
   );
 }
 
@@ -95,6 +109,12 @@ export async function claimPaymentChallenge(
         quoteSignature: binding.quote.providerSignature,
         quoteExpiresAt: binding.quote.expiresAt,
         quoteRequestHash: binding.quote.requestHash,
+        paymentRequired: binding.paymentRequired,
+        requirementsHash: binding.requirementsHash,
+        resourceUrl: binding.resourceUrl,
+        daskiExtension: binding.daskiExtension,
+        requestFingerprint: binding.requestFingerprint,
+        registrationDelegation: binding.registrationDelegation,
       });
     } catch (error) {
       if (

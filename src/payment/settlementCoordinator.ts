@@ -28,7 +28,7 @@ export type CoordinatedSettlement =
   | { kind: "invalid-registration"; message: string }
   | { kind: "result"; result: SettleResult };
 
-function parseRegistration(
+export function parseRegistration(
   raw: RegistrationInput | undefined,
 ): RegistrationDelegation | { error: string } {
   if (!raw || typeof raw !== "object") {
@@ -79,10 +79,12 @@ export async function settleChallenge(
     };
   }
 
-  if (!input.registration) {
+  const rawRegistration =
+    input.registration ?? input.challenge.registrationDelegation ?? undefined;
+  if (!rawRegistration) {
     return { kind: "registration-required" };
   }
-  const registration = parseRegistration(input.registration);
+  const registration = parseRegistration(rawRegistration);
   if ("error" in registration) {
     return {
       kind: "invalid-registration",

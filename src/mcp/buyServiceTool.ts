@@ -44,23 +44,6 @@ export const INPUT_SCHEMA = {
   paymentId: z.string().optional().describe(
     "Original asset paymentId for a free ownership-gated skill.",
   ),
-  paymentPayload: z
-    .object({
-      x402Version: z.literal(1),
-      scheme: z.literal("exact"),
-      network: z.enum(["base", "base-sepolia"]),
-      payload: z.object({
-        signature: z.string(),
-        authorization: z.record(z.string(), z.unknown()),
-      }),
-    })
-    .passthrough()
-    .optional()
-    .describe("Signed payment payload for the settlement retry."),
-  paymentRequirements: z
-    .record(z.string(), z.unknown())
-    .optional()
-    .describe("Original payment requirements echoed on the signed retry."),
   registration: z
     .object({
       agentURI: z.string(),
@@ -73,18 +56,16 @@ export const INPUT_SCHEMA = {
 
 const DESCRIPTION = [
   "Start here for a paid Daski service. The first call validates service",
-  "arguments and returns a signed provider quote plus payment typed data.",
+  "arguments and returns an x402 V2 payment challenge.",
   "A fresh wallet's first paid call also mints its permanent buyer",
   "identity: pass `name` to choose it, or the wallet-derived default",
   "applies (the quote warns if the resolved name diverges from the",
   "request's companyName — correct it before signing if unintended).",
   "Phone values in serviceArgs land on public WHOIS exactly as sent; the",
   "quote result restates them in `warnings`.",
-  "Settle by following the returned plan: sign the payment typed data,",
-  "then call daski_settle_payment (the canonical settle path). A second",
-  "call here with paymentPayload also settles (x402-middleware compat)",
-  "but then serviceArgs MUST byte-match the quoted request — pick ONE",
-  "settle path and never interleave the two.",
+  "On payment-required, use a standard x402 MCP client to sign the selected",
+  "requirements and retry this unchanged tool call with PaymentPayload at",
+  "`_meta[\"x402/payment\"]`.",
   "Entity-formation managementType and members/managers are TOP-LEVEL `serviceArgs` keys.",
   "There is NO `officials` or `officialsByClassification` wrapper. Party objects are",
   "STRICT — accepted keys: firstName, lastName, isCompany, companyName,",
@@ -94,7 +75,7 @@ const DESCRIPTION = [
   "MUST carry `jurisdictionCountry` (uppercase ISO 3166-1 alpha-2, e.g. \"US\")",
   "beside companyName.",
   "",
-  "Settlement and task dispatch are separate: after a successful second call,",
+  "Settlement and task dispatch are separate: after a successful paid retry,",
   "call daski_submit_task with the returned paymentId, serviceRef,",
   "transactionHash, providerA2AUrl, and buyerTokenId.",
   "",

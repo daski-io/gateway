@@ -10,9 +10,7 @@ import { rateLimit, securityHeaders } from "../util/security.js";
 const MCP_STATE_CHANGE_TOOLS = new Set([
   "daski_buy_service",
   "daski_confirm_delivery",
-  "daski_purchase",
   "daski_register_agent",
-  "daski_settle_payment",
   "daski_submit_task",
 ]);
 
@@ -32,6 +30,16 @@ function forMcpStateChange(middleware: RequestHandler): RequestHandler {
       );
     });
     if (hasStateChange) {
+      middleware(req, res, next);
+      return;
+    }
+    next();
+  };
+}
+
+function forPaidPurchaseRetry(middleware: RequestHandler): RequestHandler {
+  return (req, res, next) => {
+    if (req.get("PAYMENT-SIGNATURE")) {
       middleware(req, res, next);
       return;
     }
@@ -77,7 +85,20 @@ export function configureMiddleware(
 ): void {
   app.set("trust proxy", config.trustProxy);
   app.use(securityHeaders);
-  app.use(cors({ origin: "*" }));
+  app.use(
+    cors({
+      origin: "*",
+      exposedHeaders: [
+        "PAYMENT-REQUIRED",
+        "PAYMENT-SIGNATURE",
+        "PAYMENT-RESPONSE",
+      ],
+      allowedHeaders: [
+        "Content-Type",
+        "PAYMENT-SIGNATURE",
+      ],
+    }),
+  );
 
   if (config.nodeEnv !== "test") {
     configurePreParserRateLimits(app, queries, config);
@@ -95,14 +116,60 @@ function configurePreParserRateLimits(
 ): void {
   addRateLimits(
     app,
-    [
-      "/purchase",
-      "/verify",
-      "/settle",
-      "/confirm",
-      "/register-transaction",
-      "/register-prep",
-    ],
+    ["/purchase"],
+    {
+      namespace: "payment-resource",
+      perClient: 30,
+      global: config.stateChangeGlobalMaxPerMinute,
+      store: queries,
+    },
+  );
+  app.use(
+    "/purchase",
+    forPaidPurchaseRetry(
+      rateLimit({
+        windowMs: 60_000,
+        max: 30,
+        namespace: "payment-resource-retry",
+        store: queries,
+      }),
+    ),
+  );
+  app.use(
+    "/purchase",
+    forPaidPurchaseRetry(
+      rateLimit({
+        windowMs: 60_000,
+        max: config.stateChangeGlobalMaxPerMinute,
+        namespace: "payment-resource-retry-global",
+        keyScope: "global",
+        store: queries,
+      }),
+    ),
+  );
+  addRateLimits(
+    app,
+    ["/verify"],
+    {
+      namespace: "facilitator-verify",
+      perClient: 30,
+      global: config.stateChangeGlobalMaxPerMinute,
+      store: queries,
+    },
+  );
+  addRateLimits(
+    app,
+    ["/settle"],
+    {
+      namespace: "facilitator-settle",
+      perClient: 30,
+      global: config.stateChangeGlobalMaxPerMinute,
+      store: queries,
+    },
+  );
+  addRateLimits(
+    app,
+    ["/confirm", "/register-transaction", "/register-prep"],
     {
       namespace: "state-change",
       perClient: 30,

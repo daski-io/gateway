@@ -1,4 +1,10 @@
-import type { Hex, StoredChallenge } from "../types.js";
+import type {
+  DaskiX402Declaration,
+  Hex,
+  PaymentRequired,
+  SettlementResponse,
+  StoredChallenge,
+} from "../types.js";
 
 export interface ChallengeRow {
   service_ref: Buffer;
@@ -29,6 +35,17 @@ export interface ChallengeRow {
   quote_request_hash: Buffer | null;
   service_args: Record<string, unknown> | null;
   acknowledgements: Record<string, unknown> | null;
+  x402_version: number | null;
+  payment_required: PaymentRequired | null;
+  requirements_hash: Buffer | null;
+  resource_url: string | null;
+  daski_extension: DaskiX402Declaration | null;
+  request_fingerprint: Buffer | null;
+  registration_delegation: StoredChallenge["registrationDelegation"];
+  accepted_payer: string | null;
+  eip3009_nonce: Buffer | null;
+  payment_payload_fingerprint: Buffer | null;
+  settle_response: SettlementResponse | null;
 }
 
 export function hexToBytea(hex: Hex): Buffer {
@@ -81,5 +98,25 @@ export function rowToChallenge(row: ChallengeRow): StoredChallenge {
       : null,
     serviceArgs: row.service_args ?? null,
     acknowledgements: row.acknowledgements ?? {},
+    x402Version: row.x402_version ?? null,
+    paymentRequired: row.payment_required ?? null,
+    requirementsHash: row.requirements_hash
+      ? byteaToHex(row.requirements_hash)
+      : null,
+    resourceUrl: row.resource_url ?? null,
+    daskiExtension: row.daski_extension ?? null,
+    requestFingerprint: row.request_fingerprint
+      ? byteaToHex(row.request_fingerprint)
+      : null,
+    registrationDelegation: row.registration_delegation ?? null,
+    acceptedPayer:
+      row.accepted_payer != null
+        ? (row.accepted_payer.toLowerCase() as Hex)
+        : null,
+    eip3009Nonce: row.eip3009_nonce ? byteaToHex(row.eip3009_nonce) : null,
+    paymentPayloadFingerprint: row.payment_payload_fingerprint
+      ? byteaToHex(row.payment_payload_fingerprint)
+      : null,
+    settleResponse: row.settle_response ?? null,
   };
 }

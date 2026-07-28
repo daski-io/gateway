@@ -72,7 +72,7 @@ const DESCRIPTION = [
   "",
   "Open free skills use paymentId \"0\" and complete synchronously.",
   "Paid skills: the FIRST authenticated call MUST carry buyerTokenId (from",
-  "daski_buy_service or daski_settle_payment) or walletAddress for an",
+  "daski_buy_service) or walletAddress for an",
   "on-chain lookup — serviceRef and transactionHash alone fail with BAD_INPUT.",
   "Paid and gated-free skills use a two-call envelope handshake. The signed",
   "retry must preserve the exact serviceArgs, messageId, and paid routing",
