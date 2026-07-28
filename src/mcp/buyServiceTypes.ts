@@ -11,8 +11,6 @@ export interface BuyServiceArgs {
   serviceArgs?: Record<string, unknown>;
   amount?: string;
   paymentId?: string;
-  paymentPayload?: Record<string, unknown>;
-  paymentRequirements?: Record<string, unknown>;
   registration?: { agentURI: string; deadline: string; signature: string };
 }
 

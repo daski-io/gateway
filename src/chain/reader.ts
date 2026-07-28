@@ -231,6 +231,10 @@ export interface IdentityReader {
 
 export interface PaymentChainGateway {
   authorizationUsed(authorizer: Hex, nonce: Hex): Promise<boolean>;
+  simulatePayment?(
+    input: SettlementInput,
+    registration?: SettleWithRegistrationInput["registration"],
+  ): Promise<void>;
   settlePayment(
     input: SettlementInput,
     onBroadcast?: BroadcastObserver,

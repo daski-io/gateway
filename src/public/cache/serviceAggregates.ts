@@ -61,6 +61,17 @@ function syntheticChallenge(row: ChainActivityRow): StoredChallenge {
     quoteRequestHash: null,
     serviceArgs: null,
     acknowledgements: {},
+    x402Version: null,
+    paymentRequired: null,
+    requirementsHash: null,
+    resourceUrl: null,
+    daskiExtension: null,
+    requestFingerprint: null,
+    registrationDelegation: null,
+    acceptedPayer: null,
+    eip3009Nonce: null,
+    paymentPayloadFingerprint: null,
+    settleResponse: null,
   };
 }
 

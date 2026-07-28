@@ -395,10 +395,8 @@ export const x402AdapterAbi = [
       { name: "amount", type: "uint256" },
       { name: "serviceRef", type: "bytes32" },
       { name: "providerAgentId", type: "uint256" },
-      // serviceId binds the payment to a specific row in ServiceRegistry.
-      // The buyer's EIP-3009 nonce MUST be
-      // `keccak256(abi.encode(serviceRef, providerAgentId, serviceId))`
-      // so a frontrunner cannot redirect the auth to a different service.
+      // The allowlisted facilitator resolves serviceId from the persisted
+      // challenge and binds settlement to that ServiceRegistry row.
       { name: "serviceId", type: "bytes32" },
       {
         name: "auth",

@@ -1,14 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { recoverTypedDataAddress, verifyTypedData, type Hex } from "viem";
+import { verifyTypedData, type Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { startTestGateway, type TestGateway } from "./helpers/setup.js";
 
 const TEST_BUYER_KEY =
   "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80" as Hex;
 
-// ── Inline EIP-712 typed-data on /purchase 402 ─────────────────────────────
-
-describe("PaymentRequirements inline eip712TypedData", () => {
+describe("x402 V2 payment preparation", () => {
   let gateway: TestGateway;
 
   beforeEach(async () => {
@@ -29,81 +27,40 @@ describe("PaymentRequirements inline eip712TypedData", () => {
     await gateway.close();
   });
 
-  it("includes a fully-baked typed-data block bound to the agent's wallet", async () => {
-    const { json, status, serviceRef } = await gateway.purchaseChallenge(2n, {
+  it("returns standard requirements and leaves nonce generation to the client", async () => {
+    const { json, status, serviceRef, paymentRequired } =
+      await gateway.purchaseChallenge(2n, {
       buyerTokenId: "5",
+      serviceArgs: { request: "one" },
     });
     expect(status).toBe(402);
     expect(serviceRef).toBeDefined();
+    expect(paymentRequired?.x402Version).toBe(2);
+    expect(paymentRequired?.accepts[0]).toMatchObject({
+      scheme: "exact",
+      network: "eip155:84532",
+      amount: "15000000",
+      asset: gateway.config.usdcAddress,
+      payTo: gateway.config.paymentRouterAddress,
+    });
+    expect(JSON.stringify(paymentRequired)).not.toContain("eip712TypedData");
+    expect(json).not.toHaveProperty("accepts");
 
-    const td = json.accepts[0].extra.daski.eip712TypedData;
-    expect(td.primaryType).toBe("TransferWithAuthorization");
-    expect(td.types.TransferWithAuthorization).toEqual([
-      { name: "from", type: "address" },
-      { name: "to", type: "address" },
-      { name: "value", type: "uint256" },
-      { name: "validAfter", type: "uint256" },
-      { name: "validBefore", type: "uint256" },
-      { name: "nonce", type: "bytes32" },
-    ]);
-    expect(td.domain.name).toBe("USDC");
-    expect(td.domain.version).toBe("2");
-    expect(td.domain.chainId).toBe(84532);
-    expect(td.domain.verifyingContract).toBe(gateway.config.usdcAddress);
-
-    expect(td.message.from.toLowerCase()).toBe(gateway.buyerAddress);
-    expect(td.message.to).toBe(gateway.config.paymentRouterAddress);
-    expect(td.message.value).toBe("15000000");
-    expect(td.message.validAfter).toBe("0");
-    expect(Number(td.message.validBefore)).toBeGreaterThan(
-      Math.floor(Date.now() / 1000),
-    );
-    expect(td.message.nonce).toMatch(/^0x[0-9a-fA-F]{64}$/);
+    const first = await gateway.createPaymentPayload(paymentRequired!);
+    const second = await gateway.createPaymentPayload(paymentRequired!);
+    const firstNonce = (first.payload as { authorization: { nonce: Hex } })
+      .authorization.nonce;
+    const secondNonce = (second.payload as { authorization: { nonce: Hex } })
+      .authorization.nonce;
+    expect(firstNonce).toMatch(/^0x[0-9a-fA-F]{64}$/);
+    expect(secondNonce).not.toBe(firstNonce);
   });
 
-  it("baked typed-data signs cleanly and settles end-to-end (wallet-agnostic flow)", async () => {
-    const { json, serviceRef } = await gateway.purchaseChallenge(2n, {
+  it("an official Exact-EVM client payload settles end-to-end", async () => {
+    const { serviceRef, paymentRequired } = await gateway.purchaseChallenge(2n, {
       buyerTokenId: "5",
     });
-    const td = json.accepts[0].extra.daski.eip712TypedData;
-
-    // Sign with a stand-in viem account — proves any EIP-712-capable wallet
-    // can complete the flow without knowing Daski's schemas.
-    const account = privateKeyToAccount(TEST_BUYER_KEY);
-    const signature = (await account.signTypedData({
-      domain: td.domain,
-      types: { TransferWithAuthorization: td.types.TransferWithAuthorization },
-      primaryType: "TransferWithAuthorization",
-      message: {
-        from: td.message.from,
-        to: td.message.to,
-        value: BigInt(td.message.value),
-        validAfter: BigInt(td.message.validAfter),
-        validBefore: BigInt(td.message.validBefore),
-        nonce: td.message.nonce,
-      },
-    })) as Hex;
-
-    // Sanity: the signature recovers to the wallet baked into `from`
-    const recovered = await recoverTypedDataAddress({
-      domain: td.domain,
-      types: { TransferWithAuthorization: td.types.TransferWithAuthorization },
-      primaryType: "TransferWithAuthorization",
-      message: {
-        from: td.message.from,
-        to: td.message.to,
-        value: BigInt(td.message.value),
-        validAfter: BigInt(td.message.validAfter),
-        validBefore: BigInt(td.message.validBefore),
-        nonce: td.message.nonce,
-      },
-      signature,
-    });
-    expect(recovered.toLowerCase()).toBe(account.address.toLowerCase());
-    expect(recovered.toLowerCase()).toBe(td.message.from.toLowerCase());
-
-    // Settle through the canonical facilitator API using the exact
-    // gateway-baked message.
+    const payload = await gateway.createPaymentPayload(paymentRequired!);
     gateway.queueSettlementSuccess({
       txHash: ("0x" + "ab".repeat(32)) as Hex,
       paymentId: 7n,
@@ -112,22 +69,7 @@ describe("PaymentRequirements inline eip712TypedData", () => {
       buyerAgentId: 5n,
       totalAmount: 15_000_000n,
     });
-    const settled = await gateway.purchaseSettle(2n, {
-      x402Version: 1,
-      scheme: "exact",
-      network: "base-sepolia",
-      payload: {
-        signature,
-        authorization: {
-          from: td.message.from,
-          to: td.message.to,
-          value: td.message.value,
-          validAfter: td.message.validAfter,
-          validBefore: td.message.validBefore,
-          nonce: td.message.nonce,
-        },
-      },
-    });
+    const settled = await gateway.purchaseSettle(2n, payload);
     expect(settled.status).toBe(200);
     expect(settled.json.success).toBe(true);
   });

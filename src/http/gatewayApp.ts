@@ -14,6 +14,7 @@ import { createConfirmRouter } from "../payment/confirm.js";
 import { createFacilitatorRouter } from "../payment/facilitator.js";
 import { createPrepRouter } from "../payment/prep.js";
 import { createPurchaseRouter } from "../payment/routes.js";
+import { DaskiFacilitatorService } from "../payment/daskiFacilitator.js";
 import type { PaymentScreeningReadinessProbe } from "../payment/screeningReadiness.js";
 import { createPublicRouter } from "../public/routes.js";
 import type { ReputationMirrorWorker } from "../reputation/worker.js";
@@ -48,6 +49,13 @@ export async function createGatewayHttp(
 ): Promise<{ app: Express; mcp: McpWiring | null }> {
   const { config, reader, cache, queries, reputationWorker } = options;
   const app = express();
+  const facilitator = new DaskiFacilitatorService({
+    config,
+    queries,
+    reader,
+    screeningReadiness: options.screeningReadiness,
+    fetchAgentCardFn: options.buyerAgentCardFetch,
+  });
   configureMiddleware(app, queries, config);
   app.use(
     createMetaRouter({
@@ -68,17 +76,13 @@ export async function createGatewayHttp(
       queries,
       reader,
       screeningReadiness: options.screeningReadiness,
+      facilitator,
+      fetchAgentCardFn: options.buyerAgentCardFetch,
     }),
   );
   app.use(createConfirmRouter({ config, reader, queries, reputationWorker }));
   app.use(
-    createFacilitatorRouter({
-      config,
-      queries,
-      reader,
-      screeningReadiness: options.screeningReadiness,
-      fetchAgentCardFn: options.buyerAgentCardFetch,
-    }),
+    createFacilitatorRouter({ facilitator }),
   );
   app.use(createPrepRouter({ config, reader }));
   app.use(
@@ -104,6 +108,7 @@ export async function createGatewayHttp(
         queries,
         reader,
         screeningReadiness: options.screeningReadiness,
+        facilitator,
         reputationWorker,
         pool: options.pool,
         embedder: options.embedder,

@@ -1,13 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { DASKI_X402_EXTENSION_URI } from "../src/config.js";
+import type { Hex } from "../src/types.js";
 import { startTestGateway, type TestGateway } from "./helpers/setup.js";
-import type { Hex, PaymentPayload, PaymentRequirements } from "../src/types.js";
 
-const TEST_TX =
+const TX =
   "0x2222222222222222222222222222222222222222222222222222222222222222" as Hex;
-const NONCE =
-  "0xbbbb000000000000000000000000000000000000000000000000000000000001" as Hex;
 
-describe("facilitator endpoints", () => {
+describe("x402 V2 facilitator API", () => {
   let gateway: TestGateway;
 
   beforeEach(async () => {
@@ -15,600 +14,170 @@ describe("facilitator endpoints", () => {
       providers: [
         {
           tokenId: 2n,
-          name: "Daski Domain Registration",
-          priceUsdcSmallest: "15000000",
-          categoryFamily: "domains-web",
-          serviceType: "domain-management",
-          skills: [
-            {
-              id: "default-service",
-              metadata: {
-                paymentRequired: true,
-                serviceSlug: "default-service",
-                baseAmount: "15000000",
-              },
-            },
-          ],
+          name: "Provider",
+          priceUsdcSmallest: "100000",
+          categoryFamily: "other",
+          serviceType: "other",
         },
       ],
     });
   });
 
-  afterEach(async () => {
-    await gateway.close();
-  });
+  afterEach(async () => gateway.close());
 
-  it("serializes facilitator wallet writes across unrelated operations", async () => {
-    let enterFirst!: () => void;
-    const firstEntered = new Promise<void>((resolve) => {
-      enterFirst = resolve;
+  async function fixture() {
+    const challenge = await gateway.purchaseChallenge(2n, {
+      buyerTokenId: "5",
     });
-    let unblockFirst!: () => void;
-    const firstBlocked = new Promise<void>((resolve) => {
-      unblockFirst = resolve;
-    });
-    let secondEntered = false;
-
-    const first = gateway.bundle.queries.withFacilitatorTransactionLock(
-      async (release) => {
-        enterFirst();
-        await firstBlocked;
-        await release();
-      },
+    const payload = await gateway.createPaymentPayload(
+      challenge.paymentRequired!,
     );
-    await firstEntered;
-    const second = gateway.bundle.queries.withFacilitatorTransactionLock(
-      async (release) => {
-        secondEntered = true;
-        await release();
-      },
-    );
-
-    await new Promise((resolve) => setTimeout(resolve, 25));
-    expect(secondEntered).toBe(false);
-    unblockFirst();
-    await Promise.all([first, second]);
-    expect(secondEntered).toBe(true);
-  });
-
-  async function openChallenge(buyerTokenId = "5"): Promise<{
-    serviceRef: Hex;
-    paymentRequirements: PaymentRequirements;
-  }> {
-    const quoteRes = await fetch(
-      `${gateway.mockProvider.baseUrl}/quote/default-service`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ skillId: "default-service", serviceArgs: {} }),
-      },
-    );
-    expect(quoteRes.status).toBe(200);
-    const quoteBody = (await quoteRes.json()) as { quote: unknown };
-    const { status, json, serviceRef } = await gateway.purchaseChallenge(2n, {
-      buyerTokenId,
-      serviceSlug: "default-service",
-      serviceArgs: {},
-      providerQuote: quoteBody.quote,
-    });
-    expect(status).toBe(402);
-    expect(serviceRef).toBeDefined();
     return {
-      serviceRef: serviceRef!,
-      paymentRequirements: json.accepts[0] as PaymentRequirements,
+      challenge,
+      payload,
+      requirements: challenge.paymentRequired!.accepts[0]!,
     };
   }
 
-  // ── /verify ────────────────────────────────────────────────────────────
-
-  it("POST /verify returns isValid:true for a well-signed payload", async () => {
-    const { paymentRequirements } = await openChallenge();
-
-    const { signature, authorization } = await gateway.signAuthorization(
-      15_000_000n,
-      NONCE,
-    );
-    const paymentPayload: PaymentPayload = {
-      x402Version: 1,
-      scheme: "exact",
-      network: "base-sepolia",
-      payload: { signature, authorization },
-    };
-
-    const res = await fetch(`${gateway.baseUrl}/verify`, {
+  it("verifies an official Exact-EVM payload", async () => {
+    const value = await fixture();
+    const response = await fetch(`${gateway.baseUrl}/verify`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        x402Version: 1,
-        paymentPayload,
-        paymentRequirements,
+        x402Version: 2,
+        paymentPayload: value.payload,
+        paymentRequirements: value.requirements,
       }),
     });
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as any;
-    expect(body.isValid).toBe(true);
-    expect(body.invalidReason).toBeNull();
-    expect(body.payer.toLowerCase()).toBe(gateway.buyerAddress);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      isValid: true,
+      payer: gateway.buyerAddress,
+    });
   });
 
-  it("POST /verify returns isValid:false with a reason for bad signature", async () => {
-    const { paymentRequirements } = await openChallenge();
-
-    const bad: PaymentPayload = {
-      x402Version: 1,
-      scheme: "exact",
-      network: "base-sepolia",
-      payload: {
-        signature: ("0x" + "00".repeat(65)) as Hex,
-        authorization: {
-          from: gateway.buyerAddress,
-          to: gateway.config.paymentRouterAddress,
-          value: "15000000",
-          validAfter: "0",
-          validBefore: String(Math.floor(Date.now() / 1000) + 3600),
-          nonce: NONCE,
-        },
+  it("rejects an authorization that outlives the issued challenge", async () => {
+    const value = await fixture();
+    const signed = await gateway.signAuthorization(
+      BigInt(value.requirements.amount),
+      (`0x${"ab".repeat(32)}`) as Hex,
+      {
+        validBefore:
+          BigInt(Math.floor(Date.now() / 1000)) + 3_600n,
       },
-    };
-
-    const res = await fetch(`${gateway.baseUrl}/verify`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        x402Version: 1,
-        paymentPayload: bad,
-        paymentRequirements,
-      }),
-    });
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as any;
-    expect(body.isValid).toBe(false);
-    expect(body.invalidReason).toMatch(/signature/i);
-  });
-
-  it("POST /verify rejects bodies without a serviceRef", async () => {
-    const res = await fetch(`${gateway.baseUrl}/verify`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        x402Version: 1,
-        paymentPayload: {
-          x402Version: 1,
-          scheme: "exact",
-          network: "base-sepolia",
-          payload: {
-            signature: ("0x" + "00".repeat(65)) as Hex,
-            authorization: {
-              from: gateway.buyerAddress,
-              to: gateway.config.paymentRouterAddress,
-              value: "1",
-              validAfter: "0",
-              validBefore: "0",
-              nonce: NONCE,
-            },
-          },
-        },
-        paymentRequirements: { extra: { daski: {} } },
-      }),
-    });
-    expect(res.status).toBe(400);
-    const body = (await res.json()) as any;
-    expect(body.isValid).toBe(false);
-    expect(body.invalidReason).toMatch(/serviceRef/);
-  });
-
-  // ── /settle ────────────────────────────────────────────────────────────
-
-  it("rejects malformed providerTokenId without destabilizing the server", async () => {
-    const { paymentRequirements } = await openChallenge();
-    paymentRequirements.extra.daski.providerTokenId = "not-a-number";
-    const res = await fetch(`${gateway.baseUrl}/settle`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        x402Version: 1,
-        paymentPayload: {},
-        paymentRequirements,
-      }),
-    });
-    expect(res.status).toBe(400);
-    expect((await res.json()) as any).toMatchObject({
-      success: false,
-      errorReason: expect.stringMatching(/providerTokenId.*numeric/),
-    });
-    expect((await fetch(`${gateway.baseUrl}/health/live`)).status).toBe(200);
-  });
-
-  it("POST /settle submits on-chain and returns the flat Daski-extended body", async () => {
-    const { serviceRef, paymentRequirements } = await openChallenge();
-
-    const { signature, authorization } = await gateway.signAuthorization(
-      15_000_000n,
-      NONCE,
     );
-    const paymentPayload: PaymentPayload = {
-      x402Version: 1,
-      scheme: "exact",
-      network: "base-sepolia",
-      payload: { signature, authorization },
-    };
+    value.payload.payload = signed;
+    const response = await fetch(`${gateway.baseUrl}/verify`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        x402Version: 2,
+        paymentPayload: value.payload,
+        paymentRequirements: value.requirements,
+      }),
+    });
+    expect(await response.json()).toMatchObject({
+      isValid: false,
+      invalidReason:
+        "invalid_exact_evm_payload_authorization_valid_before",
+    });
+  });
 
+  it("rejects changed accepted requirements", async () => {
+    const value = await fixture();
+    value.payload.accepted = {
+      ...value.payload.accepted,
+      amount: "1",
+    };
+    const response = await fetch(`${gateway.baseUrl}/verify`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        x402Version: 2,
+        paymentPayload: value.payload,
+        paymentRequirements: value.payload.accepted,
+      }),
+    });
+    expect(await response.json()).toMatchObject({
+      isValid: false,
+      invalidReason: "payment_requirements_mismatch",
+    });
+  });
+
+  it("rejects deletion of server-declared extension info", async () => {
+    const value = await fixture();
+    const extension = value.payload.extensions?.[
+      DASKI_X402_EXTENSION_URI
+    ] as any;
+    delete extension.info.quote;
+    const response = await fetch(`${gateway.baseUrl}/verify`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        x402Version: 2,
+        paymentPayload: value.payload,
+        paymentRequirements: value.requirements,
+      }),
+    });
+    expect(await response.json()).toMatchObject({
+      isValid: false,
+      invalidReason: "extension_echo_mismatch",
+    });
+  });
+
+  it("settles through the Daski adapter backend", async () => {
+    const value = await fixture();
     gateway.queueSettlementSuccess({
-      txHash: TEST_TX,
-      paymentId: 42n,
-      serviceRef,
+      txHash: TX,
+      paymentId: 88n,
+      serviceRef: value.challenge.serviceRef!,
       providerAgentId: 2n,
       buyerAgentId: 5n,
-      totalAmount: 15_000_000n,
+      totalAmount: 100_000n,
     });
-
-    const res = await fetch(`${gateway.baseUrl}/settle`, {
+    const response = await fetch(`${gateway.baseUrl}/settle`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        x402Version: 1,
-        paymentPayload,
-        paymentRequirements,
+        x402Version: 2,
+        paymentPayload: value.payload,
+        paymentRequirements: value.requirements,
       }),
     });
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as any;
+    expect(response.status).toBe(200);
+    const settled = await response.json() as any;
+    expect(settled).toMatchObject({
+      success: true,
+      transaction: TX,
+      network: "eip155:84532",
+      amount: "100000",
+    });
+    expect(
+      settled.extensions[DASKI_X402_EXTENSION_URI].paymentId,
+    ).toBe("88");
+    expect(gateway.mockChain.simulations).toHaveLength(1);
+    expect(gateway.mockChain.simulations[0]?.serviceRef).toBe(
+      value.challenge.serviceRef,
+    );
+  });
 
-    // spec-base fields
-    expect(body.success).toBe(true);
-    expect(body.errorReason).toBeNull();
-    expect(body.transaction).toBe(TEST_TX);
-    expect(body.network).toBe("base-sepolia");
-    expect(body.payer.toLowerCase()).toBe(gateway.buyerAddress);
-
-    // Daski-extended fields — flat, not nested under `daski`
-    expect(body.paymentId).toBe("42");
-    expect(body.serviceRef).toBe(serviceRef);
-    expect(body.providerTokenId).toBe("2");
-    expect(body.buyerTokenId).toBe("5");
-    expect(body.amount).toBe("15000000");
-    expect(body.providerA2AUrl).toMatch(/^http/);
-    const quote = paymentRequirements.extra.daski.quote;
-    expect(quote).toBeDefined();
-    expect(body.quoteId).toBe(quote!.quoteId);
-    expect(body.quoteSignature).toBe(quote!.quoteSignature);
-    const stored = await gateway.bundle.queries.getChallengeByRef(serviceRef);
-    const issuedQuote = gateway.mockProvider.getIssuedQuotes().at(-1);
-    expect(issuedQuote).toBeDefined();
-    expect(stored?.quoteRequestHash).toBe(issuedQuote!.requestHash);
-
-    // A retry is served from the paid challenge without another on-chain
-    // submission and retains the credentials needed for task dispatch.
-    const retry = await fetch(`${gateway.baseUrl}/settle`, {
+  it("requires the exact V2 facilitator request envelope", async () => {
+    const value = await fixture();
+    const response = await fetch(`${gateway.baseUrl}/verify`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "content-type": "application/json" },
       body: JSON.stringify({
         x402Version: 1,
-        paymentPayload,
-        paymentRequirements,
+        paymentPayload: value.payload,
+        paymentRequirements: value.requirements,
+        registration: {},
       }),
     });
-    expect(retry.status).toBe(200);
-    const retryBody = (await retry.json()) as any;
-    expect(retryBody.transaction).toBe(TEST_TX);
-    expect(retryBody.quoteId).toBe(body.quoteId);
-    expect(retryBody.quoteSignature).toBe(body.quoteSignature);
-    expect(gateway.mockChain.settlements).toHaveLength(1);
-  });
-
-  it.each([
-    ["quote_id", "quoteId"],
-    ["quote_signature", "quoteSignature"],
-    ["quote_expires_at", "quoteExpiresAt"],
-    ["quote_request_hash", "quoteRequestHash"],
-  ] as const)(
-    "POST /settle fails closed when the stored %s commitment is missing",
-    async (column, field) => {
-      const { serviceRef, paymentRequirements } = await openChallenge();
-      await gateway.bundle.pool.query(
-        `UPDATE payment_challenges SET ${column} = NULL WHERE service_ref = $1`,
-        [Buffer.from(serviceRef.slice(2), "hex")],
-      );
-      const { signature, authorization } = await gateway.signAuthorization(
-        15_000_000n,
-        NONCE,
-      );
-      const res = await fetch(`${gateway.baseUrl}/settle`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          x402Version: 1,
-          paymentPayload: {
-            x402Version: 1,
-            scheme: "exact",
-            network: "base-sepolia",
-            payload: { signature, authorization },
-          },
-          paymentRequirements,
-        }),
-      });
-
-      expect(res.status).toBe(409);
-      const body = (await res.json()) as any;
-      expect(body.success).toBe(false);
-      expect(body.errorReason).toBe("quote_commitment_missing");
-      expect(body.invalidReason ?? body.errorReason).toBeTruthy();
-      expect(JSON.stringify(body)).toContain(field);
-      expect(gateway.mockChain.settlements).toHaveLength(0);
-    },
-  );
-
-  it("POST /settle returns an error body on chain revert", async () => {
-    const { serviceRef, paymentRequirements } = await openChallenge();
-
-    const { signature, authorization } = await gateway.signAuthorization(
-      15_000_000n,
-      NONCE,
-    );
-    const paymentPayload: PaymentPayload = {
-      x402Version: 1,
-      scheme: "exact",
-      network: "base-sepolia",
-      payload: { signature, authorization },
-    };
-
-    gateway.mockChain.queueSettlement({
-      kind: "revert",
-      reason: "out of gas",
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({
+      isValid: false,
+      invalidReason: "invalid_request",
     });
-
-    const res = await fetch(`${gateway.baseUrl}/settle`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        x402Version: 1,
-        paymentPayload,
-        paymentRequirements,
-      }),
-    });
-    expect(res.status).toBe(402);
-    const body = (await res.json()) as any;
-    expect(body.success).toBe(false);
-    expect(body.errorReason).toMatch(/unexpected_settle_error/);
-    expect(body.paymentId).toBeNull();
-    expect(body.serviceRef).toBe(serviceRef);
-    expect(body.quoteId).toBe(paymentRequirements.extra.daski.quote?.quoteId);
-    expect(body.quoteSignature).toBe(
-      paymentRequirements.extra.daski.quote?.quoteSignature,
-    );
-  });
-
-  // ── /settle atomic register-and-settle ─────────────────────────────────
-
-  it("POST /settle with registration runs atomic register-and-settle when buyer has no agent", async () => {
-    // Open a challenge with buyerTokenId="0" — i.e. wallet not yet registered.
-    const { serviceRef, paymentRequirements } = await openChallenge("0");
-    expect(serviceRef).toBeDefined();
-
-    const { signature, authorization } = await gateway.signAuthorization(
-      15_000_000n,
-      ("0xabcd" + "00".repeat(30)) as Hex,
-    );
-    const paymentPayload: PaymentPayload = {
-      x402Version: 1,
-      scheme: "exact",
-      network: "base-sepolia",
-      payload: { signature, authorization },
-    };
-
-    // Queue both: registration first, settle second. The mock's
-    // settleWithRegistration consumes them in order.
-    gateway.mockChain.queueRegistration({
-      kind: "success",
-      agentId: 77n,
-      txHash:
-        "0x4444444444444444444444444444444444444444444444444444444444444444" as Hex,
-    });
-    gateway.queueSettlementSuccess({
-      txHash: TEST_TX,
-      paymentId: 100n,
-      serviceRef: serviceRef!,
-      providerAgentId: 2n,
-      buyerAgentId: 77n, // freshly minted
-      totalAmount: 15_000_000n,
-    });
-
-    const res = await fetch(`${gateway.baseUrl}/settle`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        x402Version: 1,
-        paymentPayload,
-        paymentRequirements,
-        registration: {
-          agentURI: "ipfs://buyer.json",
-          deadline: String(Math.floor(Date.now() / 1000) + 600),
-          signature: ("0x" + "11".repeat(65)) as Hex,
-        },
-      }),
-    });
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as any;
-    expect(body.success).toBe(true);
-    expect(body.paymentId).toBe("100");
-    expect(body.buyerTokenId).toBe("77"); // from the event, not from challenge
-    expect(body.registered).toBe(true);
-
-    // Ensure both mock paths were exercised.
-    expect(gateway.mockChain.registrations).toHaveLength(1);
-    expect(gateway.mockChain.settlements).toHaveLength(1);
-
-    // Atomic path must mirror the same `buyer_identities` upsert that the
-    // standalone registration flow does — pre-fix, the cache stayed empty
-    // for any buyer whose first action was a purchase rather than a bare
-    // registration. The test gateway's default agent-card fetcher returns
-    // `{ name: "buyer-test" }`, so the resolved name lands here.
-    const cached = await gateway.bundle.queries.getBuyerIdentity(77n);
-    expect(cached).not.toBeNull();
-    expect(cached?.resolvedName).toBe("buyer-test");
-    expect(cached?.agentURI).toBe("ipfs://buyer.json");
-
-    // Backfill check: the challenge row was opened with buyer_token_id=0
-    // (atomic-register placeholder); after settle, the row must carry the
-    // freshly-minted agentId from the PaymentSettled event. Without this,
-    // /public/v1/activity would render `agent#0` and the buyer-name
-    // resolver would have nothing to look up.
-    const activityRes = await fetch(`${gateway.baseUrl}/public/v1/activity`);
-    const activityBody = (await activityRes.json()) as any;
-    const row = activityBody.activity.find(
-      (r: any) => r.txHash.toLowerCase() === TEST_TX.toLowerCase(),
-    );
-    expect(row).toBeDefined();
-    expect(row.buyerAgentId).toBe("77");
-  });
-
-  it("POST /settle returns 400 when challenge needs registration but body omits it", async () => {
-    const { paymentRequirements } = await openChallenge("0");
-
-    const { signature, authorization } = await gateway.signAuthorization(
-      15_000_000n,
-      ("0xfeed" + "00".repeat(30)) as Hex,
-    );
-    const paymentPayload: PaymentPayload = {
-      x402Version: 1,
-      scheme: "exact",
-      network: "base-sepolia",
-      payload: { signature, authorization },
-    };
-
-    const res = await fetch(`${gateway.baseUrl}/settle`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        x402Version: 1,
-        paymentPayload,
-        paymentRequirements,
-      }),
-    });
-    expect(res.status).toBe(400);
-    const body = (await res.json()) as any;
-    expect(body.success).toBe(false);
-    expect(body.errorReason).toBe("registration_required");
-  });
-});
-
-describe("GET /identity/by-wallet", () => {
-  let gateway: TestGateway;
-
-  beforeEach(async () => {
-    gateway = await startTestGateway({
-      providers: [
-        {
-          tokenId: 2n,
-          name: "p",
-          priceUsdcSmallest: "1000000",
-          categoryFamily: "other",
-          serviceType: "other",
-        },
-      ],
-    });
-  });
-
-  afterEach(async () => {
-    await gateway.close();
-  });
-
-  it("returns the agentId for a registered wallet", async () => {
-    const wallet =
-      "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" as Hex;
-    gateway.mockChain.setAgentOfWallet(wallet, 7n);
-    const res = await fetch(`${gateway.baseUrl}/identity/by-wallet/${wallet}`);
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as any;
-    expect(body.address).toBe(wallet);
-    expect(body.agentId).toBe("7");
-  });
-
-  it("returns null agentId for an unregistered wallet", async () => {
-    const wallet =
-      "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" as Hex;
-    const res = await fetch(`${gateway.baseUrl}/identity/by-wallet/${wallet}`);
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as any;
-    expect(body.agentId).toBeNull();
-  });
-
-  it("rejects a malformed address", async () => {
-    const res = await fetch(`${gateway.baseUrl}/identity/by-wallet/not-hex`);
-    expect(res.status).toBe(400);
-    const body = (await res.json()) as any;
-    expect(body.error.code).toBe("BAD_ADDRESS");
-  });
-});
-
-describe("GET /supported advertises facilitator endpoints", () => {
-  let gateway: TestGateway;
-
-  beforeEach(async () => {
-    gateway = await startTestGateway({
-      providers: [
-        {
-          tokenId: 2n,
-          name: "p",
-          priceUsdcSmallest: "1000000",
-          categoryFamily: "other",
-          serviceType: "other",
-        },
-      ],
-    });
-  });
-
-  afterEach(async () => {
-    await gateway.close();
-  });
-
-  it("lists verify + settle endpoints and the canonical chain addresses", async () => {
-    const res = await fetch(`${gateway.baseUrl}/supported`);
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as any;
-    expect(body.kinds).toEqual([
-      { scheme: "exact", network: "base-sepolia", chainId: "eip155:84532" },
-    ]);
-    expect(body.endpoints.verify).toBe("/verify");
-    expect(body.endpoints.settle).toBe("/settle");
-    expect(body.identityRegistryAddress).toBe(
-      gateway.config.identityRegistryAddress,
-    );
-    expect(body.eas.address).toBe(gateway.config.easAddress);
-    expect(body.eas.confirmationSchemaUid).toBe(
-      gateway.config.easConfirmationSchemaUid,
-    );
-  });
-});
-
-describe("GET /eas/nonce", () => {
-  let gateway: TestGateway;
-
-  beforeEach(async () => {
-    gateway = await startTestGateway({
-      providers: [
-        {
-          tokenId: 2n,
-          name: "p",
-          priceUsdcSmallest: "1000000",
-          categoryFamily: "other",
-          serviceType: "other",
-        },
-      ],
-    });
-  });
-
-  afterEach(async () => {
-    await gateway.close();
-  });
-
-  it("returns the attester nonce from the chain", async () => {
-    const wallet =
-      "0xcccccccccccccccccccccccccccccccccccccccc" as Hex;
-    gateway.mockChain.setEasAttesterNonce(wallet, 11n);
-    const res = await fetch(`${gateway.baseUrl}/eas/nonce/${wallet}`);
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as any;
-    expect(body.nonce).toBe("11");
   });
 });

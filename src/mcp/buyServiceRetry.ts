@@ -1,15 +1,12 @@
 import { computeRequestHash } from "../auth/envelope.js";
-import type { ChainReader } from "../chain/reader.js";
-import type { Config } from "../config.js";
 import type { Queries } from "../db/queries.js";
-import type { FetchAgentCardOptions } from "../identity/fetch-agent-card.js";
 import type { PaymentScreeningReadinessProbe } from "../payment/screeningReadiness.js";
-import { settleChallenge } from "../payment/settlementCoordinator.js";
-import type {
-  Hex,
-  PaymentPayload,
-  PaymentRequirements,
-} from "../types.js";
+import type { Hex, PaymentPayload } from "../types.js";
+import { hashCanonical } from "../payment/requirementResponse.js";
+import {
+  getDaskiDeclaration,
+  getDaskiReceipt,
+} from "../payment/x402Extension.js";
 import type { BuyServiceArgs } from "./buyServiceTypes.js";
 import {
   mcpError,
@@ -19,11 +16,9 @@ import {
 } from "./util.js";
 
 interface RetryDeps {
-  config: Config;
-  reader: ChainReader;
   queries: Queries;
   screeningReadiness: PaymentScreeningReadinessProbe;
-  fetchAgentCardFn?: FetchAgentCardOptions["fetchFn"];
+  facilitator: import("../payment/daskiFacilitator.js").DaskiFacilitatorService;
 }
 
 export async function runBuyServiceX402Retry(
@@ -32,38 +27,28 @@ export async function runBuyServiceX402Retry(
   deps: RetryDeps,
 ): Promise<McpToolResult | null> {
   const metaPaymentRaw = extra._meta?.["x402/payment"];
-  let inboundPayload =
-    (args.paymentPayload as PaymentPayload | undefined) ?? undefined;
-  if (!inboundPayload && typeof metaPaymentRaw === "string") {
-    try {
-      inboundPayload = JSON.parse(
-        Buffer.from(metaPaymentRaw, "base64").toString("utf8"),
-      ) as PaymentPayload;
-    } catch {
-      return mcpError({
-        code: "invalid_meta_payment",
-        message: "_meta['x402/payment'] is not valid base64-encoded JSON",
-        recoverable: true,
-        next_action:
-          "Encode the PaymentPayload as base64 JSON or pass paymentPayload directly.",
-      });
-    }
+  const inboundPayload =
+    metaPaymentRaw &&
+    typeof metaPaymentRaw === "object" &&
+    !Array.isArray(metaPaymentRaw)
+      ? (metaPaymentRaw as PaymentPayload)
+      : undefined;
+  if (metaPaymentRaw !== undefined && !inboundPayload) {
+    return mcpError({
+      code: "invalid_meta_payment",
+      message: "_meta['x402/payment'] must be a PaymentPayload object",
+      recoverable: true,
+    });
   }
   if (!inboundPayload) return null;
 
-  const requirements = args.paymentRequirements as
-    | PaymentRequirements
-    | undefined;
-  const serviceRef = requirements?.extra?.daski?.serviceRef;
-  if (
-    typeof serviceRef !== "string" ||
-    !/^0x[0-9a-fA-F]{64}$/.test(serviceRef)
-  ) {
+  const declaration = getDaskiDeclaration(inboundPayload);
+  const serviceRef = declaration?.info.serviceRef;
+  if (!serviceRef) {
     return mcpError({
       code: "BAD_INPUT",
       message:
-        "Pass the original paymentRequirements with paymentPayload so the " +
-        "gateway can locate serviceRef.",
+        "PaymentPayload is missing the Daski x402 V2 serviceRef extension.",
       recoverable: true,
     });
   }
@@ -75,6 +60,18 @@ export async function runBuyServiceX402Retry(
       code: "CHALLENGE_NOT_FOUND",
       message: "no challenge found for the given serviceRef",
       details: { serviceRef },
+    });
+  }
+  if (
+    !challenge.requestFingerprint ||
+    challenge.requestFingerprint.toLowerCase() !==
+      hashCanonical(args).toLowerCase()
+  ) {
+    return mcpError({
+      code: "PURCHASE_REQUEST_MISMATCH",
+      message: "paid retry arguments differ from the original purchase request",
+      recoverable: true,
+      next_action: "Retry with the original tool arguments unchanged.",
     });
   }
   if (
@@ -146,52 +143,32 @@ export async function runBuyServiceX402Retry(
     });
   }
 
-  const coordinated = await settleChallenge(deps, {
-    challenge,
-    paymentPayload: inboundPayload,
-    registration: args.registration,
-  });
-  if (coordinated.kind === "registration-required") {
+  const requirements = challenge.paymentRequired?.accepts[0];
+  if (!requirements) {
     return mcpError({
-      code: "registration_required",
-      message:
-        "This challenge needs the signed registration returned by the first call.",
-      recoverable: true,
-      next_action:
-        "Sign registrationPrep.eip712TypedData and pass registration.",
+      code: "INVALID_STORED_CHALLENGE",
+      message: "stored challenge is not canonical x402 V2",
     });
   }
-  if (coordinated.kind === "invalid-registration") {
-    return mcpError({
-      code: "invalid_registration",
-      message: coordinated.message,
-    });
-  }
-  if (!coordinated.result.ok) {
-    const failure = coordinated.result;
-    return mcpError({
-      code: failure.errorReason,
-      message: failure.message,
-      ...(failure.screeningFailure
-        ? {
-            retryable: failure.screeningFailure.retryable,
-            recoverable: failure.screeningFailure.retryable,
-            next_action: failure.screeningFailure.retryable
-              ? "Retry later while the provider quote remains valid."
-              : "Do not retry this unchanged payment.",
-          }
-        : {}),
-      details: {
-        transaction: failure.response.transaction,
-        payer: failure.response.payer,
+  const settlement = await deps.facilitator.settle(
+    inboundPayload,
+    requirements,
+  );
+  if (!settlement.success) {
+    return mcpError(
+      {
+        code: settlement.errorReason ?? "settlement_failed",
+        message: settlement.errorMessage ?? "payment settlement failed",
+        details: {
+          transaction: settlement.transaction,
+          payer: settlement.payer,
+        },
       },
-    });
+      { "x402/payment-response": settlement },
+    );
   }
 
-  const settlement = coordinated.result.response;
-  const paymentResponse = Buffer.from(JSON.stringify(settlement)).toString(
-    "base64",
-  );
+  const receipt = getDaskiReceipt(settlement);
   return mcpJson(
     {
       status: "completed",
@@ -202,17 +179,17 @@ export async function runBuyServiceX402Retry(
       transaction: settlement.transaction,
       network: settlement.network,
       payer: settlement.payer,
-      paymentId: settlement.daski?.paymentId ?? null,
-      serviceRef: settlement.daski?.serviceRef ?? serviceRef,
-      providerTokenId: settlement.daski?.providerTokenId ?? null,
-      buyerTokenId: settlement.daski?.buyerTokenId ?? null,
-      amount: settlement.daski?.amount ?? null,
-      providerA2AUrl: settlement.daski?.providerA2AUrl ?? null,
+      paymentId: receipt?.paymentId ?? null,
+      serviceRef: receipt?.serviceRef ?? serviceRef,
+      providerTokenId: receipt?.providerAgentId ?? null,
+      buyerTokenId: receipt?.buyerAgentId ?? null,
+      amount: settlement.amount ?? null,
+      providerA2AUrl: receipt?.providerA2AUrl ?? null,
       skillId: challenge.skillId,
-      registered: settlement.daski?.registered ?? false,
+      registered: receipt?.registered ?? false,
       next_action:
         "Call daski_submit_task with serviceRef, transactionHash, paymentId, and buyerTokenId.",
     },
-    { "x402/paymentResponse": paymentResponse },
+    { "x402/payment-response": settlement },
   );
 }

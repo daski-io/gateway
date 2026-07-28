@@ -3,7 +3,6 @@ import { keccak256 } from "viem";
 import { baseSepolia } from "viem/chains";
 import { reputationRegistryAbi } from "../src/chain/abis.js";
 import { encodeFeedbackCalldata } from "../src/chain/feedbackCalldata.js";
-import { FeedbackSubmissionError } from "../src/chain/feedbackErrors.js";
 import { createFeedbackMethods } from "../src/chain/viemFeedback.js";
 import type {
   FeedbackInput,
@@ -140,7 +139,7 @@ describe("canonical ReputationRegistry receipt outcomes", () => {
 
     await expect(
       methods.submitPreparedFeedback(prepared, INPUT),
-    ).rejects.toMatchObject<FeedbackSubmissionError>({
+    ).rejects.toMatchObject({
       failure: "reverted",
     });
   });
@@ -152,7 +151,7 @@ describe("canonical ReputationRegistry receipt outcomes", () => {
 
     await expect(
       methods.submitPreparedFeedback(prepared, INPUT),
-    ).rejects.toMatchObject<FeedbackSubmissionError>({
+    ).rejects.toMatchObject({
       failure: "succeeded_without_event",
     });
   });

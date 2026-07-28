@@ -19,7 +19,7 @@ export interface SessionRollup {
   errors: number;
   /** Named error `code`s seen on isError results (parse-best-effort). */
   errorCodes: Record<string, number>;
-  /** Unique payments completed through daski_settle_payment. */
+  /** Unique payments completed through daski_buy_service paid retries. */
   purchasesSettled: number;
   /** Unique delivery attestations submitted through daski_confirm_delivery. */
   attestationsSubmitted: number;
@@ -118,7 +118,7 @@ export class SessionMetricsRegistry {
     }
 
     const result = parseResult(resultText);
-    if (toolName.endsWith("daski_settle_payment") && result?.status === "completed") {
+    if (toolName.endsWith("daski_buy_service") && result?.status === "completed") {
       const paymentId = outcomeId(result.paymentId);
       if (paymentId) {
         s.settledPaymentIds.add(paymentId);

@@ -2,7 +2,13 @@ import type { Config } from "../config.js";
 import type { Queries } from "../db/queries.js";
 import type { DiscoveryCache } from "../discovery/cache.js";
 import type { Fetcher } from "../mcp/a2a.js";
-import type { Hex, PaymentRequirements, StoredChallenge } from "../types.js";
+import type {
+  Hex,
+  PaymentRequired,
+  PaymentRequirements,
+  StoredChallenge,
+} from "../types.js";
+import type { PurchaseLegalContext } from "../legal/types.js";
 import { issuePaymentRequirements } from "./requirements.js";
 import { resolveSkillOffer, type SkillOffer } from "./skillOffer.js";
 import { fetchProviderQuote } from "./providerQuote.js";
@@ -18,6 +24,8 @@ export interface QuotedChallengeInput {
   serviceSlug: string;
   serviceArgs: Record<string, unknown>;
   amountLimit?: string;
+  requestFingerprint?: Hex;
+  registrationDelegation?: StoredChallenge["registrationDelegation"];
 }
 
 export interface QuotedChallengeDeps {
@@ -34,6 +42,8 @@ export interface QuotedChallengeDeps {
 export interface QuotedChallengeValue {
   offer: SkillOffer;
   requirements: PaymentRequirements;
+  paymentRequired: PaymentRequired;
+  purchaseLegal: PurchaseLegalContext;
   challenge: StoredChallenge;
   quoteNotes: string[];
 }
@@ -182,6 +192,8 @@ export async function createQuotedChallenge(
         serviceSlug: quote.serviceSlug,
         serviceVersion: quote.serviceVersion,
       },
+      requestFingerprint: input.requestFingerprint,
+      registrationDelegation: input.registrationDelegation,
     },
     deps.config,
     deps.cache,
@@ -193,6 +205,8 @@ export async function createQuotedChallenge(
     value: {
       offer,
       requirements: issued.requirements,
+      paymentRequired: issued.paymentRequired,
+      purchaseLegal: issued.purchaseLegal,
       challenge: issued.challenge,
       quoteNotes: quoteResult.notes,
     },

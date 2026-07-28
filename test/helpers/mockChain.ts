@@ -86,6 +86,7 @@ export class MockChainReader implements ChainReader {
   private settlementRecoveryErrors = new Map<string, Error>();
 
   public settlements: SettlementInput[] = [];
+  public simulations: SettlementInput[] = [];
 
   addProvider(agentId: bigint, entry: MockProviderEntry & { agentURI: string }): void {
     const key = agentId.toString();
@@ -199,6 +200,10 @@ export class MockChainReader implements ChainReader {
         `${authorizer.toLowerCase()}:${nonce.toLowerCase()}`,
       ) ?? false
     );
+  }
+
+  async simulatePayment(input: SettlementInput): Promise<void> {
+    this.simulations.push(input);
   }
 
   async settlePayment(

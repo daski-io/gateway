@@ -45,6 +45,19 @@ function makeChallenge(opts: {
     quoteSignature: null,
     quoteExpiresAt: null,
     quoteRequestHash: null,
+    serviceArgs: null,
+    acknowledgements: {},
+    x402Version: 2,
+    paymentRequired: null,
+    requirementsHash: null,
+    resourceUrl: null,
+    daskiExtension: null,
+    requestFingerprint: null,
+    registrationDelegation: null,
+    acceptedPayer: null,
+    eip3009Nonce: null,
+    paymentPayloadFingerprint: null,
+    settleResponse: null,
   };
 }
 

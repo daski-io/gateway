@@ -1,8 +1,8 @@
 /* eslint-disable no-console */
 //
 // Live end-to-end runner — exercises a real Daski gateway against a real
-// EIP-712-capable wallet (Coinbase CDP SDK, by default, since that's our
-// test wallet). Phased so each phase can be run alone:
+// EIP-712-capable wallet and the official x402 V2 MCP client. Coinbase CDP
+// backs the test wallet. Phased so each phase can be run alone:
 //
 //   PHASE=0   ──  CDP sanity (just connect + resolve address)
 //   PHASE=1   ──  Live MCP discovery + identity lookup
@@ -32,6 +32,9 @@
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { x402Client } from "@x402/core/client";
+import { ExactEvmScheme } from "@x402/evm/exact/client";
+import { wrapMCPClientWithPayment } from "@x402/mcp";
 import type { Hex } from "../src/types.js";
 
 interface EnvBundle {
@@ -178,7 +181,6 @@ async function phase1_discover(
     for (const required of [
       "daski_search_services",
       "daski_buy_service",
-      "daski_settle_payment",
       "daski_submit_task",
       "daski_get_task_status",
       "daski_confirm_delivery",
@@ -232,70 +234,53 @@ async function phase2_paid_purchase(
   console.log("\n── PHASE 2: paid purchase end-to-end ────────────────");
   console.log(`  → spending USDC for skill='${env.skillId}', domain='${env.domain}'`);
 
-  const { client, transport } = await connectMcp(env.gatewayUrl);
-  try {
-    // 1. Open challenge via daski_buy_service (validates required fields)
-    const buy = unwrap<{
-      kind: string;
-      paymentRequirements: {
-        extra: { daski: { eip712TypedData: any; serviceRef: string } };
-      };
-    }>(
-      "daski_buy_service",
-      await client.callTool({
-        name: "daski_buy_service",
-        arguments: {
-          skillId: env.skillId,
-          buyerTokenId: ids.buyerTokenId,
-          walletAddress: signer.address,
-          providerTokenId: ids.providerTokenId,
-          serviceArgs: { domain: env.domain },
-        },
-      }),
+  const { client } = await connectMcp(env.gatewayUrl);
+  const maxPaymentAtomic = BigInt(
+    process.env.DASKI_MAX_PAYMENT_ATOMIC ?? "25000000",
+  );
+  const paymentClient = new x402Client()
+    .register("eip155:84532", new ExactEvmScheme(signer))
+    .register("eip155:8453", new ExactEvmScheme(signer))
+    .registerPolicy((version, requirements) =>
+      version === 2
+        ? requirements.filter(
+            (requirement) =>
+              requirement.scheme === "exact" &&
+              BigInt(requirement.amount) <= maxPaymentAtomic,
+          )
+        : [],
     );
-    if (buy.kind !== "paid") {
-      throw new Error(`expected kind=paid, got ${buy.kind}`);
-    }
-    const td = buy.paymentRequirements.extra.daski.eip712TypedData;
-    console.log(`  ✔ paymentRequirements opened (serviceRef=${buy.paymentRequirements.extra.daski.serviceRef})`);
-
-    // 2. Sign with the CDP wallet (the wallet-agnostic step)
-    const signature = await signer.signTypedData({
-      domain: td.domain,
-      types: td.types,
-      primaryType: td.primaryType,
-      message: td.message,
-    });
-    console.log(`  ✔ wallet signed typed-data (sig prefix: ${signature.slice(0, 18)}…)`);
-
-    // 3. Settle on-chain
+  const paidClient = wrapMCPClientWithPayment(client, paymentClient);
+  try {
+    // The official client receives PaymentRequired, creates a random-nonce
+    // EIP-3009 payload, and retries this same tool with x402 payment metadata.
     const settled = unwrap<{
       success: boolean;
       paymentId: string;
       transaction: string;
       providerA2AUrl: string;
       serviceRef: string;
+      network: string;
     }>(
-      "daski_settle_payment",
-      await client.callTool({
-        name: "daski_settle_payment",
-        arguments: {
-          paymentPayload: {
-            x402Version: 1,
-            scheme: "exact",
-            network: td.domain.chainId === 8453 ? "base" : "base-sepolia",
-            payload: {
-              signature,
-              authorization: td.message,
-            },
-          },
-          paymentRequirements: buy.paymentRequirements,
-        },
+      "daski_buy_service",
+      await paidClient.callTool("daski_buy_service", {
+        skillId: env.skillId,
+        buyerTokenId: ids.buyerTokenId,
+        walletAddress: signer.address,
+        providerTokenId: ids.providerTokenId,
+        serviceArgs: { domain: env.domain },
       }),
     );
+    if (!settled.success) {
+      throw new Error("official x402 client did not settle the purchase");
+    }
     console.log(`  ✔ settled on-chain: paymentId=${settled.paymentId} tx=${settled.transaction}`);
+    const chainId = Number(settled.network.split(":")[1]);
+    if (!Number.isSafeInteger(chainId)) {
+      throw new Error(`invalid CAIP-2 settlement network: ${settled.network}`);
+    }
 
-    // 4. Submit task to provider over A2A — two-call pattern.
+    // Submit task to provider over A2A — two-call pattern.
     //    First call (no envelopeAuth) returns the EIP-712 typed-data the
     //    buyer wallet signs, plus the matching messageId. Second call
     //    passes envelopeAuth + the SAME messageId; gateway forwards to A2A.
@@ -318,7 +303,7 @@ async function phase2_paid_purchase(
           serviceRef: settled.serviceRef,
           paymentId: settled.paymentId,
           transactionHash: settled.transaction,
-          chainId: td.domain.chainId,
+          chainId,
           buyerTokenId: ids.buyerTokenId,
           serviceArgs: { domain: env.domain },
         },
@@ -340,7 +325,7 @@ async function phase2_paid_purchase(
           serviceRef: settled.serviceRef,
           paymentId: settled.paymentId,
           transactionHash: settled.transaction,
-          chainId: td.domain.chainId,
+          chainId,
           serviceArgs: { domain: env.domain },
           messageId: envelope.messageId,
           envelopeAuth: {
@@ -391,7 +376,7 @@ async function phase2_paid_purchase(
     }
     throw new Error("provider task did not complete within poll window");
   } finally {
-    await transport.close();
+    await paidClient.close();
   }
 }
 

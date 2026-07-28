@@ -1,15 +1,15 @@
-import { encodeAbiParameters, keccak256 } from "viem";
+import { keccak256, toBytes } from "viem";
+import { canonicalJsonStringify } from "../auth/envelope.js";
 import type { Config } from "../config.js";
 import type { PurchaseLegalContext } from "../legal/types.js";
 import type {
   DaskiMarketplaceExtension,
-  DaskiRail,
-  Eip712TypedData,
   Hex,
+  PaymentRequired,
   PaymentRequirements,
   StoredChallenge,
 } from "../types.js";
-import { TRANSFER_WITH_AUTHORIZATION_TYPES } from "./protocol.js";
+import { buildDaskiX402Declaration } from "./x402Extension.js";
 import { purchaseDescription } from "./skillOffer.js";
 
 interface RequirementResponseInput {
@@ -35,85 +35,46 @@ interface RequirementResponseInput {
   };
   purchaseLegal: PurchaseLegalContext;
   effectiveExpiresAt: Date;
+  requestFingerprint: Hex;
+  registrationDelegation?: StoredChallenge["registrationDelegation"];
   existingChallenge: StoredChallenge | null;
   now: Date;
 }
 
-function buildRails(config: Config): DaskiRail[] {
-  const rails: DaskiRail[] = [
-    { name: "x402", kind: "eip3009", adapter: config.x402AdapterAddress },
-  ];
-  if (config.permitAdapterAddress) {
-    rails.push({
-      name: "permit",
-      kind: "eip2612",
-      adapter: config.permitAdapterAddress,
-    });
-  }
-  if (config.approvalAdapterAddress) {
-    rails.push({
-      name: "approval",
-      kind: "erc20-approve",
-      adapter: config.approvalAdapterAddress,
-    });
-  }
-  return rails;
-}
-
-function buildTypedData(input: RequirementResponseInput): Eip712TypedData {
-  const nonce = keccak256(
-    encodeAbiParameters(
-      [{ type: "bytes32" }, { type: "uint256" }, { type: "bytes32" }],
-      [input.serviceRef, input.providerTokenId, input.serviceId],
-    ),
-  ) as Hex;
-
-  return {
-    domain: {
-      name: input.config.usdcName,
-      version: input.config.usdcVersion,
-      chainId: input.config.chainId,
-      verifyingContract: input.config.usdcAddress,
-    },
-    types: {
-      TransferWithAuthorization:
-        TRANSFER_WITH_AUTHORIZATION_TYPES.TransferWithAuthorization.map((f) => ({
-          name: f.name,
-          type: f.type,
-        })),
-    },
-    primaryType: "TransferWithAuthorization",
-    message: {
-      from: input.walletAddress,
-      to: input.config.paymentRouterAddress,
-      value: input.amount.toString(),
-      validAfter: "0",
-      validBefore: BigInt(
-        Math.floor(input.effectiveExpiresAt.getTime() / 1000),
-      ).toString(),
-      nonce,
-    },
-  };
-}
-
-export function buildRequirementResponse(input: RequirementResponseInput): {
+export interface RequirementResponse {
   requirements: PaymentRequirements;
+  paymentRequired: PaymentRequired;
+  purchaseLegal: PurchaseLegalContext;
   challenge: StoredChallenge;
-} {
-  const eip712TypedData = buildTypedData(input);
+}
+
+export function buildRequirementResponse(
+  input: RequirementResponseInput,
+): RequirementResponse {
+  if (input.existingChallenge?.paymentRequired) {
+    const requirements = input.existingChallenge.paymentRequired.accepts[0];
+    if (!requirements) {
+      throw new Error("stored V2 challenge has no accepted payment method");
+    }
+    return {
+      requirements,
+      paymentRequired: input.existingChallenge.paymentRequired,
+      purchaseLegal: input.purchaseLegal,
+      challenge: input.existingChallenge,
+    };
+  }
+
+  const description = purchaseDescription(
+    input.providerTokenId,
+    input.agentCard,
+    input.marketplaceExtension,
+    input.skillId,
+  );
   const requirements: PaymentRequirements = {
     scheme: "exact",
-    network: input.config.network,
-    chainId: `eip155:${input.config.chainId}`,
-    maxAmountRequired: input.amount.toString(),
-    resource: input.resource,
-    description: purchaseDescription(
-      input.providerTokenId,
-      input.agentCard,
-      input.marketplaceExtension,
-      input.skillId,
-    ),
-    mimeType: "application/json",
+    network: input.config.x402Network,
+    amount: input.amount.toString(),
+    asset: input.config.usdcAddress,
     payTo: input.config.paymentRouterAddress,
     maxTimeoutSeconds: Math.max(
       1,
@@ -121,36 +82,48 @@ export function buildRequirementResponse(input: RequirementResponseInput): {
         (input.effectiveExpiresAt.getTime() - input.now.getTime()) / 1000,
       ),
     ),
-    asset: input.config.usdcAddress,
-    outputSchema: null,
     extra: {
+      assetTransferMethod: "eip3009",
       name: input.config.usdcName,
       version: input.config.usdcVersion,
-      daski: {
-        providerTokenId: input.providerTokenId.toString(),
-        buyerTokenId: input.buyerTokenId.toString(),
-        skillId: input.skillId,
-        serviceSlug: input.serviceSlug,
-        serviceVersion: input.serviceVersion,
-        serviceId: input.serviceId,
-        serviceRef: input.serviceRef,
-        token: input.config.usdcAddress,
-        rails: buildRails(input.config),
-        acceptedTokens: [input.config.usdcAddress],
-        eip712TypedData,
-        settlementMode:
-          input.buyerTokenId === 0n ? "atomic-register" : "settle-only",
-        quote: {
-          quoteId: input.quote.quoteId,
-          quoteSignature: input.quote.providerSignature,
-          expiresAt: input.quote.expiresAt.toISOString(),
-        },
-        ...input.purchaseLegal,
-      },
     },
   };
+  const daskiExtension = buildDaskiX402Declaration(input.config.publicUrl, {
+    serviceRef: input.serviceRef,
+    providerAgentId: input.providerTokenId.toString(),
+    buyerAgentId: input.buyerTokenId.toString(),
+    serviceId: input.serviceId,
+    skillId: input.skillId,
+    serviceSlug: input.serviceSlug,
+    serviceVersion: input.serviceVersion,
+    providerA2AUrl: input.providerA2AUrl,
+    quote: {
+      id: input.quote.quoteId,
+      signature: input.quote.providerSignature,
+      expiresAt: input.quote.expiresAt.toISOString(),
+    },
+    settlementMode:
+      input.buyerTokenId === 0n
+        ? "register-and-settle"
+        : "settle-only",
+  });
+  const paymentRequired: PaymentRequired = {
+    x402Version: 2,
+    resource: {
+      url: input.resource,
+      description,
+      mimeType: "application/json",
+      serviceName: "Daski",
+      tags: ["agent-marketplace", "a2a"],
+    },
+    accepts: [requirements],
+    extensions: {
+      "https://daski.xyz/x402/v2": daskiExtension,
+    },
+  };
+  const requirementsHash = hashCanonical(requirements);
 
-  const challenge: StoredChallenge = input.existingChallenge ?? {
+  const challenge: StoredChallenge = {
     serviceRef: input.serviceRef,
     providerTokenId: input.providerTokenId,
     buyerTokenId: input.buyerTokenId,
@@ -174,7 +147,27 @@ export function buildRequirementResponse(input: RequirementResponseInput): {
     quoteRequestHash: input.quote.requestHash,
     serviceArgs: null,
     acknowledgements: {},
+    x402Version: 2,
+    paymentRequired,
+    requirementsHash,
+    resourceUrl: input.resource,
+    daskiExtension,
+    requestFingerprint: input.requestFingerprint,
+    registrationDelegation: input.registrationDelegation ?? null,
+    acceptedPayer: null,
+    eip3009Nonce: null,
+    paymentPayloadFingerprint: null,
+    settleResponse: null,
   };
 
-  return { requirements, challenge };
+  return {
+    requirements,
+    paymentRequired,
+    purchaseLegal: input.purchaseLegal,
+    challenge,
+  };
+}
+
+export function hashCanonical(value: unknown): Hex {
+  return keccak256(toBytes(canonicalJsonStringify(value)));
 }

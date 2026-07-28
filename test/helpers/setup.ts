@@ -2,6 +2,8 @@ import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { randomUUID } from "node:crypto";
 import { privateKeyToAccount } from "viem/accounts";
+import { decodePaymentRequiredHeader } from "@x402/core/http";
+import { ExactEvmScheme } from "@x402/evm/exact/client";
 import type { Config } from "../../src/config.js";
 import { createApp, type AppBundle } from "../../src/app.js";
 import { createPool, type Pool } from "../../src/db/pool.js";
@@ -18,7 +20,12 @@ import { DASKI_A2A_EXTENSION_URI } from "../../src/config.js";
 import type { CategoryFamily, FulfillmentMode, ServiceType } from "../../src/serviceTaxonomy.js";
 import { resolveSkillOffer } from "../../src/payment/skillOffer.js";
 import type { PaymentSettledEvent } from "../../src/chain/reader.js";
-import type { ExactEvmAuthorization, Hex, PaymentPayload } from "../../src/types.js";
+import type {
+  ExactEvmAuthorization,
+  Hex,
+  PaymentPayload,
+  PaymentRequired,
+} from "../../src/types.js";
 
 const IDENTITY_REGISTRY_ADDRESS = "0x000000000000000000000000000000000000a000" as Hex;
 // Daski AgentIndex — reverse lookup + delegated registerWithSig companion of
@@ -41,7 +48,7 @@ const EAS_CONFIRMATION_SCHEMA_UID =
 const FACILITATOR_KEY = "0x1111111111111111111111111111111111111111111111111111111111111111" as Hex;
 
 // Buyer: fixed keypair so tests can sign EIP-3009 authorizations.
-const TEST_BUYER_KEY = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80" as Hex;
+export const TEST_BUYER_KEY = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80" as Hex;
 
 const CHAIN_ID = 84532;
 
@@ -112,8 +119,10 @@ export interface PurchaseChallenge {
   status: number;
   json: any;
   serviceRef?: Hex;
-  maxAmountRequired?: string;
+  amountRequired?: string;
   payTo?: Hex;
+  paymentRequired?: PaymentRequired;
+  requestBody?: Record<string, unknown>;
 }
 
 export interface TestGateway {
@@ -135,6 +144,7 @@ export interface TestGateway {
     nonce: Hex,
     opts?: { validAfter?: bigint; validBefore?: bigint },
   ): Promise<{ signature: Hex; authorization: ExactEvmAuthorization }>;
+  createPaymentPayload(paymentRequired: PaymentRequired): Promise<PaymentPayload>;
   discover(filters?: {
     categoryFamily?: CategoryFamily;
     serviceType?: ServiceType;
@@ -205,6 +215,7 @@ export async function startTestGateway(opts: TestGatewayOptions = {}): Promise<T
     baseRpcUrl: "http://127.0.0.1:0",
     chainId: CHAIN_ID,
     network: "base-sepolia",
+    x402Network: `eip155:${CHAIN_ID}`,
     identityRegistryAddress: IDENTITY_REGISTRY_ADDRESS,
     agentIndexAddress: AGENT_INDEX_ADDRESS,
     providerRegistryAddress: REGISTRY_ADDRESS,
@@ -290,7 +301,7 @@ export async function startTestGateway(opts: TestGatewayOptions = {}): Promise<T
 
   const buyerAccount = privateKeyToAccount(TEST_BUYER_KEY);
   mockChain.setAgentOwner(5n, buyerAccount.address.toLowerCase() as Hex);
-  const requirementsByProvider = new Map<string, Record<string, unknown>>();
+  const requirementsByProvider = new Map<string, PaymentRequired>();
 
   async function signAuthorization(
     value: bigint,
@@ -435,29 +446,44 @@ export async function startTestGateway(opts: TestGatewayOptions = {}): Promise<T
       });
       const json = (await res.json()) as any;
       let serviceRef: Hex | undefined;
-      let maxAmountRequired: string | undefined;
+      let amountRequired: string | undefined;
       let payTo: Hex | undefined;
-      const accepts = json?.accepts;
+      const requiredHeader = res.headers.get("payment-required");
+      const paymentRequired = requiredHeader
+        ? decodePaymentRequiredHeader(requiredHeader)
+        : undefined;
+      const accepts = paymentRequired?.accepts;
       if (Array.isArray(accepts) && accepts.length > 0) {
         const req = accepts[0];
-        serviceRef = req?.extra?.daski?.serviceRef;
-        maxAmountRequired = req?.maxAmountRequired;
-        payTo = req?.payTo;
-        requirementsByProvider.set(tokenId.toString(), req);
+        const extension = paymentRequired?.extensions?.[
+          "https://daski.xyz/x402/v2"
+        ] as { info?: { serviceRef?: Hex } } | undefined;
+        serviceRef = extension?.info?.serviceRef;
+        amountRequired = req?.amount;
+        payTo = req?.payTo as Hex | undefined;
+        requirementsByProvider.set(tokenId.toString(), paymentRequired!);
       }
-      return { status: res.status, json, serviceRef, maxAmountRequired, payTo };
+      return {
+        status: res.status,
+        json,
+        serviceRef,
+        amountRequired,
+        payTo,
+        paymentRequired,
+        requestBody: merged,
+      };
     },
 
-    async purchaseSettle(tokenId, payload, serviceRef) {
-      const requirements =
-        requirementsByProvider.get(tokenId.toString()) ??
-        (serviceRef ? { extra: { daski: { serviceRef } } } : undefined);
+    async purchaseSettle(tokenId, payload, _serviceRef) {
+      const required = requirementsByProvider.get(tokenId.toString());
+      const requirements = required?.accepts[0];
       const res = await fetch(`${baseUrl}/settle`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
+          x402Version: 2,
           paymentPayload: payload,
           paymentRequirements: requirements,
         }),
@@ -467,6 +493,23 @@ export async function startTestGateway(opts: TestGatewayOptions = {}): Promise<T
     },
 
     signAuthorization,
+
+    async createPaymentPayload(paymentRequired) {
+      const requirements = paymentRequired.accepts[0];
+      if (!requirements) throw new Error("PaymentRequired has no accepts");
+      const signed = await new ExactEvmScheme(
+        buyerAccount,
+      ).createPaymentPayload(2, requirements, {
+        extensions: paymentRequired.extensions,
+      });
+      return {
+        x402Version: 2,
+        resource: paymentRequired.resource,
+        accepted: requirements,
+        payload: signed.payload,
+        extensions: paymentRequired.extensions,
+      };
+    },
 
     async discover(filters = {}) {
       const params = new URLSearchParams();

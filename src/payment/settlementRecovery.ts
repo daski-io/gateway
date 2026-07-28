@@ -4,6 +4,7 @@ import type { Config } from "../config.js";
 import type { Queries } from "../db/queries.js";
 import type { Hex, StoredChallenge } from "../types.js";
 import { publicErrorMessage } from "../util/errorWrap.js";
+import { logger } from "../util/logger.js";
 import { handleSettlementScreeningError } from "./screeningFailure.js";
 import {
   persistSettlementEvent,
@@ -51,7 +52,7 @@ export async function recoverBroadcastSettlement(
         error,
         "settlement was broadcast and is awaiting confirmation",
       ),
-      config.network,
+      config.x402Network,
       payer,
     );
   }
@@ -65,7 +66,7 @@ export async function recoverBroadcastSettlement(
       500,
       "unexpected_settle_error",
       eventError,
-      config.network,
+      config.x402Network,
       payer,
     );
   }
@@ -81,16 +82,22 @@ export async function recoverBroadcastSettlement(
       500,
       "settlement_persistence_conflict",
       "on-chain settlement conflicts with the stored challenge",
-      config.network,
+      config.x402Network,
       payer,
     );
   }
-  return successfulSettlementResult({
+  const result = successfulSettlementResult({
     challenge,
     event: recovered.event,
     transactionHash: recovered.transactionHash,
-    network: config.network,
+    network: config.x402Network,
     payer,
     ...(atomic ? { registered: true } : {}),
   });
+  await queries.recordSettleResponse(challenge.serviceRef, result.response);
+  logger.info("x402.broadcast_recovery", {
+    source: "paid_request",
+    atomic,
+  });
+  return result;
 }

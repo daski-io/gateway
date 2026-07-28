@@ -1,23 +1,25 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { recoverTypedDataAddress, type Hex } from "viem";
+import { x402Client } from "@x402/core/client";
+import { parsePaymentRequired } from "@x402/core/schemas";
+import { ExactEvmScheme } from "@x402/evm/exact/client";
+import { wrapMCPClientWithPayment } from "@x402/mcp";
+import { type Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import {
   CATEGORY_FAMILY_SLUGS,
   SERVICE_TYPE_SLUGS,
 } from "../src/serviceTaxonomy.js";
-import { startTestGateway, type TestGateway } from "./helpers/setup.js";
-import { computeRequestHash } from "../src/auth/envelope.js";
 import {
-  AGENT_AUTHORITY,
-  MCP_LEGAL_INSTRUCTIONS,
-  PURCHASE_NOTICE,
-} from "../src/legal/purchase.js";
+  startTestGateway,
+  TEST_BUYER_KEY,
+  type TestGateway,
+} from "./helpers/setup.js";
+import { computeRequestHash } from "../src/auth/envelope.js";
+import { MCP_LEGAL_INSTRUCTIONS } from "../src/legal/purchase.js";
 import type { Embedder } from "../src/discovery/embeddings.js";
-
-const TEST_BUYER_KEY =
-  "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80" as Hex;
+import type { PaymentRequired } from "../src/types.js";
 
 async function connectClient(baseUrl: string) {
   const transport = new StreamableHTTPClientTransport(
@@ -82,24 +84,20 @@ describe("hosted MCP — wallet-agnostic surface", () => {
     await gateway.close();
   });
 
-  it("tools/list returns the 6 public and 3 advanced tools", async () => {
+  it("tools/list returns the V2-only public surface", async () => {
     const { client, transport } = await connectClient(gateway.baseUrl);
     try {
       const tools = await client.listTools();
       const names = tools.tools.map((t) => t.name).sort();
       expect(names).toEqual(
         [
-          // Public (6)
           "daski_buy_service",
           "daski_confirm_delivery",
           "daski_fetch_artifact",
           "daski_get_task_status",
+          "daski_register_agent",
           "daski_search_services",
           "daski_submit_task",
-          // Advanced (3)
-          "daski_purchase",
-          "daski_register_agent",
-          "daski_settle_payment",
         ].sort(),
       );
       const searchTool = tools.tools.find(
@@ -127,11 +125,7 @@ describe("hosted MCP — wallet-agnostic surface", () => {
       );
       expect(artifactTool?.inputSchema.required).toContain("providerA2AUrl");
       expect(client.getInstructions()).toContain(MCP_LEGAL_INSTRUCTIONS);
-      for (const toolName of [
-        "daski_purchase",
-        "daski_settle_payment",
-        "daski_buy_service",
-      ]) {
+      for (const toolName of ["daski_buy_service"]) {
         const tool = tools.tools.find((entry) => entry.name === toolName);
         expect(tool?.description).toContain("Operator is the legal party");
         expect(tool?.description).toContain("binds the Operator");
@@ -311,62 +305,42 @@ describe("hosted MCP — wallet-agnostic surface", () => {
     }
   });
 
-  it("daski_purchase returns paymentRequirements with wallet-bound typed-data", async () => {
+  it("daski_buy_service returns a direct canonical PaymentRequired result", async () => {
     const { client, transport } = await connectClient(gateway.baseUrl);
     try {
       const result = await client.callTool({
-        name: "daski_purchase",
+        name: "daski_buy_service",
         arguments: {
           providerTokenId: "2",
           serviceSlug: "domain-management",
           buyerTokenId: "5",
           walletAddress: gateway.buyerAddress,
           skillId: "register-domain",
+          serviceArgs: { domain: "canonical.xyz" },
         },
       });
-      const body = parseResult<{
-        legal: Record<string, string>;
-        agentAuthority: typeof AGENT_AUTHORITY;
-        purchaseNotice: string;
-        paymentRequirements: {
-          maxAmountRequired: string;
-          extra: {
-            daski: {
-              eip712TypedData: any;
-              serviceRef: string;
-              legal: Record<string, string>;
-              agentAuthority: typeof AGENT_AUTHORITY;
-              purchaseNotice: string;
-            };
-          };
-        };
-      }>(result);
-      expect(Object.keys(body).slice(-2)).toEqual([
-        "purchaseNotice",
-        "paymentRequirements",
-      ]);
-      expect(body.paymentRequirements.maxAmountRequired).toBe("15000000");
-      expect(body.legal).toEqual(expectedLegal(gateway));
-      expect(body.agentAuthority).toEqual(AGENT_AUTHORITY);
-      expect(body.purchaseNotice).toBe(PURCHASE_NOTICE);
-      expect(body.paymentRequirements.extra.daski.legal).toEqual(
-        expectedLegal(gateway),
-      );
-      expect(body.paymentRequirements.extra.daski.agentAuthority).toEqual(
-        AGENT_AUTHORITY,
-      );
-      expect(body.paymentRequirements.extra.daski.purchaseNotice).toBe(
-        PURCHASE_NOTICE,
-      );
-      const td = body.paymentRequirements.extra.daski.eip712TypedData;
-      expect(td.primaryType).toBe("TransferWithAuthorization");
-      expect(td.message.from.toLowerCase()).toBe(gateway.buyerAddress);
+      const response = result as ToolResultContent & {
+        structuredContent?: PaymentRequired;
+      };
+      const body = parseResult<PaymentRequired>(result);
+      expect(response.isError).toBe(true);
+      expect(response.structuredContent).toEqual(body);
+      expect(parsePaymentRequired(body)).toMatchObject({ success: true });
+      expect(body.x402Version).toBe(2);
+      expect(body.accepts).toHaveLength(1);
+      expect(body.accepts[0]).toMatchObject({
+        scheme: "exact",
+        network: "eip155:84532",
+        amount: "15000000",
+        payTo: gateway.config.paymentRouterAddress,
+      });
+      expect(body.extensions?.["https://daski.xyz/x402/v2"]).toBeDefined();
     } finally {
       await transport.close();
     }
   });
 
-  it("rejects daski_purchase without walletAddress", async () => {
+  it("rejects calls to the retired daski_purchase tool", async () => {
     const { client, transport } = await connectClient(gateway.baseUrl);
     try {
       const result = await client.callTool({
@@ -375,7 +349,6 @@ describe("hosted MCP — wallet-agnostic surface", () => {
           providerTokenId: "2",
           serviceSlug: "domain-management",
           buyerTokenId: "5",
-          // walletAddress omitted
         },
       });
       const r = result as ToolResultContent;
@@ -396,11 +369,12 @@ describe("hosted MCP — wallet-agnostic surface", () => {
         },
       ]) {
         const result = await client.callTool({
-          name: "daski_purchase",
+          name: "daski_buy_service",
           arguments: {
             providerTokenId: "2",
             serviceSlug: "domain-management",
             skillId: "register-domain",
+            serviceArgs: { domain: "self.xyz" },
             ...buyer,
           },
         });
@@ -414,7 +388,7 @@ describe("hosted MCP — wallet-agnostic surface", () => {
     }
   });
 
-  it("daski_buy_service returns a paid plan with paymentRequirements + steps", async () => {
+  it("daski_buy_service does not expose legacy plan or typed-data fields", async () => {
     const { client, transport } = await connectClient(gateway.baseUrl);
     try {
       const result = await client.callTool({
@@ -428,136 +402,141 @@ describe("hosted MCP — wallet-agnostic surface", () => {
           serviceArgs: { domain: "smoke.xyz" },
         },
       });
-      const body = parseResult<{
-        kind: string;
-        legal: Record<string, string>;
-        agentAuthority: typeof AGENT_AUTHORITY;
-        purchaseNotice: string;
-        paymentRequirements: { extra: { daski: { eip712TypedData: any } } };
-        plan: { steps: Array<{ toolName: string }> };
-      }>(result);
-      expect(body.kind).toBe("paid");
-      const paymentIndex = Object.keys(body).indexOf("paymentRequirements");
-      expect(Object.keys(body)[paymentIndex - 1]).toBe("purchaseNotice");
-      expect(body.legal).toEqual(expectedLegal(gateway));
-      expect(body.agentAuthority).toEqual(AGENT_AUTHORITY);
-      expect(body.purchaseNotice).toBe(PURCHASE_NOTICE);
-      expect(body.paymentRequirements.extra.daski.eip712TypedData).toBeDefined();
-      // The first daski_confirm_delivery step is the unsigned
-      // typed-data request; the second is the signed retry.
-      expect(body.plan.steps.map((s) => s.toolName)).toEqual([
-        "<your-wallet>.signTypedData",
-        "daski_settle_payment",
-        "daski_submit_task",
-        "daski_get_task_status",
-        // Two-call confirm delivery (first call returns typed-data):
-        "daski_confirm_delivery",
-        "<your-wallet>.signTypedData",
-        // Second call submits the signed attestation:
-        "daski_confirm_delivery",
-      ]);
+      const body = parseResult<PaymentRequired>(result);
+      expect(body.x402Version).toBe(2);
+      expect(body.accepts[0]?.amount).toBe("15000000");
+      expect(body).not.toHaveProperty("paymentRequirements");
+      expect(body).not.toHaveProperty("plan");
+      expect(JSON.stringify(body)).not.toContain("eip712TypedData");
     } finally {
       await transport.close();
     }
   });
 
-  it("end-to-end: purchase via MCP, sign locally, settle via MCP", async () => {
+  it("end-to-end: standard MCP payment metadata settles on the same tool", async () => {
     const { client, transport } = await connectClient(gateway.baseUrl);
     try {
-      // 1. Open the challenge via daski_purchase
-      const purchase = parseResult<{
-        paymentRequirements: PaymentRequirementsLite;
-      }>(
-        await client.callTool({
-          name: "daski_purchase",
-          arguments: {
-            providerTokenId: "2",
-            serviceSlug: "domain-management",
-            buyerTokenId: "5",
-            walletAddress: gateway.buyerAddress,
-            // post-service-identity-refactor: skillId is required so the
-            // gateway can derive serviceId from (providerAgentId, serviceSlug,
-            // version) and bind the EIP-3009 nonce accordingly.
-            skillId: "register-domain",
-          },
-        }),
+      const args = {
+        providerTokenId: "2",
+        serviceSlug: "domain-management",
+        buyerTokenId: "5",
+        walletAddress: gateway.buyerAddress,
+        skillId: "register-domain",
+        serviceArgs: { domain: "mcp-v2.xyz" },
+      };
+      const paymentRequired = parseResult<PaymentRequired>(
+        await client.callTool({ name: "daski_buy_service", arguments: args }),
       );
-
-      // 2. Sign the gateway-baked typed-data with a stand-in wallet (any
-      //    EIP-712-capable signer works; we simulate the wallet here).
-      const td = purchase.paymentRequirements.extra.daski.eip712TypedData;
-      const account = privateKeyToAccount(TEST_BUYER_KEY);
-      const message = {
-        from: td.message.from,
-        to: td.message.to,
-        value: BigInt(td.message.value),
-        validAfter: BigInt(td.message.validAfter),
-        validBefore: BigInt(td.message.validBefore),
-        nonce: td.message.nonce,
-      };
-      const types = {
-        TransferWithAuthorization: td.types.TransferWithAuthorization,
-      };
-      const signature = (await account.signTypedData({
-        domain: td.domain,
-        types,
-        primaryType: "TransferWithAuthorization",
-        message,
-      })) as Hex;
-
-      // Sanity: signature recovers to the wallet address baked in
-      const recovered = await recoverTypedDataAddress({
-        domain: td.domain,
-        types,
-        primaryType: "TransferWithAuthorization",
-        message,
-        signature,
-      });
-      expect(recovered.toLowerCase()).toBe(account.address.toLowerCase());
-
-      // 3. Queue settlement and call daski_settle_payment via MCP
+      const payload = await gateway.createPaymentPayload(paymentRequired);
+      const extension = paymentRequired.extensions?.[
+        "https://daski.xyz/x402/v2"
+      ] as { info: { serviceRef: Hex } };
       gateway.queueSettlementSuccess({
         txHash: ("0x" + "11".repeat(32)) as Hex,
         paymentId: 99n,
-        serviceRef: purchase.paymentRequirements.extra.daski.serviceRef as Hex,
+        serviceRef: extension.info.serviceRef,
         providerAgentId: 2n,
         buyerAgentId: 5n,
         totalAmount: 15_000_000n,
+      });
+      const raw = await client.callTool({
+        name: "daski_buy_service",
+        arguments: args,
+        _meta: { "x402/payment": payload },
       });
       const settleResult = parseResult<{
         success: boolean;
         paymentId: string;
         transaction: string;
         providerA2AUrl: string;
-      }>(
-        await client.callTool({
-          name: "daski_settle_payment",
-          arguments: {
-            paymentPayload: {
-              x402Version: 1,
-              scheme: "exact",
-              network: "base-sepolia",
-              payload: {
-                signature,
-                authorization: {
-                  from: td.message.from,
-                  to: td.message.to,
-                  value: td.message.value,
-                  validAfter: td.message.validAfter,
-                  validBefore: td.message.validBefore,
-                  nonce: td.message.nonce,
-                },
-              },
-            },
-            paymentRequirements: purchase.paymentRequirements,
-          },
-        }),
-      );
+      }>(raw);
       expect(settleResult.success).toBe(true);
       expect(settleResult.paymentId).toBe("99");
       expect(settleResult.providerA2AUrl).toMatch(/^http/);
+      expect(
+        (raw as { _meta?: Record<string, unknown> })._meta?.[
+          "x402/payment-response"
+        ],
+      ).toMatchObject({ success: true, network: "eip155:84532" });
     } finally {
       await transport.close();
+    }
+  });
+
+  it("returns a standard payment response in MCP metadata on settlement failure", async () => {
+    const { client, transport } = await connectClient(gateway.baseUrl);
+    try {
+      const args = {
+        providerTokenId: "2",
+        serviceSlug: "domain-management",
+        buyerTokenId: "5",
+        walletAddress: gateway.buyerAddress,
+        skillId: "register-domain",
+        serviceArgs: { domain: "mcp-v2-failure.xyz" },
+      };
+      const paymentRequired = parseResult<PaymentRequired>(
+        await client.callTool({ name: "daski_buy_service", arguments: args }),
+      );
+      const payload = await gateway.createPaymentPayload(paymentRequired);
+      gateway.mockChain.queueSettlement({
+        kind: "revert",
+        reason: "simulated settlement failure",
+      });
+      const raw = await client.callTool({
+        name: "daski_buy_service",
+        arguments: args,
+        _meta: { "x402/payment": payload },
+      });
+      expect((raw as ToolResultContent).isError).toBe(true);
+      expect(
+        (raw as { _meta?: Record<string, unknown> })._meta?.[
+          "x402/payment-response"
+        ],
+      ).toMatchObject({
+        success: false,
+        errorReason: "unexpected_settle_error",
+        network: "eip155:84532",
+      });
+    } finally {
+      await transport.close();
+    }
+  });
+
+  it("interoperates with the official x402 MCP client", async () => {
+    const args = {
+      providerTokenId: "2",
+      serviceSlug: "domain-management",
+      buyerTokenId: "5",
+      walletAddress: gateway.buyerAddress,
+      skillId: "register-domain",
+      serviceArgs: { domain: "official-mcp-v2.xyz" },
+    };
+    gateway.queueSettlementSuccess({
+      txHash: ("0x" + "22".repeat(32)) as Hex,
+      paymentId: 100n,
+      serviceRef: ("0x" + "00".repeat(32)) as Hex,
+      providerAgentId: 2n,
+      buyerAgentId: 5n,
+      totalAmount: 15_000_000n,
+    });
+
+    const connected = await connectClient(gateway.baseUrl);
+    const paid = wrapMCPClientWithPayment(
+      connected.client,
+      new x402Client().register(
+        "eip155:84532",
+        new ExactEvmScheme(privateKeyToAccount(TEST_BUYER_KEY)),
+      ),
+    );
+    try {
+      const result = await paid.callTool("daski_buy_service", args);
+      expect(result).toMatchObject({
+        paymentMade: true,
+        paymentResponse: { success: true, network: "eip155:84532" },
+      });
+      expect(parseResult<{ paymentId: string }>(result).paymentId).toBe("100");
+    } finally {
+      await paid.close();
     }
   });
 
@@ -645,20 +624,20 @@ describe("hosted MCP — wallet-agnostic surface", () => {
     }
   });
 
-  it("daski_buy_service routes a fresh wallet to atomic register-and-settle", async () => {
+  it("daski_buy_service requires registration before issuing a fresh-wallet challenge", async () => {
     const fresh = "0xabcd000000000000000000000000000000000003" as Hex;
-    // Wallet has no agent on chain; getRegistrationNonce returns 0 by default.
     const { client, transport } = await connectClient(gateway.baseUrl);
     try {
       const body = parseResult<{
-        kind: string;
-        atomic: boolean;
-        paymentRequirements: { extra: { daski: { eip712TypedData: any; buyerTokenId: string } } };
-        registrationPrep: {
-          eip712TypedData: { primaryType: string; message: Record<string, string> };
-          submitTemplate: { walletAddress: string };
-        } | null;
-        plan: { steps: Array<{ toolName: string }> };
+        code: string;
+        details: {
+          registrationPrep: {
+            eip712TypedData: {
+              primaryType: string;
+              message: Record<string, string>;
+            };
+          };
+        };
       }>(
         await client.callTool({
           name: "daski_buy_service",
@@ -667,54 +646,38 @@ describe("hosted MCP — wallet-agnostic surface", () => {
             providerTokenId: "2",
             serviceSlug: "domain-management",
             walletAddress: fresh,
-            // buyerTokenId omitted on purpose — orchestrator should look it up.
             serviceArgs: { domain: "atomic.xyz" },
-            // Naming the buyer explicitly; this test is about atomic
-            // routing, not naming.
             name: "Atomic Routing Co",
           },
         }),
       );
 
-      expect(body.kind).toBe("paid");
-      expect(body.atomic).toBe(true);
-      expect(body.paymentRequirements.extra.daski.buyerTokenId).toBe("0");
-      expect(body.registrationPrep).not.toBeNull();
-      expect(body.registrationPrep!.eip712TypedData.primaryType).toBe(
-        "RegisterAgent",
-      );
-      expect(body.registrationPrep!.eip712TypedData.message.agentWallet).toBe(
+      expect(body.code).toBe("registration_required");
+      expect(
+        body.details.registrationPrep.eip712TypedData.primaryType,
+      ).toBe("RegisterAgent");
+      expect(
+        body.details.registrationPrep.eip712TypedData.message.agentWallet,
+      ).toBe(
         fresh.toLowerCase(),
       );
-      // Plan: payment sign → registration sign → settle → submit → check
-      // → confirm-prep → confirm sign → confirm_delivery. Three sign
-      // steps total (payment, registration, confirmation).
-      const tools = body.plan.steps.map((s) => s.toolName);
-      expect(tools.filter((t) => t === "<your-wallet>.signTypedData")).toHaveLength(3);
-      expect(tools).toContain("daski_settle_payment");
-      expect(tools).toContain("daski_confirm_delivery");
     } finally {
       await transport.close();
     }
   });
 
-  it("daski_buy_service atomic: no name → wallet-derived default + how-to-name hint", async () => {
+  it("fresh-wallet registration defaults to the wallet-derived buyer name", async () => {
     const fresh = "0xabcd000000000000000000000000000000aa39aa" as Hex;
     const { client, transport } = await connectClient(gateway.baseUrl);
     try {
-      // De-scar 260726: no acknowledgement gate — the default applies
-      // directly and the hint/plan text carries the how-to-name nudge.
-      // The phone value checks the informational-warning wiring: the quote
-      // must restate WHOIS-bound phones in `warnings`.
       const body = parseResult<{
-        atomic: boolean;
-        warnings?: string[];
-        registrationPrep: {
-          agentURI: string;
-          resolvedName: string;
-          hint?: string;
+        code: string;
+        details: {
+          registrationPrep: {
+            resolvedName: string;
+            hint?: string;
+          };
         };
-        plan: { steps: Array<{ toolName: string; hint: string }> };
       }>(
         await client.callTool({
           name: "daski_buy_service",
@@ -728,46 +691,29 @@ describe("hosted MCP — wallet-agnostic surface", () => {
         }),
       );
 
-      expect(body.atomic).toBe(true);
-      expect(
-        (body.warnings ?? []).join(" "),
-        "quote warnings must restate WHOIS-bound phone values",
-      ).toContain("+15125550142");
-      expect((body.warnings ?? []).join(" ")).toContain("public WHOIS");
-      expect(body.registrationPrep.resolvedName).toBe("buyer-aa39aa");
-      // The hint fires exactly where the default is applied, and tells the
-      // agent to pick a name itself via re-call before signing.
-      expect(body.registrationPrep.hint).toContain("`name`");
-      expect(body.registrationPrep.hint).toContain("buyer-aa39aa");
-      // The registration sign step repeats the nudge so it survives even
-      // if the agent only reads the plan.
-      const regSign = body.plan.steps.find(
-        (s) =>
-          s.toolName === "<your-wallet>.signTypedData" &&
-          s.hint.includes("registrationPrep"),
-      );
-      expect(regSign).toBeDefined();
-      expect(regSign!.hint).toContain("buyer-aa39aa");
-      expect(regSign!.hint).toContain("`name`");
+      expect(body.code).toBe("registration_required");
+      expect(body.details.registrationPrep.resolvedName).toBe("buyer-aa39aa");
+      expect(body.details.registrationPrep.hint).toContain("`name`");
     } finally {
       await transport.close();
     }
   });
 
-  it("daski_buy_service atomic: `name` is baked into the signed registration agentURI", async () => {
+  it("fresh-wallet registration binds the selected name into agentURI", async () => {
     const fresh = "0xabcd000000000000000000000000000000000004" as Hex;
     const { client, transport } = await connectClient(gateway.baseUrl);
     try {
       const body = parseResult<{
-        atomic: boolean;
-        registrationPrep: {
-          agentURI: string;
-          resolvedName: string;
-          hint?: string;
-          eip712TypedData: { message: Record<string, string> };
-          submitTemplate: { agentURI: string };
+        code: string;
+        details: {
+          registrationPrep: {
+            agentURI: string;
+            resolvedName: string;
+            hint?: string;
+            eip712TypedData: { message: Record<string, string> };
+            submitTemplate: { agentURI: string };
+          };
         };
-        plan: { steps: Array<{ toolName: string; hint: string }> };
       }>(
         await client.callTool({
           name: "daski_buy_service",
@@ -782,27 +728,17 @@ describe("hosted MCP — wallet-agnostic surface", () => {
         }),
       );
 
-      expect(body.atomic).toBe(true);
-      // Trimmed by sanitizeBuyerName, echoed so the agent can show it.
-      expect(body.registrationPrep.resolvedName).toBe("Acme Procurement Bot");
-      // Named registration needs no how-to-name hint.
-      expect(body.registrationPrep.hint).toBeUndefined();
-      // The name must live inside the agentURI the wallet actually signs —
-      // decode the data: URI and check the embedded buyer card.
-      const uri = body.registrationPrep.agentURI;
-      expect(body.registrationPrep.eip712TypedData.message.agentURI).toBe(uri);
-      expect(body.registrationPrep.submitTemplate.agentURI).toBe(uri);
+      expect(body.code).toBe("registration_required");
+      const prep = body.details.registrationPrep;
+      expect(prep.resolvedName).toBe("Acme Procurement Bot");
+      expect(prep.hint).toBeUndefined();
+      const uri = prep.agentURI;
+      expect(prep.eip712TypedData.message.agentURI).toBe(uri);
+      expect(prep.submitTemplate.agentURI).toBe(uri);
       const b64 = uri.replace("data:application/json;base64,", "");
       const card = JSON.parse(Buffer.from(b64, "base64").toString("utf8"));
       expect(card.name).toBe("Acme Procurement Bot");
       expect(card.wallet).toBe(fresh.toLowerCase());
-      // The registration sign step confirms the chosen name.
-      const regSign = body.plan.steps.find(
-        (s) =>
-          s.toolName === "<your-wallet>.signTypedData" &&
-          s.hint.includes("registrationPrep"),
-      );
-      expect(regSign!.hint).toContain("Acme Procurement Bot");
     } finally {
       await transport.close();
     }
@@ -834,15 +770,11 @@ describe("hosted MCP — wallet-agnostic surface", () => {
     }
   });
 
-  it("daski_buy_service warns when `name` is passed for an already-registered wallet", async () => {
+  it("already-registered wallet still receives a canonical challenge when name is supplied", async () => {
     gateway.mockChain.setAgentOfWallet(gateway.buyerAddress, 5n);
     const { client, transport } = await connectClient(gateway.baseUrl);
     try {
-      const body = parseResult<{
-        atomic: boolean;
-        registrationPrep: unknown;
-        warnings?: string[];
-      }>(
+      const body = parseResult<PaymentRequired>(
         await client.callTool({
           name: "daski_buy_service",
           arguments: {
@@ -856,13 +788,9 @@ describe("hosted MCP — wallet-agnostic surface", () => {
         }),
       );
 
-      expect(body.atomic).toBe(false);
-      expect(body.registrationPrep).toBeNull();
-      // Ignored-arg policy: never drop a caller's input silently.
-      expect(body.warnings).toBeDefined();
-      expect(body.warnings!.some((w) => w.includes("`name` was ignored"))).toBe(
-        true,
-      );
+      expect(body.x402Version).toBe(2);
+      expect(body.accepts[0]?.scheme).toBe("exact");
+      expect(body).not.toHaveProperty("warnings");
     } finally {
       await transport.close();
     }
@@ -903,13 +831,7 @@ describe("hosted MCP — wallet-agnostic surface", () => {
 
     const { client, transport } = await connectClient(gateway.baseUrl);
     try {
-      const body = parseResult<{
-        kind: string;
-        atomic: boolean;
-        paymentRequirements: { maxAmountRequired: string };
-        quoteNotes: string[];
-        acceptedToken: { address: string };
-      }>(
+      const body = parseResult<PaymentRequired>(
         await client.callTool({
           name: "daski_buy_service",
           arguments: {
@@ -922,12 +844,9 @@ describe("hosted MCP — wallet-agnostic surface", () => {
           },
         }),
       );
-      expect(body.kind).toBe("paid");
-      expect(body.paymentRequirements.maxAmountRequired).toBe("2980000");
-      expect(body.quoteNotes).toContain(
-        "live name.com price for .xyz: $2.98 USD",
-      );
-      expect(body.acceptedToken.address.toLowerCase()).toBe(
+      expect(body.x402Version).toBe(2);
+      expect(body.accepts[0]?.amount).toBe("2980000");
+      expect(body.accepts[0]?.asset.toLowerCase()).toBe(
         gateway.config.usdcAddress,
       );
     } finally {
@@ -1272,73 +1191,32 @@ describe("hosted MCP — wallet-agnostic surface", () => {
     }
   });
 
-  it("daski_settle_payment requires `registration` when challenge.buyerTokenId === 0", async () => {
+  it("does not create a payment challenge before fresh-wallet registration", async () => {
     const fresh = "0xabcd000000000000000000000000000000000004" as Hex;
     const { client, transport } = await connectClient(gateway.baseUrl);
     try {
-      // 1. Open atomic challenge via daski_buy_service.
-      const plan = parseResult<{
-        paymentRequirements: PaymentRequirementsLite;
-      }>(
-        await client.callTool({
-          name: "daski_buy_service",
-          arguments: {
-            skillId: "register-domain",
-            providerTokenId: "2",
-            serviceSlug: "domain-management",
-            walletAddress: fresh,
-            serviceArgs: { domain: "atomic-settle.xyz" },
-            name: "Atomic Settle Co",
-          },
-        }),
-      );
-
-      // 2. Sign the payment typed-data with a stand-in wallet.
-      const td = plan.paymentRequirements.extra.daski.eip712TypedData;
-      const account = privateKeyToAccount(TEST_BUYER_KEY);
-      const signature = (await account.signTypedData({
-        domain: td.domain,
-        types: { TransferWithAuthorization: td.types.TransferWithAuthorization },
-        primaryType: "TransferWithAuthorization",
-        message: {
-          from: td.message.from,
-          to: td.message.to,
-          value: BigInt(td.message.value),
-          validAfter: BigInt(td.message.validAfter),
-          validBefore: BigInt(td.message.validBefore),
-          nonce: td.message.nonce,
-        },
-      })) as Hex;
-
-      // 3. Call daski_settle_payment WITHOUT registration → should be an error.
-      const errResult = await client.callTool({
-        name: "daski_settle_payment",
+      const result = await client.callTool({
+        name: "daski_buy_service",
         arguments: {
-          paymentPayload: {
-            x402Version: 1,
-            scheme: "exact",
-            network: "base-sepolia",
-            payload: {
-              signature,
-              authorization: {
-                from: td.message.from,
-                to: td.message.to,
-                value: td.message.value,
-                validAfter: td.message.validAfter,
-                validBefore: td.message.validBefore,
-                nonce: td.message.nonce,
-              },
-            },
-          },
-          paymentRequirements: plan.paymentRequirements,
+          skillId: "register-domain",
+          providerTokenId: "2",
+          serviceSlug: "domain-management",
+          walletAddress: fresh,
+          serviceArgs: { domain: "atomic-settle.xyz" },
+          name: "Atomic Settle Co",
         },
       });
-      const r = errResult as ToolResultContent;
-      expect(r.isError).toBe(true);
-      const err = JSON.parse(
-        (r.content[0]! as { type: "text"; text: string }).text,
+      const body = parseResult<{ code: string }>(result);
+      expect((result as ToolResultContent).isError).toBe(true);
+      expect(body.code).toBe("registration_required");
+      const count = await gateway.bundle.pool.query<{ count: string }>(
+        "SELECT count(*)::text AS count FROM payment_challenges",
       );
-      expect(err.code).toBe("registration_required");
+      expect(count.rows[0]?.count).toBe("0");
+      const tools = await client.listTools();
+      expect(tools.tools.map((tool) => tool.name)).not.toContain(
+        "daski_settle_payment",
+      );
     } finally {
       await transport.close();
     }
@@ -1382,11 +1260,7 @@ describe("hosted MCP — wallet-agnostic surface", () => {
     const paymentId = "4242";
     const { client, transport } = await connectClient(gateway.baseUrl);
     try {
-      const purchase = parseResult<{
-        paymentRequirements: {
-          extra: { daski: { serviceRef: Hex } };
-        };
-      }>(
+      const purchase = parseResult<PaymentRequired>(
         await client.callTool({
           name: "daski_buy_service",
           arguments: {
@@ -1399,7 +1273,11 @@ describe("hosted MCP — wallet-agnostic surface", () => {
           },
         }),
       );
-      const serviceRef = purchase.paymentRequirements.extra.daski.serviceRef;
+      const serviceRef = (
+        purchase.extensions?.["https://daski.xyz/x402/v2"] as {
+          info: { serviceRef: Hex };
+        }
+      ).info.serviceRef;
       expect(
         await gateway.bundle.queries.recordChallengePaid(
           serviceRef,
@@ -1834,18 +1712,3 @@ describe("hosted MCP — wallet-agnostic surface", () => {
   });
 
 });
-
-interface PaymentRequirementsLite {
-  maxAmountRequired: string;
-  extra: {
-    daski: {
-      serviceRef: string;
-      eip712TypedData: {
-        domain: any;
-        types: any;
-        primaryType: string;
-        message: Record<string, string>;
-      };
-    };
-  };
-}

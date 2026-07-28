@@ -53,6 +53,10 @@ export async function reconcileBroadcastSettlements(
           )
         ) {
           recovered += 1;
+          logger.info("x402.broadcast_recovery", {
+            source: "reconciler",
+            atomic,
+          });
         }
       } catch (error) {
         if (error instanceof SettlementScreeningError) {

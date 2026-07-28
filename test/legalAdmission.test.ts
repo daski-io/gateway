@@ -70,7 +70,7 @@ describe("legal metadata admission and representation", () => {
       serviceSlug: "domain-management",
     });
     expect(payment.status).toBe(422);
-    expect(payment.json.error).toMatch(/legal metadata/i);
+    expect(payment.json.error).toMatch(/provider or skill not found/i);
 
     const { client, transport } = await connectClient(gateway.baseUrl);
     try {

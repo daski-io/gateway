@@ -8,6 +8,7 @@ import {
 import type { Queries } from "../db/queries.js";
 import type {
   Hex,
+  PaymentRequired,
   PaymentRequirements,
   StoredChallenge,
 } from "../types.js";
@@ -51,10 +52,18 @@ export interface IssueParams {
    * rejects paid tasks without them.
    */
   providerQuote: ProviderQuoteForChallenge;
+  requestFingerprint?: Hex;
+  registrationDelegation?: StoredChallenge["registrationDelegation"];
 }
 
 export type IssueResult =
-  | { ok: true; requirements: PaymentRequirements; challenge: StoredChallenge }
+  | {
+      ok: true;
+      requirements: PaymentRequirements;
+      paymentRequired: PaymentRequired;
+      purchaseLegal: ReturnType<typeof buildPurchaseLegalContext>;
+      challenge: StoredChallenge;
+    }
   | { ok: false; code: string; message: string; status: number };
 
 export async function issuePaymentRequirements(
@@ -189,6 +198,40 @@ export async function issuePaymentRequirements(
     ),
   );
 
+  const requestFingerprint =
+    params.requestFingerprint ??
+    (await import("./requirementResponse.js")).hashCanonical({
+      providerAgentId: params.providerTokenId.toString(),
+      buyerAgentId: params.buyerTokenId.toString(),
+      skillId,
+      resource: params.resource,
+      walletAddress: params.walletAddress.toLowerCase(),
+      quoteId: quote.quoteId,
+    });
+  const draft = buildRequirementResponse({
+    config,
+    providerTokenId: params.providerTokenId,
+    buyerTokenId: params.buyerTokenId,
+    skillId,
+    resource: params.resource,
+    walletAddress: params.walletAddress,
+    amount,
+    serviceSlug,
+    serviceVersion,
+    serviceId,
+    serviceRef,
+    providerA2AUrl,
+    agentCard,
+    marketplaceExtension: ext,
+    quote,
+    purchaseLegal,
+    effectiveExpiresAt: expiresAt,
+    requestFingerprint,
+    registrationDelegation: params.registrationDelegation,
+    existingChallenge: null,
+    now,
+  });
+
   const claimed = await claimPaymentChallenge(
     {
       serviceRef,
@@ -208,6 +251,12 @@ export async function issuePaymentRequirements(
         expiresAt: quote.expiresAt,
         requestHash: quote.requestHash,
       },
+      paymentRequired: draft.paymentRequired,
+      requirementsHash: draft.challenge.requirementsHash!,
+      requestFingerprint,
+      daskiExtension: draft.challenge.daskiExtension!,
+      resourceUrl: params.resource,
+      registrationDelegation: params.registrationDelegation,
     },
     queries,
     now,
@@ -234,6 +283,8 @@ export async function issuePaymentRequirements(
     quote,
     purchaseLegal,
     effectiveExpiresAt,
+    requestFingerprint,
+    registrationDelegation: params.registrationDelegation,
     existingChallenge,
     now,
   });

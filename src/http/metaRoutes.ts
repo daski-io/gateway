@@ -12,6 +12,10 @@ import type { ChainEventsIndexer } from "../indexer/chainEvents.js";
 import type { ReputationMirrorWorker } from "../reputation/worker.js";
 import { DatabaseReadinessProbe } from "./readiness.js";
 import type { PaymentScreeningReadinessProbe } from "../payment/screeningReadiness.js";
+import {
+  DASKI_X402_SCHEMA_PATH,
+  daskiX402Schema,
+} from "../payment/x402Extension.js";
 
 export interface MetaRoutesDeps {
   config: Config;
@@ -45,10 +49,8 @@ function fullDocs(config: Config): string {
     "- daski_fetch_artifact — retrieve gated task artifacts",
     "- daski_confirm_delivery — submit buyer confirmation",
     "",
-    "Advanced:",
+    "Identity:",
     "- daski_register_agent — register an ERC-8004 identity",
-    "- daski_purchase — open a payment challenge",
-    "- daski_settle_payment — settle a signed x402 payload",
     "",
     "Resource:",
     "- daski://provider/{agentId} — provider Agent Card and skill metadata",
@@ -172,6 +174,10 @@ export function createMetaRouter(deps: MetaRoutesDeps): Router {
     });
   });
 
+  router.get(DASKI_X402_SCHEMA_PATH, (_req, res) => {
+    res.json(daskiX402Schema(config.publicUrl));
+  });
+
   router.get("/.well-known/x402", (_req, res) => {
     // x402scan's compatibility-fallback discovery format: flat resource URL
     // strings plus a guidance string, nothing else. The URLs are the same
@@ -185,18 +191,19 @@ export function createMetaRouter(deps: MetaRoutesDeps): Router {
           `${config.publicUrl}/purchase/${provider.agentId.toString()}`,
       );
     res.json({
-      version: 1,
+      version: 2,
       resources,
       instructions:
-        `Daski is an agent-to-agent marketplace on ${config.network} ` +
-        `(eip155:${config.chainId}). The listed resources are x402 ` +
+        `Daski is an agent-to-agent marketplace on ${config.x402Network}. ` +
+        `The listed resources are x402 V2 ` +
         `payment-challenge endpoints; opening a challenge requires a JSON ` +
         `body (buyerTokenId, walletAddress, skillId, serviceSlug, ` +
         `providerQuote) — flow documented at ${config.publicUrl}/skill.md. ` +
         `Programmatic discovery and purchase: MCP endpoint ` +
         `${config.publicUrl}${config.mcpPath} (streamable-http); REST ` +
         `catalog ${config.publicUrl}/discover. Facilitator: ` +
-        `${config.publicUrl}/supported.`,
+        `${config.publicUrl}/supported. Extension schema: ` +
+        `${config.publicUrl}${DASKI_X402_SCHEMA_PATH}.`,
     });
   });
 

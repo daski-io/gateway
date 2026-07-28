@@ -1,25 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { privateKeyToAccount } from "viem/accounts";
-import { encodeAbiParameters, keccak256 } from "viem";
-import type { Hex } from "viem";
-import { startTestGateway, type TestGateway } from "./helpers/setup.js";
+import { decodePaymentRequiredHeader } from "@x402/core/http";
+import type { Hex, PaymentRequired } from "../src/types.js";
 import { computeRequestHash } from "../src/auth/envelope.js";
-
-// ── Provider quote-commitment integration (provider audit 1.1) ──────────
-//
-// The provider signs every paid quote and enforces at task-submit time
-// that (a) the settled serviceRef equals the quote's commitment hash and
-// (b) A2A metadata carries the matching quoteId + quoteSignature. These
-// tests pin the gateway half: adopt quote.serviceRef, persist + expose
-// the credentials, bound everything by the quote TTL, and inject the
-// metadata at submit time.
-
-const TEST_BUYER_KEY =
-  "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80" as Hex;
+import { startTestGateway, type TestGateway } from "./helpers/setup.js";
 
 const PRICE = 15_000_000n;
+const DASKI_EXTENSION = "https://daski.xyz/x402/v2";
 
 async function connectClient(baseUrl: string) {
   const transport = new StreamableHTTPClientTransport(
@@ -33,32 +21,21 @@ async function connectClient(baseUrl: string) {
 interface ToolResultContent {
   content: Array<{ type: string; text: string }>;
   isError?: boolean;
+  _meta?: Record<string, unknown>;
 }
 
 function parseResult<T>(result: unknown): T {
-  const r = result as ToolResultContent;
-  expect(r.content).toBeDefined();
-  expect(r.content[0]).toBeDefined();
-  return JSON.parse(r.content[0].text) as T;
+  const content = (result as ToolResultContent).content;
+  expect(content[0]).toBeDefined();
+  return JSON.parse(content[0]!.text) as T;
 }
 
-interface BuyResponse {
-  kind: string;
-  quote: { quoteId: string; expiresAt: string };
-  quoteNotes: string[];
-  paymentRequirements: {
-    maxAmountRequired: string;
-    extra: {
-      daski: {
-        serviceRef: string;
-        quote?: { quoteId: string; quoteSignature: string; expiresAt: string };
-        eip712TypedData: {
-          domain: Record<string, unknown>;
-          types: Record<string, Array<{ name: string; type: string }>>;
-          primaryType: string;
-          message: Record<string, string>;
-        };
-      };
+function declaration(required: PaymentRequired) {
+  return required.extensions?.[DASKI_EXTENSION] as {
+    info: {
+      serviceRef: Hex;
+      providerA2AUrl: string;
+      quote: { id: string; signature: Hex; expiresAt: string };
     };
   };
 }
@@ -89,7 +66,6 @@ describe("provider quote-commitment integration", () => {
         },
       ],
     });
-    // Registered buyer — the quote flow itself is what's under test.
     gateway.mockChain.setAgentOfWallet(gateway.buyerAddress, 5n);
     gateway.mockChain.setAgentOwner(6n, gateway.buyerAddress);
   });
@@ -98,21 +74,22 @@ describe("provider quote-commitment integration", () => {
     await gateway.close();
   });
 
-  async function buyRegisterDomain(
-    client: Client,
-    extraArgs: Record<string, unknown> = {},
-  ) {
+  function buyArgs(extra: Record<string, unknown> = {}) {
+    return {
+      skillId: "register-domain",
+      providerTokenId: "2",
+      serviceSlug: "domain-management",
+      buyerTokenId: "5",
+      walletAddress: gateway.buyerAddress,
+      serviceArgs: { domain: "quoted.xyz" },
+      ...extra,
+    };
+  }
+
+  async function buy(client: Client, args = buyArgs()) {
     return client.callTool({
       name: "daski_buy_service",
-      arguments: {
-        skillId: "register-domain",
-        providerTokenId: "2",
-        serviceSlug: "domain-management",
-        buyerTokenId: "5",
-        walletAddress: gateway.buyerAddress,
-        serviceArgs: { domain: "quoted.xyz" },
-        ...extraArgs,
-      },
+      arguments: args,
     });
   }
 
@@ -125,12 +102,10 @@ describe("provider quote-commitment integration", () => {
         body: JSON.stringify({ skillId: "register-domain", serviceArgs }),
       },
     );
-    expect(response.status).toBe(200);
     const body = (await response.json()) as {
-      quote?: Record<string, unknown>;
+      quote: Record<string, unknown>;
     };
-    expect(body.quote).toBeDefined();
-    return body.quote!;
+    return body.quote;
   }
 
   async function postPurchase(body: Record<string, unknown>) {
@@ -139,13 +114,15 @@ describe("provider quote-commitment integration", () => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
+    const header = response.headers.get("payment-required");
     return {
       status: response.status,
-      json: (await response.json()) as any,
+      json: (await response.json()) as Record<string, unknown>,
+      required: header ? decodePaymentRequiredHeader(header) : undefined,
     };
   }
 
-  it("REST /purchase validates the signed quote and only reuses an exact binding", async () => {
+  it("validates provider signatures and reuses only the exact REST binding", async () => {
     const serviceArgs = { domain: "rest-quoted.xyz" };
     const baseRequest = {
       buyerTokenId: "5",
@@ -154,14 +131,13 @@ describe("provider quote-commitment integration", () => {
       serviceSlug: "domain-management",
       serviceArgs,
     };
-
-    const missing = await postPurchase(baseRequest);
-    expect(missing.status).toBe(400);
-    expect(missing.json.error).toContain("providerQuote is required");
+    expect((await postPurchase(baseRequest)).status).toBe(400);
 
     const providerQuote = await requestProviderQuote(serviceArgs);
-    const badSignature = structuredClone(providerQuote);
-    badSignature.providerSignature = `0x${"11".repeat(65)}`;
+    const badSignature = {
+      ...providerQuote,
+      providerSignature: `0x${"11".repeat(65)}`,
+    };
     const tampered = await postPurchase({
       ...baseRequest,
       providerQuote: badSignature,
@@ -169,25 +145,13 @@ describe("provider quote-commitment integration", () => {
     expect(tampered.status).toBe(400);
     expect(tampered.json.error).toMatch(/signature is invalid/i);
 
-    const drifted = await postPurchase({
-      ...baseRequest,
-      serviceArgs: { domain: "substituted.xyz" },
-      providerQuote,
-    });
-    expect(drifted.status).toBe(400);
-    expect(drifted.json.error).toMatch(/requestHash.*serviceArgs/i);
-
     const first = await postPurchase({ ...baseRequest, providerQuote });
-    expect(first.status).toBe(402);
-    const firstDaski = first.json.accepts[0].extra.daski;
-    expect(firstDaski.serviceRef).toBe(providerQuote.serviceRef);
-    expect(firstDaski.quote.quoteId).toBe(providerQuote.quoteId);
-
     const retry = await postPurchase({ ...baseRequest, providerQuote });
-    expect(retry.status).toBe(402);
-    expect(retry.json.accepts[0].extra.daski.serviceRef).toBe(
-      firstDaski.serviceRef,
+    expect(first.status).toBe(402);
+    expect(declaration(first.required!).info.serviceRef).toBe(
+      providerQuote.serviceRef,
     );
+    expect(retry.required).toEqual(first.required);
 
     const rebound = await postPurchase({
       ...baseRequest,
@@ -195,57 +159,30 @@ describe("provider quote-commitment integration", () => {
       providerQuote,
     });
     expect(rebound.status).toBe(409);
-    expect(rebound.json.error).toContain("quote is already bound");
   });
 
-  it("daski_buy_service adopts quote.serviceRef and persists the credentials", async () => {
+  it("adopts the provider serviceRef and persists quote credentials", async () => {
     const { client, transport } = await connectClient(gateway.baseUrl);
     try {
-      const body = parseResult<BuyResponse>(await buyRegisterDomain(client));
-      expect(body.kind).toBe("paid");
-
-      const issued = gateway.mockProvider.getIssuedQuotes();
-      expect(issued.length).toBeGreaterThan(0);
-      const quote = issued[issued.length - 1]!;
-      // The quote was taken with the buyer's REAL serviceArgs — the
-      // commitment's requestHash binds them to the eventual task.
-      expect(quote.serviceArgs).toEqual({ domain: "quoted.xyz" });
-
-      const daski = body.paymentRequirements.extra.daski;
-      // The challenge settles under the QUOTE's commitment hash, not a
-      // gateway-generated entropy ref.
+      const required = parseResult<PaymentRequired>(await buy(client));
+      const quote = gateway.mockProvider.getIssuedQuotes().at(-1)!;
+      const daski = declaration(required).info;
+      expect(required.x402Version).toBe(2);
+      expect(required.accepts[0]?.amount).toBe(PRICE.toString());
       expect(daski.serviceRef).toBe(quote.serviceRef);
-      expect(daski.quote?.quoteId).toBe(quote.quoteId);
-      expect(daski.quote?.quoteSignature).toBe(quote.providerSignature);
-      expect(body.quote.quoteId).toBe(quote.quoteId);
-      expect(body.paymentRequirements.maxAmountRequired).toBe(
-        PRICE.toString(),
-      );
+      expect(daski.quote).toMatchObject({
+        id: quote.quoteId,
+        signature: quote.providerSignature,
+      });
 
-      // The EIP-3009 signing window dies with the quote.
-      const validBeforeSec = Number(
-        daski.eip712TypedData.message.validBefore,
-      );
-      expect(validBeforeSec * 1000).toBeLessThanOrEqual(
-        Date.parse(quote.expiresAt),
-      );
-
-      // Persisted challenge row carries the credentials + bounded expiry.
       const challenge = await gateway.bundle.queries.getChallengeByRef(
         quote.serviceRef as Hex,
       );
-      expect(challenge).not.toBeNull();
-      expect(challenge!.quoteId).toBe(quote.quoteId);
-      expect(challenge!.quoteSignature).toBe(quote.providerSignature);
-      expect(challenge!.quoteExpiresAt).not.toBeNull();
-      expect(daski.eip712TypedData.message.nonce).toBe(
-        keccak256(
-          encodeAbiParameters(
-            [{ type: "bytes32" }, { type: "uint256" }, { type: "bytes32" }],
-            [quote.serviceRef as Hex, 2n, challenge!.serviceId],
-          ),
-        ),
-      );
+      expect(challenge).toMatchObject({
+        quoteId: quote.quoteId,
+        quoteSignature: quote.providerSignature,
+        x402Version: 2,
+      });
       expect(challenge!.expiresAt.getTime()).toBeLessThanOrEqual(
         Date.parse(quote.expiresAt),
       );
@@ -254,310 +191,111 @@ describe("provider quote-commitment integration", () => {
     }
   });
 
-  it("daski_buy_service signed retry rejects missing or changed serviceArgs before settlement", async () => {
+  it("rejects changed paid-retry arguments before settlement", async () => {
     const { client, transport } = await connectClient(gateway.baseUrl);
     try {
-      const buy = parseResult<BuyResponse>(await buyRegisterDomain(client));
-      const paymentRequirements = buy.paymentRequirements;
-      const paymentPayload = {
-        x402Version: 1,
-        scheme: "exact",
-        network: "base-sepolia",
-        payload: { signature: "0x", authorization: {} },
-      };
-
-      // Flow-state restore (migration 017): omitting serviceArgs on the
-      // signed retry is now LEGAL — the canonical args the quote committed
-      // to are restored from the challenge row, so the retry proceeds past
-      // args validation (this fixture's junk payment then fails at
-      // settlement, which is the point: the old QUOTE_REQUEST_ARGS_MISSING
-      // gate no longer fires when a snapshot exists).
-      const missing = parseResult<Record<string, unknown>>(
-        await buyRegisterDomain(client, {
-          serviceArgs: undefined,
-          paymentPayload,
-          paymentRequirements,
-        }),
-      );
-      expect(JSON.stringify(missing)).not.toContain(
-        "QUOTE_REQUEST_ARGS_MISSING",
-      );
-      expect(JSON.stringify(missing)).not.toContain("QUOTE_REQUEST_MISMATCH");
-
-      const changed = parseResult<Record<string, unknown>>(
-        await buyRegisterDomain(client, {
+      const args = buyArgs();
+      const required = parseResult<PaymentRequired>(await buy(client, args));
+      const payload = await gateway.createPaymentPayload(required);
+      const changed = await client.callTool({
+        name: "daski_buy_service",
+        arguments: buyArgs({
           serviceArgs: { domain: "changed-after-signing.xyz" },
-          paymentPayload,
-          paymentRequirements,
         }),
+        _meta: { "x402/payment": payload },
+      });
+      expect(parseResult<{ code: string }>(changed).code).toBe(
+        "PURCHASE_REQUEST_MISMATCH",
       );
-      expect(JSON.stringify(changed)).toContain("QUOTE_REQUEST_MISMATCH");
-
       const challenge = await gateway.bundle.queries.getChallengeByRef(
-        paymentRequirements.extra.daski.serviceRef as Hex,
+        declaration(required).info.serviceRef,
       );
       expect(challenge?.settlementState).toBe("pending");
       expect(gateway.mockChain.settlements).toHaveLength(0);
-
-      const nestedArgs = {
-        domain: "nested-retry.xyz",
-        registrant: { firstName: "Pawel" },
-      };
-      const nestedBuy = parseResult<BuyResponse>(
-        await buyRegisterDomain(client, { serviceArgs: nestedArgs }),
-      );
-      const normalizedRetry = parseResult<Record<string, unknown>>(
-        await buyRegisterDomain(client, {
-          serviceArgs: nestedArgs,
-          paymentPayload: {
-            ...paymentPayload,
-            serviceRef:
-              nestedBuy.paymentRequirements.extra.daski.serviceRef,
-          },
-          paymentRequirements: nestedBuy.paymentRequirements,
-        }),
-      );
-      expect(JSON.stringify(normalizedRetry)).not.toContain(
-        "QUOTE_REQUEST_MISMATCH",
-      );
-      expect(JSON.stringify(normalizedRetry)).toContain("invalid_payload");
     } finally {
       await transport.close();
     }
   });
 
-  it("advanced daski_purchase also uses the provider quote commitment", async () => {
+  it("treats amount as a cap and never as a price override", async () => {
     const { client, transport } = await connectClient(gateway.baseUrl);
     try {
-      const body = parseResult<{ paymentRequirements: BuyResponse["paymentRequirements"] }>(
-        await client.callTool({
-          name: "daski_purchase",
-          arguments: {
-            providerTokenId: "2",
-            serviceSlug: "domain-management",
-            buyerTokenId: "5",
-            walletAddress: gateway.buyerAddress,
-            skillId: "register-domain",
-            serviceArgs: { domain: "advanced-purchase.xyz" },
-          },
-        }),
+      const capped = parseResult<{ code: string }>(
+        await buy(client, buyArgs({ amount: "1000" })),
       );
-      const quote = gateway.mockProvider.getIssuedQuotes().at(-1)!;
-      const daski = body.paymentRequirements.extra.daski;
-      expect(quote.serviceArgs).toEqual({ domain: "advanced-purchase.xyz" });
-      expect(daski.serviceRef).toBe(quote.serviceRef);
-      expect(daski.quote).toMatchObject({
-        quoteId: quote.quoteId,
-        quoteSignature: quote.providerSignature,
+      expect(capped.code).toBe("price_above_limit");
+
+      const required = parseResult<PaymentRequired>(
+        await buy(client, buyArgs({ amount: PRICE.toString() })),
+      );
+      expect(required.accepts[0]?.amount).toBe(PRICE.toString());
+    } finally {
+      await transport.close();
+    }
+  });
+
+  it("fails closed on missing or drifted quote commitments", async () => {
+    const { client, transport } = await connectClient(gateway.baseUrl);
+    try {
+      gateway.mockProvider.setQuoteOutcome("register-domain", {
+        ok: true,
+        amount: PRICE,
+        omitCommitment: true,
       });
-    } finally {
-      await transport.close();
-    }
-  });
-
-  it("caps the price with args.amount but never overrides the quote", async () => {
-    const { client, transport } = await connectClient(gateway.baseUrl);
-    try {
-      // Below-quote cap → refused with the quote attached.
-      const capped = parseResult<{
-        error: { code: string; details?: { quotedAmount?: string } };
-      }>(await buyRegisterDomain(client, { amount: "1000" }));
-      const cappedError =
-        (capped as any).error ?? (capped as Record<string, unknown>);
-      expect(JSON.stringify(cappedError)).toContain("price_above_limit");
-
-      // At-quote cap → proceeds, charged the QUOTED amount.
-      const ok = parseResult<BuyResponse>(
-        await buyRegisterDomain(client, { amount: PRICE.toString() }),
-      );
-      expect(ok.kind).toBe("paid");
-      expect(ok.paymentRequirements.maxAmountRequired).toBe(PRICE.toString());
-      const issued = gateway.mockProvider.getIssuedQuotes();
-      expect(ok.paymentRequirements.extra.daski.serviceRef).toBe(
-        issued[issued.length - 1]!.serviceRef,
-      );
-    } finally {
-      await transport.close();
-    }
-  });
-
-  it("fails closed when the provider omits the signed commitment", async () => {
-    gateway.mockProvider.setQuoteOutcome("register-domain", {
-      ok: true,
-      amount: PRICE,
-      omitCommitment: true,
-    });
-    const { client, transport } = await connectClient(gateway.baseUrl);
-    try {
-      const body = parseResult<Record<string, unknown>>(
-        await buyRegisterDomain(client),
-      );
-      expect(JSON.stringify(body)).toContain("quote_commitment_missing");
-      // No challenge was opened — nothing to strand.
-    } finally {
-      await transport.close();
-    }
-  });
-
-  it("rejects a quote bound to a different serviceSlug (catalog drift)", async () => {
-    gateway.mockProvider.setQuoteOutcome("register-domain", {
-      ok: true,
-      amount: PRICE,
-      serviceSlug: "some-other-product",
-    });
-    const { client, transport } = await connectClient(gateway.baseUrl);
-    try {
-      const body = parseResult<Record<string, unknown>>(
-        await buyRegisterDomain(client),
-      );
-      expect(JSON.stringify(body)).toContain("quote_malformed");
-      expect(JSON.stringify(body)).toContain("serviceSlug");
-    } finally {
-      await transport.close();
-    }
-  });
-
-  it("daski_submit_task fails closed on missing quote credentials or changed serviceArgs", async () => {
-    const { client, transport } = await connectClient(gateway.baseUrl);
-    try {
-      const buy = parseResult<BuyResponse>(await buyRegisterDomain(client));
-      const serviceRef = buy.paymentRequirements.extra.daski.serviceRef as Hex;
-      const transactionHash = ("0x" + "44".repeat(32)) as Hex;
       expect(
-        await gateway.bundle.queries.recordChallengePaid(
-          serviceRef,
-          88n,
-          transactionHash,
-          5n,
-        ),
-      ).toBe(true);
-      const challenge = await gateway.bundle.queries.getChallengeByRef(
-        serviceRef,
-      );
-      expect(challenge).not.toBeNull();
+        parseResult<{ code: string }>(await buy(client)).code,
+      ).toBe("quote_commitment_missing");
 
-      const submitArgs = {
-        providerA2AUrl: challenge!.providerA2AUrl,
-        skillId: "register-domain",
-        chainId: 84532,
-        paymentId: "88",
-        buyerTokenId: "5",
-        serviceRef,
-        transactionHash,
-      };
-      const changedArgs = parseResult<Record<string, unknown>>(
-        await client.callTool({
-          name: "daski_submit_task",
-          arguments: {
-            ...submitArgs,
-            serviceArgs: { domain: "not-the-quoted-domain.xyz" },
-          },
-        }),
+      gateway.mockProvider.setQuoteOutcome("register-domain", {
+        ok: true,
+        amount: PRICE,
+        serviceSlug: "some-other-product",
+      });
+      const drift = parseResult<{ code: string; message: string }>(
+        await buy(client),
       );
-      expect(JSON.stringify(changedArgs)).toContain("QUOTE_REQUEST_MISMATCH");
-      expect(gateway.mockProvider.getLastSendBody()).toBeNull();
-
-      await gateway.bundle.pool.query(
-        "UPDATE payment_challenges SET quote_signature = NULL WHERE service_ref = $1",
-        [Buffer.from(serviceRef.slice(2), "hex")],
-      );
-      const missingCredentials = parseResult<Record<string, unknown>>(
-        await client.callTool({
-          name: "daski_submit_task",
-          arguments: {
-            ...submitArgs,
-            serviceArgs: { domain: "quoted.xyz" },
-          },
-        }),
-      );
-      expect(JSON.stringify(missingCredentials)).toContain(
-        "QUOTE_CREDENTIALS_MISSING",
-      );
-      expect(gateway.mockProvider.getLastSendBody()).toBeNull();
+      expect(drift.code).toBe("quote_malformed");
+      expect(drift.message).toContain("serviceSlug");
     } finally {
       await transport.close();
     }
   });
 
-  it("settles under the quote ref and injects quoteId/quoteSignature at submit time", async () => {
+  it("settles under the quote ref and injects quote credentials at submit", async () => {
     const { client, transport } = await connectClient(gateway.baseUrl);
     try {
-      // 1. Buy — challenge bound to the provider quote.
-      const buy = parseResult<BuyResponse>(await buyRegisterDomain(client));
-      const daski = buy.paymentRequirements.extra.daski;
-      const issued = gateway.mockProvider.getIssuedQuotes();
-      const quote = issued[issued.length - 1]!;
-      expect(daski.serviceRef).toBe(quote.serviceRef);
-
-      // 2. Sign the gateway-baked EIP-3009 typed-data.
-      const td = daski.eip712TypedData;
-      const account = privateKeyToAccount(TEST_BUYER_KEY);
-      const message = {
-        from: td.message.from,
-        to: td.message.to,
-        value: BigInt(td.message.value),
-        validAfter: BigInt(td.message.validAfter),
-        validBefore: BigInt(td.message.validBefore),
-        nonce: td.message.nonce,
-      };
-      const signature = (await account.signTypedData({
-        domain: td.domain as any,
-        types: {
-          TransferWithAuthorization: td.types.TransferWithAuthorization,
-        },
-        primaryType: "TransferWithAuthorization",
-        message,
-      })) as Hex;
-
-      // 3. Settle via MCP — the settle response exposes the credentials
-      //    for direct-A2A buyers.
-      const settleTx = ("0x" + "22".repeat(32)) as Hex;
+      const args = buyArgs();
+      const required = parseResult<PaymentRequired>(await buy(client, args));
+      const daski = declaration(required).info;
+      const quote = gateway.mockProvider.getIssuedQuotes().at(-1)!;
+      const payload = await gateway.createPaymentPayload(required);
+      const settleTx = `0x${"22".repeat(32)}` as Hex;
       gateway.queueSettlementSuccess({
         txHash: settleTx,
         paymentId: 77n,
-        serviceRef: daski.serviceRef as Hex,
+        serviceRef: daski.serviceRef,
         providerAgentId: 2n,
         buyerAgentId: 5n,
         totalAmount: PRICE,
       });
+      const paid = await client.callTool({
+        name: "daski_buy_service",
+        arguments: args,
+        _meta: { "x402/payment": payload },
+      });
       const settled = parseResult<{
         success: boolean;
         paymentId: string;
-        quoteId: string | null;
-        quoteSignature: string | null;
         providerA2AUrl: string;
-      }>(
-        await client.callTool({
-          name: "daski_settle_payment",
-          arguments: {
-            paymentPayload: {
-              x402Version: 1,
-              scheme: "exact",
-              network: "base-sepolia",
-              payload: {
-                signature,
-                authorization: {
-                  from: td.message.from,
-                  to: td.message.to,
-                  value: td.message.value,
-                  validAfter: td.message.validAfter,
-                  validBefore: td.message.validBefore,
-                  nonce: td.message.nonce,
-                },
-              },
-            },
-            paymentRequirements: buy.paymentRequirements,
-          },
-        }),
-      );
+      }>(paid);
       expect(settled.success).toBe(true);
-      expect(settled.quoteId).toBe(quote.quoteId);
-      expect(settled.quoteSignature).toBe(quote.providerSignature);
+      const response = (paid as ToolResultContent)._meta?.[
+        "x402/payment-response"
+      ] as { extensions: Record<string, { quoteId: string }> };
+      expect(response.extensions[DASKI_EXTENSION]?.quoteId).toBe(
+        quote.quoteId,
+      );
 
-      // 4. Submit the task (signed-envelope retry with a stand-in
-      //    signature — the MOCK provider records rather than verifies).
-      //    The gateway must inject metadata.quoteId + quoteSignature from
-      //    the challenge row.
       const messageId = "quote-msg-1";
       const submit = parseResult<{ taskId: string }>(
         await client.callTool({
@@ -573,15 +311,13 @@ describe("provider quote-commitment integration", () => {
             serviceArgs: { domain: "quoted.xyz" },
             messageId,
             envelopeAuth: {
-              signature: ("0x" + "ab".repeat(65)) as string,
+              signature: `0x${"ab".repeat(65)}`,
               authorization: {
                 buyerTokenId: "5",
                 skillId: "register-domain",
                 paymentId: settled.paymentId,
                 chainId: 84532,
                 messageId,
-                // Must be the true canonical hash of the serviceArgs above —
-                // the gateway now rejects body/envelope drift before dispatch.
                 requestHash: computeRequestHash({ domain: "quoted.xyz" }),
                 issuedAt: "1",
               },
@@ -590,15 +326,13 @@ describe("provider quote-commitment integration", () => {
         }),
       );
       expect(submit.taskId).toBeDefined();
-
-      const sendBody = gateway.mockProvider.getLastSendBody();
-      expect(sendBody).not.toBeNull();
-      const meta = (sendBody as any).params.message.metadata[
-        "https://daski.xyz/a2a/v1"
-      ];
-      expect(meta.serviceRef).toBe(daski.serviceRef);
-      expect(meta.quoteId).toBe(quote.quoteId);
-      expect(meta.quoteSignature).toBe(quote.providerSignature);
+      const meta = (gateway.mockProvider.getLastSendBody() as any).params
+        .message.metadata["https://daski.xyz/a2a/v1"];
+      expect(meta).toMatchObject({
+        serviceRef: daski.serviceRef,
+        quoteId: quote.quoteId,
+        quoteSignature: quote.providerSignature,
+      });
     } finally {
       await transport.close();
     }

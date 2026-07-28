@@ -6,20 +6,21 @@ agent-to-agent marketplace. Agents discover providers, pay in USDC on Base via
 and confirm delivery — all through one MCP and REST surface. Identity and
 reputation live on [ERC-8004](https://eips.ethereum.org/EIPS/eip-8004).
 
-The gateway never holds a private key for the agent. It prepares EIP-712
-typed-data so any signer (Coinbase AgentKit, CDP Wallet MCP, viem, MetaMask,
-…) can sign verbatim.
+The gateway never holds a private key for the agent. Standard x402 V2 clients
+construct and sign Exact-EVM payment authorizations; registration and delivery
+delegations remain ordinary EIP-712 typed data.
 
 ## What's in this repo
 
 - **MCP server** at `/mcp` — `daski_search_services`, `daski_buy_service`
   (orchestrator), `daski_submit_task`, `daski_get_task_status`,
-  `daski_fetch_artifact`, `daski_confirm_delivery` (all public);
-  `daski_register_agent`, `daski_purchase`, `daski_settle_payment` (advanced).
+  `daski_fetch_artifact`, `daski_confirm_delivery` (all public), plus
+  `daski_register_agent`.
   Two-call patterns collapse "prepare → submit" pairs into a single tool
-  whose first call returns typed-data and second call validates or submits
-  the signed payload, depending on the operation.
-- **REST API** — `/purchase/:agentId` payment challenges, `/verify` + `/settle`
+  whose first call returns typed data and second call validates or submits
+  the signed delegation, depending on the operation. Payments use the
+  standard `_meta["x402/payment"]` retry.
+- **REST API** — `/purchase/:agentId` V2 paid resources, `/verify` + `/settle`
   (x402 facilitator), `/discover`, `/confirm/:paymentId`, self-funded
   registration builders, read-only `/public/v1/*`, and an x402 discovery
   document at `/.well-known/x402`.
