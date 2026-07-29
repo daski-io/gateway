@@ -12,6 +12,7 @@ interface RefreshSchedulerOptions {
 export class DiscoveryRefreshScheduler {
   private timer: NodeJS.Timeout | null = null;
   private running = false;
+  private active: Promise<void> | null = null;
   private fastRetryDelayMs = FAST_RETRY_BASE_MS;
 
   constructor(private readonly options: RefreshSchedulerOptions) {}
@@ -22,10 +23,11 @@ export class DiscoveryRefreshScheduler {
     this.scheduleNext();
   }
 
-  stop(): void {
+  async stopAndDrain(): Promise<void> {
     this.running = false;
     if (this.timer) clearTimeout(this.timer);
     this.timer = null;
+    await this.active;
   }
 
   private scheduleNext(): void {
@@ -41,14 +43,18 @@ export class DiscoveryRefreshScheduler {
       this.fastRetryDelayMs = FAST_RETRY_BASE_MS;
     }
     this.timer = setTimeout(() => {
-      void this.options
+      const operation = this.options
         .refresh()
         .catch((error) => {
           this.options.logger.error(
             `[cache] refresh threw: ${(error as Error).message}`,
           );
         })
-        .finally(() => this.scheduleNext());
+        .finally(() => {
+          if (this.active === operation) this.active = null;
+          this.scheduleNext();
+        });
+      this.active = operation;
     }, delayMs);
   }
 }

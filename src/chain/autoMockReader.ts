@@ -25,7 +25,6 @@ import type {
   PreparedFeedbackTransaction,
   PaymentRouterRecord,
   PaymentSettledEvent,
-  PaymentSettledEventLog,
   ProviderReputation,
   ReputationRecord,
   ServiceReputation,
@@ -154,8 +153,8 @@ export class AutoMockChainReader implements ChainReader {
     return 0n;
   }
 
-  async verifySanctionsReadiness(): Promise<boolean> {
-    return true;
+  async verifyDeploymentReadiness() {
+    return { ready: true, failedCheck: null };
   }
 
   async authorizationUsed(authorizer: Hex, nonce: Hex): Promise<boolean> {
@@ -406,10 +405,10 @@ export class AutoMockChainReader implements ChainReader {
     return result;
   }
 
-  async getPaymentSettledEvents(
+  async getChainProjectionEvents(
     _from: bigint,
     _to: bigint,
-  ): Promise<PaymentSettledEventLog[]> {
+  ) {
     return [];
   }
 }

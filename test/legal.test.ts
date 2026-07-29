@@ -3,6 +3,8 @@ import {
   BASE_MAINNET_SANCTIONS_ORACLE,
   loadConfig,
 } from "../src/config.js";
+import { AutoMockChainReader } from "../src/chain/autoMockReader.js";
+import { createConfiguredChainReader } from "../src/chain/configuredReader.js";
 import { validateProviderLegalReachability } from "../src/legal/onboarding.js";
 import {
   AGENT_AUTHORITY,
@@ -30,6 +32,8 @@ const VALID_CONFIG_ENV: NodeJS.ProcessEnv = {
   PROVIDER_REGISTRY_ADDRESS: "0x0000000000000000000000000000000000000003",
   SERVICE_REGISTRY_ADDRESS: "0x0000000000000000000000000000000000000004",
   PAYMENT_ROUTER_ADDRESS: "0x0000000000000000000000000000000000000005",
+  REPUTATION_STORAGE_ADDRESS: "0x0000000000000000000000000000000000000009",
+  CHAIN_INDEXER_START_BLOCK: "0",
   SANCTIONS_ORACLE_ADDRESS: "0x0000000000000000000000000000000000000008",
   SANCTIONS_ORACLE_MODE: "mock",
   X402_ADAPTER_ADDRESS: "0x0000000000000000000000000000000000000006",
@@ -54,6 +58,10 @@ describe("startup configuration validation", () => {
       CHAIN_ID: "8453",
       SANCTIONS_ORACLE_ADDRESS: BASE_MAINNET_SANCTIONS_ORACLE,
       SANCTIONS_ORACLE_MODE: "production",
+      NODE_ENV: "production",
+      TRUST_PROXY: "1",
+      PUBLIC_URL: "https://gateway.example",
+      BASE_RPC_URL: "https://rpc.example",
     };
 
     expect(() => loadConfig(mainnetEnv)).toThrow(
@@ -63,6 +71,47 @@ describe("startup configuration validation", () => {
       loadConfig({ ...mainnetEnv, WHITELISTED_AGENT_IDS: "1" })
         .whitelistedAgentIds,
     ).toEqual([1n]);
+  });
+
+  it("accepts only live production Mainnet and selects the live reader", () => {
+    const mainnet = {
+      ...VALID_CONFIG_ENV,
+      CHAIN_ID: "8453",
+      NODE_ENV: "production",
+      CHAIN_MODE: "live",
+      TRUST_PROXY: "1",
+      PUBLIC_URL: "https://gateway.example",
+      BASE_RPC_URL: "https://rpc.example",
+      SANCTIONS_ORACLE_ADDRESS: BASE_MAINNET_SANCTIONS_ORACLE,
+      SANCTIONS_ORACLE_MODE: "production",
+      WHITELISTED_AGENT_IDS: "1",
+    };
+    expect(() =>
+      loadConfig({ ...mainnet, NODE_ENV: "development" }),
+    ).toThrow(/Base mainnet requires NODE_ENV=production/);
+    expect(() => loadConfig({ ...mainnet, CHAIN_MODE: "mock" })).toThrow(
+      /CHAIN_MODE=mock/,
+    );
+
+    const config = loadConfig(mainnet);
+    expect(createConfiguredChainReader(config)).not.toBeInstanceOf(
+      AutoMockChainReader,
+    );
+  });
+
+  it("requires projection configuration in live mode", () => {
+    expect(() =>
+      loadConfig({
+        ...VALID_CONFIG_ENV,
+        REPUTATION_STORAGE_ADDRESS: undefined,
+      }),
+    ).toThrow(/REPUTATION_STORAGE_ADDRESS/);
+    expect(() =>
+      loadConfig({
+        ...VALID_CONFIG_ENV,
+        CHAIN_INDEXER_START_BLOCK: undefined,
+      }),
+    ).toThrow(/CHAIN_INDEXER_START_BLOCK/);
   });
 
   it("rejects malformed numeric and path settings", () => {

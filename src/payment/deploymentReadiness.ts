@@ -1,16 +1,12 @@
 import type { ChainStatusReader } from "../chain/reader.js";
-import type { Config } from "../config.js";
 
-const READINESS_PROBE_ACCOUNT =
-  "0x0000000000000000000000000000000000000000" as const;
-
-export class PaymentScreeningReadinessProbe {
+export class ChainDeploymentReadinessProbe {
   private ready = false;
+  private failedCheck: string | null = "not_checked";
   private validUntil = 0;
   private pending: Promise<boolean> | null = null;
 
   constructor(
-    private readonly config: Config,
     private readonly reader: ChainStatusReader,
     private readonly ttlMs = 2_000,
   ) {}
@@ -27,20 +23,18 @@ export class PaymentScreeningReadinessProbe {
     }
   }
 
+  status() {
+    return { ready: this.ready, failedCheck: this.failedCheck };
+  }
+
   private async check(): Promise<boolean> {
     try {
-      this.ready = await this.reader.verifySanctionsReadiness({
-        oracleAddress: this.config.sanctionsOracleAddress,
-        guardedContracts: [
-          this.config.paymentRouterAddress,
-          this.config.x402AdapterAddress,
-          this.config.agentIndexAddress,
-        ],
-        probeAccount: READINESS_PROBE_ACCOUNT,
-        chainId: this.config.chainId,
-      });
+      const result = await this.reader.verifyDeploymentReadiness();
+      this.ready = result.ready;
+      this.failedCheck = result.failedCheck;
     } catch {
       this.ready = false;
+      this.failedCheck = "rpc_unavailable";
     }
     this.validUntil = Date.now() + this.ttlMs;
     return this.ready;

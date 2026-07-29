@@ -2,11 +2,8 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { startTestGateway, type TestGateway } from "./helpers/setup.js";
 import type { Hex } from "../src/types.js";
 
-// Durable flow state (migration 017): the canonical serviceArgs and
-// acknowledgements persist on the challenge row, and every dispatch
-// leaves a recoverable operation trace. These writes are deliberately
-// best-effort (swallowed) in the request paths, so only a direct test
-// proves the SQL — a broken migration would otherwise pass the suite.
+// Durable flow state: canonical serviceArgs are written atomically with the
+// challenge, and every dispatch leaves a recoverable operation trace.
 
 const REF = ("0x" + "ab".repeat(32)) as Hex;
 const SERVICE_ID = ("0x" + "cd".repeat(32)) as Hex;
@@ -22,7 +19,12 @@ describe("tier 2 durable flow state", () => {
     await gw.close();
   });
 
-  it("stores and restores the flow snapshot on the challenge row", async () => {
+  it("stores and restores service arguments with the challenge", async () => {
+    const serviceArgs = {
+      domain: "example.xyz",
+      years: 1,
+      registrantPhone: "+15125550142",
+    };
     await gw.bundle.queries.insertChallenge({
       serviceRef: REF,
       providerTokenId: 1n,
@@ -35,24 +37,13 @@ describe("tier 2 durable flow state", () => {
       providerA2AUrl: "https://provider.example/a2a",
       walletAddress: WALLET,
       expiresAt: new Date(Date.now() + 60_000),
-    });
-    const serviceArgs = {
-      domain: "example.xyz",
-      years: 1,
-      registrantPhone: "+15125550142",
-    };
-    await gw.bundle.queries.recordFlowState(REF, serviceArgs, {
-      phone: { registrantPhone: "+15125550142" },
-      buyerName: "Example Studio LLC",
+      serviceArgs,
     });
     const challenge = await gw.bundle.queries.getChallengeByRef(REF);
     expect(challenge?.serviceArgs).toEqual(serviceArgs);
-    expect(challenge?.acknowledgements).toMatchObject({
-      buyerName: "Example Studio LLC",
-    });
   });
 
-  it("legacy rows read back null serviceArgs and empty acknowledgements", async () => {
+  it("removes the abandoned acknowledgements column", async () => {
     const legacyRef = ("0x" + "ef".repeat(32)) as Hex;
     await gw.bundle.queries.insertChallenge({
       serviceRef: legacyRef,
@@ -66,10 +57,18 @@ describe("tier 2 durable flow state", () => {
       providerA2AUrl: "https://provider.example/a2a",
       walletAddress: WALLET,
       expiresAt: new Date(Date.now() + 60_000),
+      serviceArgs: {},
     });
     const challenge = await gw.bundle.queries.getChallengeByRef(legacyRef);
-    expect(challenge?.serviceArgs).toBeNull();
-    expect(challenge?.acknowledgements).toEqual({});
+    expect(challenge?.serviceArgs).toEqual({});
+    const columns = await gw.bundle.pool.query(
+      `SELECT column_name
+         FROM information_schema.columns
+        WHERE table_schema = current_schema()
+          AND table_name = 'payment_challenges'
+          AND column_name = 'acknowledgements'`,
+    );
+    expect(columns.rows).toHaveLength(0);
   });
 
   it("records and completes the operation trace", async () => {

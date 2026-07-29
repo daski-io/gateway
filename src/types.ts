@@ -139,6 +139,7 @@ export interface DaskiX402Info {
     expiresAt: string;
   };
   settlementMode: "settle-only" | "register-and-settle";
+  warnings?: string[];
 }
 
 export interface DaskiX402Declaration {

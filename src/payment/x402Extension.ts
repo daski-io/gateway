@@ -102,6 +102,10 @@ function declarationInfoSchema(): Record<string, unknown> {
       settlementMode: {
         enum: ["settle-only", "register-and-settle"],
       },
+      warnings: {
+        type: "array",
+        items: { type: "string" },
+      },
     },
     additionalProperties: true,
   };

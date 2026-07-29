@@ -36,6 +36,7 @@ export function createPaymentChallengeQueries(pool: Pool) {
       resourceUrl?: string;
       daskiExtension?: DaskiX402Declaration;
       requestFingerprint?: Hex;
+      serviceArgs: Record<string, unknown>;
       registrationDelegation?: StoredChallenge["registrationDelegation"];
     }): Promise<void> {
       await pool.query(
@@ -45,9 +46,11 @@ export function createPaymentChallengeQueries(pool: Pool) {
             provider_a2a_url, wallet_address, expires_at, settlement_state,
             quote_id, quote_signature, quote_expires_at, quote_request_hash,
             x402_version, payment_required, requirements_hash, resource_url,
-            daski_extension, request_fingerprint, registration_delegation)
+            daski_extension, request_fingerprint, registration_delegation,
+            service_args)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'pending',
-                 $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)`,
+                 $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22,
+                 $23)`,
         [
           hexToBytea(challenge.serviceRef),
           challenge.providerTokenId.toString(),
@@ -81,6 +84,7 @@ export function createPaymentChallengeQueries(pool: Pool) {
           challenge.registrationDelegation
             ? JSON.stringify(challenge.registrationDelegation)
             : null,
+          JSON.stringify(challenge.serviceArgs),
         ],
       );
     },
@@ -149,29 +153,6 @@ export function createPaymentChallengeQueries(pool: Pool) {
             SET settle_response = $2
           WHERE service_ref = $1`,
         [hexToBytea(serviceRef), JSON.stringify(response)],
-      );
-    },
-
-    /**
-     * Persists the flow snapshot for a quoted challenge: the canonical
-     * serviceArgs the quote committed to, and any acknowledgements
-     * captured at quote time. Best-effort by design — callers must never
-     * fail a purchase over a snapshot write.
-     */
-    async recordFlowState(
-      serviceRef: Hex,
-      serviceArgs: Record<string, unknown>,
-      acknowledgements: Record<string, unknown>,
-    ): Promise<void> {
-      await pool.query(
-        `UPDATE payment_challenges
-            SET service_args = $2, acknowledgements = $3
-          WHERE service_ref = $1`,
-        [
-          hexToBytea(serviceRef),
-          JSON.stringify(serviceArgs),
-          JSON.stringify(acknowledgements),
-        ],
       );
     },
 

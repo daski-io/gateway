@@ -11,7 +11,7 @@ import type { Queries } from "../db/queries.js";
 import type { DiscoveryCache } from "../discovery/cache.js";
 import type { Hex, PaymentPayload } from "../types.js";
 import { logger } from "../util/logger.js";
-import type { PaymentScreeningReadinessProbe } from "./screeningReadiness.js";
+import type { ChainDeploymentReadinessProbe } from "./deploymentReadiness.js";
 import type { DaskiFacilitatorService } from "./daskiFacilitator.js";
 import { parsePurchaseRequest } from "./purchaseRequest.js";
 import { hashCanonical } from "./requirementResponse.js";
@@ -23,7 +23,7 @@ export interface PurchaseDeps {
   cache: DiscoveryCache;
   queries: Queries;
   reader: ChainReader;
-  screeningReadiness: PaymentScreeningReadinessProbe;
+  deploymentReadiness: ChainDeploymentReadinessProbe;
   facilitator: DaskiFacilitatorService;
   fetchAgentCardFn?: import("../identity/fetch-agent-card.js").FetchAgentCardOptions["fetchFn"];
 }
@@ -102,7 +102,7 @@ async function handlePaidRetry(
   if (
     challenge.settlementState !== "paid" &&
     challenge.settlementState !== "sanctions_rejected" &&
-    !(await deps.screeningReadiness.isReady())
+    !(await deps.deploymentReadiness.isReady())
   ) {
     sendError(res, 503, "Payment cannot be processed right now. Please try again later.");
     return;
@@ -144,7 +144,7 @@ async function handleInitialPurchase(
   body: Record<string, unknown>,
   res: Response,
 ): Promise<void> {
-  if (!(await deps.screeningReadiness.isReady())) {
+  if (!(await deps.deploymentReadiness.isReady())) {
     sendError(res, 503, "Payment cannot be processed right now. Please try again later.");
     return;
   }
@@ -159,6 +159,8 @@ async function handleInitialPurchase(
       resource: `${deps.config.publicUrl}/purchase/${providerTokenId}`,
       walletAddress: parsed.walletAddress,
       providerQuote: parsed.providerQuote,
+      serviceArgs: parsed.serviceArgs,
+      warnings: [],
       requestFingerprint: hashCanonical(body),
       registrationDelegation: parsed.registration,
     },

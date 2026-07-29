@@ -13,9 +13,12 @@ import type { McpWiring } from "./mcp/server.js";
 import { sessionMetrics } from "./mcp/sessionMetrics.js";
 import { ReputationMirrorWorker } from "./reputation/worker.js";
 import { startBackgroundRuntime } from "./runtime/backgroundRuntime.js";
-import { PaymentScreeningReadinessProbe } from "./payment/screeningReadiness.js";
+import { ChainDeploymentReadinessProbe } from "./payment/deploymentReadiness.js";
 import { logErrorWithId } from "./util/errorWrap.js";
 import { logger } from "./util/logger.js";
+import { ApplicationLifecycle } from "./runtime/applicationLifecycle.js";
+
+const ZERO_ADDRESS = `0x${"00".repeat(20)}` as const;
 
 export interface CreateAppOptions {
   config: Config;
@@ -45,8 +48,9 @@ export interface AppBundle {
   settlementReconcileInterval: NodeJS.Timeout | null;
   reputationWorker: ReputationMirrorWorker;
   indexer: ChainEventsIndexer;
-  screeningReadiness: PaymentScreeningReadinessProbe;
-  shutdown(): Promise<void>;
+  deploymentReadiness: ChainDeploymentReadinessProbe;
+  beginShutdown(): void;
+  shutdown(httpClosed?: Promise<void>): Promise<void>;
 }
 
 export async function createApp(options: CreateAppOptions): Promise<AppBundle> {
@@ -56,8 +60,18 @@ export async function createApp(options: CreateAppOptions): Promise<AppBundle> {
   await runMigrations(pool);
   const queries = createQueries(pool);
   const reputationWorker = new ReputationMirrorWorker({ config, reader, queries });
-  const indexer = new ChainEventsIndexer(reader, queries);
-  const screeningReadiness = new PaymentScreeningReadinessProbe(config, reader);
+  const indexer = new ChainEventsIndexer(reader, queries, {
+    chainId: config.chainId,
+    paymentRouterAddress: config.paymentRouterAddress,
+    reputationStorageAddress:
+      config.reputationStorageAddress ?? ZERO_ADDRESS,
+    easAddress: config.easAddress,
+    confirmationSchemaUid: config.easConfirmationSchemaUid,
+    startBlock: config.chainIndexerStartBlock,
+  });
+  await indexer.initialize();
+  const deploymentReadiness = new ChainDeploymentReadinessProbe(reader);
+  const lifecycle = new ApplicationLifecycle();
   const embedder = options.embedder === null ? null : (options.embedder ?? xenovaEmbedder());
   const embeddingSync = embedder ? new CatalogEmbeddingSynchronizer(pool, embedder) : null;
   const cache = new DiscoveryCache({
@@ -73,7 +87,10 @@ export async function createApp(options: CreateAppOptions): Promise<AppBundle> {
     onCatalogChanged: (_oldProviders, newProviders) => embeddingSync?.schedule(newProviders),
     logger,
   });
-  void embedder?.warmup?.().catch((error) => logErrorWithId("embedder.warmup", error));
+  const embedderWarmup =
+    embedder?.warmup?.().catch((error) => {
+      logErrorWithId("embedder.warmup", error);
+    }) ?? Promise.resolve();
   const { app, mcp } = await createGatewayHttp({
     ...options,
     pool,
@@ -83,7 +100,8 @@ export async function createApp(options: CreateAppOptions): Promise<AppBundle> {
     embeddingSync,
     reputationWorker,
     indexer,
-    screeningReadiness,
+    deploymentReadiness,
+    lifecycle,
   });
   const background = startBackgroundRuntime({
     enabled: options.startCacheRefreshLoop !== false,
@@ -95,19 +113,39 @@ export async function createApp(options: CreateAppOptions): Promise<AppBundle> {
     reputationWorker,
   });
 
-  async function shutdown(): Promise<void> {
-    background.stop();
+  let shutdownPromise: Promise<void> | null = null;
+  function shutdown(
+    httpClosed: Promise<void> = Promise.resolve(),
+  ): Promise<void> {
+    if (shutdownPromise) return shutdownPromise;
+    lifecycle.beginShutdown();
+    const backgroundDrain = background.stopAndDrain();
     // Railway redeploys on every main push — without this, every active
     // session's telemetry rollup dies with the process.
     sessionMetrics.stop();
-    await mcp?.close().catch((error) => logErrorWithId("mcp.shutdown", error));
-    // Closing the transport can finish in-flight tool calls. Flush only
-    // after they have had a chance to update their session rollups.
-    sessionMetrics.flushAll();
-    await embeddingSync?.waitForIdle();
-    if (ownsPool) {
-      await pool.end().catch((error) => logErrorWithId("pool.shutdown", error));
-    }
+    const mcpClose = mcp?.close() ?? Promise.resolve();
+    shutdownPromise = (async () => {
+      const drains = await Promise.allSettled([
+        httpClosed,
+        backgroundDrain,
+        mcpClose,
+      ]);
+      // Closing the transport can finish in-flight tool calls. Flush only
+      // after they have had a chance to update their session rollups.
+      sessionMetrics.flushAll();
+      const bootstrap = await Promise.allSettled([
+        embedderWarmup,
+        embeddingSync?.waitForIdle() ?? Promise.resolve(),
+      ]);
+      const poolClose = ownsPool
+        ? await Promise.allSettled([pool.end()])
+        : [];
+      const failure = [...drains, ...bootstrap, ...poolClose].find(
+        (result) => result.status === "rejected",
+      );
+      if (failure?.status === "rejected") throw failure.reason;
+    })();
+    return shutdownPromise;
   }
 
   return {
@@ -121,7 +159,8 @@ export async function createApp(options: CreateAppOptions): Promise<AppBundle> {
     settlementReconcileInterval: background.settlementReconcileInterval,
     reputationWorker,
     indexer,
-    screeningReadiness,
+    deploymentReadiness,
+    beginShutdown: () => lifecycle.beginShutdown(),
     shutdown,
   };
 }

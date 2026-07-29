@@ -77,6 +77,31 @@ describe("x402 V2 HTTP payment resource", () => {
     expect(extension.info.serviceRef).toMatch(/^0x[0-9a-f]{64}$/);
   });
 
+  it("rejects REST self-purchases before challenge persistence", async () => {
+    gateway.mockChain.setAgentOwner(2n, gateway.buyerAddress);
+    const sameAgent = await gateway.purchaseChallenge(2n, {
+      buyerTokenId: "2",
+    });
+    expect(sameAgent.status).toBe(403);
+    expect(sameAgent.json.error).toBe("self_purchase_not_allowed");
+
+    gateway.mockChain.setAgentOwner(
+      5n,
+      gateway.mockProvider.walletAddress,
+    );
+    const sameWallet = await gateway.purchaseChallenge(2n, {
+      buyerTokenId: "5",
+      walletAddress: gateway.mockProvider.walletAddress,
+    });
+    expect(sameWallet.status).toBe(403);
+    expect(sameWallet.json.error).toBe("self_purchase_not_allowed");
+
+    const stored = await gateway.bundle.pool.query<{ count: string }>(
+      "SELECT count(*)::text AS count FROM payment_challenges",
+    );
+    expect(stored.rows[0]?.count).toBe("0");
+  });
+
   it("keeps the encoded challenge below the 8 KiB header budget", async () => {
     const challenge = await gateway.purchaseChallenge(2n, {
       buyerTokenId: "5",

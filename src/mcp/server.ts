@@ -27,7 +27,7 @@ import { registerBuyServiceTool } from "./buyServiceTool.js";
 import { runBuyService } from "./buyServiceWorkflow.js";
 import { runSubmitTask } from "./submitTaskWorkflow.js";
 import { ConcurrencyLimiter } from "./concurrencyLimiter.js";
-import type { PaymentScreeningReadinessProbe } from "../payment/screeningReadiness.js";
+import type { ChainDeploymentReadinessProbe } from "../payment/deploymentReadiness.js";
 import type { DaskiFacilitatorService } from "../payment/daskiFacilitator.js";
 
 // JSON response cap on provider A2A calls. Real responses are <50 KB; 1 MB
@@ -47,7 +47,7 @@ export interface McpDeps {
   cache: DiscoveryCache;
   queries: Queries;
   reader: ChainReader;
-  screeningReadiness: PaymentScreeningReadinessProbe;
+  deploymentReadiness: ChainDeploymentReadinessProbe;
   facilitator: DaskiFacilitatorService;
   reputationWorker: ReputationMirrorWorker;
   pool: import("../db/pool.js").Pool;

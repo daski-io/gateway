@@ -27,6 +27,7 @@ interface ChallengeBinding {
   paymentRequired: PaymentRequired;
   requirementsHash: Hex;
   requestFingerprint: Hex;
+  serviceArgs: Record<string, unknown>;
   daskiExtension: DaskiX402Declaration;
   resourceUrl: string;
   registrationDelegation?: StoredChallenge["registrationDelegation"];
@@ -115,6 +116,7 @@ export async function claimPaymentChallenge(
         daskiExtension: binding.daskiExtension,
         requestFingerprint: binding.requestFingerprint,
         registrationDelegation: binding.registrationDelegation,
+        serviceArgs: binding.serviceArgs,
       });
     } catch (error) {
       if (

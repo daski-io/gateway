@@ -114,22 +114,7 @@ export async function persistSettlementEvent(
     transactionHash,
     buyerAgentId,
   );
-  if (!recorded) return false;
-  await queries.upsertChainEvent({
-    paymentId: event.paymentId,
-    txHash: transactionHash,
-    blockNumber: 0n,
-    serviceId: event.serviceId,
-    buyerAgentId: event.buyerAgentId,
-    providerAgentId: event.providerAgentId,
-    amountAtomic: event.totalAmount,
-    settledAt: new Date(),
-    outcomeCode: null,
-    confirmationCode: 0,
-    fulfillmentSeconds: null,
-    refundedAtomic: 0n,
-  });
-  return true;
+  return recorded;
 }
 
 export function successfulSettlementResult(args: {

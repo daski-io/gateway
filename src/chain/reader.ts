@@ -1,4 +1,7 @@
 import type { Hex, OnChainProvider } from "../types.js";
+import type {
+  ChainProjectionEvent,
+} from "./eventTypes.js";
 
 export interface PaymentSettledEvent {
   paymentId: bigint;
@@ -284,12 +287,10 @@ export interface ConfirmationRelayer {
 
 export interface ChainStatusReader {
   getBlockNumber(): Promise<bigint>;
-  verifySanctionsReadiness(input: {
-    oracleAddress: Hex;
-    guardedContracts: readonly Hex[];
-    probeAccount: Hex;
-    chainId: number;
-  }): Promise<boolean>;
+  verifyDeploymentReadiness(): Promise<{
+    ready: boolean;
+    failedCheck: string | null;
+  }>;
 }
 
 export interface ReputationReader {
@@ -323,10 +324,10 @@ export interface FeedbackWriter {
 }
 
 export interface ChainEventReader {
-  getPaymentSettledEvents(
+  getChainProjectionEvents(
     fromBlock: bigint,
     toBlock: bigint,
-  ): Promise<Array<PaymentSettledEventLog>>;
+  ): Promise<ChainProjectionEvent[]>;
 }
 
 // The composition root supplies one object implementing every capability;
@@ -342,17 +343,6 @@ export interface ChainReader
     ChainEventReader {}
 
 /**
- * One decoded `PaymentSettled` event with the chain-context fields the
- * indexer needs to persist its row. `blockTimestamp` is the block's
- * timestamp (seconds since epoch); callers convert to a Date.
- */
-export interface PaymentSettledEventLog extends PaymentSettledEvent {
-  blockNumber: bigint;
-  blockTimestamp: bigint;
-  transactionHash: Hex;
-}
-
-/**
  * Iterates the ProviderRegistry and returns active providers admitted by the
  * configured whitelist. An empty whitelist admits every active provider.
  * Resolves each provider's ERC-8004 agentURI from the Identity Registry so the
@@ -362,17 +352,24 @@ export async function fetchOnChainProviders(
   reader: ProviderDiscoveryReader,
   whitelist: bigint[],
 ): Promise<OnChainProvider[]> {
-  const count = await reader.getProviderCount();
-  const whitelistSet = new Set(whitelist.map((x) => x.toString()));
-  const restrictToWhitelist = whitelistSet.size > 0;
+  const uniqueWhitelist = [
+    ...new Map(whitelist.map((agentId) => [agentId.toString(), agentId])).values(),
+  ].sort((left, right) => (left < right ? -1 : left > right ? 1 : 0));
+  const agentIds: bigint[] = [];
+  if (uniqueWhitelist.length > 0) {
+    agentIds.push(...uniqueWhitelist);
+  } else {
+    const count = await reader.getProviderCount();
+    for (let index = 0n; index < count; index++) {
+      agentIds.push(await reader.getProviderIdAt(index));
+    }
+  }
   const providers: OnChainProvider[] = [];
 
-  for (let i = 0n; i < count; i++) {
-    const agentId = await reader.getProviderIdAt(i);
+  for (const agentId of agentIds) {
     const provider = await reader.getProvider(agentId);
 
     if (!provider.isActive) continue;
-    if (restrictToWhitelist && !whitelistSet.has(agentId.toString())) continue;
 
     // Read the canonical wallet from the canonical IdentityRegistry. The
     // audit refactor dropped ProviderRegistry's `walletAddress` field
@@ -398,5 +395,7 @@ export async function fetchOnChainProviders(
     });
   }
 
-  return providers;
+  return providers.sort((left, right) =>
+    left.agentId < right.agentId ? -1 : left.agentId > right.agentId ? 1 : 0,
+  );
 }

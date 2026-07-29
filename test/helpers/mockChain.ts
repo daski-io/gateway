@@ -1,5 +1,5 @@
+import type { ChainProjectionEvent } from "../../src/chain/eventTypes.js";
 import { recoverTypedDataAddress } from "viem";
-import type { PaymentSettledEventLog } from "../../src/chain/reader.js";
 import { FeedbackSubmissionError } from "../../src/chain/feedbackErrors.js";
 import {
   ConfirmationSubmitError,
@@ -130,8 +130,14 @@ export class MockChainReader implements ChainReader {
 
   async getProvider(agentId: bigint): Promise<MockProviderEntry> {
     const entry = this.providers.get(agentId.toString());
-    if (!entry) throw new Error(`provider ${agentId} not found`);
-    return entry;
+    return (
+      entry ?? {
+        walletAddress: `0x${"00".repeat(20)}` as Hex,
+        agentId,
+        registrationTime: 0n,
+        isActive: false,
+      }
+    );
   }
 
   async getAgentURI(agentId: bigint): Promise<string> {
@@ -381,8 +387,14 @@ export class MockChainReader implements ChainReader {
     this.sanctionsReady = ready;
   }
 
-  async verifySanctionsReadiness(): Promise<boolean> {
-    return this.sanctionsReady;
+  async verifyDeploymentReadiness(): Promise<{
+    ready: boolean;
+    failedCheck: string | null;
+  }> {
+    return {
+      ready: this.sanctionsReady,
+      failedCheck: this.sanctionsReady ? null : "sanctions_oracle",
+    };
   }
 
   // ── Reputation mock ──────────────────────────────────────────────
@@ -586,23 +598,22 @@ export class MockChainReader implements ChainReader {
     return result;
   }
 
-  private paymentSettledLogs: PaymentSettledEventLog[] = [];
+  private chainProjectionEvents: ChainProjectionEvent[] = [];
 
   /**
-   * Test helper to seed PaymentSettled event logs for the indexer to
-   * consume. Tests call this before the indexer ticks; the indexer
-   * fetches via getPaymentSettledEvents and gets whatever was queued.
+   * Test helper to seed normalized projection events for the indexer.
    */
-  pushPaymentSettledLog(log: PaymentSettledEventLog): void {
-    this.paymentSettledLogs.push(log);
+  pushChainProjectionEvent(event: ChainProjectionEvent): void {
+    this.chainProjectionEvents.push(event);
   }
 
-  async getPaymentSettledEvents(
+  async getChainProjectionEvents(
     fromBlock: bigint,
     toBlock: bigint,
-  ): Promise<PaymentSettledEventLog[]> {
-    return this.paymentSettledLogs.filter(
-      (l) => l.blockNumber >= fromBlock && l.blockNumber <= toBlock,
+  ): Promise<ChainProjectionEvent[]> {
+    return this.chainProjectionEvents.filter(
+      (event) =>
+        event.blockNumber >= fromBlock && event.blockNumber <= toBlock,
     );
   }
 

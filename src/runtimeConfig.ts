@@ -17,6 +17,7 @@ export interface RuntimeConfig {
   discoveryMaxA2AEntries: number;
   discoveryFetchConcurrency: number;
   discoveryRefreshDeadlineMs: number;
+  shutdownGraceMs: number;
   mockProviderWalletAddress: Hex;
   mockProviderAgentId: bigint;
   mockProviderAgentUri: string;
@@ -115,6 +116,11 @@ export function loadRuntimeConfig(env: NodeJS.ProcessEnv): RuntimeConfig {
       "DISCOVERY_REFRESH_DEADLINE_MS",
       env.DISCOVERY_REFRESH_DEADLINE_MS,
       30_000,
+    ),
+    shutdownGraceMs: integer(
+      "SHUTDOWN_GRACE_MS",
+      env.SHUTDOWN_GRACE_MS,
+      25_000,
     ),
     mockProviderWalletAddress: mockWallet(env.MOCK_PROVIDER_WALLET_ADDRESS),
     mockProviderAgentId: bigintValue("MOCK_PROVIDER_AGENT_ID", env.MOCK_PROVIDER_AGENT_ID, "1"),

@@ -86,6 +86,7 @@ async function seedPaidChallenge(
     providerA2AUrl: "http://provider.test/a2a",
     walletAddress: BUYER,
     expiresAt: new Date(Date.now() + 3600_000),
+    serviceArgs: {},
   });
   await gateway.bundle.queries.recordChallengePaid(
     serviceRef,

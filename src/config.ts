@@ -63,6 +63,9 @@ export interface Config extends RuntimeConfig {
   // Writes go through EAS; this stays in config so discovery can read
   // aggregate stats for ranking.
   reputationStorageAddress?: Hex;
+  // Earliest deployment block among PaymentRouter and ReputationStorage.
+  // Live indexing always begins here; mock mode defaults to block zero.
+  chainIndexerStartBlock: bigint;
   usdcAddress: Hex;
   usdcName: string;
   usdcVersion: string;
@@ -134,6 +137,19 @@ function parseAgentIds(raw: string | undefined): bigint[] {
       });
   } catch {
     throw new Error("WHITELISTED_AGENT_IDS must contain unsigned integers");
+  }
+}
+
+function nonNegativeBigInt(name: string, raw: string | undefined): bigint {
+  if (raw === undefined) {
+    throw new Error(`${name} env var is required in live chain mode`);
+  }
+  try {
+    const value = BigInt(raw);
+    if (value < 0n) throw new Error("negative");
+    return value;
+  } catch {
+    throw new Error(`${name} must be a non-negative integer`);
   }
 }
 
@@ -283,6 +299,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   if (chainId === 8453 && oracleMode !== "production") {
     throw new Error("Base mainnet SANCTIONS_ORACLE_MODE must be production");
   }
+  if (chainId === 8453 && runtime.nodeEnv !== "production") {
+    throw new Error("Base mainnet requires NODE_ENV=production");
+  }
+  if (chainId === 8453 && runtime.chainMode !== "live") {
+    throw new Error("Base mainnet requires CHAIN_MODE=live");
+  }
   if (runtime.nodeEnv === "production" && oracleMode === "mock") {
     throw new Error("SANCTIONS_ORACLE_MODE=mock is forbidden in production");
   }
@@ -292,6 +314,25 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       "WHITELISTED_AGENT_IDS must contain at least one agentId on Base mainnet",
     );
   }
+  const reputationStorageAddress = optionalAddress(
+    "REPUTATION_STORAGE_ADDRESS",
+    env.REPUTATION_STORAGE_ADDRESS,
+  );
+  if (runtime.chainMode === "live" && !reputationStorageAddress) {
+    throw new Error("REPUTATION_STORAGE_ADDRESS env var is required in live chain mode");
+  }
+  const chainIndexerStartBlock =
+    runtime.chainMode === "live"
+      ? nonNegativeBigInt(
+          "CHAIN_INDEXER_START_BLOCK",
+          env.CHAIN_INDEXER_START_BLOCK,
+        )
+      : env.CHAIN_INDEXER_START_BLOCK === undefined
+        ? 0n
+        : nonNegativeBigInt(
+            "CHAIN_INDEXER_START_BLOCK",
+            env.CHAIN_INDEXER_START_BLOCK,
+          );
   return {
     ...runtime,
     port,
@@ -347,10 +388,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       "VALIDATION_REGISTRY_ADDRESS",
       env.VALIDATION_REGISTRY_ADDRESS,
     ),
-    reputationStorageAddress: optionalAddress(
-      "REPUTATION_STORAGE_ADDRESS",
-      env.REPUTATION_STORAGE_ADDRESS,
-    ),
+    reputationStorageAddress,
+    chainIndexerStartBlock,
     easAddress: requireAddress(
       "EAS_ADDRESS",
       env.EAS_ADDRESS ?? "0x4200000000000000000000000000000000000021",

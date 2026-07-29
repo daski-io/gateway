@@ -114,7 +114,11 @@ export class DiscoveryCache {
     const oldSnapshot = this.getAll();
     let onChain;
     try {
-      onChain = await fetchOnChainProviders(this.reader, this.whitelist);
+      onChain = await withDeadline(
+        fetchOnChainProviders(this.reader, this.whitelist),
+        deadlineAt,
+        "provider registry discovery timed out",
+      );
     } catch (error) {
       const message = (error as Error).message;
       const wasHealthy = this.lastChainError === null;
@@ -212,8 +216,8 @@ export class DiscoveryCache {
     this.scheduler.start();
   }
 
-  stop(): void {
-    this.scheduler.stop();
+  stopAndDrain(): Promise<void> {
+    return this.scheduler.stopAndDrain();
   }
 
   private hasProviderAwaitingFirstCard(): boolean {
@@ -221,5 +225,25 @@ export class DiscoveryCache {
       this.lastRefresh === null ||
       [...this.cache.values()].some((provider) => provider.cards.length === 0)
     );
+  }
+}
+
+async function withDeadline<T>(
+  operation: Promise<T>,
+  deadlineAt: number,
+  message: string,
+): Promise<T> {
+  const remainingMs = deadlineAt - Date.now();
+  if (remainingMs <= 0) throw new Error(message);
+  let timer: NodeJS.Timeout | null = null;
+  try {
+    return await Promise.race([
+      operation,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error(message)), remainingMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
   }
 }

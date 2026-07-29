@@ -60,7 +60,6 @@ function syntheticChallenge(row: ChainActivityRow): StoredChallenge {
     quoteExpiresAt: null,
     quoteRequestHash: null,
     serviceArgs: null,
-    acknowledgements: {},
     x402Version: null,
     paymentRequired: null,
     requirementsHash: null,
@@ -93,7 +92,7 @@ export function chainRowToSkillEnriched(
     outcomeTimestamp: 0n,
     confirmationTimestamp: 0n,
     outcomeRecorded: row.outcomeCode != null,
-    reputationEligible: true,
+    reputationEligible: row.reputationEligible,
   };
   return {
     challenge: syntheticChallenge(row),

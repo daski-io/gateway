@@ -36,6 +36,8 @@ interface RequirementResponseInput {
   purchaseLegal: PurchaseLegalContext;
   effectiveExpiresAt: Date;
   requestFingerprint: Hex;
+  serviceArgs: Record<string, unknown>;
+  warnings: string[];
   registrationDelegation?: StoredChallenge["registrationDelegation"];
   existingChallenge: StoredChallenge | null;
   now: Date;
@@ -117,6 +119,7 @@ export function buildRequirementResponse(
       input.buyerTokenId === 0n
         ? "register-and-settle"
         : "settle-only",
+    ...(input.warnings.length > 0 ? { warnings: input.warnings } : {}),
   });
   const paymentRequired: PaymentRequired = {
     x402Version: 2,
@@ -156,8 +159,7 @@ export function buildRequirementResponse(
     quoteSignature: input.quote.providerSignature,
     quoteExpiresAt: input.quote.expiresAt,
     quoteRequestHash: input.quote.requestHash,
-    serviceArgs: null,
-    acknowledgements: {},
+    serviceArgs: input.serviceArgs,
     x402Version: 2,
     paymentRequired,
     requirementsHash,

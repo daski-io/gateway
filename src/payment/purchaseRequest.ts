@@ -13,6 +13,7 @@ import { isHexAddress } from "../util/evmValidation.js";
 import type { ProviderQuoteForChallenge } from "./quoteBinding.js";
 import { validateProviderQuoteCommitment } from "./providerQuote.js";
 import { resolveSkillOffer } from "./skillOffer.js";
+import { isSelfPurchase } from "./selfPurchase.js";
 
 interface PurchaseRequestDeps {
   config: Config;
@@ -25,6 +26,7 @@ interface ParsedPurchaseRequest {
   buyerTokenId: bigint;
   walletAddress: Hex;
   skillId: string;
+  serviceArgs: Record<string, unknown>;
   providerQuote: ProviderQuoteForChallenge;
   registration?: { agentURI: string; deadline: string; signature: Hex };
 }
@@ -83,6 +85,21 @@ export async function parsePurchaseRequest(
     );
     return null;
   }
+  if (
+    isSelfPurchase({
+      buyerAgentId: buyerTokenId,
+      buyerWallet: walletAddress,
+      providerAgentId: provider.agentId,
+      providerWallet: provider.walletAddress,
+    })
+  ) {
+    res.status(403).json({
+      x402Version: X402_VERSION,
+      error: "self_purchase_not_allowed",
+      message: "A provider cannot purchase its own service.",
+    });
+    return null;
+  }
   const validation = await validateProviderQuoteCommitment(body.providerQuote, {
     skillId,
     serviceArgs,
@@ -109,6 +126,7 @@ export async function parsePurchaseRequest(
     buyerTokenId,
     walletAddress,
     skillId,
+    serviceArgs,
     registration: registration ?? undefined,
     providerQuote: {
       quoteId: quote.quoteId,

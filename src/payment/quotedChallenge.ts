@@ -14,7 +14,8 @@ import { resolveSkillOffer, type SkillOffer } from "./skillOffer.js";
 import { fetchProviderQuote } from "./providerQuote.js";
 import type { ChainReader } from "../chain/reader.js";
 import { walletControlsAgent } from "../identity/control.js";
-import type { PaymentScreeningReadinessProbe } from "./screeningReadiness.js";
+import type { ChainDeploymentReadinessProbe } from "./deploymentReadiness.js";
+import { isSelfPurchase } from "./selfPurchase.js";
 
 export interface QuotedChallengeInput {
   providerAgentId: bigint;
@@ -23,6 +24,7 @@ export interface QuotedChallengeInput {
   skillId: string;
   serviceSlug: string;
   serviceArgs: Record<string, unknown>;
+  warnings: string[];
   amountLimit?: string;
   requestFingerprint?: Hex;
   registrationDelegation?: StoredChallenge["registrationDelegation"];
@@ -36,7 +38,7 @@ export interface QuotedChallengeDeps {
   fetch: Fetcher;
   timeoutMs: number;
   maxResponseBytes: number;
-  screeningReadiness: PaymentScreeningReadinessProbe;
+  deploymentReadiness: ChainDeploymentReadinessProbe;
 }
 
 export interface QuotedChallengeValue {
@@ -64,7 +66,7 @@ export async function createQuotedChallenge(
   input: QuotedChallengeInput,
   deps: QuotedChallengeDeps,
 ): Promise<QuotedChallengeResult> {
-  if (!(await deps.screeningReadiness.isReady())) {
+  if (!(await deps.deploymentReadiness.isReady())) {
     return {
       ok: false,
       error: {
@@ -79,11 +81,14 @@ export async function createQuotedChallenge(
   if (!provider) {
     return fail("provider_not_found", "provider is not currently admitted");
   }
-  const sameWallet =
-    input.walletAddress.toLowerCase() === provider.walletAddress.toLowerCase();
-  const sameRegisteredAgent =
-    input.buyerAgentId !== 0n && input.buyerAgentId === provider.agentId;
-  if (sameWallet || sameRegisteredAgent) {
+  if (
+    isSelfPurchase({
+      buyerAgentId: input.buyerAgentId,
+      buyerWallet: input.walletAddress,
+      providerAgentId: provider.agentId,
+      providerWallet: provider.walletAddress,
+    })
+  ) {
     return fail(
       "self_purchase_not_allowed",
       "A provider cannot purchase its own service.",
@@ -193,6 +198,8 @@ export async function createQuotedChallenge(
         serviceVersion: quote.serviceVersion,
       },
       requestFingerprint: input.requestFingerprint,
+      serviceArgs: input.serviceArgs,
+      warnings: input.warnings,
       registrationDelegation: input.registrationDelegation,
     },
     deps.config,

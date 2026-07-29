@@ -1,6 +1,6 @@
 import { computeRequestHash } from "../auth/envelope.js";
 import type { Queries } from "../db/queries.js";
-import type { PaymentScreeningReadinessProbe } from "../payment/screeningReadiness.js";
+import type { ChainDeploymentReadinessProbe } from "../payment/deploymentReadiness.js";
 import type { Hex, PaymentPayload } from "../types.js";
 import { hashCanonical } from "../payment/requirementResponse.js";
 import {
@@ -17,7 +17,7 @@ import {
 
 interface RetryDeps {
   queries: Queries;
-  screeningReadiness: PaymentScreeningReadinessProbe;
+  deploymentReadiness: ChainDeploymentReadinessProbe;
   facilitator: import("../payment/daskiFacilitator.js").DaskiFacilitatorService;
 }
 
@@ -77,7 +77,7 @@ export async function runBuyServiceX402Retry(
   if (
     challenge.settlementState !== "paid" &&
     challenge.settlementState !== "sanctions_rejected" &&
-    !(await deps.screeningReadiness.isReady())
+    !(await deps.deploymentReadiness.isReady())
   ) {
     return mcpError({
       code: "payment_screening_unready",

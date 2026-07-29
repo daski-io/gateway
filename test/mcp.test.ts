@@ -335,6 +335,13 @@ describe("hosted MCP — wallet-agnostic surface", () => {
         payTo: gateway.config.x402AdapterAddress,
       });
       expect(body.extensions?.["https://daski.xyz/x402/v2"]).toBeDefined();
+      expect(
+        (
+          body.extensions?.["https://daski.xyz/x402/v2"] as {
+            info?: { warnings?: string[] };
+          }
+        ).info,
+      ).not.toHaveProperty("warnings");
     } finally {
       await transport.close();
     }
@@ -791,6 +798,86 @@ describe("hosted MCP — wallet-agnostic surface", () => {
       expect(body.x402Version).toBe(2);
       expect(body.accepts[0]?.scheme).toBe("daski-exact");
       expect(body).not.toHaveProperty("warnings");
+      const extension = body.extensions?.["https://daski.xyz/x402/v2"] as {
+        info?: { warnings?: string[] };
+      };
+      expect(extension.info?.warnings).toEqual([
+        "`name` was ignored because agentId 5 is already registered.",
+      ]);
+    } finally {
+      await transport.close();
+    }
+  });
+
+  it("stores deterministic paid warnings inside extension info", async () => {
+    const account = privateKeyToAccount(TEST_BUYER_KEY);
+    const deadline = BigInt(Math.floor(Date.now() / 1000) + 600);
+    const agentURI =
+      "data:application/json;base64," +
+      Buffer.from(JSON.stringify({ name: "Acme Buyer" })).toString("base64");
+    const signature = await account.signTypedData({
+      domain: {
+        name: "Daski AgentIndex",
+        version: "1",
+        chainId: gateway.config.chainId,
+        verifyingContract: gateway.config.agentIndexAddress,
+      },
+      types: {
+        RegisterAgent: [
+          { name: "agentURI", type: "string" },
+          { name: "agentWallet", type: "address" },
+          { name: "nonce", type: "uint256" },
+          { name: "deadline", type: "uint256" },
+        ],
+      },
+      primaryType: "RegisterAgent",
+      message: {
+        agentURI,
+        agentWallet: account.address,
+        nonce: 0n,
+        deadline,
+      },
+    });
+    const args = {
+      skillId: "register-domain",
+      providerTokenId: "2",
+      serviceSlug: "domain-management",
+      walletAddress: account.address,
+      name: "Acme Buyer",
+      serviceArgs: {
+        domain: "warnings.xyz",
+        registrantOrganization: "Different Organization",
+        registrantPhone: "+15125550142",
+      },
+      registration: {
+        agentURI,
+        deadline: deadline.toString(),
+        signature,
+      },
+    };
+    const { client, transport } = await connectClient(gateway.baseUrl);
+    try {
+      const first = parseResult<PaymentRequired>(
+        await client.callTool({ name: "daski_buy_service", arguments: args }),
+      );
+      expect(first).not.toHaveProperty("warnings");
+      const extension = first.extensions?.["https://daski.xyz/x402/v2"] as {
+        info?: { warnings?: string[]; serviceRef?: Hex };
+      };
+      expect(extension.info?.warnings).toHaveLength(3);
+      expect(extension.info?.warnings?.[0]).toContain(
+        "Unsupported serviceArgs ignored",
+      );
+      expect(extension.info?.warnings?.[1]).toContain("public WHOIS");
+      expect(extension.info?.warnings?.[2]).toContain(
+        "permanently registers the buyer",
+      );
+
+      const stored = await gateway.bundle.queries.getChallengeByRef(
+        extension.info!.serviceRef!,
+      );
+      expect(stored?.serviceArgs).toEqual(args.serviceArgs);
+      expect(stored?.paymentRequired).toEqual(first);
     } finally {
       await transport.close();
     }

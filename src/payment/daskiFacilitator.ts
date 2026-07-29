@@ -18,7 +18,7 @@ import type { Queries } from "../db/queries.js";
 import type { FetchAgentCardOptions } from "../identity/fetch-agent-card.js";
 import type { Hex } from "../types.js";
 import { logger } from "../util/logger.js";
-import type { PaymentScreeningReadinessProbe } from "./screeningReadiness.js";
+import type { ChainDeploymentReadinessProbe } from "./deploymentReadiness.js";
 import { settleChallenge } from "./settlementCoordinator.js";
 import { verifyPaymentPayload } from "./verifyPayload.js";
 import { getDaskiDeclaration } from "./x402Extension.js";
@@ -28,7 +28,7 @@ export interface DaskiFacilitatorDeps {
   config: Config;
   queries: Queries;
   reader: ChainReader;
-  screeningReadiness: PaymentScreeningReadinessProbe;
+  deploymentReadiness: ChainDeploymentReadinessProbe;
   fetchAgentCardFn?: FetchAgentCardOptions["fetchFn"];
 }
 
@@ -106,7 +106,7 @@ class DaskiExactEvmFacilitator implements SchemeNetworkFacilitator {
     if (
       context.challenge.settlementState !== "paid" &&
       context.challenge.settlementState !== "sanctions_rejected" &&
-      !(await this.deps.screeningReadiness.isReady())
+      !(await this.deps.deploymentReadiness.isReady())
     ) {
       return {
         isValid: false,

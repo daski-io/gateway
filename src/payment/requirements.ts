@@ -53,6 +53,8 @@ export interface IssueParams {
    */
   providerQuote: ProviderQuoteForChallenge;
   requestFingerprint?: Hex;
+  serviceArgs: Record<string, unknown>;
+  warnings: string[];
   registrationDelegation?: StoredChallenge["registrationDelegation"];
 }
 
@@ -227,6 +229,8 @@ export async function issuePaymentRequirements(
     purchaseLegal,
     effectiveExpiresAt: expiresAt,
     requestFingerprint,
+    serviceArgs: params.serviceArgs,
+    warnings: params.warnings,
     registrationDelegation: params.registrationDelegation,
     existingChallenge: null,
     now,
@@ -257,6 +261,7 @@ export async function issuePaymentRequirements(
       daskiExtension: draft.challenge.daskiExtension!,
       resourceUrl: params.resource,
       registrationDelegation: params.registrationDelegation,
+      serviceArgs: params.serviceArgs,
     },
     queries,
     now,
@@ -284,6 +289,8 @@ export async function issuePaymentRequirements(
     purchaseLegal,
     effectiveExpiresAt,
     requestFingerprint,
+    serviceArgs: params.serviceArgs,
+    warnings: params.warnings,
     registrationDelegation: params.registrationDelegation,
     existingChallenge,
     now,

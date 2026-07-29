@@ -188,6 +188,7 @@ export async function startTestGateway(opts: TestGatewayOptions = {}): Promise<T
     discoveryMaxA2AEntries: 16,
     discoveryFetchConcurrency: 4,
     discoveryRefreshDeadlineMs: 30_000,
+    shutdownGraceMs: 25_000,
     mockProviderWalletAddress: "0x1111111111111111111111111111111111111111",
     mockProviderAgentId: 1n,
     mockProviderAgentUri: "http://localhost:4040/.well-known/agent.json",
@@ -226,6 +227,7 @@ export async function startTestGateway(opts: TestGatewayOptions = {}): Promise<T
     easOutcomeSchemaUid: EAS_OUTCOME_SCHEMA_UID,
     ipfsGatewayUrl: "https://ipfs.io/ipfs/",
     ...opts.configOverrides,
+    chainIndexerStartBlock: opts.configOverrides?.chainIndexerStartBlock ?? 0n,
   };
 
   const schemaName = `gw_test_${randomUUID().replace(/-/g, "_")}`;

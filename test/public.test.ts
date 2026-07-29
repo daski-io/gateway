@@ -32,6 +32,7 @@ async function seedPaid(
      * payment_challenges side always uses now() via recordChallengePaid.
      */
     settledAt?: Date;
+    reputationEligible?: boolean | null;
   },
 ): Promise<void> {
   const queries = gateway.bundle.queries;
@@ -55,6 +56,7 @@ async function seedPaid(
     providerA2AUrl: PROVIDER_A2A,
     walletAddress: gateway.buyerAddress,
     expiresAt: new Date(Date.now() + 3600 * 1000),
+    serviceArgs: {},
   });
   const ok = await queries.recordChallengePaid(
     args.serviceRef,
@@ -63,23 +65,27 @@ async function seedPaid(
   );
   if (!ok) throw new Error("recordChallengePaid did not transition the row");
 
-  // Mirror the production indexer: upsert a chain_events row so the
-  // /activity and per-service surfaces (which now read from chain_events
-  // LEFT JOIN payment_challenges) find the seeded transaction.
-  await queries.upsertChainEvent({
-    paymentId: args.paymentId,
-    txHash: args.txHash,
-    blockNumber: 1n,
-    serviceId,
-    buyerAgentId: args.buyerAgentId,
-    providerAgentId: args.providerAgentId,
-    amountAtomic: args.amountAtomic,
-    settledAt: args.settledAt ?? new Date(),
-    outcomeCode: null,
-    confirmationCode: 0,
-    fulfillmentSeconds: null,
-    refundedAtomic: 0n,
-  });
+  // Insert an authoritative projection fixture. Production writes this row
+  // only through ChainEventsIndexer; this helper deliberately bypasses the
+  // cursor so public-route tests can seed independent histories.
+  await gateway.bundle.pool.query(
+    `INSERT INTO chain_events
+       (payment_id, tx_hash, block_number, service_id, buyer_agent_id,
+        provider_agent_id, amount_atomic, settled_at, reputation_eligible)
+     VALUES ($1, $2, 1, $3, $4, $5, $6, $7, $8)`,
+    [
+      args.paymentId.toString(),
+      Buffer.from(args.txHash.slice(2), "hex"),
+      Buffer.from(serviceId.slice(2), "hex"),
+      args.buyerAgentId.toString(),
+      args.providerAgentId.toString(),
+      args.amountAtomic.toString(),
+      args.settledAt ?? new Date(),
+      args.reputationEligible === undefined
+        ? true
+        : args.reputationEligible,
+    ],
+  );
 }
 
 /**
@@ -115,7 +121,7 @@ async function patchChainEvent(
     refundedAtomic?: bigint;
   },
 ): Promise<void> {
-  const sets: string[] = ["last_refreshed_at = now()"];
+  const sets: string[] = [];
   const args: unknown[] = [];
   let i = 1;
   if ("outcome" in patch) {
@@ -900,6 +906,11 @@ describe("public v1 — /activity", () => {
       "0xcafe000000000000000000000000000000000000000000000000000000000abc" as Hex;
     const txHash =
       "0xdead000000000000000000000000000000000000000000000000000000000abc" as Hex;
+    const provider = gateway.bundle.cache.get(1n);
+    const serviceId = provider
+      ? derivePrimaryServiceId(provider)?.serviceId
+      : null;
+    if (!serviceId) throw new Error("test provider has no primary service");
     gateway.mockChain.queueConfirmation({
       kind: "success",
       txHash,
@@ -908,8 +919,8 @@ describe("public v1 — /activity", () => {
     // /confirm reads the router record for the resolver-required recipient.
     gateway.mockChain.setPaymentRecord(203n, {
       buyerAgentId: 7n,
-      providerAgentId: 2n,
-      serviceId: ("0x" + "cd".repeat(32)) as Hex,
+      providerAgentId: 1n,
+      serviceId,
       token: "0x000000000000000000000000000000000000a003" as Hex,
       amount: 1_000_000n,
       cachedBuyerWallet: "0x000000000000000000000000000000000000b001" as Hex,
@@ -935,6 +946,21 @@ describe("public v1 — /activity", () => {
       }),
     });
     expect(confirmRes.status).toBe(200);
+
+    gateway.mockChain.pushChainProjectionEvent({
+      kind: "confirmation_submitted",
+      paymentId: 203n,
+      providerAgentId: 1n,
+      buyerAgentId: 5n,
+      serviceId,
+      confirmationCode: 1,
+      attestationUid,
+      blockNumber: 1n,
+      transactionIndex: 0,
+      logIndex: 0,
+    });
+    gateway.mockChain.setBlockNumber(20n);
+    await gateway.bundle.indexer.tick();
 
     const activityRes = await fetch(`${gateway.baseUrl}/public/v1/activity`);
     const body = (await activityRes.json()) as any;
@@ -1068,6 +1094,45 @@ describe("public v1 — /stats", () => {
       paidCount: 0,
       totalVolumeUsdc: "0.00",
     });
+  });
+
+  it("excludes false and unclassified payments from all public trust totals", async () => {
+    for (const [paymentId, buyerAgentId, amountAtomic, eligible] of [
+      [410n, 7n, 10_000_000n, true],
+      [411n, 8n, 100_000_000n, false],
+      [412n, 9n, 1_000_000_000n, null],
+    ] as const) {
+      await seedPaid(gateway, {
+        serviceRef:
+          `0x${paymentId.toString(16).padStart(64, "0")}` as Hex,
+        providerAgentId: 1n,
+        buyerAgentId,
+        amountAtomic,
+        paymentId,
+        txHash:
+          `0x${(paymentId + 1000n).toString(16).padStart(64, "0")}` as Hex,
+        reputationEligible: eligible,
+      });
+    }
+
+    const stats = (await (
+      await fetch(`${gateway.baseUrl}/public/v1/stats`)
+    ).json()) as any;
+    expect(stats.marketplace.paidCount).toBe(1);
+    expect(stats.marketplace.totalVolumeUsdc).toBe("10.00");
+
+    const activity = (await (
+      await fetch(`${gateway.baseUrl}/public/v1/activity`)
+    ).json()) as any;
+    expect(activity.activity).toHaveLength(1);
+    expect(activity.activity[0].txHash).toBe(
+      `0x${(410n + 1000n).toString(16).padStart(64, "0")}`,
+    );
+
+    const buyers = (await (
+      await fetch(`${gateway.baseUrl}/public/v1/buyers`)
+    ).json()) as any;
+    expect(buyers.buyers.map((buyer: any) => buyer.agentId)).toEqual(["7"]);
   });
 });
 

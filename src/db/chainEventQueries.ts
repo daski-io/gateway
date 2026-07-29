@@ -1,5 +1,12 @@
+import type { PoolClient } from "pg";
+import type {
+  ChainProjectionDescriptor,
+  ChainProjectionEvent,
+} from "../chain/eventTypes.js";
+import { compareProjectionEvents } from "../chain/eventTypes.js";
 import type { Hex } from "../types.js";
 import type { Pool } from "./pool.js";
+import { eligibleChainEvent } from "./chainEligibility.js";
 
 export interface ChainActivityRow {
   paymentId: bigint;
@@ -14,6 +21,7 @@ export interface ChainActivityRow {
   confirmationCode: number;
   fulfillmentSeconds: number | null;
   refundedAtomic: bigint;
+  reputationEligible: true;
   skillId: string | null;
   serviceSlug: string | null;
   serviceVersion: string | null;
@@ -40,7 +48,31 @@ interface ChainActivityDbRow {
   service_version: string | null;
   provider_a2a_url: string | null;
   wallet_address: string | null;
-  confirmation_attestation_uid: Buffer | null;
+  confirmation_uid: Buffer | null;
+}
+
+interface ProjectionStateRow {
+  last_indexed_block: string | null;
+  chain_id: string | null;
+  payment_router_address: Buffer | null;
+  reputation_storage_address: Buffer | null;
+  eas_address: Buffer | null;
+  confirmation_schema_uid: Buffer | null;
+  start_block: string | null;
+}
+
+export class ChainProjectionDescriptorError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ChainProjectionDescriptorError";
+  }
+}
+
+export class ChainProjectionIntegrityError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ChainProjectionIntegrityError";
+  }
 }
 
 const ACTIVITY_SELECT = `
@@ -49,15 +81,14 @@ const ACTIVITY_SELECT = `
          ce.settled_at, ce.outcome, ce.confirmation,
          ce.fulfillment_seconds, ce.refunded_atomic,
          pc.skill_id, pc.service_slug, pc.service_version,
-         pc.provider_a2a_url, pc.wallet_address,
-         pc.confirmation_attestation_uid
+         pc.provider_a2a_url, pc.wallet_address, ce.confirmation_uid
     FROM chain_events ce
     LEFT JOIN payment_challenges pc
            ON pc.payment_id = ce.payment_id
           AND pc.settlement_state = 'paid'
 `;
 
-const bytea = (hex: Hex): Buffer => Buffer.from(hex.slice(2), "hex");
+const bytea = (value: Hex): Buffer => Buffer.from(value.slice(2), "hex");
 const hex = (value: Buffer): Hex => `0x${value.toString("hex")}` as Hex;
 
 function toActivity(row: ChainActivityDbRow): ChainActivityRow {
@@ -74,162 +105,327 @@ function toActivity(row: ChainActivityDbRow): ChainActivityRow {
     confirmationCode: row.confirmation,
     fulfillmentSeconds: row.fulfillment_seconds,
     refundedAtomic: BigInt(row.refunded_atomic),
+    reputationEligible: true,
     skillId: row.skill_id,
     serviceSlug: row.service_slug,
     serviceVersion: row.service_version,
     providerA2AUrl: row.provider_a2a_url,
     walletAddress: (row.wallet_address as Hex | null) ?? null,
-    confirmationAttestationUid: row.confirmation_attestation_uid
-      ? hex(row.confirmation_attestation_uid)
+    confirmationAttestationUid: row.confirmation_uid
+      ? hex(row.confirmation_uid)
       : null,
   };
 }
 
+function descriptorMatches(
+  row: ProjectionStateRow,
+  descriptor: ChainProjectionDescriptor,
+): boolean {
+  return (
+    row.chain_id === descriptor.chainId.toString() &&
+    row.payment_router_address?.equals(
+      bytea(descriptor.paymentRouterAddress),
+    ) === true &&
+    row.reputation_storage_address?.equals(
+      bytea(descriptor.reputationStorageAddress),
+    ) === true &&
+    row.eas_address?.equals(bytea(descriptor.easAddress)) === true &&
+    row.confirmation_schema_uid?.equals(
+      bytea(descriptor.confirmationSchemaUid),
+    ) === true &&
+    row.start_block === descriptor.startBlock.toString()
+  );
+}
+
+function descriptorIsEmpty(row: ProjectionStateRow): boolean {
+  return (
+    row.last_indexed_block === null &&
+    row.chain_id === null &&
+    row.payment_router_address === null &&
+    row.reputation_storage_address === null &&
+    row.eas_address === null &&
+    row.confirmation_schema_uid === null &&
+    row.start_block === null
+  );
+}
+
+async function lockedState(client: PoolClient): Promise<ProjectionStateRow> {
+  await client.query(
+    `INSERT INTO chain_indexer_state (id) VALUES (1)
+     ON CONFLICT (id) DO NOTHING`,
+  );
+  const result = await client.query<ProjectionStateRow>(
+    `SELECT last_indexed_block, chain_id, payment_router_address,
+            reputation_storage_address, eas_address,
+            confirmation_schema_uid, start_block
+       FROM chain_indexer_state
+      WHERE id = 1
+      FOR UPDATE`,
+  );
+  const row = result.rows[0];
+  if (!row) throw new Error("chain projection state row is unavailable");
+  return row;
+}
+
+async function adoptDescriptor(
+  client: PoolClient,
+  descriptor: ChainProjectionDescriptor,
+): Promise<void> {
+  await client.query(
+    `UPDATE chain_indexer_state
+        SET chain_id = $1,
+            payment_router_address = $2,
+            reputation_storage_address = $3,
+            eas_address = $4,
+            confirmation_schema_uid = $5,
+            start_block = $6
+      WHERE id = 1`,
+    [
+      descriptor.chainId,
+      bytea(descriptor.paymentRouterAddress),
+      bytea(descriptor.reputationStorageAddress),
+      bytea(descriptor.easAddress),
+      bytea(descriptor.confirmationSchemaUid),
+      descriptor.startBlock.toString(),
+    ],
+  );
+}
+
+function assertBaseRowUpdated(
+  rowCount: number | null,
+  event: Exclude<
+    ChainProjectionEvent,
+    { kind: "payment_settled" | "confirmation_revoked" }
+  >,
+): void {
+  if (rowCount === 1) return;
+  throw new ChainProjectionIntegrityError(
+    `projection event ${event.kind} for payment ${event.paymentId} at block ` +
+      `${event.blockNumber} has no matching settlement; ` +
+      "CHAIN_INDEXER_START_BLOCK may be too late or projection state was reset inconsistently; " +
+      "follow the chain projection reset runbook",
+  );
+}
+
+async function applyEvent(
+  client: PoolClient,
+  event: ChainProjectionEvent,
+): Promise<void> {
+  if (event.kind === "payment_settled") {
+    const settledAt = new Date(Number(event.blockTimestamp) * 1000);
+    if (!Number.isFinite(settledAt.getTime()) || event.blockTimestamp <= 0n) {
+      throw new ChainProjectionIntegrityError(
+        `payment ${event.paymentId} has an invalid block timestamp`,
+      );
+    }
+    await client.query(
+      `INSERT INTO chain_events
+         (payment_id, tx_hash, block_number, service_id, buyer_agent_id,
+          provider_agent_id, amount_atomic, settled_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+       ON CONFLICT (payment_id) DO UPDATE
+       SET tx_hash = EXCLUDED.tx_hash,
+           block_number = EXCLUDED.block_number,
+           service_id = EXCLUDED.service_id,
+           buyer_agent_id = EXCLUDED.buyer_agent_id,
+           provider_agent_id = EXCLUDED.provider_agent_id,
+           amount_atomic = EXCLUDED.amount_atomic,
+           settled_at = EXCLUDED.settled_at`,
+      [
+        event.paymentId.toString(),
+        bytea(event.transactionHash),
+        event.blockNumber.toString(),
+        bytea(event.serviceId),
+        event.buyerAgentId.toString(),
+        event.providerAgentId.toString(),
+        event.totalAmount.toString(),
+        settledAt,
+      ],
+    );
+    return;
+  }
+
+  if (event.kind === "confirmation_revoked") {
+    await client.query(
+      `UPDATE chain_events
+          SET confirmation = 0, confirmation_uid = NULL
+        WHERE confirmation_uid = $1`,
+      [bytea(event.attestationUid)],
+    );
+    return;
+  }
+
+  if (event.kind === "refunded") {
+    const result = await client.query(
+      `UPDATE chain_events
+          SET refunded_atomic = GREATEST(refunded_atomic, $2)
+        WHERE payment_id = $1`,
+      [event.paymentId.toString(), event.cumulativeRefunded.toString()],
+    );
+    assertBaseRowUpdated(result.rowCount, event);
+    return;
+  }
+
+  const identityParams = [
+    event.paymentId.toString(),
+    event.providerAgentId.toString(),
+    event.buyerAgentId.toString(),
+    bytea(event.serviceId),
+  ];
+  if (event.kind === "payment_recorded") {
+    const result = await client.query(
+      `UPDATE chain_events
+          SET reputation_eligible = $5
+        WHERE payment_id = $1
+          AND provider_agent_id = $2
+          AND buyer_agent_id = $3
+          AND service_id = $4`,
+      [...identityParams, event.reputationEligible],
+    );
+    assertBaseRowUpdated(result.rowCount, event);
+    return;
+  }
+  if (event.kind === "outcome_recorded") {
+    const result = await client.query(
+      `UPDATE chain_events
+          SET outcome = $5, fulfillment_seconds = $6, outcome_uid = $7
+        WHERE payment_id = $1
+          AND provider_agent_id = $2
+          AND buyer_agent_id = $3
+          AND service_id = $4`,
+      [
+        ...identityParams,
+        event.outcomeCode,
+        event.fulfillmentSeconds.toString(),
+        bytea(event.attestationUid),
+      ],
+    );
+    assertBaseRowUpdated(result.rowCount, event);
+    return;
+  }
+  const result = await client.query(
+    `UPDATE chain_events
+        SET confirmation = $5, confirmation_uid = $6
+      WHERE payment_id = $1
+        AND provider_agent_id = $2
+        AND buyer_agent_id = $3
+        AND service_id = $4`,
+    [
+      ...identityParams,
+      event.confirmationCode,
+      bytea(event.attestationUid),
+    ],
+  );
+  assertBaseRowUpdated(result.rowCount, event);
+}
+
 export function createChainEventQueries(pool: Pool) {
   const list = async (
-    where: string,
+    condition: string,
     params: unknown[],
   ): Promise<ChainActivityRow[]> => {
+    const suffix = condition ? ` AND ${condition}` : "";
     const result = await pool.query<ChainActivityDbRow>(
-      `${ACTIVITY_SELECT} ${where}`,
+      `${ACTIVITY_SELECT}
+       WHERE ${eligibleChainEvent("ce.")}${suffix}
+       ORDER BY ce.settled_at DESC
+       LIMIT $${params.length}`,
       params,
     );
     return result.rows.map(toActivity);
   };
 
   return {
-    async getLastIndexedBlock(): Promise<bigint> {
-      const result = await pool.query<{ last_indexed_block: string }>(
-        `SELECT last_indexed_block FROM chain_indexer_state WHERE id = 1`,
-      );
-      return result.rows[0]
-        ? BigInt(result.rows[0].last_indexed_block)
-        : 0n;
+    async getOrAdoptChainProjection(
+      descriptor: ChainProjectionDescriptor,
+    ): Promise<bigint | null> {
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        const row = await lockedState(client);
+        if (descriptorIsEmpty(row)) {
+          await adoptDescriptor(client, descriptor);
+        } else if (!descriptorMatches(row, descriptor)) {
+          throw new ChainProjectionDescriptorError(
+            "stored chain projection descriptor conflicts with runtime configuration; " +
+              "follow the chain projection reset runbook",
+          );
+        }
+        await client.query("COMMIT");
+        return row.last_indexed_block === null
+          ? null
+          : BigInt(row.last_indexed_block);
+      } catch (error) {
+        await client.query("ROLLBACK");
+        throw error;
+      } finally {
+        client.release();
+      }
     },
 
-    async setLastIndexedBlock(blockNumber: bigint): Promise<void> {
-      await pool.query(
-        `INSERT INTO chain_indexer_state (id, last_indexed_block, last_indexed_at)
-         VALUES (1, $1, now())
-         ON CONFLICT (id) DO UPDATE
-         SET last_indexed_block = EXCLUDED.last_indexed_block,
-             last_indexed_at = EXCLUDED.last_indexed_at`,
-        [blockNumber.toString()],
-      );
-    },
-
-    async upsertChainEvent(args: {
-      paymentId: bigint;
-      txHash: Hex;
-      blockNumber: bigint;
-      serviceId: Hex;
-      buyerAgentId: bigint;
-      providerAgentId: bigint;
-      amountAtomic: bigint;
-      settledAt: Date;
-      outcomeCode: number | null;
-      confirmationCode: number;
-      fulfillmentSeconds: number | null;
-      refundedAtomic: bigint;
+    async applyChainProjectionPage(input: {
+      descriptor: ChainProjectionDescriptor;
+      fromBlock: bigint;
+      toBlock: bigint;
+      events: ChainProjectionEvent[];
     }): Promise<void> {
-      await pool.query(
-        `INSERT INTO chain_events
-           (payment_id, tx_hash, block_number, service_id, buyer_agent_id,
-            provider_agent_id, amount_atomic, settled_at, outcome,
-            confirmation, fulfillment_seconds, refunded_atomic,
-            last_refreshed_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, now())
-         ON CONFLICT (payment_id) DO UPDATE
-         SET tx_hash = EXCLUDED.tx_hash,
-             block_number = EXCLUDED.block_number,
-             service_id = EXCLUDED.service_id,
-             buyer_agent_id = EXCLUDED.buyer_agent_id,
-             provider_agent_id = EXCLUDED.provider_agent_id,
-             amount_atomic = EXCLUDED.amount_atomic,
-             settled_at = EXCLUDED.settled_at,
-             outcome = EXCLUDED.outcome,
-             confirmation = EXCLUDED.confirmation,
-             fulfillment_seconds = EXCLUDED.fulfillment_seconds,
-             refunded_atomic = EXCLUDED.refunded_atomic,
-             last_refreshed_at = now()`,
-        [
-          args.paymentId.toString(),
-          bytea(args.txHash),
-          args.blockNumber.toString(),
-          bytea(args.serviceId),
-          args.buyerAgentId.toString(),
-          args.providerAgentId.toString(),
-          args.amountAtomic.toString(),
-          args.settledAt,
-          args.outcomeCode,
-          args.confirmationCode,
-          args.fulfillmentSeconds,
-          args.refundedAtomic.toString(),
-        ],
-      );
-    },
-
-    async refreshChainEvent(args: {
-      paymentId: bigint;
-      outcomeCode: number | null;
-      confirmationCode: number;
-      fulfillmentSeconds: number | null;
-      refundedAtomic: bigint;
-    }): Promise<void> {
-      await pool.query(
-        `UPDATE chain_events
-         SET outcome = $2, confirmation = $3, fulfillment_seconds = $4,
-             refunded_atomic = $5, last_refreshed_at = now()
-         WHERE payment_id = $1`,
-        [
-          args.paymentId.toString(),
-          args.outcomeCode,
-          args.confirmationCode,
-          args.fulfillmentSeconds,
-          args.refundedAtomic.toString(),
-        ],
-      );
-    },
-
-    async listStaleChainEvents(
-      cutoff: Date,
-      limit: number,
-    ): Promise<Array<{ paymentId: bigint }>> {
-      const result = await pool.query<{ payment_id: string }>(
-        `SELECT payment_id FROM chain_events
-         WHERE (confirmation = 0 OR refunded_atomic = 0)
-           AND last_refreshed_at < $1
-         ORDER BY last_refreshed_at ASC
-         LIMIT $2`,
-        [cutoff, limit],
-      );
-      return result.rows.map((row) => ({
-        paymentId: BigInt(row.payment_id),
-      }));
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        const state = await lockedState(client);
+        if (!descriptorMatches(state, input.descriptor)) {
+          throw new ChainProjectionDescriptorError(
+            "chain projection descriptor changed while indexing; " +
+              "follow the chain projection reset runbook",
+          );
+        }
+        const expectedPrevious =
+          input.fromBlock === input.descriptor.startBlock
+            ? null
+            : input.fromBlock - 1n;
+        const storedPrevious =
+          state.last_indexed_block === null
+            ? null
+            : BigInt(state.last_indexed_block);
+        if (storedPrevious !== expectedPrevious) {
+          throw new ChainProjectionIntegrityError(
+            "chain projection cursor changed while applying a page",
+          );
+        }
+        for (const event of [...input.events].sort(compareProjectionEvents)) {
+          await applyEvent(client, event);
+        }
+        await client.query(
+          `UPDATE chain_indexer_state
+              SET last_indexed_block = $1, last_indexed_at = now()
+            WHERE id = 1`,
+          [input.toBlock.toString()],
+        );
+        await client.query("COMMIT");
+      } catch (error) {
+        await client.query("ROLLBACK");
+        throw error;
+      } finally {
+        client.release();
+      }
     },
 
     listRecentChainActivity: (limit: number) =>
-      list("ORDER BY ce.settled_at DESC LIMIT $1", [limit]),
+      list("", [limit]),
 
     listRecentChainActivityByProvider: (
       providerAgentId: bigint,
       limit: number,
     ) =>
-      list(
-        "WHERE ce.provider_agent_id = $1 ORDER BY ce.settled_at DESC LIMIT $2",
-        [providerAgentId.toString(), limit],
-      ),
+      list("ce.provider_agent_id = $1", [
+        providerAgentId.toString(),
+        limit,
+      ]),
 
     listRecentChainActivityByServiceId: (serviceId: Hex, limit: number) =>
-      list(
-        "WHERE ce.service_id = $1 ORDER BY ce.settled_at DESC LIMIT $2",
-        [bytea(serviceId), limit],
-      ),
+      list("ce.service_id = $1", [bytea(serviceId), limit]),
 
     listRecentChainActivityByBuyer: (buyerAgentId: bigint, limit: number) =>
-      list(
-        "WHERE ce.buyer_agent_id = $1 ORDER BY ce.settled_at DESC LIMIT $2",
-        [buyerAgentId.toString(), limit],
-      ),
+      list("ce.buyer_agent_id = $1", [buyerAgentId.toString(), limit]),
   };
 }

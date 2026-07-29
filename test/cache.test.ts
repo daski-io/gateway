@@ -74,6 +74,7 @@ function buildHarness(opts?: {
   serviceCount?: number;
   fetchConcurrency?: number;
   cardDelayMs?: number;
+  refreshDeadlineMs?: number;
 }): Harness {
   const chain = new MockChainReader();
   chain.addProvider(1n, {
@@ -117,6 +118,7 @@ function buildHarness(opts?: {
     maxCardStalenessSeconds: opts?.maxCardStalenessSeconds ?? 3600,
     maxA2AEntries: opts?.maxA2AEntries,
     fetchConcurrency: opts?.fetchConcurrency,
+    refreshDeadlineMs: opts?.refreshDeadlineMs,
     fetch: fetchFn,
     logger: quietLogger,
   });
@@ -145,6 +147,32 @@ describe("DiscoveryCache failure hardening", () => {
 
     expect(h.cache.get(1n)).toBeDefined();
     expect(h.cache.get(1n)!.cards).toHaveLength(1);
+  });
+
+  it("queries a nonempty whitelist directly without registry enumeration", async () => {
+    const h = buildHarness({ whitelist: [999n, 1n, 1n] });
+    const count = vi.spyOn(h.chain, "getProviderCount");
+    const idAt = vi.spyOn(h.chain, "getProviderIdAt");
+
+    await h.cache.refresh();
+
+    expect(count).not.toHaveBeenCalled();
+    expect(idAt).not.toHaveBeenCalled();
+    expect(h.cache.getAll().map((provider) => provider.agentId)).toEqual([1n]);
+  });
+
+  it("bounds the chain phase and preserves the last complete snapshot", async () => {
+    const h = buildHarness({ refreshDeadlineMs: 20 });
+    await h.cache.refresh();
+    const before = h.cache.get(1n);
+    h.chain.getProvider = () => new Promise(() => {});
+
+    const startedAt = Date.now();
+    await h.cache.refresh();
+
+    expect(Date.now() - startedAt).toBeLessThan(250);
+    expect(h.cache.get(1n)).toBe(before);
+    expect(h.cache.status().lastChainError?.message).toMatch(/timed out/);
   });
 
   it("keeps serving the last-known-good card when a refresh fetch fails", async () => {
@@ -277,7 +305,7 @@ describe("DiscoveryCache failure hardening", () => {
     expect(h.fetchFn).toHaveBeenCalledTimes(7);
 
     // stop() cancels the loop.
-    h.cache.stop();
+    await h.cache.stopAndDrain();
     await vi.advanceTimersByTimeAsync(300_000);
     expect(h.fetchFn).toHaveBeenCalledTimes(7);
   });
@@ -293,6 +321,6 @@ describe("DiscoveryCache failure hardening", () => {
     expect(h.fetchFn).toHaveBeenCalledTimes(2);
     await vi.advanceTimersByTimeAsync(1);
     expect(h.fetchFn).toHaveBeenCalledTimes(4);
-    h.cache.stop();
+    await h.cache.stopAndDrain();
   });
 });

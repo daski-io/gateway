@@ -1,5 +1,6 @@
 import type { Hex } from "../types.js";
 import type { Pool } from "./pool.js";
+import { eligibleChainEvent } from "./chainEligibility.js";
 
 interface Aggregate {
   count: number;
@@ -34,13 +35,15 @@ export interface BuyerVolumeRow {
 
 export function createAggregateQueries(pool: Pool) {
   const aggregate = async (
-    where = "",
+    condition = "",
     params: unknown[] = [],
   ): Promise<Aggregate> => {
+    const suffix = condition ? ` AND ${condition}` : "";
     const result = await pool.query<{ count: string; total_atomic: string }>(
       `SELECT COUNT(*)::bigint AS count,
               COALESCE(SUM(amount_atomic), 0)::numeric AS total_atomic
-         FROM chain_events ${where}`,
+         FROM chain_events
+        WHERE ${eligibleChainEvent()}${suffix}`,
       params,
     );
     const row = result.rows[0];
@@ -56,7 +59,8 @@ export function createAggregateQueries(pool: Pool) {
     async buyerHasChainActivity(buyerAgentId: bigint): Promise<boolean> {
       const result = await pool.query<{ exists: boolean }>(
         `SELECT EXISTS (
-           SELECT 1 FROM chain_events WHERE buyer_agent_id = $1
+           SELECT 1 FROM chain_events
+            WHERE ${eligibleChainEvent()} AND buyer_agent_id = $1
          ) AS exists`,
         [buyerAgentId.toString()],
       );
@@ -64,12 +68,12 @@ export function createAggregateQueries(pool: Pool) {
     },
 
     getProviderSpend: (providerAgentId: bigint) =>
-      aggregate("WHERE provider_agent_id = $1", [
+      aggregate("provider_agent_id = $1", [
         providerAgentId.toString(),
       ]),
 
     getServiceSpend: (serviceId: Hex) =>
-      aggregate("WHERE service_id = $1", [
+      aggregate("service_id = $1", [
         Buffer.from(serviceId.slice(2), "hex"),
       ]),
 
@@ -112,7 +116,8 @@ export function createAggregateQueries(pool: Pool) {
            LEFT JOIN payment_challenges pc
                   ON pc.payment_id = ce.payment_id
                  AND pc.settlement_state = 'paid'
-          WHERE ce.buyer_agent_id = $1`,
+          WHERE ${eligibleChainEvent("ce.")}
+            AND ce.buyer_agent_id = $1`,
         [buyerAgentId.toString()],
       );
       const row = result.rows[0];
@@ -150,6 +155,7 @@ export function createAggregateQueries(pool: Pool) {
                 bi.resolved_name
            FROM chain_events ce
            LEFT JOIN buyer_identities bi ON bi.agent_id = ce.buyer_agent_id
+          WHERE ${eligibleChainEvent("ce.")}
           GROUP BY ce.buyer_agent_id, bi.resolved_name
           ORDER BY total_spent_atomic DESC,
                    transaction_count DESC,

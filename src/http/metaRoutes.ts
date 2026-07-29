@@ -11,11 +11,12 @@ import type { Pool } from "../db/pool.js";
 import type { ChainEventsIndexer } from "../indexer/chainEvents.js";
 import type { ReputationMirrorWorker } from "../reputation/worker.js";
 import { DatabaseReadinessProbe } from "./readiness.js";
-import type { PaymentScreeningReadinessProbe } from "../payment/screeningReadiness.js";
+import type { ChainDeploymentReadinessProbe } from "../payment/deploymentReadiness.js";
 import {
   DASKI_X402_SCHEMA_PATH,
   daskiX402Schema,
 } from "../payment/x402Extension.js";
+import type { ApplicationLifecycle } from "../runtime/applicationLifecycle.js";
 
 export interface MetaRoutesDeps {
   config: Config;
@@ -24,7 +25,8 @@ export interface MetaRoutesDeps {
   pool: Pool;
   indexer: ChainEventsIndexer;
   reputationWorker: ReputationMirrorWorker;
-  screeningReadiness: PaymentScreeningReadinessProbe;
+  deploymentReadiness: ChainDeploymentReadinessProbe;
+  lifecycle: ApplicationLifecycle;
 }
 
 function findSkillPath(): string | undefined {
@@ -100,10 +102,14 @@ export function createMetaRouter(deps: MetaRoutesDeps): Router {
     const cacheStatus = cache.status();
     const mirrorStatus = deps.reputationWorker.status();
     const databaseReady = await database.isReady();
-    const screeningReady = await deps.screeningReadiness.isReady();
+    const deploymentReady = await deps.deploymentReadiness.isReady();
     const indexerReady = deps.indexer.isFresh();
     const ready =
-      databaseReady && cacheStatus.chainFresh && indexerReady && screeningReady;
+      !deps.lifecycle.isStopping() &&
+      databaseReady &&
+      cacheStatus.chainFresh &&
+      indexerReady &&
+      deploymentReady;
     const degraded =
       embedderStatus.state === "degraded" ||
       cacheStatus.cardFailureCount > 0 ||
@@ -112,7 +118,7 @@ export function createMetaRouter(deps: MetaRoutesDeps): Router {
       status: ready ? (degraded ? "degraded" : "ready") : "unready",
       version: GATEWAY_VERSION,
       dependencies: {
-        paymentScreening: screeningReady ? "ready" : "unready",
+        chainDeployment: deploymentReady ? "ready" : "unready",
       },
     });
   });

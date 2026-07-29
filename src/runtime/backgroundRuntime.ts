@@ -20,7 +20,7 @@ interface BackgroundRuntimeOptions {
 export interface BackgroundRuntime {
   expireInterval: NodeJS.Timeout | null;
   settlementReconcileInterval: NodeJS.Timeout | null;
-  stop(): void;
+  stopAndDrain(): Promise<void>;
 }
 
 export function startBackgroundRuntime(
@@ -28,29 +28,44 @@ export function startBackgroundRuntime(
 ): BackgroundRuntime {
   let expireInterval: NodeJS.Timeout | null = null;
   let settlementReconcileInterval: NodeJS.Timeout | null = null;
-  let reconciliationPending = false;
-  const reconcile = () => {
-    if (reconciliationPending) return;
-    reconciliationPending = true;
-    void reconcileBroadcastSettlements(
+  let stopping = false;
+  let reconciliation: Promise<void> | null = null;
+  let maintenance: Promise<void> | null = null;
+  const reconcile = async () => {
+    if (stopping || reconciliation) return;
+    const operation = reconcileBroadcastSettlements(
       options.reader,
       options.queries,
       options.config,
     )
+      .then(() => undefined)
       .catch((error) => {
         logErrorWithId("reconcileBroadcastSettlements", error);
-      })
-      .finally(() => {
-        reconciliationPending = false;
       });
+    reconciliation = operation;
+    try {
+      await operation;
+    } finally {
+      if (reconciliation === operation) reconciliation = null;
+    }
+  };
+  const maintain = async () => {
+    if (stopping || maintenance) return;
+    const operation = maintainPaymentChallenges(options);
+    maintenance = operation;
+    try {
+      await operation;
+    } finally {
+      if (maintenance === operation) maintenance = null;
+    }
   };
   if (options.enabled) {
-    expireInterval = setInterval(() => maintainPaymentChallenges(options), 5 * 60 * 1000);
+    expireInterval = setInterval(() => void maintain(), 5 * 60 * 1000);
     settlementReconcileInterval = setInterval(
-      reconcile,
+      () => void reconcile(),
       30_000,
     );
-    reconcile();
+    void reconcile();
     options.cache.start();
     options.indexer.start();
     options.reputationWorker.start();
@@ -58,28 +73,37 @@ export function startBackgroundRuntime(
   return {
     expireInterval,
     settlementReconcileInterval,
-    stop() {
+    async stopAndDrain() {
+      stopping = true;
       if (expireInterval) clearInterval(expireInterval);
       if (settlementReconcileInterval) clearInterval(settlementReconcileInterval);
-      options.cache.stop();
-      options.indexer.stop();
-      options.reputationWorker.stop();
+      await Promise.all([
+        options.cache.stopAndDrain(),
+        options.indexer.stopAndDrain(),
+        options.reputationWorker.stopAndDrain(),
+        reconciliation,
+        maintenance,
+      ]);
     },
   };
 }
 
-function maintainPaymentChallenges(options: BackgroundRuntimeOptions): void {
-  void options.queries
-    .expireStaleChallenges()
-    .then(() =>
-      options.queries.deleteExpiredChallenges(
-        options.config.challengeRetentionSeconds,
-      ),
-    )
-    .catch((error) => {
-      logErrorWithId("maintainPaymentChallenges", error);
-    });
-  void options.queries.pruneRateLimitBuckets().catch((error) => {
-    logErrorWithId("pruneRateLimitBuckets", error);
-  });
+async function maintainPaymentChallenges(
+  options: BackgroundRuntimeOptions,
+): Promise<void> {
+  await Promise.all([
+    options.queries
+      .expireStaleChallenges()
+      .then(() =>
+        options.queries.deleteExpiredChallenges(
+          options.config.challengeRetentionSeconds,
+        ),
+      )
+      .catch((error) => {
+        logErrorWithId("maintainPaymentChallenges", error);
+      }),
+    options.queries.pruneRateLimitBuckets().catch((error) => {
+      logErrorWithId("pruneRateLimitBuckets", error);
+    }),
+  ]);
 }

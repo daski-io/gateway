@@ -22,6 +22,8 @@ export interface ReputationMirrorWorkerDeps {
 export class ReputationMirrorWorker {
   private timer: NodeJS.Timeout | null = null;
   private running = false;
+  private stopping = false;
+  private readonly active = new Set<Promise<void>>();
   private lastSuccessAt: Date | null = null;
   private lastError: { message: string; at: Date } | null = null;
 
@@ -35,14 +37,16 @@ export class ReputationMirrorWorker {
   }
 
   start(): void {
-    if (!this.enabled() || this.timer) return;
+    if (!this.enabled() || this.timer || this.stopping) return;
     void this.tick();
     this.timer = setInterval(() => void this.tick(), 5_000);
   }
 
-  stop(): void {
+  async stopAndDrain(): Promise<void> {
+    this.stopping = true;
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
+    await Promise.all([...this.active]);
   }
 
   async enqueue(input: {
@@ -51,13 +55,20 @@ export class ReputationMirrorWorker {
     attestationUid: Hex;
     refUid: Hex | null;
   }): Promise<void> {
-    if (!this.enabled()) return;
+    if (!this.enabled() || this.stopping) return;
     const queued = await this.deps.queries.enqueueReputationMirror(input);
-    if (queued) void this.processPayment(input.paymentId);
+    if (queued && !this.stopping) {
+      void this.track(this.processPayment(input.paymentId));
+    }
   }
 
   async tick(): Promise<void> {
-    if (!this.enabled() || this.running) return;
+    if (!this.enabled() || this.running || this.stopping) return;
+    const operation = this.runTick();
+    return this.track(operation);
+  }
+
+  private async runTick(): Promise<void> {
     this.running = true;
     try {
       await this.reconcileMissing();
@@ -76,6 +87,15 @@ export class ReputationMirrorWorker {
       logErrorWithId("reputationMirror.tick", error);
     } finally {
       this.running = false;
+    }
+  }
+
+  private async track(operation: Promise<void>): Promise<void> {
+    this.active.add(operation);
+    try {
+      await operation;
+    } finally {
+      this.active.delete(operation);
     }
   }
 

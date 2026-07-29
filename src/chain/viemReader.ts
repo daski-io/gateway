@@ -3,7 +3,6 @@ import {
   createWalletClient,
   http,
   nonceManager,
-  parseAbiItem,
   parseEventLogs,
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
@@ -11,8 +10,6 @@ import { base, baseSepolia } from "viem/chains";
 import { SettlementTransactionRevertedError } from "./reader.js";
 import {
   classifySettlementScreeningFailure,
-  sanctionsGuardAbi,
-  sanctionsOracleAbi,
   SettlementScreeningError,
 } from "./sanctionsErrors.js";
 import {
@@ -27,7 +24,6 @@ import type {
   BroadcastObserver,
   PaymentRouterRecord,
   PaymentSettledEvent,
-  PaymentSettledEventLog,
   SettleWithRegistrationInput,
   SettleWithRegistrationResult,
   SettlementInput,
@@ -39,6 +35,8 @@ import { createIdentityMethods } from "./viemIdentity.js";
 import { createReputationReadMethods } from "./viemReputationRead.js";
 import { createFeedbackMethods } from "./viemFeedback.js";
 import { createConfirmationMethods } from "./viemConfirmation.js";
+import { createViemEventReader } from "./viemEventReader.js";
+import { createViemDeploymentReadiness } from "./viemDeploymentReadiness.js";
 export { decodeRevertReason } from "./viemErrors.js";
 
 export interface ViemReaderOptions {
@@ -50,19 +48,23 @@ export interface ViemReaderOptions {
   // delegated registerWithSig, the two gaps the canonical registry leaves.
   agentIndexAddress: Hex;
   providerRegistryAddress: Hex;
+  serviceRegistryAddress: Hex;
   paymentRouterAddress: Hex;
   // X402 adapter that the facilitator submits the EIP-3009 settle call to.
   // The router PaymentSettled event is still emitted by the router itself.
   x402AdapterAddress: Hex;
+  permitAdapterAddress?: Hex;
+  approvalAdapterAddress?: Hex;
+  validationRegistryAddress?: Hex;
+  sanctionsOracleAddress: Hex;
   usdcAddress: Hex;
   facilitatorPrivateKey: Hex;
   // EAS contract. On Base / Base Sepolia this is the canonical
   // 0x4200000000000000000000000000000000000021.
   easAddress: Hex;
-  // Optional — when unset, the reputation getters return null. The marketing
-  // site treats null as "no reputation data" and renders the empty state
-  // rather than 5xxing.
-  reputationStorageAddress?: Hex;
+  reputationStorageAddress: Hex;
+  easConfirmationSchemaUid: Hex;
+  easOutcomeSchemaUid: Hex;
   // Canonical ERC-8004 ReputationRegistry (0x8004B…). Optional; the
   // feedback preparation, submission, recovery, and revocation methods
   // throw when unset. The mirror module gates on config before calling.
@@ -457,76 +459,33 @@ export function createViemChainReader(opts: ViemReaderOptions): ChainReader {
       return await publicClient.getBlockNumber();
     },
 
-    async verifySanctionsReadiness(input): Promise<boolean> {
-      if ((await publicClient.getChainId()) !== input.chainId) return false;
-      const bytecode = await publicClient.getBytecode({
-        address: input.oracleAddress,
-      });
-      if (!bytecode || bytecode === "0x") return false;
-      const probe = await publicClient.readContract({
-        address: input.oracleAddress,
-        abi: sanctionsOracleAbi,
-        functionName: "isSanctioned",
-        args: [input.probeAccount],
-      });
-      if (typeof probe !== "boolean") return false;
-      const configured = await Promise.all(
-        input.guardedContracts.map((address) =>
-          publicClient.readContract({
-            address,
-            abi: sanctionsGuardAbi,
-            functionName: "sanctionsOracle",
-          }),
-        ),
-      );
-      return configured.every(
-        (address) =>
-          String(address).toLowerCase() === input.oracleAddress.toLowerCase(),
-      );
-    },
+    verifyDeploymentReadiness: createViemDeploymentReadiness(publicClient, {
+      chainId: opts.chainId,
+      identityRegistryAddress: opts.identityRegistryAddress,
+      agentIndexAddress: opts.agentIndexAddress,
+      providerRegistryAddress: opts.providerRegistryAddress,
+      serviceRegistryAddress: opts.serviceRegistryAddress,
+      paymentRouterAddress: opts.paymentRouterAddress,
+      x402AdapterAddress: opts.x402AdapterAddress,
+      permitAdapterAddress: opts.permitAdapterAddress,
+      approvalAdapterAddress: opts.approvalAdapterAddress,
+      validationRegistryAddress: opts.validationRegistryAddress,
+      reputationRegistryAddress: opts.reputationRegistryAddress,
+      reputationStorageAddress,
+      sanctionsOracleAddress: opts.sanctionsOracleAddress,
+      usdcAddress: opts.usdcAddress,
+      easAddress: opts.easAddress,
+      easOutcomeSchemaUid: opts.easOutcomeSchemaUid,
+      easConfirmationSchemaUid: opts.easConfirmationSchemaUid,
+      facilitatorAddress: account.address,
+    }),
 
-    async getPaymentSettledEvents(
-      fromBlock: bigint,
-      toBlock: bigint,
-    ): Promise<PaymentSettledEventLog[]> {
-      // Server-side log filter: address+topic only, the RPC node returns
-      // matching logs across the block window. Decoded event shape pulled
-      // out via parseEventLogs (handles type-narrowing better than a manual
-      // decode loop). Block timestamps come from a per-unique-block fetch
-      // — settled txs cluster in small windows so the dedupe is meaningful.
-      const logs = await publicClient.getLogs({
-        address: routerAddress,
-        event: parseAbiItem(
-          "event PaymentSettled(uint256 indexed paymentId, bytes32 indexed serviceRef, bytes32 indexed serviceId, uint256 buyerAgentId, uint256 providerAgentId, address token, uint256 totalAmount, uint256 providerAmount, uint256 commission)",
-        ),
-        fromBlock,
-        toBlock,
-      });
-
-      if (logs.length === 0) return [];
-
-      // Dedupe block numbers across the batch and fetch each block's
-      // timestamp once. /activity needs settled_at to render "Xs ago"
-      // tooltips; block.timestamp is the cheapest accurate signal.
-      const uniqueBlocks = Array.from(new Set(logs.map((l) => l.blockNumber)));
-      const timestamps = new Map<bigint, bigint>();
-      await Promise.all(
-        uniqueBlocks.map(async (bn) => {
-          const b = await publicClient.getBlock({ blockNumber: bn });
-          timestamps.set(bn, b.timestamp);
-        }),
-      );
-
-      return logs.map((l) => {
-        const args = l.args as PaymentSettledEvent;
-        return {
-          ...args,
-          blockNumber: l.blockNumber,
-          blockTimestamp: timestamps.get(l.blockNumber) ?? 0n,
-          transactionHash: l.transactionHash as Hex,
-        };
-      });
-    },
+    ...createViemEventReader(publicClient, {
+      paymentRouterAddress: opts.paymentRouterAddress,
+      reputationStorageAddress,
+      easAddress: opts.easAddress,
+      confirmationSchemaUid: opts.easConfirmationSchemaUid,
+    }),
 
     ...createReputationReadMethods(publicClient, reputationStorageAddress),
     ...createFeedbackMethods({

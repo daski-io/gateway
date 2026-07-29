@@ -15,7 +15,7 @@ import { createFacilitatorRouter } from "../payment/facilitator.js";
 import { createPrepRouter } from "../payment/prep.js";
 import { createPurchaseRouter } from "../payment/routes.js";
 import { DaskiFacilitatorService } from "../payment/daskiFacilitator.js";
-import type { PaymentScreeningReadinessProbe } from "../payment/screeningReadiness.js";
+import type { ChainDeploymentReadinessProbe } from "../payment/deploymentReadiness.js";
 import { createPublicRouter } from "../public/routes.js";
 import type { ReputationMirrorWorker } from "../reputation/worker.js";
 import type { ChainEventsIndexer } from "../indexer/chainEvents.js";
@@ -23,6 +23,7 @@ import { logErrorWithId } from "../util/errorWrap.js";
 import { sendBodyParserError } from "./bodyErrors.js";
 import { createMetaRouter } from "./metaRoutes.js";
 import { configureMiddleware } from "./middleware.js";
+import type { ApplicationLifecycle } from "../runtime/applicationLifecycle.js";
 
 export interface GatewayHttpOptions {
   config: Config;
@@ -34,7 +35,8 @@ export interface GatewayHttpOptions {
   pool: Pool;
   embedder: Embedder | null;
   embeddingSync: CatalogEmbeddingSynchronizer | null;
-  screeningReadiness: PaymentScreeningReadinessProbe;
+  deploymentReadiness: ChainDeploymentReadinessProbe;
+  lifecycle: ApplicationLifecycle;
   a2aFetch?: typeof fetch;
   a2aTimeoutMs?: number;
   buyerAgentCardFetch?: FetchAgentCardOptions["fetchFn"];
@@ -53,10 +55,26 @@ export async function createGatewayHttp(
     config,
     queries,
     reader,
-    screeningReadiness: options.screeningReadiness,
+    deploymentReadiness: options.deploymentReadiness,
     fetchAgentCardFn: options.buyerAgentCardFetch,
   });
   configureMiddleware(app, queries, config);
+  app.use((req, res, next) => {
+    if (
+      options.lifecycle.isStopping() &&
+      req.path !== "/health/live" &&
+      req.path !== "/health/ready"
+    ) {
+      res.status(503).json({
+        error: {
+          code: "SHUTTING_DOWN",
+          message: "Gateway is shutting down.",
+        },
+      });
+      return;
+    }
+    next();
+  });
   app.use(
     createMetaRouter({
       config,
@@ -65,7 +83,8 @@ export async function createGatewayHttp(
       pool: options.pool,
       indexer: options.indexer,
       reputationWorker,
-      screeningReadiness: options.screeningReadiness,
+      deploymentReadiness: options.deploymentReadiness,
+      lifecycle: options.lifecycle,
     }),
   );
   app.use(createDiscoveryRouter(cache, config));
@@ -75,7 +94,7 @@ export async function createGatewayHttp(
       cache,
       queries,
       reader,
-      screeningReadiness: options.screeningReadiness,
+      deploymentReadiness: options.deploymentReadiness,
       facilitator,
       fetchAgentCardFn: options.buyerAgentCardFetch,
     }),
@@ -107,7 +126,7 @@ export async function createGatewayHttp(
         cache,
         queries,
         reader,
-        screeningReadiness: options.screeningReadiness,
+        deploymentReadiness: options.deploymentReadiness,
         facilitator,
         reputationWorker,
         pool: options.pool,
