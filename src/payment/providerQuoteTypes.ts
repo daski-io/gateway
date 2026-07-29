@@ -46,11 +46,15 @@ export type ProviderQuoteValidationResult =
   | { ok: true; quote: ProviderQuoteCommitment }
   | { ok: false; message: string };
 
+export interface ProviderRejectedField {
+  field: string;
+  code: string;
+}
+
 export type ProviderQuoteResult =
   | {
       ok: true;
       amount: string;
-      notes: string[];
       quote: ProviderQuoteCommitment | null;
       paymentRequired: boolean;
     }
@@ -64,7 +68,7 @@ export type ProviderQuoteResult =
         | "quote_unavailable";
       message: string;
       status?: number;
-      errors?: Array<{ field: string; code: string; message: string }>;
+      rejectedFields?: ProviderRejectedField[];
     };
 
 export interface FetchProviderQuoteArgs {

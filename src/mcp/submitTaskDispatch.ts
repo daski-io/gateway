@@ -177,17 +177,23 @@ export async function dispatchSubmitTask({
   const rpc = post.body;
   if (rpc.error) {
     const mapped = mapProviderRpcError(rpc.error.code);
-    const payload = {
-      code: mapped?.code ?? "PROVIDER_ERROR",
+    const untrustedProviderContent = {
       message: sanitizeProviderValue(
         rpc.error.message ?? "JSON-RPC error",
       ) as string,
+      ...(rpc.error.data !== undefined
+        ? { data: sanitizeProviderValue(rpc.error.data) }
+        : {}),
+    };
+    const payload = {
+      code: mapped?.code ?? "PROVIDER_ERROR",
+      message: mapped
+        ? `Provider returned ${mapped.code}.`
+        : "Provider returned an error.",
       details: {
         contextId,
         ...(rpc.error.code !== undefined ? { rpcCode: rpc.error.code } : {}),
-        ...(rpc.error.data !== undefined
-          ? { data: sanitizeProviderValue(rpc.error.data) }
-          : {}),
+        untrustedProviderContent,
       },
       ...(mapped?.recoverable !== undefined
         ? { recoverable: mapped.recoverable }
@@ -230,11 +236,19 @@ export async function dispatchSubmitTask({
     state: status,
     providerA2AUrl: args.providerA2AUrl,
   };
+  const untrustedProviderContent: Record<string, unknown> = {};
   if (Array.isArray(result.artifacts) && result.artifacts.length > 0) {
-    flattened.artifacts = sanitizeProviderArtifacts(result.artifacts);
+    untrustedProviderContent.artifacts = sanitizeProviderArtifacts(
+      result.artifacts,
+    );
   }
   if (result.status?.message) {
-    flattened.statusMessage = sanitizeProviderValue(result.status.message);
+    untrustedProviderContent.statusMessage = sanitizeProviderValue(
+      result.status.message,
+    );
+  }
+  if (Object.keys(untrustedProviderContent).length > 0) {
+    flattened.untrustedProviderContent = untrustedProviderContent;
   }
 
   const capabilityChallengeReturned =

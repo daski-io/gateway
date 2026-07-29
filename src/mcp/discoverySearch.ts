@@ -193,7 +193,15 @@ function eligibleSkillKeys(
     const cardKey = `${entry.agentId as string}:${
       (entry.serviceSlug as string | null) ?? ""
     }`;
-    const skills = Array.isArray(entry.skills) ? entry.skills : [];
+    const untrustedProviderContent =
+      entry.untrustedProviderContent &&
+      typeof entry.untrustedProviderContent === "object" &&
+      !Array.isArray(entry.untrustedProviderContent)
+        ? (entry.untrustedProviderContent as Record<string, unknown>)
+        : {};
+    const skills = Array.isArray(untrustedProviderContent.skills)
+      ? untrustedProviderContent.skills
+      : [];
     for (const skill of skills) {
       if (!skill || typeof skill !== "object") continue;
       const record = skill as Record<string, unknown>;

@@ -39,22 +39,28 @@ function formatCardForSkillDiscover(
   const entry: Record<string, unknown> = {
     agentId: provider.agentId.toString(),
     serviceSlug: card.serviceSlug,
-    name: sanitizeForLlmReflection(extractAgentCardName(card.agentCard)),
-    serviceDescription: sanitizeForLlmReflection(extension.serviceDescription),
     categoryFamily: extension.categoryFamily,
     serviceType: extension.serviceType,
     jurisdictions: extension.jurisdictions,
     currency: pricing.currency,
     variablePricing,
     billingModel: pricing.billingModel,
-    turnaroundEstimate: sanitizeForLlmReflection(extension.turnaroundEstimate),
     serviceLifecycle: extension.serviceLifecycle,
     agentCardUrl: provider.agentURI,
     providerA2AUrl: extractAgentCardUrl(card.agentCard),
     legal: buildServiceLegal(marketplace, provider.providerLegal),
-    skills: sanitizeForLlmReflection(extractSkills(card.agentCard), {
-      stringMax: 4_000,
-    }),
+    untrustedProviderContent: {
+      name: sanitizeForLlmReflection(extractAgentCardName(card.agentCard)),
+      serviceDescription: sanitizeForLlmReflection(
+        extension.serviceDescription,
+      ),
+      turnaroundEstimate: sanitizeForLlmReflection(
+        extension.turnaroundEstimate,
+      ),
+      skills: sanitizeForLlmReflection(extractSkills(card.agentCard), {
+        stringMax: 4_000,
+      }),
+    },
   };
   if (pricingModel) entry.pricingModel = pricingModel;
   else if (baseAmount !== undefined && baseAmount !== null) {

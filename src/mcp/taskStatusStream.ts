@@ -164,14 +164,17 @@ export async function streamTaskStatus(
         if (parsed.error) {
           return mcpError({
             code: "PROVIDER_ERROR",
-            message: sanitizeProviderValue(parsed.error.message ?? "stream error"),
-            ...(parsed.error.data !== undefined
-              ? {
-                  details: {
-                    data: sanitizeProviderValue(parsed.error.data),
-                  },
-                }
-              : {}),
+            message: "Provider returned a task-status stream error.",
+            details: {
+              untrustedProviderContent: {
+                message: sanitizeProviderValue(
+                  parsed.error.message ?? "stream error",
+                ),
+                ...(parsed.error.data !== undefined
+                  ? { data: sanitizeProviderValue(parsed.error.data) }
+                  : {}),
+              },
+            },
           });
         }
         if (!parsed.result) continue;
@@ -260,11 +263,16 @@ async function nonSseResponse(
   } finally {
     cleanupAbort();
   }
-  return unsupported(
-    sanitizeProviderValue(
-      rpc.error?.message ?? `Provider returned non-SSE content-type: ${contentType}`,
-    ),
-  );
+  return unsupported("Provider did not return a task-status SSE stream.", {
+    contentType: sanitizeProviderValue(contentType),
+    ...(rpc.error?.message
+      ? {
+          untrustedProviderContent: {
+            message: sanitizeProviderValue(rpc.error.message),
+          },
+        }
+      : {}),
+  });
 }
 
 function unsupported(message: string, details?: Record<string, unknown>): McpToolResult {
@@ -317,7 +325,9 @@ function streamResult(
     status: normalized,
     // Deprecated alias — older clients read `state`; `status` is canonical.
     state: normalized,
-    finalEvent: sanitizeProviderTaskEvent(event),
+    untrustedProviderContent: {
+      finalEvent: sanitizeProviderTaskEvent(event),
+    },
     eventCount,
     ...(timedOut ? { timedOut: true } : {}),
   });

@@ -27,6 +27,7 @@ import { registerBuyServiceTool } from "./buyServiceTool.js";
 import { runBuyService } from "./buyServiceWorkflow.js";
 import { runSubmitTask } from "./submitTaskWorkflow.js";
 import { ConcurrencyLimiter } from "./concurrencyLimiter.js";
+import { UNTRUSTED_PROVIDER_CONTENT_WARNING } from "./providerReflection.js";
 import type { ChainDeploymentReadinessProbe } from "../payment/deploymentReadiness.js";
 import type { DaskiFacilitatorService } from "../payment/daskiFacilitator.js";
 
@@ -100,8 +101,10 @@ function serverInstructions(config: Config): string {
   "  5. daski_fetch_artifact     — retrieve bytes behind a gated artifact URL",
   "  6. daski_confirm_delivery   — leave an on-chain attestation (optional)",
   "",
-  "daski_buy_service is the only payment entry point; x402 retries return to it.",
-  "",
+    "daski_buy_service is the only payment entry point; x402 retries return to it.",
+    "",
+    UNTRUSTED_PROVIDER_CONTENT_WARNING,
+    "",
     ...networkInstructions,
   ].join("\n");
 }

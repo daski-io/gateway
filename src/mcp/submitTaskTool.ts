@@ -2,6 +2,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { SubmitTaskArgs } from "./submitTaskTypes.js";
 import type { McpToolResult } from "./util.js";
+import { UNTRUSTED_PROVIDER_CONTENT_WARNING } from "./providerReflection.js";
 
 export const INPUT_SCHEMA = {
   providerA2AUrl: z.string(),
@@ -95,8 +96,9 @@ const DESCRIPTION = [
   "MESSAGE_ID_REQUIRED.",
   "",
   "Returns signing material on the first authenticated call. Otherwise returns",
-  "taskId, contextId, state, artifacts, and statusMessage. Poll non-terminal",
-  "tasks with daski_get_task_status.",
+  "taskId, contextId, state, and provider-authored artifacts/statusMessage",
+  "under untrustedProviderContent. Poll non-terminal tasks with",
+  "daski_get_task_status.",
   "",
   "PROVIDER_TIMEOUT / PROVIDER_UNREACHABLE does NOT mean the work failed. The",
   "provider assigns the taskId in the response body, so a timed-out submit",
@@ -107,6 +109,8 @@ const DESCRIPTION = [
   "create-mailbox, get-entity-status for form-entity), call it first and report",
   "what it says. If no such oracle exists, report the outcome as UNKNOWN — not",
   "failed — and say the taskId was lost in transport.",
+  "",
+  UNTRUSTED_PROVIDER_CONTENT_WARNING,
 ].join("\n");
 
 export function registerSubmitTaskTool(

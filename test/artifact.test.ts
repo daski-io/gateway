@@ -338,7 +338,11 @@ describe("MCP artifact delivery", () => {
     gateways.push(gateway);
     const { client, transport } = await connectClient(gateway.baseUrl);
     try {
-      const result = parseResult<{ artifacts: Array<Record<string, unknown>> }>(
+      const result = parseResult<{
+        untrustedProviderContent: {
+          artifacts: Array<Record<string, unknown>>;
+        };
+      }>(
         await client.callTool({
           name: "daski_get_task_status",
           arguments: {
@@ -347,7 +351,7 @@ describe("MCP artifact delivery", () => {
           },
         }),
       );
-      expect(result.artifacts).toEqual([
+      expect(result.untrustedProviderContent.artifacts).toEqual([
         {
           type: "file",
           name: "formation_document",

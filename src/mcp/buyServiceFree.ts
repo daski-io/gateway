@@ -49,19 +49,20 @@ async function runSynchronousFreeSkill(
   if (!post.raw.ok) {
     return mcpError({
       code: "PROVIDER_ERROR",
-      message:
-        (body.error as { message?: string } | undefined)?.message ??
-        `${ctx.args.skillId} returned HTTP ${post.status}`,
+      message: `${ctx.args.skillId} provider returned HTTP ${post.status}.`,
+      details: {
+        untrustedProviderContent: body,
+      },
     });
   }
   return mcpJson({
     status: "completed",
-    ...body,
     kind: responseKind,
     providerTokenId: ctx.provider.agentId.toString(),
     providerA2AUrl: ctx.providerA2AUrl,
     skillId: ctx.args.skillId,
     chainId: deps.config.chainId,
+    untrustedProviderContent: body,
     network: deps.config.network,
     plan: { steps: [] },
   });

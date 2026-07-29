@@ -44,7 +44,12 @@ async function artifactErrorResponse(res: Response): Promise<McpToolResult> {
   try {
     const body = parseJson(await readBoundedBody(res, ERROR_MAX_BYTES));
     if (body !== null) {
-      details = { ...details, body: sanitizeProviderValue(body) };
+      details = {
+        ...details,
+        untrustedProviderContent: {
+          body: sanitizeProviderValue(body),
+        },
+      };
     }
   } catch (error) {
     if ((error as Error).name === "AbortError") {

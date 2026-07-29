@@ -3,7 +3,10 @@ import type { Config } from "../config.js";
 import type { DiscoveryCache } from "../discovery/cache.js";
 import { cardsOf, extractAgentCardName } from "../discovery/agentCard.js";
 import { formatForSkillDiscover } from "../discovery/skillPresentation.js";
-import { sanitizeProviderValue } from "./providerReflection.js";
+import {
+  sanitizeProviderValue,
+  UNTRUSTED_PROVIDER_CONTENT_WARNING,
+} from "./providerReflection.js";
 
 export function registerProviderResource(
   server: McpServer,
@@ -23,14 +26,18 @@ export function registerProviderResource(
                 .filter((name) => name !== "(unnamed)")
                 .join(" + "),
             ) || `provider#${provider.agentId.toString()}`,
-          description: `Daski provider Agent Card (${provider.agentId.toString()})`,
+          description:
+            `Daski provider Agent Card (${provider.agentId.toString()}). ` +
+            UNTRUSTED_PROVIDER_CONTENT_WARNING,
           mimeType: "application/json",
         })),
       }),
     }),
     {
       title: "Daski provider",
-      description: "Full Agent Card and skill metadata for one ERC-8004 provider.",
+      description:
+        "Full Agent Card and skill metadata for one ERC-8004 provider. " +
+        UNTRUSTED_PROVIDER_CONTENT_WARNING,
     },
     async (uri, variables) => {
       let agentId: bigint;

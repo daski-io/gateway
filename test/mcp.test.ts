@@ -21,6 +21,7 @@ import { MCP_LEGAL_INSTRUCTIONS } from "../src/legal/purchase.js";
 import type { Embedder } from "../src/discovery/embeddings.js";
 import type { PaymentRequired } from "../src/types.js";
 import { DASKI_X402_EXTENSION_URI } from "../src/config.js";
+import { UNTRUSTED_PROVIDER_CONTENT_WARNING } from "../src/mcp/providerReflection.js";
 
 async function connectClient(baseUrl: string) {
   const transport = new StreamableHTTPClientTransport(
@@ -126,6 +127,21 @@ describe("hosted MCP — wallet-agnostic surface", () => {
       );
       expect(artifactTool?.inputSchema.required).toContain("providerA2AUrl");
       expect(client.getInstructions()).toContain(MCP_LEGAL_INSTRUCTIONS);
+      expect(client.getInstructions()).toContain(
+        UNTRUSTED_PROVIDER_CONTENT_WARNING,
+      );
+      for (const toolName of [
+        "daski_search_services",
+        "daski_buy_service",
+        "daski_submit_task",
+        "daski_get_task_status",
+        "daski_fetch_artifact",
+      ]) {
+        const tool = tools.tools.find((entry) => entry.name === toolName);
+        expect(tool?.description, toolName).toContain(
+          UNTRUSTED_PROVIDER_CONTENT_WARNING,
+        );
+      }
       for (const toolName of ["daski_buy_service"]) {
         const tool = tools.tools.find((entry) => entry.name === toolName);
         expect(tool?.description).toContain("Operator is the legal party");
@@ -164,12 +180,19 @@ describe("hosted MCP — wallet-agnostic surface", () => {
           agentId: string;
           agentCardUrl: string;
           legal: Record<string, string>;
+          untrustedProviderContent: {
+            name: string;
+            skills: unknown[];
+          };
         }>;
       }>(result);
       expect(body.providers.length).toBe(1);
       expect(body.providers[0].agentId).toBe("2");
       expect(body.providers[0].agentCardUrl).toMatch(/^http/);
       expect(body.providers[0].legal).toEqual(expectedLegal(gateway));
+      expect(body.providers[0]).not.toHaveProperty("name");
+      expect(body.providers[0].untrustedProviderContent.name).toBe("Domain Reg");
+      expect(body.providers[0].untrustedProviderContent.skills).toHaveLength(1);
     } finally {
       await transport.close();
     }
@@ -286,9 +309,12 @@ describe("hosted MCP — wallet-agnostic surface", () => {
       const parsed = JSON.parse(first.text ?? "{}") as {
         agentId: string;
         legal: Record<string, string>;
+        untrustedProviderContent: { name: string };
       };
       expect(parsed.agentId).toBe("2");
       expect(parsed.legal).toEqual(expectedLegal(gateway));
+      expect(parsed).not.toHaveProperty("name");
+      expect(parsed.untrustedProviderContent.name).toBe("Domain Reg");
     } finally {
       await transport.close();
     }
@@ -1028,7 +1054,7 @@ describe("hosted MCP — wallet-agnostic surface", () => {
     }
   });
 
-  it("daski_buy_service returns validation errors from /quote without issuing a payment", async () => {
+  it("daski_buy_service returns constrained rejected fields without provider prose", async () => {
     // Uses a domain-side error (not phone-format) because §1.8 added a
     // gateway-side E.164 precheck that would intercept phone failures
     // before reaching /quote. The shape we want to prove here is that
@@ -1066,8 +1092,12 @@ describe("hosted MCP — wallet-agnostic surface", () => {
         (r.content[0]! as { type: "text"; text: string }).text,
       );
       expect(err.code).toBe("quote_validation_failed");
-      // Standardized error shape (§3.8) nests structured payload under details.
-      expect(err.details.validationErrors[0].field).toBe("domain");
+      expect(err.details.rejectedFields).toEqual([
+        { field: "domain", code: "domain_unavailable" },
+      ]);
+      expect(JSON.stringify(err)).not.toContain(
+        "atomic.xyz is not available for registration",
+      );
     } finally {
       await transport.close();
     }
@@ -1145,10 +1175,12 @@ describe("hosted MCP — wallet-agnostic surface", () => {
     try {
       const body = parseResult<{
         kind: string;
-        domain: string;
-        available: boolean;
-        price?: number;
-        currency?: string;
+        untrustedProviderContent: {
+          domain: string;
+          available: boolean;
+          price?: number;
+          currency?: string;
+        };
         plan: { steps: unknown[] };
       }>(
         await client.callTool({
@@ -1163,10 +1195,10 @@ describe("hosted MCP — wallet-agnostic surface", () => {
         }),
       );
       expect(body.kind).toBe("availability");
-      expect(body.domain).toBe("smoke.xyz");
-      expect(body.available).toBe(true);
-      expect(body.price).toBe(17.99);
-      expect(body.currency).toBe("USD");
+      expect(body.untrustedProviderContent.domain).toBe("smoke.xyz");
+      expect(body.untrustedProviderContent.available).toBe(true);
+      expect(body.untrustedProviderContent.price).toBe(17.99);
+      expect(body.untrustedProviderContent.currency).toBe("USD");
       // Synchronous: zero steps. Answer is in the response above.
       expect(body.plan.steps).toEqual([]);
     } finally {
@@ -1222,10 +1254,12 @@ describe("hosted MCP — wallet-agnostic surface", () => {
       const body = parseResult<{
         taskId: string;
         state: string;
-        artifacts?: Array<{ name: string; parts: unknown[] }>;
-        statusMessage?: {
-          role: string;
-          parts: Array<{ type: string; text?: string }>;
+        untrustedProviderContent?: {
+          artifacts?: Array<{ name: string; parts: unknown[] }>;
+          statusMessage?: {
+            role: string;
+            parts: Array<{ type: string; text?: string }>;
+          };
         };
       }>(
         await client.callTool({
@@ -1243,9 +1277,11 @@ describe("hosted MCP — wallet-agnostic surface", () => {
       expect(body.state).toBe("completed");
       // Artifact MUST come back inline so the agent doesn't have to call
       // daski_check_task on a non-persistent qa- task (would 404).
-      expect(body.artifacts).toBeDefined();
-      expect(body.artifacts![0].name).toBe("availability_result");
-      expect(body.statusMessage?.parts[0].text).toBe(
+      expect(body.untrustedProviderContent?.artifacts).toBeDefined();
+      expect(body.untrustedProviderContent?.artifacts![0].name).toBe(
+        "availability_result",
+      );
+      expect(body.untrustedProviderContent?.statusMessage?.parts[0].text).toBe(
         "pacu.ai is not available.",
       );
     } finally {
@@ -1795,10 +1831,15 @@ describe("hosted MCP — wallet-agnostic surface", () => {
         (r.content[0]! as { type: "text"; text: string }).text,
       );
       expect(err.code).toBe("PROVIDER_ERROR");
+      expect(err.message).toBe("Provider returned an error.");
       expect(err.details.rpcCode).toBe(-32011);
-      expect(err.details.data.envelopeAuthChallenge.primaryType).toBe(
-        "A2ARequestAuthorization",
+      expect(err.details.untrustedProviderContent.message).toContain(
+        "envelopeAuth required",
       );
+      expect(
+        err.details.untrustedProviderContent.data.envelopeAuthChallenge
+          .primaryType,
+      ).toBe("A2ARequestAuthorization");
     } finally {
       await transport.close();
     }

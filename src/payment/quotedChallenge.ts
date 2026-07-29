@@ -47,7 +47,6 @@ export interface QuotedChallengeValue {
   paymentRequired: PaymentRequired;
   purchaseLegal: PurchaseLegalContext;
   challenge: StoredChallenge;
-  quoteNotes: string[];
 }
 
 export interface QuotedChallengeError {
@@ -140,10 +139,13 @@ export async function createQuotedChallenge(
         message: quoteResult.message,
         ...(quoteResult.code === "quote_validation_failed"
           ? {
-              details: { validationErrors: quoteResult.errors ?? [] },
+              details: {
+                rejectedFields: quoteResult.rejectedFields ?? [],
+              },
               recoverable: true,
               nextAction:
-                "Fix the listed validationErrors in serviceArgs and retry.",
+                "Review only the rejected fields against the published skill " +
+                "schema, correct serviceArgs, and retry.",
             }
           : {}),
       },
@@ -169,11 +171,11 @@ export async function createQuotedChallenge(
         details: {
           quotedAmount: quoteResult.amount,
           limit: input.amountLimit,
-          notes: quoteResult.notes,
         },
         recoverable: true,
         nextAction:
-          "Accept the quote by retrying without amountLimit or with a higher limit.",
+          "Review the quoted amount with the principal and retry only with an " +
+          "explicitly approved higher amount limit.",
       },
     };
   }
@@ -215,7 +217,6 @@ export async function createQuotedChallenge(
       paymentRequired: issued.paymentRequired,
       purchaseLegal: issued.purchaseLegal,
       challenge: issued.challenge,
-      quoteNotes: quoteResult.notes,
     },
   };
 }
