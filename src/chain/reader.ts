@@ -29,9 +29,29 @@ export interface SettlementInput {
   validAfter: bigint;
   validBefore: bigint;
   nonce: Hex;
-  v: number;
-  r: Hex;
-  s: Hex;
+  signature: Hex;
+  nonceSalt: Hex;
+}
+
+export interface ReceiveAuthorizationVerification {
+  signer: Hex;
+  domain: {
+    name: string;
+    version: string;
+    chainId: number;
+    verifyingContract: Hex;
+  };
+  types: Record<string, readonly { name: string; type: string }[]>;
+  primaryType: "ReceiveWithAuthorization";
+  message: {
+    from: Hex;
+    to: Hex;
+    value: bigint;
+    validAfter: bigint;
+    validBefore: bigint;
+    nonce: Hex;
+  };
+  signature: Hex;
 }
 
 export interface SettlementResult {
@@ -231,6 +251,9 @@ export interface IdentityReader {
 
 export interface PaymentChainGateway {
   authorizationUsed(authorizer: Hex, nonce: Hex): Promise<boolean>;
+  verifyReceiveAuthorization(
+    input: ReceiveAuthorizationVerification,
+  ): Promise<boolean>;
   simulatePayment?(
     input: SettlementInput,
     registration?: SettleWithRegistrationInput["registration"],

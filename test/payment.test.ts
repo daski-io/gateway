@@ -2,6 +2,9 @@ import {
   decodePaymentResponseHeader,
   encodePaymentSignatureHeader,
 } from "@x402/core/http";
+import { x402Client } from "@x402/core/client";
+import { ExactEvmScheme } from "@x402/evm/exact/client";
+import { privateKeyToAccount } from "viem/accounts";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   DASKI_X402_EXTENSION_URI,
@@ -9,6 +12,7 @@ import {
 } from "../src/config.js";
 import type { Hex } from "../src/types.js";
 import { startTestGateway, type TestGateway } from "./helpers/setup.js";
+import { TEST_BUYER_KEY } from "./helpers/setup.js";
 
 const TX =
   "0x1111111111111111111111111111111111111111111111111111111111111111" as Hex;
@@ -45,15 +49,17 @@ describe("x402 V2 HTTP payment resource", () => {
     expect(required.resource.url).toBe(`${gateway.baseUrl}/purchase/2`);
     expect(required.accepts).toHaveLength(1);
     expect(required.accepts[0]).toMatchObject({
-      scheme: "exact",
+      scheme: "daski-exact",
       network: "eip155:84532",
       amount: "15000000",
       asset: gateway.config.usdcAddress,
-      payTo: gateway.config.paymentRouterAddress,
+      payTo: gateway.config.x402AdapterAddress,
       extra: {
-        assetTransferMethod: "eip3009",
+        assetTransferMethod: "eip3009-receive",
         name: "USDC",
         version: "2",
+        daskiProfile: "1",
+        paymentRouter: gateway.config.paymentRouterAddress,
       },
     });
     expect(required.accepts[0]?.extra).not.toHaveProperty("daski");
@@ -61,6 +67,9 @@ describe("x402 V2 HTTP payment resource", () => {
       DASKI_X402_EXTENSION_URI
     ] as any;
     expect(extension.info).toMatchObject({
+      profile: "1",
+      x402Adapter: gateway.config.x402AdapterAddress,
+      paymentRouter: gateway.config.paymentRouterAddress,
       providerAgentId: "2",
       buyerAgentId: "5",
       settlementMode: "settle-only",
@@ -81,7 +90,7 @@ describe("x402 V2 HTTP payment resource", () => {
     expect(Buffer.byteLength(encoded, "utf8")).toBeLessThan(8192);
   });
 
-  it("settles an official Exact-EVM payload on the same paid resource", async () => {
+  it("settles a Daski receive payload on the same paid resource", async () => {
     const challenge = await gateway.purchaseChallenge(2n, {
       buyerTokenId: "5",
     });
@@ -124,6 +133,21 @@ describe("x402 V2 HTTP payment resource", () => {
     expect(
       (settled.extensions?.[DASKI_X402_EXTENSION_URI] as any).paymentId,
     ).toBe("42");
+  });
+
+  it("rejects a standard-only exact client before payload creation", async () => {
+    const challenge = await gateway.purchaseChallenge(2n, {
+      buyerTokenId: "5",
+    });
+    const standardOnly = new x402Client().register(
+      "eip155:84532",
+      new ExactEvmScheme(privateKeyToAccount(TEST_BUYER_KEY)),
+    );
+
+    await expect(
+      standardOnly.createPaymentPayload(challenge.paymentRequired!),
+    ).rejects.toThrow(/No network\/scheme registered/);
+    expect(gateway.mockChain.settlements).toHaveLength(0);
   });
 
   it("returns the stored settlement for an identical replay", async () => {
@@ -211,8 +235,9 @@ describe("x402 V2 HTTP payment resource", () => {
     expect(supported.kinds).toEqual([
       {
         x402Version: 2,
-        scheme: "exact",
+        scheme: "daski-exact",
         network: "eip155:84532",
+        extra: { daskiProfile: "1" },
       },
     ]);
     expect(supported.extensions).toContain(DASKI_X402_EXTENSION_URI);

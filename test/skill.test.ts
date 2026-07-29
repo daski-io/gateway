@@ -33,7 +33,7 @@ describe("hosted SKILL.md", () => {
     // Spot-check a few sections so future edits to SKILL.md don't quietly
     // drop critical content.
     expect(text).toMatch(/Prerequisites/);
-    expect(text).toMatch(/x402 V2 MCP client/);
+    expect(text).toMatch(/daski-exact/);
     expect(text).toMatch(/daski_buy_service/);
     expect(text).toContain('_meta["x402/payment"]');
     expect(text).toContain('_meta["x402/payment-response"]');

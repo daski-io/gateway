@@ -1,7 +1,7 @@
 export { isHex32, isHexAddress } from "../util/evmValidation.js";
 
-export const TRANSFER_WITH_AUTHORIZATION_TYPES = {
-  TransferWithAuthorization: [
+export const RECEIVE_WITH_AUTHORIZATION_TYPES = {
+  ReceiveWithAuthorization: [
     { name: "from", type: "address" },
     { name: "to", type: "address" },
     { name: "value", type: "uint256" },

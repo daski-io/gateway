@@ -1,7 +1,7 @@
 /* eslint-disable no-console */
 //
 // Live end-to-end runner — exercises a real Daski gateway against a real
-// EIP-712-capable wallet and the official x402 V2 MCP client. Coinbase CDP
+// EIP-712-capable wallet and the Daski x402 V2 MCP client. Coinbase CDP
 // backs the test wallet. Phased so each phase can be run alone:
 //
 //   PHASE=0   ──  CDP sanity (just connect + resolve address)
@@ -33,9 +33,9 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { x402Client } from "@x402/core/client";
-import { ExactEvmScheme } from "@x402/evm/exact/client";
 import { wrapMCPClientWithPayment } from "@x402/mcp";
 import type { Hex } from "../src/types.js";
+import { DaskiExactEvmScheme } from "../src/payment/daskiClient.js";
 
 interface EnvBundle {
   cdpApiKeyId: string;
@@ -239,21 +239,21 @@ async function phase2_paid_purchase(
     process.env.DASKI_MAX_PAYMENT_ATOMIC ?? "25000000",
   );
   const paymentClient = new x402Client()
-    .register("eip155:84532", new ExactEvmScheme(signer))
-    .register("eip155:8453", new ExactEvmScheme(signer))
+    .register("eip155:84532", new DaskiExactEvmScheme(signer))
+    .register("eip155:8453", new DaskiExactEvmScheme(signer))
     .registerPolicy((version, requirements) =>
       version === 2
         ? requirements.filter(
             (requirement) =>
-              requirement.scheme === "exact" &&
+              requirement.scheme === "daski-exact" &&
               BigInt(requirement.amount) <= maxPaymentAtomic,
           )
         : [],
     );
   const paidClient = wrapMCPClientWithPayment(client, paymentClient);
   try {
-    // The official client receives PaymentRequired, creates a random-nonce
-    // EIP-3009 payload, and retries this same tool with x402 payment metadata.
+    // The Daski client receives PaymentRequired, creates a route-bound
+    // EIP-3009 receive payload, and retries with x402 payment metadata.
     const settled = unwrap<{
       success: boolean;
       paymentId: string;
@@ -272,7 +272,7 @@ async function phase2_paid_purchase(
       }),
     );
     if (!settled.success) {
-      throw new Error("official x402 client did not settle the purchase");
+      throw new Error("Daski x402 client did not settle the purchase");
     }
     console.log(`  ✔ settled on-chain: paymentId=${settled.paymentId} tx=${settled.transaction}`);
     const chainId = Number(settled.network.split(":")[1]);

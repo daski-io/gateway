@@ -35,8 +35,9 @@ The gateway never asks for a private key. Signing happens in the buyer's wallet.
    `daski_buy_service` with the `registration` argument. Registration is an
    application precondition and is persisted before a payment challenge exists.
 4. When `daski_buy_service` returns `isError: true` with a direct
-   `PaymentRequired` object, use a standard x402 V2 MCP client to select an
-   accepted requirement and create the Exact-EVM payment.
+   `PaymentRequired` object, use an x402 V2 client that supports the
+   `daski-exact` scheme to select the requirement and create its route-bound
+   EIP-3009 receive authorization.
 5. Retry the unchanged tool call with the `PaymentPayload` object at
    `_meta["x402/payment"]`.
 6. Read the standard `SettleResponse` from
@@ -97,8 +98,8 @@ request fingerprint.
 `POST /purchase/:providerAgentId` is the complete paid HTTP resource.
 
 - The initial validated request returns `402` with `PAYMENT-REQUIRED`.
-- The client signs a standard Exact-EVM EIP-3009 authorization using a fresh
-  random 32-byte nonce.
+- The client signs the `daski-exact` EIP-3009 receive authorization. Its nonce
+  commits to the complete settlement route plus a fresh 32-byte salt.
 - The client retries the same method, URL, and JSON body with
   `PAYMENT-SIGNATURE`.
 - Success returns `200` with `PAYMENT-RESPONSE`.
@@ -108,9 +109,9 @@ request fingerprint.
 The end client does not call `/settle`. `/verify`, `/settle`, and `/supported`
 are the standardized resource-server-to-facilitator API.
 
-The core requirements use CAIP-2 (`eip155:8453` or `eip155:84532`) and contain
-only Exact-EVM metadata. Marketplace lookup data is under the extension key
-`https://daski.xyz/x402/v2`.
+The core requirements use CAIP-2 (`eip155:8453` or `eip155:84532`) and the
+custom `daski-exact` scheme. Marketplace lookup data and the adapter/router
+profile are under the extension key `https://daski.xyz/x402/v2`.
 
 ## Task dispatch
 

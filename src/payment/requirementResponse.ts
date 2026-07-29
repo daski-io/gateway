@@ -71,11 +71,11 @@ export function buildRequirementResponse(
     input.skillId,
   );
   const requirements: PaymentRequirements = {
-    scheme: "exact",
+    scheme: "daski-exact",
     network: input.config.x402Network,
     amount: input.amount.toString(),
     asset: input.config.usdcAddress,
-    payTo: input.config.paymentRouterAddress,
+    payTo: input.config.x402AdapterAddress,
     maxTimeoutSeconds: Math.max(
       1,
       Math.floor(
@@ -83,12 +83,23 @@ export function buildRequirementResponse(
       ),
     ),
     extra: {
-      assetTransferMethod: "eip3009",
+      assetTransferMethod: "eip3009-receive",
       name: input.config.usdcName,
       version: input.config.usdcVersion,
+      daskiProfile: "1",
+      authorizationValidBefore: Math.floor(
+        input.effectiveExpiresAt.getTime() / 1000,
+      ).toString(),
+      paymentRouter: input.config.paymentRouterAddress,
+      providerAgentId: input.providerTokenId.toString(),
+      serviceId: input.serviceId,
+      serviceRef: input.serviceRef,
     },
   };
   const daskiExtension = buildDaskiX402Declaration(input.config.publicUrl, {
+    profile: "1",
+    x402Adapter: input.config.x402AdapterAddress,
+    paymentRouter: input.config.paymentRouterAddress,
     serviceRef: input.serviceRef,
     providerAgentId: input.providerTokenId.toString(),
     buyerAgentId: input.buyerTokenId.toString(),

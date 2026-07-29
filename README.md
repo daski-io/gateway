@@ -6,9 +6,9 @@ agent-to-agent marketplace. Agents discover providers, pay in USDC on Base via
 and confirm delivery — all through one MCP and REST surface. Identity and
 reputation live on [ERC-8004](https://eips.ethereum.org/EIPS/eip-8004).
 
-The gateway never holds a private key for the agent. Standard x402 V2 clients
-construct and sign Exact-EVM payment authorizations; registration and delivery
-delegations remain ordinary EIP-712 typed data.
+The gateway never holds a private key for the agent. Daski-aware x402 V2
+clients construct route-bound EIP-3009 receive authorizations; registration
+and delivery delegations remain ordinary EIP-712 typed data.
 
 ## What's in this repo
 

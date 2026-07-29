@@ -180,15 +180,24 @@ export function createViemChainReader(opts: ViemReaderOptions): ChainReader {
       })) as boolean;
     },
 
+    async verifyReceiveAuthorization(input) {
+      return publicClient.verifyTypedData({
+        address: input.signer,
+        domain: input.domain,
+        types: input.types as any,
+        primaryType: input.primaryType,
+        message: input.message,
+        signature: input.signature,
+      });
+    },
+
     async simulatePayment(input, registration) {
       const auth = {
         from: input.from,
         validAfter: input.validAfter,
         validBefore: input.validBefore,
         nonce: input.nonce,
-        v: input.v,
-        r: input.r,
-        s: input.s,
+        signature: input.signature,
       } as const;
       if (registration) {
         await publicClient.simulateContract({
@@ -202,6 +211,7 @@ export function createViemChainReader(opts: ViemReaderOptions): ChainReader {
             input.providerAgentId,
             input.serviceId,
             auth,
+            input.nonceSalt,
             registration.agentURI,
             registration.deadline,
             registration.signature,
@@ -223,6 +233,7 @@ export function createViemChainReader(opts: ViemReaderOptions): ChainReader {
           input.providerAgentId,
           input.serviceId,
           auth,
+          input.nonceSalt,
         ],
         account,
         chain,
@@ -239,15 +250,13 @@ export function createViemChainReader(opts: ViemReaderOptions): ChainReader {
         validAfter: input.validAfter,
         validBefore: input.validBefore,
         nonce: input.nonce,
-        v: input.v,
-        r: input.r,
-        s: input.s,
+        signature: input.signature,
       } as const;
 
       // Facilitator submits to the X402Adapter. The buyer signed an
-      // EIP-3009 authorization with `to = router`, so USDC moves directly
-      // from buyer → router; the adapter only orchestrates. `PaymentSettled`
-      // is emitted by the ROUTER in the same transaction.
+      // EIP-3009 receive authorization with `to = adapter`. USDC moves
+      // buyer → adapter → router atomically, and PaymentSettled is emitted
+      // by the router in the same transaction.
       //
       // Explicit gas: the default viem path runs eth_estimateGas without a
       // ceiling, which asks the RPC with the block gas limit (400M on Base
@@ -276,6 +285,7 @@ export function createViemChainReader(opts: ViemReaderOptions): ChainReader {
             input.providerAgentId,
             input.serviceId,
             auth,
+            input.nonceSalt,
           ],
           account,
           chain,
@@ -313,16 +323,14 @@ export function createViemChainReader(opts: ViemReaderOptions): ChainReader {
         validAfter: input.validAfter,
         validBefore: input.validBefore,
         nonce: input.nonce,
-        v: input.v,
-        r: input.r,
-        s: input.s,
+        signature: input.signature,
       } as const;
 
       // 2M gas budget: the atomic path now runs AgentIndex.registerWithSig
       // inside the adapter — canonical-registry register with _safeMint +
       // ERC721URIStorage SSTORE for the agentURI ≈ 380k, safeTransferFrom
       // of the fresh NFT to the buyer ≈ 60k, binding SSTOREs ≈ 50k — plus
-      // the EIP-3009 transferWithAuthorization ≈ 100k and router.settle
+      // the EIP-3009 receiveWithAuthorization ≈ 100k and router.settle
       // bookkeeping ≈ 230k. A budget that aborts mid-execution surfaces as
       // a bare "execution reverted" with no debuggable data (the
       // silent-revert footgun an earlier 600k budget hit), so 2M keeps
@@ -347,6 +355,7 @@ export function createViemChainReader(opts: ViemReaderOptions): ChainReader {
             input.providerAgentId,
             input.serviceId,
             auth,
+            input.nonceSalt,
             input.registration.agentURI,
             input.registration.deadline,
             input.registration.signature,

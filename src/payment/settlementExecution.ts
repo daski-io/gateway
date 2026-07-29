@@ -104,9 +104,8 @@ export async function verifyAndSettleUnlocked(
         validAfter: settleArgs.validAfter,
         validBefore: settleArgs.validBefore,
         nonce: settleArgs.nonce,
-        v: settleArgs.v,
-        r: settleArgs.r,
-        s: settleArgs.s,
+        signature: settleArgs.signature,
+        nonceSalt: settleArgs.nonceSalt,
       };
       const onBroadcast = async (transactionHash: Hex) => {
         const recorded = await queries.recordChallengeTransactionBroadcast(

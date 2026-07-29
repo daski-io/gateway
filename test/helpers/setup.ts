@@ -3,7 +3,7 @@ import type { AddressInfo } from "node:net";
 import { randomUUID } from "node:crypto";
 import { privateKeyToAccount } from "viem/accounts";
 import { decodePaymentRequiredHeader } from "@x402/core/http";
-import { ExactEvmScheme } from "@x402/evm/exact/client";
+import { DaskiExactEvmScheme } from "../../src/payment/daskiClient.js";
 import type { Config } from "../../src/config.js";
 import { createApp, type AppBundle } from "../../src/app.js";
 import { createPool, type Pool } from "../../src/db/pool.js";
@@ -21,7 +21,6 @@ import type { CategoryFamily, FulfillmentMode, ServiceType } from "../../src/ser
 import { resolveSkillOffer } from "../../src/payment/skillOffer.js";
 import type { PaymentSettledEvent } from "../../src/chain/reader.js";
 import type {
-  ExactEvmAuthorization,
   Hex,
   PaymentPayload,
   PaymentRequired,
@@ -139,11 +138,6 @@ export interface TestGateway {
     payload: PaymentPayload,
     serviceRef?: Hex,
   ): Promise<{ status: number; json: any }>;
-  signAuthorization(
-    value: bigint,
-    nonce: Hex,
-    opts?: { validAfter?: bigint; validBefore?: bigint },
-  ): Promise<{ signature: Hex; authorization: ExactEvmAuthorization }>;
   createPaymentPayload(paymentRequired: PaymentRequired): Promise<PaymentPayload>;
   discover(filters?: {
     categoryFamily?: CategoryFamily;
@@ -164,17 +158,6 @@ export interface TestGateway {
   refresh(): Promise<void>;
   close(): Promise<void>;
 }
-
-const TRANSFER_WITH_AUTHORIZATION_TYPES = {
-  TransferWithAuthorization: [
-    { name: "from", type: "address" },
-    { name: "to", type: "address" },
-    { name: "value", type: "uint256" },
-    { name: "validAfter", type: "uint256" },
-    { name: "validBefore", type: "uint256" },
-    { name: "nonce", type: "bytes32" },
-  ],
-} as const;
 
 export async function startTestGateway(opts: TestGatewayOptions = {}): Promise<TestGateway> {
   const mockProvider = await startMockProvider({
@@ -302,43 +285,6 @@ export async function startTestGateway(opts: TestGatewayOptions = {}): Promise<T
   const buyerAccount = privateKeyToAccount(TEST_BUYER_KEY);
   mockChain.setAgentOwner(5n, buyerAccount.address.toLowerCase() as Hex);
   const requirementsByProvider = new Map<string, PaymentRequired>();
-
-  async function signAuthorization(
-    value: bigint,
-    nonce: Hex,
-    opts?: { validAfter?: bigint; validBefore?: bigint },
-  ) {
-    const nowSec = BigInt(Math.floor(Date.now() / 1000));
-    const validAfter = opts?.validAfter ?? 0n;
-    const validBefore = opts?.validBefore ?? nowSec + 3600n;
-    const authorization: ExactEvmAuthorization = {
-      from: buyerAccount.address.toLowerCase() as Hex,
-      to: PAYMENT_ROUTER_ADDRESS,
-      value: value.toString(),
-      validAfter: validAfter.toString(),
-      validBefore: validBefore.toString(),
-      nonce,
-    };
-    const signature = (await buyerAccount.signTypedData({
-      domain: {
-        name: "USDC",
-        version: "2",
-        chainId: CHAIN_ID,
-        verifyingContract: USDC_ADDRESS,
-      },
-      types: TRANSFER_WITH_AUTHORIZATION_TYPES,
-      primaryType: "TransferWithAuthorization",
-      message: {
-        from: authorization.from,
-        to: authorization.to,
-        value,
-        validAfter,
-        validBefore,
-        nonce,
-      },
-    })) as Hex;
-    return { signature, authorization };
-  }
 
   const gateway: TestGateway = {
     bundle,
@@ -492,12 +438,10 @@ export async function startTestGateway(opts: TestGatewayOptions = {}): Promise<T
       return { status: res.status, json };
     },
 
-    signAuthorization,
-
     async createPaymentPayload(paymentRequired) {
       const requirements = paymentRequired.accepts[0];
       if (!requirements) throw new Error("PaymentRequired has no accepts");
-      const signed = await new ExactEvmScheme(
+      const signed = await new DaskiExactEvmScheme(
         buyerAccount,
       ).createPaymentPayload(2, requirements, {
         extensions: paymentRequired.extensions,

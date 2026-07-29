@@ -8,7 +8,6 @@ import type {
   SupportedResponse,
   VerifyResponse,
 } from "@x402/core/types";
-import { ExactEvmScheme } from "@x402/evm/exact/facilitator";
 import { privateKeyToAccount } from "viem/accounts";
 import type { ChainReader } from "../chain/reader.js";
 import {
@@ -24,7 +23,6 @@ import { settleChallenge } from "./settlementCoordinator.js";
 import { verifyPaymentPayload } from "./verifyPayload.js";
 import { getDaskiDeclaration } from "./x402Extension.js";
 import { hashCanonical } from "./requirementResponse.js";
-import { createOfficialFacilitatorSigner } from "./officialFacilitatorSigner.js";
 
 export interface DaskiFacilitatorDeps {
   config: Config;
@@ -82,22 +80,17 @@ export class DaskiFacilitatorService {
 }
 
 class DaskiExactEvmFacilitator implements SchemeNetworkFacilitator {
-  readonly scheme = "exact";
+  readonly scheme = "daski-exact";
   readonly caipFamily = "eip155:*";
-  private readonly standardVerifier: ExactEvmScheme | null;
   private readonly facilitatorAddress: Hex;
 
   constructor(private readonly deps: DaskiFacilitatorDeps) {
     const account = privateKeyToAccount(deps.config.facilitatorPrivateKey);
     this.facilitatorAddress = account.address.toLowerCase() as Hex;
-    this.standardVerifier =
-      deps.config.nodeEnv === "test"
-        ? null
-        : new ExactEvmScheme(createOfficialFacilitatorSigner(deps.config));
   }
 
-  getExtra(_network: Network): undefined {
-    return undefined;
+  getExtra(_network: Network): Record<string, unknown> {
+    return { daskiProfile: "1" };
   }
 
   getSigners(_network: Network): string[] {
@@ -119,16 +112,6 @@ class DaskiExactEvmFacilitator implements SchemeNetworkFacilitator {
         isValid: false,
         invalidReason: "payment_screening_unready",
       };
-    }
-    if (
-      this.standardVerifier &&
-      context.challenge.settlementState !== "paid"
-    ) {
-      const standard = await this.standardVerifier.verify(
-        payload,
-        requirements,
-      );
-      if (!standard.isValid) return standard;
     }
     const verified = await verifyPaymentPayload(
       { payload, challenge: context.challenge },

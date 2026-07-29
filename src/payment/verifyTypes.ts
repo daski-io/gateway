@@ -29,9 +29,8 @@ export type VerifyResult =
       alreadyPaid: boolean;
       payer: Hex;
       settleArgs: {
-        v: number;
-        r: Hex;
-        s: Hex;
+        signature: Hex;
+        nonceSalt: Hex;
         validAfter: bigint;
         validBefore: bigint;
         nonce: Hex;

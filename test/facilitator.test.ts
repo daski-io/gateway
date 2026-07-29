@@ -39,7 +39,7 @@ describe("x402 V2 facilitator API", () => {
     };
   }
 
-  it("verifies an official Exact-EVM payload", async () => {
+  it("verifies a Daski receive payload", async () => {
     const value = await fixture();
     const response = await fetch(`${gateway.baseUrl}/verify`, {
       method: "POST",
@@ -57,17 +57,59 @@ describe("x402 V2 facilitator API", () => {
     });
   });
 
+  it("keeps contract-wallet signatures opaque", async () => {
+    const value = await fixture();
+    (value.payload.payload as { signature: Hex }).signature = "0x1234";
+    gateway.mockChain.verifyReceiveAuthorization = async (input) => {
+      expect(input.signature).toBe("0x1234");
+      return true;
+    };
+
+    const response = await fetch(`${gateway.baseUrl}/verify`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        x402Version: 2,
+        paymentPayload: value.payload,
+        paymentRequirements: value.requirements,
+      }),
+    });
+    expect(await response.json()).toMatchObject({
+      isValid: true,
+      payer: gateway.buyerAddress,
+    });
+  });
+
+  it("rejects a nonce not bound to the issued route", async () => {
+    const value = await fixture();
+    (
+      value.payload.payload as { authorization: { nonce: Hex } }
+    ).authorization.nonce = (`0x${"ab".repeat(32)}`) as Hex;
+
+    const response = await fetch(`${gateway.baseUrl}/verify`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        x402Version: 2,
+        paymentPayload: value.payload,
+        paymentRequirements: value.requirements,
+      }),
+    });
+    expect(await response.json()).toMatchObject({
+      isValid: false,
+      invalidReason: "invalid_exact_evm_payload_authorization",
+    });
+  });
+
   it("rejects an authorization that outlives the issued challenge", async () => {
     const value = await fixture();
-    const signed = await gateway.signAuthorization(
-      BigInt(value.requirements.amount),
-      (`0x${"ab".repeat(32)}`) as Hex,
-      {
-        validBefore:
-          BigInt(Math.floor(Date.now() / 1000)) + 3_600n,
-      },
-    );
-    value.payload.payload = signed;
+    const extended = structuredClone(value.challenge.paymentRequired!);
+    const extra = extended.accepts[0]!.extra!;
+    extra.authorizationValidBefore = (
+      BigInt(String(extra.authorizationValidBefore)) + 3_600n
+    ).toString();
+    const signed = await gateway.createPaymentPayload(extended);
+    value.payload.payload = signed.payload;
     const response = await fetch(`${gateway.baseUrl}/verify`, {
       method: "POST",
       headers: { "content-type": "application/json" },

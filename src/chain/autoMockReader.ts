@@ -164,6 +164,10 @@ export class AutoMockChainReader implements ChainReader {
     );
   }
 
+  async verifyReceiveAuthorization(): Promise<boolean> {
+    return true;
+  }
+
   // ── Settlement ──────────────────────────────────────────────────────
 
   private rememberBuyer(wallet: Hex): bigint {

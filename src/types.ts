@@ -122,6 +122,9 @@ export type {
 };
 
 export interface DaskiX402Info {
+  profile: "1";
+  x402Adapter: Hex;
+  paymentRouter: Hex;
   serviceRef: Hex;
   providerAgentId: string;
   buyerAgentId: string;
@@ -184,6 +187,7 @@ export interface ExactEvmAuthorization {
 }
 
 export interface ExactEvmPayload {
-  signature: Hex; // 0x-prefixed 65-byte signature
+  signature: Hex; // opaque ECDSA or ERC-1271 signature bytes
   authorization: ExactEvmAuthorization;
+  nonceSalt: Hex;
 }

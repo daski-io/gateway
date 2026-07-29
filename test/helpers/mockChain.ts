@@ -1,3 +1,4 @@
+import { recoverTypedDataAddress } from "viem";
 import type { PaymentSettledEventLog } from "../../src/chain/reader.js";
 import { FeedbackSubmissionError } from "../../src/chain/feedbackErrors.js";
 import {
@@ -22,6 +23,7 @@ import type {
   FeedbackInput,
   FeedbackResult,
   PreparedFeedbackTransaction,
+  ReceiveAuthorizationVerification,
   PaymentRouterRecord,
   PaymentSettledEvent,
   ProviderReputation,
@@ -200,6 +202,19 @@ export class MockChainReader implements ChainReader {
         `${authorizer.toLowerCase()}:${nonce.toLowerCase()}`,
       ) ?? false
     );
+  }
+
+  async verifyReceiveAuthorization(
+    input: ReceiveAuthorizationVerification,
+  ): Promise<boolean> {
+    const recovered = await recoverTypedDataAddress({
+      domain: input.domain,
+      types: input.types,
+      primaryType: input.primaryType,
+      message: input.message,
+      signature: input.signature,
+    });
+    return recovered.toLowerCase() === input.signer.toLowerCase();
   }
 
   async simulatePayment(input: SettlementInput): Promise<void> {

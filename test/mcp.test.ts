@@ -3,7 +3,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { x402Client } from "@x402/core/client";
 import { parsePaymentRequired } from "@x402/core/schemas";
-import { ExactEvmScheme } from "@x402/evm/exact/client";
+import { DaskiExactEvmScheme } from "../src/payment/daskiClient.js";
 import { wrapMCPClientWithPayment } from "@x402/mcp";
 import { type Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
@@ -329,10 +329,10 @@ describe("hosted MCP — wallet-agnostic surface", () => {
       expect(body.x402Version).toBe(2);
       expect(body.accepts).toHaveLength(1);
       expect(body.accepts[0]).toMatchObject({
-        scheme: "exact",
+        scheme: "daski-exact",
         network: "eip155:84532",
         amount: "15000000",
-        payTo: gateway.config.paymentRouterAddress,
+        payTo: gateway.config.x402AdapterAddress,
       });
       expect(body.extensions?.["https://daski.xyz/x402/v2"]).toBeDefined();
     } finally {
@@ -502,7 +502,7 @@ describe("hosted MCP — wallet-agnostic surface", () => {
     }
   });
 
-  it("interoperates with the official x402 MCP client", async () => {
+  it("interoperates with the Daski x402 MCP client", async () => {
     const args = {
       providerTokenId: "2",
       serviceSlug: "domain-management",
@@ -525,7 +525,7 @@ describe("hosted MCP — wallet-agnostic surface", () => {
       connected.client,
       new x402Client().register(
         "eip155:84532",
-        new ExactEvmScheme(privateKeyToAccount(TEST_BUYER_KEY)),
+        new DaskiExactEvmScheme(privateKeyToAccount(TEST_BUYER_KEY)),
       ),
     );
     try {
@@ -789,7 +789,7 @@ describe("hosted MCP — wallet-agnostic surface", () => {
       );
 
       expect(body.x402Version).toBe(2);
-      expect(body.accepts[0]?.scheme).toBe("exact");
+      expect(body.accepts[0]?.scheme).toBe("daski-exact");
       expect(body).not.toHaveProperty("warnings");
     } finally {
       await transport.close();
