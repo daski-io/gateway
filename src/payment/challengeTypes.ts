@@ -7,6 +7,7 @@ import type {
 
 export type SettlementState =
   | "pending"
+  | "settlement_prepared"
   | "settlement_broadcast"
   | "paid"
   | "expired"
@@ -29,6 +30,9 @@ export interface StoredChallenge {
   settlementState: SettlementState;
   paymentId: bigint | null;
   transactionHash: Hex | null;
+  preparedTransaction: Hex | null;
+  preparedTransactionNonce: bigint | null;
+  preparedAt: Date | null;
   verifiedAt: Date | null;
   confirmationAttestationUid: Hex | null;
   quoteId: string | null;

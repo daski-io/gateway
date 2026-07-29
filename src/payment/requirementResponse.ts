@@ -116,9 +116,7 @@ export function buildRequirementResponse(
       expiresAt: input.quote.expiresAt.toISOString(),
     },
     settlementMode:
-      input.buyerTokenId === 0n
-        ? "register-and-settle"
-        : "settle-only",
+      input.buyerTokenId === 0n ? "register-and-settle" : "settle-only",
     ...(input.warnings.length > 0 ? { warnings: input.warnings } : {}),
   });
   const paymentRequired: PaymentRequired = {
@@ -153,6 +151,9 @@ export function buildRequirementResponse(
     settlementState: "pending",
     paymentId: null,
     transactionHash: null,
+    preparedTransaction: null,
+    preparedTransactionNonce: null,
+    preparedAt: null,
     verifiedAt: null,
     confirmationAttestationUid: null,
     quoteId: input.quote.quoteId,

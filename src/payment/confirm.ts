@@ -4,6 +4,7 @@ import type { Config } from "../config.js";
 import type { ChainReader } from "../chain/reader.js";
 import { ConfirmationSubmitError } from "../chain/confirmationErrors.js";
 import type { Queries } from "../db/queries.js";
+import { SettlementOutboxPendingError } from "../db/facilitatorLockQueries.js";
 import type { Hex } from "../types.js";
 import type { ReputationMirrorWorker } from "../reputation/worker.js";
 import { logErrorWithId, publicErrorMessage } from "../util/errorWrap.js";
@@ -62,7 +63,9 @@ export type ConfirmResult =
       };
     };
 
-function parseInput(body: unknown): ConfirmInput | { ok: false; message: string } {
+function parseInput(
+  body: unknown,
+): ConfirmInput | { ok: false; message: string } {
   if (!body || typeof body !== "object") {
     return { ok: false, message: "request body must be a JSON object" };
   }
@@ -71,7 +74,7 @@ function parseInput(body: unknown): ConfirmInput | { ok: false; message: string 
   if (b.confirmation !== "Confirmed" && b.confirmation !== "NotConfirmed") {
     return {
       ok: false,
-      message: "confirmation must be \"Confirmed\" or \"NotConfirmed\"",
+      message: 'confirmation must be "Confirmed" or "NotConfirmed"',
     };
   }
   if (!isHexAddress(b.attester)) {
@@ -86,13 +89,22 @@ function parseInput(body: unknown): ConfirmInput | { ok: false; message: string 
     }
   } else if (typeof b.deadline === "number") {
     if (!Number.isInteger(b.deadline) || b.deadline <= 0) {
-      return { ok: false, message: "deadline number must be a positive integer" };
+      return {
+        ok: false,
+        message: "deadline number must be a positive integer",
+      };
     }
   } else {
-    return { ok: false, message: "deadline must be a decimal string or number" };
+    return {
+      ok: false,
+      message: "deadline must be a decimal string or number",
+    };
   }
   if (b.refUid !== undefined && !isHex32(b.refUid)) {
-    return { ok: false, message: "refUid, when provided, must be a 32-byte hex string" };
+    return {
+      ok: false,
+      message: "refUid, when provided, must be a 32-byte hex string",
+    };
   }
   if (!b.signature || typeof b.signature !== "object") {
     return { ok: false, message: "signature is required" };
@@ -102,14 +114,17 @@ function parseInput(body: unknown): ConfirmInput | { ok: false; message: string 
     return { ok: false, message: "signature.v must be a uint8" };
   }
   if (!isHex32(sig.r) || !isHex32(sig.s)) {
-    return { ok: false, message: "signature.r and signature.s must each be 32-byte hex" };
+    return {
+      ok: false,
+      message: "signature.r and signature.s must each be 32-byte hex",
+    };
   }
 
   return {
     confirmation: b.confirmation,
     attester: b.attester,
     deadline: b.deadline as string | number,
-    refUid: (b.refUid as Hex | undefined),
+    refUid: b.refUid as Hex | undefined,
     signature: { v: sig.v, r: sig.r, s: sig.s },
   };
 }
@@ -128,7 +143,10 @@ export async function runConfirmDelivery(
     return {
       ok: false,
       status: 400,
-      error: { code: "bad_payment_id", message: "paymentId must be a numeric string" },
+      error: {
+        code: "bad_payment_id",
+        message: "paymentId must be a numeric string",
+      },
     };
   }
 
@@ -179,11 +197,14 @@ export async function runConfirmDelivery(
       return {
         ok: false,
         status: 404,
-        error: { code: "unknown_payment", message: "no on-chain payment with this id" },
+        error: {
+          code: "unknown_payment",
+          message: "no on-chain payment with this id",
+        },
       };
     }
     confirmationRecipient =
-      record.cachedProviderWallet !== ("0x" + "00".repeat(20))
+      record.cachedProviderWallet !== "0x" + "00".repeat(20)
         ? record.cachedProviderWallet
         : record.cachedProviderOwner;
   } catch (err) {
@@ -236,14 +257,16 @@ export async function runConfirmDelivery(
     // the mirror must NEVER delay or fail the buyer's confirmation
     // response. The durable worker handles its own bookkeeping and logging; the
     // catch here only guards against bugs in the mirror itself.
-    void deps.reputationWorker.enqueue({
-      paymentId,
-      confirmation: input.confirmation,
-      attestationUid: result.attestationUid,
-      refUid: input.refUid ?? null,
-    }).catch((err) => {
-      logErrorWithId("reputationMirror.unhandled", err);
-    });
+    void deps.reputationWorker
+      .enqueue({
+        paymentId,
+        confirmation: input.confirmation,
+        attestationUid: result.attestationUid,
+        refUid: input.refUid ?? null,
+      })
+      .catch((err) => {
+        logErrorWithId("reputationMirror.unhandled", err);
+      });
 
     return {
       ok: true,
@@ -263,10 +286,19 @@ export async function runConfirmDelivery(
 // failed to read back. Only the first is safe to blind-retry, so the
 // taxonomy is split at the viemConfirmation boundary and mapped here.
 function submitFailure(err: unknown, paymentId: bigint): ConfirmResult {
-  if (
-    err instanceof ConfirmationSubmitError &&
-    err.stage === "attestation"
-  ) {
+  if (err instanceof SettlementOutboxPendingError) {
+    return {
+      ok: false,
+      status: 503,
+      error: {
+        code: "settlement_outbox_pending",
+        message:
+          "Payment settlement is awaiting reconciliation. Try again later.",
+        retryable: true,
+      },
+    };
+  }
+  if (err instanceof ConfirmationSubmitError && err.stage === "attestation") {
     // Divergence between on-chain truth and our records: an attestation
     // exists that recordConfirmation and the reputation mirror never saw.
     // Loud on purpose — recovery is manual.
@@ -310,7 +342,9 @@ function submitFailure(err: unknown, paymentId: bigint): ConfirmResult {
           details: {
             stage: "validation",
             signatureConsumed: "no",
-            ...(err.needsFreshSignature ? { requiresFreshSignature: true } : {}),
+            ...(err.needsFreshSignature
+              ? { requiresFreshSignature: true }
+              : {}),
           },
         },
       };
@@ -339,7 +373,9 @@ function submitFailure(err: unknown, paymentId: bigint): ConfirmResult {
             `outcome is unknown to the gateway. Do NOT retry blindly: read ` +
             `the payment's confirmation state on-chain first, and only ` +
             `resubmit if no attestation exists.` +
-            (err.transactionHash ? ` Transaction: ${err.transactionHash}.` : ""),
+            (err.transactionHash
+              ? ` Transaction: ${err.transactionHash}.`
+              : ""),
           retryable: false,
           details: { stage: "unknown", signatureConsumed: "unknown", ...tx },
         },
@@ -355,7 +391,9 @@ function submitFailure(err: unknown, paymentId: bigint): ConfirmResult {
             `its UID could not be read back, so it is not recorded here. Do ` +
             `NOT retry: the nonce is consumed and a second attempt would ` +
             `fail or duplicate. This needs operator recovery.` +
-            (err.transactionHash ? ` Transaction: ${err.transactionHash}.` : ""),
+            (err.transactionHash
+              ? ` Transaction: ${err.transactionHash}.`
+              : ""),
           retryable: false,
           details: { stage: "attestation", signatureConsumed: "yes", ...tx },
         },
@@ -369,7 +407,11 @@ export function createConfirmRouter(deps: ConfirmDeps): Router {
   const router = Router();
 
   router.post("/confirm/:paymentId", async (req: Request, res: Response) => {
-    const result = await runConfirmDelivery(deps, String(req.params.paymentId), req.body);
+    const result = await runConfirmDelivery(
+      deps,
+      String(req.params.paymentId),
+      req.body,
+    );
     if (!result.ok) {
       res.status(result.status).json({ error: result.error });
       return;

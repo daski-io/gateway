@@ -3,40 +3,19 @@ import {
   createWalletClient,
   http,
   nonceManager,
-  parseEventLogs,
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { base, baseSepolia } from "viem/chains";
-import { SettlementTransactionRevertedError } from "./reader.js";
-import {
-  classifySettlementScreeningFailure,
-  SettlementScreeningError,
-} from "./sanctionsErrors.js";
-import {
-  agentIndexAbi,
-  knownErrorAbis,
-  paymentRouterAbi,
-  usdcAbi,
-  x402AdapterAbi,
-} from "./abis.js";
-import type {
-  ChainReader,
-  BroadcastObserver,
-  PaymentRouterRecord,
-  PaymentSettledEvent,
-  SettleWithRegistrationInput,
-  SettleWithRegistrationResult,
-  SettlementInput,
-  SettlementResult,
-} from "./reader.js";
+import { paymentRouterAbi, usdcAbi } from "./abis.js";
+import type { ChainReader, PaymentRouterRecord } from "./reader.js";
 import type { ChainId, Hex } from "../types.js";
-import { decodeRevertReason } from "./viemErrors.js";
 import { createIdentityMethods } from "./viemIdentity.js";
 import { createReputationReadMethods } from "./viemReputationRead.js";
 import { createFeedbackMethods } from "./viemFeedback.js";
 import { createConfirmationMethods } from "./viemConfirmation.js";
 import { createViemEventReader } from "./viemEventReader.js";
 import { createViemDeploymentReadiness } from "./viemDeploymentReadiness.js";
+import { createSettlementMethods } from "./viemSettlement.js";
 export { decodeRevertReason } from "./viemErrors.js";
 
 export interface ViemReaderOptions {
@@ -91,63 +70,8 @@ export function createViemChainReader(opts: ViemReaderOptions): ChainReader {
   const usdcAddress = opts.usdcAddress;
   const reputationStorageAddress = opts.reputationStorageAddress;
 
-  async function settlementFromTransaction(
-    transactionHash: Hex,
-    serviceRef: Hex,
-  ): Promise<SettlementResult> {
-    const receipt = await publicClient.waitForTransactionReceipt({
-      hash: transactionHash,
-    });
-    if (receipt.status !== "success") {
-      throw await classifyRevertedSettlement(
-        transactionHash,
-        receipt.blockNumber,
-      );
-    }
-    const routerLogs = receipt.logs.filter(
-      (log) => log.address.toLowerCase() === routerAddress.toLowerCase(),
-    );
-    const parsed = parseEventLogs({
-      abi: paymentRouterAbi,
-      eventName: "PaymentSettled",
-      logs: routerLogs as any,
-    });
-    const match = parsed.find(
-      (event: any) =>
-        String(event.args.serviceRef).toLowerCase() ===
-        serviceRef.toLowerCase(),
-    );
-    if (!match) {
-      throw new Error("PaymentSettled event missing from transaction");
-    }
-    const args = (match as any).args as PaymentSettledEvent;
-    return {
-      transactionHash,
-      event: {
-        paymentId: args.paymentId,
-        serviceRef: args.serviceRef,
-        serviceId: args.serviceId,
-        buyerAgentId: args.buyerAgentId,
-        providerAgentId: args.providerAgentId,
-        token: args.token,
-        totalAmount: args.totalAmount,
-        providerAmount: args.providerAmount,
-        commission: args.commission,
-      },
-    };
-  }
-
   return {
     ...createIdentityMethods(publicClient, opts),
-
-    async getPaymentRefundedAmount(paymentId: bigint) {
-      return (await publicClient.readContract({
-        address: routerAddress,
-        abi: paymentRouterAbi,
-        functionName: "refundedAmount",
-        args: [paymentId],
-      })) as bigint;
-    },
 
     async getPaymentRecord(
       paymentId: bigint,
@@ -193,259 +117,16 @@ export function createViemChainReader(opts: ViemReaderOptions): ChainReader {
       });
     },
 
-    async simulatePayment(input, registration) {
-      const auth = {
-        from: input.from,
-        validAfter: input.validAfter,
-        validBefore: input.validBefore,
-        nonce: input.nonce,
-        signature: input.signature,
-      } as const;
-      if (registration) {
-        await publicClient.simulateContract({
-          address: adapterAddress,
-          abi: [...x402AdapterAbi, ...knownErrorAbis],
-          functionName: "settleWithRegistration",
-          args: [
-            usdcAddress,
-            input.amount,
-            input.serviceRef,
-            input.providerAgentId,
-            input.serviceId,
-            auth,
-            input.nonceSalt,
-            registration.agentURI,
-            registration.deadline,
-            registration.signature,
-          ],
-          account,
-          chain,
-          gas: 2_000_000n,
-        });
-        return;
-      }
-      await publicClient.simulateContract({
-        address: adapterAddress,
-        abi: [...x402AdapterAbi, ...knownErrorAbis],
-        functionName: "settle",
-        args: [
-          usdcAddress,
-          input.amount,
-          input.serviceRef,
-          input.providerAgentId,
-          input.serviceId,
-          auth,
-          input.nonceSalt,
-        ],
-        account,
-        chain,
-        gas: 2_000_000n,
-      });
-    },
-
-    async settlePayment(
-      input: SettlementInput,
-      onBroadcast?: BroadcastObserver,
-    ): Promise<SettlementResult> {
-      const auth = {
-        from: input.from,
-        validAfter: input.validAfter,
-        validBefore: input.validBefore,
-        nonce: input.nonce,
-        signature: input.signature,
-      } as const;
-
-      // Facilitator submits to the X402Adapter. The buyer signed an
-      // EIP-3009 receive authorization with `to = adapter`. USDC moves
-      // buyer → adapter → router atomically, and PaymentSettled is emitted
-      // by the router in the same transaction.
-      //
-      // Explicit gas: the default viem path runs eth_estimateGas without a
-      // ceiling, which asks the RPC with the block gas limit (400M on Base
-      // Sepolia). sepolia.base.org caps per-tx gas at ~5M and rejects the
-      // estimate with "intrinsic gas too high". The v0.6.0 settle path
-      // (per-party sanctions staticcalls + reputation accounting) exceeds
-      // the old 500k ceiling — verified live: 500k reverts bare, 2M
-      // settles. Matches settleWithRegistration below.
-      //
-      // Simulate first: this is the only place we have a chance to surface
-      // the actual Solidity revert string (e.g. "ERC20: transfer amount
-      // exceeds balance") to the caller. Once we broadcast, the receipt's
-      // status is just success/fail without revert data; the caller would
-      // see a generic wrapper and have no idea why it failed. Simulating
-      // also avoids burning 500k gas on a guaranteed-revert tx.
-      let settleRequest;
-      try {
-        const sim = await publicClient.simulateContract({
-          address: adapterAddress,
-          abi: [...x402AdapterAbi, ...knownErrorAbis],
-          functionName: "settle",
-          args: [
-            usdcAddress,
-            input.amount,
-            input.serviceRef,
-            input.providerAgentId,
-            input.serviceId,
-            auth,
-            input.nonceSalt,
-          ],
-          account,
-          chain,
-          gas: 2_000_000n,
-        });
-        settleRequest = sim.request;
-      } catch (err) {
-        const screening = classifySettlementScreeningFailure(err);
-        if (screening) {
-          throw new SettlementScreeningError(screening, "simulation");
-        }
-        throw new Error(`adapter settle reverted: ${decodeRevertReason(err)}`);
-      }
-
-      let hash: Hex;
-      try {
-        hash = await walletClient.writeContract(settleRequest);
-      } catch (error) {
-        const screening = classifySettlementScreeningFailure(error);
-        if (screening) {
-          throw new SettlementScreeningError(screening, "submission");
-        }
-        throw error;
-      }
-      await onBroadcast?.(hash);
-      return settlementFromTransaction(hash, input.serviceRef);
-    },
-
-    async settleWithRegistration(
-      input: SettleWithRegistrationInput,
-      onBroadcast?: BroadcastObserver,
-    ): Promise<SettleWithRegistrationResult> {
-      const auth = {
-        from: input.from,
-        validAfter: input.validAfter,
-        validBefore: input.validBefore,
-        nonce: input.nonce,
-        signature: input.signature,
-      } as const;
-
-      // 2M gas budget: the atomic path now runs AgentIndex.registerWithSig
-      // inside the adapter — canonical-registry register with _safeMint +
-      // ERC721URIStorage SSTORE for the agentURI ≈ 380k, safeTransferFrom
-      // of the fresh NFT to the buyer ≈ 60k, binding SSTOREs ≈ 50k — plus
-      // the EIP-3009 receiveWithAuthorization ≈ 100k and router.settle
-      // bookkeeping ≈ 230k. A budget that aborts mid-execution surfaces as
-      // a bare "execution reverted" with no debuggable data (the
-      // silent-revert footgun an earlier 600k budget hit), so 2M keeps
-      // ~1M headroom for longer agentURIs and ERC-1271 contract-wallet
-      // signatures (arbitrary length, extra SignatureChecker gas) and
-      // still sits comfortably below Base Sepolia's ~5M per-tx cap.
-      //
-      // Simulate first — see settlePayment for the rationale. Atomic
-      // register+settle has *two* sources of revert (registration sig
-      // mismatch and adapter settle), so a clean reason is even more
-      // valuable here than in plain settle.
-      let settleRequest;
-      try {
-        const sim = await publicClient.simulateContract({
-          address: adapterAddress,
-          abi: [...x402AdapterAbi, ...knownErrorAbis],
-          functionName: "settleWithRegistration",
-          args: [
-            usdcAddress,
-            input.amount,
-            input.serviceRef,
-            input.providerAgentId,
-            input.serviceId,
-            auth,
-            input.nonceSalt,
-            input.registration.agentURI,
-            input.registration.deadline,
-            input.registration.signature,
-          ],
-          account,
-          chain,
-          gas: 2_000_000n,
-        });
-        settleRequest = sim.request;
-      } catch (err) {
-        const screening = classifySettlementScreeningFailure(err);
-        if (screening) {
-          throw new SettlementScreeningError(screening, "simulation");
-        }
-        throw new Error(
-          `settleWithRegistration reverted: ${decodeRevertReason(err)}`,
-        );
-      }
-
-      let hash: Hex;
-      try {
-        hash = await walletClient.writeContract(settleRequest);
-      } catch (error) {
-        const screening = classifySettlementScreeningFailure(error);
-        if (screening) {
-          throw new SettlementScreeningError(screening, "submission");
-        }
-        throw error;
-      }
-      await onBroadcast?.(hash);
-
-      const receipt = await publicClient.waitForTransactionReceipt({ hash });
-      if (receipt.status !== "success") {
-        throw await classifyRevertedSettlement(hash, receipt.blockNumber);
-      }
-
-      // Pull PaymentSettled out of router logs (same defensive filter as
-      // settlePayment) and the optional AgentRegistered event from the
-      // AgentIndex (only present when the buyer was actually minted in
-      // this tx).
-      const routerLogs = receipt.logs.filter(
-        (l) => l.address.toLowerCase() === routerAddress.toLowerCase(),
-      );
-      const settled = parseEventLogs({
-        abi: paymentRouterAbi,
-        eventName: "PaymentSettled",
-        logs: routerLogs as any,
-      });
-      const settledMatch = settled.find(
-        (e: any) =>
-          String(e.args.serviceRef).toLowerCase() === input.serviceRef.toLowerCase(),
-      );
-      if (!settledMatch) {
-        throw new Error("PaymentSettled event missing after settleWithRegistration");
-      }
-      const settledArgs = (settledMatch as any).args as PaymentSettledEvent;
-
-      const indexLogs = receipt.logs.filter(
-        (l) => l.address.toLowerCase() === opts.agentIndexAddress.toLowerCase(),
-      );
-      const registered = parseEventLogs({
-        abi: agentIndexAbi,
-        eventName: "AgentRegistered",
-        logs: indexLogs as any,
-      });
-      const wasRegistered = registered.some(
-        (e: any) => String(e.args.wallet).toLowerCase() === input.from.toLowerCase(),
-      );
-
-      return {
-        transactionHash: hash,
-        event: {
-          paymentId: settledArgs.paymentId,
-          serviceRef: settledArgs.serviceRef,
-          serviceId: settledArgs.serviceId,
-          buyerAgentId: settledArgs.buyerAgentId,
-          providerAgentId: settledArgs.providerAgentId,
-          token: settledArgs.token,
-          totalAmount: settledArgs.totalAmount,
-          providerAmount: settledArgs.providerAmount,
-          commission: settledArgs.commission,
-        },
-        buyerAgentId: settledArgs.buyerAgentId,
-        registered: wasRegistered,
-      };
-    },
-
-    getSettlementByTransaction: settlementFromTransaction,
+    ...createSettlementMethods({
+      publicClient,
+      walletClient,
+      account,
+      chain,
+      adapterAddress,
+      agentIndexAddress: opts.agentIndexAddress,
+      paymentRouterAddress: routerAddress,
+      usdcAddress,
+    }),
 
     ...createConfirmationMethods({
       publicClient,
@@ -496,35 +177,4 @@ export function createViemChainReader(opts: ViemReaderOptions): ChainReader {
       reputationRegistryAddress: opts.reputationRegistryAddress,
     }),
   };
-
-  async function classifyRevertedSettlement(
-    transactionHash: Hex,
-    blockNumber: bigint,
-  ): Promise<Error> {
-    try {
-      const transaction = await publicClient.getTransaction({
-        hash: transactionHash,
-      });
-      if (!transaction.to) {
-        return new SettlementTransactionRevertedError(transactionHash);
-      }
-      await publicClient.call({
-        account: transaction.from,
-        to: transaction.to,
-        data: transaction.input,
-        value: transaction.value,
-        blockNumber,
-      });
-    } catch (error) {
-      const screening = classifySettlementScreeningFailure(error);
-      if (screening) {
-        return new SettlementScreeningError(
-          screening,
-          "receipt_replay",
-          transactionHash,
-        );
-      }
-    }
-    return new SettlementTransactionRevertedError(transactionHash);
-  }
 }

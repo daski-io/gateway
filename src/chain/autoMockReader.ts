@@ -23,13 +23,13 @@ import type {
   FeedbackInput,
   FeedbackResult,
   PreparedFeedbackTransaction,
+  PreparedSettlementTransaction,
   PaymentRouterRecord,
   PaymentSettledEvent,
   ProviderReputation,
   ReputationRecord,
   ServiceReputation,
   SettleWithRegistrationInput,
-  SettleWithRegistrationResult,
   SettlementInput,
   SettlementResult,
   BroadcastObserver,
@@ -84,6 +84,11 @@ export class AutoMockChainReader implements ChainReader {
   private blockNumber = 1n;
   private usedAuthNonces = new Set<string>();
   private settlementResults = new Map<string, SettlementResult>();
+  private preparedSettlements = new Map<
+    string,
+    { input: SettlementInput; result: SettlementResult; registered?: boolean }
+  >();
+  private settlementNonce = 0n;
   private agentByWallet = new Map<string, bigint>();
   private readonly defaultBuyerAgentId: bigint;
 
@@ -183,16 +188,13 @@ export class AutoMockChainReader implements ChainReader {
     return id;
   }
 
-  async settlePayment(
+  async prepareSettlement(
     input: SettlementInput,
-    onBroadcast?: BroadcastObserver,
-  ): Promise<SettlementResult> {
+  ): Promise<PreparedSettlementTransaction> {
     const key = `${input.from.toLowerCase()}:${input.nonce.toLowerCase()}`;
     if (this.usedAuthNonces.has(key)) {
       throw new Error("mock settle: authorization nonce already used");
     }
-    this.usedAuthNonces.add(key);
-
     const buyerAgentId = this.rememberBuyer(input.from);
     const paymentId = this.nextPaymentId++;
     const commission = (input.amount * 5n) / 100n;
@@ -213,34 +215,68 @@ export class AutoMockChainReader implements ChainReader {
       transactionHash: txHashForPayment(paymentId),
       event,
     };
-    this.settlementResults.set(result.transactionHash.toLowerCase(), result);
-    await onBroadcast?.(result.transactionHash);
-    return result;
-  }
-
-  async settleWithRegistration(
-    input: SettleWithRegistrationInput,
-    onBroadcast?: BroadcastObserver,
-  ): Promise<SettleWithRegistrationResult> {
-    const existed = this.agentByWallet.has(input.from.toLowerCase());
-    const result = await this.settlePayment(input, onBroadcast);
+    const nonce = this.settlementNonce++;
+    this.preparedSettlements.set(result.transactionHash.toLowerCase(), {
+      input,
+      result,
+    });
     return {
+      kind: "settle",
       transactionHash: result.transactionHash,
-      event: result.event,
-      buyerAgentId: result.event.buyerAgentId,
-      registered: !existed,
+      serializedTransaction:
+        `0x02${nonce.toString(16).padStart(2, "0")}` as Hex,
+      facilitatorNonce: nonce,
     };
   }
 
-  async getSettlementByTransaction(
+  async prepareSettlementWithRegistration(
+    input: SettleWithRegistrationInput,
+  ): Promise<PreparedSettlementTransaction> {
+    const existed = this.agentByWallet.has(input.from.toLowerCase());
+    const prepared = await this.prepareSettlement(input);
+    const pending = this.preparedSettlements.get(
+      prepared.transactionHash.toLowerCase(),
+    );
+    if (pending) pending.registered = !existed;
+    return { ...prepared, kind: "settle_with_registration" };
+  }
+
+  async submitPreparedSettlement(
+    prepared: PreparedSettlementTransaction,
+    expectedServiceRef: Hex,
+    onBroadcast?: BroadcastObserver,
+  ): Promise<SettlementResult & { registered?: boolean }> {
+    const pending = this.preparedSettlements.get(
+      prepared.transactionHash.toLowerCase(),
+    );
+    if (!pending) throw new Error("mock prepared settlement not found");
+    const { input, result } = pending;
+    if (
+      result.event.serviceRef.toLowerCase() !== expectedServiceRef.toLowerCase()
+    ) {
+      throw new Error("mock settlement serviceRef mismatch");
+    }
+    this.usedAuthNonces.add(
+      `${input.from.toLowerCase()}:${input.nonce.toLowerCase()}`,
+    );
+    this.settlementResults.set(result.transactionHash.toLowerCase(), result);
+    await onBroadcast?.(result.transactionHash);
+    return {
+      ...result,
+      ...(prepared.kind === "settle_with_registration"
+        ? { registered: pending.registered ?? false }
+        : {}),
+    };
+  }
+
+  async findSettlementByTransaction(
     transactionHash: Hex,
     serviceRef: Hex,
-  ): Promise<SettlementResult> {
+  ): Promise<SettlementResult | null> {
     const result = this.settlementResults.get(transactionHash.toLowerCase());
-    if (!result || result.event.serviceRef.toLowerCase() !== serviceRef.toLowerCase()) {
-      throw new Error("mock settlement transaction not found");
-    }
-    return result;
+    return result?.event.serviceRef.toLowerCase() === serviceRef.toLowerCase()
+      ? result
+      : null;
   }
 
   // ── Buyer confirmation (delegated EAS) ──────────────────────────────
@@ -319,10 +355,6 @@ export class AutoMockChainReader implements ChainReader {
     };
   }
 
-  async getPaymentRefundedAmount(_paymentId: bigint): Promise<bigint> {
-    return 0n;
-  }
-
   /**
    * Synthetic PaymentRecord for any nonzero paymentId — mirrors the
    * single-provider mock world (provider = the configured agentId). The
@@ -392,7 +424,10 @@ export class AutoMockChainReader implements ChainReader {
   }
 
   async getFacilitatorTransactionCount(): Promise<bigint> {
-    return BigInt(this.feedbacks.length);
+    const feedbackNonce = BigInt(this.feedbacks.length);
+    return feedbackNonce > this.settlementNonce
+      ? feedbackNonce
+      : this.settlementNonce;
   }
 
   async revokeFeedback(
@@ -405,10 +440,7 @@ export class AutoMockChainReader implements ChainReader {
     return result;
   }
 
-  async getChainProjectionEvents(
-    _from: bigint,
-    _to: bigint,
-  ) {
+  async getChainProjectionEvents(_from: bigint, _to: bigint) {
     return [];
   }
 }

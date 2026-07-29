@@ -39,9 +39,21 @@ export class ChainEventsIndexer {
 
   async initialize(): Promise<void> {
     if (this.initialized) return;
-    this.cachedCursor =
-      await this.queries.getOrAdoptChainProjection(this.descriptor);
-    this.initialized = true;
+    try {
+      this.cachedCursor = await this.queries.getOrAdoptChainProjection(
+        this.descriptor,
+      );
+      await this.refreshSharedState();
+      this.initialized = true;
+    } catch (error) {
+      if (error instanceof ChainProjectionDescriptorError) {
+        await this.queries.recordChainProjectionTerminalFailure({
+          category: "descriptor_mismatch",
+          message: error.message,
+        });
+      }
+      throw error;
+    }
   }
 
   start(): void {
@@ -115,7 +127,18 @@ export class ChainEventsIndexer {
   private async runTick(): Promise<void> {
     try {
       if (!this.initialized) await this.initialize();
-      await this.pollToConfirmedHead();
+      await this.refreshSharedState();
+      if (this.terminal) return;
+      const confirmedHead = await this.observeConfirmedHead();
+      const leadership = await this.queries.tryWithChainProjectionLock(
+        async () => {
+          await this.refreshSharedState();
+          if (this.terminal) return;
+          await this.pollToConfirmedHead(confirmedHead);
+        },
+      );
+      if (!leadership.acquired) await this.refreshSharedState();
+      if (this.terminal) return;
       this.lastSuccessAt = new Date();
       if (this.lastFailure) logger.info("chain events indexer recovered");
       this.lastFailure = null;
@@ -139,6 +162,14 @@ export class ChainEventsIndexer {
           message: this.lastFailure.message,
         });
       }
+      if (category !== "rpc") {
+        await this.queries
+          .recordChainProjectionTerminalFailure({
+            category,
+            message: this.lastFailure.message,
+          })
+          .catch(() => undefined);
+      }
       if (this.terminal && this.timer) {
         clearInterval(this.timer);
         this.timer = null;
@@ -146,17 +177,30 @@ export class ChainEventsIndexer {
     }
   }
 
-  private async pollToConfirmedHead(): Promise<void> {
+  private async refreshSharedState(): Promise<void> {
+    const state = await this.queries.getChainProjectionState(this.descriptor);
+    this.cachedCursor = state.cursor;
+    if (!state.terminalFailure) return;
+    this.terminal = true;
+    this.lastFailure = state.terminalFailure;
+    if (this.timer) {
+      clearInterval(this.timer);
+      this.timer = null;
+    }
+  }
+
+  private async observeConfirmedHead(): Promise<bigint> {
     const head = await this.reader.getBlockNumber();
     const confirmationDepth = this.options.confirmationDepthBlocks ?? 12n;
     const confirmedHead =
       head > confirmationDepth ? head - confirmationDepth : 0n;
     this.confirmedHead = confirmedHead;
+    return confirmedHead;
+  }
+
+  private async pollToConfirmedHead(confirmedHead: bigint): Promise<void> {
     if (confirmedHead < this.descriptor.startBlock) return;
-    if (
-      this.cachedCursor !== null &&
-      this.cachedCursor >= confirmedHead
-    ) {
+    if (this.cachedCursor !== null && this.cachedCursor >= confirmedHead) {
       return;
     }
 

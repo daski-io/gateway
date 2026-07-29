@@ -3,9 +3,7 @@ import type {
   FulfillmentMode,
   ServiceType,
 } from "./serviceTaxonomy.js";
-import type {
-  ProviderLegalMetadata,
-} from "./legal/types.js";
+import type { ProviderLegalMetadata } from "./legal/types.js";
 import type {
   Network,
   PaymentPayload as X402PaymentPayload,
@@ -113,13 +111,10 @@ export interface CachedProvider {
 
 export type PaymentRequirements = X402PaymentRequirements;
 export type PaymentPayload = X402PaymentPayload;
-export type SettlementResponse = X402SettleResponse;
-export type {
-  Network,
-  PaymentRequired,
-  SupportedResponse,
-  VerifyResponse,
+export type SettlementResponse = X402SettleResponse & {
+  retryable?: boolean;
 };
+export type { Network, PaymentRequired, SupportedResponse, VerifyResponse };
 
 export interface DaskiX402Info {
   profile: "1";

@@ -1,6 +1,7 @@
-import type { PaymentChainGateway } from "../chain/reader.js";
+import type { PaymentChainGateway, SettlementInput } from "../chain/reader.js";
 import type { Config } from "../config.js";
 import type { Queries } from "../db/queries.js";
+import { SettlementOutboxPendingError } from "../db/facilitatorLockQueries.js";
 import type { Hex } from "../types.js";
 import { SettlementScreeningError } from "../chain/sanctionsErrors.js";
 import { publicErrorMessage } from "../util/errorWrap.js";
@@ -15,7 +16,7 @@ import {
   validateSettlementEvent,
 } from "./settlementResults.js";
 import { verifyPaymentPayload } from "./verifyPayload.js";
-import { recoverBroadcastSettlement } from "./settlementRecovery.js";
+import { recoverPendingSettlement } from "./settlementRecovery.js";
 import {
   handleSettlementScreeningError,
   screeningFailureResult,
@@ -79,8 +80,20 @@ export async function verifyAndSettleUnlocked(
     return storedSettlementResult(challenge, config.x402Network, payer);
   }
   const enforceBuyer = atomic === undefined;
+  const settlementInput: SettlementInput = {
+    providerAgentId: challenge.providerTokenId,
+    serviceId: challenge.serviceId,
+    amount: challenge.amount,
+    serviceRef: challenge.serviceRef,
+    from: payer,
+    validAfter: settleArgs.validAfter,
+    validBefore: settleArgs.validBefore,
+    nonce: settleArgs.nonce,
+    signature: settleArgs.signature,
+    nonceSalt: settleArgs.nonceSalt,
+  };
   if (challenge.transactionHash) {
-    return recoverBroadcastSettlement(
+    return recoverPendingSettlement(
       challenge,
       config,
       reader,
@@ -90,41 +103,58 @@ export async function verifyAndSettleUnlocked(
       Boolean(atomic),
     );
   }
-  let settlement: Awaited<ReturnType<PaymentChainGateway["settlePayment"]>> & {
+  let settlement: Awaited<
+    ReturnType<PaymentChainGateway["submitPreparedSettlement"]>
+  > & {
     registered?: boolean;
   };
   try {
-    settlement = await queries.withFacilitatorTransactionLock((release) => {
-      const settlementInput = {
-        providerAgentId: challenge.providerTokenId,
-        serviceId: challenge.serviceId,
-        amount: challenge.amount,
-        serviceRef: challenge.serviceRef,
-        from: payer,
-        validAfter: settleArgs.validAfter,
-        validBefore: settleArgs.validBefore,
-        nonce: settleArgs.nonce,
-        signature: settleArgs.signature,
-        nonceSalt: settleArgs.nonceSalt,
-      };
-      const onBroadcast = async (transactionHash: Hex) => {
-        const recorded = await queries.recordChallengeTransactionBroadcast(
+    settlement = await queries.withFacilitatorTransactionLock(
+      async (release) => {
+        const prepared = atomic
+          ? await reader.prepareSettlementWithRegistration({
+              ...settlementInput,
+              registration: atomic.registration,
+            })
+          : await reader.prepareSettlement(settlementInput);
+        const persisted = await queries.recordChallengeTransactionPrepared(
           challenge.serviceRef,
-          transactionHash,
+          prepared.transactionHash,
+          prepared.serializedTransaction,
+          prepared.facilitatorNonce,
         );
-        if (!recorded) {
-          throw new Error("unable to persist broadcast settlement transaction");
+        if (!persisted) {
+          throw new Error("unable to persist prepared settlement transaction");
         }
-        await release();
-      };
-      return atomic
-        ? reader.settleWithRegistration(
-            { ...settlementInput, registration: atomic.registration },
-            onBroadcast,
-          )
-        : reader.settlePayment(settlementInput, onBroadcast);
-    });
+        const onBroadcast = async (transactionHash: Hex) => {
+          const recorded = await queries.recordChallengeTransactionBroadcast(
+            challenge.serviceRef,
+            transactionHash,
+          );
+          if (!recorded) {
+            throw new Error(
+              "unable to persist broadcast settlement transaction",
+            );
+          }
+          await release();
+        };
+        return reader.submitPreparedSettlement(
+          prepared,
+          challenge.serviceRef,
+          onBroadcast,
+        );
+      },
+    );
   } catch (error) {
+    if (error instanceof SettlementOutboxPendingError) {
+      return settlementFailure(
+        503,
+        "settlement_outbox_pending",
+        "another settlement is awaiting transaction reconciliation",
+        config.x402Network,
+        payer,
+      );
+    }
     if (error instanceof SettlementScreeningError) {
       return handleSettlementScreeningError(
         error,
@@ -136,8 +166,8 @@ export async function verifyAndSettleUnlocked(
       );
     }
     const context = atomic
-      ? "verifyAndSettle.settleWithRegistration"
-      : "verifyAndSettle.settlePayment";
+      ? "verifyAndSettle.submitPreparedWithRegistration"
+      : "verifyAndSettle.submitPrepared";
     const pending = await broadcastFailureResult(
       queries,
       challenge,

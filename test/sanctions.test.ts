@@ -1,16 +1,20 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import {
+  decodePaymentResponseHeader,
+  encodePaymentSignatureHeader,
+} from "@x402/core/http";
 import { encodeErrorResult, toFunctionSelector } from "viem";
 import {
   classifySettlementScreeningFailure,
   sanctionsErrorAbi,
   SettlementScreeningError,
 } from "../src/chain/sanctionsErrors.js";
+import { DASKI_X402_EXTENSION_URI } from "../src/config.js";
 import type { Hex, PaymentRequired } from "../src/types.js";
 import { startTestGateway, type TestGateway } from "./helpers/setup.js";
 import { reconcileBroadcastSettlements } from "../src/payment/settlementReconciler.js";
 
-const SANCTIONED_ACCOUNT =
-  "0x00000000000000000000000000000000000000aa" as Hex;
+const SANCTIONED_ACCOUNT = "0x00000000000000000000000000000000000000aa" as Hex;
 const ORACLE = "0x00000000000000000000000000000000000000bb" as Hex;
 const REJECTED_SELECTOR = toFunctionSelector("SanctionedAddress(address)");
 const UNAVAILABLE_SELECTOR = toFunctionSelector(
@@ -24,9 +28,7 @@ describe("sanctions error decoding", () => {
       errorName: "SanctionedAddress",
       args: [SANCTIONED_ACCOUNT],
     });
-    expect(
-      classifySettlementScreeningFailure({ cause: { data } }),
-    ).toEqual({
+    expect(classifySettlementScreeningFailure({ cause: { data } })).toEqual({
       code: "SANCTIONS_ADDRESS_REJECTED",
       retryable: false,
       selector: data.slice(0, 10),
@@ -34,7 +36,9 @@ describe("sanctions error decoding", () => {
     });
     expect(
       classifySettlementScreeningFailure(
-        new Error(`execution reverted: SanctionedAddress(${SANCTIONED_ACCOUNT})`),
+        new Error(
+          `execution reverted: SanctionedAddress(${SANCTIONED_ACCOUNT})`,
+        ),
       ),
     ).toBeNull();
   });
@@ -96,11 +100,20 @@ describe("sanctions settlement lifecycle", () => {
 
     const payload = await paymentPayload(challenge.paymentRequired!);
     const first = await gateway.purchaseSettle(2n, payload);
-    expect(first.status).toBe(200);
+    expect(first.status).toBe(402);
     expect(first.json).toMatchObject({
       success: false,
       errorReason: "SANCTIONS_ADDRESS_REJECTED",
       errorMessage: "This payment cannot be processed.",
+      retryable: false,
+      extensions: {
+        [DASKI_X402_EXTENSION_URI]: {
+          screening: {
+            code: "SANCTIONS_ADDRESS_REJECTED",
+            retryable: false,
+          },
+        },
+      },
     });
     expect(JSON.stringify(first.json)).not.toContain(SANCTIONED_ACCOUNT);
     expect(
@@ -110,8 +123,32 @@ describe("sanctions settlement lifecycle", () => {
 
     gateway.mockChain.setSanctionsReady(false);
     const repeated = await gateway.purchaseSettle(2n, payload);
-    expect(repeated.status).toBe(200);
+    expect(repeated.status).toBe(402);
     expect(repeated.json.errorReason).toBe("SANCTIONS_ADDRESS_REJECTED");
+
+    const purchase = await fetch(`${gateway.baseUrl}/purchase/2`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "payment-signature": encodePaymentSignatureHeader(payload),
+      },
+      body: JSON.stringify(challenge.requestBody),
+    });
+    expect(purchase.status).toBe(402);
+    expect(await purchase.json()).toMatchObject({
+      error: "SANCTIONS_ADDRESS_REJECTED",
+      message: "This payment cannot be processed.",
+      retryable: false,
+    });
+    expect(
+      decodePaymentResponseHeader(purchase.headers.get("payment-response")!)
+        .extensions?.[DASKI_X402_EXTENSION_URI],
+    ).toMatchObject({
+      screening: {
+        code: "SANCTIONS_ADDRESS_REJECTED",
+        retryable: false,
+      },
+    });
   });
 
   it("records oracle outages as retryable without terminal rejection", async () => {
@@ -131,11 +168,12 @@ describe("sanctions settlement lifecycle", () => {
 
     const payload = await paymentPayload(challenge.paymentRequired!);
     const result = await gateway.purchaseSettle(2n, payload);
-    expect(result.status).toBe(200);
+    expect(result.status).toBe(503);
     expect(result.json).toMatchObject({
       errorReason: "SANCTIONS_SCREENING_UNAVAILABLE",
       errorMessage:
         "Payment cannot be processed right now. Please try again later.",
+      retryable: true,
     });
     expect(
       (await gateway.bundle.queries.getChallengeByRef(challenge.serviceRef!))
@@ -152,12 +190,22 @@ describe("sanctions settlement lifecycle", () => {
         oracle: ORACLE,
       },
     });
-    expect(
-      (
-        await gateway.purchaseSettle(2n, payload)
-      ).status,
-    ).toBe(200);
-    const events = await gateway.bundle.pool.query<{ occurrence_count: number }>(
+    const purchase = await fetch(`${gateway.baseUrl}/purchase/2`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "payment-signature": encodePaymentSignatureHeader(payload),
+      },
+      body: JSON.stringify(challenge.requestBody),
+    });
+    expect(purchase.status).toBe(503);
+    expect(await purchase.json()).toMatchObject({
+      error: "SANCTIONS_SCREENING_UNAVAILABLE",
+      retryable: true,
+    });
+    const events = await gateway.bundle.pool.query<{
+      occurrence_count: number;
+    }>(
       `SELECT occurrence_count
          FROM settlement_screening_events
         WHERE service_ref = $1`,
@@ -182,6 +230,12 @@ describe("sanctions settlement lifecycle", () => {
       buyerTokenId: "5",
     });
     const transactionHash = `0x${"cd".repeat(32)}` as Hex;
+    await gateway.bundle.queries.recordChallengeTransactionPrepared(
+      challenge.serviceRef!,
+      transactionHash,
+      "0x0201",
+      0n,
+    );
     await gateway.bundle.queries.recordChallengeTransactionBroadcast(
       challenge.serviceRef!,
       transactionHash,

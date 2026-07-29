@@ -1,7 +1,5 @@
 import type { Hex, OnChainProvider } from "../types.js";
-import type {
-  ChainProjectionEvent,
-} from "./eventTypes.js";
+import type { ChainProjectionEvent } from "./eventTypes.js";
 
 export interface PaymentSettledEvent {
   paymentId: bigint;
@@ -62,9 +60,14 @@ export interface SettlementResult {
   event: PaymentSettledEvent;
 }
 
-export type BroadcastObserver = (
-  transactionHash: Hex,
-) => Promise<void> | void;
+export interface PreparedSettlementTransaction {
+  kind: "settle" | "settle_with_registration";
+  transactionHash: Hex;
+  serializedTransaction: Hex;
+  facilitatorNonce: bigint;
+}
+
+export type BroadcastObserver = (transactionHash: Hex) => Promise<void> | void;
 
 export class SettlementTransactionRevertedError extends Error {
   constructor(transactionHash: Hex) {
@@ -84,12 +87,6 @@ export interface SettleWithRegistrationInput extends SettlementInput {
     deadline: bigint;
     signature: Hex;
   };
-}
-
-export interface SettleWithRegistrationResult extends SettlementResult {
-  buyerAgentId: bigint;
-  /** True when the on-chain path actually minted a new agent in this tx. */
-  registered: boolean;
 }
 
 // ── Buyer confirmation via EAS.attestByDelegation ────────────────────────
@@ -257,23 +254,22 @@ export interface PaymentChainGateway {
   verifyReceiveAuthorization(
     input: ReceiveAuthorizationVerification,
   ): Promise<boolean>;
-  simulatePayment?(
+  prepareSettlement(
     input: SettlementInput,
-    registration?: SettleWithRegistrationInput["registration"],
-  ): Promise<void>;
-  settlePayment(
-    input: SettlementInput,
-    onBroadcast?: BroadcastObserver,
-  ): Promise<SettlementResult>;
-  settleWithRegistration(
+  ): Promise<PreparedSettlementTransaction>;
+  prepareSettlementWithRegistration(
     input: SettleWithRegistrationInput,
+  ): Promise<PreparedSettlementTransaction>;
+  submitPreparedSettlement(
+    prepared: PreparedSettlementTransaction,
+    expectedServiceRef: Hex,
     onBroadcast?: BroadcastObserver,
-  ): Promise<SettleWithRegistrationResult>;
-  getSettlementByTransaction(
+  ): Promise<SettlementResult & { registered?: boolean }>;
+  findSettlementByTransaction(
     transactionHash: Hex,
     serviceRef: Hex,
-  ): Promise<SettlementResult>;
-  getPaymentRefundedAmount(paymentId: bigint): Promise<bigint>;
+  ): Promise<SettlementResult | null>;
+  getFacilitatorTransactionCount(): Promise<bigint>;
   getPaymentRecord(paymentId: bigint): Promise<PaymentRouterRecord | null>;
 }
 
@@ -353,7 +349,9 @@ export async function fetchOnChainProviders(
   whitelist: bigint[],
 ): Promise<OnChainProvider[]> {
   const uniqueWhitelist = [
-    ...new Map(whitelist.map((agentId) => [agentId.toString(), agentId])).values(),
+    ...new Map(
+      whitelist.map((agentId) => [agentId.toString(), agentId]),
+    ).values(),
   ].sort((left, right) => (left < right ? -1 : left > right ? 1 : 0));
   const agentIds: bigint[] = [];
   if (uniqueWhitelist.length > 0) {

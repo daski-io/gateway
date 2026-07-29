@@ -166,10 +166,7 @@ export function createReputationQueries(pool: Pool) {
            FROM candidate
          WHERE mirror.payment_id = candidate.payment_id
          RETURNING mirror.*`,
-        [
-          paymentId?.toString() ?? null,
-          REPUTATION_MIRROR_MAX_ATTEMPTS,
-        ],
+        [paymentId?.toString() ?? null, REPUTATION_MIRROR_MAX_ATTEMPTS],
       );
       return result.rows[0] ? mapRow(result.rows[0]) : null;
     },
@@ -258,9 +255,22 @@ export function createReputationQueries(pool: Pool) {
       );
     },
 
-    async listMissingReputationMirrors(limit = 50): Promise<
-      Array<{ paymentId: bigint; attestationUid: Hex }>
-    > {
+    async deferReputationMirrorForSettlement(paymentId: bigint): Promise<void> {
+      await pool.query(
+        `UPDATE reputation_mirrors
+            SET status = 'retry',
+                attempts = GREATEST(0, attempts - 1),
+                next_attempt_at = now() + interval '5 seconds',
+                last_error = 'prepared settlement is awaiting reconciliation',
+                updated_at = now()
+          WHERE payment_id = $1`,
+        [paymentId.toString()],
+      );
+    },
+
+    async listMissingReputationMirrors(
+      limit = 50,
+    ): Promise<Array<{ paymentId: bigint; attestationUid: Hex }>> {
       const result = await pool.query<{
         payment_id: string;
         confirmation_attestation_uid: Buffer;

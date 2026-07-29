@@ -59,6 +59,21 @@ interface ProjectionStateRow {
   eas_address: Buffer | null;
   confirmation_schema_uid: Buffer | null;
   start_block: string | null;
+  terminal_failure_category:
+    | "descriptor_mismatch"
+    | "projection_integrity"
+    | null;
+  terminal_failure_detail: string | null;
+  terminal_failure_at: Date | null;
+}
+
+export interface ChainProjectionState {
+  cursor: bigint | null;
+  terminalFailure: {
+    category: "descriptor_mismatch" | "projection_integrity";
+    message: string;
+    at: Date;
+  } | null;
 }
 
 export class ChainProjectionDescriptorError extends Error {
@@ -157,7 +172,9 @@ async function lockedState(client: PoolClient): Promise<ProjectionStateRow> {
   const result = await client.query<ProjectionStateRow>(
     `SELECT last_indexed_block, chain_id, payment_router_address,
             reputation_storage_address, eas_address,
-            confirmation_schema_uid, start_block
+            confirmation_schema_uid, start_block,
+            terminal_failure_category, terminal_failure_detail,
+            terminal_failure_at
        FROM chain_indexer_state
       WHERE id = 1
       FOR UPDATE`,
@@ -310,11 +327,7 @@ async function applyEvent(
         AND provider_agent_id = $2
         AND buyer_agent_id = $3
         AND service_id = $4`,
-    [
-      ...identityParams,
-      event.confirmationCode,
-      bytea(event.attestationUid),
-    ],
+    [...identityParams, event.confirmationCode, bytea(event.attestationUid)],
   );
   assertBaseRowUpdated(result.rowCount, event);
 }
@@ -361,6 +374,89 @@ export function createChainEventQueries(pool: Pool) {
       } finally {
         client.release();
       }
+    },
+
+    async getChainProjectionState(
+      descriptor: ChainProjectionDescriptor,
+    ): Promise<ChainProjectionState> {
+      const result = await pool.query<ProjectionStateRow>(
+        `SELECT last_indexed_block, chain_id, payment_router_address,
+                reputation_storage_address, eas_address,
+                confirmation_schema_uid, start_block,
+                terminal_failure_category, terminal_failure_detail,
+                terminal_failure_at
+           FROM chain_indexer_state
+          WHERE id = 1`,
+      );
+      const row = result.rows[0];
+      if (!row || !descriptorMatches(row, descriptor)) {
+        throw new ChainProjectionDescriptorError(
+          "stored chain projection descriptor conflicts with runtime configuration; " +
+            "follow the chain projection reset runbook",
+        );
+      }
+      return {
+        cursor:
+          row.last_indexed_block === null
+            ? null
+            : BigInt(row.last_indexed_block),
+        terminalFailure:
+          row.terminal_failure_category &&
+          row.terminal_failure_detail &&
+          row.terminal_failure_at
+            ? {
+                category: row.terminal_failure_category,
+                message: row.terminal_failure_detail,
+                at: row.terminal_failure_at,
+              }
+            : null,
+      };
+    },
+
+    async tryWithChainProjectionLock<T>(
+      action: () => Promise<T>,
+    ): Promise<{ acquired: false } | { acquired: true; result: T }> {
+      const client = await pool.connect();
+      const lockName = "daski:chain-events-indexer:v2";
+      try {
+        const lock = await client.query<{ acquired: boolean }>(
+          `SELECT pg_try_advisory_lock(
+             hashtextextended($1, 0)
+           ) AS acquired`,
+          [lockName],
+        );
+        if (!lock.rows[0]?.acquired) return { acquired: false };
+        try {
+          return { acquired: true, result: await action() };
+        } finally {
+          await client.query(
+            "SELECT pg_advisory_unlock(hashtextextended($1, 0))",
+            [lockName],
+          );
+        }
+      } finally {
+        client.release();
+      }
+    },
+
+    async recordChainProjectionTerminalFailure(input: {
+      category: "descriptor_mismatch" | "projection_integrity";
+      message: string;
+    }): Promise<void> {
+      await pool.query(
+        `UPDATE chain_indexer_state
+            SET terminal_failure_category = COALESCE(
+                  terminal_failure_category, $1
+                ),
+                terminal_failure_detail = COALESCE(
+                  terminal_failure_detail, $2
+                ),
+                terminal_failure_at = COALESCE(
+                  terminal_failure_at, now()
+                )
+          WHERE id = 1`,
+        [input.category, input.message.slice(0, 2000)],
+      );
     },
 
     async applyChainProjectionPage(input: {
@@ -410,17 +506,12 @@ export function createChainEventQueries(pool: Pool) {
       }
     },
 
-    listRecentChainActivity: (limit: number) =>
-      list("", [limit]),
+    listRecentChainActivity: (limit: number) => list("", [limit]),
 
     listRecentChainActivityByProvider: (
       providerAgentId: bigint,
       limit: number,
-    ) =>
-      list("ce.provider_agent_id = $1", [
-        providerAgentId.toString(),
-        limit,
-      ]),
+    ) => list("ce.provider_agent_id = $1", [providerAgentId.toString(), limit]),
 
     listRecentChainActivityByServiceId: (serviceId: Hex, limit: number) =>
       list("ce.service_id = $1", [bytea(serviceId), limit]),

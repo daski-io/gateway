@@ -167,17 +167,6 @@ export const providerRegistryAbi = [
 
 export const paymentRouterAbi = [
   {
-    // Cumulative refunded amount (atomic USDC) for one paymentId. Returns
-    // 0 for unknown paymentIds and for settled-but-unrefunded ones — the
-    // caller can't distinguish the two from this view alone (use the
-    // gateway's own challenge row to check whether the payment exists).
-    type: "function",
-    name: "refundedAmount",
-    inputs: [{ name: "paymentId", type: "uint256" }],
-    outputs: [{ name: "", type: "uint256" }],
-    stateMutability: "view",
-  },
-  {
     // Full PaymentRecord for one paymentId — the authoritative on-chain
     // source of (buyer, provider, service) for a settled payment. Unknown
     // paymentIds revert. The canonical-feedback mirror reads this to resolve
@@ -540,8 +529,16 @@ export const knownErrorAbis = [
   // OpenZeppelin ERC721 v5 — the canonical IdentityRegistry mints via
   // _safeMint and AgentIndex.registerWithSig transfers the NFT onward, so
   // the receiver/sender errors are reachable through registerWithSig.
-  { type: "error", name: "ERC721InvalidOwner", inputs: [{ name: "owner", type: "address" }] },
-  { type: "error", name: "ERC721NonexistentToken", inputs: [{ name: "tokenId", type: "uint256" }] },
+  {
+    type: "error",
+    name: "ERC721InvalidOwner",
+    inputs: [{ name: "owner", type: "address" }],
+  },
+  {
+    type: "error",
+    name: "ERC721NonexistentToken",
+    inputs: [{ name: "tokenId", type: "uint256" }],
+  },
   {
     type: "error",
     name: "ERC721IncorrectOwner",
@@ -551,8 +548,16 @@ export const knownErrorAbis = [
       { name: "owner", type: "address" },
     ],
   },
-  { type: "error", name: "ERC721InvalidSender", inputs: [{ name: "sender", type: "address" }] },
-  { type: "error", name: "ERC721InvalidReceiver", inputs: [{ name: "receiver", type: "address" }] },
+  {
+    type: "error",
+    name: "ERC721InvalidSender",
+    inputs: [{ name: "sender", type: "address" }],
+  },
+  {
+    type: "error",
+    name: "ERC721InvalidReceiver",
+    inputs: [{ name: "receiver", type: "address" }],
+  },
   {
     type: "error",
     name: "ERC721InsufficientApproval",
@@ -561,8 +566,16 @@ export const knownErrorAbis = [
       { name: "tokenId", type: "uint256" },
     ],
   },
-  { type: "error", name: "ERC721InvalidApprover", inputs: [{ name: "approver", type: "address" }] },
-  { type: "error", name: "ERC721InvalidOperator", inputs: [{ name: "operator", type: "address" }] },
+  {
+    type: "error",
+    name: "ERC721InvalidApprover",
+    inputs: [{ name: "approver", type: "address" }],
+  },
+  {
+    type: "error",
+    name: "ERC721InvalidOperator",
+    inputs: [{ name: "operator", type: "address" }],
+  },
 
   // OpenZeppelin Initializable — UUPS proxies behind every Daski contract.
   { type: "error", name: "InvalidInitialization", inputs: [] },
@@ -579,7 +592,11 @@ export const knownErrorAbis = [
     name: "ECDSAInvalidSignatureLength",
     inputs: [{ name: "length", type: "uint256" }],
   },
-  { type: "error", name: "ECDSAInvalidSignatureS", inputs: [{ name: "s", type: "bytes32" }] },
+  {
+    type: "error",
+    name: "ECDSAInvalidSignatureS",
+    inputs: [{ name: "s", type: "bytes32" }],
+  },
 
   // EAS errors thrown by attestByDelegation along the confirm-delivery path.
   { type: "error", name: "AccessDenied", inputs: [] },

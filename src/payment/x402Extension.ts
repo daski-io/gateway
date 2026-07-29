@@ -9,8 +9,7 @@ import type {
 } from "../types.js";
 import { isHex32, isHexAddress } from "../util/evmValidation.js";
 
-export const DASKI_X402_SCHEMA_PATH =
-  "/.well-known/x402-daski-v2.schema.json";
+export const DASKI_X402_SCHEMA_PATH = "/.well-known/x402-daski-v2.schema.json";
 
 export function daskiX402Schema(publicUrl: string): Record<string, unknown> {
   return {
@@ -52,6 +51,27 @@ export function daskiX402Schema(publicUrl: string): Record<string, unknown> {
           registered: { type: "boolean" },
           quoteId: { type: "string" },
           quoteSignature: { type: "string", pattern: "^0x[0-9a-fA-F]+$" },
+        },
+        additionalProperties: false,
+      },
+      {
+        type: "object",
+        required: ["screening"],
+        properties: {
+          screening: {
+            type: "object",
+            required: ["code", "retryable"],
+            properties: {
+              code: {
+                enum: [
+                  "SANCTIONS_ADDRESS_REJECTED",
+                  "SANCTIONS_SCREENING_UNAVAILABLE",
+                ],
+              },
+              retryable: { type: "boolean" },
+            },
+            additionalProperties: false,
+          },
         },
         additionalProperties: false,
       },

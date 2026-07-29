@@ -25,8 +25,15 @@ export class DatabaseReadinessProbe {
 
   private async check(): Promise<boolean> {
     try {
-      await this.pool.query("SELECT 1");
-      this.ready = true;
+      const result = await this.pool.query<{ ready: boolean }>(
+        `SELECT NOT EXISTS (
+           SELECT 1
+             FROM payment_challenges
+            WHERE settlement_recovery_failure_category =
+              'prepared_transaction_nonce_conflict'
+         ) AS ready`,
+      );
+      this.ready = result.rows[0]?.ready === true;
     } catch {
       this.ready = false;
     }

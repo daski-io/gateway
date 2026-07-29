@@ -74,9 +74,7 @@ export function createSettlementScreeningQueries(pool: Pool) {
             decoded.kind,
             decoded.address.toLowerCase(),
             input.detectionSource,
-            input.transactionHash
-              ? normalizeHex(input.transactionHash)
-              : null,
+            input.transactionHash ? normalizeHex(input.transactionHash) : null,
             terminal ? "compliance_evidence" : "operational_telemetry",
           ],
         );
@@ -85,7 +83,13 @@ export function createSettlementScreeningQueries(pool: Pool) {
         if (terminal) {
           const updated = await client.query(
             `UPDATE payment_challenges
-                SET settlement_state = 'sanctions_rejected'
+                SET settlement_state = 'sanctions_rejected',
+                    prepared_transaction = NULL,
+                    prepared_transaction_nonce = NULL,
+                    prepared_at = NULL,
+                    settlement_recovery_failure_category = NULL,
+                    settlement_recovery_failure_detail = NULL,
+                    settlement_recovery_failure_at = NULL
               WHERE service_ref = $1
                 AND settlement_state <> 'paid'`,
             [hexToBytea(input.challenge.serviceRef)],

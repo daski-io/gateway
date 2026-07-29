@@ -21,12 +21,16 @@ export interface ChallengeRow {
   expires_at: Date;
   settlement_state:
     | "pending"
+    | "settlement_prepared"
     | "settlement_broadcast"
     | "paid"
     | "expired"
     | "sanctions_rejected";
   payment_id: string | null;
   transaction_hash: string | null;
+  prepared_transaction: Buffer | null;
+  prepared_transaction_nonce: string | null;
+  prepared_at: Date | null;
   verified_at: Date | null;
   confirmation_attestation_uid: Buffer | null;
   quote_id: string | null;
@@ -84,6 +88,14 @@ export function rowToChallenge(row: ChallengeRow): StoredChallenge {
     paymentId: row.payment_id != null ? BigInt(row.payment_id) : null,
     transactionHash:
       row.transaction_hash != null ? (row.transaction_hash as Hex) : null,
+    preparedTransaction: row.prepared_transaction
+      ? byteaToHex(row.prepared_transaction)
+      : null,
+    preparedTransactionNonce:
+      row.prepared_transaction_nonce != null
+        ? BigInt(row.prepared_transaction_nonce)
+        : null,
+    preparedAt: row.prepared_at,
     verifiedAt: row.verified_at,
     confirmationAttestationUid: row.confirmation_attestation_uid
       ? byteaToHex(row.confirmation_attestation_uid)

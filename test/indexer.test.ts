@@ -42,8 +42,7 @@ function settlement(
     commission: 0n,
     blockNumber,
     blockTimestamp: 1_700_000_000n + blockNumber,
-    transactionHash:
-      `0x${paymentId.toString(16).padStart(64, "0")}` as Hex,
+    transactionHash: `0x${paymentId.toString(16).padStart(64, "0")}` as Hex,
     transactionIndex: 0,
     logIndex,
   };
@@ -84,8 +83,7 @@ describe("ChainEventsIndexer", () => {
         },
       ],
       configOverrides: {
-        reputationStorageAddress:
-          "0x000000000000000000000000000000000000a009",
+        reputationStorageAddress: "0x000000000000000000000000000000000000a009",
       },
     });
   });
@@ -94,10 +92,12 @@ describe("ChainEventsIndexer", () => {
     await gateway.close();
   });
 
-  function indexer(options: {
-    blockRangePerCall?: bigint;
-    confirmationDepthBlocks?: bigint;
-  } = {}) {
+  function indexer(
+    options: {
+      blockRangePerCall?: bigint;
+      confirmationDepthBlocks?: bigint;
+    } = {},
+  ) {
     return new ChainEventsIndexer(
       gateway.mockChain,
       gateway.bundle.queries,
@@ -159,9 +159,7 @@ describe("ChainEventsIndexer", () => {
     ).toHaveLength(0);
     const stored = await gateway.bundle.pool.query<{
       reputation_eligible: boolean;
-    }>(
-      "SELECT reputation_eligible FROM chain_events WHERE payment_id = 2",
-    );
+    }>("SELECT reputation_eligible FROM chain_events WHERE payment_id = 2");
     expect(stored.rows[0]?.reputation_eligible).toBe(false);
   });
 
@@ -227,8 +225,7 @@ describe("ChainEventsIndexer", () => {
     const worker = indexer({ confirmationDepthBlocks: 0n });
     await worker.tick();
 
-    let [row] =
-      await gateway.bundle.queries.listRecentChainActivity(10);
+    let [row] = await gateway.bundle.queries.listRecentChainActivity(10);
     expect(row).toMatchObject({
       paymentId: 42n,
       outcomeCode: 0,
@@ -319,5 +316,68 @@ describe("ChainEventsIndexer", () => {
       await gateway.bundle.queries.listRecentChainActivity(10),
     ).toHaveLength(1);
     expect(worker.status().lastIndexedBlock).toBe(100n);
+  });
+
+  it("serializes projection pages across replicas", async () => {
+    gateway.mockChain.setBlockNumber(10n);
+    gateway.mockChain.pushChainProjectionEvent(settlement(61n, 5n));
+    gateway.mockChain.pushChainProjectionEvent(eligibility(61n, 5n));
+    const first = indexer({ confirmationDepthBlocks: 0n });
+    const second = indexer({ confirmationDepthBlocks: 0n });
+
+    await Promise.all([first.tick(), second.tick()]);
+    await Promise.all([first.tick(), second.tick()]);
+
+    expect(first.status().terminal).toBe(false);
+    expect(second.status().terminal).toBe(false);
+    expect(first.isReady()).toBe(true);
+    expect(second.isReady()).toBe(true);
+    expect(
+      await gateway.bundle.queries.listRecentChainActivity(10),
+    ).toHaveLength(1);
+  });
+
+  it("fails over to another replica from the shared cursor", async () => {
+    gateway.mockChain.setBlockNumber(5n);
+    gateway.mockChain.pushChainProjectionEvent(settlement(71n, 5n));
+    gateway.mockChain.pushChainProjectionEvent(eligibility(71n, 5n));
+    const first = indexer({ confirmationDepthBlocks: 0n });
+    const second = indexer({ confirmationDepthBlocks: 0n });
+
+    await first.tick();
+    await first.stopAndDrain();
+    gateway.mockChain.setBlockNumber(6n);
+    gateway.mockChain.pushChainProjectionEvent(settlement(72n, 6n));
+    gateway.mockChain.pushChainProjectionEvent(eligibility(72n, 6n));
+    await second.tick();
+
+    expect(second.status()).toMatchObject({
+      terminal: false,
+      lastIndexedBlock: 6n,
+    });
+    expect(
+      await gateway.bundle.queries.listRecentChainActivity(10),
+    ).toHaveLength(2);
+  });
+
+  it("shares terminal projection failures with follower replicas", async () => {
+    gateway.mockChain.setBlockNumber(10n);
+    gateway.mockChain.pushChainProjectionEvent(
+      eligibility(999n, 6n, true, 1, 2n),
+    );
+    const leader = indexer({ confirmationDepthBlocks: 0n });
+    const follower = indexer({ confirmationDepthBlocks: 0n });
+
+    await leader.tick();
+    await follower.tick();
+
+    expect(leader.status()).toMatchObject({
+      terminal: true,
+      lastFailure: { category: "projection_integrity" },
+    });
+    expect(follower.status()).toMatchObject({
+      terminal: true,
+      lastFailure: { category: "projection_integrity" },
+    });
   });
 });

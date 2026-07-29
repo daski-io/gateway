@@ -23,6 +23,7 @@ import type {
   FeedbackInput,
   FeedbackResult,
   PreparedFeedbackTransaction,
+  PreparedSettlementTransaction,
   ReceiveAuthorizationVerification,
   PaymentRouterRecord,
   PaymentSettledEvent,
@@ -30,7 +31,6 @@ import type {
   ReputationRecord,
   ServiceReputation,
   SettleWithRegistrationInput,
-  SettleWithRegistrationResult,
   SettlementInput,
   SettlementResult,
   BroadcastObserver,
@@ -65,6 +65,12 @@ export type SettlementOutcome =
       reason: string;
     }
   | {
+      kind: "submission-error";
+      event: PaymentSettledEvent;
+      txHash: Hex;
+      reason: string;
+    }
+  | {
       kind: "screening-error";
       failure: SettlementScreeningFailure;
       detectionSource: ScreeningDetectionSource;
@@ -86,11 +92,20 @@ export class MockChainReader implements ChainReader {
   private outcomes: SettlementOutcome[] = [];
   private settlementResults = new Map<string, SettlementResult>();
   private settlementRecoveryErrors = new Map<string, Error>();
+  private preparedSettlements = new Map<
+    string,
+    { input: SettlementInput; outcome: SettlementOutcome }
+  >();
+  private settlementNonce = 0n;
+  private settlementBroadcastNonce = 0n;
 
   public settlements: SettlementInput[] = [];
   public simulations: SettlementInput[] = [];
 
-  addProvider(agentId: bigint, entry: MockProviderEntry & { agentURI: string }): void {
+  addProvider(
+    agentId: bigint,
+    entry: MockProviderEntry & { agentURI: string },
+  ): void {
     const key = agentId.toString();
     if (!this.providers.has(key)) this.providerOrder.push(agentId);
     this.providers.set(key, {
@@ -103,7 +118,10 @@ export class MockChainReader implements ChainReader {
   }
 
   setAuthorizationUsed(authorizer: Hex, nonce: Hex, used: boolean): void {
-    this.authStates.set(`${authorizer.toLowerCase()}:${nonce.toLowerCase()}`, used);
+    this.authStates.set(
+      `${authorizer.toLowerCase()}:${nonce.toLowerCase()}`,
+      used,
+    );
   }
 
   /** Queue the next settlement outcome. Tests call this before every submit. */
@@ -124,7 +142,8 @@ export class MockChainReader implements ChainReader {
   async getProviderIdAt(index: bigint): Promise<bigint> {
     const i = Number(index);
     const id = this.providerOrder[i];
-    if (id === undefined) throw new Error(`providerIds index ${i} out of range`);
+    if (id === undefined)
+      throw new Error(`providerIds index ${i} out of range`);
     return id;
   }
 
@@ -174,11 +193,17 @@ export class MockChainReader implements ChainReader {
   private agentOwnerOverrides = new Map<string, Hex>();
 
   setAgentWallet(agentId: bigint, wallet: Hex): void {
-    this.agentWalletOverrides.set(agentId.toString(), wallet.toLowerCase() as Hex);
+    this.agentWalletOverrides.set(
+      agentId.toString(),
+      wallet.toLowerCase() as Hex,
+    );
   }
 
   setAgentOwner(agentId: bigint, wallet: Hex): void {
-    this.agentOwnerOverrides.set(agentId.toString(), wallet.toLowerCase() as Hex);
+    this.agentOwnerOverrides.set(
+      agentId.toString(),
+      wallet.toLowerCase() as Hex,
+    );
   }
 
   async getAgentWallet(agentId: bigint): Promise<Hex> {
@@ -223,28 +248,96 @@ export class MockChainReader implements ChainReader {
     return recovered.toLowerCase() === input.signer.toLowerCase();
   }
 
-  async simulatePayment(input: SettlementInput): Promise<void> {
-    this.simulations.push(input);
-  }
-
-  async settlePayment(
+  async prepareSettlement(
     input: SettlementInput,
-    onBroadcast?: BroadcastObserver,
-  ): Promise<SettlementResult> {
-    this.settlements.push(input);
+  ): Promise<PreparedSettlementTransaction> {
+    this.simulations.push(input);
     const outcome = this.outcomes.shift();
     if (!outcome) {
       throw new Error(
-        "MockChainReader.settlePayment called with no queued outcome",
+        "MockChainReader.prepareSettlement called with no queued outcome",
       );
     }
     if (outcome.kind === "revert") throw new Error(outcome.reason);
+    if (
+      outcome.kind === "screening-error" &&
+      outcome.detectionSource === "simulation"
+    ) {
+      throw new SettlementScreeningError(
+        outcome.failure,
+        outcome.detectionSource,
+        outcome.transactionHash,
+      );
+    }
+    const nonce = this.settlementNonce++;
+    const transactionHash =
+      outcome.kind === "screening-error"
+        ? (outcome.transactionHash ??
+          (`0xbeef${nonce.toString(16).padStart(60, "0")}` as Hex))
+        : outcome.txHash;
+    const prepared = {
+      kind: "settle" as const,
+      transactionHash,
+      serializedTransaction:
+        `0x02${nonce.toString(16).padStart(2, "0")}` as Hex,
+      facilitatorNonce: nonce,
+    };
+    this.preparedSettlements.set(transactionHash.toLowerCase(), {
+      input,
+      outcome,
+    });
+    return prepared;
+  }
+
+  async prepareSettlementWithRegistration(
+    input: SettleWithRegistrationInput,
+  ): Promise<PreparedSettlementTransaction> {
+    this.settleWithRegistrationCalls.push(input);
+    const prepared = await this.prepareSettlement(input);
+    return { ...prepared, kind: "settle_with_registration" };
+  }
+
+  async submitPreparedSettlement(
+    prepared: PreparedSettlementTransaction,
+    expectedServiceRef: Hex,
+    onBroadcast?: BroadcastObserver,
+  ): Promise<SettlementResult & { registered?: boolean }> {
+    const queued = this.preparedSettlements.get(
+      prepared.transactionHash.toLowerCase(),
+    );
+    if (!queued) {
+      throw new Error("mock prepared settlement not found");
+    }
+    const { input, outcome } = queued;
+    this.settlements.push(input);
     if (outcome.kind === "screening-error") {
       throw new SettlementScreeningError(
         outcome.failure,
         outcome.detectionSource,
         outcome.transactionHash,
       );
+    }
+    if (outcome.kind === "submission-error") {
+      queued.outcome = {
+        kind: "success",
+        event: outcome.event,
+        txHash: outcome.txHash,
+      };
+      throw new Error(outcome.reason);
+    }
+    let registered = false;
+    if (prepared.kind === "settle_with_registration") {
+      const registrationInput = input as SettleWithRegistrationInput;
+      const existing = await this.agentOfWallet(input.from);
+      if (existing === 0n) {
+        await this.applyQueuedRegistration({
+          agentURI: registrationInput.registration.agentURI,
+          agentWallet: input.from,
+          deadline: registrationInput.registration.deadline,
+          signature: registrationInput.registration.signature,
+        });
+        registered = true;
+      }
     }
     this.setAuthorizationUsed(input.from, input.nonce, true);
     // If the test didn't bother setting a serviceId on the queued event
@@ -267,11 +360,17 @@ export class MockChainReader implements ChainReader {
     };
     const result = { transactionHash: outcome.txHash, event };
     this.settlementResults.set(outcome.txHash.toLowerCase(), result);
+    if (event.serviceRef.toLowerCase() !== expectedServiceRef.toLowerCase()) {
+      throw new Error("mock settlement serviceRef mismatch");
+    }
+    if (prepared.facilitatorNonce >= this.settlementBroadcastNonce) {
+      this.settlementBroadcastNonce = prepared.facilitatorNonce + 1n;
+    }
     await onBroadcast?.(outcome.txHash);
     if (outcome.kind === "broadcast-error") {
       throw new Error(outcome.reason);
     }
-    return result;
+    return { ...result, ...(prepared.kind === "settle" ? {} : { registered }) };
   }
 
   // ── Confirmation mock ────────────────────────────────────────────
@@ -311,7 +410,10 @@ export class MockChainReader implements ChainReader {
       });
     }
     await onBroadcast?.(outcome.txHash);
-    return { transactionHash: outcome.txHash, attestationUid: outcome.attestationUid };
+    return {
+      transactionHash: outcome.txHash,
+      attestationUid: outcome.attestationUid,
+    };
   }
 
   async getEasAttesterNonce(attester: Hex): Promise<bigint> {
@@ -357,7 +459,8 @@ export class MockChainReader implements ChainReader {
     if (outcome.kind === "revert") throw new Error(outcome.reason);
     // Mirror the on-chain side-effects so subsequent reads see the new agent.
     this.setAgentOfWallet(input.agentWallet, outcome.agentId);
-    const cur = this.registrationNonces.get(input.agentWallet.toLowerCase()) ?? 0n;
+    const cur =
+      this.registrationNonces.get(input.agentWallet.toLowerCase()) ?? 0n;
     this.registrationNonces.set(input.agentWallet.toLowerCase(), cur + 1n);
     return { agentId: outcome.agentId, transactionHash: outcome.txHash };
   }
@@ -465,20 +568,6 @@ export class MockChainReader implements ChainReader {
     return this.reputationRecords.get(paymentId.toString()) ?? null;
   }
 
-  // Per-paymentId refund mock. Default 0n (settled, no refund), which
-  // matches the PaymentRouter behavior — the contract returns 0 for both
-  // unknown and unrefunded paymentIds. Tests that exercise refunds call
-  // setPaymentRefundedAmount.
-  private paymentRefunds = new Map<string, bigint>();
-
-  setPaymentRefundedAmount(paymentId: bigint, atomic: bigint): void {
-    this.paymentRefunds.set(paymentId.toString(), atomic);
-  }
-
-  async getPaymentRefundedAmount(paymentId: bigint): Promise<bigint> {
-    return this.paymentRefunds.get(paymentId.toString()) ?? 0n;
-  }
-
   // Per-paymentId PaymentRouter.getPayment mock. Default null (unknown
   // payment) mirrors the reader's zero-init detection; tests that exercise
   // the reputation mirror seed a record via setPaymentRecord.
@@ -535,8 +624,7 @@ export class MockChainReader implements ChainReader {
     const nonce = this.feedbackNonce++;
     return {
       nonce,
-      transactionHash:
-        `0xfade${nonce.toString(16).padStart(60, "0")}` as Hex,
+      transactionHash: `0xfade${nonce.toString(16).padStart(60, "0")}` as Hex,
       serializedTransaction:
         `0x02${nonce.toString(16).padStart(2, "0")}` as Hex,
     };
@@ -579,7 +667,9 @@ export class MockChainReader implements ChainReader {
   }
 
   async getFacilitatorTransactionCount(): Promise<bigint> {
-    return this.feedbackBroadcastNonce;
+    return this.feedbackBroadcastNonce > this.settlementBroadcastNonce
+      ? this.feedbackBroadcastNonce
+      : this.settlementBroadcastNonce;
   }
 
   async revokeFeedback(
@@ -612,53 +702,24 @@ export class MockChainReader implements ChainReader {
     toBlock: bigint,
   ): Promise<ChainProjectionEvent[]> {
     return this.chainProjectionEvents.filter(
-      (event) =>
-        event.blockNumber >= fromBlock && event.blockNumber <= toBlock,
+      (event) => event.blockNumber >= fromBlock && event.blockNumber <= toBlock,
     );
   }
 
-  async settleWithRegistration(
-    input: SettleWithRegistrationInput,
-    onBroadcast?: BroadcastObserver,
-  ): Promise<SettleWithRegistrationResult> {
-    this.settleWithRegistrationCalls.push(input);
-    let registered = false;
-    const existing = await this.agentOfWallet(input.from);
-    if (existing === 0n) {
-      const reg = await this.applyQueuedRegistration({
-        agentURI: input.registration.agentURI,
-        agentWallet: input.from,
-        deadline: input.registration.deadline,
-        signature: input.registration.signature,
-      });
-      registered = true;
-      // Settlement queue can be parameterised on buyerAgentId by the test;
-      // we just record what the registration produced.
-      reg;
-    }
-    const settled = await this.settlePayment(input, onBroadcast);
-    return {
-      transactionHash: settled.transactionHash,
-      event: settled.event,
-      buyerAgentId: settled.event.buyerAgentId,
-      registered,
-    };
-  }
-
-  async getSettlementByTransaction(
+  async findSettlementByTransaction(
     transactionHash: Hex,
     serviceRef: Hex,
-  ): Promise<SettlementResult> {
+  ): Promise<SettlementResult | null> {
     const recoveryError = this.settlementRecoveryErrors.get(
       transactionHash.toLowerCase(),
     );
     if (recoveryError) throw recoveryError;
     const result = this.settlementResults.get(transactionHash.toLowerCase());
-    if (!result || result.event.serviceRef.toLowerCase() !== serviceRef.toLowerCase()) {
-      throw new Error("mock settlement transaction not found");
-    }
-    return result;
+    return result?.event.serviceRef.toLowerCase() === serviceRef.toLowerCase()
+      ? result
+      : null;
   }
+
 }
 
 export function makePaymentSettledEvent(args: {

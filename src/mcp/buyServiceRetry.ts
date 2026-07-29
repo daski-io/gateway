@@ -130,8 +130,7 @@ export async function runBuyServiceX402Retry(
     });
   }
   if (
-    retryRequestHash.toLowerCase() !==
-    challenge.quoteRequestHash.toLowerCase()
+    retryRequestHash.toLowerCase() !== challenge.quoteRequestHash.toLowerCase()
   ) {
     return mcpError({
       code: "QUOTE_REQUEST_MISMATCH",
@@ -150,15 +149,29 @@ export async function runBuyServiceX402Retry(
       message: "stored challenge is not canonical x402 V2",
     });
   }
-  const settlement = await deps.facilitator.settle(
+  const settlementResult = await deps.facilitator.settleDetailed(
     inboundPayload,
     requirements,
   );
+  const settlement = settlementResult.response;
   if (!settlement.success) {
+    const retryable = settlement.retryable ?? false;
+    const screeningCode = settlement.errorReason;
+    const nextAction =
+      screeningCode === "SANCTIONS_ADDRESS_REJECTED"
+        ? "Do not retry this unchanged payment. Obtain a fresh quote and challenge only if the purchase context changes."
+        : screeningCode === "SANCTIONS_SCREENING_UNAVAILABLE"
+          ? "Retry later while the original quote and challenge remain valid."
+          : retryable
+            ? "Retry the same signed payment later."
+            : undefined;
     return mcpError(
       {
         code: settlement.errorReason ?? "settlement_failed",
         message: settlement.errorMessage ?? "payment settlement failed",
+        retryable,
+        recoverable: retryable,
+        ...(nextAction ? { next_action: nextAction } : {}),
         details: {
           transaction: settlement.transaction,
           payer: settlement.payer,

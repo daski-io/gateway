@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ChainProjectionDescriptor } from "../src/chain/eventTypes.js";
-import type { ChainStatusReader, ChainEventReader } from "../src/chain/reader.js";
+import type {
+  ChainStatusReader,
+  ChainEventReader,
+} from "../src/chain/reader.js";
 import { ChainEventsIndexer } from "../src/indexer/chainEvents.js";
 import { ReputationMirrorWorker } from "../src/reputation/worker.js";
 import { withGracePeriod } from "../src/runtime/gracePeriod.js";
@@ -42,6 +45,15 @@ describe("graceful lifecycle", () => {
     };
     const queries = {
       getOrAdoptChainProjection: async () => null,
+      getChainProjectionState: async () => ({
+        cursor: null,
+        terminalFailure: null,
+      }),
+      tryWithChainProjectionLock: async (operation: () => Promise<void>) => {
+        await operation();
+        return { acquired: true, value: undefined };
+      },
+      recordChainProjectionTerminalFailure: async () => {},
       applyChainProjectionPage: applyPage,
     };
     const indexer = new ChainEventsIndexer(

@@ -7,6 +7,7 @@ import type {
 } from "../chain/reader.js";
 import type { Config } from "../config.js";
 import type { Queries, ReputationMirrorRow } from "../db/queries.js";
+import { SettlementOutboxPendingError } from "../db/facilitatorLockQueries.js";
 import { REPUTATION_MIRROR_MAX_ATTEMPTS } from "../db/reputationQueries.js";
 import type { Hex } from "../types.js";
 import { logErrorWithId } from "../util/errorWrap.js";
@@ -249,6 +250,10 @@ export class ReputationMirrorWorker {
     error: unknown,
   ): Promise<void> {
     if (error instanceof NonceConsumedError) return;
+    if (error instanceof SettlementOutboxPendingError) {
+      await this.deps.queries.deferReputationMirrorForSettlement(row.paymentId);
+      return;
+    }
     const message = error instanceof Error ? error.message : String(error);
     const terminal =
       error instanceof FeedbackSubmissionError ||

@@ -50,7 +50,10 @@ async function seedPaid(
     amount: args.amountAtomic,
     skillId: args.skillId ?? null,
     serviceSlug:
-      args.serviceSlug ?? primary?.serviceSlug ?? args.skillId ?? "test-service",
+      args.serviceSlug ??
+      primary?.serviceSlug ??
+      args.skillId ??
+      "test-service",
     serviceVersion: "1",
     serviceId,
     providerA2AUrl: PROVIDER_A2A,
@@ -81,9 +84,7 @@ async function seedPaid(
       args.providerAgentId.toString(),
       args.amountAtomic.toString(),
       args.settledAt ?? new Date(),
-      args.reputationEligible === undefined
-        ? true
-        : args.reputationEligible,
+      args.reputationEligible === undefined ? true : args.reputationEligible,
     ],
   );
 }
@@ -246,11 +247,7 @@ describe("public v1 — /services", () => {
               source: "registrar",
               hint: "Quote at purchase via Name.com.",
             },
-            requiredFields: [
-              "domain",
-              "registrantName",
-              "registrantEmail",
-            ],
+            requiredFields: ["domain", "registrantName", "registrantEmail"],
           },
         },
         {
@@ -408,14 +405,16 @@ describe("public v1 — /services/:agentId", () => {
     // Without a fallback the activity feed shows `null` for the buyer
     // name; with the fallback, it derives `buyer-<last6>` from the
     // wallet — same convention the gateway uses at registration time.
-    const wallet =
-      "0xABd98f58eCA6e676E613C4001dd4c497fBAA39aA" as Hex;
+    const wallet = "0xABd98f58eCA6e676E613C4001dd4c497fBAA39aA" as Hex;
     gateway.mockChain.setAgentWallet(20n, wallet);
     // Explicitly no setAgentURI(20n, ...) — agentURI returns "".
 
     await seedPaid(gateway, {
       serviceRef:
-        "0xccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc".slice(0, 66) as Hex,
+        "0xccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc".slice(
+          0,
+          66,
+        ) as Hex,
       providerAgentId: 1n,
       buyerAgentId: 20n,
       amountAtomic: 12_000_000n,
@@ -427,9 +426,7 @@ describe("public v1 — /services/:agentId", () => {
 
     const res = await fetch(`${gateway.baseUrl}/public/v1/services/1`);
     const body = (await res.json()) as any;
-    const row = body.recentPurchases.find(
-      (r: any) => r.buyerAgentId === "20",
-    );
+    const row = body.recentPurchases.find((r: any) => r.buyerAgentId === "20");
     expect(row).toBeDefined();
     // Last 6 hex chars of `0xabd98f58eca6e676e613c4001dd4c497fbaa39aa` → "aa39aa".
     expect(row.buyerName).toBe("buyer-aa39aa");
@@ -861,7 +858,7 @@ describe("public v1 — /activity", () => {
     expect(unknown.buyerName).toBeNull();
   });
 
-  it("surfaces PaymentRouter.refundedAmount per activity row", async () => {
+  it("surfaces cumulative refund events per activity row", async () => {
     await seedPaid(gateway, {
       serviceRef:
         "0x6666666666666666666666666666666666666666666666666666666666666666",
@@ -1103,8 +1100,7 @@ describe("public v1 — /stats", () => {
       [412n, 9n, 1_000_000_000n, null],
     ] as const) {
       await seedPaid(gateway, {
-        serviceRef:
-          `0x${paymentId.toString(16).padStart(64, "0")}` as Hex,
+        serviceRef: `0x${paymentId.toString(16).padStart(64, "0")}` as Hex,
         providerAgentId: 1n,
         buyerAgentId,
         amountAtomic,
@@ -1414,12 +1410,14 @@ describe("public v1 — /buyers (leaderboard)", () => {
   it("honors the ?limit query param", async () => {
     for (let i = 0; i < 5; i++) {
       await seedPaid(gateway, {
-        serviceRef: ("0x" + (i + 0xb0).toString(16).padStart(2, "0").repeat(32)) as Hex,
+        serviceRef: ("0x" +
+          (i + 0xb0).toString(16).padStart(2, "0").repeat(32)) as Hex,
         providerAgentId: 1n,
         buyerAgentId: BigInt(100 + i),
         amountAtomic: BigInt((i + 1) * 1_000_000),
         paymentId: BigInt(900 + i),
-        txHash: ("0x" + (i + 0x90).toString(16).padStart(2, "0").repeat(32)) as Hex,
+        txHash: ("0x" +
+          (i + 0x90).toString(16).padStart(2, "0").repeat(32)) as Hex,
       });
     }
 

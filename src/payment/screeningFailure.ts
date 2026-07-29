@@ -88,7 +88,7 @@ export async function handleSettlementScreeningError(
       error.failure.code === "SANCTIONS_SCREENING_UNAVAILABLE" &&
       error.transactionHash
     ) {
-      const cleared = await queries.clearChallengeTransactionBroadcast(
+      const cleared = await queries.clearChallengePreparedTransaction(
         challenge.serviceRef,
         error.transactionHash,
       );

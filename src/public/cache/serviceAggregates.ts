@@ -53,6 +53,9 @@ function syntheticChallenge(row: ChainActivityRow): StoredChallenge {
     settlementState: "paid",
     paymentId: row.paymentId,
     transactionHash: row.txHash,
+    preparedTransaction: null,
+    preparedTransactionNonce: null,
+    preparedAt: null,
     verifiedAt: row.settledAt,
     confirmationAttestationUid: row.confirmationAttestationUid,
     quoteId: null,
@@ -86,9 +89,7 @@ export function chainRowToSkillEnriched(
       row.outcomeCode == null ? null : (OUTCOMES[row.outcomeCode] ?? null),
     confirmation: CONFIRMATIONS[row.confirmationCode] ?? "Pending",
     fulfillmentSeconds:
-      row.fulfillmentSeconds == null
-        ? null
-        : BigInt(row.fulfillmentSeconds),
+      row.fulfillmentSeconds == null ? null : BigInt(row.fulfillmentSeconds),
     outcomeTimestamp: 0n,
     confirmationTimestamp: 0n,
     outcomeRecorded: row.outcomeCode != null,

@@ -1,4 +1,9 @@
-import type { PaymentChainGateway } from "../chain/reader.js";
+import type {
+  PaymentChainGateway,
+  PreparedSettlementTransaction,
+  SettlementResult,
+} from "../chain/reader.js";
+import { SettlementTransactionRevertedError } from "../chain/reader.js";
 import { SettlementScreeningError } from "../chain/sanctionsErrors.js";
 import type { Config } from "../config.js";
 import type { Queries } from "../db/queries.js";
@@ -14,7 +19,7 @@ import {
 } from "./settlementResults.js";
 import type { SettleResult } from "./verifyTypes.js";
 
-export async function recoverBroadcastSettlement(
+export async function recoverPendingSettlement(
   challenge: StoredChallenge,
   config: Config,
   reader: PaymentChainGateway,
@@ -23,13 +28,52 @@ export async function recoverBroadcastSettlement(
   enforceBuyer: boolean,
   atomic: boolean,
 ): Promise<SettleResult> {
-  let recovered: Awaited<
-    ReturnType<PaymentChainGateway["getSettlementByTransaction"]>
-  >;
+  let recovered: SettlementResult & { registered?: boolean };
   try {
-    recovered = await reader.getSettlementByTransaction(
-      challenge.transactionHash!,
-      challenge.serviceRef,
+    recovered = await queries.withFacilitatorTransactionLock(
+      async (release) => {
+        const existing = await reader.findSettlementByTransaction(
+          challenge.transactionHash!,
+          challenge.serviceRef,
+        );
+        if (existing) {
+          await release();
+          return existing;
+        }
+        const prepared = preparedFromChallenge(challenge);
+        if (!prepared) {
+          throw new Error(
+            "pending settlement is missing its signed transaction",
+          );
+        }
+        const nextNonce = await reader.getFacilitatorTransactionCount();
+        if (nextNonce > prepared.facilitatorNonce) {
+          await queries.recordPreparedSettlementNonceConflict(
+            challenge.serviceRef,
+          );
+          throw new Error(
+            "prepared settlement nonce was consumed; receipt reconciliation is required",
+          );
+        }
+        const onBroadcast = async (transactionHash: Hex) => {
+          const recorded = await queries.recordChallengeTransactionBroadcast(
+            challenge.serviceRef,
+            transactionHash,
+          );
+          if (!recorded) {
+            throw new Error(
+              "unable to persist broadcast settlement transaction",
+            );
+          }
+          await release();
+        };
+        return reader.submitPreparedSettlement(
+          prepared,
+          challenge.serviceRef,
+          onBroadcast,
+        );
+      },
+      { settlementServiceRef: challenge.serviceRef },
     );
   } catch (error) {
     if (error instanceof SettlementScreeningError) {
@@ -42,15 +86,37 @@ export async function recoverBroadcastSettlement(
         atomic ? "settle_with_registration" : "settle",
       );
     }
+    if (error instanceof SettlementTransactionRevertedError) {
+      const cleared = await queries.clearChallengePreparedTransaction(
+        challenge.serviceRef,
+        challenge.transactionHash!,
+      );
+      if (!cleared) {
+        return settlementFailure(
+          503,
+          "settlement_confirmation_pending",
+          "reverted settlement could not be reconciled",
+          config.x402Network,
+          payer,
+        );
+      }
+      return settlementFailure(
+        402,
+        "unexpected_settle_error",
+        "on-chain settlement reverted",
+        config.x402Network,
+        payer,
+      );
+    }
     return settlementFailure(
       503,
       "settlement_confirmation_pending",
       publicErrorMessage(
         atomic
-          ? "verifyAndSettleWithRegistration.recoverBroadcast"
-          : "verifyAndSettle.recoverBroadcast",
+          ? "verifyAndSettleWithRegistration.recoverPending"
+          : "verifyAndSettle.recoverPending",
         error,
-        "settlement was broadcast and is awaiting confirmation",
+        "settlement is prepared or broadcast and is awaiting confirmation",
       ),
       config.x402Network,
       payer,
@@ -100,4 +166,22 @@ export async function recoverBroadcastSettlement(
     atomic,
   });
   return result;
+}
+
+export function preparedFromChallenge(
+  challenge: StoredChallenge,
+): PreparedSettlementTransaction | null {
+  if (
+    !challenge.transactionHash ||
+    !challenge.preparedTransaction ||
+    challenge.preparedTransactionNonce == null
+  ) {
+    return null;
+  }
+  return {
+    transactionHash: challenge.transactionHash,
+    serializedTransaction: challenge.preparedTransaction,
+    facilitatorNonce: challenge.preparedTransactionNonce,
+    kind: challenge.buyerTokenId === 0n ? "settle_with_registration" : "settle",
+  };
 }
