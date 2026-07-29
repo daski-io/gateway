@@ -1,78 +1,14 @@
 import type { Hex } from "../types.js";
 import type { Pool } from "./pool.js";
+import {
+  mapReputationMirrorRow,
+  REPUTATION_MIRROR_MAX_ATTEMPTS,
+  reputationBytea,
+  type ReputationMirrorDbRow,
+  type ReputationMirrorRow,
+} from "./reputationRows.js";
 
-export const REPUTATION_MIRROR_MAX_ATTEMPTS = 8;
-
-export type ReputationMirrorStatus =
-  | "queued"
-  | "processing"
-  | "prepared"
-  | "broadcast"
-  | "retry"
-  | "sent"
-  | "failed"
-  | "skipped";
-
-interface ReputationMirrorDbRow {
-  payment_id: string;
-  attestation_uid: Buffer;
-  provider_agent_id: string | null;
-  feedback_index: string | null;
-  tx_hash: Buffer | null;
-  status: ReputationMirrorStatus;
-  confirmation: "Confirmed" | "NotConfirmed" | null;
-  ref_uid: Buffer | null;
-  prepared_tx: Buffer | null;
-  tx_nonce: string | null;
-  attempts: number;
-  next_attempt_at: Date;
-  last_error: string | null;
-  created_at: Date;
-  updated_at: Date;
-}
-
-export interface ReputationMirrorRow {
-  paymentId: bigint;
-  attestationUid: Hex;
-  providerAgentId: bigint | null;
-  feedbackIndex: bigint | null;
-  txHash: Hex | null;
-  status: ReputationMirrorStatus;
-  confirmation: "Confirmed" | "NotConfirmed" | null;
-  refUid: Hex | null;
-  preparedTransaction: Hex | null;
-  transactionNonce: bigint | null;
-  attempts: number;
-  nextAttemptAt: Date;
-  lastError: string | null;
-  createdAt: Date;
-  updatedAt: Date;
-}
-
-const bytea = (value: Hex): Buffer => Buffer.from(value.slice(2), "hex");
-const hex = (value: Buffer): Hex => `0x${value.toString("hex")}` as Hex;
-
-function mapRow(row: ReputationMirrorDbRow): ReputationMirrorRow {
-  return {
-    paymentId: BigInt(row.payment_id),
-    attestationUid: hex(row.attestation_uid),
-    providerAgentId:
-      row.provider_agent_id == null ? null : BigInt(row.provider_agent_id),
-    feedbackIndex:
-      row.feedback_index == null ? null : BigInt(row.feedback_index),
-    txHash: row.tx_hash ? hex(row.tx_hash) : null,
-    status: row.status,
-    confirmation: row.confirmation,
-    refUid: row.ref_uid ? hex(row.ref_uid) : null,
-    preparedTransaction: row.prepared_tx ? hex(row.prepared_tx) : null,
-    transactionNonce: row.tx_nonce == null ? null : BigInt(row.tx_nonce),
-    attempts: row.attempts,
-    nextAttemptAt: row.next_attempt_at,
-    lastError: row.last_error,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-  };
-}
+export { REPUTATION_MIRROR_MAX_ATTEMPTS } from "./reputationRows.js";
 
 export function createReputationQueries(pool: Pool) {
   return {
@@ -83,7 +19,7 @@ export function createReputationQueries(pool: Pool) {
         "SELECT * FROM reputation_mirrors WHERE payment_id = $1",
         [paymentId.toString()],
       );
-      return result.rows[0] ? mapRow(result.rows[0]) : null;
+      return result.rows[0] ? mapReputationMirrorRow(result.rows[0]) : null;
     },
 
     async enqueueReputationMirror(input: {
@@ -92,36 +28,126 @@ export function createReputationQueries(pool: Pool) {
       attestationUid: Hex;
       refUid: Hex | null;
     }): Promise<boolean> {
-      const result = await pool.query(
+      const result = await pool.query<{ should_process: boolean }>(
         `INSERT INTO reputation_mirrors
            (payment_id, attestation_uid, confirmation, ref_uid, status)
          VALUES ($1, $2, $3, $4, 'queued')
          ON CONFLICT (payment_id) DO UPDATE
-         SET attestation_uid = EXCLUDED.attestation_uid,
-             confirmation = EXCLUDED.confirmation,
-             ref_uid = EXCLUDED.ref_uid,
-             status = 'queued',
-             prepared_tx = NULL,
-             tx_nonce = NULL,
+         SET attestation_uid = CASE
+               WHEN reputation_mirrors.prepared_tx IS NULL
+                 THEN EXCLUDED.attestation_uid
+               ELSE reputation_mirrors.attestation_uid
+             END,
+             confirmation = CASE
+               WHEN reputation_mirrors.prepared_tx IS NULL
+                 THEN EXCLUDED.confirmation
+               ELSE reputation_mirrors.confirmation
+             END,
+             ref_uid = CASE
+               WHEN reputation_mirrors.prepared_tx IS NULL
+                 THEN EXCLUDED.ref_uid
+               ELSE reputation_mirrors.ref_uid
+             END,
+             pending_attestation_uid = CASE
+               WHEN reputation_mirrors.prepared_tx IS NOT NULL
+                 THEN EXCLUDED.attestation_uid
+               ELSE NULL
+             END,
+             pending_confirmation = CASE
+               WHEN reputation_mirrors.prepared_tx IS NOT NULL
+                 THEN EXCLUDED.confirmation
+               ELSE NULL
+             END,
+             pending_ref_uid = CASE
+               WHEN reputation_mirrors.prepared_tx IS NOT NULL
+                 AND reputation_mirrors.pending_attestation_uid =
+                   EXCLUDED.attestation_uid
+                 THEN COALESCE(
+                   EXCLUDED.ref_uid,
+                   reputation_mirrors.pending_ref_uid
+                 )
+               WHEN reputation_mirrors.prepared_tx IS NOT NULL
+                 THEN EXCLUDED.ref_uid
+               ELSE NULL
+             END,
+             status = CASE
+               WHEN reputation_mirrors.prepared_tx IS NULL
+                 THEN 'queued'
+               ELSE reputation_mirrors.status
+             END,
              tx_hash = CASE
+               WHEN reputation_mirrors.prepared_tx IS NOT NULL
+                 THEN reputation_mirrors.tx_hash
                WHEN reputation_mirrors.attestation_uid = EXCLUDED.attestation_uid
                  THEN reputation_mirrors.tx_hash
                ELSE NULL
              END,
-             attempts = 0,
-             next_attempt_at = now(),
-             last_error = NULL,
+             prepared_tx = CASE
+               WHEN reputation_mirrors.prepared_tx IS NULL THEN NULL
+               ELSE reputation_mirrors.prepared_tx
+             END,
+             tx_nonce = CASE
+               WHEN reputation_mirrors.prepared_tx IS NULL THEN NULL
+               ELSE reputation_mirrors.tx_nonce
+             END,
+             prepared_at = CASE
+               WHEN reputation_mirrors.prepared_tx IS NULL THEN NULL
+               ELSE reputation_mirrors.prepared_at
+             END,
+             broadcast_at = CASE
+               WHEN reputation_mirrors.prepared_tx IS NULL THEN NULL
+               ELSE reputation_mirrors.broadcast_at
+             END,
+             attempts = CASE
+               WHEN reputation_mirrors.prepared_tx IS NULL THEN 0
+               ELSE reputation_mirrors.attempts
+             END,
+             receipt_checks = CASE
+               WHEN reputation_mirrors.prepared_tx IS NULL THEN 0
+               ELSE reputation_mirrors.receipt_checks
+             END,
+             next_attempt_at = CASE
+               WHEN reputation_mirrors.prepared_tx IS NULL THEN now()
+               ELSE reputation_mirrors.next_attempt_at
+             END,
+             last_error = CASE
+               WHEN reputation_mirrors.prepared_tx IS NULL THEN NULL
+               ELSE reputation_mirrors.last_error
+             END,
              updated_at = now()
-         WHERE reputation_mirrors.attestation_uid <> EXCLUDED.attestation_uid
-            OR reputation_mirrors.status NOT IN ('sent', 'skipped')`,
+         WHERE (
+                 reputation_mirrors.prepared_tx IS NOT NULL
+                 AND reputation_mirrors.attestation_uid <> EXCLUDED.attestation_uid
+                 AND (
+                   reputation_mirrors.pending_attestation_uid IS NULL
+                   OR reputation_mirrors.pending_attestation_uid <>
+                     EXCLUDED.attestation_uid
+                   OR reputation_mirrors.pending_confirmation <>
+                     EXCLUDED.confirmation
+                   OR (
+                     EXCLUDED.ref_uid IS NOT NULL
+                     AND reputation_mirrors.pending_ref_uid IS DISTINCT FROM
+                       EXCLUDED.ref_uid
+                   )
+                 )
+               )
+            OR (
+                 reputation_mirrors.prepared_tx IS NULL
+                 AND (
+                   reputation_mirrors.attestation_uid <>
+                     EXCLUDED.attestation_uid
+                   OR reputation_mirrors.status NOT IN ('sent', 'skipped')
+                 )
+               )
+         RETURNING prepared_tx IS NULL AS should_process`,
         [
           input.paymentId.toString(),
-          bytea(input.attestationUid),
+          reputationBytea(input.attestationUid),
           input.confirmation,
-          input.refUid ? bytea(input.refUid) : null,
+          input.refUid ? reputationBytea(input.refUid) : null,
         ],
       );
-      return (result.rowCount ?? 0) > 0;
+      return result.rows[0]?.should_process === true;
     },
 
     async claimReputationMirror(
@@ -132,28 +158,32 @@ export function createReputationQueries(pool: Pool) {
            UPDATE reputation_mirrors
               SET status = 'failed',
                   next_attempt_at = now(),
-                  last_error = COALESCE(
-                    last_error,
-                    'reputation mirror attempt limit reached'
-                  ),
+                  last_error = 'reputation_submission_attempt_limit',
                   updated_at = now()
-            WHERE attempts >= $2
+            WHERE broadcast_at IS NULL
+              AND attempts >= $2
               AND (
-                status IN ('queued', 'prepared', 'broadcast', 'retry')
-                OR (status = 'processing'
-                  AND updated_at < now() - interval '2 minutes')
+                status IN ('queued', 'prepared', 'retry')
+                OR (
+                  status = 'processing'
+                  AND updated_at < now() - interval '2 minutes'
+                )
               )
          ),
          candidate AS (
            SELECT payment_id
              FROM reputation_mirrors
             WHERE ($1::bigint IS NULL OR payment_id = $1)
-              AND attempts < $2
+              AND (attempts < $2 OR broadcast_at IS NOT NULL)
               AND (
-                (status IN ('queued', 'prepared', 'broadcast', 'retry')
-                  AND next_attempt_at <= now())
-                OR (status = 'processing'
-                  AND updated_at < now() - interval '2 minutes')
+                (
+                  status IN ('queued', 'prepared', 'broadcast', 'retry')
+                  AND next_attempt_at <= now()
+                )
+                OR (
+                  status = 'processing'
+                  AND updated_at < now() - interval '2 minutes'
+                )
               )
             ORDER BY next_attempt_at, updated_at
             LIMIT 1
@@ -161,111 +191,17 @@ export function createReputationQueries(pool: Pool) {
          )
          UPDATE reputation_mirrors AS mirror
             SET status = 'processing',
-                attempts = attempts + 1,
+                attempts = attempts +
+                  CASE WHEN broadcast_at IS NULL THEN 1 ELSE 0 END,
+                receipt_checks = receipt_checks +
+                  CASE WHEN broadcast_at IS NOT NULL THEN 1 ELSE 0 END,
                 updated_at = now()
            FROM candidate
-         WHERE mirror.payment_id = candidate.payment_id
+          WHERE mirror.payment_id = candidate.payment_id
          RETURNING mirror.*`,
         [paymentId?.toString() ?? null, REPUTATION_MIRROR_MAX_ATTEMPTS],
       );
-      return result.rows[0] ? mapRow(result.rows[0]) : null;
-    },
-
-    async markReputationMirrorPrepared(input: {
-      paymentId: bigint;
-      transactionHash: Hex;
-      preparedTransaction: Hex;
-      transactionNonce: bigint;
-    }): Promise<void> {
-      await pool.query(
-        `UPDATE reputation_mirrors
-            SET status = 'prepared', tx_hash = $2, prepared_tx = $3,
-                tx_nonce = $4, updated_at = now()
-          WHERE payment_id = $1`,
-        [
-          input.paymentId.toString(),
-          bytea(input.transactionHash),
-          bytea(input.preparedTransaction),
-          input.transactionNonce.toString(),
-        ],
-      );
-    },
-
-    async markReputationMirrorBroadcast(
-      paymentId: bigint,
-      transactionHash: Hex,
-    ): Promise<void> {
-      await pool.query(
-        `UPDATE reputation_mirrors
-            SET status = 'broadcast', tx_hash = $2, updated_at = now()
-          WHERE payment_id = $1`,
-        [paymentId.toString(), bytea(transactionHash)],
-      );
-    },
-
-    async markReputationMirrorSent(input: {
-      paymentId: bigint;
-      providerAgentId: bigint;
-      feedbackIndex: bigint;
-      transactionHash: Hex;
-    }): Promise<void> {
-      await pool.query(
-        `UPDATE reputation_mirrors
-            SET status = 'sent', provider_agent_id = $2,
-                feedback_index = $3, tx_hash = $4, prepared_tx = NULL,
-                tx_nonce = NULL, last_error = NULL, updated_at = now()
-          WHERE payment_id = $1`,
-        [
-          input.paymentId.toString(),
-          input.providerAgentId.toString(),
-          input.feedbackIndex.toString(),
-          bytea(input.transactionHash),
-        ],
-      );
-    },
-
-    async markReputationMirrorResult(input: {
-      paymentId: bigint;
-      status: "retry" | "failed" | "skipped";
-      error?: string;
-      clearPrepared?: boolean;
-    }): Promise<void> {
-      await pool.query(
-        `UPDATE reputation_mirrors
-            SET status = $2,
-                next_attempt_at = CASE WHEN $2 = 'retry'
-                  THEN now() + (
-                    interval '1 second' *
-                    LEAST(300, power(2, LEAST(8, attempts)))
-                  )
-                  ELSE now()
-                END,
-                last_error = $3,
-                prepared_tx = CASE WHEN $4 THEN NULL ELSE prepared_tx END,
-                tx_nonce = CASE WHEN $4 THEN NULL ELSE tx_nonce END,
-                tx_hash = CASE WHEN $4 THEN NULL ELSE tx_hash END,
-                updated_at = now()
-          WHERE payment_id = $1`,
-        [
-          input.paymentId.toString(),
-          input.status,
-          input.error?.slice(0, 2000) ?? null,
-          input.clearPrepared ?? false,
-        ],
-      );
-    },
-
-    async deferReputationMirrorForSettlement(paymentId: bigint): Promise<void> {
-      await pool.query(
-        `UPDATE reputation_mirrors
-            SET status = 'retry',
-                attempts = GREATEST(0, attempts - 1),
-                next_attempt_at = now() + interval '5 seconds',
-                last_error = 'prepared settlement is awaiting reconciliation',
-                updated_at = now()
-          WHERE payment_id = $1`,
-        [paymentId.toString()],
-      );
+      return result.rows[0] ? mapReputationMirrorRow(result.rows[0]) : null;
     },
 
     async listMissingReputationMirrors(
@@ -284,7 +220,12 @@ export function createReputationQueries(pool: Pool) {
             AND challenge.confirmation_attestation_uid IS NOT NULL
             AND (
               mirror.payment_id IS NULL
-              OR mirror.attestation_uid <> challenge.confirmation_attestation_uid
+              OR (
+                mirror.attestation_uid <>
+                  challenge.confirmation_attestation_uid
+                AND mirror.pending_attestation_uid IS DISTINCT FROM
+                  challenge.confirmation_attestation_uid
+              )
             )
           ORDER BY challenge.verified_at
           LIMIT $1`,
@@ -292,7 +233,7 @@ export function createReputationQueries(pool: Pool) {
       );
       return result.rows.map((row) => ({
         paymentId: BigInt(row.payment_id),
-        attestationUid: hex(row.confirmation_attestation_uid),
+        attestationUid: `0x${row.confirmation_attestation_uid.toString("hex")}`,
       }));
     },
 

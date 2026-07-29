@@ -46,9 +46,7 @@ export class DiscoveryRefreshScheduler {
       const operation = this.options
         .refresh()
         .catch((error) => {
-          this.options.logger.error(
-            `[cache] refresh threw: ${(error as Error).message}`,
-          );
+          this.options.logger.error("[cache] refresh threw", { error });
         })
         .finally(() => {
           if (this.active === operation) this.active = null;

@@ -4,7 +4,7 @@ import type { Config } from "../config.js";
 import type { ChainReader } from "../chain/reader.js";
 import { ConfirmationSubmitError } from "../chain/confirmationErrors.js";
 import type { Queries } from "../db/queries.js";
-import { SettlementOutboxPendingError } from "../db/facilitatorLockQueries.js";
+import { FacilitatorOutboxPendingError } from "../db/facilitatorLockQueries.js";
 import type { Hex } from "../types.js";
 import type { ReputationMirrorWorker } from "../reputation/worker.js";
 import { logErrorWithId, publicErrorMessage } from "../util/errorWrap.js";
@@ -286,14 +286,14 @@ export async function runConfirmDelivery(
 // failed to read back. Only the first is safe to blind-retry, so the
 // taxonomy is split at the viemConfirmation boundary and mapped here.
 function submitFailure(err: unknown, paymentId: bigint): ConfirmResult {
-  if (err instanceof SettlementOutboxPendingError) {
+  if (err instanceof FacilitatorOutboxPendingError) {
     return {
       ok: false,
       status: 503,
       error: {
         code: "settlement_outbox_pending",
         message:
-          "Payment settlement is awaiting reconciliation. Try again later.",
+          "The facilitator wallet is reconciling a prior transaction. Try again later.",
         retryable: true,
       },
     };

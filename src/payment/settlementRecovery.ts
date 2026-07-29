@@ -73,7 +73,12 @@ export async function recoverPendingSettlement(
           onBroadcast,
         );
       },
-      { settlementServiceRef: challenge.serviceRef },
+      {
+        owner: {
+          kind: "settlement",
+          serviceRef: challenge.serviceRef,
+        },
+      },
     );
   } catch (error) {
     if (error instanceof SettlementScreeningError) {

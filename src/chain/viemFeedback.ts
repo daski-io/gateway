@@ -18,6 +18,7 @@ import {
   feedbackArgs,
 } from "./feedbackCalldata.js";
 import { FeedbackSubmissionError } from "./feedbackErrors.js";
+import { isAlreadyKnownTransaction } from "./transactionErrors.js";
 import type {
   ChainReader,
   FeedbackInput,
@@ -166,9 +167,15 @@ export function createFeedbackMethods(deps: FeedbackDeps): FeedbackMethods {
       input: FeedbackInput,
       onBroadcast,
     ): Promise<FeedbackResult> {
-      const hash = await deps.walletClient.sendRawTransaction({
-        serializedTransaction: prepared.serializedTransaction,
-      });
+      let hash: Hex;
+      try {
+        hash = await deps.walletClient.sendRawTransaction({
+          serializedTransaction: prepared.serializedTransaction,
+        });
+      } catch (error) {
+        if (!isAlreadyKnownTransaction(error)) throw error;
+        hash = prepared.transactionHash;
+      }
       if (hash.toLowerCase() !== prepared.transactionHash.toLowerCase()) {
         throw new Error("RPC returned an unexpected feedback transaction hash");
       }

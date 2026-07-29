@@ -8,12 +8,14 @@ import { createPaymentChallengeQueries } from "./paymentChallengeQueries.js";
 import { createPaymentChallengeStateQueries } from "./paymentChallengeStateQueries.js";
 import { createRateLimitQueries } from "./rateLimitQueries.js";
 import { createReputationQueries } from "./reputationQueries.js";
+import { createReputationStateQueries } from "./reputationStateQueries.js";
+import { createReputationTransactionQueries } from "./reputationTransactionQueries.js";
 import { createSkillQueries } from "./skillQueries.js";
 import { createSettlementScreeningQueries } from "./settlementScreeningQueries.js";
 import { createTaskMappingQueries } from "./taskMappingQueries.js";
 
 export type { ChainActivityRow } from "./chainEventQueries.js";
-export type { ReputationMirrorRow } from "./reputationQueries.js";
+export type { ReputationMirrorRow } from "./reputationRows.js";
 export type { SkillSearchHit } from "./skillQueries.js";
 
 export function createQueries(pool: Pool) {
@@ -24,6 +26,8 @@ export function createQueries(pool: Pool) {
     ...createPaymentChallengeStateQueries(pool),
     ...createChallengeSettlementLock(pool),
     ...createReputationQueries(pool),
+    ...createReputationStateQueries(pool),
+    ...createReputationTransactionQueries(pool),
     ...createSkillQueries(pool),
     ...createBuyerIdentityQueries(pool),
     ...createAggregateQueries(pool),

@@ -49,7 +49,7 @@ async function main() {
   try {
     await bundle.cache.refresh();
   } catch (err) {
-    logger.error("initial cache refresh failed", err);
+    logger.error("initial cache refresh failed", { error: err });
   }
 
   const server = bundle.app.listen(config.port, () => {
@@ -79,9 +79,7 @@ async function main() {
         );
         process.exit(0);
       } catch (error) {
-        logger.error("graceful shutdown failed", {
-          message: error instanceof Error ? error.message : String(error),
-        });
+        logger.error("graceful shutdown failed", { error });
         process.exit(1);
       }
     })();
@@ -93,6 +91,6 @@ async function main() {
 }
 
 main().catch((err) => {
-  logger.error("fatal startup failure", err);
+  logger.error("fatal startup failure", { error: err });
   process.exit(1);
 });

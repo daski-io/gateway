@@ -338,6 +338,8 @@ describe("x402 V2 facilitator API", () => {
     expect(blocked.status).toBe(503);
     expect(await blocked.json()).toMatchObject({
       errorReason: "settlement_outbox_pending",
+      errorMessage:
+        "the facilitator wallet is reconciling a prior transaction",
       retryable: true,
     });
     expect(gateway.mockChain.simulations).toHaveLength(1);

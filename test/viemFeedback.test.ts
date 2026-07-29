@@ -164,4 +164,29 @@ describe("canonical ReputationRegistry receipt outcomes", () => {
       methods.submitPreparedFeedback(prepared, INPUT),
     ).rejects.toBe(rpcError);
   });
+
+  it("treats an already-known raw transaction as broadcast", async () => {
+    const onBroadcast = vi.fn();
+    const methods = createFeedbackMethods({
+      publicClient: {
+        waitForTransactionReceipt: vi.fn().mockResolvedValue({
+          status: "success",
+          logs: [],
+        }),
+      } as any,
+      walletClient: {
+        sendRawTransaction: vi
+          .fn()
+          .mockRejectedValue(new Error("already known")),
+      } as any,
+      account: { address: CLIENT } as any,
+      chain: baseSepolia,
+      reputationRegistryAddress: REGISTRY,
+    });
+
+    await expect(
+      methods.submitPreparedFeedback(prepared, INPUT, onBroadcast),
+    ).rejects.toMatchObject({ failure: "succeeded_without_event" });
+    expect(onBroadcast).toHaveBeenCalledWith(TRANSACTION_HASH);
+  });
 });

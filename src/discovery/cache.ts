@@ -125,7 +125,9 @@ export class DiscoveryCache {
       this.lastCycleAt = new Date();
       this.lastChainError = { message, at: this.lastCycleAt };
       if (wasHealthy) {
-        this.logger.error(`[cache] provider registry became unavailable: ${message}`);
+        this.logger.error("[cache] provider registry became unavailable", {
+          error,
+        });
       }
       return;
     }
@@ -152,9 +154,11 @@ export class DiscoveryCache {
         cardFailureCount += 1;
         const message = (error as Error).message ?? String(error);
         const hardLegalFailure = error instanceof ProviderLegalValidationError;
-        this.logger.warn(
-          `[cache] failed to fetch agent card from ${provider.agentURI}: ${message}`,
-        );
+        this.logger.warn("[cache] failed to fetch agent card", {
+          agentId: provider.agentId,
+          agentUri: provider.agentURI,
+          error,
+        });
         const hasKnownGoodCard = existing !== undefined && existing.cards.length > 0;
         const withinStalenessCap =
           existing !== undefined &&
@@ -204,9 +208,9 @@ export class DiscoveryCache {
       try {
         this.onCatalogChanged(oldSnapshot, newSnapshot);
       } catch (error) {
-        this.logger.error(
-          `[cache] onCatalogChanged callback threw: ${(error as Error).message}`,
-        );
+        this.logger.error("[cache] onCatalogChanged callback threw", {
+          error,
+        });
       }
     }
     this.catalogInitialized = true;

@@ -159,7 +159,7 @@ export class ChainEventsIndexer {
       if (firstFailure) {
         logger.error("chain events indexer became unhealthy", {
           category,
-          message: this.lastFailure.message,
+          error,
         });
       }
       if (category !== "rpc") {

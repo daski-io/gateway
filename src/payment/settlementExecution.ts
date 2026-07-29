@@ -1,7 +1,7 @@
 import type { PaymentChainGateway, SettlementInput } from "../chain/reader.js";
 import type { Config } from "../config.js";
 import type { Queries } from "../db/queries.js";
-import { SettlementOutboxPendingError } from "../db/facilitatorLockQueries.js";
+import { FacilitatorOutboxPendingError } from "../db/facilitatorLockQueries.js";
 import type { Hex } from "../types.js";
 import { SettlementScreeningError } from "../chain/sanctionsErrors.js";
 import { publicErrorMessage } from "../util/errorWrap.js";
@@ -146,11 +146,11 @@ export async function verifyAndSettleUnlocked(
       },
     );
   } catch (error) {
-    if (error instanceof SettlementOutboxPendingError) {
+    if (error instanceof FacilitatorOutboxPendingError) {
       return settlementFailure(
         503,
         "settlement_outbox_pending",
-        "another settlement is awaiting transaction reconciliation",
+        "the facilitator wallet is reconciling a prior transaction",
         config.x402Network,
         payer,
       );
