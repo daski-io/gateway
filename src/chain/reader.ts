@@ -279,6 +279,7 @@ export interface IdentityReader {
 }
 
 export interface PaymentChainGateway {
+  getFacilitatorBalance(): Promise<bigint>;
   authorizationUsed(authorizer: Hex, nonce: Hex): Promise<boolean>;
   verifyReceiveAuthorization(
     input: ReceiveAuthorizationVerification,

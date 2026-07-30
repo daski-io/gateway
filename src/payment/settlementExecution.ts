@@ -31,6 +31,11 @@ import {
   successfulSettlementResult,
   validateSettlementEvent,
 } from "./settlementResults.js";
+import {
+  requireFacilitatorBalance,
+  SettlementAdmissionError,
+  settlementSponsorshipError,
+} from "./settlementAdmission.js";
 import { verifyPaymentPayload } from "./verifyPayload.js";
 import type {
   AtomicSettlementOptions,
@@ -100,6 +105,15 @@ export async function verifyAndSettleUnlocked(
   if (verified.alreadyPaid) {
     return storedSettlementResult(challenge, config.x402Network, payer);
   }
+  if (challenge.amount < config.settlementMinAmount) {
+    return settlementFailure(
+      409,
+      "settlement_amount_below_minimum",
+      "the quoted amount is below the gateway settlement minimum",
+      config.x402Network,
+      payer,
+    );
+  }
   const settlementInput: SettlementInput = {
     providerAgentId: challenge.providerTokenId,
     serviceId: challenge.serviceId,
@@ -137,15 +151,29 @@ export async function verifyAndSettleUnlocked(
               nonce,
             )
           : reader.prepareSettlement(settlementInput, nonce),
-      send: (prepared, onBroadcast) =>
-        reader.submitPreparedSettlement(
+      send: async (prepared, onBroadcast) => {
+        await requireFacilitatorBalance(
+          reader,
+          config.facilitatorMinBalanceWei,
+        );
+        return reader.submitPreparedSettlement(
           { ...prepared, kind: operation } as PreparedSettlementTransaction,
           challenge.serviceRef,
           onBroadcast,
-        ),
+        );
+      },
       inspect: (hash) =>
         reader.findSettlementByTransaction(hash, challenge.serviceRef),
       persistPrepared: async (client, transactionId, transactionHash) => {
+        const sponsorshipLimit =
+          await queries.reserveSettlementSponsorship(client, {
+            wallet: payer,
+            walletDailyLimit: config.settlementMaxPerWalletPerDay,
+            globalDailyLimit: config.settlementMaxGlobalPerDay,
+          });
+        if (sponsorshipLimit) {
+          throw settlementSponsorshipError(sponsorshipLimit);
+        }
         const persisted = await queries.recordChallengeTransactionPrepared(
           client,
           challenge.serviceRef,
@@ -204,6 +232,15 @@ export async function verifyAndSettleUnlocked(
       allowNewAttemptAfterRevert: true,
     });
   } catch (error) {
+    if (error instanceof SettlementAdmissionError) {
+      return settlementFailure(
+        error.status,
+        error.code,
+        error.message,
+        config.x402Network,
+        payer,
+      );
+    }
     if (error instanceof SettlementScreeningError) {
       return handleSettlementScreeningError(
         error,

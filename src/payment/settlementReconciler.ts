@@ -12,6 +12,7 @@ import {
 } from "./facilitatorTransactionCoordinator.js";
 import { validateSettlementEvent } from "./settlementResults.js";
 import { recordScreeningFailure } from "./screeningFailure.js";
+import { requireFacilitatorBalance } from "./settlementAdmission.js";
 
 export interface SettlementReconciliationResult {
   scanned: number;
@@ -52,15 +53,20 @@ export async function reconcileBroadcastSettlements(
         prepare: async () => {
           throw new Error("recovery cannot prepare a replacement transaction");
         },
-        send: (prepared, onBroadcast) =>
-          reader.submitPreparedSettlement(
+        send: async (prepared, onBroadcast) => {
+          await requireFacilitatorBalance(
+            reader,
+            config.facilitatorMinBalanceWei,
+          );
+          return reader.submitPreparedSettlement(
             {
               ...prepared,
               kind,
             } as PreparedSettlementTransaction,
             challenge.serviceRef,
             onBroadcast,
-          ),
+          );
+        },
         inspect: (hash) =>
           reader.findSettlementByTransaction(hash, challenge.serviceRef),
         persistPrepared: async () => {

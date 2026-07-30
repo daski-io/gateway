@@ -35,7 +35,7 @@ export const INPUT_SCHEMA = {
     })
     .passthrough()
     .optional(),
-  messageId: z.string().optional().describe(
+  messageId: z.string().min(1).max(256).optional().describe(
     "Required with envelopeAuth; echo the first call's messageId.",
   ),
   envelopeAuth: z
@@ -47,7 +47,7 @@ export const INPUT_SCHEMA = {
           skillId: z.string(),
           paymentId: z.string(),
           chainId: z.number(),
-          messageId: z.string(),
+          messageId: z.string().min(1).max(256),
           requestHash: z.string(),
           issuedAt: z.string(),
         })
@@ -59,10 +59,10 @@ export const INPUT_SCHEMA = {
       "Omit on the first authenticated call. On retry, pass the signed " +
         "authorization and matching messageId without changing serviceArgs.",
     ),
-  contextId: z.string().optional().describe(
+  contextId: z.string().min(1).max(256).optional().describe(
     "A2A contextId for continuing a prior conversation.",
   ),
-  taskId: z.string().optional().describe(
+  taskId: z.string().min(1).max(256).optional().describe(
     "Only for answering a long-running input-required task. Do not combine " +
       "with paid routing fields or envelopeAuth.",
   ),

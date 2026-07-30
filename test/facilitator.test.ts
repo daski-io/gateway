@@ -212,6 +212,113 @@ describe("x402 V2 facilitator API", () => {
     expect(verifyCalls).toBe(1);
   });
 
+  it("rejects quotes and stored challenges below the settlement floor", async () => {
+    gateway.config.settlementMinAmount = 100_001n;
+    const rejected = await gateway.purchaseChallenge(2n, {
+      buyerTokenId: "5",
+    });
+    expect(rejected.status).toBe(400);
+    expect(rejected.json.error).toMatch(/settlement minimum/);
+
+    gateway.config.settlementMinAmount = 1n;
+    const value = await fixture();
+    gateway.config.settlementMinAmount = 100_001n;
+    const response = await fetch(`${gateway.baseUrl}/settle`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        x402Version: 2,
+        paymentPayload: value.payload,
+        paymentRequirements: value.requirements,
+      }),
+    });
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({
+      errorReason: "settlement_amount_below_minimum",
+    });
+    expect(gateway.mockChain.simulations).toHaveLength(0);
+  });
+
+  it("stops settlement when the facilitator reserve is below its floor", async () => {
+    const value = await fixture();
+    gateway.config.facilitatorMinBalanceWei = 10n;
+    gateway.mockChain.facilitatorBalance = 10n;
+    gateway.queueSettlementSuccess({
+      txHash: TX,
+      paymentId: 88n,
+      serviceRef: value.challenge.serviceRef!,
+      providerAgentId: 2n,
+      buyerAgentId: 5n,
+      totalAmount: 100_000n,
+    });
+    const response = await fetch(`${gateway.baseUrl}/settle`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        x402Version: 2,
+        paymentPayload: value.payload,
+        paymentRequirements: value.requirements,
+      }),
+    });
+    expect(response.status).toBe(503);
+    expect(await response.json()).toMatchObject({
+      errorReason: "facilitator_balance_low",
+      retryable: true,
+    });
+    expect(gateway.mockChain.settlements).toHaveLength(0);
+  });
+
+  it("enforces the durable daily settlement sponsorship ceiling", async () => {
+    gateway.config.settlementMaxPerWalletPerDay = 2;
+    gateway.config.settlementMaxGlobalPerDay = 1;
+    const first = await fixture();
+    const second = await fixture();
+    gateway.queueSettlementSuccess({
+      txHash: TX,
+      paymentId: 88n,
+      serviceRef: first.challenge.serviceRef!,
+      providerAgentId: 2n,
+      buyerAgentId: 5n,
+      totalAmount: 100_000n,
+    });
+    gateway.queueSettlementSuccess({
+      txHash:
+        "0x3333333333333333333333333333333333333333333333333333333333333333",
+      paymentId: 89n,
+      serviceRef: second.challenge.serviceRef!,
+      providerAgentId: 2n,
+      buyerAgentId: 5n,
+      totalAmount: 100_000n,
+    });
+    const settle = (value: Awaited<ReturnType<typeof fixture>>) =>
+      fetch(`${gateway.baseUrl}/settle`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          x402Version: 2,
+          paymentPayload: value.payload,
+          paymentRequirements: value.requirements,
+        }),
+      });
+
+    expect((await settle(first)).status).toBe(200);
+    const rejected = await settle(second);
+    expect(rejected.status).toBe(503);
+    expect(await rejected.json()).toMatchObject({
+      errorReason: "settlement_sponsorship_unavailable",
+      retryable: true,
+    });
+    const global = await gateway.bundle.pool.query<{
+      sponsorship_count: number;
+    }>(
+      `SELECT sponsorship_count
+         FROM settlement_sponsorship_buckets
+        WHERE bucket_key = 'global'`,
+    );
+    expect(global.rows[0]?.sponsorship_count).toBe(1);
+    expect(gateway.mockChain.settlements).toHaveLength(1);
+  });
+
   it("retries the same signed transaction after submission fails", async () => {
     const value = await fixture();
     gateway.mockChain.queueSettlement({

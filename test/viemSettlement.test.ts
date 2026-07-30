@@ -59,6 +59,17 @@ function methods(
 }
 
 describe("prepared settlement transactions", () => {
+  it("reads the pending facilitator balance before settlement broadcast", async () => {
+    const getBalance = vi.fn().mockResolvedValue(123n);
+    const fixture = methods(vi.fn(), { getBalance });
+
+    await expect(fixture.methods.getFacilitatorBalance()).resolves.toBe(123n);
+    expect(getBalance).toHaveBeenCalledWith({
+      address: ADDRESS,
+      blockTag: "pending",
+    });
+  });
+
   it("simulates once and returns the signed transaction hash and nonce", async () => {
     const simulate = vi.fn().mockResolvedValue({
       request: { gas: 2_000_000n },

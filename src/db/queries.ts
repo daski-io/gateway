@@ -15,6 +15,7 @@ import { createReputationStateQueries } from "./reputationStateQueries.js";
 import { createReputationTransactionQueries } from "./reputationTransactionQueries.js";
 import { createSkillQueries } from "./skillQueries.js";
 import { createSettlementScreeningQueries } from "./settlementScreeningQueries.js";
+import { createSettlementSponsorshipQueries } from "./settlementSponsorshipQueries.js";
 import { createTaskMappingQueries } from "./taskMappingQueries.js";
 import { createTransactionQueries } from "./transactionQueries.js";
 
@@ -41,6 +42,7 @@ export function createQueries(pool: Pool) {
     ...createAggregateQueries(pool),
     ...createChainEventQueries(pool),
     ...createSettlementScreeningQueries(pool),
+    ...createSettlementSponsorshipQueries(pool),
     ...createTaskMappingQueries(pool),
   };
 }

@@ -1863,6 +1863,12 @@ describe("hosted MCP — wallet-agnostic surface", () => {
         err.details.untrustedProviderContent.data.envelopeAuthChallenge
           .primaryType,
       ).toBe("A2ARequestAuthorization");
+      const pending = await gateway.bundle.pool.query<{ count: string }>(
+        `SELECT count(*)::text AS count
+           FROM task_mappings
+          WHERE task_id IS NULL`,
+      );
+      expect(pending.rows[0]?.count).toBe("0");
     } finally {
       await transport.close();
     }

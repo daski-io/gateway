@@ -140,10 +140,14 @@ export async function createGatewayHttp(
         fetch: options.a2aFetch,
         a2aTimeoutMs: options.a2aTimeoutMs,
         buyerAgentCardFetch: options.buyerAgentCardFetch,
-        maxSessions: options.mcpMaxSessions,
-        maxSessionsPerClient: options.mcpMaxSessionsPerClient,
-        sessionIdleTtlMs: options.mcpSessionIdleTtlMs,
-        sessionSweepIntervalMs: options.mcpSessionSweepIntervalMs,
+        maxSessions: options.mcpMaxSessions ?? config.mcpMaxSessions,
+        maxSessionsPerClient:
+          options.mcpMaxSessionsPerClient ?? config.mcpMaxSessionsPerClient,
+        sessionIdleTtlMs:
+          options.mcpSessionIdleTtlMs ?? config.mcpSessionIdleTtlMs,
+        sessionSweepIntervalMs:
+          options.mcpSessionSweepIntervalMs ??
+          config.mcpSessionSweepIntervalMs,
       })
     : null;
   const errorHandler: ErrorRequestHandler = (error, _req, res, next) => {

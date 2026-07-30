@@ -228,6 +228,15 @@ export async function issuePaymentRequirements(
   );
   if (!validatedQuote.ok) return validatedQuote;
   const amount = validatedQuote.amount;
+  if (amount < config.settlementMinAmount) {
+    return {
+      ok: false,
+      code: "quote_below_settlement_minimum",
+      message:
+        "provider quote amount is below the gateway settlement minimum",
+      status: 400,
+    };
+  }
   const serviceRef = quote.serviceRef;
   // Quote-backed challenges live exactly as long as the quote: settling
   // an authorization after quote expiry would capture funds the provider

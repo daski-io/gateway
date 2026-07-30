@@ -92,6 +92,10 @@ export interface Config extends RuntimeConfig {
   confirmationMaxPerPayment: number;
   confirmationMaxPerWalletPerDay: number;
   confirmationMaxGlobalPerDay: number;
+  settlementMinAmount: bigint;
+  settlementMaxPerWalletPerDay: number;
+  settlementMaxGlobalPerDay: number;
+  facilitatorMinBalanceWei: bigint;
   // How long the discovery cache keeps serving a provider's last-known-good
   // Agent Card when refresh fetches fail (provider restarting, card host
   // down). Past the cap the provider degrades to a card-less catalog entry
@@ -152,6 +156,34 @@ function nonNegativeBigInt(name: string, raw: string | undefined): bigint {
   }
   try {
     const value = BigInt(raw);
+    if (value < 0n) throw new Error("negative");
+    return value;
+  } catch {
+    throw new Error(`${name} must be a non-negative integer`);
+  }
+}
+
+function positiveBigInt(
+  name: string,
+  raw: string | undefined,
+  fallback: bigint,
+): bigint {
+  try {
+    const value = raw === undefined ? fallback : BigInt(raw);
+    if (value <= 0n) throw new Error("non-positive");
+    return value;
+  } catch {
+    throw new Error(`${name} must be a positive integer`);
+  }
+}
+
+function nonNegativeBigIntWithDefault(
+  name: string,
+  raw: string | undefined,
+  fallback: bigint,
+): bigint {
+  try {
+    const value = raw === undefined ? fallback : BigInt(raw);
     if (value < 0n) throw new Error("negative");
     return value;
   } catch {
@@ -369,6 +401,38 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     500,
     1_000,
   );
+  const settlementMinAmount = positiveBigInt(
+    "SETTLEMENT_MIN_AMOUNT",
+    mainnetRequired("SETTLEMENT_MIN_AMOUNT"),
+    1n,
+  );
+  const settlementMaxPerWalletPerDay = positiveInteger(
+    "SETTLEMENT_MAX_PER_WALLET_PER_DAY",
+    mainnetRequired("SETTLEMENT_MAX_PER_WALLET_PER_DAY"),
+    100,
+  );
+  const settlementMaxGlobalPerDay = positiveInteger(
+    "SETTLEMENT_MAX_GLOBAL_PER_DAY",
+    mainnetRequired("SETTLEMENT_MAX_GLOBAL_PER_DAY"),
+    1_000,
+  );
+  if (settlementMaxPerWalletPerDay > settlementMaxGlobalPerDay) {
+    throw new Error(
+      "SETTLEMENT_MAX_PER_WALLET_PER_DAY cannot exceed SETTLEMENT_MAX_GLOBAL_PER_DAY",
+    );
+  }
+  const facilitatorMinBalanceWei =
+    chainId === 8453
+      ? positiveBigInt(
+          "FACILITATOR_MIN_BALANCE_WEI",
+          mainnetRequired("FACILITATOR_MIN_BALANCE_WEI"),
+          1n,
+        )
+      : nonNegativeBigIntWithDefault(
+          "FACILITATOR_MIN_BALANCE_WEI",
+          env.FACILITATOR_MIN_BALANCE_WEI,
+          0n,
+        );
   const providerAuthMaxAgeSeconds = positiveInteger(
     "PROVIDER_AUTH_MAX_AGE_SECONDS",
     mainnetRequired("PROVIDER_AUTH_MAX_AGE_SECONDS"),
@@ -480,6 +544,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     confirmationMaxPerPayment,
     confirmationMaxPerWalletPerDay,
     confirmationMaxGlobalPerDay,
+    settlementMinAmount,
+    settlementMaxPerWalletPerDay,
+    settlementMaxGlobalPerDay,
+    facilitatorMinBalanceWei,
     cacheMaxStalenessSeconds: positiveInteger(
       "CACHE_MAX_STALENESS_SECONDS",
       env.CACHE_MAX_STALENESS_SECONDS,

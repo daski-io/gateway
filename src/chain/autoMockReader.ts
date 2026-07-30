@@ -101,6 +101,10 @@ export class AutoMockChainReader implements ChainReader {
     this.defaultBuyerAgentId = opts.defaultBuyerAgentId ?? 99n;
   }
 
+  async getFacilitatorBalance(): Promise<bigint> {
+    return 10n ** 30n;
+  }
+
   // ── ProviderRegistry views ─────────────────────────────────────────
 
   async getProviderCount(): Promise<bigint> {

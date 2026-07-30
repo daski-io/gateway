@@ -34,6 +34,7 @@ type SettlementMethods = Pick<
   | "prepareSettlementWithRegistration"
   | "submitPreparedSettlement"
   | "findSettlementByTransaction"
+  | "getFacilitatorBalance"
   | "getFacilitatorTransactionCount"
   | "getFacilitatorPendingTransactionCount"
 >;
@@ -157,6 +158,13 @@ export function createSettlementMethods(
   };
 
   return {
+    async getFacilitatorBalance(): Promise<bigint> {
+      return deps.publicClient.getBalance({
+        address: deps.account.address,
+        blockTag: "pending",
+      });
+    },
+
     prepareSettlement: (input, nonce) => prepare(input, "settle", nonce),
     prepareSettlementWithRegistration: (input, nonce) =>
       prepare(input, "settleWithRegistration", nonce),

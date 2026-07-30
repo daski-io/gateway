@@ -113,5 +113,12 @@ async function maintainPaymentChallenges(
     options.queries.pruneRateLimitBuckets().catch((error) => {
       logErrorWithId("pruneRateLimitBuckets", error);
     }),
+    options.queries
+      .deleteExpiredPendingTaskMappings(
+        options.config.taskMappingPendingRetentionSeconds,
+      )
+      .catch((error) => {
+        logErrorWithId("maintainTaskMappings", error);
+      }),
   ]);
 }

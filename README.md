@@ -83,14 +83,23 @@ for the full list with defaults. The most important ones:
 | `CONFIRMATION_MAX_PER_PAYMENT` | Lifetime sponsored confirmation cap per payment; launch maximum is 3. |
 | `CONFIRMATION_MAX_PER_WALLET_PER_DAY` | Fixed-UTC-day sponsored confirmation cap for one buyer wallet. |
 | `CONFIRMATION_MAX_GLOBAL_PER_DAY` | Fixed-UTC-day deployment-wide sponsored confirmation cap. |
+| `SETTLEMENT_MIN_AMOUNT` | Minimum provider quote accepted for settlement, in atomic USDC units. |
+| `SETTLEMENT_MAX_PER_WALLET_PER_DAY` | Fixed-UTC-day sponsored settlement cap for one buyer wallet. |
+| `SETTLEMENT_MAX_GLOBAL_PER_DAY` | Fixed-UTC-day deployment-wide sponsored settlement cap. |
+| `FACILITATOR_MIN_BALANCE_WEI` | Native-token wallet reserve below which new settlement broadcasts fail closed. |
 | `PUBLIC_URL` | Externally reachable URL — embedded in payment requirements and discovery responses |
 | `TRUST_PROXY` | Explicit number of trusted reverse-proxy hops; default `0` prevents forged forwarded IPs |
 | `MARKETPLACE_TERMS_URL` | Required HTTPS URL for the Daski Terms of Use returned with every service and purchase |
 | `MARKETPLACE_PRIVACY_URL` | Required HTTPS URL for the Daski Privacy Policy returned with every service and purchase |
 | `CHALLENGE_RETENTION_SECONDS` | Retention window for expired payment challenges before bounded deletion |
+| `TASK_MAPPING_PENDING_RETENTION_SECONDS` | Retention window for abandoned, incomplete provider task bindings |
 | `RPC_READ_MAX_PER_MINUTE` | Aggregate RPC-backed read budget across clients and replicas |
 | `STATE_CHANGE_GLOBAL_MAX_PER_MINUTE` | Aggregate state-changing request budget across clients and replicas |
 | `MCP_GLOBAL_MAX_PER_MINUTE` | Aggregate request budget for all MCP traffic across clients and replicas |
+| `MCP_MAX_SESSIONS` | Maximum active MCP sessions per gateway replica |
+| `MCP_MAX_SESSIONS_PER_CLIENT` | Maximum active MCP sessions per client IP per replica |
+| `MCP_SESSION_IDLE_TTL_MS` | Idle lifetime before an MCP session is reclaimed |
+| `MCP_SESSION_SWEEP_INTERVAL_MS` | Interval for reclaiming idle MCP sessions |
 | `PUBLIC_READ_MAX_PER_MINUTE` | Per-client budget for public read routes |
 | `PUBLIC_READ_GLOBAL_MAX_PER_MINUTE` | Aggregate public-read budget across clients and replicas |
 | `PUBLIC_CACHE_MAX_ENTRIES` | Maximum entries retained by each keyed public read cache |

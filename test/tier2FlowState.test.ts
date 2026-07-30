@@ -130,4 +130,67 @@ describe("durable payment and task bindings", () => {
     );
     expect(count.rows[0]?.count).toBe("1");
   });
+
+  it("deletes failed and expired pending mappings without completed tasks", async () => {
+    const failedId = await gateway.bundle.queries.insertTaskMapping({
+      contextId: "ctx-failed",
+      messageId: "msg-failed",
+      serviceRef: null,
+      providerA2AUrl: "https://provider.example/a2a",
+      skillId: "check-availability",
+      buyerTokenId: "0",
+    });
+    expect(
+      await gateway.bundle.queries.deletePendingTaskMapping(failedId),
+    ).toBe(true);
+
+    const expiredId = await gateway.bundle.queries.insertTaskMapping({
+      contextId: "ctx-expired",
+      messageId: "msg-expired",
+      serviceRef: null,
+      providerA2AUrl: "https://provider.example/a2a",
+      skillId: "check-availability",
+      buyerTokenId: "0",
+    });
+    const completedId = await gateway.bundle.queries.insertTaskMapping({
+      contextId: "ctx-completed",
+      messageId: "msg-completed",
+      serviceRef: null,
+      providerA2AUrl: "https://provider.example/a2a",
+      skillId: "check-availability",
+      buyerTokenId: "0",
+    });
+    await gateway.bundle.queries.completeTaskMapping(
+      completedId,
+      "task-completed",
+      "completed",
+    );
+    await gateway.bundle.pool.query(
+      "UPDATE task_mappings SET created_at = now() - interval '2 days' WHERE id IN ($1, $2)",
+      [expiredId, completedId],
+    );
+
+    expect(
+      await gateway.bundle.queries.deleteExpiredPendingTaskMappings(86_400),
+    ).toBe(1);
+    expect(
+      await gateway.bundle.queries.completedTaskMapping(
+        "https://provider.example/a2a",
+        "task-completed",
+      ),
+    ).not.toBeNull();
+  });
+
+  it("enforces identifier bounds at the persistence boundary", async () => {
+    await expect(
+      gateway.bundle.queries.insertTaskMapping({
+        contextId: "x".repeat(257),
+        messageId: "msg",
+        serviceRef: null,
+        providerA2AUrl: "https://provider.example/a2a",
+        skillId: "check-availability",
+        buyerTokenId: "0",
+      }),
+    ).rejects.toThrow();
+  });
 });

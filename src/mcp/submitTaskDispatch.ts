@@ -8,6 +8,7 @@ import { buildTaskAccessChallenge } from "../auth/taskAccess.js";
 import { validateProviderTaskAccessChallenge } from "../auth/taskAccessChallenge.js";
 import { TaskMappingIntegrityError } from "../db/taskMappingQueries.js";
 import { normalizeState } from "../util/a2aShape.js";
+import { logErrorWithId } from "../util/errorWrap.js";
 import { a2aPostJson, providerErrorFromFailure, type Fetcher } from "./a2a.js";
 import {
   sanitizeProviderArtifacts,
@@ -160,6 +161,7 @@ export async function dispatchSubmitTask({
     failOnNonOk: true,
   });
   if (!post.ok) {
+    await abandonPendingMapping(queries, taskMappingId);
     // The lost-response loop is CLOSED for paid submits (provider ≥v0.15
     // deduplicates on the settled serviceRef + signed body + envelope
     // messageId: an identical re-send returns the existing task without
@@ -188,6 +190,7 @@ export async function dispatchSubmitTask({
   }
   const rpc = post.body;
   if (rpc.error) {
+    await abandonPendingMapping(queries, taskMappingId);
     const mapped = mapProviderRpcError(rpc.error.code);
     const untrustedProviderContent = {
       message: sanitizeProviderValue(
@@ -238,10 +241,15 @@ export async function dispatchSubmitTask({
     }
     return mcpError(payload);
   }
-  if (!rpc.result?.id) {
+  if (
+    typeof rpc.result?.id !== "string" ||
+    rpc.result.id.length < 1 ||
+    rpc.result.id.length > 256
+  ) {
+    await abandonPendingMapping(queries, taskMappingId);
     return mcpError({
       code: "PROVIDER_ERROR",
-      message: "Provider response missing result.id",
+      message: "Provider response has an invalid result.id",
       details: { contextId },
     });
   }
@@ -348,4 +356,16 @@ function asRecord(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : null;
+}
+
+async function abandonPendingMapping(
+  queries: Queries,
+  mappingId: string | null,
+): Promise<void> {
+  if (!mappingId) return;
+  try {
+    await queries.deletePendingTaskMapping(mappingId);
+  } catch (error) {
+    logErrorWithId("taskMapping.abandon", error);
+  }
 }

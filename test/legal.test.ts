@@ -52,6 +52,10 @@ const VALID_CONFIG_ENV: NodeJS.ProcessEnv = {
   CONFIRMATION_MAX_PER_PAYMENT: "3",
   CONFIRMATION_MAX_PER_WALLET_PER_DAY: "20",
   CONFIRMATION_MAX_GLOBAL_PER_DAY: "500",
+  SETTLEMENT_MIN_AMOUNT: "10000",
+  SETTLEMENT_MAX_PER_WALLET_PER_DAY: "100",
+  SETTLEMENT_MAX_GLOBAL_PER_DAY: "1000",
+  FACILITATOR_MIN_BALANCE_WEI: "10000000000000000",
   PROVIDER_AUTH_MAX_AGE_SECONDS: "30",
   CACHE_REFRESH_INTERVAL: "30",
 };
@@ -84,6 +88,33 @@ describe("startup configuration validation", () => {
       loadConfig({ ...mainnetEnv, WHITELISTED_AGENT_IDS: "1" })
         .whitelistedAgentIds,
     ).toEqual([1n]);
+  });
+
+  it("requires explicit settlement guardrails on Base mainnet", () => {
+    const mainnetEnv = {
+      ...VALID_CONFIG_ENV,
+      CHAIN_ID: "8453",
+      SANCTIONS_ORACLE_ADDRESS: BASE_MAINNET_SANCTIONS_ORACLE,
+      SANCTIONS_ORACLE_MODE: "production",
+      NODE_ENV: "production",
+      TRUST_PROXY: "1",
+      PUBLIC_URL: "https://gateway.example",
+      BASE_RPC_URL: "https://rpc.example",
+      WHITELISTED_AGENT_IDS: "1",
+      USDC_ADDRESS: REVIEWED_USDC_DOMAINS[8453].address,
+      USDC_NAME: REVIEWED_USDC_DOMAINS[8453].name,
+      USDC_DOMAIN_SEPARATOR: REVIEWED_USDC_DOMAINS[8453].domainSeparator,
+    };
+    for (const field of [
+      "SETTLEMENT_MIN_AMOUNT",
+      "SETTLEMENT_MAX_PER_WALLET_PER_DAY",
+      "SETTLEMENT_MAX_GLOBAL_PER_DAY",
+      "FACILITATOR_MIN_BALANCE_WEI",
+    ] as const) {
+      expect(() =>
+        loadConfig({ ...mainnetEnv, [field]: undefined }),
+      ).toThrow(new RegExp(field));
+    }
   });
 
   it("accepts only live production Mainnet and selects the live reader", () => {
@@ -143,6 +174,13 @@ describe("startup configuration validation", () => {
     expect(() =>
       loadConfig({ ...VALID_CONFIG_ENV, MCP_ENABLED: "yes" }),
     ).toThrow(/MCP_ENABLED/);
+    expect(() =>
+      loadConfig({
+        ...VALID_CONFIG_ENV,
+        SETTLEMENT_MAX_PER_WALLET_PER_DAY: "101",
+        SETTLEMENT_MAX_GLOBAL_PER_DAY: "100",
+      }),
+    ).toThrow(/SETTLEMENT_MAX_PER_WALLET_PER_DAY/);
   });
 
   it("requires HTTPS public and RPC URLs in production", () => {

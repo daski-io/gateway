@@ -176,6 +176,37 @@ export function createTaskMappingQueries(pool: Pool) {
       }
     },
 
+    async deletePendingTaskMapping(mappingId: string): Promise<boolean> {
+      const result = await pool.query(
+        `DELETE FROM task_mappings
+          WHERE id = $1 AND task_id IS NULL`,
+        [mappingId],
+      );
+      return result.rowCount === 1;
+    },
+
+    async deleteExpiredPendingTaskMappings(
+      retentionSeconds: number,
+      batchSize = 500,
+    ): Promise<number> {
+      const result = await pool.query(
+        `WITH candidates AS (
+           SELECT id
+             FROM task_mappings
+            WHERE task_id IS NULL
+              AND created_at < now() - ($1 * interval '1 second')
+            ORDER BY created_at
+            LIMIT $2
+            FOR UPDATE SKIP LOCKED
+         )
+         DELETE FROM task_mappings AS mapping
+          USING candidates
+          WHERE mapping.id = candidates.id`,
+        [retentionSeconds, batchSize],
+      );
+      return result.rowCount ?? 0;
+    },
+
     async completedTaskMapping(
       providerA2AUrl: string,
       taskId: string,

@@ -90,4 +90,27 @@ describe("SKILL.md examples validate against live tool schemas", () => {
     const serviceArgs = parsed.serviceArgs as Record<string, unknown>;
     expect(Object.keys(serviceArgs).length).toBeGreaterThan(0);
   });
+
+  it("bounds every caller-supplied A2A task identifier", () => {
+    const schema = z.object(SUBMIT_TASK_SCHEMA);
+    const common = {
+      providerA2AUrl: "https://provider.example/a2a",
+      skillId: "check",
+      paymentId: "0",
+      chainId: 84532 as const,
+    };
+    for (const field of ["messageId", "contextId", "taskId"] as const) {
+      expect(
+        schema.safeParse({ ...common, [field]: "x".repeat(257) }).success,
+      ).toBe(false);
+    }
+    expect(
+      schema.safeParse({
+        ...common,
+        messageId: "message-1",
+        contextId: "context-1",
+        taskId: "task-1",
+      }).success,
+    ).toBe(true);
+  });
 });

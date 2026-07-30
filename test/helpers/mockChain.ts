@@ -108,6 +108,11 @@ export class MockChainReader implements ChainReader {
 
   public settlements: SettlementInput[] = [];
   public simulations: SettlementInput[] = [];
+  public facilitatorBalance = 10n ** 30n;
+
+  async getFacilitatorBalance(): Promise<bigint> {
+    return this.facilitatorBalance;
+  }
 
   addProvider(
     agentId: bigint,
