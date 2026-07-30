@@ -87,34 +87,23 @@ export async function runBuyServiceX402Retry(
       next_action: "Retry later while payment screening is available.",
     });
   }
-  // Flow-state restore (migration 017): the canonical serviceArgs the
-  // quote committed to are stored on the challenge row, so the signed
-  // retry may omit them entirely — the hash check below still verifies
-  // the restored bytes against the quote commitment.
-  let effectiveServiceArgs = args.serviceArgs;
-  let restoredFromQuote = false;
-  if (effectiveServiceArgs === undefined && challenge.serviceArgs) {
-    effectiveServiceArgs = challenge.serviceArgs;
-    restoredFromQuote = true;
-  }
-  if (effectiveServiceArgs === undefined) {
-    return mcpError({
-      code: "QUOTE_REQUEST_ARGS_MISSING",
-      message:
-        "serviceArgs is required on a signed retry for this quote (it " +
-        "predates stored flow state).",
-      recoverable: true,
-      next_action:
-        "Re-include the identical serviceArgs object from your first call " +
-        "verbatim — nothing removed — alongside paymentPayload and " +
-        "paymentRequirements. Do NOT re-sign or re-quote; the existing " +
-        "payment signature is still valid.",
-    });
-  }
   if (!challenge.quoteRequestHash) {
     return mcpError({
       code: "QUOTE_CREDENTIALS_MISSING",
       message: "stored challenge is missing its quote requestHash",
+    });
+  }
+  const effectiveServiceArgs = args.serviceArgs ?? {};
+  if (
+    args.serviceArgs === undefined &&
+    challenge.quoteRequestHash.toLowerCase() !==
+      computeRequestHash({}).toLowerCase()
+  ) {
+    return mcpError({
+      code: "SERVICE_ARGS_REQUIRED",
+      message: "The exact serviceArgs used for the signed quote are required.",
+      recoverable: true,
+      next_action: "Retry with the complete original serviceArgs unchanged.",
     });
   }
   const normalized = validateAndNormalizeServiceArgs(effectiveServiceArgs, []);
@@ -188,7 +177,6 @@ export async function runBuyServiceX402Retry(
       success: true,
       kind: "settled",
       settled: true,
-      ...(restoredFromQuote ? { serviceArgsRestored: true } : {}),
       transaction: settlement.transaction,
       network: settlement.network,
       payer: settlement.payer,

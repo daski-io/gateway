@@ -18,6 +18,7 @@ interface StreamTaskStatusArgs {
     signature: string;
     authorization: Record<string, unknown>;
   };
+  taskAccessToken?: string;
   streamingTimeoutMs?: number;
 }
 
@@ -89,6 +90,9 @@ export async function streamTaskStatus(
         params: {
           id: args.taskId,
           ...(args.capability ? { capability: args.capability } : {}),
+          ...(args.taskAccessToken
+            ? { taskAccessToken: args.taskAccessToken }
+            : {}),
         },
       }),
       signal: controller.signal,

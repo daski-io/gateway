@@ -39,7 +39,6 @@ export function createPaymentChallengeQueries(pool: Pool) {
       resourceUrl?: string;
       daskiExtension?: DaskiX402Declaration;
       requestFingerprint?: Hex;
-      serviceArgs: Record<string, unknown>;
       registrationDelegation?: StoredChallenge["registrationDelegation"];
       providerAuthority: {
         walletAddress: Hex;
@@ -56,11 +55,11 @@ export function createPaymentChallengeQueries(pool: Pool) {
             quote_id, quote_signature, quote_expires_at, quote_request_hash,
             x402_version, payment_required, requirements_hash, resource_url,
             daski_extension, request_fingerprint, registration_delegation,
-            service_args, provider_authority_wallet,
-            provider_authority_agent_uri, provider_authority_block)
+            provider_authority_wallet, provider_authority_agent_uri,
+            provider_authority_block)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 'pending',
                  $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24,
-                 $25, $26, $27, $28)`,
+                 $25, $26, $27)`,
         [
           hexToBytea(challenge.serviceRef),
           challenge.providerTokenId.toString(),
@@ -96,7 +95,6 @@ export function createPaymentChallengeQueries(pool: Pool) {
           challenge.registrationDelegation
             ? JSON.stringify(challenge.registrationDelegation)
             : null,
-          JSON.stringify(challenge.serviceArgs),
           challenge.providerAuthority.walletAddress.toLowerCase(),
           challenge.providerAuthority.agentURI,
           challenge.providerAuthority.observedBlock.toString(),

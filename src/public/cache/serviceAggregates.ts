@@ -65,7 +65,6 @@ function syntheticChallenge(row: ChainActivityRow): StoredChallenge {
     quoteSignature: null,
     quoteExpiresAt: null,
     quoteRequestHash: null,
-    serviceArgs: null,
     x402Version: null,
     paymentRequired: null,
     requirementsHash: null,

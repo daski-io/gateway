@@ -11,10 +11,11 @@ import {
   type StreamTaskStatusTransport,
 } from "./taskStatusStream.js";
 import type { McpDeps } from "./server.js";
-import { mcpError, mcpJson } from "./util.js";
+import { mcpError } from "./util.js";
 import type { ConcurrencyLimiter } from "./concurrencyLimiter.js";
 import { activeRequestKey, activeRequestSignal } from "./requestContext.js";
 import { UNTRUSTED_PROVIDER_CONTENT_WARNING } from "./providerReflection.js";
+import { admitTaskStatus } from "./taskStatusAdmission.js";
 
 export interface TaskStatusToolTransport
   extends TaskStatusTransport,
@@ -24,20 +25,7 @@ export interface TaskStatusToolTransport
 
 export const TASK_STATUS_INPUT_SCHEMA = {
   providerA2AUrl: z.string(),
-  taskId: z.string().optional().describe(
-    "The provider task id. May be omitted when contextId or serviceRef " +
-      "is supplied — the gateway restores the task from its durable " +
-      "operation trace (use this to recover a task whose submit response " +
-      "was lost in transport).",
-  ),
-  contextId: z.string().optional().describe(
-    "A2A contextId from the submit response — recovery key when taskId " +
-      "was lost.",
-  ),
-  serviceRef: z.string().optional().describe(
-    "Settlement serviceRef — recovery key when taskId and contextId were " +
-      "both lost.",
-  ),
+  taskId: z.string().min(1).max(256).describe("The provider task id."),
   capability: z
     .object({
       signature: z.string(),
@@ -45,6 +33,13 @@ export const TASK_STATUS_INPUT_SCHEMA = {
     })
     .optional()
     .describe("Signed TaskAccessAuthorization for gated task reads."),
+  taskAccessToken: z
+    .string()
+    .regex(/^[A-Za-z0-9_-]{43}$/)
+    .optional()
+    .describe(
+      "Sensitive access token returned with an anonymous persisted task.",
+    ),
   stream: z
     .boolean()
     .optional()
@@ -70,7 +65,7 @@ export function registerTaskStatusTool(
         "Get the current state of a Daski provider task by polling once or streaming SSE updates.",
         "",
         "Use after daski_submit_task returns submitted or working.",
-        "Pass a signed TaskAccessAuthorization capability when the provider requires it.",
+        "Buyer-bound tasks always require a signed TaskAccessAuthorization. Anonymous tasks require taskAccessToken.",
         "Keep passing the signed capability on later polls and reuse it until `authorization.expiry`.",
         "Stop polling on completed or failed. For input-required, submit the corrected full payload through daski_submit_task.",
         "If streaming is unsupported, retry with stream:false.",
@@ -88,7 +83,11 @@ export function registerTaskStatusTool(
       },
     },
     async (args, extra) => {
-      if (!findCatalogA2AEndpoint(deps.cache, args.providerA2AUrl)) {
+      const endpoint = findCatalogA2AEndpoint(
+        deps.cache,
+        args.providerA2AUrl,
+      );
+      if (!endpoint) {
         return mcpError({
           code: "PROVIDER_ENDPOINT_NOT_CATALOGED",
           message:
@@ -96,71 +95,9 @@ export function registerTaskStatusTool(
             "provider. No outbound request was made.",
         });
       }
-      let taskId = args.taskId;
-      if (!taskId) {
-        // Recovery path: restore the taskId from the durable operation
-        // trace written at dispatch time (migration 017). This is how a
-        // submit whose response timed out — losing the provider-assigned
-        // taskId in transport — becomes checkable instead of lost.
-        if (!args.contextId && !args.serviceRef) {
-          return mcpError({
-            code: "BAD_INPUT",
-            message:
-              "Pass taskId, or contextId/serviceRef so the gateway can " +
-              "restore the task from its operation trace.",
-            recoverable: true,
-          });
-        }
-        try {
-          const mapping = args.contextId
-            ? await deps.queries.latestTaskMappingByContext(args.contextId)
-            : await deps.queries.latestTaskMappingByServiceRef(
-                args.serviceRef!.toLowerCase() as `0x${string}`,
-              );
-          if (!mapping) {
-            return mcpError({
-              code: "TASK_TRACE_NOT_FOUND",
-              message:
-                "No operation trace matches that contextId/serviceRef on " +
-                "this gateway.",
-              recoverable: true,
-              next_action:
-                "Verify the identifier, or check the asset with the " +
-                "skill's read-only companion.",
-            });
-          }
-          if (!mapping.taskId) {
-            return mcpJson({
-              status: "unknown",
-              contextId: mapping.contextId,
-              submittedAt: mapping.createdAt.toISOString(),
-              message:
-                "A dispatch was recorded for this operation but its " +
-                "response (and the provider-assigned taskId) never " +
-                "arrived. The provider may still have executed it.",
-              // One canonical recovery per failure class (de-scar 260726):
-              // paid submits are provider-deduplicated (≥v0.15), so the
-              // identical re-send IS the recovery; the read-only oracle is
-              // the fallback for free skills.
-              next_action:
-                "For a PAID submit, re-send the identical daski_submit_task " +
-                "call (same envelope, same messageId): the provider " +
-                "deduplicates and returns the existing task without " +
-                "re-executing. For a free skill, verify the real-world " +
-                "outcome with the skill's read-only companion before " +
-                "re-signing anything.",
-            });
-          }
-          taskId = mapping.taskId;
-        } catch {
-          return mcpError({
-            code: "TASK_TRACE_LOOKUP_FAILED",
-            message: "The operation-trace lookup failed. Retry, or pass taskId.",
-            recoverable: true,
-          });
-        }
-      }
-      const resolvedArgs = { ...args, taskId };
+      const admission = await admitTaskStatus(args, endpoint, deps);
+      if (!admission.ok) return admission.result;
+      const admittedArgs = admission.args;
       if (args.stream) {
         const release = transport.streamLimiter.tryAcquire(
           activeRequestKey(extra.sessionId ?? "sessionless"),
@@ -174,7 +111,7 @@ export function registerTaskStatusTool(
         }
         try {
           return await streamTaskStatus(
-            resolvedArgs,
+            admittedArgs,
             {
               signal: activeRequestSignal(extra.signal),
               _meta: extra._meta,
@@ -186,7 +123,7 @@ export function registerTaskStatusTool(
           release();
         }
       }
-      return pollTaskStatus(resolvedArgs, transport);
+      return pollTaskStatus(admittedArgs, transport);
     },
   );
 }

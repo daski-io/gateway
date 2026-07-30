@@ -10,6 +10,7 @@ import type {
 } from "../chain/reader.js";
 import type { Config } from "../config.js";
 import { FacilitatorTransactionPendingError } from "../db/facilitatorLockQueries.js";
+import { ReputationProjectionMismatchError } from "../db/reputationTransactionQueries.js";
 import type { Queries, ReputationMirrorRow } from "../db/queries.js";
 import { REPUTATION_MIRROR_MAX_ATTEMPTS } from "../db/reputationQueries.js";
 import {
@@ -112,15 +113,23 @@ export class ReputationMirrorProcessor {
             kind: "revoke",
             transactionId,
           }),
-        finalizeSuccess: async () => undefined,
-        finalizeReverted: (client) =>
+        finalizeSuccess: (client, transactionId) =>
+          this.deps.queries.finishReputationRevocationSuccess(client, {
+            paymentId: row.paymentId,
+            attestationUid: row.attestationUid,
+            transactionId,
+          }),
+        finalizeReverted: (client, transactionId) =>
           this.deps.queries.finishReputationMirrorFailure(client, {
             paymentId: row.paymentId,
             attestationUid: row.attestationUid,
             errorCode: "feedback_revoke_reverted",
+            transactionId,
+            kind: "revoke",
           }),
         isReverted: isFeedbackRevert,
         failureCode: () => "feedback_revoke_reverted",
+        projectionFailureCode,
       });
     } catch (error) {
       if (error instanceof FeedbackAlreadyRevokedError) return;
@@ -173,7 +182,7 @@ export class ReputationMirrorProcessor {
           kind: "give",
           transactionId,
         }),
-      finalizeSuccess: async (client, _transactionId, result) => {
+      finalizeSuccess: async (client, transactionId, result) => {
         if (result.feedbackIndex == null) {
           throw new FeedbackSubmissionError(
             "malformed_event",
@@ -186,16 +195,20 @@ export class ReputationMirrorProcessor {
           transactionHash: result.transactionHash,
           providerAgentId,
           feedbackIndex: result.feedbackIndex,
+          transactionId,
         });
       },
-      finalizeReverted: (client) =>
+      finalizeReverted: (client, transactionId) =>
         this.deps.queries.finishReputationMirrorFailure(client, {
           paymentId: row.paymentId,
           attestationUid: row.attestationUid,
           errorCode: "feedback_give_reverted",
+          transactionId,
+          kind: "give",
         }),
       isReverted: isFeedbackRevert,
       failureCode: () => "feedback_give_reverted",
+      projectionFailureCode,
     });
   }
 
@@ -208,6 +221,13 @@ export class ReputationMirrorProcessor {
         row.paymentId,
         row.attestationUid,
       );
+      return;
+    }
+    if (error instanceof ReputationProjectionMismatchError) {
+      logger.error("reputation journal projection mismatch", {
+        paymentId: row.paymentId,
+        failureCode: "reputation_projection_mismatch",
+      });
       return;
     }
     if (
@@ -246,4 +266,10 @@ function isFeedbackRevert(error: unknown): boolean {
     error instanceof FeedbackSubmissionError &&
     error.failure === "reverted"
   );
+}
+
+function projectionFailureCode(error: unknown): string | null {
+  return error instanceof ReputationProjectionMismatchError
+    ? "reputation_projection_mismatch"
+    : null;
 }

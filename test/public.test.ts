@@ -63,7 +63,6 @@ async function seedPaid(
     providerA2AUrl: PROVIDER_A2A,
     walletAddress: gateway.buyerAddress,
     expiresAt: new Date(Date.now() + 3600 * 1000),
-    serviceArgs: {},
     providerAuthority: {
       walletAddress:
         provider?.walletAddress ??

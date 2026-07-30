@@ -10,6 +10,7 @@ import { createPaymentChallengeQueries } from "./paymentChallengeQueries.js";
 import { createPaymentChallengeStateQueries } from "./paymentChallengeStateQueries.js";
 import { createRateLimitQueries } from "./rateLimitQueries.js";
 import { createReputationQueries } from "./reputationQueries.js";
+import { createReputationEnqueueQueries } from "./reputationEnqueueQueries.js";
 import { createReputationStateQueries } from "./reputationStateQueries.js";
 import { createReputationTransactionQueries } from "./reputationTransactionQueries.js";
 import { createSkillQueries } from "./skillQueries.js";
@@ -32,6 +33,7 @@ export function createQueries(pool: Pool) {
     ...createPaymentChallengeStateQueries(pool),
     ...createChallengeSettlementLock(pool),
     ...createReputationQueries(pool),
+    ...createReputationEnqueueQueries(pool),
     ...createReputationStateQueries(pool),
     ...createReputationTransactionQueries(pool),
     ...createSkillQueries(pool),

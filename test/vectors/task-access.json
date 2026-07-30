@@ -1,0 +1,30 @@
+{
+  "domain": {
+    "name": "Daski",
+    "version": "1",
+    "chainId": 84532,
+    "verifyingContract": "0x000000000000000000000000000000000000a000"
+  },
+  "types": {
+    "TaskAccessAuthorization": [
+      { "name": "buyerTokenId", "type": "uint256" },
+      { "name": "taskId", "type": "string" },
+      { "name": "action", "type": "string" },
+      { "name": "requestHash", "type": "bytes32" },
+      { "name": "nonce", "type": "bytes32" },
+      { "name": "expiry", "type": "uint256" }
+    ]
+  },
+  "primaryType": "TaskAccessAuthorization",
+  "request": {},
+  "authorization": {
+    "buyerTokenId": "5",
+    "taskId": "task-conformance-1",
+    "action": "get",
+    "requestHash": "0xb48d38f93eaa084033fc5970bf96e559c33c4cdc07d889ab00b4d63f9590739d",
+    "nonce": "0x1111111111111111111111111111111111111111111111111111111111111111",
+    "expiry": "2000000000"
+  },
+  "signer": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+  "signature": "0x48c79f85d65a40552060b4f99c20ad824580e69935e476eb2de586be502ecd445f61b787e797d74b50552313b1542adb497a6d6456225410bd6052ec4fbced121b"
+}

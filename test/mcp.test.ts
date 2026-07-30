@@ -122,6 +122,11 @@ describe("hosted MCP — wallet-agnostic surface", () => {
         minimum: 1_000,
         maximum: 120_000,
       });
+      expect(statusProperties).toHaveProperty("taskId");
+      expect(statusProperties).toHaveProperty("capability");
+      expect(statusProperties).toHaveProperty("taskAccessToken");
+      expect(statusProperties).not.toHaveProperty("contextId");
+      expect(statusProperties).not.toHaveProperty("serviceRef");
       const artifactTool = tools.tools.find(
         (tool) => tool.name === "daski_fetch_artifact",
       );
@@ -989,7 +994,12 @@ describe("hosted MCP — wallet-agnostic surface", () => {
       const stored = await gateway.bundle.queries.getChallengeByRef(
         extension.info!.serviceRef!,
       );
-      expect(stored?.serviceArgs).toEqual(args.serviceArgs);
+      expect(stored).not.toHaveProperty("serviceArgs");
+      const serialized = JSON.stringify(stored, (_key, value) =>
+        typeof value === "bigint" ? value.toString() : value,
+      );
+      expect(serialized).not.toContain("+15125550142");
+      expect(serialized).not.toContain("Different Organization");
       expect(stored?.paymentRequired).toEqual(first);
     } finally {
       await transport.close();
@@ -1273,7 +1283,7 @@ describe("hosted MCP — wallet-agnostic surface", () => {
           },
         }),
       );
-      expect(body.taskId).toBe("qa-test-1");
+      expect(body).toMatchObject({ taskId: "qa-test-1" });
       expect(body.state).toBe("completed");
       // Artifact MUST come back inline so the agent doesn't have to call
       // daski_check_task on a non-persistent qa- task (would 404).

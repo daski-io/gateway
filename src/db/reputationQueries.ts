@@ -3,7 +3,6 @@ import type { Pool } from "./pool.js";
 import {
   mapReputationMirrorRow,
   REPUTATION_MIRROR_MAX_ATTEMPTS,
-  reputationBytea,
   type ReputationMirrorDbRow,
   type ReputationMirrorRow,
 } from "./reputationRows.js";
@@ -22,86 +21,6 @@ export function createReputationQueries(pool: Pool) {
       return result.rows[0] ? mapReputationMirrorRow(result.rows[0]) : null;
     },
 
-    async enqueueReputationMirror(input: {
-      paymentId: bigint;
-      confirmation: "Confirmed" | "NotConfirmed";
-      attestationUid: Hex;
-      refUid: Hex | null;
-    }): Promise<boolean> {
-      const result = await pool.query<{ should_process: boolean }>(
-        `INSERT INTO reputation_mirrors
-           (payment_id, attestation_uid, confirmation, ref_uid, status)
-         VALUES ($1, $2, $3, $4, 'queued')
-         ON CONFLICT (payment_id) DO UPDATE
-         SET attestation_uid = CASE
-               WHEN reputation_mirrors.status = 'processing'
-                 THEN reputation_mirrors.attestation_uid
-               ELSE EXCLUDED.attestation_uid
-             END,
-             confirmation = CASE
-               WHEN reputation_mirrors.status = 'processing'
-                 THEN reputation_mirrors.confirmation
-               ELSE EXCLUDED.confirmation
-             END,
-             ref_uid = CASE
-               WHEN reputation_mirrors.status = 'processing'
-                 THEN reputation_mirrors.ref_uid
-               ELSE EXCLUDED.ref_uid
-             END,
-             pending_attestation_uid = CASE
-               WHEN reputation_mirrors.status = 'processing'
-                 THEN EXCLUDED.attestation_uid
-               ELSE NULL
-             END,
-             pending_confirmation = CASE
-               WHEN reputation_mirrors.status = 'processing'
-                 THEN EXCLUDED.confirmation
-               ELSE NULL
-             END,
-             pending_ref_uid = CASE
-               WHEN reputation_mirrors.status = 'processing'
-                 THEN EXCLUDED.ref_uid
-               ELSE NULL
-             END,
-             status = CASE
-               WHEN reputation_mirrors.status = 'processing'
-                 THEN reputation_mirrors.status
-               ELSE 'queued'
-             END,
-             tx_hash = CASE
-               WHEN reputation_mirrors.attestation_uid = EXCLUDED.attestation_uid
-                 THEN reputation_mirrors.tx_hash
-               ELSE NULL
-             END,
-             attempts = CASE
-               WHEN reputation_mirrors.status = 'processing'
-                 THEN reputation_mirrors.attempts
-               ELSE 0
-             END,
-             next_attempt_at = CASE
-               WHEN reputation_mirrors.status = 'processing'
-                 THEN reputation_mirrors.next_attempt_at
-               ELSE now()
-             END,
-             last_error = CASE
-               WHEN reputation_mirrors.status = 'processing'
-                 THEN reputation_mirrors.last_error
-               ELSE NULL
-             END,
-             updated_at = now()
-         WHERE reputation_mirrors.attestation_uid <> EXCLUDED.attestation_uid
-            OR reputation_mirrors.status NOT IN ('sent', 'skipped')
-         RETURNING pending_attestation_uid IS NULL AS should_process`,
-        [
-          input.paymentId.toString(),
-          reputationBytea(input.attestationUid),
-          input.confirmation,
-          input.refUid ? reputationBytea(input.refUid) : null,
-        ],
-      );
-      return result.rows[0]?.should_process === true;
-    },
-
     async claimReputationMirror(
       paymentId?: bigint,
     ): Promise<ReputationMirrorRow | null> {
@@ -112,6 +31,17 @@ export function createReputationQueries(pool: Pool) {
                   last_error = 'reputation_submission_attempt_limit',
                   updated_at = now()
             WHERE attempts >= $2
+              AND NOT EXISTS (
+                SELECT 1
+                  FROM facilitator_transactions AS transaction
+                 WHERE transaction.status IN ('prepared', 'broadcast')
+                   AND (
+                     transaction.id =
+                       reputation_mirrors.revoke_facilitator_transaction_id
+                     OR transaction.id =
+                       reputation_mirrors.give_facilitator_transaction_id
+                   )
+              )
               AND (
                 status IN ('queued', 'retry')
                 OR (
@@ -125,6 +55,17 @@ export function createReputationQueries(pool: Pool) {
              FROM reputation_mirrors
             WHERE ($1::bigint IS NULL OR payment_id = $1)
               AND attempts < $2
+              AND NOT EXISTS (
+                SELECT 1
+                  FROM facilitator_transactions AS transaction
+                 WHERE transaction.status IN ('prepared', 'broadcast')
+                   AND (
+                     transaction.id =
+                       reputation_mirrors.revoke_facilitator_transaction_id
+                     OR transaction.id =
+                       reputation_mirrors.give_facilitator_transaction_id
+                   )
+              )
               AND (
                 (
                   status IN ('queued', 'retry')

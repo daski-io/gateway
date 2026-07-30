@@ -38,7 +38,6 @@ interface RequirementResponseInput {
   purchaseLegal: PurchaseLegalContext;
   effectiveExpiresAt: Date;
   requestFingerprint: Hex;
-  serviceArgs: Record<string, unknown>;
   warnings: string[];
   registrationDelegation?: StoredChallenge["registrationDelegation"];
   existingChallenge: StoredChallenge | null;
@@ -167,7 +166,6 @@ export function buildRequirementResponse(
     quoteSignature: input.quote.providerSignature,
     quoteExpiresAt: input.quote.expiresAt,
     quoteRequestHash: input.quote.requestHash,
-    serviceArgs: input.serviceArgs,
     x402Version: 2,
     paymentRequired,
     requirementsHash,

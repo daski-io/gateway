@@ -45,7 +45,6 @@ function makeChallenge(opts: {
     quoteSignature: null,
     quoteExpiresAt: null,
     quoteRequestHash: null,
-    serviceArgs: null,
     x402Version: 2,
     paymentRequired: null,
     requirementsHash: null,

@@ -161,6 +161,11 @@ export function createFacilitatorTransactionQueries(pool: Pool) {
         `UPDATE facilitator_transactions
             SET submission_attempts = submission_attempts + 1,
                 next_attempt_at = now() + interval '5 seconds',
+                failure_code = CASE
+                  WHEN submission_attempts + 1 >= 8
+                    THEN 'automatic_recovery_exhausted'
+                  ELSE failure_code
+                END,
                 updated_at = now()
           WHERE id = $1
             AND status IN ('prepared', 'broadcast')
@@ -205,6 +210,8 @@ export function createFacilitatorTransactionQueries(pool: Pool) {
              FROM facilitator_transactions
              WHERE status IN ('prepared', 'broadcast')
                AND operation_kind = $1
+               AND submission_attempts < 8
+               AND failure_code IS NULL
                AND next_attempt_at <= now()
              ORDER BY next_attempt_at
              LIMIT $2

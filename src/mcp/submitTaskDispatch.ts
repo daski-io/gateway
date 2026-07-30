@@ -4,6 +4,8 @@ import { DASKI_A2A_EXTENSION_URI } from "../config.js";
 import type { Queries } from "../db/queries.js";
 import type { Hex, StoredChallenge } from "../types.js";
 import { buildEnvelopeAuth } from "../auth/envelope.js";
+import { buildTaskAccessChallenge } from "../auth/taskAccess.js";
+import { TaskMappingIntegrityError } from "../db/taskMappingQueries.js";
 import { normalizeState } from "../util/a2aShape.js";
 import { a2aPostJson, providerErrorFromFailure, type Fetcher } from "./a2a.js";
 import {
@@ -104,14 +106,10 @@ export async function dispatchSubmitTask({
 
   const messageId = args.messageId ?? randomUUID();
   const contextId = args.contextId ?? randomUUID();
-  // Durable operation trace, written BEFORE the provider sees the request:
-  // if the response (and with it the provider-assigned taskId) is lost to
-  // a timeout, the contextId row still exists for recovery
-  // (daski_get_task_status accepts contextId/serviceRef). Input resubmits
-  // reference an existing task, so they only update the trace on success.
+  let taskMappingId: string | null = null;
   if (!args.taskId) {
     try {
-      await queries.insertTaskMapping({
+      taskMappingId = await queries.insertTaskMapping({
         contextId,
         messageId,
         serviceRef:
@@ -120,10 +118,19 @@ export async function dispatchSubmitTask({
             : null,
         providerA2AUrl: args.providerA2AUrl,
         skillId: args.skillId,
-        buyerTokenId: args.buyerTokenId ?? null,
+        buyerTokenId:
+          args.envelopeAuth?.authorization.buyerTokenId ??
+          args.buyerTokenId ??
+          "0",
       });
     } catch {
-      // Best-effort trace — never blocks a dispatch.
+      return mcpError({
+        code: "TASK_MAPPING_UNAVAILABLE",
+        message:
+          "The gateway could not persist the task authorization binding. No provider request was made.",
+        recoverable: true,
+        next_action: "Retry the identical daski_submit_task request.",
+      });
     }
   }
   const body = {
@@ -216,15 +223,33 @@ export async function dispatchSubmitTask({
 
   const result = rpc.result;
   const status = normalizeState(result.status?.state) ?? "submitted";
-  if (typeof result.id === "string") {
+  if (typeof result.id === "string" && taskMappingId) {
     try {
       await queries.completeTaskMapping(
-        result.contextId ?? contextId,
+        taskMappingId,
         result.id,
         status,
       );
-    } catch {
-      // Best-effort trace.
+    } catch (error) {
+      return mcpError({
+        code:
+          error instanceof TaskMappingIntegrityError
+            ? "TASK_MAPPING_INTEGRITY"
+            : "TASK_MAPPING_COMPLETION_FAILED",
+        message:
+          error instanceof TaskMappingIntegrityError
+            ? "The provider task conflicts with an existing dispatch binding."
+            : "The provider may have accepted the task, but the gateway could not complete its authorization binding.",
+        recoverable: !(error instanceof TaskMappingIntegrityError),
+        ...(error instanceof TaskMappingIntegrityError
+          ? {}
+          : {
+              next_action:
+                args.serviceRef
+                  ? "Retry the identical paid submit after gateway storage recovers; the provider will return the existing task."
+                  : "The free task may have been accepted, but it cannot be recovered safely from this response. Do not repeat a state-changing submission unless you independently verify that it did not execute.",
+            }),
+      });
     }
   }
   const flattened: Record<string, unknown> = {
@@ -249,6 +274,15 @@ export async function dispatchSubmitTask({
   }
   if (Object.keys(untrustedProviderContent).length > 0) {
     flattened.untrustedProviderContent = untrustedProviderContent;
+  }
+  const buyerTokenId =
+    args.envelopeAuth?.authorization.buyerTokenId ?? args.buyerTokenId;
+  if (buyerTokenId && buyerTokenId !== "0") {
+    flattened.taskAccessChallenge = buildTaskAccessChallenge(
+      config,
+      BigInt(buyerTokenId),
+      result.id!,
+    );
   }
 
   const capabilityChallengeReturned =

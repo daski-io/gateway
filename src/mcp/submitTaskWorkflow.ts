@@ -68,7 +68,10 @@ export async function runSubmitTask(
   if (envelope) return envelope;
 
   return dispatchSubmitTask({
-    args: normalizedArgs,
+    args: {
+      ...normalizedArgs,
+      providerA2AUrl: catalogEndpoint.url,
+    },
     paidChallenge: paymentContext.paidChallenge,
     config: deps.config,
     transport,

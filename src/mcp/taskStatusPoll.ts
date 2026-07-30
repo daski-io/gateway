@@ -12,6 +12,7 @@ interface PollTaskStatusArgs {
     signature: string;
     authorization: Record<string, unknown>;
   };
+  taskAccessToken?: string;
 }
 
 export interface TaskStatusTransport {
@@ -52,6 +53,9 @@ export async function pollTaskStatus(
     params: {
       id: args.taskId,
       ...(args.capability ? { capability: args.capability } : {}),
+      ...(args.taskAccessToken
+        ? { taskAccessToken: args.taskAccessToken }
+        : {}),
     },
   };
   const post = await a2aPostJson<CheckRpc>(args.providerA2AUrl, body, {

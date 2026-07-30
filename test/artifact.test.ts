@@ -336,6 +336,19 @@ describe("MCP artifact delivery", () => {
       },
     });
     gateways.push(gateway);
+    const mappingId = await gateway.bundle.queries.insertTaskMapping({
+      contextId: "ctx-inline-file",
+      messageId: "msg-inline-file",
+      serviceRef: null,
+      providerA2AUrl: gateway.mockProvider.baseUrl + "/a2a",
+      skillId: "form-entity",
+      buyerTokenId: "0",
+    });
+    await gateway.bundle.queries.completeTaskMapping(
+      mappingId,
+      "task-inline-file",
+      "completed",
+    );
     const { client, transport } = await connectClient(gateway.baseUrl);
     try {
       const result = parseResult<{
@@ -348,6 +361,7 @@ describe("MCP artifact delivery", () => {
           arguments: {
             providerA2AUrl: gateway.mockProvider.baseUrl + "/a2a",
             taskId: "task-inline-file",
+            taskAccessToken: "t".repeat(43),
           },
         }),
       );

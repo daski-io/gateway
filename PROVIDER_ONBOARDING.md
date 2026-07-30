@@ -242,10 +242,24 @@ agent gets a real `taskId` and polls).
 
 ### 3.4 GetTask / SubscribeToTask
 
-Standard A2A. The gateway exposes both via the merged
-`daski_get_task_status` tool. Long-running paid skills SHOULD support
-SSE so the gateway can forward provider events as MCP progress
-notifications.
+Every persisted buyer-bound task MUST require a valid EIP-712
+`TaskAccessAuthorization` with `action: "get"`, even when the skill advertises
+`requiresCapability: false`. That skill flag controls execution authorization;
+it never makes stored task results public. Anonymous persisted tasks MUST
+require the unguessable `taskAccessToken` returned only in the submission
+response. Task IDs, context IDs, service references, and payment IDs are not
+credentials.
+
+An unsigned buyer-bound `GetTask` returns only a ready-to-sign challenge. It
+does not return status, messages, artifacts, or result metadata. The challenge
+necessarily exposes its `buyerTokenId` signing field and confirms that the
+task-read gate exists. Current capability verification supports EOA signatures;
+EIP-1271 contract-wallet signatures are not part of this release.
+
+The gateway can expose `GetTask` and `SubscribeToTask` through the merged
+`daski_get_task_status` tool, but streaming is optional. The reference provider
+advertises `streaming: false` and rejects `SubscribeToTask`. A provider that
+implements streaming MUST apply the same task-read gate before opening SSE.
 
 ---
 

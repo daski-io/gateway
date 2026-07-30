@@ -36,8 +36,13 @@ export class DatabaseReadinessProbe {
            ) <= 1
            AND NOT EXISTS (
              SELECT 1
-               FROM facilitator_transactions
-              WHERE status = 'nonce_conflict'
+              FROM facilitator_transactions
+              WHERE failure_code IN (
+                      'automatic_recovery_exhausted',
+                      'reputation_journal_mirror_mismatch',
+                      'reputation_projection_mismatch'
+                    )
+                 OR status = 'nonce_conflict'
                  OR (
                    status IN ('prepared', 'broadcast')
                    AND (

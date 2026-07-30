@@ -91,7 +91,9 @@ the provider's signed quote.
 
 The wallet, provider, skill, service arguments, amount cap, and registration
 must be unchanged on the paid `_meta` retry. The gateway rejects a changed
-request fingerprint.
+request fingerprint. Keep the exact `serviceArgs` until payment settlement and
+initial task dispatch finish; the gateway retains only their signed hash and
+cannot restore omitted non-empty arguments.
 
 ## x402 V2 HTTP
 
@@ -137,15 +139,37 @@ After settlement, call `daski_submit_task` with the receipt values:
 
 The first paid task submission may return an A2A authorization challenge. Sign
 the returned typed data with the buyer wallet and retry with `envelopeAuth`.
+If the submit response is lost, repeat that exact authenticated paid submit
+with the same envelope, message ID, arguments, payment binding, and provider.
+The provider returns the existing task without executing it twice. A
+`serviceRef` or `contextId` is never a task-read credential.
 
-Poll:
+Buyer-bound task reads use a second, task-specific authorization. Sign the
+`taskAccessChallenge.eip712TypedData` returned by a successful submission, or
+call the status tool once without a capability to obtain a fresh challenge.
+Then poll with the signed authorization:
 
 ```json tool=daski_get_task_status
 {
   "providerA2AUrl": "https://provider.example/a2a/example-service",
-  "taskId": "task-42"
+  "taskId": "task-42",
+  "capability": {
+    "signature": "0x…",
+    "authorization": {
+      "buyerTokenId": "123",
+      "taskId": "task-42",
+      "action": "get",
+      "requestHash": "0x…",
+      "nonce": "0x…",
+      "expiry": "1785170000"
+    }
+  }
 }
 ```
+
+Reuse a valid `get` capability on later polls until expiry. Anonymous persisted
+tasks instead require the `taskAccessToken` returned only in their submission
+response. The reference provider supports polling, not task-status streaming.
 
 ## Delivery confirmation
 

@@ -270,7 +270,6 @@ export async function issuePaymentRequirements(
     purchaseLegal,
     effectiveExpiresAt: expiresAt,
     requestFingerprint,
-    serviceArgs: params.serviceArgs,
     warnings: params.warnings,
     registrationDelegation: params.registrationDelegation,
     existingChallenge: null,
@@ -304,7 +303,6 @@ export async function issuePaymentRequirements(
       daskiExtension: draft.challenge.daskiExtension!,
       resourceUrl: params.resource,
       registrationDelegation: params.registrationDelegation,
-      serviceArgs: params.serviceArgs,
       providerAuthority: {
         walletAddress: params.providerAuthority.walletAddress,
         agentURI: params.providerAuthority.agentURI,
@@ -339,7 +337,6 @@ export async function issuePaymentRequirements(
     purchaseLegal,
     effectiveExpiresAt,
     requestFingerprint,
-    serviceArgs: params.serviceArgs,
     warnings: params.warnings,
     registrationDelegation: params.registrationDelegation,
     existingChallenge,

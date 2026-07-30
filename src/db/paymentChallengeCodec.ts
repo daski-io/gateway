@@ -40,7 +40,6 @@ export interface ChallengeRow {
   quote_signature: string | null;
   quote_expires_at: Date | null;
   quote_request_hash: Buffer | null;
-  service_args: Record<string, unknown> | null;
   x402_version: number | null;
   payment_required: PaymentRequired | null;
   requirements_hash: Buffer | null;
@@ -119,7 +118,6 @@ export function rowToChallenge(row: ChallengeRow): StoredChallenge {
     quoteRequestHash: row.quote_request_hash
       ? byteaToHex(row.quote_request_hash)
       : null,
-    serviceArgs: row.service_args ?? null,
     x402Version: row.x402_version ?? null,
     paymentRequired: row.payment_required ?? null,
     requirementsHash: row.requirements_hash

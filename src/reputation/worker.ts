@@ -154,18 +154,38 @@ export class ReputationMirrorWorker {
         20,
       )),
     ];
-    const paymentIds = new Set<string>();
     for (const transaction of transactions) {
       const paymentId = transaction.operationData.paymentId;
-      if (typeof paymentId === "string" && /^[0-9]+$/.test(paymentId)) {
-        paymentIds.add(paymentId);
+      const attestationUid = transaction.operationData.attestationUid;
+      const kind =
+        transaction.operationKind === "feedback_revoke" ? "revoke" : "give";
+      if (
+        typeof paymentId !== "string" ||
+        !/^[0-9]+$/.test(paymentId) ||
+        typeof attestationUid !== "string" ||
+        !/^0x[0-9a-fA-F]{64}$/.test(attestationUid)
+      ) {
+        await this.deps.queries.flagReputationJournalIntegrity(
+          transaction.id,
+          "reputation_journal_mirror_mismatch",
+        );
+        continue;
       }
-    }
-    for (const paymentId of paymentIds) {
-      const row = await this.deps.queries.getReputationMirror(BigInt(paymentId));
-      if (row?.status === "processing") {
-        await this.processor.process(row);
+      const row =
+        await this.deps.queries.claimReputationMirrorForTransaction({
+          transactionId: transaction.id,
+          paymentId: BigInt(paymentId),
+          attestationUid: attestationUid.toLowerCase() as Hex,
+          kind,
+        });
+      if (!row) {
+        await this.deps.queries.flagReputationJournalIntegrity(
+          transaction.id,
+          "reputation_journal_mirror_mismatch",
+        );
+        continue;
       }
+      await this.processor.process(row);
     }
   }
 }

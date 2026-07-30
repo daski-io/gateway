@@ -7,9 +7,8 @@ import {
 
 // De-scar 260726: the acknowledgement gates (phone token/object, buyer
 // name) and the principalUpdate composer are gone. The platform informs —
-// consequential values are restated as quote `warnings` while they can
-// still be corrected — and never gates on, or composes, what the agent
-// says to its principal.
+// consequential fields are named in quote `warnings` while they can still
+// be corrected, without copying their values into durable challenge JSON.
 describe("informational warnings", () => {
   it("phone values produce one WHOIS-consequence warning", () => {
     const w = phoneWhoisWarnings({
@@ -17,7 +16,8 @@ describe("informational warnings", () => {
       domain: "x.xyz",
     });
     expect(w).toHaveLength(1);
-    expect(w[0]).toContain("+15125550142");
+    expect(w[0]).toContain("registrantPhone");
+    expect(w[0]).not.toContain("+15125550142");
     expect(w[0]).toContain("public WHOIS");
   });
 
@@ -29,8 +29,9 @@ describe("informational warnings", () => {
     const w = buyerNameMismatchWarning("Harbor and Pine Goods", {
       companyName: "Sunrise Trading LLC",
     });
-    expect(w).toContain("Harbor and Pine Goods");
-    expect(w).toContain("Sunrise Trading LLC");
+    expect(w).toContain("companyName");
+    expect(w).not.toContain("Harbor and Pine Goods");
+    expect(w).not.toContain("Sunrise Trading LLC");
     expect(w).toContain("permanently");
   });
 
@@ -53,8 +54,9 @@ describe("informational warnings", () => {
       domain: "x.xyz",
       registrantOrganization: "Sunrise Trading LLC",
     });
-    expect(w).toContain("buyer-0b83e2");
-    expect(w).toContain("Sunrise Trading LLC");
+    expect(w).toContain("registrantOrganization");
+    expect(w).not.toContain("buyer-0b83e2");
+    expect(w).not.toContain("Sunrise Trading LLC");
   });
 
   it("a fully non-alphanumeric organization still warns (no vacuous match)", () => {

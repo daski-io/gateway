@@ -191,15 +191,25 @@ export class FacilitatorTransactionCoordinator {
     options: FacilitatorExecutionOptions<TResult>,
     existingClient?: PoolClient,
   ): Promise<void> {
-    await this.withTransaction(existingClient, async (client) => {
-      await options.finalizeSuccess(client, row.id, result);
-      const finished = await this.queries.finishFacilitatorTransaction(
-        client,
-        row.id,
+    try {
+      await this.withTransaction(existingClient, async (client) => {
+        await options.finalizeSuccess(client, row.id, result);
+        const finished = await this.queries.finishFacilitatorTransaction(
+          client,
+          row.id,
+          "succeeded",
+        );
+        if (!finished) throw new Error("transaction finalization conflict");
+      });
+    } catch (error) {
+      await this.finishAfterProjectionMismatch(
+        row,
         "succeeded",
+        options,
+        error,
       );
-      if (!finished) throw new Error("transaction finalization conflict");
-    });
+      throw error;
+    }
   }
 
   private async finishReverted<TResult>(
@@ -207,15 +217,26 @@ export class FacilitatorTransactionCoordinator {
     code: string,
     options: FacilitatorExecutionOptions<TResult>,
   ): Promise<void> {
-    await this.withTransaction(undefined, async (client) => {
-      await options.finalizeReverted?.(client, row.id, code);
-      await this.queries.finishFacilitatorTransaction(
-        client,
-        row.id,
+    try {
+      await this.withTransaction(undefined, async (client) => {
+        await options.finalizeReverted?.(client, row.id, code);
+        const finished = await this.queries.finishFacilitatorTransaction(
+          client,
+          row.id,
+          "reverted",
+          code,
+        );
+        if (!finished) throw new Error("transaction finalization conflict");
+      });
+    } catch (error) {
+      await this.finishAfterProjectionMismatch(
+        row,
         "reverted",
-        code,
+        options,
+        error,
       );
-    });
+      throw error;
+    }
   }
 
   private async finishConflict<TResult>(
@@ -240,8 +261,45 @@ export class FacilitatorTransactionCoordinator {
       await client.query("COMMIT");
     } catch (error) {
       await client.query("ROLLBACK");
+      const failureCode = options.projectionFailureCode?.(error);
+      if (failureCode) {
+        await client.query("BEGIN");
+        try {
+          const finished = await this.queries.finishFacilitatorTransaction(
+            client,
+            row.id,
+            "nonce_conflict",
+            failureCode,
+          );
+          if (!finished) throw new Error("transaction finalization conflict");
+          await client.query("COMMIT");
+          return;
+        } catch (terminalError) {
+          await client.query("ROLLBACK");
+          throw terminalError;
+        }
+      }
       throw error;
     }
+  }
+
+  private async finishAfterProjectionMismatch<TResult>(
+    row: FacilitatorTransactionRow,
+    status: "succeeded" | "reverted",
+    options: FacilitatorExecutionOptions<TResult>,
+    error: unknown,
+  ): Promise<void> {
+    const failureCode = options.projectionFailureCode?.(error);
+    if (!failureCode) return;
+    await this.queries.withDatabaseTransaction(async (client) => {
+      const finished = await this.queries.finishFacilitatorTransaction(
+        client,
+        row.id,
+        status,
+        failureCode,
+      );
+      if (!finished) throw new Error("transaction finalization conflict");
+    });
   }
 
   private async withTransaction(

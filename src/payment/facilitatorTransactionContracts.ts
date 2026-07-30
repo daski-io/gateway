@@ -58,6 +58,7 @@ export interface FacilitatorExecutionOptions<TResult> {
   ): Promise<void>;
   isReverted?(error: unknown): boolean;
   failureCode?(error: unknown): string;
+  projectionFailureCode?(error: unknown): string | null;
   allowNewAttemptAfterRevert?: boolean;
 }
 
