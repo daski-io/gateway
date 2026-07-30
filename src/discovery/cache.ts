@@ -176,10 +176,18 @@ export class DiscoveryCache {
           error,
         });
         const hasKnownGoodCard = existing !== undefined && existing.cards.length > 0;
+        const agentURIChanged =
+          existing !== undefined && existing.agentURI !== provider.agentURI;
         const withinStalenessCap =
           existing !== undefined &&
           Date.now() - existing.lastFetched.getTime() <= this.maxCardStalenessMs;
-        if (!hardLegalFailure && existing && hasKnownGoodCard && withinStalenessCap) {
+        if (
+          !hardLegalFailure &&
+          !agentURIChanged &&
+          existing &&
+          hasKnownGoodCard &&
+          withinStalenessCap
+        ) {
           nextCache.set(provider.agentId.toString(), {
             ...existing,
             walletAddress: provider.walletAddress,
@@ -193,7 +201,9 @@ export class DiscoveryCache {
           if (hasKnownGoodCard) {
             const reason = hardLegalFailure
               ? "provider legal metadata is invalid"
-              : `staleness cap ${this.maxCardStalenessMs / 1000}s exceeded`;
+              : agentURIChanged
+                ? "on-chain agentURI changed"
+                : `staleness cap ${this.maxCardStalenessMs / 1000}s exceeded`;
             this.logger.warn(
               `[cache] dropping agent ${provider.agentId}'s last-known-good card: ${reason}`,
             );

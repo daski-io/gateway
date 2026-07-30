@@ -214,6 +214,23 @@ describe("DiscoveryCache failure hardening", () => {
     expect(kept.cards).toHaveLength(1);
   });
 
+  it("drops cached cards when agentURI rotates and the replacement fetch fails", async () => {
+    const h = buildHarness();
+    await h.cache.refresh();
+    expect(h.cache.get(1n)!.cards).toHaveLength(1);
+
+    const rotatedURI = "http://127.0.0.1:9/registrations/rotated.json";
+    h.chain.setAgentURI(1n, rotatedURI);
+    h.setFailing(true);
+    await h.cache.refresh();
+
+    const rotated = h.cache.get(1n)!;
+    expect(rotated.agentURI).toBe(rotatedURI);
+    expect(rotated.cards).toEqual([]);
+    expect(rotated.providerLegal).toBeNull();
+    expect(rotated.fetchError).toMatch(/HTTP 500/);
+  });
+
   it("degrades to a card-less placeholder once the staleness cap is exceeded", async () => {
     const h = buildHarness({ maxCardStalenessSeconds: 3600 });
     await h.cache.refresh();
