@@ -40,7 +40,7 @@ describe("x402 V2 payment preparation", () => {
       scheme: "daski-exact",
       network: "eip155:84532",
       amount: "15000000",
-      asset: gateway.config.usdcAddress,
+      asset: gateway.config.usdc.address,
       payTo: gateway.config.x402AdapterAddress,
     });
     expect(JSON.stringify(paymentRequired)).not.toContain("eip712TypedData");

@@ -1,6 +1,9 @@
 import type { ChainProjectionEvent } from "../../src/chain/eventTypes.js";
 import { recoverTypedDataAddress } from "viem";
-import { FeedbackSubmissionError } from "../../src/chain/feedbackErrors.js";
+import {
+  FeedbackAlreadyRevokedError,
+  FeedbackSubmissionError,
+} from "../../src/chain/feedbackErrors.js";
 import {
   ConfirmationSubmitError,
   type ConfirmationFailureStage,
@@ -20,9 +23,12 @@ import type {
   ChainReader,
   ConfirmationDelegationInput,
   ConfirmationResult,
+  FeedbackRevocationInput,
   FeedbackInput,
   FeedbackResult,
+  PreparedConfirmationTransaction,
   PreparedFeedbackTransaction,
+  ProviderAuthoritySnapshot,
   PreparedSettlementTransaction,
   ReceiveAuthorizationVerification,
   PaymentRouterRecord,
@@ -159,6 +165,31 @@ export class MockChainReader implements ChainReader {
     );
   }
 
+  async getProviderAuthority(
+    agentId: bigint,
+    blockNumber: bigint,
+  ): Promise<ProviderAuthoritySnapshot> {
+    const provider = await this.getProvider(agentId);
+    if (!provider.isActive) {
+      return {
+        agentId,
+        isActive: false,
+        registrationTime: provider.registrationTime,
+        walletAddress: `0x${"00".repeat(20)}` as Hex,
+        agentURI: "",
+        observedBlock: blockNumber,
+      };
+    }
+    return {
+      agentId,
+      isActive: provider.isActive,
+      registrationTime: provider.registrationTime,
+      walletAddress: await this.getAgentWallet(agentId),
+      agentURI: await this.getAgentURI(agentId),
+      observedBlock: blockNumber,
+    };
+  }
+
   async getAgentURI(agentId: bigint): Promise<string> {
     const uri = this.agentURIs.get(agentId.toString());
     if (uri === undefined) throw new Error(`agentURI for ${agentId} not found`);
@@ -250,6 +281,7 @@ export class MockChainReader implements ChainReader {
 
   async prepareSettlement(
     input: SettlementInput,
+    facilitatorNonce: bigint,
   ): Promise<PreparedSettlementTransaction> {
     this.simulations.push(input);
     const outcome = this.outcomes.shift();
@@ -269,7 +301,8 @@ export class MockChainReader implements ChainReader {
         outcome.transactionHash,
       );
     }
-    const nonce = this.settlementNonce++;
+    const nonce = facilitatorNonce;
+    if (nonce >= this.settlementNonce) this.settlementNonce = nonce + 1n;
     const transactionHash =
       outcome.kind === "screening-error"
         ? (outcome.transactionHash ??
@@ -291,9 +324,10 @@ export class MockChainReader implements ChainReader {
 
   async prepareSettlementWithRegistration(
     input: SettleWithRegistrationInput,
+    facilitatorNonce: bigint,
   ): Promise<PreparedSettlementTransaction> {
     this.settleWithRegistrationCalls.push(input);
-    const prepared = await this.prepareSettlement(input);
+    const prepared = await this.prepareSettlement(input, facilitatorNonce);
     return { ...prepared, kind: "settle_with_registration" };
   }
 
@@ -318,9 +352,28 @@ export class MockChainReader implements ChainReader {
       );
     }
     if (outcome.kind === "submission-error") {
+      const zero = "0x" + "00".repeat(32);
+      const event = {
+        ...outcome.event,
+        serviceId:
+          outcome.event.serviceId.toLowerCase() === zero
+            ? input.serviceId
+            : outcome.event.serviceId,
+        serviceRef:
+          outcome.event.serviceRef.toLowerCase() === zero
+            ? input.serviceRef
+            : outcome.event.serviceRef,
+      };
+      this.settlementResults.set(outcome.txHash.toLowerCase(), {
+        transactionHash: outcome.txHash,
+        event,
+      });
+      if (prepared.facilitatorNonce >= this.settlementBroadcastNonce) {
+        this.settlementBroadcastNonce = prepared.facilitatorNonce + 1n;
+      }
       queued.outcome = {
         kind: "success",
-        event: outcome.event,
+        event,
         txHash: outcome.txHash,
       };
       throw new Error(outcome.reason);
@@ -378,8 +431,16 @@ export class MockChainReader implements ChainReader {
   // Tests exercise the gateway-side confirm flow without touching a real
   // EAS. Queue a result via queueConfirmation; otherwise the mock throws.
   private confirmationOutcomes: ConfirmationOutcome[] = [];
+  private preparedConfirmations = new Map<
+    string,
+    { input: ConfirmationDelegationInput; outcome: ConfirmationOutcome }
+  >();
+  private confirmationResults = new Map<string, ConfirmationResult>();
+  private confirmationFailures = new Map<string, ConfirmationSubmitError>();
   public confirmations: ConfirmationDelegationInput[] = [];
   private nonces = new Map<string, bigint>();
+  private confirmationNonce = 0n;
+  private confirmationBroadcastNonce = 0n;
 
   queueConfirmation(outcome: ConfirmationOutcome): void {
     this.confirmationOutcomes.push(outcome);
@@ -389,31 +450,107 @@ export class MockChainReader implements ChainReader {
     this.nonces.set(attester.toLowerCase(), nonce);
   }
 
-  async submitBuyerConfirmation(
+  async prepareBuyerConfirmation(
     input: ConfirmationDelegationInput,
-    onBroadcast?: BroadcastObserver,
-  ): Promise<ConfirmationResult> {
+    facilitatorNonce: bigint,
+  ): Promise<PreparedConfirmationTransaction> {
     this.confirmations.push(input);
     const outcome = this.confirmationOutcomes.shift();
     if (!outcome) {
       throw new Error(
-        "MockChainReader.submitBuyerConfirmation called with no queued outcome",
+        "MockChainReader.prepareBuyerConfirmation called with no queued outcome",
       );
     }
     if (outcome.kind === "revert") throw new Error(outcome.reason);
-    // Stage-typed failures exercise the confirm-delivery taxonomy split
-    // (pre-broadcast / reverted / unknown / attested-but-unrecorded).
-    if (outcome.kind === "stage") {
+    if (outcome.kind === "stage" && outcome.stage === "validation") {
       throw new ConfirmationSubmitError(outcome.stage, outcome.reason, {
         transactionHash: outcome.txHash,
         needsFreshSignature: outcome.needsFreshSignature,
       });
     }
-    await onBroadcast?.(outcome.txHash);
+    const transactionHash =
+      outcome.kind === "success"
+        ? outcome.txHash
+        : (outcome.txHash ??
+          (`0xcafe${facilitatorNonce.toString(16).padStart(60, "0")}` as Hex));
+    this.preparedConfirmations.set(transactionHash.toLowerCase(), {
+      input,
+      outcome,
+    });
+    if (facilitatorNonce >= this.confirmationNonce) {
+      this.confirmationNonce = facilitatorNonce + 1n;
+    }
     return {
+      transactionHash,
+      serializedTransaction:
+        `0x02${facilitatorNonce.toString(16).padStart(2, "0")}` as Hex,
+      facilitatorNonce,
+    };
+  }
+
+  async submitPreparedBuyerConfirmation(
+    prepared: PreparedConfirmationTransaction,
+    _input: ConfirmationDelegationInput,
+    onBroadcast?: BroadcastObserver,
+  ): Promise<ConfirmationResult> {
+    const queued = this.preparedConfirmations.get(
+      prepared.transactionHash.toLowerCase(),
+    );
+    if (!queued) throw new Error("mock prepared confirmation not found");
+    const { input, outcome } = queued;
+    if (outcome.kind === "stage") {
+      const failure = new ConfirmationSubmitError(
+        outcome.stage,
+        outcome.reason,
+        {
+          transactionHash: outcome.txHash ?? prepared.transactionHash,
+          needsFreshSignature: outcome.needsFreshSignature,
+        },
+      );
+      this.confirmationFailures.set(
+        prepared.transactionHash.toLowerCase(),
+        failure,
+      );
+      if (outcome.stage !== "unknown" || outcome.txHash) {
+        if (
+          prepared.facilitatorNonce >= this.confirmationBroadcastNonce
+        ) {
+          this.confirmationBroadcastNonce = prepared.facilitatorNonce + 1n;
+        }
+        await onBroadcast?.(prepared.transactionHash);
+      }
+      throw failure;
+    }
+    if (outcome.kind === "revert") throw new Error(outcome.reason);
+    const result = {
       transactionHash: outcome.txHash,
       attestationUid: outcome.attestationUid,
     };
+    this.confirmationResults.set(outcome.txHash.toLowerCase(), result);
+    const current = this.nonces.get(input.attester.toLowerCase()) ?? 0n;
+    this.nonces.set(input.attester.toLowerCase(), current + 1n);
+    if (prepared.facilitatorNonce >= this.confirmationBroadcastNonce) {
+      this.confirmationBroadcastNonce = prepared.facilitatorNonce + 1n;
+    }
+    await onBroadcast?.(outcome.txHash);
+    return result;
+  }
+
+  async getBuyerConfirmationByTransaction(
+    transactionHash: Hex,
+  ): Promise<ConfirmationResult | null> {
+    const failure = this.confirmationFailures.get(transactionHash.toLowerCase());
+    if (failure) throw failure;
+    return this.confirmationResults.get(transactionHash.toLowerCase()) ?? null;
+  }
+
+  resolveConfirmation(
+    transactionHash: Hex,
+    result: ConfirmationResult,
+  ): void {
+    const key = transactionHash.toLowerCase();
+    this.confirmationFailures.delete(key);
+    this.confirmationResults.set(key, result);
   }
 
   async getEasAttesterNonce(attester: Hex): Promise<bigint> {
@@ -604,6 +741,11 @@ export class MockChainReader implements ChainReader {
     [];
   private feedbackLastIndex = new Map<string, bigint>();
   private feedbackTransactions = new Map<string, FeedbackResult>();
+  private preparedFeedbackRevocations = new Map<
+    string,
+    { input: FeedbackRevocationInput; failure?: FeedbackSubmissionError }
+  >();
+  private feedbackRevocationTransactions = new Map<string, FeedbackResult>();
   private feedbackNonce = 0n;
   private feedbackBroadcastNonce = 0n;
 
@@ -620,10 +762,12 @@ export class MockChainReader implements ChainReader {
 
   async prepareFeedback(
     _input: FeedbackInput,
+    facilitatorNonce: bigint,
   ): Promise<PreparedFeedbackTransaction> {
-    const nonce = this.feedbackNonce++;
+    const nonce = facilitatorNonce;
+    if (nonce >= this.feedbackNonce) this.feedbackNonce = nonce + 1n;
     return {
-      nonce,
+      facilitatorNonce: nonce,
       transactionHash: `0xfade${nonce.toString(16).padStart(60, "0")}` as Hex,
       serializedTransaction:
         `0x02${nonce.toString(16).padStart(2, "0")}` as Hex,
@@ -638,6 +782,10 @@ export class MockChainReader implements ChainReader {
     this.feedbacks.push(input);
     const outcome = this.feedbackOutcomes.shift();
     if (outcome?.kind === "permanent") {
+      if (prepared.facilitatorNonce >= this.feedbackBroadcastNonce) {
+        this.feedbackBroadcastNonce = prepared.facilitatorNonce + 1n;
+      }
+      await onBroadcast?.(prepared.transactionHash);
       throw new FeedbackSubmissionError("reverted", outcome.reason);
     }
     if (outcome) throw new Error(outcome.reason);
@@ -652,8 +800,8 @@ export class MockChainReader implements ChainReader {
       prepared.transactionHash.toLowerCase(),
       result,
     );
-    if (prepared.nonce >= this.feedbackBroadcastNonce) {
-      this.feedbackBroadcastNonce = prepared.nonce + 1n;
+    if (prepared.facilitatorNonce >= this.feedbackBroadcastNonce) {
+      this.feedbackBroadcastNonce = prepared.facilitatorNonce + 1n;
     }
     await onBroadcast?.(prepared.transactionHash);
     return result;
@@ -667,25 +815,92 @@ export class MockChainReader implements ChainReader {
   }
 
   async getFacilitatorTransactionCount(): Promise<bigint> {
-    return this.feedbackBroadcastNonce > this.settlementBroadcastNonce
-      ? this.feedbackBroadcastNonce
-      : this.settlementBroadcastNonce;
+    return maxBigint(
+      this.feedbackBroadcastNonce,
+      this.settlementBroadcastNonce,
+      this.confirmationBroadcastNonce,
+    );
   }
 
-  async revokeFeedback(
-    agentId: bigint,
-    feedbackIndex: bigint,
+  async getFacilitatorPendingTransactionCount(): Promise<bigint> {
+    const prepared = maxBigint(
+      this.feedbackNonce,
+      this.settlementNonce,
+      this.confirmationNonce,
+    );
+    const broadcast = maxBigint(
+      this.feedbackBroadcastNonce,
+      this.settlementBroadcastNonce,
+      this.confirmationBroadcastNonce,
+    );
+    return prepared > broadcast ? prepared : broadcast;
+  }
+
+  async prepareFeedbackRevocation(
+    input: FeedbackRevocationInput,
+    facilitatorNonce: bigint,
+  ): Promise<PreparedFeedbackTransaction> {
+    this.feedbackRevokes.push(input);
+    const outcome = this.feedbackRevokeOutcomes.shift();
+    if (outcome?.reason === "already revoked") {
+      throw new FeedbackAlreadyRevokedError();
+    }
+    const transactionHash =
+      `0xdead${facilitatorNonce.toString(16).padStart(60, "0")}` as Hex;
+    if (facilitatorNonce >= this.feedbackNonce) {
+      this.feedbackNonce = facilitatorNonce + 1n;
+    }
+    this.preparedFeedbackRevocations.set(transactionHash.toLowerCase(), {
+      input,
+      ...(outcome
+        ? {
+            failure: new FeedbackSubmissionError("reverted", outcome.reason),
+          }
+        : {}),
+    });
+    return {
+      transactionHash,
+      serializedTransaction:
+        `0x03${facilitatorNonce.toString(16).padStart(2, "0")}` as Hex,
+      facilitatorNonce,
+    };
+  }
+
+  async submitPreparedFeedbackRevocation(
+    prepared: PreparedFeedbackTransaction,
+    input: FeedbackRevocationInput,
     onBroadcast?: BroadcastObserver,
   ): Promise<FeedbackResult> {
-    this.feedbackRevokes.push({ agentId, feedbackIndex });
-    const outcome = this.feedbackRevokeOutcomes.shift();
-    if (outcome) throw new Error(outcome.reason);
+    const queued = this.preparedFeedbackRevocations.get(
+      prepared.transactionHash.toLowerCase(),
+    );
+    if (!queued) throw new Error("mock prepared feedback revocation not found");
+    if (prepared.facilitatorNonce >= this.feedbackBroadcastNonce) {
+      this.feedbackBroadcastNonce = prepared.facilitatorNonce + 1n;
+    }
+    await onBroadcast?.(prepared.transactionHash);
+    if (queued.failure) throw queued.failure;
     const result = {
-      transactionHash:
-        `0xdead${feedbackIndex.toString(16).padStart(60, "0")}` as Hex,
+      transactionHash: prepared.transactionHash,
     };
-    await onBroadcast?.(result.transactionHash);
+    this.feedbackRevocationTransactions.set(
+      prepared.transactionHash.toLowerCase(),
+      result,
+    );
     return result;
+  }
+
+  async getFeedbackRevocationByTransaction(
+    transactionHash: Hex,
+  ): Promise<FeedbackResult | null> {
+    const queued = this.preparedFeedbackRevocations.get(
+      transactionHash.toLowerCase(),
+    );
+    if (queued?.failure) throw queued.failure;
+    return (
+      this.feedbackRevocationTransactions.get(transactionHash.toLowerCase()) ??
+      null
+    );
   }
 
   private chainProjectionEvents: ChainProjectionEvent[] = [];
@@ -720,6 +935,13 @@ export class MockChainReader implements ChainReader {
       : null;
   }
 
+}
+
+function maxBigint(...values: bigint[]): bigint {
+  return values.reduce(
+    (largest, value) => (value > largest ? value : largest),
+    0n,
+  );
 }
 
 export function makePaymentSettledEvent(args: {

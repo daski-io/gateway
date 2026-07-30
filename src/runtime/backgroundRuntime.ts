@@ -6,6 +6,7 @@ import type { ChainEventsIndexer } from "../indexer/chainEvents.js";
 import type { ReputationMirrorWorker } from "../reputation/worker.js";
 import { logErrorWithId } from "../util/errorWrap.js";
 import { reconcileBroadcastSettlements } from "../payment/settlementReconciler.js";
+import { reconcileBuyerConfirmations } from "../payment/confirmationReconciler.js";
 
 interface BackgroundRuntimeOptions {
   enabled: boolean;
@@ -33,11 +34,18 @@ export function startBackgroundRuntime(
   let maintenance: Promise<void> | null = null;
   const reconcile = async () => {
     if (stopping || reconciliation) return;
-    const operation = reconcileBroadcastSettlements(
-      options.reader,
-      options.queries,
-      options.config,
-    )
+    const operation = Promise.all([
+      reconcileBroadcastSettlements(
+        options.reader,
+        options.queries,
+        options.config,
+      ),
+      reconcileBuyerConfirmations(
+        options.reader,
+        options.queries,
+        options.reputationWorker,
+      ),
+    ])
       .then(() => undefined)
       .catch((error) => {
         logErrorWithId("reconcileBroadcastSettlements", error);

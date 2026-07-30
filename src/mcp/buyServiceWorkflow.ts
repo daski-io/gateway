@@ -165,6 +165,7 @@ export async function runBuyService(
         maxResponseBytes: transport.maxResponseBytes,
         fetchAgentCardFn: deps.buyerAgentCardFetch,
         deploymentReadiness: deps.deploymentReadiness,
+        providerAuthority: deps.providerAuthority,
       })
     : runBuyServiceFreePath(context, {
         config: deps.config,

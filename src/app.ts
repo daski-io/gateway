@@ -17,6 +17,7 @@ import { ChainDeploymentReadinessProbe } from "./payment/deploymentReadiness.js"
 import { logErrorWithId } from "./util/errorWrap.js";
 import { logger } from "./util/logger.js";
 import { ApplicationLifecycle } from "./runtime/applicationLifecycle.js";
+import { ProviderAuthorityService } from "./payment/providerAuthority.js";
 
 const ZERO_ADDRESS = `0x${"00".repeat(20)}` as const;
 
@@ -49,6 +50,7 @@ export interface AppBundle {
   reputationWorker: ReputationMirrorWorker;
   indexer: ChainEventsIndexer;
   deploymentReadiness: ChainDeploymentReadinessProbe;
+  providerAuthority: ProviderAuthorityService;
   beginShutdown(): void;
   shutdown(httpClosed?: Promise<void>): Promise<void>;
 }
@@ -87,6 +89,7 @@ export async function createApp(options: CreateAppOptions): Promise<AppBundle> {
     onCatalogChanged: (_oldProviders, newProviders) => embeddingSync?.schedule(newProviders),
     logger,
   });
+  const providerAuthority = new ProviderAuthorityService(cache, config);
   const embedderWarmup =
     embedder?.warmup?.().catch((error) => {
       logErrorWithId("embedder.warmup", error);
@@ -102,6 +105,7 @@ export async function createApp(options: CreateAppOptions): Promise<AppBundle> {
     indexer,
     deploymentReadiness,
     lifecycle,
+    providerAuthority,
   });
   const background = startBackgroundRuntime({
     enabled: options.startCacheRefreshLoop !== false,
@@ -160,6 +164,7 @@ export async function createApp(options: CreateAppOptions): Promise<AppBundle> {
     reputationWorker,
     indexer,
     deploymentReadiness,
+    providerAuthority,
     beginShutdown: () => lifecycle.beginShutdown(),
     shutdown,
   };

@@ -4,6 +4,13 @@ export const oracleAbi = parseAbi([
   "function isSanctioned(address account) view returns (bool)",
 ]);
 
+export const usdcAbi = parseAbi([
+  "function decimals() view returns (uint8)",
+  "function name() view returns (string)",
+  "function version() view returns (string)",
+  "function DOMAIN_SEPARATOR() view returns (bytes32)",
+]);
+
 export const agentIndexAbi = parseAbi([
   "function getIdentityRegistry() view returns (address)",
   "function sanctionsOracle() view returns (address)",

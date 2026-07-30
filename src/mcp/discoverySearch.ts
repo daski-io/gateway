@@ -163,9 +163,7 @@ function emptyFilterSteer(
 
 function acceptedToken(config: Config): Record<string, unknown> {
   return {
-    address: config.usdcAddress,
-    name: config.usdcName,
-    version: config.usdcVersion,
+    ...config.usdc,
     chainId: config.chainId,
     network: config.network,
   };

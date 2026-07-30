@@ -20,6 +20,7 @@ type IdentityMethods = Pick<
   | "getAgentWallet"
   | "getAgentOwner"
   | "getRegistrationNonce"
+  | "getProviderAuthority"
 >;
 
 export function createIdentityMethods(
@@ -54,6 +55,55 @@ export function createIdentityMethods(
         agentId: bigint;
         registrationTime: bigint;
         isActive: boolean;
+      };
+    },
+
+    async getProviderAuthority(agentId: bigint, blockNumber: bigint) {
+      const provider = await publicClient.readContract({
+        address: addresses.providerRegistryAddress,
+        abi: providerRegistryAbi,
+        functionName: "getProvider",
+        args: [agentId],
+        blockNumber,
+      });
+      const record = provider as {
+        agentId: bigint;
+        registrationTime: bigint;
+        isActive: boolean;
+      };
+      if (!record.isActive) {
+        return {
+          agentId,
+          registrationTime: record.registrationTime,
+          isActive: false,
+          agentURI: "",
+          walletAddress: `0x${"00".repeat(20)}` as Hex,
+          observedBlock: blockNumber,
+        };
+      }
+      const [agentURI, walletAddress] = await Promise.all([
+        publicClient.readContract({
+          address: addresses.identityRegistryAddress,
+          abi: identityRegistryAbi,
+          functionName: "tokenURI",
+          args: [agentId],
+          blockNumber,
+        }),
+        publicClient.readContract({
+          address: addresses.identityRegistryAddress,
+          abi: identityRegistryAbi,
+          functionName: "getAgentWallet",
+          args: [agentId],
+          blockNumber,
+        }),
+      ]);
+      return {
+        agentId: record.agentId,
+        registrationTime: record.registrationTime,
+        isActive: record.isActive,
+        agentURI: agentURI as string,
+        walletAddress: walletAddress as Hex,
+        observedBlock: blockNumber,
       };
     },
 

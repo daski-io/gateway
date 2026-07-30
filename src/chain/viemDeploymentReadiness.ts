@@ -7,6 +7,7 @@ import {
   reputationAbi,
   routerAbi,
   serviceRegistryAbi,
+  usdcAbi,
   validationAbi,
   x402Abi,
 } from "./deploymentReadinessAbis.js";
@@ -68,6 +69,25 @@ export function createViemDeploymentReadiness(
         if (!bytecode || bytecode === "0x") return failed(id);
       }
 
+      const usdcChecks = [
+        ["usdc_decimals", "decimals", options.usdc.decimals],
+        ["usdc_name", "name", options.usdc.name],
+        ["usdc_version", "version", options.usdc.version],
+        [
+          "usdc_domain_separator",
+          "DOMAIN_SEPARATOR",
+          options.usdc.domainSeparator,
+        ],
+      ] as const;
+      for (const [id, functionName, expected] of usdcChecks) {
+        const actual = await read(options.usdc.address, usdcAbi, functionName);
+        const matches =
+          typeof expected === "string" && expected.startsWith("0x")
+            ? sameHex(actual, expected as Hex)
+            : actual === expected;
+        if (!matches) return failed(id);
+      }
+
       if (
         typeof (await read(
           options.sanctionsOracleAddress,
@@ -120,7 +140,7 @@ export function createViemDeploymentReadiness(
         options.paymentRouterAddress,
         routerAbi,
         "getTokenReputationConfig",
-        [options.usdcAddress],
+        [options.usdc.address],
       );
       if (
         !Array.isArray(reputationConfig) ||
@@ -145,7 +165,7 @@ function contractCodeChecks(
     ["service_registry_code", options.serviceRegistryAddress],
     ["payment_router_code", options.paymentRouterAddress],
     ["x402_adapter_code", options.x402AdapterAddress],
-    ["usdc_code", options.usdcAddress],
+    ["usdc_code", options.usdc.address],
     ["eas_code", options.easAddress],
     ["reputation_storage_code", options.reputationStorageAddress],
     ["sanctions_oracle_code", options.sanctionsOracleAddress],
@@ -177,7 +197,7 @@ function addressChecks(options: DeploymentReadinessOptions): AddressCheck[] {
     check("agent_index_identity", options.agentIndexAddress, agentIndexAbi, "getIdentityRegistry", options.identityRegistryAddress),
     check("agent_index_oracle", options.agentIndexAddress, agentIndexAbi, "sanctionsOracle", oracle),
     check("provider_registry_identity", options.providerRegistryAddress, providerRegistryAbi, "identity", options.identityRegistryAddress),
-    check("provider_registry_usdc", options.providerRegistryAddress, providerRegistryAbi, "usdc", options.usdcAddress),
+    check("provider_registry_usdc", options.providerRegistryAddress, providerRegistryAbi, "usdc", options.usdc.address),
     check("provider_registry_oracle", options.providerRegistryAddress, providerRegistryAbi, "sanctionsOracle", oracle),
     check("service_registry_identity", options.serviceRegistryAddress, serviceRegistryAbi, "identity", options.identityRegistryAddress),
     check("service_registry_provider_registry", options.serviceRegistryAddress, serviceRegistryAbi, "providerRegistry", options.providerRegistryAddress),
@@ -252,7 +272,7 @@ function booleanChecks(options: DeploymentReadinessOptions): BooleanCheck[] {
   }
   return [
     ...adapterChecks,
-    { id: "payment_router_usdc", address: options.paymentRouterAddress, abi: routerAbi, functionName: "isAcceptedToken", args: [options.usdcAddress] },
+    { id: "payment_router_usdc", address: options.paymentRouterAddress, abi: routerAbi, functionName: "isAcceptedToken", args: [options.usdc.address] },
     { id: "x402_facilitator", address: options.x402AdapterAddress, abi: x402Abi, functionName: "authorizedFacilitators", args: [options.facilitatorAddress] },
     { id: "reputation_storage_configured", address: options.reputationStorageAddress, abi: reputationAbi, functionName: "isConfigured" },
   ];

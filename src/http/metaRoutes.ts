@@ -169,14 +169,14 @@ export function createMetaRouter(deps: MetaRoutesDeps): Router {
         ...(config.validationRegistryAddress
           ? { validationRegistry: config.validationRegistryAddress }
           : {}),
-        usdc: config.usdcAddress,
+        usdc: config.usdc.address,
         eas: config.easAddress,
       },
       schemas: {
         easConfirmation: config.easConfirmationSchemaUid,
         easOutcome: config.easOutcomeSchemaUid,
       },
-      usdcDomain: { name: config.usdcName, version: config.usdcVersion },
+      usdcDomain: config.usdc,
     });
   });
 

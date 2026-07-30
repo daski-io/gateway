@@ -6,6 +6,10 @@ import {
   loadRuntimeConfig,
   type RuntimeConfig,
 } from "./runtimeConfig.js";
+import {
+  loadUsdcDomain,
+  type UsdcDomainConfig,
+} from "./payment/usdcDomain.js";
 
 export const DASKI_A2A_EXTENSION_URI = "https://daski.xyz/a2a/v1";
 export const DASKI_X402_EXTENSION_URI = "https://daski.xyz/x402/v2";
@@ -66,9 +70,7 @@ export interface Config extends RuntimeConfig {
   // Earliest deployment block among PaymentRouter and ReputationStorage.
   // Live indexing always begins here; mock mode defaults to block zero.
   chainIndexerStartBlock: bigint;
-  usdcAddress: Hex;
-  usdcName: string;
-  usdcVersion: string;
+  usdc: UsdcDomainConfig;
   facilitatorPrivateKey: Hex;
   // Empty admits every active ProviderRegistry entry on Base Sepolia.
   // Base mainnet requires at least one explicitly admitted agentId.
@@ -86,6 +88,10 @@ export interface Config extends RuntimeConfig {
   // assigned in the response body we just threw away.
   a2aSubmitTimeoutMs: number;
   cacheRefreshIntervalSeconds: number;
+  providerAuthMaxAgeSeconds: number;
+  confirmationMaxPerPayment: number;
+  confirmationMaxPerWalletPerDay: number;
+  confirmationMaxGlobalPerDay: number;
   // How long the discovery cache keeps serving a provider's last-known-good
   // Agent Card when refresh fetches fail (provider restarting, card host
   // down). Past the cap the provider degrades to a card-less catalog entry
@@ -333,6 +339,55 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
             "CHAIN_INDEXER_START_BLOCK",
             env.CHAIN_INDEXER_START_BLOCK,
           );
+  const usdc = loadUsdcDomain({
+    chainId,
+    chainMode: runtime.chainMode,
+    address: requireAddress("USDC_ADDRESS", env.USDC_ADDRESS),
+    env,
+  });
+  const mainnetRequired = (name: string): string | undefined => {
+    if (chainId === 8453 && env[name] === undefined) {
+      throw new Error(`${name} must be explicitly set on Base mainnet`);
+    }
+    return env[name];
+  };
+  const confirmationMaxPerPayment = positiveInteger(
+    "CONFIRMATION_MAX_PER_PAYMENT",
+    mainnetRequired("CONFIRMATION_MAX_PER_PAYMENT"),
+    3,
+    3,
+  );
+  const confirmationMaxPerWalletPerDay = positiveInteger(
+    "CONFIRMATION_MAX_PER_WALLET_PER_DAY",
+    mainnetRequired("CONFIRMATION_MAX_PER_WALLET_PER_DAY"),
+    20,
+    100,
+  );
+  const confirmationMaxGlobalPerDay = positiveInteger(
+    "CONFIRMATION_MAX_GLOBAL_PER_DAY",
+    mainnetRequired("CONFIRMATION_MAX_GLOBAL_PER_DAY"),
+    500,
+    1_000,
+  );
+  const providerAuthMaxAgeSeconds = positiveInteger(
+    "PROVIDER_AUTH_MAX_AGE_SECONDS",
+    mainnetRequired("PROVIDER_AUTH_MAX_AGE_SECONDS"),
+    30,
+    60,
+  );
+  const cacheRefreshIntervalSeconds = positiveInteger(
+    "CACHE_REFRESH_INTERVAL",
+    env.CACHE_REFRESH_INTERVAL,
+    300,
+  );
+  if (
+    chainId === 8453 &&
+    cacheRefreshIntervalSeconds > providerAuthMaxAgeSeconds
+  ) {
+    throw new Error(
+      "CACHE_REFRESH_INTERVAL cannot exceed PROVIDER_AUTH_MAX_AGE_SECONDS on Base mainnet",
+    );
+  }
   return {
     ...runtime,
     port,
@@ -402,9 +457,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       "EAS_OUTCOME_SCHEMA_UID",
       env.EAS_OUTCOME_SCHEMA_UID,
     ),
-    usdcAddress: requireAddress("USDC_ADDRESS", env.USDC_ADDRESS),
-    usdcName: env.USDC_NAME ?? "USDC",
-    usdcVersion: env.USDC_VERSION ?? "2",
+    usdc,
     facilitatorPrivateKey: requirePrivateKey(
       "FACILITATOR_PRIVATE_KEY",
       env.FACILITATOR_PRIVATE_KEY,
@@ -422,11 +475,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       90_000,
       600_000,
     ),
-    cacheRefreshIntervalSeconds: positiveInteger(
-      "CACHE_REFRESH_INTERVAL",
-      env.CACHE_REFRESH_INTERVAL,
-      300,
-    ),
+    cacheRefreshIntervalSeconds,
+    providerAuthMaxAgeSeconds,
+    confirmationMaxPerPayment,
+    confirmationMaxPerWalletPerDay,
+    confirmationMaxGlobalPerDay,
     cacheMaxStalenessSeconds: positiveInteger(
       "CACHE_MAX_STALENESS_SECONDS",
       env.CACHE_MAX_STALENESS_SECONDS,

@@ -4,6 +4,7 @@ import type {
   DeploymentReadinessOptions,
 } from "../src/chain/deploymentReadinessTypes.js";
 import { createViemDeploymentReadiness } from "../src/chain/viemDeploymentReadiness.js";
+import { computeUsdcDomainSeparator } from "../src/payment/usdcDomain.js";
 import type { Hex } from "../src/types.js";
 
 const address = (suffix: number): Hex =>
@@ -23,7 +24,18 @@ const options: DeploymentReadinessOptions = {
   reputationRegistryAddress: address(10),
   reputationStorageAddress: address(11),
   sanctionsOracleAddress: address(12),
-  usdcAddress: address(13),
+  usdc: {
+    address: address(13),
+    decimals: 6,
+    name: "USD Coin",
+    version: "2",
+    domainSeparator: computeUsdcDomainSeparator(
+      8453,
+      address(13),
+      "USD Coin",
+      "2",
+    ),
+  },
   easAddress: address(14),
   easOutcomeSchemaUid: `0x${"aa".repeat(32)}`,
   easConfirmationSchemaUid: `0x${"bb".repeat(32)}`,
@@ -88,10 +100,17 @@ function expectedRead(
     return false;
   }
   const reads = new Map<string, unknown>([
+    [key(options.usdc.address, "decimals"), options.usdc.decimals],
+    [key(options.usdc.address, "name"), options.usdc.name],
+    [key(options.usdc.address, "version"), options.usdc.version],
+    [
+      key(options.usdc.address, "DOMAIN_SEPARATOR"),
+      options.usdc.domainSeparator,
+    ],
     [key(options.agentIndexAddress, "getIdentityRegistry"), options.identityRegistryAddress],
     [key(options.agentIndexAddress, "sanctionsOracle"), options.sanctionsOracleAddress],
     [key(options.providerRegistryAddress, "identity"), options.identityRegistryAddress],
-    [key(options.providerRegistryAddress, "usdc"), options.usdcAddress],
+    [key(options.providerRegistryAddress, "usdc"), options.usdc.address],
     [key(options.providerRegistryAddress, "sanctionsOracle"), options.sanctionsOracleAddress],
     [key(options.serviceRegistryAddress, "identity"), options.identityRegistryAddress],
     [key(options.serviceRegistryAddress, "providerRegistry"), options.providerRegistryAddress],
@@ -101,8 +120,8 @@ function expectedRead(
     [key(options.paymentRouterAddress, "serviceRegistry"), options.serviceRegistryAddress],
     [key(options.paymentRouterAddress, "reputationStorage"), options.reputationStorageAddress],
     [key(options.paymentRouterAddress, "sanctionsOracle"), options.sanctionsOracleAddress],
-    [key(options.paymentRouterAddress, "isAcceptedToken", [options.usdcAddress]), true],
-    [key(options.paymentRouterAddress, "getTokenReputationConfig", [options.usdcAddress]), [true, 1n]],
+    [key(options.paymentRouterAddress, "isAcceptedToken", [options.usdc.address]), true],
+    [key(options.paymentRouterAddress, "getTokenReputationConfig", [options.usdc.address]), [true, 1n]],
     [key(options.x402AdapterAddress, "authorizedFacilitators", [options.facilitatorAddress]), true],
     [key(options.x402AdapterAddress, "getFacilitatorCount"), 1n],
     [key(options.x402AdapterAddress, "getFacilitatorAt", [0n]), options.facilitatorAddress],
@@ -158,6 +177,19 @@ describe("live deployment readiness", () => {
   });
 
   it.each([
+    ["usdc_decimals", "decimals", 18],
+    ["usdc_name", "name", "USDC"],
+    ["usdc_version", "version", "1"],
+    ["usdc_domain_separator", "DOMAIN_SEPARATOR", `0x${"ff".repeat(32)}`],
+  ])("reports %s independently", async (id, functionName, value) => {
+    const fixture = new DeploymentFixture();
+    fixture.set(options.usdc.address, functionName, value);
+    await expect(
+      createViemDeploymentReadiness(fixture, options)(),
+    ).resolves.toMatchObject({ ready: false, failedCheck: id });
+  });
+
+  it.each([
     ["agent_index_identity", options.agentIndexAddress, "getIdentityRegistry"],
     ["agent_index_oracle", options.agentIndexAddress, "sanctionsOracle"],
     ["provider_registry_identity", options.providerRegistryAddress, "identity"],
@@ -195,7 +227,7 @@ describe("live deployment readiness", () => {
     ["payment_router_x402_adapter", "isAdapter", options.x402AdapterAddress],
     ["payment_router_permit_adapter", "isAdapter", options.permitAdapterAddress],
     ["payment_router_approval_adapter", "isAdapter", options.approvalAdapterAddress],
-    ["payment_router_usdc", "isAcceptedToken", options.usdcAddress],
+    ["payment_router_usdc", "isAcceptedToken", options.usdc.address],
   ])("fails when %s is unauthorized", async (id, functionName, target) => {
     const fixture = new DeploymentFixture();
     fixture.set(options.paymentRouterAddress, functionName, false, [target]);
@@ -224,7 +256,7 @@ describe("live deployment readiness", () => {
       options.paymentRouterAddress,
       "getTokenReputationConfig",
       [false, 0n],
-      [options.usdcAddress],
+      [options.usdc.address],
     );
     await expect(
       createViemDeploymentReadiness(disabled, options)(),

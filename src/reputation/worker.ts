@@ -76,6 +76,7 @@ export class ReputationMirrorWorker {
     this.running = true;
     try {
       await this.reconcileMissing();
+      await this.reconcileFacilitatorTransactions();
       for (let index = 0; index < 20; index++) {
         const row = await this.deps.queries.claimReputationMirror();
         if (!row) break;
@@ -139,6 +140,32 @@ export class ReputationMirrorWorker {
       logger.info("reputation mirror reconciliation completed", {
         candidates: missing.length,
       });
+    }
+  }
+
+  private async reconcileFacilitatorTransactions(): Promise<void> {
+    const transactions = [
+      ...(await this.deps.queries.listDueFacilitatorTransactions(
+        "feedback_revoke",
+        20,
+      )),
+      ...(await this.deps.queries.listDueFacilitatorTransactions(
+        "feedback_give",
+        20,
+      )),
+    ];
+    const paymentIds = new Set<string>();
+    for (const transaction of transactions) {
+      const paymentId = transaction.operationData.paymentId;
+      if (typeof paymentId === "string" && /^[0-9]+$/.test(paymentId)) {
+        paymentIds.add(paymentId);
+      }
+    }
+    for (const paymentId of paymentIds) {
+      const row = await this.deps.queries.getReputationMirror(BigInt(paymentId));
+      if (row?.status === "processing") {
+        await this.processor.process(row);
+      }
     }
   }
 }

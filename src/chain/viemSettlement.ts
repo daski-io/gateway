@@ -35,6 +35,7 @@ type SettlementMethods = Pick<
   | "submitPreparedSettlement"
   | "findSettlementByTransaction"
   | "getFacilitatorTransactionCount"
+  | "getFacilitatorPendingTransactionCount"
 >;
 
 export interface SettlementDeps {
@@ -86,6 +87,7 @@ export function createSettlementMethods(
   const prepare = async (
     input: SettlementInput | SettleWithRegistrationInput,
     operation: SettlementFunction,
+    facilitatorNonce: bigint,
   ): Promise<PreparedSettlementTransaction> => {
     const args = argsFor(input, operation);
     let simulation;
@@ -116,6 +118,7 @@ export function createSettlementMethods(
         args: args as any,
       }),
       gas: simulation.request.gas,
+      nonce: facilitatorNonce,
     });
     const serializedTransaction = (await deps.account.signTransaction(
       request as any,
@@ -153,9 +156,9 @@ export function createSettlementMethods(
   };
 
   return {
-    prepareSettlement: (input) => prepare(input, "settle"),
-    prepareSettlementWithRegistration: (input) =>
-      prepare(input, "settleWithRegistration"),
+    prepareSettlement: (input, nonce) => prepare(input, "settle", nonce),
+    prepareSettlementWithRegistration: (input, nonce) =>
+      prepare(input, "settleWithRegistration", nonce),
 
     async submitPreparedSettlement(prepared, expectedServiceRef, onBroadcast) {
       const receipt = await send(prepared, onBroadcast);
@@ -202,6 +205,15 @@ export function createSettlementMethods(
         await deps.publicClient.getTransactionCount({
           address: deps.account.address,
           blockTag: "latest",
+        }),
+      );
+    },
+
+    async getFacilitatorPendingTransactionCount(): Promise<bigint> {
+      return BigInt(
+        await deps.publicClient.getTransactionCount({
+          address: deps.account.address,
+          blockTag: "pending",
         }),
       );
     },

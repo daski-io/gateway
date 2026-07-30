@@ -9,7 +9,7 @@ export function createConfiguredChainReader(config: Config): ChainReader {
       throw new Error("Base mainnet cannot use AutoMockChainReader");
     }
     return new AutoMockChainReader({
-      tokenAddress: config.usdcAddress,
+      tokenAddress: config.usdc.address,
       providerWalletAddress: config.mockProviderWalletAddress,
       providerAgentId: config.mockProviderAgentId,
       providerAgentUri: config.mockProviderAgentUri,
@@ -32,7 +32,8 @@ export function createConfiguredChainReader(config: Config): ChainReader {
     approvalAdapterAddress: config.approvalAdapterAddress,
     validationRegistryAddress: config.validationRegistryAddress,
     sanctionsOracleAddress: config.sanctionsOracleAddress,
-    usdcAddress: config.usdcAddress,
+    usdcAddress: config.usdc.address,
+    usdcDomain: config.usdc,
     facilitatorPrivateKey: config.facilitatorPrivateKey,
     easAddress: config.easAddress,
     reputationStorageAddress: config.reputationStorageAddress,

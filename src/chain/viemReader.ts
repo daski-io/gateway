@@ -9,6 +9,7 @@ import { base, baseSepolia } from "viem/chains";
 import { paymentRouterAbi, usdcAbi } from "./abis.js";
 import type { ChainReader, PaymentRouterRecord } from "./reader.js";
 import type { ChainId, Hex } from "../types.js";
+import type { UsdcDomainConfig } from "../payment/usdcDomain.js";
 import { createIdentityMethods } from "./viemIdentity.js";
 import { createReputationReadMethods } from "./viemReputationRead.js";
 import { createFeedbackMethods } from "./viemFeedback.js";
@@ -37,6 +38,7 @@ export interface ViemReaderOptions {
   validationRegistryAddress?: Hex;
   sanctionsOracleAddress: Hex;
   usdcAddress: Hex;
+  usdcDomain: UsdcDomainConfig;
   facilitatorPrivateKey: Hex;
   // EAS contract. On Base / Base Sepolia this is the canonical
   // 0x4200000000000000000000000000000000000021.
@@ -154,7 +156,7 @@ export function createViemChainReader(opts: ViemReaderOptions): ChainReader {
       reputationRegistryAddress: opts.reputationRegistryAddress,
       reputationStorageAddress,
       sanctionsOracleAddress: opts.sanctionsOracleAddress,
-      usdcAddress: opts.usdcAddress,
+      usdc: opts.usdcDomain,
       easAddress: opts.easAddress,
       easOutcomeSchemaUid: opts.easOutcomeSchemaUid,
       easConfirmationSchemaUid: opts.easConfirmationSchemaUid,

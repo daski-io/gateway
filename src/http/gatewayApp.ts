@@ -24,6 +24,7 @@ import { sendBodyParserError } from "./bodyErrors.js";
 import { createMetaRouter } from "./metaRoutes.js";
 import { configureMiddleware } from "./middleware.js";
 import type { ApplicationLifecycle } from "../runtime/applicationLifecycle.js";
+import type { ProviderAuthorityService } from "../payment/providerAuthority.js";
 
 export interface GatewayHttpOptions {
   config: Config;
@@ -37,6 +38,7 @@ export interface GatewayHttpOptions {
   embeddingSync: CatalogEmbeddingSynchronizer | null;
   deploymentReadiness: ChainDeploymentReadinessProbe;
   lifecycle: ApplicationLifecycle;
+  providerAuthority: ProviderAuthorityService;
   a2aFetch?: typeof fetch;
   a2aTimeoutMs?: number;
   buyerAgentCardFetch?: FetchAgentCardOptions["fetchFn"];
@@ -56,6 +58,7 @@ export async function createGatewayHttp(
     queries,
     reader,
     deploymentReadiness: options.deploymentReadiness,
+    providerAuthority: options.providerAuthority,
     fetchAgentCardFn: options.buyerAgentCardFetch,
   });
   configureMiddleware(app, queries, config);
@@ -96,6 +99,7 @@ export async function createGatewayHttp(
       reader,
       deploymentReadiness: options.deploymentReadiness,
       facilitator,
+      providerAuthority: options.providerAuthority,
       fetchAgentCardFn: options.buyerAgentCardFetch,
     }),
   );
@@ -128,6 +132,7 @@ export async function createGatewayHttp(
         reader,
         deploymentReadiness: options.deploymentReadiness,
         facilitator,
+        providerAuthority: options.providerAuthority,
         reputationWorker,
         pool: options.pool,
         embedder: options.embedder,

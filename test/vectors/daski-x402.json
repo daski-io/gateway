@@ -1,0 +1,53 @@
+{
+  "schema": "daski-x402-vectors/v1",
+  "vectors": [
+    {
+      "network": "base-mainnet",
+      "chainId": 8453,
+      "token": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+      "decimals": 6,
+      "name": "USD Coin",
+      "version": "2",
+      "domainSeparator": "0x02fa7265e7c5d81118673727957699e4d68f74cd74b7db77da710fe8a2c7834f",
+      "adapter": "0x000000000000000000000000000000000000a004",
+      "router": "0x000000000000000000000000000000000000a002",
+      "payer": "0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A",
+      "amount": "15000000",
+      "validAfter": "0",
+      "validBefore": "2000000000",
+      "providerAgentId": "2",
+      "serviceId": "0x2222222222222222222222222222222222222222222222222222222222222222",
+      "serviceRef": "0x3333333333333333333333333333333333333333333333333333333333333333",
+      "nonceSalt": "0x4444444444444444444444444444444444444444444444444444444444444444",
+      "nonce": "0x52fe8ab08f655d42df7f647b7c1459881320d8e118ae8a44e2c15923fa9efb7c",
+      "structHash": "0xd2c82835099609b3aab35000c9f78b334d68b26d83cec098b22c1baf5afc91f8",
+      "digest": "0x7da8c9919ea0a0a707c6876ae12763046c12c560e9ec346520582822c5507fd1",
+      "signer": "0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A",
+      "signature": "0xe6b643ec29b56a7cd12edd39a9750728693272b47aab0ad341b7b67f66499b9d50f98ee80d8ed9e456a0bddabedb5a02bf79937793f51a5f6a82b961f730e2711b"
+    },
+    {
+      "network": "base-sepolia",
+      "chainId": 84532,
+      "token": "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+      "decimals": 6,
+      "name": "USDC",
+      "version": "2",
+      "domainSeparator": "0x71f17a3b2ff373b803d70a5a07c046c1a2bc8e89c09ef722fcb047abe94c9818",
+      "adapter": "0x000000000000000000000000000000000000a004",
+      "router": "0x000000000000000000000000000000000000a002",
+      "payer": "0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A",
+      "amount": "15000000",
+      "validAfter": "0",
+      "validBefore": "2000000000",
+      "providerAgentId": "2",
+      "serviceId": "0x2222222222222222222222222222222222222222222222222222222222222222",
+      "serviceRef": "0x3333333333333333333333333333333333333333333333333333333333333333",
+      "nonceSalt": "0x4444444444444444444444444444444444444444444444444444444444444444",
+      "nonce": "0xff3ea2c513139bcb77d1e020aa21321db733cd8662c68e1fa16fa1a72aee1286",
+      "structHash": "0xf3084b30e7b793475f8963e43afe35558ad84e56cd9fdc476d7c427b92a08fe7",
+      "digest": "0x1869e5592951c6ab24f0ceb691933f7d364a5535d50773a895dcdaaa4921a9aa",
+      "signer": "0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A",
+      "signature": "0x307ff9543b3c197dc8988c43e138c31bd616e946cf9bb904a940bebaa6ccd13f265598ee333490981c27549cbd2dcca0d5a2b27d16b784558c3932903c7cf7a91b"
+    }
+  ]
+}

@@ -13,6 +13,7 @@ import type { Hex, PaymentPayload } from "../types.js";
 import { logger } from "../util/logger.js";
 import type { ChainDeploymentReadinessProbe } from "./deploymentReadiness.js";
 import type { DaskiFacilitatorService } from "./daskiFacilitator.js";
+import type { ProviderAuthorityService } from "./providerAuthority.js";
 import { parsePurchaseRequest } from "./purchaseRequest.js";
 import { hashCanonical } from "./requirementResponse.js";
 import { issuePaymentRequirements } from "./requirements.js";
@@ -25,6 +26,7 @@ export interface PurchaseDeps {
   reader: ChainReader;
   deploymentReadiness: ChainDeploymentReadinessProbe;
   facilitator: DaskiFacilitatorService;
+  providerAuthority: ProviderAuthorityService;
   fetchAgentCardFn?: import("../identity/fetch-agent-card.js").FetchAgentCardOptions["fetchFn"];
 }
 
@@ -169,6 +171,7 @@ async function handleInitialPurchase(
       warnings: [],
       requestFingerprint: hashCanonical(body),
       registrationDelegation: parsed.registration,
+      providerAuthority: parsed.providerAuthority,
     },
     deps.config,
     deps.cache,

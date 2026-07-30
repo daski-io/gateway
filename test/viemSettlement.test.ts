@@ -64,7 +64,7 @@ describe("prepared settlement transactions", () => {
     });
     const fixture = methods(simulate);
 
-    const prepared = await fixture.methods.prepareSettlement(INPUT);
+    const prepared = await fixture.methods.prepareSettlement(INPUT, 7n);
 
     expect(simulate).toHaveBeenCalledTimes(1);
     expect(fixture.prepareTransactionRequest).toHaveBeenCalledWith(
@@ -74,6 +74,7 @@ describe("prepared settlement transactions", () => {
         to: ADDRESS,
         gas: 2_000_000n,
         data: expect.stringMatching(/^0x[0-9a-f]+$/),
+        nonce: 7n,
       }),
     );
     expect(prepared).toEqual({
@@ -95,7 +96,7 @@ describe("prepared settlement transactions", () => {
     );
 
     await expect(
-      fixture.methods.prepareSettlement(INPUT),
+      fixture.methods.prepareSettlement(INPUT, 7n),
     ).rejects.toMatchObject({
       failure: {
         code: "SANCTIONS_ADDRESS_REJECTED",
@@ -117,7 +118,7 @@ describe("prepared settlement transactions", () => {
           .mockRejectedValue(new Error("transaction already known")),
       },
     );
-    const prepared = await fixture.methods.prepareSettlement(INPUT);
+    const prepared = await fixture.methods.prepareSettlement(INPUT, 7n);
     const onBroadcast = vi.fn();
 
     await expect(

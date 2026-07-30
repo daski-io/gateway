@@ -31,6 +31,11 @@ interface ChallengeBinding {
   daskiExtension: DaskiX402Declaration;
   resourceUrl: string;
   registrationDelegation?: StoredChallenge["registrationDelegation"];
+  providerAuthority: {
+    walletAddress: Hex;
+    agentURI: string;
+    observedBlock: bigint;
+  };
 }
 
 export type ClaimChallengeResult =
@@ -62,7 +67,11 @@ function matchesBinding(
       binding.quote.requestHash.toLowerCase() &&
     existing.x402Version === 2 &&
     existing.requestFingerprint?.toLowerCase() ===
-      binding.requestFingerprint.toLowerCase()
+      binding.requestFingerprint.toLowerCase() &&
+    existing.providerAuthorityWallet?.toLowerCase() ===
+      binding.providerAuthority.walletAddress.toLowerCase() &&
+    existing.providerAuthorityAgentUri === binding.providerAuthority.agentURI &&
+    existing.providerAuthorityBlock === binding.providerAuthority.observedBlock
   );
 }
 
@@ -117,6 +126,7 @@ export async function claimPaymentChallenge(
         requestFingerprint: binding.requestFingerprint,
         registrationDelegation: binding.registrationDelegation,
         serviceArgs: binding.serviceArgs,
+        providerAuthority: binding.providerAuthority,
       });
     } catch (error) {
       if (

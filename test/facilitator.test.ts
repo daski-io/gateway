@@ -224,7 +224,7 @@ describe("x402 V2 facilitator API", () => {
           .serviceId as Hex,
         buyerAgentId: 5n,
         providerAgentId: 2n,
-        token: gateway.config.usdcAddress,
+        token: gateway.config.usdc.address,
         totalAmount: 100_000n,
         providerAmount: 95_000n,
         commission: 5_000n,
@@ -250,9 +250,16 @@ describe("x402 V2 facilitator API", () => {
     expect(prepared).toMatchObject({
       settlementState: "settlement_prepared",
       transactionHash: TX,
-      preparedTransactionNonce: 0n,
+      settlementFacilitatorTransactionId: expect.any(String),
     });
-    expect(prepared?.preparedTransaction).toBeTruthy();
+    const journal =
+      await gateway.bundle.queries.getFacilitatorTransactionById(
+        prepared!.settlementFacilitatorTransactionId!,
+      );
+    expect(journal).toMatchObject({
+      transactionNonce: 0n,
+      preparedTransaction: expect.any(String),
+    });
 
     expect((await settle()).status).toBe(200);
     expect(gateway.mockChain.simulations).toHaveLength(1);
@@ -281,14 +288,16 @@ describe("x402 V2 facilitator API", () => {
       );
     let failOnce = true;
     gateway.bundle.queries.recordChallengeTransactionBroadcast = async (
+      client,
       serviceRef,
+      transactionId,
       transactionHash,
     ) => {
       if (failOnce) {
         failOnce = false;
         throw new Error("database write failed");
       }
-      return record(serviceRef, transactionHash);
+      return record(client, serviceRef, transactionId, transactionHash);
     };
     const settle = () =>
       fetch(`${gateway.baseUrl}/settle`, {
@@ -337,7 +346,7 @@ describe("x402 V2 facilitator API", () => {
     const blocked = await settle(second);
     expect(blocked.status).toBe(503);
     expect(await blocked.json()).toMatchObject({
-      errorReason: "settlement_outbox_pending",
+      errorReason: "facilitator_transaction_pending",
       errorMessage:
         "the facilitator wallet is reconciling a prior transaction",
       retryable: true,
@@ -368,7 +377,7 @@ describe("x402 V2 facilitator API", () => {
       }),
     });
 
-    expect(response.status).toBe(402);
+    expect(response.status).toBe(503);
     expect(gateway.mockChain.simulations).toHaveLength(1);
     expect(gateway.mockChain.settlements).toHaveLength(0);
     expect(

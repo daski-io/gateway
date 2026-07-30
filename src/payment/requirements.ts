@@ -28,6 +28,7 @@ import {
   validateQuoteBinding,
   type ProviderQuoteForChallenge,
 } from "./quoteBinding.js";
+import type { ProviderAuthoritySnapshot } from "../chain/reader.js";
 
 export interface IssueParams {
   providerTokenId: bigint;
@@ -56,6 +57,7 @@ export interface IssueParams {
   serviceArgs: Record<string, unknown>;
   warnings: string[];
   registrationDelegation?: StoredChallenge["registrationDelegation"];
+  providerAuthority: ProviderAuthoritySnapshot;
 }
 
 export type IssueResult =
@@ -86,6 +88,18 @@ export async function issuePaymentRequirements(
   }
   if (!provider.providerLegal) {
     return providerLegalAdmissionFailure(provider);
+  }
+  if (
+    provider.agentURI !== params.providerAuthority.agentURI ||
+    provider.walletAddress.toLowerCase() !==
+      params.providerAuthority.walletAddress.toLowerCase()
+  ) {
+    return {
+      ok: false,
+      code: "provider_authority_changed",
+      message: "provider authority changed while the challenge was created",
+      status: 409,
+    };
   }
   const purchaseLegal = buildPurchaseLegalContext(config, provider.providerLegal);
 
@@ -262,6 +276,11 @@ export async function issuePaymentRequirements(
       resourceUrl: params.resource,
       registrationDelegation: params.registrationDelegation,
       serviceArgs: params.serviceArgs,
+      providerAuthority: {
+        walletAddress: params.providerAuthority.walletAddress,
+        agentURI: params.providerAuthority.agentURI,
+        observedBlock: params.providerAuthority.observedBlock,
+      },
     },
     queries,
     now,

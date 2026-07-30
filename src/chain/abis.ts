@@ -349,9 +349,8 @@ export const reputationRegistryAbi = [
     stateMutability: "nonpayable",
   },
   {
-    // Soft revocation — the record stays, isRevoked flips. Reverts with
-    // "no such feedback" / "already revoked"; callers doing best-effort
-    // revoke-before-revise swallow those.
+    // Soft revocation — the record stays and isRevoked flips. The revision
+    // flow accepts only the canonical "already revoked" result as success.
     type: "function",
     name: "revokeFeedback",
     inputs: [

@@ -30,6 +30,7 @@ import { ConcurrencyLimiter } from "./concurrencyLimiter.js";
 import { UNTRUSTED_PROVIDER_CONTENT_WARNING } from "./providerReflection.js";
 import type { ChainDeploymentReadinessProbe } from "../payment/deploymentReadiness.js";
 import type { DaskiFacilitatorService } from "../payment/daskiFacilitator.js";
+import type { ProviderAuthorityService } from "../payment/providerAuthority.js";
 
 // JSON response cap on provider A2A calls. Real responses are <50 KB; 1 MB
 // is generous enough for unusual artifact payloads while still protecting
@@ -50,6 +51,7 @@ export interface McpDeps {
   reader: ChainReader;
   deploymentReadiness: ChainDeploymentReadinessProbe;
   facilitator: DaskiFacilitatorService;
+  providerAuthority: ProviderAuthorityService;
   reputationWorker: ReputationMirrorWorker;
   pool: import("../db/pool.js").Pool;
   embeddingSync?: import("../discovery/embeddingSync.js").CatalogEmbeddingSynchronizer | null;

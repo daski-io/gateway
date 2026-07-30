@@ -52,7 +52,7 @@ describe("x402 V2 HTTP payment resource", () => {
       scheme: "daski-exact",
       network: "eip155:84532",
       amount: "15000000",
-      asset: gateway.config.usdcAddress,
+      asset: gateway.config.usdc.address,
       payTo: gateway.config.x402AdapterAddress,
       extra: {
         assetTransferMethod: "eip3009-receive",
@@ -75,6 +75,69 @@ describe("x402 V2 HTTP payment resource", () => {
       settlementMode: "settle-only",
     });
     expect(extension.info.serviceRef).toMatch(/^0x[0-9a-f]{64}$/);
+  });
+
+  it("rejects an old-key quote after a targeted provider wallet refresh", async () => {
+    const rotated =
+      "0x000000000000000000000000000000000000beef" as Hex;
+    gateway.mockChain.setAgentWallet(2n, rotated);
+    gateway.bundle.cache.get(2n)!.authorityObservedAt = new Date(0);
+
+    const challenge = await gateway.purchaseChallenge(2n, {
+      buyerTokenId: "5",
+    });
+
+    expect(challenge.status).toBe(400);
+    expect(challenge.json.error).toMatch(/invalid providerQuote/);
+    const stored = await gateway.bundle.pool.query<{ count: string }>(
+      "SELECT count(*)::text AS count FROM payment_challenges",
+    );
+    expect(stored.rows[0]?.count).toBe("0");
+  });
+
+  it("fails challenge issuance closed when provider authority is unavailable", async () => {
+    gateway.bundle.cache.get(2n)!.authorityObservedAt = new Date(0);
+    gateway.mockChain.getProviderAuthority = async () => {
+      throw new Error("provider registry unavailable");
+    };
+
+    const challenge = await gateway.purchaseChallenge(2n, {
+      buyerTokenId: "5",
+    });
+
+    expect(challenge.status).toBe(503);
+    expect(challenge.json.error).toBe("provider_authority_unavailable");
+    expect(challenge.paymentRequired).toBeUndefined();
+  });
+
+  it("rejects first settlement when provider authority changed after challenge issuance", async () => {
+    const challenge = await gateway.purchaseChallenge(2n, {
+      buyerTokenId: "5",
+    });
+    const payload = await gateway.createPaymentPayload(
+      challenge.paymentRequired!,
+    );
+    gateway.mockChain.setAgentWallet(
+      2n,
+      "0x000000000000000000000000000000000000beef" as Hex,
+    );
+    gateway.bundle.cache.get(2n)!.authorityObservedAt = new Date(0);
+
+    const response = await fetch(`${gateway.baseUrl}/purchase/2`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "payment-signature": encodePaymentSignatureHeader(payload),
+      },
+      body: JSON.stringify(challenge.requestBody),
+    });
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({
+      error: "provider_authority_changed",
+      retryable: false,
+    });
+    expect(gateway.mockChain.simulations).toHaveLength(0);
   });
 
   it("rejects REST self-purchases before challenge persistence", async () => {

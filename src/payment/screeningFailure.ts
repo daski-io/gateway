@@ -84,18 +84,6 @@ export async function handleSettlementScreeningError(
       operation,
       transactionHash: error.transactionHash,
     });
-    if (
-      error.failure.code === "SANCTIONS_SCREENING_UNAVAILABLE" &&
-      error.transactionHash
-    ) {
-      const cleared = await queries.clearChallengePreparedTransaction(
-        challenge.serviceRef,
-        error.transactionHash,
-      );
-      if (!cleared) {
-        throw new Error("unable to clear reverted settlement broadcast");
-      }
-    }
   } catch (persistenceError) {
     return settlementFailure(
       503,

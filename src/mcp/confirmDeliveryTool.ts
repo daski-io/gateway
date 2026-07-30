@@ -11,6 +11,7 @@ interface ConfirmDeliveryArgs {
   attester: string;
   deadlineSeconds?: number;
   deadline?: string;
+  easNonce?: string;
   refUid?: string;
   signature?: { v: number; r: string; s: string };
 }
@@ -31,6 +32,10 @@ export const CONFIRM_DELIVERY_INPUT_SCHEMA = {
     .string()
     .optional()
     .describe("Second-call deadline returned by the first call."),
+  easNonce: z
+    .string()
+    .optional()
+    .describe("Second-call EAS nonce returned by the first call."),
   refUid: z.string().optional(),
   signature: z
     .object({
@@ -53,7 +58,7 @@ export function registerConfirmDeliveryTool(
         "The gateway relays the signed EAS attestation and updates the provider's on-chain reputation.",
         "",
         "First call without signature returns EIP-712 typed-data and a deadline.",
-        "Second call repeats the inputs with deadline and signature {v,r,s}.",
+        "Second call repeats the inputs with easNonce, deadline, and signature {v,r,s}.",
         "Use the same buyer wallet that paid for the service.",
       ].join("\n"),
       inputSchema: CONFIRM_DELIVERY_INPUT_SCHEMA,
@@ -107,6 +112,14 @@ async function confirmDelivery(
         "the first call so the signed typed-data matches.",
     });
   }
+  if (!args.easNonce) {
+    return mcpError({
+      code: "BAD_INPUT",
+      message:
+        "easNonce is required alongside signature. Echo the value from " +
+        "the first call so the signed typed-data matches.",
+    });
+  }
   const result = await runConfirmDelivery(
     {
       config: deps.config,
@@ -119,6 +132,7 @@ async function confirmDelivery(
       confirmation: args.confirmation,
       attester: args.attester,
       deadline: args.deadline,
+      easNonce: args.easNonce,
       refUid: args.refUid,
       signature: args.signature,
     },

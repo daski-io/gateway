@@ -61,6 +61,18 @@ describe("discovery", () => {
     expect(llc.fetchError).toBeNull();
   });
 
+  it("marks retained discovery data when provider authority is stale", async () => {
+    gateway.bundle.cache.get(1n)!.authorityObservedAt = new Date(0);
+
+    const { status, json } = await gateway.discover();
+
+    expect(status).toBe(200);
+    expect(
+      json.providers.find((provider: any) => provider.agentId === "1")
+        .authorityFresh,
+    ).toBe(false);
+  });
+
   it("filters by category family", async () => {
     const { status, json } = await gateway.discover({
       categoryFamily: "domains-web",

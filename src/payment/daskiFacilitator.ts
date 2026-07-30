@@ -22,12 +22,17 @@ import { getDaskiDeclaration } from "./x402Extension.js";
 import { hashCanonical } from "./requirementResponse.js";
 import { settlementFailure } from "./settlementResults.js";
 import type { SettleResult } from "./verifyTypes.js";
+import {
+  ProviderAuthorityError,
+  type ProviderAuthorityService,
+} from "./providerAuthority.js";
 
 export interface DaskiFacilitatorDeps {
   config: Config;
   queries: Queries;
   reader: ChainReader;
   deploymentReadiness: ChainDeploymentReadinessProbe;
+  providerAuthority: ProviderAuthorityService;
   fetchAgentCardFn?: FetchAgentCardOptions["fetchFn"];
 }
 
@@ -177,6 +182,42 @@ class DaskiExactEvmFacilitator implements SchemeNetworkFacilitator {
         "Payment cannot be processed right now. Please try again later.",
         this.deps.config.x402Network,
       );
+    }
+    if (
+      context.challenge.settlementState !== "paid" &&
+      !context.challenge.settlementFacilitatorTransactionId
+    ) {
+      try {
+        const authority = await this.deps.providerAuthority.requireFresh(
+          context.challenge.providerTokenId,
+        );
+        if (
+          context.challenge.providerAuthorityWallet?.toLowerCase() !==
+            authority.walletAddress.toLowerCase() ||
+          context.challenge.providerAuthorityAgentUri !== authority.agentURI
+        ) {
+          return settlementFailure(
+            409,
+            "provider_authority_changed",
+            "Provider authority changed; request a fresh quote and challenge.",
+            this.deps.config.x402Network,
+          );
+        }
+      } catch (error) {
+        const inactive =
+          error instanceof ProviderAuthorityError &&
+          error.code === "provider_inactive";
+        return settlementFailure(
+          inactive ? 409 : 503,
+          inactive
+            ? "provider_authority_changed"
+            : "provider_authority_unavailable",
+          inactive
+            ? "Provider is no longer active; request a different provider."
+            : "Provider authority cannot be verified right now.",
+          this.deps.config.x402Network,
+        );
+      }
     }
     const coordinated = await settleChallenge(
       {

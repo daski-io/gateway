@@ -142,7 +142,7 @@ export async function verifyPaymentPayload(
     chainId: config.chainId,
     adapter: config.x402AdapterAddress,
     router: config.paymentRouterAddress,
-    token: config.usdcAddress,
+    token: config.usdc.address,
     payer: auth.from,
     amount: value,
     validAfter,
@@ -165,10 +165,10 @@ export async function verifyPaymentPayload(
     const validSignature = await reader.verifyReceiveAuthorization({
       signer: auth.from,
       domain: {
-        name: config.usdcName,
-        version: config.usdcVersion,
+        name: config.usdc.name,
+        version: config.usdc.version,
         chainId: config.chainId,
-        verifyingContract: config.usdcAddress,
+        verifyingContract: config.usdc.address,
       },
       types: RECEIVE_WITH_AUTHORIZATION_TYPES,
       primaryType: "ReceiveWithAuthorization",

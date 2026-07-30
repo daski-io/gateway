@@ -34,112 +34,64 @@ export function createReputationQueries(pool: Pool) {
          VALUES ($1, $2, $3, $4, 'queued')
          ON CONFLICT (payment_id) DO UPDATE
          SET attestation_uid = CASE
-               WHEN reputation_mirrors.prepared_tx IS NULL
-                 THEN EXCLUDED.attestation_uid
-               ELSE reputation_mirrors.attestation_uid
+               WHEN reputation_mirrors.status = 'processing'
+                 THEN reputation_mirrors.attestation_uid
+               ELSE EXCLUDED.attestation_uid
              END,
              confirmation = CASE
-               WHEN reputation_mirrors.prepared_tx IS NULL
-                 THEN EXCLUDED.confirmation
-               ELSE reputation_mirrors.confirmation
+               WHEN reputation_mirrors.status = 'processing'
+                 THEN reputation_mirrors.confirmation
+               ELSE EXCLUDED.confirmation
              END,
              ref_uid = CASE
-               WHEN reputation_mirrors.prepared_tx IS NULL
-                 THEN EXCLUDED.ref_uid
-               ELSE reputation_mirrors.ref_uid
+               WHEN reputation_mirrors.status = 'processing'
+                 THEN reputation_mirrors.ref_uid
+               ELSE EXCLUDED.ref_uid
              END,
              pending_attestation_uid = CASE
-               WHEN reputation_mirrors.prepared_tx IS NOT NULL
+               WHEN reputation_mirrors.status = 'processing'
                  THEN EXCLUDED.attestation_uid
                ELSE NULL
              END,
              pending_confirmation = CASE
-               WHEN reputation_mirrors.prepared_tx IS NOT NULL
+               WHEN reputation_mirrors.status = 'processing'
                  THEN EXCLUDED.confirmation
                ELSE NULL
              END,
              pending_ref_uid = CASE
-               WHEN reputation_mirrors.prepared_tx IS NOT NULL
-                 AND reputation_mirrors.pending_attestation_uid =
-                   EXCLUDED.attestation_uid
-                 THEN COALESCE(
-                   EXCLUDED.ref_uid,
-                   reputation_mirrors.pending_ref_uid
-                 )
-               WHEN reputation_mirrors.prepared_tx IS NOT NULL
+               WHEN reputation_mirrors.status = 'processing'
                  THEN EXCLUDED.ref_uid
                ELSE NULL
              END,
              status = CASE
-               WHEN reputation_mirrors.prepared_tx IS NULL
-                 THEN 'queued'
-               ELSE reputation_mirrors.status
+               WHEN reputation_mirrors.status = 'processing'
+                 THEN reputation_mirrors.status
+               ELSE 'queued'
              END,
              tx_hash = CASE
-               WHEN reputation_mirrors.prepared_tx IS NOT NULL
-                 THEN reputation_mirrors.tx_hash
                WHEN reputation_mirrors.attestation_uid = EXCLUDED.attestation_uid
                  THEN reputation_mirrors.tx_hash
                ELSE NULL
              END,
-             prepared_tx = CASE
-               WHEN reputation_mirrors.prepared_tx IS NULL THEN NULL
-               ELSE reputation_mirrors.prepared_tx
-             END,
-             tx_nonce = CASE
-               WHEN reputation_mirrors.prepared_tx IS NULL THEN NULL
-               ELSE reputation_mirrors.tx_nonce
-             END,
-             prepared_at = CASE
-               WHEN reputation_mirrors.prepared_tx IS NULL THEN NULL
-               ELSE reputation_mirrors.prepared_at
-             END,
-             broadcast_at = CASE
-               WHEN reputation_mirrors.prepared_tx IS NULL THEN NULL
-               ELSE reputation_mirrors.broadcast_at
-             END,
              attempts = CASE
-               WHEN reputation_mirrors.prepared_tx IS NULL THEN 0
-               ELSE reputation_mirrors.attempts
-             END,
-             receipt_checks = CASE
-               WHEN reputation_mirrors.prepared_tx IS NULL THEN 0
-               ELSE reputation_mirrors.receipt_checks
+               WHEN reputation_mirrors.status = 'processing'
+                 THEN reputation_mirrors.attempts
+               ELSE 0
              END,
              next_attempt_at = CASE
-               WHEN reputation_mirrors.prepared_tx IS NULL THEN now()
-               ELSE reputation_mirrors.next_attempt_at
+               WHEN reputation_mirrors.status = 'processing'
+                 THEN reputation_mirrors.next_attempt_at
+               ELSE now()
              END,
              last_error = CASE
-               WHEN reputation_mirrors.prepared_tx IS NULL THEN NULL
-               ELSE reputation_mirrors.last_error
+               WHEN reputation_mirrors.status = 'processing'
+                 THEN reputation_mirrors.last_error
+               ELSE NULL
              END,
              updated_at = now()
-         WHERE (
-                 reputation_mirrors.prepared_tx IS NOT NULL
-                 AND reputation_mirrors.attestation_uid <> EXCLUDED.attestation_uid
-                 AND (
-                   reputation_mirrors.pending_attestation_uid IS NULL
-                   OR reputation_mirrors.pending_attestation_uid <>
-                     EXCLUDED.attestation_uid
-                   OR reputation_mirrors.pending_confirmation <>
-                     EXCLUDED.confirmation
-                   OR (
-                     EXCLUDED.ref_uid IS NOT NULL
-                     AND reputation_mirrors.pending_ref_uid IS DISTINCT FROM
-                       EXCLUDED.ref_uid
-                   )
-                 )
-               )
-            OR (
-                 reputation_mirrors.prepared_tx IS NULL
-                 AND (
-                   reputation_mirrors.attestation_uid <>
-                     EXCLUDED.attestation_uid
-                   OR reputation_mirrors.status NOT IN ('sent', 'skipped')
-                 )
-               )
-         RETURNING prepared_tx IS NULL AS should_process`,
+         WHERE reputation_mirrors.attestation_uid <> EXCLUDED.attestation_uid
+            OR reputation_mirrors.status NOT IN ('sent', 'skipped')
+         RETURNING pending_attestation_uid IS NULL AS should_process`,
         [
           input.paymentId.toString(),
           reputationBytea(input.attestationUid),
@@ -157,13 +109,11 @@ export function createReputationQueries(pool: Pool) {
         `WITH dead_letter AS (
            UPDATE reputation_mirrors
               SET status = 'failed',
-                  next_attempt_at = now(),
                   last_error = 'reputation_submission_attempt_limit',
                   updated_at = now()
-            WHERE broadcast_at IS NULL
-              AND attempts >= $2
+            WHERE attempts >= $2
               AND (
-                status IN ('queued', 'prepared', 'retry')
+                status IN ('queued', 'retry')
                 OR (
                   status = 'processing'
                   AND updated_at < now() - interval '2 minutes'
@@ -174,10 +124,10 @@ export function createReputationQueries(pool: Pool) {
            SELECT payment_id
              FROM reputation_mirrors
             WHERE ($1::bigint IS NULL OR payment_id = $1)
-              AND (attempts < $2 OR broadcast_at IS NOT NULL)
+              AND attempts < $2
               AND (
                 (
-                  status IN ('queued', 'prepared', 'broadcast', 'retry')
+                  status IN ('queued', 'retry')
                   AND next_attempt_at <= now()
                 )
                 OR (
@@ -191,10 +141,7 @@ export function createReputationQueries(pool: Pool) {
          )
          UPDATE reputation_mirrors AS mirror
             SET status = 'processing',
-                attempts = attempts +
-                  CASE WHEN broadcast_at IS NULL THEN 1 ELSE 0 END,
-                receipt_checks = receipt_checks +
-                  CASE WHEN broadcast_at IS NOT NULL THEN 1 ELSE 0 END,
+                attempts = attempts + 1,
                 updated_at = now()
            FROM candidate
           WHERE mirror.payment_id = candidate.payment_id

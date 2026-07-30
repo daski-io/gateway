@@ -12,6 +12,7 @@ import {
 import { DASKI_X402_EXTENSION_URI } from "../src/config.js";
 import type { Hex, PaymentRequired } from "../src/types.js";
 import { startTestGateway, type TestGateway } from "./helpers/setup.js";
+import { makePaymentSettledEvent } from "./helpers/mockChain.js";
 import { reconcileBroadcastSettlements } from "../src/payment/settlementReconciler.js";
 
 const SANCTIONED_ACCOUNT = "0x00000000000000000000000000000000000000aa" as Hex;
@@ -230,16 +231,20 @@ describe("sanctions settlement lifecycle", () => {
       buyerTokenId: "5",
     });
     const transactionHash = `0x${"cd".repeat(32)}` as Hex;
-    await gateway.bundle.queries.recordChallengeTransactionPrepared(
-      challenge.serviceRef!,
-      transactionHash,
-      "0x0201",
-      0n,
-    );
-    await gateway.bundle.queries.recordChallengeTransactionBroadcast(
-      challenge.serviceRef!,
-      transactionHash,
-    );
+    gateway.mockChain.queueSettlement({
+      kind: "submission-error",
+      txHash: transactionHash,
+      event: makePaymentSettledEvent({
+        paymentId: 9n,
+        serviceRef: challenge.serviceRef!,
+        buyerAgentId: 5n,
+        providerAgentId: 2n,
+        totalAmount: 15_000_000n,
+      }),
+      reason: "receipt unavailable",
+    });
+    const payload = await paymentPayload(challenge.paymentRequired!);
+    expect((await gateway.purchaseSettle(2n, payload)).status).toBe(503);
     gateway.mockChain.setSettlementRecoveryError(
       transactionHash,
       new SettlementScreeningError(
@@ -252,6 +257,13 @@ describe("sanctions settlement lifecycle", () => {
         "receipt_replay",
         transactionHash,
       ),
+    );
+    await gateway.bundle.pool.query(
+      `UPDATE facilitator_transactions
+          SET next_attempt_at = now()
+        WHERE operation_kind = 'settlement'
+          AND operation_key = $1`,
+      [challenge.serviceRef!.toLowerCase()],
     );
 
     expect(

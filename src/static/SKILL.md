@@ -145,6 +145,25 @@ Poll:
 }
 ```
 
+## Delivery confirmation
+
+`daski_confirm_delivery` is a two-call EAS signing flow:
+
+1. Call it with `paymentId`, `confirmation`, and the buyer-wallet `attester`.
+   For a revision, also provide the current attestation as `refUid`.
+2. Sign the returned `eip712TypedData`.
+3. Repeat the call with the exact returned `deadline` and `easNonce`, plus
+   signature `{v,r,s}`.
+
+The gateway rejects stale nonces and branching revisions. It durably limits
+sponsored confirmations per payment, wallet/day, and deployment/day.
+Reconciliation errors are retryable only with the identical signed request;
+never prepare a new confirmation while the prior transaction is unresolved.
+
+Discovery entries expose `authorityFresh`. A false value is useful only for
+browsing; paid flows revalidate the provider's active status, wallet, and agent
+URI on-chain before issuing a challenge and before the first settlement.
+
 ## Safety and legal context
 
 The Operator controlling the buying agent is the legal party. Review the

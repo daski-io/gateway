@@ -60,11 +60,15 @@ export interface SettlementResult {
   event: PaymentSettledEvent;
 }
 
-export interface PreparedSettlementTransaction {
-  kind: "settle" | "settle_with_registration";
+export interface PreparedFacilitatorTransaction {
   transactionHash: Hex;
   serializedTransaction: Hex;
   facilitatorNonce: bigint;
+}
+
+export interface PreparedSettlementTransaction
+  extends PreparedFacilitatorTransaction {
+  kind: "settle" | "settle_with_registration";
 }
 
 export type BroadcastObserver = (transactionHash: Hex) => Promise<void> | void;
@@ -117,6 +121,9 @@ export interface ConfirmationResult {
   attestationUid: Hex;
 }
 
+export interface PreparedConfirmationTransaction
+  extends PreparedFacilitatorTransaction {}
+
 // ── Canonical ERC-8004 ReputationRegistry feedback ───────────────────────
 //
 // The gateway's facilitator wallet acts as the orchestrator-client the
@@ -145,10 +152,12 @@ export interface FeedbackResult {
   feedbackIndex?: bigint;
 }
 
-export interface PreparedFeedbackTransaction {
-  transactionHash: Hex;
-  serializedTransaction: Hex;
-  nonce: bigint;
+export interface PreparedFeedbackTransaction
+  extends PreparedFacilitatorTransaction {}
+
+export interface FeedbackRevocationInput {
+  agentId: bigint;
+  feedbackIndex: bigint;
 }
 
 // ── PaymentRouter.getPayment record ──────────────────────────────────────
@@ -227,6 +236,7 @@ export interface ReputationRecord {
   outcomeTimestamp: bigint;
   /** Block-timestamp seconds of the latest confirmation; 0 until attested. */
   confirmationTimestamp: bigint;
+  currentConfirmationUid: Hex;
   outcomeRecorded: boolean;
   reputationEligible: boolean;
 }
@@ -239,6 +249,15 @@ export interface ProviderRegistryReader {
     registrationTime: bigint;
     isActive: boolean;
   }>;
+}
+
+export interface ProviderAuthoritySnapshot {
+  agentId: bigint;
+  isActive: boolean;
+  walletAddress: Hex;
+  agentURI: string;
+  registrationTime: bigint;
+  observedBlock: bigint;
 }
 
 export interface IdentityReader {
@@ -256,9 +275,11 @@ export interface PaymentChainGateway {
   ): Promise<boolean>;
   prepareSettlement(
     input: SettlementInput,
+    facilitatorNonce: bigint,
   ): Promise<PreparedSettlementTransaction>;
   prepareSettlementWithRegistration(
     input: SettleWithRegistrationInput,
+    facilitatorNonce: bigint,
   ): Promise<PreparedSettlementTransaction>;
   submitPreparedSettlement(
     prepared: PreparedSettlementTransaction,
@@ -270,14 +291,24 @@ export interface PaymentChainGateway {
     serviceRef: Hex,
   ): Promise<SettlementResult | null>;
   getFacilitatorTransactionCount(): Promise<bigint>;
+  getFacilitatorPendingTransactionCount(): Promise<bigint>;
   getPaymentRecord(paymentId: bigint): Promise<PaymentRouterRecord | null>;
 }
 
 export interface ConfirmationRelayer {
-  submitBuyerConfirmation(
+  prepareBuyerConfirmation(
+    input: ConfirmationDelegationInput,
+    facilitatorNonce: bigint,
+  ): Promise<PreparedConfirmationTransaction>;
+  submitPreparedBuyerConfirmation(
+    prepared: PreparedConfirmationTransaction,
     input: ConfirmationDelegationInput,
     onBroadcast?: BroadcastObserver,
   ): Promise<ConfirmationResult>;
+  getBuyerConfirmationByTransaction(
+    transactionHash: Hex,
+    input: ConfirmationDelegationInput,
+  ): Promise<ConfirmationResult | null>;
   getEasAttesterNonce(attester: Hex): Promise<bigint>;
 }
 
@@ -296,12 +327,20 @@ export interface ReputationReader {
 }
 
 export interface ProviderDiscoveryReader extends ProviderRegistryReader {
+  getBlockNumber(): Promise<bigint>;
   getAgentURI(agentId: bigint): Promise<string>;
   getAgentWallet(agentId: bigint): Promise<Hex>;
+  getProviderAuthority(
+    agentId: bigint,
+    blockNumber: bigint,
+  ): Promise<ProviderAuthoritySnapshot>;
 }
 
 export interface FeedbackWriter {
-  prepareFeedback(input: FeedbackInput): Promise<PreparedFeedbackTransaction>;
+  prepareFeedback(
+    input: FeedbackInput,
+    facilitatorNonce: bigint,
+  ): Promise<PreparedFeedbackTransaction>;
   submitPreparedFeedback(
     prepared: PreparedFeedbackTransaction,
     input: FeedbackInput,
@@ -312,11 +351,19 @@ export interface FeedbackWriter {
     input: FeedbackInput,
   ): Promise<FeedbackResult | null>;
   getFacilitatorTransactionCount(): Promise<bigint>;
-  revokeFeedback(
-    agentId: bigint,
-    feedbackIndex: bigint,
+  prepareFeedbackRevocation(
+    input: FeedbackRevocationInput,
+    facilitatorNonce: bigint,
+  ): Promise<PreparedFeedbackTransaction>;
+  submitPreparedFeedbackRevocation(
+    prepared: PreparedFeedbackTransaction,
+    input: FeedbackRevocationInput,
     onBroadcast?: BroadcastObserver,
   ): Promise<FeedbackResult>;
+  getFeedbackRevocationByTransaction(
+    transactionHash: Hex,
+    input: FeedbackRevocationInput,
+  ): Promise<FeedbackResult | null>;
 }
 
 export interface ChainEventReader {
@@ -329,7 +376,7 @@ export interface ChainEventReader {
 // The composition root supplies one object implementing every capability;
 // individual subsystems depend on the narrow interfaces above.
 export interface ChainReader
-  extends ProviderRegistryReader,
+  extends ProviderDiscoveryReader,
     IdentityReader,
     PaymentChainGateway,
     ConfirmationRelayer,
@@ -348,6 +395,7 @@ export async function fetchOnChainProviders(
   reader: ProviderDiscoveryReader,
   whitelist: bigint[],
 ): Promise<OnChainProvider[]> {
+  const observedBlock = await reader.getBlockNumber();
   const uniqueWhitelist = [
     ...new Map(
       whitelist.map((agentId) => [agentId.toString(), agentId]),
@@ -365,32 +413,11 @@ export async function fetchOnChainProviders(
   const providers: OnChainProvider[] = [];
 
   for (const agentId of agentIds) {
-    const provider = await reader.getProvider(agentId);
-
-    if (!provider.isActive) continue;
-
-    // Read the canonical wallet from the canonical IdentityRegistry. The
-    // audit refactor dropped ProviderRegistry's `walletAddress` field
-    // entirely, so IdentityRegistry.getAgentWallet is the sole source — it
-    // is also what PaymentRouter resolves payees through, so discovery
-    // always reflects the live payee even across ERC-8004 wallet rotation.
-    // The canonical registry never auto-sets agentWallet (providers must
-    // call setAgentWallet explicitly); when unset, getAgentWallet returns
-    // the zero address and we surface that as-is (there is no longer a
-    // registry hint to fall back to) so callers can treat it as "no payee
-    // currently".
-    const [agentURI, liveWallet] = await Promise.all([
-      reader.getAgentURI(agentId),
-      reader.getAgentWallet(agentId),
-    ]);
-
-    providers.push({
+    const authority = await reader.getProviderAuthority(
       agentId,
-      walletAddress: liveWallet,
-      agentURI,
-      registrationTime: provider.registrationTime,
-      isActive: true,
-    });
+      observedBlock,
+    );
+    if (authority.isActive) providers.push(authority);
   }
 
   return providers.sort((left, right) =>

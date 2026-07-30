@@ -58,6 +58,7 @@ export interface OnChainProvider {
   agentURI: string;
   registrationTime: bigint;
   isActive: boolean;
+  observedBlock: bigint;
 }
 
 /**
@@ -105,6 +106,9 @@ export interface CachedProvider {
   providerLegal: ProviderLegalMetadata | null;
   lastFetched: Date;
   fetchError: string | null;
+  authorityObservedAt: Date;
+  authorityObservedBlock: bigint;
+  authorityActive: boolean;
 }
 
 // ── x402 V2 wire types ───────────────────────────────────────────

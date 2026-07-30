@@ -76,7 +76,7 @@ export function buildRequirementResponse(
     scheme: "daski-exact",
     network: input.config.x402Network,
     amount: input.amount.toString(),
-    asset: input.config.usdcAddress,
+    asset: input.config.usdc.address,
     payTo: input.config.x402AdapterAddress,
     maxTimeoutSeconds: Math.max(
       1,
@@ -86,8 +86,8 @@ export function buildRequirementResponse(
     ),
     extra: {
       assetTransferMethod: "eip3009-receive",
-      name: input.config.usdcName,
-      version: input.config.usdcVersion,
+      name: input.config.usdc.name,
+      version: input.config.usdc.version,
       daskiProfile: "1",
       authorizationValidBefore: Math.floor(
         input.effectiveExpiresAt.getTime() / 1000,
@@ -151,9 +151,10 @@ export function buildRequirementResponse(
     settlementState: "pending",
     paymentId: null,
     transactionHash: null,
-    preparedTransaction: null,
-    preparedTransactionNonce: null,
-    preparedAt: null,
+    settlementFacilitatorTransactionId: null,
+    providerAuthorityWallet: null,
+    providerAuthorityAgentUri: null,
+    providerAuthorityBlock: null,
     verifiedAt: null,
     confirmationAttestationUid: null,
     quoteId: input.quote.quoteId,

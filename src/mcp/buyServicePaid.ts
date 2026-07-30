@@ -15,6 +15,7 @@ import type { ChainDeploymentReadinessProbe } from "../payment/deploymentReadine
 import type { BuyServiceContext } from "./buyServiceTypes.js";
 import { unknownServiceArgWarnings } from "./serviceArgWarnings.js";
 import { logger } from "../util/logger.js";
+import type { ProviderAuthorityService } from "../payment/providerAuthority.js";
 import {
   buyerNameMismatchWarning,
   mcpError,
@@ -32,6 +33,7 @@ interface PaidPathDeps {
   maxResponseBytes: number;
   fetchAgentCardFn?: FetchAgentCardOptions["fetchFn"];
   deploymentReadiness: ChainDeploymentReadinessProbe;
+  providerAuthority: ProviderAuthorityService;
 }
 
 export async function runBuyServicePaidPath(
@@ -122,6 +124,7 @@ export async function runBuyServicePaidPath(
       timeoutMs: deps.timeoutMs,
       maxResponseBytes: deps.maxResponseBytes,
       deploymentReadiness: deps.deploymentReadiness,
+      providerAuthority: deps.providerAuthority,
     },
   );
   if (!result.ok) {

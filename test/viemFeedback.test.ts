@@ -108,7 +108,7 @@ describe("canonical ReputationRegistry calldata", () => {
       reputationRegistryAddress: REGISTRY,
     });
 
-    const prepared = await methods.prepareFeedback(INPUT);
+    const prepared = await methods.prepareFeedback(INPUT, 7n);
 
     expect(prepareTransactionRequest).toHaveBeenCalledWith({
       account,
@@ -116,11 +116,12 @@ describe("canonical ReputationRegistry calldata", () => {
       to: REGISTRY,
       data: EXPECTED_CALLDATA,
       gas: 300_000n,
+      nonce: 7n,
     });
     expect(prepared).toEqual({
       transactionHash: keccak256(SERIALIZED_TRANSACTION),
       serializedTransaction: SERIALIZED_TRANSACTION,
-      nonce: 7n,
+      facilitatorNonce: 7n,
     });
   });
 });
@@ -129,7 +130,7 @@ describe("canonical ReputationRegistry receipt outcomes", () => {
   const prepared: PreparedFeedbackTransaction = {
     transactionHash: TRANSACTION_HASH,
     serializedTransaction: SERIALIZED_TRANSACTION,
-    nonce: 0n,
+    facilitatorNonce: 0n,
   };
 
   it("classifies a reverted receipt as permanent", async () => {

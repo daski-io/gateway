@@ -28,32 +28,36 @@ export class DatabaseReadinessProbe {
   private async check(): Promise<boolean> {
     try {
       const result = await this.pool.query<{ ready: boolean }>(
-        `WITH facilitator_reservations AS (
-           SELECT service_ref::text AS owner_key
-             FROM payment_challenges
-            WHERE settlement_state = 'settlement_prepared'
-           UNION ALL
-           SELECT payment_id::text AS owner_key
-             FROM reputation_mirrors
-            WHERE prepared_tx IS NOT NULL
-              AND tx_nonce IS NOT NULL
-              AND tx_hash IS NOT NULL
-              AND broadcast_at IS NULL
-         )
-         SELECT
-           NOT EXISTS (
-             SELECT 1
-               FROM payment_challenges
-              WHERE settlement_recovery_failure_category =
-                'prepared_transaction_nonce_conflict'
-           )
-           AND (SELECT count(*) FROM facilitator_reservations) <= 1
+        `SELECT
+           (
+             SELECT count(*)
+               FROM facilitator_transactions
+              WHERE status = 'prepared'
+           ) <= 1
            AND NOT EXISTS (
              SELECT 1
-               FROM reputation_mirrors
-              WHERE status = 'failed'
-                AND prepared_tx IS NOT NULL
-                AND tx_nonce IS NOT NULL
+               FROM facilitator_transactions
+              WHERE status = 'nonce_conflict'
+                 OR (
+                   status IN ('prepared', 'broadcast')
+                   AND (
+                     submission_attempts >= 8
+                     OR now() - prepared_at > interval '15 minutes'
+                   )
+                 )
+           )
+           AND NOT EXISTS (
+             SELECT 1
+               FROM buyer_confirmation_submissions AS submission
+               JOIN facilitator_transactions AS transaction
+                 ON transaction.id = submission.facilitator_transaction_id
+              WHERE (
+                submission.status = 'prepared'
+                AND transaction.status <> 'prepared'
+              ) OR (
+                submission.status = 'broadcast'
+                AND transaction.status <> 'broadcast'
+              )
            ) AS ready`,
       );
       this.ready = result.rows[0]?.ready === true;

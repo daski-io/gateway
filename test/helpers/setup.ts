@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { privateKeyToAccount } from "viem/accounts";
 import { decodePaymentRequiredHeader } from "@x402/core/http";
 import { DaskiExactEvmScheme } from "../../src/payment/daskiClient.js";
+import { computeUsdcDomainSeparator } from "../../src/payment/usdcDomain.js";
 import type { Config } from "../../src/config.js";
 import { createApp, type AppBundle } from "../../src/app.js";
 import { createPool, type Pool } from "../../src/db/pool.js";
@@ -208,14 +209,27 @@ export async function startTestGateway(opts: TestGatewayOptions = {}): Promise<T
     sanctionsOracleAddress: SANCTIONS_ORACLE_ADDRESS,
     sanctionsOracleMode: "mock",
     x402AdapterAddress: X402_ADAPTER_ADDRESS,
-    usdcAddress: USDC_ADDRESS,
-    usdcName: "USDC",
-    usdcVersion: "2",
+    usdc: {
+      address: USDC_ADDRESS,
+      decimals: 6,
+      name: "USDC",
+      version: "2",
+      domainSeparator: computeUsdcDomainSeparator(
+        CHAIN_ID,
+        USDC_ADDRESS,
+        "USDC",
+        "2",
+      ),
+    },
     facilitatorPrivateKey: FACILITATOR_KEY,
     whitelistedAgentIds: whitelist,
     a2aTimeoutMs: 30_000,
     a2aSubmitTimeoutMs: 90_000,
     cacheRefreshIntervalSeconds: 60,
+    providerAuthMaxAgeSeconds: 30,
+    confirmationMaxPerPayment: 3,
+    confirmationMaxPerWalletPerDay: 20,
+    confirmationMaxGlobalPerDay: 500,
     cacheMaxStalenessSeconds: 86400,
     challengeTtlSeconds: 3600,
     databaseUrl: TEST_DATABASE_URL,

@@ -10,6 +10,11 @@ export function catalogChanged(
     const newProvider = newProviders[index];
     if (
       oldProvider.agentId !== newProvider.agentId ||
+      oldProvider.walletAddress !== newProvider.walletAddress ||
+      oldProvider.agentURI !== newProvider.agentURI ||
+      oldProvider.authorityActive !== newProvider.authorityActive ||
+      oldProvider.authorityObservedBlock !==
+        newProvider.authorityObservedBlock ||
       oldProvider.providerName !== newProvider.providerName ||
       oldProvider.providerDescription !== newProvider.providerDescription ||
       JSON.stringify(oldProvider.providerLegal) !==

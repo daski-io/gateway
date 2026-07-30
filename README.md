@@ -79,6 +79,10 @@ for the full list with defaults. The most important ones:
 | `SANCTIONS_ORACLE_ADDRESS` | Expected sanctions oracle. Base mainnet is pinned to the official Chainalysis oracle; Base Sepolia may use an explicitly marked mock. |
 | `SANCTIONS_ORACLE_MODE` | `production` or `mock`. Mock mode is rejected in production and on Base mainnet. |
 | `REPUTATION_REGISTRY_ADDRESS` | Canonical ERC-8004 ReputationRegistry. Set it to mirror confirmed deliveries as public feedback; unset = mirror off |
+| `PROVIDER_AUTH_MAX_AGE_SECONDS` | Maximum age of provider wallet/active/URI authority accepted by paid flows. Mainnet must set this explicitly at no more than 60 seconds. |
+| `CONFIRMATION_MAX_PER_PAYMENT` | Lifetime sponsored confirmation cap per payment; launch maximum is 3. |
+| `CONFIRMATION_MAX_PER_WALLET_PER_DAY` | Fixed-UTC-day sponsored confirmation cap for one buyer wallet. |
+| `CONFIRMATION_MAX_GLOBAL_PER_DAY` | Fixed-UTC-day deployment-wide sponsored confirmation cap. |
 | `PUBLIC_URL` | Externally reachable URL — embedded in payment requirements and discovery responses |
 | `TRUST_PROXY` | Explicit number of trusted reverse-proxy hops; default `0` prevents forged forwarded IPs |
 | `MARKETPLACE_TERMS_URL` | Required HTTPS URL for the Daski Terms of Use returned with every service and purchase |
@@ -93,6 +97,26 @@ for the full list with defaults. The most important ones:
 
 The .env.example ships with the post-audit Base Sepolia deployment addresses
 for the Daski contracts. Replace them when redeploying.
+
+## Delivery confirmation
+
+Delivery confirmation is a two-call EAS delegation flow. First call
+`daski_confirm_delivery` without a signature (or use the confirmation-prep
+endpoint) and sign the returned EIP-712 data. The submit call must echo the
+returned `deadline` and `easNonce` with signature `{v,r,s}`; omitted or stale
+nonces are rejected. REST submits the same body to
+`POST /confirm/:paymentId`.
+
+The gateway sponsors one initial confirmation and at most two canonical
+revisions per payment. Revisions must set `refUid` to the current on-chain
+confirmation UID. Wallet and global daily sponsorship limits can return
+`confirmation_sponsorship_limited` or
+`confirmation_sponsorship_unavailable`; ambiguous writes return a retryable
+reconciliation error and should be retried with the identical signed request.
+
+Discovery results include `authorityFresh`. Treat `false` as read-only catalog
+data: challenge creation and first settlement independently require a fresh,
+active on-chain provider wallet and agent URI.
 
 Providers should run the one-time legal metadata and unauthenticated-reachability
 check before registering on Base Sepolia. Marketplace operators must run it

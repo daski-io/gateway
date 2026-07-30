@@ -92,6 +92,7 @@ describe("graceful lifecycle", () => {
       reader: {} as never,
       queries: {
         listMissingReputationMirrors: listMissing,
+        listDueFacilitatorTransactions: async () => [],
         claimReputationMirror: async () => null,
       } as never,
     });

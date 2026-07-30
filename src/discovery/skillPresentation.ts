@@ -10,9 +10,13 @@ import {
   parseAgentSkills,
 } from "./agentCard.js";
 
+type SkillMarketplaceConfig = MarketplaceLegalUrls & {
+  providerAuthMaxAgeSeconds?: number;
+};
+
 export function formatForSkillDiscover(
   providers: CachedProvider[],
-  marketplace: MarketplaceLegalUrls,
+  marketplace: SkillMarketplaceConfig,
 ): Array<Record<string, unknown>> {
   return providers.flatMap((provider) =>
     cardsOf(provider).flatMap((card) => {
@@ -25,7 +29,7 @@ export function formatForSkillDiscover(
 function formatCardForSkillDiscover(
   provider: CachedProvider,
   card: ProviderCard,
-  marketplace: MarketplaceLegalUrls,
+  marketplace: SkillMarketplaceConfig,
 ): Record<string, unknown> | null {
   const extension = extractMarketplaceExtension(card.agentCard);
   if (!extension || !provider.providerLegal) return null;
@@ -48,6 +52,10 @@ function formatCardForSkillDiscover(
     serviceLifecycle: extension.serviceLifecycle,
     agentCardUrl: provider.agentURI,
     providerA2AUrl: extractAgentCardUrl(card.agentCard),
+    authorityFresh:
+      provider.authorityActive &&
+      Date.now() - provider.authorityObservedAt.getTime() <=
+        (marketplace.providerAuthMaxAgeSeconds ?? 30) * 1_000,
     legal: buildServiceLegal(marketplace, provider.providerLegal),
     untrustedProviderContent: {
       name: sanitizeForLlmReflection(extractAgentCardName(card.agentCard)),

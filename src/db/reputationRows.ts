@@ -21,14 +21,11 @@ export interface ReputationMirrorDbRow {
   status: ReputationMirrorStatus;
   confirmation: "Confirmed" | "NotConfirmed" | null;
   ref_uid: Buffer | null;
-  prepared_tx: Buffer | null;
-  tx_nonce: string | null;
-  prepared_at: Date | null;
-  broadcast_at: Date | null;
   attempts: number;
-  receipt_checks: number;
   next_attempt_at: Date;
   last_error: string | null;
+  revoke_facilitator_transaction_id: string | null;
+  give_facilitator_transaction_id: string | null;
   pending_attestation_uid: Buffer | null;
   pending_confirmation: "Confirmed" | "NotConfirmed" | null;
   pending_ref_uid: Buffer | null;
@@ -45,14 +42,11 @@ export interface ReputationMirrorRow {
   status: ReputationMirrorStatus;
   confirmation: "Confirmed" | "NotConfirmed" | null;
   refUid: Hex | null;
-  preparedTransaction: Hex | null;
-  transactionNonce: bigint | null;
-  preparedAt: Date | null;
-  broadcastAt: Date | null;
   attempts: number;
-  receiptChecks: number;
   nextAttemptAt: Date;
   lastError: string | null;
+  revokeFacilitatorTransactionId: string | null;
+  giveFacilitatorTransactionId: string | null;
   pendingAttestationUid: Hex | null;
   pendingConfirmation: "Confirmed" | "NotConfirmed" | null;
   pendingRefUid: Hex | null;
@@ -79,14 +73,11 @@ export function mapReputationMirrorRow(
     status: row.status,
     confirmation: row.confirmation,
     refUid: row.ref_uid ? hex(row.ref_uid) : null,
-    preparedTransaction: row.prepared_tx ? hex(row.prepared_tx) : null,
-    transactionNonce: row.tx_nonce == null ? null : BigInt(row.tx_nonce),
-    preparedAt: row.prepared_at,
-    broadcastAt: row.broadcast_at,
     attempts: row.attempts,
-    receiptChecks: row.receipt_checks,
     nextAttemptAt: row.next_attempt_at,
     lastError: row.last_error,
+    revokeFacilitatorTransactionId: row.revoke_facilitator_transaction_id,
+    giveFacilitatorTransactionId: row.give_facilitator_transaction_id,
     pendingAttestationUid: row.pending_attestation_uid
       ? hex(row.pending_attestation_uid)
       : null,

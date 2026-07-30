@@ -16,3 +16,10 @@ export class FeedbackSubmissionError extends Error {
     this.name = "FeedbackSubmissionError";
   }
 }
+
+export class FeedbackAlreadyRevokedError extends Error {
+  constructor() {
+    super("feedback is already revoked");
+    this.name = "FeedbackAlreadyRevokedError";
+  }
+}

@@ -6,6 +6,7 @@ import type {
   StoredChallenge,
 } from "../types.js";
 import type { Pool } from "./pool.js";
+import type { PoolClient } from "pg";
 import {
   hexToBytea,
   normalizeHex,
@@ -38,6 +39,11 @@ export function createPaymentChallengeQueries(pool: Pool) {
       requestFingerprint?: Hex;
       serviceArgs: Record<string, unknown>;
       registrationDelegation?: StoredChallenge["registrationDelegation"];
+      providerAuthority: {
+        walletAddress: Hex;
+        agentURI: string;
+        observedBlock: bigint;
+      };
     }): Promise<void> {
       await pool.query(
         `INSERT INTO payment_challenges
@@ -47,10 +53,11 @@ export function createPaymentChallengeQueries(pool: Pool) {
             quote_id, quote_signature, quote_expires_at, quote_request_hash,
             x402_version, payment_required, requirements_hash, resource_url,
             daski_extension, request_fingerprint, registration_delegation,
-            service_args)
+            service_args, provider_authority_wallet,
+            provider_authority_agent_uri, provider_authority_block)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'pending',
                  $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22,
-                 $23)`,
+                 $23, $24, $25, $26)`,
         [
           hexToBytea(challenge.serviceRef),
           challenge.providerTokenId.toString(),
@@ -85,6 +92,9 @@ export function createPaymentChallengeQueries(pool: Pool) {
             ? JSON.stringify(challenge.registrationDelegation)
             : null,
           JSON.stringify(challenge.serviceArgs),
+          challenge.providerAuthority.walletAddress.toLowerCase(),
+          challenge.providerAuthority.agentURI,
+          challenge.providerAuthority.observedBlock.toString(),
         ],
       );
     },
@@ -182,8 +192,12 @@ export function createPaymentChallengeQueries(pool: Pool) {
       return res.rows[0] ? rowToChallenge(res.rows[0]) : null;
     },
 
-    async recordConfirmation(paymentId: bigint, attestationUid: Hex): Promise<void> {
-      await pool.query(
+    async recordConfirmation(
+      paymentId: bigint,
+      attestationUid: Hex,
+      client?: PoolClient,
+    ): Promise<void> {
+      await (client ?? pool).query(
         `UPDATE payment_challenges
             SET confirmation_attestation_uid = $1
           WHERE payment_id = $2`,

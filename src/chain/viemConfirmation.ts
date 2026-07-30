@@ -1,8 +1,11 @@
 import {
   decodeEventLog,
+  encodeFunctionData,
+  keccak256,
   parseAbiItem,
   type PrivateKeyAccount,
   type PublicClient,
+  type TransactionReceipt,
   type Transport,
   type WalletClient,
 } from "viem";
@@ -11,6 +14,7 @@ import { easAbi, knownErrorAbis } from "./abis.js";
 import type {
   ChainReader,
   ConfirmationDelegationInput,
+  PreparedConfirmationTransaction,
   ConfirmationResult,
 } from "./reader.js";
 import type { Hex } from "../types.js";
@@ -19,11 +23,15 @@ import {
   revertInvalidatesSignature,
 } from "./confirmationErrors.js";
 import { decodeRevertReason } from "./viemErrors.js";
+import { isAlreadyKnownTransaction } from "./transactionErrors.js";
 
 type SupportedChain = typeof base | typeof baseSepolia;
 type ConfirmationMethods = Pick<
   ChainReader,
-  "submitBuyerConfirmation" | "getEasAttesterNonce"
+  | "prepareBuyerConfirmation"
+  | "submitPreparedBuyerConfirmation"
+  | "getBuyerConfirmationByTransaction"
+  | "getEasAttesterNonce"
 >;
 
 export interface ConfirmationDeps {
@@ -41,27 +49,56 @@ const EAS_ATTESTED_EVENT = parseAbiItem(
 export function createConfirmationMethods(
   deps: ConfirmationDeps,
 ): ConfirmationMethods {
+  const delegationFor = (input: ConfirmationDelegationInput) => ({
+    schema: input.schema,
+    data: {
+      recipient: input.recipient,
+      expirationTime: input.expirationTime,
+      revocable: input.revocable,
+      refUID: input.refUID,
+      data: input.data,
+      value: input.value,
+    },
+    signature: input.signature,
+    attester: input.attester,
+    deadline: input.deadline,
+  });
+
+  const resultFromReceipt = (
+    transactionHash: Hex,
+    input: ConfirmationDelegationInput,
+    receipt: TransactionReceipt,
+  ): ConfirmationResult => {
+    if (receipt.status !== "success") {
+      throw new ConfirmationSubmitError(
+        "reverted",
+        `EAS.attestByDelegation reverted after simulation (tx ${transactionHash})`,
+        { transactionHash },
+      );
+    }
+    const uid =
+      findAttestationUid(
+        receipt.logs,
+        deps.easAddress,
+        input.attester,
+        input.schema,
+      ) ?? findAttestationUid(receipt.logs, deps.easAddress);
+    if (!uid) {
+      throw new ConfirmationSubmitError(
+        "attestation",
+        `EAS Attested event not found in a successful attestByDelegation receipt (tx ${transactionHash})`,
+        { transactionHash },
+      );
+    }
+    return { transactionHash, attestationUid: uid };
+  };
+
   return {
-    async submitBuyerConfirmation(
+    async prepareBuyerConfirmation(
       input: ConfirmationDelegationInput,
-      onBroadcast,
-    ): Promise<ConfirmationResult> {
-      const delegation = {
-        schema: input.schema,
-        data: {
-          recipient: input.recipient,
-          expirationTime: input.expirationTime,
-          revocable: input.revocable,
-          refUID: input.refUID,
-          data: input.data,
-          value: input.value,
-        },
-        signature: input.signature,
-        attester: input.attester,
-        deadline: input.deadline,
-      } as const;
-      // Stage 1 — pre-flight eth_call. A revert here broadcasts nothing and
-      // consumes no attester nonce.
+      facilitatorNonce: bigint,
+    ): Promise<PreparedConfirmationTransaction> {
+      const delegation = delegationFor(input);
       let request;
       try {
         const simulation = await deps.publicClient.simulateContract({
@@ -73,7 +110,18 @@ export function createConfirmationMethods(
           chain: deps.chain,
           gas: 600_000n,
         });
-        request = simulation.request;
+        request = await (deps.walletClient as any).prepareTransactionRequest({
+          account: deps.account,
+          chain: deps.chain,
+          to: deps.easAddress,
+          data: encodeFunctionData({
+            abi: easAbi,
+            functionName: "attestByDelegation",
+            args: [delegation],
+          }),
+          gas: simulation.request.gas,
+          nonce: facilitatorNonce,
+        });
       } catch (error) {
         const reason = decodeRevertReason(error);
         throw new ConfirmationSubmitError(
@@ -82,20 +130,45 @@ export function createConfirmationMethods(
           { needsFreshSignature: revertInvalidatesSignature(reason) },
         );
       }
+      const serializedTransaction = (await deps.account.signTransaction(
+        request as any,
+      )) as Hex;
+      return {
+        transactionHash: keccak256(serializedTransaction),
+        serializedTransaction,
+        facilitatorNonce,
+      };
+    },
 
-      // Stage 2 — broadcast. Past this point we can no longer prove the
-      // transaction is NOT in flight, so every failure is `unknown`.
+    async submitPreparedBuyerConfirmation(
+      prepared,
+      input,
+      onBroadcast,
+    ): Promise<ConfirmationResult> {
       let hash: Hex;
       try {
-        hash = await deps.walletClient.writeContract(request);
+        hash = await deps.walletClient.sendRawTransaction({
+          serializedTransaction: prepared.serializedTransaction,
+        });
       } catch (error) {
+        if (isAlreadyKnownTransaction(error)) {
+          hash = prepared.transactionHash;
+        } else {
+          throw new ConfirmationSubmitError(
+            "unknown",
+            `EAS.attestByDelegation broadcast failed: ${decodeRevertReason(error)}`,
+            { transactionHash: prepared.transactionHash },
+          );
+        }
+      }
+      if (hash.toLowerCase() !== prepared.transactionHash.toLowerCase()) {
         throw new ConfirmationSubmitError(
           "unknown",
-          `EAS.attestByDelegation broadcast failed: ${decodeRevertReason(error)}`,
+          "RPC returned an unexpected confirmation transaction hash",
+          { transactionHash: prepared.transactionHash },
         );
       }
       await onBroadcast?.(hash);
-
       let receipt;
       try {
         receipt = await deps.publicClient.waitForTransactionReceipt({ hash });
@@ -106,34 +179,25 @@ export function createConfirmationMethods(
           { transactionHash: hash },
         );
       }
-      if (receipt.status !== "success") {
-        throw new ConfirmationSubmitError(
-          "reverted",
-          `EAS.attestByDelegation reverted after simulation (tx ${hash})`,
-          { transactionHash: hash },
-        );
-      }
+      return resultFromReceipt(hash, input, receipt);
+    },
 
-      // Stage 3 — the attestation EXISTS on-chain and the nonce is spent.
-      // Losing the UID here is data loss, not a failed confirmation, so the
-      // strict (attester, schema) match falls back to any Attested event
-      // this EAS emitted in our own receipt — attestByDelegation emits
-      // exactly one.
-      const uid =
-        findAttestationUid(
-          receipt.logs,
-          deps.easAddress,
-          input.attester,
-          input.schema,
-        ) ?? findAttestationUid(receipt.logs, deps.easAddress);
-      if (!uid) {
-        throw new ConfirmationSubmitError(
-          "attestation",
-          `EAS Attested event not found in a successful attestByDelegation receipt (tx ${hash})`,
-          { transactionHash: hash },
-        );
+    async getBuyerConfirmationByTransaction(transactionHash, input) {
+      try {
+        const receipt = await deps.publicClient.getTransactionReceipt({
+          hash: transactionHash,
+        });
+        return resultFromReceipt(transactionHash, input, receipt);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (
+          message.includes("could not be found") ||
+          message.includes("TransactionReceiptNotFound")
+        ) {
+          return null;
+        }
+        throw error;
       }
-      return { transactionHash: hash, attestationUid: uid };
     },
 
     async getEasAttesterNonce(attester: Hex): Promise<bigint> {

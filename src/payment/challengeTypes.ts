@@ -30,9 +30,10 @@ export interface StoredChallenge {
   settlementState: SettlementState;
   paymentId: bigint | null;
   transactionHash: Hex | null;
-  preparedTransaction: Hex | null;
-  preparedTransactionNonce: bigint | null;
-  preparedAt: Date | null;
+  settlementFacilitatorTransactionId: string | null;
+  providerAuthorityWallet: Hex | null;
+  providerAuthorityAgentUri: string | null;
+  providerAuthorityBlock: bigint | null;
   verifiedAt: Date | null;
   confirmationAttestationUid: Hex | null;
   quoteId: string | null;

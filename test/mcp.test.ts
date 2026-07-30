@@ -1010,7 +1010,7 @@ describe("hosted MCP — wallet-agnostic surface", () => {
       );
       expect(body.acceptedToken).toBeDefined();
       expect(body.acceptedToken.address.toLowerCase()).toBe(
-        gateway.config.usdcAddress,
+        gateway.config.usdc.address,
       );
       expect(body.acceptedToken.chainId).toBe(84532);
       expect(body.acceptedToken.network).toBe("base-sepolia");
@@ -1047,7 +1047,7 @@ describe("hosted MCP — wallet-agnostic surface", () => {
       expect(body.x402Version).toBe(2);
       expect(body.accepts[0]?.amount).toBe("2980000");
       expect(body.accepts[0]?.asset.toLowerCase()).toBe(
-        gateway.config.usdcAddress,
+        gateway.config.usdc.address,
       );
     } finally {
       await transport.close();

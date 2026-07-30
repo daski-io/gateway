@@ -83,13 +83,7 @@ export function createSettlementScreeningQueries(pool: Pool) {
         if (terminal) {
           const updated = await client.query(
             `UPDATE payment_challenges
-                SET settlement_state = 'sanctions_rejected',
-                    prepared_transaction = NULL,
-                    prepared_transaction_nonce = NULL,
-                    prepared_at = NULL,
-                    settlement_recovery_failure_category = NULL,
-                    settlement_recovery_failure_detail = NULL,
-                    settlement_recovery_failure_at = NULL
+                SET settlement_state = 'sanctions_rejected'
               WHERE service_ref = $1
                 AND settlement_state <> 'paid'`,
             [hexToBytea(input.challenge.serviceRef)],

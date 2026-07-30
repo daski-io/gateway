@@ -1,5 +1,6 @@
 import {
   fetchOnChainProviders,
+  type ProviderAuthoritySnapshot,
   type ProviderDiscoveryReader,
 } from "../chain/reader.js";
 import { ProviderLegalValidationError } from "../legal/validation.js";
@@ -92,6 +93,17 @@ export class DiscoveryCache {
     return this.cache.get(agentId.toString());
   }
 
+  getForDiscovery(agentId: bigint): CachedProvider | undefined {
+    return this.get(agentId);
+  }
+
+  authorityIsFresh(provider: CachedProvider, maxAgeMs: number): boolean {
+    return (
+      provider.authorityActive &&
+      Date.now() - provider.authorityObservedAt.getTime() <= maxAgeMs
+    );
+  }
+
   getLastRefresh(): Date | null {
     return this.lastRefresh;
   }
@@ -133,6 +145,7 @@ export class DiscoveryCache {
     }
     if (this.lastChainError) this.logger.log("[cache] provider registry recovered");
     this.lastChainSuccessAt = new Date();
+    const authorityObservedAt = this.lastChainSuccessAt;
     this.lastChainError = null;
 
     const nextCache = new Map<string, CachedProvider>();
@@ -146,6 +159,9 @@ export class DiscoveryCache {
           agentId: provider.agentId,
           walletAddress: provider.walletAddress,
           agentURI: provider.agentURI,
+          authorityObservedAt,
+          authorityObservedBlock: provider.observedBlock,
+          authorityActive: provider.isActive,
           ...providerCards,
           lastFetched: new Date(),
           fetchError: partialError,
@@ -168,6 +184,9 @@ export class DiscoveryCache {
             ...existing,
             walletAddress: provider.walletAddress,
             agentURI: provider.agentURI,
+            authorityObservedAt,
+            authorityObservedBlock: provider.observedBlock,
+            authorityActive: provider.isActive,
             fetchError: message,
           });
         } else {
@@ -183,6 +202,9 @@ export class DiscoveryCache {
             agentId: provider.agentId,
             walletAddress: provider.walletAddress,
             agentURI: provider.agentURI,
+            authorityObservedAt,
+            authorityObservedBlock: provider.observedBlock,
+            authorityActive: provider.isActive,
             cards: [],
             providerName: null,
             providerDescription: null,
@@ -214,6 +236,60 @@ export class DiscoveryCache {
       }
     }
     this.catalogInitialized = true;
+  }
+
+  async refreshProviderAuthority(
+    agentId: bigint,
+  ): Promise<{
+    provider: CachedProvider;
+    authority: ProviderAuthoritySnapshot;
+  }> {
+    if (
+      this.whitelist.length > 0 &&
+      !this.whitelist.some((allowed) => allowed === agentId)
+    ) {
+      throw new Error("provider is not admitted");
+    }
+    const blockNumber = await this.reader.getBlockNumber();
+    const authority = await this.reader.getProviderAuthority(
+      agentId,
+      blockNumber,
+    );
+    if (!authority.isActive) throw new Error("provider is inactive");
+    const existing = this.cache.get(agentId.toString());
+    let provider: CachedProvider;
+    if (
+      existing &&
+      existing.agentURI === authority.agentURI &&
+      existing.cards.length > 0
+    ) {
+      provider = {
+        ...existing,
+        walletAddress: authority.walletAddress,
+        authorityObservedAt: new Date(),
+        authorityObservedBlock: authority.observedBlock,
+        authorityActive: true,
+      };
+    } else {
+      const resolved = await this.resolver.resolve(
+        authority.agentURI,
+        Date.now() + this.refreshDeadlineMs,
+      );
+      const { partialError, ...cards } = resolved;
+      provider = {
+        agentId,
+        walletAddress: authority.walletAddress,
+        agentURI: authority.agentURI,
+        ...cards,
+        lastFetched: new Date(),
+        fetchError: partialError,
+        authorityObservedAt: new Date(),
+        authorityObservedBlock: authority.observedBlock,
+        authorityActive: true,
+      };
+    }
+    this.cache.set(agentId.toString(), provider);
+    return { provider, authority };
   }
 
   start(): void {

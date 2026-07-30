@@ -16,6 +16,10 @@ import type { ChainReader } from "../chain/reader.js";
 import { walletControlsAgent } from "../identity/control.js";
 import type { ChainDeploymentReadinessProbe } from "./deploymentReadiness.js";
 import { isSelfPurchase } from "./selfPurchase.js";
+import {
+  ProviderAuthorityError,
+  type ProviderAuthorityService,
+} from "./providerAuthority.js";
 
 export interface QuotedChallengeInput {
   providerAgentId: bigint;
@@ -39,6 +43,7 @@ export interface QuotedChallengeDeps {
   timeoutMs: number;
   maxResponseBytes: number;
   deploymentReadiness: ChainDeploymentReadinessProbe;
+  providerAuthority: ProviderAuthorityService;
 }
 
 export interface QuotedChallengeValue {
@@ -76,6 +81,31 @@ export async function createQuotedChallenge(
       },
     };
   }
+  let authority;
+  try {
+    authority = await deps.providerAuthority.requireFresh(
+      input.providerAgentId,
+    );
+  } catch (error) {
+    const code =
+      error instanceof ProviderAuthorityError
+        ? error.code
+        : "provider_authority_unavailable";
+    return {
+      ok: false,
+      error: {
+        code,
+        message:
+          code === "provider_inactive"
+            ? "provider is not currently active"
+            : "provider authority is temporarily unavailable",
+        recoverable: code === "provider_authority_unavailable",
+        ...(code === "provider_authority_unavailable"
+          ? { nextAction: "Retry after the provider registry is readable." }
+          : {}),
+      },
+    };
+  }
   const provider = deps.cache.get(input.providerAgentId);
   if (!provider) {
     return fail("provider_not_found", "provider is not currently admitted");
@@ -85,7 +115,7 @@ export async function createQuotedChallenge(
       buyerAgentId: input.buyerAgentId,
       buyerWallet: input.walletAddress,
       providerAgentId: provider.agentId,
-      providerWallet: provider.walletAddress,
+      providerWallet: authority.walletAddress,
     })
   ) {
     return fail(
@@ -122,9 +152,9 @@ export async function createQuotedChallenge(
     providerA2AUrl: offer.providerA2AUrl,
     skillId: input.skillId,
     serviceArgs: input.serviceArgs,
-    expectedSignerAddress: provider.walletAddress,
+    expectedSignerAddress: authority.walletAddress,
     expectedChainId: deps.config.chainId,
-    expectedTokenAddress: deps.config.usdcAddress,
+    expectedTokenAddress: deps.config.usdc.address,
     expectedServiceSlug: offer.serviceSlug,
     expectedServiceVersion: offer.serviceVersion,
     fetchFn: deps.fetch,
@@ -203,6 +233,7 @@ export async function createQuotedChallenge(
       serviceArgs: input.serviceArgs,
       warnings: input.warnings,
       registrationDelegation: input.registrationDelegation,
+      providerAuthority: authority,
     },
     deps.config,
     deps.cache,

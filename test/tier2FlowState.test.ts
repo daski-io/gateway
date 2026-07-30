@@ -38,6 +38,11 @@ describe("tier 2 durable flow state", () => {
       walletAddress: WALLET,
       expiresAt: new Date(Date.now() + 60_000),
       serviceArgs,
+      providerAuthority: {
+        walletAddress: WALLET,
+        agentURI: "https://provider.example/agent.json",
+        observedBlock: 0n,
+      },
     });
     const challenge = await gw.bundle.queries.getChallengeByRef(REF);
     expect(challenge?.serviceArgs).toEqual(serviceArgs);
@@ -58,6 +63,11 @@ describe("tier 2 durable flow state", () => {
       walletAddress: WALLET,
       expiresAt: new Date(Date.now() + 60_000),
       serviceArgs: {},
+      providerAuthority: {
+        walletAddress: WALLET,
+        agentURI: "https://provider.example/agent.json",
+        observedBlock: 0n,
+      },
     });
     const challenge = await gw.bundle.queries.getChallengeByRef(legacyRef);
     expect(challenge?.serviceArgs).toEqual({});

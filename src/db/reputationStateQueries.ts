@@ -9,49 +9,26 @@ export function createReputationStateQueries(pool: Pool) {
     async markReputationMirrorRetry(input: {
       paymentId: bigint;
       attestationUid: Hex;
-      transactionHash: Hex | null;
       errorCode: string;
-      receiptPending: boolean;
     }): Promise<boolean> {
       const result = await pool.query(
         `UPDATE reputation_mirrors
-            SET status = CASE WHEN $5 THEN 'broadcast' ELSE 'retry' END,
+            SET status = 'retry',
                 next_attempt_at = now() + (
-                  interval '1 second' * LEAST(
-                    300,
-                    power(
-                      2,
-                      LEAST(8, CASE WHEN $5 THEN receipt_checks ELSE attempts END)
-                    )
-                  )
+                  interval '1 second' * LEAST(300, power(2, LEAST(8, attempts)))
                 ),
-                last_error = $4,
+                last_error = $3,
                 updated_at = now()
           WHERE payment_id = $1
             AND attestation_uid = $2
-            AND tx_hash IS NOT DISTINCT FROM $3
-            AND (
-              ($5 AND broadcast_at IS NOT NULL)
-              OR (NOT $5 AND broadcast_at IS NULL)
-            )
-            AND (
-              ($5 AND status IN ('processing', 'broadcast'))
-              OR (
-                NOT $5
-                AND status IN ('processing', 'prepared', 'retry')
-              )
-            )`,
+            AND status = 'processing'`,
         [
           input.paymentId.toString(),
           reputationBytea(input.attestationUid),
-          input.transactionHash
-            ? reputationBytea(input.transactionHash)
-            : null,
           safeCode(input.errorCode),
-          input.receiptPending,
         ],
       );
-      return (result.rowCount ?? 0) === 1;
+      return result.rowCount === 1;
     },
 
     async markReputationMirrorUnpreparedFailed(input: {
@@ -62,12 +39,10 @@ export function createReputationStateQueries(pool: Pool) {
       const result = await pool.query(
         `UPDATE reputation_mirrors
             SET status = 'failed',
-                next_attempt_at = now(),
                 last_error = $3,
                 updated_at = now()
           WHERE payment_id = $1
             AND attestation_uid = $2
-            AND prepared_tx IS NULL
             AND status = 'processing'`,
         [
           input.paymentId.toString(),
@@ -75,7 +50,7 @@ export function createReputationStateQueries(pool: Pool) {
           safeCode(input.errorCode),
         ],
       );
-      return (result.rowCount ?? 0) === 1;
+      return result.rowCount === 1;
     },
 
     async markReputationMirrorSkipped(input: {
@@ -86,7 +61,6 @@ export function createReputationStateQueries(pool: Pool) {
       const result = await pool.query(
         `UPDATE reputation_mirrors
             SET status = 'skipped',
-                next_attempt_at = now(),
                 last_error = $3,
                 pending_attestation_uid = NULL,
                 pending_confirmation = NULL,
@@ -94,7 +68,6 @@ export function createReputationStateQueries(pool: Pool) {
                 updated_at = now()
           WHERE payment_id = $1
             AND attestation_uid = $2
-            AND prepared_tx IS NULL
             AND status = 'processing'`,
         [
           input.paymentId.toString(),
@@ -102,7 +75,7 @@ export function createReputationStateQueries(pool: Pool) {
           safeCode(input.errorCode),
         ],
       );
-      return (result.rowCount ?? 0) === 1;
+      return result.rowCount === 1;
     },
 
     async deferReputationMirrorForFacilitator(
@@ -111,18 +84,8 @@ export function createReputationStateQueries(pool: Pool) {
     ): Promise<void> {
       await pool.query(
         `UPDATE reputation_mirrors
-            SET status = CASE
-                  WHEN broadcast_at IS NULL THEN 'retry'
-                  ELSE 'broadcast'
-                END,
-                attempts = CASE
-                  WHEN broadcast_at IS NULL THEN GREATEST(0, attempts - 1)
-                  ELSE attempts
-                END,
-                receipt_checks = CASE
-                  WHEN broadcast_at IS NULL THEN receipt_checks
-                  ELSE GREATEST(0, receipt_checks - 1)
-                END,
+            SET status = 'retry',
+                attempts = GREATEST(0, attempts - 1),
                 next_attempt_at = now() + interval '5 seconds',
                 last_error = 'facilitator_transaction_reserved',
                 updated_at = now()

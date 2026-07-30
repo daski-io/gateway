@@ -28,9 +28,10 @@ export interface ChallengeRow {
     | "sanctions_rejected";
   payment_id: string | null;
   transaction_hash: string | null;
-  prepared_transaction: Buffer | null;
-  prepared_transaction_nonce: string | null;
-  prepared_at: Date | null;
+  settlement_facilitator_transaction_id: string | null;
+  provider_authority_wallet: string | null;
+  provider_authority_agent_uri: string | null;
+  provider_authority_block: string | null;
   verified_at: Date | null;
   confirmation_attestation_uid: Buffer | null;
   quote_id: string | null;
@@ -88,14 +89,16 @@ export function rowToChallenge(row: ChallengeRow): StoredChallenge {
     paymentId: row.payment_id != null ? BigInt(row.payment_id) : null,
     transactionHash:
       row.transaction_hash != null ? (row.transaction_hash as Hex) : null,
-    preparedTransaction: row.prepared_transaction
-      ? byteaToHex(row.prepared_transaction)
+    settlementFacilitatorTransactionId:
+      row.settlement_facilitator_transaction_id,
+    providerAuthorityWallet: row.provider_authority_wallet
+      ? (row.provider_authority_wallet.toLowerCase() as Hex)
       : null,
-    preparedTransactionNonce:
-      row.prepared_transaction_nonce != null
-        ? BigInt(row.prepared_transaction_nonce)
-        : null,
-    preparedAt: row.prepared_at,
+    providerAuthorityAgentUri: row.provider_authority_agent_uri,
+    providerAuthorityBlock:
+      row.provider_authority_block == null
+        ? null
+        : BigInt(row.provider_authority_block),
     verifiedAt: row.verified_at,
     confirmationAttestationUid: row.confirmation_attestation_uid
       ? byteaToHex(row.confirmation_attestation_uid)

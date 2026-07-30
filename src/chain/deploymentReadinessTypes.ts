@@ -1,4 +1,5 @@
 import type { Hex } from "../types.js";
+import type { UsdcDomainConfig } from "../payment/usdcDomain.js";
 
 export interface DeploymentReadinessOptions {
   chainId: number;
@@ -14,7 +15,7 @@ export interface DeploymentReadinessOptions {
   reputationRegistryAddress?: Hex;
   reputationStorageAddress: Hex;
   sanctionsOracleAddress: Hex;
-  usdcAddress: Hex;
+  usdc: UsdcDomainConfig;
   easAddress: Hex;
   easOutcomeSchemaUid: Hex;
   easConfirmationSchemaUid: Hex;

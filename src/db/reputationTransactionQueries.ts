@@ -1,101 +1,60 @@
+import type { PoolClient } from "pg";
 import type { Hex } from "../types.js";
 import type { Pool } from "./pool.js";
 import { reputationBytea } from "./reputationRows.js";
 
 const safeCode = (value: string): string => value.slice(0, 128);
 
-export function createReputationTransactionQueries(pool: Pool) {
+export function createReputationTransactionQueries(_pool: Pool) {
   return {
-    async markReputationMirrorPrepared(input: {
-      paymentId: bigint;
-      attestationUid: Hex;
-      transactionHash: Hex;
-      preparedTransaction: Hex;
-      transactionNonce: bigint;
-    }): Promise<boolean> {
-      const result = await pool.query(
+    async linkReputationFacilitatorTransaction(
+      client: PoolClient,
+      input: {
+        paymentId: bigint;
+        attestationUid: Hex;
+        kind: "revoke" | "give";
+        transactionId: string;
+      },
+    ): Promise<void> {
+      const column =
+        input.kind === "revoke"
+          ? "revoke_facilitator_transaction_id"
+          : "give_facilitator_transaction_id";
+      const result = await client.query(
         `UPDATE reputation_mirrors
-            SET status = 'prepared',
-                tx_hash = $3,
-                prepared_tx = $4,
-                tx_nonce = $5,
-                prepared_at = now(),
-                broadcast_at = NULL,
-                receipt_checks = 0,
-                updated_at = now()
+            SET ${column} = $3, updated_at = now()
           WHERE payment_id = $1
             AND attestation_uid = $2
-            AND status = 'processing'
-            AND prepared_tx IS NULL`,
+            AND status = 'processing'`,
         [
           input.paymentId.toString(),
           reputationBytea(input.attestationUid),
-          reputationBytea(input.transactionHash),
-          reputationBytea(input.preparedTransaction),
-          input.transactionNonce.toString(),
+          input.transactionId,
         ],
       );
-      return (result.rowCount ?? 0) === 1;
-    },
-
-    async markReputationMirrorBroadcast(input: {
-      paymentId: bigint;
-      attestationUid: Hex;
-      transactionHash: Hex;
-    }): Promise<boolean> {
-      const result = await pool.query(
-        `UPDATE reputation_mirrors
-            SET status = 'broadcast',
-                broadcast_at = COALESCE(broadcast_at, now()),
-                updated_at = now()
-          WHERE payment_id = $1
-            AND attestation_uid = $2
-            AND tx_hash = $3
-            AND prepared_tx IS NOT NULL`,
-        [
-          input.paymentId.toString(),
-          reputationBytea(input.attestationUid),
-          reputationBytea(input.transactionHash),
-        ],
-      );
-      return (result.rowCount ?? 0) === 1;
-    },
-
-    async finishReputationMirrorTransaction(input: {
-      paymentId: bigint;
-      attestationUid: Hex;
-      transactionHash: Hex;
-      outcome:
-        | {
-            status: "sent";
-            providerAgentId: bigint;
-            feedbackIndex: bigint;
-          }
-        | { status: "failed"; errorCode: string };
-    }): Promise<boolean> {
-      let providerAgentId: string | null = null;
-      let feedbackIndex: string | null = null;
-      let errorCode: string | null = null;
-      if (input.outcome.status === "sent") {
-        providerAgentId = input.outcome.providerAgentId.toString();
-        feedbackIndex = input.outcome.feedbackIndex.toString();
-      } else {
-        errorCode = safeCode(input.outcome.errorCode);
+      if (result.rowCount !== 1) {
+        throw new Error("reputation transaction link conflict");
       }
-      const result = await pool.query(
+    },
+
+    async finishReputationMirrorSuccess(
+      client: PoolClient,
+      input: {
+        paymentId: bigint;
+        attestationUid: Hex;
+        transactionHash: Hex;
+        providerAgentId: bigint;
+        feedbackIndex: bigint;
+      },
+    ): Promise<void> {
+      const result = await client.query(
         `UPDATE reputation_mirrors
             SET status = CASE
-                  WHEN pending_attestation_uid IS NULL THEN $4
+                  WHEN pending_attestation_uid IS NULL THEN 'sent'
                   ELSE 'queued'
                 END,
-                provider_agent_id = CASE
-                  WHEN $4 = 'sent' THEN $5
-                  ELSE provider_agent_id
-                END,
-                feedback_index = CASE
-                  WHEN $4 = 'sent' THEN $6
-                  ELSE feedback_index
-                END,
+                provider_agent_id = $4::bigint,
+                feedback_index = $5::bigint,
                 attestation_uid = COALESCE(
                   pending_attestation_uid,
                   attestation_uid
@@ -109,78 +68,61 @@ export function createReputationTransactionQueries(pool: Pool) {
                   ELSE pending_ref_uid
                 END,
                 tx_hash = CASE
-                  WHEN pending_attestation_uid IS NULL THEN $3
-                  ELSE NULL
-                END,
-                prepared_tx = NULL,
-                tx_nonce = NULL,
-                prepared_at = CASE
-                  WHEN pending_attestation_uid IS NULL THEN prepared_at
-                  ELSE NULL
-                END,
-                broadcast_at = CASE
-                  WHEN pending_attestation_uid IS NULL THEN broadcast_at
+                  WHEN pending_attestation_uid IS NULL THEN $3::bytea
                   ELSE NULL
                 END,
                 attempts = CASE
                   WHEN pending_attestation_uid IS NULL THEN attempts
                   ELSE 0
                 END,
-                receipt_checks = CASE
-                  WHEN pending_attestation_uid IS NULL THEN receipt_checks
-                  ELSE 0
-                END,
                 next_attempt_at = now(),
-                last_error = CASE
-                  WHEN pending_attestation_uid IS NOT NULL THEN NULL
-                  WHEN $4 = 'failed' THEN $7
-                  ELSE NULL
-                END,
+                last_error = NULL,
                 pending_attestation_uid = NULL,
                 pending_confirmation = NULL,
                 pending_ref_uid = NULL,
                 updated_at = now()
           WHERE payment_id = $1
             AND attestation_uid = $2
-            AND tx_hash = $3
-            AND prepared_tx IS NOT NULL`,
+            AND status = 'processing'`,
         [
           input.paymentId.toString(),
           reputationBytea(input.attestationUid),
           reputationBytea(input.transactionHash),
-          input.outcome.status,
-          providerAgentId,
-          feedbackIndex,
-          errorCode,
+          input.providerAgentId.toString(),
+          input.feedbackIndex.toString(),
         ],
       );
-      return (result.rowCount ?? 0) === 1;
+      if (result.rowCount !== 1) {
+        throw new Error("reputation success finalization conflict");
+      }
     },
 
-    async markReputationMirrorPreparedConflict(input: {
-      paymentId: bigint;
-      attestationUid: Hex;
-      transactionHash: Hex;
-      errorCode: string;
-    }): Promise<boolean> {
-      const result = await pool.query(
+    async finishReputationMirrorFailure(
+      client: PoolClient,
+      input: {
+        paymentId: bigint;
+        attestationUid: Hex;
+        errorCode: string;
+      },
+    ): Promise<void> {
+      const result = await client.query(
         `UPDATE reputation_mirrors
             SET status = 'failed',
+                last_error = $3,
                 next_attempt_at = now(),
-                last_error = $4,
                 updated_at = now()
           WHERE payment_id = $1
             AND attestation_uid = $2
-            AND tx_hash = $3
-            AND prepared_tx IS NOT NULL`,
+            AND status = 'processing'`,
         [
           input.paymentId.toString(),
           reputationBytea(input.attestationUid),
-          reputationBytea(input.transactionHash),
           safeCode(input.errorCode),
         ],
       );
-      return (result.rowCount ?? 0) === 1;
+      if (result.rowCount !== 1) {
+        throw new Error("reputation failure finalization conflict");
+      }
     },
   };
 }

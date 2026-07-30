@@ -14,12 +14,18 @@ import type { ProviderQuoteForChallenge } from "./quoteBinding.js";
 import { validateProviderQuoteCommitment } from "./providerQuote.js";
 import { resolveSkillOffer } from "./skillOffer.js";
 import { isSelfPurchase } from "./selfPurchase.js";
+import {
+  ProviderAuthorityError,
+  type ProviderAuthorityService,
+} from "./providerAuthority.js";
+import type { ProviderAuthoritySnapshot } from "../chain/reader.js";
 
 interface PurchaseRequestDeps {
   config: Config;
   cache: DiscoveryCache;
   reader: ChainReader;
   fetchAgentCardFn?: FetchAgentCardOptions["fetchFn"];
+  providerAuthority: ProviderAuthorityService;
 }
 
 interface ParsedPurchaseRequest {
@@ -29,6 +35,7 @@ interface ParsedPurchaseRequest {
   serviceArgs: Record<string, unknown>;
   providerQuote: ProviderQuoteForChallenge;
   registration?: { agentURI: string; deadline: string; signature: Hex };
+  providerAuthority: ProviderAuthoritySnapshot;
 }
 
 export async function parsePurchaseRequest(
@@ -73,6 +80,23 @@ export async function parsePurchaseRequest(
   if (registration === null) return null;
 
   const serviceArgs = isRecord(body.serviceArgs) ? body.serviceArgs : {};
+  let providerAuthority: ProviderAuthoritySnapshot;
+  try {
+    providerAuthority = await deps.providerAuthority.requireFresh(
+      providerTokenId,
+    );
+  } catch (error) {
+    const code =
+      error instanceof ProviderAuthorityError
+        ? error.code
+        : "provider_authority_unavailable";
+    sendError(
+      res,
+      code === "provider_inactive" ? 404 : 503,
+      code,
+    );
+    return null;
+  }
   const provider = deps.cache.get(providerTokenId);
   const offerResult = resolveSkillOffer(providerTokenId, skillId, deps.cache, {
     serviceSlug,
@@ -90,7 +114,7 @@ export async function parsePurchaseRequest(
       buyerAgentId: buyerTokenId,
       buyerWallet: walletAddress,
       providerAgentId: provider.agentId,
-      providerWallet: provider.walletAddress,
+      providerWallet: providerAuthority.walletAddress,
     })
   ) {
     res.status(403).json({
@@ -108,9 +132,9 @@ export async function parsePurchaseRequest(
       typeof body.providerQuote.amount === "string"
         ? body.providerQuote.amount
         : "",
-    expectedSignerAddress: provider.walletAddress,
+    expectedSignerAddress: providerAuthority.walletAddress,
     expectedChainId: deps.config.chainId,
-    expectedTokenAddress: deps.config.usdcAddress,
+    expectedTokenAddress: deps.config.usdc.address,
     expectedServiceSlug: offerResult.offer.serviceSlug,
     expectedServiceVersion: offerResult.offer.serviceVersion,
   });
@@ -139,6 +163,7 @@ export async function parsePurchaseRequest(
       serviceSlug: quote.serviceSlug,
       serviceVersion: quote.serviceVersion,
     },
+    providerAuthority,
   };
 }
 

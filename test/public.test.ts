@@ -5,6 +5,10 @@ import {
   derivePrimaryServiceId,
 } from "../src/discovery/serviceIdentity.js";
 import type { Hex } from "../src/types.js";
+import {
+  signedConfirmation,
+  TEST_BUYER,
+} from "./helpers/confirmation.js";
 
 const PROVIDER_A2A = "http://provider.test/a2a";
 
@@ -60,6 +64,13 @@ async function seedPaid(
     walletAddress: gateway.buyerAddress,
     expiresAt: new Date(Date.now() + 3600 * 1000),
     serviceArgs: {},
+    providerAuthority: {
+      walletAddress:
+        provider?.walletAddress ??
+        ("0x0000000000000000000000000000000000000000" as Hex),
+      agentURI: provider?.agentURI ?? "https://provider.test/agent.json",
+      observedBlock: provider?.authorityObservedBlock ?? 0n,
+    },
   });
   const ok = await queries.recordChallengePaid(
     args.serviceRef,
@@ -920,7 +931,7 @@ describe("public v1 — /activity", () => {
       serviceId,
       token: "0x000000000000000000000000000000000000a003" as Hex,
       amount: 1_000_000n,
-      cachedBuyerWallet: "0x000000000000000000000000000000000000b001" as Hex,
+      cachedBuyerWallet: TEST_BUYER,
       cachedProviderOwner: "0x000000000000000000000000000000000000c001" as Hex,
       cachedProviderWallet: "0x000000000000000000000000000000000000c002" as Hex,
       serviceRef: ("0x" + "ab".repeat(32)) as Hex,
@@ -931,16 +942,14 @@ describe("public v1 — /activity", () => {
     const confirmRes = await fetch(`${gateway.baseUrl}/confirm/203`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        confirmation: "Confirmed",
-        attester: "0x000000000000000000000000000000000000beef",
-        deadline: String(Math.floor(Date.now() / 1000) + 3600),
-        signature: {
-          v: 27,
-          r: "0x1111111111111111111111111111111111111111111111111111111111111111",
-          s: "0x2222222222222222222222222222222222222222222222222222222222222222",
-        },
-      }),
+      body: JSON.stringify(
+        await signedConfirmation(gateway.config, {
+          paymentId: 203n,
+          confirmation: "Confirmed",
+          recipient:
+            "0x000000000000000000000000000000000000c002" as Hex,
+        }),
+      ),
     });
     expect(confirmRes.status).toBe(200);
 
