@@ -22,6 +22,8 @@ export interface StoredChallenge {
   serviceSlug: string;
   serviceVersion: string;
   serviceId: Hex;
+  expectedPayee: Hex | null;
+  expectedPayeeBlock: bigint | null;
   amount: bigint;
   providerA2AUrl: string;
   walletAddress: Hex;

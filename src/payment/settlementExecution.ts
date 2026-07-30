@@ -64,6 +64,14 @@ export async function verifyAndSettleUnlocked(
           challenge.walletAddress,
         );
   }
+  if (!challenge.expectedPayee) {
+    return settlementFailure(
+      409,
+      "expected_payee_missing",
+      "stored challenge is missing its quoted settlement payee",
+      config.x402Network,
+    );
+  }
   const missingQuote = missingQuoteCommitment(challenge);
   if (missingQuote) {
     return settlementFailure(
@@ -95,6 +103,7 @@ export async function verifyAndSettleUnlocked(
   const settlementInput: SettlementInput = {
     providerAgentId: challenge.providerTokenId,
     serviceId: challenge.serviceId,
+    expectedPayee: challenge.expectedPayee,
     amount: challenge.amount,
     serviceRef: challenge.serviceRef,
     from: payer,
@@ -275,6 +284,7 @@ function settlementIntentHash(
   return hashCanonical({
     providerAgentId: input.providerAgentId.toString(),
     serviceId: input.serviceId,
+    expectedPayee: input.expectedPayee,
     amount: input.amount.toString(),
     serviceRef: input.serviceRef,
     from: input.from,

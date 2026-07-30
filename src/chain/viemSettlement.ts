@@ -71,6 +71,7 @@ export function createSettlementMethods(
       input.serviceRef,
       input.providerAgentId,
       input.serviceId,
+      input.expectedPayee,
       auth,
       input.nonceSalt,
     ] as const;

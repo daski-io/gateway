@@ -14,6 +14,7 @@ const VECTOR = {
   validBefore: 2_000_000_000n,
   providerAgentId: 2n,
   serviceId: (`0x${"22".repeat(32)}`) as Hex,
+  expectedPayee: "0x000000000000000000000000000000000000bEEF",
   serviceRef: (`0x${"33".repeat(32)}`) as Hex,
   nonceSalt: (`0x${"44".repeat(32)}`) as Hex,
 } as const;
@@ -23,12 +24,12 @@ describe("Daski receive authorization nonce", () => {
     expect(
       deriveDaskiReceiveNonce({ ...VECTOR, chainId: 84_532 }),
     ).toBe(
-      "0xf0872764c2542890513764a8d23790424f3c5ce54c069086da3c05fbe36bc73a",
+      "0x6895237ed56c402a03e8bdad76bdaaa360aea6460ca448a08c4bb2afcf8e901e",
     );
     expect(
       deriveDaskiReceiveNonce({ ...VECTOR, chainId: 8_453 }),
     ).toBe(
-      "0x3b31104e221fc5d6a0f66b422e70ec8bcc502834f28f67005bd00a10809a2c61",
+      "0xe8c5ed2d18601764774c354819c70a9abf284906a8ec0aca4dae2152d0697bc0",
     );
   });
 
@@ -42,6 +43,14 @@ describe("Daski receive authorization nonce", () => {
         ...VECTOR,
         chainId: 84_532,
         providerAgentId: 3n,
+      }),
+    ).not.toBe(expected);
+    expect(
+      deriveDaskiReceiveNonce({
+        ...VECTOR,
+        chainId: 84_532,
+        expectedPayee:
+          "0x000000000000000000000000000000000000beee",
       }),
     ).not.toBe(expected);
     expect(
@@ -75,6 +84,7 @@ describe("Daski receive authorization nonce", () => {
           paymentRouter: VECTOR.router,
           providerAgentId: VECTOR.providerAgentId.toString(),
           serviceId: VECTOR.serviceId,
+          expectedPayee: VECTOR.expectedPayee,
           serviceRef: VECTOR.serviceRef,
         },
       },

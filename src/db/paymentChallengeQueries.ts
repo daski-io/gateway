@@ -25,6 +25,8 @@ export function createPaymentChallengeQueries(pool: Pool) {
       serviceSlug: string;
       serviceVersion: string;
       serviceId: Hex;
+      expectedPayee?: Hex | null;
+      expectedPayeeBlock?: bigint | null;
       providerA2AUrl: string;
       walletAddress: Hex;
       expiresAt: Date;
@@ -49,15 +51,16 @@ export function createPaymentChallengeQueries(pool: Pool) {
         `INSERT INTO payment_challenges
            (service_ref, provider_token_id, buyer_token_id, amount, skill_id,
             service_slug, service_version, service_id,
+            expected_payee, expected_payee_block,
             provider_a2a_url, wallet_address, expires_at, settlement_state,
             quote_id, quote_signature, quote_expires_at, quote_request_hash,
             x402_version, payment_required, requirements_hash, resource_url,
             daski_extension, request_fingerprint, registration_delegation,
             service_args, provider_authority_wallet,
             provider_authority_agent_uri, provider_authority_block)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'pending',
-                 $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22,
-                 $23, $24, $25, $26)`,
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 'pending',
+                 $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24,
+                 $25, $26, $27, $28)`,
         [
           hexToBytea(challenge.serviceRef),
           challenge.providerTokenId.toString(),
@@ -67,6 +70,8 @@ export function createPaymentChallengeQueries(pool: Pool) {
           challenge.serviceSlug,
           challenge.serviceVersion,
           hexToBytea(challenge.serviceId),
+          challenge.expectedPayee?.toLowerCase() ?? null,
+          challenge.expectedPayeeBlock?.toString() ?? null,
           challenge.providerA2AUrl,
           challenge.walletAddress.toLowerCase(),
           challenge.expiresAt,

@@ -34,6 +34,7 @@ import type {
   SettleWithRegistrationInput,
   SettlementInput,
   SettlementResult,
+  ServiceSettlementSnapshot,
   BroadcastObserver,
 } from "./reader.js";
 
@@ -143,6 +144,21 @@ export class AutoMockChainReader implements ChainReader {
       walletAddress: await this.getAgentWallet(agentId),
       agentURI: await this.getAgentURI(agentId),
       observedBlock: blockNumber,
+    };
+  }
+
+  async getServiceSettlement(
+    serviceId: Hex,
+  ): Promise<ServiceSettlementSnapshot> {
+    const wallet = await this.getAgentWallet(this.opts.providerAgentId);
+    return {
+      serviceId,
+      providerAgentId: this.opts.providerAgentId,
+      active: true,
+      providerOwner: wallet,
+      providerWallet: wallet,
+      payee: wallet,
+      observedBlock: this.blockNumber,
     };
   }
 

@@ -21,9 +21,9 @@ export interface SettlementInput {
   providerAgentId: bigint;
   // 32-byte hex serviceId. PaymentRouter.settle requires this — it
   // validates the (provider, service) pair against ServiceRegistry and
-  // resolves the payee using the per-service wallet override (if set)
-  // or the provider's live ERC-8004 agentWallet (default).
+  // requires the live payee to match the address quoted to the buyer.
   serviceId: Hex;
+  expectedPayee: Hex;
   amount: bigint;
   serviceRef: Hex;
   from: Hex;
@@ -260,6 +260,16 @@ export interface ProviderAuthoritySnapshot {
   observedBlock: bigint;
 }
 
+export interface ServiceSettlementSnapshot {
+  serviceId: Hex;
+  providerAgentId: bigint;
+  active: boolean;
+  providerOwner: Hex;
+  providerWallet: Hex;
+  payee: Hex;
+  observedBlock: bigint;
+}
+
 export interface IdentityReader {
   getAgentURI(agentId: bigint): Promise<string>;
   agentOfWallet(wallet: Hex): Promise<bigint>;
@@ -334,6 +344,7 @@ export interface ProviderDiscoveryReader extends ProviderRegistryReader {
     agentId: bigint,
     blockNumber: bigint,
   ): Promise<ProviderAuthoritySnapshot>;
+  getServiceSettlement(serviceId: Hex): Promise<ServiceSettlementSnapshot>;
 }
 
 export interface FeedbackWriter {

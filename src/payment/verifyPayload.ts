@@ -46,7 +46,8 @@ export async function verifyPaymentPayload(
   if (
     challenge.x402Version !== 2 ||
     !challenge.paymentRequired ||
-    !challenge.requirementsHash
+    !challenge.requirementsHash ||
+    !challenge.expectedPayee
   ) {
     return fail(409, "invalid_stored_challenge", "challenge is not canonical x402 V2");
   }
@@ -149,6 +150,7 @@ export async function verifyPaymentPayload(
     validBefore,
     providerAgentId: challenge.providerTokenId,
     serviceId: challenge.serviceId,
+    expectedPayee: challenge.expectedPayee,
     serviceRef: challenge.serviceRef,
     nonceSalt,
   });

@@ -90,6 +90,7 @@ function declarationInfoSchema(): Record<string, unknown> {
       "providerAgentId",
       "buyerAgentId",
       "serviceId",
+      "expectedPayee",
       "skillId",
       "serviceSlug",
       "serviceVersion",
@@ -105,6 +106,7 @@ function declarationInfoSchema(): Record<string, unknown> {
       providerAgentId: { type: "string", pattern: "^[0-9]+$" },
       buyerAgentId: { type: "string", pattern: "^[0-9]+$" },
       serviceId: { type: "string", pattern: "^0x[0-9a-fA-F]{64}$" },
+      expectedPayee: { type: "string", pattern: "^0x[0-9a-fA-F]{40}$" },
       skillId: { type: "string" },
       serviceSlug: { type: "string" },
       serviceVersion: { type: "string" },
@@ -150,7 +152,8 @@ export function getDaskiDeclaration(
     info.profile !== "1" ||
     !isHexAddress(info.x402Adapter) ||
     !isHexAddress(info.paymentRouter) ||
-    !isHex32(info.serviceRef)
+    !isHex32(info.serviceRef) ||
+    !isHexAddress(info.expectedPayee)
   ) {
     return null;
   }

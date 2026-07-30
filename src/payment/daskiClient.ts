@@ -28,6 +28,7 @@ interface DaskiRequirementExtra {
   paymentRouter?: Hex;
   providerAgentId?: string;
   serviceId?: Hex;
+  expectedPayee?: Hex;
   serviceRef?: Hex;
 }
 
@@ -67,6 +68,7 @@ export class DaskiExactEvmScheme implements SchemeNetworkClient {
         validBefore,
         providerAgentId: BigInt(extra!.providerAgentId!),
         serviceId: extra!.serviceId!,
+        expectedPayee: getAddress(extra!.expectedPayee!),
         serviceRef: extra!.serviceRef!,
         nonceSalt,
       }),
@@ -110,6 +112,7 @@ function validateRequirement(
     !extra.paymentRouter ||
     !extra.providerAgentId ||
     !extra.serviceId ||
+    !extra.expectedPayee ||
     !extra.serviceRef
   ) {
     throw new Error("daski-exact requirement is missing route metadata");

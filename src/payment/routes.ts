@@ -176,6 +176,7 @@ async function handleInitialPurchase(
     deps.config,
     deps.cache,
     deps.queries,
+    deps.reader,
   );
   if (!result.ok) {
     sendError(res, result.status, result.message);

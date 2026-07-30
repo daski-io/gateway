@@ -1,6 +1,11 @@
 import type { PublicClient, Transport } from "viem";
 import type { base, baseSepolia } from "viem/chains";
-import { agentIndexAbi, identityRegistryAbi, providerRegistryAbi } from "./abis.js";
+import {
+  agentIndexAbi,
+  identityRegistryAbi,
+  providerRegistryAbi,
+  serviceRegistryAbi,
+} from "./abis.js";
 import type { ChainReader } from "./reader.js";
 import type { Hex } from "../types.js";
 
@@ -8,6 +13,7 @@ export interface IdentityContractAddresses {
   agentIndexAddress: Hex;
   identityRegistryAddress: Hex;
   providerRegistryAddress: Hex;
+  serviceRegistryAddress: Hex;
 }
 
 type IdentityMethods = Pick<
@@ -21,6 +27,7 @@ type IdentityMethods = Pick<
   | "getAgentOwner"
   | "getRegistrationNonce"
   | "getProviderAuthority"
+  | "getServiceSettlement"
 >;
 
 export function createIdentityMethods(
@@ -104,6 +111,27 @@ export function createIdentityMethods(
         agentURI: agentURI as string,
         walletAddress: walletAddress as Hex,
         observedBlock: blockNumber,
+      };
+    },
+
+    async getServiceSettlement(serviceId: Hex) {
+      const observedBlock = await publicClient.getBlockNumber();
+      const [providerAgentId, active, providerOwner, providerWallet, payee] =
+        (await publicClient.readContract({
+          address: addresses.serviceRegistryAddress,
+          abi: serviceRegistryAbi,
+          functionName: "resolveSettlement",
+          args: [serviceId],
+          blockNumber: observedBlock,
+        })) as readonly [bigint, boolean, Hex, Hex, Hex];
+      return {
+        serviceId,
+        providerAgentId,
+        active,
+        providerOwner,
+        providerWallet,
+        payee,
+        observedBlock,
       };
     },
 

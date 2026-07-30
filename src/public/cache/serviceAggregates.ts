@@ -46,6 +46,8 @@ function syntheticChallenge(row: ChainActivityRow): StoredChallenge {
     serviceSlug: row.serviceSlug ?? "",
     serviceVersion: row.serviceVersion ?? "1",
     serviceId: row.serviceId,
+    expectedPayee: null,
+    expectedPayeeBlock: null,
     providerA2AUrl: row.providerA2AUrl ?? "",
     walletAddress: row.walletAddress ?? ZERO_ADDRESS,
     createdAt: row.settledAt,

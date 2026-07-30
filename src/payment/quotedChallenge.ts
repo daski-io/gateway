@@ -238,6 +238,7 @@ export async function createQuotedChallenge(
     deps.config,
     deps.cache,
     deps.queries,
+    deps.reader,
   );
   if (!issued.ok) return fail(issued.code, issued.message);
   return {

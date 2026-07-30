@@ -13,6 +13,7 @@ const SERIALIZED_TRANSACTION = "0x02" as Hex;
 const INPUT: SettlementInput = {
   providerAgentId: 2n,
   serviceId: `0x${"33".repeat(32)}` as Hex,
+  expectedPayee: "0x0000000000000000000000000000000000000055",
   amount: 100_000n,
   serviceRef: SERVICE_REF,
   from: "0x0000000000000000000000000000000000000044",

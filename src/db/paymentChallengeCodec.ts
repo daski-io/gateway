@@ -15,6 +15,8 @@ export interface ChallengeRow {
   service_slug: string | null;
   service_version: string | null;
   service_id: Buffer | null;
+  expected_payee: string | null;
+  expected_payee_block: string | null;
   provider_a2a_url: string;
   wallet_address: string;
   created_at: Date;
@@ -81,6 +83,13 @@ export function rowToChallenge(row: ChallengeRow): StoredChallenge {
     serviceSlug: requiredColumn(row.service_slug, "service_slug"),
     serviceVersion: requiredColumn(row.service_version, "service_version"),
     serviceId: byteaToHex(requiredColumn(row.service_id, "service_id")),
+    expectedPayee: row.expected_payee
+      ? (row.expected_payee.toLowerCase() as Hex)
+      : null,
+    expectedPayeeBlock:
+      row.expected_payee_block == null
+        ? null
+        : BigInt(row.expected_payee_block),
     providerA2AUrl: row.provider_a2a_url,
     walletAddress: requiredColumn(row.wallet_address, "wallet_address") as Hex,
     createdAt: row.created_at,

@@ -21,6 +21,7 @@ export interface DaskiReceiveNonceInput {
   validBefore: bigint;
   providerAgentId: bigint;
   serviceId: Hex;
+  expectedPayee: Address;
   serviceRef: Hex;
   nonceSalt: Hex;
 }
@@ -43,6 +44,7 @@ export function deriveDaskiReceiveNonce(
         { type: "uint256" },
         { type: "uint256" },
         { type: "bytes32" },
+        { type: "address" },
         { type: "bytes32" },
         { type: "bytes32" },
       ],
@@ -58,6 +60,7 @@ export function deriveDaskiReceiveNonce(
         input.validBefore,
         input.providerAgentId,
         input.serviceId,
+        input.expectedPayee,
         input.serviceRef,
         input.nonceSalt,
       ],

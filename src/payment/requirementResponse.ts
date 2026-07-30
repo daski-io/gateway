@@ -23,6 +23,8 @@ interface RequirementResponseInput {
   serviceSlug: string;
   serviceVersion: string;
   serviceId: Hex;
+  expectedPayee: Hex;
+  expectedPayeeBlock: bigint;
   serviceRef: Hex;
   providerA2AUrl: string;
   agentCard: Record<string, unknown>;
@@ -95,6 +97,7 @@ export function buildRequirementResponse(
       paymentRouter: input.config.paymentRouterAddress,
       providerAgentId: input.providerTokenId.toString(),
       serviceId: input.serviceId,
+      expectedPayee: input.expectedPayee,
       serviceRef: input.serviceRef,
     },
   };
@@ -106,6 +109,7 @@ export function buildRequirementResponse(
     providerAgentId: input.providerTokenId.toString(),
     buyerAgentId: input.buyerTokenId.toString(),
     serviceId: input.serviceId,
+    expectedPayee: input.expectedPayee,
     skillId: input.skillId,
     serviceSlug: input.serviceSlug,
     serviceVersion: input.serviceVersion,
@@ -143,6 +147,8 @@ export function buildRequirementResponse(
     serviceSlug: input.serviceSlug,
     serviceVersion: input.serviceVersion,
     serviceId: input.serviceId,
+    expectedPayee: input.expectedPayee,
+    expectedPayeeBlock: input.expectedPayeeBlock,
     amount: input.amount,
     providerA2AUrl: input.providerA2AUrl,
     walletAddress: input.walletAddress.toLowerCase() as Hex,

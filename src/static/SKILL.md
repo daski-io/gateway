@@ -99,7 +99,9 @@ request fingerprint.
 
 - The initial validated request returns `402` with `PAYMENT-REQUIRED`.
 - The client signs the `daski-exact` EIP-3009 receive authorization. Its nonce
-  commits to the complete settlement route plus a fresh 32-byte salt.
+  commits to the complete settlement route, including the quoted payee, plus a
+  fresh 32-byte salt. If the registry changes that payee before settlement, the
+  transaction reverts instead of redirecting the payment.
 - The client retries the same method, URL, and JSON body with
   `PAYMENT-SIGNATURE`.
 - Success returns `200` with `PAYMENT-RESPONSE`.

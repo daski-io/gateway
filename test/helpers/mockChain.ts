@@ -29,6 +29,7 @@ import type {
   PreparedConfirmationTransaction,
   PreparedFeedbackTransaction,
   ProviderAuthoritySnapshot,
+  ServiceSettlementSnapshot,
   PreparedSettlementTransaction,
   ReceiveAuthorizationVerification,
   PaymentRouterRecord,
@@ -222,6 +223,7 @@ export class MockChainReader implements ChainReader {
   // IdentityRegistry-driven path.
   private agentWalletOverrides = new Map<string, Hex>();
   private agentOwnerOverrides = new Map<string, Hex>();
+  private serviceSettlements = new Map<string, ServiceSettlementSnapshot>();
 
   setAgentWallet(agentId: bigint, wallet: Hex): void {
     this.agentWalletOverrides.set(
@@ -256,6 +258,37 @@ export class MockChainReader implements ChainReader {
     return provider
       ? (provider.walletAddress.toLowerCase() as Hex)
       : (("0x" + "00".repeat(20)) as Hex);
+  }
+
+  setServiceSettlement(
+    serviceId: Hex,
+    settlement: Omit<ServiceSettlementSnapshot, "serviceId">,
+  ): void {
+    this.serviceSettlements.set(serviceId.toLowerCase(), {
+      serviceId,
+      ...settlement,
+    });
+  }
+
+  async getServiceSettlement(
+    serviceId: Hex,
+  ): Promise<ServiceSettlementSnapshot> {
+    const configured = this.serviceSettlements.get(serviceId.toLowerCase());
+    if (configured) return configured;
+    const provider = [...this.providers.values()].find(
+      (entry) => entry.isActive,
+    );
+    if (!provider) throw new Error("mock service not found");
+    const wallet = await this.getAgentWallet(provider.agentId);
+    return {
+      serviceId,
+      providerAgentId: provider.agentId,
+      active: true,
+      providerOwner: await this.getAgentOwner(provider.agentId),
+      providerWallet: wallet,
+      payee: wallet,
+      observedBlock: this.blockNumber,
+    };
   }
 
   async authorizationUsed(authorizer: Hex, nonce: Hex): Promise<boolean> {

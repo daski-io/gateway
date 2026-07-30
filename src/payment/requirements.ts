@@ -29,6 +29,7 @@ import {
   type ProviderQuoteForChallenge,
 } from "./quoteBinding.js";
 import type { ProviderAuthoritySnapshot } from "../chain/reader.js";
+import type { ProviderDiscoveryReader } from "../chain/reader.js";
 
 export interface IssueParams {
   providerTokenId: bigint;
@@ -75,6 +76,7 @@ export async function issuePaymentRequirements(
   config: Config,
   cache: DiscoveryCache,
   queries: Queries,
+  reader: Pick<ProviderDiscoveryReader, "getServiceSettlement">,
   now: Date = new Date(),
 ): Promise<IssueResult> {
   const provider = cache.get(params.providerTokenId);
@@ -193,6 +195,29 @@ export async function issuePaymentRequirements(
     serviceSlug,
     serviceVersion,
   );
+  let settlement;
+  try {
+    settlement = await reader.getServiceSettlement(serviceId);
+  } catch {
+    return {
+      ok: false,
+      code: "service_settlement_unavailable",
+      message: "service settlement details are temporarily unavailable",
+      status: 503,
+    };
+  }
+  if (
+    settlement.providerAgentId !== params.providerTokenId ||
+    !settlement.active ||
+    /^0x0{40}$/i.test(settlement.payee)
+  ) {
+    return {
+      ok: false,
+      code: "service_not_payable",
+      message: "service is not active with a valid settlement payee",
+      status: 409,
+    };
+  }
 
   const validatedQuote = validateQuoteBinding(
     quote,
@@ -235,6 +260,8 @@ export async function issuePaymentRequirements(
     serviceSlug,
     serviceVersion,
     serviceId,
+    expectedPayee: settlement.payee,
+    expectedPayeeBlock: settlement.observedBlock,
     serviceRef,
     providerA2AUrl,
     agentCard,
@@ -260,6 +287,8 @@ export async function issuePaymentRequirements(
       serviceSlug,
       serviceVersion,
       serviceId,
+      expectedPayee: settlement.payee,
+      expectedPayeeBlock: settlement.observedBlock,
       providerA2AUrl,
       walletAddress: params.walletAddress,
       expiresAt,
@@ -300,6 +329,8 @@ export async function issuePaymentRequirements(
     serviceSlug,
     serviceVersion,
     serviceId,
+    expectedPayee: settlement.payee,
+    expectedPayeeBlock: settlement.observedBlock,
     serviceRef,
     providerA2AUrl,
     agentCard,

@@ -160,6 +160,24 @@ export const providerRegistryAbi = [
   },
 ] as const;
 
+// ── Daski ServiceRegistry ───────────────────────────────────────────────
+
+export const serviceRegistryAbi = [
+  {
+    type: "function",
+    name: "resolveSettlement",
+    inputs: [{ name: "serviceId", type: "bytes32" }],
+    outputs: [
+      { name: "providerAgentId", type: "uint256" },
+      { name: "active", type: "bool" },
+      { name: "providerOwner", type: "address" },
+      { name: "providerWallet", type: "address" },
+      { name: "payee", type: "address" },
+    ],
+    stateMutability: "view",
+  },
+] as const;
+
 // ── Daski PaymentRouter ─────────────────────────────────────────────────
 //
 // The router is now rail-agnostic — adapters handle the specifics of how
@@ -386,6 +404,7 @@ export const x402AdapterAbi = [
       // The allowlisted facilitator resolves serviceId from the persisted
       // challenge and binds settlement to that ServiceRegistry row.
       { name: "serviceId", type: "bytes32" },
+      { name: "expectedPayee", type: "address" },
       {
         name: "auth",
         type: "tuple",
@@ -416,6 +435,7 @@ export const x402AdapterAbi = [
       { name: "serviceRef", type: "bytes32" },
       { name: "providerAgentId", type: "uint256" },
       { name: "serviceId", type: "bytes32" },
+      { name: "expectedPayee", type: "address" },
       {
         name: "auth",
         type: "tuple",

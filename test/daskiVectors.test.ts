@@ -28,6 +28,7 @@ interface Vector {
   validBefore: string;
   providerAgentId: string;
   serviceId: Hex;
+  expectedPayee: Hex;
   serviceRef: Hex;
   nonceSalt: Hex;
   nonce: Hex;
@@ -65,6 +66,7 @@ describe("shared Daski x402 signature vectors", () => {
       validBefore,
       providerAgentId: BigInt(vector.providerAgentId),
       serviceId: vector.serviceId,
+      expectedPayee: vector.expectedPayee,
       serviceRef: vector.serviceRef,
       nonceSalt: vector.nonceSalt,
     });

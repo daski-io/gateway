@@ -15,6 +15,8 @@ interface ChallengeBinding {
   serviceSlug: string;
   serviceVersion: string;
   serviceId: Hex;
+  expectedPayee: Hex;
+  expectedPayeeBlock: bigint;
   providerA2AUrl: string;
   walletAddress: Hex;
   expiresAt: Date;
@@ -57,6 +59,8 @@ function matchesBinding(
     existing.serviceSlug === binding.serviceSlug &&
     existing.serviceVersion === binding.serviceVersion &&
     existing.serviceId.toLowerCase() === binding.serviceId.toLowerCase() &&
+    existing.expectedPayee?.toLowerCase() ===
+      binding.expectedPayee.toLowerCase() &&
     existing.providerA2AUrl === binding.providerA2AUrl &&
     existing.walletAddress.toLowerCase() ===
       binding.walletAddress.toLowerCase() &&
@@ -112,6 +116,8 @@ export async function claimPaymentChallenge(
         serviceSlug: binding.serviceSlug,
         serviceVersion: binding.serviceVersion,
         serviceId: binding.serviceId,
+        expectedPayee: binding.expectedPayee,
+        expectedPayeeBlock: binding.expectedPayeeBlock,
         providerA2AUrl: binding.providerA2AUrl,
         walletAddress: binding.walletAddress,
         expiresAt: binding.expiresAt,

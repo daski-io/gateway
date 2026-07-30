@@ -128,6 +128,7 @@ export interface DaskiX402Info {
   providerAgentId: string;
   buyerAgentId: string;
   serviceId: Hex;
+  expectedPayee: Hex;
   skillId: string;
   serviceSlug: string;
   serviceVersion: string;
