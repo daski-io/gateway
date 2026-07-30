@@ -24,6 +24,7 @@ import {
 } from "./confirmationErrors.js";
 import { decodeRevertReason } from "./viemErrors.js";
 import { isAlreadyKnownTransaction } from "./transactionErrors.js";
+import { FACILITATOR_WRITE_CONFIRMATIONS } from "./transactionFinality.js";
 
 type SupportedChain = typeof base | typeof baseSepolia;
 type ConfirmationMethods = Pick<
@@ -171,7 +172,10 @@ export function createConfirmationMethods(
       await onBroadcast?.(hash);
       let receipt;
       try {
-        receipt = await deps.publicClient.waitForTransactionReceipt({ hash });
+        receipt = await deps.publicClient.waitForTransactionReceipt({
+          hash,
+          confirmations: FACILITATOR_WRITE_CONFIRMATIONS,
+        });
       } catch (error) {
         throw new ConfirmationSubmitError(
           "unknown",
@@ -187,6 +191,11 @@ export function createConfirmationMethods(
         const receipt = await deps.publicClient.getTransactionReceipt({
           hash: transactionHash,
         });
+        const confirmations =
+          await deps.publicClient.getTransactionConfirmations({
+            transactionReceipt: receipt,
+          });
+        if (confirmations < BigInt(FACILITATOR_WRITE_CONFIRMATIONS)) return null;
         return resultFromReceipt(transactionHash, input, receipt);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);

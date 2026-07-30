@@ -26,6 +26,7 @@ import {
   registrationOccurred,
   settlementEventFromReceipt,
 } from "./viemSettlementReceipt.js";
+import { FACILITATOR_WRITE_CONFIRMATIONS } from "./transactionFinality.js";
 
 type SupportedChain = typeof base | typeof baseSepolia;
 type SettlementMethods = Pick<
@@ -51,7 +52,6 @@ export interface SettlementDeps {
 }
 
 type SettlementFunction = "settle" | "settleWithRegistration";
-const SETTLEMENT_CONFIRMATIONS = 12;
 
 export function createSettlementMethods(
   deps: SettlementDeps,
@@ -157,7 +157,7 @@ export function createSettlementMethods(
     await onBroadcast?.(hash);
     return deps.publicClient.waitForTransactionReceipt({
       hash,
-      confirmations: SETTLEMENT_CONFIRMATIONS,
+      confirmations: FACILITATOR_WRITE_CONFIRMATIONS,
     });
   };
 
@@ -199,7 +199,7 @@ export function createSettlementMethods(
           await deps.publicClient.getTransactionConfirmations({
             transactionReceipt: receipt,
           });
-        if (confirmations < BigInt(SETTLEMENT_CONFIRMATIONS)) return null;
+        if (confirmations < BigInt(FACILITATOR_WRITE_CONFIRMATIONS)) return null;
         return settlementEventFromReceipt(
           deps,
           transactionHash,

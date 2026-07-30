@@ -31,6 +31,7 @@ import type {
   PreparedFeedbackTransaction,
 } from "./reader.js";
 import { decodeRevertReason } from "./viemErrors.js";
+import { FACILITATOR_WRITE_CONFIRMATIONS } from "./transactionFinality.js";
 
 type SupportedChain = typeof base | typeof baseSepolia;
 type FeedbackMethods = Pick<
@@ -199,6 +200,7 @@ export function createFeedbackMethods(deps: FeedbackDeps): FeedbackMethods {
       await onBroadcast?.(hash);
       const receipt = await deps.publicClient.waitForTransactionReceipt({
         hash,
+        confirmations: FACILITATOR_WRITE_CONFIRMATIONS,
       });
       return resultFromReceipt(hash, input, receipt);
     },
@@ -211,6 +213,11 @@ export function createFeedbackMethods(deps: FeedbackDeps): FeedbackMethods {
         const receipt = await deps.publicClient.getTransactionReceipt({
           hash: transactionHash,
         });
+        const confirmations =
+          await deps.publicClient.getTransactionConfirmations({
+            transactionReceipt: receipt,
+          });
+        if (confirmations < BigInt(FACILITATOR_WRITE_CONFIRMATIONS)) return null;
         if (receipt.status !== "success") {
           throw new FeedbackSubmissionError(
             "reverted",
@@ -300,7 +307,10 @@ export function createFeedbackMethods(deps: FeedbackDeps): FeedbackMethods {
         throw new Error("RPC returned an unexpected revocation transaction hash");
       }
       await onBroadcast?.(hash);
-      const receipt = await deps.publicClient.waitForTransactionReceipt({ hash });
+      const receipt = await deps.publicClient.waitForTransactionReceipt({
+        hash,
+        confirmations: FACILITATOR_WRITE_CONFIRMATIONS,
+      });
       if (receipt.status !== "success") {
         throw new FeedbackSubmissionError(
           "reverted",
@@ -315,6 +325,11 @@ export function createFeedbackMethods(deps: FeedbackDeps): FeedbackMethods {
         const receipt = await deps.publicClient.getTransactionReceipt({
           hash: transactionHash,
         });
+        const confirmations =
+          await deps.publicClient.getTransactionConfirmations({
+            transactionReceipt: receipt,
+          });
+        if (confirmations < BigInt(FACILITATOR_WRITE_CONFIRMATIONS)) return null;
         if (receipt.status !== "success") {
           throw new FeedbackSubmissionError(
             "reverted",
