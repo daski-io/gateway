@@ -26,6 +26,7 @@ describe("provider capability signing relay", () => {
       2n,
       "task-input-1",
     );
+    await completeTaskMapping(gateway, "task-input-1");
     challenge.eip712TypedData = {
       domain: {
         name: "Permit2",
@@ -81,6 +82,7 @@ describe("provider capability signing relay", () => {
       2n,
       "task-input-2",
     );
+    await completeTaskMapping(gateway, "task-input-2");
     gateway.mockProvider.setNextA2AError({
       code: -32107,
       message: "Capability required",
@@ -111,6 +113,45 @@ describe("provider capability signing relay", () => {
         action: "sign_capability",
         code: "CAPABILITY_REQUIRED",
       });
+    } finally {
+      await transport.close();
+    }
+  });
+
+  it("refuses a challenge naming a different buyer identity", async () => {
+    gateway = await startTestGateway({
+      providers: [taskProvider()],
+    });
+    const challenge = inputChallenge(
+      gateway.config,
+      2n,
+      "task-input-3",
+    );
+    challenge.authorization.buyerTokenId = "6";
+    challenge.eip712TypedData.message = challenge.authorization;
+    await completeTaskMapping(gateway, "task-input-3");
+    gateway.mockProvider.setNextA2AError({
+      code: -32107,
+      message: "Capability required",
+      data: { capabilityChallenge: challenge },
+    });
+
+    const { client, transport } = await connectClient(gateway.baseUrl);
+    try {
+      const result = parseResult<{ code: string }>(
+        await client.callTool({
+          name: "daski_submit_task",
+          arguments: {
+            providerA2AUrl: `${gateway.mockProvider.baseUrl}/a2a`,
+            skillId: "run-task",
+            paymentId: "0",
+            chainId: 84532,
+            taskId: "task-input-3",
+            serviceArgs: { correction: "safe" },
+          },
+        }),
+      );
+      expect(result.code).toBe("PROVIDER_CAPABILITY_CHALLENGE_INVALID");
     } finally {
       await transport.close();
     }
@@ -165,6 +206,25 @@ function taskProvider() {
       },
     ],
   };
+}
+
+async function completeTaskMapping(
+  gateway: TestGateway,
+  taskId: string,
+): Promise<void> {
+  const mappingId = await gateway.bundle.queries.insertTaskMapping({
+    contextId: `context-${taskId}`,
+    messageId: `message-${taskId}`,
+    serviceRef: null,
+    providerA2AUrl: `${gateway.mockProvider.baseUrl}/a2a`,
+    skillId: "run-task",
+    buyerTokenId: "5",
+  });
+  await gateway.bundle.queries.completeTaskMapping(
+    mappingId,
+    taskId,
+    "input-required",
+  );
 }
 
 interface ToolResultContent {

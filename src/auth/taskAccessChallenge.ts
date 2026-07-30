@@ -31,6 +31,7 @@ export interface ProviderTaskAccessChallenge {
 }
 
 interface ExpectedChallenge {
+  buyerTokenId?: bigint;
   providerAgentId: bigint;
   taskId?: string;
   action?: string;
@@ -96,6 +97,12 @@ function validAuthorization(
     return false;
   }
   if (expected.taskId !== undefined && authorization.taskId !== expected.taskId) {
+    return false;
+  }
+  if (
+    expected.buyerTokenId !== undefined &&
+    authorization.buyerTokenId !== expected.buyerTokenId.toString()
+  ) {
     return false;
   }
   if (expected.action !== undefined && authorization.action !== expected.action) {

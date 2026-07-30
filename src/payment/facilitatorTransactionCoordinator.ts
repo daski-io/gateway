@@ -92,13 +92,15 @@ export class FacilitatorTransactionCoordinator {
             }
             await release();
           };
-          const attempted =
-            await this.queries.recordFacilitatorSubmissionAttempt(
-              transaction.id,
-              client,
-            );
-          if (!attempted) {
-            throw new Error("facilitator submission attempt conflict");
+          if (transaction.status === "prepared") {
+            const attempted =
+              await this.queries.recordFacilitatorSubmissionAttempt(
+                transaction.id,
+                client,
+              );
+            if (!attempted) {
+              throw new Error("facilitator submission attempt conflict");
+            }
           }
           return options.send(prepared, onBroadcast);
         },

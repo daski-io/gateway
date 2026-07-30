@@ -1582,6 +1582,19 @@ describe("hosted MCP — wallet-agnostic surface", () => {
     // Answering an input-required task authenticates via the provider's
     // action:"input" TaskAccessAuthorization challenge, NOT an envelope —
     // even on a paid skill that would normally get the envelope first-call.
+    const mappingId = await gateway.bundle.queries.insertTaskMapping({
+      contextId: "context-task-parked-1",
+      messageId: "message-task-parked-1",
+      serviceRef: null,
+      providerA2AUrl: gateway.mockProvider.baseUrl + "/a2a",
+      skillId: "register-domain",
+      buyerTokenId: "5",
+    });
+    await gateway.bundle.queries.completeTaskMapping(
+      mappingId,
+      "task-parked-1",
+      "input-required",
+    );
     const { client, transport } = await connectClient(gateway.baseUrl);
     try {
       const body = parseResult<{ taskId: string; state: string }>(

@@ -316,6 +316,54 @@ describe("x402 V2 facilitator API", () => {
     expect(gateway.mockChain.settlements).toHaveLength(1);
   });
 
+  it("does not consume submission attempts after broadcast", async () => {
+    const value = await fixture();
+    gateway.mockChain.queueSettlement({
+      kind: "broadcast-error",
+      txHash: TX,
+      event: makePaymentSettledEvent({
+        paymentId: 88n,
+        serviceRef: value.challenge.serviceRef!,
+        buyerAgentId: 5n,
+        providerAgentId: 2n,
+        totalAmount: 100_000n,
+      }),
+      reason: "receipt unavailable",
+    });
+    const settle = () =>
+      fetch(`${gateway.baseUrl}/settle`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          x402Version: 2,
+          paymentPayload: value.payload,
+          paymentRequirements: value.requirements,
+        }),
+      });
+
+    expect((await settle()).status).toBe(503);
+    const challenge = await gateway.bundle.queries.getChallengeByRef(
+      value.challenge.serviceRef!,
+    );
+    const transactionId = challenge!.settlementFacilitatorTransactionId!;
+    expect(
+      await gateway.bundle.queries.getFacilitatorTransactionById(transactionId),
+    ).toMatchObject({
+      status: "broadcast",
+      submissionAttempts: 1,
+    });
+
+    gateway.mockChain.findSettlementByTransaction = async () => null;
+    expect((await settle()).status).toBe(503);
+    expect(
+      await gateway.bundle.queries.getFacilitatorTransactionById(transactionId),
+    ).toMatchObject({
+      status: "broadcast",
+      submissionAttempts: 1,
+    });
+    expect(gateway.mockChain.settlements).toHaveLength(2);
+  });
+
   it("blocks another challenge while a prepared transaction is unresolved", async () => {
     const first = await fixture();
     const second = await fixture();

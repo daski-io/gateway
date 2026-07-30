@@ -31,6 +31,7 @@ interface SubmitTaskTransport {
 interface DispatchInput {
   args: SubmitTaskArgs;
   paidChallenge: StoredChallenge | null;
+  expectedBuyerTokenId?: bigint;
   providerAgentId: bigint;
   config: Config;
   transport: SubmitTaskTransport;
@@ -58,6 +59,7 @@ function inputError(code: string, message: string): McpToolResult {
 export async function dispatchSubmitTask({
   args,
   paidChallenge,
+  expectedBuyerTokenId,
   providerAgentId,
   config,
   transport,
@@ -219,6 +221,7 @@ export async function dispatchSubmitTask({
             config,
             asRecord(rpc.error.data)?.capabilityChallenge,
             {
+              buyerTokenId: expectedBuyerTokenId,
               providerAgentId,
               taskId: args.taskId,
               action: "input",

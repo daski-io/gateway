@@ -65,6 +65,31 @@ export async function runSubmitTask(
   );
   if (!fresh.ok) return fresh.result;
   const freshEndpoint = fresh.endpoint;
+  let expectedBuyerTokenId: bigint | undefined;
+  if (args.taskId) {
+    let mapping;
+    try {
+      mapping = await deps.queries.completedTaskMapping(
+        freshEndpoint.url,
+        args.taskId,
+      );
+    } catch {
+      return mcpError({
+        code: "TASK_MAPPING_LOOKUP_FAILED",
+        message:
+          "The gateway could not verify this task's dispatch binding. No outbound request was made.",
+        recoverable: true,
+      });
+    }
+    if (!mapping || mapping.skillId !== args.skillId) {
+      return mcpError({
+        code: "TASK_NOT_MAPPED",
+        message:
+          "No completed gateway dispatch matches this provider, skill, and task. No outbound request was made.",
+      });
+    }
+    expectedBuyerTokenId = mapping.buyerTokenId;
+  }
   if (
     args.taskId &&
     args.capability &&
@@ -75,6 +100,18 @@ export async function runSubmitTask(
       code: "CAPABILITY_PROVIDER_MISMATCH",
       message:
         "The task capability is not bound to the selected provider. No outbound request was made.",
+    });
+  }
+  if (
+    args.taskId &&
+    args.capability &&
+    args.capability.authorization.buyerTokenId !==
+      expectedBuyerTokenId?.toString()
+  ) {
+    return mcpError({
+      code: "CAPABILITY_BUYER_MISMATCH",
+      message:
+        "The task capability is not bound to the task's buyer. No outbound request was made.",
     });
   }
 
@@ -99,6 +136,7 @@ export async function runSubmitTask(
       providerA2AUrl: freshEndpoint.url,
     },
     paidChallenge: paymentContext.paidChallenge,
+    expectedBuyerTokenId,
     providerAgentId: freshEndpoint.provider.agentId,
     config: deps.config,
     transport,

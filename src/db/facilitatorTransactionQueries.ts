@@ -168,7 +168,7 @@ export function createFacilitatorTransactionQueries(pool: Pool) {
                 END,
                 updated_at = now()
           WHERE id = $1
-            AND status IN ('prepared', 'broadcast')
+            AND status = 'prepared'
             AND submission_attempts < 8`,
         [id],
       );
