@@ -12,6 +12,7 @@ const TASK_ID_MAX_LENGTH = 256;
 export const TASK_ACCESS_AUTHORIZATION_TYPES = {
   TaskAccessAuthorization: [
     { name: "buyerTokenId", type: "uint256" },
+    { name: "providerAgentId", type: "uint256" },
     { name: "taskId", type: "string" },
     { name: "action", type: "string" },
     { name: "requestHash", type: "bytes32" },
@@ -25,6 +26,7 @@ export const TASK_ACCESS_REQUEST_HASH = computeRequestHash({});
 
 export interface TaskAccessAuthorization {
   buyerTokenId: string;
+  providerAgentId: string;
   taskId: string;
   action: "get";
   requestHash: Hex;
@@ -40,11 +42,13 @@ export interface TaskAccessCapability {
 export function buildTaskAccessChallenge(
   config: Config,
   buyerTokenId: bigint,
+  providerAgentId: bigint,
   taskId: string,
   now = Math.floor(Date.now() / 1000),
 ) {
   const authorization: TaskAccessAuthorization = {
     buyerTokenId: buyerTokenId.toString(),
+    providerAgentId: providerAgentId.toString(),
     taskId,
     action: "get",
     requestHash: TASK_ACCESS_REQUEST_HASH,
@@ -66,7 +70,7 @@ export async function verifyTaskAccessCapability(
   config: Config,
   reader: ChainReader,
   capability: unknown,
-  expected: { buyerTokenId: bigint; taskId: string },
+  expected: { buyerTokenId: bigint; providerAgentId: bigint; taskId: string },
   now = Math.floor(Date.now() / 1000),
 ): Promise<{ ok: true } | { ok: false; code: string }> {
   const parsed = parseCapability(capability);
@@ -74,6 +78,7 @@ export async function verifyTaskAccessCapability(
   const { authorization } = parsed;
   if (
     authorization.buyerTokenId !== expected.buyerTokenId.toString() ||
+    authorization.providerAgentId !== expected.providerAgentId.toString() ||
     authorization.taskId !== expected.taskId ||
     authorization.action !== "get" ||
     authorization.requestHash.toLowerCase() !==
@@ -94,6 +99,7 @@ export async function verifyTaskAccessCapability(
       message: {
         ...authorization,
         buyerTokenId: BigInt(authorization.buyerTokenId),
+        providerAgentId: BigInt(authorization.providerAgentId),
         expiry,
       },
       signature: parsed.signature,
@@ -125,6 +131,7 @@ function parseCapability(value: unknown): TaskAccessCapability | null {
   if (
     !hasExactKeys(authorization, [
       "buyerTokenId",
+      "providerAgentId",
       "taskId",
       "action",
       "requestHash",
@@ -132,6 +139,7 @@ function parseCapability(value: unknown): TaskAccessCapability | null {
       "expiry",
     ]) ||
     !isDecimal(authorization.buyerTokenId) ||
+    !isDecimal(authorization.providerAgentId) ||
     typeof authorization.taskId !== "string" ||
     authorization.taskId.length < 1 ||
     authorization.taskId.length > TASK_ID_MAX_LENGTH ||

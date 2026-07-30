@@ -93,6 +93,9 @@ describe("task-status authorization admission", () => {
           buyerTokenId: BigInt(
             taskAccessVector.authorization.buyerTokenId,
           ),
+          providerAgentId: BigInt(
+            taskAccessVector.authorization.providerAgentId,
+          ),
           expiry: BigInt(taskAccessVector.authorization.expiry),
           requestHash:
             taskAccessVector.authorization.requestHash as `0x${string}`,
@@ -137,6 +140,7 @@ describe("task-status authorization admission", () => {
         }),
       );
       expect(challenge.code).toBe("TASK_AUTHORIZATION_REQUIRED");
+      expect(challenge.authorization.providerAgentId).toBe("2");
       expect(getTaskBodies).toHaveLength(0);
 
       const account = privateKeyToAccount(TEST_BUYER_KEY);

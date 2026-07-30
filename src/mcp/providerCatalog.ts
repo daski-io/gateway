@@ -113,8 +113,16 @@ export function isCatalogArtifactUrl(
   providerA2AUrl: string,
   artifactUrl: string,
 ): boolean {
+  return findCatalogArtifactEndpoint(cache, providerA2AUrl, artifactUrl) !== null;
+}
+
+export function findCatalogArtifactEndpoint(
+  cache: DiscoveryCache,
+  providerA2AUrl: string,
+  artifactUrl: string,
+): CatalogA2AEndpoint | null {
   const match = findCatalogA2AEndpoint(cache, providerA2AUrl);
-  if (!match) return false;
+  if (!match) return null;
   try {
     const providerEndpoint = new URL(match.url);
     const target = new URL(artifactUrl);
@@ -123,7 +131,7 @@ export function isCatalogArtifactUrl(
       target.username ||
       target.password
     ) {
-      return false;
+      return null;
     }
     const allowedOrigins = new Set([providerEndpoint.origin]);
     const advertised = extractMarketplaceExtension(match.card.agentCard)
@@ -131,9 +139,9 @@ export function isCatalogArtifactUrl(
     for (const origin of advertised ?? []) {
       allowedOrigins.add(new URL(origin).origin);
     }
-    return allowedOrigins.has(target.origin);
+    return allowedOrigins.has(target.origin) ? match : null;
   } catch {
-    return false;
+    return null;
   }
 }
 

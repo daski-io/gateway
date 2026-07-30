@@ -1,4 +1,6 @@
 import { mcpError, mcpJson, type McpToolResult } from "./util.js";
+import type { Config } from "../config.js";
+import { validateProviderTaskAccessChallenge } from "../auth/taskAccessChallenge.js";
 
 export interface ArtifactCapability {
   signature: string;
@@ -68,11 +70,13 @@ export function challengeResponse(
   taskId: string,
   artifactUrl: string,
   refreshed: boolean,
+  config: Config,
+  providerAgentId: bigint,
 ): McpToolResult {
   // The provider's document challenge is a TaskAccessChallenge whose
-  // authorization binds (buyerTokenId, taskId, action, nonce, expiry) — it
-  // carries NO resource field, so URL equality can only be enforced when a
-  // challenge actually has one. Requiring it unconditionally rejected every
+  // authorization binds the buyer, provider, task, action, request hash,
+  // nonce, and expiry. It carries NO resource field, so URL equality can only
+  // be enforced when a challenge actually has one. Requiring it rejected every
   // legitimate download (agentic run 260723-163533: 30+ mismatches across
   // provably correct URL+taskId pairs). Server-side scoping still holds:
   // the provider binds the token audience to the minting transaction +
@@ -94,6 +98,19 @@ export function challengeResponse(
             "task's id."
           : "The artifact challenge is not bound to the requested taskId, URL, " +
             'and action="document-download". Refusing to request a signature.',
+    });
+  }
+  if (
+    !validateProviderTaskAccessChallenge(config, challenge, {
+      providerAgentId,
+      taskId,
+      action: "document-download",
+    })
+  ) {
+    return mcpError({
+      code: "ARTIFACT_CHALLENGE_INVALID",
+      message:
+        "The artifact server returned signing material that did not match the canonical Daski task authorization contract.",
     });
   }
   return mcpJson({
@@ -118,8 +135,10 @@ export function validateCapability(
   capability: ArtifactCapability,
   taskId: string,
   artifactUrl: string,
+  providerAgentId: bigint,
 ): McpToolResult | null {
   if (
+    capability.authorization.providerAgentId === providerAgentId.toString() &&
     capability.authorization.taskId === taskId &&
     capability.authorization.action === "document-download" &&
     // TaskAccess-shaped authorizations have no resource binding — enforce
@@ -132,8 +151,8 @@ export function validateCapability(
   return mcpError({
     code: "ARTIFACT_CAPABILITY_MISMATCH",
     message:
-      "capability.authorization must match this taskId and exact URL and use " +
-      'action="document-download". Sign the challenge returned for this URL.',
+      "capability.authorization must match this provider, taskId, exact URL, " +
+      'and action="document-download". Sign the challenge returned for this URL.',
     recoverable: true,
     next_action: "Call daski_fetch_artifact without capability to obtain a fresh challenge.",
   });

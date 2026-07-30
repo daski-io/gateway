@@ -5,6 +5,7 @@ import type { Queries } from "../db/queries.js";
 import type { Hex, StoredChallenge } from "../types.js";
 import { buildEnvelopeAuth } from "../auth/envelope.js";
 import { buildTaskAccessChallenge } from "../auth/taskAccess.js";
+import { validateProviderTaskAccessChallenge } from "../auth/taskAccessChallenge.js";
 import { TaskMappingIntegrityError } from "../db/taskMappingQueries.js";
 import { normalizeState } from "../util/a2aShape.js";
 import { a2aPostJson, providerErrorFromFailure, type Fetcher } from "./a2a.js";
@@ -30,6 +31,7 @@ interface SubmitTaskTransport {
 interface DispatchInput {
   args: SubmitTaskArgs;
   paidChallenge: StoredChallenge | null;
+  providerAgentId: bigint;
   config: Config;
   transport: SubmitTaskTransport;
   queries: Queries;
@@ -56,6 +58,7 @@ function inputError(code: string, message: string): McpToolResult {
 export async function dispatchSubmitTask({
   args,
   paidChallenge,
+  providerAgentId,
   config,
   transport,
   queries,
@@ -209,6 +212,25 @@ export async function dispatchSubmitTask({
     };
     // Authorization steps are expected transitions, not failures.
     if (mapped?.actionRequired) {
+      if (
+        mapped.actionRequired === "sign_capability" &&
+        (!args.taskId ||
+          !validateProviderTaskAccessChallenge(
+            config,
+            asRecord(rpc.error.data)?.capabilityChallenge,
+            {
+              providerAgentId,
+              taskId: args.taskId,
+              action: "input",
+            },
+          ))
+      ) {
+        return mcpError({
+          code: "PROVIDER_CAPABILITY_CHALLENGE_INVALID",
+          message:
+            "The provider returned capability signing material that did not match the canonical Daski task authorization contract.",
+        });
+      }
       return mcpActionRequired(mapped.actionRequired, payload);
     }
     return mcpError(payload);
@@ -281,6 +303,7 @@ export async function dispatchSubmitTask({
     flattened.taskAccessChallenge = buildTaskAccessChallenge(
       config,
       BigInt(buyerTokenId),
+      providerAgentId,
       result.id!,
     );
   }
@@ -316,4 +339,10 @@ export async function dispatchSubmitTask({
     };
   }
   return mcpJson(flattened);
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
 }

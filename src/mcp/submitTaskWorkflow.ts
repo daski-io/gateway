@@ -7,6 +7,7 @@ import type { McpDeps } from "./server.js";
 import {
   findCatalogSkillAtA2AEndpoint,
 } from "./providerCatalog.js";
+import { requireFreshCatalogMatch } from "./freshProvider.js";
 import { mcpError, type McpToolResult } from "./util.js";
 
 interface SubmitTaskTransport {
@@ -52,9 +53,34 @@ export async function runSubmitTask(
     });
   }
 
+  const fresh = await requireFreshCatalogMatch(
+    catalogEndpoint.provider.agentId,
+    deps.providerAuthority,
+    () =>
+      findCatalogSkillAtA2AEndpoint(
+        deps.cache,
+        args.providerA2AUrl,
+        args.skillId,
+      ),
+  );
+  if (!fresh.ok) return fresh.result;
+  const freshEndpoint = fresh.endpoint;
+  if (
+    args.taskId &&
+    args.capability &&
+    args.capability.authorization.providerAgentId !==
+      freshEndpoint.provider.agentId.toString()
+  ) {
+    return mcpError({
+      code: "CAPABILITY_PROVIDER_MISMATCH",
+      message:
+        "The task capability is not bound to the selected provider. No outbound request was made.",
+    });
+  }
+
   const paymentContext = await resolveSubmitTaskPayment(
     args,
-    catalogEndpoint.skillMeta,
+    freshEndpoint.skillMeta,
     deps.queries,
   );
   if (!paymentContext.ok) return paymentContext.result;
@@ -70,9 +96,10 @@ export async function runSubmitTask(
   return dispatchSubmitTask({
     args: {
       ...normalizedArgs,
-      providerA2AUrl: catalogEndpoint.url,
+      providerA2AUrl: freshEndpoint.url,
     },
     paidChallenge: paymentContext.paidChallenge,
+    providerAgentId: freshEndpoint.provider.agentId,
     config: deps.config,
     transport,
     queries: deps.queries,

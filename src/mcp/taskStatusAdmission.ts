@@ -89,6 +89,7 @@ export async function admitTaskStatus(
     const challenge = buildTaskAccessChallenge(
       deps.config,
       mapping.buyerTokenId,
+      endpoint.provider.agentId,
       mapping.taskId,
     );
     return {
@@ -113,6 +114,7 @@ export async function admitTaskStatus(
     args.capability,
     {
       buyerTokenId: mapping.buyerTokenId,
+      providerAgentId: endpoint.provider.agentId,
       taskId: mapping.taskId,
     },
   );

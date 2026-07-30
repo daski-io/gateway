@@ -1,19 +1,22 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { DiscoveryCache } from "../discovery/cache.js";
+import type { ProviderAuthorityService } from "../payment/providerAuthority.js";
 import {
   fetchArtifact,
   type ArtifactFetchOptions,
 } from "./artifactFetch.js";
 import { ConcurrencyLimiter } from "./concurrencyLimiter.js";
-import { isCatalogArtifactUrl } from "./providerCatalog.js";
+import { findCatalogArtifactEndpoint } from "./providerCatalog.js";
 import { mcpError } from "./util.js";
 import { activeRequestKey, activeRequestSignal } from "./requestContext.js";
 import { UNTRUSTED_PROVIDER_CONTENT_WARNING } from "./providerReflection.js";
+import { requireFreshCatalogMatch } from "./freshProvider.js";
 
 export function registerArtifactTool(
   server: McpServer,
   cache: DiscoveryCache,
+  providerAuthority: ProviderAuthorityService,
   options: ArtifactFetchOptions,
   limiter: ConcurrencyLimiter,
 ): void {
@@ -74,7 +77,12 @@ export function registerArtifactTool(
       },
     },
     async (args, extra) => {
-      if (!isCatalogArtifactUrl(cache, args.providerA2AUrl, args.url)) {
+      const endpoint = findCatalogArtifactEndpoint(
+        cache,
+        args.providerA2AUrl,
+        args.url,
+      );
+      if (!endpoint) {
         return mcpError({
           code: "ARTIFACT_ENDPOINT_NOT_CATALOGED",
           message:
@@ -82,6 +90,13 @@ export function registerArtifactTool(
             "origin advertised by the cataloged provider. No request was made.",
         });
       }
+      const fresh = await requireFreshCatalogMatch(
+        endpoint.provider.agentId,
+        providerAuthority,
+        () =>
+          findCatalogArtifactEndpoint(cache, args.providerA2AUrl, args.url),
+      );
+      if (!fresh.ok) return fresh.result;
       const release = limiter.tryAcquire(
         activeRequestKey(extra.sessionId ?? "sessionless"),
       );
@@ -93,7 +108,14 @@ export function registerArtifactTool(
         });
       }
       try {
-        return await fetchArtifact(args, options, activeRequestSignal(extra.signal));
+        return await fetchArtifact(
+          {
+            ...args,
+            providerAgentId: fresh.endpoint.provider.agentId,
+          },
+          options,
+          activeRequestSignal(extra.signal),
+        );
       } finally {
         release();
       }

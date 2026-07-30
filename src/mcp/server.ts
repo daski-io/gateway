@@ -138,9 +138,11 @@ export async function createMcpServer(
     registerArtifactTool(
       server,
       deps.cache,
+      deps.providerAuthority,
       {
         fetch: a2aFetch,
         timeoutMs: a2aTimeoutMs,
+        config: deps.config,
       },
       artifactLimiter,
     );

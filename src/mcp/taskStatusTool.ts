@@ -16,6 +16,7 @@ import type { ConcurrencyLimiter } from "./concurrencyLimiter.js";
 import { activeRequestKey, activeRequestSignal } from "./requestContext.js";
 import { UNTRUSTED_PROVIDER_CONTENT_WARNING } from "./providerReflection.js";
 import { admitTaskStatus } from "./taskStatusAdmission.js";
+import { requireFreshCatalogMatch } from "./freshProvider.js";
 
 export interface TaskStatusToolTransport
   extends TaskStatusTransport,
@@ -95,7 +96,13 @@ export function registerTaskStatusTool(
             "provider. No outbound request was made.",
         });
       }
-      const admission = await admitTaskStatus(args, endpoint, deps);
+      const fresh = await requireFreshCatalogMatch(
+        endpoint.provider.agentId,
+        deps.providerAuthority,
+        () => findCatalogA2AEndpoint(deps.cache, args.providerA2AUrl),
+      );
+      if (!fresh.ok) return fresh.result;
+      const admission = await admitTaskStatus(args, fresh.endpoint, deps);
       if (!admission.ok) return admission.result;
       const admittedArgs = admission.args;
       if (args.stream) {
