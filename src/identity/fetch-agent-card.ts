@@ -228,6 +228,7 @@ async function fetchHttp(
     }
 
     if (!res.ok) {
+      await res.body?.cancel().catch(() => undefined);
       throw new AgentCardFetchError(
         `Failed to fetch agentURI: HTTP ${res.status}`,
         "AGENT_URI_FETCH_FAILED",

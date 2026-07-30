@@ -130,6 +130,7 @@ export async function a2aPostJson<T>(
   }
 
   if (opts.failOnNonOk && !res.ok) {
+    await res.body?.cancel().catch(() => undefined);
     clearTimeout(timer);
     return {
       ok: false,

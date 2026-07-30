@@ -35,12 +35,13 @@ export class AgentCardFetcher {
       if (first.response.status >= 300 && first.response.status < 400) {
         const location = first.response.headers.get("location");
         if (location) {
+          await first.response.body?.cancel().catch(() => undefined);
+          first.finish();
           const next = new URL(location, uri).toString();
           const nextValidated =
             this.fetchFn === safeFetch
               ? await validateUrlForOutbound(next)
               : undefined;
-          first.finish();
           const followed = await this.fetchOnce(next, deadlineAt, nextValidated);
           try {
             return await this.readJson(followed.response);
@@ -81,7 +82,10 @@ export class AgentCardFetcher {
   }
 
   private async readJson(response: Response): Promise<Record<string, unknown>> {
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    if (!response.ok) {
+      await response.body?.cancel().catch(() => undefined);
+      throw new Error(`HTTP ${response.status}`);
+    }
     const json = await readBoundedJson<Record<string, unknown>>(
       response,
       AGENT_CARD_MAX_BYTES,

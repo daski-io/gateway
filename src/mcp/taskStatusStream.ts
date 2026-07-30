@@ -117,6 +117,7 @@ export async function streamTaskStatus(
   }
 
   if (!response.ok) {
+    await response.body?.cancel().catch(() => undefined);
     cleanupAbort();
     return unsupported(`Provider returned HTTP ${response.status} on SubscribeToTask`, {
       status: response.status,

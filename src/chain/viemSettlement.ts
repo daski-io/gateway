@@ -51,6 +51,7 @@ export interface SettlementDeps {
 }
 
 type SettlementFunction = "settle" | "settleWithRegistration";
+const SETTLEMENT_CONFIRMATIONS = 12;
 
 export function createSettlementMethods(
   deps: SettlementDeps,
@@ -154,7 +155,10 @@ export function createSettlementMethods(
       throw new Error("RPC returned an unexpected settlement transaction hash");
     }
     await onBroadcast?.(hash);
-    return deps.publicClient.waitForTransactionReceipt({ hash });
+    return deps.publicClient.waitForTransactionReceipt({
+      hash,
+      confirmations: SETTLEMENT_CONFIRMATIONS,
+    });
   };
 
   return {
@@ -191,6 +195,11 @@ export function createSettlementMethods(
         const receipt = await deps.publicClient.getTransactionReceipt({
           hash: transactionHash,
         });
+        const confirmations =
+          await deps.publicClient.getTransactionConfirmations({
+            transactionReceipt: receipt,
+          });
+        if (confirmations < BigInt(SETTLEMENT_CONFIRMATIONS)) return null;
         return settlementEventFromReceipt(
           deps,
           transactionHash,

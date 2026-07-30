@@ -144,6 +144,33 @@ describe("prepared settlement transactions", () => {
     expect(onBroadcast).toHaveBeenCalledWith(prepared.transactionHash);
     expect(waitForTransactionReceipt).toHaveBeenCalledWith({
       hash: prepared.transactionHash,
+      confirmations: 12,
+    });
+  });
+
+  it("does not recover a settlement before the confirmation policy is met", async () => {
+    const receipt = {
+      blockNumber: 100n,
+      logs: [],
+      status: "success",
+    };
+    const getTransactionConfirmations = vi.fn().mockResolvedValue(11n);
+    const fixture = methods(
+      vi.fn(),
+      {
+        getTransactionReceipt: vi.fn().mockResolvedValue(receipt),
+        getTransactionConfirmations,
+      },
+    );
+
+    await expect(
+      fixture.methods.findSettlementByTransaction(
+        keccak256(SERIALIZED_TRANSACTION),
+        SERVICE_REF,
+      ),
+    ).resolves.toBeNull();
+    expect(getTransactionConfirmations).toHaveBeenCalledWith({
+      transactionReceipt: receipt,
     });
   });
 });
