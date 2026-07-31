@@ -357,6 +357,7 @@ export async function startMockProvider(
       quoteVersion: PROVIDER_QUOTE_VERSION,
       issuedAt: now.toISOString(),
       expiresAt: expiresAt.toISOString(),
+      supplierCostCeiling: outcome.supplierCostCeiling ?? null,
     } satisfies Omit<
       ProviderQuoteCommitment,
       "serviceRef" | "providerSignature" | "signerAddress" | "signingKeyId"

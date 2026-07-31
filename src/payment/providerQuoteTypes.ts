@@ -1,7 +1,7 @@
 import type { Fetcher } from "../mcp/a2a.js";
 import type { Hex } from "../types.js";
 
-export const PROVIDER_QUOTE_VERSION = "provider-quote-v1" as const;
+export const PROVIDER_QUOTE_VERSION = "provider-quote-v2" as const;
 
 export interface ProviderQuoteCommitment {
   quoteId: string;
@@ -20,6 +20,12 @@ export interface ProviderQuoteCommitment {
   serviceSlug: string;
   serviceVersion: string;
   skillId: string;
+  // Provider-owned quote-commitment v2 field: the supplier cost ceiling the
+  // provider bound into the signed payload (null when the service has no
+  // supplier spend). The gateway does not consume it — it must carry the
+  // exact value so the canonical signed payload (and serviceRef, its
+  // keccak) reconstruct byte-for-byte.
+  supplierCostCeiling: Record<string, unknown> | null;
   providerSignature: Hex;
   signerAddress: Hex;
   signingKeyId: string;

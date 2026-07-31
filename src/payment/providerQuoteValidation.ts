@@ -64,6 +64,7 @@ export async function validateProviderQuoteCommitment(
     quoteVersion: quote.quoteVersion,
     issuedAt: quote.issuedAt,
     expiresAt: quote.expiresAt,
+    supplierCostCeiling: quote.supplierCostCeiling,
   };
   let message: string;
   try {
