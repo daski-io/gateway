@@ -94,15 +94,25 @@ export function createReputationQueries(pool: Pool) {
 
     async listMissingReputationMirrors(
       limit = 50,
-    ): Promise<Array<{ paymentId: bigint; attestationUid: Hex }>> {
+    ): Promise<
+      Array<{ paymentId: bigint; attestationUid: Hex; refUid: Hex | null }>
+    > {
       const result = await pool.query<{
         payment_id: string;
         confirmation_attestation_uid: Buffer;
+        ref_uid: Buffer | null;
       }>(
-        `SELECT challenge.payment_id, challenge.confirmation_attestation_uid
+        `SELECT challenge.payment_id,
+                challenge.confirmation_attestation_uid,
+                submission.ref_uid
            FROM payment_challenges AS challenge
            LEFT JOIN reputation_mirrors AS mirror
              ON mirror.payment_id = challenge.payment_id
+           LEFT JOIN buyer_confirmation_submissions AS submission
+             ON submission.payment_id = challenge.payment_id
+            AND submission.attestation_uid =
+                  challenge.confirmation_attestation_uid
+            AND submission.status = 'confirmed'
           WHERE challenge.settlement_state = 'paid'
             AND challenge.payment_id IS NOT NULL
             AND challenge.confirmation_attestation_uid IS NOT NULL
@@ -122,6 +132,7 @@ export function createReputationQueries(pool: Pool) {
       return result.rows.map((row) => ({
         paymentId: BigInt(row.payment_id),
         attestationUid: `0x${row.confirmation_attestation_uid.toString("hex")}`,
+        refUid: row.ref_uid ? `0x${row.ref_uid.toString("hex")}` : null,
       }));
     },
 

@@ -7,6 +7,7 @@ import {
 } from "./helpers/confirmation.js";
 import { ReputationProjectionMismatchError } from "../src/db/reputationTransactionQueries.js";
 import { DatabaseReadinessProbe } from "../src/http/readiness.js";
+import { ReputationMirrorWorker } from "../src/reputation/worker.js";
 
 // Canonical-feedback mirror (src/reputation/mirror.ts). The mirror is
 // fire-and-forget from POST /confirm — these tests await its side effects
@@ -16,6 +17,8 @@ import { DatabaseReadinessProbe } from "../src/http/readiness.js";
 const BUYER = TEST_BUYER;
 const TX_HASH =
   "0xdead000000000000000000000000000000000000000000000000000000000001" as Hex;
+const REVISED_TX_HASH =
+  "0xdead000000000000000000000000000000000000000000000000000000000002" as Hex;
 const ATTEST_UID =
   "0xcafe000000000000000000000000000000000000000000000000000000000001" as Hex;
 const REVISED_UID =
@@ -591,6 +594,123 @@ describe("canonical ReputationRegistry feedback mirror", () => {
     const row = await gateway.bundle.queries.getReputationMirror(PAYMENT_ID);
     expect(row!.status).toBe("sent");
     expect(row!.attestationUid).toBe(REVISED_UID);
+  });
+
+  it("recovers a missed revision enqueue with its durable lineage", async () => {
+    gateway.mockChain.setPaymentRecord(
+      PAYMENT_ID,
+      paymentRecord(PROVIDER_AGENT_ID),
+    );
+    await seedPaidChallenge(gateway, "domain-mgmt");
+    gateway.mockChain.queueConfirmation({
+      kind: "success",
+      txHash: TX_HASH,
+      attestationUid: ATTEST_UID,
+    });
+    await postConfirm(gateway, { confirmation: "Confirmed" });
+    await vi.waitFor(async () => {
+      expect(
+        (await gateway.bundle.queries.getReputationMirror(PAYMENT_ID))
+          ?.feedbackIndex,
+      ).toBe(1n);
+    });
+
+    gateway.mockChain.setReputationRecord(
+      PAYMENT_ID,
+      reputationRecord(ATTEST_UID),
+    );
+    await gateway.bundle.reputationWorker.stopAndDrain();
+    gateway.mockChain.queueConfirmation({
+      kind: "success",
+      txHash: REVISED_TX_HASH,
+      attestationUid: REVISED_UID,
+    });
+    const response = await postConfirm(gateway, {
+      confirmation: "NotConfirmed",
+      refUid: ATTEST_UID,
+      easNonce: "1",
+    });
+    expect(response.status).toBe(200);
+    expect(
+      (await gateway.bundle.queries.getReputationMirror(PAYMENT_ID))
+        ?.attestationUid,
+    ).toBe(ATTEST_UID);
+    expect(await gateway.bundle.queries.listMissingReputationMirrors()).toEqual([
+      {
+        paymentId: PAYMENT_ID,
+        attestationUid: REVISED_UID,
+        refUid: ATTEST_UID,
+      },
+    ]);
+
+    gateway.mockChain.setReputationRecord(PAYMENT_ID, {
+      ...reputationRecord(REVISED_UID),
+      confirmation: "NotConfirmed",
+    });
+    const recoveryWorker = new ReputationMirrorWorker({
+      config: gateway.config,
+      reader: gateway.mockChain,
+      queries: gateway.bundle.queries,
+    });
+    await recoveryWorker.tick();
+    await recoveryWorker.stopAndDrain();
+
+    expect(gateway.mockChain.feedbackRevokes).toEqual([
+      { agentId: PROVIDER_AGENT_ID, feedbackIndex: 1n },
+    ]);
+    expect(gateway.mockChain.feedbacks.map((item) => item.feedbackHash)).toEqual([
+      ATTEST_UID,
+      REVISED_UID,
+    ]);
+    expect(
+      await gateway.bundle.queries.getReputationMirror(PAYMENT_ID),
+    ).toMatchObject({
+      status: "sent",
+      attestationUid: REVISED_UID,
+      refUid: ATTEST_UID,
+      feedbackIndex: 2n,
+    });
+  });
+
+  it("revokes a prior feedback index even when revision lineage is absent", async () => {
+    gateway.mockChain.setPaymentRecord(
+      PAYMENT_ID,
+      paymentRecord(PROVIDER_AGENT_ID),
+    );
+    await seedPaidChallenge(gateway, "domain-mgmt");
+    await gateway.bundle.reputationWorker.enqueue({
+      paymentId: PAYMENT_ID,
+      confirmation: "Confirmed",
+      attestationUid: ATTEST_UID,
+      refUid: null,
+    });
+    await vi.waitFor(async () => {
+      expect(
+        (await gateway.bundle.queries.getReputationMirror(PAYMENT_ID))
+          ?.feedbackIndex,
+      ).toBe(1n);
+    });
+
+    await gateway.bundle.reputationWorker.enqueue({
+      paymentId: PAYMENT_ID,
+      confirmation: "NotConfirmed",
+      attestationUid: REVISED_UID,
+      refUid: null,
+    });
+    await vi.waitFor(async () => {
+      expect(
+        (await gateway.bundle.queries.getReputationMirror(PAYMENT_ID))
+          ?.feedbackIndex,
+      ).toBe(2n);
+    });
+
+    expect(gateway.mockChain.feedbackRevokes).toEqual([
+      { agentId: PROVIDER_AGENT_ID, feedbackIndex: 1n },
+    ]);
+    expect(gateway.mockChain.feedbacks.map((item) => item.feedbackHash)).toEqual([
+      ATTEST_UID,
+      REVISED_UID,
+    ]);
   });
 
   it("revision still posts fresh feedback when the revoke reverts (already revoked)", async () => {

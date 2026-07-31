@@ -133,7 +133,7 @@ export class ReputationMirrorWorker {
         paymentId: item.paymentId,
         confirmation: record.confirmation,
         attestationUid: item.attestationUid,
-        refUid: null,
+        refUid: item.refUid,
       });
     }
     if (missing.length > 0) {

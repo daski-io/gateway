@@ -71,7 +71,7 @@ export class ReputationMirrorProcessor {
     row: ReputationMirrorRow,
     providerAgentId: bigint,
   ): Promise<void> {
-    if (!row.refUid || row.feedbackIndex == null) return;
+    if (row.feedbackIndex == null) return;
     const input = {
       agentId: row.providerAgentId ?? providerAgentId,
       feedbackIndex: row.feedbackIndex,
