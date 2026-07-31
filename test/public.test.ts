@@ -5,6 +5,10 @@ import {
   derivePrimaryServiceId,
 } from "../src/discovery/serviceIdentity.js";
 import type { Hex } from "../src/types.js";
+import {
+  signedConfirmation,
+  TEST_BUYER,
+} from "./helpers/confirmation.js";
 
 const PROVIDER_A2A = "http://provider.test/a2a";
 
@@ -32,6 +36,7 @@ async function seedPaid(
      * payment_challenges side always uses now() via recordChallengePaid.
      */
     settledAt?: Date;
+    reputationEligible?: boolean | null;
   },
 ): Promise<void> {
   const queries = gateway.bundle.queries;
@@ -49,12 +54,22 @@ async function seedPaid(
     amount: args.amountAtomic,
     skillId: args.skillId ?? null,
     serviceSlug:
-      args.serviceSlug ?? primary?.serviceSlug ?? args.skillId ?? "test-service",
+      args.serviceSlug ??
+      primary?.serviceSlug ??
+      args.skillId ??
+      "test-service",
     serviceVersion: "1",
     serviceId,
     providerA2AUrl: PROVIDER_A2A,
     walletAddress: gateway.buyerAddress,
     expiresAt: new Date(Date.now() + 3600 * 1000),
+    providerAuthority: {
+      walletAddress:
+        provider?.walletAddress ??
+        ("0x0000000000000000000000000000000000000000" as Hex),
+      agentURI: provider?.agentURI ?? "https://provider.test/agent.json",
+      observedBlock: provider?.authorityObservedBlock ?? 0n,
+    },
   });
   const ok = await queries.recordChallengePaid(
     args.serviceRef,
@@ -63,23 +78,25 @@ async function seedPaid(
   );
   if (!ok) throw new Error("recordChallengePaid did not transition the row");
 
-  // Mirror the production indexer: upsert a chain_events row so the
-  // /activity and per-service surfaces (which now read from chain_events
-  // LEFT JOIN payment_challenges) find the seeded transaction.
-  await queries.upsertChainEvent({
-    paymentId: args.paymentId,
-    txHash: args.txHash,
-    blockNumber: 1n,
-    serviceId,
-    buyerAgentId: args.buyerAgentId,
-    providerAgentId: args.providerAgentId,
-    amountAtomic: args.amountAtomic,
-    settledAt: args.settledAt ?? new Date(),
-    outcomeCode: null,
-    confirmationCode: 0,
-    fulfillmentSeconds: null,
-    refundedAtomic: 0n,
-  });
+  // Insert an authoritative projection fixture. Production writes this row
+  // only through ChainEventsIndexer; this helper deliberately bypasses the
+  // cursor so public-route tests can seed independent histories.
+  await gateway.bundle.pool.query(
+    `INSERT INTO chain_events
+       (payment_id, tx_hash, block_number, service_id, buyer_agent_id,
+        provider_agent_id, amount_atomic, settled_at, reputation_eligible)
+     VALUES ($1, $2, 1, $3, $4, $5, $6, $7, $8)`,
+    [
+      args.paymentId.toString(),
+      Buffer.from(args.txHash.slice(2), "hex"),
+      Buffer.from(serviceId.slice(2), "hex"),
+      args.buyerAgentId.toString(),
+      args.providerAgentId.toString(),
+      args.amountAtomic.toString(),
+      args.settledAt ?? new Date(),
+      args.reputationEligible === undefined ? true : args.reputationEligible,
+    ],
+  );
 }
 
 /**
@@ -115,7 +132,7 @@ async function patchChainEvent(
     refundedAtomic?: bigint;
   },
 ): Promise<void> {
-  const sets: string[] = ["last_refreshed_at = now()"];
+  const sets: string[] = [];
   const args: unknown[] = [];
   let i = 1;
   if ("outcome" in patch) {
@@ -240,11 +257,7 @@ describe("public v1 — /services", () => {
               source: "registrar",
               hint: "Quote at purchase via Name.com.",
             },
-            requiredFields: [
-              "domain",
-              "registrantName",
-              "registrantEmail",
-            ],
+            requiredFields: ["domain", "registrantName", "registrantEmail"],
           },
         },
         {
@@ -402,14 +415,16 @@ describe("public v1 — /services/:agentId", () => {
     // Without a fallback the activity feed shows `null` for the buyer
     // name; with the fallback, it derives `buyer-<last6>` from the
     // wallet — same convention the gateway uses at registration time.
-    const wallet =
-      "0xABd98f58eCA6e676E613C4001dd4c497fBAA39aA" as Hex;
+    const wallet = "0xABd98f58eCA6e676E613C4001dd4c497fBAA39aA" as Hex;
     gateway.mockChain.setAgentWallet(20n, wallet);
     // Explicitly no setAgentURI(20n, ...) — agentURI returns "".
 
     await seedPaid(gateway, {
       serviceRef:
-        "0xccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc".slice(0, 66) as Hex,
+        "0xccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc".slice(
+          0,
+          66,
+        ) as Hex,
       providerAgentId: 1n,
       buyerAgentId: 20n,
       amountAtomic: 12_000_000n,
@@ -421,9 +436,7 @@ describe("public v1 — /services/:agentId", () => {
 
     const res = await fetch(`${gateway.baseUrl}/public/v1/services/1`);
     const body = (await res.json()) as any;
-    const row = body.recentPurchases.find(
-      (r: any) => r.buyerAgentId === "20",
-    );
+    const row = body.recentPurchases.find((r: any) => r.buyerAgentId === "20");
     expect(row).toBeDefined();
     // Last 6 hex chars of `0xabd98f58eca6e676e613c4001dd4c497fbaa39aa` → "aa39aa".
     expect(row.buyerName).toBe("buyer-aa39aa");
@@ -855,7 +868,7 @@ describe("public v1 — /activity", () => {
     expect(unknown.buyerName).toBeNull();
   });
 
-  it("surfaces PaymentRouter.refundedAmount per activity row", async () => {
+  it("surfaces cumulative refund events per activity row", async () => {
     await seedPaid(gateway, {
       serviceRef:
         "0x6666666666666666666666666666666666666666666666666666666666666666",
@@ -900,6 +913,11 @@ describe("public v1 — /activity", () => {
       "0xcafe000000000000000000000000000000000000000000000000000000000abc" as Hex;
     const txHash =
       "0xdead000000000000000000000000000000000000000000000000000000000abc" as Hex;
+    const provider = gateway.bundle.cache.get(1n);
+    const serviceId = provider
+      ? derivePrimaryServiceId(provider)?.serviceId
+      : null;
+    if (!serviceId) throw new Error("test provider has no primary service");
     gateway.mockChain.queueConfirmation({
       kind: "success",
       txHash,
@@ -908,11 +926,11 @@ describe("public v1 — /activity", () => {
     // /confirm reads the router record for the resolver-required recipient.
     gateway.mockChain.setPaymentRecord(203n, {
       buyerAgentId: 7n,
-      providerAgentId: 2n,
-      serviceId: ("0x" + "cd".repeat(32)) as Hex,
+      providerAgentId: 1n,
+      serviceId,
       token: "0x000000000000000000000000000000000000a003" as Hex,
       amount: 1_000_000n,
-      cachedBuyerWallet: "0x000000000000000000000000000000000000b001" as Hex,
+      cachedBuyerWallet: TEST_BUYER,
       cachedProviderOwner: "0x000000000000000000000000000000000000c001" as Hex,
       cachedProviderWallet: "0x000000000000000000000000000000000000c002" as Hex,
       serviceRef: ("0x" + "ab".repeat(32)) as Hex,
@@ -923,18 +941,31 @@ describe("public v1 — /activity", () => {
     const confirmRes = await fetch(`${gateway.baseUrl}/confirm/203`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        confirmation: "Confirmed",
-        attester: "0x000000000000000000000000000000000000beef",
-        deadline: String(Math.floor(Date.now() / 1000) + 3600),
-        signature: {
-          v: 27,
-          r: "0x1111111111111111111111111111111111111111111111111111111111111111",
-          s: "0x2222222222222222222222222222222222222222222222222222222222222222",
-        },
-      }),
+      body: JSON.stringify(
+        await signedConfirmation(gateway.config, {
+          paymentId: 203n,
+          confirmation: "Confirmed",
+          recipient:
+            "0x000000000000000000000000000000000000c002" as Hex,
+        }),
+      ),
     });
     expect(confirmRes.status).toBe(200);
+
+    gateway.mockChain.pushChainProjectionEvent({
+      kind: "confirmation_submitted",
+      paymentId: 203n,
+      providerAgentId: 1n,
+      buyerAgentId: 5n,
+      serviceId,
+      confirmationCode: 1,
+      attestationUid,
+      blockNumber: 1n,
+      transactionIndex: 0,
+      logIndex: 0,
+    });
+    gateway.mockChain.setBlockNumber(20n);
+    await gateway.bundle.indexer.tick();
 
     const activityRes = await fetch(`${gateway.baseUrl}/public/v1/activity`);
     const body = (await activityRes.json()) as any;
@@ -1068,6 +1099,44 @@ describe("public v1 — /stats", () => {
       paidCount: 0,
       totalVolumeUsdc: "0.00",
     });
+  });
+
+  it("excludes false and unclassified payments from all public trust totals", async () => {
+    for (const [paymentId, buyerAgentId, amountAtomic, eligible] of [
+      [410n, 7n, 10_000_000n, true],
+      [411n, 8n, 100_000_000n, false],
+      [412n, 9n, 1_000_000_000n, null],
+    ] as const) {
+      await seedPaid(gateway, {
+        serviceRef: `0x${paymentId.toString(16).padStart(64, "0")}` as Hex,
+        providerAgentId: 1n,
+        buyerAgentId,
+        amountAtomic,
+        paymentId,
+        txHash:
+          `0x${(paymentId + 1000n).toString(16).padStart(64, "0")}` as Hex,
+        reputationEligible: eligible,
+      });
+    }
+
+    const stats = (await (
+      await fetch(`${gateway.baseUrl}/public/v1/stats`)
+    ).json()) as any;
+    expect(stats.marketplace.paidCount).toBe(1);
+    expect(stats.marketplace.totalVolumeUsdc).toBe("10.00");
+
+    const activity = (await (
+      await fetch(`${gateway.baseUrl}/public/v1/activity`)
+    ).json()) as any;
+    expect(activity.activity).toHaveLength(1);
+    expect(activity.activity[0].txHash).toBe(
+      `0x${(410n + 1000n).toString(16).padStart(64, "0")}`,
+    );
+
+    const buyers = (await (
+      await fetch(`${gateway.baseUrl}/public/v1/buyers`)
+    ).json()) as any;
+    expect(buyers.buyers.map((buyer: any) => buyer.agentId)).toEqual(["7"]);
   });
 });
 
@@ -1349,12 +1418,14 @@ describe("public v1 — /buyers (leaderboard)", () => {
   it("honors the ?limit query param", async () => {
     for (let i = 0; i < 5; i++) {
       await seedPaid(gateway, {
-        serviceRef: ("0x" + (i + 0xb0).toString(16).padStart(2, "0").repeat(32)) as Hex,
+        serviceRef: ("0x" +
+          (i + 0xb0).toString(16).padStart(2, "0").repeat(32)) as Hex,
         providerAgentId: 1n,
         buyerAgentId: BigInt(100 + i),
         amountAtomic: BigInt((i + 1) * 1_000_000),
         paymentId: BigInt(900 + i),
-        txHash: ("0x" + (i + 0x90).toString(16).padStart(2, "0").repeat(32)) as Hex,
+        txHash: ("0x" +
+          (i + 0x90).toString(16).padStart(2, "0").repeat(32)) as Hex,
       });
     }
 

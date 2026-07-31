@@ -39,7 +39,8 @@ const KNOWN_RPC_ERRORS: Record<number, MappedRpcError> = {
     actionRequired: "sign_capability",
     nextAction:
       "This is an expected authorization step, not a failure. Sign the " +
-      "capability challenge in details.data.capabilityChallenge (or a " +
+      "capability challenge in details.untrustedProviderContent.data." +
+      "capabilityChallenge (or a " +
       "task_access_challenge you already hold for this exact taskId and " +
       "action) and retry the SAME call with `capability` added.",
   },
@@ -82,8 +83,8 @@ const KNOWN_RPC_ERRORS: Record<number, MappedRpcError> = {
     code: "INVALID_PARAMS",
     recoverable: true,
     nextAction:
-      "The provider names the offending parameter in the message — fix " +
-      "that exact field and retry.",
+      "Review the request against the published skill schema, correct only " +
+      "the invalid serviceArgs fields, and retry.",
   },
   [-32603]: { code: "PROVIDER_INTERNAL_ERROR" },
 };

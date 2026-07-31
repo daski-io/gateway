@@ -61,6 +61,18 @@ describe("discovery", () => {
     expect(llc.fetchError).toBeNull();
   });
 
+  it("marks retained discovery data when provider authority is stale", async () => {
+    gateway.bundle.cache.get(1n)!.authorityObservedAt = new Date(0);
+
+    const { status, json } = await gateway.discover();
+
+    expect(status).toBe(200);
+    expect(
+      json.providers.find((provider: any) => provider.agentId === "1")
+        .authorityFresh,
+    ).toBe(false);
+  });
+
   it("filters by category family", async () => {
     const { status, json } = await gateway.discover({
       categoryFamily: "domains-web",
@@ -180,15 +192,8 @@ describe("discovery", () => {
     expect(json.providers.find((p: any) => p.agentId === "1")).toBeUndefined();
   });
 
-  it("records fetchError but keeps the provider visible when the agent card fetch fails", async () => {
-    // Break the LLC provider's card URL.
-    gateway.mockChain.addProvider(1n, {
-      walletAddress: "0x0000000000000000000000000000000000000001",
-      agentId: 1n,
-      agentURI: "http://127.0.0.1:1/nowhere.json",
-      registrationTime: 1n,
-      isActive: true,
-    });
+  it("records fetchError but keeps the provider visible when its unchanged card fails", async () => {
+    gateway.mockProvider.setAgentCard("/agent-cards/1.json", {});
     await gateway.refresh();
     const { json } = await gateway.discover();
     const broken = json.providers.find((p: any) => p.agentId === "1");

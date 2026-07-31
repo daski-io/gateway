@@ -1,5 +1,9 @@
-import type { PaymentSettledEventLog } from "../../src/chain/reader.js";
-import { FeedbackSubmissionError } from "../../src/chain/feedbackErrors.js";
+import type { ChainProjectionEvent } from "../../src/chain/eventTypes.js";
+import { recoverTypedDataAddress } from "viem";
+import {
+  FeedbackAlreadyRevokedError,
+  FeedbackSubmissionError,
+} from "../../src/chain/feedbackErrors.js";
 import {
   ConfirmationSubmitError,
   type ConfirmationFailureStage,
@@ -19,16 +23,21 @@ import type {
   ChainReader,
   ConfirmationDelegationInput,
   ConfirmationResult,
+  FeedbackRevocationInput,
   FeedbackInput,
   FeedbackResult,
+  PreparedConfirmationTransaction,
   PreparedFeedbackTransaction,
+  ProviderAuthoritySnapshot,
+  ServiceSettlementSnapshot,
+  PreparedSettlementTransaction,
+  ReceiveAuthorizationVerification,
   PaymentRouterRecord,
   PaymentSettledEvent,
   ProviderReputation,
   ReputationRecord,
   ServiceReputation,
   SettleWithRegistrationInput,
-  SettleWithRegistrationResult,
   SettlementInput,
   SettlementResult,
   BroadcastObserver,
@@ -63,6 +72,12 @@ export type SettlementOutcome =
       reason: string;
     }
   | {
+      kind: "submission-error";
+      event: PaymentSettledEvent;
+      txHash: Hex;
+      reason: string;
+    }
+  | {
       kind: "screening-error";
       failure: SettlementScreeningFailure;
       detectionSource: ScreeningDetectionSource;
@@ -84,11 +99,25 @@ export class MockChainReader implements ChainReader {
   private outcomes: SettlementOutcome[] = [];
   private settlementResults = new Map<string, SettlementResult>();
   private settlementRecoveryErrors = new Map<string, Error>();
+  private preparedSettlements = new Map<
+    string,
+    { input: SettlementInput; outcome: SettlementOutcome }
+  >();
+  private settlementNonce = 0n;
+  private settlementBroadcastNonce = 0n;
 
   public settlements: SettlementInput[] = [];
   public simulations: SettlementInput[] = [];
+  public facilitatorBalance = 10n ** 30n;
 
-  addProvider(agentId: bigint, entry: MockProviderEntry & { agentURI: string }): void {
+  async getFacilitatorBalance(): Promise<bigint> {
+    return this.facilitatorBalance;
+  }
+
+  addProvider(
+    agentId: bigint,
+    entry: MockProviderEntry & { agentURI: string },
+  ): void {
     const key = agentId.toString();
     if (!this.providers.has(key)) this.providerOrder.push(agentId);
     this.providers.set(key, {
@@ -101,7 +130,10 @@ export class MockChainReader implements ChainReader {
   }
 
   setAuthorizationUsed(authorizer: Hex, nonce: Hex, used: boolean): void {
-    this.authStates.set(`${authorizer.toLowerCase()}:${nonce.toLowerCase()}`, used);
+    this.authStates.set(
+      `${authorizer.toLowerCase()}:${nonce.toLowerCase()}`,
+      used,
+    );
   }
 
   /** Queue the next settlement outcome. Tests call this before every submit. */
@@ -122,14 +154,46 @@ export class MockChainReader implements ChainReader {
   async getProviderIdAt(index: bigint): Promise<bigint> {
     const i = Number(index);
     const id = this.providerOrder[i];
-    if (id === undefined) throw new Error(`providerIds index ${i} out of range`);
+    if (id === undefined)
+      throw new Error(`providerIds index ${i} out of range`);
     return id;
   }
 
   async getProvider(agentId: bigint): Promise<MockProviderEntry> {
     const entry = this.providers.get(agentId.toString());
-    if (!entry) throw new Error(`provider ${agentId} not found`);
-    return entry;
+    return (
+      entry ?? {
+        walletAddress: `0x${"00".repeat(20)}` as Hex,
+        agentId,
+        registrationTime: 0n,
+        isActive: false,
+      }
+    );
+  }
+
+  async getProviderAuthority(
+    agentId: bigint,
+    blockNumber: bigint,
+  ): Promise<ProviderAuthoritySnapshot> {
+    const provider = await this.getProvider(agentId);
+    if (!provider.isActive) {
+      return {
+        agentId,
+        isActive: false,
+        registrationTime: provider.registrationTime,
+        walletAddress: `0x${"00".repeat(20)}` as Hex,
+        agentURI: "",
+        observedBlock: blockNumber,
+      };
+    }
+    return {
+      agentId,
+      isActive: provider.isActive,
+      registrationTime: provider.registrationTime,
+      walletAddress: await this.getAgentWallet(agentId),
+      agentURI: await this.getAgentURI(agentId),
+      observedBlock: blockNumber,
+    };
   }
 
   async getAgentURI(agentId: bigint): Promise<string> {
@@ -164,13 +228,20 @@ export class MockChainReader implements ChainReader {
   // IdentityRegistry-driven path.
   private agentWalletOverrides = new Map<string, Hex>();
   private agentOwnerOverrides = new Map<string, Hex>();
+  private serviceSettlements = new Map<string, ServiceSettlementSnapshot>();
 
   setAgentWallet(agentId: bigint, wallet: Hex): void {
-    this.agentWalletOverrides.set(agentId.toString(), wallet.toLowerCase() as Hex);
+    this.agentWalletOverrides.set(
+      agentId.toString(),
+      wallet.toLowerCase() as Hex,
+    );
   }
 
   setAgentOwner(agentId: bigint, wallet: Hex): void {
-    this.agentOwnerOverrides.set(agentId.toString(), wallet.toLowerCase() as Hex);
+    this.agentOwnerOverrides.set(
+      agentId.toString(),
+      wallet.toLowerCase() as Hex,
+    );
   }
 
   async getAgentWallet(agentId: bigint): Promise<Hex> {
@@ -194,6 +265,37 @@ export class MockChainReader implements ChainReader {
       : (("0x" + "00".repeat(20)) as Hex);
   }
 
+  setServiceSettlement(
+    serviceId: Hex,
+    settlement: Omit<ServiceSettlementSnapshot, "serviceId">,
+  ): void {
+    this.serviceSettlements.set(serviceId.toLowerCase(), {
+      serviceId,
+      ...settlement,
+    });
+  }
+
+  async getServiceSettlement(
+    serviceId: Hex,
+  ): Promise<ServiceSettlementSnapshot> {
+    const configured = this.serviceSettlements.get(serviceId.toLowerCase());
+    if (configured) return configured;
+    const provider = [...this.providers.values()].find(
+      (entry) => entry.isActive,
+    );
+    if (!provider) throw new Error("mock service not found");
+    const wallet = await this.getAgentWallet(provider.agentId);
+    return {
+      serviceId,
+      providerAgentId: provider.agentId,
+      active: true,
+      providerOwner: await this.getAgentOwner(provider.agentId),
+      providerWallet: wallet,
+      payee: wallet,
+      observedBlock: this.blockNumber,
+    };
+  }
+
   async authorizationUsed(authorizer: Hex, nonce: Hex): Promise<boolean> {
     return (
       this.authStates.get(
@@ -202,28 +304,131 @@ export class MockChainReader implements ChainReader {
     );
   }
 
-  async simulatePayment(input: SettlementInput): Promise<void> {
-    this.simulations.push(input);
+  async verifyReceiveAuthorization(
+    input: ReceiveAuthorizationVerification,
+  ): Promise<boolean> {
+    const recovered = await recoverTypedDataAddress({
+      domain: input.domain,
+      types: input.types,
+      primaryType: input.primaryType,
+      message: input.message,
+      signature: input.signature,
+    });
+    return recovered.toLowerCase() === input.signer.toLowerCase();
   }
 
-  async settlePayment(
+  async prepareSettlement(
     input: SettlementInput,
-    onBroadcast?: BroadcastObserver,
-  ): Promise<SettlementResult> {
-    this.settlements.push(input);
+    facilitatorNonce: bigint,
+  ): Promise<PreparedSettlementTransaction> {
+    this.simulations.push(input);
     const outcome = this.outcomes.shift();
     if (!outcome) {
       throw new Error(
-        "MockChainReader.settlePayment called with no queued outcome",
+        "MockChainReader.prepareSettlement called with no queued outcome",
       );
     }
     if (outcome.kind === "revert") throw new Error(outcome.reason);
+    if (
+      outcome.kind === "screening-error" &&
+      outcome.detectionSource === "simulation"
+    ) {
+      throw new SettlementScreeningError(
+        outcome.failure,
+        outcome.detectionSource,
+        outcome.transactionHash,
+      );
+    }
+    const nonce = facilitatorNonce;
+    if (nonce >= this.settlementNonce) this.settlementNonce = nonce + 1n;
+    const transactionHash =
+      outcome.kind === "screening-error"
+        ? (outcome.transactionHash ??
+          (`0xbeef${nonce.toString(16).padStart(60, "0")}` as Hex))
+        : outcome.txHash;
+    const prepared = {
+      kind: "settle" as const,
+      transactionHash,
+      serializedTransaction:
+        `0x02${nonce.toString(16).padStart(2, "0")}` as Hex,
+      facilitatorNonce: nonce,
+    };
+    this.preparedSettlements.set(transactionHash.toLowerCase(), {
+      input,
+      outcome,
+    });
+    return prepared;
+  }
+
+  async prepareSettlementWithRegistration(
+    input: SettleWithRegistrationInput,
+    facilitatorNonce: bigint,
+  ): Promise<PreparedSettlementTransaction> {
+    this.settleWithRegistrationCalls.push(input);
+    const prepared = await this.prepareSettlement(input, facilitatorNonce);
+    return { ...prepared, kind: "settle_with_registration" };
+  }
+
+  async submitPreparedSettlement(
+    prepared: PreparedSettlementTransaction,
+    expectedServiceRef: Hex,
+    onBroadcast?: BroadcastObserver,
+  ): Promise<SettlementResult & { registered?: boolean }> {
+    const queued = this.preparedSettlements.get(
+      prepared.transactionHash.toLowerCase(),
+    );
+    if (!queued) {
+      throw new Error("mock prepared settlement not found");
+    }
+    const { input, outcome } = queued;
+    this.settlements.push(input);
     if (outcome.kind === "screening-error") {
       throw new SettlementScreeningError(
         outcome.failure,
         outcome.detectionSource,
         outcome.transactionHash,
       );
+    }
+    if (outcome.kind === "submission-error") {
+      const zero = "0x" + "00".repeat(32);
+      const event = {
+        ...outcome.event,
+        serviceId:
+          outcome.event.serviceId.toLowerCase() === zero
+            ? input.serviceId
+            : outcome.event.serviceId,
+        serviceRef:
+          outcome.event.serviceRef.toLowerCase() === zero
+            ? input.serviceRef
+            : outcome.event.serviceRef,
+      };
+      this.settlementResults.set(outcome.txHash.toLowerCase(), {
+        transactionHash: outcome.txHash,
+        event,
+      });
+      if (prepared.facilitatorNonce >= this.settlementBroadcastNonce) {
+        this.settlementBroadcastNonce = prepared.facilitatorNonce + 1n;
+      }
+      queued.outcome = {
+        kind: "success",
+        event,
+        txHash: outcome.txHash,
+      };
+      throw new Error(outcome.reason);
+    }
+    let registered = false;
+    if (prepared.kind === "settle_with_registration") {
+      const registrationInput = input as SettleWithRegistrationInput;
+      const existing = await this.agentOfWallet(input.from);
+      if (existing === 0n) {
+        await this.applyQueuedRegistration({
+          agentURI: registrationInput.registration.agentURI,
+          agentWallet: input.from,
+          deadline: registrationInput.registration.deadline,
+          signature: registrationInput.registration.signature,
+        });
+        registered = true;
+      }
     }
     this.setAuthorizationUsed(input.from, input.nonce, true);
     // If the test didn't bother setting a serviceId on the queued event
@@ -246,11 +451,17 @@ export class MockChainReader implements ChainReader {
     };
     const result = { transactionHash: outcome.txHash, event };
     this.settlementResults.set(outcome.txHash.toLowerCase(), result);
+    if (event.serviceRef.toLowerCase() !== expectedServiceRef.toLowerCase()) {
+      throw new Error("mock settlement serviceRef mismatch");
+    }
+    if (prepared.facilitatorNonce >= this.settlementBroadcastNonce) {
+      this.settlementBroadcastNonce = prepared.facilitatorNonce + 1n;
+    }
     await onBroadcast?.(outcome.txHash);
     if (outcome.kind === "broadcast-error") {
       throw new Error(outcome.reason);
     }
-    return result;
+    return { ...result, ...(prepared.kind === "settle" ? {} : { registered }) };
   }
 
   // ── Confirmation mock ────────────────────────────────────────────
@@ -258,8 +469,16 @@ export class MockChainReader implements ChainReader {
   // Tests exercise the gateway-side confirm flow without touching a real
   // EAS. Queue a result via queueConfirmation; otherwise the mock throws.
   private confirmationOutcomes: ConfirmationOutcome[] = [];
+  private preparedConfirmations = new Map<
+    string,
+    { input: ConfirmationDelegationInput; outcome: ConfirmationOutcome }
+  >();
+  private confirmationResults = new Map<string, ConfirmationResult>();
+  private confirmationFailures = new Map<string, ConfirmationSubmitError>();
   public confirmations: ConfirmationDelegationInput[] = [];
   private nonces = new Map<string, bigint>();
+  private confirmationNonce = 0n;
+  private confirmationBroadcastNonce = 0n;
 
   queueConfirmation(outcome: ConfirmationOutcome): void {
     this.confirmationOutcomes.push(outcome);
@@ -269,28 +488,107 @@ export class MockChainReader implements ChainReader {
     this.nonces.set(attester.toLowerCase(), nonce);
   }
 
-  async submitBuyerConfirmation(
+  async prepareBuyerConfirmation(
     input: ConfirmationDelegationInput,
-    onBroadcast?: BroadcastObserver,
-  ): Promise<ConfirmationResult> {
+    facilitatorNonce: bigint,
+  ): Promise<PreparedConfirmationTransaction> {
     this.confirmations.push(input);
     const outcome = this.confirmationOutcomes.shift();
     if (!outcome) {
       throw new Error(
-        "MockChainReader.submitBuyerConfirmation called with no queued outcome",
+        "MockChainReader.prepareBuyerConfirmation called with no queued outcome",
       );
     }
     if (outcome.kind === "revert") throw new Error(outcome.reason);
-    // Stage-typed failures exercise the confirm-delivery taxonomy split
-    // (pre-broadcast / reverted / unknown / attested-but-unrecorded).
-    if (outcome.kind === "stage") {
+    if (outcome.kind === "stage" && outcome.stage === "validation") {
       throw new ConfirmationSubmitError(outcome.stage, outcome.reason, {
         transactionHash: outcome.txHash,
         needsFreshSignature: outcome.needsFreshSignature,
       });
     }
+    const transactionHash =
+      outcome.kind === "success"
+        ? outcome.txHash
+        : (outcome.txHash ??
+          (`0xcafe${facilitatorNonce.toString(16).padStart(60, "0")}` as Hex));
+    this.preparedConfirmations.set(transactionHash.toLowerCase(), {
+      input,
+      outcome,
+    });
+    if (facilitatorNonce >= this.confirmationNonce) {
+      this.confirmationNonce = facilitatorNonce + 1n;
+    }
+    return {
+      transactionHash,
+      serializedTransaction:
+        `0x02${facilitatorNonce.toString(16).padStart(2, "0")}` as Hex,
+      facilitatorNonce,
+    };
+  }
+
+  async submitPreparedBuyerConfirmation(
+    prepared: PreparedConfirmationTransaction,
+    _input: ConfirmationDelegationInput,
+    onBroadcast?: BroadcastObserver,
+  ): Promise<ConfirmationResult> {
+    const queued = this.preparedConfirmations.get(
+      prepared.transactionHash.toLowerCase(),
+    );
+    if (!queued) throw new Error("mock prepared confirmation not found");
+    const { input, outcome } = queued;
+    if (outcome.kind === "stage") {
+      const failure = new ConfirmationSubmitError(
+        outcome.stage,
+        outcome.reason,
+        {
+          transactionHash: outcome.txHash ?? prepared.transactionHash,
+          needsFreshSignature: outcome.needsFreshSignature,
+        },
+      );
+      this.confirmationFailures.set(
+        prepared.transactionHash.toLowerCase(),
+        failure,
+      );
+      if (outcome.stage !== "unknown" || outcome.txHash) {
+        if (
+          prepared.facilitatorNonce >= this.confirmationBroadcastNonce
+        ) {
+          this.confirmationBroadcastNonce = prepared.facilitatorNonce + 1n;
+        }
+        await onBroadcast?.(prepared.transactionHash);
+      }
+      throw failure;
+    }
+    if (outcome.kind === "revert") throw new Error(outcome.reason);
+    const result = {
+      transactionHash: outcome.txHash,
+      attestationUid: outcome.attestationUid,
+    };
+    this.confirmationResults.set(outcome.txHash.toLowerCase(), result);
+    const current = this.nonces.get(input.attester.toLowerCase()) ?? 0n;
+    this.nonces.set(input.attester.toLowerCase(), current + 1n);
+    if (prepared.facilitatorNonce >= this.confirmationBroadcastNonce) {
+      this.confirmationBroadcastNonce = prepared.facilitatorNonce + 1n;
+    }
     await onBroadcast?.(outcome.txHash);
-    return { transactionHash: outcome.txHash, attestationUid: outcome.attestationUid };
+    return result;
+  }
+
+  async getBuyerConfirmationByTransaction(
+    transactionHash: Hex,
+  ): Promise<ConfirmationResult | null> {
+    const failure = this.confirmationFailures.get(transactionHash.toLowerCase());
+    if (failure) throw failure;
+    return this.confirmationResults.get(transactionHash.toLowerCase()) ?? null;
+  }
+
+  resolveConfirmation(
+    transactionHash: Hex,
+    result: ConfirmationResult,
+  ): void {
+    const key = transactionHash.toLowerCase();
+    this.confirmationFailures.delete(key);
+    this.confirmationResults.set(key, result);
   }
 
   async getEasAttesterNonce(attester: Hex): Promise<bigint> {
@@ -336,7 +634,8 @@ export class MockChainReader implements ChainReader {
     if (outcome.kind === "revert") throw new Error(outcome.reason);
     // Mirror the on-chain side-effects so subsequent reads see the new agent.
     this.setAgentOfWallet(input.agentWallet, outcome.agentId);
-    const cur = this.registrationNonces.get(input.agentWallet.toLowerCase()) ?? 0n;
+    const cur =
+      this.registrationNonces.get(input.agentWallet.toLowerCase()) ?? 0n;
     this.registrationNonces.set(input.agentWallet.toLowerCase(), cur + 1n);
     return { agentId: outcome.agentId, transactionHash: outcome.txHash };
   }
@@ -366,8 +665,14 @@ export class MockChainReader implements ChainReader {
     this.sanctionsReady = ready;
   }
 
-  async verifySanctionsReadiness(): Promise<boolean> {
-    return this.sanctionsReady;
+  async verifyDeploymentReadiness(): Promise<{
+    ready: boolean;
+    failedCheck: string | null;
+  }> {
+    return {
+      ready: this.sanctionsReady,
+      failedCheck: this.sanctionsReady ? null : "sanctions_oracle",
+    };
   }
 
   // ── Reputation mock ──────────────────────────────────────────────
@@ -438,20 +743,6 @@ export class MockChainReader implements ChainReader {
     return this.reputationRecords.get(paymentId.toString()) ?? null;
   }
 
-  // Per-paymentId refund mock. Default 0n (settled, no refund), which
-  // matches the PaymentRouter behavior — the contract returns 0 for both
-  // unknown and unrefunded paymentIds. Tests that exercise refunds call
-  // setPaymentRefundedAmount.
-  private paymentRefunds = new Map<string, bigint>();
-
-  setPaymentRefundedAmount(paymentId: bigint, atomic: bigint): void {
-    this.paymentRefunds.set(paymentId.toString(), atomic);
-  }
-
-  async getPaymentRefundedAmount(paymentId: bigint): Promise<bigint> {
-    return this.paymentRefunds.get(paymentId.toString()) ?? 0n;
-  }
-
   // Per-paymentId PaymentRouter.getPayment mock. Default null (unknown
   // payment) mirrors the reader's zero-init detection; tests that exercise
   // the reputation mirror seed a record via setPaymentRecord.
@@ -488,6 +779,11 @@ export class MockChainReader implements ChainReader {
     [];
   private feedbackLastIndex = new Map<string, bigint>();
   private feedbackTransactions = new Map<string, FeedbackResult>();
+  private preparedFeedbackRevocations = new Map<
+    string,
+    { input: FeedbackRevocationInput; failure?: FeedbackSubmissionError }
+  >();
+  private feedbackRevocationTransactions = new Map<string, FeedbackResult>();
   private feedbackNonce = 0n;
   private feedbackBroadcastNonce = 0n;
 
@@ -504,12 +800,13 @@ export class MockChainReader implements ChainReader {
 
   async prepareFeedback(
     _input: FeedbackInput,
+    facilitatorNonce: bigint,
   ): Promise<PreparedFeedbackTransaction> {
-    const nonce = this.feedbackNonce++;
+    const nonce = facilitatorNonce;
+    if (nonce >= this.feedbackNonce) this.feedbackNonce = nonce + 1n;
     return {
-      nonce,
-      transactionHash:
-        `0xfade${nonce.toString(16).padStart(60, "0")}` as Hex,
+      facilitatorNonce: nonce,
+      transactionHash: `0xfade${nonce.toString(16).padStart(60, "0")}` as Hex,
       serializedTransaction:
         `0x02${nonce.toString(16).padStart(2, "0")}` as Hex,
     };
@@ -523,6 +820,10 @@ export class MockChainReader implements ChainReader {
     this.feedbacks.push(input);
     const outcome = this.feedbackOutcomes.shift();
     if (outcome?.kind === "permanent") {
+      if (prepared.facilitatorNonce >= this.feedbackBroadcastNonce) {
+        this.feedbackBroadcastNonce = prepared.facilitatorNonce + 1n;
+      }
+      await onBroadcast?.(prepared.transactionHash);
       throw new FeedbackSubmissionError("reverted", outcome.reason);
     }
     if (outcome) throw new Error(outcome.reason);
@@ -537,8 +838,8 @@ export class MockChainReader implements ChainReader {
       prepared.transactionHash.toLowerCase(),
       result,
     );
-    if (prepared.nonce >= this.feedbackBroadcastNonce) {
-      this.feedbackBroadcastNonce = prepared.nonce + 1n;
+    if (prepared.facilitatorNonce >= this.feedbackBroadcastNonce) {
+      this.feedbackBroadcastNonce = prepared.facilitatorNonce + 1n;
     }
     await onBroadcast?.(prepared.transactionHash);
     return result;
@@ -552,87 +853,133 @@ export class MockChainReader implements ChainReader {
   }
 
   async getFacilitatorTransactionCount(): Promise<bigint> {
-    return this.feedbackBroadcastNonce;
-  }
-
-  async revokeFeedback(
-    agentId: bigint,
-    feedbackIndex: bigint,
-    onBroadcast?: BroadcastObserver,
-  ): Promise<FeedbackResult> {
-    this.feedbackRevokes.push({ agentId, feedbackIndex });
-    const outcome = this.feedbackRevokeOutcomes.shift();
-    if (outcome) throw new Error(outcome.reason);
-    const result = {
-      transactionHash:
-        `0xdead${feedbackIndex.toString(16).padStart(60, "0")}` as Hex,
-    };
-    await onBroadcast?.(result.transactionHash);
-    return result;
-  }
-
-  private paymentSettledLogs: PaymentSettledEventLog[] = [];
-
-  /**
-   * Test helper to seed PaymentSettled event logs for the indexer to
-   * consume. Tests call this before the indexer ticks; the indexer
-   * fetches via getPaymentSettledEvents and gets whatever was queued.
-   */
-  pushPaymentSettledLog(log: PaymentSettledEventLog): void {
-    this.paymentSettledLogs.push(log);
-  }
-
-  async getPaymentSettledEvents(
-    fromBlock: bigint,
-    toBlock: bigint,
-  ): Promise<PaymentSettledEventLog[]> {
-    return this.paymentSettledLogs.filter(
-      (l) => l.blockNumber >= fromBlock && l.blockNumber <= toBlock,
+    return maxBigint(
+      this.feedbackBroadcastNonce,
+      this.settlementBroadcastNonce,
+      this.confirmationBroadcastNonce,
     );
   }
 
-  async settleWithRegistration(
-    input: SettleWithRegistrationInput,
-    onBroadcast?: BroadcastObserver,
-  ): Promise<SettleWithRegistrationResult> {
-    this.settleWithRegistrationCalls.push(input);
-    let registered = false;
-    const existing = await this.agentOfWallet(input.from);
-    if (existing === 0n) {
-      const reg = await this.applyQueuedRegistration({
-        agentURI: input.registration.agentURI,
-        agentWallet: input.from,
-        deadline: input.registration.deadline,
-        signature: input.registration.signature,
-      });
-      registered = true;
-      // Settlement queue can be parameterised on buyerAgentId by the test;
-      // we just record what the registration produced.
-      reg;
+  async getFacilitatorPendingTransactionCount(): Promise<bigint> {
+    const prepared = maxBigint(
+      this.feedbackNonce,
+      this.settlementNonce,
+      this.confirmationNonce,
+    );
+    const broadcast = maxBigint(
+      this.feedbackBroadcastNonce,
+      this.settlementBroadcastNonce,
+      this.confirmationBroadcastNonce,
+    );
+    return prepared > broadcast ? prepared : broadcast;
+  }
+
+  async prepareFeedbackRevocation(
+    input: FeedbackRevocationInput,
+    facilitatorNonce: bigint,
+  ): Promise<PreparedFeedbackTransaction> {
+    this.feedbackRevokes.push(input);
+    const outcome = this.feedbackRevokeOutcomes.shift();
+    if (outcome?.reason === "already revoked") {
+      throw new FeedbackAlreadyRevokedError();
     }
-    const settled = await this.settlePayment(input, onBroadcast);
+    const transactionHash =
+      `0xdead${facilitatorNonce.toString(16).padStart(60, "0")}` as Hex;
+    if (facilitatorNonce >= this.feedbackNonce) {
+      this.feedbackNonce = facilitatorNonce + 1n;
+    }
+    this.preparedFeedbackRevocations.set(transactionHash.toLowerCase(), {
+      input,
+      ...(outcome
+        ? {
+            failure: new FeedbackSubmissionError("reverted", outcome.reason),
+          }
+        : {}),
+    });
     return {
-      transactionHash: settled.transactionHash,
-      event: settled.event,
-      buyerAgentId: settled.event.buyerAgentId,
-      registered,
+      transactionHash,
+      serializedTransaction:
+        `0x03${facilitatorNonce.toString(16).padStart(2, "0")}` as Hex,
+      facilitatorNonce,
     };
   }
 
-  async getSettlementByTransaction(
+  async submitPreparedFeedbackRevocation(
+    prepared: PreparedFeedbackTransaction,
+    input: FeedbackRevocationInput,
+    onBroadcast?: BroadcastObserver,
+  ): Promise<FeedbackResult> {
+    const queued = this.preparedFeedbackRevocations.get(
+      prepared.transactionHash.toLowerCase(),
+    );
+    if (!queued) throw new Error("mock prepared feedback revocation not found");
+    if (prepared.facilitatorNonce >= this.feedbackBroadcastNonce) {
+      this.feedbackBroadcastNonce = prepared.facilitatorNonce + 1n;
+    }
+    await onBroadcast?.(prepared.transactionHash);
+    if (queued.failure) throw queued.failure;
+    const result = {
+      transactionHash: prepared.transactionHash,
+    };
+    this.feedbackRevocationTransactions.set(
+      prepared.transactionHash.toLowerCase(),
+      result,
+    );
+    return result;
+  }
+
+  async getFeedbackRevocationByTransaction(
+    transactionHash: Hex,
+  ): Promise<FeedbackResult | null> {
+    const queued = this.preparedFeedbackRevocations.get(
+      transactionHash.toLowerCase(),
+    );
+    if (queued?.failure) throw queued.failure;
+    return (
+      this.feedbackRevocationTransactions.get(transactionHash.toLowerCase()) ??
+      null
+    );
+  }
+
+  private chainProjectionEvents: ChainProjectionEvent[] = [];
+
+  /**
+   * Test helper to seed normalized projection events for the indexer.
+   */
+  pushChainProjectionEvent(event: ChainProjectionEvent): void {
+    this.chainProjectionEvents.push(event);
+  }
+
+  async getChainProjectionEvents(
+    fromBlock: bigint,
+    toBlock: bigint,
+  ): Promise<ChainProjectionEvent[]> {
+    return this.chainProjectionEvents.filter(
+      (event) => event.blockNumber >= fromBlock && event.blockNumber <= toBlock,
+    );
+  }
+
+  async findSettlementByTransaction(
     transactionHash: Hex,
     serviceRef: Hex,
-  ): Promise<SettlementResult> {
+  ): Promise<SettlementResult | null> {
     const recoveryError = this.settlementRecoveryErrors.get(
       transactionHash.toLowerCase(),
     );
     if (recoveryError) throw recoveryError;
     const result = this.settlementResults.get(transactionHash.toLowerCase());
-    if (!result || result.event.serviceRef.toLowerCase() !== serviceRef.toLowerCase()) {
-      throw new Error("mock settlement transaction not found");
-    }
-    return result;
+    return result?.event.serviceRef.toLowerCase() === serviceRef.toLowerCase()
+      ? result
+      : null;
   }
+
+}
+
+function maxBigint(...values: bigint[]): bigint {
+  return values.reduce(
+    (largest, value) => (value > largest ? value : largest),
+    0n,
+  );
 }
 
 export function makePaymentSettledEvent(args: {

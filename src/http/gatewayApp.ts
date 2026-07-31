@@ -15,7 +15,7 @@ import { createFacilitatorRouter } from "../payment/facilitator.js";
 import { createPrepRouter } from "../payment/prep.js";
 import { createPurchaseRouter } from "../payment/routes.js";
 import { DaskiFacilitatorService } from "../payment/daskiFacilitator.js";
-import type { PaymentScreeningReadinessProbe } from "../payment/screeningReadiness.js";
+import type { ChainDeploymentReadinessProbe } from "../payment/deploymentReadiness.js";
 import { createPublicRouter } from "../public/routes.js";
 import type { ReputationMirrorWorker } from "../reputation/worker.js";
 import type { ChainEventsIndexer } from "../indexer/chainEvents.js";
@@ -23,6 +23,8 @@ import { logErrorWithId } from "../util/errorWrap.js";
 import { sendBodyParserError } from "./bodyErrors.js";
 import { createMetaRouter } from "./metaRoutes.js";
 import { configureMiddleware } from "./middleware.js";
+import type { ApplicationLifecycle } from "../runtime/applicationLifecycle.js";
+import type { ProviderAuthorityService } from "../payment/providerAuthority.js";
 
 export interface GatewayHttpOptions {
   config: Config;
@@ -34,7 +36,9 @@ export interface GatewayHttpOptions {
   pool: Pool;
   embedder: Embedder | null;
   embeddingSync: CatalogEmbeddingSynchronizer | null;
-  screeningReadiness: PaymentScreeningReadinessProbe;
+  deploymentReadiness: ChainDeploymentReadinessProbe;
+  lifecycle: ApplicationLifecycle;
+  providerAuthority: ProviderAuthorityService;
   a2aFetch?: typeof fetch;
   a2aTimeoutMs?: number;
   buyerAgentCardFetch?: FetchAgentCardOptions["fetchFn"];
@@ -53,10 +57,27 @@ export async function createGatewayHttp(
     config,
     queries,
     reader,
-    screeningReadiness: options.screeningReadiness,
+    deploymentReadiness: options.deploymentReadiness,
+    providerAuthority: options.providerAuthority,
     fetchAgentCardFn: options.buyerAgentCardFetch,
   });
   configureMiddleware(app, queries, config);
+  app.use((req, res, next) => {
+    if (
+      options.lifecycle.isStopping() &&
+      req.path !== "/health/live" &&
+      req.path !== "/health/ready"
+    ) {
+      res.status(503).json({
+        error: {
+          code: "SHUTTING_DOWN",
+          message: "Gateway is shutting down.",
+        },
+      });
+      return;
+    }
+    next();
+  });
   app.use(
     createMetaRouter({
       config,
@@ -65,7 +86,8 @@ export async function createGatewayHttp(
       pool: options.pool,
       indexer: options.indexer,
       reputationWorker,
-      screeningReadiness: options.screeningReadiness,
+      deploymentReadiness: options.deploymentReadiness,
+      lifecycle: options.lifecycle,
     }),
   );
   app.use(createDiscoveryRouter(cache, config));
@@ -75,8 +97,9 @@ export async function createGatewayHttp(
       cache,
       queries,
       reader,
-      screeningReadiness: options.screeningReadiness,
+      deploymentReadiness: options.deploymentReadiness,
       facilitator,
+      providerAuthority: options.providerAuthority,
       fetchAgentCardFn: options.buyerAgentCardFetch,
     }),
   );
@@ -107,8 +130,9 @@ export async function createGatewayHttp(
         cache,
         queries,
         reader,
-        screeningReadiness: options.screeningReadiness,
+        deploymentReadiness: options.deploymentReadiness,
         facilitator,
+        providerAuthority: options.providerAuthority,
         reputationWorker,
         pool: options.pool,
         embedder: options.embedder,
@@ -116,10 +140,14 @@ export async function createGatewayHttp(
         fetch: options.a2aFetch,
         a2aTimeoutMs: options.a2aTimeoutMs,
         buyerAgentCardFetch: options.buyerAgentCardFetch,
-        maxSessions: options.mcpMaxSessions,
-        maxSessionsPerClient: options.mcpMaxSessionsPerClient,
-        sessionIdleTtlMs: options.mcpSessionIdleTtlMs,
-        sessionSweepIntervalMs: options.mcpSessionSweepIntervalMs,
+        maxSessions: options.mcpMaxSessions ?? config.mcpMaxSessions,
+        maxSessionsPerClient:
+          options.mcpMaxSessionsPerClient ?? config.mcpMaxSessionsPerClient,
+        sessionIdleTtlMs:
+          options.mcpSessionIdleTtlMs ?? config.mcpSessionIdleTtlMs,
+        sessionSweepIntervalMs:
+          options.mcpSessionSweepIntervalMs ??
+          config.mcpSessionSweepIntervalMs,
       })
     : null;
   const errorHandler: ErrorRequestHandler = (error, _req, res, next) => {

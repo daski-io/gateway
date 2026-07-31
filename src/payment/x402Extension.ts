@@ -7,10 +7,9 @@ import type {
   PaymentRequired,
   SettlementResponse,
 } from "../types.js";
-import { isHex32 } from "../util/evmValidation.js";
+import { isHex32, isHexAddress } from "../util/evmValidation.js";
 
-export const DASKI_X402_SCHEMA_PATH =
-  "/.well-known/x402-daski-v2.schema.json";
+export const DASKI_X402_SCHEMA_PATH = "/.well-known/x402-daski-v2.schema.json";
 
 export function daskiX402Schema(publicUrl: string): Record<string, unknown> {
   return {
@@ -55,6 +54,27 @@ export function daskiX402Schema(publicUrl: string): Record<string, unknown> {
         },
         additionalProperties: false,
       },
+      {
+        type: "object",
+        required: ["screening"],
+        properties: {
+          screening: {
+            type: "object",
+            required: ["code", "retryable"],
+            properties: {
+              code: {
+                enum: [
+                  "SANCTIONS_ADDRESS_REJECTED",
+                  "SANCTIONS_SCREENING_UNAVAILABLE",
+                ],
+              },
+              retryable: { type: "boolean" },
+            },
+            additionalProperties: false,
+          },
+        },
+        additionalProperties: false,
+      },
     ],
   };
 }
@@ -63,10 +83,14 @@ function declarationInfoSchema(): Record<string, unknown> {
   return {
     type: "object",
     required: [
+      "profile",
+      "x402Adapter",
+      "paymentRouter",
       "serviceRef",
       "providerAgentId",
       "buyerAgentId",
       "serviceId",
+      "expectedPayee",
       "skillId",
       "serviceSlug",
       "serviceVersion",
@@ -75,10 +99,14 @@ function declarationInfoSchema(): Record<string, unknown> {
       "settlementMode",
     ],
     properties: {
+      profile: { const: "1" },
+      x402Adapter: { type: "string", pattern: "^0x[0-9a-fA-F]{40}$" },
+      paymentRouter: { type: "string", pattern: "^0x[0-9a-fA-F]{40}$" },
       serviceRef: { type: "string", pattern: "^0x[0-9a-fA-F]{64}$" },
       providerAgentId: { type: "string", pattern: "^[0-9]+$" },
       buyerAgentId: { type: "string", pattern: "^[0-9]+$" },
       serviceId: { type: "string", pattern: "^0x[0-9a-fA-F]{64}$" },
+      expectedPayee: { type: "string", pattern: "^0x[0-9a-fA-F]{40}$" },
       skillId: { type: "string" },
       serviceSlug: { type: "string" },
       serviceVersion: { type: "string" },
@@ -95,6 +123,10 @@ function declarationInfoSchema(): Record<string, unknown> {
       },
       settlementMode: {
         enum: ["settle-only", "register-and-settle"],
+      },
+      warnings: {
+        type: "array",
+        items: { type: "string" },
       },
     },
     additionalProperties: true,
@@ -115,7 +147,16 @@ export function getDaskiDeclaration(
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const declaration = value as Partial<DaskiX402Declaration>;
   if (!declaration.info || typeof declaration.info !== "object") return null;
-  if (!isHex32((declaration.info as DaskiX402Info).serviceRef)) return null;
+  const info = declaration.info as DaskiX402Info;
+  if (
+    info.profile !== "1" ||
+    !isHexAddress(info.x402Adapter) ||
+    !isHexAddress(info.paymentRouter) ||
+    !isHex32(info.serviceRef) ||
+    !isHexAddress(info.expectedPayee)
+  ) {
+    return null;
+  }
   return declaration as DaskiX402Declaration;
 }
 

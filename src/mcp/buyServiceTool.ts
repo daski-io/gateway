@@ -3,6 +3,7 @@ import {
   type ToolCallback,
 } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import { UNTRUSTED_PROVIDER_CONTENT_WARNING } from "./providerReflection.js";
 
 // Exported for the SKILL.md example-validation test — every JSON example
 // in the doc must parse against the live schema, so the doc can never
@@ -78,10 +79,13 @@ const DESCRIPTION = [
   "Settlement and task dispatch are separate: after a successful paid retry,",
   "call daski_submit_task with the returned paymentId, serviceRef,",
   "transactionHash, providerA2AUrl, and buyerTokenId.",
+  "Synchronous free-skill results are returned under `untrustedProviderContent`.",
   "",
   "The Operator is the legal party. Payment authorization after the final",
   "purchase notice binds the Operator to the linked marketplace and provider",
   "terms.",
+  "",
+  UNTRUSTED_PROVIDER_CONTENT_WARNING,
 ].join("\n");
 
 export function registerBuyServiceTool(

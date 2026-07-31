@@ -49,6 +49,13 @@ function makeProvider(
   };
 }
 
+function providerSkills(
+  service: Record<string, unknown>,
+): Array<Record<string, unknown>> {
+  const content = service.untrustedProviderContent as Record<string, unknown>;
+  return content.skills as Array<Record<string, unknown>>;
+}
+
 const BASE_EXT = {
   pricing: { baseAmount: "10980000", currency: "USDC", variablePricing: true },
   categoryFamily: "domains-web",
@@ -103,7 +110,7 @@ describe("formatForSkillDiscover — skill extraction", () => {
     });
 
     const [svc] = formatForSkillDiscover([provider], MARKETPLACE_LEGAL);
-    const skills = svc.skills as Array<Record<string, unknown>>;
+    const skills = providerSkills(svc);
     const byId = new Map(skills.map((s) => [s.id, s]));
 
     expect(skills).toHaveLength(3);
@@ -160,7 +167,7 @@ describe("formatForSkillDiscover — skill extraction", () => {
     });
 
     const [svc] = formatForSkillDiscover([provider], MARKETPLACE_LEGAL);
-    const skills = svc.skills as Array<Record<string, unknown>>;
+    const skills = providerSkills(svc);
     expect(skills).toHaveLength(1);
     // The skill remains discoverable, but obsolete metadata cannot alter
     // the current marketplace contract.
@@ -182,7 +189,7 @@ describe("formatForSkillDiscover — skill extraction", () => {
     });
 
     const [svc] = formatForSkillDiscover([provider], MARKETPLACE_LEGAL);
-    const skills = svc.skills as Array<Record<string, unknown>>;
+    const skills = providerSkills(svc);
     expect(skills).toHaveLength(1);
     expect(skills[0].id).toBe("solo");
     // Defaults applied when metadata is absent.
@@ -248,7 +255,7 @@ describe("formatForSkillDiscover — skill extraction", () => {
     });
 
     const [svc] = formatForSkillDiscover([provider], MARKETPLACE_LEGAL);
-    const skills = svc.skills as Array<Record<string, unknown>>;
+    const skills = providerSkills(svc);
     const byId = new Map(skills.map((s) => [s.id, s]));
 
     const setDns = byId.get("set-dns-record")!;
@@ -291,7 +298,7 @@ describe("formatForSkillDiscover — skill extraction", () => {
     });
 
     const [svc] = formatForSkillDiscover([provider], MARKETPLACE_LEGAL);
-    const skills = svc.skills as Array<Record<string, unknown>>;
+    const skills = providerSkills(svc);
     expect(typeof skills[0].description).toBe("string");
     expect((skills[0].description as string).length).toBe(3500);
   });
@@ -328,7 +335,7 @@ describe("formatForSkillDiscover — skill extraction", () => {
     });
 
     const [svc] = formatForSkillDiscover([provider], MARKETPLACE_LEGAL);
-    const skills = svc.skills as Array<Record<string, unknown>>;
+    const skills = providerSkills(svc);
     expect(skills[0].paymentRequired).toBe(false);
     expect(skills[0].baseAmount).toBe("1.00");
   });

@@ -72,6 +72,7 @@ function feedbackMethods(input: {
     account: account as any,
     chain: baseSepolia,
     reputationRegistryAddress: REGISTRY,
+    maxTransactionFeeWei: 10n ** 18n,
   });
 }
 
@@ -91,6 +92,7 @@ describe("canonical ReputationRegistry calldata", () => {
     const prepareTransactionRequest = vi.fn(async (request) => ({
       ...request,
       nonce: 7,
+      maxFeePerGas: 1n,
     }));
     const account = {
       address: CLIENT,
@@ -106,9 +108,10 @@ describe("canonical ReputationRegistry calldata", () => {
       account: account as any,
       chain: baseSepolia,
       reputationRegistryAddress: REGISTRY,
+      maxTransactionFeeWei: 10n ** 18n,
     });
 
-    const prepared = await methods.prepareFeedback(INPUT);
+    const prepared = await methods.prepareFeedback(INPUT, 7n);
 
     expect(prepareTransactionRequest).toHaveBeenCalledWith({
       account,
@@ -116,11 +119,12 @@ describe("canonical ReputationRegistry calldata", () => {
       to: REGISTRY,
       data: EXPECTED_CALLDATA,
       gas: 300_000n,
+      nonce: 7n,
     });
     expect(prepared).toEqual({
       transactionHash: keccak256(SERIALIZED_TRANSACTION),
       serializedTransaction: SERIALIZED_TRANSACTION,
-      nonce: 7n,
+      facilitatorNonce: 7n,
     });
   });
 });
@@ -129,7 +133,7 @@ describe("canonical ReputationRegistry receipt outcomes", () => {
   const prepared: PreparedFeedbackTransaction = {
     transactionHash: TRANSACTION_HASH,
     serializedTransaction: SERIALIZED_TRANSACTION,
-    nonce: 0n,
+    facilitatorNonce: 0n,
   };
 
   it("classifies a reverted receipt as permanent", async () => {
@@ -163,5 +167,31 @@ describe("canonical ReputationRegistry receipt outcomes", () => {
     await expect(
       methods.submitPreparedFeedback(prepared, INPUT),
     ).rejects.toBe(rpcError);
+  });
+
+  it("treats an already-known raw transaction as broadcast", async () => {
+    const onBroadcast = vi.fn();
+    const methods = createFeedbackMethods({
+      publicClient: {
+        waitForTransactionReceipt: vi.fn().mockResolvedValue({
+          status: "success",
+          logs: [],
+        }),
+      } as any,
+      walletClient: {
+        sendRawTransaction: vi
+          .fn()
+          .mockRejectedValue(new Error("already known")),
+      } as any,
+      account: { address: CLIENT } as any,
+      chain: baseSepolia,
+      reputationRegistryAddress: REGISTRY,
+      maxTransactionFeeWei: 10n ** 18n,
+    });
+
+    await expect(
+      methods.submitPreparedFeedback(prepared, INPUT, onBroadcast),
+    ).rejects.toMatchObject({ failure: "succeeded_without_event" });
+    expect(onBroadcast).toHaveBeenCalledWith(TRANSACTION_HASH);
   });
 });

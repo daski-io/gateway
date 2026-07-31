@@ -1,16 +1,24 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { startTestGateway, type TestGateway } from "./helpers/setup.js";
 import type { Hex } from "../src/types.js";
-import { buildFeedbackInput } from "../src/reputation/mirror.js";
+import {
+  signedConfirmation,
+  TEST_BUYER,
+} from "./helpers/confirmation.js";
+import { ReputationProjectionMismatchError } from "../src/db/reputationTransactionQueries.js";
+import { DatabaseReadinessProbe } from "../src/http/readiness.js";
+import { ReputationMirrorWorker } from "../src/reputation/worker.js";
 
 // Canonical-feedback mirror (src/reputation/mirror.ts). The mirror is
 // fire-and-forget from POST /confirm — these tests await its side effects
 // (mock reader call records + the reputation_mirrors row) via vi.waitFor
 // rather than the HTTP response.
 
-const BUYER = "0xbbbb000000000000000000000000000000000001" as Hex;
+const BUYER = TEST_BUYER;
 const TX_HASH =
   "0xdead000000000000000000000000000000000000000000000000000000000001" as Hex;
+const REVISED_TX_HASH =
+  "0xdead000000000000000000000000000000000000000000000000000000000002" as Hex;
 const ATTEST_UID =
   "0xcafe000000000000000000000000000000000000000000000000000000000001" as Hex;
 const REVISED_UID =
@@ -21,12 +29,8 @@ const REPUTATION_REGISTRY =
   "0x000000000000000000000000000000000000b004" as Hex;
 const PROVIDER_AGENT_ID = 2n;
 const PAYMENT_ID = 42n;
-
-const SIG = {
-  v: 27,
-  r: "0x1111111111111111111111111111111111111111111111111111111111111111" as Hex,
-  s: "0x2222222222222222222222222222222222222222222222222222222222222222" as Hex,
-};
+const PROVIDER_WALLET =
+  "0x000000000000000000000000000000000000c002" as Hex;
 
 function paymentRecord(
   providerAgentId: bigint,
@@ -41,11 +45,27 @@ function paymentRecord(
     cachedBuyerWallet: BUYER,
     cachedProviderOwner:
       "0x000000000000000000000000000000000000c001" as Hex,
-    cachedProviderWallet:
-      "0x000000000000000000000000000000000000c002" as Hex,
+    cachedProviderWallet: PROVIDER_WALLET,
     serviceRef: ("0x" + "ab".repeat(32)) as Hex,
     paidAt: BigInt(Math.floor(Date.now() / 1000)),
     reputationEligible,
+  };
+}
+
+function reputationRecord(currentConfirmationUid: Hex) {
+  return {
+    paymentId: PAYMENT_ID,
+    providerAgentId: PROVIDER_AGENT_ID,
+    buyerAgentId: 7n,
+    serviceId: ("0x" + "cd".repeat(32)) as Hex,
+    outcome: "Completed" as const,
+    confirmation: "Confirmed" as const,
+    fulfillmentSeconds: 1n,
+    outcomeTimestamp: 1n,
+    confirmationTimestamp: 1n,
+    currentConfirmationUid,
+    outcomeRecorded: true,
+    reputationEligible: true,
   };
 }
 
@@ -53,16 +73,24 @@ async function postConfirm(
   gateway: TestGateway,
   body: Record<string, unknown>,
 ): Promise<{ status: number; json: any }> {
+  const confirmation =
+    body.confirmation === "NotConfirmed" ? "NotConfirmed" : "Confirmed";
+  const easNonce = BigInt(String(body.easNonce ?? "0"));
+  const refUid = (body.refUid as Hex | undefined) ?? null;
+  const deadline =
+    body.deadline === undefined ? undefined : BigInt(String(body.deadline));
+  const signed = await signedConfirmation(gateway.config, {
+    paymentId: PAYMENT_ID,
+    confirmation,
+    recipient: PROVIDER_WALLET,
+    easNonce,
+    refUid,
+    deadline,
+  });
   const res = await fetch(`${gateway.baseUrl}/confirm/${PAYMENT_ID}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      confirmation: "Confirmed",
-      attester: BUYER,
-      deadline: String(Math.floor(Date.now() / 1000) + 3600),
-      signature: SIG,
-      ...body,
-    }),
+    body: JSON.stringify({ ...signed, ...body }),
   });
   return { status: res.status, json: await res.json() };
 }
@@ -86,6 +114,12 @@ async function seedPaidChallenge(
     providerA2AUrl: "http://provider.test/a2a",
     walletAddress: BUYER,
     expiresAt: new Date(Date.now() + 3600_000),
+    providerAuthority: {
+      walletAddress:
+        "0x000000000000000000000000000000000000c002" as Hex,
+      agentURI: "https://provider.test/agent.json",
+      observedBlock: 0n,
+    },
   });
   await gateway.bundle.queries.recordChallengePaid(
     serviceRef,
@@ -279,6 +313,18 @@ describe("canonical ReputationRegistry feedback mirror", () => {
 
     const row = await gateway.bundle.queries.getReputationMirror(PAYMENT_ID);
     expect(row?.attempts).toBe(1);
+    expect(row?.giveFacilitatorTransactionId).toBeNull();
+    const transaction =
+      await gateway.bundle.queries.getFacilitatorTransaction({
+        kind: "feedback_give",
+        key: `${PAYMENT_ID}:${ATTEST_UID.toLowerCase()}`,
+      });
+    expect(transaction).toMatchObject({
+      status: "reverted",
+      preparedTransaction: null,
+      failureCode: "feedback_give_reverted",
+    });
+    expect(row?.lastError).toBe("feedback_give_reverted");
     expect(gateway.mockChain.feedbacks).toHaveLength(1);
   });
 
@@ -305,6 +351,133 @@ describe("canonical ReputationRegistry feedback mirror", () => {
     });
     const row = await gateway.bundle.queries.getReputationMirror(PAYMENT_ID);
     expect(row?.attempts).toBe(1);
+    expect(row?.giveFacilitatorTransactionId).not.toBeNull();
+    const transaction =
+      await gateway.bundle.queries.getFacilitatorTransactionById(
+        row!.giveFacilitatorTransactionId!,
+      );
+    expect(transaction).toMatchObject({
+      status: "prepared",
+      transactionNonce: 0n,
+      preparedTransaction: expect.any(String),
+      broadcastAt: null,
+    });
+    expect(row?.lastError).toBe("reputation_transaction_failed");
+    expect(row?.lastError).not.toContain("RPC request timed out");
+    expect(gateway.mockChain.feedbacks).toHaveLength(1);
+  });
+
+  it("finishes the exact prepared revision before promoting a replacement", async () => {
+    gateway.mockChain.setPaymentRecord(
+      PAYMENT_ID,
+      paymentRecord(PROVIDER_AGENT_ID),
+    );
+    gateway.mockChain.queueFeedback({
+      kind: "transient",
+      reason: "RPC request timed out",
+    });
+
+    await gateway.bundle.reputationWorker.enqueue({
+      paymentId: PAYMENT_ID,
+      confirmation: "Confirmed",
+      attestationUid: ATTEST_UID,
+      refUid: null,
+    });
+    await vi.waitFor(async () => {
+      expect(
+        (await gateway.bundle.queries.getReputationMirror(PAYMENT_ID))?.status,
+      ).toBe("retry");
+    });
+
+    const prepared = await gateway.bundle.queries.getReputationMirror(
+      PAYMENT_ID,
+    );
+    const transactionId = prepared!.giveFacilitatorTransactionId!;
+    expect(
+      await gateway.bundle.queries.enqueueReputationMirror({
+        paymentId: PAYMENT_ID,
+        confirmation: "NotConfirmed",
+        attestationUid: REVISED_UID,
+        refUid: null,
+      }),
+    ).toBe(false);
+    const staged = await gateway.bundle.queries.getReputationMirror(PAYMENT_ID);
+    expect(staged).toMatchObject({
+      attestationUid: ATTEST_UID,
+      giveFacilitatorTransactionId: transactionId,
+      pendingAttestationUid: REVISED_UID,
+      pendingConfirmation: "NotConfirmed",
+    });
+
+    await gateway.bundle.pool.query(
+      `UPDATE facilitator_transactions
+          SET next_attempt_at = now()
+        WHERE id = $1`,
+      [transactionId],
+    );
+    await gateway.bundle.reputationWorker.tick();
+
+    expect(gateway.mockChain.feedbacks.map((item) => item.feedbackHash)).toEqual([
+      ATTEST_UID,
+      ATTEST_UID,
+      REVISED_UID,
+    ]);
+    expect(
+      await gateway.bundle.queries.getFacilitatorTransactionById(transactionId),
+    ).toMatchObject({
+      status: "succeeded",
+      failureCode: null,
+    });
+    expect(
+      await gateway.bundle.queries.getReputationMirror(PAYMENT_ID),
+    ).toMatchObject({
+      status: "sent",
+      attestationUid: REVISED_UID,
+      pendingAttestationUid: null,
+      giveFacilitatorTransactionId: null,
+    });
+  });
+
+  it("terminalizes the journal and fails readiness on projection mismatch", async () => {
+    gateway.mockChain.setPaymentRecord(
+      PAYMENT_ID,
+      paymentRecord(PROVIDER_AGENT_ID),
+    );
+    vi.spyOn(
+      gateway.bundle.queries,
+      "finishReputationMirrorSuccess",
+    ).mockRejectedValueOnce(new ReputationProjectionMismatchError());
+
+    await gateway.bundle.reputationWorker.enqueue({
+      paymentId: PAYMENT_ID,
+      confirmation: "Confirmed",
+      attestationUid: ATTEST_UID,
+      refUid: null,
+    });
+    await vi.waitFor(async () => {
+      const row = await gateway.bundle.queries.getReputationMirror(PAYMENT_ID);
+      const transaction = row?.giveFacilitatorTransactionId
+        ? await gateway.bundle.queries.getFacilitatorTransactionById(
+            row.giveFacilitatorTransactionId,
+          )
+        : null;
+      expect(transaction).toMatchObject({
+        status: "succeeded",
+        failureCode: "reputation_projection_mismatch",
+      });
+    });
+
+    expect(await new DatabaseReadinessProbe(gateway.bundle.pool, 0).isReady()).toBe(
+      false,
+    );
+    expect(gateway.mockChain.feedbacks).toHaveLength(1);
+    await gateway.bundle.pool.query(
+      `UPDATE reputation_mirrors
+          SET updated_at = now() - interval '3 minutes'
+        WHERE payment_id = $1`,
+      [PAYMENT_ID.toString()],
+    );
+    await gateway.bundle.reputationWorker.tick();
     expect(gateway.mockChain.feedbacks).toHaveLength(1);
   });
 
@@ -331,11 +504,12 @@ describe("canonical ReputationRegistry feedback mirror", () => {
     const row = await gateway.bundle.queries.getReputationMirror(PAYMENT_ID);
     expect(row?.status).toBe("failed");
     expect(row?.attempts).toBe(8);
-    expect(row?.lastError).toBe("reputation mirror attempt limit reached");
+    expect(row?.lastError).toBe("reputation_submission_attempt_limit");
     expect(gateway.mockChain.feedbacks).toHaveLength(0);
   });
 
-  it("duplicate confirmation (no refUid) does not post a second feedback", async () => {
+  it("returns a completed duplicate without posting second feedback", async () => {
+    const deadline = BigInt(Math.floor(Date.now() / 1000) + 3600).toString();
     gateway.mockChain.setPaymentRecord(
       PAYMENT_ID,
       paymentRecord(PROVIDER_AGENT_ID),
@@ -346,22 +520,16 @@ describe("canonical ReputationRegistry feedback mirror", () => {
       attestationUid: ATTEST_UID,
     });
 
-    await postConfirm(gateway, {});
+    await postConfirm(gateway, { deadline });
     await vi.waitFor(async () => {
       const row = await gateway.bundle.queries.getReputationMirror(PAYMENT_ID);
       expect(row?.status).toBe("sent");
     });
 
-    // Retry of the same confirmation (mock EAS accepts; in prod the
-    // resolver rejects refUID-less duplicates — the mirror's own dedupe
-    // is what's under test here).
-    gateway.mockChain.queueConfirmation({
-      kind: "success",
-      txHash: TX_HASH,
-      attestationUid: ATTEST_UID,
-    });
-    const res = await postConfirm(gateway, {});
+    // An exact retry resolves from the durable completed transaction.
+    const res = await postConfirm(gateway, { deadline });
     expect(res.status).toBe(200);
+    expect(res.json.attestationUid).toBe(ATTEST_UID);
 
     // Nothing observable changes on the skip path — give the async mirror
     // a beat, then assert no second post happened.
@@ -382,10 +550,18 @@ describe("canonical ReputationRegistry feedback mirror", () => {
     });
 
     await postConfirm(gateway, { confirmation: "Confirmed" });
-    await vi.waitFor(async () => {
-      const row = await gateway.bundle.queries.getReputationMirror(PAYMENT_ID);
-      expect(row?.feedbackIndex).toBe(1n);
-    });
+    await vi.waitFor(
+      async () => {
+        const row =
+          await gateway.bundle.queries.getReputationMirror(PAYMENT_ID);
+        expect(row?.feedbackIndex).toBe(1n);
+      },
+      { timeout: 5_000 },
+    );
+    gateway.mockChain.setReputationRecord(
+      PAYMENT_ID,
+      reputationRecord(ATTEST_UID),
+    );
 
     gateway.mockChain.queueConfirmation({
       kind: "success",
@@ -395,6 +571,7 @@ describe("canonical ReputationRegistry feedback mirror", () => {
     const res = await postConfirm(gateway, {
       confirmation: "NotConfirmed",
       refUid: ATTEST_UID,
+      easNonce: "1",
     });
     expect(res.status).toBe(200);
 
@@ -419,6 +596,123 @@ describe("canonical ReputationRegistry feedback mirror", () => {
     expect(row!.attestationUid).toBe(REVISED_UID);
   });
 
+  it("recovers a missed revision enqueue with its durable lineage", async () => {
+    gateway.mockChain.setPaymentRecord(
+      PAYMENT_ID,
+      paymentRecord(PROVIDER_AGENT_ID),
+    );
+    await seedPaidChallenge(gateway, "domain-mgmt");
+    gateway.mockChain.queueConfirmation({
+      kind: "success",
+      txHash: TX_HASH,
+      attestationUid: ATTEST_UID,
+    });
+    await postConfirm(gateway, { confirmation: "Confirmed" });
+    await vi.waitFor(async () => {
+      expect(
+        (await gateway.bundle.queries.getReputationMirror(PAYMENT_ID))
+          ?.feedbackIndex,
+      ).toBe(1n);
+    });
+
+    gateway.mockChain.setReputationRecord(
+      PAYMENT_ID,
+      reputationRecord(ATTEST_UID),
+    );
+    await gateway.bundle.reputationWorker.stopAndDrain();
+    gateway.mockChain.queueConfirmation({
+      kind: "success",
+      txHash: REVISED_TX_HASH,
+      attestationUid: REVISED_UID,
+    });
+    const response = await postConfirm(gateway, {
+      confirmation: "NotConfirmed",
+      refUid: ATTEST_UID,
+      easNonce: "1",
+    });
+    expect(response.status).toBe(200);
+    expect(
+      (await gateway.bundle.queries.getReputationMirror(PAYMENT_ID))
+        ?.attestationUid,
+    ).toBe(ATTEST_UID);
+    expect(await gateway.bundle.queries.listMissingReputationMirrors()).toEqual([
+      {
+        paymentId: PAYMENT_ID,
+        attestationUid: REVISED_UID,
+        refUid: ATTEST_UID,
+      },
+    ]);
+
+    gateway.mockChain.setReputationRecord(PAYMENT_ID, {
+      ...reputationRecord(REVISED_UID),
+      confirmation: "NotConfirmed",
+    });
+    const recoveryWorker = new ReputationMirrorWorker({
+      config: gateway.config,
+      reader: gateway.mockChain,
+      queries: gateway.bundle.queries,
+    });
+    await recoveryWorker.tick();
+    await recoveryWorker.stopAndDrain();
+
+    expect(gateway.mockChain.feedbackRevokes).toEqual([
+      { agentId: PROVIDER_AGENT_ID, feedbackIndex: 1n },
+    ]);
+    expect(gateway.mockChain.feedbacks.map((item) => item.feedbackHash)).toEqual([
+      ATTEST_UID,
+      REVISED_UID,
+    ]);
+    expect(
+      await gateway.bundle.queries.getReputationMirror(PAYMENT_ID),
+    ).toMatchObject({
+      status: "sent",
+      attestationUid: REVISED_UID,
+      refUid: ATTEST_UID,
+      feedbackIndex: 2n,
+    });
+  });
+
+  it("revokes a prior feedback index even when revision lineage is absent", async () => {
+    gateway.mockChain.setPaymentRecord(
+      PAYMENT_ID,
+      paymentRecord(PROVIDER_AGENT_ID),
+    );
+    await seedPaidChallenge(gateway, "domain-mgmt");
+    await gateway.bundle.reputationWorker.enqueue({
+      paymentId: PAYMENT_ID,
+      confirmation: "Confirmed",
+      attestationUid: ATTEST_UID,
+      refUid: null,
+    });
+    await vi.waitFor(async () => {
+      expect(
+        (await gateway.bundle.queries.getReputationMirror(PAYMENT_ID))
+          ?.feedbackIndex,
+      ).toBe(1n);
+    });
+
+    await gateway.bundle.reputationWorker.enqueue({
+      paymentId: PAYMENT_ID,
+      confirmation: "NotConfirmed",
+      attestationUid: REVISED_UID,
+      refUid: null,
+    });
+    await vi.waitFor(async () => {
+      expect(
+        (await gateway.bundle.queries.getReputationMirror(PAYMENT_ID))
+          ?.feedbackIndex,
+      ).toBe(2n);
+    });
+
+    expect(gateway.mockChain.feedbackRevokes).toEqual([
+      { agentId: PROVIDER_AGENT_ID, feedbackIndex: 1n },
+    ]);
+    expect(gateway.mockChain.feedbacks.map((item) => item.feedbackHash)).toEqual([
+      ATTEST_UID,
+      REVISED_UID,
+    ]);
+  });
+
   it("revision still posts fresh feedback when the revoke reverts (already revoked)", async () => {
     gateway.mockChain.setPaymentRecord(
       PAYMENT_ID,
@@ -434,10 +728,14 @@ describe("canonical ReputationRegistry feedback mirror", () => {
       const row = await gateway.bundle.queries.getReputationMirror(PAYMENT_ID);
       expect(row?.status).toBe("sent");
     });
+    gateway.mockChain.setReputationRecord(
+      PAYMENT_ID,
+      reputationRecord(ATTEST_UID),
+    );
 
     gateway.mockChain.queueFeedbackRevoke({
       kind: "revert",
-      reason: "revokeFeedback reverted: already revoked",
+      reason: "already revoked",
     });
     gateway.mockChain.queueConfirmation({
       kind: "success",
@@ -447,6 +745,7 @@ describe("canonical ReputationRegistry feedback mirror", () => {
     await postConfirm(gateway, {
       confirmation: "NotConfirmed",
       refUid: ATTEST_UID,
+      easNonce: "1",
     });
 
     // Revoke was attempted, swallowed, and the fresh post still landed.
@@ -459,6 +758,55 @@ describe("canonical ReputationRegistry feedback mirror", () => {
       expect(row?.attestationUid).toBe(REVISED_UID);
       expect(row?.status).toBe("sent");
     });
+  });
+
+  it("does not publish replacement feedback after an unclassified revoke failure", async () => {
+    gateway.mockChain.setPaymentRecord(
+      PAYMENT_ID,
+      paymentRecord(PROVIDER_AGENT_ID),
+    );
+    gateway.mockChain.queueConfirmation({
+      kind: "success",
+      txHash: TX_HASH,
+      attestationUid: ATTEST_UID,
+    });
+    await postConfirm(gateway, {});
+    await vi.waitFor(async () => {
+      expect(
+        (await gateway.bundle.queries.getReputationMirror(PAYMENT_ID))?.status,
+      ).toBe("sent");
+    });
+    gateway.mockChain.setReputationRecord(
+      PAYMENT_ID,
+      reputationRecord(ATTEST_UID),
+    );
+    gateway.mockChain.queueFeedbackRevoke({
+      kind: "revert",
+      reason: "registry rejected revocation",
+    });
+    gateway.mockChain.queueConfirmation({
+      kind: "success",
+      txHash: `0x${"de".repeat(32)}` as Hex,
+      attestationUid: REVISED_UID,
+    });
+
+    expect(
+      (
+        await postConfirm(gateway, {
+          confirmation: "NotConfirmed",
+          refUid: ATTEST_UID,
+          easNonce: "1",
+        })
+      ).status,
+    ).toBe(200);
+
+    await vi.waitFor(async () => {
+      expect(
+        (await gateway.bundle.queries.getReputationMirror(PAYMENT_ID))?.status,
+      ).toBe("failed");
+    });
+    expect(gateway.mockChain.feedbackRevokes).toHaveLength(1);
+    expect(gateway.mockChain.feedbacks).toHaveLength(1);
   });
 
   it("queues a retry when the authoritative router record is unavailable", async () => {
@@ -520,40 +868,6 @@ describe("canonical ReputationRegistry feedback mirror", () => {
     expect(gateway.mockChain.feedbacks[0]!.agentId).toBe(0n);
   });
 
-  it("rebroadcasts the identical prepared transaction after a worker crash", async () => {
-    gateway.mockChain.setPaymentRecord(
-      PAYMENT_ID,
-      paymentRecord(PROVIDER_AGENT_ID),
-    );
-    await gateway.bundle.queries.enqueueReputationMirror({
-      paymentId: PAYMENT_ID,
-      confirmation: "Confirmed",
-      attestationUid: ATTEST_UID,
-      refUid: null,
-    });
-    await gateway.bundle.queries.claimReputationMirror(PAYMENT_ID);
-    const feedback = buildFeedbackInput({
-      config: gateway.config,
-      providerAgentId: PROVIDER_AGENT_ID,
-      confirmation: "Confirmed",
-      attestationUid: ATTEST_UID,
-      serviceSlug: "",
-    });
-    const prepared = await gateway.mockChain.prepareFeedback(feedback);
-    await gateway.bundle.queries.markReputationMirrorPrepared({
-      paymentId: PAYMENT_ID,
-      transactionHash: prepared.transactionHash,
-      preparedTransaction: prepared.serializedTransaction,
-      transactionNonce: prepared.nonce,
-    });
-
-    await gateway.bundle.reputationWorker.tick();
-
-    const row = await gateway.bundle.queries.getReputationMirror(PAYMENT_ID);
-    expect(row?.status).toBe("sent");
-    expect(row?.txHash).toBe(prepared.transactionHash);
-    expect(gateway.mockChain.feedbacks).toHaveLength(1);
-  });
 });
 
 describe("mirror disabled without REPUTATION_REGISTRY_ADDRESS", () => {

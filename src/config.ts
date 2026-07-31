@@ -6,6 +6,10 @@ import {
   loadRuntimeConfig,
   type RuntimeConfig,
 } from "./runtimeConfig.js";
+import {
+  loadUsdcDomain,
+  type UsdcDomainConfig,
+} from "./payment/usdcDomain.js";
 
 export const DASKI_A2A_EXTENSION_URI = "https://daski.xyz/a2a/v1";
 export const DASKI_X402_EXTENSION_URI = "https://daski.xyz/x402/v2";
@@ -63,9 +67,10 @@ export interface Config extends RuntimeConfig {
   // Writes go through EAS; this stays in config so discovery can read
   // aggregate stats for ranking.
   reputationStorageAddress?: Hex;
-  usdcAddress: Hex;
-  usdcName: string;
-  usdcVersion: string;
+  // Earliest deployment block among PaymentRouter and ReputationStorage.
+  // Live indexing always begins here; mock mode defaults to block zero.
+  chainIndexerStartBlock: bigint;
+  usdc: UsdcDomainConfig;
   facilitatorPrivateKey: Hex;
   // Empty admits every active ProviderRegistry entry on Base Sepolia.
   // Base mainnet requires at least one explicitly admitted agentId.
@@ -83,6 +88,17 @@ export interface Config extends RuntimeConfig {
   // assigned in the response body we just threw away.
   a2aSubmitTimeoutMs: number;
   cacheRefreshIntervalSeconds: number;
+  providerAuthMaxAgeSeconds: number;
+  confirmationMaxPerPayment: number;
+  confirmationMaxPerWalletPerDay: number;
+  confirmationMaxGlobalPerDay: number;
+  settlementMinAmount: bigint;
+  settlementMaxPerWalletPerDay: number;
+  settlementMaxGlobalPerDay: number;
+  // Reserve retained after every facilitator-funded write.
+  facilitatorMinBalanceWei: bigint;
+  // Maximum native-token cost accepted from an RPC-prepared transaction.
+  facilitatorMaxTransactionFeeWei: bigint;
   // How long the discovery cache keeps serving a provider's last-known-good
   // Agent Card when refresh fetches fail (provider restarting, card host
   // down). Past the cap the provider degrades to a card-less catalog entry
@@ -134,6 +150,47 @@ function parseAgentIds(raw: string | undefined): bigint[] {
       });
   } catch {
     throw new Error("WHITELISTED_AGENT_IDS must contain unsigned integers");
+  }
+}
+
+function nonNegativeBigInt(name: string, raw: string | undefined): bigint {
+  if (raw === undefined) {
+    throw new Error(`${name} env var is required in live chain mode`);
+  }
+  try {
+    const value = BigInt(raw);
+    if (value < 0n) throw new Error("negative");
+    return value;
+  } catch {
+    throw new Error(`${name} must be a non-negative integer`);
+  }
+}
+
+function positiveBigInt(
+  name: string,
+  raw: string | undefined,
+  fallback: bigint,
+): bigint {
+  try {
+    const value = raw === undefined ? fallback : BigInt(raw);
+    if (value <= 0n) throw new Error("non-positive");
+    return value;
+  } catch {
+    throw new Error(`${name} must be a positive integer`);
+  }
+}
+
+function nonNegativeBigIntWithDefault(
+  name: string,
+  raw: string | undefined,
+  fallback: bigint,
+): bigint {
+  try {
+    const value = raw === undefined ? fallback : BigInt(raw);
+    if (value < 0n) throw new Error("negative");
+    return value;
+  } catch {
+    throw new Error(`${name} must be a non-negative integer`);
   }
 }
 
@@ -283,6 +340,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   if (chainId === 8453 && oracleMode !== "production") {
     throw new Error("Base mainnet SANCTIONS_ORACLE_MODE must be production");
   }
+  if (chainId === 8453 && runtime.nodeEnv !== "production") {
+    throw new Error("Base mainnet requires NODE_ENV=production");
+  }
+  if (chainId === 8453 && runtime.chainMode !== "live") {
+    throw new Error("Base mainnet requires CHAIN_MODE=live");
+  }
   if (runtime.nodeEnv === "production" && oracleMode === "mock") {
     throw new Error("SANCTIONS_ORACLE_MODE=mock is forbidden in production");
   }
@@ -290,6 +353,111 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   if (chainId === 8453 && whitelistedAgentIds.length === 0) {
     throw new Error(
       "WHITELISTED_AGENT_IDS must contain at least one agentId on Base mainnet",
+    );
+  }
+  const reputationStorageAddress = optionalAddress(
+    "REPUTATION_STORAGE_ADDRESS",
+    env.REPUTATION_STORAGE_ADDRESS,
+  );
+  if (runtime.chainMode === "live" && !reputationStorageAddress) {
+    throw new Error("REPUTATION_STORAGE_ADDRESS env var is required in live chain mode");
+  }
+  const chainIndexerStartBlock =
+    runtime.chainMode === "live"
+      ? nonNegativeBigInt(
+          "CHAIN_INDEXER_START_BLOCK",
+          env.CHAIN_INDEXER_START_BLOCK,
+        )
+      : env.CHAIN_INDEXER_START_BLOCK === undefined
+        ? 0n
+        : nonNegativeBigInt(
+            "CHAIN_INDEXER_START_BLOCK",
+            env.CHAIN_INDEXER_START_BLOCK,
+          );
+  const usdc = loadUsdcDomain({
+    chainId,
+    chainMode: runtime.chainMode,
+    address: requireAddress("USDC_ADDRESS", env.USDC_ADDRESS),
+    env,
+  });
+  const mainnetRequired = (name: string): string | undefined => {
+    if (chainId === 8453 && env[name] === undefined) {
+      throw new Error(`${name} must be explicitly set on Base mainnet`);
+    }
+    return env[name];
+  };
+  const confirmationMaxPerPayment = positiveInteger(
+    "CONFIRMATION_MAX_PER_PAYMENT",
+    mainnetRequired("CONFIRMATION_MAX_PER_PAYMENT"),
+    3,
+    3,
+  );
+  const confirmationMaxPerWalletPerDay = positiveInteger(
+    "CONFIRMATION_MAX_PER_WALLET_PER_DAY",
+    mainnetRequired("CONFIRMATION_MAX_PER_WALLET_PER_DAY"),
+    20,
+    100,
+  );
+  const confirmationMaxGlobalPerDay = positiveInteger(
+    "CONFIRMATION_MAX_GLOBAL_PER_DAY",
+    mainnetRequired("CONFIRMATION_MAX_GLOBAL_PER_DAY"),
+    500,
+    1_000,
+  );
+  const settlementMinAmount = positiveBigInt(
+    "SETTLEMENT_MIN_AMOUNT",
+    mainnetRequired("SETTLEMENT_MIN_AMOUNT"),
+    1n,
+  );
+  const settlementMaxPerWalletPerDay = positiveInteger(
+    "SETTLEMENT_MAX_PER_WALLET_PER_DAY",
+    mainnetRequired("SETTLEMENT_MAX_PER_WALLET_PER_DAY"),
+    100,
+  );
+  const settlementMaxGlobalPerDay = positiveInteger(
+    "SETTLEMENT_MAX_GLOBAL_PER_DAY",
+    mainnetRequired("SETTLEMENT_MAX_GLOBAL_PER_DAY"),
+    1_000,
+  );
+  if (settlementMaxPerWalletPerDay > settlementMaxGlobalPerDay) {
+    throw new Error(
+      "SETTLEMENT_MAX_PER_WALLET_PER_DAY cannot exceed SETTLEMENT_MAX_GLOBAL_PER_DAY",
+    );
+  }
+  const facilitatorMinBalanceWei =
+    chainId === 8453
+      ? positiveBigInt(
+          "FACILITATOR_MIN_BALANCE_WEI",
+          mainnetRequired("FACILITATOR_MIN_BALANCE_WEI"),
+          1n,
+        )
+      : nonNegativeBigIntWithDefault(
+          "FACILITATOR_MIN_BALANCE_WEI",
+          env.FACILITATOR_MIN_BALANCE_WEI,
+          0n,
+        );
+  const facilitatorMaxTransactionFeeWei = positiveBigInt(
+    "FACILITATOR_MAX_TRANSACTION_FEE_WEI",
+    mainnetRequired("FACILITATOR_MAX_TRANSACTION_FEE_WEI"),
+    10_000_000_000_000_000n,
+  );
+  const providerAuthMaxAgeSeconds = positiveInteger(
+    "PROVIDER_AUTH_MAX_AGE_SECONDS",
+    mainnetRequired("PROVIDER_AUTH_MAX_AGE_SECONDS"),
+    30,
+    60,
+  );
+  const cacheRefreshIntervalSeconds = positiveInteger(
+    "CACHE_REFRESH_INTERVAL",
+    env.CACHE_REFRESH_INTERVAL,
+    300,
+  );
+  if (
+    chainId === 8453 &&
+    cacheRefreshIntervalSeconds > providerAuthMaxAgeSeconds
+  ) {
+    throw new Error(
+      "CACHE_REFRESH_INTERVAL cannot exceed PROVIDER_AUTH_MAX_AGE_SECONDS on Base mainnet",
     );
   }
   return {
@@ -347,10 +515,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       "VALIDATION_REGISTRY_ADDRESS",
       env.VALIDATION_REGISTRY_ADDRESS,
     ),
-    reputationStorageAddress: optionalAddress(
-      "REPUTATION_STORAGE_ADDRESS",
-      env.REPUTATION_STORAGE_ADDRESS,
-    ),
+    reputationStorageAddress,
+    chainIndexerStartBlock,
     easAddress: requireAddress(
       "EAS_ADDRESS",
       env.EAS_ADDRESS ?? "0x4200000000000000000000000000000000000021",
@@ -363,9 +529,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       "EAS_OUTCOME_SCHEMA_UID",
       env.EAS_OUTCOME_SCHEMA_UID,
     ),
-    usdcAddress: requireAddress("USDC_ADDRESS", env.USDC_ADDRESS),
-    usdcName: env.USDC_NAME ?? "USDC",
-    usdcVersion: env.USDC_VERSION ?? "2",
+    usdc,
     facilitatorPrivateKey: requirePrivateKey(
       "FACILITATOR_PRIVATE_KEY",
       env.FACILITATOR_PRIVATE_KEY,
@@ -383,11 +547,16 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       90_000,
       600_000,
     ),
-    cacheRefreshIntervalSeconds: positiveInteger(
-      "CACHE_REFRESH_INTERVAL",
-      env.CACHE_REFRESH_INTERVAL,
-      300,
-    ),
+    cacheRefreshIntervalSeconds,
+    providerAuthMaxAgeSeconds,
+    confirmationMaxPerPayment,
+    confirmationMaxPerWalletPerDay,
+    confirmationMaxGlobalPerDay,
+    settlementMinAmount,
+    settlementMaxPerWalletPerDay,
+    settlementMaxGlobalPerDay,
+    facilitatorMinBalanceWei,
+    facilitatorMaxTransactionFeeWei,
     cacheMaxStalenessSeconds: positiveInteger(
       "CACHE_MAX_STALENESS_SECONDS",
       env.CACHE_MAX_STALENESS_SECONDS,

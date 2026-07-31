@@ -12,23 +12,20 @@ import { hasMarketplaceService } from "./agentCard.js";
 import { applyDiscoverFilters, type DiscoverFilters } from "./filters.js";
 import { formatForRestDiscover } from "./restPresentation.js";
 
-/// Wallet-facing description of which ERC-20 the gateway settles in. Surfaced
-/// at the top of /discover so agents can pre-check balance against the right
-/// contract — Daski uses a custom test USDC on Sepolia, NOT Circle's, and a
-/// fresh wallet hitting Circle's faucet would land on the wrong address.
+/// Wallet-facing description of the reviewed Circle USDC configuration.
 export interface AcceptedToken {
   address: string;
+  decimals: number;
   name: string;
   version: string;
+  domainSeparator: string;
   chainId: number;
   network: "base" | "base-sepolia";
 }
 
 export function buildAcceptedToken(config: Config): AcceptedToken {
   return {
-    address: config.usdcAddress,
-    name: config.usdcName,
-    version: config.usdcVersion,
+    ...config.usdc,
     chainId: config.chainId,
     network: config.network,
   };
@@ -118,7 +115,11 @@ export function createDiscoveryRouter(
     res.json({
       acceptedToken: buildAcceptedToken(config),
       providers: filtered.map((provider) =>
-        formatForRestDiscover(provider, config),
+        formatForRestDiscover(
+          provider,
+          config,
+          config.providerAuthMaxAgeSeconds,
+        ),
       ),
       cachedAt: cache.getLastRefresh()?.toISOString() ?? null,
     });
@@ -148,7 +149,13 @@ export function createDiscoveryRouter(
       });
       return;
     }
-    res.json(formatForRestDiscover(provider, config));
+    res.json(
+      formatForRestDiscover(
+        provider,
+        config,
+        config.providerAuthMaxAgeSeconds,
+      ),
+    );
   });
 
   return router;

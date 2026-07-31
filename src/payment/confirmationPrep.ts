@@ -5,6 +5,7 @@ import type { Eip712TypedData, Hex } from "../types.js";
 import { logErrorWithId } from "../util/errorWrap.js";
 import { isHex32, isHexAddress } from "../util/evmValidation.js";
 import { CONFIRMATION_CODE } from "./protocol.js";
+import { confirmationTypedData } from "./confirmationTypedData.js";
 
 export interface ConfirmationPrepDeps {
   config: Config;
@@ -18,20 +19,6 @@ export type ConfirmationPrepResult =
       status: number;
       error: { code: string; message: string; correlationId?: string };
     };
-
-const ATTEST_TYPES = {
-  Attest: [
-    { name: "schema", type: "bytes32" },
-    { name: "recipient", type: "address" },
-    { name: "expirationTime", type: "uint64" },
-    { name: "revocable", type: "bool" },
-    { name: "refUID", type: "bytes32" },
-    { name: "data", type: "bytes" },
-    { name: "value", type: "uint256" },
-    { name: "nonce", type: "uint256" },
-    { name: "deadline", type: "uint64" },
-  ],
-} as const;
 
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
 const ZERO_BYTES32 = `0x${"00".repeat(32)}` as Hex;
@@ -81,14 +68,21 @@ export async function prepareConfirmation(
   ) {
     return fail("BAD_REFUID", "refUid must be a 32-byte hex string");
   }
-  const deadlineSeconds =
+  const requestedDeadlineSeconds =
     input.deadlineSeconds == null ? 3600 : Number(input.deadlineSeconds);
-  if (!Number.isSafeInteger(deadlineSeconds) || deadlineSeconds <= 0) {
+  if (
+    !Number.isSafeInteger(requestedDeadlineSeconds) ||
+    requestedDeadlineSeconds <= 0
+  ) {
     return fail(
       "BAD_DEADLINE",
       "deadlineSeconds must be a positive integer",
     );
   }
+  const deadlineSeconds = Math.min(
+    3_600,
+    Math.max(300, requestedDeadlineSeconds),
+  );
 
   const attester = input.attester.toLowerCase() as Hex;
 
@@ -139,32 +133,13 @@ export async function prepareConfirmation(
     paymentId,
     CONFIRMATION_CODE[input.confirmation],
   ]);
-  const typedData: Eip712TypedData = {
-    domain: {
-      name: "EAS",
-      version: "1.2.0",
-      chainId: deps.config.chainId,
-      verifyingContract: deps.config.easAddress,
-    },
-    types: {
-      Attest: ATTEST_TYPES.Attest.map((field) => ({
-        name: field.name,
-        type: field.type,
-      })),
-    },
-    primaryType: "Attest",
-    message: {
-      schema: deps.config.easConfirmationSchemaUid,
-      recipient,
-      expirationTime: "0",
-      revocable: true,
-      refUID,
-      data,
-      value: "0",
-      nonce: nonce.toString(),
-      deadline: deadline.toString(),
-    },
-  };
+  const typedData: Eip712TypedData = confirmationTypedData(deps.config, {
+    recipient,
+    refUid: refUID,
+    data,
+    easNonce: nonce,
+    deadline,
+  });
   return {
     ok: true,
     value: {
@@ -172,12 +147,14 @@ export async function prepareConfirmation(
       confirmation: input.confirmation,
       attester,
       deadline: deadline.toString(),
+      easNonce: nonce.toString(),
       refUid: input.refUid ?? null,
       eip712TypedData: typedData,
       submitTemplate: {
         confirmation: input.confirmation,
         attester,
         deadline: deadline.toString(),
+        easNonce: nonce.toString(),
         ...(input.refUid ? { refUid: input.refUid } : {}),
       },
     },

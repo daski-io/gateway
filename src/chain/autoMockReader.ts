@@ -23,20 +23,23 @@ import type {
   FeedbackInput,
   FeedbackResult,
   PreparedFeedbackTransaction,
+  PreparedConfirmationTransaction,
+  FeedbackRevocationInput,
+  PreparedSettlementTransaction,
   PaymentRouterRecord,
   PaymentSettledEvent,
-  PaymentSettledEventLog,
   ProviderReputation,
   ReputationRecord,
   ServiceReputation,
   SettleWithRegistrationInput,
-  SettleWithRegistrationResult,
   SettlementInput,
   SettlementResult,
+  ServiceSettlementSnapshot,
   BroadcastObserver,
 } from "./reader.js";
 
 const ZERO_HASH = ("0x" + "00".repeat(32)) as Hex;
+const ZERO_ADDRESS = ("0x" + "00".repeat(20)) as Hex;
 const ZERO_ADDR = ("0x" + "00".repeat(20)) as Hex;
 
 export interface AutoMockChainReaderOptions {
@@ -85,11 +88,21 @@ export class AutoMockChainReader implements ChainReader {
   private blockNumber = 1n;
   private usedAuthNonces = new Set<string>();
   private settlementResults = new Map<string, SettlementResult>();
+  private preparedSettlements = new Map<
+    string,
+    { input: SettlementInput; result: SettlementResult; registered?: boolean }
+  >();
+  private facilitatorPreparedNonce = 0n;
+  private facilitatorConfirmedNonce = 0n;
   private agentByWallet = new Map<string, bigint>();
   private readonly defaultBuyerAgentId: bigint;
 
   constructor(private readonly opts: AutoMockChainReaderOptions) {
     this.defaultBuyerAgentId = opts.defaultBuyerAgentId ?? 99n;
+  }
+
+  async getFacilitatorBalance(): Promise<bigint> {
+    return 10n ** 30n;
   }
 
   // ── ProviderRegistry views ─────────────────────────────────────────
@@ -117,6 +130,39 @@ export class AutoMockChainReader implements ChainReader {
       agentId,
       registrationTime: 1n,
       isActive: true,
+    };
+  }
+
+  async getProviderAuthority(agentId: bigint, blockNumber: bigint) {
+    const provider = await this.getProvider(agentId);
+    if (!provider.isActive) {
+      return {
+        ...provider,
+        walletAddress: ZERO_ADDRESS,
+        agentURI: "",
+        observedBlock: blockNumber,
+      };
+    }
+    return {
+      ...provider,
+      walletAddress: await this.getAgentWallet(agentId),
+      agentURI: await this.getAgentURI(agentId),
+      observedBlock: blockNumber,
+    };
+  }
+
+  async getServiceSettlement(
+    serviceId: Hex,
+  ): Promise<ServiceSettlementSnapshot> {
+    const wallet = await this.getAgentWallet(this.opts.providerAgentId);
+    return {
+      serviceId,
+      providerAgentId: this.opts.providerAgentId,
+      active: true,
+      providerOwner: wallet,
+      providerWallet: wallet,
+      payee: wallet,
+      observedBlock: this.blockNumber,
     };
   }
 
@@ -154,14 +200,18 @@ export class AutoMockChainReader implements ChainReader {
     return 0n;
   }
 
-  async verifySanctionsReadiness(): Promise<boolean> {
-    return true;
+  async verifyDeploymentReadiness() {
+    return { ready: true, failedCheck: null };
   }
 
   async authorizationUsed(authorizer: Hex, nonce: Hex): Promise<boolean> {
     return this.usedAuthNonces.has(
       `${authorizer.toLowerCase()}:${nonce.toLowerCase()}`,
     );
+  }
+
+  async verifyReceiveAuthorization(): Promise<boolean> {
+    return true;
   }
 
   // ── Settlement ──────────────────────────────────────────────────────
@@ -180,16 +230,14 @@ export class AutoMockChainReader implements ChainReader {
     return id;
   }
 
-  async settlePayment(
+  async prepareSettlement(
     input: SettlementInput,
-    onBroadcast?: BroadcastObserver,
-  ): Promise<SettlementResult> {
+    facilitatorNonce: bigint,
+  ): Promise<PreparedSettlementTransaction> {
     const key = `${input.from.toLowerCase()}:${input.nonce.toLowerCase()}`;
     if (this.usedAuthNonces.has(key)) {
       throw new Error("mock settle: authorization nonce already used");
     }
-    this.usedAuthNonces.add(key);
-
     const buyerAgentId = this.rememberBuyer(input.from);
     const paymentId = this.nextPaymentId++;
     const commission = (input.amount * 5n) / 100n;
@@ -210,49 +258,114 @@ export class AutoMockChainReader implements ChainReader {
       transactionHash: txHashForPayment(paymentId),
       event,
     };
-    this.settlementResults.set(result.transactionHash.toLowerCase(), result);
-    await onBroadcast?.(result.transactionHash);
-    return result;
-  }
-
-  async settleWithRegistration(
-    input: SettleWithRegistrationInput,
-    onBroadcast?: BroadcastObserver,
-  ): Promise<SettleWithRegistrationResult> {
-    const existed = this.agentByWallet.has(input.from.toLowerCase());
-    const result = await this.settlePayment(input, onBroadcast);
+    const nonce = facilitatorNonce;
+    this.recordPreparedFacilitatorNonce(nonce);
+    this.preparedSettlements.set(result.transactionHash.toLowerCase(), {
+      input,
+      result,
+    });
     return {
+      kind: "settle",
       transactionHash: result.transactionHash,
-      event: result.event,
-      buyerAgentId: result.event.buyerAgentId,
-      registered: !existed,
+      serializedTransaction:
+        `0x02${nonce.toString(16).padStart(2, "0")}` as Hex,
+      facilitatorNonce: nonce,
     };
   }
 
-  async getSettlementByTransaction(
+  async prepareSettlementWithRegistration(
+    input: SettleWithRegistrationInput,
+    facilitatorNonce: bigint,
+  ): Promise<PreparedSettlementTransaction> {
+    const existed = this.agentByWallet.has(input.from.toLowerCase());
+    const prepared = await this.prepareSettlement(input, facilitatorNonce);
+    const pending = this.preparedSettlements.get(
+      prepared.transactionHash.toLowerCase(),
+    );
+    if (pending) pending.registered = !existed;
+    return { ...prepared, kind: "settle_with_registration" };
+  }
+
+  async submitPreparedSettlement(
+    prepared: PreparedSettlementTransaction,
+    expectedServiceRef: Hex,
+    onBroadcast?: BroadcastObserver,
+  ): Promise<SettlementResult & { registered?: boolean }> {
+    const pending = this.preparedSettlements.get(
+      prepared.transactionHash.toLowerCase(),
+    );
+    if (!pending) throw new Error("mock prepared settlement not found");
+    const { input, result } = pending;
+    if (
+      result.event.serviceRef.toLowerCase() !== expectedServiceRef.toLowerCase()
+    ) {
+      throw new Error("mock settlement serviceRef mismatch");
+    }
+    this.usedAuthNonces.add(
+      `${input.from.toLowerCase()}:${input.nonce.toLowerCase()}`,
+    );
+    this.settlementResults.set(result.transactionHash.toLowerCase(), result);
+    this.recordConfirmedFacilitatorNonce(prepared.facilitatorNonce);
+    await onBroadcast?.(result.transactionHash);
+    return {
+      ...result,
+      ...(prepared.kind === "settle_with_registration"
+        ? { registered: pending.registered ?? false }
+        : {}),
+    };
+  }
+
+  async findSettlementByTransaction(
     transactionHash: Hex,
     serviceRef: Hex,
-  ): Promise<SettlementResult> {
+  ): Promise<SettlementResult | null> {
     const result = this.settlementResults.get(transactionHash.toLowerCase());
-    if (!result || result.event.serviceRef.toLowerCase() !== serviceRef.toLowerCase()) {
-      throw new Error("mock settlement transaction not found");
-    }
-    return result;
+    return result?.event.serviceRef.toLowerCase() === serviceRef.toLowerCase()
+      ? result
+      : null;
   }
 
   // ── Buyer confirmation (delegated EAS) ──────────────────────────────
 
-  async submitBuyerConfirmation(
+  private preparedConfirmations = new Map<string, ConfirmationResult>();
+
+  async prepareBuyerConfirmation(
     _input: ConfirmationDelegationInput,
-    onBroadcast?: BroadcastObserver,
-  ): Promise<ConfirmationResult> {
+    facilitatorNonce: bigint,
+  ): Promise<PreparedConfirmationTransaction> {
     this.confirmationCount++;
     const result = {
       transactionHash: deterministicHex("c", this.confirmationCount),
       attestationUid: deterministicHex("a", this.confirmationCount),
     };
+    this.preparedConfirmations.set(
+      result.transactionHash.toLowerCase(),
+      result,
+    );
+    this.recordPreparedFacilitatorNonce(facilitatorNonce);
+    return {
+      transactionHash: result.transactionHash,
+      serializedTransaction: deterministicHex("d", this.confirmationCount),
+      facilitatorNonce,
+    };
+  }
+
+  async submitPreparedBuyerConfirmation(
+    prepared: PreparedConfirmationTransaction,
+    _input: ConfirmationDelegationInput,
+    onBroadcast?: BroadcastObserver,
+  ): Promise<ConfirmationResult> {
+    const result = this.preparedConfirmations.get(
+      prepared.transactionHash.toLowerCase(),
+    );
+    if (!result) throw new Error("mock confirmation transaction not found");
+    this.recordConfirmedFacilitatorNonce(prepared.facilitatorNonce);
     await onBroadcast?.(result.transactionHash);
     return result;
+  }
+
+  async getBuyerConfirmationByTransaction(transactionHash: Hex) {
+    return this.preparedConfirmations.get(transactionHash.toLowerCase()) ?? null;
   }
 
   async getEasAttesterNonce(_attester: Hex): Promise<bigint> {
@@ -311,13 +424,10 @@ export class AutoMockChainReader implements ChainReader {
       fulfillmentSeconds: 1n,
       outcomeTimestamp: BigInt(Math.floor(Date.now() / 1000)),
       confirmationTimestamp: 0n,
+      currentConfirmationUid: ZERO_HASH,
       outcomeRecorded: true,
       reputationEligible: true,
     };
-  }
-
-  async getPaymentRefundedAmount(_paymentId: bigint): Promise<bigint> {
-    return 0n;
   }
 
   /**
@@ -356,12 +466,13 @@ export class AutoMockChainReader implements ChainReader {
 
   async prepareFeedback(
     _input: FeedbackInput,
+    facilitatorNonce: bigint,
   ): Promise<PreparedFeedbackTransaction> {
-    const nonce = BigInt(this.feedbacks.length);
+    this.recordPreparedFacilitatorNonce(facilitatorNonce);
     return {
-      nonce,
-      transactionHash: deterministicHex("f", nonce + 1n),
-      serializedTransaction: deterministicHex("e", nonce + 1n),
+      facilitatorNonce,
+      transactionHash: deterministicHex("f", facilitatorNonce + 1n),
+      serializedTransaction: deterministicHex("e", facilitatorNonce + 1n),
     };
   }
 
@@ -374,6 +485,7 @@ export class AutoMockChainReader implements ChainReader {
     const key = input.agentId.toString();
     const next = (this.feedbackIndexByAgent.get(key) ?? 0n) + 1n;
     this.feedbackIndexByAgent.set(key, next);
+    this.recordConfirmedFacilitatorNonce(prepared.facilitatorNonce);
     await onBroadcast?.(prepared.transactionHash);
     return {
       transactionHash: prepared.transactionHash,
@@ -389,23 +501,58 @@ export class AutoMockChainReader implements ChainReader {
   }
 
   async getFacilitatorTransactionCount(): Promise<bigint> {
-    return BigInt(this.feedbacks.length);
+    return this.facilitatorConfirmedNonce;
   }
 
-  async revokeFeedback(
-    _agentId: bigint,
-    feedbackIndex: bigint,
+  async getFacilitatorPendingTransactionCount(): Promise<bigint> {
+    return this.facilitatorPreparedNonce > this.facilitatorConfirmedNonce
+      ? this.facilitatorPreparedNonce
+      : this.facilitatorConfirmedNonce;
+  }
+
+  async prepareFeedbackRevocation(
+    input: FeedbackRevocationInput,
+    facilitatorNonce: bigint,
+  ): Promise<PreparedFeedbackTransaction> {
+    this.recordPreparedFacilitatorNonce(facilitatorNonce);
+    return {
+      transactionHash: deterministicHex("v", input.feedbackIndex),
+      serializedTransaction: deterministicHex("r", input.feedbackIndex),
+      facilitatorNonce,
+    };
+  }
+
+  async submitPreparedFeedbackRevocation(
+    prepared: PreparedFeedbackTransaction,
+    _input: FeedbackRevocationInput,
     onBroadcast?: BroadcastObserver,
   ): Promise<FeedbackResult> {
-    const result = { transactionHash: deterministicHex("v", feedbackIndex) };
+    const result = { transactionHash: prepared.transactionHash };
+    this.recordConfirmedFacilitatorNonce(prepared.facilitatorNonce);
     await onBroadcast?.(result.transactionHash);
     return result;
   }
 
-  async getPaymentSettledEvents(
-    _from: bigint,
-    _to: bigint,
-  ): Promise<PaymentSettledEventLog[]> {
+  async getFeedbackRevocationByTransaction(
+    _transactionHash: Hex,
+    _input: FeedbackRevocationInput,
+  ): Promise<FeedbackResult | null> {
+    return null;
+  }
+
+  async getChainProjectionEvents(_from: bigint, _to: bigint) {
     return [];
+  }
+
+  private recordPreparedFacilitatorNonce(nonce: bigint): void {
+    if (nonce >= this.facilitatorPreparedNonce) {
+      this.facilitatorPreparedNonce = nonce + 1n;
+    }
+  }
+
+  private recordConfirmedFacilitatorNonce(nonce: bigint): void {
+    if (nonce >= this.facilitatorConfirmedNonce) {
+      this.facilitatorConfirmedNonce = nonce + 1n;
+    }
   }
 }

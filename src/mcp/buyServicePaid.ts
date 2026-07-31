@@ -11,10 +11,11 @@ import { createQuotedChallenge } from "../payment/quotedChallenge.js";
 import type { Hex } from "../types.js";
 import { hashCanonical } from "../payment/requirementResponse.js";
 import type { Fetcher } from "./a2a.js";
-import type { PaymentScreeningReadinessProbe } from "../payment/screeningReadiness.js";
+import type { ChainDeploymentReadinessProbe } from "../payment/deploymentReadiness.js";
 import type { BuyServiceContext } from "./buyServiceTypes.js";
 import { unknownServiceArgWarnings } from "./serviceArgWarnings.js";
 import { logger } from "../util/logger.js";
+import type { ProviderAuthorityService } from "../payment/providerAuthority.js";
 import {
   buyerNameMismatchWarning,
   mcpError,
@@ -31,7 +32,8 @@ interface PaidPathDeps {
   timeoutMs: number;
   maxResponseBytes: number;
   fetchAgentCardFn?: FetchAgentCardOptions["fetchFn"];
-  screeningReadiness: PaymentScreeningReadinessProbe;
+  deploymentReadiness: ChainDeploymentReadinessProbe;
+  providerAuthority: ProviderAuthorityService;
 }
 
 export async function runBuyServicePaidPath(
@@ -80,6 +82,21 @@ export async function runBuyServicePaidPath(
     );
     if (!validated.ok) return mcpError(validated.error);
   }
+  const warnings = unknownServiceArgWarnings(
+    provider.skillMeta,
+    args.serviceArgs,
+  );
+  warnings.push(...phoneWhoisWarnings(serviceArgs));
+  if (isAtomic && args.useWalletDerivedName !== true) {
+    const mismatch = buyerNameMismatchWarning(buyerName ?? null, serviceArgs);
+    if (mismatch) warnings.push(mismatch);
+  }
+  if (!isAtomic && buyerName) {
+    warnings.push(
+      `\`name\` was ignored because agentId ${buyerAgentId.toString()} is ` +
+        "already registered.",
+    );
+  }
   const result = await createQuotedChallenge(
     {
       providerAgentId: provider.agentId,
@@ -88,6 +105,7 @@ export async function runBuyServicePaidPath(
       skillId: args.skillId,
       serviceSlug: args.serviceSlug,
       serviceArgs,
+      warnings,
       amountLimit: args.amount,
       requestFingerprint: hashCanonical(args),
       registrationDelegation: args.registration
@@ -105,7 +123,8 @@ export async function runBuyServicePaidPath(
       fetch: deps.fetch,
       timeoutMs: deps.timeoutMs,
       maxResponseBytes: deps.maxResponseBytes,
-      screeningReadiness: deps.screeningReadiness,
+      deploymentReadiness: deps.deploymentReadiness,
+      providerAuthority: deps.providerAuthority,
     },
   );
   if (!result.ok) {
@@ -128,46 +147,6 @@ export async function runBuyServicePaidPath(
     });
   }
 
-  const requirements = result.value.requirements;
-  // Flow snapshot (migration 017): persist the canonical serviceArgs the
-  // quote committed to plus the acknowledgements captured on this call,
-  // so continuation calls can omit re-entry and acknowledgements survive
-  // restarts. Best-effort — never fails the purchase.
-  try {
-    await deps.queries.recordFlowState(
-      result.value.challenge.serviceRef,
-      serviceArgs,
-      {
-        ...(buyerName
-          ? { buyerName }
-          : args.useWalletDerivedName
-            ? { buyerName: "wallet-derived" }
-            : {}),
-      },
-    );
-  } catch {
-    // snapshot only
-  }
-  const warnings = unknownServiceArgWarnings(
-    provider.skillMeta,
-    args.serviceArgs,
-  );
-  warnings.push(...phoneWhoisWarnings(serviceArgs));
-  if (isAtomic && args.useWalletDerivedName !== true) {
-    // The identity minted with this purchase is permanent — surface a
-    // divergence from the request's own companyName while it can still be
-    // corrected. A warning, never a gate: mismatches can be deliberate.
-    const mismatch = buyerNameMismatchWarning(buyerName ?? null, serviceArgs);
-    if (mismatch) warnings.push(mismatch);
-  }
-  if (!isAtomic && buyerName) {
-    warnings.push(
-      `\`name\` was ignored because agentId ${buyerAgentId.toString()} is ` +
-        "already registered.",
-    );
-  }
-  void requirements;
-  void warnings;
   const paymentRequired = result.value.paymentRequired;
   logger.info("x402.payment_required", { transport: "mcp" });
   return {

@@ -22,7 +22,7 @@ describe("health surfaces", () => {
     expect(await beforeIndexer.json()).toEqual({
       status: "unready",
       version: expect.any(String),
-      dependencies: { paymentScreening: "ready" },
+      dependencies: { chainDeployment: "ready" },
     });
 
     await gateway.bundle.indexer.tick();
@@ -31,11 +31,25 @@ describe("health surfaces", () => {
     expect(await ready.json()).toEqual({
       status: "ready",
       version: expect.any(String),
-      dependencies: { paymentScreening: "ready" },
+      dependencies: { chainDeployment: "ready" },
     });
   });
 
   it("does not retain the retired /health compatibility route", async () => {
     expect((await fetch(`${gateway.baseUrl}/health`)).status).toBe(404);
+  });
+
+  it("becomes unready, rejects new work, and tears down idempotently", async () => {
+    gateway.bundle.beginShutdown();
+    expect((await fetch(`${gateway.baseUrl}/health/live`)).status).toBe(200);
+    expect((await fetch(`${gateway.baseUrl}/health/ready`)).status).toBe(503);
+    expect((await fetch(`${gateway.baseUrl}/public/v1/services`)).status).toBe(
+      503,
+    );
+
+    const first = gateway.bundle.shutdown();
+    const second = gateway.bundle.shutdown();
+    expect(second).toBe(first);
+    await first;
   });
 });

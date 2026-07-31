@@ -97,7 +97,14 @@ describe("streamTaskStatus", () => {
       },
     );
 
-    expect(parseResult(result).message).toContain("[removed untrusted instruction]");
+    const parsed = parseResult(result);
+    expect(parsed.message).toBe("Provider returned a task-status stream error.");
+    expect(
+      (
+        (parsed.details as Record<string, unknown>)
+          .untrustedProviderContent as Record<string, unknown>
+      ).message,
+    ).toContain("[removed untrusted instruction]");
   });
 
   it("aborts the provider stream when the client cancels", async () => {

@@ -23,6 +23,8 @@ interface RequirementResponseInput {
   serviceSlug: string;
   serviceVersion: string;
   serviceId: Hex;
+  expectedPayee: Hex;
+  expectedPayeeBlock: bigint;
   serviceRef: Hex;
   providerA2AUrl: string;
   agentCard: Record<string, unknown>;
@@ -36,6 +38,7 @@ interface RequirementResponseInput {
   purchaseLegal: PurchaseLegalContext;
   effectiveExpiresAt: Date;
   requestFingerprint: Hex;
+  warnings: string[];
   registrationDelegation?: StoredChallenge["registrationDelegation"];
   existingChallenge: StoredChallenge | null;
   now: Date;
@@ -71,11 +74,11 @@ export function buildRequirementResponse(
     input.skillId,
   );
   const requirements: PaymentRequirements = {
-    scheme: "exact",
+    scheme: "daski-exact",
     network: input.config.x402Network,
     amount: input.amount.toString(),
-    asset: input.config.usdcAddress,
-    payTo: input.config.paymentRouterAddress,
+    asset: input.config.usdc.address,
+    payTo: input.config.x402AdapterAddress,
     maxTimeoutSeconds: Math.max(
       1,
       Math.floor(
@@ -83,16 +86,29 @@ export function buildRequirementResponse(
       ),
     ),
     extra: {
-      assetTransferMethod: "eip3009",
-      name: input.config.usdcName,
-      version: input.config.usdcVersion,
+      assetTransferMethod: "eip3009-receive",
+      name: input.config.usdc.name,
+      version: input.config.usdc.version,
+      daskiProfile: "1",
+      authorizationValidBefore: Math.floor(
+        input.effectiveExpiresAt.getTime() / 1000,
+      ).toString(),
+      paymentRouter: input.config.paymentRouterAddress,
+      providerAgentId: input.providerTokenId.toString(),
+      serviceId: input.serviceId,
+      expectedPayee: input.expectedPayee,
+      serviceRef: input.serviceRef,
     },
   };
   const daskiExtension = buildDaskiX402Declaration(input.config.publicUrl, {
+    profile: "1",
+    x402Adapter: input.config.x402AdapterAddress,
+    paymentRouter: input.config.paymentRouterAddress,
     serviceRef: input.serviceRef,
     providerAgentId: input.providerTokenId.toString(),
     buyerAgentId: input.buyerTokenId.toString(),
     serviceId: input.serviceId,
+    expectedPayee: input.expectedPayee,
     skillId: input.skillId,
     serviceSlug: input.serviceSlug,
     serviceVersion: input.serviceVersion,
@@ -103,9 +119,8 @@ export function buildRequirementResponse(
       expiresAt: input.quote.expiresAt.toISOString(),
     },
     settlementMode:
-      input.buyerTokenId === 0n
-        ? "register-and-settle"
-        : "settle-only",
+      input.buyerTokenId === 0n ? "register-and-settle" : "settle-only",
+    ...(input.warnings.length > 0 ? { warnings: input.warnings } : {}),
   });
   const paymentRequired: PaymentRequired = {
     x402Version: 2,
@@ -131,6 +146,8 @@ export function buildRequirementResponse(
     serviceSlug: input.serviceSlug,
     serviceVersion: input.serviceVersion,
     serviceId: input.serviceId,
+    expectedPayee: input.expectedPayee,
+    expectedPayeeBlock: input.expectedPayeeBlock,
     amount: input.amount,
     providerA2AUrl: input.providerA2AUrl,
     walletAddress: input.walletAddress.toLowerCase() as Hex,
@@ -139,14 +156,16 @@ export function buildRequirementResponse(
     settlementState: "pending",
     paymentId: null,
     transactionHash: null,
+    settlementFacilitatorTransactionId: null,
+    providerAuthorityWallet: null,
+    providerAuthorityAgentUri: null,
+    providerAuthorityBlock: null,
     verifiedAt: null,
     confirmationAttestationUid: null,
     quoteId: input.quote.quoteId,
     quoteSignature: input.quote.providerSignature,
     quoteExpiresAt: input.quote.expiresAt,
     quoteRequestHash: input.quote.requestHash,
-    serviceArgs: null,
-    acknowledgements: {},
     x402Version: 2,
     paymentRequired,
     requirementsHash,

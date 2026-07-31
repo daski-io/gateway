@@ -8,6 +8,7 @@ import { cardsOf } from "./agentCard.js";
 export function formatForRestDiscover(
   provider: CachedProvider,
   marketplace: MarketplaceLegalUrls,
+  authorityMaxAgeSeconds = 30,
 ): Record<string, unknown> {
   if (!provider.providerLegal) {
     throw new Error("provider legal metadata is required for discovery");
@@ -29,6 +30,10 @@ export function formatForRestDiscover(
     })),
     lastFetched: provider.lastFetched.toISOString(),
     fetchError: provider.fetchError,
+    authorityFresh:
+      provider.authorityActive &&
+      Date.now() - provider.authorityObservedAt.getTime() <=
+        authorityMaxAgeSeconds * 1_000,
   };
 }
 

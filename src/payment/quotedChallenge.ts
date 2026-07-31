@@ -14,7 +14,12 @@ import { resolveSkillOffer, type SkillOffer } from "./skillOffer.js";
 import { fetchProviderQuote } from "./providerQuote.js";
 import type { ChainReader } from "../chain/reader.js";
 import { walletControlsAgent } from "../identity/control.js";
-import type { PaymentScreeningReadinessProbe } from "./screeningReadiness.js";
+import type { ChainDeploymentReadinessProbe } from "./deploymentReadiness.js";
+import { isSelfPurchase } from "./selfPurchase.js";
+import {
+  ProviderAuthorityError,
+  type ProviderAuthorityService,
+} from "./providerAuthority.js";
 
 export interface QuotedChallengeInput {
   providerAgentId: bigint;
@@ -23,6 +28,7 @@ export interface QuotedChallengeInput {
   skillId: string;
   serviceSlug: string;
   serviceArgs: Record<string, unknown>;
+  warnings: string[];
   amountLimit?: string;
   requestFingerprint?: Hex;
   registrationDelegation?: StoredChallenge["registrationDelegation"];
@@ -36,7 +42,8 @@ export interface QuotedChallengeDeps {
   fetch: Fetcher;
   timeoutMs: number;
   maxResponseBytes: number;
-  screeningReadiness: PaymentScreeningReadinessProbe;
+  deploymentReadiness: ChainDeploymentReadinessProbe;
+  providerAuthority: ProviderAuthorityService;
 }
 
 export interface QuotedChallengeValue {
@@ -45,7 +52,6 @@ export interface QuotedChallengeValue {
   paymentRequired: PaymentRequired;
   purchaseLegal: PurchaseLegalContext;
   challenge: StoredChallenge;
-  quoteNotes: string[];
 }
 
 export interface QuotedChallengeError {
@@ -64,7 +70,7 @@ export async function createQuotedChallenge(
   input: QuotedChallengeInput,
   deps: QuotedChallengeDeps,
 ): Promise<QuotedChallengeResult> {
-  if (!(await deps.screeningReadiness.isReady())) {
+  if (!(await deps.deploymentReadiness.isReady())) {
     return {
       ok: false,
       error: {
@@ -75,15 +81,43 @@ export async function createQuotedChallenge(
       },
     };
   }
+  let authority;
+  try {
+    authority = await deps.providerAuthority.requireFresh(
+      input.providerAgentId,
+    );
+  } catch (error) {
+    const code =
+      error instanceof ProviderAuthorityError
+        ? error.code
+        : "provider_authority_unavailable";
+    return {
+      ok: false,
+      error: {
+        code,
+        message:
+          code === "provider_inactive"
+            ? "provider is not currently active"
+            : "provider authority is temporarily unavailable",
+        recoverable: code === "provider_authority_unavailable",
+        ...(code === "provider_authority_unavailable"
+          ? { nextAction: "Retry after the provider registry is readable." }
+          : {}),
+      },
+    };
+  }
   const provider = deps.cache.get(input.providerAgentId);
   if (!provider) {
     return fail("provider_not_found", "provider is not currently admitted");
   }
-  const sameWallet =
-    input.walletAddress.toLowerCase() === provider.walletAddress.toLowerCase();
-  const sameRegisteredAgent =
-    input.buyerAgentId !== 0n && input.buyerAgentId === provider.agentId;
-  if (sameWallet || sameRegisteredAgent) {
+  if (
+    isSelfPurchase({
+      buyerAgentId: input.buyerAgentId,
+      buyerWallet: input.walletAddress,
+      providerAgentId: provider.agentId,
+      providerWallet: authority.walletAddress,
+    })
+  ) {
     return fail(
       "self_purchase_not_allowed",
       "A provider cannot purchase its own service.",
@@ -118,9 +152,9 @@ export async function createQuotedChallenge(
     providerA2AUrl: offer.providerA2AUrl,
     skillId: input.skillId,
     serviceArgs: input.serviceArgs,
-    expectedSignerAddress: provider.walletAddress,
+    expectedSignerAddress: authority.walletAddress,
     expectedChainId: deps.config.chainId,
-    expectedTokenAddress: deps.config.usdcAddress,
+    expectedTokenAddress: deps.config.usdc.address,
     expectedServiceSlug: offer.serviceSlug,
     expectedServiceVersion: offer.serviceVersion,
     fetchFn: deps.fetch,
@@ -135,10 +169,13 @@ export async function createQuotedChallenge(
         message: quoteResult.message,
         ...(quoteResult.code === "quote_validation_failed"
           ? {
-              details: { validationErrors: quoteResult.errors ?? [] },
+              details: {
+                rejectedFields: quoteResult.rejectedFields ?? [],
+              },
               recoverable: true,
               nextAction:
-                "Fix the listed validationErrors in serviceArgs and retry.",
+                "Review only the rejected fields against the published skill " +
+                "schema, correct serviceArgs, and retry.",
             }
           : {}),
       },
@@ -164,11 +201,11 @@ export async function createQuotedChallenge(
         details: {
           quotedAmount: quoteResult.amount,
           limit: input.amountLimit,
-          notes: quoteResult.notes,
         },
         recoverable: true,
         nextAction:
-          "Accept the quote by retrying without amountLimit or with a higher limit.",
+          "Review the quoted amount with the principal and retry only with an " +
+          "explicitly approved higher amount limit.",
       },
     };
   }
@@ -193,11 +230,15 @@ export async function createQuotedChallenge(
         serviceVersion: quote.serviceVersion,
       },
       requestFingerprint: input.requestFingerprint,
+      serviceArgs: input.serviceArgs,
+      warnings: input.warnings,
       registrationDelegation: input.registrationDelegation,
+      providerAuthority: authority,
     },
     deps.config,
     deps.cache,
     deps.queries,
+    deps.reader,
   );
   if (!issued.ok) return fail(issued.code, issued.message);
   return {
@@ -208,7 +249,6 @@ export async function createQuotedChallenge(
       paymentRequired: issued.paymentRequired,
       purchaseLegal: issued.purchaseLegal,
       challenge: issued.challenge,
-      quoteNotes: quoteResult.notes,
     },
   };
 }

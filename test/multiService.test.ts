@@ -251,11 +251,13 @@ describe("multi-service providers", () => {
       const body = parseResult<{
         providers: Array<{
           agentId: string;
-          name: string;
           serviceSlug: string | null;
           providerA2AUrl: string;
           legal: Record<string, string>;
-          skills: Array<{ id: string }>;
+          untrustedProviderContent: {
+            name: string;
+            skills: Array<{ id: string }>;
+          };
         }>;
       }>(result);
 
@@ -265,23 +267,32 @@ describe("multi-service providers", () => {
       for (const service of mine) {
         expect(service.legal).toEqual(expectedLegal(gateway));
       }
-      expect(bySlug.get("domain-management")!.name).toBe("Domain Management");
-      expect(bySlug.get("mailboxes")!.name).toBe("Agent Mailboxes");
+      expect(
+        bySlug.get("domain-management")!.untrustedProviderContent.name,
+      ).toBe("Domain Management");
+      expect(bySlug.get("mailboxes")!.untrustedProviderContent.name).toBe(
+        "Agent Mailboxes",
+      );
       expect(bySlug.get("mailboxes")!.providerA2AUrl).toMatch(/\/a2a\/mailboxes$/);
       expect(bySlug.get("domain-management")!.providerA2AUrl).toMatch(
         /\/a2a\/domain-management$/,
       );
       // The colliding free skill appears on BOTH services, each namespaced.
       expect(
-        bySlug.get("mailboxes")!.skills.map((s) => s.id),
+        bySlug
+          .get("mailboxes")!
+          .untrustedProviderContent.skills.map((s) => s.id),
       ).toContain("check-availability");
       expect(
-        bySlug.get("domain-management")!.skills.map((s) => s.id),
+        bySlug
+          .get("domain-management")!
+          .untrustedProviderContent.skills.map((s) => s.id),
       ).toContain("check-availability");
       // Fixed price surfaces from the NESTED meta.pricing.baseAmount
       // (the shape daski-provider emits); the free skill's translated
       // "0" must NOT surface as a $0.00 price.
-      const mailboxSkills = bySlug.get("mailboxes")!.skills as Array<{
+      const mailboxSkills = bySlug.get("mailboxes")!.untrustedProviderContent
+        .skills as Array<{
         id: string;
         baseAmount?: string;
       }>;

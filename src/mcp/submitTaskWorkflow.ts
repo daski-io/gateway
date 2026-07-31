@@ -1,12 +1,17 @@
 import type { Fetcher } from "./a2a.js";
 import { dispatchSubmitTask } from "./submitTaskDispatch.js";
-import { prepareSubmitTaskEnvelope } from "./submitTaskEnvelope.js";
+import {
+  prepareSubmitTaskEnvelope,
+  rejectUnsignedAuthenticatedPrompt,
+  verifySubmitTaskEnvelope,
+} from "./submitTaskEnvelope.js";
 import { resolveSubmitTaskPayment } from "./submitTaskPayment.js";
 import type { SubmitTaskArgs } from "./submitTaskTypes.js";
 import type { McpDeps } from "./server.js";
 import {
   findCatalogSkillAtA2AEndpoint,
 } from "./providerCatalog.js";
+import { requireFreshCatalogMatch } from "./freshProvider.js";
 import { mcpError, type McpToolResult } from "./util.js";
 
 interface SubmitTaskTransport {
@@ -52,24 +57,103 @@ export async function runSubmitTask(
     });
   }
 
+  const fresh = await requireFreshCatalogMatch(
+    catalogEndpoint.provider.agentId,
+    deps.providerAuthority,
+    () =>
+      findCatalogSkillAtA2AEndpoint(
+        deps.cache,
+        args.providerA2AUrl,
+        args.skillId,
+      ),
+  );
+  if (!fresh.ok) return fresh.result;
+  const freshEndpoint = fresh.endpoint;
+  let expectedBuyerTokenId: bigint | undefined;
+  if (args.taskId) {
+    let mapping;
+    try {
+      mapping = await deps.queries.completedTaskMapping(
+        freshEndpoint.url,
+        args.taskId,
+      );
+    } catch {
+      return mcpError({
+        code: "TASK_MAPPING_LOOKUP_FAILED",
+        message:
+          "The gateway could not verify this task's dispatch binding. No outbound request was made.",
+        recoverable: true,
+      });
+    }
+    if (!mapping || mapping.skillId !== args.skillId) {
+      return mcpError({
+        code: "TASK_NOT_MAPPED",
+        message:
+          "No completed gateway dispatch matches this provider, skill, and task. No outbound request was made.",
+      });
+    }
+    expectedBuyerTokenId = mapping.buyerTokenId;
+  }
+  if (
+    args.taskId &&
+    args.capability &&
+    args.capability.authorization.providerAgentId !==
+      freshEndpoint.provider.agentId.toString()
+  ) {
+    return mcpError({
+      code: "CAPABILITY_PROVIDER_MISMATCH",
+      message:
+        "The task capability is not bound to the selected provider. No outbound request was made.",
+    });
+  }
+  if (
+    args.taskId &&
+    args.capability &&
+    args.capability.authorization.buyerTokenId !==
+      expectedBuyerTokenId?.toString()
+  ) {
+    return mcpError({
+      code: "CAPABILITY_BUYER_MISMATCH",
+      message:
+        "The task capability is not bound to the task's buyer. No outbound request was made.",
+    });
+  }
+
   const paymentContext = await resolveSubmitTaskPayment(
     args,
-    catalogEndpoint.skillMeta,
+    freshEndpoint.skillMeta,
     deps.queries,
   );
   if (!paymentContext.ok) return paymentContext.result;
   const normalizedArgs = paymentContext.args;
 
+  const unsignedPrompt = rejectUnsignedAuthenticatedPrompt(
+    normalizedArgs,
+    paymentContext.requiresEnvelopeAuth,
+  );
+  if (unsignedPrompt) return unsignedPrompt;
+
   const envelope = await prepareSubmitTaskEnvelope(
     normalizedArgs,
     paymentContext.requiresEnvelopeAuth,
-    deps,
+    { ...deps, providerAgentId: freshEndpoint.provider.agentId },
   );
   if (envelope) return envelope;
+  const invalidEnvelope = await verifySubmitTaskEnvelope(
+    normalizedArgs,
+    paymentContext.paidChallenge,
+    { ...deps, providerAgentId: freshEndpoint.provider.agentId },
+  );
+  if (invalidEnvelope) return invalidEnvelope;
 
   return dispatchSubmitTask({
-    args: normalizedArgs,
+    args: {
+      ...normalizedArgs,
+      providerA2AUrl: freshEndpoint.url,
+    },
     paidChallenge: paymentContext.paidChallenge,
+    expectedBuyerTokenId,
+    providerAgentId: freshEndpoint.provider.agentId,
     config: deps.config,
     transport,
     queries: deps.queries,

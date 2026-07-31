@@ -150,8 +150,8 @@ export async function validateUrlForOutbound(
 
 /**
  * Reads a Response body with a hard byte cap. If `Content-Length` exceeds
- * the cap, throws before opening the stream; otherwise streams chunks
- * and aborts as soon as the running total exceeds `maxBytes`.
+ * the cap, cancels without reading; otherwise streams chunks and aborts as
+ * soon as the running total exceeds `maxBytes`.
  */
 export async function readBoundedBody(
   res: Response,
@@ -161,6 +161,7 @@ export async function readBoundedBody(
   if (cl != null) {
     const n = Number(cl);
     if (Number.isFinite(n) && n > maxBytes) {
+      await res.body?.cancel().catch(() => undefined);
       throw new UrlSafetyError(
         `response too large (Content-Length=${n}, max=${maxBytes})`,
         "RESPONSE_TOO_LARGE",

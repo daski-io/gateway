@@ -1,3 +1,4 @@
+import type { PoolClient } from "pg";
 import type {
   ScreeningDetectionSource,
   SettlementScreeningFailure,
@@ -26,21 +27,25 @@ interface StoredFailureRow {
 
 export function createSettlementScreeningQueries(pool: Pool) {
   return {
-    async recordSettlementScreeningEvent(input: {
-      challenge: StoredChallenge;
-      failure: SettlementScreeningFailure;
-      detectionSource: ScreeningDetectionSource;
-      operation: SettlementOperation;
-      chainId: number;
-      paymentRouter: Hex;
-      adapterAddress: Hex;
-      transactionHash?: Hex | null;
-    }): Promise<RecordedScreeningEvent> {
-      const client = await pool.connect();
+    async recordSettlementScreeningEvent(
+      input: {
+        challenge: StoredChallenge;
+        failure: SettlementScreeningFailure;
+        detectionSource: ScreeningDetectionSource;
+        operation: SettlementOperation;
+        chainId: number;
+        paymentRouter: Hex;
+        adapterAddress: Hex;
+        transactionHash?: Hex | null;
+      },
+      existingClient?: PoolClient,
+    ): Promise<RecordedScreeningEvent> {
+      const client = existingClient ?? (await pool.connect());
+      const ownsTransaction = existingClient === undefined;
       const decoded = screeningFailureAddress(input.failure);
       const terminal = input.failure.code === "SANCTIONS_ADDRESS_REJECTED";
       try {
-        await client.query("BEGIN");
+        if (ownsTransaction) await client.query("BEGIN");
         const result = await client.query<ScreeningEventRow>(
           `INSERT INTO settlement_screening_events
              (service_ref, provider_token_id, buyer_token_id, service_id,
@@ -74,9 +79,7 @@ export function createSettlementScreeningQueries(pool: Pool) {
             decoded.kind,
             decoded.address.toLowerCase(),
             input.detectionSource,
-            input.transactionHash
-              ? normalizeHex(input.transactionHash)
-              : null,
+            input.transactionHash ? normalizeHex(input.transactionHash) : null,
             terminal ? "compliance_evidence" : "operational_telemetry",
           ],
         );
@@ -94,16 +97,16 @@ export function createSettlementScreeningQueries(pool: Pool) {
             throw new Error("unable to persist terminal sanctions state");
           }
         }
-        await client.query("COMMIT");
+        if (ownsTransaction) await client.query("COMMIT");
         return {
           eventId: event.event_id,
           occurrenceCount: event.occurrence_count,
         };
       } catch (error) {
-        await client.query("ROLLBACK");
+        if (ownsTransaction) await client.query("ROLLBACK");
         throw error;
       } finally {
-        client.release();
+        if (ownsTransaction) client.release();
       }
     },
 

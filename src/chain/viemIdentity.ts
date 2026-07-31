@@ -1,6 +1,11 @@
 import type { PublicClient, Transport } from "viem";
 import type { base, baseSepolia } from "viem/chains";
-import { agentIndexAbi, identityRegistryAbi, providerRegistryAbi } from "./abis.js";
+import {
+  agentIndexAbi,
+  identityRegistryAbi,
+  providerRegistryAbi,
+  serviceRegistryAbi,
+} from "./abis.js";
 import type { ChainReader } from "./reader.js";
 import type { Hex } from "../types.js";
 
@@ -8,6 +13,7 @@ export interface IdentityContractAddresses {
   agentIndexAddress: Hex;
   identityRegistryAddress: Hex;
   providerRegistryAddress: Hex;
+  serviceRegistryAddress: Hex;
 }
 
 type IdentityMethods = Pick<
@@ -20,6 +26,8 @@ type IdentityMethods = Pick<
   | "getAgentWallet"
   | "getAgentOwner"
   | "getRegistrationNonce"
+  | "getProviderAuthority"
+  | "getServiceSettlement"
 >;
 
 export function createIdentityMethods(
@@ -54,6 +62,76 @@ export function createIdentityMethods(
         agentId: bigint;
         registrationTime: bigint;
         isActive: boolean;
+      };
+    },
+
+    async getProviderAuthority(agentId: bigint, blockNumber: bigint) {
+      const provider = await publicClient.readContract({
+        address: addresses.providerRegistryAddress,
+        abi: providerRegistryAbi,
+        functionName: "getProvider",
+        args: [agentId],
+        blockNumber,
+      });
+      const record = provider as {
+        agentId: bigint;
+        registrationTime: bigint;
+        isActive: boolean;
+      };
+      if (!record.isActive) {
+        return {
+          agentId,
+          registrationTime: record.registrationTime,
+          isActive: false,
+          agentURI: "",
+          walletAddress: `0x${"00".repeat(20)}` as Hex,
+          observedBlock: blockNumber,
+        };
+      }
+      const [agentURI, walletAddress] = await Promise.all([
+        publicClient.readContract({
+          address: addresses.identityRegistryAddress,
+          abi: identityRegistryAbi,
+          functionName: "tokenURI",
+          args: [agentId],
+          blockNumber,
+        }),
+        publicClient.readContract({
+          address: addresses.identityRegistryAddress,
+          abi: identityRegistryAbi,
+          functionName: "getAgentWallet",
+          args: [agentId],
+          blockNumber,
+        }),
+      ]);
+      return {
+        agentId: record.agentId,
+        registrationTime: record.registrationTime,
+        isActive: record.isActive,
+        agentURI: agentURI as string,
+        walletAddress: walletAddress as Hex,
+        observedBlock: blockNumber,
+      };
+    },
+
+    async getServiceSettlement(serviceId: Hex) {
+      const observedBlock = await publicClient.getBlockNumber();
+      const [providerAgentId, active, providerOwner, providerWallet, payee] =
+        (await publicClient.readContract({
+          address: addresses.serviceRegistryAddress,
+          abi: serviceRegistryAbi,
+          functionName: "resolveSettlement",
+          args: [serviceId],
+          blockNumber: observedBlock,
+        })) as readonly [bigint, boolean, Hex, Hex, Hex];
+      return {
+        serviceId,
+        providerAgentId,
+        active,
+        providerOwner,
+        providerWallet,
+        payee,
+        observedBlock,
       };
     },
 

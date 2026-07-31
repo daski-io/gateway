@@ -1,6 +1,6 @@
 import { computeRequestHash } from "../auth/envelope.js";
 import type { Queries } from "../db/queries.js";
-import type { PaymentScreeningReadinessProbe } from "../payment/screeningReadiness.js";
+import type { ChainDeploymentReadinessProbe } from "../payment/deploymentReadiness.js";
 import type { Hex, PaymentPayload } from "../types.js";
 import { hashCanonical } from "../payment/requirementResponse.js";
 import {
@@ -17,7 +17,7 @@ import {
 
 interface RetryDeps {
   queries: Queries;
-  screeningReadiness: PaymentScreeningReadinessProbe;
+  deploymentReadiness: ChainDeploymentReadinessProbe;
   facilitator: import("../payment/daskiFacilitator.js").DaskiFacilitatorService;
 }
 
@@ -77,7 +77,7 @@ export async function runBuyServiceX402Retry(
   if (
     challenge.settlementState !== "paid" &&
     challenge.settlementState !== "sanctions_rejected" &&
-    !(await deps.screeningReadiness.isReady())
+    !(await deps.deploymentReadiness.isReady())
   ) {
     return mcpError({
       code: "payment_screening_unready",
@@ -87,34 +87,23 @@ export async function runBuyServiceX402Retry(
       next_action: "Retry later while payment screening is available.",
     });
   }
-  // Flow-state restore (migration 017): the canonical serviceArgs the
-  // quote committed to are stored on the challenge row, so the signed
-  // retry may omit them entirely — the hash check below still verifies
-  // the restored bytes against the quote commitment.
-  let effectiveServiceArgs = args.serviceArgs;
-  let restoredFromQuote = false;
-  if (effectiveServiceArgs === undefined && challenge.serviceArgs) {
-    effectiveServiceArgs = challenge.serviceArgs;
-    restoredFromQuote = true;
-  }
-  if (effectiveServiceArgs === undefined) {
-    return mcpError({
-      code: "QUOTE_REQUEST_ARGS_MISSING",
-      message:
-        "serviceArgs is required on a signed retry for this quote (it " +
-        "predates stored flow state).",
-      recoverable: true,
-      next_action:
-        "Re-include the identical serviceArgs object from your first call " +
-        "verbatim — nothing removed — alongside paymentPayload and " +
-        "paymentRequirements. Do NOT re-sign or re-quote; the existing " +
-        "payment signature is still valid.",
-    });
-  }
   if (!challenge.quoteRequestHash) {
     return mcpError({
       code: "QUOTE_CREDENTIALS_MISSING",
       message: "stored challenge is missing its quote requestHash",
+    });
+  }
+  const effectiveServiceArgs = args.serviceArgs ?? {};
+  if (
+    args.serviceArgs === undefined &&
+    challenge.quoteRequestHash.toLowerCase() !==
+      computeRequestHash({}).toLowerCase()
+  ) {
+    return mcpError({
+      code: "SERVICE_ARGS_REQUIRED",
+      message: "The exact serviceArgs used for the signed quote are required.",
+      recoverable: true,
+      next_action: "Retry with the complete original serviceArgs unchanged.",
     });
   }
   const normalized = validateAndNormalizeServiceArgs(effectiveServiceArgs, []);
@@ -130,8 +119,7 @@ export async function runBuyServiceX402Retry(
     });
   }
   if (
-    retryRequestHash.toLowerCase() !==
-    challenge.quoteRequestHash.toLowerCase()
+    retryRequestHash.toLowerCase() !== challenge.quoteRequestHash.toLowerCase()
   ) {
     return mcpError({
       code: "QUOTE_REQUEST_MISMATCH",
@@ -150,15 +138,29 @@ export async function runBuyServiceX402Retry(
       message: "stored challenge is not canonical x402 V2",
     });
   }
-  const settlement = await deps.facilitator.settle(
+  const settlementResult = await deps.facilitator.settleDetailed(
     inboundPayload,
     requirements,
   );
+  const settlement = settlementResult.response;
   if (!settlement.success) {
+    const retryable = settlement.retryable ?? false;
+    const screeningCode = settlement.errorReason;
+    const nextAction =
+      screeningCode === "SANCTIONS_ADDRESS_REJECTED"
+        ? "Do not retry this unchanged payment. Obtain a fresh quote and challenge only if the purchase context changes."
+        : screeningCode === "SANCTIONS_SCREENING_UNAVAILABLE"
+          ? "Retry later while the original quote and challenge remain valid."
+          : retryable
+            ? "Retry the same signed payment later."
+            : undefined;
     return mcpError(
       {
         code: settlement.errorReason ?? "settlement_failed",
         message: settlement.errorMessage ?? "payment settlement failed",
+        retryable,
+        recoverable: retryable,
+        ...(nextAction ? { next_action: nextAction } : {}),
         details: {
           transaction: settlement.transaction,
           payer: settlement.payer,
@@ -175,7 +177,6 @@ export async function runBuyServiceX402Retry(
       success: true,
       kind: "settled",
       settled: true,
-      ...(restoredFromQuote ? { serviceArgsRestored: true } : {}),
       transaction: settlement.transaction,
       network: settlement.network,
       payer: settlement.payer,

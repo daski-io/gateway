@@ -1,3 +1,8 @@
+import {
+  sanitizeLogDetails,
+  sanitizeLogMessage,
+} from "./logSanitizer.js";
+
 export interface GatewayLogger {
   log(message: string, details?: unknown): void;
   info(message: string, details?: unknown): void;
@@ -14,19 +19,10 @@ function write(
   const entry: Record<string, unknown> = {
     timestamp: new Date().toISOString(),
     level,
-    message,
+    message: sanitizeLogMessage(message),
   };
-  if (details !== undefined) entry.details = details;
-  const line = `${JSON.stringify(entry, (_key, value: unknown) => {
-    if (value instanceof Error) {
-      return {
-        name: value.name,
-        message: value.message,
-        stack: value.stack,
-      };
-    }
-    return typeof value === "bigint" ? value.toString() : value;
-  })}\n`;
+  if (details !== undefined) entry.details = sanitizeLogDetails(details);
+  const line = `${JSON.stringify(entry)}\n`;
   (level === "error" ? process.stderr : process.stdout).write(line);
 }
 

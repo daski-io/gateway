@@ -5,6 +5,7 @@ import {
 import type {
   FetchProviderQuoteArgs,
   ProviderQuoteCommitment,
+  ProviderRejectedField,
   ProviderQuoteResult,
 } from "./providerQuoteTypes.js";
 
@@ -14,12 +15,18 @@ export {
   type FetchProviderQuoteArgs,
   type ProviderQuoteCommitment,
   type ProviderQuoteExpectations,
+  type ProviderRejectedField,
   type ProviderQuoteResult,
   type ProviderQuoteValidationResult,
 } from "./providerQuoteTypes.js";
 
 const DEFAULT_TIMEOUT_MS = 15_000;
 const DEFAULT_MAX_BYTES = 256 * 1024;
+const MAX_REJECTED_FIELDS = 20;
+const MAX_PROVIDER_MESSAGE_LENGTH = 1_000;
+const FIELD_PATH_RE =
+  /^[A-Za-z][A-Za-z0-9_]*(?:(?:\.[A-Za-z][A-Za-z0-9_]*)|(?:\[(?:0|[1-9][0-9]{0,3})\]))*$/;
+const ERROR_CODE_RE = /^[a-z][a-z0-9_]{0,63}$/;
 
 function quoteUrlFor(providerA2AUrl: string): string {
   return providerA2AUrl.replace(/\/a2a(?=\/|$)/, "/quote");
@@ -40,13 +47,20 @@ export async function fetchProviderQuote(
   );
   if (!post.ok) return transportFailure(url, post);
   const body = post.body;
-  if (!body.ok) {
+  if (body.ok === false) {
+    const rejectedFields = parseRejectedFields(body.errors, args.serviceArgs);
+    if (!rejectedFields) {
+      return malformed("provider /quote returned malformed validation errors");
+    }
     return {
       ok: false,
       code: "quote_validation_failed",
       message: "Provider rejected the requested args.",
-      errors: Array.isArray(body.errors) ? body.errors : [],
+      rejectedFields,
     };
+  }
+  if (body.ok !== true) {
+    return malformed("provider /quote returned a malformed ok flag");
   }
   if (
     typeof body.amount !== "string" ||
@@ -83,13 +97,9 @@ export async function fetchProviderQuote(
     }
     quote = validated.quote;
   }
-  const notes = Array.isArray(body.notes)
-    ? body.notes.filter((note): note is string => typeof note === "string")
-    : [];
   return {
     ok: true,
     amount: body.amount,
-    notes,
     quote,
     paymentRequired: body.paymentRequired !== false,
   };
@@ -99,10 +109,51 @@ interface QuoteJson {
   ok?: boolean;
   amount?: unknown;
   currency?: unknown;
-  notes?: unknown;
   paymentRequired?: unknown;
   quote?: unknown;
-  errors?: Array<{ field: string; code: string; message: string }>;
+  errors?: unknown;
+}
+
+function parseRejectedFields(
+  value: unknown,
+  serviceArgs: Record<string, unknown>,
+): ProviderRejectedField[] | null {
+  if (
+    !Array.isArray(value) ||
+    value.length === 0 ||
+    value.length > MAX_REJECTED_FIELDS
+  ) {
+    return null;
+  }
+  const rejectedFields: ProviderRejectedField[] = [];
+  const seen = new Set<string>();
+  for (const entry of value) {
+    if (!isRecord(entry)) return null;
+    const keys = Object.keys(entry);
+    if (
+      keys.some((key) => !["field", "code", "message"].includes(key)) ||
+      typeof entry.field !== "string" ||
+      entry.field.length > 160 ||
+      !FIELD_PATH_RE.test(entry.field) ||
+      typeof entry.code !== "string" ||
+      !ERROR_CODE_RE.test(entry.code) ||
+      typeof entry.message !== "string" ||
+      entry.message.length > MAX_PROVIDER_MESSAGE_LENGTH
+    ) {
+      return null;
+    }
+    const rootField = entry.field.match(/^[A-Za-z][A-Za-z0-9_]*/)?.[0];
+    if (!rootField || !Object.hasOwn(serviceArgs, rootField)) return null;
+    const key = `${entry.field}:${entry.code}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    rejectedFields.push({ field: entry.field, code: entry.code });
+  }
+  return rejectedFields;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
 function malformed(message: string): ProviderQuoteResult {

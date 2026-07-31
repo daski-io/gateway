@@ -5,7 +5,6 @@ import type {
   SettlementResponse,
   StoredChallenge,
 } from "../types.js";
-import type { SettlementScreeningFailure } from "../chain/sanctionsErrors.js";
 
 export interface SettleInput {
   payload: PaymentPayload;
@@ -13,14 +12,16 @@ export interface SettleInput {
 }
 
 export type SettleResult =
-  | { ok: true; response: SettlementResponse }
+  | { ok: true; status: 200; response: SettlementResponse }
   | {
       ok: false;
-      errorReason: string;
-      message: string;
       status: number;
       response: SettlementResponse;
-      screeningFailure?: SettlementScreeningFailure;
+      failure: {
+        code: string;
+        message: string;
+        retryable?: boolean;
+      };
     };
 
 export type VerifyResult =
@@ -29,9 +30,8 @@ export type VerifyResult =
       alreadyPaid: boolean;
       payer: Hex;
       settleArgs: {
-        v: number;
-        r: Hex;
-        s: Hex;
+        signature: Hex;
+        nonceSalt: Hex;
         validAfter: bigint;
         validBefore: bigint;
         nonce: Hex;

@@ -13,6 +13,8 @@ type PaymentContextResult =
     }
   | { ok: false; result: McpToolResult };
 
+const EMPTY_SERVICE_ARGS_HASH = computeRequestHash({});
+
 function fail(
   code: string,
   message: string,
@@ -64,8 +66,8 @@ function envelopeRequired(
 }
 
 /**
- * Restores and validates the gateway payment binding before provider dispatch.
- * Omitted signed-retry routing fields are restored into a normalized copy.
+ * Restores routing credentials and validates the payment binding before
+ * provider dispatch.
  */
 export async function resolveSubmitTaskPayment(
   args: SubmitTaskArgs,
@@ -74,26 +76,20 @@ export async function resolveSubmitTaskPayment(
 ): Promise<PaymentContextResult> {
   let normalizedArgs = { ...args };
 
-  // Flow-state restore (migration 017): a continuation call may omit
-  // serviceArgs entirely — the canonical args the quote committed to are
-  // restored from the challenge row. The envelope/quote hash checks below
-  // still run against the restored bytes, so what was signed is exactly
-  // what executes.
   if (
     normalizedArgs.serviceArgs === undefined &&
-    normalizedArgs.serviceRef &&
-    /^0x[0-9a-fA-F]{64}$/.test(normalizedArgs.serviceRef)
+    normalizedArgs.envelopeAuth?.authorization.requestHash &&
+    normalizedArgs.envelopeAuth.authorization.requestHash.toLowerCase() !==
+      EMPTY_SERVICE_ARGS_HASH.toLowerCase()
   ) {
-    try {
-      const flow = await queries.getChallengeByRef(
-        normalizedArgs.serviceRef.toLowerCase() as Hex,
-      );
-      if (flow?.serviceArgs) {
-        normalizedArgs = { ...normalizedArgs, serviceArgs: flow.serviceArgs };
-      }
-    } catch {
-      // Restore is best-effort; the explicit-args contract still applies.
-    }
+    return fail(
+      "SERVICE_ARGS_REQUIRED",
+      "The exact serviceArgs used for the signed quote are required.",
+      {
+        recoverable: true,
+        next_action: "Retry with the complete original serviceArgs unchanged.",
+      },
+    );
   }
 
   if (normalizedArgs.envelopeAuth?.authorization.requestHash) {
@@ -243,12 +239,21 @@ export async function resolveSubmitTaskPayment(
     paidChallenge.providerA2AUrl !== normalizedArgs.providerA2AUrl ||
     !normalizedArgs.transactionHash ||
     paidChallenge.transactionHash.toLowerCase() !==
-      normalizedArgs.transactionHash.toLowerCase();
+      normalizedArgs.transactionHash.toLowerCase() ||
+    (normalizedArgs.envelopeAuth !== undefined &&
+      (paidChallenge.buyerTokenId.toString() !==
+        normalizedArgs.envelopeAuth.authorization.buyerTokenId ||
+        normalizedArgs.envelopeAuth.authorization.skillId !==
+          normalizedArgs.skillId ||
+        normalizedArgs.envelopeAuth.authorization.paymentId !==
+          normalizedArgs.paymentId ||
+        normalizedArgs.envelopeAuth.authorization.chainId !==
+          normalizedArgs.chainId));
   if (bindingMismatch) {
     return fail(
       "PAYMENT_BINDING_MISMATCH",
-      "serviceRef, paymentId, transactionHash, skillId, and providerA2AUrl " +
-        "must all describe the same settled challenge. No task was dispatched.",
+      "The payment, buyer, signed envelope, skill, and provider must all " +
+        "describe the same settled challenge. No task was dispatched.",
     );
   }
   if (
@@ -259,6 +264,20 @@ export async function resolveSubmitTaskPayment(
     return fail(
       "QUOTE_CREDENTIALS_MISSING",
       "The settled challenge has no complete provider quote commitment.",
+    );
+  }
+  if (
+    normalizedArgs.serviceArgs === undefined &&
+    paidChallenge.quoteRequestHash.toLowerCase() !==
+      EMPTY_SERVICE_ARGS_HASH.toLowerCase()
+  ) {
+    return fail(
+      "SERVICE_ARGS_REQUIRED",
+      "The exact serviceArgs used for the signed quote are required.",
+      {
+        recoverable: true,
+        next_action: "Retry with the complete original serviceArgs unchanged.",
+      },
     );
   }
   const committedRequestHash = requestHash(normalizedArgs);

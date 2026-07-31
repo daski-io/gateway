@@ -1,16 +1,17 @@
-import { hexToBytes, recoverTypedDataAddress, type Address } from "viem";
+import { isHex } from "viem";
 import type { PaymentChainGateway } from "../chain/reader.js";
 import type { Config } from "../config.js";
 import type { Queries } from "../db/queries.js";
-import type { ExactEvmAuthorization, Hex } from "../types.js";
+import type { ExactEvmAuthorization, ExactEvmPayload, Hex } from "../types.js";
 import { canonicalJsonStringify } from "../auth/envelope.js";
 import { publicErrorMessage } from "../util/errorWrap.js";
 import { logger } from "../util/logger.js";
 import {
   isHex32,
   isHexAddress,
-  TRANSFER_WITH_AUTHORIZATION_TYPES,
+  RECEIVE_WITH_AUTHORIZATION_TYPES,
 } from "./protocol.js";
+import { deriveDaskiReceiveNonce } from "./daskiNonce.js";
 import { missingQuoteCommitment } from "./settlementResults.js";
 import { hashCanonical } from "./requirementResponse.js";
 import { getDaskiDeclaration } from "./x402Extension.js";
@@ -23,7 +24,10 @@ const VALID_BEFORE_EXPIRY_TOLERANCE_SEC = 1n;
 export async function verifyPaymentPayload(
   input: SettleInput,
   config: Config,
-  reader: Pick<PaymentChainGateway, "authorizationUsed">,
+  reader: Pick<
+    PaymentChainGateway,
+    "authorizationUsed" | "verifyReceiveAuthorization"
+  >,
   now: Date = new Date(),
   options: {
     allowBroadcastRecovery?: boolean;
@@ -42,14 +46,15 @@ export async function verifyPaymentPayload(
   if (
     challenge.x402Version !== 2 ||
     !challenge.paymentRequired ||
-    !challenge.requirementsHash
+    !challenge.requirementsHash ||
+    !challenge.expectedPayee
   ) {
     return fail(409, "invalid_stored_challenge", "challenge is not canonical x402 V2");
   }
   if (payload.x402Version !== 2) {
     return fail(400, "invalid_x402_version", `unsupported x402Version: ${payload.x402Version}`);
   }
-  if (payload.accepted?.scheme !== "exact") {
+  if (payload.accepted?.scheme !== "daski-exact") {
     return fail(400, "invalid_scheme", `unsupported scheme: ${payload.accepted?.scheme}`);
   }
   if (payload.accepted.network !== config.x402Network) {
@@ -81,12 +86,18 @@ export async function verifyPaymentPayload(
     return fail(400, "extension_echo_mismatch", "payment extensions differ from the issued challenge");
   }
 
-  const auth = payload.payload?.authorization as
+  const daskiPayload = payload.payload as Partial<ExactEvmPayload> | undefined;
+  const auth = daskiPayload?.authorization as
     | ExactEvmAuthorization
     | undefined;
-  const signature = payload.payload?.signature;
-  if (!auth || !signature) {
-    return fail(400, "invalid_payload", "missing authorization or signature");
+  const signature = daskiPayload?.signature;
+  const nonceSalt = daskiPayload?.nonceSalt;
+  if (!auth || !signature || !nonceSalt) {
+    return fail(
+      400,
+      "invalid_payload",
+      "missing authorization, signature, or nonceSalt",
+    );
   }
   if (
     !isHexAddress(auth.from) ||
@@ -94,7 +105,11 @@ export async function verifyPaymentPayload(
     !isHex32(auth.nonce) ||
     typeof auth.value !== "string" ||
     typeof auth.validAfter !== "string" ||
-    typeof auth.validBefore !== "string"
+    typeof auth.validBefore !== "string" ||
+    !isHex(signature) ||
+    signature === "0x" ||
+    !isHex32(nonceSalt) ||
+    /^0x0{64}$/i.test(nonceSalt)
   ) {
     return fail(400, "invalid_payload", "malformed authorization fields");
   }
@@ -120,21 +135,45 @@ export async function verifyPaymentPayload(
     auth.to,
     challenge.amount,
     challenge.walletAddress,
-    config.paymentRouterAddress,
+    config.x402AdapterAddress,
   );
   if (bindingFailure) return fail(402, ...bindingFailure, payer);
 
-  let recovered: Address;
+  const expectedNonce = deriveDaskiReceiveNonce({
+    chainId: config.chainId,
+    adapter: config.x402AdapterAddress,
+    router: config.paymentRouterAddress,
+    token: config.usdc.address,
+    payer: auth.from,
+    amount: value,
+    validAfter,
+    validBefore,
+    providerAgentId: challenge.providerTokenId,
+    serviceId: challenge.serviceId,
+    expectedPayee: challenge.expectedPayee,
+    serviceRef: challenge.serviceRef,
+    nonceSalt,
+  });
+  if (auth.nonce.toLowerCase() !== expectedNonce.toLowerCase()) {
+    return fail(
+      402,
+      "invalid_exact_evm_payload_authorization",
+      "authorization nonce is not bound to the issued Daski route",
+      payer,
+    );
+  }
+
   try {
-    recovered = await recoverTypedDataAddress({
+    const validSignature = await reader.verifyReceiveAuthorization({
+      signer: auth.from,
       domain: {
-        name: config.usdcName,
-        version: config.usdcVersion,
+        name: config.usdc.name,
+        version: config.usdc.version,
         chainId: config.chainId,
-        verifyingContract: config.usdcAddress,
+        verifyingContract: config.usdc.address,
       },
-      types: TRANSFER_WITH_AUTHORIZATION_TYPES,
-      primaryType: "TransferWithAuthorization",
+      types: RECEIVE_WITH_AUTHORIZATION_TYPES,
+      primaryType: "ReceiveWithAuthorization",
       message: {
         from: auth.from,
         to: auth.to,
@@ -143,33 +182,27 @@ export async function verifyPaymentPayload(
         validBefore,
         nonce: auth.nonce,
       },
-      signature: signature as Hex,
+      signature,
     });
+    if (!validSignature) {
+      return fail(
+        402,
+        "invalid_exact_evm_payload_signature",
+        "signature does not match authorization.from",
+        payer,
+      );
+    }
   } catch (error) {
     return fail(
       402,
       "invalid_exact_evm_payload_signature",
       publicErrorMessage(
-        "verifyPaymentPayload.recoverSignature",
+        "verifyPaymentPayload.verifySignature",
         error,
-        "signature recovery failed",
+        "signature verification failed",
       ),
       payer,
     );
-  }
-  if (recovered.toLowerCase() !== payer) {
-    return fail(
-      402,
-      "invalid_exact_evm_payload_signature",
-      "recovered signer does not match authorization.from",
-      payer,
-    );
-  }
-  let signatureParts: { v: number; r: Hex; s: Hex };
-  try {
-    signatureParts = parseSignature(signature as Hex);
-  } catch {
-    return fail(400, "invalid_payload", "malformed signature", payer);
   }
   const success = async (): Promise<VerifyResult> => {
     if (options.queries) {
@@ -196,7 +229,8 @@ export async function verifyPaymentPayload(
       alreadyPaid: challenge.settlementState === "paid",
       payer,
       settleArgs: {
-        ...signatureParts,
+        signature,
+        nonceSalt,
         validAfter,
         validBefore,
         nonce: auth.nonce,
@@ -306,7 +340,7 @@ function validateAuthorizationBinding(
   if (to.toLowerCase() !== expectedRecipient.toLowerCase()) {
     return [
       "invalid_exact_evm_payload_recipient_mismatch",
-      "authorization `to` must be the PaymentRouter",
+      "authorization `to` must be the X402Adapter",
     ];
   }
   if (from.toLowerCase() !== expectedWallet.toLowerCase()) {
@@ -316,16 +350,6 @@ function validateAuthorizationBinding(
     ];
   }
   return null;
-}
-
-function parseSignature(signature: Hex): { v: number; r: Hex; s: Hex } {
-  const bytes = hexToBytes(signature);
-  if (bytes.length !== 65) throw new Error("signature must be 65 bytes");
-  const r = `0x${Buffer.from(bytes.slice(0, 32)).toString("hex")}` as Hex;
-  const s = `0x${Buffer.from(bytes.slice(32, 64)).toString("hex")}` as Hex;
-  let v = bytes[64];
-  if (v < 27) v += 27;
-  return { v, r, s };
 }
 
 function fail(

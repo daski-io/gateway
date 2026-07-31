@@ -3,9 +3,7 @@ import type {
   FulfillmentMode,
   ServiceType,
 } from "./serviceTaxonomy.js";
-import type {
-  ProviderLegalMetadata,
-} from "./legal/types.js";
+import type { ProviderLegalMetadata } from "./legal/types.js";
 import type {
   Network,
   PaymentPayload as X402PaymentPayload,
@@ -60,6 +58,7 @@ export interface OnChainProvider {
   agentURI: string;
   registrationTime: bigint;
   isActive: boolean;
+  observedBlock: bigint;
 }
 
 /**
@@ -107,25 +106,29 @@ export interface CachedProvider {
   providerLegal: ProviderLegalMetadata | null;
   lastFetched: Date;
   fetchError: string | null;
+  authorityObservedAt: Date;
+  authorityObservedBlock: bigint;
+  authorityActive: boolean;
 }
 
 // ── x402 V2 wire types ───────────────────────────────────────────
 
 export type PaymentRequirements = X402PaymentRequirements;
 export type PaymentPayload = X402PaymentPayload;
-export type SettlementResponse = X402SettleResponse;
-export type {
-  Network,
-  PaymentRequired,
-  SupportedResponse,
-  VerifyResponse,
+export type SettlementResponse = X402SettleResponse & {
+  retryable?: boolean;
 };
+export type { Network, PaymentRequired, SupportedResponse, VerifyResponse };
 
 export interface DaskiX402Info {
+  profile: "1";
+  x402Adapter: Hex;
+  paymentRouter: Hex;
   serviceRef: Hex;
   providerAgentId: string;
   buyerAgentId: string;
   serviceId: Hex;
+  expectedPayee: Hex;
   skillId: string;
   serviceSlug: string;
   serviceVersion: string;
@@ -136,6 +139,7 @@ export interface DaskiX402Info {
     expiresAt: string;
   };
   settlementMode: "settle-only" | "register-and-settle";
+  warnings?: string[];
 }
 
 export interface DaskiX402Declaration {
@@ -184,6 +188,7 @@ export interface ExactEvmAuthorization {
 }
 
 export interface ExactEvmPayload {
-  signature: Hex; // 0x-prefixed 65-byte signature
+  signature: Hex; // opaque ECDSA or ERC-1271 signature bytes
   authorization: ExactEvmAuthorization;
+  nonceSalt: Hex;
 }

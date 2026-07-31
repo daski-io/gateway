@@ -28,6 +28,8 @@ import {
   validateQuoteBinding,
   type ProviderQuoteForChallenge,
 } from "./quoteBinding.js";
+import type { ProviderAuthoritySnapshot } from "../chain/reader.js";
+import type { ProviderDiscoveryReader } from "../chain/reader.js";
 
 export interface IssueParams {
   providerTokenId: bigint;
@@ -53,7 +55,10 @@ export interface IssueParams {
    */
   providerQuote: ProviderQuoteForChallenge;
   requestFingerprint?: Hex;
+  serviceArgs: Record<string, unknown>;
+  warnings: string[];
   registrationDelegation?: StoredChallenge["registrationDelegation"];
+  providerAuthority: ProviderAuthoritySnapshot;
 }
 
 export type IssueResult =
@@ -71,6 +76,7 @@ export async function issuePaymentRequirements(
   config: Config,
   cache: DiscoveryCache,
   queries: Queries,
+  reader: Pick<ProviderDiscoveryReader, "getServiceSettlement">,
   now: Date = new Date(),
 ): Promise<IssueResult> {
   const provider = cache.get(params.providerTokenId);
@@ -84,6 +90,18 @@ export async function issuePaymentRequirements(
   }
   if (!provider.providerLegal) {
     return providerLegalAdmissionFailure(provider);
+  }
+  if (
+    provider.agentURI !== params.providerAuthority.agentURI ||
+    provider.walletAddress.toLowerCase() !==
+      params.providerAuthority.walletAddress.toLowerCase()
+  ) {
+    return {
+      ok: false,
+      code: "provider_authority_changed",
+      message: "provider authority changed while the challenge was created",
+      status: 409,
+    };
   }
   const purchaseLegal = buildPurchaseLegalContext(config, provider.providerLegal);
 
@@ -177,6 +195,29 @@ export async function issuePaymentRequirements(
     serviceSlug,
     serviceVersion,
   );
+  let settlement;
+  try {
+    settlement = await reader.getServiceSettlement(serviceId);
+  } catch {
+    return {
+      ok: false,
+      code: "service_settlement_unavailable",
+      message: "service settlement details are temporarily unavailable",
+      status: 503,
+    };
+  }
+  if (
+    settlement.providerAgentId !== params.providerTokenId ||
+    !settlement.active ||
+    /^0x0{40}$/i.test(settlement.payee)
+  ) {
+    return {
+      ok: false,
+      code: "service_not_payable",
+      message: "service is not active with a valid settlement payee",
+      status: 409,
+    };
+  }
 
   const validatedQuote = validateQuoteBinding(
     quote,
@@ -187,6 +228,15 @@ export async function issuePaymentRequirements(
   );
   if (!validatedQuote.ok) return validatedQuote;
   const amount = validatedQuote.amount;
+  if (amount < config.settlementMinAmount) {
+    return {
+      ok: false,
+      code: "quote_below_settlement_minimum",
+      message:
+        "provider quote amount is below the gateway settlement minimum",
+      status: 400,
+    };
+  }
   const serviceRef = quote.serviceRef;
   // Quote-backed challenges live exactly as long as the quote: settling
   // an authorization after quote expiry would capture funds the provider
@@ -219,6 +269,8 @@ export async function issuePaymentRequirements(
     serviceSlug,
     serviceVersion,
     serviceId,
+    expectedPayee: settlement.payee,
+    expectedPayeeBlock: settlement.observedBlock,
     serviceRef,
     providerA2AUrl,
     agentCard,
@@ -227,6 +279,7 @@ export async function issuePaymentRequirements(
     purchaseLegal,
     effectiveExpiresAt: expiresAt,
     requestFingerprint,
+    warnings: params.warnings,
     registrationDelegation: params.registrationDelegation,
     existingChallenge: null,
     now,
@@ -242,6 +295,8 @@ export async function issuePaymentRequirements(
       serviceSlug,
       serviceVersion,
       serviceId,
+      expectedPayee: settlement.payee,
+      expectedPayeeBlock: settlement.observedBlock,
       providerA2AUrl,
       walletAddress: params.walletAddress,
       expiresAt,
@@ -257,6 +312,11 @@ export async function issuePaymentRequirements(
       daskiExtension: draft.challenge.daskiExtension!,
       resourceUrl: params.resource,
       registrationDelegation: params.registrationDelegation,
+      providerAuthority: {
+        walletAddress: params.providerAuthority.walletAddress,
+        agentURI: params.providerAuthority.agentURI,
+        observedBlock: params.providerAuthority.observedBlock,
+      },
     },
     queries,
     now,
@@ -276,6 +336,8 @@ export async function issuePaymentRequirements(
     serviceSlug,
     serviceVersion,
     serviceId,
+    expectedPayee: settlement.payee,
+    expectedPayeeBlock: settlement.observedBlock,
     serviceRef,
     providerA2AUrl,
     agentCard,
@@ -284,6 +346,7 @@ export async function issuePaymentRequirements(
     purchaseLegal,
     effectiveExpiresAt,
     requestFingerprint,
+    warnings: params.warnings,
     registrationDelegation: params.registrationDelegation,
     existingChallenge,
     now,

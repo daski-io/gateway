@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import type { Config } from "../config.js";
 import { readBoundedBody, UrlSafetyError } from "../util/urlSafety.js";
 import { mcpError, mcpJson, type McpToolResult } from "./util.js";
 import {
@@ -22,11 +23,13 @@ export interface ArtifactFetchArgs {
   taskId: string;
   expectedMimeType?: string;
   capability?: ArtifactCapability;
+  providerAgentId: bigint;
 }
 
 export interface ArtifactFetchOptions {
   fetch: (url: string, init?: RequestInit) => Promise<Response>;
   timeoutMs: number;
+  config: Config;
 }
 
 interface ActiveResponse {
@@ -44,7 +47,12 @@ async function artifactErrorResponse(res: Response): Promise<McpToolResult> {
   try {
     const body = parseJson(await readBoundedBody(res, ERROR_MAX_BYTES));
     if (body !== null) {
-      details = { ...details, body: sanitizeProviderValue(body) };
+      details = {
+        ...details,
+        untrustedProviderContent: {
+          body: sanitizeProviderValue(body),
+        },
+      };
     }
   } catch (error) {
     if ((error as Error).name === "AbortError") {
@@ -204,7 +212,12 @@ export async function fetchArtifact(
   requestSignal?: AbortSignal,
 ): Promise<McpToolResult> {
   if (args.capability) {
-    const invalid = validateCapability(args.capability, args.taskId, args.url);
+    const invalid = validateCapability(
+      args.capability,
+      args.taskId,
+      args.url,
+      args.providerAgentId,
+    );
     if (invalid) return invalid;
   }
   const result = await getArtifactResponse(args, options, requestSignal);
@@ -216,7 +229,14 @@ export async function fetchArtifact(
         const body = parseJson(await readBoundedBody(res, ERROR_MAX_BYTES));
         const challenge = extractChallenge(body);
         if (challenge) {
-          return challengeResponse(challenge, args.taskId, args.url, !!args.capability);
+          return challengeResponse(
+            challenge,
+            args.taskId,
+            args.url,
+            !!args.capability,
+            options.config,
+            args.providerAgentId,
+          );
         }
       } catch (error) {
         return mcpError({

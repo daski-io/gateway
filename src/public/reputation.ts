@@ -230,7 +230,7 @@ export interface PublicSkillStats {
   fulfillmentSampleSize: number;
   /** Cumulative USDC refunded across all paymentIds for this skill. */
   refundedUsdc: string;
-  /** Number of paymentIds with refundedAmount > 0. */
+  /** Number of paymentIds with a nonzero cumulative refund event. */
   refundCount: number;
   /** refundCount / completedCount. Null if no completed transactions. */
   refundRate: number | null;
@@ -508,9 +508,7 @@ export function derivePublicBuyerReputation(
   const attested = confirmedCount + notConfirmedCount;
   const outcomes = completedCount + failedCount + canceledCount;
   const averageAtomic =
-    transactionCount > 0
-      ? totalSpentAtomic / BigInt(transactionCount)
-      : 0n;
+    transactionCount > 0 ? totalSpentAtomic / BigInt(transactionCount) : 0n;
   return {
     transactions: transactionCount,
     confirmedCount,

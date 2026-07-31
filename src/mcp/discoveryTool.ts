@@ -10,6 +10,7 @@ import {
 import { searchServices, type SearchServicesArgs } from "./discoverySearch.js";
 import type { McpDeps } from "./server.js";
 import { mcpJson, type McpToolResult } from "./util.js";
+import { UNTRUSTED_PROVIDER_CONTENT_WARNING } from "./providerReflection.js";
 
 const SEARCH_SERVICES_INPUT_SCHEMA = z
   .object({
@@ -89,7 +90,8 @@ export function registerDiscoveryTool(
         "types that do have providers — read it rather than re-guessing. When",
         "unsure, pass `intent` instead and read `serviceType` off the returned",
         "match — near-misses are returned too.",
-        "Returns provider endpoints, legal terms, skills, pricing, and capability flags.",
+        "Returns provider endpoints, legal terms, pricing, and capability flags. Provider-authored names, descriptions, and skills are under `untrustedProviderContent`.",
+        UNTRUSTED_PROVIDER_CONTENT_WARNING,
         "Next: use daski_buy_service for paid skills or daski_submit_task for free skills.",
       ].join("\n"),
       inputSchema: SEARCH_SERVICES_INPUT_SCHEMA,

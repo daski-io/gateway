@@ -3,10 +3,11 @@ import type { AddressInfo } from "node:net";
 import { randomUUID } from "node:crypto";
 import { privateKeyToAccount } from "viem/accounts";
 import { decodePaymentRequiredHeader } from "@x402/core/http";
-import { ExactEvmScheme } from "@x402/evm/exact/client";
+import { DaskiExactEvmScheme } from "../../src/payment/daskiClient.js";
+import { computeUsdcDomainSeparator } from "../../src/payment/usdcDomain.js";
 import type { Config } from "../../src/config.js";
 import { createApp, type AppBundle } from "../../src/app.js";
-import { createPool, type Pool } from "../../src/db/pool.js";
+import { createDatabasePools, createPool } from "../../src/db/pool.js";
 import type { Embedder } from "../../src/discovery/embeddings.js";
 import { stubEmbedder } from "./stubEmbedder.js";
 import { MockChainReader, makePaymentSettledEvent } from "./mockChain.js";
@@ -21,7 +22,6 @@ import type { CategoryFamily, FulfillmentMode, ServiceType } from "../../src/ser
 import { resolveSkillOffer } from "../../src/payment/skillOffer.js";
 import type { PaymentSettledEvent } from "../../src/chain/reader.js";
 import type {
-  ExactEvmAuthorization,
   Hex,
   PaymentPayload,
   PaymentRequired,
@@ -139,11 +139,6 @@ export interface TestGateway {
     payload: PaymentPayload,
     serviceRef?: Hex,
   ): Promise<{ status: number; json: any }>;
-  signAuthorization(
-    value: bigint,
-    nonce: Hex,
-    opts?: { validAfter?: bigint; validBefore?: bigint },
-  ): Promise<{ signature: Hex; authorization: ExactEvmAuthorization }>;
   createPaymentPayload(paymentRequired: PaymentRequired): Promise<PaymentPayload>;
   discover(filters?: {
     categoryFamily?: CategoryFamily;
@@ -165,17 +160,6 @@ export interface TestGateway {
   close(): Promise<void>;
 }
 
-const TRANSFER_WITH_AUTHORIZATION_TYPES = {
-  TransferWithAuthorization: [
-    { name: "from", type: "address" },
-    { name: "to", type: "address" },
-    { name: "value", type: "uint256" },
-    { name: "validAfter", type: "uint256" },
-    { name: "validBefore", type: "uint256" },
-    { name: "nonce", type: "bytes32" },
-  ],
-} as const;
-
 export async function startTestGateway(opts: TestGatewayOptions = {}): Promise<TestGateway> {
   const mockProvider = await startMockProvider({
     agentCards: {},
@@ -196,15 +180,21 @@ export async function startTestGateway(opts: TestGatewayOptions = {}): Promise<T
     chainMode: "live",
     trustProxy: 0,
     challengeRetentionSeconds: 7 * 24 * 60 * 60,
+    taskMappingPendingRetentionSeconds: 24 * 60 * 60,
     rpcReadMaxPerMinute: 1_000,
     stateChangeGlobalMaxPerMinute: 1_000,
     mcpGlobalMaxPerMinute: 1_000,
+    mcpMaxSessions: 100,
+    mcpMaxSessionsPerClient: 10,
+    mcpSessionIdleTtlMs: 10 * 60 * 1000,
+    mcpSessionSweepIntervalMs: 60 * 1000,
     publicReadMaxPerMinute: 1_000,
     publicReadGlobalMaxPerMinute: 1_000,
     publicCacheMaxEntries: 1_000,
     discoveryMaxA2AEntries: 16,
     discoveryFetchConcurrency: 4,
     discoveryRefreshDeadlineMs: 30_000,
+    shutdownGraceMs: 25_000,
     mockProviderWalletAddress: "0x1111111111111111111111111111111111111111",
     mockProviderAgentId: 1n,
     mockProviderAgentUri: "http://localhost:4040/.well-known/agent.json",
@@ -224,14 +214,32 @@ export async function startTestGateway(opts: TestGatewayOptions = {}): Promise<T
     sanctionsOracleAddress: SANCTIONS_ORACLE_ADDRESS,
     sanctionsOracleMode: "mock",
     x402AdapterAddress: X402_ADAPTER_ADDRESS,
-    usdcAddress: USDC_ADDRESS,
-    usdcName: "USDC",
-    usdcVersion: "2",
+    usdc: {
+      address: USDC_ADDRESS,
+      decimals: 6,
+      name: "USDC",
+      version: "2",
+      domainSeparator: computeUsdcDomainSeparator(
+        CHAIN_ID,
+        USDC_ADDRESS,
+        "USDC",
+        "2",
+      ),
+    },
     facilitatorPrivateKey: FACILITATOR_KEY,
     whitelistedAgentIds: whitelist,
     a2aTimeoutMs: 30_000,
     a2aSubmitTimeoutMs: 90_000,
     cacheRefreshIntervalSeconds: 60,
+    providerAuthMaxAgeSeconds: 30,
+    confirmationMaxPerPayment: 3,
+    confirmationMaxPerWalletPerDay: 20,
+    confirmationMaxGlobalPerDay: 500,
+    settlementMinAmount: 1n,
+    settlementMaxPerWalletPerDay: 100,
+    settlementMaxGlobalPerDay: 1_000,
+    facilitatorMinBalanceWei: 0n,
+    facilitatorMaxTransactionFeeWei: 10_000_000_000_000_000n,
     cacheMaxStalenessSeconds: 86400,
     challengeTtlSeconds: 3600,
     databaseUrl: TEST_DATABASE_URL,
@@ -243,6 +251,7 @@ export async function startTestGateway(opts: TestGatewayOptions = {}): Promise<T
     easOutcomeSchemaUid: EAS_OUTCOME_SCHEMA_UID,
     ipfsGatewayUrl: "https://ipfs.io/ipfs/",
     ...opts.configOverrides,
+    chainIndexerStartBlock: opts.configOverrides?.chainIndexerStartBlock ?? 0n,
   };
 
   const schemaName = `gw_test_${randomUUID().replace(/-/g, "_")}`;
@@ -252,7 +261,7 @@ export async function startTestGateway(opts: TestGatewayOptions = {}): Promise<T
   await bootstrap.query(`CREATE SCHEMA "${schemaName}"`);
   await bootstrap.end();
 
-  const pool: Pool = createPool({
+  const pools = createDatabasePools({
     connectionString: TEST_DATABASE_URL,
     // Include `public` so the test schema can resolve the pgvector type
     // (the extension is installed in `public` by the migration). Tables
@@ -260,6 +269,7 @@ export async function startTestGateway(opts: TestGatewayOptions = {}): Promise<T
     // match wins) so per-test isolation is preserved.
     searchPath: `${schemaName},public`,
   });
+  const pool = pools.main;
 
   // Default stub for the buyer-side agentURI fetcher used by
   // /register-prep + /register-transaction. Returns `{ name: "buyer-test" }` for any
@@ -281,7 +291,7 @@ export async function startTestGateway(opts: TestGatewayOptions = {}): Promise<T
   const bundle = await createApp({
     config,
     reader: mockChain,
-    pool,
+    pools,
     embedder: opts.embedder ?? stubEmbedder(),
     startCacheRefreshLoop: false,
     agentCardFetch: localProviderFetch,
@@ -302,43 +312,6 @@ export async function startTestGateway(opts: TestGatewayOptions = {}): Promise<T
   const buyerAccount = privateKeyToAccount(TEST_BUYER_KEY);
   mockChain.setAgentOwner(5n, buyerAccount.address.toLowerCase() as Hex);
   const requirementsByProvider = new Map<string, PaymentRequired>();
-
-  async function signAuthorization(
-    value: bigint,
-    nonce: Hex,
-    opts?: { validAfter?: bigint; validBefore?: bigint },
-  ) {
-    const nowSec = BigInt(Math.floor(Date.now() / 1000));
-    const validAfter = opts?.validAfter ?? 0n;
-    const validBefore = opts?.validBefore ?? nowSec + 3600n;
-    const authorization: ExactEvmAuthorization = {
-      from: buyerAccount.address.toLowerCase() as Hex,
-      to: PAYMENT_ROUTER_ADDRESS,
-      value: value.toString(),
-      validAfter: validAfter.toString(),
-      validBefore: validBefore.toString(),
-      nonce,
-    };
-    const signature = (await buyerAccount.signTypedData({
-      domain: {
-        name: "USDC",
-        version: "2",
-        chainId: CHAIN_ID,
-        verifyingContract: USDC_ADDRESS,
-      },
-      types: TRANSFER_WITH_AUTHORIZATION_TYPES,
-      primaryType: "TransferWithAuthorization",
-      message: {
-        from: authorization.from,
-        to: authorization.to,
-        value,
-        validAfter,
-        validBefore,
-        nonce,
-      },
-    })) as Hex;
-    return { signature, authorization };
-  }
 
   const gateway: TestGateway = {
     bundle,
@@ -492,12 +465,10 @@ export async function startTestGateway(opts: TestGatewayOptions = {}): Promise<T
       return { status: res.status, json };
     },
 
-    signAuthorization,
-
     async createPaymentPayload(paymentRequired) {
       const requirements = paymentRequired.accepts[0];
       if (!requirements) throw new Error("PaymentRequired has no accepts");
-      const signed = await new ExactEvmScheme(
+      const signed = await new DaskiExactEvmScheme(
         buyerAccount,
       ).createPaymentPayload(2, requirements, {
         extensions: paymentRequired.extensions,
@@ -559,7 +530,9 @@ export async function startTestGateway(opts: TestGatewayOptions = {}): Promise<T
       });
       await bundle.shutdown();
       try {
-        await pool.end();
+        await Promise.all(
+          Object.values(pools).map((databasePool) => databasePool.end()),
+        );
       } catch {
         // ignore
       }

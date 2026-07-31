@@ -15,26 +15,31 @@ export interface ChallengeRow {
   service_slug: string | null;
   service_version: string | null;
   service_id: Buffer | null;
+  expected_payee: string | null;
+  expected_payee_block: string | null;
   provider_a2a_url: string;
   wallet_address: string;
   created_at: Date;
   expires_at: Date;
   settlement_state:
     | "pending"
+    | "settlement_prepared"
     | "settlement_broadcast"
     | "paid"
     | "expired"
     | "sanctions_rejected";
   payment_id: string | null;
   transaction_hash: string | null;
+  settlement_facilitator_transaction_id: string | null;
+  provider_authority_wallet: string | null;
+  provider_authority_agent_uri: string | null;
+  provider_authority_block: string | null;
   verified_at: Date | null;
   confirmation_attestation_uid: Buffer | null;
   quote_id: string | null;
   quote_signature: string | null;
   quote_expires_at: Date | null;
   quote_request_hash: Buffer | null;
-  service_args: Record<string, unknown> | null;
-  acknowledgements: Record<string, unknown> | null;
   x402_version: number | null;
   payment_required: PaymentRequired | null;
   requirements_hash: Buffer | null;
@@ -77,6 +82,13 @@ export function rowToChallenge(row: ChallengeRow): StoredChallenge {
     serviceSlug: requiredColumn(row.service_slug, "service_slug"),
     serviceVersion: requiredColumn(row.service_version, "service_version"),
     serviceId: byteaToHex(requiredColumn(row.service_id, "service_id")),
+    expectedPayee: row.expected_payee
+      ? (row.expected_payee.toLowerCase() as Hex)
+      : null,
+    expectedPayeeBlock:
+      row.expected_payee_block == null
+        ? null
+        : BigInt(row.expected_payee_block),
     providerA2AUrl: row.provider_a2a_url,
     walletAddress: requiredColumn(row.wallet_address, "wallet_address") as Hex,
     createdAt: row.created_at,
@@ -85,6 +97,16 @@ export function rowToChallenge(row: ChallengeRow): StoredChallenge {
     paymentId: row.payment_id != null ? BigInt(row.payment_id) : null,
     transactionHash:
       row.transaction_hash != null ? (row.transaction_hash as Hex) : null,
+    settlementFacilitatorTransactionId:
+      row.settlement_facilitator_transaction_id,
+    providerAuthorityWallet: row.provider_authority_wallet
+      ? (row.provider_authority_wallet.toLowerCase() as Hex)
+      : null,
+    providerAuthorityAgentUri: row.provider_authority_agent_uri,
+    providerAuthorityBlock:
+      row.provider_authority_block == null
+        ? null
+        : BigInt(row.provider_authority_block),
     verifiedAt: row.verified_at,
     confirmationAttestationUid: row.confirmation_attestation_uid
       ? byteaToHex(row.confirmation_attestation_uid)
@@ -96,8 +118,6 @@ export function rowToChallenge(row: ChallengeRow): StoredChallenge {
     quoteRequestHash: row.quote_request_hash
       ? byteaToHex(row.quote_request_hash)
       : null,
-    serviceArgs: row.service_args ?? null,
-    acknowledgements: row.acknowledgements ?? {},
     x402Version: row.x402_version ?? null,
     paymentRequired: row.payment_required ?? null,
     requirementsHash: row.requirements_hash

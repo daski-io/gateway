@@ -2,6 +2,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { SubmitTaskArgs } from "./submitTaskTypes.js";
 import type { McpToolResult } from "./util.js";
+import { UNTRUSTED_PROVIDER_CONTENT_WARNING } from "./providerReflection.js";
 
 export const INPUT_SCHEMA = {
   providerA2AUrl: z.string(),
@@ -25,7 +26,10 @@ export const INPUT_SCHEMA = {
   transactionHash: z.string().optional().describe(
     "Settlement transaction hash; required for paid tasks.",
   ),
-  prompt: z.string().optional(),
+  prompt: z.string().optional().describe(
+    "Open-free skills only. Authenticated skills must place all variable " +
+      "task input in serviceArgs so it is covered by the signed request hash.",
+  ),
   serviceArgs: z.record(z.string(), z.unknown()).optional(),
   capability: z
     .object({
@@ -34,7 +38,7 @@ export const INPUT_SCHEMA = {
     })
     .passthrough()
     .optional(),
-  messageId: z.string().optional().describe(
+  messageId: z.string().min(1).max(256).optional().describe(
     "Required with envelopeAuth; echo the first call's messageId.",
   ),
   envelopeAuth: z
@@ -46,7 +50,7 @@ export const INPUT_SCHEMA = {
           skillId: z.string(),
           paymentId: z.string(),
           chainId: z.number(),
-          messageId: z.string(),
+          messageId: z.string().min(1).max(256),
           requestHash: z.string(),
           issuedAt: z.string(),
         })
@@ -58,10 +62,10 @@ export const INPUT_SCHEMA = {
       "Omit on the first authenticated call. On retry, pass the signed " +
         "authorization and matching messageId without changing serviceArgs.",
     ),
-  contextId: z.string().optional().describe(
+  contextId: z.string().min(1).max(256).optional().describe(
     "A2A contextId for continuing a prior conversation.",
   ),
-  taskId: z.string().optional().describe(
+  taskId: z.string().min(1).max(256).optional().describe(
     "Only for answering a long-running input-required task. Do not combine " +
       "with paid routing fields or envelopeAuth.",
   ),
@@ -77,6 +81,8 @@ const DESCRIPTION = [
   "Paid and gated-free skills use a two-call envelope handshake. The signed",
   "retry must preserve the exact serviceArgs, messageId, and paid routing",
   "fields returned by settlement, with NOTHING REMOVED.",
+  "Do not use prompt on an authenticated task; put every variable instruction",
+  "in serviceArgs so the signature covers it.",
   "",
   "For a long-running task in input-required state, pass taskId and the full",
   "corrected serviceArgs without serviceRef, transactionHash, or envelopeAuth.",
@@ -95,8 +101,9 @@ const DESCRIPTION = [
   "MESSAGE_ID_REQUIRED.",
   "",
   "Returns signing material on the first authenticated call. Otherwise returns",
-  "taskId, contextId, state, artifacts, and statusMessage. Poll non-terminal",
-  "tasks with daski_get_task_status.",
+  "taskId, contextId, state, and provider-authored artifacts/statusMessage",
+  "under untrustedProviderContent. Poll non-terminal tasks with",
+  "daski_get_task_status.",
   "",
   "PROVIDER_TIMEOUT / PROVIDER_UNREACHABLE does NOT mean the work failed. The",
   "provider assigns the taskId in the response body, so a timed-out submit",
@@ -107,6 +114,8 @@ const DESCRIPTION = [
   "create-mailbox, get-entity-status for form-entity), call it first and report",
   "what it says. If no such oracle exists, report the outcome as UNKNOWN — not",
   "failed — and say the taskId was lost in transport.",
+  "",
+  UNTRUSTED_PROVIDER_CONTENT_WARNING,
 ].join("\n");
 
 export function registerSubmitTaskTool(

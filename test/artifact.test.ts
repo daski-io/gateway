@@ -3,6 +3,13 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { startTestGateway, type TestGateway } from "./helpers/setup.js";
 import { parseFilename } from "../src/mcp/artifactProtocol.js";
+import type { Config } from "../src/config.js";
+import {
+  TASK_ACCESS_AUTHORIZATION_TYPES,
+  TASK_ACCESS_PRIMARY_TYPE,
+  TASK_ACCESS_REQUEST_HASH,
+} from "../src/auth/taskAccess.js";
+import { providerAgentIdDomainSalt } from "../src/auth/providerDomain.js";
 
 interface ToolResultContent {
   content: Array<{ type: string; text: string }>;
@@ -36,25 +43,9 @@ describe("MCP artifact delivery", () => {
     const pdf = new TextEncoder().encode("%PDF-1.7\nmock formation document");
     const nonce1 = `0x${"11".repeat(32)}`;
     const nonce2 = `0x${"22".repeat(32)}`;
-    const challenge = (nonce: string) => {
-      const authorization = {
-        buyerTokenId: "5",
-        taskId,
-        action: "document-download",
-        resource: artifactUrl,
-        nonce,
-        expiry: "9999999999",
-      };
-      return {
-        authorization,
-        eip712TypedData: {
-          domain: { name: "Daski Capability" },
-          types: { TaskAccessAuthorization: [] },
-          primaryType: "TaskAccessAuthorization",
-          message: authorization,
-        },
-      };
-    };
+    let gateway!: TestGateway;
+    const challenge = (nonce: string) =>
+      artifactChallenge(gateway.config, taskId, nonce, artifactUrl);
     let calls = 0;
     const a2aFetch: typeof fetch = async (input, init) => {
       const url = input instanceof Request ? input.url : input.toString();
@@ -94,7 +85,7 @@ describe("MCP artifact delivery", () => {
         },
       });
     };
-    const gateway = await startTestGateway({
+    gateway = await startTestGateway({
       a2aFetch,
       providers: [artifactProvider()],
     });
@@ -213,29 +204,23 @@ describe("MCP artifact delivery", () => {
 
   it("accepts a TaskAccess-shaped challenge with no resource binding", async () => {
     // Provider document challenges are TaskAccessChallenges — authorization
-    // binds (buyerTokenId, taskId, action, nonce, expiry) and carries NO
-    // resource field. Demanding one rejected every real download
+    // binds buyer, provider, task, action, request hash, nonce, and expiry,
+    // while carrying NO resource field. Demanding one rejected every download
     // (agentic run 260723-163533).
     const requestedUrl = "https://artifacts.example/requested.pdf";
+    let gateway!: TestGateway;
     const a2aFetch: typeof fetch = async () =>
       Response.json(
         {
-          capabilityChallenge: {
-            authorization: {
-              buyerTokenId: "8360",
-              taskId: "task-document-3",
-              action: "document-download",
-              nonce: `0x${"11".repeat(32)}`,
-              expiry: "1784819678",
-            },
-            eip712TypedData: {
-              primaryType: "TaskAccessAuthorization",
-            },
-          },
+          capabilityChallenge: artifactChallenge(
+            gateway.config,
+            "task-document-3",
+            `0x${"11".repeat(32)}`,
+          ),
         },
         { status: 401 },
       );
-    const gateway = await startTestGateway({
+    gateway = await startTestGateway({
       a2aFetch,
       providers: [artifactProvider()],
     });
@@ -257,6 +242,44 @@ describe("MCP artifact delivery", () => {
       }>(result);
       expect(body.requiresSignature).toBe(true);
       expect(body.authorization?.taskId).toBe("task-document-3");
+    } finally {
+      await transport.close();
+    }
+  });
+
+  it("rejects provider typed data that does not encode the checked authorization", async () => {
+    const taskId = "task-document-phishing";
+    let gateway!: TestGateway;
+    const a2aFetch: typeof fetch = async () => {
+      const challenge = artifactChallenge(
+        gateway.config,
+        taskId,
+        `0x${"33".repeat(32)}`,
+      );
+      challenge.eip712TypedData.message = {
+        ...challenge.authorization,
+        action: "permit",
+      };
+      return Response.json({ capabilityChallenge: challenge }, { status: 401 });
+    };
+    gateway = await startTestGateway({
+      a2aFetch,
+      providers: [artifactProvider()],
+    });
+    gateways.push(gateway);
+    const { client, transport } = await connectClient(gateway.baseUrl);
+    try {
+      const result = parseResult<{ code: string }>(
+        await client.callTool({
+          name: "daski_fetch_artifact",
+          arguments: {
+            url: "https://artifacts.example/phishing.pdf",
+            taskId,
+            providerA2AUrl: `${gateway.mockProvider.baseUrl}/a2a`,
+          },
+        }),
+      );
+      expect(result.code).toBe("ARTIFACT_CHALLENGE_INVALID");
     } finally {
       await transport.close();
     }
@@ -336,18 +359,36 @@ describe("MCP artifact delivery", () => {
       },
     });
     gateways.push(gateway);
+    const mappingId = await gateway.bundle.queries.insertTaskMapping({
+      contextId: "ctx-inline-file",
+      messageId: "msg-inline-file",
+      serviceRef: null,
+      providerA2AUrl: gateway.mockProvider.baseUrl + "/a2a",
+      skillId: "form-entity",
+      buyerTokenId: "0",
+    });
+    await gateway.bundle.queries.completeTaskMapping(
+      mappingId,
+      "task-inline-file",
+      "completed",
+    );
     const { client, transport } = await connectClient(gateway.baseUrl);
     try {
-      const result = parseResult<{ artifacts: Array<Record<string, unknown>> }>(
+      const result = parseResult<{
+        untrustedProviderContent: {
+          artifacts: Array<Record<string, unknown>>;
+        };
+      }>(
         await client.callTool({
           name: "daski_get_task_status",
           arguments: {
             providerA2AUrl: gateway.mockProvider.baseUrl + "/a2a",
             taskId: "task-inline-file",
+            taskAccessToken: "t".repeat(43),
           },
         }),
       );
-      expect(result.artifacts).toEqual([
+      expect(result.untrustedProviderContent.artifacts).toEqual([
         {
           type: "file",
           name: "formation_document",
@@ -396,6 +437,39 @@ function artifactProvider(artifactOrigins = ["https://artifacts.example"]) {
     categoryFamily: "business-formation" as const,
     serviceType: "entity-formation" as const,
     artifactOrigins,
+  };
+}
+
+function artifactChallenge(
+  config: Config,
+  taskId: string,
+  nonce: string,
+  resource?: string,
+) {
+  const authorization: Record<string, unknown> = {
+    buyerTokenId: "5",
+    providerAgentId: "1",
+    taskId,
+    action: "document-download",
+    requestHash: TASK_ACCESS_REQUEST_HASH,
+    nonce,
+    expiry: String(Math.floor(Date.now() / 1_000) + 600),
+    ...(resource ? { resource } : {}),
+  };
+  return {
+    authorization,
+    eip712TypedData: {
+      domain: {
+        name: "Daski",
+        version: "1",
+        chainId: config.chainId,
+        verifyingContract: config.identityRegistryAddress,
+        salt: providerAgentIdDomainSalt(1n),
+      },
+      types: TASK_ACCESS_AUTHORIZATION_TYPES,
+      primaryType: TASK_ACCESS_PRIMARY_TYPE,
+      message: { ...authorization },
+    },
   };
 }
 

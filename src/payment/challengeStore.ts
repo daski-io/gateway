@@ -15,6 +15,8 @@ interface ChallengeBinding {
   serviceSlug: string;
   serviceVersion: string;
   serviceId: Hex;
+  expectedPayee: Hex;
+  expectedPayeeBlock: bigint;
   providerA2AUrl: string;
   walletAddress: Hex;
   expiresAt: Date;
@@ -30,6 +32,11 @@ interface ChallengeBinding {
   daskiExtension: DaskiX402Declaration;
   resourceUrl: string;
   registrationDelegation?: StoredChallenge["registrationDelegation"];
+  providerAuthority: {
+    walletAddress: Hex;
+    agentURI: string;
+    observedBlock: bigint;
+  };
 }
 
 export type ClaimChallengeResult =
@@ -51,6 +58,8 @@ function matchesBinding(
     existing.serviceSlug === binding.serviceSlug &&
     existing.serviceVersion === binding.serviceVersion &&
     existing.serviceId.toLowerCase() === binding.serviceId.toLowerCase() &&
+    existing.expectedPayee?.toLowerCase() ===
+      binding.expectedPayee.toLowerCase() &&
     existing.providerA2AUrl === binding.providerA2AUrl &&
     existing.walletAddress.toLowerCase() ===
       binding.walletAddress.toLowerCase() &&
@@ -61,7 +70,11 @@ function matchesBinding(
       binding.quote.requestHash.toLowerCase() &&
     existing.x402Version === 2 &&
     existing.requestFingerprint?.toLowerCase() ===
-      binding.requestFingerprint.toLowerCase()
+      binding.requestFingerprint.toLowerCase() &&
+    existing.providerAuthorityWallet?.toLowerCase() ===
+      binding.providerAuthority.walletAddress.toLowerCase() &&
+    existing.providerAuthorityAgentUri === binding.providerAuthority.agentURI &&
+    existing.providerAuthorityBlock === binding.providerAuthority.observedBlock
   );
 }
 
@@ -102,6 +115,8 @@ export async function claimPaymentChallenge(
         serviceSlug: binding.serviceSlug,
         serviceVersion: binding.serviceVersion,
         serviceId: binding.serviceId,
+        expectedPayee: binding.expectedPayee,
+        expectedPayeeBlock: binding.expectedPayeeBlock,
         providerA2AUrl: binding.providerA2AUrl,
         walletAddress: binding.walletAddress,
         expiresAt: binding.expiresAt,
@@ -115,6 +130,7 @@ export async function claimPaymentChallenge(
         daskiExtension: binding.daskiExtension,
         requestFingerprint: binding.requestFingerprint,
         registrationDelegation: binding.registrationDelegation,
+        providerAuthority: binding.providerAuthority,
       });
     } catch (error) {
       if (

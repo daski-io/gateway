@@ -12,6 +12,7 @@ interface PollTaskStatusArgs {
     signature: string;
     authorization: Record<string, unknown>;
   };
+  taskAccessToken?: string;
 }
 
 export interface TaskStatusTransport {
@@ -52,6 +53,9 @@ export async function pollTaskStatus(
     params: {
       id: args.taskId,
       ...(args.capability ? { capability: args.capability } : {}),
+      ...(args.taskAccessToken
+        ? { taskAccessToken: args.taskAccessToken }
+        : {}),
     },
   };
   const post = await a2aPostJson<CheckRpc>(args.providerA2AUrl, body, {
@@ -66,23 +70,31 @@ export async function pollTaskStatus(
   if (post.body.error) {
     const rpcError = post.body.error;
     const mapped = mapProviderRpcError(rpcError.code);
+    const untrustedProviderContent = {
+      message: sanitizeProviderValue(
+        rpcError.message ?? "JSON-RPC error",
+      ) as string,
+      ...(rpcError.data !== undefined
+        ? { data: sanitizeProviderValue(rpcError.data) }
+        : {}),
+    };
     const payload = {
       code: mapped?.code ?? "PROVIDER_ERROR",
       ...(mapped?.recoverable !== undefined
         ? { recoverable: mapped.recoverable }
         : {}),
       ...(mapped?.nextAction ? { next_action: mapped.nextAction } : {}),
-      message: sanitizeProviderValue(rpcError.message ?? "JSON-RPC error") as string,
+      message: mapped
+        ? `Provider returned ${mapped.code}.`
+        : "Provider returned an error.",
       ...(rpcError.code !== undefined || rpcError.data !== undefined
         ? {
             details: {
               ...(rpcError.code !== undefined ? { rpcCode: rpcError.code } : {}),
-              ...(rpcError.data !== undefined
-                ? { data: sanitizeProviderValue(rpcError.data) }
-                : {}),
+              untrustedProviderContent,
             },
           }
-        : {}),
+        : { details: { untrustedProviderContent } }),
     };
     // Authorization steps are expected transitions, not failures.
     if (mapped?.actionRequired) {
@@ -108,8 +120,10 @@ export async function pollTaskStatus(
     taskId: resolvedTaskId,
     contextId: result.contextId ?? null,
     status: resolvedStatus,
-    artifacts: extractedArtifacts,
-    messages: extractMessages(result.status?.message),
+    untrustedProviderContent: {
+      artifacts: extractedArtifacts,
+      messages: extractMessages(result.status?.message),
+    },
   });
 }
 

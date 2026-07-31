@@ -216,11 +216,10 @@ export function phoneFormatError(
   return mcpError({
     code: "BAD_INPUT",
     message:
-      `Field '${invalid.field}' must be E.164 with no separators (pattern \`^\\+[1-9]\\d{1,14}\\$\`). ` +
-      `Received '${invalid.value}'; expected something like '+15555550100'.`,
+      `Field '${invalid.field}' must be E.164 with no separators ` +
+      "(for example, +15555550100).",
     details: {
       field: invalid.field,
-      received: invalid.value,
       pattern: "^\\+[1-9]\\d{1,14}$",
       example: "+15555550100",
     },
@@ -265,8 +264,8 @@ export function phoneWhoisWarnings(args: Record<string, unknown>): string[] {
   const phones = presentPhoneFields(args);
   if (phones.length === 0) return [];
   return [
-    `Phone value(s) ${phones
-      .map(({ field, value }) => `${field}='${value}'`)
+    `Phone field(s) ${phones
+      .map(({ field }) => field)
       .join(", ")} will appear on public WHOIS exactly as sent — nothing ` +
       "further is required, but correct them before signing if wrong.",
   ];
@@ -285,10 +284,15 @@ export function buyerNameMismatchWarning(
   resolvedName: string | null,
   serviceArgs: Record<string, unknown>,
 ): string | null {
-  const stated = [serviceArgs.companyName, serviceArgs.registrantOrganization].find(
-    (v): v is string => typeof v === "string" && v.trim() !== "",
-  );
-  if (!resolvedName || !stated) return null;
+  const statedEntry = [
+    ["companyName", serviceArgs.companyName],
+    ["registrantOrganization", serviceArgs.registrantOrganization],
+  ].find((entry): entry is [string, string] => {
+    const value = entry[1];
+    return typeof value === "string" && value.trim() !== "";
+  });
+  if (!resolvedName || !statedEntry) return null;
+  const [statedField, stated] = statedEntry;
   const canon = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, "");
   const a = canon(resolvedName);
   const b = canon(stated);
@@ -296,8 +300,8 @@ export function buyerNameMismatchWarning(
   // containment test vacuously true — treat as incomparable, warn.
   if (a !== "" && b !== "" && (a.includes(b) || b.includes(a))) return null;
   return (
-    `This purchase permanently registers the buyer as '${resolvedName}' ` +
-    `while the request names the organization '${stated}'. If that is ` +
+    "This purchase permanently registers the buyer identity, while " +
+    `the request field '${statedField}' differs from it. If that is ` +
     "unintended, re-send with the corrected `name` BEFORE signing the " +
     "registration typed-data — the registered name cannot be changed later."
   );

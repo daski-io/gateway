@@ -59,9 +59,20 @@ export function derivePrimaryServiceId(
 ): { serviceSlug: string; serviceVersion: string; serviceId: Hex } | null {
   for (const card of cardsOf(provider)) {
     for (const skill of parseAgentSkills(card.agentCard)) {
-      const serviceSlug = resolveServiceSlug(card.agentCard, skill.id);
+      const rawSlug = skill.metadata["serviceSlug"];
+      const serviceSlug =
+        typeof rawSlug === "string" && rawSlug.length > 0 && rawSlug.length <= 64
+          ? rawSlug
+          : null;
       if (!serviceSlug) continue;
-      const serviceVersion = resolveServiceVersion(card.agentCard, skill.id);
+      const rawVersion =
+        skill.metadata["serviceVersion"] ?? skill.metadata["version"];
+      const serviceVersion =
+        typeof rawVersion === "string" &&
+        rawVersion.length > 0 &&
+        rawVersion.length <= 32
+          ? rawVersion
+          : DEFAULT_SERVICE_VERSION;
       return {
         serviceSlug,
         serviceVersion,

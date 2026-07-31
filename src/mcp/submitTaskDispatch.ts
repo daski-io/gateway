@@ -4,7 +4,11 @@ import { DASKI_A2A_EXTENSION_URI } from "../config.js";
 import type { Queries } from "../db/queries.js";
 import type { Hex, StoredChallenge } from "../types.js";
 import { buildEnvelopeAuth } from "../auth/envelope.js";
+import { buildTaskAccessChallenge } from "../auth/taskAccess.js";
+import { validateProviderTaskAccessChallenge } from "../auth/taskAccessChallenge.js";
+import { TaskMappingIntegrityError } from "../db/taskMappingQueries.js";
 import { normalizeState } from "../util/a2aShape.js";
+import { logErrorWithId } from "../util/errorWrap.js";
 import { a2aPostJson, providerErrorFromFailure, type Fetcher } from "./a2a.js";
 import {
   sanitizeProviderArtifacts,
@@ -28,6 +32,8 @@ interface SubmitTaskTransport {
 interface DispatchInput {
   args: SubmitTaskArgs;
   paidChallenge: StoredChallenge | null;
+  expectedBuyerTokenId?: bigint;
+  providerAgentId: bigint;
   config: Config;
   transport: SubmitTaskTransport;
   queries: Queries;
@@ -54,6 +60,8 @@ function inputError(code: string, message: string): McpToolResult {
 export async function dispatchSubmitTask({
   args,
   paidChallenge,
+  expectedBuyerTokenId,
+  providerAgentId,
   config,
   transport,
   queries,
@@ -104,14 +112,10 @@ export async function dispatchSubmitTask({
 
   const messageId = args.messageId ?? randomUUID();
   const contextId = args.contextId ?? randomUUID();
-  // Durable operation trace, written BEFORE the provider sees the request:
-  // if the response (and with it the provider-assigned taskId) is lost to
-  // a timeout, the contextId row still exists for recovery
-  // (daski_get_task_status accepts contextId/serviceRef). Input resubmits
-  // reference an existing task, so they only update the trace on success.
+  let taskMappingId: string | null = null;
   if (!args.taskId) {
     try {
-      await queries.insertTaskMapping({
+      taskMappingId = await queries.insertTaskMapping({
         contextId,
         messageId,
         serviceRef:
@@ -120,10 +124,19 @@ export async function dispatchSubmitTask({
             : null,
         providerA2AUrl: args.providerA2AUrl,
         skillId: args.skillId,
-        buyerTokenId: args.buyerTokenId ?? null,
+        buyerTokenId:
+          args.envelopeAuth?.authorization.buyerTokenId ??
+          args.buyerTokenId ??
+          "0",
       });
     } catch {
-      // Best-effort trace — never blocks a dispatch.
+      return mcpError({
+        code: "TASK_MAPPING_UNAVAILABLE",
+        message:
+          "The gateway could not persist the task authorization binding. No provider request was made.",
+        recoverable: true,
+        next_action: "Retry the identical daski_submit_task request.",
+      });
     }
   }
   const body = {
@@ -148,6 +161,7 @@ export async function dispatchSubmitTask({
     failOnNonOk: true,
   });
   if (!post.ok) {
+    await abandonPendingMapping(queries, taskMappingId);
     // The lost-response loop is CLOSED for paid submits (provider ≥v0.15
     // deduplicates on the settled serviceRef + signed body + envelope
     // messageId: an identical re-send returns the existing task without
@@ -176,18 +190,25 @@ export async function dispatchSubmitTask({
   }
   const rpc = post.body;
   if (rpc.error) {
+    await abandonPendingMapping(queries, taskMappingId);
     const mapped = mapProviderRpcError(rpc.error.code);
-    const payload = {
-      code: mapped?.code ?? "PROVIDER_ERROR",
+    const untrustedProviderContent = {
       message: sanitizeProviderValue(
         rpc.error.message ?? "JSON-RPC error",
       ) as string,
+      ...(rpc.error.data !== undefined
+        ? { data: sanitizeProviderValue(rpc.error.data) }
+        : {}),
+    };
+    const payload = {
+      code: mapped?.code ?? "PROVIDER_ERROR",
+      message: mapped
+        ? `Provider returned ${mapped.code}.`
+        : "Provider returned an error.",
       details: {
         contextId,
         ...(rpc.error.code !== undefined ? { rpcCode: rpc.error.code } : {}),
-        ...(rpc.error.data !== undefined
-          ? { data: sanitizeProviderValue(rpc.error.data) }
-          : {}),
+        untrustedProviderContent,
       },
       ...(mapped?.recoverable !== undefined
         ? { recoverable: mapped.recoverable }
@@ -196,29 +217,72 @@ export async function dispatchSubmitTask({
     };
     // Authorization steps are expected transitions, not failures.
     if (mapped?.actionRequired) {
+      if (
+        mapped.actionRequired === "sign_capability" &&
+        (!args.taskId ||
+          !validateProviderTaskAccessChallenge(
+            config,
+            asRecord(rpc.error.data)?.capabilityChallenge,
+            {
+              buyerTokenId: expectedBuyerTokenId,
+              providerAgentId,
+              taskId: args.taskId,
+              action: "input",
+            },
+          ))
+      ) {
+        return mcpError({
+          code: "PROVIDER_CAPABILITY_CHALLENGE_INVALID",
+          message:
+            "The provider returned capability signing material that did not match the canonical Daski task authorization contract.",
+        });
+      }
       return mcpActionRequired(mapped.actionRequired, payload);
     }
     return mcpError(payload);
   }
-  if (!rpc.result?.id) {
+  if (
+    typeof rpc.result?.id !== "string" ||
+    rpc.result.id.length < 1 ||
+    rpc.result.id.length > 256
+  ) {
+    await abandonPendingMapping(queries, taskMappingId);
     return mcpError({
       code: "PROVIDER_ERROR",
-      message: "Provider response missing result.id",
+      message: "Provider response has an invalid result.id",
       details: { contextId },
     });
   }
 
   const result = rpc.result;
   const status = normalizeState(result.status?.state) ?? "submitted";
-  if (typeof result.id === "string") {
+  if (typeof result.id === "string" && taskMappingId) {
     try {
       await queries.completeTaskMapping(
-        result.contextId ?? contextId,
+        taskMappingId,
         result.id,
         status,
       );
-    } catch {
-      // Best-effort trace.
+    } catch (error) {
+      return mcpError({
+        code:
+          error instanceof TaskMappingIntegrityError
+            ? "TASK_MAPPING_INTEGRITY"
+            : "TASK_MAPPING_COMPLETION_FAILED",
+        message:
+          error instanceof TaskMappingIntegrityError
+            ? "The provider task conflicts with an existing dispatch binding."
+            : "The provider may have accepted the task, but the gateway could not complete its authorization binding.",
+        recoverable: !(error instanceof TaskMappingIntegrityError),
+        ...(error instanceof TaskMappingIntegrityError
+          ? {}
+          : {
+              next_action:
+                args.serviceRef
+                  ? "Retry the identical paid submit after gateway storage recovers; the provider will return the existing task."
+                  : "The free task may have been accepted, but it cannot be recovered safely from this response. Do not repeat a state-changing submission unless you independently verify that it did not execute.",
+            }),
+      });
     }
   }
   const flattened: Record<string, unknown> = {
@@ -230,11 +294,29 @@ export async function dispatchSubmitTask({
     state: status,
     providerA2AUrl: args.providerA2AUrl,
   };
+  const untrustedProviderContent: Record<string, unknown> = {};
   if (Array.isArray(result.artifacts) && result.artifacts.length > 0) {
-    flattened.artifacts = sanitizeProviderArtifacts(result.artifacts);
+    untrustedProviderContent.artifacts = sanitizeProviderArtifacts(
+      result.artifacts,
+    );
   }
   if (result.status?.message) {
-    flattened.statusMessage = sanitizeProviderValue(result.status.message);
+    untrustedProviderContent.statusMessage = sanitizeProviderValue(
+      result.status.message,
+    );
+  }
+  if (Object.keys(untrustedProviderContent).length > 0) {
+    flattened.untrustedProviderContent = untrustedProviderContent;
+  }
+  const buyerTokenId =
+    args.envelopeAuth?.authorization.buyerTokenId ?? args.buyerTokenId;
+  if (buyerTokenId && buyerTokenId !== "0") {
+    flattened.taskAccessChallenge = buildTaskAccessChallenge(
+      config,
+      BigInt(buyerTokenId),
+      providerAgentId,
+      result.id!,
+    );
   }
 
   const capabilityChallengeReturned =
@@ -253,6 +335,7 @@ export async function dispatchSubmitTask({
       chainId: args.chainId,
       buyerTokenId: args.envelopeAuth.authorization.buyerTokenId,
       identityRegistryAddress: config.identityRegistryAddress,
+      providerAgentId,
       serviceArgs: args.serviceArgs ?? {},
     });
     flattened.nextEnvelopeAuthChallenge = {
@@ -268,4 +351,22 @@ export async function dispatchSubmitTask({
     };
   }
   return mcpJson(flattened);
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+async function abandonPendingMapping(
+  queries: Queries,
+  mappingId: string | null,
+): Promise<void> {
+  if (!mappingId) return;
+  try {
+    await queries.deletePendingTaskMapping(mappingId);
+  } catch (error) {
+    logErrorWithId("taskMapping.abandon", error);
+  }
 }

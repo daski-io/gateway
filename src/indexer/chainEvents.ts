@@ -1,260 +1,231 @@
-import type { ChainReader, PaymentSettledEventLog } from "../chain/reader.js";
+import type { ChainProjectionDescriptor } from "../chain/eventTypes.js";
+import type { ChainEventReader, ChainStatusReader } from "../chain/reader.js";
+import {
+  ChainProjectionDescriptorError,
+  ChainProjectionIntegrityError,
+} from "../db/chainEventQueries.js";
 import type { Queries } from "../db/queries.js";
 import { logger } from "../util/logger.js";
 
-/**
- * Chain-events indexer. Polls `PaymentRouter.PaymentSettled` events in
- * small block windows, enriches each new paymentId with on-chain
- * `getRecord` + `refundedAmount`, and UPSERTs into the `chain_events`
- * mirror table. Powers `/public/v1/activity` and the per-service
- * recentPurchases list — both read from chain_events with a LEFT JOIN
- * onto `payment_challenges` for the rich enrichment (skillId, original
- * a2a URL, etc.) that the gateway captures at challenge-issue time.
- *
- * Two responsibilities, one loop:
- *   1. **Forward poll**: every tick, scan from `last_indexed_block + 1`
- *      to the confirmed head, paginated under `BLOCK_RANGE_PER_CALL` so even
- *      conservative RPC providers (10k-block caps) accept the request.
- *      Sets `last_indexed_block` after each successful page.
- *   2. **Refresh sweep**: also revisits recent / pending rows whose
- *      confirmation or outcome may still arrive (per-row
- *      `last_refreshed_at` timestamp throttles re-reads to once per
- *      `REFRESH_INTERVAL_MS`).
- *
- * Bootstrap behaviour: on first run, `last_indexed_block` is 0. The
- * indexer initializes to `currentHead - INITIAL_LOOKBACK_BLOCKS` so we
- * don't scan all of Base history. Conservative window covers any
- * realistic contract-deploy date for the current Daski stack.
- *
- * Reorg exposure is bounded by a confirmation-depth delay (12 blocks by
- * default). UPSERT keyed by paymentId makes duplicate fetches safe; a
- * reorg deeper than the configured confirmation depth still requires
- * operator reconciliation.
- */
+type ProjectionReader = ChainEventReader & ChainStatusReader;
+
+interface IndexerFailure {
+  category: "rpc" | "descriptor_mismatch" | "projection_integrity";
+  message: string;
+  at: Date;
+}
+
 export class ChainEventsIndexer {
   private timer: NodeJS.Timeout | null = null;
-  private running = false;
-  private lastError: { message: string; at: Date } | null = null;
+  private inFlight: Promise<void> | null = null;
+  private stopping = false;
+  private initialized = false;
+  private terminal = false;
+  private cachedCursor: bigint | null = null;
+  private confirmedHead: bigint | null = null;
   private lastSuccessAt: Date | null = null;
+  private lastFailure: IndexerFailure | null = null;
 
   constructor(
-    private readonly reader: ChainReader,
+    private readonly reader: ProjectionReader,
     private readonly queries: Queries,
-    private readonly opts: {
-      /** How often the loop ticks (ms). Default 5s — Base block time is ~2s. */
+    private readonly descriptor: ChainProjectionDescriptor,
+    private readonly options: {
       pollIntervalMs?: number;
-      /** Max blocks per getLogs call. RPC-dependent; 2000 is conservative. */
       blockRangePerCall?: bigint;
-      /** Blocks kept behind the RPC head before indexing. Default 12. */
       confirmationDepthBlocks?: bigint;
-      /** Initial backfill on cold start: head - this. Default 1_000_000 (~23d on Base). */
-      initialLookbackBlocks?: bigint;
-      /** Refresh interval for pending rows (ms). Default 60s. */
-      refreshIntervalMs?: number;
-      /** How many pending rows to refresh per tick. Default 20. */
-      refreshBatchSize?: number;
     } = {},
   ) {}
 
-  /** Begin the polling loop. No-op if already started. */
-  start(): void {
-    if (this.timer != null) return;
-    const interval = this.opts.pollIntervalMs ?? 5_000;
-    // Kick once immediately so first /activity request after boot already
-    // has data; subsequent ticks fire on the interval.
-    void this.tick();
-    this.timer = setInterval(() => void this.tick(), interval);
+  async initialize(): Promise<void> {
+    if (this.initialized) return;
+    try {
+      this.cachedCursor = await this.queries.getOrAdoptChainProjection(
+        this.descriptor,
+      );
+      await this.refreshSharedState();
+      this.initialized = true;
+    } catch (error) {
+      if (error instanceof ChainProjectionDescriptorError) {
+        await this.queries.recordChainProjectionTerminalFailure({
+          category: "descriptor_mismatch",
+          message: error.message,
+        });
+      }
+      throw error;
+    }
   }
 
-  /** Stop the polling loop. Safe to call multiple times. */
-  stop(): void {
-    if (this.timer != null) {
+  start(): void {
+    if (this.timer || this.stopping || this.terminal) return;
+    void this.tick();
+    this.timer = setInterval(
+      () => void this.tick(),
+      this.options.pollIntervalMs ?? 5_000,
+    );
+  }
+
+  async stopAndDrain(): Promise<void> {
+    this.stopping = true;
+    if (this.timer) clearInterval(this.timer);
+    this.timer = null;
+    await this.inFlight;
+  }
+
+  async tick(): Promise<void> {
+    if (this.stopping || this.terminal) return;
+    if (this.inFlight) return this.inFlight;
+    const operation = this.runTick();
+    this.inFlight = operation;
+    try {
+      await operation;
+    } finally {
+      if (this.inFlight === operation) this.inFlight = null;
+    }
+  }
+
+  status() {
+    const lagBlocks = this.lagBlocks();
+    return {
+      initialized: this.initialized,
+      startBlock: this.descriptor.startBlock,
+      lastIndexedBlock: this.cachedCursor,
+      lastObservedConfirmedHead: this.confirmedHead,
+      lagBlocks,
+      lastSuccessAt: this.lastSuccessAt,
+      lastFailure: this.lastFailure,
+      terminal: this.terminal,
+    };
+  }
+
+  isReady(now = Date.now()): boolean {
+    const maximumAge = (this.options.pollIntervalMs ?? 5_000) * 6;
+    return (
+      this.initialized &&
+      !this.terminal &&
+      this.lastSuccessAt !== null &&
+      now - this.lastSuccessAt.getTime() <= maximumAge &&
+      this.lagBlocks() === 0n
+    );
+  }
+
+  isFresh(now = Date.now()): boolean {
+    return this.isReady(now);
+  }
+
+  private lagBlocks(): bigint | null {
+    if (this.confirmedHead === null) return null;
+    if (this.confirmedHead < this.descriptor.startBlock) return 0n;
+    if (this.cachedCursor === null) {
+      return this.confirmedHead - this.descriptor.startBlock + 1n;
+    }
+    return this.confirmedHead > this.cachedCursor
+      ? this.confirmedHead - this.cachedCursor
+      : 0n;
+  }
+
+  private async runTick(): Promise<void> {
+    try {
+      if (!this.initialized) await this.initialize();
+      await this.refreshSharedState();
+      if (this.terminal) return;
+      const confirmedHead = await this.observeConfirmedHead();
+      const leadership = await this.queries.tryWithChainProjectionLock(
+        async () => {
+          await this.refreshSharedState();
+          if (this.terminal) return;
+          await this.pollToConfirmedHead(confirmedHead);
+        },
+      );
+      if (!leadership.acquired) await this.refreshSharedState();
+      if (this.terminal) return;
+      this.lastSuccessAt = new Date();
+      if (this.lastFailure) logger.info("chain events indexer recovered");
+      this.lastFailure = null;
+    } catch (error) {
+      const category =
+        error instanceof ChainProjectionDescriptorError
+          ? "descriptor_mismatch"
+          : error instanceof ChainProjectionIntegrityError
+            ? "projection_integrity"
+            : "rpc";
+      this.terminal = category !== "rpc";
+      const firstFailure = this.lastFailure === null;
+      this.lastFailure = {
+        category,
+        message: error instanceof Error ? error.message : String(error),
+        at: new Date(),
+      };
+      if (firstFailure) {
+        logger.error("chain events indexer became unhealthy", {
+          category,
+          error,
+        });
+      }
+      if (category !== "rpc") {
+        await this.queries
+          .recordChainProjectionTerminalFailure({
+            category,
+            message: this.lastFailure.message,
+          })
+          .catch(() => undefined);
+      }
+      if (this.terminal && this.timer) {
+        clearInterval(this.timer);
+        this.timer = null;
+      }
+    }
+  }
+
+  private async refreshSharedState(): Promise<void> {
+    const state = await this.queries.getChainProjectionState(this.descriptor);
+    this.cachedCursor = state.cursor;
+    if (!state.terminalFailure) return;
+    this.terminal = true;
+    this.lastFailure = state.terminalFailure;
+    if (this.timer) {
       clearInterval(this.timer);
       this.timer = null;
     }
   }
 
-  /** One-shot tick. Exposed so tests can drive the loop deterministically. */
-  async tick(): Promise<void> {
-    if (this.running) return; // skip if previous tick still running
-    this.running = true;
-    try {
-      await this.poll();
-      await this.refreshPending();
-      this.lastSuccessAt = new Date();
-      if (this.lastError) {
-        logger.info("chain events indexer recovered");
-      }
-      this.lastError = null;
-    } catch (err) {
-      const firstFailure = this.lastError === null;
-      this.lastError = {
-        message: err instanceof Error ? err.message : String(err),
-        at: new Date(),
-      };
-      if (firstFailure) {
-        logger.error("chain events indexer became unhealthy", this.lastError);
-      }
-    } finally {
-      this.running = false;
-    }
-  }
-
-  /** Health/diagnostic snapshot. */
-  status(): {
-    lastIndexedBlock: bigint | null;
-    lastSuccessAt: Date | null;
-    lastError: { message: string; at: Date } | null;
-  } {
-    return {
-      lastIndexedBlock: this.cachedCursor,
-      lastSuccessAt: this.lastSuccessAt,
-      lastError: this.lastError,
-    };
-  }
-
-  isFresh(now = Date.now()): boolean {
-    const maximumAge = (this.opts.pollIntervalMs ?? 5_000) * 6;
-    return (
-      this.lastSuccessAt !== null &&
-      now - this.lastSuccessAt.getTime() <= maximumAge
-    );
-  }
-
-  // ── Internals ──────────────────────────────────────────────────────
-
-  private cachedCursor: bigint | null = null;
-
-  private async poll(): Promise<void> {
+  private async observeConfirmedHead(): Promise<bigint> {
     const head = await this.reader.getBlockNumber();
-    const confirmationDepth = this.opts.confirmationDepthBlocks ?? 12n;
+    const confirmationDepth = this.options.confirmationDepthBlocks ?? 12n;
     const confirmedHead =
       head > confirmationDepth ? head - confirmationDepth : 0n;
-    const cursor = await this.getOrInitCursor(confirmedHead);
-    if (cursor >= confirmedHead) return;
+    this.confirmedHead = confirmedHead;
+    return confirmedHead;
+  }
 
-    const rangePerCall =
-      this.opts.blockRangePerCall ?? 2000n;
-    let fromBlock = cursor + 1n;
+  private async pollToConfirmedHead(confirmedHead: bigint): Promise<void> {
+    if (confirmedHead < this.descriptor.startBlock) return;
+    if (this.cachedCursor !== null && this.cachedCursor >= confirmedHead) {
+      return;
+    }
 
-    while (fromBlock <= confirmedHead) {
+    const range = this.options.blockRangePerCall ?? 2_000n;
+    let fromBlock =
+      this.cachedCursor === null
+        ? this.descriptor.startBlock
+        : this.cachedCursor + 1n;
+    while (fromBlock <= confirmedHead && !this.stopping) {
       const toBlock =
-        fromBlock + rangePerCall - 1n > confirmedHead
+        fromBlock + range - 1n > confirmedHead
           ? confirmedHead
-          : fromBlock + rangePerCall - 1n;
-      const events = await this.reader.getPaymentSettledEvents(
+          : fromBlock + range - 1n;
+      const events = await this.reader.getChainProjectionEvents(
         fromBlock,
         toBlock,
       );
-      if (events.length > 0) {
-        await this.ingest(events);
-      }
-      await this.queries.setLastIndexedBlock(toBlock);
+      await this.queries.applyChainProjectionPage({
+        descriptor: this.descriptor,
+        fromBlock,
+        toBlock,
+        events,
+      });
       this.cachedCursor = toBlock;
       fromBlock = toBlock + 1n;
     }
   }
-
-  /**
-   * Initialize the cursor on first run: if it's 0, set to
-   * `head - initialLookbackBlocks` so we don't scan all of Base
-   * history. Returns the cursor value to use.
-   */
-  private async getOrInitCursor(head: bigint): Promise<bigint> {
-    const stored = await this.queries.getLastIndexedBlock();
-    if (stored > 0n) {
-      this.cachedCursor = stored;
-      return stored;
-    }
-    const lookback = this.opts.initialLookbackBlocks ?? 1_000_000n;
-    const init = head > lookback ? head - lookback : 0n;
-    await this.queries.setLastIndexedBlock(init);
-    this.cachedCursor = init;
-    return init;
-  }
-
-  /**
-   * For each new PaymentSettled event, fetch the per-paymentId
-   * `getRecord` + `refundedAmount` and UPSERT a row. Sequential per
-   * event so a transient RPC failure on one doesn't poison the whole
-   * batch — at small batch sizes this is fine, and the row-level UPSERT
-   * keeps it idempotent on retry.
-   */
-  private async ingest(events: PaymentSettledEventLog[]): Promise<void> {
-    for (const e of events) {
-      const [record, refundedAtomic] = await Promise.all([
-        this.reader.getReputationRecord(e.paymentId),
-        this.reader.getPaymentRefundedAmount(e.paymentId),
-      ]);
-      await this.queries.upsertChainEvent({
-        paymentId: e.paymentId,
-        txHash: e.transactionHash,
-        blockNumber: e.blockNumber,
-        serviceId: e.serviceId,
-        buyerAgentId: e.buyerAgentId,
-        providerAgentId: e.providerAgentId,
-        amountAtomic: e.totalAmount,
-        settledAt: new Date(Number(e.blockTimestamp) * 1000),
-        outcomeCode: record?.outcomeRecorded
-          ? OUTCOME_TO_CODE[record.outcome ?? "Completed"]
-          : null,
-        confirmationCode: CONFIRMATION_TO_CODE[record?.confirmation ?? "Pending"],
-        fulfillmentSeconds:
-          record?.fulfillmentSeconds != null
-            ? Number(record.fulfillmentSeconds)
-            : null,
-        refundedAtomic,
-      });
-    }
-  }
-
-  /**
-   * Re-poll rows whose state is still mutable (no refund, no terminal
-   * confirmation) and that haven't been refreshed within
-   * `refreshIntervalMs`. Cheap multicall per row; bounded batch size
-   * keeps tick latency predictable.
-   */
-  private async refreshPending(): Promise<void> {
-    const intervalMs = this.opts.refreshIntervalMs ?? 60_000;
-    const batchSize = this.opts.refreshBatchSize ?? 20;
-    const cutoff =
-      intervalMs === 0
-        ? new Date(8_640_000_000_000_000)
-        : new Date(Date.now() - intervalMs);
-    const stale = await this.queries.listStaleChainEvents(cutoff, batchSize);
-    if (stale.length === 0) return;
-
-    for (const row of stale) {
-      const [record, refundedAtomic] = await Promise.all([
-        this.reader.getReputationRecord(row.paymentId),
-        this.reader.getPaymentRefundedAmount(row.paymentId),
-      ]);
-      await this.queries.refreshChainEvent({
-        paymentId: row.paymentId,
-        outcomeCode: record?.outcomeRecorded
-          ? OUTCOME_TO_CODE[record.outcome ?? "Completed"]
-          : null,
-        confirmationCode: CONFIRMATION_TO_CODE[record?.confirmation ?? "Pending"],
-        fulfillmentSeconds:
-          record?.fulfillmentSeconds != null
-            ? Number(record.fulfillmentSeconds)
-            : null,
-        refundedAtomic,
-      });
-    }
-  }
 }
-
-// Mirror the Solidity enum order used by ReputationStorage:
-//   outcome:       0=Completed, 1=Failed, 2=Canceled
-//   confirmation:  0=Pending, 1=Confirmed, 2=NotConfirmed
-const OUTCOME_TO_CODE: Record<"Completed" | "Failed" | "Canceled", number> = {
-  Completed: 0,
-  Failed: 1,
-  Canceled: 2,
-};
-const CONFIRMATION_TO_CODE: Record<"Pending" | "Confirmed" | "NotConfirmed", number> = {
-  Pending: 0,
-  Confirmed: 1,
-  NotConfirmed: 2,
-};

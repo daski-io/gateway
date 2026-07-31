@@ -11,8 +11,9 @@ import type { Queries } from "../db/queries.js";
 import type { DiscoveryCache } from "../discovery/cache.js";
 import type { Hex, PaymentPayload } from "../types.js";
 import { logger } from "../util/logger.js";
-import type { PaymentScreeningReadinessProbe } from "./screeningReadiness.js";
+import type { ChainDeploymentReadinessProbe } from "./deploymentReadiness.js";
 import type { DaskiFacilitatorService } from "./daskiFacilitator.js";
+import type { ProviderAuthorityService } from "./providerAuthority.js";
 import { parsePurchaseRequest } from "./purchaseRequest.js";
 import { hashCanonical } from "./requirementResponse.js";
 import { issuePaymentRequirements } from "./requirements.js";
@@ -23,8 +24,9 @@ export interface PurchaseDeps {
   cache: DiscoveryCache;
   queries: Queries;
   reader: ChainReader;
-  screeningReadiness: PaymentScreeningReadinessProbe;
+  deploymentReadiness: ChainDeploymentReadinessProbe;
   facilitator: DaskiFacilitatorService;
+  providerAuthority: ProviderAuthorityService;
   fetchAgentCardFn?: import("../identity/fetch-agent-card.js").FetchAgentCardOptions["fetchFn"];
 }
 
@@ -102,9 +104,13 @@ async function handlePaidRetry(
   if (
     challenge.settlementState !== "paid" &&
     challenge.settlementState !== "sanctions_rejected" &&
-    !(await deps.screeningReadiness.isReady())
+    !(await deps.deploymentReadiness.isReady())
   ) {
-    sendError(res, 503, "Payment cannot be processed right now. Please try again later.");
+    sendError(
+      res,
+      503,
+      "Payment cannot be processed right now. Please try again later.",
+    );
     return;
   }
   const requirements = challenge.paymentRequired?.accepts[0];
@@ -112,20 +118,18 @@ async function handlePaidRetry(
     sendError(res, 409, "stored challenge is not canonical x402 V2");
     return;
   }
-  const settlement = await deps.facilitator.settle(
+  const settlementResult = await deps.facilitator.settleDetailed(
     paymentPayload,
     requirements,
   );
+  const settlement = settlementResult.response;
   res.setHeader("PAYMENT-RESPONSE", encodePaymentResponseHeader(settlement));
   if (!settlement.success) {
-    res
-      .status(
-        settlement.errorReason === "payment_screening_unready" ? 503 : 402,
-      )
-      .json({
-        error: settlement.errorReason,
-        message: settlement.errorMessage,
-      });
+    res.status(settlementResult.ok ? 500 : settlementResult.status).json({
+      error: settlement.errorReason,
+      message: settlement.errorMessage,
+      retryable: settlement.retryable ?? false,
+    });
     return;
   }
   const receipt = getDaskiReceipt(settlement);
@@ -144,8 +148,12 @@ async function handleInitialPurchase(
   body: Record<string, unknown>,
   res: Response,
 ): Promise<void> {
-  if (!(await deps.screeningReadiness.isReady())) {
-    sendError(res, 503, "Payment cannot be processed right now. Please try again later.");
+  if (!(await deps.deploymentReadiness.isReady())) {
+    sendError(
+      res,
+      503,
+      "Payment cannot be processed right now. Please try again later.",
+    );
     return;
   }
   const parsed = await parsePurchaseRequest(deps, providerTokenId, body, res);
@@ -159,12 +167,16 @@ async function handleInitialPurchase(
       resource: `${deps.config.publicUrl}/purchase/${providerTokenId}`,
       walletAddress: parsed.walletAddress,
       providerQuote: parsed.providerQuote,
+      serviceArgs: parsed.serviceArgs,
+      warnings: [],
       requestFingerprint: hashCanonical(body),
       registrationDelegation: parsed.registration,
+      providerAuthority: parsed.providerAuthority,
     },
     deps.config,
     deps.cache,
     deps.queries,
+    deps.reader,
   );
   if (!result.ok) {
     sendError(res, result.status, result.message);
@@ -173,7 +185,11 @@ async function handleInitialPurchase(
   const encoded = encodePaymentRequiredHeader(result.paymentRequired);
   if (Buffer.byteLength(encoded, "utf8") >= 8192) {
     logger.warn("x402.header_oversize", { transport: "http" });
-    sendError(res, 500, "payment challenge exceeds the configured header budget");
+    sendError(
+      res,
+      500,
+      "payment challenge exceeds the configured header budget",
+    );
     return;
   }
   logger.info("x402.payment_required", { transport: "http" });

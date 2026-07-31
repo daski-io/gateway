@@ -1,5 +1,6 @@
 import { keccak256, toBytes, type Hex } from "viem";
 import { randomUUID } from "node:crypto";
+import { buildDaskiProviderDomain } from "./providerDomain.js";
 
 // EIP-712 A2A envelope authentication. Shared shape with daski-provider's
 // src/core/auth/envelope.ts — must be kept in sync (the schema is on-chain
@@ -19,9 +20,6 @@ export const A2A_REQUEST_AUTHORIZATION_TYPES = {
 
 export const A2A_REQUEST_AUTHORIZATION_PRIMARY_TYPE = "A2ARequestAuthorization";
 
-export const DASKI_AUTH_DOMAIN_NAME = "Daski";
-export const DASKI_AUTH_DOMAIN_VERSION = "1";
-
 export interface A2ARequestAuthorization {
   buyerTokenId: string;
   skillId: string;
@@ -39,6 +37,7 @@ export interface BuildEnvelopeInput {
   paymentId: string;
   chainId: number;
   identityRegistryAddress: Hex;
+  providerAgentId: bigint;
   serviceArgs?: Record<string, unknown>;
   /** Optional override; auto-generated otherwise. */
   messageId?: string;
@@ -57,6 +56,7 @@ export interface BuiltEnvelope {
       version: string;
       chainId: number;
       verifyingContract: Hex;
+      salt: Hex;
     };
     types: typeof A2A_REQUEST_AUTHORIZATION_TYPES;
     primaryType: typeof A2A_REQUEST_AUTHORIZATION_PRIMARY_TYPE;
@@ -126,12 +126,11 @@ export function buildEnvelopeAuth(input: BuildEnvelopeInput): BuiltEnvelope {
     issuedAt,
     authorization,
     eip712TypedData: {
-      domain: {
-        name: DASKI_AUTH_DOMAIN_NAME,
-        version: DASKI_AUTH_DOMAIN_VERSION,
+      domain: buildDaskiProviderDomain({
         chainId: input.chainId,
-        verifyingContract: input.identityRegistryAddress,
-      },
+        identityRegistryAddress: input.identityRegistryAddress,
+        providerAgentId: input.providerAgentId,
+      }),
       types: A2A_REQUEST_AUTHORIZATION_TYPES,
       primaryType: A2A_REQUEST_AUTHORIZATION_PRIMARY_TYPE,
       // Wallet-friendly message: string-form bigints so the signature

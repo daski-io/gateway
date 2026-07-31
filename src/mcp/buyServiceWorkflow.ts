@@ -40,7 +40,7 @@ export async function runBuyService(
 
   const retry = await runBuyServiceX402Retry(args, extra, {
     queries: deps.queries,
-    screeningReadiness: deps.screeningReadiness,
+    deploymentReadiness: deps.deploymentReadiness,
     facilitator: deps.facilitator,
   });
   if (retry !== null) return retry;
@@ -164,7 +164,8 @@ export async function runBuyService(
         timeoutMs: transport.timeoutMs,
         maxResponseBytes: transport.maxResponseBytes,
         fetchAgentCardFn: deps.buyerAgentCardFetch,
-        screeningReadiness: deps.screeningReadiness,
+        deploymentReadiness: deps.deploymentReadiness,
+        providerAuthority: deps.providerAuthority,
       })
     : runBuyServiceFreePath(context, {
         config: deps.config,

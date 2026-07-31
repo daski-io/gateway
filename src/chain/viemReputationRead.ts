@@ -109,6 +109,7 @@ export function createReputationReadMethods(
         fulfillmentSeconds: raw.outcomeRecorded ? raw.outcomeAttestationDelay : null,
         outcomeTimestamp: raw.outcomeTimestamp,
         confirmationTimestamp: raw.confirmationTimestamp,
+        currentConfirmationUid: raw.currentConfirmationUid,
         outcomeRecorded: raw.outcomeRecorded,
         reputationEligible: raw.reputationEligible,
       };

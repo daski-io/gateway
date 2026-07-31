@@ -160,23 +160,30 @@ export const providerRegistryAbi = [
   },
 ] as const;
 
+// ── Daski ServiceRegistry ───────────────────────────────────────────────
+
+export const serviceRegistryAbi = [
+  {
+    type: "function",
+    name: "resolveSettlement",
+    inputs: [{ name: "serviceId", type: "bytes32" }],
+    outputs: [
+      { name: "providerAgentId", type: "uint256" },
+      { name: "active", type: "bool" },
+      { name: "providerOwner", type: "address" },
+      { name: "providerWallet", type: "address" },
+      { name: "payee", type: "address" },
+    ],
+    stateMutability: "view",
+  },
+] as const;
+
 // ── Daski PaymentRouter ─────────────────────────────────────────────────
 //
 // The router is now rail-agnostic — adapters handle the specifics of how
 // funds arrive. The gateway consumes PaymentSettled (emitted by the router).
 
 export const paymentRouterAbi = [
-  {
-    // Cumulative refunded amount (atomic USDC) for one paymentId. Returns
-    // 0 for unknown paymentIds and for settled-but-unrefunded ones — the
-    // caller can't distinguish the two from this view alone (use the
-    // gateway's own challenge row to check whether the payment exists).
-    type: "function",
-    name: "refundedAmount",
-    inputs: [{ name: "paymentId", type: "uint256" }],
-    outputs: [{ name: "", type: "uint256" }],
-    stateMutability: "view",
-  },
   {
     // Full PaymentRecord for one paymentId — the authoritative on-chain
     // source of (buyer, provider, service) for a settled payment. Unknown
@@ -360,9 +367,8 @@ export const reputationRegistryAbi = [
     stateMutability: "nonpayable",
   },
   {
-    // Soft revocation — the record stays, isRevoked flips. Reverts with
-    // "no such feedback" / "already revoked"; callers doing best-effort
-    // revoke-before-revise swallow those.
+    // Soft revocation — the record stays and isRevoked flips. The revision
+    // flow accepts only the canonical "already revoked" result as success.
     type: "function",
     name: "revokeFeedback",
     inputs: [
@@ -398,6 +404,7 @@ export const x402AdapterAbi = [
       // The allowlisted facilitator resolves serviceId from the persisted
       // challenge and binds settlement to that ServiceRegistry row.
       { name: "serviceId", type: "bytes32" },
+      { name: "expectedPayee", type: "address" },
       {
         name: "auth",
         type: "tuple",
@@ -406,11 +413,10 @@ export const x402AdapterAbi = [
           { name: "validAfter", type: "uint256" },
           { name: "validBefore", type: "uint256" },
           { name: "nonce", type: "bytes32" },
-          { name: "v", type: "uint8" },
-          { name: "r", type: "bytes32" },
-          { name: "s", type: "bytes32" },
+          { name: "signature", type: "bytes" },
         ],
       },
+      { name: "nonceSalt", type: "bytes32" },
     ],
     outputs: [{ name: "", type: "uint256" }],
     stateMutability: "nonpayable",
@@ -429,6 +435,7 @@ export const x402AdapterAbi = [
       { name: "serviceRef", type: "bytes32" },
       { name: "providerAgentId", type: "uint256" },
       { name: "serviceId", type: "bytes32" },
+      { name: "expectedPayee", type: "address" },
       {
         name: "auth",
         type: "tuple",
@@ -437,11 +444,10 @@ export const x402AdapterAbi = [
           { name: "validAfter", type: "uint256" },
           { name: "validBefore", type: "uint256" },
           { name: "nonce", type: "bytes32" },
-          { name: "v", type: "uint8" },
-          { name: "r", type: "bytes32" },
-          { name: "s", type: "bytes32" },
+          { name: "signature", type: "bytes" },
         ],
       },
+      { name: "nonceSalt", type: "bytes32" },
       { name: "agentURI", type: "string" },
       { name: "registrationDeadline", type: "uint256" },
       { name: "registrationSignature", type: "bytes" },
@@ -542,8 +548,16 @@ export const knownErrorAbis = [
   // OpenZeppelin ERC721 v5 — the canonical IdentityRegistry mints via
   // _safeMint and AgentIndex.registerWithSig transfers the NFT onward, so
   // the receiver/sender errors are reachable through registerWithSig.
-  { type: "error", name: "ERC721InvalidOwner", inputs: [{ name: "owner", type: "address" }] },
-  { type: "error", name: "ERC721NonexistentToken", inputs: [{ name: "tokenId", type: "uint256" }] },
+  {
+    type: "error",
+    name: "ERC721InvalidOwner",
+    inputs: [{ name: "owner", type: "address" }],
+  },
+  {
+    type: "error",
+    name: "ERC721NonexistentToken",
+    inputs: [{ name: "tokenId", type: "uint256" }],
+  },
   {
     type: "error",
     name: "ERC721IncorrectOwner",
@@ -553,8 +567,16 @@ export const knownErrorAbis = [
       { name: "owner", type: "address" },
     ],
   },
-  { type: "error", name: "ERC721InvalidSender", inputs: [{ name: "sender", type: "address" }] },
-  { type: "error", name: "ERC721InvalidReceiver", inputs: [{ name: "receiver", type: "address" }] },
+  {
+    type: "error",
+    name: "ERC721InvalidSender",
+    inputs: [{ name: "sender", type: "address" }],
+  },
+  {
+    type: "error",
+    name: "ERC721InvalidReceiver",
+    inputs: [{ name: "receiver", type: "address" }],
+  },
   {
     type: "error",
     name: "ERC721InsufficientApproval",
@@ -563,8 +585,16 @@ export const knownErrorAbis = [
       { name: "tokenId", type: "uint256" },
     ],
   },
-  { type: "error", name: "ERC721InvalidApprover", inputs: [{ name: "approver", type: "address" }] },
-  { type: "error", name: "ERC721InvalidOperator", inputs: [{ name: "operator", type: "address" }] },
+  {
+    type: "error",
+    name: "ERC721InvalidApprover",
+    inputs: [{ name: "approver", type: "address" }],
+  },
+  {
+    type: "error",
+    name: "ERC721InvalidOperator",
+    inputs: [{ name: "operator", type: "address" }],
+  },
 
   // OpenZeppelin Initializable — UUPS proxies behind every Daski contract.
   { type: "error", name: "InvalidInitialization", inputs: [] },
@@ -581,7 +611,11 @@ export const knownErrorAbis = [
     name: "ECDSAInvalidSignatureLength",
     inputs: [{ name: "length", type: "uint256" }],
   },
-  { type: "error", name: "ECDSAInvalidSignatureS", inputs: [{ name: "s", type: "bytes32" }] },
+  {
+    type: "error",
+    name: "ECDSAInvalidSignatureS",
+    inputs: [{ name: "s", type: "bytes32" }],
+  },
 
   // EAS errors thrown by attestByDelegation along the confirm-delivery path.
   { type: "error", name: "AccessDenied", inputs: [] },

@@ -36,6 +36,27 @@ describe("loadRuntimeConfig", () => {
     ).toThrow(/STATE_CHANGE_GLOBAL_MAX_PER_MINUTE/);
   });
 
+  it("loads tunable MCP session limits and rejects an invalid split", () => {
+    const config = loadRuntimeConfig({
+      MCP_MAX_SESSIONS: "250",
+      MCP_MAX_SESSIONS_PER_CLIENT: "25",
+      MCP_SESSION_IDLE_TTL_MS: "120000",
+      MCP_SESSION_SWEEP_INTERVAL_MS: "30000",
+    });
+    expect(config).toMatchObject({
+      mcpMaxSessions: 250,
+      mcpMaxSessionsPerClient: 25,
+      mcpSessionIdleTtlMs: 120_000,
+      mcpSessionSweepIntervalMs: 30_000,
+    });
+    expect(() =>
+      loadRuntimeConfig({
+        MCP_MAX_SESSIONS: "10",
+        MCP_MAX_SESSIONS_PER_CLIENT: "11",
+      }),
+    ).toThrow(/MCP_MAX_SESSIONS_PER_CLIENT/);
+  });
+
   it("has no standalone registration sponsorship setting", () => {
     const config = loadRuntimeConfig({
       REGISTRATION_SPONSOR_MAX_PER_HOUR: "20",

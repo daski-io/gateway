@@ -38,7 +38,7 @@ describe("GET /.well-known/daski-chain.json", () => {
     expect(contracts.serviceRegistry).toBe(gateway.config.serviceRegistryAddress);
     expect(contracts.paymentRouter).toBe(gateway.config.paymentRouterAddress);
     expect(contracts.x402Adapter).toBe(gateway.config.x402AdapterAddress);
-    expect(contracts.usdc).toBe(gateway.config.usdcAddress);
+    expect(contracts.usdc).toBe(gateway.config.usdc.address);
     expect(contracts.eas).toBe(gateway.config.easAddress);
 
     // Optional addresses aren't configured in the test fixture, so the
@@ -55,8 +55,7 @@ describe("GET /.well-known/daski-chain.json", () => {
     expect(schemas.easOutcome).toBe(gateway.config.easOutcomeSchemaUid);
 
     const usdcDomain = body.usdcDomain as Record<string, string>;
-    expect(usdcDomain.name).toBe(gateway.config.usdcName);
-    expect(usdcDomain.version).toBe(gateway.config.usdcVersion);
+    expect(usdcDomain).toEqual(gateway.config.usdc);
   });
 
   it("includes optional contract addresses when configured", async () => {

@@ -2,6 +2,7 @@ import {
   BaseError,
   ContractFunctionRevertedError,
   ContractFunctionZeroDataError,
+  encodeFunctionData,
   keccak256,
   parseEventLogs,
   type PrivateKeyAccount,
@@ -17,14 +18,21 @@ import {
   encodeFeedbackCalldata,
   feedbackArgs,
 } from "./feedbackCalldata.js";
-import { FeedbackSubmissionError } from "./feedbackErrors.js";
+import {
+  FeedbackAlreadyRevokedError,
+  FeedbackSubmissionError,
+} from "./feedbackErrors.js";
+import { isAlreadyKnownTransaction } from "./transactionErrors.js";
 import type {
   ChainReader,
   FeedbackInput,
+  FeedbackRevocationInput,
   FeedbackResult,
   PreparedFeedbackTransaction,
 } from "./reader.js";
 import { decodeRevertReason } from "./viemErrors.js";
+import { FACILITATOR_WRITE_CONFIRMATIONS } from "./transactionFinality.js";
+import { assertFacilitatorTransactionFee } from "./facilitatorFee.js";
 
 type SupportedChain = typeof base | typeof baseSepolia;
 type FeedbackMethods = Pick<
@@ -33,7 +41,9 @@ type FeedbackMethods = Pick<
   | "submitPreparedFeedback"
   | "getFeedbackByTransaction"
   | "getFacilitatorTransactionCount"
-  | "revokeFeedback"
+  | "prepareFeedbackRevocation"
+  | "submitPreparedFeedbackRevocation"
+  | "getFeedbackRevocationByTransaction"
 >;
 
 export interface FeedbackDeps {
@@ -42,6 +52,7 @@ export interface FeedbackDeps {
   account: PrivateKeyAccount;
   chain: SupportedChain;
   reputationRegistryAddress?: Hex;
+  maxTransactionFeeWei: bigint;
 }
 
 function isContractRevert(error: unknown): boolean {
@@ -52,6 +63,14 @@ function isContractRevert(error: unknown): boolean {
         cause instanceof ContractFunctionRevertedError ||
         cause instanceof ContractFunctionZeroDataError,
     ),
+  );
+}
+
+function receiptMissing(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return (
+    message.includes("could not be found") ||
+    message.includes("TransactionReceiptNotFound")
   );
 }
 
@@ -142,6 +161,7 @@ export function createFeedbackMethods(deps: FeedbackDeps): FeedbackMethods {
   return {
     async prepareFeedback(
       input: FeedbackInput,
+      facilitatorNonce: bigint,
     ): Promise<PreparedFeedbackTransaction> {
       const simulation = await simulate(input);
       const request = await (deps.walletClient as any).prepareTransactionRequest({
@@ -150,14 +170,16 @@ export function createFeedbackMethods(deps: FeedbackDeps): FeedbackMethods {
         to: registry(),
         data: encodeFeedbackCalldata(input),
         gas: simulation.request.gas,
+        nonce: facilitatorNonce,
       });
+      assertFacilitatorTransactionFee(request, deps.maxTransactionFeeWei);
       const serializedTransaction = (await deps.account.signTransaction(
         request as any,
       )) as Hex;
       return {
         transactionHash: keccak256(serializedTransaction),
         serializedTransaction,
-        nonce: BigInt(request.nonce),
+        facilitatorNonce: BigInt(request.nonce),
       };
     },
 
@@ -166,15 +188,22 @@ export function createFeedbackMethods(deps: FeedbackDeps): FeedbackMethods {
       input: FeedbackInput,
       onBroadcast,
     ): Promise<FeedbackResult> {
-      const hash = await deps.walletClient.sendRawTransaction({
-        serializedTransaction: prepared.serializedTransaction,
-      });
+      let hash: Hex;
+      try {
+        hash = await deps.walletClient.sendRawTransaction({
+          serializedTransaction: prepared.serializedTransaction,
+        });
+      } catch (error) {
+        if (!isAlreadyKnownTransaction(error)) throw error;
+        hash = prepared.transactionHash;
+      }
       if (hash.toLowerCase() !== prepared.transactionHash.toLowerCase()) {
         throw new Error("RPC returned an unexpected feedback transaction hash");
       }
       await onBroadcast?.(hash);
       const receipt = await deps.publicClient.waitForTransactionReceipt({
         hash,
+        confirmations: FACILITATOR_WRITE_CONFIRMATIONS,
       });
       return resultFromReceipt(hash, input, receipt);
     },
@@ -187,6 +216,11 @@ export function createFeedbackMethods(deps: FeedbackDeps): FeedbackMethods {
         const receipt = await deps.publicClient.getTransactionReceipt({
           hash: transactionHash,
         });
+        const confirmations =
+          await deps.publicClient.getTransactionConfirmations({
+            transactionReceipt: receipt,
+          });
+        if (confirmations < BigInt(FACILITATOR_WRITE_CONFIRMATIONS)) return null;
         if (receipt.status !== "success") {
           throw new FeedbackSubmissionError(
             "reverted",
@@ -195,13 +229,7 @@ export function createFeedbackMethods(deps: FeedbackDeps): FeedbackMethods {
         }
         return resultFromReceipt(transactionHash, input, receipt);
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        if (
-          message.includes("could not be found") ||
-          message.includes("TransactionReceiptNotFound")
-        ) {
-          return null;
-        }
+        if (receiptMissing(error)) return null;
         throw error;
       }
     },
@@ -218,35 +246,105 @@ export function createFeedbackMethods(deps: FeedbackDeps): FeedbackMethods {
       );
     },
 
-    async revokeFeedback(
-      agentId: bigint,
-      feedbackIndex: bigint,
-      onBroadcast,
-    ): Promise<FeedbackResult> {
-      let request;
+    async prepareFeedbackRevocation(
+      input: FeedbackRevocationInput,
+      facilitatorNonce: bigint,
+    ): Promise<PreparedFeedbackTransaction> {
+      let simulation;
       try {
-        const simulation = await deps.publicClient.simulateContract({
+        simulation = await deps.publicClient.simulateContract({
           address: registry(),
           abi: [...reputationRegistryAbi, ...knownErrorAbis],
           functionName: "revokeFeedback",
-          args: [agentId, feedbackIndex],
+          args: [input.agentId, input.feedbackIndex],
           account: deps.account,
           chain: deps.chain,
           gas: 150_000n,
         });
-        request = simulation.request;
       } catch (error) {
+        const reason = decodeRevertReason(error);
+        if (reason === "already revoked") {
+          throw new FeedbackAlreadyRevokedError();
+        }
         throw new Error(
-          `revokeFeedback reverted: ${decodeRevertReason(error)}`,
+          `revokeFeedback reverted: ${reason}`,
         );
       }
-      const hash = await deps.walletClient.writeContract(request);
+      const request = await (deps.walletClient as any).prepareTransactionRequest({
+        account: deps.account,
+        chain: deps.chain,
+        to: registry(),
+        data: encodeFunctionData({
+          abi: reputationRegistryAbi,
+          functionName: "revokeFeedback",
+          args: [input.agentId, input.feedbackIndex],
+        }),
+        gas: simulation.request.gas,
+        nonce: facilitatorNonce,
+      });
+      assertFacilitatorTransactionFee(request, deps.maxTransactionFeeWei);
+      const serializedTransaction = (await deps.account.signTransaction(
+        request as any,
+      )) as Hex;
+      return {
+        transactionHash: keccak256(serializedTransaction),
+        serializedTransaction,
+        facilitatorNonce,
+      };
+    },
+
+    async submitPreparedFeedbackRevocation(
+      prepared,
+      _input,
+      onBroadcast,
+    ): Promise<FeedbackResult> {
+      let hash: Hex;
+      try {
+        hash = await deps.walletClient.sendRawTransaction({
+          serializedTransaction: prepared.serializedTransaction,
+        });
+      } catch (error) {
+        if (!isAlreadyKnownTransaction(error)) throw error;
+        hash = prepared.transactionHash;
+      }
+      if (hash.toLowerCase() !== prepared.transactionHash.toLowerCase()) {
+        throw new Error("RPC returned an unexpected revocation transaction hash");
+      }
       await onBroadcast?.(hash);
-      const receipt = await deps.publicClient.waitForTransactionReceipt({ hash });
+      const receipt = await deps.publicClient.waitForTransactionReceipt({
+        hash,
+        confirmations: FACILITATOR_WRITE_CONFIRMATIONS,
+      });
       if (receipt.status !== "success") {
-        throw new Error(`revokeFeedback transaction reverted (${hash})`);
+        throw new FeedbackSubmissionError(
+          "reverted",
+          `revokeFeedback transaction reverted (${hash})`,
+        );
       }
       return { transactionHash: hash };
+    },
+
+    async getFeedbackRevocationByTransaction(transactionHash) {
+      try {
+        const receipt = await deps.publicClient.getTransactionReceipt({
+          hash: transactionHash,
+        });
+        const confirmations =
+          await deps.publicClient.getTransactionConfirmations({
+            transactionReceipt: receipt,
+          });
+        if (confirmations < BigInt(FACILITATOR_WRITE_CONFIRMATIONS)) return null;
+        if (receipt.status !== "success") {
+          throw new FeedbackSubmissionError(
+            "reverted",
+            `revokeFeedback transaction reverted (${transactionHash})`,
+          );
+        }
+        return { transactionHash };
+      } catch (error) {
+        if (receiptMissing(error)) return null;
+        throw error;
+      }
     },
   };
 }

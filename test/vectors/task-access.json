@@ -1,0 +1,33 @@
+{
+  "domain": {
+    "name": "Daski",
+    "version": "1",
+    "chainId": 84532,
+    "verifyingContract": "0x000000000000000000000000000000000000a000",
+    "salt": "0xb10e2d527612073b26eecdfd717e6a320cf44b4afac2b0732d9fcbe2b7fa0cf6"
+  },
+  "types": {
+    "TaskAccessAuthorization": [
+      { "name": "buyerTokenId", "type": "uint256" },
+      { "name": "providerAgentId", "type": "uint256" },
+      { "name": "taskId", "type": "string" },
+      { "name": "action", "type": "string" },
+      { "name": "requestHash", "type": "bytes32" },
+      { "name": "nonce", "type": "bytes32" },
+      { "name": "expiry", "type": "uint256" }
+    ]
+  },
+  "primaryType": "TaskAccessAuthorization",
+  "request": {},
+  "authorization": {
+    "buyerTokenId": "5",
+    "providerAgentId": "1",
+    "taskId": "task-conformance-1",
+    "action": "get",
+    "requestHash": "0xb48d38f93eaa084033fc5970bf96e559c33c4cdc07d889ab00b4d63f9590739d",
+    "nonce": "0x1111111111111111111111111111111111111111111111111111111111111111",
+    "expiry": "2000000000"
+  },
+  "signer": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+  "signature": "0x511c5b19845776e5d1be1c4a2ac30b455b6c019f3ed3763e3b94d402b198f559450bfd28b0a225576ee685ae7d1f0e072a62a5e32dc83e67a7ef9b63caee54d51b"
+}

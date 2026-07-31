@@ -8,6 +8,9 @@ import {
 } from "../serviceTaxonomy.js";
 import { parseAgentSkills } from "./agentCard.js";
 
+export const MAX_AGENT_CARD_SKILLS = 64;
+export const MAX_AGENT_SKILL_ID_LENGTH = 128;
+
 export class ServiceTaxonomyValidationError extends Error {
   constructor(errors: string[]) {
     super(`invalid service taxonomy: ${errors.join("; ")}`);
@@ -60,15 +63,31 @@ function validateSkillModes(
     errors.push("skills must be a non-empty array");
     return;
   }
+  if (skills.length > MAX_AGENT_CARD_SKILLS) {
+    errors.push(`skills must contain at most ${MAX_AGENT_CARD_SKILLS} entries`);
+    return;
+  }
   const metadataById = new Map(
     parseAgentSkills(card).map((skill) => [skill.id, skill.metadata]),
   );
+  const seenIds = new Set<string>();
   for (const skill of skills) {
     const record = asRecord(skill);
     if (!record || typeof record.id !== "string" || record.id.length === 0) {
       errors.push("every skill must have a non-empty id");
       continue;
     }
+    if (record.id.length > MAX_AGENT_SKILL_ID_LENGTH) {
+      errors.push(
+        `skill ids must be at most ${MAX_AGENT_SKILL_ID_LENGTH} characters`,
+      );
+      continue;
+    }
+    if (seenIds.has(record.id)) {
+      errors.push(`skills contains duplicate id '${record.id}'`);
+      continue;
+    }
+    seenIds.add(record.id);
     const override = metadataById.get(record.id)?.fulfillmentMode;
     if (override !== undefined && !isFulfillmentMode(override)) {
       errors.push(

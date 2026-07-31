@@ -27,7 +27,7 @@ describe("x402 V2 payment preparation", () => {
     await gateway.close();
   });
 
-  it("returns standard requirements and leaves nonce generation to the client", async () => {
+  it("returns Daski requirements and leaves salt generation to the client", async () => {
     const { json, status, serviceRef, paymentRequired } =
       await gateway.purchaseChallenge(2n, {
       buyerTokenId: "5",
@@ -37,11 +37,11 @@ describe("x402 V2 payment preparation", () => {
     expect(serviceRef).toBeDefined();
     expect(paymentRequired?.x402Version).toBe(2);
     expect(paymentRequired?.accepts[0]).toMatchObject({
-      scheme: "exact",
+      scheme: "daski-exact",
       network: "eip155:84532",
       amount: "15000000",
-      asset: gateway.config.usdcAddress,
-      payTo: gateway.config.paymentRouterAddress,
+      asset: gateway.config.usdc.address,
+      payTo: gateway.config.x402AdapterAddress,
     });
     expect(JSON.stringify(paymentRequired)).not.toContain("eip712TypedData");
     expect(json).not.toHaveProperty("accepts");
@@ -52,11 +52,15 @@ describe("x402 V2 payment preparation", () => {
       .authorization.nonce;
     const secondNonce = (second.payload as { authorization: { nonce: Hex } })
       .authorization.nonce;
+    const firstSalt = (first.payload as { nonceSalt: Hex }).nonceSalt;
+    const secondSalt = (second.payload as { nonceSalt: Hex }).nonceSalt;
     expect(firstNonce).toMatch(/^0x[0-9a-fA-F]{64}$/);
+    expect(firstSalt).toMatch(/^0x[0-9a-fA-F]{64}$/);
+    expect(secondSalt).not.toBe(firstSalt);
     expect(secondNonce).not.toBe(firstNonce);
   });
 
-  it("an official Exact-EVM client payload settles end-to-end", async () => {
+  it("a Daski receive client payload settles end-to-end", async () => {
     const { serviceRef, paymentRequired } = await gateway.purchaseChallenge(2n, {
       buyerTokenId: "5",
     });

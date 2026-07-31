@@ -1,5 +1,6 @@
 import type { Hex, StoredChallenge } from "../types.js";
 import type { Pool } from "./pool.js";
+import type { PoolClient } from "pg";
 import {
   hexToBytea,
   normalizeHex,
@@ -9,11 +10,15 @@ import {
 
 export function createPaymentChallengeStateQueries(pool: Pool) {
   return {
-    async listBroadcastChallenges(limit = 100): Promise<StoredChallenge[]> {
+    async listPendingSettlementChallenges(
+      limit = 100,
+    ): Promise<StoredChallenge[]> {
       const result = await pool.query<ChallengeRow>(
         `SELECT *
            FROM payment_challenges
-          WHERE settlement_state = 'settlement_broadcast'
+         WHERE settlement_state IN (
+            'settlement_prepared', 'settlement_broadcast'
+          )
           ORDER BY created_at
           LIMIT $1`,
         [limit],
@@ -21,32 +26,68 @@ export function createPaymentChallengeStateQueries(pool: Pool) {
       return result.rows.map(rowToChallenge);
     },
 
-    async recordChallengeTransactionBroadcast(
+    async recordChallengeTransactionPrepared(
+      client: PoolClient,
       serviceRef: Hex,
+      facilitatorTransactionId: string,
       transactionHash: Hex,
     ): Promise<boolean> {
-      const res = await pool.query(
+      const res = await client.query(
         `UPDATE payment_challenges
-            SET transaction_hash = $1,
-                settlement_state = 'settlement_broadcast'
-          WHERE service_ref = $2
-            AND settlement_state IN ('pending', 'expired', 'settlement_broadcast')
-            AND (transaction_hash IS NULL OR transaction_hash = $1)`,
-        [normalizeHex(transactionHash), hexToBytea(serviceRef)],
+            SET transaction_hash = $2,
+                settlement_facilitator_transaction_id = $3,
+                settlement_state = 'settlement_prepared'
+          WHERE service_ref = $1
+            AND settlement_state = 'pending'
+            AND transaction_hash IS NULL`,
+        [
+          hexToBytea(serviceRef),
+          normalizeHex(transactionHash),
+          facilitatorTransactionId,
+        ],
       );
       return (res.rowCount ?? 0) > 0;
     },
 
-    async clearChallengeTransactionBroadcast(
+    async recordChallengeTransactionBroadcast(
+      client: PoolClient,
       serviceRef: Hex,
+      facilitatorTransactionId: string,
       transactionHash: Hex,
     ): Promise<boolean> {
-      const res = await pool.query(
+      const res = await client.query(
+        `UPDATE payment_challenges
+            SET transaction_hash = $1,
+                settlement_state = 'settlement_broadcast'
+          WHERE service_ref = $2
+            AND settlement_facilitator_transaction_id = $3
+            AND settlement_state IN (
+              'settlement_prepared', 'settlement_broadcast'
+            )
+            AND transaction_hash = $1`,
+        [
+          normalizeHex(transactionHash),
+          hexToBytea(serviceRef),
+          facilitatorTransactionId,
+        ],
+      );
+      return (res.rowCount ?? 0) > 0;
+    },
+
+    async clearChallengePreparedTransaction(
+      serviceRef: Hex,
+      transactionHash: Hex,
+      client?: PoolClient,
+    ): Promise<boolean> {
+      const res = await (client ?? pool).query(
         `UPDATE payment_challenges
             SET transaction_hash = NULL,
+                settlement_facilitator_transaction_id = NULL,
                 settlement_state = 'pending'
           WHERE service_ref = $1
-            AND settlement_state = 'settlement_broadcast'
+            AND settlement_state IN (
+              'settlement_prepared', 'settlement_broadcast'
+            )
             AND transaction_hash = $2`,
         [hexToBytea(serviceRef), normalizeHex(transactionHash)],
       );
@@ -58,9 +99,10 @@ export function createPaymentChallengeStateQueries(pool: Pool) {
       paymentId: bigint,
       txHash: Hex,
       buyerAgentId?: bigint,
+      client?: PoolClient,
     ): Promise<boolean> {
       const setBuyer = buyerAgentId !== undefined;
-      const res = await pool.query(
+      const res = await (client ?? pool).query(
         `UPDATE payment_challenges
             SET settlement_state = 'paid',
                 payment_id = $1,
@@ -71,7 +113,8 @@ export function createPaymentChallengeStateQueries(pool: Pool) {
           WHERE service_ref = $3
             AND (
               settlement_state IN (
-                'pending', 'settlement_broadcast', 'expired'
+                'pending', 'settlement_prepared', 'settlement_broadcast',
+                'expired'
               )
               OR (
                 settlement_state = 'paid'
@@ -86,7 +129,11 @@ export function createPaymentChallengeStateQueries(pool: Pool) {
               hexToBytea(serviceRef),
               (buyerAgentId as bigint).toString(),
             ]
-          : [paymentId.toString(), normalizeHex(txHash), hexToBytea(serviceRef)],
+          : [
+              paymentId.toString(),
+              normalizeHex(txHash),
+              hexToBytea(serviceRef),
+            ],
       );
       return (res.rowCount ?? 0) > 0;
     },

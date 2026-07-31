@@ -8,9 +8,17 @@ import { logger } from "./logger.js";
 // the RPC provider, or the upstream error path. Operators can grep logs
 // by correlation id when a user reports a failure.
 
-export function logErrorWithId(context: string, err: unknown): string {
+export function logErrorWithId(
+  context: string,
+  err: unknown,
+  fields: Record<string, unknown> = {},
+): string {
   const correlationId = randomUUID();
-  logger.error(`${context} failed`, { correlationId, error: err });
+  logger.error(`${context} failed`, {
+    correlationId,
+    ...fields,
+    error: err instanceof Error ? err : { name: "NonErrorThrown" },
+  });
   return correlationId;
 }
 

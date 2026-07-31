@@ -89,9 +89,10 @@ export class ProviderCardResolver {
       };
     } catch (error) {
       const message = (error as Error).message ?? String(error);
-      this.options.logger.warn(
-        `[cache] failed to fetch agent card from ${endpoint}: ${message}`,
-      );
+      this.options.logger.warn("[cache] failed to fetch agent card", {
+        endpoint,
+        error,
+      });
       return { ok: false as const, error: `${endpoint}: ${message}` };
     }
   }

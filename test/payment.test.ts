@@ -2,13 +2,18 @@ import {
   decodePaymentResponseHeader,
   encodePaymentSignatureHeader,
 } from "@x402/core/http";
+import { x402Client } from "@x402/core/client";
+import { ExactEvmScheme } from "@x402/evm/exact/client";
+import { privateKeyToAccount } from "viem/accounts";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   DASKI_X402_EXTENSION_URI,
   X402_VERSION,
 } from "../src/config.js";
+import { computeServiceId } from "../src/discovery/serviceIdentity.js";
 import type { Hex } from "../src/types.js";
 import { startTestGateway, type TestGateway } from "./helpers/setup.js";
+import { TEST_BUYER_KEY } from "./helpers/setup.js";
 
 const TX =
   "0x1111111111111111111111111111111111111111111111111111111111111111" as Hex;
@@ -45,15 +50,18 @@ describe("x402 V2 HTTP payment resource", () => {
     expect(required.resource.url).toBe(`${gateway.baseUrl}/purchase/2`);
     expect(required.accepts).toHaveLength(1);
     expect(required.accepts[0]).toMatchObject({
-      scheme: "exact",
+      scheme: "daski-exact",
       network: "eip155:84532",
       amount: "15000000",
-      asset: gateway.config.usdcAddress,
-      payTo: gateway.config.paymentRouterAddress,
+      asset: gateway.config.usdc.address,
+      payTo: gateway.config.x402AdapterAddress,
       extra: {
-        assetTransferMethod: "eip3009",
+        assetTransferMethod: "eip3009-receive",
         name: "USDC",
         version: "2",
+        daskiProfile: "1",
+        paymentRouter: gateway.config.paymentRouterAddress,
+        expectedPayee: gateway.mockProvider.walletAddress,
       },
     });
     expect(required.accepts[0]?.extra).not.toHaveProperty("daski");
@@ -61,11 +69,150 @@ describe("x402 V2 HTTP payment resource", () => {
       DASKI_X402_EXTENSION_URI
     ] as any;
     expect(extension.info).toMatchObject({
+      profile: "1",
+      x402Adapter: gateway.config.x402AdapterAddress,
+      paymentRouter: gateway.config.paymentRouterAddress,
       providerAgentId: "2",
       buyerAgentId: "5",
+      expectedPayee: gateway.mockProvider.walletAddress,
       settlementMode: "settle-only",
     });
     expect(extension.info.serviceRef).toMatch(/^0x[0-9a-f]{64}$/);
+  });
+
+  it("pins a per-service payee override into the signed route", async () => {
+    const serviceId = computeServiceId(2n, "domain-management", "1");
+    const payee = "0x000000000000000000000000000000000000beef" as Hex;
+    gateway.mockChain.setServiceSettlement(serviceId, {
+      providerAgentId: 2n,
+      active: true,
+      providerOwner: gateway.mockProvider.walletAddress,
+      providerWallet: gateway.mockProvider.walletAddress,
+      payee,
+      observedBlock: 123n,
+    });
+
+    const challenge = await gateway.purchaseChallenge(2n, {
+      buyerTokenId: "5",
+    });
+
+    expect(challenge.status).toBe(402);
+    expect(challenge.paymentRequired?.accepts[0]?.extra).toMatchObject({
+      serviceId,
+      expectedPayee: payee,
+    });
+    const stored = await gateway.bundle.queries.getChallengeByRef(
+      (
+        challenge.paymentRequired!.accepts[0]!.extra as {
+          serviceRef: Hex;
+        }
+      ).serviceRef,
+    );
+    expect(stored?.expectedPayee).toBe(payee);
+    expect(stored?.expectedPayeeBlock).toBe(123n);
+  });
+
+  it("fails challenge issuance closed when the service payee is unreadable", async () => {
+    gateway.mockChain.getServiceSettlement = async () => {
+      throw new Error("service registry unavailable");
+    };
+
+    const challenge = await gateway.purchaseChallenge(2n, {
+      buyerTokenId: "5",
+    });
+
+    expect(challenge.status).toBe(503);
+    expect(challenge.json.error).toBe(
+      "service settlement details are temporarily unavailable",
+    );
+  });
+
+  it("rejects an old-key quote after a targeted provider wallet refresh", async () => {
+    const rotated =
+      "0x000000000000000000000000000000000000beef" as Hex;
+    gateway.mockChain.setAgentWallet(2n, rotated);
+    gateway.bundle.cache.get(2n)!.authorityObservedAt = new Date(0);
+
+    const challenge = await gateway.purchaseChallenge(2n, {
+      buyerTokenId: "5",
+    });
+
+    expect(challenge.status).toBe(400);
+    expect(challenge.json.error).toMatch(/invalid providerQuote/);
+    const stored = await gateway.bundle.pool.query<{ count: string }>(
+      "SELECT count(*)::text AS count FROM payment_challenges",
+    );
+    expect(stored.rows[0]?.count).toBe("0");
+  });
+
+  it("fails challenge issuance closed when provider authority is unavailable", async () => {
+    gateway.bundle.cache.get(2n)!.authorityObservedAt = new Date(0);
+    gateway.mockChain.getProviderAuthority = async () => {
+      throw new Error("provider registry unavailable");
+    };
+
+    const challenge = await gateway.purchaseChallenge(2n, {
+      buyerTokenId: "5",
+    });
+
+    expect(challenge.status).toBe(503);
+    expect(challenge.json.error).toBe("provider_authority_unavailable");
+    expect(challenge.paymentRequired).toBeUndefined();
+  });
+
+  it("rejects first settlement when provider authority changed after challenge issuance", async () => {
+    const challenge = await gateway.purchaseChallenge(2n, {
+      buyerTokenId: "5",
+    });
+    const payload = await gateway.createPaymentPayload(
+      challenge.paymentRequired!,
+    );
+    gateway.mockChain.setAgentWallet(
+      2n,
+      "0x000000000000000000000000000000000000beef" as Hex,
+    );
+    gateway.bundle.cache.get(2n)!.authorityObservedAt = new Date(0);
+
+    const response = await fetch(`${gateway.baseUrl}/purchase/2`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "payment-signature": encodePaymentSignatureHeader(payload),
+      },
+      body: JSON.stringify(challenge.requestBody),
+    });
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({
+      error: "provider_authority_changed",
+      retryable: false,
+    });
+    expect(gateway.mockChain.simulations).toHaveLength(0);
+  });
+
+  it("rejects REST self-purchases before challenge persistence", async () => {
+    gateway.mockChain.setAgentOwner(2n, gateway.buyerAddress);
+    const sameAgent = await gateway.purchaseChallenge(2n, {
+      buyerTokenId: "2",
+    });
+    expect(sameAgent.status).toBe(403);
+    expect(sameAgent.json.error).toBe("self_purchase_not_allowed");
+
+    gateway.mockChain.setAgentOwner(
+      5n,
+      gateway.mockProvider.walletAddress,
+    );
+    const sameWallet = await gateway.purchaseChallenge(2n, {
+      buyerTokenId: "5",
+      walletAddress: gateway.mockProvider.walletAddress,
+    });
+    expect(sameWallet.status).toBe(403);
+    expect(sameWallet.json.error).toBe("self_purchase_not_allowed");
+
+    const stored = await gateway.bundle.pool.query<{ count: string }>(
+      "SELECT count(*)::text AS count FROM payment_challenges",
+    );
+    expect(stored.rows[0]?.count).toBe("0");
   });
 
   it("keeps the encoded challenge below the 8 KiB header budget", async () => {
@@ -81,7 +228,7 @@ describe("x402 V2 HTTP payment resource", () => {
     expect(Buffer.byteLength(encoded, "utf8")).toBeLessThan(8192);
   });
 
-  it("settles an official Exact-EVM payload on the same paid resource", async () => {
+  it("settles a Daski receive payload on the same paid resource", async () => {
     const challenge = await gateway.purchaseChallenge(2n, {
       buyerTokenId: "5",
     });
@@ -124,6 +271,24 @@ describe("x402 V2 HTTP payment resource", () => {
     expect(
       (settled.extensions?.[DASKI_X402_EXTENSION_URI] as any).paymentId,
     ).toBe("42");
+    expect(gateway.mockChain.settlements[0]?.expectedPayee).toBe(
+      gateway.mockProvider.walletAddress,
+    );
+  });
+
+  it("rejects a standard-only exact client before payload creation", async () => {
+    const challenge = await gateway.purchaseChallenge(2n, {
+      buyerTokenId: "5",
+    });
+    const standardOnly = new x402Client().register(
+      "eip155:84532",
+      new ExactEvmScheme(privateKeyToAccount(TEST_BUYER_KEY)),
+    );
+
+    await expect(
+      standardOnly.createPaymentPayload(challenge.paymentRequired!),
+    ).rejects.toThrow(/No network\/scheme registered/);
+    expect(gateway.mockChain.settlements).toHaveLength(0);
   });
 
   it("returns the stored settlement for an identical replay", async () => {
@@ -211,8 +376,9 @@ describe("x402 V2 HTTP payment resource", () => {
     expect(supported.kinds).toEqual([
       {
         x402Version: 2,
-        scheme: "exact",
+        scheme: "daski-exact",
         network: "eip155:84532",
+        extra: { daskiProfile: "1" },
       },
     ]);
     expect(supported.extensions).toContain(DASKI_X402_EXTENSION_URI);

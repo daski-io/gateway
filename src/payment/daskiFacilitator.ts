@@ -4,43 +4,46 @@ import type {
   PaymentPayload,
   PaymentRequirements,
   SchemeNetworkFacilitator,
-  SettleResponse,
   SupportedResponse,
   VerifyResponse,
 } from "@x402/core/types";
-import { ExactEvmScheme } from "@x402/evm/exact/facilitator";
 import { privateKeyToAccount } from "viem/accounts";
 import type { ChainReader } from "../chain/reader.js";
-import {
-  type Config,
-  DASKI_X402_EXTENSION_URI,
-} from "../config.js";
+import { type Config, DASKI_X402_EXTENSION_URI } from "../config.js";
 import type { Queries } from "../db/queries.js";
 import type { FetchAgentCardOptions } from "../identity/fetch-agent-card.js";
 import type { Hex } from "../types.js";
+import type { SettlementResponse } from "../types.js";
 import { logger } from "../util/logger.js";
-import type { PaymentScreeningReadinessProbe } from "./screeningReadiness.js";
+import type { ChainDeploymentReadinessProbe } from "./deploymentReadiness.js";
 import { settleChallenge } from "./settlementCoordinator.js";
 import { verifyPaymentPayload } from "./verifyPayload.js";
 import { getDaskiDeclaration } from "./x402Extension.js";
 import { hashCanonical } from "./requirementResponse.js";
-import { createOfficialFacilitatorSigner } from "./officialFacilitatorSigner.js";
+import { settlementFailure } from "./settlementResults.js";
+import type { SettleResult } from "./verifyTypes.js";
+import {
+  ProviderAuthorityError,
+  type ProviderAuthorityService,
+} from "./providerAuthority.js";
 
 export interface DaskiFacilitatorDeps {
   config: Config;
   queries: Queries;
   reader: ChainReader;
-  screeningReadiness: PaymentScreeningReadinessProbe;
+  deploymentReadiness: ChainDeploymentReadinessProbe;
+  providerAuthority: ProviderAuthorityService;
   fetchAgentCardFn?: FetchAgentCardOptions["fetchFn"];
 }
 
 export class DaskiFacilitatorService {
   private readonly core: x402Facilitator;
+  private readonly adapter: DaskiExactEvmFacilitator;
 
   constructor(deps: DaskiFacilitatorDeps) {
-    const adapter = new DaskiExactEvmFacilitator(deps);
+    this.adapter = new DaskiExactEvmFacilitator(deps);
     this.core = new x402Facilitator()
-      .register(deps.config.x402Network, adapter)
+      .register(deps.config.x402Network, this.adapter)
       .registerExtension({ key: DASKI_X402_EXTENSION_URI });
   }
 
@@ -63,17 +66,28 @@ export class DaskiFacilitatorService {
   settle(
     payload: PaymentPayload,
     requirements: PaymentRequirements,
-  ): Promise<SettleResponse> {
+  ): Promise<SettlementResponse> {
+    return this.settleDetailed(payload, requirements).then(
+      (result) => result.response,
+    );
+  }
+
+  settleDetailed(
+    payload: PaymentPayload,
+    requirements: PaymentRequirements,
+  ): Promise<SettleResult> {
     const startedAt = Date.now();
-    return this.core.settle(payload, requirements).then((result) => {
-      logger.info("x402.settle", {
-        success: result.success,
-        reason: result.success ? "success" : result.errorReason,
-        network: requirements.network,
-        durationMs: Date.now() - startedAt,
+    return this.adapter
+      .executeSettlement(payload, requirements)
+      .then((result) => {
+        logger.info("x402.settle", {
+          success: result.response.success,
+          reason: result.ok ? "success" : result.failure.code,
+          network: requirements.network,
+          durationMs: Date.now() - startedAt,
+        });
+        return result;
       });
-      return result;
-    });
   }
 
   getSupported(): SupportedResponse {
@@ -82,22 +96,17 @@ export class DaskiFacilitatorService {
 }
 
 class DaskiExactEvmFacilitator implements SchemeNetworkFacilitator {
-  readonly scheme = "exact";
+  readonly scheme = "daski-exact";
   readonly caipFamily = "eip155:*";
-  private readonly standardVerifier: ExactEvmScheme | null;
   private readonly facilitatorAddress: Hex;
 
   constructor(private readonly deps: DaskiFacilitatorDeps) {
     const account = privateKeyToAccount(deps.config.facilitatorPrivateKey);
     this.facilitatorAddress = account.address.toLowerCase() as Hex;
-    this.standardVerifier =
-      deps.config.nodeEnv === "test"
-        ? null
-        : new ExactEvmScheme(createOfficialFacilitatorSigner(deps.config));
   }
 
-  getExtra(_network: Network): undefined {
-    return undefined;
+  getExtra(_network: Network): Record<string, unknown> {
+    return { daskiProfile: "1" };
   }
 
   getSigners(_network: Network): string[] {
@@ -113,22 +122,12 @@ class DaskiExactEvmFacilitator implements SchemeNetworkFacilitator {
     if (
       context.challenge.settlementState !== "paid" &&
       context.challenge.settlementState !== "sanctions_rejected" &&
-      !(await this.deps.screeningReadiness.isReady())
+      !(await this.deps.deploymentReadiness.isReady())
     ) {
       return {
         isValid: false,
         invalidReason: "payment_screening_unready",
       };
-    }
-    if (
-      this.standardVerifier &&
-      context.challenge.settlementState !== "paid"
-    ) {
-      const standard = await this.standardVerifier.verify(
-        payload,
-        requirements,
-      );
-      if (!standard.isValid) return standard;
     }
     const verified = await verifyPaymentPayload(
       { payload, challenge: context.challenge },
@@ -149,49 +148,75 @@ class DaskiExactEvmFacilitator implements SchemeNetworkFacilitator {
       logger.info("x402.challenge_replay", { outcome: "stored_settlement" });
       return { isValid: true, payer: verified.payer };
     }
-    if (this.deps.reader.simulatePayment) {
-      try {
-        await this.deps.reader.simulatePayment(
-          {
-            providerAgentId: context.challenge.providerTokenId,
-            serviceId: context.challenge.serviceId,
-            amount: context.challenge.amount,
-            serviceRef: context.challenge.serviceRef,
-            from: verified.payer,
-            ...verified.settleArgs,
-          },
-          context.challenge.registrationDelegation
-            ? {
-                agentURI: context.challenge.registrationDelegation.agentURI,
-                deadline: BigInt(
-                  context.challenge.registrationDelegation.deadline,
-                ),
-                signature:
-                  context.challenge.registrationDelegation.signature,
-              }
-            : undefined,
-        );
-      } catch {
-        return {
-          isValid: false,
-          invalidReason: "daski_adapter_simulation_failed",
-          payer: verified.payer,
-        };
-      }
-    }
     return { isValid: true, payer: verified.payer };
   }
 
   async settle(
     payload: PaymentPayload,
     requirements: PaymentRequirements,
-  ): Promise<SettleResponse> {
+  ): Promise<import("@x402/core/types").SettleResponse> {
+    return (await this.executeSettlement(payload, requirements)).response;
+  }
+
+  async executeSettlement(
+    payload: PaymentPayload,
+    requirements: PaymentRequirements,
+  ): Promise<SettleResult> {
     const context = await this.loadContext(payload, requirements);
-    if (!context.ok) return settleFailure(this.deps.config.x402Network, context.response);
-    if (context.challenge.settlementState !== "sanctions_rejected") {
-      const verification = await this.verify(payload, requirements);
-      if (!verification.isValid) {
-        return settleFailure(this.deps.config.x402Network, verification);
+    if (!context.ok) {
+      return settlementFailure(
+        400,
+        context.response.invalidReason ?? "invalid_payment",
+        context.response.invalidMessage ?? "payment validation failed",
+        this.deps.config.x402Network,
+      );
+    }
+    if (
+      context.challenge.settlementState !== "paid" &&
+      context.challenge.settlementState !== "sanctions_rejected" &&
+      !(await this.deps.deploymentReadiness.isReady())
+    ) {
+      return settlementFailure(
+        503,
+        "payment_screening_unready",
+        "Payment cannot be processed right now. Please try again later.",
+        this.deps.config.x402Network,
+      );
+    }
+    if (
+      context.challenge.settlementState !== "paid" &&
+      !context.challenge.settlementFacilitatorTransactionId
+    ) {
+      try {
+        const authority = await this.deps.providerAuthority.requireFresh(
+          context.challenge.providerTokenId,
+        );
+        if (
+          context.challenge.providerAuthorityWallet?.toLowerCase() !==
+            authority.walletAddress.toLowerCase() ||
+          context.challenge.providerAuthorityAgentUri !== authority.agentURI
+        ) {
+          return settlementFailure(
+            409,
+            "provider_authority_changed",
+            "Provider authority changed; request a fresh quote and challenge.",
+            this.deps.config.x402Network,
+          );
+        }
+      } catch (error) {
+        const inactive =
+          error instanceof ProviderAuthorityError &&
+          error.code === "provider_inactive";
+        return settlementFailure(
+          inactive ? 409 : 503,
+          inactive
+            ? "provider_authority_changed"
+            : "provider_authority_unavailable",
+          inactive
+            ? "Provider is no longer active; request a different provider."
+            : "Provider authority cannot be verified right now.",
+          this.deps.config.x402Network,
+        );
       }
     }
     const coordinated = await settleChallenge(
@@ -204,16 +229,16 @@ class DaskiExactEvmFacilitator implements SchemeNetworkFacilitator {
       { challenge: context.challenge, paymentPayload: payload },
     );
     if (coordinated.kind !== "result") {
-      return settleFailure(this.deps.config.x402Network, {
-        isValid: false,
-        invalidReason: coordinated.kind,
-        invalidMessage:
-          coordinated.kind === "invalid-registration"
-            ? coordinated.message
-            : undefined,
-      });
+      return settlementFailure(
+        400,
+        coordinated.kind,
+        coordinated.kind === "invalid-registration"
+          ? coordinated.message
+          : "payment challenge does not match the settlement request",
+        this.deps.config.x402Network,
+      );
     }
-    return coordinated.result.response;
+    return coordinated.result;
   }
 
   private async loadContext(
@@ -252,19 +277,5 @@ function invalid(reason: string) {
   return {
     ok: false as const,
     response: { isValid: false, invalidReason: reason },
-  };
-}
-
-function settleFailure(
-  network: Network,
-  response: VerifyResponse,
-): SettleResponse {
-  return {
-    success: false,
-    errorReason: response.invalidReason ?? "invalid_payment",
-    errorMessage: response.invalidMessage,
-    payer: response.payer,
-    transaction: "",
-    network,
   };
 }

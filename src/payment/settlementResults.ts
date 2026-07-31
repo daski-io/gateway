@@ -1,7 +1,4 @@
-import {
-  DASKI_X402_EXTENSION_URI,
-  type Config,
-} from "../config.js";
+import { DASKI_X402_EXTENSION_URI, type Config } from "../config.js";
 import {
   SettlementTransactionRevertedError,
   type PaymentSettledEvent,
@@ -22,11 +19,15 @@ export function settlementFailure(
   payer: Hex = ZERO_ADDRESS,
   screeningFailure?: SettlementScreeningFailure,
 ): SettleResult {
+  const retryable = screeningFailure?.retryable ?? status >= 500;
   return {
     ok: false,
-    errorReason,
-    message,
     status,
+    failure: {
+      code: errorReason,
+      message,
+      retryable,
+    },
     response: {
       success: false,
       errorReason,
@@ -34,8 +35,20 @@ export function settlementFailure(
       transaction: "",
       network,
       payer,
+      retryable,
+      ...(screeningFailure
+        ? {
+            extensions: {
+              [DASKI_X402_EXTENSION_URI]: {
+                screening: {
+                  code: screeningFailure.code,
+                  retryable: screeningFailure.retryable,
+                },
+              },
+            },
+          }
+        : {}),
     },
-    ...(screeningFailure ? { screeningFailure } : {}),
   };
 }
 
@@ -45,7 +58,7 @@ export function storedSettlementResult(
   payer: Hex,
 ): SettleResult {
   if (challenge.settleResponse?.success) {
-    return { ok: true, response: challenge.settleResponse };
+    return { ok: true, status: 200, response: challenge.settleResponse };
   }
   if (challenge.paymentId == null || !challenge.transactionHash) {
     return settlementFailure(
@@ -114,22 +127,7 @@ export async function persistSettlementEvent(
     transactionHash,
     buyerAgentId,
   );
-  if (!recorded) return false;
-  await queries.upsertChainEvent({
-    paymentId: event.paymentId,
-    txHash: transactionHash,
-    blockNumber: 0n,
-    serviceId: event.serviceId,
-    buyerAgentId: event.buyerAgentId,
-    providerAgentId: event.providerAgentId,
-    amountAtomic: event.totalAmount,
-    settledAt: new Date(),
-    outcomeCode: null,
-    confirmationCode: 0,
-    fulfillmentSeconds: null,
-    refundedAtomic: 0n,
-  });
-  return true;
+  return recorded;
 }
 
 export function successfulSettlementResult(args: {
@@ -142,6 +140,7 @@ export function successfulSettlementResult(args: {
 }): SettleResult {
   return {
     ok: true,
+    status: 200,
     response: {
       success: true,
       transaction: args.transactionHash,
@@ -177,7 +176,7 @@ export async function broadcastFailureResult(
   const latest = await queries.getChallengeByRef(challenge.serviceRef);
   if (!latest?.transactionHash) return null;
   if (error instanceof SettlementTransactionRevertedError) {
-    await queries.clearChallengeTransactionBroadcast(
+    await queries.clearChallengePreparedTransaction(
       challenge.serviceRef,
       latest.transactionHash,
     );

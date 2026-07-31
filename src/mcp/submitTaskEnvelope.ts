@@ -1,7 +1,11 @@
-import { buildEnvelopeAuth } from "../auth/envelope.js";
+import {
+  buildEnvelopeAuth,
+  computeRequestHash,
+} from "../auth/envelope.js";
+import { verifyEnvelopeAuth } from "../auth/envelopeVerification.js";
 import type { ChainReader } from "../chain/reader.js";
 import type { Config } from "../config.js";
-import type { Hex } from "../types.js";
+import type { Hex, StoredChallenge } from "../types.js";
 import { publicErrorMessage } from "../util/errorWrap.js";
 import { isHexAddress } from "../util/evmValidation.js";
 import type { SubmitTaskArgs } from "./submitTaskTypes.js";
@@ -14,6 +18,25 @@ import {
 interface EnvelopeDeps {
   config: Config;
   reader: ChainReader;
+  providerAgentId: bigint;
+}
+
+export function rejectUnsignedAuthenticatedPrompt(
+  args: SubmitTaskArgs,
+  requiresEnvelopeAuth: boolean,
+): McpToolResult | null {
+  if ((!requiresEnvelopeAuth && !args.envelopeAuth) || args.prompt === undefined) {
+    return null;
+  }
+  return mcpError({
+    code: "UNSIGNED_PROMPT_NOT_ALLOWED",
+    message:
+      "Authenticated tasks must put all variable task input in serviceArgs. " +
+      "prompt is not covered by the signed request hash, so no task was dispatched.",
+    recoverable: true,
+    next_action:
+      "Move the requested work into the provider's documented serviceArgs fields and start a fresh envelope challenge.",
+  });
 }
 
 /**
@@ -84,6 +107,7 @@ export async function prepareSubmitTaskEnvelope(
     chainId: args.chainId,
     buyerTokenId,
     identityRegistryAddress: deps.config.identityRegistryAddress,
+    providerAgentId: deps.providerAgentId,
     serviceArgs: args.serviceArgs ?? {},
     messageId: args.messageId,
   });
@@ -100,4 +124,79 @@ export async function prepareSubmitTaskEnvelope(
       "second call with the exact first-call arguments plus envelopeAuth " +
       "and the same messageId.",
   });
+}
+
+export async function verifySubmitTaskEnvelope(
+  args: SubmitTaskArgs,
+  paidChallenge: StoredChallenge | null,
+  deps: EnvelopeDeps,
+): Promise<McpToolResult | null> {
+  if (!args.envelopeAuth) return null;
+  if (!args.messageId) {
+    return mcpError({
+      code: "MESSAGE_ID_REQUIRED",
+      message:
+        "messageId must accompany envelopeAuth and match the signed authorization.",
+    });
+  }
+
+  let buyerTokenId: bigint;
+  try {
+    buyerTokenId = paidChallenge
+      ? paidChallenge.buyerTokenId
+      : BigInt(args.envelopeAuth.authorization.buyerTokenId);
+  } catch {
+    return mcpError({
+      code: "ENVELOPE_AUTH_INVALID",
+      message: "The signed envelope buyerTokenId is invalid.",
+    });
+  }
+  const requestHash = computeSubmitRequestHash(args);
+  if (!requestHash) {
+    return mcpError({
+      code: "BAD_INPUT",
+      message: "serviceArgs cannot be canonically hashed.",
+    });
+  }
+  const verified = await verifyEnvelopeAuth(
+    deps.config,
+    deps.reader,
+    args.envelopeAuth,
+    {
+      buyerTokenId,
+      skillId: args.skillId,
+      paymentId: args.paymentId,
+      chainId: args.chainId,
+      messageId: args.messageId,
+      requestHash,
+      providerAgentId: deps.providerAgentId,
+    },
+  );
+  if (!verified.ok) {
+    return mcpError({
+      code: "ENVELOPE_AUTH_INVALID",
+      message:
+        "The envelope signature or its payment, buyer, chain, skill, message, " +
+        "or request binding is invalid. No task was dispatched.",
+    });
+  }
+  if (
+    args.buyerTokenId !== undefined &&
+    args.buyerTokenId !== buyerTokenId.toString()
+  ) {
+    return mcpError({
+      code: "ENVELOPE_AUTH_INVALID",
+      message:
+        "buyerTokenId conflicts with the verified envelope. No task was dispatched.",
+    });
+  }
+  return null;
+}
+
+function computeSubmitRequestHash(args: SubmitTaskArgs): Hex | null {
+  try {
+    return computeRequestHash(args.serviceArgs ?? {});
+  } catch {
+    return null;
+  }
 }

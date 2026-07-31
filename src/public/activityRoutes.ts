@@ -89,7 +89,7 @@ export function registerActivityRoutes(
         permitAdapter: config.permitAdapterAddress ?? null,
         approvalAdapter: config.approvalAdapterAddress ?? null,
         reputationStorage: config.reputationStorageAddress ?? null,
-        usdc: config.usdcAddress,
+        usdc: config.usdc.address,
       },
     });
   });

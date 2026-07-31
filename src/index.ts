@@ -1,9 +1,9 @@
 import { loadConfig } from "./config.js";
-import { createViemChainReader } from "./chain/viemReader.js";
 import { AutoMockChainReader } from "./chain/autoMockReader.js";
 import { createApp } from "./app.js";
-import type { ChainReader } from "./chain/reader.js";
 import { logger } from "./util/logger.js";
+import { withGracePeriod } from "./runtime/gracePeriod.js";
+import { createConfiguredChainReader } from "./chain/configuredReader.js";
 
 async function main() {
   const config = loadConfig();
@@ -15,39 +15,14 @@ async function main() {
   // runtimeConfig.LOCAL_PLACEHOLDER_CONTRACTS so EIP-712 signatures the
   // buyer produces verify against the same domain the gateway bakes into
   // PaymentRequirements.
-  let reader: ChainReader;
-  if (config.chainMode === "mock") {
-    const providerWallet = config.mockProviderWalletAddress;
-    const providerAgentId = config.mockProviderAgentId;
-    const providerAgentUri = config.mockProviderAgentUri;
-    const defaultBuyerAgentId = config.mockBuyerAgentId;
-    reader = new AutoMockChainReader({
-      tokenAddress: config.usdcAddress,
-      providerWalletAddress: providerWallet,
-      providerAgentId,
-      providerAgentUri,
-      defaultBuyerAgentId,
-    });
+  const reader = createConfiguredChainReader(config);
+  if (reader instanceof AutoMockChainReader) {
     logger.info(
       `daski-gateway CHAIN_MODE=mock — using AutoMockChainReader ` +
-        `(provider agentId=${providerAgentId}, agentURI=${providerAgentUri}, ` +
-        `buyer agentId=${defaultBuyerAgentId})`,
+        `(provider agentId=${config.mockProviderAgentId}, ` +
+        `agentURI=${config.mockProviderAgentUri}, ` +
+        `buyer agentId=${config.mockBuyerAgentId})`,
     );
-  } else {
-    reader = createViemChainReader({
-      rpcUrl: config.baseRpcUrl,
-      chainId: config.chainId,
-      identityRegistryAddress: config.identityRegistryAddress,
-      agentIndexAddress: config.agentIndexAddress,
-      providerRegistryAddress: config.providerRegistryAddress,
-      paymentRouterAddress: config.paymentRouterAddress,
-      x402AdapterAddress: config.x402AdapterAddress,
-      usdcAddress: config.usdcAddress,
-      facilitatorPrivateKey: config.facilitatorPrivateKey,
-      easAddress: config.easAddress,
-      reputationStorageAddress: config.reputationStorageAddress,
-      reputationRegistryAddress: config.reputationRegistryAddress,
-    });
   }
 
   // Canonical-feedback mirror status — one startup line so operators can
@@ -74,7 +49,7 @@ async function main() {
   try {
     await bundle.cache.refresh();
   } catch (err) {
-    logger.error("initial cache refresh failed", err);
+    logger.error("initial cache refresh failed", { error: err });
   }
 
   const server = bundle.app.listen(config.port, () => {
@@ -85,11 +60,30 @@ async function main() {
     );
   });
 
-  const shutdown = async (signal: string) => {
-    logger.info(`received ${signal}, shutting down`);
-    server.close();
-    await bundle.shutdown();
-    process.exit(0);
+  let shutdownPromise: Promise<void> | null = null;
+  const shutdown = (signal: string): Promise<void> => {
+    if (shutdownPromise) return shutdownPromise;
+    shutdownPromise = (async () => {
+      logger.info(`received ${signal}, shutting down`);
+      bundle.beginShutdown();
+      const httpClosed = new Promise<void>((resolve, reject) => {
+        server.close((error) => {
+          if (error) reject(error);
+          else resolve();
+        });
+      });
+      try {
+        await withGracePeriod(
+          bundle.shutdown(httpClosed),
+          config.shutdownGraceMs,
+        );
+        process.exit(0);
+      } catch (error) {
+        logger.error("graceful shutdown failed", { error });
+        process.exit(1);
+      }
+    })();
+    return shutdownPromise;
   };
 
   process.on("SIGINT", () => void shutdown("SIGINT"));
@@ -97,6 +91,6 @@ async function main() {
 }
 
 main().catch((err) => {
-  logger.error("fatal startup failure", err);
+  logger.error("fatal startup failure", { error: err });
   process.exit(1);
 });

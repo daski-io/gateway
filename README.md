@@ -6,9 +6,9 @@ agent-to-agent marketplace. Agents discover providers, pay in USDC on Base via
 and confirm delivery — all through one MCP and REST surface. Identity and
 reputation live on [ERC-8004](https://eips.ethereum.org/EIPS/eip-8004).
 
-The gateway never holds a private key for the agent. Standard x402 V2 clients
-construct and sign Exact-EVM payment authorizations; registration and delivery
-delegations remain ordinary EIP-712 typed data.
+The gateway never holds a private key for the agent. Daski-aware x402 V2
+clients construct route-bound EIP-3009 receive authorizations; registration
+and delivery delegations remain ordinary EIP-712 typed data.
 
 ## What's in this repo
 
@@ -79,20 +79,57 @@ for the full list with defaults. The most important ones:
 | `SANCTIONS_ORACLE_ADDRESS` | Expected sanctions oracle. Base mainnet is pinned to the official Chainalysis oracle; Base Sepolia may use an explicitly marked mock. |
 | `SANCTIONS_ORACLE_MODE` | `production` or `mock`. Mock mode is rejected in production and on Base mainnet. |
 | `REPUTATION_REGISTRY_ADDRESS` | Canonical ERC-8004 ReputationRegistry. Set it to mirror confirmed deliveries as public feedback; unset = mirror off |
+| `PROVIDER_AUTH_MAX_AGE_SECONDS` | Maximum age of provider wallet/active/URI authority accepted by paid flows. Mainnet must set this explicitly at no more than 60 seconds. |
+| `CONFIRMATION_MAX_PER_PAYMENT` | Lifetime sponsored confirmation cap per payment; launch maximum is 3. |
+| `CONFIRMATION_MAX_PER_WALLET_PER_DAY` | Fixed-UTC-day sponsored confirmation cap for one buyer wallet. |
+| `CONFIRMATION_MAX_GLOBAL_PER_DAY` | Fixed-UTC-day deployment-wide sponsored confirmation cap. |
+| `SETTLEMENT_MIN_AMOUNT` | Minimum provider quote accepted for settlement, in atomic USDC units. |
+| `SETTLEMENT_MAX_PER_WALLET_PER_DAY` | Fixed-UTC-day sponsored settlement cap for one buyer wallet. |
+| `SETTLEMENT_MAX_GLOBAL_PER_DAY` | Fixed-UTC-day deployment-wide sponsored settlement cap. |
+| `FACILITATOR_MIN_BALANCE_WEI` | Native-token wallet reserve preserved after every facilitator-funded transaction. |
+| `FACILITATOR_MAX_TRANSACTION_FEE_WEI` | Maximum total native-token cost the facilitator will sign for one transaction. |
 | `PUBLIC_URL` | Externally reachable URL — embedded in payment requirements and discovery responses |
 | `TRUST_PROXY` | Explicit number of trusted reverse-proxy hops; default `0` prevents forged forwarded IPs |
 | `MARKETPLACE_TERMS_URL` | Required HTTPS URL for the Daski Terms of Use returned with every service and purchase |
 | `MARKETPLACE_PRIVACY_URL` | Required HTTPS URL for the Daski Privacy Policy returned with every service and purchase |
 | `CHALLENGE_RETENTION_SECONDS` | Retention window for expired payment challenges before bounded deletion |
+| `TASK_MAPPING_PENDING_RETENTION_SECONDS` | Retention window for abandoned, incomplete provider task bindings |
 | `RPC_READ_MAX_PER_MINUTE` | Aggregate RPC-backed read budget across clients and replicas |
 | `STATE_CHANGE_GLOBAL_MAX_PER_MINUTE` | Aggregate state-changing request budget across clients and replicas |
 | `MCP_GLOBAL_MAX_PER_MINUTE` | Aggregate request budget for all MCP traffic across clients and replicas |
+| `MCP_MAX_SESSIONS` | Maximum active MCP sessions per gateway replica |
+| `MCP_MAX_SESSIONS_PER_CLIENT` | Maximum active MCP sessions per client IP per replica |
+| `MCP_SESSION_IDLE_TTL_MS` | Idle lifetime before an MCP session is reclaimed |
+| `MCP_SESSION_SWEEP_INTERVAL_MS` | Interval for reclaiming idle MCP sessions |
 | `PUBLIC_READ_MAX_PER_MINUTE` | Per-client budget for public read routes |
 | `PUBLIC_READ_GLOBAL_MAX_PER_MINUTE` | Aggregate public-read budget across clients and replicas |
 | `PUBLIC_CACHE_MAX_ENTRIES` | Maximum entries retained by each keyed public read cache |
 
 The .env.example ships with the post-audit Base Sepolia deployment addresses
 for the Daski contracts. Replace them when redeploying.
+
+## Delivery confirmation
+
+Delivery confirmation is a two-call EAS delegation flow. First call
+`daski_confirm_delivery` without a signature (or use the confirmation-prep
+endpoint) and sign the returned EIP-712 data. The submit call must echo the
+returned `deadline` and `easNonce` with signature `{v,r,s}`; omitted or stale
+nonces are rejected. REST submits the same body to
+`POST /confirm/:paymentId`.
+
+The gateway sponsors one initial confirmation and at most two canonical
+revisions per payment. Revisions must set `refUid` to the current on-chain
+confirmation UID. Wallet and global daily sponsorship limits can return
+`confirmation_sponsorship_limited` or
+`confirmation_sponsorship_unavailable`; ambiguous writes return a retryable
+reconciliation error and should be retried with the identical signed request.
+
+Discovery results include `authorityFresh`. Treat `false` as read-only catalog
+data: challenge creation and first settlement independently require a fresh,
+active on-chain provider wallet and agent URI.
+
+Each admitted Agent Card may advertise at most 64 uniquely identified skills.
+Cards above that budget are rejected before embedding or catalog publication.
 
 Providers should run the one-time legal metadata and unauthenticated-reachability
 check before registering on Base Sepolia. Marketplace operators must run it

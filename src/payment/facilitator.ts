@@ -45,17 +45,17 @@ export function createFacilitatorRouter(deps: FacilitatorDeps): Router {
         success: false,
         errorReason: "invalid_request",
         errorMessage: body.message,
+        retryable: false,
         transaction: "",
         network: "eip155:0",
       });
       return;
     }
-    res.json(
-      await deps.facilitator.settle(
-        body.value.paymentPayload,
-        body.value.paymentRequirements,
-      ),
+    const result = await deps.facilitator.settleDetailed(
+      body.value.paymentPayload,
+      body.value.paymentRequirements,
     );
+    res.status(result.ok ? 200 : result.status).json(result.response);
   });
 
   return router;
@@ -78,9 +78,7 @@ function validateBody(raw: unknown):
   if (
     keys.some(
       (key) =>
-        !["x402Version", "paymentPayload", "paymentRequirements"].includes(
-          key,
-        ),
+        !["x402Version", "paymentPayload", "paymentRequirements"].includes(key),
     )
   ) {
     return { ok: false, message: "request contains unsupported fields" };

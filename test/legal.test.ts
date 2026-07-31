@@ -3,6 +3,9 @@ import {
   BASE_MAINNET_SANCTIONS_ORACLE,
   loadConfig,
 } from "../src/config.js";
+import { REVIEWED_USDC_DOMAINS } from "../src/payment/usdcDomain.js";
+import { AutoMockChainReader } from "../src/chain/autoMockReader.js";
+import { createConfiguredChainReader } from "../src/chain/configuredReader.js";
 import { validateProviderLegalReachability } from "../src/legal/onboarding.js";
 import {
   AGENT_AUTHORITY,
@@ -30,16 +33,32 @@ const VALID_CONFIG_ENV: NodeJS.ProcessEnv = {
   PROVIDER_REGISTRY_ADDRESS: "0x0000000000000000000000000000000000000003",
   SERVICE_REGISTRY_ADDRESS: "0x0000000000000000000000000000000000000004",
   PAYMENT_ROUTER_ADDRESS: "0x0000000000000000000000000000000000000005",
+  REPUTATION_STORAGE_ADDRESS: "0x0000000000000000000000000000000000000009",
+  CHAIN_INDEXER_START_BLOCK: "0",
   SANCTIONS_ORACLE_ADDRESS: "0x0000000000000000000000000000000000000008",
   SANCTIONS_ORACLE_MODE: "mock",
   X402_ADAPTER_ADDRESS: "0x0000000000000000000000000000000000000006",
-  USDC_ADDRESS: "0x0000000000000000000000000000000000000007",
+  USDC_ADDRESS: REVIEWED_USDC_DOMAINS[84532].address,
+  USDC_DECIMALS: "6",
+  USDC_NAME: REVIEWED_USDC_DOMAINS[84532].name,
+  USDC_VERSION: REVIEWED_USDC_DOMAINS[84532].version,
+  USDC_DOMAIN_SEPARATOR: REVIEWED_USDC_DOMAINS[84532].domainSeparator,
   FACILITATOR_PRIVATE_KEY: `0x${"1".repeat(64)}`,
   EAS_CONFIRMATION_SCHEMA_UID: `0x${"a".repeat(64)}`,
   EAS_OUTCOME_SCHEMA_UID: `0x${"b".repeat(64)}`,
   DATABASE_URL: "postgresql://example.invalid/daski",
   MARKETPLACE_TERMS_URL: "https://daski.io/terms-of-use",
   MARKETPLACE_PRIVACY_URL: "https://daski.io/privacy-policy",
+  CONFIRMATION_MAX_PER_PAYMENT: "3",
+  CONFIRMATION_MAX_PER_WALLET_PER_DAY: "20",
+  CONFIRMATION_MAX_GLOBAL_PER_DAY: "500",
+  SETTLEMENT_MIN_AMOUNT: "10000",
+  SETTLEMENT_MAX_PER_WALLET_PER_DAY: "100",
+  SETTLEMENT_MAX_GLOBAL_PER_DAY: "1000",
+  FACILITATOR_MIN_BALANCE_WEI: "10000000000000000",
+  FACILITATOR_MAX_TRANSACTION_FEE_WEI: "10000000000000000",
+  PROVIDER_AUTH_MAX_AGE_SECONDS: "30",
+  CACHE_REFRESH_INTERVAL: "30",
 };
 
 describe("startup configuration validation", () => {
@@ -54,6 +73,13 @@ describe("startup configuration validation", () => {
       CHAIN_ID: "8453",
       SANCTIONS_ORACLE_ADDRESS: BASE_MAINNET_SANCTIONS_ORACLE,
       SANCTIONS_ORACLE_MODE: "production",
+      NODE_ENV: "production",
+      TRUST_PROXY: "1",
+      PUBLIC_URL: "https://gateway.example",
+      BASE_RPC_URL: "https://rpc.example",
+      USDC_ADDRESS: REVIEWED_USDC_DOMAINS[8453].address,
+      USDC_NAME: REVIEWED_USDC_DOMAINS[8453].name,
+      USDC_DOMAIN_SEPARATOR: REVIEWED_USDC_DOMAINS[8453].domainSeparator,
     };
 
     expect(() => loadConfig(mainnetEnv)).toThrow(
@@ -63,6 +89,78 @@ describe("startup configuration validation", () => {
       loadConfig({ ...mainnetEnv, WHITELISTED_AGENT_IDS: "1" })
         .whitelistedAgentIds,
     ).toEqual([1n]);
+  });
+
+  it("requires explicit settlement guardrails on Base mainnet", () => {
+    const mainnetEnv = {
+      ...VALID_CONFIG_ENV,
+      CHAIN_ID: "8453",
+      SANCTIONS_ORACLE_ADDRESS: BASE_MAINNET_SANCTIONS_ORACLE,
+      SANCTIONS_ORACLE_MODE: "production",
+      NODE_ENV: "production",
+      TRUST_PROXY: "1",
+      PUBLIC_URL: "https://gateway.example",
+      BASE_RPC_URL: "https://rpc.example",
+      WHITELISTED_AGENT_IDS: "1",
+      USDC_ADDRESS: REVIEWED_USDC_DOMAINS[8453].address,
+      USDC_NAME: REVIEWED_USDC_DOMAINS[8453].name,
+      USDC_DOMAIN_SEPARATOR: REVIEWED_USDC_DOMAINS[8453].domainSeparator,
+    };
+    for (const field of [
+      "SETTLEMENT_MIN_AMOUNT",
+      "SETTLEMENT_MAX_PER_WALLET_PER_DAY",
+      "SETTLEMENT_MAX_GLOBAL_PER_DAY",
+      "FACILITATOR_MIN_BALANCE_WEI",
+      "FACILITATOR_MAX_TRANSACTION_FEE_WEI",
+    ] as const) {
+      expect(() =>
+        loadConfig({ ...mainnetEnv, [field]: undefined }),
+      ).toThrow(new RegExp(field));
+    }
+  });
+
+  it("accepts only live production Mainnet and selects the live reader", () => {
+    const mainnet = {
+      ...VALID_CONFIG_ENV,
+      CHAIN_ID: "8453",
+      NODE_ENV: "production",
+      CHAIN_MODE: "live",
+      TRUST_PROXY: "1",
+      PUBLIC_URL: "https://gateway.example",
+      BASE_RPC_URL: "https://rpc.example",
+      SANCTIONS_ORACLE_ADDRESS: BASE_MAINNET_SANCTIONS_ORACLE,
+      SANCTIONS_ORACLE_MODE: "production",
+      WHITELISTED_AGENT_IDS: "1",
+      USDC_ADDRESS: REVIEWED_USDC_DOMAINS[8453].address,
+      USDC_NAME: REVIEWED_USDC_DOMAINS[8453].name,
+      USDC_DOMAIN_SEPARATOR: REVIEWED_USDC_DOMAINS[8453].domainSeparator,
+    };
+    expect(() =>
+      loadConfig({ ...mainnet, NODE_ENV: "development" }),
+    ).toThrow(/Base mainnet requires NODE_ENV=production/);
+    expect(() => loadConfig({ ...mainnet, CHAIN_MODE: "mock" })).toThrow(
+      /CHAIN_MODE=mock/,
+    );
+
+    const config = loadConfig(mainnet);
+    expect(createConfiguredChainReader(config)).not.toBeInstanceOf(
+      AutoMockChainReader,
+    );
+  });
+
+  it("requires projection configuration in live mode", () => {
+    expect(() =>
+      loadConfig({
+        ...VALID_CONFIG_ENV,
+        REPUTATION_STORAGE_ADDRESS: undefined,
+      }),
+    ).toThrow(/REPUTATION_STORAGE_ADDRESS/);
+    expect(() =>
+      loadConfig({
+        ...VALID_CONFIG_ENV,
+        CHAIN_INDEXER_START_BLOCK: undefined,
+      }),
+    ).toThrow(/CHAIN_INDEXER_START_BLOCK/);
   });
 
   it("rejects malformed numeric and path settings", () => {
@@ -78,6 +176,13 @@ describe("startup configuration validation", () => {
     expect(() =>
       loadConfig({ ...VALID_CONFIG_ENV, MCP_ENABLED: "yes" }),
     ).toThrow(/MCP_ENABLED/);
+    expect(() =>
+      loadConfig({
+        ...VALID_CONFIG_ENV,
+        SETTLEMENT_MAX_PER_WALLET_PER_DAY: "101",
+        SETTLEMENT_MAX_GLOBAL_PER_DAY: "100",
+      }),
+    ).toThrow(/SETTLEMENT_MAX_PER_WALLET_PER_DAY/);
   });
 
   it("requires HTTPS public and RPC URLs in production", () => {
@@ -119,6 +224,28 @@ describe("startup configuration validation", () => {
         BASE_RPC_URL: "https://rpc.example",
       }),
     ).toThrow(/SANCTIONS_ORACLE_MODE=mock/);
+  });
+
+  it("requires the complete reviewed Circle USDC domain in live mode", () => {
+    for (const field of [
+      "USDC_DECIMALS",
+      "USDC_NAME",
+      "USDC_VERSION",
+      "USDC_DOMAIN_SEPARATOR",
+    ] as const) {
+      expect(() =>
+        loadConfig({ ...VALID_CONFIG_ENV, [field]: undefined }),
+      ).toThrow(new RegExp(field));
+    }
+    expect(() =>
+      loadConfig({ ...VALID_CONFIG_ENV, USDC_NAME: "USD Coin" }),
+    ).toThrow(/USDC_NAME.*reviewed Base Sepolia/);
+    expect(() =>
+      loadConfig({
+        ...VALID_CONFIG_ENV,
+        USDC_DOMAIN_SEPARATOR: `0x${"ff".repeat(32)}`,
+      }),
+    ).toThrow(/USDC_DOMAIN_SEPARATOR.*reviewed Base Sepolia/);
   });
 });
 

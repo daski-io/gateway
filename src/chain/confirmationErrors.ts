@@ -2,7 +2,7 @@ import type { Hex } from "../types.js";
 
 // ── Buyer-confirmation failure taxonomy ──────────────────────────────────
 //
-// `submitBuyerConfirmation` used to throw a plain Error for every failure,
+// Buyer-confirmation submission used to throw a plain Error for every failure,
 // and `runConfirmDelivery` collapsed all of them into one `submit_failed`.
 // Three genuinely different outcomes hid behind that single code, and they
 // call for opposite recoveries:

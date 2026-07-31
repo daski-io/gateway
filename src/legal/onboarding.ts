@@ -26,6 +26,7 @@ async function fetchReachable(
         signal: controller.signal,
       });
       if (response.status >= 300 && response.status < 400) {
+        await response.body?.cancel().catch(() => undefined);
         const location = response.headers.get("location");
         if (!location || attempt === 1) {
           throw new Error(`${field} has an unusable redirect`);
@@ -34,9 +35,10 @@ async function fetchReachable(
         continue;
       }
       if (!response.ok) {
+        await response.body?.cancel().catch(() => undefined);
         throw new Error(`${field} returned HTTP ${response.status}`);
       }
-      await response.body?.cancel();
+      await response.body?.cancel().catch(() => undefined);
       return;
     } finally {
       clearTimeout(timer);
@@ -57,6 +59,7 @@ export async function validateProviderLegalReachability(
       signal: controller.signal,
     });
     if (!response.ok) {
+      await response.body?.cancel().catch(() => undefined);
       throw new Error(`registration URL returned HTTP ${response.status}`);
     }
     const registration = await readBoundedJson<Record<string, unknown>>(
