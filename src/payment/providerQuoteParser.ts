@@ -60,6 +60,12 @@ export function parseProviderQuote(raw: unknown): ParsedProviderQuote {
   if (raw.quoteVersion !== PROVIDER_QUOTE_VERSION) {
     return invalid(`quoteVersion must be '${PROVIDER_QUOTE_VERSION}'`);
   }
+  if (
+    raw.supplierCostCeiling === undefined ||
+    (raw.supplierCostCeiling !== null && !isRecord(raw.supplierCostCeiling))
+  ) {
+    return invalid("supplierCostCeiling must be null or a plain object");
+  }
   if (!isHexSignature(raw.providerSignature)) {
     return invalid("providerSignature must be a 65-byte hex signature");
   }
@@ -100,6 +106,7 @@ export function parseProviderQuote(raw: unknown): ParsedProviderQuote {
       serviceSlug: raw.serviceSlug as string,
       serviceVersion: raw.serviceVersion as string,
       skillId: raw.skillId as string,
+      supplierCostCeiling: raw.supplierCostCeiling as Record<string, unknown> | null,
       providerSignature: raw.providerSignature,
       signerAddress: raw.signerAddress.toLowerCase() as Hex,
       signingKeyId: raw.signingKeyId,

@@ -80,7 +80,13 @@ describe("provider quote validation", () => {
       ["amount", (copy) => { copy.amount = "7000001"; }],
       ["token", (copy) => { copy.token = "0x0000000000000000000000000000000000000001"; }],
       ["chainId", (copy) => { copy.chainId = 1; }],
-      ["quoteVersion", (copy) => { copy.quoteVersion = "provider-quote-v2"; }],
+      ["quoteVersion", (copy) => { copy.quoteVersion = "provider-quote-v1"; }],
+      ["missing supplierCostCeiling", (copy) => delete copy.supplierCostCeiling],
+      // The ceiling is part of the signed payload — swapping it must break
+      // both the serviceRef hash and the signature.
+      ["tampered supplierCostCeiling", (copy) => {
+        copy.supplierCostCeiling = { kind: "supplier-cost-ceiling-v1", tampered: true };
+      }],
       ["skillId", (copy) => { copy.skillId = "other-skill"; }],
       ["serviceSlug", (copy) => { copy.serviceSlug = "other-service"; }],
       ["serviceVersion", (copy) => { copy.serviceVersion = "2"; }],
