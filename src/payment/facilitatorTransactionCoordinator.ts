@@ -111,7 +111,7 @@ export class FacilitatorTransactionCoordinator {
     } catch (error) {
       if (transaction && options.isReverted?.(error)) {
         const code = options.failureCode?.(error) ?? "transaction_reverted";
-        await this.finishReverted(transaction, code, options);
+        await this.finishReverted(transaction, code, options, error);
       }
       throw error;
     }
@@ -218,10 +218,16 @@ export class FacilitatorTransactionCoordinator {
     row: FacilitatorTransactionRow,
     code: string,
     options: FacilitatorExecutionOptions<TResult>,
+    transactionError: unknown,
   ): Promise<void> {
     try {
       await this.withTransaction(undefined, async (client) => {
-        await options.finalizeReverted?.(client, row.id, code);
+        await options.finalizeReverted?.(
+          client,
+          row.id,
+          code,
+          transactionError,
+        );
         const finished = await this.queries.finishFacilitatorTransaction(
           client,
           row.id,

@@ -6,6 +6,7 @@ import {
   TASK_ACCESS_PRIMARY_TYPE,
   TASK_ACCESS_REQUEST_HASH,
 } from "../src/auth/taskAccess.js";
+import { providerAgentIdDomainSalt } from "../src/auth/providerDomain.js";
 import type { Config } from "../src/config.js";
 import { startTestGateway, type TestGateway } from "./helpers/setup.js";
 
@@ -180,6 +181,7 @@ function inputChallenge(
         version: "1",
         chainId: config.chainId,
         verifyingContract: config.identityRegistryAddress,
+        salt: providerAgentIdDomainSalt(providerAgentId),
       },
       types: TASK_ACCESS_AUTHORIZATION_TYPES,
       primaryType: TASK_ACCESS_PRIMARY_TYPE,

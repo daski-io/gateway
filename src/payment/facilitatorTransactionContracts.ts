@@ -55,6 +55,7 @@ export interface FacilitatorExecutionOptions<TResult> {
     client: PoolClient,
     transactionId: string,
     failureCode: string,
+    error?: unknown,
   ): Promise<void>;
   isReverted?(error: unknown): boolean;
   failureCode?(error: unknown): string;

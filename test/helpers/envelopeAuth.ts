@@ -2,24 +2,23 @@ import { privateKeyToAccount } from "viem/accounts";
 import {
   A2A_REQUEST_AUTHORIZATION_PRIMARY_TYPE,
   A2A_REQUEST_AUTHORIZATION_TYPES,
-  DASKI_AUTH_DOMAIN_NAME,
-  DASKI_AUTH_DOMAIN_VERSION,
   type A2ARequestAuthorization,
 } from "../../src/auth/envelope.js";
+import { buildDaskiProviderDomain } from "../../src/auth/providerDomain.js";
 import type { Config } from "../../src/config.js";
 import { TEST_BUYER_KEY } from "./setup.js";
 
 export async function signTestEnvelope(
   config: Pick<Config, "chainId" | "identityRegistryAddress">,
+  providerAgentId: bigint,
   authorization: A2ARequestAuthorization,
 ): Promise<string> {
   return privateKeyToAccount(TEST_BUYER_KEY).signTypedData({
-    domain: {
-      name: DASKI_AUTH_DOMAIN_NAME,
-      version: DASKI_AUTH_DOMAIN_VERSION,
+    domain: buildDaskiProviderDomain({
       chainId: config.chainId,
-      verifyingContract: config.identityRegistryAddress,
-    },
+      identityRegistryAddress: config.identityRegistryAddress,
+      providerAgentId,
+    }),
     types: A2A_REQUEST_AUTHORIZATION_TYPES,
     primaryType: A2A_REQUEST_AUTHORIZATION_PRIMARY_TYPE,
     message: {

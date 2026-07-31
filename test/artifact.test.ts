@@ -9,6 +9,7 @@ import {
   TASK_ACCESS_PRIMARY_TYPE,
   TASK_ACCESS_REQUEST_HASH,
 } from "../src/auth/taskAccess.js";
+import { providerAgentIdDomainSalt } from "../src/auth/providerDomain.js";
 
 interface ToolResultContent {
   content: Array<{ type: string; text: string }>;
@@ -463,6 +464,7 @@ function artifactChallenge(
         version: "1",
         chainId: config.chainId,
         verifyingContract: config.identityRegistryAddress,
+        salt: providerAgentIdDomainSalt(1n),
       },
       types: TASK_ACCESS_AUTHORIZATION_TYPES,
       primaryType: TASK_ACCESS_PRIMARY_TYPE,

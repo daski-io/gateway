@@ -335,6 +335,7 @@ export async function dispatchSubmitTask({
       chainId: args.chainId,
       buyerTokenId: args.envelopeAuth.authorization.buyerTokenId,
       identityRegistryAddress: config.identityRegistryAddress,
+      providerAgentId,
       serviceArgs: args.serviceArgs ?? {},
     });
     flattened.nextEnvelopeAuthChallenge = {

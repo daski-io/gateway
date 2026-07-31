@@ -1570,6 +1570,7 @@ describe("hosted MCP — wallet-agnostic surface", () => {
       );
       const envelopeSignature = await signTestEnvelope(
         gateway.config,
+        2n,
         first.authorization,
       );
 
@@ -1957,6 +1958,7 @@ describe("hosted MCP — wallet-agnostic surface", () => {
       };
       const envelopeSignature = await signTestEnvelope(
         gateway.config,
+        2n,
         authorization,
       );
       const body = parseResult<{

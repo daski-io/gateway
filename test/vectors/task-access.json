@@ -3,7 +3,8 @@
     "name": "Daski",
     "version": "1",
     "chainId": 84532,
-    "verifyingContract": "0x000000000000000000000000000000000000a000"
+    "verifyingContract": "0x000000000000000000000000000000000000a000",
+    "salt": "0xb10e2d527612073b26eecdfd717e6a320cf44b4afac2b0732d9fcbe2b7fa0cf6"
   },
   "types": {
     "TaskAccessAuthorization": [
@@ -28,5 +29,5 @@
     "expiry": "2000000000"
   },
   "signer": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
-  "signature": "0x4c2fd441b4bf5cfc215bdd202a39ac6f418902ad9eb7911ab5a4651916bfac383cab68d75b7311b5387b74f7d65f53337477916f0a4e4feed369f1157a3baf801c"
+  "signature": "0x511c5b19845776e5d1be1c4a2ac30b455b6c019f3ed3763e3b94d402b198f559450bfd28b0a225576ee685ae7d1f0e072a62a5e32dc83e67a7ef9b63caee54d51b"
 }

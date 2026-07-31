@@ -7,11 +7,15 @@ import { SettlementTransactionRevertedError } from "../chain/reader.js";
 import { SettlementScreeningError } from "../chain/sanctionsErrors.js";
 import type { Config } from "../config.js";
 import type { Queries } from "../db/queries.js";
+import type { RecordedScreeningEvent } from "../db/settlementScreeningQueries.js";
 import {
   FacilitatorTransactionCoordinator,
 } from "./facilitatorTransactionCoordinator.js";
 import { validateSettlementEvent } from "./settlementResults.js";
-import { recordScreeningFailure } from "./screeningFailure.js";
+import {
+  logRecordedScreeningFailure,
+  recordScreeningFailure,
+} from "./screeningFailure.js";
 import { requireFacilitatorBalance } from "./facilitatorBalance.js";
 
 export interface SettlementReconciliationResult {
@@ -42,6 +46,7 @@ export async function reconcileBroadcastSettlements(
         ? "settle_with_registration"
         : "settle";
     const coordinator = new FacilitatorTransactionCoordinator(reader, queries);
+    let receiptReplayEvidence: RecordedScreeningEvent | null = null;
     try {
       await coordinator.execute<SettlementResult & { registered?: boolean }>({
         owner: {
@@ -100,7 +105,25 @@ export async function reconcileBroadcastSettlements(
           );
           if (!recorded) throw new Error("settlement recovery state conflict");
         },
-        finalizeReverted: async (client) => {
+        finalizeReverted: async (client, _id, _failureCode, error) => {
+          if (
+            error instanceof SettlementScreeningError &&
+            error.detectionSource === "receipt_replay"
+          ) {
+            receiptReplayEvidence = await recordScreeningFailure(
+              {
+                queries,
+                config,
+                challenge,
+                failure: error.failure,
+                detectionSource: error.detectionSource,
+                operation: kind,
+                transactionHash: error.transactionHash,
+              },
+              client,
+            );
+            if (error.failure.code === "SANCTIONS_ADDRESS_REJECTED") return;
+          }
           await queries.clearChallengePreparedTransaction(
             challenge.serviceRef,
             transaction.transactionHash,
@@ -120,7 +143,7 @@ export async function reconcileBroadcastSettlements(
       recovered += 1;
     } catch (error) {
       if (error instanceof SettlementScreeningError) {
-        await recordScreeningFailure({
+        const recordInput = {
           queries,
           config,
           challenge,
@@ -128,7 +151,12 @@ export async function reconcileBroadcastSettlements(
           detectionSource: error.detectionSource,
           operation: kind,
           transactionHash: error.transactionHash,
-        }).catch(() => undefined);
+        } as const;
+        if (receiptReplayEvidence) {
+          logRecordedScreeningFailure(recordInput, receiptReplayEvidence);
+        } else {
+          await recordScreeningFailure(recordInput).catch(() => undefined);
+        }
       }
       // The journal retains the exact transaction for the next bounded pass.
     }

@@ -4,6 +4,7 @@ import type { ChainReader } from "../chain/reader.js";
 import type { Config } from "../config.js";
 import { walletControlsAgent } from "../identity/control.js";
 import { computeRequestHash } from "./envelope.js";
+import { buildDaskiProviderDomain } from "./providerDomain.js";
 
 const CAPABILITY_LIFETIME_SECONDS = 10 * 60;
 const MAX_CAPABILITY_LIFETIME_SECONDS = 15 * 60;
@@ -58,7 +59,7 @@ export function buildTaskAccessChallenge(
   return {
     authorization,
     eip712TypedData: {
-      domain: taskAccessDomain(config),
+      domain: taskAccessDomain(config, providerAgentId),
       types: TASK_ACCESS_AUTHORIZATION_TYPES,
       primaryType: TASK_ACCESS_PRIMARY_TYPE,
       message: authorization,
@@ -93,7 +94,7 @@ export async function verifyTaskAccessCapability(
   }
   try {
     const signer = await recoverTypedDataAddress({
-      domain: taskAccessDomain(config),
+      domain: taskAccessDomain(config, expected.providerAgentId),
       types: TASK_ACCESS_AUTHORIZATION_TYPES,
       primaryType: TASK_ACCESS_PRIMARY_TYPE,
       message: {
@@ -113,13 +114,12 @@ export async function verifyTaskAccessCapability(
   return { ok: true };
 }
 
-function taskAccessDomain(config: Config) {
-  return {
-    name: "Daski",
-    version: "1",
+function taskAccessDomain(config: Config, providerAgentId: bigint) {
+  return buildDaskiProviderDomain({
     chainId: config.chainId,
-    verifyingContract: config.identityRegistryAddress,
-  } as const;
+    identityRegistryAddress: config.identityRegistryAddress,
+    providerAgentId,
+  });
 }
 
 function parseCapability(value: unknown): TaskAccessCapability | null {

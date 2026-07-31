@@ -11,6 +11,7 @@ import {
 import type { Config } from "../config.js";
 import { FacilitatorTransactionPendingError } from "../db/facilitatorLockQueries.js";
 import type { Queries } from "../db/queries.js";
+import type { RecordedScreeningEvent } from "../db/settlementScreeningQueries.js";
 import type { Hex } from "../types.js";
 import { publicErrorMessage } from "../util/errorWrap.js";
 import { cacheRegisteredBuyer } from "./buyerRegistrationCache.js";
@@ -22,6 +23,8 @@ import {
 import { hashCanonical } from "./requirementResponse.js";
 import {
   handleSettlementScreeningError,
+  logRecordedScreeningFailure,
+  recordScreeningFailure,
   screeningFailureResult,
 } from "./screeningFailure.js";
 import {
@@ -134,6 +137,7 @@ export async function verifyAndSettleUnlocked(
   const intentHash = settlementIntentHash(settlementInput, atomic);
   const coordinator = new FacilitatorTransactionCoordinator(reader, queries);
   let settlement: SettlementResult & { registered?: boolean };
+  let receiptReplayEvidence: RecordedScreeningEvent | null = null;
   try {
     settlement = await coordinator.execute({
       owner: {
@@ -216,7 +220,25 @@ export async function verifyAndSettleUnlocked(
         );
         if (!recorded) throw new Error("settlement persistence conflict");
       },
-      finalizeReverted: async (client, _transactionId) => {
+      finalizeReverted: async (client, _transactionId, _failureCode, error) => {
+        if (
+          error instanceof SettlementScreeningError &&
+          error.detectionSource === "receipt_replay"
+        ) {
+          receiptReplayEvidence = await recordScreeningFailure(
+            {
+              queries,
+              config,
+              challenge,
+              failure: error.failure,
+              detectionSource: error.detectionSource,
+              operation,
+              transactionHash: error.transactionHash,
+            },
+            client,
+          );
+          if (error.failure.code === "SANCTIONS_ADDRESS_REJECTED") return;
+        }
         const current = await queries.getChallengeByRef(challenge.serviceRef);
         if (current?.transactionHash) {
           await queries.clearChallengePreparedTransaction(
@@ -259,6 +281,21 @@ export async function verifyAndSettleUnlocked(
       );
     }
     if (error instanceof SettlementScreeningError) {
+      if (receiptReplayEvidence) {
+        logRecordedScreeningFailure(
+          {
+            queries,
+            config,
+            challenge,
+            failure: error.failure,
+            detectionSource: error.detectionSource,
+            operation,
+            transactionHash: error.transactionHash,
+          },
+          receiptReplayEvidence,
+        );
+        return screeningFailureResult(error.failure, config, payer);
+      }
       return handleSettlementScreeningError(
         error,
         challenge,

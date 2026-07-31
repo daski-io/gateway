@@ -85,6 +85,7 @@ describe("task-status authorization admission", () => {
           ...taskAccessVector.domain,
           verifyingContract:
             taskAccessVector.domain.verifyingContract as `0x${string}`,
+          salt: taskAccessVector.domain.salt as `0x${string}`,
         },
         types: TASK_ACCESS_AUTHORIZATION_TYPES,
         primaryType: TASK_ACCESS_PRIMARY_TYPE,

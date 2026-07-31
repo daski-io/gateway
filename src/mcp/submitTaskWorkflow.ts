@@ -136,13 +136,13 @@ export async function runSubmitTask(
   const envelope = await prepareSubmitTaskEnvelope(
     normalizedArgs,
     paymentContext.requiresEnvelopeAuth,
-    deps,
+    { ...deps, providerAgentId: freshEndpoint.provider.agentId },
   );
   if (envelope) return envelope;
   const invalidEnvelope = await verifySubmitTaskEnvelope(
     normalizedArgs,
     paymentContext.paidChallenge,
-    deps,
+    { ...deps, providerAgentId: freshEndpoint.provider.agentId },
   );
   if (invalidEnvelope) return invalidEnvelope;
 

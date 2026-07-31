@@ -316,6 +316,7 @@ describe("provider quote-commitment integration", () => {
       };
       const envelopeSignature = await signTestEnvelope(
         gateway.config,
+        2n,
         authorization,
       );
       const submitArguments = {

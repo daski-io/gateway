@@ -18,6 +18,7 @@ import {
 interface EnvelopeDeps {
   config: Config;
   reader: ChainReader;
+  providerAgentId: bigint;
 }
 
 export function rejectUnsignedAuthenticatedPrompt(
@@ -106,6 +107,7 @@ export async function prepareSubmitTaskEnvelope(
     chainId: args.chainId,
     buyerTokenId,
     identityRegistryAddress: deps.config.identityRegistryAddress,
+    providerAgentId: deps.providerAgentId,
     serviceArgs: args.serviceArgs ?? {},
     messageId: args.messageId,
   });
@@ -167,6 +169,7 @@ export async function verifySubmitTaskEnvelope(
       chainId: args.chainId,
       messageId: args.messageId,
       requestHash,
+      providerAgentId: deps.providerAgentId,
     },
   );
   if (!verified.ok) {

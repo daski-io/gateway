@@ -4,6 +4,11 @@ import {
   TASK_ACCESS_AUTHORIZATION_TYPES,
   TASK_ACCESS_PRIMARY_TYPE,
 } from "./taskAccess.js";
+import {
+  DASKI_PROVIDER_DOMAIN_NAME,
+  DASKI_PROVIDER_DOMAIN_VERSION,
+  providerAgentIdDomainSalt,
+} from "./providerDomain.js";
 
 const MAX_CAPABILITY_LIFETIME_SECONDS = 15 * 60;
 const TASK_ID_MAX_LENGTH = 256;
@@ -58,11 +63,16 @@ export function validateProviderTaskAccessChallenge(
       "version",
       "chainId",
       "verifyingContract",
+      "salt",
     ]) ||
-    domain.name !== "Daski" ||
-    domain.version !== "1" ||
+    domain.name !== DASKI_PROVIDER_DOMAIN_NAME ||
+    domain.version !== DASKI_PROVIDER_DOMAIN_VERSION ||
     domain.chainId !== config.chainId ||
     !sameAddress(domain.verifyingContract, config.identityRegistryAddress) ||
+    !sameHex32(
+      domain.salt,
+      providerAgentIdDomainSalt(expected.providerAgentId),
+    ) ||
     typedData.primaryType !== TASK_ACCESS_PRIMARY_TYPE ||
     !sameTypes(typedData.types)
   ) {
@@ -164,6 +174,10 @@ function sameAddress(value: unknown, expected: Hex): boolean {
   );
 }
 
+function sameHex32(value: unknown, expected: Hex): boolean {
+  return isHex32(value) && value.toLowerCase() === expected.toLowerCase();
+}
+
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -174,6 +188,6 @@ function isDecimal(value: unknown): value is string {
   return typeof value === "string" && /^[0-9]+$/.test(value);
 }
 
-function isHex32(value: unknown): boolean {
+function isHex32(value: unknown): value is Hex {
   return typeof value === "string" && /^0x[0-9a-fA-F]{64}$/.test(value);
 }

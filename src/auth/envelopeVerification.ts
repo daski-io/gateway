@@ -5,10 +5,9 @@ import { walletControlsAgent } from "../identity/control.js";
 import {
   A2A_REQUEST_AUTHORIZATION_PRIMARY_TYPE,
   A2A_REQUEST_AUTHORIZATION_TYPES,
-  DASKI_AUTH_DOMAIN_NAME,
-  DASKI_AUTH_DOMAIN_VERSION,
   type A2ARequestAuthorization,
 } from "./envelope.js";
+import { buildDaskiProviderDomain } from "./providerDomain.js";
 
 interface EnvelopeAuth {
   signature: Hex;
@@ -22,6 +21,7 @@ export interface ExpectedEnvelopeBinding {
   chainId: number;
   messageId: string;
   requestHash: Hex;
+  providerAgentId: bigint;
 }
 
 export type EnvelopeVerificationResult =
@@ -54,12 +54,11 @@ export async function verifyEnvelopeAuth(
 
   try {
     const signer = await recoverTypedDataAddress({
-      domain: {
-        name: DASKI_AUTH_DOMAIN_NAME,
-        version: DASKI_AUTH_DOMAIN_VERSION,
+      domain: buildDaskiProviderDomain({
         chainId: config.chainId,
-        verifyingContract: config.identityRegistryAddress,
-      },
+        identityRegistryAddress: config.identityRegistryAddress,
+        providerAgentId: expected.providerAgentId,
+      }),
       types: A2A_REQUEST_AUTHORIZATION_TYPES,
       primaryType: A2A_REQUEST_AUTHORIZATION_PRIMARY_TYPE,
       message: {

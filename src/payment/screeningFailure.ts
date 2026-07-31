@@ -1,3 +1,4 @@
+import type { PoolClient } from "pg";
 import type {
   ScreeningDetectionSource,
   SettlementScreeningFailure,
@@ -5,7 +6,10 @@ import type {
 import { SettlementScreeningError } from "../chain/sanctionsErrors.js";
 import type { Config } from "../config.js";
 import type { Queries } from "../db/queries.js";
-import type { SettlementOperation } from "../db/settlementScreeningQueries.js";
+import type {
+  RecordedScreeningEvent,
+  SettlementOperation,
+} from "../db/settlementScreeningQueries.js";
 import type { Hex, StoredChallenge } from "../types.js";
 import { logger } from "../util/logger.js";
 import { publicErrorMessage } from "../util/errorWrap.js";
@@ -30,7 +34,7 @@ export function screeningFailureResult(
   );
 }
 
-export async function recordScreeningFailure(input: {
+export interface ScreeningFailureRecordInput {
   queries: Queries;
   config: Config;
   challenge: StoredChallenge;
@@ -38,17 +42,33 @@ export async function recordScreeningFailure(input: {
   detectionSource: ScreeningDetectionSource;
   operation: SettlementOperation;
   transactionHash?: Hex | null;
-}): Promise<void> {
-  const recorded = await input.queries.recordSettlementScreeningEvent({
-    challenge: input.challenge,
-    failure: input.failure,
-    detectionSource: input.detectionSource,
-    operation: input.operation,
-    chainId: input.config.chainId,
-    paymentRouter: input.config.paymentRouterAddress,
-    adapterAddress: input.config.x402AdapterAddress,
-    transactionHash: input.transactionHash,
-  });
+}
+
+export async function recordScreeningFailure(
+  input: ScreeningFailureRecordInput,
+  client?: PoolClient,
+): Promise<RecordedScreeningEvent> {
+  const recorded = await input.queries.recordSettlementScreeningEvent(
+    {
+      challenge: input.challenge,
+      failure: input.failure,
+      detectionSource: input.detectionSource,
+      operation: input.operation,
+      chainId: input.config.chainId,
+      paymentRouter: input.config.paymentRouterAddress,
+      adapterAddress: input.config.x402AdapterAddress,
+      transactionHash: input.transactionHash,
+    },
+    client,
+  );
+  if (!client) logRecordedScreeningFailure(input, recorded);
+  return recorded;
+}
+
+export function logRecordedScreeningFailure(
+  input: ScreeningFailureRecordInput,
+  recorded: RecordedScreeningEvent,
+): void {
   logger.info(
     input.failure.code === "SANCTIONS_ADDRESS_REJECTED"
       ? "payment.sanctions_address_rejected"

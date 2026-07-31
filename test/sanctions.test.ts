@@ -278,4 +278,111 @@ describe("sanctions settlement lifecycle", () => {
         ?.settlementState,
     ).toBe("sanctions_rejected");
   });
+
+  it("keeps receipt replay recovery active when evidence persistence fails", async () => {
+    const challenge = await gateway.purchaseChallenge(2n, {
+      buyerTokenId: "5",
+    });
+    const transactionHash = `0x${"de".repeat(32)}` as Hex;
+    gateway.mockChain.queueSettlement({
+      kind: "submission-error",
+      txHash: transactionHash,
+      event: makePaymentSettledEvent({
+        paymentId: 10n,
+        serviceRef: challenge.serviceRef!,
+        buyerAgentId: 5n,
+        providerAgentId: 2n,
+        totalAmount: 15_000_000n,
+      }),
+      reason: "receipt unavailable",
+    });
+    const payload = await paymentPayload(challenge.paymentRequired!);
+    expect((await gateway.purchaseSettle(2n, payload)).status).toBe(503);
+    const prepared = await gateway.bundle.queries.getChallengeByRef(
+      challenge.serviceRef!,
+    );
+    const transactionId = prepared!.settlementFacilitatorTransactionId!;
+    gateway.mockChain.setSettlementRecoveryError(
+      transactionHash,
+      new SettlementScreeningError(
+        {
+          code: "SANCTIONS_ADDRESS_REJECTED",
+          retryable: false,
+          selector: REJECTED_SELECTOR,
+          account: SANCTIONED_ACCOUNT,
+        },
+        "receipt_replay",
+        transactionHash,
+      ),
+    );
+    const record =
+      gateway.bundle.queries.recordSettlementScreeningEvent.bind(
+        gateway.bundle.queries,
+      );
+    let failOnce = true;
+    gateway.bundle.queries.recordSettlementScreeningEvent = async (
+      input,
+      client,
+    ) => {
+      if (failOnce) {
+        failOnce = false;
+        throw new Error("evidence write failed");
+      }
+      return record(input, client);
+    };
+    const makeDue = () =>
+      gateway.bundle.pool.query(
+        `UPDATE facilitator_transactions
+            SET next_attempt_at = now()
+          WHERE id = $1`,
+        [transactionId],
+      );
+
+    await makeDue();
+    expect(
+      await reconcileBroadcastSettlements(
+        gateway.mockChain,
+        gateway.bundle.queries,
+        gateway.config,
+      ),
+    ).toEqual({ scanned: 1, recovered: 0 });
+    expect(
+      await gateway.bundle.queries.getChallengeByRef(challenge.serviceRef!),
+    ).toMatchObject({
+      settlementState: "settlement_prepared",
+      settlementFacilitatorTransactionId: transactionId,
+      transactionHash,
+    });
+    expect(
+      await gateway.bundle.queries.getFacilitatorTransactionById(transactionId),
+    ).toMatchObject({ status: "prepared", resolvedAt: null });
+    const evidenceAfterFailure = await gateway.bundle.pool.query<{
+      count: string;
+    }>(
+      `SELECT count(*)::text AS count
+         FROM settlement_screening_events
+        WHERE service_ref = $1`,
+      [Buffer.from(challenge.serviceRef!.slice(2), "hex")],
+    );
+    expect(evidenceAfterFailure.rows[0]?.count).toBe("0");
+
+    await makeDue();
+    expect(
+      await reconcileBroadcastSettlements(
+        gateway.mockChain,
+        gateway.bundle.queries,
+        gateway.config,
+      ),
+    ).toEqual({ scanned: 1, recovered: 0 });
+    expect(
+      (await gateway.bundle.queries.getChallengeByRef(challenge.serviceRef!))
+        ?.settlementState,
+    ).toBe("sanctions_rejected");
+    expect(
+      await gateway.bundle.queries.getFacilitatorTransactionById(transactionId),
+    ).toMatchObject({
+      status: "reverted",
+      failureCode: "SANCTIONS_ADDRESS_REJECTED",
+    });
+  });
 });
