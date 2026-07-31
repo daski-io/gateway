@@ -16,12 +16,16 @@ import {
   TEST_BUYER_KEY,
   type TestGateway,
 } from "./helpers/setup.js";
-import { computeRequestHash } from "../src/auth/envelope.js";
+import {
+  computeRequestHash,
+  type A2ARequestAuthorization,
+} from "../src/auth/envelope.js";
 import { MCP_LEGAL_INSTRUCTIONS } from "../src/legal/purchase.js";
 import type { Embedder } from "../src/discovery/embeddings.js";
 import type { PaymentRequired } from "../src/types.js";
 import { DASKI_X402_EXTENSION_URI } from "../src/config.js";
 import { UNTRUSTED_PROVIDER_CONTENT_WARNING } from "../src/mcp/providerReflection.js";
+import { signTestEnvelope } from "./helpers/envelopeAuth.js";
 
 async function connectClient(baseUrl: string) {
   const transport = new StreamableHTTPClientTransport(
@@ -1490,6 +1494,31 @@ describe("hosted MCP — wallet-agnostic surface", () => {
     }
   });
 
+  it("daski_submit_task rejects prompt input that is outside an authenticated request hash", async () => {
+    const { client, transport } = await connectClient(gateway.baseUrl);
+    try {
+      const result = await client.callTool({
+        name: "daski_submit_task",
+        arguments: {
+          providerA2AUrl: gateway.mockProvider.baseUrl + "/a2a",
+          skillId: "register-domain",
+          paymentId: "42",
+          chainId: 84532,
+          buyerTokenId: "5",
+          prompt: "Register attacker-controlled.example",
+        },
+      });
+
+      expect(result).toMatchObject({ isError: true });
+      expect(parseResult<{ code: string }>(result).code).toBe(
+        "UNSIGNED_PROMPT_NOT_ALLOWED",
+      );
+      expect(gateway.mockProvider.getLastSendBody()).toBeNull();
+    } finally {
+      await transport.close();
+    }
+  });
+
   it("daski_submit_task restores paid-path fields on a signed retry", async () => {
     const serviceArgs = { domain: "restored-paid-path.xyz" };
     const transactionHash = `0x${"cd".repeat(32)}` as Hex;
@@ -1532,20 +1561,16 @@ describe("hosted MCP — wallet-agnostic surface", () => {
       };
       const first = parseResult<{
         messageId: string;
-        authorization: {
-          buyerTokenId: string;
-          skillId: string;
-          paymentId: string;
-          chainId: number;
-          messageId: string;
-          requestHash: string;
-          issuedAt: string;
-        };
+        authorization: A2ARequestAuthorization;
       }>(
         await client.callTool({
           name: "daski_submit_task",
           arguments: firstArgs,
         }),
+      );
+      const envelopeSignature = await signTestEnvelope(
+        gateway.config,
+        first.authorization,
       );
 
       const result = parseResult<{ taskId: string; state: string }>(
@@ -1555,7 +1580,7 @@ describe("hosted MCP — wallet-agnostic surface", () => {
             ...firstArgs,
             messageId: first.messageId,
             envelopeAuth: {
-              signature: `0x${"ab".repeat(65)}`,
+              signature: envelopeSignature,
               authorization: first.authorization,
             },
           },
@@ -1919,6 +1944,21 @@ describe("hosted MCP — wallet-agnostic surface", () => {
     });
     const { client, transport } = await connectClient(gateway.baseUrl);
     try {
+      const authorization: A2ARequestAuthorization = {
+        buyerTokenId: "5",
+        skillId: "change-password",
+        paymentId: "5",
+        chainId: 84532,
+        messageId: "msg-used-1",
+        requestHash: computeRequestHash({
+          address: "pawel@uat.example",
+        }),
+        issuedAt: "1",
+      };
+      const envelopeSignature = await signTestEnvelope(
+        gateway.config,
+        authorization,
+      );
       const body = parseResult<{
         state: string;
         nextEnvelopeAuthChallenge?: {
@@ -1942,20 +1982,8 @@ describe("hosted MCP — wallet-agnostic surface", () => {
             buyerTokenId: "5",
             messageId: "msg-used-1",
             envelopeAuth: {
-              signature: ("0x" + "ab".repeat(65)) as string,
-              authorization: {
-                buyerTokenId: "5",
-                skillId: "change-password",
-                paymentId: "5",
-                chainId: 84532,
-                messageId: "msg-used-1",
-                // Must be the true canonical hash of the serviceArgs below —
-                // the gateway now rejects body/envelope drift before dispatch.
-                requestHash: computeRequestHash({
-                  address: "pawel@uat.example",
-                }),
-                issuedAt: "1",
-              },
+              signature: envelopeSignature,
+              authorization,
             },
             serviceArgs: { address: "pawel@uat.example" },
           },

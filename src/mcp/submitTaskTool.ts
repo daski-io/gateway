@@ -26,7 +26,10 @@ export const INPUT_SCHEMA = {
   transactionHash: z.string().optional().describe(
     "Settlement transaction hash; required for paid tasks.",
   ),
-  prompt: z.string().optional(),
+  prompt: z.string().optional().describe(
+    "Open-free skills only. Authenticated skills must place all variable " +
+      "task input in serviceArgs so it is covered by the signed request hash.",
+  ),
   serviceArgs: z.record(z.string(), z.unknown()).optional(),
   capability: z
     .object({
@@ -78,6 +81,8 @@ const DESCRIPTION = [
   "Paid and gated-free skills use a two-call envelope handshake. The signed",
   "retry must preserve the exact serviceArgs, messageId, and paid routing",
   "fields returned by settlement, with NOTHING REMOVED.",
+  "Do not use prompt on an authenticated task; put every variable instruction",
+  "in serviceArgs so the signature covers it.",
   "",
   "For a long-running task in input-required state, pass taskId and the full",
   "corrected serviceArgs without serviceRef, transactionHash, or envelopeAuth.",

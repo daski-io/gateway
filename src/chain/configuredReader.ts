@@ -35,6 +35,7 @@ export function createConfiguredChainReader(config: Config): ChainReader {
     usdcAddress: config.usdc.address,
     usdcDomain: config.usdc,
     facilitatorPrivateKey: config.facilitatorPrivateKey,
+    facilitatorMaxTransactionFeeWei: config.facilitatorMaxTransactionFeeWei,
     easAddress: config.easAddress,
     reputationStorageAddress: config.reputationStorageAddress,
     easConfirmationSchemaUid: config.easConfirmationSchemaUid,

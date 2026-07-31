@@ -72,6 +72,7 @@ function feedbackMethods(input: {
     account: account as any,
     chain: baseSepolia,
     reputationRegistryAddress: REGISTRY,
+    maxTransactionFeeWei: 10n ** 18n,
   });
 }
 
@@ -91,6 +92,7 @@ describe("canonical ReputationRegistry calldata", () => {
     const prepareTransactionRequest = vi.fn(async (request) => ({
       ...request,
       nonce: 7,
+      maxFeePerGas: 1n,
     }));
     const account = {
       address: CLIENT,
@@ -106,6 +108,7 @@ describe("canonical ReputationRegistry calldata", () => {
       account: account as any,
       chain: baseSepolia,
       reputationRegistryAddress: REGISTRY,
+      maxTransactionFeeWei: 10n ** 18n,
     });
 
     const prepared = await methods.prepareFeedback(INPUT, 7n);
@@ -183,6 +186,7 @@ describe("canonical ReputationRegistry receipt outcomes", () => {
       account: { address: CLIENT } as any,
       chain: baseSepolia,
       reputationRegistryAddress: REGISTRY,
+      maxTransactionFeeWei: 10n ** 18n,
     });
 
     await expect(

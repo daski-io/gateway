@@ -1,5 +1,6 @@
 import { Router, type Request, type Response } from "express";
 import { ConfirmationSubmitError } from "../chain/confirmationErrors.js";
+import { FacilitatorTransactionFeeError } from "../chain/facilitatorFee.js";
 import type { Config } from "../config.js";
 import { FacilitatorTransactionPendingError } from "../db/facilitatorLockQueries.js";
 import type { Queries } from "../db/queries.js";
@@ -15,6 +16,7 @@ import {
   ConfirmationAdmissionError,
   submitConfirmation,
 } from "./confirmationSubmission.js";
+import { FacilitatorBalanceError } from "./facilitatorBalance.js";
 import {
   parseConfirmInput,
   type ConfirmInput,
@@ -100,6 +102,12 @@ function mapConfirmationError(error: unknown): ConfirmResult {
       "The facilitator wallet is reconciling a prior transaction.",
       true,
     );
+  }
+  if (
+    error instanceof FacilitatorBalanceError ||
+    error instanceof FacilitatorTransactionFeeError
+  ) {
+    return failure(503, error.code, error.message, true);
   }
   if (error instanceof FacilitatorTransactionTerminalError) {
     return failure(

@@ -12,7 +12,7 @@ import {
 } from "./facilitatorTransactionCoordinator.js";
 import { validateSettlementEvent } from "./settlementResults.js";
 import { recordScreeningFailure } from "./screeningFailure.js";
-import { requireFacilitatorBalance } from "./settlementAdmission.js";
+import { requireFacilitatorBalance } from "./facilitatorBalance.js";
 
 export interface SettlementReconciliationResult {
   scanned: number;
@@ -57,6 +57,7 @@ export async function reconcileBroadcastSettlements(
           await requireFacilitatorBalance(
             reader,
             config.facilitatorMinBalanceWei,
+            config.facilitatorMaxTransactionFeeWei,
           );
           return reader.submitPreparedSettlement(
             {

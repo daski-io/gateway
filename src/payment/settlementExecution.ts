@@ -32,10 +32,14 @@ import {
   validateSettlementEvent,
 } from "./settlementResults.js";
 import {
-  requireFacilitatorBalance,
   SettlementAdmissionError,
   settlementSponsorshipError,
 } from "./settlementAdmission.js";
+import {
+  FacilitatorBalanceError,
+  requireFacilitatorBalance,
+} from "./facilitatorBalance.js";
+import { FacilitatorTransactionFeeError } from "../chain/facilitatorFee.js";
 import { verifyPaymentPayload } from "./verifyPayload.js";
 import type {
   AtomicSettlementOptions,
@@ -155,6 +159,7 @@ export async function verifyAndSettleUnlocked(
         await requireFacilitatorBalance(
           reader,
           config.facilitatorMinBalanceWei,
+          config.facilitatorMaxTransactionFeeWei,
         );
         return reader.submitPreparedSettlement(
           { ...prepared, kind: operation } as PreparedSettlementTransaction,
@@ -232,9 +237,21 @@ export async function verifyAndSettleUnlocked(
       allowNewAttemptAfterRevert: true,
     });
   } catch (error) {
-    if (error instanceof SettlementAdmissionError) {
+    if (
+      error instanceof SettlementAdmissionError ||
+      error instanceof FacilitatorBalanceError
+    ) {
       return settlementFailure(
-        error.status,
+        error instanceof SettlementAdmissionError ? error.status : 503,
+        error.code,
+        error.message,
+        config.x402Network,
+        payer,
+      );
+    }
+    if (error instanceof FacilitatorTransactionFeeError) {
+      return settlementFailure(
+        503,
         error.code,
         error.message,
         config.x402Network,

@@ -239,12 +239,21 @@ export async function resolveSubmitTaskPayment(
     paidChallenge.providerA2AUrl !== normalizedArgs.providerA2AUrl ||
     !normalizedArgs.transactionHash ||
     paidChallenge.transactionHash.toLowerCase() !==
-      normalizedArgs.transactionHash.toLowerCase();
+      normalizedArgs.transactionHash.toLowerCase() ||
+    (normalizedArgs.envelopeAuth !== undefined &&
+      (paidChallenge.buyerTokenId.toString() !==
+        normalizedArgs.envelopeAuth.authorization.buyerTokenId ||
+        normalizedArgs.envelopeAuth.authorization.skillId !==
+          normalizedArgs.skillId ||
+        normalizedArgs.envelopeAuth.authorization.paymentId !==
+          normalizedArgs.paymentId ||
+        normalizedArgs.envelopeAuth.authorization.chainId !==
+          normalizedArgs.chainId));
   if (bindingMismatch) {
     return fail(
       "PAYMENT_BINDING_MISMATCH",
-      "serviceRef, paymentId, transactionHash, skillId, and providerA2AUrl " +
-        "must all describe the same settled challenge. No task was dispatched.",
+      "The payment, buyer, signed envelope, skill, and provider must all " +
+        "describe the same settled challenge. No task was dispatched.",
     );
   }
   if (

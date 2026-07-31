@@ -86,7 +86,8 @@ for the full list with defaults. The most important ones:
 | `SETTLEMENT_MIN_AMOUNT` | Minimum provider quote accepted for settlement, in atomic USDC units. |
 | `SETTLEMENT_MAX_PER_WALLET_PER_DAY` | Fixed-UTC-day sponsored settlement cap for one buyer wallet. |
 | `SETTLEMENT_MAX_GLOBAL_PER_DAY` | Fixed-UTC-day deployment-wide sponsored settlement cap. |
-| `FACILITATOR_MIN_BALANCE_WEI` | Native-token wallet reserve below which new settlement broadcasts fail closed. |
+| `FACILITATOR_MIN_BALANCE_WEI` | Native-token wallet reserve preserved after every facilitator-funded transaction. |
+| `FACILITATOR_MAX_TRANSACTION_FEE_WEI` | Maximum total native-token cost the facilitator will sign for one transaction. |
 | `PUBLIC_URL` | Externally reachable URL — embedded in payment requirements and discovery responses |
 | `TRUST_PROXY` | Explicit number of trusted reverse-proxy hops; default `0` prevents forged forwarded IPs |
 | `MARKETPLACE_TERMS_URL` | Required HTTPS URL for the Daski Terms of Use returned with every service and purchase |
@@ -126,6 +127,9 @@ reconciliation error and should be retried with the identical signed request.
 Discovery results include `authorityFresh`. Treat `false` as read-only catalog
 data: challenge creation and first settlement independently require a fresh,
 active on-chain provider wallet and agent URI.
+
+Each admitted Agent Card may advertise at most 64 uniquely identified skills.
+Cards above that budget are rejected before embedding or catalog publication.
 
 Providers should run the one-time legal metadata and unauthenticated-reachability
 check before registering on Base Sepolia. Marketplace operators must run it

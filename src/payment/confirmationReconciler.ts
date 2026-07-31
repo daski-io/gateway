@@ -5,10 +5,12 @@ import type {
   ConfirmationResult,
   PreparedConfirmationTransaction,
 } from "../chain/reader.js";
+import type { Config } from "../config.js";
 import type { Queries } from "../db/queries.js";
 import type { ReputationMirrorWorker } from "../reputation/worker.js";
 import type { Hex } from "../types.js";
 import { FacilitatorTransactionCoordinator } from "./facilitatorTransactionCoordinator.js";
+import { requireFacilitatorBalance } from "./facilitatorBalance.js";
 
 const ZERO_HASH = `0x${"00".repeat(32)}` as Hex;
 
@@ -16,6 +18,7 @@ export async function reconcileBuyerConfirmations(
   reader: ChainReader,
   queries: Queries,
   reputationWorker: ReputationMirrorWorker,
+  config: Config,
   limit = 50,
 ): Promise<{ scanned: number; recovered: number }> {
   const due = await queries.listDueFacilitatorTransactions(
@@ -47,12 +50,18 @@ export async function reconcileBuyerConfirmations(
         prepare: async () => {
           throw new Error("confirmation recovery cannot prepare a replacement");
         },
-        send: (prepared, onBroadcast) =>
-          reader.submitPreparedBuyerConfirmation(
+        send: async (prepared, onBroadcast) => {
+          await requireFacilitatorBalance(
+            reader,
+            config.facilitatorMinBalanceWei,
+            config.facilitatorMaxTransactionFeeWei,
+          );
+          return reader.submitPreparedBuyerConfirmation(
             prepared as PreparedConfirmationTransaction,
             delegation,
             onBroadcast,
-          ),
+          );
+        },
         inspect: (hash) =>
           reader.getBuyerConfirmationByTransaction(hash, delegation),
         persistPrepared: async () => {

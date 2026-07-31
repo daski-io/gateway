@@ -32,6 +32,7 @@ function methods(
   const prepareTransactionRequest = vi.fn(async (request) => ({
     ...request,
     nonce: 7,
+    maxFeePerGas: 1n,
   }));
   const account = {
     address: ADDRESS,
@@ -53,6 +54,7 @@ function methods(
       agentIndexAddress: ADDRESS,
       paymentRouterAddress: ADDRESS,
       usdcAddress: ADDRESS,
+      maxTransactionFeeWei: 10n ** 18n,
     }),
     prepareTransactionRequest,
   };

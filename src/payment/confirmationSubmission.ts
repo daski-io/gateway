@@ -13,6 +13,7 @@ import type { Hex } from "../types.js";
 import {
   FacilitatorTransactionCoordinator,
 } from "./facilitatorTransactionCoordinator.js";
+import { requireFacilitatorBalance } from "./facilitatorBalance.js";
 import {
   ConfirmationAdmissionError,
   confirmationSponsorshipError,
@@ -154,12 +155,18 @@ export async function submitConfirmation(
       refUid: refUID,
     },
     prepare: (nonce) => deps.reader.prepareBuyerConfirmation(delegation, nonce),
-    send: (prepared, onBroadcast) =>
-      deps.reader.submitPreparedBuyerConfirmation(
+    send: async (prepared, onBroadcast) => {
+      await requireFacilitatorBalance(
+        deps.reader,
+        deps.config.facilitatorMinBalanceWei,
+        deps.config.facilitatorMaxTransactionFeeWei,
+      );
+      return deps.reader.submitPreparedBuyerConfirmation(
         prepared as PreparedConfirmationTransaction,
         delegation,
         onBroadcast,
-      ),
+      );
+    },
     inspect: (hash) =>
       deps.reader.getBuyerConfirmationByTransaction(hash, delegation),
     loadCompleted: async () => {

@@ -239,6 +239,7 @@ export async function startTestGateway(opts: TestGatewayOptions = {}): Promise<T
     settlementMaxPerWalletPerDay: 100,
     settlementMaxGlobalPerDay: 1_000,
     facilitatorMinBalanceWei: 0n,
+    facilitatorMaxTransactionFeeWei: 10_000_000_000_000_000n,
     cacheMaxStalenessSeconds: 86400,
     challengeTtlSeconds: 3600,
     databaseUrl: TEST_DATABASE_URL,

@@ -95,7 +95,10 @@ export interface Config extends RuntimeConfig {
   settlementMinAmount: bigint;
   settlementMaxPerWalletPerDay: number;
   settlementMaxGlobalPerDay: number;
+  // Reserve retained after every facilitator-funded write.
   facilitatorMinBalanceWei: bigint;
+  // Maximum native-token cost accepted from an RPC-prepared transaction.
+  facilitatorMaxTransactionFeeWei: bigint;
   // How long the discovery cache keeps serving a provider's last-known-good
   // Agent Card when refresh fetches fail (provider restarting, card host
   // down). Past the cap the provider degrades to a card-less catalog entry
@@ -433,6 +436,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
           env.FACILITATOR_MIN_BALANCE_WEI,
           0n,
         );
+  const facilitatorMaxTransactionFeeWei = positiveBigInt(
+    "FACILITATOR_MAX_TRANSACTION_FEE_WEI",
+    mainnetRequired("FACILITATOR_MAX_TRANSACTION_FEE_WEI"),
+    10_000_000_000_000_000n,
+  );
   const providerAuthMaxAgeSeconds = positiveInteger(
     "PROVIDER_AUTH_MAX_AGE_SECONDS",
     mainnetRequired("PROVIDER_AUTH_MAX_AGE_SECONDS"),
@@ -548,6 +556,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     settlementMaxPerWalletPerDay,
     settlementMaxGlobalPerDay,
     facilitatorMinBalanceWei,
+    facilitatorMaxTransactionFeeWei,
     cacheMaxStalenessSeconds: positiveInteger(
       "CACHE_MAX_STALENESS_SECONDS",
       env.CACHE_MAX_STALENESS_SECONDS,

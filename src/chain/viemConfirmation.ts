@@ -25,6 +25,10 @@ import {
 import { decodeRevertReason } from "./viemErrors.js";
 import { isAlreadyKnownTransaction } from "./transactionErrors.js";
 import { FACILITATOR_WRITE_CONFIRMATIONS } from "./transactionFinality.js";
+import {
+  assertFacilitatorTransactionFee,
+  FacilitatorTransactionFeeError,
+} from "./facilitatorFee.js";
 
 type SupportedChain = typeof base | typeof baseSepolia;
 type ConfirmationMethods = Pick<
@@ -41,6 +45,7 @@ export interface ConfirmationDeps {
   account: PrivateKeyAccount;
   chain: SupportedChain;
   easAddress: Hex;
+  maxTransactionFeeWei: bigint;
 }
 
 const EAS_ATTESTED_EVENT = parseAbiItem(
@@ -123,7 +128,9 @@ export function createConfirmationMethods(
           gas: simulation.request.gas,
           nonce: facilitatorNonce,
         });
+        assertFacilitatorTransactionFee(request, deps.maxTransactionFeeWei);
       } catch (error) {
+        if (error instanceof FacilitatorTransactionFeeError) throw error;
         const reason = decodeRevertReason(error);
         throw new ConfirmationSubmitError(
           "validation",

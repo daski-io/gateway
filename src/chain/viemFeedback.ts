@@ -32,6 +32,7 @@ import type {
 } from "./reader.js";
 import { decodeRevertReason } from "./viemErrors.js";
 import { FACILITATOR_WRITE_CONFIRMATIONS } from "./transactionFinality.js";
+import { assertFacilitatorTransactionFee } from "./facilitatorFee.js";
 
 type SupportedChain = typeof base | typeof baseSepolia;
 type FeedbackMethods = Pick<
@@ -51,6 +52,7 @@ export interface FeedbackDeps {
   account: PrivateKeyAccount;
   chain: SupportedChain;
   reputationRegistryAddress?: Hex;
+  maxTransactionFeeWei: bigint;
 }
 
 function isContractRevert(error: unknown): boolean {
@@ -170,6 +172,7 @@ export function createFeedbackMethods(deps: FeedbackDeps): FeedbackMethods {
         gas: simulation.request.gas,
         nonce: facilitatorNonce,
       });
+      assertFacilitatorTransactionFee(request, deps.maxTransactionFeeWei);
       const serializedTransaction = (await deps.account.signTransaction(
         request as any,
       )) as Hex;
@@ -279,6 +282,7 @@ export function createFeedbackMethods(deps: FeedbackDeps): FeedbackMethods {
         gas: simulation.request.gas,
         nonce: facilitatorNonce,
       });
+      assertFacilitatorTransactionFee(request, deps.maxTransactionFeeWei);
       const serializedTransaction = (await deps.account.signTransaction(
         request as any,
       )) as Hex;

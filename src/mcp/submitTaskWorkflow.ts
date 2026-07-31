@@ -1,6 +1,10 @@
 import type { Fetcher } from "./a2a.js";
 import { dispatchSubmitTask } from "./submitTaskDispatch.js";
-import { prepareSubmitTaskEnvelope } from "./submitTaskEnvelope.js";
+import {
+  prepareSubmitTaskEnvelope,
+  rejectUnsignedAuthenticatedPrompt,
+  verifySubmitTaskEnvelope,
+} from "./submitTaskEnvelope.js";
 import { resolveSubmitTaskPayment } from "./submitTaskPayment.js";
 import type { SubmitTaskArgs } from "./submitTaskTypes.js";
 import type { McpDeps } from "./server.js";
@@ -123,12 +127,24 @@ export async function runSubmitTask(
   if (!paymentContext.ok) return paymentContext.result;
   const normalizedArgs = paymentContext.args;
 
+  const unsignedPrompt = rejectUnsignedAuthenticatedPrompt(
+    normalizedArgs,
+    paymentContext.requiresEnvelopeAuth,
+  );
+  if (unsignedPrompt) return unsignedPrompt;
+
   const envelope = await prepareSubmitTaskEnvelope(
     normalizedArgs,
     paymentContext.requiresEnvelopeAuth,
     deps,
   );
   if (envelope) return envelope;
+  const invalidEnvelope = await verifySubmitTaskEnvelope(
+    normalizedArgs,
+    paymentContext.paidChallenge,
+    deps,
+  );
+  if (invalidEnvelope) return invalidEnvelope;
 
   return dispatchSubmitTask({
     args: {

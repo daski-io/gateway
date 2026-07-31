@@ -311,6 +311,7 @@ describe("POST /confirm/:paymentId", () => {
         gateway.mockChain,
         gateway.bundle.queries,
         gateway.bundle.reputationWorker,
+        gateway.config,
       ),
     ).toEqual({ scanned: 1, recovered: 1 });
     expect(

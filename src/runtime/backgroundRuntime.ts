@@ -44,6 +44,7 @@ export function startBackgroundRuntime(
         options.reader,
         options.queries,
         options.reputationWorker,
+        options.config,
       ),
     ])
       .then(() => undefined)

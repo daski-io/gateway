@@ -74,6 +74,7 @@ function confirmationMethods(
     account: { address: ADDRESS } as any,
     chain: baseSepolia,
     easAddress: ADDRESS,
+    maxTransactionFeeWei: 10n ** 18n,
   });
 }
 
@@ -90,6 +91,7 @@ function feedbackMethods(
     account: { address: ADDRESS } as any,
     chain: baseSepolia,
     reputationRegistryAddress: ADDRESS,
+    maxTransactionFeeWei: 10n ** 18n,
   });
 }
 

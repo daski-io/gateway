@@ -56,6 +56,7 @@ const VALID_CONFIG_ENV: NodeJS.ProcessEnv = {
   SETTLEMENT_MAX_PER_WALLET_PER_DAY: "100",
   SETTLEMENT_MAX_GLOBAL_PER_DAY: "1000",
   FACILITATOR_MIN_BALANCE_WEI: "10000000000000000",
+  FACILITATOR_MAX_TRANSACTION_FEE_WEI: "10000000000000000",
   PROVIDER_AUTH_MAX_AGE_SECONDS: "30",
   CACHE_REFRESH_INTERVAL: "30",
 };
@@ -110,6 +111,7 @@ describe("startup configuration validation", () => {
       "SETTLEMENT_MAX_PER_WALLET_PER_DAY",
       "SETTLEMENT_MAX_GLOBAL_PER_DAY",
       "FACILITATOR_MIN_BALANCE_WEI",
+      "FACILITATOR_MAX_TRANSACTION_FEE_WEI",
     ] as const) {
       expect(() =>
         loadConfig({ ...mainnetEnv, [field]: undefined }),

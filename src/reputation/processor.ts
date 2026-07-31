@@ -18,6 +18,7 @@ import {
   FacilitatorTransactionTerminalError,
 } from "../payment/facilitatorTransactionCoordinator.js";
 import { hashCanonical } from "../payment/requirementResponse.js";
+import { requireFacilitatorBalance } from "../payment/facilitatorBalance.js";
 import { logErrorWithId } from "../util/errorWrap.js";
 import { logger } from "../util/logger.js";
 import { buildFeedbackInput } from "./mirror.js";
@@ -98,12 +99,14 @@ export class ReputationMirrorProcessor {
         },
         prepare: (nonce) =>
           this.deps.reader.prepareFeedbackRevocation(input, nonce),
-        send: (prepared, onBroadcast) =>
-          this.deps.reader.submitPreparedFeedbackRevocation(
+        send: async (prepared, onBroadcast) => {
+          await this.requireFacilitatorBalance();
+          return this.deps.reader.submitPreparedFeedbackRevocation(
             prepared as PreparedFeedbackTransaction,
             input,
             onBroadcast,
-          ),
+          );
+        },
         inspect: (hash) =>
           this.deps.reader.getFeedbackRevocationByTransaction(hash, input),
         persistPrepared: (client, transactionId) =>
@@ -167,12 +170,14 @@ export class ReputationMirrorProcessor {
         },
       },
       prepare: (nonce) => this.deps.reader.prepareFeedback(input, nonce),
-      send: (prepared, onBroadcast) =>
-        this.deps.reader.submitPreparedFeedback(
+      send: async (prepared, onBroadcast) => {
+        await this.requireFacilitatorBalance();
+        return this.deps.reader.submitPreparedFeedback(
           prepared as PreparedFeedbackTransaction,
           input,
           onBroadcast,
-        ),
+        );
+      },
       inspect: (hash) =>
         this.deps.reader.getFeedbackByTransaction(hash, input),
       persistPrepared: (client, transactionId) =>
@@ -210,6 +215,14 @@ export class ReputationMirrorProcessor {
       failureCode: () => "feedback_give_reverted",
       projectionFailureCode,
     });
+  }
+
+  private requireFacilitatorBalance(): Promise<void> {
+    return requireFacilitatorBalance(
+      this.deps.reader,
+      this.deps.config.facilitatorMinBalanceWei,
+      this.deps.config.facilitatorMaxTransactionFeeWei,
+    );
   }
 
   private async handleFailure(

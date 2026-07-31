@@ -27,6 +27,7 @@ import {
   settlementEventFromReceipt,
 } from "./viemSettlementReceipt.js";
 import { FACILITATOR_WRITE_CONFIRMATIONS } from "./transactionFinality.js";
+import { assertFacilitatorTransactionFee } from "./facilitatorFee.js";
 
 type SupportedChain = typeof base | typeof baseSepolia;
 type SettlementMethods = Pick<
@@ -49,6 +50,7 @@ export interface SettlementDeps {
   agentIndexAddress: Hex;
   paymentRouterAddress: Hex;
   usdcAddress: Hex;
+  maxTransactionFeeWei: bigint;
 }
 
 type SettlementFunction = "settle" | "settleWithRegistration";
@@ -123,6 +125,7 @@ export function createSettlementMethods(
       gas: simulation.request.gas,
       nonce: facilitatorNonce,
     });
+    assertFacilitatorTransactionFee(request, deps.maxTransactionFeeWei);
     const serializedTransaction = (await deps.account.signTransaction(
       request as any,
     )) as Hex;

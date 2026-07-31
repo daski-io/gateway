@@ -40,6 +40,8 @@ export interface ViemReaderOptions {
   usdcAddress: Hex;
   usdcDomain: UsdcDomainConfig;
   facilitatorPrivateKey: Hex;
+  // Applies to settlement, confirmation, and reputation writes.
+  facilitatorMaxTransactionFeeWei: bigint;
   // EAS contract. On Base / Base Sepolia this is the canonical
   // 0x4200000000000000000000000000000000000021.
   easAddress: Hex;
@@ -128,6 +130,7 @@ export function createViemChainReader(opts: ViemReaderOptions): ChainReader {
       agentIndexAddress: opts.agentIndexAddress,
       paymentRouterAddress: routerAddress,
       usdcAddress,
+      maxTransactionFeeWei: opts.facilitatorMaxTransactionFeeWei,
     }),
 
     ...createConfirmationMethods({
@@ -136,6 +139,7 @@ export function createViemChainReader(opts: ViemReaderOptions): ChainReader {
       account,
       chain,
       easAddress: opts.easAddress,
+      maxTransactionFeeWei: opts.facilitatorMaxTransactionFeeWei,
     }),
 
     async getBlockNumber(): Promise<bigint> {
@@ -177,6 +181,7 @@ export function createViemChainReader(opts: ViemReaderOptions): ChainReader {
       account,
       chain,
       reputationRegistryAddress: opts.reputationRegistryAddress,
+      maxTransactionFeeWei: opts.facilitatorMaxTransactionFeeWei,
     }),
   };
 }
