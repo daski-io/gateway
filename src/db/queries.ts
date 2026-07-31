@@ -1,4 +1,4 @@
-import type { Pool } from "./pool.js";
+import type { DatabasePools } from "./pool.js";
 import { createAggregateQueries } from "./aggregateQueries.js";
 import { createBuyerIdentityQueries } from "./buyerIdentityQueries.js";
 import { createChainEventQueries } from "./chainEventQueries.js";
@@ -23,17 +23,18 @@ export type { ChainActivityRow } from "./chainEventQueries.js";
 export type { ReputationMirrorRow } from "./reputationRows.js";
 export type { SkillSearchHit } from "./skillQueries.js";
 
-export function createQueries(pool: Pool) {
+export function createQueries(pools: DatabasePools) {
+  const pool = pools.main;
   return {
-    ...createFacilitatorLockQueries(pool),
+    ...createFacilitatorLockQueries(pools.facilitatorTransaction),
     ...createFacilitatorTransactionQueries(pool),
     ...createConfirmationSubmissionQueries(pool),
     ...createTransactionQueries(pool),
     ...createRateLimitQueries(pool),
     ...createPaymentChallengeQueries(pool),
     ...createPaymentChallengeStateQueries(pool),
-    ...createChallengeSettlementLock(pool),
-    ...createReputationQueries(pool),
+    ...createChallengeSettlementLock(pools.challengeSettlement),
+    ...createReputationQueries(pool, pools.providerFeedback),
     ...createReputationEnqueueQueries(pool),
     ...createReputationStateQueries(pool),
     ...createReputationTransactionQueries(pool),

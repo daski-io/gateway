@@ -1,7 +1,12 @@
 import type { Express } from "express";
 import type { ChainReader } from "./chain/reader.js";
 import type { Config } from "./config.js";
-import { createPool, runMigrations, type Pool } from "./db/pool.js";
+import {
+  createDatabasePools,
+  runMigrations,
+  type DatabasePools,
+  type Pool,
+} from "./db/pool.js";
 import { createQueries, type Queries } from "./db/queries.js";
 import { DiscoveryCache, type FetchFn } from "./discovery/cache.js";
 import { CatalogEmbeddingSynchronizer } from "./discovery/embeddingSync.js";
@@ -24,7 +29,7 @@ const ZERO_ADDRESS = `0x${"00".repeat(20)}` as const;
 export interface CreateAppOptions {
   config: Config;
   reader: ChainReader;
-  pool?: Pool;
+  pools?: DatabasePools;
   embedder?: Embedder | null;
   agentCardFetch?: FetchFn;
   a2aFetch?: typeof fetch;
@@ -57,10 +62,13 @@ export interface AppBundle {
 
 export async function createApp(options: CreateAppOptions): Promise<AppBundle> {
   const { config, reader } = options;
-  const pool = options.pool ?? createPool({ connectionString: config.databaseUrl });
-  const ownsPool = options.pool === undefined;
+  const pools =
+    options.pools ??
+    createDatabasePools({ connectionString: config.databaseUrl });
+  const pool = pools.main;
+  const ownsPools = options.pools === undefined;
   await runMigrations(pool);
-  const queries = createQueries(pool);
+  const queries = createQueries(pools);
   const reputationWorker = new ReputationMirrorWorker({ config, reader, queries });
   const indexer = new ChainEventsIndexer(reader, queries, {
     chainId: config.chainId,
@@ -141,8 +149,10 @@ export async function createApp(options: CreateAppOptions): Promise<AppBundle> {
         embedderWarmup,
         embeddingSync?.waitForIdle() ?? Promise.resolve(),
       ]);
-      const poolClose = ownsPool
-        ? await Promise.allSettled([pool.end()])
+      const poolClose = ownsPools
+        ? await Promise.allSettled(
+            Object.values(pools).map((databasePool) => databasePool.end()),
+          )
         : [];
       const failure = [...drains, ...bootstrap, ...poolClose].find(
         (result) => result.status === "rejected",

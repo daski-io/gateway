@@ -7,7 +7,7 @@ import { DaskiExactEvmScheme } from "../../src/payment/daskiClient.js";
 import { computeUsdcDomainSeparator } from "../../src/payment/usdcDomain.js";
 import type { Config } from "../../src/config.js";
 import { createApp, type AppBundle } from "../../src/app.js";
-import { createPool, type Pool } from "../../src/db/pool.js";
+import { createDatabasePools, createPool } from "../../src/db/pool.js";
 import type { Embedder } from "../../src/discovery/embeddings.js";
 import { stubEmbedder } from "./stubEmbedder.js";
 import { MockChainReader, makePaymentSettledEvent } from "./mockChain.js";
@@ -261,7 +261,7 @@ export async function startTestGateway(opts: TestGatewayOptions = {}): Promise<T
   await bootstrap.query(`CREATE SCHEMA "${schemaName}"`);
   await bootstrap.end();
 
-  const pool: Pool = createPool({
+  const pools = createDatabasePools({
     connectionString: TEST_DATABASE_URL,
     // Include `public` so the test schema can resolve the pgvector type
     // (the extension is installed in `public` by the migration). Tables
@@ -269,6 +269,7 @@ export async function startTestGateway(opts: TestGatewayOptions = {}): Promise<T
     // match wins) so per-test isolation is preserved.
     searchPath: `${schemaName},public`,
   });
+  const pool = pools.main;
 
   // Default stub for the buyer-side agentURI fetcher used by
   // /register-prep + /register-transaction. Returns `{ name: "buyer-test" }` for any
@@ -290,7 +291,7 @@ export async function startTestGateway(opts: TestGatewayOptions = {}): Promise<T
   const bundle = await createApp({
     config,
     reader: mockChain,
-    pool,
+    pools,
     embedder: opts.embedder ?? stubEmbedder(),
     startCacheRefreshLoop: false,
     agentCardFetch: localProviderFetch,
@@ -529,7 +530,9 @@ export async function startTestGateway(opts: TestGatewayOptions = {}): Promise<T
       });
       await bundle.shutdown();
       try {
-        await pool.end();
+        await Promise.all(
+          Object.values(pools).map((databasePool) => databasePool.end()),
+        );
       } catch {
         // ignore
       }

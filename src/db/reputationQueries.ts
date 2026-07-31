@@ -9,7 +9,7 @@ import {
 
 export { REPUTATION_MIRROR_MAX_ATTEMPTS } from "./reputationRows.js";
 
-export function createReputationQueries(pool: Pool) {
+export function createReputationQueries(pool: Pool, feedbackLockPool: Pool) {
   return {
     async getReputationMirror(
       paymentId: bigint,
@@ -140,7 +140,7 @@ export function createReputationQueries(pool: Pool) {
       providerAgentId: bigint,
       action: () => Promise<T>,
     ): Promise<T> {
-      const client = await pool.connect();
+      const client = await feedbackLockPool.connect();
       const key = `daski:feedback:${providerAgentId}`;
       try {
         await client.query("SELECT pg_advisory_lock(hashtextextended($1, 0))", [
