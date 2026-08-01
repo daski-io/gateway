@@ -18,7 +18,33 @@ import { createConfirmationMethods } from "./viemConfirmation.js";
 import { createViemEventReader } from "./viemEventReader.js";
 import { createViemDeploymentReadiness } from "./viemDeploymentReadiness.js";
 import { createSettlementMethods } from "./viemSettlement.js";
+import { logger } from "../util/logger.js";
 export { decodeRevertReason } from "./viemErrors.js";
+
+// Shared transport builder: ordered fallback plus throttle visibility.
+// viem's in-client retries absorb HTTP 429s silently — the 2026-08-01
+// post-mortem found a permanent ~32% throttle floor that no log line had
+// ever surfaced. One WARN per label per minute is enough to see it
+// without becoming its own log flood. The label is a workload name, never
+// a URL (RPC URLs can carry keyed paths).
+export function buildChainTransport(
+  primaryUrl: string,
+  fallbackUrls: string[] | undefined,
+  label: string,
+) {
+  let lastThrottleLogAt = 0;
+  const onFetchResponse = (response: { status: number }) => {
+    if (response.status !== 429) return;
+    const now = Date.now();
+    if (now - lastThrottleLogAt < 60_000) return;
+    lastThrottleLogAt = now;
+    logger.warn("chain.rpc_throttled", { label, status: 429 });
+  };
+  const toTransport = (url: string) => http(url, { onFetchResponse });
+  return fallbackUrls?.length
+    ? fallback([primaryUrl, ...fallbackUrls].map(toTransport))
+    : toTransport(primaryUrl);
+}
 
 export interface ViemReaderOptions {
   rpcUrl: string;
@@ -66,9 +92,11 @@ function chainForId(chainId: ChainId) {
 /** Compose the contract-specific viem adapters into the ChainReader API. */
 export function createViemChainReader(opts: ViemReaderOptions): ChainReader {
   const chain = chainForId(opts.chainId);
-  const transport = opts.rpcFallbackUrls?.length
-    ? fallback([opts.rpcUrl, ...opts.rpcFallbackUrls].map((url) => http(url)))
-    : http(opts.rpcUrl);
+  const transport = buildChainTransport(
+    opts.rpcUrl,
+    opts.rpcFallbackUrls,
+    "payment",
+  );
   const publicClient = createPublicClient({ chain, transport });
 
   const account = privateKeyToAccount(opts.facilitatorPrivateKey, {
@@ -189,6 +217,46 @@ export function createViemChainReader(opts: ViemReaderOptions): ChainReader {
       chain,
       reputationRegistryAddress: opts.reputationRegistryAddress,
       maxTransactionFeeWei: opts.facilitatorMaxTransactionFeeWei,
+    }),
+  };
+}
+
+export interface ViemProjectionReaderOptions {
+  rpcUrl: string;
+  rpcFallbackUrls?: string[];
+  chainId: ChainId;
+  paymentRouterAddress: Hex;
+  reputationStorageAddress: Hex;
+  easAddress: Hex;
+  easConfirmationSchemaUid: Hex;
+}
+
+/**
+ * A read-only reader carrying exactly what the chain-events indexer needs
+ * (getBlockNumber + the projection event reader) on its OWN transport.
+ * Lets CHAIN_INDEXER_RPC_URL route the bulk getLogs polling through a
+ * separate endpoint (e.g. public primary, keyed fallback) so the indexer
+ * cannot spend the payment path's keyed budget or saturate its per-IP
+ * allowance — the self-inflicted throttling the 2026-08-01 post-mortem
+ * traced the rpc_unavailable flakes to.
+ */
+export function createViemProjectionReader(opts: ViemProjectionReaderOptions) {
+  const chain = chainForId(opts.chainId);
+  const transport = buildChainTransport(
+    opts.rpcUrl,
+    opts.rpcFallbackUrls,
+    "indexer",
+  );
+  const publicClient = createPublicClient({ chain, transport });
+  return {
+    async getBlockNumber(): Promise<bigint> {
+      return await publicClient.getBlockNumber();
+    },
+    ...createViemEventReader(publicClient, {
+      paymentRouterAddress: opts.paymentRouterAddress,
+      reputationStorageAddress: opts.reputationStorageAddress,
+      easAddress: opts.easAddress,
+      confirmationSchemaUid: opts.easConfirmationSchemaUid,
     }),
   };
 }

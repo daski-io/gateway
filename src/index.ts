@@ -3,7 +3,10 @@ import { AutoMockChainReader } from "./chain/autoMockReader.js";
 import { createApp } from "./app.js";
 import { logger } from "./util/logger.js";
 import { withGracePeriod } from "./runtime/gracePeriod.js";
-import { createConfiguredChainReader } from "./chain/configuredReader.js";
+import {
+  createConfiguredChainReader,
+  createConfiguredProjectionReader,
+} from "./chain/configuredReader.js";
 
 async function main() {
   const config = loadConfig();
@@ -41,7 +44,13 @@ async function main() {
         })`,
   );
 
-  const bundle = await createApp({ config, reader });
+  const projectionReader = createConfiguredProjectionReader(config);
+  if (projectionReader) {
+    logger.info(
+      "chain-events indexer on dedicated RPC route (CHAIN_INDEXER_RPC_URL)",
+    );
+  }
+  const bundle = await createApp({ config, reader, projectionReader });
 
   // Await an initial discovery refresh so readiness and /discover have data
   // before we accept any HTTP traffic. We log on failure but still start

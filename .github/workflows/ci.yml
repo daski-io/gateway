@@ -52,6 +52,15 @@ jobs:
       - name: Build
         run: npm run build
 
+      # Full-repo typecheck including test/. The build tsconfig is
+      # src-only and vitest transpiles without checking, so without this
+      # step the mock layer has no type gate at all — 15 type errors
+      # accumulated in test helpers across two release days before the
+      # 2026-08-01 post-mortem noticed (mock drift from real interfaces
+      # is this stack's historically most expensive bug class).
+      - name: Typecheck (src + test)
+        run: npm run typecheck
+
       - name: Test
         run: npm test
 

@@ -65,52 +65,75 @@ export function createViemEventReader(
       fromBlock: bigint,
       toBlock: bigint,
     ): Promise<ChainProjectionEvent[]> {
-      const [
-        settledLogs,
-        refundLogs,
-        paymentLogs,
-        outcomeLogs,
-        confirmationLogs,
-        revocationLogs,
-      ] = await Promise.all([
-        publicClient.getLogs({
-          address: options.paymentRouterAddress,
-          event: paymentSettledEvent,
-          fromBlock,
-          toBlock,
-        }),
-        publicClient.getLogs({
-          address: options.paymentRouterAddress,
-          event: refundedEvent,
-          fromBlock,
-          toBlock,
-        }),
-        publicClient.getLogs({
-          address: options.reputationStorageAddress,
-          event: paymentRecordedEvent,
-          fromBlock,
-          toBlock,
-        }),
-        publicClient.getLogs({
-          address: options.reputationStorageAddress,
-          event: outcomeRecordedEvent,
-          fromBlock,
-          toBlock,
-        }),
-        publicClient.getLogs({
-          address: options.reputationStorageAddress,
-          event: confirmationSubmittedEvent,
-          fromBlock,
-          toBlock,
-        }),
-        publicClient.getLogs({
-          address: options.easAddress,
-          event: easRevokedEvent,
-          args: { schemaUID: options.confirmationSchemaUid },
-          fromBlock,
-          toBlock,
-        }),
-      ]);
+      // ONE getLogs for all six filters. The previous six parallel
+      // getLogs per page were a ~1,530-credit burst on every indexer
+      // tick — enough to trip per-second provider throttles each tick
+      // and, at the public endpoint, to saturate the gateway's own
+      // per-IP allowance (the 2026-08-01 post-mortem attributed ~87% of
+      // all RPC traffic and the historical rpc_unavailable flakes to
+      // this loop). The six signatures are distinct, so demux is by
+      // eventName; the address guard keeps a same-signature event on a
+      // foreign contract out of the family, and the Revoked schemaUID
+      // filter moves client-side because a merged `events` query cannot
+      // carry per-event args.
+      const logs = await publicClient.getLogs({
+        address: [
+          options.paymentRouterAddress,
+          options.reputationStorageAddress,
+          options.easAddress,
+        ],
+        events: [
+          paymentSettledEvent,
+          refundedEvent,
+          paymentRecordedEvent,
+          outcomeRecordedEvent,
+          confirmationSubmittedEvent,
+          easRevokedEvent,
+        ],
+        fromBlock,
+        toBlock,
+      });
+      const from = (log: { address?: unknown }, expected: Hex) =>
+        typeof log.address === "string" &&
+        log.address.toLowerCase() === expected.toLowerCase();
+      const named = (log: { eventName?: unknown }, name: string) =>
+        log.eventName === name;
+      const settledLogs = logs.filter(
+        (log) =>
+          named(log, "PaymentSettled") &&
+          from(log, options.paymentRouterAddress),
+      );
+      const refundLogs = logs.filter(
+        (log) =>
+          named(log, "Refunded") && from(log, options.paymentRouterAddress),
+      );
+      const paymentLogs = logs.filter(
+        (log) =>
+          named(log, "PaymentRecorded") &&
+          from(log, options.reputationStorageAddress),
+      );
+      const outcomeLogs = logs.filter(
+        (log) =>
+          named(log, "OutcomeRecorded") &&
+          from(log, options.reputationStorageAddress),
+      );
+      const confirmationLogs = logs.filter(
+        (log) =>
+          named(log, "BuyerConfirmationSubmitted") &&
+          from(log, options.reputationStorageAddress),
+      );
+      const revocationLogs = logs.filter((log) => {
+        if (!named(log, "Revoked") || !from(log, options.easAddress)) {
+          return false;
+        }
+        const schemaUID = (log.args as { schemaUID?: unknown } | undefined)
+          ?.schemaUID;
+        return (
+          typeof schemaUID === "string" &&
+          schemaUID.toLowerCase() ===
+            options.confirmationSchemaUid.toLowerCase()
+        );
+      });
 
       const timestamps = new Map<bigint, bigint>();
       await Promise.all(

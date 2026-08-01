@@ -46,6 +46,9 @@ function makeProvider(
     },
     lastFetched: new Date(),
     fetchError: null,
+    authorityObservedAt: new Date(),
+    authorityObservedBlock: 1n,
+    authorityActive: true,
   };
 }
 

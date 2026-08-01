@@ -127,6 +127,8 @@ export type MockQuoteOutcome =
       serviceSlug?: string;
       /** Override the Agent Card-derived service version. */
       serviceVersion?: string;
+      /** provider-quote-v2 supplier cost ceiling; null/omitted = none. */
+      supplierCostCeiling?: Record<string, unknown> | null;
     }
   | {
       ok: false;

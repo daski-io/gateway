@@ -13,7 +13,10 @@ import { CatalogEmbeddingSynchronizer } from "./discovery/embeddingSync.js";
 import { xenovaEmbedder, type Embedder } from "./discovery/embeddings.js";
 import { createGatewayHttp } from "./http/gatewayApp.js";
 import type { FetchAgentCardOptions } from "./identity/fetch-agent-card.js";
-import { ChainEventsIndexer } from "./indexer/chainEvents.js";
+import {
+  ChainEventsIndexer,
+  type ProjectionReader,
+} from "./indexer/chainEvents.js";
 import type { McpWiring } from "./mcp/server.js";
 import { sessionMetrics } from "./mcp/sessionMetrics.js";
 import { ReputationMirrorWorker } from "./reputation/worker.js";
@@ -29,6 +32,9 @@ const ZERO_ADDRESS = `0x${"00".repeat(20)}` as const;
 export interface CreateAppOptions {
   config: Config;
   reader: ChainReader;
+  // Dedicated reader for the chain-events indexer (own RPC transport via
+  // CHAIN_INDEXER_RPC_URL). Unset = the indexer shares `reader`.
+  projectionReader?: ProjectionReader;
   pools?: DatabasePools;
   embedder?: Embedder | null;
   agentCardFetch?: FetchFn;
@@ -70,15 +76,20 @@ export async function createApp(options: CreateAppOptions): Promise<AppBundle> {
   await runMigrations(pool);
   const queries = createQueries(pools);
   const reputationWorker = new ReputationMirrorWorker({ config, reader, queries });
-  const indexer = new ChainEventsIndexer(reader, queries, {
-    chainId: config.chainId,
-    paymentRouterAddress: config.paymentRouterAddress,
-    reputationStorageAddress:
-      config.reputationStorageAddress ?? ZERO_ADDRESS,
-    easAddress: config.easAddress,
-    confirmationSchemaUid: config.easConfirmationSchemaUid,
-    startBlock: config.chainIndexerStartBlock,
-  });
+  const indexer = new ChainEventsIndexer(
+    options.projectionReader ?? reader,
+    queries,
+    {
+      chainId: config.chainId,
+      paymentRouterAddress: config.paymentRouterAddress,
+      reputationStorageAddress:
+        config.reputationStorageAddress ?? ZERO_ADDRESS,
+      easAddress: config.easAddress,
+      confirmationSchemaUid: config.easConfirmationSchemaUid,
+      startBlock: config.chainIndexerStartBlock,
+    },
+    { pollIntervalMs: config.chainIndexerPollIntervalMs },
+  );
   await indexer.initialize();
   const deploymentReadiness = new ChainDeploymentReadinessProbe(reader);
   const lifecycle = new ApplicationLifecycle();
