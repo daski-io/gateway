@@ -34,6 +34,31 @@ function sendError(res: Response, status: number, message: string) {
   res.status(status).json({ x402Version: X402_VERSION, error: message });
 }
 
+// Fail-closed is correct — but a silent refusal of a paid POST cost an
+// hour of forensics on 2026-08-01. Every readiness refusal logs the
+// probe's reason and puts it in the body: `rpc_unavailable` in the
+// response is what lets the e2e runner's INFRA classifier recognize this
+// as retryable infrastructure noise rather than a product failure.
+function refuseUnready(
+  deps: PurchaseDeps,
+  res: Response,
+  site: "initial_purchase" | "paid_retry",
+) {
+  const { failedCheck } = deps.deploymentReadiness.status();
+  const reason = failedCheck ?? "unready";
+  logger.warn("x402.readiness_refused", {
+    transport: "http",
+    site,
+    failedCheck: reason,
+  });
+  res.status(503).json({
+    x402Version: X402_VERSION,
+    error: "Payment cannot be processed right now. Please try again later.",
+    reason,
+    retryable: true,
+  });
+}
+
 export function createPurchaseRouter(deps: PurchaseDeps): Router {
   const router = Router();
 
@@ -106,11 +131,7 @@ async function handlePaidRetry(
     challenge.settlementState !== "sanctions_rejected" &&
     !(await deps.deploymentReadiness.isReady())
   ) {
-    sendError(
-      res,
-      503,
-      "Payment cannot be processed right now. Please try again later.",
-    );
+    refuseUnready(deps, res, "paid_retry");
     return;
   }
   const requirements = challenge.paymentRequired?.accepts[0];
@@ -149,22 +170,7 @@ async function handleInitialPurchase(
   res: Response,
 ): Promise<void> {
   if (!(await deps.deploymentReadiness.isReady())) {
-    // Fail-closed is correct — but a silent refusal of a paid POST cost an
-    // hour of forensics on 2026-08-01. Log the reason and put it in the
-    // body: `rpc_unavailable` in the response is what lets the e2e
-    // runner's INFRA classifier recognize this as retryable infrastructure
-    // noise rather than a product failure.
-    const { failedCheck } = deps.deploymentReadiness.status();
-    logger.warn("x402.readiness_refused", {
-      transport: "http",
-      failedCheck: failedCheck ?? "unready",
-    });
-    res.status(503).json({
-      x402Version: X402_VERSION,
-      error: "Payment cannot be processed right now. Please try again later.",
-      reason: failedCheck ?? "unready",
-      retryable: true,
-    });
+    refuseUnready(deps, res, "initial_purchase");
     return;
   }
   const parsed = await parsePurchaseRequest(deps, providerTokenId, body, res);

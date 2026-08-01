@@ -124,9 +124,21 @@ class DaskiExactEvmFacilitator implements SchemeNetworkFacilitator {
       context.challenge.settlementState !== "sanctions_rejected" &&
       !(await this.deps.deploymentReadiness.isReady())
     ) {
+      // Readiness refusals must carry their reason (2026-08-01 flake).
+      // invalidReason stays stable; the probe's failedCheck rides in the
+      // message so it reaches whoever logs the refusal.
+      const { failedCheck } = this.deps.deploymentReadiness.status();
+      const reason = failedCheck ?? "unready";
+      logger.warn("x402.readiness_refused", {
+        site: "facilitator_verify",
+        failedCheck: reason,
+      });
       return {
         isValid: false,
         invalidReason: "payment_screening_unready",
+        invalidMessage:
+          `Payment cannot be processed right now (${reason}). ` +
+          "Please try again later.",
       };
     }
     const verified = await verifyPaymentPayload(
@@ -176,10 +188,18 @@ class DaskiExactEvmFacilitator implements SchemeNetworkFacilitator {
       context.challenge.settlementState !== "sanctions_rejected" &&
       !(await this.deps.deploymentReadiness.isReady())
     ) {
+      // Same contract as verify(): stable code, reason in the message.
+      const { failedCheck } = this.deps.deploymentReadiness.status();
+      const reason = failedCheck ?? "unready";
+      logger.warn("x402.readiness_refused", {
+        site: "facilitator_settle",
+        failedCheck: reason,
+      });
       return settlementFailure(
         503,
         "payment_screening_unready",
-        "Payment cannot be processed right now. Please try again later.",
+        `Payment cannot be processed right now (${reason}). ` +
+          "Please try again later.",
         this.deps.config.x402Network,
       );
     }

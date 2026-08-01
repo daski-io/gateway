@@ -7,6 +7,7 @@ import {
   getDaskiDeclaration,
   getDaskiReceipt,
 } from "../payment/x402Extension.js";
+import { logger } from "../util/logger.js";
 import type { BuyServiceArgs } from "./buyServiceTypes.js";
 import {
   mcpError,
@@ -79,11 +80,24 @@ export async function runBuyServiceX402Retry(
     challenge.settlementState !== "sanctions_rejected" &&
     !(await deps.deploymentReadiness.isReady())
   ) {
+    // Readiness refusals must carry their reason — a silent one cost an
+    // hour of forensics on 2026-08-01. The code stays stable for agents
+    // that match on it; the probe's failedCheck rides in message/details.
+    const { failedCheck } = deps.deploymentReadiness.status();
+    const reason = failedCheck ?? "unready";
+    logger.warn("x402.readiness_refused", {
+      transport: "mcp",
+      site: "buy_service_retry",
+      failedCheck: reason,
+    });
     return mcpError({
       code: "payment_screening_unready",
-      message: "Payment cannot be processed right now. Please try again later.",
+      message:
+        `Payment cannot be processed right now (${reason}). ` +
+        "Please try again later.",
       retryable: true,
       recoverable: true,
+      details: { reason },
       next_action: "Retry later while payment screening is available.",
     });
   }
