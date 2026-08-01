@@ -149,11 +149,22 @@ async function handleInitialPurchase(
   res: Response,
 ): Promise<void> {
   if (!(await deps.deploymentReadiness.isReady())) {
-    sendError(
-      res,
-      503,
-      "Payment cannot be processed right now. Please try again later.",
-    );
+    // Fail-closed is correct — but a silent refusal of a paid POST cost an
+    // hour of forensics on 2026-08-01. Log the reason and put it in the
+    // body: `rpc_unavailable` in the response is what lets the e2e
+    // runner's INFRA classifier recognize this as retryable infrastructure
+    // noise rather than a product failure.
+    const { failedCheck } = deps.deploymentReadiness.status();
+    logger.warn("x402.readiness_refused", {
+      transport: "http",
+      failedCheck: failedCheck ?? "unready",
+    });
+    res.status(503).json({
+      x402Version: X402_VERSION,
+      error: "Payment cannot be processed right now. Please try again later.",
+      reason: failedCheck ?? "unready",
+      retryable: true,
+    });
     return;
   }
   const parsed = await parsePurchaseRequest(deps, providerTokenId, body, res);

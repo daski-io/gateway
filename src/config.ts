@@ -29,6 +29,11 @@ export interface Config extends RuntimeConfig {
   mcpEnabled: boolean;
   mcpPath: string;
   baseRpcUrl: string;
+  // Ordered failover RPC endpoints tried after baseRpcUrl. Empty = no
+  // fallback (single-endpoint behavior, the pre-2026-08 default). A flap
+  // on the primary otherwise turns the /purchase readiness gate into a
+  // silent 503 window — see the 2026-08-01 deployment record.
+  baseRpcFallbackUrls: string[];
   chainId: ChainId;
   network: "base" | "base-sepolia";
   x402Network: Network;
@@ -470,6 +475,15 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       env.BASE_RPC_URL ?? "https://mainnet.base.org",
       { requireHttps: production },
     ),
+    baseRpcFallbackUrls: (env.BASE_RPC_FALLBACK_URLS ?? "")
+      .split(",")
+      .map((url) => url.trim())
+      .filter(Boolean)
+      .map((url, index) =>
+        requireHttpUrl(`BASE_RPC_FALLBACK_URLS[${index}]`, url, {
+          requireHttps: production,
+        }),
+      ),
     chainId,
     network: networkForChain(chainId),
     x402Network: `eip155:${chainId}`,
