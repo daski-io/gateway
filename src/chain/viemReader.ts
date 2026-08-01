@@ -1,6 +1,7 @@
 import {
   createPublicClient,
   createWalletClient,
+  fallback,
   http,
   nonceManager,
 } from "viem";
@@ -21,6 +22,10 @@ export { decodeRevertReason } from "./viemErrors.js";
 
 export interface ViemReaderOptions {
   rpcUrl: string;
+  // Ordered failover endpoints tried after rpcUrl fails. viem retries a
+  // failed request on the next transport automatically; empty/unset keeps
+  // the single-endpoint transport.
+  rpcFallbackUrls?: string[];
   chainId: ChainId;
   // Canonical per-chain ERC-8004 IdentityRegistry (0x8004A…).
   identityRegistryAddress: Hex;
@@ -61,7 +66,9 @@ function chainForId(chainId: ChainId) {
 /** Compose the contract-specific viem adapters into the ChainReader API. */
 export function createViemChainReader(opts: ViemReaderOptions): ChainReader {
   const chain = chainForId(opts.chainId);
-  const transport = http(opts.rpcUrl);
+  const transport = opts.rpcFallbackUrls?.length
+    ? fallback([opts.rpcUrl, ...opts.rpcFallbackUrls].map((url) => http(url)))
+    : http(opts.rpcUrl);
   const publicClient = createPublicClient({ chain, transport });
 
   const account = privateKeyToAccount(opts.facilitatorPrivateKey, {

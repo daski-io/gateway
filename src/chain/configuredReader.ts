@@ -21,6 +21,7 @@ export function createConfiguredChainReader(config: Config): ChainReader {
   }
   return createViemChainReader({
     rpcUrl: config.baseRpcUrl,
+    rpcFallbackUrls: config.baseRpcFallbackUrls,
     chainId: config.chainId,
     identityRegistryAddress: config.identityRegistryAddress,
     agentIndexAddress: config.agentIndexAddress,

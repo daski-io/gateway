@@ -15,6 +15,7 @@ import { fetchProviderQuote } from "./providerQuote.js";
 import type { ChainReader } from "../chain/reader.js";
 import { walletControlsAgent } from "../identity/control.js";
 import type { ChainDeploymentReadinessProbe } from "./deploymentReadiness.js";
+import { logger } from "../util/logger.js";
 import { isSelfPurchase } from "./selfPurchase.js";
 import {
   ProviderAuthorityError,
@@ -71,11 +72,23 @@ export async function createQuotedChallenge(
   deps: QuotedChallengeDeps,
 ): Promise<QuotedChallengeResult> {
   if (!(await deps.deploymentReadiness.isReady())) {
+    // Readiness refusals must carry their reason — a silent one cost an
+    // hour of forensics on 2026-08-01. Stable code; failedCheck in the
+    // message and details.
+    const { failedCheck } = deps.deploymentReadiness.status();
+    const reason = failedCheck ?? "unready";
+    logger.warn("x402.readiness_refused", {
+      site: "quoted_challenge",
+      failedCheck: reason,
+    });
     return {
       ok: false,
       error: {
         code: "payment_screening_unready",
-        message: "Payment cannot be processed right now. Please try again later.",
+        message:
+          `Payment cannot be processed right now (${reason}). ` +
+          "Please try again later.",
+        details: { reason },
         recoverable: true,
         nextAction: "Retry later while payment screening is available.",
       },
