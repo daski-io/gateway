@@ -203,6 +203,9 @@ export async function startTestGateway(opts: TestGatewayOptions = {}): Promise<T
     mcpEnabled: true,
     mcpPath: "/mcp",
     baseRpcUrl: "http://127.0.0.1:0",
+    baseRpcFallbackUrls: [],
+    chainIndexerPollIntervalMs: 30_000,
+    chainIndexerRpcFallbackUrls: [],
     chainId: CHAIN_ID,
     network: "base-sepolia",
     x402Network: `eip155:${CHAIN_ID}`,
@@ -269,7 +272,6 @@ export async function startTestGateway(opts: TestGatewayOptions = {}): Promise<T
     // match wins) so per-test isolation is preserved.
     searchPath: `${schemaName},public`,
   });
-  const pool = pools.main;
 
   // Default stub for the buyer-side agentURI fetcher used by
   // /register-prep + /register-transaction. Returns `{ name: "buyer-test" }` for any

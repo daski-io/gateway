@@ -11,6 +11,7 @@
     "start": "node dist/index.js",
     "test": "NODE_ENV=test vitest run",
     "test:watch": "NODE_ENV=test vitest",
+    "typecheck": "tsc --noEmit",
     "live-e2e": "tsx scripts/live-e2e.ts",
     "validate-provider-legal": "tsx scripts/validate-provider-legal.ts"
   },

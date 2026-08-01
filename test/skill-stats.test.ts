@@ -56,6 +56,12 @@ function makeChallenge(opts: {
     eip3009Nonce: null,
     paymentPayloadFingerprint: null,
     settleResponse: null,
+    expectedPayee: null,
+    expectedPayeeBlock: null,
+    settlementFacilitatorTransactionId: null,
+    providerAuthorityWallet: null,
+    providerAuthorityAgentUri: null,
+    providerAuthorityBlock: null,
   };
 }
 
@@ -78,6 +84,7 @@ function makeRecord(opts: {
     confirmationTimestamp: 0n,
     outcomeRecorded: opts.outcomeRecorded ?? true,
     reputationEligible: true,
+    currentConfirmationUid: ZERO_BYTES,
   };
 }
 

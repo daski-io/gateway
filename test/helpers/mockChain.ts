@@ -416,6 +416,13 @@ export class MockChainReader implements ChainReader {
       };
       throw new Error(outcome.reason);
     }
+    // A queued revert never produces an event or txHash — surface the
+    // reason instead of falling through to the success path (which would
+    // be a TypeError at runtime and was a type error unnoticed while
+    // test/ sat outside every typecheck gate).
+    if (outcome.kind === "revert") {
+      throw new Error(outcome.reason);
+    }
     let registered = false;
     if (prepared.kind === "settle_with_registration") {
       const registrationInput = input as SettleWithRegistrationInput;
@@ -906,7 +913,7 @@ export class MockChainReader implements ChainReader {
 
   async submitPreparedFeedbackRevocation(
     prepared: PreparedFeedbackTransaction,
-    input: FeedbackRevocationInput,
+    _input: FeedbackRevocationInput,
     onBroadcast?: BroadcastObserver,
   ): Promise<FeedbackResult> {
     const queued = this.preparedFeedbackRevocations.get(
