@@ -316,4 +316,63 @@ describe("live deployment readiness", () => {
       failedCheck: "rpc_unavailable",
     });
   });
+
+  it("verifies immutable facts once, then skips them on later refreshes", async () => {
+    // Deployed bytecode and the USDC token constants cannot change for
+    // the life of the process — re-reading them on every 2s-TTL probe
+    // refresh was most of the eth_getCode burn in the 2026-08-01
+    // post-mortem. Dynamic checks must still run every refresh.
+    const fixture = new DeploymentFixture();
+    let bytecodeReads = 0;
+    let usdcConstantReads = 0;
+    const client: DeploymentReadinessClient = {
+      getChainId: () => fixture.getChainId(),
+      getBytecode: (input) => {
+        bytecodeReads += 1;
+        return fixture.getBytecode(input);
+      },
+      readContract: (input) => {
+        if (
+          input.address === options.usdc.address &&
+          ["decimals", "name", "version", "DOMAIN_SEPARATOR"].includes(
+            input.functionName,
+          )
+        ) {
+          usdcConstantReads += 1;
+        }
+        return fixture.readContract(input);
+      },
+    };
+    const verify = createViemDeploymentReadiness(client, options);
+
+    await expect(verify()).resolves.toEqual({
+      ready: true,
+      failedCheck: null,
+    });
+    const bytecodeAfterFirst = bytecodeReads;
+    expect(bytecodeAfterFirst).toBeGreaterThan(0);
+    expect(usdcConstantReads).toBe(4);
+
+    await expect(verify()).resolves.toEqual({
+      ready: true,
+      failedCheck: null,
+    });
+    expect(bytecodeReads).toBe(bytecodeAfterFirst);
+    expect(usdcConstantReads).toBe(4);
+  });
+
+  it("keeps retrying immutable checks until they first pass", async () => {
+    const fixture = new DeploymentFixture();
+    fixture.missingCode.add(options.paymentRouterAddress);
+    const verify = createViemDeploymentReadiness(fixture, options);
+    await expect(verify()).resolves.toMatchObject({
+      ready: false,
+      failedCheck: "payment_router_code",
+    });
+    fixture.missingCode.clear();
+    await expect(verify()).resolves.toEqual({
+      ready: true,
+      failedCheck: null,
+    });
+  });
 });

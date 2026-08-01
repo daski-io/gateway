@@ -34,6 +34,16 @@ export interface Config extends RuntimeConfig {
   // on the primary otherwise turns the /purchase readiness gate into a
   // silent 503 window — see the 2026-08-01 deployment record.
   baseRpcFallbackUrls: string[];
+  // Chain-events indexer cadence. The projection deliberately trails the
+  // head by 12 confirmation blocks (~24s on Base Sepolia), so sub-30s
+  // polling buys nothing — the old hardcoded 5s tick was ~87% of all RPC
+  // traffic (2026-08-01 post-mortem).
+  chainIndexerPollIntervalMs: number;
+  // Optional dedicated RPC route for the indexer's bulk getLogs polling
+  // (e.g. public primary + keyed fallback), keeping baseRpcUrl for the
+  // payment path. Unset = the indexer shares the main reader.
+  chainIndexerRpcUrl?: string;
+  chainIndexerRpcFallbackUrls: string[];
   chainId: ChainId;
   network: "base" | "base-sepolia";
   x402Network: Network;
@@ -481,6 +491,26 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       .filter(Boolean)
       .map((url, index) =>
         requireHttpUrl(`BASE_RPC_FALLBACK_URLS[${index}]`, url, {
+          requireHttps: production,
+        }),
+      ),
+    chainIndexerPollIntervalMs: positiveInteger(
+      "CHAIN_INDEXER_POLL_INTERVAL_MS",
+      env.CHAIN_INDEXER_POLL_INTERVAL_MS,
+      30_000,
+      600_000,
+    ),
+    chainIndexerRpcUrl: env.CHAIN_INDEXER_RPC_URL
+      ? requireHttpUrl("CHAIN_INDEXER_RPC_URL", env.CHAIN_INDEXER_RPC_URL, {
+          requireHttps: production,
+        })
+      : undefined,
+    chainIndexerRpcFallbackUrls: (env.CHAIN_INDEXER_RPC_FALLBACK_URLS ?? "")
+      .split(",")
+      .map((url) => url.trim())
+      .filter(Boolean)
+      .map((url, index) =>
+        requireHttpUrl(`CHAIN_INDEXER_RPC_FALLBACK_URLS[${index}]`, url, {
           requireHttps: production,
         }),
       ),

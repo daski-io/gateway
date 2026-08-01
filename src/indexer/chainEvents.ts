@@ -7,7 +7,12 @@ import {
 import type { Queries } from "../db/queries.js";
 import { logger } from "../util/logger.js";
 
-type ProjectionReader = ChainEventReader & ChainStatusReader;
+// The indexer needs only event pages and the head number — deliberately
+// NOT the full ChainStatusReader (verifyDeploymentReadiness), so it can
+// run on a dedicated projection reader with its own RPC transport
+// (CHAIN_INDEXER_RPC_URL) instead of the payment path's.
+export type ProjectionReader = ChainEventReader &
+  Pick<ChainStatusReader, "getBlockNumber">;
 
 interface IndexerFailure {
   category: "rpc" | "descriptor_mismatch" | "projection_integrity";

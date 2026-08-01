@@ -58,34 +58,51 @@ export function createViemDeploymentReadiness(
     args?: readonly unknown[],
   ) => client.readContract({ address, abi, functionName, args });
 
+  // Deployed bytecode and the USDC token constants are immutable for the
+  // life of the process (a new deployment means new addresses and a new
+  // boot). Re-reading them on every TTL refresh burned 13+ calls per
+  // probe — most of the eth_getCode traffic in the 2026-08-01 post-mortem
+  // — and stretched the cold /purchase readiness check past 5s. Verify
+  // them until they pass once, then trust them; every dynamic fact
+  // (chain id — a fallback transport could silently point elsewhere —
+  // pause flags, facilitator set, router config) stays per-refresh.
+  let immutableChecksVerified = false;
+
   return async function verifyDeploymentReadiness(): Promise<DeploymentReadinessResult> {
     try {
       if ((await client.getChainId()) !== options.chainId) {
         return failed("chain_id");
       }
 
-      for (const [id, address] of contractCodeChecks(options)) {
-        const bytecode = await client.getBytecode({ address });
-        if (!bytecode || bytecode === "0x") return failed(id);
-      }
+      if (!immutableChecksVerified) {
+        for (const [id, address] of contractCodeChecks(options)) {
+          const bytecode = await client.getBytecode({ address });
+          if (!bytecode || bytecode === "0x") return failed(id);
+        }
 
-      const usdcChecks = [
-        ["usdc_decimals", "decimals", options.usdc.decimals],
-        ["usdc_name", "name", options.usdc.name],
-        ["usdc_version", "version", options.usdc.version],
-        [
-          "usdc_domain_separator",
-          "DOMAIN_SEPARATOR",
-          options.usdc.domainSeparator,
-        ],
-      ] as const;
-      for (const [id, functionName, expected] of usdcChecks) {
-        const actual = await read(options.usdc.address, usdcAbi, functionName);
-        const matches =
-          typeof expected === "string" && expected.startsWith("0x")
-            ? sameHex(actual, expected as Hex)
-            : actual === expected;
-        if (!matches) return failed(id);
+        const usdcChecks = [
+          ["usdc_decimals", "decimals", options.usdc.decimals],
+          ["usdc_name", "name", options.usdc.name],
+          ["usdc_version", "version", options.usdc.version],
+          [
+            "usdc_domain_separator",
+            "DOMAIN_SEPARATOR",
+            options.usdc.domainSeparator,
+          ],
+        ] as const;
+        for (const [id, functionName, expected] of usdcChecks) {
+          const actual = await read(
+            options.usdc.address,
+            usdcAbi,
+            functionName,
+          );
+          const matches =
+            typeof expected === "string" && expected.startsWith("0x")
+              ? sameHex(actual, expected as Hex)
+              : actual === expected;
+          if (!matches) return failed(id);
+        }
+        immutableChecksVerified = true;
       }
 
       if (
