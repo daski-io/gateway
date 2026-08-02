@@ -10,6 +10,7 @@ import type {
   StoredChallenge,
 } from "../types.js";
 import { buildDaskiX402Declaration } from "./x402Extension.js";
+import { buildDaskiX402Signing } from "./daskiSigning.js";
 import { purchaseDescription } from "./skillOffer.js";
 
 interface RequirementResponseInput {
@@ -100,28 +101,40 @@ export function buildRequirementResponse(
       serviceRef: input.serviceRef,
     },
   };
-  const daskiExtension = buildDaskiX402Declaration(input.config.publicUrl, {
-    profile: "1",
-    x402Adapter: input.config.x402AdapterAddress,
-    paymentRouter: input.config.paymentRouterAddress,
-    serviceRef: input.serviceRef,
-    providerAgentId: input.providerTokenId.toString(),
-    buyerAgentId: input.buyerTokenId.toString(),
-    serviceId: input.serviceId,
-    expectedPayee: input.expectedPayee,
-    skillId: input.skillId,
-    serviceSlug: input.serviceSlug,
-    serviceVersion: input.serviceVersion,
-    providerA2AUrl: input.providerA2AUrl,
-    quote: {
-      id: input.quote.quoteId,
-      signature: input.quote.providerSignature,
-      expiresAt: input.quote.expiresAt.toISOString(),
+  const daskiExtension = buildDaskiX402Declaration(
+    input.config.publicUrl,
+    {
+      profile: "1",
+      x402Adapter: input.config.x402AdapterAddress,
+      paymentRouter: input.config.paymentRouterAddress,
+      serviceRef: input.serviceRef,
+      providerAgentId: input.providerTokenId.toString(),
+      buyerAgentId: input.buyerTokenId.toString(),
+      serviceId: input.serviceId,
+      expectedPayee: input.expectedPayee,
+      skillId: input.skillId,
+      serviceSlug: input.serviceSlug,
+      serviceVersion: input.serviceVersion,
+      providerA2AUrl: input.providerA2AUrl,
+      quote: {
+        id: input.quote.quoteId,
+        signature: input.quote.providerSignature,
+        expiresAt: input.quote.expiresAt.toISOString(),
+      },
+      settlementMode:
+        input.buyerTokenId === 0n ? "register-and-settle" : "settle-only",
+      ...(input.warnings.length > 0 ? { warnings: input.warnings } : {}),
     },
-    settlementMode:
-      input.buyerTokenId === 0n ? "register-and-settle" : "settle-only",
-    ...(input.warnings.length > 0 ? { warnings: input.warnings } : {}),
-  });
+    buildDaskiX402Signing(input.config, {
+      payer: input.walletAddress,
+      amount: input.amount,
+      validBefore: BigInt(requirements.extra.authorizationValidBefore as string),
+      providerAgentId: input.providerTokenId,
+      serviceId: input.serviceId,
+      expectedPayee: input.expectedPayee,
+      serviceRef: input.serviceRef,
+    }),
+  );
   const paymentRequired: PaymentRequired = {
     x402Version: 2,
     resource: {

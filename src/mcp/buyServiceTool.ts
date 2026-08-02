@@ -3,7 +3,22 @@ import {
   type ToolCallback,
 } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import type { PaymentPayload } from "../types.js";
 import { UNTRUSTED_PROVIDER_CONTENT_WARNING } from "./providerReflection.js";
+
+const PAYMENT_PAYLOAD_SCHEMA = z
+  .object({
+    x402Version: z.literal(2),
+    resource: z.record(z.string(), z.unknown()),
+    accepted: z.record(z.string(), z.unknown()),
+    extensions: z.record(z.string(), z.unknown()),
+    payload: z.object({
+      authorization: z.record(z.string(), z.unknown()),
+      signature: z.string(),
+      nonceSalt: z.string(),
+    }),
+  })
+  .passthrough() as unknown as z.ZodType<PaymentPayload>;
 
 // Exported for the SKILL.md example-validation test — every JSON example
 // in the doc must parse against the live schema, so the doc can never
@@ -53,6 +68,14 @@ export const INPUT_SCHEMA = {
     })
     .optional()
     .describe("Atomic registration authorization for a fresh wallet."),
+  paymentPayload: PAYMENT_PAYLOAD_SCHEMA
+    .optional()
+    .describe(
+      "Signed daski-exact PaymentPayload for the settlement retry. Copy " +
+        "resource, accepted (= accepts[0]), and extensions from the payment " +
+        "challenge exactly; fill payload with authorization, signature, and " +
+        "nonceSalt. Equivalent to _meta['x402/payment'].",
+    ),
 };
 
 const DESCRIPTION = [
@@ -64,9 +87,9 @@ const DESCRIPTION = [
   "request's companyName — correct it before signing if unintended).",
   "Phone values in serviceArgs land on public WHOIS exactly as sent; the",
   "quote result restates them in `warnings`.",
-  "On payment-required, use a standard x402 MCP client to sign the selected",
-  "requirements and retry this unchanged tool call with PaymentPayload at",
-  "`_meta[\"x402/payment\"]`.",
+  "On payment-required, sign the challenge's EIP-712 data and retry this",
+  "unchanged tool call plus `paymentPayload`. An x402-aware MCP client may",
+  "instead send the same payload at `_meta[\"x402/payment\"]`.",
   "Entity-formation managementType and members/managers are TOP-LEVEL `serviceArgs` keys.",
   "There is NO `officials` or `officialsByClassification` wrapper. Party objects are",
   "STRICT — accepted keys: firstName, lastName, isCompany, companyName,",

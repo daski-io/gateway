@@ -145,6 +145,29 @@ export interface DaskiX402Info {
 export interface DaskiX402Declaration {
   info: DaskiX402Info;
   schema: Record<string, unknown>;
+  signing?: DaskiX402Signing;
+}
+
+export interface DaskiX402Signing {
+  eip712TypedData: Eip712TypedData;
+  nonceSalt: Hex;
+  nonceDerivation: {
+    chainId: ChainId;
+    adapter: Hex;
+    router: Hex;
+    token: Hex;
+    payer: Hex;
+    amount: string;
+    validAfter: string;
+    validBefore: string;
+    providerAgentId: string;
+    serviceId: Hex;
+    expectedPayee: Hex;
+    serviceRef: Hex;
+    nonceSalt: Hex;
+    recipe: string;
+  };
+  nextAction: string;
 }
 
 export interface DaskiX402Receipt {

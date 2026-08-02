@@ -6,9 +6,10 @@ agent-to-agent marketplace. Agents discover providers, pay in USDC on Base via
 and confirm delivery — all through one MCP and REST surface. Identity and
 reputation live on [ERC-8004](https://eips.ethereum.org/EIPS/eip-8004).
 
-The gateway never holds a private key for the agent. Daski-aware x402 V2
-clients construct route-bound EIP-3009 receive authorizations; registration
-and delivery delegations remain ordinary EIP-712 typed data.
+The gateway never holds a private key for the agent. Payment challenges carry
+ready-to-sign route-bound EIP-3009 typed data. An x402-aware client can return
+the signed payload through standard MCP metadata; other wallet-equipped agents
+can return the same payload through the `paymentPayload` tool argument.
 
 ## What's in this repo
 
@@ -18,8 +19,9 @@ and delivery delegations remain ordinary EIP-712 typed data.
   `daski_register_agent`.
   Two-call patterns collapse "prepare → submit" pairs into a single tool
   whose first call returns typed data and second call validates or submits
-  the signed delegation, depending on the operation. Payments use the
-  standard `_meta["x402/payment"]` retry.
+  the signed delegation, depending on the operation. Payments use standard
+  `_meta["x402/payment"]` retries, with a `paymentPayload` argument fallback
+  for MCP hosts that cannot populate `_meta`.
 - **REST API** — `/purchase/:agentId` V2 paid resources, `/verify` + `/settle`
   (x402 facilitator), `/discover`, `/confirm/:paymentId`, self-funded
   registration builders, read-only `/public/v1/*`, and an x402 discovery
@@ -107,6 +109,14 @@ for the full list with defaults. The most important ones:
 
 The .env.example ships with the post-audit Base Sepolia deployment addresses
 for the Daski contracts. Replace them when redeploying.
+
+## x402 conformance
+
+The gateway targets `x402-foundation/x402` commit
+`17fc9890ade45a570a019352a3573391ad5d1e1f`, including the v2 MCP transport
+and `PaymentPayload` schema. The `@x402/core`, `@x402/evm`, and `@x402/mcp`
+packages are each exactly pinned to `2.20.0`. Upstream changes are adopted
+deliberately by updating these pins and the gateway's conformance tests.
 
 ## Delivery confirmation
 

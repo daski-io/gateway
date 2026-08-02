@@ -2,13 +2,15 @@ import { computeRequestHash } from "../auth/envelope.js";
 import type { Queries } from "../db/queries.js";
 import type { ChainDeploymentReadinessProbe } from "../payment/deploymentReadiness.js";
 import type { Hex, PaymentPayload } from "../types.js";
-import { hashCanonical } from "../payment/requirementResponse.js";
 import {
   getDaskiDeclaration,
   getDaskiReceipt,
 } from "../payment/x402Extension.js";
 import { logger } from "../util/logger.js";
-import type { BuyServiceArgs } from "./buyServiceTypes.js";
+import {
+  purchaseRequestFingerprint,
+  type BuyServiceArgs,
+} from "./buyServiceTypes.js";
 import {
   mcpError,
   mcpJson,
@@ -28,19 +30,20 @@ export async function runBuyServiceX402Retry(
   deps: RetryDeps,
 ): Promise<McpToolResult | null> {
   const metaPaymentRaw = extra._meta?.["x402/payment"];
-  const inboundPayload =
+  const metaPayment =
     metaPaymentRaw &&
     typeof metaPaymentRaw === "object" &&
     !Array.isArray(metaPaymentRaw)
       ? (metaPaymentRaw as PaymentPayload)
       : undefined;
-  if (metaPaymentRaw !== undefined && !inboundPayload) {
+  if (metaPaymentRaw !== undefined && !metaPayment) {
     return mcpError({
       code: "invalid_meta_payment",
       message: "_meta['x402/payment'] must be a PaymentPayload object",
       recoverable: true,
     });
   }
+  const inboundPayload = metaPayment ?? args.paymentPayload;
   if (!inboundPayload) return null;
 
   const declaration = getDaskiDeclaration(inboundPayload);
@@ -66,7 +69,7 @@ export async function runBuyServiceX402Retry(
   if (
     !challenge.requestFingerprint ||
     challenge.requestFingerprint.toLowerCase() !==
-      hashCanonical(args).toLowerCase()
+      purchaseRequestFingerprint(args).toLowerCase()
   ) {
     return mcpError({
       code: "PURCHASE_REQUEST_MISMATCH",

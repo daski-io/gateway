@@ -9,10 +9,12 @@ import {
 } from "../identity/service.js";
 import { createQuotedChallenge } from "../payment/quotedChallenge.js";
 import type { Hex } from "../types.js";
-import { hashCanonical } from "../payment/requirementResponse.js";
 import type { Fetcher } from "./a2a.js";
 import type { ChainDeploymentReadinessProbe } from "../payment/deploymentReadiness.js";
-import type { BuyServiceContext } from "./buyServiceTypes.js";
+import {
+  purchaseRequestFingerprint,
+  type BuyServiceContext,
+} from "./buyServiceTypes.js";
 import { unknownServiceArgWarnings } from "./serviceArgWarnings.js";
 import { logger } from "../util/logger.js";
 import type { ProviderAuthorityService } from "../payment/providerAuthority.js";
@@ -107,7 +109,7 @@ export async function runBuyServicePaidPath(
       serviceArgs,
       warnings,
       amountLimit: args.amount,
-      requestFingerprint: hashCanonical(args),
+      requestFingerprint: purchaseRequestFingerprint(args),
       registrationDelegation: args.registration
         ? {
             ...args.registration,

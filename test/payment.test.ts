@@ -390,5 +390,14 @@ describe("x402 V2 HTTP payment resource", () => {
     expect(schema.$id).toBe(
       `${gateway.baseUrl}/.well-known/x402-daski-v2.schema.json`,
     );
+    expect(schema.oneOf[0].properties.signing).toMatchObject({
+      type: "object",
+      required: [
+        "eip712TypedData",
+        "nonceSalt",
+        "nonceDerivation",
+        "nextAction",
+      ],
+    });
   });
 });

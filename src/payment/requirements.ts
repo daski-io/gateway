@@ -323,8 +323,9 @@ export async function issuePaymentRequirements(
   );
   if (!claimed.ok) return claimed;
   const existingChallenge = claimed.existingChallenge;
+  if (!existingChallenge) return { ok: true, ...draft };
 
-  const effectiveExpiresAt = existingChallenge?.expiresAt ?? expiresAt;
+  const effectiveExpiresAt = existingChallenge.expiresAt;
   const response = buildRequirementResponse({
     config,
     providerTokenId: params.providerTokenId,

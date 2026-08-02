@@ -103,7 +103,8 @@ function serverInstructions(config: Config): string {
   "  5. daski_fetch_artifact     — retrieve bytes behind a gated artifact URL",
   "  6. daski_confirm_delivery   — leave an on-chain attestation (optional)",
   "",
-    "daski_buy_service is the only payment entry point; x402 retries return to it.",
+    "daski_buy_service is the only payment entry point; signed retries return " +
+      "through standard x402 metadata or its paymentPayload argument.",
     "",
     UNTRUSTED_PROVIDER_CONTENT_WARNING,
     "",
