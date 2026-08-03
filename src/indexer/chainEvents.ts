@@ -7,12 +7,12 @@ import {
 import type { Queries } from "../db/queries.js";
 import { logger } from "../util/logger.js";
 
-// The indexer needs only event pages and the head number — deliberately
+// The indexer needs only event pages and block head reads — deliberately
 // NOT the full ChainStatusReader (verifyDeploymentReadiness), so it can
 // run on a dedicated projection reader with its own RPC transport
 // (CHAIN_INDEXER_RPC_URL) instead of the payment path's.
 export type ProjectionReader = ChainEventReader &
-  Pick<ChainStatusReader, "getBlockNumber">;
+  Pick<ChainStatusReader, "getBlockNumber" | "getSafeBlockNumber">;
 
 interface IndexerFailure {
   category: "rpc" | "descriptor_mismatch" | "projection_integrity";
@@ -27,7 +27,7 @@ export class ChainEventsIndexer {
   private initialized = false;
   private terminal = false;
   private cachedCursor: bigint | null = null;
-  private confirmedHead: bigint | null = null;
+  private safeHead: bigint | null = null;
   private lastSuccessAt: Date | null = null;
   private lastFailure: IndexerFailure | null = null;
 
@@ -38,7 +38,6 @@ export class ChainEventsIndexer {
     private readonly options: {
       pollIntervalMs?: number;
       blockRangePerCall?: bigint;
-      confirmationDepthBlocks?: bigint;
     } = {},
   ) {}
 
@@ -95,7 +94,7 @@ export class ChainEventsIndexer {
       initialized: this.initialized,
       startBlock: this.descriptor.startBlock,
       lastIndexedBlock: this.cachedCursor,
-      lastObservedConfirmedHead: this.confirmedHead,
+      lastObservedSafeHead: this.safeHead,
       lagBlocks,
       lastSuccessAt: this.lastSuccessAt,
       lastFailure: this.lastFailure,
@@ -119,13 +118,13 @@ export class ChainEventsIndexer {
   }
 
   private lagBlocks(): bigint | null {
-    if (this.confirmedHead === null) return null;
-    if (this.confirmedHead < this.descriptor.startBlock) return 0n;
+    if (this.safeHead === null) return null;
+    if (this.safeHead < this.descriptor.startBlock) return 0n;
     if (this.cachedCursor === null) {
-      return this.confirmedHead - this.descriptor.startBlock + 1n;
+      return this.safeHead - this.descriptor.startBlock + 1n;
     }
-    return this.confirmedHead > this.cachedCursor
-      ? this.confirmedHead - this.cachedCursor
+    return this.safeHead > this.cachedCursor
+      ? this.safeHead - this.cachedCursor
       : 0n;
   }
 
@@ -134,12 +133,12 @@ export class ChainEventsIndexer {
       if (!this.initialized) await this.initialize();
       await this.refreshSharedState();
       if (this.terminal) return;
-      const confirmedHead = await this.observeConfirmedHead();
+      const safeHead = await this.observeSafeHead();
       const leadership = await this.queries.tryWithChainProjectionLock(
         async () => {
           await this.refreshSharedState();
           if (this.terminal) return;
-          await this.pollToConfirmedHead(confirmedHead);
+          await this.pollToSafeHead(safeHead);
         },
       );
       if (!leadership.acquired) await this.refreshSharedState();
@@ -194,18 +193,15 @@ export class ChainEventsIndexer {
     }
   }
 
-  private async observeConfirmedHead(): Promise<bigint> {
-    const head = await this.reader.getBlockNumber();
-    const confirmationDepth = this.options.confirmationDepthBlocks ?? 12n;
-    const confirmedHead =
-      head > confirmationDepth ? head - confirmationDepth : 0n;
-    this.confirmedHead = confirmedHead;
-    return confirmedHead;
+  private async observeSafeHead(): Promise<bigint> {
+    const safeHead = await this.reader.getSafeBlockNumber();
+    this.safeHead = safeHead;
+    return safeHead;
   }
 
-  private async pollToConfirmedHead(confirmedHead: bigint): Promise<void> {
-    if (confirmedHead < this.descriptor.startBlock) return;
-    if (this.cachedCursor !== null && this.cachedCursor >= confirmedHead) {
+  private async pollToSafeHead(safeHead: bigint): Promise<void> {
+    if (safeHead < this.descriptor.startBlock) return;
+    if (this.cachedCursor !== null && this.cachedCursor >= safeHead) {
       return;
     }
 
@@ -214,10 +210,10 @@ export class ChainEventsIndexer {
       this.cachedCursor === null
         ? this.descriptor.startBlock
         : this.cachedCursor + 1n;
-    while (fromBlock <= confirmedHead && !this.stopping) {
+    while (fromBlock <= safeHead && !this.stopping) {
       const toBlock =
-        fromBlock + range - 1n > confirmedHead
-          ? confirmedHead
+        fromBlock + range - 1n > safeHead
+          ? safeHead
           : fromBlock + range - 1n;
       const events = await this.reader.getChainProjectionEvents(
         fromBlock,

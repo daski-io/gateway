@@ -181,6 +181,11 @@ export function createViemChainReader(opts: ViemReaderOptions): ChainReader {
       return await publicClient.getBlockNumber();
     },
 
+    async getSafeBlockNumber(): Promise<bigint> {
+      const block = await publicClient.getBlock({ blockTag: "safe" });
+      return block.number;
+    },
+
     verifyDeploymentReadiness: createViemDeploymentReadiness(publicClient, {
       chainId: opts.chainId,
       identityRegistryAddress: opts.identityRegistryAddress,
@@ -233,7 +238,7 @@ export interface ViemProjectionReaderOptions {
 
 /**
  * A read-only reader carrying exactly what the chain-events indexer needs
- * (getBlockNumber + the projection event reader) on its OWN transport.
+ * (latest/safe block reads + the projection event reader) on its OWN transport.
  * Lets CHAIN_INDEXER_RPC_URL route the bulk getLogs polling through a
  * separate endpoint (e.g. public primary, keyed fallback) so the indexer
  * cannot spend the payment path's keyed budget or saturate its per-IP
@@ -251,6 +256,10 @@ export function createViemProjectionReader(opts: ViemProjectionReaderOptions) {
   return {
     async getBlockNumber(): Promise<bigint> {
       return await publicClient.getBlockNumber();
+    },
+    async getSafeBlockNumber(): Promise<bigint> {
+      const block = await publicClient.getBlock({ blockTag: "safe" });
+      return block.number;
     },
     ...createViemEventReader(publicClient, {
       paymentRouterAddress: opts.paymentRouterAddress,

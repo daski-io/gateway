@@ -90,6 +90,9 @@ export class ChainProjectionIntegrityError extends Error {
   }
 }
 
+const CHAIN_PROJECTION_RUNBOOK =
+  "docs/runbooks/chain-projection-recovery.md";
+
 const ACTIVITY_SELECT = `
   SELECT ce.payment_id, ce.tx_hash, ce.block_number, ce.service_id,
          ce.buyer_agent_id, ce.provider_agent_id, ce.amount_atomic,
@@ -220,7 +223,7 @@ function assertBaseRowUpdated(
     `projection event ${event.kind} for payment ${event.paymentId} at block ` +
       `${event.blockNumber} has no matching settlement; ` +
       "CHAIN_INDEXER_START_BLOCK may be too late or projection state was reset inconsistently; " +
-      "follow the chain projection reset runbook",
+      `follow ${CHAIN_PROJECTION_RUNBOOK}`,
   );
 }
 
@@ -361,7 +364,7 @@ export function createChainEventQueries(pool: Pool) {
         } else if (!descriptorMatches(row, descriptor)) {
           throw new ChainProjectionDescriptorError(
             "stored chain projection descriptor conflicts with runtime configuration; " +
-              "follow the chain projection reset runbook",
+              `follow ${CHAIN_PROJECTION_RUNBOOK}`,
           );
         }
         await client.query("COMMIT");
@@ -392,7 +395,7 @@ export function createChainEventQueries(pool: Pool) {
       if (!row || !descriptorMatches(row, descriptor)) {
         throw new ChainProjectionDescriptorError(
           "stored chain projection descriptor conflicts with runtime configuration; " +
-            "follow the chain projection reset runbook",
+            `follow ${CHAIN_PROJECTION_RUNBOOK}`,
         );
       }
       return {
@@ -472,7 +475,7 @@ export function createChainEventQueries(pool: Pool) {
         if (!descriptorMatches(state, input.descriptor)) {
           throw new ChainProjectionDescriptorError(
             "chain projection descriptor changed while indexing; " +
-              "follow the chain projection reset runbook",
+              `follow ${CHAIN_PROJECTION_RUNBOOK}`,
           );
         }
         const expectedPrevious =

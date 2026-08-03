@@ -378,6 +378,10 @@ export class AutoMockChainReader implements ChainReader {
     return ++this.blockNumber;
   }
 
+  async getSafeBlockNumber(): Promise<bigint> {
+    return ++this.blockNumber;
+  }
+
   // ── Reputation ──────────────────────────────────────────────────────
 
   async getProviderReputation(

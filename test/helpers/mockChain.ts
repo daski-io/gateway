@@ -659,13 +659,23 @@ export class MockChainReader implements ChainReader {
   // Tests that exercise /public/v1/stats set this to a known value.
   // Default 0n is enough for tests that don't care.
   private blockNumber = 0n;
+  private safeBlockNumber = 0n;
 
   setBlockNumber(value: bigint): void {
     this.blockNumber = value;
+    this.safeBlockNumber = value;
+  }
+
+  setSafeBlockNumber(value: bigint): void {
+    this.safeBlockNumber = value;
   }
 
   async getBlockNumber(): Promise<bigint> {
     return this.blockNumber;
+  }
+
+  async getSafeBlockNumber(): Promise<bigint> {
+    return this.safeBlockNumber;
   }
 
   setSanctionsReady(ready: boolean): void {

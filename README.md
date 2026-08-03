@@ -180,6 +180,8 @@ host that can run a Node 20 container with a Postgres + pgvector add-on
 works. Release coordination (develop→main merges, semver tags, env cascade
 on contract redeploys, DB resets) lives in
 [daski-io/deploy-testnet](https://github.com/daski-io/deploy-testnet).
+Chain projection incidents use the tracked
+[projection recovery runbook](docs/runbooks/chain-projection-recovery.md).
 
 ## Architecture
 
