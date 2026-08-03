@@ -31,7 +31,8 @@ can return the same payload through the `paymentPayload` tool argument.
   `all-MiniLM-L6-v2` embeddings. Catalog admission enforces the canonical
   service family/type, jurisdiction, and skill fulfillment metadata in
   [`src/serviceTaxonomy.ts`](src/serviceTaxonomy.ts).
-- **Provider onboarding guide** — see [PROVIDER_ONBOARDING.md](PROVIDER_ONBOARDING.md)
+- **Provider onboarding guide** — see
+  [docs/provider-onboarding.md](docs/provider-onboarding.md)
   for the gateway↔provider wire contract.
 
 ## Prerequisites
@@ -199,8 +200,8 @@ Chain projection incidents use the tracked
 - `src/db/` — Postgres pool, migrations, queries
 - `src/public/` — read-only `/public/v1/*` API
 - `src/http/` — health, discovery metadata, and crawler-facing documents
-- [PROVIDER_ONBOARDING.md](PROVIDER_ONBOARDING.md) — what a provider has to
-  ship to be reachable from this gateway
+- [docs/provider-onboarding.md](docs/provider-onboarding.md) — what a provider
+  has to ship to be reachable from this gateway
 
 ## Status
 
