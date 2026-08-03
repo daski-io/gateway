@@ -21,14 +21,16 @@ async function startTransport(options: {
   idleTtlMs?: number;
   sweepIntervalMs?: number;
   allowedOrigins?: string[];
+  createServer?: () => McpServer;
 }) {
   const app = express();
   app.use(express.json());
   const wiring: McpWiring = mountMcpHttpTransport({
     app,
     path: "/mcp",
-    createServer: () =>
-      new McpServer({ name: "transport-test", version: "1.0.0" }),
+    createServer:
+      options.createServer ??
+      (() => new McpServer({ name: "transport-test", version: "1.0.0" })),
     ...options,
   });
   const server = http.createServer(app);
@@ -99,6 +101,54 @@ describe("MCP HTTP session lifecycle", () => {
     expect(await response.json()).toMatchObject({
       error: { message: "Origin is not allowed" },
     });
+  });
+
+  it("rejects JSON-RPC batches before dispatching any tool call", async () => {
+    const calls = vi.fn();
+    const { url } = await startTransport({
+      createServer: () => {
+        const server = new McpServer({
+          name: "batch-test",
+          version: "1.0.0",
+        });
+        server.registerTool("mutate", { inputSchema: {} }, async () => {
+          calls();
+          return { content: [{ type: "text", text: "ok" }] };
+        });
+        return server;
+      },
+    });
+    const connected = await connect(url);
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "mcp-session-id": connected.transport.sessionId!,
+      },
+      body: JSON.stringify([
+        {
+          jsonrpc: "2.0",
+          id: 1,
+          method: "tools/call",
+          params: { name: "mutate", arguments: {} },
+        },
+        {
+          jsonrpc: "2.0",
+          id: 2,
+          method: "tools/call",
+          params: { name: "mutate", arguments: {} },
+        },
+      ]),
+    });
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({
+      error: {
+        code: -32600,
+        message: "JSON-RPC batch requests are not supported",
+      },
+    });
+    expect(calls).not.toHaveBeenCalled();
+    await connected.transport.close();
   });
 
   it("closes idle sessions during the sweep", async () => {

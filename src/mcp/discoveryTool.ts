@@ -11,15 +11,20 @@ import { searchServices, type SearchServicesArgs } from "./discoverySearch.js";
 import type { McpDeps } from "./server.js";
 import { mcpJson, type McpToolResult } from "./util.js";
 import { UNTRUSTED_PROVIDER_CONTENT_WARNING } from "./providerReflection.js";
+import { ConcurrencyLimiter } from "./concurrencyLimiter.js";
+
+export const MAX_SEARCH_INTENT_CHARACTERS = 2_048;
+export const MAX_CONCURRENT_SEARCH_EMBEDDINGS = 1;
 
 const SEARCH_SERVICES_INPUT_SCHEMA = z
   .object({
     intent: z
       .string()
+      .max(MAX_SEARCH_INTENT_CHARACTERS)
       .optional()
       .describe(
         "Free-text description of the desired service. Results are ranked " +
-          "by semantic similarity over catalog skills.",
+          `by semantic similarity over catalog skills. Maximum ${MAX_SEARCH_INTENT_CHARACTERS} characters.`,
       ),
     categoryFamily: z
       .enum(CATEGORY_FAMILY_SLUGS)
@@ -71,6 +76,7 @@ const SEARCH_SERVICES_INPUT_SCHEMA = z
 export function registerDiscoveryTool(
   server: McpServer,
   deps: McpDeps,
+  embeddingLimiter: ConcurrencyLimiter,
 ): void {
   server.registerTool(
     "daski_search_services",
@@ -115,7 +121,28 @@ export function registerDiscoveryTool(
           },
         });
       }
-      return mcpJson(await searchServices(args, deps));
+      const usesEmbedding = Boolean(args.intent?.trim() && deps.embedder);
+      const release = usesEmbedding
+        ? embeddingLimiter.tryAcquire("semantic-search")
+        : null;
+      if (usesEmbedding && !release) {
+        const fallback = await searchServices(
+          { ...args, intent: undefined },
+          deps,
+        );
+        return mcpJson({
+          ...fallback,
+          intent: args.intent,
+          ranking: "busy",
+          warning:
+            "Semantic ranking is busy; returning the filtered catalog. Retry later for ranked results.",
+        });
+      }
+      try {
+        return mcpJson(await searchServices(args, deps));
+      } finally {
+        release?.();
+      }
     },
   );
 }

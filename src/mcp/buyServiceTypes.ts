@@ -1,3 +1,5 @@
+import { hashCanonical } from "../payment/requirementResponse.js";
+import type { Hex, PaymentPayload } from "../types.js";
 import type { ProviderMatch } from "./providerCatalog.js";
 
 export interface BuyServiceArgs {
@@ -12,6 +14,12 @@ export interface BuyServiceArgs {
   amount?: string;
   paymentId?: string;
   registration?: { agentURI: string; deadline: string; signature: string };
+  paymentPayload?: PaymentPayload;
+}
+
+export function purchaseRequestFingerprint(args: BuyServiceArgs): Hex {
+  const { paymentPayload: _paymentPayload, ...purchase } = args;
+  return hashCanonical(purchase);
 }
 
 export interface BuyServiceContext {

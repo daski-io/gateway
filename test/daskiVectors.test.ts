@@ -1,4 +1,6 @@
 import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   encodeAbiParameters,
   hashTypedData,
@@ -7,19 +9,15 @@ import {
   toBytes,
 } from "viem";
 import { describe, expect, it } from "vitest";
-import type { Hex } from "../src/types.js";
-import { deriveDaskiReceiveNonce } from "../src/payment/daskiNonce.js";
-import { RECEIVE_WITH_AUTHORIZATION_TYPES } from "../src/payment/protocol.js";
-import { computeUsdcDomainSeparator } from "../src/payment/usdcDomain.js";
 
-interface Vector {
+type Hex = `0x${string}`;
+
+interface PublishedVector {
   network: string;
-  chainId: 8453 | 84532;
+  chainId: number;
   token: Hex;
-  decimals: 6;
-  name: string;
-  version: string;
-  domainSeparator: Hex;
+  tokenName: string;
+  tokenVersion: string;
   adapter: Hex;
   router: Hex;
   payer: Hex;
@@ -31,100 +29,131 @@ interface Vector {
   expectedPayee: Hex;
   serviceRef: Hex;
   nonceSalt: Hex;
-  nonce: Hex;
-  structHash: Hex;
-  digest: Hex;
-  signer: Hex;
+  expectedNonce: Hex;
+  typedData: {
+    domain: {
+      name: string;
+      version: string;
+      chainId: number;
+      verifyingContract: Hex;
+    };
+    types: Record<string, Array<{ name: string; type: string }>>;
+    primaryType: string;
+    message: Record<string, string>;
+  };
+  expectedSigner: Hex;
   signature: Hex;
 }
 
-const vectors = (
-  JSON.parse(
-    readFileSync(new URL("./vectors/daski-x402.json", import.meta.url), "utf8"),
-  ) as { schema: string; vectors: Vector[] }
-).vectors;
-
-const RECEIVE_TYPEHASH = keccak256(
-  toBytes(
-    "ReceiveWithAuthorization(address from,address to,uint256 value,uint256 validAfter,uint256 validBefore,bytes32 nonce)",
-  ),
+const skillPath = join(
+  dirname(fileURLToPath(import.meta.url)),
+  "..",
+  "src",
+  "static",
+  "SKILL.md",
 );
+const skill = readFileSync(skillPath, "utf8");
+const vectorMatch = skill.match(
+  /```json daski-exact-signing-vector\r?\n([\s\S]*?)```/,
+);
+if (!vectorMatch?.[1]) throw new Error("SKILL.md has no signing vector");
+const vector = JSON.parse(vectorMatch[1]) as PublishedVector;
+const nonceDomain = keccak256(toBytes("DASKI_X402_RECEIVE_V1"));
 
-describe("shared Daski x402 signature vectors", () => {
-  it.each(vectors)("reproduces $network", async (vector) => {
-    const amount = BigInt(vector.amount);
-    const validAfter = BigInt(vector.validAfter);
-    const validBefore = BigInt(vector.validBefore);
-    const nonce = deriveDaskiReceiveNonce({
-      chainId: vector.chainId,
-      adapter: vector.adapter,
-      router: vector.router,
-      token: vector.token,
-      payer: vector.payer,
-      amount,
-      validAfter,
-      validBefore,
-      providerAgentId: BigInt(vector.providerAgentId),
-      serviceId: vector.serviceId,
-      expectedPayee: vector.expectedPayee,
-      serviceRef: vector.serviceRef,
-      nonceSalt: vector.nonceSalt,
-    });
-    expect(nonce).toBe(vector.nonce);
-    expect(
-      computeUsdcDomainSeparator(
-        vector.chainId,
-        vector.token,
-        vector.name,
-        vector.version,
-      ),
-    ).toBe(vector.domainSeparator);
-
-    const structHash = keccak256(
+describe("published daski-exact signing vector", () => {
+  it("reproduces the nonce and constructs a complete signed payload", async () => {
+    expect(skill).toContain(
+      "keccak256(abi.encode(bytes32 DOMAIN, uint256 chainId, address adapter, address router, address token, address payer, uint256 amount, uint256 validAfter, uint256 validBefore, uint256 providerAgentId, bytes32 serviceId, address expectedPayee, bytes32 serviceRef, bytes32 nonceSalt))",
+    );
+    const nonce = keccak256(
       encodeAbiParameters(
         [
           { type: "bytes32" },
+          { type: "uint256" },
           { type: "address" },
           { type: "address" },
+          { type: "address" },
+          { type: "address" },
+          { type: "uint256" },
           { type: "uint256" },
           { type: "uint256" },
           { type: "uint256" },
           { type: "bytes32" },
+          { type: "address" },
+          { type: "bytes32" },
+          { type: "bytes32" },
         ],
         [
-          RECEIVE_TYPEHASH,
-          vector.payer,
+          nonceDomain,
+          BigInt(vector.chainId),
           vector.adapter,
-          amount,
-          validAfter,
-          validBefore,
-          nonce,
+          vector.router,
+          vector.token,
+          vector.payer,
+          BigInt(vector.amount),
+          BigInt(vector.validAfter),
+          BigInt(vector.validBefore),
+          BigInt(vector.providerAgentId),
+          vector.serviceId,
+          vector.expectedPayee,
+          vector.serviceRef,
+          vector.nonceSalt,
         ],
       ),
     );
-    expect(structHash).toBe(vector.structHash);
+    expect(nonce).toBe(vector.expectedNonce);
+    expect(vector.typedData.message.nonce).toBe(nonce);
 
     const digest = hashTypedData({
-      domain: {
-        name: vector.name,
-        version: vector.version,
-        chainId: vector.chainId,
-        verifyingContract: vector.token,
-      },
-      types: RECEIVE_WITH_AUTHORIZATION_TYPES,
-      primaryType: "ReceiveWithAuthorization",
-      message: {
-        from: vector.payer,
-        to: vector.adapter,
-        value: amount,
-        validAfter,
-        validBefore,
-        nonce,
-      },
+      domain: vector.typedData.domain,
+      types: vector.typedData.types,
+      primaryType: vector.typedData.primaryType,
+      message: vector.typedData.message,
     });
-    expect(digest).toBe(vector.digest);
     await expect(
       recoverAddress({ hash: digest, signature: vector.signature }),
-    ).resolves.toBe(vector.signer);
+    ).resolves.toBe(vector.expectedSigner);
+
+    const challenge = {
+      x402Version: 2 as const,
+      resource: { url: "https://gateway.example/purchase/2" },
+      accepts: [
+        {
+          scheme: "daski-exact",
+          network: "eip155:84532",
+          amount: vector.amount,
+          asset: vector.token,
+          payTo: vector.adapter,
+          maxTimeoutSeconds: 600,
+          extra: {},
+        },
+      ],
+      extensions: {
+        "https://daski.xyz/x402/v2": {
+          info: { serviceRef: vector.serviceRef },
+          signing: {
+            eip712TypedData: vector.typedData,
+            nonceSalt: vector.nonceSalt,
+          },
+        },
+      },
+    };
+    const paymentPayload = {
+      x402Version: 2,
+      resource: challenge.resource,
+      accepted: challenge.accepts[0],
+      extensions: challenge.extensions,
+      payload: {
+        authorization: vector.typedData.message,
+        signature: vector.signature,
+        nonceSalt: vector.nonceSalt,
+      },
+    };
+    expect(paymentPayload.resource).toEqual(challenge.resource);
+    expect(paymentPayload.accepted).toEqual(challenge.accepts[0]);
+    expect(paymentPayload.extensions).toEqual(challenge.extensions);
+    expect(paymentPayload.payload.authorization.nonce).toBe(
+      vector.expectedNonce,
+    );
   });
 });

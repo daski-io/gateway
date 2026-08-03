@@ -34,6 +34,7 @@ describe("graceful lifecycle", () => {
     const applyPage = vi.fn(async () => {});
     const reader: ChainEventReader & ChainStatusReader = {
       getBlockNumber: async () => 1n,
+      getSafeBlockNumber: async () => 1n,
       verifyDeploymentReadiness: async () => ({
         ready: true,
         failedCheck: null,
@@ -60,7 +61,6 @@ describe("graceful lifecycle", () => {
       reader,
       queries as never,
       descriptor,
-      { confirmationDepthBlocks: 0n },
     );
     const tick = indexer.tick();
     await pageStarted.promise;

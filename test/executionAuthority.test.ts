@@ -35,6 +35,70 @@ describe("fresh provider authority on execution paths", () => {
     }
   });
 
+  it("blocks task submission when only a stale provider card is available", async () => {
+    gateway = await startTestGateway({ providers: [taskProvider()] });
+    gateway.mockProvider.setAgentCard("/agent-registrations/2.json", {
+      name: "Task Provider",
+      legalName: "Example Provider, LLC",
+      termsUrl: "https://provider.example/terms",
+      privacyUrl: "https://provider.example/privacy",
+      services: [],
+    });
+    await gateway.refresh();
+    expect(gateway.bundle.cache.get(2n)!.fetchError).toMatch(
+      /no A2A service endpoint/,
+    );
+    expect(gateway.bundle.cache.get(2n)!.cards).toHaveLength(1);
+
+    const { client, transport } = await connectClient(gateway.baseUrl);
+    try {
+      const result = parseResult<{ code: string }>(
+        await client.callTool({
+          name: "daski_submit_task",
+          arguments: {
+            providerA2AUrl: `${gateway.mockProvider.baseUrl}/a2a`,
+            skillId: "run-task",
+            paymentId: "0",
+            chainId: 84532,
+            serviceArgs: { value: "sensitive" },
+          },
+        }),
+      );
+      expect(result.code).toBe("PROVIDER_AUTHORITY_UNAVAILABLE");
+      expect(gateway.mockProvider.getLastSendBody()).toBeNull();
+    } finally {
+      await transport.close();
+    }
+  });
+
+  it("blocks direct free services before provider dispatch", async () => {
+    const a2aFetch = vi.fn<typeof fetch>();
+    gateway = await startTestGateway({
+      providers: [directFreeProvider()],
+      a2aFetch,
+    });
+    makeAuthorityUnavailable(gateway, 2n);
+    const { client, transport } = await connectClient(gateway.baseUrl);
+    try {
+      const result = parseResult<{ code: string }>(
+        await client.callTool({
+          name: "daski_buy_service",
+          arguments: {
+            providerTokenId: "2",
+            skillId: "check-availability",
+            serviceSlug: "other",
+            walletAddress: "0x1111111111111111111111111111111111111111",
+            serviceArgs: { domain: "sensitive.example" },
+          },
+        }),
+      );
+      expect(result.code).toBe("PROVIDER_AUTHORITY_UNAVAILABLE");
+      expect(a2aFetch).not.toHaveBeenCalled();
+    } finally {
+      await transport.close();
+    }
+  });
+
   it("blocks task status before issuing or forwarding authorization", async () => {
     gateway = await startTestGateway({ providers: [taskProvider()] });
     const providerA2AUrl = `${gateway.mockProvider.baseUrl}/a2a`;
@@ -124,6 +188,24 @@ function taskProvider() {
           paymentRequired: false,
           requiresAssetOwnership: false,
           requiresCapability: false,
+        },
+      },
+    ],
+  };
+}
+
+function directFreeProvider() {
+  return {
+    ...taskProvider(),
+    skills: [
+      {
+        id: "check-availability",
+        metadata: {
+          paymentRequired: false,
+          requiresAssetOwnership: false,
+          requiresCapability: false,
+          directEndpoint: "/availability",
+          directResultKind: "availability",
         },
       },
     ],

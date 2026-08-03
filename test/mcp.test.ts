@@ -22,9 +22,14 @@ import {
 } from "../src/auth/envelope.js";
 import { MCP_LEGAL_INSTRUCTIONS } from "../src/legal/purchase.js";
 import type { Embedder } from "../src/discovery/embeddings.js";
-import type { PaymentRequired } from "../src/types.js";
+import type {
+  DaskiX402Declaration,
+  PaymentPayload,
+  PaymentRequired,
+} from "../src/types.js";
 import { DASKI_X402_EXTENSION_URI } from "../src/config.js";
 import { UNTRUSTED_PROVIDER_CONTENT_WARNING } from "../src/mcp/providerReflection.js";
+import { MAX_SEARCH_INTENT_CHARACTERS } from "../src/mcp/discoveryTool.js";
 import { signTestEnvelope } from "./helpers/envelopeAuth.js";
 
 async function connectClient(baseUrl: string) {
@@ -55,6 +60,35 @@ function expectedLegal(gateway: TestGateway) {
     providerLegalName: "Example Provider, LLC",
     providerTermsUrl: "https://provider.example/terms",
     providerPrivacyUrl: "https://provider.example/privacy",
+  };
+}
+
+async function signChallengePayload(
+  paymentRequired: PaymentRequired,
+): Promise<PaymentPayload> {
+  const declaration = paymentRequired.extensions?.[
+    DASKI_X402_EXTENSION_URI
+  ] as DaskiX402Declaration | undefined;
+  const signing = declaration?.signing;
+  const accepted = paymentRequired.accepts[0];
+  if (!signing || !accepted || !paymentRequired.resource) {
+    throw new Error("challenge is missing Daski signing material");
+  }
+  const signature = await privateKeyToAccount(TEST_BUYER_KEY).signTypedData(
+    signing.eip712TypedData as Parameters<
+      ReturnType<typeof privateKeyToAccount>["signTypedData"]
+    >[0],
+  );
+  return {
+    x402Version: 2,
+    resource: paymentRequired.resource,
+    accepted,
+    extensions: paymentRequired.extensions,
+    payload: {
+      authorization: signing.eip712TypedData.message,
+      signature,
+      nonceSalt: signing.nonceSalt,
+    },
   };
 }
 
@@ -111,10 +145,16 @@ describe("hosted MCP — wallet-agnostic surface", () => {
       );
       const properties = searchTool?.inputSchema.properties as Record<
         string,
-        { enum?: string[]; minimum?: number; maximum?: number }
+        {
+          enum?: string[];
+          minimum?: number;
+          maximum?: number;
+          maxLength?: number;
+        }
       >;
       expect(properties.categoryFamily.enum).toEqual(CATEGORY_FAMILY_SLUGS);
       expect(properties.serviceType.enum).toEqual(SERVICE_TYPE_SLUGS);
+      expect(properties.intent.maxLength).toBe(MAX_SEARCH_INTENT_CHARACTERS);
       const statusTool = tools.tools.find(
         (tool) => tool.name === "daski_get_task_status",
       );
@@ -135,6 +175,11 @@ describe("hosted MCP — wallet-agnostic surface", () => {
         (tool) => tool.name === "daski_fetch_artifact",
       );
       expect(artifactTool?.inputSchema.required).toContain("providerA2AUrl");
+      const buyTool = tools.tools.find(
+        (tool) => tool.name === "daski_buy_service",
+      );
+      expect(buyTool?.inputSchema.properties).toHaveProperty("paymentPayload");
+      expect(buyTool?.inputSchema.required).not.toContain("paymentPayload");
       expect(client.getInstructions()).toContain(MCP_LEGAL_INSTRUCTIONS);
       expect(client.getInstructions()).toContain(
         UNTRUSTED_PROVIDER_CONTENT_WARNING,
@@ -230,6 +275,25 @@ describe("hosted MCP — wallet-agnostic surface", () => {
       expect(body.providers[0].agentId).toBe("2");
       expect(body.providers[0].match.distance).toBeLessThanOrEqual(2);
       expect(typeof body.providers[0].match.bestSkillId).toBe("string");
+    } finally {
+      await transport.close();
+    }
+  });
+
+  it("rejects oversized semantic-search intents before embedding", async () => {
+    const { client, transport } = await connectClient(gateway.baseUrl);
+    try {
+      const result = (await client.callTool({
+        name: "daski_search_services",
+        arguments: {
+          intent: "x".repeat(MAX_SEARCH_INTENT_CHARACTERS + 1),
+        },
+      })) as ToolResultContent;
+
+      expect(result.isError).toBe(true);
+      expect(result.content[0]?.text).toContain(
+        String(MAX_SEARCH_INTENT_CHARACTERS),
+      );
     } finally {
       await transport.close();
     }
@@ -370,14 +434,38 @@ describe("hosted MCP — wallet-agnostic surface", () => {
         amount: "15000000",
         payTo: gateway.config.x402AdapterAddress,
       });
-      expect(body.extensions?.["https://daski.xyz/x402/v2"]).toBeDefined();
+      const extension = body.extensions?.[
+        DASKI_X402_EXTENSION_URI
+      ] as DaskiX402Declaration;
+      expect(extension.info).not.toHaveProperty("warnings");
+      expect(extension.signing).toMatchObject({
+        eip712TypedData: {
+          primaryType: "ReceiveWithAuthorization",
+          message: {
+            value: "15000000",
+            validAfter: "0",
+          },
+        },
+        nonceSalt: expect.stringMatching(/^0x[0-9a-f]{64}$/i),
+        nonceDerivation: {
+          chainId: 84532,
+          recipe: expect.stringContaining(
+            "/skill.md#daski-exact-signing",
+          ),
+        },
+      });
+      expect(extension.signing?.nonceSalt).not.toBe(
+        `0x${"0".repeat(64)}`,
+      );
       expect(
-        (
-          body.extensions?.["https://daski.xyz/x402/v2"] as {
-            info?: { warnings?: string[] };
-          }
-        ).info,
-      ).not.toHaveProperty("warnings");
+        String(extension.signing?.eip712TypedData.message.from).toLowerCase(),
+      ).toBe(gateway.buyerAddress.toLowerCase());
+      expect(
+        String(extension.signing?.eip712TypedData.message.to).toLowerCase(),
+      ).toBe(gateway.config.x402AdapterAddress.toLowerCase());
+      expect(extension.schema).toEqual({
+        $ref: `${gateway.baseUrl}/.well-known/x402-daski-v2.schema.json`,
+      });
     } finally {
       await transport.close();
     }
@@ -431,7 +519,7 @@ describe("hosted MCP — wallet-agnostic surface", () => {
     }
   });
 
-  it("daski_buy_service does not expose legacy plan or typed-data fields", async () => {
+  it("keeps signing data inside the canonical Daski extension", async () => {
     const { client, transport } = await connectClient(gateway.baseUrl);
     try {
       const result = await client.callTool({
@@ -450,7 +538,14 @@ describe("hosted MCP — wallet-agnostic surface", () => {
       expect(body.accepts[0]?.amount).toBe("15000000");
       expect(body).not.toHaveProperty("paymentRequirements");
       expect(body).not.toHaveProperty("plan");
-      expect(JSON.stringify(body)).not.toContain("eip712TypedData");
+      expect(body).not.toHaveProperty("eip712TypedData");
+      expect(
+        (
+          body.extensions?.[
+            DASKI_X402_EXTENSION_URI
+          ] as DaskiX402Declaration
+        ).signing?.eip712TypedData.primaryType,
+      ).toBe("ReceiveWithAuthorization");
     } finally {
       await transport.close();
     }
@@ -501,6 +596,226 @@ describe("hosted MCP — wallet-agnostic surface", () => {
           "x402/payment-response"
         ],
       ).toMatchObject({ success: true, network: "eip155:84532" });
+    } finally {
+      await transport.close();
+    }
+  });
+
+  it("end-to-end: challenge-only signing settles through paymentPayload", async () => {
+    const { client, transport } = await connectClient(gateway.baseUrl);
+    try {
+      const args = {
+        providerTokenId: "2",
+        serviceSlug: "domain-management",
+        buyerTokenId: "5",
+        walletAddress: gateway.buyerAddress,
+        skillId: "register-domain",
+        serviceArgs: { domain: "tool-payload.xyz" },
+      };
+      const paymentRequired = parseResult<PaymentRequired>(
+        await client.callTool({ name: "daski_buy_service", arguments: args }),
+      );
+      const payload = await signChallengePayload(paymentRequired);
+      const declaration = paymentRequired.extensions?.[
+        DASKI_X402_EXTENSION_URI
+      ] as DaskiX402Declaration;
+      gateway.queueSettlementSuccess({
+        txHash: ("0x" + "12".repeat(32)) as Hex,
+        paymentId: 101n,
+        serviceRef: declaration.info.serviceRef,
+        providerAgentId: 2n,
+        buyerAgentId: 5n,
+        totalAmount: 15_000_000n,
+      });
+
+      const raw = await client.callTool({
+        name: "daski_buy_service",
+        arguments: { ...args, paymentPayload: payload },
+      });
+      expect(parseResult<{ success: boolean; paymentId: string }>(raw)).toMatchObject(
+        { success: true, paymentId: "101" },
+      );
+      expect(
+        (raw as { _meta?: Record<string, unknown> })._meta?.[
+          "x402/payment-response"
+        ],
+      ).toMatchObject({ success: true, network: "eip155:84532" });
+    } finally {
+      await transport.close();
+    }
+  });
+
+  it.each(["stripped", "altered"] as const)(
+    "treats %s advisory signing material as non-binding",
+    async (mode) => {
+      const { client, transport } = await connectClient(gateway.baseUrl);
+      try {
+        const args = {
+          providerTokenId: "2",
+          serviceSlug: "domain-management",
+          buyerTokenId: "5",
+          walletAddress: gateway.buyerAddress,
+          skillId: "register-domain",
+          serviceArgs: { domain: `advisory-${mode}.xyz` },
+        };
+        const paymentRequired = parseResult<PaymentRequired>(
+          await client.callTool({ name: "daski_buy_service", arguments: args }),
+        );
+        const payload = await signChallengePayload(paymentRequired);
+        const declaration = paymentRequired.extensions?.[
+          DASKI_X402_EXTENSION_URI
+        ] as DaskiX402Declaration;
+        const echoed = payload.extensions?.[
+          DASKI_X402_EXTENSION_URI
+        ] as Record<string, unknown>;
+        if (mode === "stripped") delete echoed.signing;
+        else echoed.signing = { advisory: "changed" };
+        gateway.queueSettlementSuccess({
+          txHash: ("0x" + (mode === "stripped" ? "13" : "14").repeat(32)) as Hex,
+          paymentId: mode === "stripped" ? 102n : 103n,
+          serviceRef: declaration.info.serviceRef,
+          providerAgentId: 2n,
+          buyerAgentId: 5n,
+          totalAmount: 15_000_000n,
+        });
+
+        const raw = await client.callTool({
+          name: "daski_buy_service",
+          arguments: { ...args, paymentPayload: payload },
+        });
+        expect(parseResult<{ success: boolean }>(raw).success).toBe(true);
+      } finally {
+        await transport.close();
+      }
+    },
+  );
+
+  it.each([
+    {
+      field: "accepted",
+      code: "payment_requirements_mismatch",
+      mutate(payload: PaymentPayload) {
+        payload.accepted.amount = "1";
+      },
+    },
+    {
+      field: "resource",
+      code: "resource_mismatch",
+      mutate(payload: PaymentPayload) {
+        if (payload.resource) payload.resource.description = "changed";
+      },
+    },
+    {
+      field: "Daski info",
+      code: "extension_echo_mismatch",
+      mutate(payload: PaymentPayload) {
+        const extension = payload.extensions?.[
+          DASKI_X402_EXTENSION_URI
+        ] as DaskiX402Declaration;
+        extension.info.providerAgentId = "999";
+      },
+    },
+  ])("rejects altered $field identically on both payment routes", async ({ code, mutate }) => {
+    const { client, transport } = await connectClient(gateway.baseUrl);
+    try {
+      const args = {
+        providerTokenId: "2",
+        serviceSlug: "domain-management",
+        buyerTokenId: "5",
+        walletAddress: gateway.buyerAddress,
+        skillId: "register-domain",
+        serviceArgs: { domain: `binding-${code}.xyz` },
+      };
+      const paymentRequired = parseResult<PaymentRequired>(
+        await client.callTool({ name: "daski_buy_service", arguments: args }),
+      );
+      const original = await signChallengePayload(paymentRequired);
+      for (const route of ["argument", "meta"] as const) {
+        const payload = structuredClone(original);
+        mutate(payload);
+        const raw = await client.callTool({
+          name: "daski_buy_service",
+          arguments:
+            route === "argument" ? { ...args, paymentPayload: payload } : args,
+          ...(route === "meta"
+            ? { _meta: { "x402/payment": payload } }
+            : {}),
+        });
+        expect((raw as ToolResultContent).isError).toBe(true);
+        expect(parseResult<{ code: string }>(raw).code).toBe(code);
+      }
+    } finally {
+      await transport.close();
+    }
+  });
+
+  it("gives valid metadata precedence over the paymentPayload argument", async () => {
+    const { client, transport } = await connectClient(gateway.baseUrl);
+    try {
+      const args = {
+        providerTokenId: "2",
+        serviceSlug: "domain-management",
+        buyerTokenId: "5",
+        walletAddress: gateway.buyerAddress,
+        skillId: "register-domain",
+        serviceArgs: { domain: "meta-precedence.xyz" },
+      };
+      const paymentRequired = parseResult<PaymentRequired>(
+        await client.callTool({ name: "daski_buy_service", arguments: args }),
+      );
+      const metaPayload = await signChallengePayload(paymentRequired);
+      const argumentPayload = structuredClone(metaPayload);
+      const argumentDeclaration = argumentPayload.extensions?.[
+        DASKI_X402_EXTENSION_URI
+      ] as DaskiX402Declaration;
+      argumentDeclaration.info.serviceRef = ("0x" + "ff".repeat(32)) as Hex;
+      const declaration = paymentRequired.extensions?.[
+        DASKI_X402_EXTENSION_URI
+      ] as DaskiX402Declaration;
+      gateway.queueSettlementSuccess({
+        txHash: ("0x" + "15".repeat(32)) as Hex,
+        paymentId: 104n,
+        serviceRef: declaration.info.serviceRef,
+        providerAgentId: 2n,
+        buyerAgentId: 5n,
+        totalAmount: 15_000_000n,
+      });
+
+      const raw = await client.callTool({
+        name: "daski_buy_service",
+        arguments: { ...args, paymentPayload: argumentPayload },
+        _meta: { "x402/payment": metaPayload },
+      });
+      expect(parseResult<{ paymentId: string }>(raw).paymentId).toBe("104");
+    } finally {
+      await transport.close();
+    }
+  });
+
+  it("does not fall back when payment metadata is present but malformed", async () => {
+    const { client, transport } = await connectClient(gateway.baseUrl);
+    try {
+      const args = {
+        providerTokenId: "2",
+        serviceSlug: "domain-management",
+        buyerTokenId: "5",
+        walletAddress: gateway.buyerAddress,
+        skillId: "register-domain",
+        serviceArgs: { domain: "malformed-meta.xyz" },
+      };
+      const paymentRequired = parseResult<PaymentRequired>(
+        await client.callTool({ name: "daski_buy_service", arguments: args }),
+      );
+      const paymentPayload = await signChallengePayload(paymentRequired);
+      const raw = await client.callTool({
+        name: "daski_buy_service",
+        arguments: { ...args, paymentPayload },
+        _meta: { "x402/payment": "not-an-object" },
+      });
+      expect((raw as ToolResultContent).isError).toBe(true);
+      expect(parseResult<{ code: string }>(raw).code).toBe(
+        "invalid_meta_payment",
+      );
     } finally {
       await transport.close();
     }

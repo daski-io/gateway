@@ -27,7 +27,7 @@ describe("x402 V2 payment preparation", () => {
     await gateway.close();
   });
 
-  it("returns Daski requirements and leaves salt generation to the client", async () => {
+  it("returns signable Daski requirements while allowing client salts", async () => {
     const { json, status, serviceRef, paymentRequired } =
       await gateway.purchaseChallenge(2n, {
       buyerTokenId: "5",
@@ -43,7 +43,18 @@ describe("x402 V2 payment preparation", () => {
       asset: gateway.config.usdc.address,
       payTo: gateway.config.x402AdapterAddress,
     });
-    expect(JSON.stringify(paymentRequired)).not.toContain("eip712TypedData");
+    const signing = paymentRequired?.extensions?.[
+      "https://daski.xyz/x402/v2"
+    ] as {
+      signing?: {
+        nonceSalt: Hex;
+        eip712TypedData: { primaryType: string };
+      };
+    };
+    expect(signing.signing).toMatchObject({
+      nonceSalt: expect.stringMatching(/^0x[0-9a-fA-F]{64}$/),
+      eip712TypedData: { primaryType: "ReceiveWithAuthorization" },
+    });
     expect(json).not.toHaveProperty("accepts");
 
     const first = await gateway.createPaymentPayload(paymentRequired!);

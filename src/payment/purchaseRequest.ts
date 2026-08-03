@@ -80,9 +80,16 @@ export async function parsePurchaseRequest(
   if (registration === null) return null;
 
   const serviceArgs = isRecord(body.serviceArgs) ? body.serviceArgs : {};
+  const cachedOffer = resolveSkillOffer(providerTokenId, skillId, deps.cache, {
+    serviceSlug,
+  });
+  if (!deps.cache.get(providerTokenId) || !cachedOffer.ok) {
+    sendError(res, cachedOffer.ok ? 404 : cachedOffer.status, "provider or skill not found");
+    return null;
+  }
   let providerAuthority: ProviderAuthoritySnapshot;
   try {
-    providerAuthority = await deps.providerAuthority.requireFresh(
+    providerAuthority = await deps.providerAuthority.requireFreshCatalog(
       providerTokenId,
     );
   } catch (error) {

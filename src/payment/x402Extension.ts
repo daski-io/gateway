@@ -3,6 +3,7 @@ import type {
   DaskiX402Declaration,
   DaskiX402Info,
   DaskiX402Receipt,
+  DaskiX402Signing,
   PaymentPayload,
   PaymentRequired,
   SettlementResponse,
@@ -10,6 +11,10 @@ import type {
 import { isHex32, isHexAddress } from "../util/evmValidation.js";
 
 export const DASKI_X402_SCHEMA_PATH = "/.well-known/x402-daski-v2.schema.json";
+
+function daskiX402SchemaRef(publicUrl: string): Record<string, unknown> {
+  return { $ref: `${publicUrl}${DASKI_X402_SCHEMA_PATH}` };
+}
 
 export function daskiX402Schema(publicUrl: string): Record<string, unknown> {
   return {
@@ -23,6 +28,7 @@ export function daskiX402Schema(publicUrl: string): Record<string, unknown> {
         properties: {
           info: declarationInfoSchema(),
           schema: { type: "object" },
+          signing: signingSchema(),
         },
         additionalProperties: true,
       },
@@ -76,6 +82,73 @@ export function daskiX402Schema(publicUrl: string): Record<string, unknown> {
         additionalProperties: false,
       },
     ],
+  };
+}
+
+function signingSchema(): Record<string, unknown> {
+  const address = { type: "string", pattern: "^0x[0-9a-fA-F]{40}$" };
+  const bytes32 = { type: "string", pattern: "^0x[0-9a-fA-F]{64}$" };
+  const decimal = { type: "string", pattern: "^[0-9]+$" };
+  return {
+    type: "object",
+    required: [
+      "eip712TypedData",
+      "nonceSalt",
+      "nonceDerivation",
+      "nextAction",
+    ],
+    properties: {
+      eip712TypedData: {
+        type: "object",
+        required: ["domain", "types", "primaryType", "message"],
+        properties: {
+          domain: { type: "object" },
+          types: { type: "object" },
+          primaryType: { const: "ReceiveWithAuthorization" },
+          message: { type: "object" },
+        },
+        additionalProperties: false,
+      },
+      nonceSalt: bytes32,
+      nonceDerivation: {
+        type: "object",
+        required: [
+          "chainId",
+          "adapter",
+          "router",
+          "token",
+          "payer",
+          "amount",
+          "validAfter",
+          "validBefore",
+          "providerAgentId",
+          "serviceId",
+          "expectedPayee",
+          "serviceRef",
+          "nonceSalt",
+          "recipe",
+        ],
+        properties: {
+          chainId: { enum: [8453, 84532] },
+          adapter: address,
+          router: address,
+          token: address,
+          payer: address,
+          amount: decimal,
+          validAfter: decimal,
+          validBefore: decimal,
+          providerAgentId: decimal,
+          serviceId: bytes32,
+          expectedPayee: address,
+          serviceRef: bytes32,
+          nonceSalt: bytes32,
+          recipe: { type: "string", format: "uri" },
+        },
+        additionalProperties: false,
+      },
+      nextAction: { type: "string" },
+    },
+    additionalProperties: false,
   };
 }
 
@@ -136,8 +209,9 @@ function declarationInfoSchema(): Record<string, unknown> {
 export function buildDaskiX402Declaration(
   publicUrl: string,
   info: DaskiX402Info,
+  signing: DaskiX402Signing,
 ): DaskiX402Declaration {
-  return { info, schema: daskiX402Schema(publicUrl) };
+  return { info, schema: daskiX402SchemaRef(publicUrl), signing };
 }
 
 export function getDaskiDeclaration(

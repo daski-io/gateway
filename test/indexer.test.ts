@@ -95,7 +95,6 @@ describe("ChainEventsIndexer", () => {
   function indexer(
     options: {
       blockRangePerCall?: bigint;
-      confirmationDepthBlocks?: bigint;
     } = {},
   ) {
     return new ChainEventsIndexer(
@@ -127,7 +126,6 @@ describe("ChainEventsIndexer", () => {
     gateway.mockChain.pushChainProjectionEvent(eligibility(1n, 0n));
 
     const worker = indexer({
-      confirmationDepthBlocks: 0n,
       blockRangePerCall: 2_000_000n,
     });
     await worker.tick();
@@ -152,7 +150,7 @@ describe("ChainEventsIndexer", () => {
     gateway.mockChain.pushChainProjectionEvent(settlement(2n, 10n));
     gateway.mockChain.pushChainProjectionEvent(eligibility(2n, 11n, false));
 
-    await indexer({ confirmationDepthBlocks: 0n }).tick();
+    await indexer().tick();
 
     expect(
       await gateway.bundle.queries.listRecentChainActivity(10),
@@ -222,7 +220,7 @@ describe("ChainEventsIndexer", () => {
     }
     gateway.mockChain.setBlockNumber(14n);
 
-    const worker = indexer({ confirmationDepthBlocks: 0n });
+    const worker = indexer();
     await worker.tick();
 
     let [row] = await gateway.bundle.queries.listRecentChainActivity(10);
@@ -257,7 +255,7 @@ describe("ChainEventsIndexer", () => {
     gateway.mockChain.pushChainProjectionEvent(
       eligibility(999n, 6n, true, 1, 2n),
     );
-    const worker = indexer({ confirmationDepthBlocks: 0n });
+    const worker = indexer();
 
     await worker.tick();
 
@@ -266,6 +264,9 @@ describe("ChainEventsIndexer", () => {
       lastIndexedBlock: null,
       lastFailure: { category: "projection_integrity" },
     });
+    expect(worker.status().lastFailure?.message).toContain(
+      "docs/runbooks/chain-projection-recovery.md",
+    );
     const stored = await gateway.bundle.pool.query(
       "SELECT payment_id FROM chain_events",
     );
@@ -280,7 +281,7 @@ describe("ChainEventsIndexer", () => {
     );
 
     await expect(worker.initialize()).rejects.toThrow(
-      "stored chain projection descriptor conflicts",
+      "docs/runbooks/chain-projection-recovery.md",
     );
   });
 
@@ -291,26 +292,27 @@ describe("ChainEventsIndexer", () => {
     const worker = indexer();
 
     await expect(worker.initialize()).rejects.toThrow(
-      "stored chain projection descriptor conflicts",
+      "docs/runbooks/chain-projection-recovery.md",
     );
   });
 
-  it("waits for confirmation depth and advances pages atomically", async () => {
-    gateway.mockChain.setBlockNumber(100n);
+  it("indexes only through the safe head and advances pages atomically", async () => {
+    gateway.mockChain.setBlockNumber(112n);
+    gateway.mockChain.setSafeBlockNumber(88n);
     gateway.mockChain.pushChainProjectionEvent(settlement(50n, 100n));
     gateway.mockChain.pushChainProjectionEvent(eligibility(50n, 100n));
-    const worker = indexer({
-      blockRangePerCall: 25n,
-      confirmationDepthBlocks: 12n,
-    });
+    const worker = indexer({ blockRangePerCall: 25n });
 
     await worker.tick();
     expect(
       await gateway.bundle.queries.listRecentChainActivity(10),
     ).toHaveLength(0);
-    expect(worker.status().lastIndexedBlock).toBe(88n);
+    expect(worker.status()).toMatchObject({
+      lastIndexedBlock: 88n,
+      lastObservedSafeHead: 88n,
+    });
 
-    gateway.mockChain.setBlockNumber(112n);
+    gateway.mockChain.setSafeBlockNumber(100n);
     await worker.tick();
     expect(
       await gateway.bundle.queries.listRecentChainActivity(10),
@@ -322,8 +324,8 @@ describe("ChainEventsIndexer", () => {
     gateway.mockChain.setBlockNumber(10n);
     gateway.mockChain.pushChainProjectionEvent(settlement(61n, 5n));
     gateway.mockChain.pushChainProjectionEvent(eligibility(61n, 5n));
-    const first = indexer({ confirmationDepthBlocks: 0n });
-    const second = indexer({ confirmationDepthBlocks: 0n });
+    const first = indexer();
+    const second = indexer();
 
     await Promise.all([first.tick(), second.tick()]);
     await Promise.all([first.tick(), second.tick()]);
@@ -341,8 +343,8 @@ describe("ChainEventsIndexer", () => {
     gateway.mockChain.setBlockNumber(5n);
     gateway.mockChain.pushChainProjectionEvent(settlement(71n, 5n));
     gateway.mockChain.pushChainProjectionEvent(eligibility(71n, 5n));
-    const first = indexer({ confirmationDepthBlocks: 0n });
-    const second = indexer({ confirmationDepthBlocks: 0n });
+    const first = indexer();
+    const second = indexer();
 
     await first.tick();
     await first.stopAndDrain();
@@ -365,8 +367,8 @@ describe("ChainEventsIndexer", () => {
     gateway.mockChain.pushChainProjectionEvent(
       eligibility(999n, 6n, true, 1, 2n),
     );
-    const leader = indexer({ confirmationDepthBlocks: 0n });
-    const follower = indexer({ confirmationDepthBlocks: 0n });
+    const leader = indexer();
+    const follower = indexer();
 
     await leader.tick();
     await follower.tick();

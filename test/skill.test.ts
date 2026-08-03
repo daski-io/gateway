@@ -34,7 +34,10 @@ describe("hosted SKILL.md", () => {
     // drop critical content.
     expect(text).toMatch(/Prerequisites/);
     expect(text).toMatch(/daski-exact/);
+    expect(text).toMatch(/Signing a daski-exact payment yourself/);
+    expect(text).toContain("DASKI_X402_RECEIVE_V1");
     expect(text).toMatch(/daski_buy_service/);
+    expect(text).toContain("paymentPayload");
     expect(text).toContain('_meta["x402/payment"]');
     expect(text).toContain('_meta["x402/payment-response"]');
     expect(text).toMatch(/daski_submit_task/);

@@ -325,6 +325,7 @@ export interface ConfirmationRelayer {
 
 export interface ChainStatusReader {
   getBlockNumber(): Promise<bigint>;
+  getSafeBlockNumber(): Promise<bigint>;
   verifyDeploymentReadiness(): Promise<{
     ready: boolean;
     failedCheck: string | null;

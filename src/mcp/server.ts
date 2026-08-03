@@ -16,7 +16,10 @@ import { GATEWAY_VERSION } from "../version.js";
 import { registerProviderResource } from "./providerResource.js";
 import { instrumentToolCalls } from "./instrumentation.js";
 import { sessionMetrics } from "./sessionMetrics.js";
-import { registerDiscoveryTool } from "./discoveryTool.js";
+import {
+  MAX_CONCURRENT_SEARCH_EMBEDDINGS,
+  registerDiscoveryTool,
+} from "./discoveryTool.js";
 import { registerConfirmDeliveryTool } from "./confirmDeliveryTool.js";
 import { registerAgentTool } from "./registerAgentTool.js";
 import { registerTaskStatusTool } from "./taskStatusTool.js";
@@ -103,7 +106,8 @@ function serverInstructions(config: Config): string {
   "  5. daski_fetch_artifact     — retrieve bytes behind a gated artifact URL",
   "  6. daski_confirm_delivery   — leave an on-chain attestation (optional)",
   "",
-    "daski_buy_service is the only payment entry point; x402 retries return to it.",
+    "daski_buy_service is the only payment entry point; signed retries return " +
+      "through standard x402 metadata or its paymentPayload argument.",
     "",
     UNTRUSTED_PROVIDER_CONTENT_WARNING,
     "",
@@ -132,6 +136,10 @@ export async function createMcpServer(
   // a test forcing a timeout still forces it on submit.
   const a2aTimeoutMs = deps.a2aTimeoutMs ?? deps.config.a2aTimeoutMs;
   const a2aSubmitTimeoutMs = deps.a2aTimeoutMs ?? deps.config.a2aSubmitTimeoutMs;
+  const searchEmbeddingLimiter = new ConcurrencyLimiter(
+    MAX_CONCURRENT_SEARCH_EMBEDDINGS,
+    MAX_CONCURRENT_SEARCH_EMBEDDINGS,
+  );
   const artifactLimiter = new ConcurrencyLimiter(8, 1);
   const streamLimiter = new ConcurrencyLimiter(20, 2);
   function registerTools(server: McpServer) {
@@ -146,7 +154,7 @@ export async function createMcpServer(
       },
       artifactLimiter,
     );
-    registerDiscoveryTool(server, deps);
+    registerDiscoveryTool(server, deps, searchEmbeddingLimiter);
 
     registerConfirmDeliveryTool(server, deps);
     registerAgentTool(server, deps);
