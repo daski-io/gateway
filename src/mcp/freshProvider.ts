@@ -15,7 +15,7 @@ export async function requireFreshCatalogMatch<T extends CatalogA2AEndpoint>(
   resolveCurrent: () => T | null,
 ): Promise<FreshCatalogResult<T>> {
   try {
-    await authority.requireFresh(providerAgentId);
+    await authority.requireFreshCatalog(providerAgentId);
   } catch (error) {
     const inactive =
       error instanceof ProviderAuthorityError &&

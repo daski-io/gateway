@@ -94,9 +94,21 @@ export async function createQuotedChallenge(
       },
     };
   }
+  if (!deps.cache.get(input.providerAgentId)) {
+    return fail("provider_not_found", "provider is not currently admitted");
+  }
+  const cachedOffer = resolveSkillOffer(
+    input.providerAgentId,
+    input.skillId,
+    deps.cache,
+    { serviceSlug: input.serviceSlug },
+  );
+  if (!cachedOffer.ok) {
+    return fail(cachedOffer.code, cachedOffer.message);
+  }
   let authority;
   try {
-    authority = await deps.providerAuthority.requireFresh(
+    authority = await deps.providerAuthority.requireFreshCatalog(
       input.providerAgentId,
     );
   } catch (error) {

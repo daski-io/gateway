@@ -1,6 +1,7 @@
 import type { ProviderAuthoritySnapshot } from "../chain/reader.js";
 import type { Config } from "../config.js";
 import type { DiscoveryCache } from "../discovery/cache.js";
+import type { CachedProvider } from "../types.js";
 
 export type ProviderAuthorityFailure =
   | "provider_authority_unavailable"
@@ -14,7 +15,11 @@ export class ProviderAuthorityError extends Error {
 }
 
 export class ProviderAuthorityService {
-  private readonly pending = new Map<
+  private readonly pendingAuthority = new Map<
+    string,
+    Promise<ProviderAuthoritySnapshot>
+  >();
+  private readonly pendingCatalog = new Map<
     string,
     Promise<ProviderAuthoritySnapshot>
   >();
@@ -30,33 +35,55 @@ export class ProviderAuthorityService {
   async requireFresh(agentId: bigint): Promise<ProviderAuthoritySnapshot> {
     const cached = this.cache.getForDiscovery(agentId);
     if (cached && this.cache.authorityIsFresh(cached, this.maxAgeMs)) {
-      return {
-        agentId: cached.agentId,
-        isActive: cached.authorityActive,
-        walletAddress: cached.walletAddress,
-        agentURI: cached.agentURI,
-        registrationTime: 0n,
-        observedBlock: cached.authorityObservedBlock,
-      };
+      return authorityFromCache(cached);
     }
+    return this.refreshOnce(agentId, false);
+  }
+
+  /** Requires recent on-chain authority and a successfully resolved catalog. */
+  async requireFreshCatalog(
+    agentId: bigint,
+  ): Promise<ProviderAuthoritySnapshot> {
+    const cached = this.cache.getForDiscovery(agentId);
+    if (
+      cached &&
+      this.cache.authorityIsFresh(cached, this.maxAgeMs) &&
+      cached.fetchError === null &&
+      cached.cards.length > 0 &&
+      Date.now() - cached.lastFetched.getTime() <= this.maxAgeMs
+    ) {
+      return authorityFromCache(cached);
+    }
+    return this.refreshOnce(agentId, true);
+  }
+
+  private async refreshOnce(
+    agentId: bigint,
+    refreshCatalog: boolean,
+  ): Promise<ProviderAuthoritySnapshot> {
     const key = agentId.toString();
-    const existing = this.pending.get(key);
+    const pending = refreshCatalog
+      ? this.pendingCatalog
+      : this.pendingAuthority;
+    const existing = pending.get(key);
     if (existing) return existing;
-    const refresh = this.refresh(agentId);
-    this.pending.set(key, refresh);
+    const refresh = this.refresh(agentId, refreshCatalog);
+    pending.set(key, refresh);
     try {
       return await refresh;
     } finally {
-      if (this.pending.get(key) === refresh) this.pending.delete(key);
+      if (pending.get(key) === refresh) pending.delete(key);
     }
   }
 
   private async refresh(
     agentId: bigint,
+    refreshCatalog: boolean,
   ): Promise<ProviderAuthoritySnapshot> {
     try {
-      const { authority } =
-        await this.cache.refreshProviderAuthority(agentId);
+      const { authority } = await this.cache.refreshProviderAuthority(agentId, {
+        refreshCatalog,
+      });
       if (!authority.isActive) {
         throw new ProviderAuthorityError("provider_inactive");
       }
@@ -72,4 +99,17 @@ export class ProviderAuthorityService {
       throw new ProviderAuthorityError("provider_authority_unavailable");
     }
   }
+}
+
+function authorityFromCache(
+  provider: CachedProvider,
+): ProviderAuthoritySnapshot {
+  return {
+    agentId: provider.agentId,
+    isActive: provider.authorityActive,
+    walletAddress: provider.walletAddress,
+    agentURI: provider.agentURI,
+    registrationTime: 0n,
+    observedBlock: provider.authorityObservedBlock,
+  };
 }

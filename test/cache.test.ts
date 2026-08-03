@@ -214,6 +214,21 @@ describe("DiscoveryCache failure hardening", () => {
     expect(kept.cards).toHaveLength(1);
   });
 
+  it("never reauthorizes execution from a retained last-known-good card", async () => {
+    const h = buildHarness();
+    await h.cache.refresh();
+    h.setFailing(true);
+    await h.cache.refresh();
+    expect(h.cache.get(1n)!.fetchError).toMatch(/HTTP 500/);
+    expect(h.cache.get(1n)!.cards).toHaveLength(1);
+
+    h.fetchFn.mockClear();
+    await expect(
+      h.cache.refreshProviderAuthority(1n, { refreshCatalog: true }),
+    ).rejects.toThrow(/HTTP 500/);
+    expect(h.fetchFn).toHaveBeenCalledTimes(1);
+  });
+
   it("drops cached cards when agentURI rotates and the replacement fetch fails", async () => {
     const h = buildHarness();
     await h.cache.refresh();

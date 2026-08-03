@@ -62,7 +62,7 @@ describe("free service provider authority", () => {
   it("fails closed before direct dispatch when authority is unavailable", async () => {
     const fetchFn = vi.fn<typeof fetch>();
     const providerAuthority = {
-      requireFresh: vi.fn().mockRejectedValue(
+      requireFreshCatalog: vi.fn().mockRejectedValue(
         new ProviderAuthorityError("provider_authority_unavailable"),
       ),
     } as unknown as ProviderAuthorityService;
@@ -79,7 +79,7 @@ describe("free service provider authority", () => {
     expect(JSON.parse(content.text)).toMatchObject({
       code: "PROVIDER_AUTHORITY_UNAVAILABLE",
     });
-    expect(providerAuthority.requireFresh).toHaveBeenCalledWith(7n);
+    expect(providerAuthority.requireFreshCatalog).toHaveBeenCalledWith(7n);
     expect(fetchFn).not.toHaveBeenCalled();
   });
 
@@ -95,7 +95,7 @@ describe("free service provider authority", () => {
         ),
     );
     const providerAuthority = {
-      requireFresh: vi.fn().mockResolvedValue({ agentId: 7n }),
+      requireFreshCatalog: vi.fn().mockResolvedValue({ agentId: 7n }),
     } as unknown as ProviderAuthorityService;
     const result = await runBuyServiceFreePath(CONTEXT, {
       config: { chainId: 84532, network: "base-sepolia" } as Config,
@@ -115,7 +115,7 @@ describe("free service provider authority", () => {
         available: true,
       },
     });
-    expect(providerAuthority.requireFresh).toHaveBeenCalledWith(7n);
+    expect(providerAuthority.requireFreshCatalog).toHaveBeenCalledWith(7n);
     expect(fetchFn).toHaveBeenCalledWith(
       "https://provider.test/availability",
       expect.objectContaining({ method: "POST" }),

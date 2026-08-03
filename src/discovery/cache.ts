@@ -250,6 +250,7 @@ export class DiscoveryCache {
 
   async refreshProviderAuthority(
     agentId: bigint,
+    options: { refreshCatalog?: boolean } = {},
   ): Promise<{
     provider: CachedProvider;
     authority: ProviderAuthoritySnapshot;
@@ -269,6 +270,7 @@ export class DiscoveryCache {
     const existing = this.cache.get(agentId.toString());
     let provider: CachedProvider;
     if (
+      options.refreshCatalog !== true &&
       existing &&
       existing.agentURI === authority.agentURI &&
       existing.cards.length > 0

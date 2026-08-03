@@ -29,6 +29,7 @@ import type {
 } from "../src/types.js";
 import { DASKI_X402_EXTENSION_URI } from "../src/config.js";
 import { UNTRUSTED_PROVIDER_CONTENT_WARNING } from "../src/mcp/providerReflection.js";
+import { MAX_SEARCH_INTENT_CHARACTERS } from "../src/mcp/discoveryTool.js";
 import { signTestEnvelope } from "./helpers/envelopeAuth.js";
 
 async function connectClient(baseUrl: string) {
@@ -144,10 +145,16 @@ describe("hosted MCP — wallet-agnostic surface", () => {
       );
       const properties = searchTool?.inputSchema.properties as Record<
         string,
-        { enum?: string[]; minimum?: number; maximum?: number }
+        {
+          enum?: string[];
+          minimum?: number;
+          maximum?: number;
+          maxLength?: number;
+        }
       >;
       expect(properties.categoryFamily.enum).toEqual(CATEGORY_FAMILY_SLUGS);
       expect(properties.serviceType.enum).toEqual(SERVICE_TYPE_SLUGS);
+      expect(properties.intent.maxLength).toBe(MAX_SEARCH_INTENT_CHARACTERS);
       const statusTool = tools.tools.find(
         (tool) => tool.name === "daski_get_task_status",
       );
@@ -268,6 +275,25 @@ describe("hosted MCP — wallet-agnostic surface", () => {
       expect(body.providers[0].agentId).toBe("2");
       expect(body.providers[0].match.distance).toBeLessThanOrEqual(2);
       expect(typeof body.providers[0].match.bestSkillId).toBe("string");
+    } finally {
+      await transport.close();
+    }
+  });
+
+  it("rejects oversized semantic-search intents before embedding", async () => {
+    const { client, transport } = await connectClient(gateway.baseUrl);
+    try {
+      const result = (await client.callTool({
+        name: "daski_search_services",
+        arguments: {
+          intent: "x".repeat(MAX_SEARCH_INTENT_CHARACTERS + 1),
+        },
+      })) as ToolResultContent;
+
+      expect(result.isError).toBe(true);
+      expect(result.content[0]?.text).toContain(
+        String(MAX_SEARCH_INTENT_CHARACTERS),
+      );
     } finally {
       await transport.close();
     }
