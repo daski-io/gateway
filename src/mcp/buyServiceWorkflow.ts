@@ -169,6 +169,8 @@ export async function runBuyService(
       })
     : runBuyServiceFreePath(context, {
         config: deps.config,
+        cache: deps.cache,
+        providerAuthority: deps.providerAuthority,
         fetch: transport.fetch,
         timeoutMs: transport.timeoutMs,
         maxResponseBytes: transport.maxResponseBytes,

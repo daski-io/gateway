@@ -47,6 +47,19 @@ function unknownSession(res: Response): void {
   });
 }
 
+function rejectBatchRequest(req: Request, res: Response): boolean {
+  if (!Array.isArray(req.body)) return false;
+  res.status(400).json({
+    jsonrpc: "2.0",
+    error: {
+      code: -32600,
+      message: "JSON-RPC batch requests are not supported",
+    },
+    id: null,
+  });
+  return true;
+}
+
 function clientKey(req: Request): string {
   return req.ip ?? req.socket.remoteAddress ?? "unknown";
 }
@@ -160,6 +173,7 @@ export function mountMcpHttpTransport(
   options.app.post(options.path, async (req, res) => {
     try {
       if (rejectDisallowedOrigin(req, res)) return;
+      if (rejectBatchRequest(req, res)) return;
       const id = sessionId(req);
       const existing = id ? sessions.get(id) : undefined;
       if (existing) {

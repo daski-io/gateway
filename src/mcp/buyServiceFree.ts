@@ -1,6 +1,10 @@
 import type { Config } from "../config.js";
+import type { DiscoveryCache } from "../discovery/cache.js";
+import type { ProviderAuthorityService } from "../payment/providerAuthority.js";
 import { a2aPostJson, providerErrorFromFailure, type Fetcher } from "./a2a.js";
 import type { BuyServiceContext } from "./buyServiceTypes.js";
+import { requireFreshCatalogMatch } from "./freshProvider.js";
+import { findCatalogSkillAtA2AEndpoint } from "./providerCatalog.js";
 import { sanitizeProviderValue } from "./providerReflection.js";
 import { unknownServiceArgWarnings } from "./serviceArgWarnings.js";
 import {
@@ -11,11 +15,12 @@ import {
 
 interface FreePathDeps {
   config: Config;
+  cache: DiscoveryCache;
+  providerAuthority: ProviderAuthorityService;
   fetch: Fetcher;
   timeoutMs: number;
   maxResponseBytes: number;
 }
-
 function synchronousDispatch(
   skillMeta: Record<string, unknown>,
 ): { endpoint: string; kind: string } | null {
@@ -188,6 +193,26 @@ export async function runBuyServiceFreePath(
   ctx: BuyServiceContext,
   deps: FreePathDeps,
 ): Promise<McpToolResult> {
+  const fresh = await requireFreshCatalogMatch(
+    ctx.provider.agentId,
+    deps.providerAuthority,
+    () => {
+      const endpoint = findCatalogSkillAtA2AEndpoint(
+        deps.cache, ctx.providerA2AUrl, ctx.args.skillId,
+      );
+      return endpoint?.card.serviceSlug === ctx.provider.serviceSlug
+        ? endpoint
+        : null;
+    },
+  );
+  if (!fresh.ok) return fresh.result;
+  const provider = {
+    agentId: fresh.endpoint.provider.agentId,
+    serviceSlug: fresh.endpoint.card.serviceSlug,
+    skillMeta: fresh.endpoint.skillMeta,
+    agentCard: fresh.endpoint.card.agentCard,
+  };
+  ctx = { ...ctx, provider, providerA2AUrl: fresh.endpoint.url };
   const requiresAssetOwnership =
     ctx.provider.skillMeta.requiresAssetOwnership === true;
   const requiresCapability =
