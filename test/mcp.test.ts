@@ -174,7 +174,10 @@ describe("hosted MCP — wallet-agnostic surface", () => {
       const artifactTool = tools.tools.find(
         (tool) => tool.name === "daski_fetch_artifact",
       );
-      expect(artifactTool?.inputSchema.required).toContain("providerA2AUrl");
+      expect(artifactTool?.inputSchema.required).toEqual(["url", "taskId"]);
+      expect(artifactTool?.inputSchema.properties).not.toHaveProperty(
+        "providerA2AUrl",
+      );
       const buyTool = tools.tools.find(
         (tool) => tool.name === "daski_buy_service",
       );
@@ -1582,7 +1585,7 @@ describe("hosted MCP — wallet-agnostic surface", () => {
     try {
       const body = parseResult<{
         taskId: string;
-        state: string;
+        status: string;
         untrustedProviderContent?: {
           artifacts?: Array<{ name: string; parts: unknown[] }>;
           statusMessage?: {
@@ -1602,8 +1605,8 @@ describe("hosted MCP — wallet-agnostic surface", () => {
           },
         }),
       );
-      expect(body).toMatchObject({ taskId: "qa-test-1" });
-      expect(body.state).toBe("completed");
+      expect(body.taskId).toMatch(/^[A-Za-z0-9_-]{43}$/);
+      expect(body.status).toBe("completed");
       // Artifact MUST come back inline so the agent doesn't have to call
       // daski_check_task on a non-persistent qa- task (would 404).
       expect(body.untrustedProviderContent?.artifacts).toBeDefined();
@@ -1889,7 +1892,7 @@ describe("hosted MCP — wallet-agnostic surface", () => {
         first.authorization,
       );
 
-      const result = parseResult<{ taskId: string; state: string }>(
+      const result = parseResult<{ taskId: string; status: string }>(
         await client.callTool({
           name: "daski_submit_task",
           arguments: {
@@ -1903,7 +1906,7 @@ describe("hosted MCP — wallet-agnostic surface", () => {
         }),
       );
       expect(result.taskId).toBeDefined();
-      expect(result.state).toBe("submitted");
+      expect(result.status).toBe("submitted");
 
       const sent = gateway.mockProvider.getLastSendBody();
       const params = sent?.params as {
@@ -1923,7 +1926,7 @@ describe("hosted MCP — wallet-agnostic surface", () => {
     // Answering an input-required task authenticates via the provider's
     // action:"input" TaskAccessAuthorization challenge, NOT an envelope —
     // even on a paid skill that would normally get the envelope first-call.
-    const mappingId = await gateway.bundle.queries.insertTaskMapping({
+    const pending = await gateway.tasks.begin({
       contextId: "context-task-parked-1",
       messageId: "message-task-parked-1",
       serviceRef: null,
@@ -1931,28 +1934,28 @@ describe("hosted MCP — wallet-agnostic surface", () => {
       skillId: "register-domain",
       buyerTokenId: "5",
     });
-    await gateway.bundle.queries.completeTaskMapping(
-      mappingId,
+    await gateway.tasks.complete(
+      pending.mappingId,
       "task-parked-1",
       "input-required",
     );
+    gateway.mockProvider.setSyncResult({
+      id: "task-parked-1",
+      state: "submitted",
+    });
     const { client, transport } = await connectClient(gateway.baseUrl);
     try {
-      const body = parseResult<{ taskId: string; state: string }>(
+      const body = parseResult<{ taskId: string; status: string }>(
         await client.callTool({
           name: "daski_submit_task",
           arguments: {
-            providerA2AUrl: gateway.mockProvider.baseUrl + "/a2a",
-            skillId: "register-domain",
-            paymentId: "42",
-            chainId: 84532,
-            taskId: "task-parked-1",
+            taskId: pending.taskId,
             serviceArgs: { domain: "corrected.xyz" },
           },
         }),
       );
       // No envelope typed-data — the call went straight to the provider.
-      expect(body.taskId).toBeDefined();
+      expect(body.taskId).toBe(pending.taskId);
       const sent = gateway.mockProvider.getLastSendBody();
       expect(sent).not.toBeNull();
       const params = sent!.params as {
@@ -1963,6 +1966,7 @@ describe("hosted MCP — wallet-agnostic surface", () => {
       expect(meta.serviceRef).toBeUndefined();
       expect(meta.envelopeAuth).toBeUndefined();
     } finally {
+      gateway.mockProvider.setSyncResult(null);
       await transport.close();
     }
   });
@@ -1977,7 +1981,7 @@ describe("hosted MCP — wallet-agnostic surface", () => {
           skillId: "register-domain",
           paymentId: "42",
           chainId: 84532,
-          taskId: "task-parked-1",
+          taskId: "t".repeat(43),
           serviceRef: "0x" + "ab".repeat(32),
           transactionHash: "0x" + "cd".repeat(32),
           serviceArgs: { domain: "corrected.xyz" },
@@ -2207,7 +2211,7 @@ describe("hosted MCP — wallet-agnostic surface", () => {
       const pending = await gateway.bundle.pool.query<{ count: string }>(
         `SELECT count(*)::text AS count
            FROM task_mappings
-          WHERE task_id IS NULL`,
+          WHERE provider_task_id IS NULL`,
       );
       expect(pending.rows[0]?.count).toBe("0");
     } finally {
@@ -2277,7 +2281,7 @@ describe("hosted MCP — wallet-agnostic surface", () => {
         authorization,
       );
       const body = parseResult<{
-        state: string;
+        status: string;
         nextEnvelopeAuthChallenge?: {
           messageId: string;
           authorization: {
@@ -2306,7 +2310,7 @@ describe("hosted MCP — wallet-agnostic surface", () => {
           },
         }),
       );
-      expect(body.state).toBe("input-required");
+      expect(body.status).toBe("input-required");
       expect(body.nextEnvelopeAuthChallenge).toBeDefined();
       const next = body.nextEnvelopeAuthChallenge!;
       expect(next.messageId).not.toBe("msg-used-1");

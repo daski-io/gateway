@@ -91,7 +91,7 @@ describe("SKILL.md examples validate against live tool schemas", () => {
     expect(Object.keys(serviceArgs).length).toBeGreaterThan(0);
   });
 
-  it("bounds every caller-supplied A2A task identifier", () => {
+  it("bounds A2A identifiers and requires an opaque gateway task handle", () => {
     const schema = z.object(SUBMIT_TASK_SCHEMA);
     const common = {
       providerA2AUrl: "https://provider.example/a2a",
@@ -99,17 +99,17 @@ describe("SKILL.md examples validate against live tool schemas", () => {
       paymentId: "0",
       chainId: 84532 as const,
     };
-    for (const field of ["messageId", "contextId", "taskId"] as const) {
+    for (const field of ["messageId", "contextId"] as const) {
       expect(
         schema.safeParse({ ...common, [field]: "x".repeat(257) }).success,
       ).toBe(false);
     }
+    expect(schema.safeParse({ taskId: "task-1" }).success).toBe(false);
     expect(
       schema.safeParse({
-        ...common,
         messageId: "message-1",
         contextId: "context-1",
-        taskId: "task-1",
+        taskId: "GATEWAY_TASK_ID_0123456789abcdefghijklmnopq",
       }).success,
     ).toBe(true);
   });

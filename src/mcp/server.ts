@@ -34,6 +34,7 @@ import { UNTRUSTED_PROVIDER_CONTENT_WARNING } from "./providerReflection.js";
 import type { ChainDeploymentReadinessProbe } from "../payment/deploymentReadiness.js";
 import type { DaskiFacilitatorService } from "../payment/daskiFacilitator.js";
 import type { ProviderAuthorityService } from "../payment/providerAuthority.js";
+import { DaskiTaskService } from "../tasks/taskService.js";
 
 // JSON response cap on provider A2A calls. Real responses are <50 KB; 1 MB
 // is generous enough for unusual artifact payloads while still protecting
@@ -142,11 +143,16 @@ export async function createMcpServer(
   );
   const artifactLimiter = new ConcurrencyLimiter(8, 1);
   const streamLimiter = new ConcurrencyLimiter(20, 2);
+  const tasks = new DaskiTaskService(
+    deps.queries,
+    deps.config.taskRetentionSeconds,
+  );
   function registerTools(server: McpServer) {
     registerArtifactTool(
       server,
       deps.cache,
       deps.providerAuthority,
+      tasks,
       {
         fetch: a2aFetch,
         timeoutMs: a2aTimeoutMs,
@@ -162,16 +168,21 @@ export async function createMcpServer(
     const submitTaskHandler = async (
       args: SubmitTaskArgs,
     ): Promise<McpToolResult> => {
-      return runSubmitTask(args, deps, {
-        fetch: a2aFetch,
-        timeoutMs: a2aSubmitTimeoutMs,
-        maxResponseBytes: A2A_RESPONSE_MAX_BYTES,
-      });
+      return runSubmitTask(
+        args,
+        deps,
+        tasks,
+        {
+          fetch: a2aFetch,
+          timeoutMs: a2aSubmitTimeoutMs,
+          maxResponseBytes: A2A_RESPONSE_MAX_BYTES,
+        },
+      );
     };
 
     registerSubmitTaskTool(server, submitTaskHandler);
 
-    registerTaskStatusTool(server, deps, {
+    registerTaskStatusTool(server, deps, tasks, {
       fetch: a2aFetch,
       timeoutMs: a2aTimeoutMs,
       enforceUrlSafety,

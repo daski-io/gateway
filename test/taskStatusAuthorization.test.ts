@@ -106,7 +106,7 @@ describe("task-status authorization admission", () => {
       }),
     ).toBe(taskAccessVector.signer);
     const providerA2AUrl = `${gateway.mockProvider.url}/a2a`;
-    const mappingId = await gateway.bundle.queries.insertTaskMapping({
+    const pending = await gateway.tasks.begin({
       contextId: "buyer-context",
       messageId: "buyer-message",
       serviceRef: null,
@@ -114,8 +114,8 @@ describe("task-status authorization admission", () => {
       skillId: "run-task",
       buyerTokenId: "5",
     });
-    await gateway.bundle.queries.completeTaskMapping(
-      mappingId,
+    await gateway.tasks.complete(
+      pending.mappingId,
       "buyer-task",
       "completed",
     );
@@ -135,8 +135,7 @@ describe("task-status authorization admission", () => {
         await client.callTool({
           name: "daski_get_task_status",
           arguments: {
-            providerA2AUrl,
-            taskId: "buyer-task",
+            taskId: pending.taskId,
           },
         }),
       );
@@ -154,8 +153,7 @@ describe("task-status authorization admission", () => {
         await client.callTool({
           name: "daski_get_task_status",
           arguments: {
-            providerA2AUrl,
-            taskId: "buyer-task",
+            taskId: pending.taskId,
             capability: {
               signature,
               authorization: challenge.authorization,
@@ -164,7 +162,7 @@ describe("task-status authorization admission", () => {
         }),
       );
       expect(result).toMatchObject({
-        taskId: "buyer-task",
+        taskId: pending.taskId,
         status: "completed",
       });
       expect(getTaskBodies).toHaveLength(1);
@@ -174,19 +172,18 @@ describe("task-status authorization admission", () => {
   });
 
   it("does no outbound request for an unmapped task", async () => {
-    const providerA2AUrl = `${gateway.mockProvider.url}/a2a`;
+    const unknownTaskId = "n".repeat(43);
     const { client, transport } = await connectClient(gateway.baseUrl);
     try {
       const result = parseResult<{ code: string }>(
         await client.callTool({
           name: "daski_get_task_status",
           arguments: {
-            providerA2AUrl,
-            taskId: "not-dispatched",
+            taskId: unknownTaskId,
           },
         }),
       );
-      expect(result.code).toBe("TASK_NOT_MAPPED");
+      expect(result.code).toBe("TASK_NOT_FOUND");
       expect(getTaskBodies).toHaveLength(0);
     } finally {
       await transport.close();
@@ -195,7 +192,7 @@ describe("task-status authorization admission", () => {
 
   it("requires and forwards the anonymous task token", async () => {
     const providerA2AUrl = `${gateway.mockProvider.url}/a2a`;
-    const mappingId = await gateway.bundle.queries.insertTaskMapping({
+    const pending = await gateway.tasks.begin({
       contextId: "anonymous-context",
       messageId: "anonymous-message",
       serviceRef: null,
@@ -203,8 +200,8 @@ describe("task-status authorization admission", () => {
       skillId: "run-task",
       buyerTokenId: "0",
     });
-    await gateway.bundle.queries.completeTaskMapping(
-      mappingId,
+    await gateway.tasks.complete(
+      pending.mappingId,
       "anonymous-task",
       "working",
     );
@@ -215,8 +212,7 @@ describe("task-status authorization admission", () => {
         await client.callTool({
           name: "daski_get_task_status",
           arguments: {
-            providerA2AUrl,
-            taskId: "anonymous-task",
+            taskId: pending.taskId,
           },
         }),
       );
@@ -227,8 +223,7 @@ describe("task-status authorization admission", () => {
       await client.callTool({
         name: "daski_get_task_status",
         arguments: {
-          providerA2AUrl,
-          taskId: "anonymous-task",
+          taskId: pending.taskId,
           taskAccessToken,
         },
       });

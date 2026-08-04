@@ -21,6 +21,7 @@ export interface ArtifactFetchArgs {
   url: string;
   providerA2AUrl: string;
   taskId: string;
+  providerTaskId: string;
   expectedMimeType?: string;
   capability?: ArtifactCapability;
   providerAgentId: bigint;
@@ -214,7 +215,7 @@ export async function fetchArtifact(
   if (args.capability) {
     const invalid = validateCapability(
       args.capability,
-      args.taskId,
+      args.providerTaskId,
       args.url,
       args.providerAgentId,
     );
@@ -232,6 +233,7 @@ export async function fetchArtifact(
           return challengeResponse(
             challenge,
             args.taskId,
+            args.providerTaskId,
             args.url,
             !!args.capability,
             options.config,

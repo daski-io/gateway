@@ -1,13 +1,13 @@
 import { computeRequestHash } from "../auth/envelope.js";
 import type { Queries } from "../db/queries.js";
 import type { Hex, StoredChallenge } from "../types.js";
-import type { SubmitTaskArgs } from "./submitTaskTypes.js";
+import type { RoutedSubmitTaskArgs } from "./submitTaskTypes.js";
 import { mcpError, type McpToolResult } from "./util.js";
 
 type PaymentContextResult =
   | {
       ok: true;
-      args: SubmitTaskArgs;
+      args: RoutedSubmitTaskArgs;
       paidChallenge: StoredChallenge | null;
       requiresEnvelopeAuth: boolean;
     }
@@ -23,7 +23,7 @@ function fail(
   return { ok: false, result: mcpError({ code, message, ...extra }) };
 }
 
-function requestHash(args: SubmitTaskArgs): Hex | null {
+function requestHash(args: RoutedSubmitTaskArgs): Hex | null {
   try {
     return computeRequestHash(args.serviceArgs ?? {});
   } catch {
@@ -48,7 +48,7 @@ function isSettled(
 }
 
 function envelopeRequired(
-  args: SubmitTaskArgs,
+  args: RoutedSubmitTaskArgs,
   skillMeta: Record<string, unknown>,
 ): boolean {
   if (args.taskId) return false;
@@ -70,7 +70,7 @@ function envelopeRequired(
  * provider dispatch.
  */
 export async function resolveSubmitTaskPayment(
-  args: SubmitTaskArgs,
+  args: RoutedSubmitTaskArgs,
   skillMeta: Record<string, unknown>,
   queries: Queries,
 ): Promise<PaymentContextResult> {

@@ -5,7 +5,7 @@ import { hexToBytea } from "./paymentChallengeCodec.js";
 export interface TaskMappingRow {
   contextId: string;
   messageId: string | null;
-  taskId: string;
+  providerTaskId: string;
   serviceRef: Hex | null;
   providerA2AUrl: string;
   skillId: string;
@@ -13,13 +13,15 @@ export interface TaskMappingRow {
   status: string | null;
   createdAt: Date;
   updatedAt: Date;
+  expiresAt: Date;
 }
 
 interface RawRow {
   id: string;
   context_id: string;
   message_id: string | null;
-  task_id: string | null;
+  provider_task_id: string | null;
+  public_id_hash: Buffer;
   service_ref: Buffer | null;
   provider_a2a_url: string;
   skill_id: string;
@@ -27,6 +29,7 @@ interface RawRow {
   status: string | null;
   created_at: Date;
   updated_at: Date;
+  expires_at: Date;
 }
 
 export class TaskMappingIntegrityError extends Error {
@@ -37,11 +40,11 @@ export class TaskMappingIntegrityError extends Error {
 }
 
 function toCompletedRow(raw: RawRow): TaskMappingRow {
-  if (raw.task_id === null) throw new TaskMappingIntegrityError();
+  if (raw.provider_task_id === null) throw new TaskMappingIntegrityError();
   return {
     contextId: raw.context_id,
     messageId: raw.message_id,
-    taskId: raw.task_id,
+    providerTaskId: raw.provider_task_id,
     serviceRef: raw.service_ref
       ? (`0x${raw.service_ref.toString("hex")}` as Hex)
       : null,
@@ -51,6 +54,7 @@ function toCompletedRow(raw: RawRow): TaskMappingRow {
     status: raw.status,
     createdAt: raw.created_at,
     updatedAt: raw.updated_at,
+    expiresAt: raw.expires_at,
   };
 }
 
@@ -70,8 +74,9 @@ function buffersEqual(left: Buffer | null, right: Buffer | null): boolean {
 }
 
 const SELECT_COLUMNS = `
-  id, context_id, message_id, task_id, service_ref, provider_a2a_url,
-  skill_id, buyer_token_id, status, created_at, updated_at
+  id, context_id, message_id, provider_task_id, public_id_hash,
+  service_ref, provider_a2a_url, skill_id, buyer_token_id, status,
+  created_at, updated_at, expires_at
 `;
 
 export function createTaskMappingQueries(pool: Pool) {
@@ -83,12 +88,14 @@ export function createTaskMappingQueries(pool: Pool) {
       providerA2AUrl: string;
       skillId: string;
       buyerTokenId: string;
+      publicIdHash: Buffer;
+      expiresAt: Date;
     }): Promise<string> {
       const result = await pool.query<{ id: string }>(
         `INSERT INTO task_mappings
            (context_id, message_id, service_ref, provider_a2a_url,
-            skill_id, buyer_token_id)
-         VALUES ($1, $2, $3, $4, $5, $6)
+            skill_id, buyer_token_id, public_id_hash, expires_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
          RETURNING id`,
         [
           mapping.contextId,
@@ -97,6 +104,8 @@ export function createTaskMappingQueries(pool: Pool) {
           mapping.providerA2AUrl,
           mapping.skillId,
           mapping.buyerTokenId,
+          mapping.publicIdHash,
+          mapping.expiresAt,
         ],
       );
       return result.rows[0]!.id;
@@ -118,7 +127,7 @@ export function createTaskMappingQueries(pool: Pool) {
           [mappingId],
         );
         const pending = pendingResult.rows[0];
-        if (!pending || pending.task_id !== null) {
+        if (!pending || pending.provider_task_id !== null) {
           throw new TaskMappingIntegrityError();
         }
         await client.query(
@@ -129,43 +138,18 @@ export function createTaskMappingQueries(pool: Pool) {
           `SELECT ${SELECT_COLUMNS}
              FROM task_mappings
             WHERE provider_a2a_url = $1
-              AND task_id = $2
+              AND provider_task_id = $2
             FOR UPDATE`,
           [pending.provider_a2a_url, taskId],
         );
-        const existing = existingResult.rows[0];
-        if (existing) {
-          if (!sameBinding(existing, pending)) {
-            throw new TaskMappingIntegrityError();
-          }
-          await client.query("DELETE FROM task_mappings WHERE id = $1", [
-            mappingId,
-          ]);
-        } else {
-          await client.query(
-            `UPDATE task_mappings
-                SET task_id = $2, status = $3, updated_at = now()
-              WHERE id = $1`,
-            [mappingId, taskId, status],
-          );
+        if (existingResult.rows.some((row) => !sameBinding(row, pending))) {
+          throw new TaskMappingIntegrityError();
         }
         await client.query(
-          `DELETE FROM task_mappings
-            WHERE id <> $1
-              AND task_id IS NULL
-              AND provider_a2a_url = $2
-              AND skill_id = $3
-              AND buyer_token_id = $4
-              AND message_id IS NOT DISTINCT FROM $5
-              AND service_ref IS NOT DISTINCT FROM $6`,
-          [
-            existing?.id ?? mappingId,
-            pending.provider_a2a_url,
-            pending.skill_id,
-            pending.buyer_token_id,
-            pending.message_id,
-            pending.service_ref,
-          ],
+          `UPDATE task_mappings
+              SET provider_task_id = $2, status = $3, updated_at = now()
+            WHERE id = $1`,
+          [mappingId, taskId, status],
         );
         await client.query("COMMIT");
       } catch (error) {
@@ -179,7 +163,7 @@ export function createTaskMappingQueries(pool: Pool) {
     async deletePendingTaskMapping(mappingId: string): Promise<boolean> {
       const result = await pool.query(
         `DELETE FROM task_mappings
-          WHERE id = $1 AND task_id IS NULL`,
+          WHERE id = $1 AND provider_task_id IS NULL`,
         [mappingId],
       );
       return result.rowCount === 1;
@@ -193,7 +177,7 @@ export function createTaskMappingQueries(pool: Pool) {
         `WITH candidates AS (
            SELECT id
              FROM task_mappings
-            WHERE task_id IS NULL
+            WHERE provider_task_id IS NULL
               AND created_at < now() - ($1 * interval '1 second')
             ORDER BY created_at
             LIMIT $2
@@ -207,18 +191,49 @@ export function createTaskMappingQueries(pool: Pool) {
       return result.rowCount ?? 0;
     },
 
-    async completedTaskMapping(
-      providerA2AUrl: string,
-      taskId: string,
-    ): Promise<TaskMappingRow | null> {
+    async completedTaskMapping(publicIdHash: Buffer): Promise<TaskMappingRow | null> {
       const result = await pool.query<RawRow>(
         `SELECT ${SELECT_COLUMNS}
            FROM task_mappings
-          WHERE provider_a2a_url = $1
-            AND task_id = $2`,
-        [providerA2AUrl, taskId],
+          WHERE public_id_hash = $1
+            AND provider_task_id IS NOT NULL
+            AND expires_at > now()`,
+        [publicIdHash],
       );
       return result.rows[0] ? toCompletedRow(result.rows[0]) : null;
+    },
+
+    async updateTaskMappingStatus(
+      publicIdHash: Buffer,
+      status: string,
+    ): Promise<boolean> {
+      const result = await pool.query(
+        `UPDATE task_mappings
+            SET status = $2, updated_at = now()
+          WHERE public_id_hash = $1
+            AND provider_task_id IS NOT NULL
+            AND expires_at > now()`,
+        [publicIdHash, status],
+      );
+      return result.rowCount === 1;
+    },
+
+    async deleteExpiredTaskMappings(batchSize = 500): Promise<number> {
+      const result = await pool.query(
+        `WITH candidates AS (
+           SELECT id
+             FROM task_mappings
+            WHERE expires_at <= now()
+            ORDER BY expires_at
+            LIMIT $1
+            FOR UPDATE SKIP LOCKED
+         )
+         DELETE FROM task_mappings AS mapping
+          USING candidates
+          WHERE mapping.id = candidates.id`,
+        [batchSize],
+      );
+      return result.rowCount ?? 0;
     },
   };
 }

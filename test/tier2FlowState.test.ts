@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { startTestGateway, type TestGateway } from "./helpers/setup.js";
 import type { Hex } from "../src/types.js";
+import { hashGatewayTaskId } from "../src/tasks/taskId.js";
 
 const REF = ("0x" + "ab".repeat(32)) as Hex;
 const SERVICE_ID = ("0x" + "cd".repeat(32)) as Hex;
@@ -52,8 +53,8 @@ describe("durable payment and task bindings", () => {
     expect(columns.rows).toHaveLength(0);
   });
 
-  it("resolves only an exact completed provider/task binding", async () => {
-    const mappingId = await gateway.bundle.queries.insertTaskMapping({
+  it("resolves only a completed opaque gateway task handle", async () => {
+    const pending = await gateway.tasks.begin({
       contextId: "ctx-1",
       messageId: "msg-1",
       serviceRef: REF,
@@ -61,40 +62,39 @@ describe("durable payment and task bindings", () => {
       skillId: "register-domain",
       buyerTokenId: "5",
     });
-    expect(
-      await gateway.bundle.queries.completedTaskMapping(
-        "https://provider.example/a2a",
-        "task-42",
-      ),
-    ).toBeNull();
+    expect(await gateway.tasks.resolve(pending.taskId)).toBeNull();
+    expect(await gateway.tasks.resolve("task-42")).toBeNull();
 
-    await gateway.bundle.queries.completeTaskMapping(
-      mappingId,
+    await gateway.tasks.complete(
+      pending.mappingId,
       "task-42",
       "submitted",
     );
-    const completed = await gateway.bundle.queries.completedTaskMapping(
-      "https://provider.example/a2a",
-      "task-42",
-    );
+    const completed = await gateway.tasks.resolve(pending.taskId);
     expect(completed).toMatchObject({
       contextId: "ctx-1",
-      taskId: "task-42",
+      providerTaskId: "task-42",
       buyerTokenId: 5n,
       status: "submitted",
     });
+    const stored = await gateway.bundle.pool.query<{
+      public_id_hash: Buffer;
+      provider_task_id: string;
+    }>(
+      `SELECT public_id_hash, provider_task_id
+         FROM task_mappings
+        WHERE id = $1`,
+      [pending.mappingId],
+    );
+    expect(stored.rows[0]?.public_id_hash).toEqual(
+      hashGatewayTaskId(pending.taskId),
+    );
+    expect(stored.rows[0]?.provider_task_id).toBe("task-42");
+    expect(Object.values(stored.rows[0] ?? {})).not.toContain(pending.taskId);
   });
 
-  it("completes an identical provider replay without stale mappings", async () => {
-    await gateway.bundle.queries.insertTaskMapping({
-      contextId: "ctx-original",
-      messageId: "msg-replay",
-      serviceRef: null,
-      providerA2AUrl: "https://provider.example/a2a",
-      skillId: "check-availability",
-      buyerTokenId: "0",
-    });
-    const replayId = await gateway.bundle.queries.insertTaskMapping({
+  it("keeps existing gateway handles valid across an exact provider replay", async () => {
+    const first = await gateway.tasks.begin({
       contextId: "ctx-retry",
       messageId: "msg-replay",
       serviceRef: null,
@@ -102,12 +102,12 @@ describe("durable payment and task bindings", () => {
       skillId: "check-availability",
       buyerTokenId: "0",
     });
-    await gateway.bundle.queries.completeTaskMapping(
-      replayId,
+    await gateway.tasks.complete(
+      first.mappingId,
       "task-replay",
       "working",
     );
-    const duplicateId = await gateway.bundle.queries.insertTaskMapping({
+    const second = await gateway.tasks.begin({
       contextId: "ctx-retry-again",
       messageId: "msg-replay",
       serviceRef: null,
@@ -115,24 +115,23 @@ describe("durable payment and task bindings", () => {
       skillId: "check-availability",
       buyerTokenId: "0",
     });
-    await gateway.bundle.queries.completeTaskMapping(
-      duplicateId,
+    await gateway.tasks.complete(
+      second.mappingId,
       "task-replay",
       "working",
     );
 
-    const count = await gateway.bundle.pool.query<{ count: string }>(
-      `SELECT count(*)::text AS count
-         FROM task_mappings
-        WHERE provider_a2a_url = $1
-          AND message_id = 'msg-replay'`,
-      ["https://provider.example/a2a"],
+    expect(first.taskId).not.toBe(second.taskId);
+    expect((await gateway.tasks.resolve(first.taskId))?.providerTaskId).toBe(
+      "task-replay",
     );
-    expect(count.rows[0]?.count).toBe("1");
+    expect((await gateway.tasks.resolve(second.taskId))?.providerTaskId).toBe(
+      "task-replay",
+    );
   });
 
   it("deletes failed and expired pending mappings without completed tasks", async () => {
-    const failedId = await gateway.bundle.queries.insertTaskMapping({
+    const failed = await gateway.tasks.begin({
       contextId: "ctx-failed",
       messageId: "msg-failed",
       serviceRef: null,
@@ -141,10 +140,10 @@ describe("durable payment and task bindings", () => {
       buyerTokenId: "0",
     });
     expect(
-      await gateway.bundle.queries.deletePendingTaskMapping(failedId),
+      await gateway.bundle.queries.deletePendingTaskMapping(failed.mappingId),
     ).toBe(true);
 
-    const expiredId = await gateway.bundle.queries.insertTaskMapping({
+    const expired = await gateway.tasks.begin({
       contextId: "ctx-expired",
       messageId: "msg-expired",
       serviceRef: null,
@@ -152,7 +151,7 @@ describe("durable payment and task bindings", () => {
       skillId: "check-availability",
       buyerTokenId: "0",
     });
-    const completedId = await gateway.bundle.queries.insertTaskMapping({
+    const completed = await gateway.tasks.begin({
       contextId: "ctx-completed",
       messageId: "msg-completed",
       serviceRef: null,
@@ -160,30 +159,36 @@ describe("durable payment and task bindings", () => {
       skillId: "check-availability",
       buyerTokenId: "0",
     });
-    await gateway.bundle.queries.completeTaskMapping(
-      completedId,
+    await gateway.tasks.complete(
+      completed.mappingId,
       "task-completed",
       "completed",
     );
     await gateway.bundle.pool.query(
       "UPDATE task_mappings SET created_at = now() - interval '2 days' WHERE id IN ($1, $2)",
-      [expiredId, completedId],
+      [expired.mappingId, completed.mappingId],
     );
 
     expect(
       await gateway.bundle.queries.deleteExpiredPendingTaskMappings(86_400),
     ).toBe(1);
     expect(
-      await gateway.bundle.queries.completedTaskMapping(
-        "https://provider.example/a2a",
-        "task-completed",
-      ),
+      await gateway.tasks.resolve(completed.taskId),
     ).not.toBeNull();
+    await gateway.bundle.pool.query(
+      `UPDATE task_mappings
+          SET created_at = now() - interval '2 days',
+              expires_at = now() - interval '1 day'
+        WHERE id = $1`,
+      [completed.mappingId],
+    );
+    expect(await gateway.tasks.resolve(completed.taskId)).toBeNull();
+    expect(await gateway.bundle.queries.deleteExpiredTaskMappings()).toBe(1);
   });
 
   it("enforces identifier bounds at the persistence boundary", async () => {
     await expect(
-      gateway.bundle.queries.insertTaskMapping({
+      gateway.tasks.begin({
         contextId: "x".repeat(257),
         messageId: "msg",
         serviceRef: null,

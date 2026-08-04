@@ -102,7 +102,7 @@ describe("fresh provider authority on execution paths", () => {
   it("blocks task status before issuing or forwarding authorization", async () => {
     gateway = await startTestGateway({ providers: [taskProvider()] });
     const providerA2AUrl = `${gateway.mockProvider.baseUrl}/a2a`;
-    const mappingId = await gateway.bundle.queries.insertTaskMapping({
+    const pending = await gateway.tasks.begin({
       contextId: "authority-context",
       messageId: "authority-message",
       serviceRef: null,
@@ -110,8 +110,8 @@ describe("fresh provider authority on execution paths", () => {
       skillId: "run-task",
       buyerTokenId: "5",
     });
-    await gateway.bundle.queries.completeTaskMapping(
-      mappingId,
+    await gateway.tasks.complete(
+      pending.mappingId,
       "authority-task",
       "working",
     );
@@ -122,7 +122,7 @@ describe("fresh provider authority on execution paths", () => {
       const result = parseResult<{ code: string }>(
         await client.callTool({
           name: "daski_get_task_status",
-          arguments: { providerA2AUrl, taskId: "authority-task" },
+          arguments: { taskId: pending.taskId },
         }),
       );
       expect(result.code).toBe("PROVIDER_AUTHORITY_UNAVAILABLE");
@@ -142,6 +142,19 @@ describe("fresh provider authority on execution paths", () => {
         },
       ],
     });
+    const artifactTask = await gateway.tasks.begin({
+      contextId: "artifact-context",
+      messageId: "artifact-message",
+      serviceRef: null,
+      providerA2AUrl: `${gateway.mockProvider.baseUrl}/a2a`,
+      skillId: "run-task",
+      buyerTokenId: "5",
+    });
+    await gateway.tasks.complete(
+      artifactTask.mappingId,
+      "artifact-task",
+      "completed",
+    );
     makeAuthorityUnavailable(gateway, 2n);
 
     const { client, transport } = await connectClient(gateway.baseUrl);
@@ -151,8 +164,7 @@ describe("fresh provider authority on execution paths", () => {
           name: "daski_fetch_artifact",
           arguments: {
             url: "https://artifacts.example/private.pdf",
-            taskId: "artifact-task",
-            providerA2AUrl: `${gateway.mockProvider.baseUrl}/a2a`,
+            taskId: artifactTask.taskId,
           },
         }),
       );

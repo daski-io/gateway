@@ -9,6 +9,7 @@ export interface RuntimeConfig {
   trustProxy: number;
   challengeRetentionSeconds: number;
   taskMappingPendingRetentionSeconds: number;
+  taskRetentionSeconds: number;
   rpcReadMaxPerMinute: number;
   stateChangeGlobalMaxPerMinute: number;
   mcpGlobalMaxPerMinute: number;
@@ -104,6 +105,11 @@ export function loadRuntimeConfig(env: NodeJS.ProcessEnv): RuntimeConfig {
       "TASK_MAPPING_PENDING_RETENTION_SECONDS",
       env.TASK_MAPPING_PENDING_RETENTION_SECONDS,
       24 * 60 * 60,
+    ),
+    taskRetentionSeconds: integer(
+      "TASK_RETENTION_SECONDS",
+      env.TASK_RETENTION_SECONDS,
+      365 * 24 * 60 * 60,
     ),
     rpcReadMaxPerMinute: integer("RPC_READ_MAX_PER_MINUTE", env.RPC_READ_MAX_PER_MINUTE, 300),
     stateChangeGlobalMaxPerMinute: integer(

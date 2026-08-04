@@ -26,6 +26,7 @@ import type {
   PaymentPayload,
   PaymentRequired,
 } from "../../src/types.js";
+import { DaskiTaskService } from "../../src/tasks/taskService.js";
 
 const IDENTITY_REGISTRY_ADDRESS = "0x000000000000000000000000000000000000a000" as Hex;
 // Daski AgentIndex — reverse lookup + delegated registerWithSig companion of
@@ -127,6 +128,7 @@ export interface PurchaseChallenge {
 
 export interface TestGateway {
   bundle: AppBundle;
+  tasks: DaskiTaskService;
   httpServer: Server;
   baseUrl: string;
   config: Config;
@@ -181,6 +183,7 @@ export async function startTestGateway(opts: TestGatewayOptions = {}): Promise<T
     trustProxy: 0,
     challengeRetentionSeconds: 7 * 24 * 60 * 60,
     taskMappingPendingRetentionSeconds: 24 * 60 * 60,
+    taskRetentionSeconds: 365 * 24 * 60 * 60,
     rpcReadMaxPerMinute: 1_000,
     stateChangeGlobalMaxPerMinute: 1_000,
     mcpGlobalMaxPerMinute: 1_000,
@@ -303,6 +306,10 @@ export async function startTestGateway(opts: TestGatewayOptions = {}): Promise<T
   });
 
   await bundle.cache.refresh();
+  const tasks = new DaskiTaskService(
+    bundle.queries,
+    config.taskRetentionSeconds,
+  );
 
   const httpServer: Server = await new Promise((resolve) => {
     const s = bundle.app.listen(0, "127.0.0.1", () => resolve(s));
@@ -317,6 +324,7 @@ export async function startTestGateway(opts: TestGatewayOptions = {}): Promise<T
 
   const gateway: TestGateway = {
     bundle,
+    tasks,
     httpServer,
     baseUrl,
     config,

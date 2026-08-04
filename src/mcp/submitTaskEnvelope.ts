@@ -8,7 +8,7 @@ import type { Config } from "../config.js";
 import type { Hex, StoredChallenge } from "../types.js";
 import { publicErrorMessage } from "../util/errorWrap.js";
 import { isHexAddress } from "../util/evmValidation.js";
-import type { SubmitTaskArgs } from "./submitTaskTypes.js";
+import type { RoutedSubmitTaskArgs } from "./submitTaskTypes.js";
 import {
   mcpError,
   mcpJson,
@@ -22,7 +22,7 @@ interface EnvelopeDeps {
 }
 
 export function rejectUnsignedAuthenticatedPrompt(
-  args: SubmitTaskArgs,
+  args: RoutedSubmitTaskArgs,
   requiresEnvelopeAuth: boolean,
 ): McpToolResult | null {
   if ((!requiresEnvelopeAuth && !args.envelopeAuth) || args.prompt === undefined) {
@@ -44,7 +44,7 @@ export function rejectUnsignedAuthenticatedPrompt(
  * A null result means the caller already supplied an envelope.
  */
 export async function prepareSubmitTaskEnvelope(
-  args: SubmitTaskArgs,
+  args: RoutedSubmitTaskArgs,
   requiresEnvelopeAuth: boolean,
   deps: EnvelopeDeps,
 ): Promise<McpToolResult | null> {
@@ -127,7 +127,7 @@ export async function prepareSubmitTaskEnvelope(
 }
 
 export async function verifySubmitTaskEnvelope(
-  args: SubmitTaskArgs,
+  args: RoutedSubmitTaskArgs,
   paidChallenge: StoredChallenge | null,
   deps: EnvelopeDeps,
 ): Promise<McpToolResult | null> {
@@ -193,7 +193,7 @@ export async function verifySubmitTaskEnvelope(
   return null;
 }
 
-function computeSubmitRequestHash(args: SubmitTaskArgs): Hex | null {
+function computeSubmitRequestHash(args: RoutedSubmitTaskArgs): Hex | null {
   try {
     return computeRequestHash(args.serviceArgs ?? {});
   } catch {

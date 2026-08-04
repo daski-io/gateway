@@ -1,8 +1,8 @@
 export interface SubmitTaskArgs {
-  providerA2AUrl: string;
-  skillId: string;
-  paymentId: string;
-  chainId: 8453 | 84532;
+  providerA2AUrl?: string;
+  skillId?: string;
+  paymentId?: string;
+  chainId?: 8453 | 84532;
   buyerTokenId?: string;
   walletAddress?: string;
   serviceRef?: string;
@@ -28,4 +28,11 @@ export interface SubmitTaskArgs {
   };
   contextId?: string;
   taskId?: string;
+}
+
+export interface RoutedSubmitTaskArgs extends SubmitTaskArgs {
+  providerA2AUrl: string;
+  skillId: string;
+  paymentId: string;
+  chainId: 8453 | 84532;
 }

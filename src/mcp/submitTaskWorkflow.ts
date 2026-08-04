@@ -7,7 +7,9 @@ import {
 } from "./submitTaskEnvelope.js";
 import { resolveSubmitTaskPayment } from "./submitTaskPayment.js";
 import type { SubmitTaskArgs } from "./submitTaskTypes.js";
+import type { RoutedSubmitTaskArgs } from "./submitTaskTypes.js";
 import type { McpDeps } from "./server.js";
+import type { DaskiTask, DaskiTaskService } from "../tasks/taskService.js";
 import {
   findCatalogSkillAtA2AEndpoint,
 } from "./providerCatalog.js";
@@ -23,6 +25,7 @@ interface SubmitTaskTransport {
 export async function runSubmitTask(
   args: SubmitTaskArgs,
   deps: McpDeps,
+  tasks: DaskiTaskService,
   transport: SubmitTaskTransport,
 ): Promise<McpToolResult> {
   if (
@@ -43,10 +46,14 @@ export async function runSubmitTask(
     });
   }
 
+  const routed = await resolveTaskRouting(args, deps, tasks);
+  if (!routed.ok) return routed.result;
+  const routedArgs = routed.args;
+
   const catalogEndpoint = findCatalogSkillAtA2AEndpoint(
     deps.cache,
-    args.providerA2AUrl,
-    args.skillId,
+    routedArgs.providerA2AUrl,
+    routedArgs.skillId,
   );
   if (!catalogEndpoint) {
     return mcpError({
@@ -63,41 +70,17 @@ export async function runSubmitTask(
     () =>
       findCatalogSkillAtA2AEndpoint(
         deps.cache,
-        args.providerA2AUrl,
-        args.skillId,
+        routedArgs.providerA2AUrl,
+        routedArgs.skillId,
       ),
   );
   if (!fresh.ok) return fresh.result;
   const freshEndpoint = fresh.endpoint;
-  let expectedBuyerTokenId: bigint | undefined;
-  if (args.taskId) {
-    let mapping;
-    try {
-      mapping = await deps.queries.completedTaskMapping(
-        freshEndpoint.url,
-        args.taskId,
-      );
-    } catch {
-      return mcpError({
-        code: "TASK_MAPPING_LOOKUP_FAILED",
-        message:
-          "The gateway could not verify this task's dispatch binding. No outbound request was made.",
-        recoverable: true,
-      });
-    }
-    if (!mapping || mapping.skillId !== args.skillId) {
-      return mcpError({
-        code: "TASK_NOT_MAPPED",
-        message:
-          "No completed gateway dispatch matches this provider, skill, and task. No outbound request was made.",
-      });
-    }
-    expectedBuyerTokenId = mapping.buyerTokenId;
-  }
+  const expectedBuyerTokenId = routed.task?.buyerTokenId;
   if (
-    args.taskId &&
-    args.capability &&
-    args.capability.authorization.providerAgentId !==
+    routed.task &&
+    routedArgs.capability &&
+    routedArgs.capability.authorization.providerAgentId !==
       freshEndpoint.provider.agentId.toString()
   ) {
     return mcpError({
@@ -107,9 +90,9 @@ export async function runSubmitTask(
     });
   }
   if (
-    args.taskId &&
-    args.capability &&
-    args.capability.authorization.buyerTokenId !==
+    routed.task &&
+    routedArgs.capability &&
+    routedArgs.capability.authorization.buyerTokenId !==
       expectedBuyerTokenId?.toString()
   ) {
     return mcpError({
@@ -120,7 +103,7 @@ export async function runSubmitTask(
   }
 
   const paymentContext = await resolveSubmitTaskPayment(
-    args,
+    routedArgs,
     freshEndpoint.skillMeta,
     deps.queries,
   );
@@ -151,11 +134,108 @@ export async function runSubmitTask(
       ...normalizedArgs,
       providerA2AUrl: freshEndpoint.url,
     },
+    gatewayTaskId: routed.gatewayTaskId,
     paidChallenge: paymentContext.paidChallenge,
     expectedBuyerTokenId,
     providerAgentId: freshEndpoint.provider.agentId,
     config: deps.config,
     transport,
-    queries: deps.queries,
+    tasks,
   });
+}
+
+type RoutingResult =
+  | {
+      ok: true;
+      args: RoutedSubmitTaskArgs;
+      gatewayTaskId?: string;
+      task?: DaskiTask;
+    }
+  | { ok: false; result: McpToolResult };
+
+async function resolveTaskRouting(
+  args: SubmitTaskArgs,
+  deps: McpDeps,
+  tasks: DaskiTaskService,
+): Promise<RoutingResult> {
+  if (!args.taskId) {
+    const missing = [
+      ["providerA2AUrl", args.providerA2AUrl],
+      ["skillId", args.skillId],
+      ["paymentId", args.paymentId],
+      ["chainId", args.chainId],
+    ].filter(([, value]) => value === undefined);
+    if (missing.length > 0) {
+      return {
+        ok: false,
+        result: mcpError({
+          code: "BAD_INPUT",
+          message:
+            `New tasks require ${missing.map(([name]) => name).join(", ")}.`,
+        }),
+      };
+    }
+    return { ok: true, args: args as RoutedSubmitTaskArgs };
+  }
+
+  const conflicting = [
+    "providerA2AUrl",
+    "skillId",
+    "paymentId",
+    "chainId",
+    "buyerTokenId",
+    "walletAddress",
+    "messageId",
+    "contextId",
+  ].filter((key) => args[key as keyof SubmitTaskArgs] !== undefined);
+  if (conflicting.length > 0) {
+    return {
+      ok: false,
+      result: mcpError({
+        code: "BAD_INPUT",
+        message:
+          `Task input derives routing from taskId; omit ${conflicting.join(", ")}.`,
+        recoverable: true,
+        next_action:
+          "Retry with taskId, the corrected serviceArgs, and capability when requested.",
+      }),
+    };
+  }
+
+  let task;
+  try {
+    task = await tasks.resolve(args.taskId);
+  } catch {
+    return {
+      ok: false,
+      result: mcpError({
+        code: "TASK_LOOKUP_FAILED",
+        message: "The gateway could not load this task.",
+        recoverable: true,
+      }),
+    };
+  }
+  if (!task) {
+    return {
+      ok: false,
+      result: mcpError({
+        code: "TASK_NOT_FOUND",
+        message: "The gateway task does not exist or has expired.",
+      }),
+    };
+  }
+  return {
+    ok: true,
+    gatewayTaskId: args.taskId,
+    task,
+    args: {
+      ...args,
+      providerA2AUrl: task.providerA2AUrl,
+      skillId: task.skillId,
+      paymentId: "0",
+      chainId: deps.config.chainId,
+      contextId: task.contextId,
+      taskId: task.providerTaskId,
+    },
+  };
 }

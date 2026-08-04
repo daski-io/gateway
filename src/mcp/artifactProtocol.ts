@@ -67,7 +67,8 @@ export function sanitizeFilename(value: string): string | null {
 
 export function challengeResponse(
   challenge: ArtifactChallenge,
-  taskId: string,
+  gatewayTaskId: string,
+  providerTaskId: string,
   artifactUrl: string,
   refreshed: boolean,
   config: Config,
@@ -82,28 +83,22 @@ export function challengeResponse(
   // the provider binds the token audience to the minting transaction +
   // buyer, and document tokens are strictly one-time.
   if (
-    challenge.authorization.taskId !== taskId ||
+    challenge.authorization.taskId !== providerTaskId ||
     challenge.authorization.action !== "document-download" ||
     (challenge.authorization.resource !== undefined &&
       challenge.authorization.resource !== artifactUrl)
   ) {
-    const boundTask = challenge.authorization.taskId;
     return mcpError({
       code: "ARTIFACT_CHALLENGE_MISMATCH",
       message:
-        typeof boundTask === "string" && boundTask !== taskId
-          ? `The artifact challenge for this URL is bound to taskId '${boundTask}' ` +
-            `(the task whose response minted the URL), not '${taskId}'. Re-call ` +
-            "with that taskId — do not pass a contextId, documentId, or another " +
-            "task's id."
-          : "The artifact challenge is not bound to the requested taskId, URL, " +
-            'and action="document-download". Refusing to request a signature.',
+        "The artifact challenge is not bound to this gateway task, URL, " +
+        'and action="document-download". Refusing to request a signature.',
     });
   }
   if (
     !validateProviderTaskAccessChallenge(config, challenge, {
       providerAgentId,
-      taskId,
+      taskId: providerTaskId,
       action: "document-download",
     })
   ) {
@@ -117,7 +112,7 @@ export function challengeResponse(
     status: "action-required",
     action: "sign_capability",
     requiresSignature: true,
-    taskId,
+    taskId: gatewayTaskId,
     capabilityChallenge: challenge,
     authorization: challenge.authorization,
     eip712TypedData: challenge.eip712TypedData,

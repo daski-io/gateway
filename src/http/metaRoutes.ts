@@ -47,7 +47,7 @@ function fullDocs(config: Config): string {
     "- daski_search_services — intent-driven provider discovery",
     "- daski_buy_service — validate, quote, and prepare or settle a purchase",
     "- daski_submit_task — dispatch work over A2A",
-    "- daski_get_task_status — poll or stream provider task state",
+    "- daski_get_task_status — poll or stream gateway task status",
     "- daski_fetch_artifact — retrieve gated task artifacts",
     "- daski_confirm_delivery — submit buyer confirmation",
     "",

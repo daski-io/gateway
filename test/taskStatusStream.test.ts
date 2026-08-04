@@ -1,6 +1,17 @@
 import { describe, expect, it, vi } from "vitest";
 import { streamTaskStatus } from "../src/mcp/taskStatusStream.js";
 
+function taskArgs(taskId: string) {
+  return {
+    providerA2AUrl: "https://provider.example/a2a",
+    taskId,
+    providerTaskId: taskId,
+    createdAt: new Date("2026-01-01T00:00:00.000Z"),
+    updatedAt: new Date("2026-01-01T00:00:00.000Z"),
+    expiresAt: new Date("2027-01-01T00:00:00.000Z"),
+  };
+}
+
 function parseResult(result: Awaited<ReturnType<typeof streamTaskStatus>>) {
   const first = result.content[0];
   if (!first || first.type !== "text") {
@@ -14,8 +25,7 @@ describe("streamTaskStatus", () => {
     const fetch = vi.fn();
     const result = await streamTaskStatus(
       {
-        providerA2AUrl: "https://provider.example/a2a",
-        taskId: "task-stream-invalid-timeout",
+        ...taskArgs("task-stream-invalid-timeout"),
         streamingTimeoutMs: 2 ** 31,
       },
       { sendNotification: async () => undefined },
@@ -51,8 +61,7 @@ describe("streamTaskStatus", () => {
 
     const result = await streamTaskStatus(
       {
-        providerA2AUrl: "https://provider.example/a2a",
-        taskId: "task-stream-1",
+        ...taskArgs("task-stream-1"),
         capability,
       },
       {
@@ -68,7 +77,7 @@ describe("streamTaskStatus", () => {
     expect(requestBody?.params.capability).toEqual(capability);
     expect(parseResult(result)).toMatchObject({
       taskId: "task-stream-1",
-      state: "completed",
+      status: "completed",
       eventCount: 1,
     });
   });
@@ -81,8 +90,7 @@ describe("streamTaskStatus", () => {
     };
     const result = await streamTaskStatus(
       {
-        providerA2AUrl: "https://provider.example/a2a",
-        taskId: "task-stream-2",
+        ...taskArgs("task-stream-2"),
       },
       {
         sendNotification: async () => undefined,
@@ -128,8 +136,7 @@ describe("streamTaskStatus", () => {
 
     const pending = streamTaskStatus(
       {
-        providerA2AUrl: "https://provider.example/a2a",
-        taskId: "task-stream-cancelled",
+        ...taskArgs("task-stream-cancelled"),
       },
       {
         signal: clientAbort.signal,
@@ -154,8 +161,7 @@ describe("streamTaskStatus", () => {
     const event = { result: { id: "task-stream-detached", status: { state: "working" } } };
     const result = await streamTaskStatus(
       {
-        providerA2AUrl: "https://provider.example/a2a",
-        taskId: "task-stream-detached",
+        ...taskArgs("task-stream-detached"),
       },
       {
         _meta: { progressToken: "progress-1" },

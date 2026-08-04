@@ -8,6 +8,10 @@ import { mapProviderRpcError } from "./rpcErrors.js";
 interface PollTaskStatusArgs {
   providerA2AUrl: string;
   taskId: string;
+  providerTaskId: string;
+  createdAt: Date;
+  updatedAt: Date;
+  expiresAt: Date;
   capability?: {
     signature: string;
     authorization: Record<string, unknown>;
@@ -51,7 +55,7 @@ export async function pollTaskStatus(
     id: randomUUID(),
     method: "GetTask",
     params: {
-      id: args.taskId,
+      id: args.providerTaskId,
       ...(args.capability ? { capability: args.capability } : {}),
       ...(args.taskAccessToken
         ? { taskAccessToken: args.taskAccessToken }
@@ -110,16 +114,25 @@ export async function pollTaskStatus(
     });
   }
   const resolvedStatus = normalizeState(result.status?.state) ?? "unknown";
-  const resolvedTaskId =
-    typeof result.id === "string" ? result.id : args.taskId;
+  if (
+    typeof result.id === "string" &&
+    result.id !== args.providerTaskId
+  ) {
+    return mcpError({
+      code: "PROVIDER_TASK_ID_MISMATCH",
+      message: "Provider returned a different task identifier than requested.",
+    });
+  }
   const extractedArtifacts = extractArtifacts(
     result.artifacts ?? [],
-    args.providerA2AUrl,
   );
   return mcpJson({
-    taskId: resolvedTaskId,
+    taskId: args.taskId,
     contextId: result.contextId ?? null,
     status: resolvedStatus,
+    createdAt: args.createdAt.toISOString(),
+    updatedAt: new Date().toISOString(),
+    expiresAt: args.expiresAt.toISOString(),
     untrustedProviderContent: {
       artifacts: extractedArtifacts,
       messages: extractMessages(result.status?.message),
@@ -129,7 +142,6 @@ export async function pollTaskStatus(
 
 function extractArtifacts(
   source: NonNullable<CheckRpc["result"]>["artifacts"],
-  providerA2AUrl: string,
 ): Array<Record<string, unknown>> {
   const artifacts: Array<Record<string, unknown>> = [];
   for (const artifact of source ?? []) {
@@ -141,7 +153,6 @@ function extractArtifacts(
             type: "file",
             name: sanitizeProviderValue(artifact.name ?? file.name ?? "(unnamed)"),
             url: file.url,
-            providerA2AUrl,
             mimeType: sanitizeProviderValue(file.mimeType),
           });
         } else if (typeof file.bytes === "string") {
