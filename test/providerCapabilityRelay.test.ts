@@ -27,7 +27,7 @@ describe("provider capability signing relay", () => {
       2n,
       "task-input-1",
     );
-    await completeTaskMapping(gateway, "task-input-1");
+    const taskId = await completeTaskMapping(gateway, "task-input-1");
     challenge.eip712TypedData = {
       domain: {
         name: "Permit2",
@@ -59,11 +59,7 @@ describe("provider capability signing relay", () => {
         await client.callTool({
           name: "daski_submit_task",
           arguments: {
-            providerA2AUrl: `${gateway.mockProvider.baseUrl}/a2a`,
-            skillId: "run-task",
-            paymentId: "0",
-            chainId: 84532,
-            taskId: "task-input-1",
+            taskId,
             serviceArgs: { correction: "safe" },
           },
         }),
@@ -83,7 +79,7 @@ describe("provider capability signing relay", () => {
       2n,
       "task-input-2",
     );
-    await completeTaskMapping(gateway, "task-input-2");
+    const taskId = await completeTaskMapping(gateway, "task-input-2");
     gateway.mockProvider.setNextA2AError({
       code: -32107,
       message: "Capability required",
@@ -100,11 +96,7 @@ describe("provider capability signing relay", () => {
         await client.callTool({
           name: "daski_submit_task",
           arguments: {
-            providerA2AUrl: `${gateway.mockProvider.baseUrl}/a2a`,
-            skillId: "run-task",
-            paymentId: "0",
-            chainId: 84532,
-            taskId: "task-input-2",
+            taskId,
             serviceArgs: { correction: "safe" },
           },
         }),
@@ -130,7 +122,7 @@ describe("provider capability signing relay", () => {
     );
     challenge.authorization.buyerTokenId = "6";
     challenge.eip712TypedData.message = challenge.authorization;
-    await completeTaskMapping(gateway, "task-input-3");
+    const taskId = await completeTaskMapping(gateway, "task-input-3");
     gateway.mockProvider.setNextA2AError({
       code: -32107,
       message: "Capability required",
@@ -143,11 +135,7 @@ describe("provider capability signing relay", () => {
         await client.callTool({
           name: "daski_submit_task",
           arguments: {
-            providerA2AUrl: `${gateway.mockProvider.baseUrl}/a2a`,
-            skillId: "run-task",
-            paymentId: "0",
-            chainId: 84532,
-            taskId: "task-input-3",
+            taskId,
             serviceArgs: { correction: "safe" },
           },
         }),
@@ -213,8 +201,8 @@ function taskProvider() {
 async function completeTaskMapping(
   gateway: TestGateway,
   taskId: string,
-): Promise<void> {
-  const mappingId = await gateway.bundle.queries.insertTaskMapping({
+): Promise<string> {
+  const pending = await gateway.tasks.begin({
     contextId: `context-${taskId}`,
     messageId: `message-${taskId}`,
     serviceRef: null,
@@ -222,11 +210,12 @@ async function completeTaskMapping(
     skillId: "run-task",
     buyerTokenId: "5",
   });
-  await gateway.bundle.queries.completeTaskMapping(
-    mappingId,
+  await gateway.tasks.complete(
+    pending.mappingId,
     taskId,
     "input-required",
   );
+  return pending.taskId;
 }
 
 interface ToolResultContent {

@@ -17,6 +17,7 @@ import { activeRequestKey, activeRequestSignal } from "./requestContext.js";
 import { UNTRUSTED_PROVIDER_CONTENT_WARNING } from "./providerReflection.js";
 import { admitTaskStatus } from "./taskStatusAdmission.js";
 import { requireFreshCatalogMatch } from "./freshProvider.js";
+import type { DaskiTaskService } from "../tasks/taskService.js";
 
 export interface TaskStatusToolTransport
   extends TaskStatusTransport,
@@ -25,8 +26,10 @@ export interface TaskStatusToolTransport
 }
 
 export const TASK_STATUS_INPUT_SCHEMA = {
-  providerA2AUrl: z.string(),
-  taskId: z.string().min(1).max(256).describe("The provider task id."),
+  taskId: z
+    .string()
+    .regex(/^[A-Za-z0-9_-]{43}$/)
+    .describe("The opaque gateway task id returned by daski_submit_task."),
   capability: z
     .object({
       signature: z.string(),
@@ -57,16 +60,18 @@ export const TASK_STATUS_INPUT_SCHEMA = {
 export function registerTaskStatusTool(
   server: McpServer,
   deps: McpDeps,
+  tasks: DaskiTaskService,
   transport: TaskStatusToolTransport,
 ): void {
   server.registerTool(
     "daski_get_task_status",
     {
       description: [
-        "Get the current state of a Daski provider task by polling once or streaming SSE updates.",
+        "Get the current state of a Daski gateway task by polling once or streaming SSE updates.",
         "",
         "Use after daski_submit_task returns submitted or working.",
-        "Buyer-bound tasks always require a signed TaskAccessAuthorization. Anonymous tasks require taskAccessToken.",
+        "The gateway taskId supplies provider routing; never pass a provider URL or provider task id.",
+        "Buyer-bound tasks still require the signed TaskAccessAuthorization returned by this tool. Anonymous tasks require taskAccessToken.",
         "Keep passing the signed capability on later polls and reuse it until `authorization.expiry`.",
         "Stop polling on completed or failed. For input-required, submit the corrected full payload through daski_submit_task.",
         "If streaming is unsupported, retry with stream:false.",
@@ -84,25 +89,43 @@ export function registerTaskStatusTool(
       },
     },
     async (args, extra) => {
-      const endpoint = findCatalogA2AEndpoint(
-        deps.cache,
-        args.providerA2AUrl,
-      );
+      let task;
+      try {
+        task = await tasks.resolve(args.taskId);
+      } catch {
+        return mcpError({
+          code: "TASK_LOOKUP_FAILED",
+          message: "The gateway could not load this task.",
+          recoverable: true,
+        });
+      }
+      if (!task) {
+        return mcpError({
+          code: "TASK_NOT_FOUND",
+          message: "The gateway task does not exist or has expired.",
+        });
+      }
+      const endpoint = findCatalogA2AEndpoint(deps.cache, task.providerA2AUrl);
       if (!endpoint) {
         return mcpError({
           code: "PROVIDER_ENDPOINT_NOT_CATALOGED",
           message:
-            "providerA2AUrl is not advertised by a currently admitted " +
+            "The task's endpoint is not advertised by a currently admitted " +
             "provider. No outbound request was made.",
         });
       }
       const fresh = await requireFreshCatalogMatch(
         endpoint.provider.agentId,
         deps.providerAuthority,
-        () => findCatalogA2AEndpoint(deps.cache, args.providerA2AUrl),
+        () => findCatalogA2AEndpoint(deps.cache, task.providerA2AUrl),
       );
       if (!fresh.ok) return fresh.result;
-      const admission = await admitTaskStatus(args, fresh.endpoint, deps);
+      const admission = await admitTaskStatus(
+        args,
+        task,
+        fresh.endpoint,
+        deps,
+      );
       if (!admission.ok) return admission.result;
       const admittedArgs = admission.args;
       if (args.stream) {
@@ -117,7 +140,7 @@ export function registerTaskStatusTool(
           });
         }
         try {
-          return await streamTaskStatus(
+          const result = await streamTaskStatus(
             admittedArgs,
             {
               signal: activeRequestSignal(extra.signal),
@@ -126,11 +149,36 @@ export function registerTaskStatusTool(
             } as ProgressSink,
             transport,
           );
+          await recordStatus(tasks, args.taskId, result);
+          return result;
         } finally {
           release();
         }
       }
-      return pollTaskStatus(admittedArgs, transport);
+      const result = await pollTaskStatus(admittedArgs, transport);
+      await recordStatus(tasks, args.taskId, result);
+      return result;
     },
   );
+}
+
+async function recordStatus(
+  tasks: DaskiTaskService,
+  taskId: string,
+  result: Awaited<ReturnType<typeof pollTaskStatus>>,
+): Promise<void> {
+  if (result.isError) return;
+  const structured = result.structuredContent;
+  if (
+    structured &&
+    typeof structured === "object" &&
+    typeof (structured as Record<string, unknown>).status === "string"
+  ) {
+    await tasks
+      .recordStatus(
+        taskId,
+        (structured as Record<string, unknown>).status as string,
+      )
+      .catch(() => undefined);
+  }
 }

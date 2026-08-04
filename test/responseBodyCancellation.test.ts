@@ -93,6 +93,10 @@ describe("outbound response body cancellation", () => {
       {
         providerA2AUrl: "https://provider.example/a2a",
         taskId: "task-1",
+        providerTaskId: "task-1",
+        createdAt: new Date("2026-01-01T00:00:00.000Z"),
+        updatedAt: new Date("2026-01-01T00:00:00.000Z"),
+        expiresAt: new Date("2027-01-01T00:00:00.000Z"),
       },
       { sendNotification: async () => undefined },
       {

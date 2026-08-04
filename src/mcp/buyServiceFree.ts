@@ -163,7 +163,7 @@ function buildFreeSkillPlan(
     steps.push({
       toolName: "daski_get_task_status",
       hint: "Poll until status is completed or failed.",
-      args: { providerA2AUrl, taskId: "<from daski_submit_task>" },
+      args: { taskId: "<from daski_submit_task>" },
     });
   }
 

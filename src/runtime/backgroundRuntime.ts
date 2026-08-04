@@ -121,5 +121,8 @@ async function maintainPaymentChallenges(
       .catch((error) => {
         logErrorWithId("maintainTaskMappings", error);
       }),
+    options.queries.deleteExpiredTaskMappings().catch((error) => {
+      logErrorWithId("expireTaskMappings", error);
+    }),
   ]);
 }

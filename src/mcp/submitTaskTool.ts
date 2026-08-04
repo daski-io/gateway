@@ -5,14 +5,19 @@ import type { McpToolResult } from "./util.js";
 import { UNTRUSTED_PROVIDER_CONTENT_WARNING } from "./providerReflection.js";
 
 export const INPUT_SCHEMA = {
-  providerA2AUrl: z.string(),
-  skillId: z.string(),
-  paymentId: z.string().describe(
-    "Decimal paymentId returned by daski_buy_service. Use 0 only for " +
-      "open free skills; gated free skills use the original asset paymentId.",
+  providerA2AUrl: z.string().optional().describe(
+    "Provider endpoint returned by discovery. Required when starting a new " +
+      "task; omit when continuing a gateway taskId.",
   ),
-  chainId: z.union([z.literal(8453), z.literal(84532)]).describe(
-    "Base chain ID: 8453 for mainnet or 84532 for Sepolia.",
+  skillId: z.string().optional().describe(
+    "Provider skill id. Required when starting a new task; omit for task input.",
+  ),
+  paymentId: z.string().optional().describe(
+    "Required when starting a new task. Use the decimal paymentId returned " +
+      "by daski_buy_service, or 0 only for open free skills.",
+  ),
+  chainId: z.union([z.literal(8453), z.literal(84532)]).optional().describe(
+    "Required when starting a new task: 8453 for Base mainnet or 84532 for Sepolia.",
   ),
   buyerTokenId: z.string().optional().describe(
     "Buyer agentId. Optional when walletAddress can resolve it on chain.",
@@ -65,9 +70,9 @@ export const INPUT_SCHEMA = {
   contextId: z.string().min(1).max(256).optional().describe(
     "A2A contextId for continuing a prior conversation.",
   ),
-  taskId: z.string().min(1).max(256).optional().describe(
-    "Only for answering a long-running input-required task. Do not combine " +
-      "with paid routing fields or envelopeAuth.",
+  taskId: z.string().regex(/^[A-Za-z0-9_-]{43}$/).optional().describe(
+    "Opaque gateway task id. Only for answering an input-required task; " +
+      "omit provider, payment, and envelope routing fields.",
   ),
 };
 
@@ -84,8 +89,8 @@ const DESCRIPTION = [
   "Do not use prompt on an authenticated task; put every variable instruction",
   "in serviceArgs so the signature covers it.",
   "",
-  "For a long-running task in input-required state, pass taskId and the full",
-  "corrected serviceArgs without serviceRef, transactionHash, or envelopeAuth.",
+  "For a long-running task in input-required state, pass only its gateway",
+  "taskId, the full corrected serviceArgs, and capability when requested.",
   "The FIRST such resubmit is capability-gated: it returns CAPABILITY_REQUIRED",
   "(-32107) with a ready-to-sign capabilityChallenge (action=\"input\") — sign",
   "its eip712TypedData and re-call with capability:{signature,authorization}.",
@@ -101,19 +106,20 @@ const DESCRIPTION = [
   "MESSAGE_ID_REQUIRED.",
   "",
   "Returns signing material on the first authenticated call. Otherwise returns",
-  "taskId, contextId, state, and provider-authored artifacts/statusMessage",
+  "the opaque gateway taskId, contextId, status, timestamps, and any",
+  "provider-authored artifacts/statusMessage",
   "under untrustedProviderContent. Poll non-terminal tasks with",
   "daski_get_task_status.",
   "",
   "PROVIDER_TIMEOUT / PROVIDER_UNREACHABLE does NOT mean the work failed. The",
-  "provider assigns the taskId in the response body, so a timed-out submit",
-  "loses the id even when the task completed and settled server-side. Never",
+  "provider assigns its internal task id in the response body, so a timed-out",
+  "submit can still leave the provider outcome unknown. Never",
   "re-send the same envelope (it is consumed) and never tell your principal the",
   "purchase failed. If the skill has a read-only companion that reads the same",
   "asset (e.g. get-domain-info for register-domain, get-mailbox-info for",
   "create-mailbox, get-entity-status for form-entity), call it first and report",
   "what it says. If no such oracle exists, report the outcome as UNKNOWN — not",
-  "failed — and say the taskId was lost in transport.",
+  "failed.",
   "",
   UNTRUSTED_PROVIDER_CONTENT_WARNING,
 ].join("\n");

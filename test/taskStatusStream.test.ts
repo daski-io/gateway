@@ -1,5 +1,22 @@
 import { describe, expect, it, vi } from "vitest";
 import { streamTaskStatus } from "../src/mcp/taskStatusStream.js";
+import { createGatewayTaskId } from "../src/tasks/taskId.js";
+
+const GATEWAY_TASK_ID = createGatewayTaskId();
+
+// The gateway handle and the provider's task id are deliberately different
+// values here: a fixture that reuses one string for both cannot catch the
+// two being swapped, which is the whole point of gateway-owned handles.
+function taskArgs(providerTaskId: string) {
+  return {
+    providerA2AUrl: "https://provider.example/a2a",
+    taskId: GATEWAY_TASK_ID,
+    providerTaskId,
+    createdAt: new Date("2026-01-01T00:00:00.000Z"),
+    updatedAt: new Date("2026-01-01T00:00:00.000Z"),
+    expiresAt: new Date("2027-01-01T00:00:00.000Z"),
+  };
+}
 
 function parseResult(result: Awaited<ReturnType<typeof streamTaskStatus>>) {
   const first = result.content[0];
@@ -14,8 +31,7 @@ describe("streamTaskStatus", () => {
     const fetch = vi.fn();
     const result = await streamTaskStatus(
       {
-        providerA2AUrl: "https://provider.example/a2a",
-        taskId: "task-stream-invalid-timeout",
+        ...taskArgs("task-stream-invalid-timeout"),
         streamingTimeoutMs: 2 ** 31,
       },
       { sendNotification: async () => undefined },
@@ -51,8 +67,7 @@ describe("streamTaskStatus", () => {
 
     const result = await streamTaskStatus(
       {
-        providerA2AUrl: "https://provider.example/a2a",
-        taskId: "task-stream-1",
+        ...taskArgs("task-stream-1"),
         capability,
       },
       {
@@ -66,10 +81,42 @@ describe("streamTaskStatus", () => {
     );
 
     expect(requestBody?.params.capability).toEqual(capability);
+    // The provider is subscribed to by its own task id; the gateway handle
+    // stays on this side of the boundary.
+    expect(requestBody?.params.id).toBe("task-stream-1");
+    expect(JSON.stringify(requestBody)).not.toContain(GATEWAY_TASK_ID);
     expect(parseResult(result)).toMatchObject({
-      taskId: "task-stream-1",
-      state: "completed",
+      taskId: GATEWAY_TASK_ID,
+      status: "completed",
       eventCount: 1,
+    });
+  });
+
+  it("refuses a stream that reports a different provider task", async () => {
+    const event = {
+      result: {
+        id: "task-stream-other",
+        final: true,
+        status: { state: "TASK_STATE_COMPLETED" },
+      },
+    };
+    const result = await streamTaskStatus(
+      {
+        ...taskArgs("task-stream-1"),
+      },
+      { sendNotification: async () => undefined },
+      {
+        fetch: async () =>
+          new Response(`data: ${JSON.stringify(event)}\n\n`, {
+            headers: { "content-type": "text/event-stream" },
+          }),
+        enforceUrlSafety: false,
+        maxResponseBytes: 1024,
+      },
+    );
+
+    expect(parseResult(result)).toMatchObject({
+      code: "PROVIDER_TASK_ID_MISMATCH",
     });
   });
 
@@ -81,8 +128,7 @@ describe("streamTaskStatus", () => {
     };
     const result = await streamTaskStatus(
       {
-        providerA2AUrl: "https://provider.example/a2a",
-        taskId: "task-stream-2",
+        ...taskArgs("task-stream-2"),
       },
       {
         sendNotification: async () => undefined,
@@ -128,8 +174,7 @@ describe("streamTaskStatus", () => {
 
     const pending = streamTaskStatus(
       {
-        providerA2AUrl: "https://provider.example/a2a",
-        taskId: "task-stream-cancelled",
+        ...taskArgs("task-stream-cancelled"),
       },
       {
         signal: clientAbort.signal,
@@ -154,8 +199,7 @@ describe("streamTaskStatus", () => {
     const event = { result: { id: "task-stream-detached", status: { state: "working" } } };
     const result = await streamTaskStatus(
       {
-        providerA2AUrl: "https://provider.example/a2a",
-        taskId: "task-stream-detached",
+        ...taskArgs("task-stream-detached"),
       },
       {
         _meta: { progressToken: "progress-1" },

@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import type { Config } from "../config.js";
 import { DASKI_A2A_EXTENSION_URI } from "../config.js";
-import type { Queries } from "../db/queries.js";
 import type { Hex, StoredChallenge } from "../types.js";
+import type { DaskiTaskService, PendingDaskiTask } from "../tasks/taskService.js";
 import { buildEnvelopeAuth } from "../auth/envelope.js";
 import { buildTaskAccessChallenge } from "../auth/taskAccess.js";
 import { validateProviderTaskAccessChallenge } from "../auth/taskAccessChallenge.js";
@@ -15,7 +15,7 @@ import {
   sanitizeProviderValue,
 } from "./providerReflection.js";
 import { mapProviderRpcError } from "./rpcErrors.js";
-import type { SubmitTaskArgs } from "./submitTaskTypes.js";
+import type { RoutedSubmitTaskArgs } from "./submitTaskTypes.js";
 import {
   mcpActionRequired,
   mcpError,
@@ -30,13 +30,14 @@ interface SubmitTaskTransport {
 }
 
 interface DispatchInput {
-  args: SubmitTaskArgs;
+  args: RoutedSubmitTaskArgs;
+  gatewayTaskId?: string;
   paidChallenge: StoredChallenge | null;
   expectedBuyerTokenId?: bigint;
   providerAgentId: bigint;
   config: Config;
   transport: SubmitTaskTransport;
-  queries: Queries;
+  tasks: DaskiTaskService;
 }
 
 type SubmitRpc = {
@@ -59,12 +60,13 @@ function inputError(code: string, message: string): McpToolResult {
 /** Dispatches an authenticated task after local payment checks are complete. */
 export async function dispatchSubmitTask({
   args,
+  gatewayTaskId: continuedGatewayTaskId,
   paidChallenge,
   expectedBuyerTokenId,
   providerAgentId,
   config,
   transport,
-  queries,
+  tasks,
 }: DispatchInput): Promise<McpToolResult> {
   const parts: Array<Record<string, unknown>> = [
     args.prompt
@@ -112,10 +114,10 @@ export async function dispatchSubmitTask({
 
   const messageId = args.messageId ?? randomUUID();
   const contextId = args.contextId ?? randomUUID();
-  let taskMappingId: string | null = null;
+  let pendingTask: PendingDaskiTask | null = null;
   if (!args.taskId) {
     try {
-      taskMappingId = await queries.insertTaskMapping({
+      pendingTask = await tasks.begin({
         contextId,
         messageId,
         serviceRef:
@@ -139,6 +141,13 @@ export async function dispatchSubmitTask({
       });
     }
   }
+  const gatewayTaskId = continuedGatewayTaskId ?? pendingTask?.taskId;
+  if (!gatewayTaskId) {
+    return mcpError({
+      code: "TASK_MAPPING_INTEGRITY",
+      message: "The gateway task handle is unavailable.",
+    });
+  }
   const body = {
     jsonrpc: "2.0",
     id: randomUUID(),
@@ -161,7 +170,7 @@ export async function dispatchSubmitTask({
     failOnNonOk: true,
   });
   if (!post.ok) {
-    await abandonPendingMapping(queries, taskMappingId);
+    await abandonPendingMapping(tasks, pendingTask?.mappingId ?? null);
     // The lost-response loop is CLOSED for paid submits (provider ≥v0.15
     // deduplicates on the settled serviceRef + signed body + envelope
     // messageId: an identical re-send returns the existing task without
@@ -190,7 +199,7 @@ export async function dispatchSubmitTask({
   }
   const rpc = post.body;
   if (rpc.error) {
-    await abandonPendingMapping(queries, taskMappingId);
+    await abandonPendingMapping(tasks, pendingTask?.mappingId ?? null);
     const mapped = mapProviderRpcError(rpc.error.code);
     const untrustedProviderContent = {
       message: sanitizeProviderValue(
@@ -246,7 +255,7 @@ export async function dispatchSubmitTask({
     rpc.result.id.length < 1 ||
     rpc.result.id.length > 256
   ) {
-    await abandonPendingMapping(queries, taskMappingId);
+    await abandonPendingMapping(tasks, pendingTask?.mappingId ?? null);
     return mcpError({
       code: "PROVIDER_ERROR",
       message: "Provider response has an invalid result.id",
@@ -255,11 +264,17 @@ export async function dispatchSubmitTask({
   }
 
   const result = rpc.result;
+  if (args.taskId && result.id !== args.taskId) {
+    return mcpError({
+      code: "PROVIDER_TASK_ID_MISMATCH",
+      message: "The provider returned a different task for this continuation.",
+    });
+  }
   const status = normalizeState(result.status?.state) ?? "submitted";
-  if (typeof result.id === "string" && taskMappingId) {
+  if (typeof result.id === "string" && pendingTask) {
     try {
-      await queries.completeTaskMapping(
-        taskMappingId,
+      await tasks.complete(
+        pendingTask.mappingId,
         result.id,
         status,
       );
@@ -284,15 +299,31 @@ export async function dispatchSubmitTask({
             }),
       });
     }
+  } else {
+    try {
+      await tasks.recordStatus(gatewayTaskId, status);
+    } catch {
+      return mcpError({
+        code: "TASK_STATUS_PERSISTENCE_FAILED",
+        message:
+          "The provider accepted the task input, but the gateway could not persist its latest status.",
+        recoverable: true,
+        next_action: "Poll the same gateway taskId before sending more input.",
+      });
+    }
   }
+  const storedTask = await tasks.resolve(gatewayTaskId).catch(() => null);
   const flattened: Record<string, unknown> = {
-    taskId: result.id,
+    taskId: gatewayTaskId,
     contextId: result.contextId ?? contextId,
     status,
-    // Deprecated alias — older clients read `state`. Remove after a
-    // deprecation window; `status` is the canonical key on every path.
-    state: status,
-    providerA2AUrl: args.providerA2AUrl,
+    ...(storedTask
+      ? {
+          createdAt: storedTask.createdAt.toISOString(),
+          updatedAt: storedTask.updatedAt.toISOString(),
+          expiresAt: storedTask.expiresAt.toISOString(),
+        }
+      : {}),
   };
   const untrustedProviderContent: Record<string, unknown> = {};
   if (Array.isArray(result.artifacts) && result.artifacts.length > 0) {
@@ -360,12 +391,12 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 }
 
 async function abandonPendingMapping(
-  queries: Queries,
+  tasks: DaskiTaskService,
   mappingId: string | null,
 ): Promise<void> {
   if (!mappingId) return;
   try {
-    await queries.deletePendingTaskMapping(mappingId);
+    await tasks.abandon(mappingId);
   } catch (error) {
     logErrorWithId("taskMapping.abandon", error);
   }

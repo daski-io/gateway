@@ -2,6 +2,16 @@ import { describe, expect, it } from "vitest";
 import { loadRuntimeConfig } from "../src/runtimeConfig.js";
 
 describe("loadRuntimeConfig", () => {
+  it("loads and validates the completed task retention window", () => {
+    expect(
+      loadRuntimeConfig({ TASK_RETENTION_SECONDS: "604800" })
+        .taskRetentionSeconds,
+    ).toBe(604800);
+    expect(() =>
+      loadRuntimeConfig({ TASK_RETENTION_SECONDS: "0" }),
+    ).toThrow(/TASK_RETENTION_SECONDS/);
+  });
+
   it("forbids mock chain mode in production", () => {
     expect(() =>
       loadRuntimeConfig({

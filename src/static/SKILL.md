@@ -362,12 +362,13 @@ The provider returns the existing task without executing it twice. A
 Buyer-bound task reads use a second, task-specific authorization. Sign the
 `taskAccessChallenge.eip712TypedData` returned by a successful submission, or
 call the status tool once without a capability to obtain a fresh challenge.
-Then poll with the signed authorization:
+The outer `taskId` is always the opaque gateway handle returned by submission;
+the provider task ID inside `capability.authorization` must be copied unchanged
+from the challenge. Then poll with the signed authorization:
 
 ```json tool=daski_get_task_status
 {
-  "providerA2AUrl": "https://provider.example/a2a/example-service",
-  "taskId": "task-42",
+  "taskId": "GATEWAY_TASK_ID_0123456789abcdefghijklmnopq",
   "capability": {
     "signature": "0x…",
     "authorization": {

@@ -5,11 +5,11 @@ import {
 import type { McpDeps } from "./server.js";
 import type { CatalogA2AEndpoint } from "./providerCatalog.js";
 import { mcpActionRequired, mcpError, type McpToolResult } from "./util.js";
+import type { DaskiTask } from "../tasks/taskService.js";
 
 const ANONYMOUS_TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 
 export interface TaskStatusInput {
-  providerA2AUrl: string;
   taskId: string;
   capability?: {
     signature: string;
@@ -20,33 +20,25 @@ export interface TaskStatusInput {
   streamingTimeoutMs?: number;
 }
 
+export interface AdmittedTaskStatusInput extends TaskStatusInput {
+  providerA2AUrl: string;
+  providerTaskId: string;
+  createdAt: Date;
+  updatedAt: Date;
+  expiresAt: Date;
+}
+
 type AdmissionResult =
-  | { ok: true; args: TaskStatusInput }
+  | { ok: true; args: AdmittedTaskStatusInput }
   | { ok: false; result: McpToolResult };
 
 export async function admitTaskStatus(
   args: TaskStatusInput,
+  task: DaskiTask,
   endpoint: CatalogA2AEndpoint,
   deps: McpDeps,
 ): Promise<AdmissionResult> {
-  let mapping;
-  try {
-    mapping = await deps.queries.completedTaskMapping(endpoint.url, args.taskId);
-  } catch {
-    return refused(
-      "TASK_MAPPING_LOOKUP_FAILED",
-      "The gateway could not verify this task's dispatch binding.",
-      true,
-    );
-  }
-  if (!mapping) {
-    return refused(
-      "TASK_NOT_MAPPED",
-      "No completed gateway dispatch matches this provider and task.",
-      false,
-    );
-  }
-  if (mapping.providerA2AUrl !== endpoint.url) {
+  if (task.providerA2AUrl !== endpoint.url) {
     return refused(
       "TASK_MAPPING_INTEGRITY",
       "The stored provider binding is inconsistent.",
@@ -54,7 +46,7 @@ export async function admitTaskStatus(
     );
   }
 
-  if (mapping.buyerTokenId === 0n) {
+  if (task.buyerTokenId === 0n) {
     if (args.capability) {
       return refused(
         "TASK_AUTHORIZATION_MISMATCH",
@@ -74,7 +66,14 @@ export async function admitTaskStatus(
     }
     return {
       ok: true,
-      args: { ...args, providerA2AUrl: mapping.providerA2AUrl },
+      args: {
+        ...args,
+        providerA2AUrl: task.providerA2AUrl,
+        providerTaskId: task.providerTaskId,
+        createdAt: task.createdAt,
+        updatedAt: task.updatedAt,
+        expiresAt: task.expiresAt,
+      },
     };
   }
 
@@ -88,9 +87,9 @@ export async function admitTaskStatus(
   if (!args.capability) {
     const challenge = buildTaskAccessChallenge(
       deps.config,
-      mapping.buyerTokenId,
+      task.buyerTokenId,
       endpoint.provider.agentId,
-      mapping.taskId,
+      task.providerTaskId,
     );
     return {
       ok: false,
@@ -113,9 +112,9 @@ export async function admitTaskStatus(
     deps.reader,
     args.capability,
     {
-      buyerTokenId: mapping.buyerTokenId,
+      buyerTokenId: task.buyerTokenId,
       providerAgentId: endpoint.provider.agentId,
-      taskId: mapping.taskId,
+      taskId: task.providerTaskId,
     },
   );
   if (!verified.ok) {
@@ -127,7 +126,14 @@ export async function admitTaskStatus(
   }
   return {
     ok: true,
-    args: { ...args, providerA2AUrl: mapping.providerA2AUrl },
+    args: {
+      ...args,
+      providerA2AUrl: task.providerA2AUrl,
+      providerTaskId: task.providerTaskId,
+      createdAt: task.createdAt,
+      updatedAt: task.updatedAt,
+      expiresAt: task.expiresAt,
+    },
   };
 }
 

@@ -14,6 +14,10 @@ const STREAM_MAX_TIMEOUT_MS = 120_000;
 interface StreamTaskStatusArgs {
   providerA2AUrl: string;
   taskId: string;
+  providerTaskId: string;
+  createdAt: Date;
+  updatedAt: Date;
+  expiresAt: Date;
   capability?: {
     signature: string;
     authorization: Record<string, unknown>;
@@ -88,7 +92,7 @@ export async function streamTaskStatus(
         id: randomUUID(),
         method: "SubscribeToTask",
         params: {
-          id: args.taskId,
+          id: args.providerTaskId,
           ...(args.capability ? { capability: args.capability } : {}),
           ...(args.taskAccessToken
             ? { taskAccessToken: args.taskAccessToken }
@@ -110,7 +114,7 @@ export async function streamTaskStatus(
       message:
         abortReason === "client"
           ? "Task-status stream cancelled by the client."
-          : `Provider unreachable at ${args.providerA2AUrl}`,
+          : "Provider is unreachable.",
       recoverable: true,
       next_action: "Retry streaming or use daski_get_task_status with stream:false.",
     });
@@ -121,7 +125,6 @@ export async function streamTaskStatus(
     cleanupAbort();
     return unsupported(`Provider returned HTTP ${response.status} on SubscribeToTask`, {
       status: response.status,
-      providerA2AUrl: args.providerA2AUrl,
     });
   }
   const contentType = response.headers.get("content-type") ?? "";
@@ -183,6 +186,15 @@ export async function streamTaskStatus(
           });
         }
         if (!parsed.result) continue;
+        if (
+          typeof parsed.result.id === "string" &&
+          parsed.result.id !== args.providerTaskId
+        ) {
+          return mcpError({
+            code: "PROVIDER_TASK_ID_MISMATCH",
+            message: "Provider streamed a different task identifier than requested.",
+          });
+        }
         lastEvent = parsed.result;
         eventCount += 1;
         if (!(await emitProgress(extra, eventCount, parsed.result))) {
@@ -202,7 +214,7 @@ export async function streamTaskStatus(
           });
         }
         if (parsed.result.final === true) {
-          return streamResult(args.taskId, parsed.result, eventCount, false);
+          return streamResult(args, parsed.result, eventCount, false);
         }
       }
     }
@@ -228,7 +240,7 @@ export async function streamTaskStatus(
       // The stream may already be closed.
     }
   }
-  return streamResult(args.taskId, lastEvent, eventCount, true);
+  return streamResult(args, lastEvent, eventCount, true);
 }
 
 type StreamEvent = {
@@ -315,7 +327,7 @@ async function emitProgress(
 }
 
 function streamResult(
-  taskId: string,
+  args: StreamTaskStatusArgs,
   event: Record<string, unknown> | null,
   eventCount: number,
   timedOut: boolean,
@@ -325,11 +337,12 @@ function streamResult(
     normalizeState(typeof status.state === "string" ? status.state : undefined) ??
     (timedOut ? "unknown" : "completed");
   return mcpJson({
-    taskId,
+    taskId: args.taskId,
     contextId: event && typeof event.contextId === "string" ? event.contextId : null,
     status: normalized,
-    // Deprecated alias — older clients read `state`; `status` is canonical.
-    state: normalized,
+    createdAt: args.createdAt.toISOString(),
+    updatedAt: new Date().toISOString(),
+    expiresAt: args.expiresAt.toISOString(),
     untrustedProviderContent: {
       finalEvent: sanitizeProviderTaskEvent(event),
     },

@@ -315,7 +315,7 @@ async function phase2_paid_purchase(
       primaryType: envelope.eip712TypedData.primaryType,
       message: envelope.eip712TypedData.message,
     });
-    const submit = unwrap<{ taskId: string; state: string }>(
+    const submit = unwrap<{ taskId: string; status: string }>(
       "daski_submit_task (second call)",
       await client.callTool({
         name: "daski_submit_task",
@@ -335,12 +335,14 @@ async function phase2_paid_purchase(
         },
       }),
     );
-    console.log(`  ✔ provider accepted task: taskId=${submit.taskId} state=${submit.state}`);
+    console.log(
+      `  ✔ provider accepted task: taskId=${submit.taskId} status=${submit.status}`,
+    );
 
     // 5. Poll until completed
     const POLL_INTERVAL_MS = 3_000;
     const MAX_POLLS = 60; // 3 minutes
-    let lastState = submit.state;
+    let lastState = submit.status;
     for (let i = 0; i < MAX_POLLS; i++) {
       await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
       const check = unwrap<{
@@ -352,7 +354,6 @@ async function phase2_paid_purchase(
         await client.callTool({
           name: "daski_get_task_status",
           arguments: {
-            providerA2AUrl: settled.providerA2AUrl,
             taskId: submit.taskId,
           },
         }),

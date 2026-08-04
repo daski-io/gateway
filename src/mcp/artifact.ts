@@ -12,11 +12,13 @@ import { mcpError } from "./util.js";
 import { activeRequestKey, activeRequestSignal } from "./requestContext.js";
 import { UNTRUSTED_PROVIDER_CONTENT_WARNING } from "./providerReflection.js";
 import { requireFreshCatalogMatch } from "./freshProvider.js";
+import type { DaskiTaskService } from "../tasks/taskService.js";
 
 export function registerArtifactTool(
   server: McpServer,
   cache: DiscoveryCache,
   providerAuthority: ProviderAuthorityService,
+  tasks: DaskiTaskService,
   options: ArtifactFetchOptions,
   limiter: ConcurrencyLimiter,
 ): void {
@@ -27,8 +29,8 @@ export function registerArtifactTool(
         "Retrieve the actual bytes behind a Daski artifact URL, including audience-bound formation PDFs. This is a two-call wallet-signature flow; do not hand a short-lived artifact URL to the principal as durable proof.",
         "",
         "Inputs:",
-        "- First call: `url` from the provider artifact, that artifact's `taskId`, and the cataloged `providerA2AUrl`; omit `capability`. The URL must use the provider origin or an artifact origin advertised by its Agent Card.",
-        "- Signed retry: the exact same `url` + `taskId` + `providerA2AUrl`, plus `capability: { signature, authorization }`. Sign the returned `eip712TypedData` and echo `authorization` verbatim.",
+        "- First call: `url` from the provider artifact and its gateway `taskId`; omit `capability`. Provider routing is resolved from the task handle.",
+        "- Signed retry: the exact same `url` + `taskId`, plus `capability: { signature, authorization }`. Sign the returned `eip712TypedData` and echo `authorization` verbatim.",
         "- `expectedMimeType` defaults to `application/pdf`; pass the artifact's advertised mimeType for another format.",
         "",
         "Returns:",
@@ -42,14 +44,10 @@ export function registerArtifactTool(
       ].join("\n"),
       inputSchema: {
         url: z.string().url().describe("Short-lived URL from a Daski artifact."),
-        providerA2AUrl: z
-          .string()
-          .url()
-          .describe("Cataloged provider endpoint that produced the artifact."),
         taskId: z
           .string()
-          .min(1)
-          .describe("Task id that the artifact URL's audience challenge binds."),
+          .regex(/^[A-Za-z0-9_-]{43}$/)
+          .describe("Opaque gateway task id returned by daski_submit_task."),
         expectedMimeType: z
           .string()
           .optional()
@@ -77,9 +75,25 @@ export function registerArtifactTool(
       },
     },
     async (args, extra) => {
+      let task;
+      try {
+        task = await tasks.resolve(args.taskId);
+      } catch {
+        return mcpError({
+          code: "TASK_LOOKUP_FAILED",
+          message: "The gateway could not load this task.",
+          recoverable: true,
+        });
+      }
+      if (!task) {
+        return mcpError({
+          code: "TASK_NOT_FOUND",
+          message: "The gateway task does not exist or has expired.",
+        });
+      }
       const endpoint = findCatalogArtifactEndpoint(
         cache,
-        args.providerA2AUrl,
+        task.providerA2AUrl,
         args.url,
       );
       if (!endpoint) {
@@ -94,7 +108,7 @@ export function registerArtifactTool(
         endpoint.provider.agentId,
         providerAuthority,
         () =>
-          findCatalogArtifactEndpoint(cache, args.providerA2AUrl, args.url),
+          findCatalogArtifactEndpoint(cache, task.providerA2AUrl, args.url),
       );
       if (!fresh.ok) return fresh.result;
       const release = limiter.tryAcquire(
@@ -111,6 +125,8 @@ export function registerArtifactTool(
         return await fetchArtifact(
           {
             ...args,
+            providerA2AUrl: task.providerA2AUrl,
+            providerTaskId: task.providerTaskId,
             providerAgentId: fresh.endpoint.provider.agentId,
           },
           options,

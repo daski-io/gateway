@@ -39,13 +39,13 @@ describe("MCP artifact delivery", () => {
 
   it("completes the audience challenge and refreshes an expired one", async () => {
     const artifactUrl = "https://artifacts.example/entity.pdf";
-    const taskId = "task-document-1";
+    const providerTaskId = "task-document-1";
     const pdf = new TextEncoder().encode("%PDF-1.7\nmock formation document");
     const nonce1 = `0x${"11".repeat(32)}`;
     const nonce2 = `0x${"22".repeat(32)}`;
     let gateway!: TestGateway;
     const challenge = (nonce: string) =>
-      artifactChallenge(gateway.config, taskId, nonce, artifactUrl);
+      artifactChallenge(gateway.config, providerTaskId, nonce, artifactUrl);
     let calls = 0;
     const a2aFetch: typeof fetch = async (input, init) => {
       const url = input instanceof Request ? input.url : input.toString();
@@ -90,7 +90,7 @@ describe("MCP artifact delivery", () => {
       providers: [artifactProvider()],
     });
     gateways.push(gateway);
-    const providerA2AUrl = `${gateway.mockProvider.baseUrl}/a2a`;
+    const taskId = await mapTask(gateway, providerTaskId);
     const { client, transport } = await connectClient(gateway.baseUrl);
     try {
       const first = parseResult<{
@@ -99,7 +99,7 @@ describe("MCP artifact delivery", () => {
       }>(
         await client.callTool({
           name: "daski_fetch_artifact",
-          arguments: { url: artifactUrl, taskId, providerA2AUrl },
+          arguments: { url: artifactUrl, taskId },
         }),
       );
       expect(first.eip712TypedData.primaryType).toBe("TaskAccessAuthorization");
@@ -113,7 +113,6 @@ describe("MCP artifact delivery", () => {
           arguments: {
             url: artifactUrl,
             taskId,
-            providerA2AUrl,
             capability: {
               signature: `0x${"ab".repeat(65)}`,
               authorization: first.authorization,
@@ -129,7 +128,6 @@ describe("MCP artifact delivery", () => {
         arguments: {
           url: artifactUrl,
           taskId,
-          providerA2AUrl,
           capability: {
             signature: `0x${"cd".repeat(65)}`,
             authorization: refreshed.authorization,
@@ -184,15 +182,14 @@ describe("MCP artifact delivery", () => {
       providers: [artifactProvider()],
     });
     gateways.push(gateway);
-    const providerA2AUrl = `${gateway.mockProvider.baseUrl}/a2a`;
+    const taskId = await mapTask(gateway, "task-document-2");
     const { client, transport } = await connectClient(gateway.baseUrl);
     try {
       const result = await client.callTool({
         name: "daski_fetch_artifact",
         arguments: {
           url: requestedUrl,
-          taskId: "task-document-2",
-          providerA2AUrl,
+          taskId,
         },
       });
       const body = parseResult<{ code: string }>(result);
@@ -225,15 +222,14 @@ describe("MCP artifact delivery", () => {
       providers: [artifactProvider()],
     });
     gateways.push(gateway);
-    const providerA2AUrl = `${gateway.mockProvider.baseUrl}/a2a`;
+    const taskId = await mapTask(gateway, "task-document-3");
     const { client, transport } = await connectClient(gateway.baseUrl);
     try {
       const result = await client.callTool({
         name: "daski_fetch_artifact",
         arguments: {
           url: requestedUrl,
-          taskId: "task-document-3",
-          providerA2AUrl,
+          taskId,
         },
       });
       const body = parseResult<{
@@ -248,12 +244,12 @@ describe("MCP artifact delivery", () => {
   });
 
   it("rejects provider typed data that does not encode the checked authorization", async () => {
-    const taskId = "task-document-phishing";
+    const providerTaskId = "task-document-phishing";
     let gateway!: TestGateway;
     const a2aFetch: typeof fetch = async () => {
       const challenge = artifactChallenge(
         gateway.config,
-        taskId,
+        providerTaskId,
         `0x${"33".repeat(32)}`,
       );
       challenge.eip712TypedData.message = {
@@ -267,6 +263,7 @@ describe("MCP artifact delivery", () => {
       providers: [artifactProvider()],
     });
     gateways.push(gateway);
+    const taskId = await mapTask(gateway, providerTaskId);
     const { client, transport } = await connectClient(gateway.baseUrl);
     try {
       const result = parseResult<{ code: string }>(
@@ -275,7 +272,6 @@ describe("MCP artifact delivery", () => {
           arguments: {
             url: "https://artifacts.example/phishing.pdf",
             taskId,
-            providerA2AUrl: `${gateway.mockProvider.baseUrl}/a2a`,
           },
         }),
       );
@@ -307,20 +303,19 @@ describe("MCP artifact delivery", () => {
       providers: [artifactProvider()],
     });
     gateways.push(gateway);
-    const providerA2AUrl = `${gateway.mockProvider.baseUrl}/a2a`;
+    const taskId = await mapTask(gateway, "task-wrong");
     const { client, transport } = await connectClient(gateway.baseUrl);
     try {
       const result = await client.callTool({
         name: "daski_fetch_artifact",
         arguments: {
           url: requestedUrl,
-          taskId: "task-wrong",
-          providerA2AUrl,
+          taskId,
         },
       });
       const body = parseResult<{ code: string; message: string }>(result);
       expect(body.code).toBe("ARTIFACT_CHALLENGE_MISMATCH");
-      expect(body.message).toContain("task-document-minter");
+      expect(body.message).not.toContain("task-document-minter");
     } finally {
       await transport.close();
     }
@@ -359,18 +354,11 @@ describe("MCP artifact delivery", () => {
       },
     });
     gateways.push(gateway);
-    const mappingId = await gateway.bundle.queries.insertTaskMapping({
-      contextId: "ctx-inline-file",
-      messageId: "msg-inline-file",
-      serviceRef: null,
-      providerA2AUrl: gateway.mockProvider.baseUrl + "/a2a",
-      skillId: "form-entity",
-      buyerTokenId: "0",
-    });
-    await gateway.bundle.queries.completeTaskMapping(
-      mappingId,
+    const taskId = await mapTask(
+      gateway,
       "task-inline-file",
-      "completed",
+      "0",
+      "form-entity",
     );
     const { client, transport } = await connectClient(gateway.baseUrl);
     try {
@@ -382,8 +370,7 @@ describe("MCP artifact delivery", () => {
         await client.callTool({
           name: "daski_get_task_status",
           arguments: {
-            providerA2AUrl: gateway.mockProvider.baseUrl + "/a2a",
-            taskId: "task-inline-file",
+            taskId,
             taskAccessToken: "t".repeat(43),
           },
         }),
@@ -409,6 +396,7 @@ describe("MCP artifact delivery", () => {
       providers: [artifactProvider([])],
     });
     gateways.push(gateway);
+    const taskId = await mapTask(gateway, "task-untrusted-origin");
     const { client, transport } = await connectClient(gateway.baseUrl);
     try {
       const result = parseResult<{ code: string }>(
@@ -416,8 +404,7 @@ describe("MCP artifact delivery", () => {
           name: "daski_fetch_artifact",
           arguments: {
             url: "https://unrelated.example/document.pdf",
-            taskId: "task-untrusted-origin",
-            providerA2AUrl: `${gateway.mockProvider.baseUrl}/a2a`,
+            taskId,
           },
         }),
       );
@@ -438,6 +425,24 @@ function artifactProvider(artifactOrigins = ["https://artifacts.example"]) {
     serviceType: "entity-formation" as const,
     artifactOrigins,
   };
+}
+
+async function mapTask(
+  gateway: TestGateway,
+  providerTaskId: string,
+  buyerTokenId = "5",
+  skillId = "form-entity",
+): Promise<string> {
+  const pending = await gateway.tasks.begin({
+    contextId: `context-${providerTaskId}`,
+    messageId: `message-${providerTaskId}`,
+    serviceRef: null,
+    providerA2AUrl: `${gateway.mockProvider.baseUrl}/a2a`,
+    skillId,
+    buyerTokenId,
+  });
+  await gateway.tasks.complete(pending.mappingId, providerTaskId, "completed");
+  return pending.taskId;
 }
 
 function artifactChallenge(

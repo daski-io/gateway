@@ -22,6 +22,9 @@ can return the same payload through the `paymentPayload` tool argument.
   the signed delegation, depending on the operation. Payments use standard
   `_meta["x402/payment"]` retries, with a `paymentPayload` argument fallback
   for MCP hosts that cannot populate `_meta`.
+  Task submission returns an opaque gateway-owned `taskId`; status checks,
+  task input, and artifact retrieval use that handle without repeating
+  provider routing data.
 - **REST API** — `/purchase/:agentId` V2 paid resources, `/verify` + `/settle`
   (x402 facilitator), `/discover`, `/confirm/:paymentId`, self-funded
   registration builders, read-only `/public/v1/*`, and an x402 discovery
@@ -97,6 +100,7 @@ for the full list with defaults. The most important ones:
 | `MARKETPLACE_PRIVACY_URL` | Required HTTPS URL for the Daski Privacy Policy returned with every service and purchase |
 | `CHALLENGE_RETENTION_SECONDS` | Retention window for expired payment challenges before bounded deletion |
 | `TASK_MAPPING_PENDING_RETENTION_SECONDS` | Retention window for abandoned, incomplete provider task bindings |
+| `TASK_RETENTION_SECONDS` | Lifetime of completed opaque gateway task handles before bounded deletion |
 | `RPC_READ_MAX_PER_MINUTE` | Aggregate RPC-backed read budget across clients and replicas |
 | `STATE_CHANGE_GLOBAL_MAX_PER_MINUTE` | Aggregate state-changing request budget across clients and replicas |
 | `MCP_GLOBAL_MAX_PER_MINUTE` | Aggregate request budget for all MCP traffic across clients and replicas |
