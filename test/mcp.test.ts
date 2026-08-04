@@ -160,7 +160,7 @@ describe("hosted MCP — wallet-agnostic surface", () => {
       );
       const statusProperties = statusTool?.inputSchema.properties as Record<
         string,
-        { minimum?: number; maximum?: number }
+        { minimum?: number; maximum?: number; pattern?: string }
       >;
       expect(statusProperties.streamingTimeoutMs).toMatchObject({
         minimum: 1_000,
@@ -171,6 +171,13 @@ describe("hosted MCP — wallet-agnostic surface", () => {
       expect(statusProperties).toHaveProperty("taskAccessToken");
       expect(statusProperties).not.toHaveProperty("contextId");
       expect(statusProperties).not.toHaveProperty("serviceRef");
+      // Provider routing comes from the gateway task handle, so the caller
+      // has no way to aim a poll at an endpoint of its choosing.
+      expect(statusProperties).not.toHaveProperty("providerA2AUrl");
+      expect(statusTool?.inputSchema.required).toEqual(["taskId"]);
+      expect(statusProperties.taskId).toMatchObject({
+        pattern: "^[A-Za-z0-9_-]{43}$",
+      });
       const artifactTool = tools.tools.find(
         (tool) => tool.name === "daski_fetch_artifact",
       );
@@ -1993,7 +2000,67 @@ describe("hosted MCP — wallet-agnostic surface", () => {
         (r.content[0]! as { type: "text"; text: string }).text,
       );
       expect(err.code).toBe("BAD_INPUT");
-      expect(err.message).toMatch(/task input/i);
+      // Pin the serviceRef guard specifically: the routing-conflict guard
+      // below rejects the same call with a different message.
+      expect(err.message).toMatch(
+        /must not include serviceRef, transactionHash, or envelopeAuth/,
+      );
+    } finally {
+      await transport.close();
+    }
+  });
+
+  it("daski_submit_task rejects routing fields alongside taskId", async () => {
+    const { client, transport } = await connectClient(gateway.baseUrl);
+    try {
+      const result = await client.callTool({
+        name: "daski_submit_task",
+        arguments: {
+          providerA2AUrl: gateway.mockProvider.baseUrl + "/a2a",
+          skillId: "register-domain",
+          taskId: "t".repeat(43),
+          serviceArgs: { domain: "corrected.xyz" },
+        },
+      });
+      const r = result as ToolResultContent;
+      expect(r.isError).toBe(true);
+      const err = JSON.parse(
+        (r.content[0]! as { type: "text"; text: string }).text,
+      );
+      expect(err.code).toBe("BAD_INPUT");
+      // Silently ignoring these would let a caller believe it had steered the
+      // continuation at a provider or skill of its choosing.
+      expect(err.message).toMatch(/derives routing from taskId/);
+      expect(err.message).toContain("providerA2AUrl");
+      expect(err.message).toContain("skillId");
+      expect(gateway.mockProvider.getLastSendBody()).toBeNull();
+    } finally {
+      await transport.close();
+    }
+  });
+
+  it("daski_submit_task names the routing fields a new task is missing", async () => {
+    const { client, transport } = await connectClient(gateway.baseUrl);
+    try {
+      const result = await client.callTool({
+        name: "daski_submit_task",
+        arguments: {
+          providerA2AUrl: gateway.mockProvider.baseUrl + "/a2a",
+          serviceArgs: { domain: "example.xyz" },
+        },
+      });
+      const r = result as ToolResultContent;
+      expect(r.isError).toBe(true);
+      const err = JSON.parse(
+        (r.content[0]! as { type: "text"; text: string }).text,
+      );
+      expect(err.code).toBe("BAD_INPUT");
+      expect(err.message).toMatch(/New tasks require/);
+      expect(err.message).toContain("skillId");
+      expect(err.message).toContain("paymentId");
+      expect(err.message).toContain("chainId");
+      expect(err.message).not.toContain("providerA2AUrl");
+      expect(gateway.mockProvider.getLastSendBody()).toBeNull();
     } finally {
       await transport.close();
     }
