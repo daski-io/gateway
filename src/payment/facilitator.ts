@@ -1,5 +1,8 @@
 import { Router, type Request, type Response } from "express";
-import type { PaymentPayload, PaymentRequirements } from "../types.js";
+import type {
+  DaskiPaymentPayload,
+  PaymentRequirements,
+} from "../types.js";
 import type { DaskiFacilitatorService } from "./daskiFacilitator.js";
 
 export interface FacilitatorDeps {
@@ -8,7 +11,7 @@ export interface FacilitatorDeps {
 
 interface FacilitatorBody {
   x402Version?: unknown;
-  paymentPayload?: PaymentPayload;
+  paymentPayload?: DaskiPaymentPayload;
   paymentRequirements?: PaymentRequirements;
 }
 
@@ -65,7 +68,7 @@ function validateBody(raw: unknown):
   | {
       ok: true;
       value: {
-        paymentPayload: PaymentPayload;
+        paymentPayload: DaskiPaymentPayload;
         paymentRequirements: PaymentRequirements;
       };
     }

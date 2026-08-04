@@ -9,7 +9,7 @@ reputation live on [ERC-8004](https://eips.ethereum.org/EIPS/eip-8004).
 The gateway never holds a private key for the agent. Payment challenges carry
 ready-to-sign route-bound EIP-3009 typed data. An x402-aware client can return
 the signed payload through standard MCP metadata; other wallet-equipped agents
-can return the same payload through the `paymentPayload` tool argument.
+can return a compact signed payload through the `paymentPayload` tool argument.
 
 ## What's in this repo
 
@@ -104,16 +104,25 @@ for the full list with defaults. The most important ones:
 | `RPC_READ_MAX_PER_MINUTE` | Aggregate RPC-backed read budget across clients and replicas |
 | `STATE_CHANGE_GLOBAL_MAX_PER_MINUTE` | Aggregate state-changing request budget across clients and replicas |
 | `MCP_GLOBAL_MAX_PER_MINUTE` | Aggregate request budget for all MCP traffic across clients and replicas |
-| `MCP_MAX_SESSIONS` | Maximum active MCP sessions per gateway replica |
-| `MCP_MAX_SESSIONS_PER_CLIENT` | Maximum active MCP sessions per client IP per replica |
-| `MCP_SESSION_IDLE_TTL_MS` | Idle lifetime before an MCP session is reclaimed |
-| `MCP_SESSION_SWEEP_INTERVAL_MS` | Interval for reclaiming idle MCP sessions |
 | `PUBLIC_READ_MAX_PER_MINUTE` | Per-client budget for public read routes |
 | `PUBLIC_READ_GLOBAL_MAX_PER_MINUTE` | Aggregate public-read budget across clients and replicas |
 | `PUBLIC_CACHE_MAX_ENTRIES` | Maximum entries retained by each keyed public read cache |
 
 The .env.example ships with the post-audit Base Sepolia deployment addresses
 for the Daski contracts. Replace them when redeploying.
+
+## MCP conformance
+
+The gateway uses the MCP TypeScript SDK v2 split packages and serves the
+stateless 2026 protocol through `server/discover`. Every HTTP request gets a
+fresh MCP server instance; the gateway does not issue or consume
+`Mcp-Session-Id`, and `/mcp` has no GET or DELETE session lifecycle.
+
+SDK v2 clients must opt into version negotiation (`mode: "auto"` or a pinned
+2026 revision) because the SDK client defaults to the 2025 handshake. Existing
+2025 clients continue to work through the SDK's stateless legacy fallback on
+the same `/mcp` endpoint. The gateway does not implement or advertise the
+Tasks extension yet.
 
 ## x402 conformance
 
@@ -191,7 +200,7 @@ Chain projection incidents use the tracked
 ## Architecture
 
 - `src/app.ts` — Express wiring, route registration, MCP mount
-- `src/mcp/` — MCP tools plus bounded HTTP session lifecycle
+- `src/mcp/` — MCP tools plus stateless modern/legacy HTTP transport
 - `src/discovery/` — Agent Card cache + pgvector embedding sync
 - `src/serviceTaxonomy.ts` — the 16 service families, controlled service
   types, jurisdiction rules, and fulfillment-mode vocabulary

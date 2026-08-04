@@ -1,4 +1,4 @@
-import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { McpServer, ResourceTemplate } from "@modelcontextprotocol/server";
 import type { Config } from "../config.js";
 import type { DiscoveryCache } from "../discovery/cache.js";
 import { cardsOf, extractAgentCardName } from "../discovery/agentCard.js";

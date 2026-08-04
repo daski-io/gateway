@@ -92,11 +92,11 @@ export function configureMiddleware(
         "PAYMENT-REQUIRED",
         "PAYMENT-SIGNATURE",
         "PAYMENT-RESPONSE",
+        "MCP-Protocol-Version",
       ],
-      allowedHeaders: [
-        "Content-Type",
-        "PAYMENT-SIGNATURE",
-      ],
+      // Reflect the browser's requested header list. Modern MCP adds
+      // Mcp-Method, Mcp-Name, and schema-derived Mcp-Param-* headers, whose
+      // complete names cannot be enumerated ahead of time.
     }),
   );
 

@@ -17,7 +17,6 @@ import { hashCanonical } from "./requirementResponse.js";
 import { getDaskiDeclaration } from "./x402Extension.js";
 import type { SettleInput, VerifyResult } from "./verifyTypes.js";
 
-const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000" as Hex;
 const VALID_BEFORE_BUFFER_SEC = 10n;
 const VALID_BEFORE_EXPIRY_TOLERANCE_SEC = 1n;
 
@@ -68,13 +67,22 @@ export async function verifyPaymentPayload(
     hashCanonical(payload.accepted).toLowerCase() !==
     challenge.requirementsHash.toLowerCase()
   ) {
-    return fail(400, "payment_requirements_mismatch", "accepted requirements differ from the issued challenge");
+    const expected = challenge.paymentRequired.accepts[0];
+    return fail(
+      400,
+      "payment_requirements_mismatch",
+      `accepted requirements differ at ${firstDifference(payload.accepted, expected, "accepted")}`,
+    );
   }
   if (
     canonicalJsonStringify(payload.resource) !==
     canonicalJsonStringify(challenge.paymentRequired.resource)
   ) {
-    return fail(400, "resource_mismatch", "payment resource differs from the issued challenge");
+    return fail(
+      400,
+      "resource_mismatch",
+      `payment resource differs at ${firstDifference(payload.resource, challenge.paymentRequired.resource, "resource")}`,
+    );
   }
   const issuedDeclaration = getDaskiDeclaration(challenge.paymentRequired);
   const echoedDeclaration = getDaskiDeclaration(payload);
@@ -83,7 +91,11 @@ export async function verifyPaymentPayload(
     !echoedDeclaration ||
     !containsCanonicalInfo(echoedDeclaration.info, issuedDeclaration.info)
   ) {
-    return fail(400, "extension_echo_mismatch", "payment extensions differ from the issued challenge");
+    return fail(
+      400,
+      "extension_echo_mismatch",
+      `payment extensions differ at ${firstDifference(echoedDeclaration?.info, issuedDeclaration?.info, "extensions.daski.info")}`,
+    );
   }
 
   const daskiPayload = payload.payload as Partial<ExactEvmPayload> | undefined;
@@ -323,6 +335,43 @@ function containsCanonicalInfo(
   );
 }
 
+function firstDifference(
+  candidate: unknown,
+  expected: unknown,
+  path: string,
+): string {
+  if (canonicalJsonStringify(candidate) === canonicalJsonStringify(expected)) {
+    return path;
+  }
+  if (
+    candidate &&
+    expected &&
+    typeof candidate === "object" &&
+    typeof expected === "object" &&
+    !Array.isArray(candidate) &&
+    !Array.isArray(expected)
+  ) {
+    const candidateRecord = candidate as Record<string, unknown>;
+    for (const key of Object.keys(expected as Record<string, unknown>).sort()) {
+      if (!Object.prototype.hasOwnProperty.call(candidateRecord, key)) {
+        return `${path}.${key}`;
+      }
+      const nestedPath = `${path}.${key}`;
+      if (
+        canonicalJsonStringify(candidateRecord[key]) !==
+        canonicalJsonStringify((expected as Record<string, unknown>)[key])
+      ) {
+        return firstDifference(
+          candidateRecord[key],
+          (expected as Record<string, unknown>)[key],
+          nestedPath,
+        );
+      }
+    }
+  }
+  return path;
+}
+
 function validateAuthorizationBinding(
   value: bigint,
   from: Hex,
@@ -356,7 +405,13 @@ function fail(
   status: number,
   errorReason: string,
   message: string,
-  payer: Hex = ZERO_ADDRESS,
+  payer?: Hex,
 ): VerifyResult {
-  return { ok: false, status, errorReason, message, payer };
+  return {
+    ok: false,
+    status,
+    errorReason,
+    message,
+    ...(payer ? { payer } : {}),
+  };
 }

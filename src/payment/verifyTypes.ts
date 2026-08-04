@@ -42,7 +42,7 @@ export type VerifyResult =
       errorReason: string;
       message: string;
       status: number;
-      payer: Hex;
+      payer?: Hex;
     };
 
 export interface RegistrationDelegation {

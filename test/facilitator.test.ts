@@ -59,6 +59,32 @@ describe("x402 V2 facilitator API", () => {
     expect(gateway.mockChain.simulations).toHaveLength(0);
   });
 
+  it("does not invent a payer for an unreadable compact payload", async () => {
+    const value = await fixture();
+    const response = await fetch(`${gateway.baseUrl}/verify`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        x402Version: 2,
+        paymentPayload: {
+          x402Version: 2,
+          serviceRef: value.challenge.serviceRef,
+          payload: null,
+        },
+        paymentRequirements: value.requirements,
+      }),
+    });
+    const body = (await response.json()) as Record<string, unknown>;
+    expect(body).toMatchObject({
+      isValid: false,
+      invalidReason: "invalid_payment_payload",
+    });
+    expect(body).not.toHaveProperty("payer");
+    expect(JSON.stringify(body)).not.toContain(
+      "0x0000000000000000000000000000000000000000",
+    );
+  });
+
   it("keeps contract-wallet signatures opaque", async () => {
     const value = await fixture();
     (value.payload.payload as { signature: Hex }).signature = "0x1234";
@@ -139,12 +165,13 @@ describe("x402 V2 facilitator API", () => {
       body: JSON.stringify({
         x402Version: 2,
         paymentPayload: value.payload,
-        paymentRequirements: value.payload.accepted,
+        paymentRequirements: value.requirements,
       }),
     });
     expect(await response.json()).toMatchObject({
       isValid: false,
       invalidReason: "payment_requirements_mismatch",
+      invalidMessage: expect.stringContaining("accepted.amount"),
     });
   });
 
@@ -166,6 +193,7 @@ describe("x402 V2 facilitator API", () => {
     expect(await response.json()).toMatchObject({
       isValid: false,
       invalidReason: "extension_echo_mismatch",
+      invalidMessage: expect.stringContaining("extensions.daski.info.quote"),
     });
   });
 

@@ -9,14 +9,12 @@ import type { SettlementScreeningFailure } from "../chain/sanctionsErrors.js";
 import { publicErrorMessage } from "../util/errorWrap.js";
 import type { SettleResult } from "./verifyTypes.js";
 
-const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000" as Hex;
-
 export function settlementFailure(
   status: number,
   errorReason: string,
   message: string,
   network: Config["x402Network"],
-  payer: Hex = ZERO_ADDRESS,
+  payer?: Hex,
   screeningFailure?: SettlementScreeningFailure,
 ): SettleResult {
   const retryable = screeningFailure?.retryable ?? status >= 500;
@@ -34,7 +32,7 @@ export function settlementFailure(
       errorMessage: message,
       transaction: "",
       network,
-      payer,
+      ...(payer ? { payer } : {}),
       retryable,
       ...(screeningFailure
         ? {

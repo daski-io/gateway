@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { McpServer } from "@modelcontextprotocol/server";
 import { findCatalogA2AEndpoint } from "./providerCatalog.js";
 import {
   pollTaskStatus,
@@ -130,7 +130,7 @@ export function registerTaskStatusTool(
       const admittedArgs = admission.args;
       if (args.stream) {
         const release = transport.streamLimiter.tryAcquire(
-          activeRequestKey(extra.sessionId ?? "sessionless"),
+          activeRequestKey(String(extra.mcpReq.id)),
         );
         if (!release) {
           return mcpError({
@@ -143,9 +143,9 @@ export function registerTaskStatusTool(
           const result = await streamTaskStatus(
             admittedArgs,
             {
-              signal: activeRequestSignal(extra.signal),
-              _meta: extra._meta,
-              sendNotification: extra.sendNotification,
+              signal: activeRequestSignal(extra.mcpReq.signal),
+              _meta: extra.mcpReq._meta,
+              sendNotification: extra.mcpReq.notify,
             } as ProgressSink,
             transport,
           );

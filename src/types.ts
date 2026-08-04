@@ -115,6 +115,12 @@ export interface CachedProvider {
 
 export type PaymentRequirements = X402PaymentRequirements;
 export type PaymentPayload = X402PaymentPayload;
+export type DaskiPaymentPayload = Omit<X402PaymentPayload, "accepted"> & {
+  /** Correlates a compact MCP retry with its stored payment challenge. */
+  serviceRef?: Hex;
+  /** May be omitted when serviceRef identifies the stored challenge. */
+  accepted?: X402PaymentPayload["accepted"];
+};
 export type SettlementResponse = X402SettleResponse & {
   retryable?: boolean;
 };

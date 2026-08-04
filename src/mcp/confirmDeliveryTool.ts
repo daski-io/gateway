@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { McpServer } from "@modelcontextprotocol/server";
 import { runConfirmDelivery } from "../payment/confirm.js";
 import { prepareConfirmation } from "../payment/confirmationPrep.js";
 import type { McpDeps } from "./server.js";
