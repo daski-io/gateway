@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { McpServer } from "@modelcontextprotocol/server";
 import type { DiscoveryCache } from "../discovery/cache.js";
 import type { ProviderAuthorityService } from "../payment/providerAuthority.js";
 import {
@@ -112,7 +112,7 @@ export function registerArtifactTool(
       );
       if (!fresh.ok) return fresh.result;
       const release = limiter.tryAcquire(
-        activeRequestKey(extra.sessionId ?? "sessionless"),
+        activeRequestKey(String(extra.mcpReq.id)),
       );
       if (!release) {
         return mcpError({
@@ -130,7 +130,7 @@ export function registerArtifactTool(
             providerAgentId: fresh.endpoint.provider.agentId,
           },
           options,
-          activeRequestSignal(extra.signal),
+          activeRequestSignal(extra.mcpReq.signal),
         );
       } finally {
         release();

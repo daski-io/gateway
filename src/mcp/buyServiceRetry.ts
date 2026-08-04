@@ -1,11 +1,9 @@
 import { computeRequestHash } from "../auth/envelope.js";
 import type { Queries } from "../db/queries.js";
 import type { ChainDeploymentReadinessProbe } from "../payment/deploymentReadiness.js";
-import type { Hex, PaymentPayload } from "../types.js";
-import {
-  getDaskiDeclaration,
-  getDaskiReceipt,
-} from "../payment/x402Extension.js";
+import type { DaskiPaymentPayload, Hex } from "../types.js";
+import { getDaskiReceipt } from "../payment/x402Extension.js";
+import { paymentPayloadCorrelation } from "../payment/paymentPayload.js";
 import { logger } from "../util/logger.js";
 import {
   purchaseRequestFingerprint,
@@ -34,7 +32,7 @@ export async function runBuyServiceX402Retry(
     metaPaymentRaw &&
     typeof metaPaymentRaw === "object" &&
     !Array.isArray(metaPaymentRaw)
-      ? (metaPaymentRaw as PaymentPayload)
+      ? (metaPaymentRaw as DaskiPaymentPayload)
       : undefined;
   if (metaPaymentRaw !== undefined && !metaPayment) {
     return mcpError({
@@ -46,16 +44,18 @@ export async function runBuyServiceX402Retry(
   const inboundPayload = metaPayment ?? args.paymentPayload;
   if (!inboundPayload) return null;
 
-  const declaration = getDaskiDeclaration(inboundPayload);
-  const serviceRef = declaration?.info.serviceRef;
-  if (!serviceRef) {
+  const correlation = paymentPayloadCorrelation(inboundPayload);
+  if (!correlation.ok) {
     return mcpError({
       code: "BAD_INPUT",
       message:
-        "PaymentPayload is missing the Daski x402 V2 serviceRef extension.",
+        correlation.reason === "service_ref_mismatch"
+          ? "paymentPayload.serviceRef differs from the Daski extension serviceRef."
+          : "paymentPayload needs serviceRef or the full Daski x402 extension.",
       recoverable: true,
     });
   }
+  const { serviceRef } = correlation;
   const challenge = await deps.queries.getChallengeByRef(
     serviceRef.toLowerCase() as Hex,
   );

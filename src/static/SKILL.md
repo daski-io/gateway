@@ -40,9 +40,9 @@ The gateway never asks for a private key. Signing happens in the buyer's wallet.
    `extensions["https://daski.xyz/x402/v2"].signing.eip712TypedData` and sign
    it with the buyer wallet. An x402 client that supports `daski-exact` may
    construct and sign the same authorization itself.
-5. Retry the otherwise unchanged tool call with the complete signed
-   `PaymentPayload` as the `paymentPayload` argument. An x402-aware MCP client
-   may instead place the same object at `_meta["x402/payment"]`.
+5. Retry the otherwise unchanged tool call with the compact signed
+   `paymentPayload` shown below. An x402-aware MCP client may instead place a
+   standard full `PaymentPayload` at `_meta["x402/payment"]`.
 6. Read the standard `SettleResponse` from
    `_meta["x402/payment-response"]`.
 7. Call `daski_submit_task`, then `daski_get_task_status`.
@@ -169,10 +169,10 @@ This fixed Base Sepolia vector can be reproduced without gateway code:
 }
 ```
 
-For a live purchase, copy `resource`, `accepted` (the challenge's
-`accepts[0]`), and `extensions` verbatim from that same challenge. Do not use
-the fixed values below for another purchase. Put the typed-data message,
-signature, and salt under `payload`, then retry the original arguments:
+For a live purchase, copy only the challenge's Daski `info.serviceRef`, put the
+typed-data message, signature, and salt under `payload`, then retry the original
+arguments. The gateway restores the standard `resource`, `accepted`, and
+`extensions` fields from its stored challenge:
 
 ```json tool=daski_buy_service
 {
@@ -187,107 +187,7 @@ signature, and salt under `payload`, then retry the original arguments:
   "amount": "15000000",
   "paymentPayload": {
     "x402Version": 2,
-    "resource": {
-      "url": "https://gateway.example/purchase/2",
-      "description": "Example service",
-      "mimeType": "application/json",
-      "serviceName": "Daski",
-      "tags": ["agent-marketplace", "a2a"]
-    },
-    "accepted": {
-      "scheme": "daski-exact",
-      "network": "eip155:84532",
-      "amount": "15000000",
-      "asset": "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
-      "payTo": "0x000000000000000000000000000000000000a004",
-      "maxTimeoutSeconds": 600,
-      "extra": {
-        "assetTransferMethod": "eip3009-receive",
-        "name": "USDC",
-        "version": "2",
-        "daskiProfile": "1",
-        "authorizationValidBefore": "2000000000",
-        "paymentRouter": "0x000000000000000000000000000000000000a002",
-        "providerAgentId": "2",
-        "serviceId": "0x2222222222222222222222222222222222222222222222222222222222222222",
-        "expectedPayee": "0x000000000000000000000000000000000000bEEF",
-        "serviceRef": "0x3333333333333333333333333333333333333333333333333333333333333333"
-      }
-    },
-    "extensions": {
-      "https://daski.xyz/x402/v2": {
-        "info": {
-          "profile": "1",
-          "x402Adapter": "0x000000000000000000000000000000000000a004",
-          "paymentRouter": "0x000000000000000000000000000000000000a002",
-          "serviceRef": "0x3333333333333333333333333333333333333333333333333333333333333333",
-          "providerAgentId": "2",
-          "buyerAgentId": "123",
-          "serviceId": "0x2222222222222222222222222222222222222222222222222222222222222222",
-          "expectedPayee": "0x000000000000000000000000000000000000bEEF",
-          "skillId": "example-skill",
-          "serviceSlug": "example-service",
-          "serviceVersion": "1.0.0",
-          "providerA2AUrl": "https://provider.example/a2a/example-service",
-          "quote": {
-            "id": "example-quote",
-            "signature": "0x1234",
-            "expiresAt": "2033-05-18T03:33:20.000Z"
-          },
-          "settlementMode": "settle-only"
-        },
-        "schema": {
-          "$ref": "https://gateway.example/.well-known/x402-daski-v2.schema.json"
-        },
-        "signing": {
-          "eip712TypedData": {
-            "domain": {
-              "name": "USDC",
-              "version": "2",
-              "chainId": 84532,
-              "verifyingContract": "0x036CbD53842c5426634e7929541eC2318f3dCF7e"
-            },
-            "types": {
-              "ReceiveWithAuthorization": [
-                { "name": "from", "type": "address" },
-                { "name": "to", "type": "address" },
-                { "name": "value", "type": "uint256" },
-                { "name": "validAfter", "type": "uint256" },
-                { "name": "validBefore", "type": "uint256" },
-                { "name": "nonce", "type": "bytes32" }
-              ]
-            },
-            "primaryType": "ReceiveWithAuthorization",
-            "message": {
-              "from": "0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A",
-              "to": "0x000000000000000000000000000000000000a004",
-              "value": "15000000",
-              "validAfter": "0",
-              "validBefore": "2000000000",
-              "nonce": "0x934e0799d4f12c147fb49eae57dae5c22fa2e4343dd908636527157b1bd25c87"
-            }
-          },
-          "nonceSalt": "0x4444444444444444444444444444444444444444444444444444444444444444",
-          "nonceDerivation": {
-            "chainId": 84532,
-            "adapter": "0x000000000000000000000000000000000000a004",
-            "router": "0x000000000000000000000000000000000000a002",
-            "token": "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
-            "payer": "0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A",
-            "amount": "15000000",
-            "validAfter": "0",
-            "validBefore": "2000000000",
-            "providerAgentId": "2",
-            "serviceId": "0x2222222222222222222222222222222222222222222222222222222222222222",
-            "expectedPayee": "0x000000000000000000000000000000000000bEEF",
-            "serviceRef": "0x3333333333333333333333333333333333333333333333333333333333333333",
-            "nonceSalt": "0x4444444444444444444444444444444444444444444444444444444444444444",
-            "recipe": "https://gateway.example/skill.md#daski-exact-signing"
-          },
-          "nextAction": "Sign and retry with this paymentPayload."
-        }
-      }
-    },
+    "serviceRef": "0x3333333333333333333333333333333333333333333333333333333333333333",
     "payload": {
       "authorization": {
         "from": "0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A",
@@ -304,11 +204,11 @@ signature, and salt under `payload`, then retry the original arguments:
 }
 ```
 
-The same complete `paymentPayload` may instead be sent at
-`_meta["x402/payment"]`. If both routes are present, `_meta` takes precedence.
-A malformed present `_meta` value is rejected rather than falling back to the
-tool argument. The `signing` sibling is advisory and need not be echoed, but
-the Daski `info` sibling must be copied exactly.
+A standard full `PaymentPayload` may still be used as the tool argument or sent
+at `_meta["x402/payment"]`. If full `resource`, `accepted`, or `extensions`
+fields are present, they must match the issued challenge. If both routes are
+present, `_meta` takes precedence. A malformed present `_meta` value is
+rejected rather than falling back to the tool argument.
 
 ## x402 V2 HTTP
 

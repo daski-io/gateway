@@ -13,10 +13,6 @@ export interface RuntimeConfig {
   rpcReadMaxPerMinute: number;
   stateChangeGlobalMaxPerMinute: number;
   mcpGlobalMaxPerMinute: number;
-  mcpMaxSessions: number;
-  mcpMaxSessionsPerClient: number;
-  mcpSessionIdleTtlMs: number;
-  mcpSessionSweepIntervalMs: number;
   publicReadMaxPerMinute: number;
   publicReadGlobalMaxPerMinute: number;
   publicCacheMaxEntries: number;
@@ -74,22 +70,6 @@ export function loadRuntimeConfig(env: NodeJS.ProcessEnv): RuntimeConfig {
   if (nodeEnv === "production" && env.TRUST_PROXY === undefined) {
     throw new Error("TRUST_PROXY must be set explicitly in production");
   }
-  const mcpMaxSessions = integer(
-    "MCP_MAX_SESSIONS",
-    env.MCP_MAX_SESSIONS,
-    100,
-  );
-  const mcpMaxSessionsPerClient = integer(
-    "MCP_MAX_SESSIONS_PER_CLIENT",
-    env.MCP_MAX_SESSIONS_PER_CLIENT,
-    10,
-  );
-  if (mcpMaxSessionsPerClient > mcpMaxSessions) {
-    throw new Error(
-      "MCP_MAX_SESSIONS_PER_CLIENT cannot exceed MCP_MAX_SESSIONS",
-    );
-  }
-
   return {
     nodeEnv,
     chainMode,
@@ -121,18 +101,6 @@ export function loadRuntimeConfig(env: NodeJS.ProcessEnv): RuntimeConfig {
       "MCP_GLOBAL_MAX_PER_MINUTE",
       env.MCP_GLOBAL_MAX_PER_MINUTE,
       300,
-    ),
-    mcpMaxSessions,
-    mcpMaxSessionsPerClient,
-    mcpSessionIdleTtlMs: integer(
-      "MCP_SESSION_IDLE_TTL_MS",
-      env.MCP_SESSION_IDLE_TTL_MS,
-      10 * 60 * 1000,
-    ),
-    mcpSessionSweepIntervalMs: integer(
-      "MCP_SESSION_SWEEP_INTERVAL_MS",
-      env.MCP_SESSION_SWEEP_INTERVAL_MS,
-      60 * 1000,
     ),
     publicReadMaxPerMinute: integer(
       "PUBLIC_READ_MAX_PER_MINUTE",

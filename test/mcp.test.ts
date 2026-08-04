@@ -23,6 +23,7 @@ import {
 import { MCP_LEGAL_INSTRUCTIONS } from "../src/legal/purchase.js";
 import type { Embedder } from "../src/discovery/embeddings.js";
 import type {
+  DaskiPaymentPayload,
   DaskiX402Declaration,
   PaymentPayload,
   PaymentRequired,
@@ -89,6 +90,20 @@ async function signChallengePayload(
       signature,
       nonceSalt: signing.nonceSalt,
     },
+  };
+}
+
+function compactPaymentPayload(
+  payload: PaymentPayload,
+): DaskiPaymentPayload {
+  const declaration = payload.extensions?.[
+    DASKI_X402_EXTENSION_URI
+  ] as DaskiX402Declaration | undefined;
+  if (!declaration) throw new Error("payment payload has no Daski declaration");
+  return {
+    x402Version: 2,
+    serviceRef: declaration.info.serviceRef,
+    payload: payload.payload,
   };
 }
 
@@ -484,16 +499,16 @@ describe("hosted MCP — wallet-agnostic surface", () => {
   it("rejects calls to the retired daski_purchase tool", async () => {
     const { client, transport } = await connectClient(gateway.baseUrl);
     try {
-      const result = await client.callTool({
-        name: "daski_purchase",
-        arguments: {
-          providerTokenId: "2",
-          serviceSlug: "domain-management",
-          buyerTokenId: "5",
-        },
-      });
-      const r = result as ToolResultContent;
-      expect(r.isError).toBe(true);
+      await expect(
+        client.callTool({
+          name: "daski_purchase",
+          arguments: {
+            providerTokenId: "2",
+            serviceSlug: "domain-management",
+            buyerTokenId: "5",
+          },
+        }),
+      ).rejects.toMatchObject({ code: -32602 });
     } finally {
       await transport.close();
     }
@@ -625,7 +640,9 @@ describe("hosted MCP — wallet-agnostic surface", () => {
       const paymentRequired = parseResult<PaymentRequired>(
         await client.callTool({ name: "daski_buy_service", arguments: args }),
       );
-      const payload = await signChallengePayload(paymentRequired);
+      const payload = compactPaymentPayload(
+        await signChallengePayload(paymentRequired),
+      );
       const declaration = paymentRequired.extensions?.[
         DASKI_X402_EXTENSION_URI
       ] as DaskiX402Declaration;
@@ -650,6 +667,113 @@ describe("hosted MCP — wallet-agnostic surface", () => {
           "x402/payment-response"
         ],
       ).toMatchObject({ success: true, network: "eip155:84532" });
+    } finally {
+      await transport.close();
+    }
+  });
+
+  it.each([
+    {
+      name: "signature",
+      code: "invalid_exact_evm_payload_signature",
+      mutate(payload: DaskiPaymentPayload) {
+        const signed = payload.payload as { signature: string };
+        signed.signature = `0x${"11".repeat(65)}`;
+      },
+    },
+    {
+      name: "amount",
+      code: "invalid_exact_evm_payload_authorization_value",
+      mutate(payload: DaskiPaymentPayload) {
+        const signed = payload.payload as {
+          authorization: { value: string };
+        };
+        signed.authorization.value = "1";
+      },
+    },
+    {
+      name: "payee",
+      code: "invalid_exact_evm_payload_recipient_mismatch",
+      mutate(payload: DaskiPaymentPayload) {
+        const signed = payload.payload as {
+          authorization: { to: string };
+        };
+        signed.authorization.to = "0x0000000000000000000000000000000000000001";
+      },
+    },
+    {
+      name: "serviceRef",
+      code: "CHALLENGE_NOT_FOUND",
+      mutate(payload: DaskiPaymentPayload) {
+        payload.serviceRef = `0x${"ff".repeat(32)}`;
+      },
+    },
+  ])("rejects a compact payload with the wrong $name", async ({ name, code, mutate }) => {
+    const { client, transport } = await connectClient(gateway.baseUrl);
+    try {
+      const args = {
+        providerTokenId: "2",
+        serviceSlug: "domain-management",
+        buyerTokenId: "5",
+        walletAddress: gateway.buyerAddress,
+        skillId: "register-domain",
+        serviceArgs: { domain: `compact-wrong-${name}.xyz` },
+      };
+      const challenge = parseResult<PaymentRequired>(
+        await client.callTool({ name: "daski_buy_service", arguments: args }),
+      );
+      const payload = compactPaymentPayload(
+        await signChallengePayload(challenge),
+      );
+      mutate(payload);
+
+      const raw = await client.callTool({
+        name: "daski_buy_service",
+        arguments: { ...args, paymentPayload: payload },
+      });
+      expect((raw as ToolResultContent).isError).toBe(true);
+      expect(parseResult<{ code: string }>(raw).code).toBe(code);
+      expect(gateway.mockChain.settlements).toHaveLength(0);
+    } finally {
+      await transport.close();
+    }
+  });
+
+  it("rejects a compact payload whose authorization nonce is already used", async () => {
+    const { client, transport } = await connectClient(gateway.baseUrl);
+    try {
+      const args = {
+        providerTokenId: "2",
+        serviceSlug: "domain-management",
+        buyerTokenId: "5",
+        walletAddress: gateway.buyerAddress,
+        skillId: "register-domain",
+        serviceArgs: { domain: "compact-replay.xyz" },
+      };
+      const challenge = parseResult<PaymentRequired>(
+        await client.callTool({ name: "daski_buy_service", arguments: args }),
+      );
+      const payload = compactPaymentPayload(
+        await signChallengePayload(challenge),
+      );
+      const authorization = (
+        payload.payload as { authorization: { from: Hex; nonce: Hex } }
+      ).authorization;
+      gateway.mockChain.setAuthorizationUsed(
+        authorization.from,
+        authorization.nonce,
+        true,
+      );
+
+      const raw = await client.callTool({
+        name: "daski_buy_service",
+        arguments: { ...args, paymentPayload: payload },
+      });
+      expect(parseResult<{ code: string; message: string }>(raw)).toMatchObject({
+        code: "invalid_exact_evm_payload_authorization",
+        message: expect.stringContaining("nonce already consumed"),
+      });
+      expect(gateway.mockChain.settlements).toHaveLength(0);
     } finally {
       await transport.close();
     }
@@ -704,6 +828,7 @@ describe("hosted MCP — wallet-agnostic surface", () => {
     {
       field: "accepted",
       code: "payment_requirements_mismatch",
+      expectedPath: "accepted.amount",
       mutate(payload: PaymentPayload) {
         payload.accepted.amount = "1";
       },
@@ -711,6 +836,7 @@ describe("hosted MCP — wallet-agnostic surface", () => {
     {
       field: "resource",
       code: "resource_mismatch",
+      expectedPath: "resource.description",
       mutate(payload: PaymentPayload) {
         if (payload.resource) payload.resource.description = "changed";
       },
@@ -718,6 +844,7 @@ describe("hosted MCP — wallet-agnostic surface", () => {
     {
       field: "Daski info",
       code: "extension_echo_mismatch",
+      expectedPath: "extensions.daski.info.providerAgentId",
       mutate(payload: PaymentPayload) {
         const extension = payload.extensions?.[
           DASKI_X402_EXTENSION_URI
@@ -725,7 +852,7 @@ describe("hosted MCP — wallet-agnostic surface", () => {
         extension.info.providerAgentId = "999";
       },
     },
-  ])("rejects altered $field identically on both payment routes", async ({ code, mutate }) => {
+  ])("rejects altered $field identically on both payment routes", async ({ code, expectedPath, mutate }) => {
     const { client, transport } = await connectClient(gateway.baseUrl);
     try {
       const args = {
@@ -752,7 +879,10 @@ describe("hosted MCP — wallet-agnostic surface", () => {
             : {}),
         });
         expect((raw as ToolResultContent).isError).toBe(true);
-        expect(parseResult<{ code: string }>(raw).code).toBe(code);
+        expect(parseResult<{ code: string; message: string }>(raw)).toMatchObject({
+          code,
+          message: expect.stringContaining(expectedPath),
+        });
       }
     } finally {
       await transport.close();

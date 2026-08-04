@@ -78,10 +78,11 @@ export function buildDaskiX402Signing(
     },
     nextAction:
       "Sign eip712TypedData with the buyer wallet, then retry this exact " +
-      "tool call unchanged plus paymentPayload (copy resource, accepted, " +
-      "and extensions from this challenge exactly). x402 clients use " +
-      "_meta['x402/payment'] instead. A client that cannot sign and cannot " +
-      "reach a signer cannot buy; settlement requires wallet signing.",
+      "tool call unchanged plus paymentPayload containing x402Version, " +
+      "serviceRef, authorization, signature, and nonceSalt. x402 clients " +
+      "may use the full payload at _meta['x402/payment'] instead. A client " +
+      "that cannot sign and cannot reach a signer cannot buy; settlement " +
+      "requires wallet signing.",
   };
 }
 

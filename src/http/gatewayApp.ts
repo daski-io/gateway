@@ -42,10 +42,6 @@ export interface GatewayHttpOptions {
   a2aFetch?: typeof fetch;
   a2aTimeoutMs?: number;
   buyerAgentCardFetch?: FetchAgentCardOptions["fetchFn"];
-  mcpMaxSessions?: number;
-  mcpMaxSessionsPerClient?: number;
-  mcpSessionIdleTtlMs?: number;
-  mcpSessionSweepIntervalMs?: number;
 }
 
 export async function createGatewayHttp(
@@ -140,14 +136,6 @@ export async function createGatewayHttp(
         fetch: options.a2aFetch,
         a2aTimeoutMs: options.a2aTimeoutMs,
         buyerAgentCardFetch: options.buyerAgentCardFetch,
-        maxSessions: options.mcpMaxSessions ?? config.mcpMaxSessions,
-        maxSessionsPerClient:
-          options.mcpMaxSessionsPerClient ?? config.mcpMaxSessionsPerClient,
-        sessionIdleTtlMs:
-          options.mcpSessionIdleTtlMs ?? config.mcpSessionIdleTtlMs,
-        sessionSweepIntervalMs:
-          options.mcpSessionSweepIntervalMs ??
-          config.mcpSessionSweepIntervalMs,
       })
     : null;
   const errorHandler: ErrorRequestHandler = (error, _req, res, next) => {

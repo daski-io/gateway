@@ -1,24 +1,22 @@
-import {
-  type McpServer,
-  type ToolCallback,
-} from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { McpServer, ServerContext } from "@modelcontextprotocol/server";
 import { z } from "zod";
-import type { PaymentPayload } from "../types.js";
+import type { DaskiPaymentPayload } from "../types.js";
 import { UNTRUSTED_PROVIDER_CONTENT_WARNING } from "./providerReflection.js";
 
 const PAYMENT_PAYLOAD_SCHEMA = z
   .object({
     x402Version: z.literal(2),
-    resource: z.record(z.string(), z.unknown()),
-    accepted: z.record(z.string(), z.unknown()),
-    extensions: z.record(z.string(), z.unknown()),
+    serviceRef: z.string().regex(/^0x[0-9a-fA-F]{64}$/).optional(),
+    resource: z.record(z.string(), z.unknown()).optional(),
+    accepted: z.record(z.string(), z.unknown()).optional(),
+    extensions: z.record(z.string(), z.unknown()).optional(),
     payload: z.object({
       authorization: z.record(z.string(), z.unknown()),
       signature: z.string(),
       nonceSalt: z.string(),
     }),
   })
-  .passthrough() as unknown as z.ZodType<PaymentPayload>;
+  .passthrough() as unknown as z.ZodType<DaskiPaymentPayload>;
 
 // Exported for the SKILL.md example-validation test — every JSON example
 // in the doc must parse against the live schema, so the doc can never
@@ -71,10 +69,11 @@ export const INPUT_SCHEMA = {
   paymentPayload: PAYMENT_PAYLOAD_SCHEMA
     .optional()
     .describe(
-      "Signed daski-exact PaymentPayload for the settlement retry. Copy " +
-        "resource, accepted (= accepts[0]), and extensions from the payment " +
-        "challenge exactly; fill payload with authorization, signature, and " +
-        "nonceSalt. Equivalent to _meta['x402/payment'].",
+      "Signed daski-exact PaymentPayload for the settlement retry. The " +
+        "compact form needs x402Version, serviceRef, and payload only; the " +
+        "gateway restores accepted, resource, and extensions from the stored " +
+        "challenge. Full standard payloads remain valid. Equivalent to " +
+        "_meta['x402/payment'].",
     ),
 };
 
@@ -89,7 +88,7 @@ const DESCRIPTION = [
   "quote result restates them in `warnings`.",
   "On payment-required, sign the challenge's EIP-712 data and retry this",
   "unchanged tool call plus `paymentPayload`. An x402-aware MCP client may",
-  "instead send the same payload at `_meta[\"x402/payment\"]`.",
+  "instead send the standard full payload at `_meta[\"x402/payment\"]`.",
   "Entity-formation managementType and members/managers are TOP-LEVEL `serviceArgs` keys.",
   "There is NO `officials` or `officialsByClassification` wrapper. Party objects are",
   "STRICT — accepted keys: firstName, lastName, isCompany, companyName,",
@@ -113,7 +112,10 @@ const DESCRIPTION = [
 
 export function registerBuyServiceTool(
   server: McpServer,
-  handler: ToolCallback<typeof INPUT_SCHEMA>,
+  handler: (
+    args: import("./buyServiceTypes.js").BuyServiceArgs,
+    context: ServerContext,
+  ) => Promise<import("./util.js").McpToolResult>,
 ): void {
   server.registerTool(
     "daski_buy_service",

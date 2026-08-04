@@ -4,6 +4,7 @@ import type {
   DaskiX402Info,
   DaskiX402Receipt,
   DaskiX402Signing,
+  DaskiPaymentPayload,
   PaymentPayload,
   PaymentRequired,
   SettlementResponse,
@@ -215,7 +216,7 @@ export function buildDaskiX402Declaration(
 }
 
 export function getDaskiDeclaration(
-  source: PaymentRequired | PaymentPayload,
+  source: PaymentRequired | PaymentPayload | DaskiPaymentPayload,
 ): DaskiX402Declaration | null {
   const value = source.extensions?.[DASKI_X402_EXTENSION_URI];
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;

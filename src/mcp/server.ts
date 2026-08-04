@@ -1,4 +1,7 @@
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import {
+  McpServer,
+  type McpRequestContext,
+} from "@modelcontextprotocol/server";
 import type { Express } from "express";
 import type { Config } from "../config.js";
 import type { ChainReader } from "../chain/reader.js";
@@ -15,7 +18,6 @@ import {
 import { GATEWAY_VERSION } from "../version.js";
 import { registerProviderResource } from "./providerResource.js";
 import { instrumentToolCalls } from "./instrumentation.js";
-import { sessionMetrics } from "./sessionMetrics.js";
 import {
   MAX_CONCURRENT_SEARCH_EMBEDDINGS,
   registerDiscoveryTool,
@@ -72,10 +74,6 @@ export interface McpDeps {
    * `buyer_identities` without a network call.
    */
   buyerAgentCardFetch?: import("../identity/fetch-agent-card.js").FetchAgentCardOptions["fetchFn"];
-  maxSessions?: number;
-  maxSessionsPerClient?: number;
-  sessionIdleTtlMs?: number;
-  sessionSweepIntervalMs?: number;
 }
 
 export type { McpWiring } from "./httpTransport.js";
@@ -120,9 +118,6 @@ export async function createMcpServer(
   app: Express,
   deps: McpDeps,
 ): Promise<McpWiring> {
-  // Per-session telemetry rollups flush on idle (mcp.session_metrics log
-  // lines) — the production-side replacement for the retired judge loop.
-  sessionMetrics.start();
   // Default to safeFetch (validates host + pins resolved IP at connect).
   // Tests inject deps.fetch with a mock that ignores SSRF; the loose
   // signature means a `(url, init) => Promise<Response>` mock satisfies
@@ -192,8 +187,8 @@ export async function createMcpServer(
 
     registerBuyServiceTool(
       server,
-      async (args, extra) => {
-        return runBuyService(args, extra, deps, {
+      async (args, context) => {
+        return runBuyService(args, { _meta: context.mcpReq._meta }, deps, {
           fetch: a2aFetch,
           timeoutMs: a2aTimeoutMs,
           maxResponseBytes: A2A_RESPONSE_MAX_BYTES,
@@ -205,7 +200,7 @@ export async function createMcpServer(
   // ── Resources ────────────────────────────────────────────────────────
   //
   // §5 — agents that already know a providerTokenId (from search_services)
-  function buildServer(): McpServer {
+  function buildServer(_context: McpRequestContext): McpServer {
     const server = new McpServer(
       { name: "daski-gateway", version: GATEWAY_VERSION },
       {
@@ -216,9 +211,19 @@ export async function createMcpServer(
           // lazy-load full Agent Cards without costing a tool slot.
           resources: { listChanged: false },
         },
-        // Planted in the `initialize` response so the model sees the
-        // canonical workflow before any individual tool description.
+        // Returned during modern discovery or legacy initialization so the
+        // model sees the canonical workflow before any tool description.
         instructions: serverInstructions(deps.config),
+        cacheHints: {
+          "server/discover": { ttlMs: 60_000, cacheScope: "public" },
+          "tools/list": { ttlMs: 300_000, cacheScope: "public" },
+          "prompts/list": { ttlMs: 300_000, cacheScope: "public" },
+          "resources/list": { ttlMs: 30_000, cacheScope: "public" },
+          "resources/templates/list": {
+            ttlMs: 300_000,
+            cacheScope: "public",
+          },
+        },
       },
     );
     instrumentToolCalls(server);
@@ -231,10 +236,7 @@ export async function createMcpServer(
     app,
     path: deps.config.mcpPath,
     createServer: buildServer,
-    maxSessions: deps.maxSessions,
-    maxSessionsPerClient: deps.maxSessionsPerClient,
-    idleTtlMs: deps.sessionIdleTtlMs,
-    sweepIntervalMs: deps.sessionSweepIntervalMs,
-    allowedOrigins: [new URL(deps.config.publicUrl).origin],
+    allowedHosts: [new URL(deps.config.publicUrl).hostname],
+    allowedOrigins: [new URL(deps.config.publicUrl).hostname],
   });
 }

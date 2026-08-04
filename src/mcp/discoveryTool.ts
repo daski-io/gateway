@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { McpServer } from "@modelcontextprotocol/server";
 import {
   CATEGORY_FAMILY_SLUGS,
   FULFILLMENT_MODES,
@@ -16,8 +16,8 @@ import { ConcurrencyLimiter } from "./concurrencyLimiter.js";
 export const MAX_SEARCH_INTENT_CHARACTERS = 2_048;
 export const MAX_CONCURRENT_SEARCH_EMBEDDINGS = 1;
 
-const SEARCH_SERVICES_INPUT_SCHEMA = z
-  .object({
+const SEARCH_SERVICES_INPUT_SCHEMA = z.strictObject(
+  {
     intent: z
       .string()
       .max(MAX_SEARCH_INTENT_CHARACTERS)
@@ -36,12 +36,12 @@ const SEARCH_SERVICES_INPUT_SCHEMA = z
       .describe("Filter by controlled service type."),
     jurisdiction: z
       .string()
-      .refine(isJurisdiction, (val) => ({
+      .refine(isJurisdiction, {
         message:
-          `Invalid jurisdiction '${val}'. Use 'global', an ISO 3166-1 country ` +
+          "Invalid jurisdiction. Use 'global', an ISO 3166-1 country " +
           "code ('US'), or an ISO 3166-2 subdivision code ('US-WY'). Plain " +
           "place names like 'Wyoming' are not accepted.",
-      }))
+      })
       .optional()
       .describe(
         "Filter by availability jurisdiction — ISO code only: 'global', a " +
@@ -63,15 +63,16 @@ const SEARCH_SERVICES_INPUT_SCHEMA = z
       .max(50)
       .optional()
       .describe("Maximum providers to return. Default 10."),
-  })
-  // Blind agents reach for `query`. The bare zod text names the offending key
-  // but not the right one, so recovery is a guess; name `intent` in the error
-  // itself. The `keys` array still ships alongside this message.
-  .strict(
+  },
+  {
+    // Blind agents reach for `query`; name the supported field directly in
+    // the validation error so recovery does not require guessing.
+    error:
     "daski_search_services has no free-text 'query' parameter — use 'intent' " +
       "for natural-language search, or 'categoryFamily' / 'serviceType' / " +
       "'jurisdiction' / 'fulfillmentMode' / 'maxPrice' for structured filters.",
-  );
+  },
+);
 
 export function registerDiscoveryTool(
   server: McpServer,

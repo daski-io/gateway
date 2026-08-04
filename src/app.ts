@@ -18,7 +18,6 @@ import {
   type ProjectionReader,
 } from "./indexer/chainEvents.js";
 import type { McpWiring } from "./mcp/server.js";
-import { sessionMetrics } from "./mcp/sessionMetrics.js";
 import { ReputationMirrorWorker } from "./reputation/worker.js";
 import { startBackgroundRuntime } from "./runtime/backgroundRuntime.js";
 import { ChainDeploymentReadinessProbe } from "./payment/deploymentReadiness.js";
@@ -43,10 +42,6 @@ export interface CreateAppOptions {
   startCacheRefreshLoop?: boolean;
   agentCardFetchTimeoutMs?: number;
   buyerAgentCardFetch?: FetchAgentCardOptions["fetchFn"];
-  mcpMaxSessions?: number;
-  mcpMaxSessionsPerClient?: number;
-  mcpSessionIdleTtlMs?: number;
-  mcpSessionSweepIntervalMs?: number;
 }
 
 export interface AppBundle {
@@ -143,9 +138,6 @@ export async function createApp(options: CreateAppOptions): Promise<AppBundle> {
     if (shutdownPromise) return shutdownPromise;
     lifecycle.beginShutdown();
     const backgroundDrain = background.stopAndDrain();
-    // Railway redeploys on every main push — without this, every active
-    // session's telemetry rollup dies with the process.
-    sessionMetrics.stop();
     const mcpClose = mcp?.close() ?? Promise.resolve();
     shutdownPromise = (async () => {
       const drains = await Promise.allSettled([
@@ -153,9 +145,6 @@ export async function createApp(options: CreateAppOptions): Promise<AppBundle> {
         backgroundDrain,
         mcpClose,
       ]);
-      // Closing the transport can finish in-flight tool calls. Flush only
-      // after they have had a chance to update their session rollups.
-      sessionMetrics.flushAll();
       const bootstrap = await Promise.allSettled([
         embedderWarmup,
         embeddingSync?.waitForIdle() ?? Promise.resolve(),
