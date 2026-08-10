@@ -25,6 +25,8 @@ import { logErrorWithId } from "./util/errorWrap.js";
 import { logger } from "./util/logger.js";
 import { ApplicationLifecycle } from "./runtime/applicationLifecycle.js";
 import { ProviderAuthorityService } from "./payment/providerAuthority.js";
+import type { BazaarCompatibilityWiring } from "./bazaar/types.js";
+import type { BazaarRecoveryRuntime } from "./bazaar/recovery.js";
 
 const ZERO_ADDRESS = `0x${"00".repeat(20)}` as const;
 
@@ -42,6 +44,7 @@ export interface CreateAppOptions {
   startCacheRefreshLoop?: boolean;
   agentCardFetchTimeoutMs?: number;
   buyerAgentCardFetch?: FetchAgentCardOptions["fetchFn"];
+  bazaarCompatibility?: BazaarCompatibilityWiring;
 }
 
 export interface AppBundle {
@@ -57,6 +60,7 @@ export interface AppBundle {
   indexer: ChainEventsIndexer;
   deploymentReadiness: ChainDeploymentReadinessProbe;
   providerAuthority: ProviderAuthorityService;
+  bazaarRecovery: BazaarRecoveryRuntime | null;
   beginShutdown(): void;
   shutdown(httpClosed?: Promise<void>): Promise<void>;
 }
@@ -108,7 +112,7 @@ export async function createApp(options: CreateAppOptions): Promise<AppBundle> {
     embedder?.warmup?.().catch((error) => {
       logErrorWithId("embedder.warmup", error);
     }) ?? Promise.resolve();
-  const { app, mcp } = await createGatewayHttp({
+  const { app, mcp, closeBazaar, bazaarRecovery } = await createGatewayHttp({
     ...options,
     pool,
     queries,
@@ -144,6 +148,7 @@ export async function createApp(options: CreateAppOptions): Promise<AppBundle> {
         httpClosed,
         backgroundDrain,
         mcpClose,
+        closeBazaar(),
       ]);
       const bootstrap = await Promise.allSettled([
         embedderWarmup,
@@ -175,6 +180,7 @@ export async function createApp(options: CreateAppOptions): Promise<AppBundle> {
     indexer,
     deploymentReadiness,
     providerAuthority,
+    bazaarRecovery,
     beginShutdown: () => lifecycle.beginShutdown(),
     shutdown,
   };

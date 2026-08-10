@@ -40,6 +40,11 @@ export class ProviderAuthorityService {
     return this.refreshOnce(agentId, false);
   }
 
+  /** Forces a fresh authority read for settlement-sensitive revocation checks. */
+  async requireCurrent(agentId: bigint): Promise<ProviderAuthoritySnapshot> {
+    return this.refreshOnce(agentId, false);
+  }
+
   /** Requires recent on-chain authority and a successfully resolved catalog. */
   async requireFreshCatalog(
     agentId: bigint,

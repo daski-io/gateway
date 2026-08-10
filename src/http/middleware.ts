@@ -6,6 +6,7 @@ import express, {
 import type { Config } from "../config.js";
 import type { Queries } from "../db/queries.js";
 import { rateLimit, securityHeaders } from "../util/security.js";
+import { captureRawJsonBody } from "./rawJsonBody.js";
 
 const MCP_STATE_CHANGE_TOOLS = new Set([
   "daski_buy_service",
@@ -78,6 +79,22 @@ function addRateLimits(
   );
 }
 
+function rejectBazaarAlternateFraming(
+  req: Parameters<RequestHandler>[0],
+  res: Parameters<RequestHandler>[1],
+  next: Parameters<RequestHandler>[2],
+): void {
+  if (
+    req.headers["content-encoding"] !== undefined ||
+    req.headers["transfer-encoding"] !== undefined
+  ) {
+    res.setHeader("Cache-Control", "no-store");
+    res.status(400).json({ error: "alternate_request_framing_forbidden" });
+    return;
+  }
+  next();
+}
+
 export function configureMiddleware(
   app: Express,
   queries: Queries,
@@ -103,7 +120,11 @@ export function configureMiddleware(
   if (config.nodeEnv !== "test") {
     configurePreParserRateLimits(app, queries, config);
   }
-  app.use(express.json({ limit: "1mb" }));
+  app.use(
+    ["/x402/v1/outcomes", "/x402/v1/orders"],
+    rejectBazaarAlternateFraming,
+  );
+  app.use(express.json({ limit: "1mb", verify: captureRawJsonBody }));
   if (config.nodeEnv !== "test") {
     configureParsedMcpRateLimits(app, queries, config);
   }
@@ -116,7 +137,7 @@ function configurePreParserRateLimits(
 ): void {
   addRateLimits(
     app,
-    ["/purchase"],
+    ["/purchase", "/x402/v1/outcomes"],
     {
       namespace: "payment-resource",
       perClient: 30,
@@ -125,7 +146,7 @@ function configurePreParserRateLimits(
     },
   );
   app.use(
-    "/purchase",
+    ["/purchase", "/x402/v1/outcomes"],
     forPaidPurchaseRetry(
       rateLimit({
         windowMs: 60_000,
@@ -136,7 +157,7 @@ function configurePreParserRateLimits(
     ),
   );
   app.use(
-    "/purchase",
+    ["/purchase", "/x402/v1/outcomes"],
     forPaidPurchaseRetry(
       rateLimit({
         windowMs: 60_000,
@@ -184,6 +205,16 @@ function configurePreParserRateLimits(
       namespace: "rpc-read",
       perClient: 60,
       global: config.rpcReadMaxPerMinute,
+      store: queries,
+    },
+  );
+  addRateLimits(
+    app,
+    ["/x402/v1/orders"],
+    {
+      namespace: "bazaar-lifecycle",
+      perClient: 30,
+      global: config.stateChangeGlobalMaxPerMinute,
       store: queries,
     },
   );

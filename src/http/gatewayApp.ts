@@ -25,6 +25,9 @@ import { createMetaRouter } from "./metaRoutes.js";
 import { configureMiddleware } from "./middleware.js";
 import type { ApplicationLifecycle } from "../runtime/applicationLifecycle.js";
 import type { ProviderAuthorityService } from "../payment/providerAuthority.js";
+import { createBazaarCompatibilityRouter } from "../bazaar/router.js";
+import type { BazaarCompatibilityWiring } from "../bazaar/types.js";
+import type { BazaarRecoveryRuntime } from "../bazaar/recovery.js";
 
 export interface GatewayHttpOptions {
   config: Config;
@@ -42,11 +45,17 @@ export interface GatewayHttpOptions {
   a2aFetch?: typeof fetch;
   a2aTimeoutMs?: number;
   buyerAgentCardFetch?: FetchAgentCardOptions["fetchFn"];
+  bazaarCompatibility?: BazaarCompatibilityWiring;
 }
 
 export async function createGatewayHttp(
   options: GatewayHttpOptions,
-): Promise<{ app: Express; mcp: McpWiring | null }> {
+): Promise<{
+  app: Express;
+  mcp: McpWiring | null;
+  closeBazaar: () => Promise<void>;
+  bazaarRecovery: BazaarRecoveryRuntime | null;
+}> {
   const { config, reader, cache, queries, reputationWorker } = options;
   const app = express();
   const facilitator = new DaskiFacilitatorService({
@@ -86,6 +95,18 @@ export async function createGatewayHttp(
       lifecycle: options.lifecycle,
     }),
   );
+  let closeBazaar = () => Promise.resolve();
+  let bazaarRecovery: BazaarRecoveryRuntime | null = null;
+  if (options.bazaarCompatibility) {
+    const bazaar = await createBazaarCompatibilityRouter({
+      pool: options.pool,
+      providerAuthority: options.providerAuthority,
+      wiring: options.bazaarCompatibility,
+    });
+    app.use(bazaar.router);
+    closeBazaar = bazaar.close;
+    bazaarRecovery = bazaar.recovery;
+  }
   app.use(createDiscoveryRouter(cache, config));
   app.use(
     createPurchaseRouter({
@@ -147,5 +168,5 @@ export async function createGatewayHttp(
     });
   };
   app.use(errorHandler);
-  return { app, mcp };
+  return { app, mcp, closeBazaar, bazaarRecovery };
 }
