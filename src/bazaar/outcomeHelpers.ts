@@ -47,6 +47,7 @@ export function createClaimInput(
     authorizationValidAfter: payment.authorization.validAfter,
     paidRetryReceivedAt,
     paymentMaxTimeoutSeconds: offer.paymentMaxTimeoutSeconds,
+    refundPolicyVersion: listing.policyVersion,
   };
 }
 

@@ -275,10 +275,13 @@ export interface BazaarRefundInstructionSigningRequest {
   message: {
     orderRecordId: Hex;
     refundId: Hex;
+    providerAgentId: string;
     authorizationDigest: Hex;
     payer: Hex;
     token: Hex;
     grossAmount: string;
+    refundWallet: Hex;
+    refundPolicyVersion: Hex;
     refundReason: Hex;
     evidenceHash: Hex;
     instructionNonce: Hex;
@@ -297,6 +300,7 @@ export interface BazaarRefundRequestService {
     refundId: Hex;
     providerAgentId: bigint;
     refundWallet: Hex;
+    refundPolicyVersion: Hex;
     instruction: {
       domain: Record<string, unknown>;
       types: Record<string, readonly { name: string; type: string }[]>;

@@ -4,9 +4,13 @@ import type {
   BazaarRefundRiskPolicy,
   BazaarRefundWorkerPolicy,
 } from "./types.js";
-import { isHexAddress } from "../util/evmValidation.js";
+import { encodeAbiParameters, keccak256, toBytes, type Hex } from "viem";
+import { isHex32, isHexAddress } from "../util/evmValidation.js";
 
 const MAX_UINT256 = (1n << 256n) - 1n;
+const REFUND_POLICY_TYPE_HASH = keccak256(toBytes(
+  "DaskiProviderRefundRiskPolicyV1(uint256 providerAgentId,bytes32 assurance,address refundWallet,uint256 maxSingleGross,uint256 maxAggregateReserved,uint256 maxAggregatePaidUnfulfilled,uint256 maxAggregateRefundDue,uint256 refundSlaSeconds)",
+));
 
 interface RiskTotals {
   reserved: string;
@@ -28,7 +32,43 @@ export function validateRefundRiskPolicies(
   if (actual.join("\0") !== expected.join("\0")) {
     throw new Error("Bazaar refund-risk policies do not match listed providers");
   }
-  for (const providerId of expected) validateRefundRiskPolicy(policies[providerId]!);
+  for (const providerId of expected) {
+    const policy = policies[providerId]!;
+    const providerAgentId = BigInt(providerId);
+    validateRefundRiskPolicy(policy);
+    const version = computeBazaarRefundPolicyVersion(providerAgentId, policy);
+    for (const listing of listings.filter((candidate) =>
+      candidate.offer.message.providerAgentId === providerAgentId)) {
+      if (
+        !isHex32(listing.policyVersion) ||
+        listing.policyVersion.toLowerCase() !== version.toLowerCase() ||
+        listing.offer.message.token.toLowerCase() === policy.refundWallet.toLowerCase()
+      ) throw new Error("Bazaar listing does not bind its refund-risk policy");
+    }
+  }
+}
+
+export function computeBazaarRefundPolicyVersion(
+  providerAgentId: bigint,
+  policy: BazaarRefundRiskPolicy,
+): Hex {
+  if (providerAgentId < 1n || providerAgentId > MAX_UINT256) {
+    throw new Error("Bazaar refund-risk provider is invalid");
+  }
+  return keccak256(encodeAbiParameters(
+    [
+      { type: "bytes32" }, { type: "uint256" }, { type: "bytes32" },
+      { type: "address" }, { type: "uint256" }, { type: "uint256" },
+      { type: "uint256" }, { type: "uint256" }, { type: "uint256" },
+    ],
+    [
+      REFUND_POLICY_TYPE_HASH, providerAgentId,
+      keccak256(toBytes(policy.assurance)), policy.refundWallet,
+      policy.maxSingleGross, policy.maxAggregateReserved,
+      policy.maxAggregatePaidUnfulfilled, policy.maxAggregateRefundDue,
+      BigInt(policy.refundSlaSeconds),
+    ],
+  ));
 }
 
 export function refundRiskPolicyFor(

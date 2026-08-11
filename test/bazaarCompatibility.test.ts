@@ -24,7 +24,9 @@ import {
   createPaymentPayload,
   accountRefundBroker,
   PROVIDER_KEY,
+  REFUND_WALLET_KEY,
   SECOND_PAY_TO_KEY,
+  TEST_TOKEN,
   TEST_NOW,
   ZERO_BYTES32,
 } from "./helpers/bazaar.js";
@@ -260,6 +262,51 @@ describe("Bazaar compatibility harness", () => {
     })).rejects.toThrow(/cannot reuse listing or payment keys/);
   });
 
+  it("binds refund policy fields and purpose-separates the refund signer", async () => {
+    const drifted = await createBazaarHarness();
+    drifted.wiring.refundRiskPolicies["701"]!.assurance = "bonded";
+    await expect(createBazaarCompatibilityRouter({
+      pool: gateway.bundle.pool,
+      providerAuthority: gateway.bundle.providerAuthority,
+      wiring: drifted.wiring,
+      lifecycleDomainRetentionSeconds: gateway.config.taskRetentionSeconds,
+    })).rejects.toThrow(/bind its refund-risk policy/);
+
+    const signerAlias = await createBazaarHarness();
+    signerAlias.wiring.refundInstructionSigningBroker = {
+      ...signerAlias.wiring.refundInstructionSigningBroker,
+      address: signerAlias.wiring.refundRiskPolicies["701"]!.refundWallet,
+    };
+    await expect(createBazaarCompatibilityRouter({
+      pool: gateway.bundle.pool,
+      providerAuthority: gateway.bundle.providerAuthority,
+      wiring: signerAlias.wiring,
+      lifecycleDomainRetentionSeconds: gateway.config.taskRetentionSeconds,
+    })).rejects.toThrow(/refund signer must be valid and purpose-separated/);
+
+    const lifecycleAlias = await createBazaarHarness();
+    lifecycleAlias.wiring.providerActionSigningBroker = {
+      ...lifecycleAlias.wiring.providerActionSigningBroker,
+      address: lifecycleAlias.wiring.refundRiskPolicies["701"]!.refundWallet,
+    };
+    await expect(createBazaarCompatibilityRouter({
+      pool: gateway.bundle.pool,
+      providerAuthority: gateway.bundle.providerAuthority,
+      wiring: lifecycleAlias.wiring,
+      lifecycleDomainRetentionSeconds: gateway.config.taskRetentionSeconds,
+    })).rejects.toThrow(/provider-action signer must be valid and purpose-separated/);
+
+    const tokenAlias = await createBazaarHarness({
+      refundPolicyOverrides: { refundWallet: TEST_TOKEN },
+    });
+    await expect(createBazaarCompatibilityRouter({
+      pool: gateway.bundle.pool,
+      providerAuthority: gateway.bundle.providerAuthority,
+      wiring: tokenAlias.wiring,
+      lifecycleDomainRetentionSeconds: gateway.config.taskRetentionSeconds,
+    })).rejects.toThrow(/bind its refund-risk policy/);
+  });
+
   it("rejects outcome URLs outside the configured public origin", async () => {
     harness.wiring.publicOrigin = "https://attacker.example";
     await expect(createBazaarCompatibilityRouter({
@@ -436,6 +483,22 @@ describe("Bazaar compatibility harness", () => {
     expect(await latestOrderState(gateway)).toBeUndefined();
   });
 
+  it("rejects the configured refund wallet as payer before facilitator egress", async () => {
+    const refundPayer = privateKeyToAccount(REFUND_WALLET_KEY);
+    const required = await paymentRequired(gateway);
+    const payment = await createPaymentPayload({
+      paymentRequired: required,
+      buyer: refundPayer,
+      nonce: nonce(33),
+    });
+    const result = await paid(gateway, payment);
+    expect(result.response.status).toBe(402);
+    expect(result.body).toEqual({ error: "payer_refund_wallet_conflict" });
+    expect(harness.facilitator.verifyCalls).toBe(0);
+    expect(harness.facilitator.settleCalls).toBe(0);
+    expect(await latestOrderState(gateway)).toBeUndefined();
+  });
+
   it("rejects one outcome payment at a second same-provider, same-price outcome", async () => {
     await gateway.close();
     const secondPayTo = privateKeyToAccount(SECOND_PAY_TO_KEY);
@@ -606,6 +669,36 @@ describe("Bazaar compatibility harness", () => {
       observation_state: "pending",
       exposure_state: "reserved",
       attempt_count: 1,
+    });
+  });
+
+  it("fails closed on a malformed settlement-observer result", async () => {
+    await gateway.close();
+    let currentNow = new Date(TEST_NOW);
+    harness.wiring.now = () => new Date(currentNow);
+    harness.facilitator.settleError = true;
+    gateway = await startHarnessGateway(harness);
+    const required = await paymentRequired(gateway);
+    const payment = await createPaymentPayload({
+      paymentRequired: required,
+      buyer,
+      nonce: nonce(71),
+    });
+    await paid(gateway, payment);
+    currentNow = new Date(TEST_NOW.getTime() + 301_000);
+    harness.settlementObserver.result = null as never;
+    await gateway.bundle.bazaarRecovery!.runOnce();
+    const pending = await gateway.bundle.pool.query<{
+      observation_state: string;
+      exposure_state: string;
+    }>(
+      `SELECT o.state AS observation_state, e.state AS exposure_state
+         FROM bazaar_settlement_observations o
+         JOIN bazaar_exposures e USING (order_record_id)`,
+    );
+    expect(pending.rows[0]).toEqual({
+      observation_state: "pending",
+      exposure_state: "reserved",
     });
   });
 
@@ -844,6 +937,30 @@ describe("Bazaar compatibility harness", () => {
     expect((await paid(gateway, payment)).response.status).toBe(200);
   });
 
+  it("classifies a malformed provider result as dispatch ambiguity", async () => {
+    harness.fulfillment.rawDispatchResult = null;
+    const required = await paymentRequired(gateway);
+    const payment = await createPaymentPayload({
+      paymentRequired: required,
+      buyer,
+      nonce: nonce(157),
+    });
+    expect((await paid(gateway, payment)).response.status).toBe(202);
+    expect(await latestOrderState(gateway)).toBe("dispatch_ambiguous");
+    const state = await gateway.bundle.pool.query<{
+      exposure_state: string;
+      refunds: string;
+    }>(
+      `SELECT e.state AS exposure_state,
+              (SELECT count(*) FROM bazaar_refund_obligations)::text AS refunds
+         FROM bazaar_exposures e`,
+    );
+    expect(state.rows[0]).toEqual({
+      exposure_state: "paid_unfulfilled",
+      refunds: "0",
+    });
+  });
+
   it("creates one exact payer-bound refund only after explicit provider rejection", async () => {
     harness.fulfillment.dispatchResult = {
       kind: "rejected",
@@ -868,6 +985,11 @@ describe("Bazaar compatibility harness", () => {
       gross_amount: string;
       primary_reason: string;
       refund_id: string;
+      refund_wallet: string;
+      exposure_refund_wallet: string;
+      refund_policy_version: string;
+      exposure_policy_version: string;
+      refund_sla_seconds: number;
     }>(
       `SELECT e.state AS exposure_state,
               (SELECT count(*) FROM bazaar_refund_obligations)::text AS refunds,
@@ -875,7 +997,12 @@ describe("Bazaar compatibility harness", () => {
               encode(r.payer, 'hex') AS payer,
               encode(r.token, 'hex') AS token,
               r.gross_amount::text, r.primary_reason,
-              encode(r.refund_id, 'hex') AS refund_id
+              encode(r.refund_id, 'hex') AS refund_id,
+              encode(r.refund_wallet, 'hex') AS refund_wallet,
+              encode(e.refund_wallet, 'hex') AS exposure_refund_wallet,
+              encode(r.refund_policy_version, 'hex') AS refund_policy_version,
+              encode(e.refund_policy_version, 'hex') AS exposure_policy_version,
+              e.refund_sla_seconds
          FROM bazaar_exposures e
          JOIN bazaar_refund_obligations r USING (order_record_id)`,
     );
@@ -887,6 +1014,15 @@ describe("Bazaar compatibility harness", () => {
       token: harness.wiring.listings[0]!.offer.message.token.slice(2).toLowerCase(),
       gross_amount: "10000",
       primary_reason: "PROVIDER_FULFILLMENT_FAILURE",
+      refund_wallet: harness.wiring.refundRiskPolicies["701"]!
+        .refundWallet.slice(2).toLowerCase(),
+      exposure_refund_wallet: harness.wiring.refundRiskPolicies["701"]!
+        .refundWallet.slice(2).toLowerCase(),
+      refund_policy_version: harness.wiring.listings[0]!
+        .policyVersion.slice(2).toLowerCase(),
+      exposure_policy_version: harness.wiring.listings[0]!
+        .policyVersion.slice(2).toLowerCase(),
+      refund_sla_seconds: 24 * 60 * 60,
     });
     expect(obligation.rows[0]?.refund_id).toMatch(/^[0-9a-f]{64}$/);
     const replay = await paid(gateway, payment);
@@ -937,7 +1073,8 @@ describe("Bazaar compatibility harness", () => {
     const request = harness.refundService.calls[0]!;
     expect(request).toMatchObject({
       providerAgentId: 701n,
-      refundWallet: harness.wiring.refundRiskPolicies["701"]!.refundWallet,
+      refundWallet: harness.wiring.refundRiskPolicies["701"]!.refundWallet.toLowerCase(),
+      refundPolicyVersion: harness.wiring.listings[0]!.policyVersion.toLowerCase(),
       instruction: {
         domain: {
           name: "Daski Bazaar Refund Instruction",
@@ -959,10 +1096,20 @@ describe("Bazaar compatibility harness", () => {
       refund_transaction: string;
       job_state: string;
       exposure_state: string;
+      evidence_hash: string;
+      block_hash: string;
+      transfer_log_index: string;
+      broadcast_recorded: boolean;
+      finalization_recorded: boolean;
     }>(
       `SELECT r.state AS refund_state,
               encode(r.refund_transaction, 'hex') AS refund_transaction,
-              j.state AS job_state, e.state AS exposure_state
+              j.state AS job_state, e.state AS exposure_state,
+              encode(r.finalization_evidence_hash, 'hex') AS evidence_hash,
+              encode(r.finalization_block_hash, 'hex') AS block_hash,
+              r.finalization_transfer_log_index::text AS transfer_log_index,
+              r.broadcast_at IS NOT NULL AS broadcast_recorded,
+              r.finalized_at IS NOT NULL AS finalization_recorded
          FROM bazaar_refund_obligations r
          JOIN bazaar_refund_jobs j USING (order_record_id)
          JOIN bazaar_exposures e USING (order_record_id)`,
@@ -972,6 +1119,11 @@ describe("Bazaar compatibility harness", () => {
       refund_transaction: nonce(151).slice(2),
       job_state: "complete",
       exposure_state: "released",
+      evidence_hash: "88".repeat(32),
+      block_hash: "99".repeat(32),
+      transfer_log_index: "7",
+      broadcast_recorded: true,
+      finalization_recorded: true,
     });
     await gateway.bundle.bazaarRecovery!.runOnce();
     expect(harness.refundService.calls).toHaveLength(1);
@@ -1054,17 +1206,126 @@ describe("Bazaar compatibility harness", () => {
     expect(due.rows[0]).toEqual({ refund_state: "due", job_state: "pending" });
   });
 
+  it("defers a malformed refund-provider result without changing financial state", async () => {
+    await createProviderRefundDue(gateway, harness, buyer, 158);
+    harness.refundService.result = null as never;
+    await gateway.bundle.bazaarRecovery!.runOnce();
+    const due = await gateway.bundle.pool.query<{
+      refund_state: string;
+      job_state: string;
+      exposure_state: string;
+    }>(
+      `SELECT r.state AS refund_state, j.state AS job_state,
+              e.state AS exposure_state
+         FROM bazaar_refund_obligations r
+         JOIN bazaar_refund_jobs j USING (order_record_id)
+         JOIN bazaar_exposures e USING (order_record_id)`,
+    );
+    expect(due.rows[0]).toEqual({
+      refund_state: "due",
+      job_state: "pending",
+      exposure_state: "refund_due",
+    });
+    expect(harness.refundService.calls).toHaveLength(1);
+  });
+
+  it("retries a lost refund response by immutable refundId and finalizes once", async () => {
+    await createProviderRefundDue(gateway, harness, buyer, 159);
+    harness.refundService.error = true;
+    await gateway.bundle.bazaarRecovery!.runOnce();
+    expect(harness.refundService.calls).toHaveLength(1);
+    await gateway.bundle.pool.query(
+      "UPDATE bazaar_refund_jobs SET next_attempt_at = now() - interval '1 second'",
+    );
+    harness.refundService.error = false;
+    harness.refundService.result = { kind: "broadcast", transaction: nonce(160) };
+    await gateway.bundle.bazaarRecovery!.runOnce();
+    expect(harness.refundService.calls).toHaveLength(2);
+    const [first, second] = harness.refundService.calls;
+    expect(second!.refundId).toBe(first!.refundId);
+    expect(second!.instruction.message.providerAgentId)
+      .toBe(second!.providerAgentId.toString());
+    expect(second!.instruction.message.refundWallet).toBe(second!.refundWallet);
+    expect(second!.instruction.message.refundPolicyVersion)
+      .toBe(second!.refundPolicyVersion);
+    expect(second!.instruction.message.instructionNonce)
+      .not.toBe(first!.instruction.message.instructionNonce);
+    const finalized = await gateway.bundle.pool.query<{
+      refund_state: string;
+      job_state: string;
+      exposure_state: string;
+      obligations: string;
+    }>(
+      `SELECT r.state AS refund_state, j.state AS job_state,
+              e.state AS exposure_state,
+              (SELECT count(*) FROM bazaar_refund_obligations)::text AS obligations
+         FROM bazaar_refund_obligations r
+         JOIN bazaar_refund_jobs j USING (order_record_id)
+         JOIN bazaar_exposures e USING (order_record_id)`,
+    );
+    expect(finalized.rows[0]).toEqual({
+      refund_state: "finalized",
+      job_state: "complete",
+      exposure_state: "released",
+      obligations: "1",
+    });
+  });
+
+  it("fences a stale refund worker and permits one replacement transition", async () => {
+    await createProviderRefundDue(gateway, harness, buyer, 161);
+    harness.refundService.result = { kind: "broadcast", transaction: nonce(162) };
+    const gate = deferred();
+    harness.refundService.gate = gate.promise;
+    const stale = gateway.bundle.bazaarRecovery!.runOnce();
+    await waitForRefundCalls(harness, 1);
+    await gateway.bundle.pool.query(
+      `UPDATE bazaar_refund_jobs
+          SET lease_expires_at = now() - interval '1 second'`,
+    );
+    const replacement = gateway.bundle.bazaarRecovery!.runOnce();
+    await waitForRefundCalls(harness, 2);
+    gate.resolve();
+    await Promise.all([stale, replacement]);
+    const final = await gateway.bundle.pool.query<{
+      refund_state: string;
+      job_state: string;
+      exposure_state: string;
+      attempt_count: number;
+    }>(
+      `SELECT r.state AS refund_state, j.state AS job_state,
+              e.state AS exposure_state, j.attempt_count
+         FROM bazaar_refund_obligations r
+         JOIN bazaar_refund_jobs j USING (order_record_id)
+         JOIN bazaar_exposures e USING (order_record_id)`,
+    );
+    expect(final.rows[0]).toMatchObject({
+      refund_state: "finalized",
+      job_state: "complete",
+      exposure_state: "released",
+    });
+    expect(final.rows[0]!.attempt_count).toBeGreaterThanOrEqual(3);
+    expect(harness.refundService.calls[1]!.refundId)
+      .toBe(harness.refundService.calls[0]!.refundId);
+    expect(harness.refundService.calls[1]!.instruction.message.instructionNonce)
+      .not.toBe(
+        harness.refundService.calls[0]!.instruction.message.instructionNonce,
+      );
+  });
+
   it("reserves paid and refund headroom across a provider's outcome routes", async () => {
     await gateway.close();
+    harness = await createBazaarHarness({
+      refundPolicyOverrides: {
+        maxAggregateReserved: 10_000n,
+        maxAggregatePaidUnfulfilled: 10_000n,
+        maxAggregateRefundDue: 10_000n,
+      },
+    });
     harness.wiring.listings.push(await createListing(harness.providerAccount, {
       payTo: privateKeyToAccount(SECOND_PAY_TO_KEY),
       slug: "second-report",
+      refundPolicy: harness.wiring.refundRiskPolicies["701"],
     }));
-    Object.assign(harness.wiring.refundRiskPolicies["701"]!, {
-      maxAggregateReserved: 10_000n,
-      maxAggregatePaidUnfulfilled: 10_000n,
-      maxAggregateRefundDue: 10_000n,
-    });
     harness.fulfillment.dispatchError = true;
     gateway = await startHarnessGateway(harness);
     const required = await paymentRequired(gateway);
@@ -1087,10 +1348,12 @@ describe("Bazaar compatibility harness", () => {
 
   it("admits one winner when paid authorizations race for refund headroom", async () => {
     await gateway.close();
-    Object.assign(harness.wiring.refundRiskPolicies["701"]!, {
-      maxAggregateReserved: 10_000n,
-      maxAggregatePaidUnfulfilled: 10_000n,
-      maxAggregateRefundDue: 10_000n,
+    harness = await createBazaarHarness({
+      refundPolicyOverrides: {
+        maxAggregateReserved: 10_000n,
+        maxAggregatePaidUnfulfilled: 10_000n,
+        maxAggregateRefundDue: 10_000n,
+      },
     });
     const gate = deferred();
     harness.facilitator.settleGate = gate.promise;
@@ -1612,6 +1875,17 @@ async function waitForObserverCalls(
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
   throw new Error(`Bazaar observer did not reach ${count} calls`);
+}
+
+async function waitForRefundCalls(
+  harness: Awaited<ReturnType<typeof createBazaarHarness>>,
+  count: number,
+): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (harness.refundService.calls.length >= count) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`Bazaar refund service did not reach ${count} calls`);
 }
 
 async function latestOrderState(gateway: TestGateway): Promise<string | undefined> {

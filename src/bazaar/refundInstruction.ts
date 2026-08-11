@@ -15,10 +15,13 @@ export const BAZAAR_REFUND_INSTRUCTION_TYPES = {
   DaskiBazaarRefundInstruction: [
     { name: "orderRecordId", type: "bytes32" },
     { name: "refundId", type: "bytes32" },
+    { name: "providerAgentId", type: "uint256" },
     { name: "authorizationDigest", type: "bytes32" },
     { name: "payer", type: "address" },
     { name: "token", type: "address" },
     { name: "grossAmount", type: "uint256" },
+    { name: "refundWallet", type: "address" },
+    { name: "refundPolicyVersion", type: "bytes32" },
     { name: "refundReason", type: "bytes32" },
     { name: "evidenceHash", type: "bytes32" },
     { name: "instructionNonce", type: "bytes32" },
@@ -38,10 +41,13 @@ export async function createBazaarRefundInstruction(input: {
   payTo: Hex;
   orderRecordId: Hex;
   refundId: Hex;
+  providerAgentId: bigint;
   authorizationDigest: Hex;
   payer: Hex;
   token: Hex;
   grossAmount: bigint;
+  refundWallet: Hex;
+  refundPolicyVersion: Hex;
   refundReason: BazaarRefundReason;
   evidenceHash: Hex;
   attemptCount: number;
@@ -65,10 +71,13 @@ export async function createBazaarRefundInstruction(input: {
     message: {
       orderRecordId: input.orderRecordId,
       refundId: input.refundId,
+      providerAgentId: input.providerAgentId.toString(),
       authorizationDigest: input.authorizationDigest,
       payer: input.payer,
       token: input.token,
       grossAmount: input.grossAmount.toString(),
+      refundWallet: input.refundWallet,
+      refundPolicyVersion: input.refundPolicyVersion,
       refundReason: keccak256(toBytes(input.refundReason)),
       evidenceHash: input.evidenceHash,
       instructionNonce,
@@ -90,6 +99,7 @@ export async function createBazaarRefundInstruction(input: {
     domain: { ...typed.domain, chainId: input.chainId },
     message: {
       ...typed.message,
+      providerAgentId: input.providerAgentId,
       grossAmount: input.grossAmount,
       issuedAt: input.issuedAt,
       expiresAt: input.expiresAt,

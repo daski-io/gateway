@@ -53,6 +53,7 @@ export interface ClaimOrderInput extends Omit<
   authorizationValidAfter: bigint;
   paidRetryReceivedAt: bigint;
   paymentMaxTimeoutSeconds: bigint;
+  refundPolicyVersion: Hex;
 }
 
 export interface LeasedBazaarOrder {
@@ -222,7 +223,12 @@ export class BazaarOrderStore {
         );
         if (!inserted.rows[0]) throw new Error("Bazaar order insert returned no row");
         const order = toBazaarOrder(inserted.rows[0]);
-        await reserveBazaarExposure(client, order);
+        await reserveBazaarExposure(
+          client,
+          order,
+          refundPolicy,
+          input.refundPolicyVersion,
+        );
         await client.query("COMMIT");
         return {
           kind: "claimed",
@@ -384,7 +390,6 @@ export class BazaarOrderStore {
     expected: "settled" | "dispatch_started";
     reason: Extract<BazaarRefundReason,
       "PROVIDER_COMPLIANCE_FAILURE" | "PROVIDER_FULFILLMENT_FAILURE">;
-    policy: BazaarRefundRiskPolicy;
     failureCode: string;
   }): Promise<boolean> {
     return markBazaarDispatchRefundDue({ ...input, pool: this.pool });

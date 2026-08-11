@@ -10,7 +10,6 @@ import type {
   BazaarObservationOriginState,
   BazaarOrderState,
   BazaarRefundReason,
-  BazaarRefundRiskPolicy,
   BazaarSettlementObservationResult,
 } from "./types.js";
 
@@ -95,7 +94,6 @@ export async function completeBazaarObservedTransfer(input: {
       disposition: "refund_due";
       reason: Extract<BazaarRefundReason,
         "AMBIGUOUS_PAID" | "SETTLEMENT_EVIDENCE_INVALID">;
-      policy: BazaarRefundRiskPolicy;
     }
 )): Promise<boolean> {
   assertTransferDisposition(input.originState, input.disposition);
@@ -146,7 +144,6 @@ export async function completeBazaarObservedTransfer(input: {
         client,
         order: toRefundBinding(orderRow),
         reason: input.reason,
-        policy: input.policy,
         evidenceHash: input.observation.evidenceHash,
         expectedExposure: "reserved",
       });

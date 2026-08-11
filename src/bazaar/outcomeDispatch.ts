@@ -8,9 +8,9 @@ import {
 } from "./outcomeHelpers.js";
 import type { BazaarOrderStore } from "./store.js";
 import type { BazaarLeaseGuard } from "./lease.js";
-import { refundRiskPolicyFor } from "./refundPolicy.js";
 import type {
   BazaarCompatibilityWiring,
+  BazaarDispatchResult,
   BazaarListing,
   BazaarOrder,
 } from "./types.js";
@@ -26,10 +26,6 @@ export async function dispatchBazaarOrder(input: {
   lease: BazaarLeaseGuard;
 }): Promise<BazaarOutcomeResult> {
   const { order, paymentResponse, store, wiring, listing, leaseToken, lease } = input;
-  const refundPolicy = refundRiskPolicyFor(
-    wiring.refundRiskPolicies,
-    order.providerAgentId,
-  );
   if (order.state !== "dispatch_started") {
     try {
       lease.assertOwned();
@@ -42,7 +38,6 @@ export async function dispatchBazaarOrder(input: {
         leaseToken,
         expected: "settled",
         reason: "PROVIDER_COMPLIANCE_FAILURE",
-        policy: refundPolicy,
         failureCode: "provider_authority_changed_before_dispatch",
       });
       if (!marked) return existingOutcomeResult(await reload(store, order));
@@ -56,10 +51,10 @@ export async function dispatchBazaarOrder(input: {
       return existingOutcomeResult(await reload(store, order));
     }
   }
-  let dispatched;
+  let response: unknown;
   try {
     lease.assertOwned();
-    dispatched = await wiring.fulfillment.dispatch({
+    response = await wiring.fulfillment.dispatch({
       orderRecordId: order.orderRecordId,
       orderHandle: order.orderHandle,
       providerAgentId: order.providerAgentId,
@@ -82,20 +77,8 @@ export async function dispatchBazaarOrder(input: {
     lease.complete();
     return existingOutcomeResult(await reload(store, order));
   }
-  if (dispatched.kind === "rejected") {
-    const marked = await store.markDispatchRefundDue({
-      orderRecordId: order.orderRecordId,
-      leaseToken,
-      expected: "dispatch_started",
-      reason: dispatched.reason,
-      policy: refundPolicy,
-      failureCode: "provider_dispatch_rejected",
-    });
-    if (!marked) return existingOutcomeResult(await reload(store, order));
-    lease.complete();
-    return failureOutcome(502, "provider_dispatch_failed");
-  }
-  if (!/^[A-Za-z0-9._:-]{1,128}$/.test(dispatched.taskId)) {
+  const dispatched = parseDispatchResult(response);
+  if (!dispatched) {
     const marked = await store.markDispatchAmbiguous(
       order.orderRecordId,
       leaseToken,
@@ -104,6 +87,18 @@ export async function dispatchBazaarOrder(input: {
     if (!marked) return existingOutcomeResult(await reload(store, order));
     lease.complete();
     return existingOutcomeResult(await reload(store, order));
+  }
+  if (dispatched.kind === "rejected") {
+    const marked = await store.markDispatchRefundDue({
+      orderRecordId: order.orderRecordId,
+      leaseToken,
+      expected: "dispatch_started",
+      reason: dispatched.reason,
+      failureCode: "provider_dispatch_rejected",
+    });
+    if (!marked) return existingOutcomeResult(await reload(store, order));
+    lease.complete();
+    return failureOutcome(502, "provider_dispatch_failed");
   }
   const marked = await store.markDispatched(
     order.orderRecordId,
@@ -114,6 +109,30 @@ export async function dispatchBazaarOrder(input: {
   if (!marked) return existingOutcomeResult(await reload(store, order));
   lease.complete();
   return successOutcome(order.orderHandle, listing.resourceUrl, paymentResponse);
+}
+
+function parseDispatchResult(value: unknown): BazaarDispatchResult | null {
+  if (!isRecord(value)) return null;
+  if (
+    value.kind === "accepted" && hasExactKeys(value, ["kind", "taskId"]) &&
+    typeof value.taskId === "string" &&
+    /^[A-Za-z0-9._:-]{1,128}$/.test(value.taskId)
+  ) return { kind: "accepted", taskId: value.taskId };
+  if (
+    value.kind === "rejected" && hasExactKeys(value, ["kind", "reason"]) &&
+    (value.reason === "PROVIDER_COMPLIANCE_FAILURE" ||
+      value.reason === "PROVIDER_FULFILLMENT_FAILURE")
+  ) return { kind: "rejected", reason: value.reason };
+  return null;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function hasExactKeys(value: Record<string, unknown>, keys: string[]): boolean {
+  return Object.keys(value).length === keys.length &&
+    keys.every((key) => Object.hasOwn(value, key));
 }
 
 function ownershipLost(): BazaarOutcomeResult {

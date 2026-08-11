@@ -18,6 +18,8 @@ interface RawRefundWorkItem {
   evidence_hash: Buffer;
   refund_state: "due" | "broadcast";
   refund_transaction: Buffer | null;
+  refund_wallet: Buffer;
+  refund_policy_version: Buffer;
   chain_id: string;
   pay_to: Buffer;
   attempt_count: number;
@@ -36,6 +38,8 @@ export interface BazaarRefundWorkItem {
   evidenceHash: Hex;
   refundState: "due" | "broadcast";
   refundTransaction: Hex | null;
+  refundWallet: Hex;
+  refundPolicyVersion: Hex;
   chainId: bigint;
   payTo: Hex;
   attemptCount: number;
@@ -83,7 +87,8 @@ export async function claimBazaarRefund(input: {
       `SELECT r.order_record_id, r.refund_id, r.authorization_digest,
               r.provider_agent_id, r.payer, r.token, r.gross_amount,
               r.primary_reason, r.evidence_hash, r.state AS refund_state,
-              r.refund_transaction, o.chain_id, o.pay_to,
+              r.refund_transaction, r.refund_wallet,
+              r.refund_policy_version, o.chain_id, o.pay_to,
               j.attempt_count, j.lease_token
          FROM bazaar_refund_obligations r
          JOIN bazaar_refund_jobs j USING (order_record_id)
@@ -152,6 +157,8 @@ function toWorkItem(row: RawRefundWorkItem): BazaarRefundWorkItem {
     evidenceHash: hex(row.evidence_hash),
     refundState: row.refund_state,
     refundTransaction: row.refund_transaction ? hex(row.refund_transaction) : null,
+    refundWallet: hex(row.refund_wallet),
+    refundPolicyVersion: hex(row.refund_policy_version),
     chainId: BigInt(row.chain_id),
     payTo: hex(row.pay_to),
     attemptCount: row.attempt_count,

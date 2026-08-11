@@ -44,10 +44,10 @@ export async function observeBazaarSettlement(input: {
   );
   const now = BigInt(Math.floor((wiring.now?.() ?? new Date()).getTime() / 1000));
   if (now < requiredThrough) return { kind: "pending" };
-  let result: BazaarSettlementObservationResult;
+  let response: unknown;
   try {
     lease.assertOwned();
-    result = await wiring.settlementObserver.observe({
+    response = await wiring.settlementObserver.observe({
       orderRecordId: order.orderRecordId,
       authorizationDigest: order.authorizationDigest,
       chainId: order.chainId,
@@ -63,6 +63,8 @@ export async function observeBazaarSettlement(input: {
   } catch {
     return { kind: "pending" };
   }
+  const result = parseObservationResult(response);
+  if (!result) return { kind: "pending" };
   if (result.kind === "pending") return result;
   if (
     result.observedThrough < requiredThrough || result.observedThrough > now ||
@@ -91,4 +93,47 @@ function validMatchingTransfer(
 
 function isNonzeroHex32(value: unknown): boolean {
   return isHex32(value) && value.toLowerCase() !== ZERO_BYTES32;
+}
+
+function parseObservationResult(
+  value: unknown,
+): BazaarSettlementObservationResult | null {
+  if (!isRecord(value)) return null;
+  if (value.kind === "pending" && hasExactKeys(value, ["kind"])) {
+    return { kind: "pending" };
+  }
+  if (
+    value.kind === "no_transfer" &&
+    hasExactKeys(value, ["kind", "observedThrough", "evidenceHash"]) &&
+    typeof value.observedThrough === "bigint" &&
+    typeof value.evidenceHash === "string"
+  ) return value as Extract<BazaarSettlementObservationResult, { kind: "no_transfer" }>;
+  const matchingKeys = [
+    "kind", "observedThrough", "evidenceHash", "transaction", "blockHash",
+    "transactionIndex", "authorizationLogIndex", "transferLogIndex",
+    "finalized", "authorizationUsedEventCount", "matchingTransferEventCount",
+  ];
+  if (
+    value.kind === "matching_transfer" && hasExactKeys(value, matchingKeys) &&
+    typeof value.observedThrough === "bigint" &&
+    [value.evidenceHash, value.transaction, value.blockHash]
+      .every((field) => typeof field === "string") &&
+    [value.transactionIndex, value.authorizationLogIndex, value.transferLogIndex]
+      .every((field) => typeof field === "number") &&
+    value.finalized === true && value.authorizationUsedEventCount === 1 &&
+    value.matchingTransferEventCount === 1
+  ) return value as Extract<
+    BazaarSettlementObservationResult,
+    { kind: "matching_transfer" }
+  >;
+  return null;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function hasExactKeys(value: Record<string, unknown>, keys: string[]): boolean {
+  return Object.keys(value).length === keys.length &&
+    keys.every((key) => Object.hasOwn(value, key));
 }

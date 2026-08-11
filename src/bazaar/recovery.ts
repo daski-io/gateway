@@ -6,7 +6,6 @@ import { paymentResponseFromOrder } from "./outcomeHelpers.js";
 import { requireCurrentListing } from "./listingAuthority.js";
 import { type BazaarLeaseGuard, withBazaarLease } from "./lease.js";
 import { verifyBazaarSettlementEvidence } from "./settlementEvidence.js";
-import { refundRiskPolicyFor } from "./refundPolicy.js";
 import { BazaarObservationStore } from "./observationStore.js";
 import type { LeasedBazaarObservation } from "./observationLeaseStore.js";
 import { observeBazaarSettlement } from "./settlementObservation.js";
@@ -121,10 +120,6 @@ export class BazaarRecoveryRuntime {
           reason: leased.originState === "evidence_rejected"
             ? "SETTLEMENT_EVIDENCE_INVALID"
             : "AMBIGUOUS_PAID",
-          policy: refundRiskPolicyFor(
-            this.wiring.refundRiskPolicies,
-            leased.order.providerAgentId,
-          ),
         })
       : await this.observationStore.completeObservedTransfer({
           orderRecordId: leased.order.orderRecordId,
@@ -220,10 +215,6 @@ export class BazaarRecoveryRuntime {
         leaseToken,
         expected: order.state,
         reason: "PROVIDER_COMPLIANCE_FAILURE",
-        policy: refundRiskPolicyFor(
-          this.wiring.refundRiskPolicies,
-          order.providerAgentId,
-        ),
         failureCode: "listing_manifest_missing_during_recovery",
       });
     }

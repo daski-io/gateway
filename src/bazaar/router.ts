@@ -229,11 +229,15 @@ async function validateWiring(wiring: BazaarCompatibilityWiring): Promise<void> 
   }
   if (
     !isHexAddress(wiring.providerActionSigningBroker.address) ||
-    providerActionSigner === zeroAddress
-  ) throw new Error("Bazaar provider-action signer must be valid");
+    providerActionSigner === zeroAddress ||
+    Object.values(wiring.refundRiskPolicies).some((policy) =>
+      policy.refundWallet.toLowerCase() === providerActionSigner)
+  ) throw new Error("Bazaar provider-action signer must be valid and purpose-separated");
   if (
     !isHexAddress(wiring.refundInstructionSigningBroker.address) ||
-    refundSigner === zeroAddress || refundSigner === providerActionSigner
+    refundSigner === zeroAddress || refundSigner === providerActionSigner ||
+    Object.values(wiring.refundRiskPolicies).some((policy) =>
+      policy.refundWallet.toLowerCase() === refundSigner)
   ) throw new Error("Bazaar refund signer must be valid and purpose-separated");
   for (const listing of wiring.listings) {
     await validateCompatibilityListing(listing, now);

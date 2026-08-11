@@ -12,6 +12,7 @@ import {
 } from "../../src/bazaar/offer.js";
 import { PAY_TO_CONTROL_TYPES } from "../../src/bazaar/payToControl.js";
 import { BAZAAR_REFUND_INSTRUCTION_TYPES } from "../../src/bazaar/refundInstruction.js";
+import { computeBazaarRefundPolicyVersion } from "../../src/bazaar/refundPolicy.js";
 import type {
   BazaarCompatibilityWiring,
   BazaarDispatchInput,
@@ -25,6 +26,7 @@ import type {
   BazaarRefundInstructionSigningBroker,
   BazaarRefundEvidenceInput,
   BazaarRefundRequestService,
+  BazaarRefundRiskPolicy,
   BazaarListing,
   ListingOfferV1,
 } from "../../src/bazaar/types.js";
@@ -53,15 +55,17 @@ export interface BazaarHarness {
   refundEvidence: FakeRefundEvidenceVerifier;
 }
 
-export async function createBazaarHarness(): Promise<BazaarHarness> {
+export async function createBazaarHarness(options: {
+  refundPolicyOverrides?: Partial<BazaarRefundRiskPolicy>;
+} = {}): Promise<BazaarHarness> {
   const providerAccount = privateKeyToAccount(PROVIDER_KEY);
-  const listing = await createListing(providerAccount);
+  const refundPolicy = createTestRefundPolicy(options.refundPolicyOverrides);
+  const listing = await createListing(providerAccount, { refundPolicy });
   const facilitator = new FakeFacilitator();
   const fulfillment = new FakeFulfillment();
   const settlementObserver = new FakeSettlementObserver();
   const refundService = new FakeRefundService();
   const refundEvidence = new FakeRefundEvidenceVerifier();
-  const refundWallet = privateKeyToAccount(REFUND_WALLET_KEY);
   const wiring: BazaarCompatibilityWiring = {
     listings: [listing],
     retiredLifecycleCommitments: [],
@@ -97,15 +101,7 @@ export async function createBazaarHarness(): Promise<BazaarHarness> {
       maxPerPayerPerMinute: 30,
     },
     refundRiskPolicies: {
-      "701": {
-        assurance: "contractual-only",
-        refundWallet: refundWallet.address,
-        maxSingleGross: 10_000n,
-        maxAggregateReserved: 80_000n,
-        maxAggregatePaidUnfulfilled: 80_000n,
-        maxAggregateRefundDue: 80_000n,
-        refundSlaSeconds: 24 * 60 * 60,
-      },
+      "701": refundPolicy,
     },
     refundWorkerPolicy: {
       instructionTtlSeconds: 60,
@@ -134,7 +130,11 @@ export async function createBazaarHarness(): Promise<BazaarHarness> {
 
 export async function createListing(
   provider: PrivateKeyAccount,
-  options: { payTo?: PrivateKeyAccount; slug?: string } = {},
+  options: {
+    payTo?: PrivateKeyAccount;
+    slug?: string;
+    refundPolicy?: BazaarRefundRiskPolicy;
+  } = {},
 ): Promise<BazaarListing> {
   const payTo = options.payTo ?? provider;
   const slug = options.slug ?? "test-report";
@@ -199,7 +199,10 @@ export async function createListing(
     commissionBps: 0n,
     splitterCodeHash: ZERO_BYTES32,
     termsHash: computeListingTermsHash(terms),
-    policyVersion: keccak256(toBytes("test-policy-1")),
+    policyVersion: computeBazaarRefundPolicyVersion(
+      701n,
+      options.refundPolicy ?? createTestRefundPolicy(),
+    ),
     offerId: keccak256(toBytes(`${slug}-offer-1`)),
     issuedAt: now - 60n,
     validBefore: now + 3_600n,
@@ -247,6 +250,21 @@ export async function createListing(
     policyVersion: message.policyVersion,
     payToControlProof,
     offer: { message, signature },
+  };
+}
+
+export function createTestRefundPolicy(
+  overrides: Partial<BazaarRefundRiskPolicy> = {},
+): BazaarRefundRiskPolicy {
+  return {
+    assurance: "contractual-only",
+    refundWallet: privateKeyToAccount(REFUND_WALLET_KEY).address,
+    maxSingleGross: 10_000n,
+    maxAggregateReserved: 80_000n,
+    maxAggregatePaidUnfulfilled: 80_000n,
+    maxAggregateRefundDue: 80_000n,
+    refundSlaSeconds: 24 * 60 * 60,
+    ...overrides,
   };
 }
 
@@ -345,11 +363,15 @@ export class FakeFulfillment implements BazaarFulfillmentService {
   dispatchCalls = 0;
   dispatchError = false;
   dispatchResult: BazaarDispatchResult | null = null;
+  rawDispatchResult: unknown = undefined;
   lifecycleCalls: BazaarLifecycleDispatchInput[] = [];
 
   async dispatch(input: BazaarDispatchInput) {
     this.dispatchCalls += 1;
     if (this.dispatchError) throw new Error("ambiguous provider dispatch");
+    if (this.rawDispatchResult !== undefined) {
+      return this.rawDispatchResult as BazaarDispatchResult;
+    }
     return this.dispatchResult ?? {
       kind: "accepted" as const,
       taskId: `task-${input.orderRecordId.slice(-12)}`,
@@ -463,6 +485,7 @@ export function accountRefundBroker(
       primaryType: "DaskiBazaarRefundInstruction",
       message: {
         ...input.message,
+        providerAgentId: BigInt(input.message.providerAgentId),
         grossAmount: BigInt(input.message.grossAmount),
         issuedAt: BigInt(input.message.issuedAt),
         expiresAt: BigInt(input.message.expiresAt),

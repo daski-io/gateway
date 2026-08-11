@@ -26,6 +26,15 @@ interface RawRefundBinding {
   gross_amount: string;
   primary_reason: BazaarRefundReason;
   evidence_hash: Buffer | null;
+  refund_wallet: Buffer;
+  refund_policy_version: Buffer;
+}
+
+interface RawExposurePolicy {
+  state: "reserved" | "paid_unfulfilled" | "refund_due" | "released";
+  refund_wallet: Buffer;
+  refund_policy_version: Buffer;
+  refund_sla_seconds: number;
 }
 
 export function computeBazaarRefundEvidenceHash(
@@ -82,16 +91,21 @@ export function computeBazaarRefundId(
 export async function reserveBazaarExposure(
   client: PoolClient,
   order: BazaarOrder,
+  policy: BazaarRefundRiskPolicy,
+  policyVersion: Hex,
 ): Promise<void> {
   const result = await client.query(
     `INSERT INTO bazaar_exposures (
        order_record_id, authorization_digest, provider_agent_id, payer, token,
-       gross_amount, state
-     ) VALUES ($1, $2, $3, $4, $5, $6, 'reserved')`,
+       gross_amount, refund_wallet, refund_policy_version, refund_sla_seconds,
+       state
+     ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'reserved')`,
     [
       hexToBytea(order.orderRecordId), hexToBytea(order.authorizationDigest),
       order.providerAgentId.toString(), hexToBytea(order.payer),
       hexToBytea(order.token), order.grossAmount.toString(),
+      hexToBytea(policy.refundWallet), hexToBytea(policyVersion),
+      policy.refundSlaSeconds,
     ],
   );
   if (result.rowCount !== 1) throw new Error("Bazaar exposure was not reserved");
@@ -117,30 +131,43 @@ export async function createBazaarRefundDue(input: {
   client: PoolClient;
   order: BazaarRefundBinding;
   reason: BazaarRefundReason;
-  policy: BazaarRefundRiskPolicy;
   evidenceHash: Hex;
   expectedExposure?: "reserved" | "paid_unfulfilled";
 }): Promise<void> {
-  const { client, order, reason, policy } = input;
+  const { client, order, reason } = input;
+  const expectedExposure = input.expectedExposure ?? "paid_unfulfilled";
+  const exposure = await client.query<RawExposurePolicy>(
+    `SELECT state, refund_wallet, refund_policy_version, refund_sla_seconds
+       FROM bazaar_exposures WHERE order_record_id = $1 FOR UPDATE`,
+    [hexToBytea(order.orderRecordId)],
+  );
+  const policy = exposure.rows[0];
+  if (
+    !policy ||
+    (policy.state !== expectedExposure && policy.state !== "refund_due")
+  ) throw new Error("Bazaar refund policy snapshot is unavailable");
   const refundId = computeBazaarRefundId(order, reason);
   await client.query(
     `INSERT INTO bazaar_refund_obligations (
        order_record_id, refund_id, authorization_digest, provider_agent_id,
-       payer, token, gross_amount, primary_reason, due_at, evidence_hash
+       payer, token, gross_amount, primary_reason, due_at, evidence_hash,
+       refund_wallet, refund_policy_version
      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8,
-       now() + make_interval(secs => $9), $10)
+       now() + make_interval(secs => $9), $10, $11, $12)
      ON CONFLICT DO NOTHING`,
     [
       hexToBytea(order.orderRecordId), hexToBytea(refundId),
       hexToBytea(order.authorizationDigest), order.providerAgentId.toString(),
       hexToBytea(order.payer), hexToBytea(order.token),
-      order.grossAmount.toString(), reason, policy.refundSlaSeconds,
-      hexToBytea(input.evidenceHash),
+      order.grossAmount.toString(), reason, policy.refund_sla_seconds,
+      hexToBytea(input.evidenceHash), policy.refund_wallet,
+      policy.refund_policy_version,
     ],
   );
   const stored = await client.query<RawRefundBinding>(
     `SELECT refund_id, authorization_digest, provider_agent_id, payer, token,
-            gross_amount, primary_reason, evidence_hash
+            gross_amount, primary_reason, evidence_hash, refund_wallet,
+            refund_policy_version
        FROM bazaar_refund_obligations WHERE order_record_id = $1`,
     [hexToBytea(order.orderRecordId)],
   );
@@ -151,6 +178,7 @@ export async function createBazaarRefundDue(input: {
     reason,
     refundId,
     input.evidenceHash,
+    policy,
   )) {
     throw new Error("Bazaar refund obligation binding conflict");
   }
@@ -167,7 +195,7 @@ export async function createBazaarRefundDue(input: {
   await ensureRefundDueExposure(
     client,
     order.orderRecordId,
-    input.expectedExposure ?? "paid_unfulfilled",
+    expectedExposure,
   );
 }
 
@@ -197,6 +225,7 @@ function refundBindingMatches(
   reason: BazaarRefundReason,
   refundId: Hex,
   evidenceHash: Hex,
+  policy: RawExposurePolicy,
 ): boolean {
   const samePrimaryReason = row.primary_reason === reason;
   return (!samePrimaryReason || (
@@ -208,5 +237,7 @@ function refundBindingMatches(
     row.provider_agent_id === order.providerAgentId.toString() &&
     row.payer.equals(hexToBytea(order.payer)) &&
     row.token.equals(hexToBytea(order.token)) &&
-    BigInt(row.gross_amount) === order.grossAmount;
+    BigInt(row.gross_amount) === order.grossAmount &&
+    row.refund_wallet.equals(policy.refund_wallet) &&
+    row.refund_policy_version.equals(policy.refund_policy_version);
 }

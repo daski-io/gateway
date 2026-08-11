@@ -8,7 +8,7 @@ import {
   type BazaarRefundBinding,
 } from "./refundAccounting.js";
 import type {
-  BazaarFinancialStatus, BazaarRefundReason, BazaarRefundRiskPolicy,
+  BazaarFinancialStatus, BazaarRefundReason,
 } from "./types.js";
 
 interface RawRefundOrder {
@@ -145,7 +145,6 @@ export async function markBazaarDispatchRefundDue(input: {
   expected: "settled" | "dispatch_started";
   reason: Extract<BazaarRefundReason,
     "PROVIDER_COMPLIANCE_FAILURE" | "PROVIDER_FULFILLMENT_FAILURE">;
-  policy: BazaarRefundRiskPolicy;
   failureCode: string;
 }): Promise<boolean> {
   const client = await input.pool.connect();
@@ -176,7 +175,6 @@ export async function markBazaarDispatchRefundDue(input: {
       client,
       order: binding,
       reason: input.reason,
-      policy: input.policy,
       evidenceHash: computeBazaarRefundEvidenceHash(
         binding,
         input.reason,

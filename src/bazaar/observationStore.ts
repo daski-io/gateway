@@ -14,7 +14,6 @@ import type {
   BazaarObservationOriginState,
   BazaarOrderState,
   BazaarRefundReason,
-  BazaarRefundRiskPolicy,
   BazaarSettlementObservationPolicy,
   BazaarSettlementObservationResult,
 } from "./types.js";
@@ -85,7 +84,6 @@ export class BazaarObservationStore {
         disposition: "refund_due";
         reason: Extract<BazaarRefundReason,
           "AMBIGUOUS_PAID" | "SETTLEMENT_EVIDENCE_INVALID">;
-        policy: BazaarRefundRiskPolicy;
       }
   )): Promise<boolean> {
     return completeBazaarObservedTransfer({ ...input, pool: this.pool });

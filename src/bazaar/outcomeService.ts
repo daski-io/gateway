@@ -116,6 +116,10 @@ export class BazaarOutcomeService {
       paidRetryReceivedAt,
     );
     if (!parsed.ok) return failureOutcome(400, parsed.code);
+    if (
+      parsed.payment.authorization.from.toLowerCase() ===
+      this.refundPolicy.refundWallet.toLowerCase()
+    ) return failureOutcome(402, "payer_refund_wallet_conflict");
     const claimInput = createClaimInput(
       this.listing,
       parsed.payment,
