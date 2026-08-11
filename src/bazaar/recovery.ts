@@ -24,6 +24,7 @@ import type {
 const RECONCILE_INTERVAL_MS = 30_000;
 export class BazaarRecoveryRuntime {
   private readonly owner = `gateway-recovery:${randomUUID()}`;
+  private readonly shutdown = new AbortController();
   private readonly listings: Map<string, BazaarListing>;
   private interval: NodeJS.Timeout | null = null;
   private active: Promise<void> | null = null;
@@ -39,9 +40,17 @@ export class BazaarRecoveryRuntime {
     private readonly wiring: BazaarCompatibilityWiring,
     private readonly providerAuthority: ProviderAuthorityService,
   ) {
-    this.refundRecovery = new BazaarRefundRecovery(refundStore, wiring, this.owner);
+    this.refundRecovery = new BazaarRefundRecovery(
+      refundStore,
+      wiring,
+      this.owner,
+      this.shutdown.signal,
+    );
     this.fulfillmentRecovery = new BazaarFulfillmentRecovery(
-      fulfillmentStore, wiring, this.owner,
+      fulfillmentStore,
+      wiring,
+      this.owner,
+      this.shutdown.signal,
     );
     this.listings = new Map(wiring.listings.map((listing) => [
       listing.listingCommitment.toLowerCase(), listing,
@@ -49,15 +58,17 @@ export class BazaarRecoveryRuntime {
   }
 
   async start(): Promise<void> {
-    if (this.interval) return;
+    if (this.interval || this.stopping) return;
     this.interval = setInterval(() => void this.schedule(), RECONCILE_INTERVAL_MS);
     this.interval.unref();
     await this.schedule();
   }
 
   async runOnce(): Promise<void> {
+    if (this.stopping) return;
     await this.store.terminalizeExpiredAttempts();
     for (let processed = 0; processed < 50; processed += 1) {
+      if (this.stopping) return;
       const observable = await this.observationStore.claim(
         this.owner,
         this.nowSeconds(),
@@ -66,13 +77,16 @@ export class BazaarRecoveryRuntime {
       if (!observable) break;
       await this.observe(observable);
     }
+    if (this.stopping) return;
     await this.refundRecovery.runOnce();
     for (let processed = 0; processed < 50; processed += 1) {
+      if (this.stopping) return;
       const recoverable = await this.store.claimRecoverableOrders(this.owner, 1);
       const leased = recoverable[0];
       if (!leased) break;
       await this.recover(leased);
     }
+    if (this.stopping) return;
     await this.fulfillmentRecovery.runOnce();
   }
 
@@ -83,6 +97,7 @@ export class BazaarRecoveryRuntime {
       leaseToken: leased.leaseToken,
       action: (lease) => this.observeLeased(leased, lease),
       onOwnershipLost: () => undefined,
+      signal: this.shutdown.signal,
     });
   }
 
@@ -140,6 +155,7 @@ export class BazaarRecoveryRuntime {
 
   async close(): Promise<void> {
     this.stopping = true;
+    this.shutdown.abort(new Error("Bazaar recovery is shutting down"));
     if (this.interval) clearInterval(this.interval);
     this.interval = null;
     await this.active;
@@ -165,6 +181,7 @@ export class BazaarRecoveryRuntime {
       leaseToken: leased.leaseToken,
       action: (lease) => this.recoverLeased(leased, lease),
       onOwnershipLost: () => undefined,
+      signal: this.shutdown.signal,
     });
   }
 

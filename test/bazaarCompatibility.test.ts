@@ -436,6 +436,41 @@ describe("Bazaar compatibility harness", () => {
     });
   });
 
+  it("cancels an active settlement request during application shutdown", async () => {
+    harness.facilitator.settleGate = new Promise(() => undefined);
+    const required = await paymentRequired(gateway);
+    const payment = await createPaymentPayload({
+      paymentRequired: required,
+      buyer,
+      nonce: nonce(261),
+    });
+    const request = paid(gateway, payment);
+    await waitForOrderState(gateway, "settle_started");
+
+    const startedAt = Date.now();
+    gateway.bundle.beginShutdown();
+    const result = await request;
+    expect(Date.now() - startedAt).toBeLessThan(1_000);
+    expect(result.response.status).toBe(503);
+    expect(result.body).toEqual({ error: "gateway_shutting_down" });
+
+    const open = await gateway.bundle.pool.query<{
+      order_state: string;
+      exposure_state: string;
+      settlement_transaction: string | null;
+    }>(
+      `SELECT o.state AS order_state, e.state AS exposure_state,
+              encode(o.settlement_transaction, 'hex') AS settlement_transaction
+         FROM bazaar_orders o
+         JOIN bazaar_exposures e USING (order_record_id)`,
+    );
+    expect(open.rows[0]).toEqual({
+      order_state: "settle_started",
+      exposure_state: "reserved",
+      settlement_transaction: null,
+    });
+  });
+
   it("keeps simultaneous equal-price orders distinct by payer nonce", async () => {
     const required = await paymentRequired(gateway);
     const payments = await Promise.all([1, 2].map(async (value) =>
@@ -1206,6 +1241,45 @@ describe("Bazaar compatibility harness", () => {
     const startedAt = Date.now();
     await gateway.bundle.bazaarRecovery!.runOnce();
     expect(Date.now() - startedAt).toBeLessThan(3_000);
+    const pending = await gateway.bundle.pool.query<{
+      order_state: string;
+      exposure_state: string;
+      job_state: string;
+      attestations: string;
+    }>(
+      `SELECT o.state AS order_state, e.state AS exposure_state,
+              j.state AS job_state,
+              (SELECT count(*) FROM bazaar_fulfillment_attestations)::text
+                AS attestations
+         FROM bazaar_orders o
+         JOIN bazaar_exposures e USING (order_record_id)
+         JOIN bazaar_fulfillment_jobs j USING (order_record_id)`,
+    );
+    expect(pending.rows[0]).toEqual({
+      order_state: "dispatched",
+      exposure_state: "paid_unfulfilled",
+      job_state: "pending",
+      attestations: "0",
+    });
+  });
+
+  it("cancels active recovery work during graceful shutdown", async () => {
+    const required = await paymentRequired(gateway);
+    const payment = await createPaymentPayload({
+      paymentRequired: required,
+      buyer,
+      nonce: nonce(259),
+    });
+    expect((await paid(gateway, payment)).response.status).toBe(200);
+    harness.fulfillmentObserver.gate = new Promise(() => undefined);
+
+    const running = gateway.bundle.bazaarRecovery!.runOnce();
+    await waitForFulfillmentCalls(harness, 1);
+    const startedAt = Date.now();
+    await gateway.bundle.bazaarRecovery!.close();
+    await running;
+    expect(Date.now() - startedAt).toBeLessThan(1_000);
+
     const pending = await gateway.bundle.pool.query<{
       order_state: string;
       exposure_state: string;

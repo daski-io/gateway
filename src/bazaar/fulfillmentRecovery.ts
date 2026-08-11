@@ -10,10 +10,12 @@ export class BazaarFulfillmentRecovery {
     private readonly store: BazaarFulfillmentStore,
     private readonly wiring: BazaarCompatibilityWiring,
     private readonly owner: string,
+    private readonly shutdownSignal?: AbortSignal,
   ) {}
 
   async runOnce(): Promise<void> {
     for (let processed = 0; processed < MAX_FULFILLMENTS_PER_RUN; processed += 1) {
+      if (this.shutdownSignal?.aborted) return;
       const work = await this.store.claim(this.owner);
       if (!work) return;
       await withBazaarLease({
@@ -39,6 +41,7 @@ export class BazaarFulfillmentRecovery {
           if (completed) lease.complete();
         },
         onOwnershipLost: () => undefined,
+        signal: this.shutdownSignal,
       });
     }
   }

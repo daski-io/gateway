@@ -48,6 +48,7 @@ export class BazaarOutcomeService {
     private readonly wiring: BazaarCompatibilityWiring,
     private readonly providerAuthority: ProviderAuthorityService,
     private readonly leaseOwner: string,
+    private readonly shutdownSignal?: AbortSignal,
   ) {
     this.now = wiring.now ?? (() => new Date());
     this.random = wiring.randomBytes ?? randomBytes;
@@ -59,6 +60,7 @@ export class BazaarOutcomeService {
   }
 
   async unpaid(): Promise<BazaarOutcomeResult> {
+    if (this.shutdownSignal?.aborted) return shuttingDown();
     await this.requireCurrentListing(false, 310n);
     if (await this.store.hasBlockingIncident(
       this.listing.offer.message.listingCommitment,
@@ -104,6 +106,7 @@ export class BazaarOutcomeService {
     decoded: PaymentPayload,
     ingressAgeSeconds: bigint,
   ): Promise<BazaarOutcomeResult> {
+    if (this.shutdownSignal?.aborted) return shuttingDown();
     const currentTime = this.nowSeconds();
     const paidRetryReceivedAt = currentTime >= ingressAgeSeconds
       ? currentTime - ingressAgeSeconds
@@ -158,6 +161,7 @@ export class BazaarOutcomeService {
     try {
       const profile = await callBazaarAdapter({
         timeoutMs: this.wiring.adapterCallTimeoutMs,
+        signal: this.shutdownSignal,
         operation: (signal) => this.wiring.payerProfileVerifier.verifyBeforeSettlement({
           chainId: this.listing.offer.message.chainId,
           payer: parsed.payment.authorization.from,
@@ -172,8 +176,11 @@ export class BazaarOutcomeService {
         return failureOutcome(402, "payer_profile_unsupported");
       }
     } catch {
-      return failureOutcome(503, "payer_profile_ambiguous");
+      return this.shutdownSignal?.aborted
+        ? shuttingDown()
+        : failureOutcome(503, "payer_profile_ambiguous");
     }
+    if (this.shutdownSignal?.aborted) return shuttingDown();
     const rechecked = await parseBazaarPayment(
       payload,
       this.declaration.requirements,
@@ -213,8 +220,11 @@ export class BazaarOutcomeService {
         this.declaration.requirements,
         lease,
       ),
-      onOwnershipLost: () => failureOutcome(409, "processing_ownership_lost"),
+      onOwnershipLost: () => this.shutdownSignal?.aborted
+        ? shuttingDown()
+        : failureOutcome(409, "processing_ownership_lost"),
       onOwnershipLostCleanup: () => scrubPaymentPayload(parsed.payment.payload),
+      signal: this.shutdownSignal,
     });
   }
 
@@ -427,6 +437,10 @@ function scrubPaymentPayload(payload: PaymentPayload): void {
 
 function ownershipLost(): BazaarOutcomeResult {
   return failureOutcome(409, "processing_ownership_lost");
+}
+
+function shuttingDown(): BazaarOutcomeResult {
+  return failureOutcome(503, "gateway_shutting_down");
 }
 
 function validPayerProfile(

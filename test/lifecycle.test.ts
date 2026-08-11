@@ -7,6 +7,7 @@ import type {
 import { ChainEventsIndexer } from "../src/indexer/chainEvents.js";
 import { ReputationMirrorWorker } from "../src/reputation/worker.js";
 import { withGracePeriod } from "../src/runtime/gracePeriod.js";
+import { ApplicationLifecycle } from "../src/runtime/applicationLifecycle.js";
 import type { Config } from "../src/config.js";
 import type { Hex } from "../src/types.js";
 
@@ -28,6 +29,18 @@ const descriptor: ChainProjectionDescriptor = {
 };
 
 describe("graceful lifecycle", () => {
+  it("publishes one idempotent shutdown signal", () => {
+    const lifecycle = new ApplicationLifecycle();
+    let aborts = 0;
+    lifecycle.signal.addEventListener("abort", () => { aborts += 1; });
+    expect(lifecycle.signal.aborted).toBe(false);
+    lifecycle.beginShutdown();
+    lifecycle.beginShutdown();
+    expect(lifecycle.isStopping()).toBe(true);
+    expect(lifecycle.signal.aborted).toBe(true);
+    expect(aborts).toBe(1);
+  });
+
   it("waits for an active indexer page and is idempotent", async () => {
     const events = deferred<[]>();
     const pageStarted = deferred<void>();

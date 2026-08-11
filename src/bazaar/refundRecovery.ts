@@ -23,10 +23,12 @@ export class BazaarRefundRecovery {
     private readonly store: BazaarRefundStore,
     private readonly wiring: BazaarCompatibilityWiring,
     private readonly leaseOwner: string,
+    private readonly shutdownSignal?: AbortSignal,
   ) {}
 
   async runOnce(): Promise<void> {
     for (let processed = 0; processed < MAX_REFUNDS_PER_RUN; processed += 1) {
+      if (this.shutdownSignal?.aborted) return;
       const work = await this.store.claim(this.leaseOwner);
       if (!work) return;
       await withBazaarLease({
@@ -35,6 +37,7 @@ export class BazaarRefundRecovery {
         leaseToken: work.leaseToken,
         action: (lease) => this.process(work, lease),
         onOwnershipLost: () => undefined,
+        signal: this.shutdownSignal,
       });
     }
   }

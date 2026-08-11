@@ -1,4 +1,8 @@
-import type { PaymentPayload, PaymentRequired } from "@x402/core/types";
+import type {
+  PaymentPayload,
+  PaymentRequired,
+  PaymentRequirements,
+} from "@x402/core/types";
 import { keccak256, toBytes, type Hex } from "viem";
 import { privateKeyToAccount, type PrivateKeyAccount } from "viem/accounts";
 import { canonicalJsonStringify } from "../../src/auth/envelope.js";
@@ -391,9 +395,13 @@ export class FakeFacilitator implements BazaarFacilitatorClient {
     };
   }
 
-  async settle(payload: PaymentPayload) {
+  async settle(
+    payload: PaymentPayload,
+    _requirements: PaymentRequirements,
+    signal: AbortSignal,
+  ) {
     this.settleCalls += 1;
-    await this.settleGate;
+    await waitForGate(this.settleGate, signal);
     if (this.settleError) throw new Error("ambiguous settle");
     const authorization = payload.payload.authorization as Record<string, string>;
     return {
@@ -407,6 +415,25 @@ export class FakeFacilitator implements BazaarFacilitatorClient {
       },
       extensionResponses: extensionResponse("processing"),
     };
+  }
+}
+
+async function waitForGate(
+  gate: Promise<void> | null,
+  signal: AbortSignal,
+): Promise<void> {
+  if (!gate) return;
+  signal.throwIfAborted();
+  let onAbort: (() => void) | undefined;
+  const aborted = new Promise<never>((_resolve, reject) => {
+    onAbort = () => reject(signal.reason ?? new Error("adapter aborted"));
+    signal.addEventListener("abort", onAbort, { once: true });
+    if (signal.aborted) onAbort();
+  });
+  try {
+    await Promise.race([gate, aborted]);
+  } finally {
+    if (onAbort) signal.removeEventListener("abort", onAbort);
   }
 }
 

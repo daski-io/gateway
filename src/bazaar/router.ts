@@ -54,6 +54,7 @@ export async function createBazaarCompatibilityRouter(options: {
   providerAuthority: ProviderAuthorityService;
   wiring: BazaarCompatibilityWiring;
   lifecycleDomainRetentionSeconds: number;
+  shutdownSignal?: AbortSignal;
 }): Promise<{ router: Router; close(): Promise<void>; recovery: BazaarRecoveryRuntime }> {
   const wiring = snapshotBazaarCompatibilityWiring(options.wiring);
   await validateWiring(wiring);
@@ -75,7 +76,7 @@ export async function createBazaarCompatibilityRouter(options: {
   const refundStore = new BazaarRefundStore(options.pool);
   const fulfillmentStore = new BazaarFulfillmentStore(options.pool);
   const leaseOwner = `gateway-request:${randomUUID()}`;
-  const lifecycle = new BazaarLifecycleService(store, wiring);
+  const lifecycle = new BazaarLifecycleService(store, wiring, options.shutdownSignal);
   const recovery = new BazaarRecoveryRuntime(
     store,
     observationStore,
@@ -113,6 +114,7 @@ export async function createBazaarCompatibilityRouter(options: {
       wiring,
       options.providerAuthority,
       leaseOwner,
+      options.shutdownSignal,
     );
     router.post(listing.routePath, async (req, res) => {
       try {

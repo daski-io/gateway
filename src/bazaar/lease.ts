@@ -27,10 +27,11 @@ export class BazaarLeaseGuard {
     this.completed = true;
   }
 
-  loseOwnership(): void {
-    if (this.completed || this.lost) return;
+  loseOwnership(): boolean {
+    if (this.completed || this.lost) return false;
     this.lost = true;
     this.controller.abort(new BazaarLeaseOwnershipLostError());
+    return true;
   }
 
   canHeartbeat(): boolean {
@@ -52,9 +53,18 @@ export async function withBazaarLease<T>(input: {
   onOwnershipLost: () => Promise<T> | T;
   onOwnershipLostCleanup?: () => void;
   heartbeatIntervalMs?: number;
+  signal?: AbortSignal;
 }): Promise<T> {
   const guard = new BazaarLeaseGuard();
   let renewal = Promise.resolve();
+  const loseOwnership = () => {
+    if (guard.loseOwnership()) input.onOwnershipLostCleanup?.();
+  };
+  const onAbort = () => loseOwnership();
+  if (input.signal) {
+    input.signal.addEventListener("abort", onAbort, { once: true });
+    if (input.signal.aborted) onAbort();
+  }
   const interval = setInterval(() => {
     if (!guard.canHeartbeat()) return;
     renewal = renewal
@@ -65,15 +75,15 @@ export async function withBazaarLease<T>(input: {
             input.orderRecordId,
             input.leaseToken,
           );
-          if (!renewed) guard.loseOwnership();
+          if (!renewed) loseOwnership();
         } catch {
-          guard.loseOwnership();
+          loseOwnership();
         }
-        if (guard.ownershipLost) input.onOwnershipLostCleanup?.();
       });
   }, input.heartbeatIntervalMs ?? HEARTBEAT_INTERVAL_MS);
   interval.unref();
   try {
+    if (guard.ownershipLost) return await input.onOwnershipLost();
     const result = await input.action(guard);
     clearInterval(interval);
     await renewal;
@@ -87,5 +97,6 @@ export async function withBazaarLease<T>(input: {
     throw error;
   } finally {
     clearInterval(interval);
+    input.signal?.removeEventListener("abort", onAbort);
   }
 }

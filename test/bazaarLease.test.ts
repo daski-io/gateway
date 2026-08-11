@@ -101,6 +101,47 @@ describe("Bazaar fenced lease heartbeat", () => {
     expect(result).toBe("complete");
     expect(renewals).toBe(0);
   });
+
+  it("aborts active work when its recovery runtime shuts down", async () => {
+    const shutdown = new AbortController();
+    let adapterExited = false;
+    const operation = withBazaarLease({
+      store: { renewLease: async () => true },
+      orderRecordId: ORDER_ID,
+      leaseToken: "lease-shutdown",
+      heartbeatIntervalMs: 1_000,
+      signal: shutdown.signal,
+      onOwnershipLost: () => "stopped",
+      action: async (guard) => {
+        await aborted(guard.signal);
+        adapterExited = true;
+        guard.assertOwned();
+        return "unsafe";
+      },
+    });
+    shutdown.abort(new Error("shutdown"));
+    expect(await operation).toBe("stopped");
+    expect(adapterExited).toBe(true);
+  });
+
+  it("does not start work after shutdown has already begun", async () => {
+    const shutdown = new AbortController();
+    shutdown.abort(new Error("shutdown"));
+    let started = false;
+    const result = await withBazaarLease({
+      store: { renewLease: async () => true },
+      orderRecordId: ORDER_ID,
+      leaseToken: "lease-pre-shutdown",
+      signal: shutdown.signal,
+      onOwnershipLost: () => "stopped",
+      action: async () => {
+        started = true;
+        return "unsafe";
+      },
+    });
+    expect(result).toBe("stopped");
+    expect(started).toBe(false);
+  });
 });
 
 describe("Bazaar adapter deadline", () => {

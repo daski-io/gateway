@@ -42,6 +42,7 @@ export class BazaarLifecycleService {
   constructor(
     private readonly store: BazaarOrderStore,
     private readonly wiring: BazaarCompatibilityWiring,
+    private readonly shutdownSignal?: AbortSignal,
   ) {
     this.now = wiring.now ?? (() => new Date());
     this.random = wiring.randomBytes ?? randomBytes;
@@ -129,6 +130,7 @@ export class BazaarLifecycleService {
     try {
       const assertion = await callBazaarAdapter({
         timeoutMs: this.wiring.adapterCallTimeoutMs,
+        signal: this.shutdownSignal,
         operation: (signal) => createProviderLifecycleAssertion({
           order,
           action,
@@ -143,6 +145,7 @@ export class BazaarLifecycleService {
       });
       const response: unknown = await callBazaarAdapter({
         timeoutMs: this.wiring.adapterCallTimeoutMs,
+        signal: this.shutdownSignal,
         operation: (signal) => this.wiring.fulfillment.performLifecycleAction({
           taskId: order.taskId,
           action,

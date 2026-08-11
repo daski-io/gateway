@@ -105,6 +105,7 @@ export async function createGatewayHttp(
       providerAuthority: options.providerAuthority,
       wiring: options.bazaarCompatibility,
       lifecycleDomainRetentionSeconds: config.taskRetentionSeconds,
+      shutdownSignal: options.lifecycle.signal,
     });
     app.use(bazaar.router);
     closeBazaar = bazaar.close;
