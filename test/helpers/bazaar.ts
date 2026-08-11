@@ -11,6 +11,7 @@ import {
   listingOfferDomain,
 } from "../../src/bazaar/offer.js";
 import { PAY_TO_CONTROL_TYPES } from "../../src/bazaar/payToControl.js";
+import { BAZAAR_REFUND_INSTRUCTION_TYPES } from "../../src/bazaar/refundInstruction.js";
 import type {
   BazaarCompatibilityWiring,
   BazaarDispatchInput,
@@ -18,7 +19,12 @@ import type {
   BazaarFacilitatorClient,
   BazaarFulfillmentService,
   BazaarLifecycleDispatchInput,
+  BazaarSettlementObservationInput,
+  BazaarSettlementObservationResult,
   BazaarProviderActionSigningBroker,
+  BazaarRefundInstructionSigningBroker,
+  BazaarRefundEvidenceInput,
+  BazaarRefundRequestService,
   BazaarListing,
   ListingOfferV1,
 } from "../../src/bazaar/types.js";
@@ -30,14 +36,21 @@ export const CHALLENGE_MAC_SECRET = Buffer.from("33".repeat(32), "hex");
 export const PROVIDER_ACTION_KEY =
   `0x${"44".repeat(32)}` as Hex;
 export const SECOND_PAY_TO_KEY = `0x${"55".repeat(32)}` as Hex;
+export const REFUND_SIGNING_KEY = `0x${"66".repeat(32)}` as Hex;
+export const REFUND_WALLET_KEY = `0x${"77".repeat(32)}` as Hex;
 export const TEST_TOKEN = "0x036cbd53842c5426634e7929541ec2318f3dcf7e" as Hex;
 export const ZERO_BYTES32 = `0x${"00".repeat(32)}` as Hex;
+const REFUND_EVIDENCE_HASH = `0x${"88".repeat(32)}` as Hex;
+const REFUND_BLOCK_HASH = `0x${"99".repeat(32)}` as Hex;
 
 export interface BazaarHarness {
   wiring: BazaarCompatibilityWiring;
   providerAccount: PrivateKeyAccount;
   facilitator: FakeFacilitator;
   fulfillment: FakeFulfillment;
+  settlementObserver: FakeSettlementObserver;
+  refundService: FakeRefundService;
+  refundEvidence: FakeRefundEvidenceVerifier;
 }
 
 export async function createBazaarHarness(): Promise<BazaarHarness> {
@@ -45,6 +58,10 @@ export async function createBazaarHarness(): Promise<BazaarHarness> {
   const listing = await createListing(providerAccount);
   const facilitator = new FakeFacilitator();
   const fulfillment = new FakeFulfillment();
+  const settlementObserver = new FakeSettlementObserver();
+  const refundService = new FakeRefundService();
+  const refundEvidence = new FakeRefundEvidenceVerifier();
+  const refundWallet = privateKeyToAccount(REFUND_WALLET_KEY);
   const wiring: BazaarCompatibilityWiring = {
     listings: [listing],
     retiredLifecycleCommitments: [],
@@ -58,6 +75,11 @@ export async function createBazaarHarness(): Promise<BazaarHarness> {
         authorizationUsedEventCount: 1,
         matchingTransferEventCount: 1,
       }),
+    },
+    settlementObserver,
+    settlementObservationPolicy: {
+      finalityWindowSeconds: 60,
+      retryDelaySeconds: 30,
     },
     payerProfileVerifier: {
       verifyBeforeSettlement: async () => ({ profile: "eoa" }),
@@ -77,6 +99,7 @@ export async function createBazaarHarness(): Promise<BazaarHarness> {
     refundRiskPolicies: {
       "701": {
         assurance: "contractual-only",
+        refundWallet: refundWallet.address,
         maxSingleGross: 10_000n,
         maxAggregateReserved: 80_000n,
         maxAggregatePaidUnfulfilled: 80_000n,
@@ -84,12 +107,29 @@ export async function createBazaarHarness(): Promise<BazaarHarness> {
         refundSlaSeconds: 24 * 60 * 60,
       },
     },
+    refundWorkerPolicy: {
+      instructionTtlSeconds: 60,
+      retryDelaySeconds: 30,
+    },
+    refundInstructionSigningBroker: accountRefundBroker(
+      privateKeyToAccount(REFUND_SIGNING_KEY),
+    ),
+    refundRequestService: refundService,
+    refundEvidenceVerifier: refundEvidence,
     providerActionSigningBroker: accountLifecycleBroker(
       privateKeyToAccount(PROVIDER_ACTION_KEY),
     ),
     now: () => new Date(TEST_NOW),
   };
-  return { wiring, providerAccount, facilitator, fulfillment };
+  return {
+    wiring,
+    providerAccount,
+    facilitator,
+    fulfillment,
+    settlementObserver,
+    refundService,
+    refundEvidence,
+  };
 }
 
 export async function createListing(
@@ -269,6 +309,7 @@ export class FakeFacilitator implements BazaarFacilitatorClient {
   settleCalls = 0;
   verifyError = false;
   settleError = false;
+  settleRejected = false;
   settleExtra: Record<string, unknown> | undefined;
   settleGate: Promise<void> | null = null;
 
@@ -288,7 +329,7 @@ export class FakeFacilitator implements BazaarFacilitatorClient {
     const authorization = payload.payload.authorization as Record<string, string>;
     return {
       response: {
-        success: true,
+        success: !this.settleRejected,
         payer: payer(payload),
         transaction: authorization.nonce,
         network: "eip155:84532" as const,
@@ -321,6 +362,55 @@ export class FakeFulfillment implements BazaarFulfillmentService {
   }
 }
 
+export class FakeSettlementObserver {
+  calls: BazaarSettlementObservationInput[] = [];
+  result: BazaarSettlementObservationResult = { kind: "pending" };
+  error = false;
+  gate: Promise<void> | null = null;
+
+  async observe(input: BazaarSettlementObservationInput) {
+    this.calls.push(input);
+    await this.gate;
+    if (this.error) throw new Error("ambiguous settlement observation");
+    return this.result;
+  }
+}
+
+export class FakeRefundService implements BazaarRefundRequestService {
+  calls: Parameters<BazaarRefundRequestService["requestRefund"]>[0][] = [];
+  result: Awaited<ReturnType<BazaarRefundRequestService["requestRefund"]>> = {
+    kind: "deferred",
+  };
+  error = false;
+  gate: Promise<void> | null = null;
+
+  async requestRefund(input: Parameters<BazaarRefundRequestService["requestRefund"]>[0]) {
+    this.calls.push(input);
+    await this.gate;
+    if (this.error) throw new Error("ambiguous provider refund request");
+    return this.result;
+  }
+}
+
+export class FakeRefundEvidenceVerifier {
+  calls: BazaarRefundEvidenceInput[] = [];
+  error = false;
+  mutate: ((input: BazaarRefundEvidenceInput) => BazaarRefundEvidenceInput) | null = null;
+
+  async verify(input: BazaarRefundEvidenceInput) {
+    this.calls.push(input);
+    if (this.error) throw new Error("ambiguous refund evidence");
+    return {
+      ...(this.mutate?.(input) ?? input),
+      finalized: true as const,
+      matchingTransferEventCount: 1 as const,
+      evidenceHash: REFUND_EVIDENCE_HASH,
+      blockHash: REFUND_BLOCK_HASH,
+      transferLogIndex: 7,
+    };
+  }
+}
+
 export function accountLifecycleBroker(
   account: PrivateKeyAccount,
 ): BazaarProviderActionSigningBroker {
@@ -350,6 +440,30 @@ export function accountLifecycleBroker(
       message: {
         ...input.message,
         providerAgentId: BigInt(input.message.providerAgentId),
+        issuedAt: BigInt(input.message.issuedAt),
+        expiresAt: BigInt(input.message.expiresAt),
+      },
+    }),
+  };
+}
+
+export function accountRefundBroker(
+  account: PrivateKeyAccount,
+): BazaarRefundInstructionSigningBroker {
+  return {
+    address: account.address,
+    signRefundInstruction: (input) => account.signTypedData({
+      domain: {
+        name: "Daski Bazaar Refund Instruction",
+        version: "1",
+        chainId: BigInt(input.chainId),
+        verifyingContract: input.payTo,
+      },
+      types: BAZAAR_REFUND_INSTRUCTION_TYPES,
+      primaryType: "DaskiBazaarRefundInstruction",
+      message: {
+        ...input.message,
+        grossAmount: BigInt(input.message.grossAmount),
         issuedAt: BigInt(input.message.issuedAt),
         expiresAt: BigInt(input.message.expiresAt),
       },

@@ -13,6 +13,9 @@ import type {
 } from "./types.js";
 
 const REFUND_DOMAIN_HASH = keccak256(toBytes("DASKI_BAZAAR_REFUND_V1"));
+const REFUND_EVIDENCE_DOMAIN_HASH = keccak256(
+  toBytes("DASKI_BAZAAR_REFUND_EVIDENCE_V1"),
+);
 
 interface RawRefundBinding {
   refund_id: Buffer;
@@ -22,6 +25,30 @@ interface RawRefundBinding {
   token: Buffer;
   gross_amount: string;
   primary_reason: BazaarRefundReason;
+  evidence_hash: Buffer | null;
+}
+
+export function computeBazaarRefundEvidenceHash(
+  order: BazaarRefundBinding,
+  reason: BazaarRefundReason,
+  failureCode: string,
+): Hex {
+  return keccak256(encodeAbiParameters(
+    [
+      { type: "bytes32" },
+      { type: "bytes32" },
+      { type: "bytes32" },
+      { type: "bytes32" },
+      { type: "bytes32" },
+    ],
+    [
+      REFUND_EVIDENCE_DOMAIN_HASH,
+      order.orderRecordId,
+      order.authorizationDigest,
+      keccak256(toBytes(reason)),
+      keccak256(toBytes(failureCode)),
+    ],
+  ));
 }
 
 export type BazaarRefundBinding = Pick<BazaarOrder,
@@ -91,31 +118,40 @@ export async function createBazaarRefundDue(input: {
   order: BazaarRefundBinding;
   reason: BazaarRefundReason;
   policy: BazaarRefundRiskPolicy;
+  evidenceHash: Hex;
+  expectedExposure?: "reserved" | "paid_unfulfilled";
 }): Promise<void> {
   const { client, order, reason, policy } = input;
   const refundId = computeBazaarRefundId(order, reason);
   await client.query(
     `INSERT INTO bazaar_refund_obligations (
        order_record_id, refund_id, authorization_digest, provider_agent_id,
-       payer, token, gross_amount, primary_reason, due_at
+       payer, token, gross_amount, primary_reason, due_at, evidence_hash
      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8,
-       now() + make_interval(secs => $9))
+       now() + make_interval(secs => $9), $10)
      ON CONFLICT DO NOTHING`,
     [
       hexToBytea(order.orderRecordId), hexToBytea(refundId),
       hexToBytea(order.authorizationDigest), order.providerAgentId.toString(),
       hexToBytea(order.payer), hexToBytea(order.token),
       order.grossAmount.toString(), reason, policy.refundSlaSeconds,
+      hexToBytea(input.evidenceHash),
     ],
   );
   const stored = await client.query<RawRefundBinding>(
     `SELECT refund_id, authorization_digest, provider_agent_id, payer, token,
-            gross_amount, primary_reason
+            gross_amount, primary_reason, evidence_hash
        FROM bazaar_refund_obligations WHERE order_record_id = $1`,
     [hexToBytea(order.orderRecordId)],
   );
   const row = stored.rows[0];
-  if (!row || !refundBindingMatches(row, order, reason, refundId)) {
+  if (!row || !refundBindingMatches(
+    row,
+    order,
+    reason,
+    refundId,
+    input.evidenceHash,
+  )) {
     throw new Error("Bazaar refund obligation binding conflict");
   }
   await client.query(
@@ -123,17 +159,27 @@ export async function createBazaarRefundDue(input: {
      VALUES ($1, $2) ON CONFLICT DO NOTHING`,
     [hexToBytea(order.orderRecordId), reason],
   );
-  await ensureRefundDueExposure(client, order.orderRecordId);
+  await client.query(
+    `INSERT INTO bazaar_refund_jobs (order_record_id)
+     VALUES ($1) ON CONFLICT DO NOTHING`,
+    [hexToBytea(order.orderRecordId)],
+  );
+  await ensureRefundDueExposure(
+    client,
+    order.orderRecordId,
+    input.expectedExposure ?? "paid_unfulfilled",
+  );
 }
 
 async function ensureRefundDueExposure(
   client: PoolClient,
   orderRecordId: Hex,
+  expected: "reserved" | "paid_unfulfilled",
 ): Promise<void> {
   const transitioned = await client.query(
     `UPDATE bazaar_exposures SET state = 'refund_due', updated_at = now()
-      WHERE order_record_id = $1 AND state = 'paid_unfulfilled'`,
-    [hexToBytea(orderRecordId)],
+      WHERE order_record_id = $1 AND state = $2`,
+    [hexToBytea(orderRecordId), expected],
   );
   if (transitioned.rowCount === 1) return;
   const existing = await client.query<{ state: string }>(
@@ -150,9 +196,14 @@ function refundBindingMatches(
   order: BazaarRefundBinding,
   reason: BazaarRefundReason,
   refundId: Hex,
+  evidenceHash: Hex,
 ): boolean {
   const samePrimaryReason = row.primary_reason === reason;
-  return (!samePrimaryReason || row.refund_id.equals(hexToBytea(refundId))) &&
+  return (!samePrimaryReason || (
+    row.refund_id.equals(hexToBytea(refundId)) &&
+    row.evidence_hash !== null &&
+    row.evidence_hash.equals(hexToBytea(evidenceHash))
+  )) &&
     row.authorization_digest.equals(hexToBytea(order.authorizationDigest)) &&
     row.provider_agent_id === order.providerAgentId.toString() &&
     row.payer.equals(hexToBytea(order.payer)) &&

@@ -23,10 +23,16 @@ import { BazaarOutcomeService } from "./outcomeService.js";
 import type { BazaarOutcomeResult } from "./outcomeHelpers.js";
 import { validateStockFixedRequest } from "./requestBinding.js";
 import { BazaarOrderStore } from "./store.js";
+import { BazaarObservationStore } from "./observationStore.js";
+import { BazaarRefundStore } from "./refundStore.js";
 import type { BazaarCompatibilityWiring } from "./types.js";
 import { registerListingBindings } from "./listingStore.js";
 import { validateSettlementCapacityPolicy } from "./settlementCapacity.js";
-import { validateRefundRiskPolicies } from "./refundPolicy.js";
+import {
+  validateRefundRiskPolicies,
+  validateRefundWorkerPolicy,
+} from "./refundPolicy.js";
+import { validateSettlementObservationPolicy } from "./settlementObservation.js";
 import { snapshotBazaarCompatibilityWiring } from "./wiringSnapshot.js";
 import {
   readLifecycleDomains,
@@ -55,10 +61,14 @@ export async function createBazaarCompatibilityRouter(options: {
   });
   const router = Router();
   const store = new BazaarOrderStore(options.pool);
+  const observationStore = new BazaarObservationStore(options.pool);
+  const refundStore = new BazaarRefundStore(options.pool);
   const leaseOwner = `gateway-request:${randomUUID()}`;
   const lifecycle = new BazaarLifecycleService(store, wiring);
   const recovery = new BazaarRecoveryRuntime(
     store,
+    observationStore,
+    refundStore,
     wiring,
     options.providerAuthority,
   );
@@ -199,11 +209,14 @@ async function validateWiring(wiring: BazaarCompatibilityWiring): Promise<void> 
   const retiredCommitments = new Set<string>();
   const offerIds = new Map<string, string>();
   const providerActionSigner = wiring.providerActionSigningBroker.address.toLowerCase();
+  const refundSigner = wiring.refundInstructionSigningBroker.address.toLowerCase();
   const zeroAddress = `0x${"00".repeat(20)}`;
   const now = BigInt(Math.floor((wiring.now?.() ?? new Date()).getTime() / 1000));
   validateChallengeMacKeyring(wiring.challengeMac, now);
   validateSettlementCapacityPolicy(wiring.settlementCapacity);
+  validateSettlementObservationPolicy(wiring.settlementObservationPolicy);
   validateRefundRiskPolicies(wiring.refundRiskPolicies, wiring.listings);
+  validateRefundWorkerPolicy(wiring.refundWorkerPolicy);
   for (const commitment of wiring.retiredLifecycleCommitments) {
     if (!/^0x[0-9a-fA-F]{64}$/.test(commitment)) {
       throw new Error("Bazaar retired lifecycle commitment is malformed");
@@ -218,6 +231,10 @@ async function validateWiring(wiring: BazaarCompatibilityWiring): Promise<void> 
     !isHexAddress(wiring.providerActionSigningBroker.address) ||
     providerActionSigner === zeroAddress
   ) throw new Error("Bazaar provider-action signer must be valid");
+  if (
+    !isHexAddress(wiring.refundInstructionSigningBroker.address) ||
+    refundSigner === zeroAddress || refundSigner === providerActionSigner
+  ) throw new Error("Bazaar refund signer must be valid and purpose-separated");
   for (const listing of wiring.listings) {
     await validateCompatibilityListing(listing, now);
     const offer = listing.offer.message;
@@ -231,6 +248,10 @@ async function validateWiring(wiring: BazaarCompatibilityWiring): Promise<void> 
       providerActionSigner === offer.offerSigner.toLowerCase() ||
       providerActionSigner === offer.payTo.toLowerCase()
     ) throw new Error("Bazaar lifecycle keys cannot reuse listing or payment keys");
+    if (
+      refundSigner === offer.offerSigner.toLowerCase() ||
+      refundSigner === offer.payTo.toLowerCase()
+    ) throw new Error("Bazaar refund keys cannot reuse listing or payment keys");
     if (offer.chainId !== 84532n) {
       throw new Error("Bazaar compatibility harness is Base Sepolia only");
     }

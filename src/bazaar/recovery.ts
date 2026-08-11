@@ -7,10 +7,16 @@ import { requireCurrentListing } from "./listingAuthority.js";
 import { type BazaarLeaseGuard, withBazaarLease } from "./lease.js";
 import { verifyBazaarSettlementEvidence } from "./settlementEvidence.js";
 import { refundRiskPolicyFor } from "./refundPolicy.js";
+import { BazaarObservationStore } from "./observationStore.js";
+import type { LeasedBazaarObservation } from "./observationLeaseStore.js";
+import { observeBazaarSettlement } from "./settlementObservation.js";
+import { BazaarRefundRecovery } from "./refundRecovery.js";
+import type { BazaarRefundStore } from "./refundStore.js";
 import type { BazaarOrderStore, LeasedBazaarOrder } from "./store.js";
 import type {
   BazaarCompatibilityWiring,
   BazaarListing,
+  BazaarObservationOriginState,
   BazaarOrder,
 } from "./types.js";
 
@@ -22,12 +28,16 @@ export class BazaarRecoveryRuntime {
   private interval: NodeJS.Timeout | null = null;
   private active: Promise<void> | null = null;
   private stopping = false;
+  private readonly refundRecovery: BazaarRefundRecovery;
 
   constructor(
     private readonly store: BazaarOrderStore,
+    private readonly observationStore: BazaarObservationStore,
+    refundStore: BazaarRefundStore,
     private readonly wiring: BazaarCompatibilityWiring,
     private readonly providerAuthority: ProviderAuthorityService,
   ) {
+    this.refundRecovery = new BazaarRefundRecovery(refundStore, wiring, this.owner);
     this.listings = new Map(wiring.listings.map((listing) => [
       listing.listingCommitment.toLowerCase(), listing,
     ]));
@@ -43,11 +53,87 @@ export class BazaarRecoveryRuntime {
   async runOnce(): Promise<void> {
     await this.store.terminalizeExpiredAttempts();
     for (let processed = 0; processed < 50; processed += 1) {
+      const observable = await this.observationStore.claim(
+        this.owner,
+        this.nowSeconds(),
+        this.wiring.settlementObservationPolicy,
+      );
+      if (!observable) break;
+      await this.observe(observable);
+    }
+    await this.refundRecovery.runOnce();
+    for (let processed = 0; processed < 50; processed += 1) {
       const recoverable = await this.store.claimRecoverableOrders(this.owner, 1);
       const leased = recoverable[0];
       if (!leased) break;
       await this.recover(leased);
     }
+  }
+
+  private async observe(leased: LeasedBazaarObservation): Promise<void> {
+    await withBazaarLease({
+      store: this.observationStore,
+      orderRecordId: leased.order.orderRecordId,
+      leaseToken: leased.leaseToken,
+      action: (lease) => this.observeLeased(leased, lease),
+      onOwnershipLost: () => undefined,
+    });
+  }
+
+  private async observeLeased(
+    leased: LeasedBazaarObservation,
+    lease: BazaarLeaseGuard,
+  ): Promise<void> {
+    const result = await observeBazaarSettlement({
+      order: leased.order,
+      wiring: this.wiring,
+      lease,
+    });
+    if (result.kind === "pending") {
+      const deferred = await this.observationStore.defer(
+        leased.order.orderRecordId,
+        leased.leaseToken,
+        this.wiring.settlementObservationPolicy.retryDelaySeconds,
+      );
+      if (deferred) lease.complete();
+      return;
+    }
+    if (result.kind === "no_transfer") {
+      const completed = await this.observationStore.completeNoTransfer({
+        orderRecordId: leased.order.orderRecordId,
+        originState: leased.originState,
+        terminalState: noTransferState(leased.originState),
+        leaseToken: leased.leaseToken,
+        observation: result,
+      });
+      if (completed) lease.complete();
+      return;
+    }
+    const requiresRefund = leased.originState === "settle_ambiguous" ||
+      leased.originState === "evidence_rejected";
+    const completed = requiresRefund
+      ? await this.observationStore.completeObservedTransfer({
+          orderRecordId: leased.order.orderRecordId,
+          originState: leased.originState,
+          leaseToken: leased.leaseToken,
+          observation: result,
+          disposition: "refund_due",
+          reason: leased.originState === "evidence_rejected"
+            ? "SETTLEMENT_EVIDENCE_INVALID"
+            : "AMBIGUOUS_PAID",
+          policy: refundRiskPolicyFor(
+            this.wiring.refundRiskPolicies,
+            leased.order.providerAgentId,
+          ),
+        })
+      : await this.observationStore.completeObservedTransfer({
+          orderRecordId: leased.order.orderRecordId,
+          originState: leased.originState,
+          leaseToken: leased.leaseToken,
+          observation: result,
+          disposition: "unapproved",
+        });
+    if (completed) lease.complete();
   }
 
   async close(): Promise<void> {
@@ -149,4 +235,18 @@ export class BazaarRecoveryRuntime {
       "listing_manifest_missing_during_recovery",
     );
   }
+
+  private nowSeconds(): bigint {
+    return BigInt(Math.floor((this.wiring.now?.() ?? new Date()).getTime() / 1000));
+  }
+}
+
+function noTransferState(origin: BazaarObservationOriginState):
+  | "rejected_expired_no_transfer"
+  | "ambiguous_expired_no_transfer"
+  | "invalid_evidence_expired_no_transfer" {
+  if (origin === "evidence_rejected") return "invalid_evidence_expired_no_transfer";
+  return origin === "verify_ambiguous" || origin === "settle_ambiguous"
+    ? "ambiguous_expired_no_transfer"
+    : "rejected_expired_no_transfer";
 }

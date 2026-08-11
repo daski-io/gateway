@@ -22,6 +22,7 @@ import {
   createBazaarHarness,
   createListing,
   createPaymentPayload,
+  accountRefundBroker,
   PROVIDER_KEY,
   SECOND_PAY_TO_KEY,
   TEST_NOW,
@@ -523,6 +524,254 @@ describe("Bazaar compatibility harness", () => {
     expect(harness.fulfillment.dispatchCalls).toBe(0);
   });
 
+  it("closes an ambiguous settlement only after finalized no-transfer observation", async () => {
+    await gateway.close();
+    let currentNow = new Date(TEST_NOW);
+    harness.wiring.now = () => new Date(currentNow);
+    harness.facilitator.settleError = true;
+    gateway = await startHarnessGateway(harness);
+    const required = await paymentRequired(gateway);
+    const payment = await createPaymentPayload({
+      paymentRequired: required,
+      buyer,
+      nonce: nonce(60),
+    });
+    expect((await paid(gateway, payment)).response.status).toBe(502);
+    expect(await latestOrderState(gateway)).toBe("settle_ambiguous");
+    await gateway.bundle.bazaarRecovery!.runOnce();
+    expect(harness.settlementObserver.calls).toHaveLength(0);
+
+    currentNow = new Date(TEST_NOW.getTime() + 301_000);
+    harness.settlementObserver.result = {
+      kind: "no_transfer",
+      observedThrough: BigInt(Math.floor(currentNow.getTime() / 1000)),
+      evidenceHash: nonce(61),
+    };
+    await gateway.bundle.bazaarRecovery!.runOnce();
+    expect(await latestOrderState(gateway)).toBe("ambiguous_expired_no_transfer");
+    expect(harness.settlementObserver.calls).toHaveLength(1);
+    const closed = await gateway.bundle.pool.query<{
+      observation_state: string;
+      exposure_state: string;
+      refunds: string;
+    }>(
+      `SELECT o.state AS observation_state, e.state AS exposure_state,
+              (SELECT count(*) FROM bazaar_refund_obligations)::text AS refunds
+         FROM bazaar_settlement_observations o
+         JOIN bazaar_exposures e USING (order_record_id)`,
+    );
+    expect(closed.rows[0]).toEqual({
+      observation_state: "no_transfer",
+      exposure_state: "released",
+      refunds: "0",
+    });
+    await gateway.bundle.bazaarRecovery!.runOnce();
+    expect(harness.settlementObserver.calls).toHaveLength(1);
+    expect((await unpaid(gateway)).status).toBe(503);
+  });
+
+  it("defers a future-dated observation instead of closing financial exposure", async () => {
+    await gateway.close();
+    let currentNow = new Date(TEST_NOW);
+    harness.wiring.now = () => new Date(currentNow);
+    harness.facilitator.settleError = true;
+    gateway = await startHarnessGateway(harness);
+    const required = await paymentRequired(gateway);
+    const payment = await createPaymentPayload({
+      paymentRequired: required,
+      buyer,
+      nonce: nonce(67),
+    });
+    await paid(gateway, payment);
+    currentNow = new Date(TEST_NOW.getTime() + 301_000);
+    const nowSeconds = BigInt(Math.floor(currentNow.getTime() / 1000));
+    harness.settlementObserver.result = {
+      kind: "no_transfer",
+      observedThrough: nowSeconds + 1n,
+      evidenceHash: nonce(68),
+    };
+    await gateway.bundle.bazaarRecovery!.runOnce();
+    expect(await latestOrderState(gateway)).toBe("settle_ambiguous");
+    const deferred = await gateway.bundle.pool.query<{
+      observation_state: string;
+      exposure_state: string;
+      attempt_count: number;
+    }>(
+      `SELECT o.state AS observation_state, e.state AS exposure_state,
+              o.attempt_count
+         FROM bazaar_settlement_observations o
+         JOIN bazaar_exposures e USING (order_record_id)`,
+    );
+    expect(deferred.rows[0]).toEqual({
+      observation_state: "pending",
+      exposure_state: "reserved",
+      attempt_count: 1,
+    });
+  });
+
+  it("fences a stale observer and lets one replacement close the order", async () => {
+    await gateway.close();
+    let currentNow = new Date(TEST_NOW);
+    harness.wiring.now = () => new Date(currentNow);
+    harness.facilitator.settleError = true;
+    gateway = await startHarnessGateway(harness);
+    const required = await paymentRequired(gateway);
+    const payment = await createPaymentPayload({
+      paymentRequired: required,
+      buyer,
+      nonce: nonce(69),
+    });
+    await paid(gateway, payment);
+    currentNow = new Date(TEST_NOW.getTime() + 301_000);
+    harness.settlementObserver.result = {
+      kind: "no_transfer",
+      observedThrough: BigInt(Math.floor(currentNow.getTime() / 1000)),
+      evidenceHash: nonce(70),
+    };
+    const gate = deferred();
+    harness.settlementObserver.gate = gate.promise;
+    const stale = gateway.bundle.bazaarRecovery!.runOnce();
+    await waitForObserverCalls(harness, 1);
+    await gateway.bundle.pool.query(
+      `UPDATE bazaar_settlement_observations
+          SET lease_expires_at = now() - interval '1 second'`,
+    );
+    const replacement = gateway.bundle.bazaarRecovery!.runOnce();
+    await waitForObserverCalls(harness, 2);
+    gate.resolve();
+    await Promise.all([stale, replacement]);
+    expect(await latestOrderState(gateway)).toBe("ambiguous_expired_no_transfer");
+    const final = await gateway.bundle.pool.query<{
+      attempt_count: number;
+      exposure_state: string;
+    }>(
+      `SELECT o.attempt_count, e.state AS exposure_state
+         FROM bazaar_settlement_observations o
+         JOIN bazaar_exposures e USING (order_record_id)`,
+    );
+    expect(final.rows[0]).toEqual({ attempt_count: 2, exposure_state: "released" });
+  });
+
+  it("turns an observed ambiguous debit into one exact refund obligation", async () => {
+    await gateway.close();
+    let currentNow = new Date(TEST_NOW);
+    harness.wiring.now = () => new Date(currentNow);
+    harness.facilitator.settleError = true;
+    gateway = await startHarnessGateway(harness);
+    const required = await paymentRequired(gateway);
+    const payment = await createPaymentPayload({
+      paymentRequired: required,
+      buyer,
+      nonce: nonce(62),
+    });
+    expect((await paid(gateway, payment)).response.status).toBe(502);
+    currentNow = new Date(TEST_NOW.getTime() + 301_000);
+    harness.settlementObserver.result = matchingObservation(
+      BigInt(Math.floor(currentNow.getTime() / 1000)),
+      nonce(63),
+    );
+    await gateway.bundle.bazaarRecovery!.runOnce();
+    expect(await latestOrderState(gateway)).toBe("settlement_refund_due");
+    const due = await gateway.bundle.pool.query<{
+      observation_state: string;
+      exposure_state: string;
+      primary_reason: string;
+      payer: string;
+      gross_amount: string;
+    }>(
+      `SELECT o.state AS observation_state, e.state AS exposure_state,
+              r.primary_reason, encode(r.payer, 'hex') AS payer,
+              r.gross_amount::text
+         FROM bazaar_settlement_observations o
+         JOIN bazaar_exposures e USING (order_record_id)
+         JOIN bazaar_refund_obligations r USING (order_record_id)`,
+    );
+    expect(due.rows[0]).toEqual({
+      observation_state: "refund_due",
+      exposure_state: "refund_due",
+      primary_reason: "AMBIGUOUS_PAID",
+      payer: buyer.address.slice(2).toLowerCase(),
+      gross_amount: "10000",
+    });
+    await gateway.bundle.bazaarRecovery!.runOnce();
+    expect(harness.settlementObserver.calls).toHaveLength(1);
+  });
+
+  it("classifies a rejected-path transfer as unapproved inbound, not payment", async () => {
+    await gateway.close();
+    let currentNow = new Date(TEST_NOW);
+    harness.wiring.now = () => new Date(currentNow);
+    harness.facilitator.settleRejected = true;
+    gateway = await startHarnessGateway(harness);
+    const required = await paymentRequired(gateway);
+    const payment = await createPaymentPayload({
+      paymentRequired: required,
+      buyer,
+      nonce: nonce(64),
+    });
+    expect((await paid(gateway, payment)).response.status).toBe(402);
+    expect(await latestOrderState(gateway)).toBe("settle_rejected");
+    currentNow = new Date(TEST_NOW.getTime() + 301_000);
+    harness.settlementObserver.result = matchingObservation(
+      BigInt(Math.floor(currentNow.getTime() / 1000)),
+      nonce(65),
+    );
+    await gateway.bundle.bazaarRecovery!.runOnce();
+    expect(await latestOrderState(gateway)).toBe("unapproved_direct_inbound");
+    const inbound = await gateway.bundle.pool.query<{
+      observation_state: string;
+      exposure_state: string;
+      refunds: string;
+    }>(
+      `SELECT o.state AS observation_state, e.state AS exposure_state,
+              (SELECT count(*) FROM bazaar_refund_obligations)::text AS refunds
+         FROM bazaar_settlement_observations o
+         JOIN bazaar_exposures e USING (order_record_id)`,
+    );
+    expect(inbound.rows[0]).toEqual({
+      observation_state: "unapproved_transfer",
+      exposure_state: "paid_unfulfilled",
+      refunds: "0",
+    });
+    expect(harness.fulfillment.dispatchCalls).toBe(0);
+  });
+
+  it("refunds an observed debit after nominal-success evidence is invalid", async () => {
+    await gateway.close();
+    let currentNow = new Date(TEST_NOW);
+    harness.wiring.now = () => new Date(currentNow);
+    harness.wiring.evidenceVerifier = {
+      verify: async (input) => ({
+        ...input,
+        transaction: nonce(200),
+        finalized: true,
+        authorizationUsedEventCount: 1,
+        matchingTransferEventCount: 1,
+      }),
+    };
+    gateway = await startHarnessGateway(harness);
+    const required = await paymentRequired(gateway);
+    const payment = await createPaymentPayload({
+      paymentRequired: required,
+      buyer,
+      nonce: nonce(66),
+    });
+    expect((await paid(gateway, payment)).response.status).toBe(502);
+    expect(await latestOrderState(gateway)).toBe("evidence_rejected");
+    currentNow = new Date(TEST_NOW.getTime() + 301_000);
+    harness.settlementObserver.result = matchingObservation(
+      BigInt(Math.floor(currentNow.getTime() / 1000)),
+      nonce(66),
+    );
+    await gateway.bundle.bazaarRecovery!.runOnce();
+    expect(await latestOrderState(gateway)).toBe("settlement_refund_due");
+    const reason = await gateway.bundle.pool.query<{ primary_reason: string }>(
+      "SELECT primary_reason FROM bazaar_refund_obligations",
+    );
+    expect(reason.rows[0]?.primary_reason).toBe("SETTLEMENT_EVIDENCE_INVALID");
+    expect(harness.fulfillment.dispatchCalls).toBe(0);
+  });
+
   it("recovers finalized evidence and dispatch after a captured CDP success", async () => {
     await gateway.close();
     const firstEvidence = deferred();
@@ -676,6 +925,133 @@ describe("Bazaar compatibility harness", () => {
     );
     expect(replayCount.rows[0]?.count).toBe("1");
     expect(harness.fulfillment.dispatchCalls).toBe(1);
+  });
+
+  it("finalizes a provider refund only after exact independent transfer evidence", async () => {
+    const payment = await createProviderRefundDue(gateway, harness, buyer, 150);
+    harness.refundService.result = { kind: "broadcast", transaction: nonce(151) };
+    await gateway.bundle.bazaarRecovery!.runOnce();
+    expect(await latestOrderState(gateway)).toBe("refund_finalized");
+    expect(harness.refundService.calls).toHaveLength(1);
+    expect(harness.refundEvidence.calls).toHaveLength(1);
+    const request = harness.refundService.calls[0]!;
+    expect(request).toMatchObject({
+      providerAgentId: 701n,
+      refundWallet: harness.wiring.refundRiskPolicies["701"]!.refundWallet,
+      instruction: {
+        domain: {
+          name: "Daski Bazaar Refund Instruction",
+          version: "1",
+          chainId: "84532",
+        },
+        primaryType: "DaskiBazaarRefundInstruction",
+        message: {
+          payer: buyer.address.toLowerCase(),
+          grossAmount: "10000",
+        },
+      },
+    });
+    expect(JSON.stringify(request.instruction)).not.toContain(
+      (payment.payload as { signature: string }).signature,
+    );
+    const finalized = await gateway.bundle.pool.query<{
+      refund_state: string;
+      refund_transaction: string;
+      job_state: string;
+      exposure_state: string;
+    }>(
+      `SELECT r.state AS refund_state,
+              encode(r.refund_transaction, 'hex') AS refund_transaction,
+              j.state AS job_state, e.state AS exposure_state
+         FROM bazaar_refund_obligations r
+         JOIN bazaar_refund_jobs j USING (order_record_id)
+         JOIN bazaar_exposures e USING (order_record_id)`,
+    );
+    expect(finalized.rows[0]).toEqual({
+      refund_state: "finalized",
+      refund_transaction: nonce(151).slice(2),
+      job_state: "complete",
+      exposure_state: "released",
+    });
+    await gateway.bundle.bazaarRecovery!.runOnce();
+    expect(harness.refundService.calls).toHaveLength(1);
+  });
+
+  it("keeps a broadcast refund open when finality evidence does not match", async () => {
+    await createProviderRefundDue(gateway, harness, buyer, 152);
+    harness.refundService.result = { kind: "broadcast", transaction: nonce(153) };
+    harness.refundEvidence.mutate = (input) => ({
+      ...input,
+      payer: harness.providerAccount.address,
+    });
+    await gateway.bundle.bazaarRecovery!.runOnce();
+    expect(await latestOrderState(gateway)).toBe("dispatch_failed");
+    const open = await gateway.bundle.pool.query<{
+      refund_state: string;
+      job_state: string;
+      exposure_state: string;
+    }>(
+      `SELECT r.state AS refund_state, j.state AS job_state,
+              e.state AS exposure_state
+         FROM bazaar_refund_obligations r
+         JOIN bazaar_refund_jobs j USING (order_record_id)
+         JOIN bazaar_exposures e USING (order_record_id)`,
+    );
+    expect(open.rows[0]).toEqual({
+      refund_state: "broadcast",
+      job_state: "pending",
+      exposure_state: "refund_due",
+    });
+  });
+
+  it("records issuer blocking without claiming that a refund occurred", async () => {
+    await createProviderRefundDue(gateway, harness, buyer, 154);
+    harness.refundService.result = { kind: "blocked_issuer" };
+    await gateway.bundle.bazaarRecovery!.runOnce();
+    expect(await latestOrderState(gateway)).toBe("refund_blocked_issuer");
+    const blocked = await gateway.bundle.pool.query<{
+      refund_state: string;
+      refund_transaction: Buffer | null;
+      job_state: string;
+      exposure_state: string;
+    }>(
+      `SELECT r.state AS refund_state, r.refund_transaction,
+              j.state AS job_state, e.state AS exposure_state
+         FROM bazaar_refund_obligations r
+         JOIN bazaar_refund_jobs j USING (order_record_id)
+         JOIN bazaar_exposures e USING (order_record_id)`,
+    );
+    expect(blocked.rows[0]).toEqual({
+      refund_state: "blocked_issuer",
+      refund_transaction: null,
+      job_state: "blocked",
+      exposure_state: "refund_due",
+    });
+    expect(await unpaid(gateway).then((response) => response.status)).toBe(503);
+  });
+
+  it("rejects a wrong refund-signer result before provider egress", async () => {
+    await gateway.close();
+    const declared = harness.wiring.refundInstructionSigningBroker.address;
+    const wrong = accountRefundBroker(harness.providerAccount);
+    harness.wiring.refundInstructionSigningBroker = {
+      address: declared,
+      signRefundInstruction: wrong.signRefundInstruction,
+    };
+    gateway = await startHarnessGateway(harness);
+    await createProviderRefundDue(gateway, harness, buyer, 155);
+    harness.refundService.result = { kind: "broadcast", transaction: nonce(156) };
+    await gateway.bundle.bazaarRecovery!.runOnce();
+    expect(harness.refundService.calls).toHaveLength(0);
+    const due = await gateway.bundle.pool.query<{
+      refund_state: string;
+      job_state: string;
+    }>(
+      `SELECT r.state AS refund_state, j.state AS job_state
+         FROM bazaar_refund_obligations r
+         JOIN bazaar_refund_jobs j USING (order_record_id)`,
+    );
+    expect(due.rows[0]).toEqual({ refund_state: "due", job_state: "pending" });
   });
 
   it("reserves paid and refund headroom across a provider's outcome routes", async () => {
@@ -1122,6 +1498,26 @@ async function paid(gateway: TestGateway, payment: any) {
   });
 }
 
+async function createProviderRefundDue(
+  gateway: TestGateway,
+  harness: Awaited<ReturnType<typeof createBazaarHarness>>,
+  buyer: PrivateKeyAccount,
+  nonceValue: number,
+) {
+  harness.fulfillment.dispatchResult = {
+    kind: "rejected",
+    reason: "PROVIDER_FULFILLMENT_FAILURE",
+  };
+  const required = await paymentRequired(gateway);
+  const payment = await createPaymentPayload({
+    paymentRequired: required,
+    buyer,
+    nonce: nonce(nonceValue),
+  });
+  expect((await paid(gateway, payment)).response.status).toBe(502);
+  return payment;
+}
+
 async function postJson(
   gateway: TestGateway,
   path: string,
@@ -1138,6 +1534,22 @@ async function postJson(
 
 function nonce(value: number): Hex {
   return `0x${value.toString(16).padStart(64, "0")}` as Hex;
+}
+
+function matchingObservation(observedThrough: bigint, transaction: Hex) {
+  return {
+    kind: "matching_transfer" as const,
+    observedThrough,
+    evidenceHash: nonce(210),
+    transaction,
+    blockHash: nonce(211),
+    transactionIndex: 1,
+    authorizationLogIndex: 2,
+    transferLogIndex: 3,
+    finalized: true as const,
+    authorizationUsedEventCount: 1 as const,
+    matchingTransferEventCount: 1 as const,
+  };
 }
 
 function lifecycleClaim(
@@ -1189,6 +1601,17 @@ async function waitForOrderState(gateway: TestGateway, state: string): Promise<v
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
   throw new Error(`Bazaar order did not reach ${state}`);
+}
+
+async function waitForObserverCalls(
+  harness: Awaited<ReturnType<typeof createBazaarHarness>>,
+  count: number,
+): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (harness.settlementObserver.calls.length >= count) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`Bazaar observer did not reach ${count} calls`);
 }
 
 async function latestOrderState(gateway: TestGateway): Promise<string | undefined> {

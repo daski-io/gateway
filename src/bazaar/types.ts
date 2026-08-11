@@ -103,6 +103,52 @@ export interface SettlementEvidenceVerifier {
   }>;
 }
 
+export interface BazaarSettlementObservationInput {
+  orderRecordId: Hex;
+  authorizationDigest: Hex;
+  chainId: bigint;
+  token: Hex;
+  payer: Hex;
+  nonce: Hex;
+  payTo: Hex;
+  grossAmount: bigint;
+  authorizationValidBefore: bigint;
+  requiredObservedThrough: bigint;
+}
+
+export type BazaarSettlementObservationResult =
+  | { kind: "pending" }
+  | {
+      kind: "no_transfer";
+      observedThrough: bigint;
+      evidenceHash: Hex;
+    }
+  | {
+      kind: "matching_transfer";
+      observedThrough: bigint;
+      evidenceHash: Hex;
+      transaction: Hex;
+      blockHash: Hex;
+      transactionIndex: number;
+      authorizationLogIndex: number;
+      transferLogIndex: number;
+      finalized: true;
+      authorizationUsedEventCount: 1;
+      matchingTransferEventCount: 1;
+    };
+
+export interface BazaarSettlementObserver {
+  observe(
+    input: BazaarSettlementObservationInput,
+    signal: AbortSignal,
+  ): Promise<BazaarSettlementObservationResult>;
+}
+
+export interface BazaarSettlementObservationPolicy {
+  finalityWindowSeconds: number;
+  retryDelaySeconds: number;
+}
+
 export interface BazaarPayerProfileVerifier {
   verifyBeforeSettlement(input: {
     chainId: bigint;
@@ -210,11 +256,80 @@ export interface BazaarSettlementCapacityPolicy {
 
 export interface BazaarRefundRiskPolicy {
   assurance: "contractual-only" | "prefunded-reserve" | "bonded";
+  refundWallet: Hex;
   maxSingleGross: bigint;
   maxAggregateReserved: bigint;
   maxAggregatePaidUnfulfilled: bigint;
   maxAggregateRefundDue: bigint;
   refundSlaSeconds: number;
+}
+
+export interface BazaarRefundWorkerPolicy {
+  instructionTtlSeconds: number;
+  retryDelaySeconds: number;
+}
+
+export interface BazaarRefundInstructionSigningRequest {
+  chainId: string;
+  payTo: Hex;
+  message: {
+    orderRecordId: Hex;
+    refundId: Hex;
+    authorizationDigest: Hex;
+    payer: Hex;
+    token: Hex;
+    grossAmount: string;
+    refundReason: Hex;
+    evidenceHash: Hex;
+    instructionNonce: Hex;
+    issuedAt: string;
+    expiresAt: string;
+  };
+}
+
+export interface BazaarRefundInstructionSigningBroker {
+  address: Hex;
+  signRefundInstruction(input: BazaarRefundInstructionSigningRequest): Promise<Hex>;
+}
+
+export interface BazaarRefundRequestService {
+  requestRefund(input: {
+    refundId: Hex;
+    providerAgentId: bigint;
+    refundWallet: Hex;
+    instruction: {
+      domain: Record<string, unknown>;
+      types: Record<string, readonly { name: string; type: string }[]>;
+      primaryType: "DaskiBazaarRefundInstruction";
+      message: BazaarRefundInstructionSigningRequest["message"];
+      signature: Hex;
+    };
+  }, signal: AbortSignal): Promise<
+    | { kind: "broadcast"; transaction: Hex }
+    | { kind: "blocked_issuer" }
+    | { kind: "deferred" }
+  >;
+}
+
+export interface BazaarRefundEvidenceInput {
+  transaction: Hex;
+  chainId: bigint;
+  token: Hex;
+  refundWallet: Hex;
+  payer: Hex;
+  grossAmount: bigint;
+}
+
+export interface BazaarRefundEvidenceVerifier {
+  verify(input: BazaarRefundEvidenceInput, signal: AbortSignal): Promise<
+    BazaarRefundEvidenceInput & {
+      finalized: true;
+      matchingTransferEventCount: 1;
+      evidenceHash: Hex;
+      blockHash: Hex;
+      transferLogIndex: number;
+    }
+  >;
 }
 
 export interface BazaarFinancialStatus {
@@ -227,6 +342,7 @@ export interface BazaarFinancialStatus {
     grossAmount: string;
     primaryReason: BazaarRefundReason;
     dueAt: string;
+    transaction: Hex | null;
   };
 }
 
@@ -237,11 +353,17 @@ export interface BazaarCompatibilityWiring {
   approvedTermsOrigins: string[];
   facilitator: BazaarFacilitatorClient;
   evidenceVerifier: SettlementEvidenceVerifier;
+  settlementObserver: BazaarSettlementObserver;
+  settlementObservationPolicy: BazaarSettlementObservationPolicy;
   payerProfileVerifier: BazaarPayerProfileVerifier;
   fulfillment: BazaarFulfillmentService;
   challengeMac: BazaarChallengeMacKeyring;
   settlementCapacity: BazaarSettlementCapacityPolicy;
   refundRiskPolicies: Record<string, BazaarRefundRiskPolicy>;
+  refundWorkerPolicy: BazaarRefundWorkerPolicy;
+  refundInstructionSigningBroker: BazaarRefundInstructionSigningBroker;
+  refundRequestService: BazaarRefundRequestService;
+  refundEvidenceVerifier: BazaarRefundEvidenceVerifier;
   providerActionSigningBroker: BazaarProviderActionSigningBroker;
   now?: () => Date;
   randomBytes?: (size: number) => Buffer;
@@ -260,7 +382,18 @@ export type BazaarOrderState =
   | "dispatch_started"
   | "dispatch_ambiguous"
   | "dispatch_failed"
-  | "dispatched";
+  | "dispatched"
+  | "rejected_expired_no_transfer"
+  | "ambiguous_expired_no_transfer"
+  | "invalid_evidence_expired_no_transfer"
+  | "unapproved_direct_inbound"
+  | "settlement_refund_due"
+  | "refund_finalized"
+  | "refund_blocked_issuer";
+
+export type BazaarObservationOriginState = Extract<BazaarOrderState,
+  "verify_rejected" | "verify_ambiguous" | "settle_rejected" |
+  "settle_ambiguous" | "evidence_rejected">;
 
 export interface BazaarOrder {
   orderRecordId: Hex;

@@ -1,0 +1,61 @@
+import type { BazaarLeaseGuard } from "./lease.js";
+import type { Hex } from "../types.js";
+import { isHex32 } from "../util/evmValidation.js";
+import type {
+  BazaarCompatibilityWiring,
+  BazaarRefundRiskPolicy,
+} from "./types.js";
+import type { BazaarRefundWorkItem } from "./refundLeaseStore.js";
+
+export interface VerifiedBazaarRefundEvidence {
+  evidenceHash: Hex;
+  blockHash: Hex;
+  transferLogIndex: number;
+}
+
+export async function verifyBazaarRefundEvidence(input: {
+  work: BazaarRefundWorkItem;
+  policy: BazaarRefundRiskPolicy;
+  wiring: BazaarCompatibilityWiring;
+  lease: BazaarLeaseGuard;
+}): Promise<VerifiedBazaarRefundEvidence | "pending"> {
+  const transaction = input.work.refundTransaction;
+  if (!transaction) return "pending";
+  let evidence;
+  try {
+    input.lease.assertOwned();
+    evidence = await input.wiring.refundEvidenceVerifier.verify({
+      transaction,
+      chainId: input.work.chainId,
+      token: input.work.token,
+      refundWallet: input.policy.refundWallet,
+      payer: input.work.payer,
+      grossAmount: input.work.grossAmount,
+    }, input.lease.signal);
+    input.lease.assertOwned();
+  } catch {
+    return "pending";
+  }
+  const valid = evidence.finalized === true &&
+    evidence.matchingTransferEventCount === 1 &&
+    evidence.transaction.toLowerCase() === transaction.toLowerCase() &&
+    evidence.chainId === input.work.chainId &&
+    evidence.token.toLowerCase() === input.work.token.toLowerCase() &&
+    evidence.refundWallet.toLowerCase() === input.policy.refundWallet.toLowerCase() &&
+    evidence.payer.toLowerCase() === input.work.payer.toLowerCase() &&
+    evidence.grossAmount === input.work.grossAmount &&
+    evidence.refundWallet.toLowerCase() !== evidence.payer.toLowerCase() &&
+    isNonzeroHex32(evidence.evidenceHash) &&
+    isNonzeroHex32(evidence.blockHash) &&
+    Number.isSafeInteger(evidence.transferLogIndex) &&
+    evidence.transferLogIndex >= 0;
+  return valid ? {
+    evidenceHash: evidence.evidenceHash,
+    blockHash: evidence.blockHash,
+    transferLogIndex: evidence.transferLogIndex,
+  } : "pending";
+}
+
+function isNonzeroHex32(value: unknown): value is Hex {
+  return isHex32(value) && !/^0x0{64}$/i.test(value);
+}

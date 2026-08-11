@@ -3,13 +3,12 @@ import { hexToBytea } from "../db/paymentChallengeCodec.js";
 import type { Hex } from "../types.js";
 import {
   createBazaarRefundDue,
+  computeBazaarRefundEvidenceHash,
   transitionBazaarExposure,
   type BazaarRefundBinding,
 } from "./refundAccounting.js";
 import type {
-  BazaarFinancialStatus,
-  BazaarRefundReason,
-  BazaarRefundRiskPolicy,
+  BazaarFinancialStatus, BazaarRefundReason, BazaarRefundRiskPolicy,
 } from "./types.js";
 
 interface RawRefundOrder {
@@ -30,6 +29,7 @@ interface RawFinancialStatus {
   refund_gross_amount: string | null;
   primary_reason: BazaarRefundReason | null;
   due_at: Date | null;
+  refund_transaction: Buffer | null;
 }
 
 export async function markBazaarSettled(
@@ -90,10 +90,7 @@ export async function markBazaarDispatched(input: {
       return false;
     }
     await transitionBazaarExposure(
-      client,
-      input.orderRecordId,
-      "paid_unfulfilled",
-      "paid_unfulfilled",
+      client, input.orderRecordId, "paid_unfulfilled", "paid_unfulfilled",
     );
     await client.query("COMMIT");
     return true;
@@ -129,10 +126,7 @@ export async function markBazaarDispatchAmbiguous(input: {
       return false;
     }
     await transitionBazaarExposure(
-      client,
-      input.orderRecordId,
-      "paid_unfulfilled",
-      "paid_unfulfilled",
+      client, input.orderRecordId, "paid_unfulfilled", "paid_unfulfilled",
     );
     await client.query("COMMIT");
     return true;
@@ -177,11 +171,17 @@ export async function markBazaarDispatchRefundDue(input: {
       await client.query("ROLLBACK");
       return false;
     }
+    const binding = toRefundBinding(row);
     await createBazaarRefundDue({
       client,
-      order: toRefundBinding(row),
+      order: binding,
       reason: input.reason,
       policy: input.policy,
+      evidenceHash: computeBazaarRefundEvidenceHash(
+        binding,
+        input.reason,
+        input.failureCode,
+      ),
     });
     await client.query("COMMIT");
     return true;
@@ -201,7 +201,7 @@ export async function getBazaarFinancialStatus(
     `SELECT e.state AS exposure_state, r.refund_id,
             r.state AS refund_state, r.payer AS refund_payer,
             r.token AS refund_token, r.gross_amount AS refund_gross_amount,
-            r.primary_reason, r.due_at
+            r.primary_reason, r.due_at, r.refund_transaction
        FROM bazaar_exposures e
        LEFT JOIN bazaar_refund_obligations r USING (order_record_id)
       WHERE e.order_record_id = $1`,
@@ -229,6 +229,7 @@ export async function getBazaarFinancialStatus(
       grossAmount: row.refund_gross_amount!,
       primaryReason: row.primary_reason!,
       dueAt: row.due_at!.toISOString(),
+      transaction: row.refund_transaction ? toHex(row.refund_transaction) : null,
     },
   };
 }

@@ -2,7 +2,9 @@ import type { Pool, PoolClient } from "pg";
 import type {
   BazaarListing,
   BazaarRefundRiskPolicy,
+  BazaarRefundWorkerPolicy,
 } from "./types.js";
+import { isHexAddress } from "../util/evmValidation.js";
 
 const MAX_UINT256 = (1n << 256n) - 1n;
 
@@ -82,6 +84,7 @@ function validateRefundRiskPolicy(policy: BazaarRefundRiskPolicy): void {
   ];
   if (
     !["contractual-only", "prefunded-reserve", "bonded"].includes(policy.assurance) ||
+    !isHexAddress(policy.refundWallet) || /^0x0{40}$/i.test(policy.refundWallet) ||
     caps.some((value) => typeof value !== "bigint" || value < 1n || value > MAX_UINT256) ||
     caps.slice(1).some((value) => value < policy.maxSingleGross) ||
     policy.maxAggregateReserved > policy.maxAggregatePaidUnfulfilled ||
@@ -89,4 +92,14 @@ function validateRefundRiskPolicy(policy: BazaarRefundRiskPolicy): void {
     !Number.isSafeInteger(policy.refundSlaSeconds) ||
     policy.refundSlaSeconds < 60 || policy.refundSlaSeconds > 30 * 24 * 60 * 60
   ) throw new Error("Bazaar refund-risk policy is invalid");
+}
+
+export function validateRefundWorkerPolicy(policy: BazaarRefundWorkerPolicy): void {
+  if (
+    !policy || typeof policy !== "object" ||
+    !Number.isSafeInteger(policy.instructionTtlSeconds) ||
+    policy.instructionTtlSeconds < 30 || policy.instructionTtlSeconds > 5 * 60 ||
+    !Number.isSafeInteger(policy.retryDelaySeconds) ||
+    policy.retryDelaySeconds < 5 || policy.retryDelaySeconds > 60 * 60
+  ) throw new Error("Bazaar refund-worker policy is invalid");
 }

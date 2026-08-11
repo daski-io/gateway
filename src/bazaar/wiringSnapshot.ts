@@ -8,9 +8,13 @@ export function snapshotBazaarCompatibilityWiring(
 ): BazaarCompatibilityWiring {
   const facilitator = wiring.facilitator;
   const evidenceVerifier = wiring.evidenceVerifier;
+  const settlementObserver = wiring.settlementObserver;
   const payerProfileVerifier = wiring.payerProfileVerifier;
   const fulfillment = wiring.fulfillment;
   const signingBroker = wiring.providerActionSigningBroker;
+  const refundSigningBroker = wiring.refundInstructionSigningBroker;
+  const refundRequestService = wiring.refundRequestService;
+  const refundEvidenceVerifier = wiring.refundEvidenceVerifier;
   return {
     ...wiring,
     listings: wiring.listings.map(snapshotListing),
@@ -32,6 +36,8 @@ export function snapshotBazaarCompatibilityWiring(
         : {}),
     },
     settlementCapacity: { ...wiring.settlementCapacity },
+    settlementObservationPolicy: { ...wiring.settlementObservationPolicy },
+    refundWorkerPolicy: { ...wiring.refundWorkerPolicy },
     refundRiskPolicies: Object.fromEntries(Object.entries(
       wiring.refundRiskPolicies,
     ).map(([providerId, policy]) => [providerId, { ...policy }])),
@@ -41,6 +47,9 @@ export function snapshotBazaarCompatibilityWiring(
     },
     evidenceVerifier: {
       verify: evidenceVerifier.verify.bind(evidenceVerifier),
+    },
+    settlementObserver: {
+      observe: settlementObserver.observe.bind(settlementObserver),
     },
     payerProfileVerifier: {
       verifyBeforeSettlement: payerProfileVerifier.verifyBeforeSettlement.bind(
@@ -54,6 +63,18 @@ export function snapshotBazaarCompatibilityWiring(
     providerActionSigningBroker: {
       address: signingBroker.address,
       signLifecycleAction: signingBroker.signLifecycleAction.bind(signingBroker),
+    },
+    refundInstructionSigningBroker: {
+      address: refundSigningBroker.address,
+      signRefundInstruction: refundSigningBroker.signRefundInstruction.bind(
+        refundSigningBroker,
+      ),
+    },
+    refundRequestService: {
+      requestRefund: refundRequestService.requestRefund.bind(refundRequestService),
+    },
+    refundEvidenceVerifier: {
+      verify: refundEvidenceVerifier.verify.bind(refundEvidenceVerifier),
     },
   };
 }
