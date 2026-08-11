@@ -34,7 +34,6 @@ export type LifecycleResult =
 export class BazaarLifecycleService {
   private readonly now: () => Date;
   private readonly random: (size: number) => Buffer;
-  private readonly allowedDomains: Set<string>;
 
   constructor(
     private readonly store: BazaarOrderStore,
@@ -42,10 +41,6 @@ export class BazaarLifecycleService {
   ) {
     this.now = wiring.now ?? (() => new Date());
     this.random = wiring.randomBytes ?? randomBytes;
-    this.allowedDomains = new Set(wiring.listings.map((listing) => {
-      const offer = listing.offer.message;
-      return `${offer.chainId}:${offer.payTo.toLowerCase()}`;
-    }));
   }
 
   async challenge(handle: string, body: unknown): Promise<LifecycleResult> {
@@ -54,7 +49,7 @@ export class BazaarLifecycleService {
     if (
       !orderRecordId ||
       !claim ||
-      !this.allowedDomains.has(`${claim.chainId}:${claim.payTo}`)
+      !(await this.store.hasLifecycleDomain(claim.chainId, claim.payTo))
     ) {
       return badRequest();
     }

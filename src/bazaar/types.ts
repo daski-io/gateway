@@ -194,6 +194,8 @@ export interface BazaarSettlementCapacityPolicy {
 
 export interface BazaarCompatibilityWiring {
   listings: BazaarListing[];
+  retiredLifecycleCommitments: Hex[];
+  publicOrigin: string;
   approvedTermsOrigins: string[];
   facilitator: BazaarFacilitatorClient;
   evidenceVerifier: SettlementEvidenceVerifier;

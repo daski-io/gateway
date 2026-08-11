@@ -11,6 +11,7 @@ import { privateKeyToAccount, type PrivateKeyAccount } from "viem/accounts";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { lifecycleRequestHash } from "../src/bazaar/lifecycleAuthorization.js";
 import { registerListingBindings } from "../src/bazaar/listingStore.js";
+import { reconcileLifecycleDomains } from "../src/bazaar/lifecycleDomainRegistry.js";
 import {
   computeListingCommitment,
   validateCompatibilityListing,
@@ -150,6 +151,7 @@ describe("Bazaar compatibility harness", () => {
       pool: gateway.bundle.pool,
       providerAuthority: gateway.bundle.providerAuthority,
       wiring: harness.wiring,
+      lifecycleDomainRetentionSeconds: gateway.config.taskRetentionSeconds,
     })).rejects.toThrow(/MAC key is malformed/);
 
     harness = await createBazaarHarness();
@@ -161,7 +163,18 @@ describe("Bazaar compatibility harness", () => {
       pool: gateway.bundle.pool,
       providerAuthority: gateway.bundle.providerAuthority,
       wiring: harness.wiring,
+      lifecycleDomainRetentionSeconds: gateway.config.taskRetentionSeconds,
     })).rejects.toThrow(/cannot reuse listing or payment keys/);
+  });
+
+  it("rejects outcome URLs outside the configured public origin", async () => {
+    harness.wiring.publicOrigin = "https://attacker.example";
+    await expect(createBazaarCompatibilityRouter({
+      pool: gateway.bundle.pool,
+      providerAuthority: gateway.bundle.providerAuthority,
+      wiring: harness.wiring,
+      lifecycleDomainRetentionSeconds: gateway.config.taskRetentionSeconds,
+    })).rejects.toThrow(/canonical public origin/);
   });
 
   it("settles once, dispatches once, and makes exact replay idempotent", async () => {
@@ -584,6 +597,96 @@ describe("Bazaar compatibility harness", () => {
     );
     expect(retried.response.status).toBe(200);
     expect(harness.fulfillment.lifecycleCalls).toHaveLength(2);
+  });
+
+  it("retains retired lifecycle domains only for the configured task window", async () => {
+    const required = await paymentRequired(gateway);
+    const payment = await createPaymentPayload({
+      paymentRequired: required,
+      buyer,
+      nonce: nonce(52),
+    });
+    const purchase = await paid(gateway, payment);
+    const handle = purchase.body.orderHandle as string;
+    const claim = lifecycleClaim(buyer.address, harness.providerAccount.address);
+
+    await expect(reconcileLifecycleDomains({
+      pool: gateway.bundle.pool,
+      listings: harness.wiring.listings,
+      retiredCommitments: [harness.wiring.listings[0]!.listingCommitment],
+      providerActionSigner: harness.wiring.providerActionSigningBroker.address,
+      retentionSeconds: gateway.config.taskRetentionSeconds,
+    })).rejects.toThrow(/retirement set is invalid/);
+
+    await reconcileLifecycleDomains({
+      pool: gateway.bundle.pool,
+      listings: [],
+      retiredCommitments: [harness.wiring.listings[0]!.listingCommitment],
+      providerActionSigner: harness.wiring.providerActionSigningBroker.address,
+      retentionSeconds: gateway.config.taskRetentionSeconds,
+    });
+    const retained = await postJson(
+      gateway,
+      `/x402/v1/orders/${handle}/challenge`,
+      claim,
+    );
+    expect(retained.response.status).toBe(200);
+    const redeemed = await postJson(
+      gateway,
+      `/x402/v1/orders/${handle}/actions`,
+      {
+        envelope: retained.body.envelope,
+        payerSignature: await signTaskAccess(
+          buyer,
+          retained.body.envelope.payload.authorization,
+        ),
+      },
+    );
+    expect(redeemed.response.status).toBe(200);
+
+    const firstRetention = await gateway.bundle.pool.query<{ accept_until: Date }>(
+      "SELECT accept_until FROM bazaar_lifecycle_domains WHERE NOT active",
+    );
+    await reconcileLifecycleDomains({
+      pool: gateway.bundle.pool,
+      listings: [],
+      retiredCommitments: [harness.wiring.listings[0]!.listingCommitment],
+      providerActionSigner: harness.wiring.providerActionSigningBroker.address,
+      retentionSeconds: gateway.config.taskRetentionSeconds,
+    });
+    const repeatedRetention = await gateway.bundle.pool.query<{ accept_until: Date }>(
+      "SELECT accept_until FROM bazaar_lifecycle_domains WHERE NOT active",
+    );
+    expect(repeatedRetention.rows[0]!.accept_until.getTime()).toBe(
+      firstRetention.rows[0]!.accept_until.getTime(),
+    );
+    await expect(reconcileLifecycleDomains({
+      pool: gateway.bundle.pool,
+      listings: [],
+      retiredCommitments: [harness.wiring.listings[0]!.listingCommitment],
+      providerActionSigner: harness.providerAccount.address,
+      retentionSeconds: gateway.config.taskRetentionSeconds,
+    })).rejects.toThrow(/retained financial key/);
+    await expect(reconcileLifecycleDomains({
+      pool: gateway.bundle.pool,
+      listings: harness.wiring.listings,
+      retiredCommitments: [],
+      providerActionSigner: harness.wiring.providerActionSigningBroker.address,
+      retentionSeconds: gateway.config.taskRetentionSeconds,
+    })).rejects.toThrow(/cannot be reactivated/);
+
+    await gateway.bundle.pool.query(
+      `UPDATE bazaar_lifecycle_domains
+          SET retired_at = now() - interval '2 seconds',
+              accept_until = now() - interval '1 second'
+        WHERE NOT active`,
+    );
+    const expired = await postJson(
+      gateway,
+      `/x402/v1/orders/${handle}/challenge`,
+      claim,
+    );
+    expect(expired.response.status).toBe(400);
   });
 
   it("rejects lifecycle compression and oversized uint claims before signing", async () => {

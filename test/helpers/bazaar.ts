@@ -46,6 +46,8 @@ export async function createBazaarHarness(): Promise<BazaarHarness> {
   const fulfillment = new FakeFulfillment();
   const wiring: BazaarCompatibilityWiring = {
     listings: [listing],
+    retiredLifecycleCommitments: [],
+    publicOrigin: "https://gateway.test",
     approvedTermsOrigins: ["https://gateway.test"],
     facilitator,
     evidenceVerifier: {

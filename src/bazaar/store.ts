@@ -75,6 +75,17 @@ const SELECT_COLUMNS = `
 export class BazaarOrderStore {
   constructor(private readonly pool: Pool) {}
 
+  async hasLifecycleDomain(chainId: bigint, payTo: Hex): Promise<boolean> {
+    const result = await this.pool.query(
+      `SELECT 1 FROM bazaar_lifecycle_domains
+        WHERE chain_id = $1 AND pay_to = $2
+          AND (active OR accept_until > now())
+        LIMIT 1`,
+      [chainId.toString(), hexToBytea(payTo)],
+    );
+    return result.rowCount === 1;
+  }
+
   async hasBlockingIncident(listingCommitment: Hex): Promise<boolean> {
     const result = await this.pool.query(
       `SELECT 1 FROM bazaar_orders

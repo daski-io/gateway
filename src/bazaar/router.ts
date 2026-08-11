@@ -27,6 +27,7 @@ import type { BazaarCompatibilityWiring } from "./types.js";
 import { registerListingBindings } from "./listingStore.js";
 import { validateSettlementCapacityPolicy } from "./settlementCapacity.js";
 import { snapshotBazaarCompatibilityWiring } from "./wiringSnapshot.js";
+import { reconcileLifecycleDomains } from "./lifecycleDomainRegistry.js";
 
 const MAX_X402_HEADER_BYTES = 8 * 1024;
 const MAX_PAYMENT_SIGNATURE_BYTES = 12 * 1024;
@@ -36,10 +37,18 @@ export async function createBazaarCompatibilityRouter(options: {
   pool: Pool;
   providerAuthority: ProviderAuthorityService;
   wiring: BazaarCompatibilityWiring;
+  lifecycleDomainRetentionSeconds: number;
 }): Promise<{ router: Router; close(): Promise<void>; recovery: BazaarRecoveryRuntime }> {
   const wiring = snapshotBazaarCompatibilityWiring(options.wiring);
   await validateWiring(wiring);
   await registerListingBindings(options.pool, wiring.listings);
+  await reconcileLifecycleDomains({
+    pool: options.pool,
+    listings: wiring.listings,
+    retiredCommitments: wiring.retiredLifecycleCommitments,
+    providerActionSigner: wiring.providerActionSigningBroker.address,
+    retentionSeconds: options.lifecycleDomainRetentionSeconds,
+  });
   const router = Router();
   const store = new BazaarOrderStore(options.pool);
   const leaseOwner = `gateway-request:${randomUUID()}`;
@@ -157,17 +166,28 @@ async function sendOutcome(
 }
 
 async function validateWiring(wiring: BazaarCompatibilityWiring): Promise<void> {
-  if (wiring.listings.length === 0) throw new Error("Bazaar harness has no listings");
+  const publicOrigin = validatePublicOrigin(wiring.publicOrigin);
   const termsOrigins = validateApprovedTermsOrigins(wiring.approvedTermsOrigins);
   const routes = new Set<string>();
   const recipients = new Set<string>();
   const commitments = new Set<string>();
+  const retiredCommitments = new Set<string>();
   const offerIds = new Map<string, string>();
   const providerActionSigner = wiring.providerActionSigningBroker.address.toLowerCase();
   const zeroAddress = `0x${"00".repeat(20)}`;
   const now = BigInt(Math.floor((wiring.now?.() ?? new Date()).getTime() / 1000));
   validateChallengeMacKeyring(wiring.challengeMac, now);
   validateSettlementCapacityPolicy(wiring.settlementCapacity);
+  for (const commitment of wiring.retiredLifecycleCommitments) {
+    if (!/^0x[0-9a-fA-F]{64}$/.test(commitment)) {
+      throw new Error("Bazaar retired lifecycle commitment is malformed");
+    }
+    const normalized = commitment.toLowerCase();
+    if (retiredCommitments.has(normalized)) {
+      throw new Error("Bazaar retired lifecycle commitments must be unique");
+    }
+    retiredCommitments.add(normalized);
+  }
   if (
     !isHexAddress(wiring.providerActionSigningBroker.address) ||
     providerActionSigner === zeroAddress
@@ -175,6 +195,9 @@ async function validateWiring(wiring: BazaarCompatibilityWiring): Promise<void> 
   for (const listing of wiring.listings) {
     await validateCompatibilityListing(listing, now);
     const offer = listing.offer.message;
+    if (new URL(listing.resourceUrl).origin !== publicOrigin) {
+      throw new Error("Bazaar resource URL does not use the canonical public origin");
+    }
     if (!termsOrigins.has(new URL(listing.termsUrl).origin)) {
       throw new Error("Bazaar terms URL does not use an approved publication origin");
     }
@@ -188,7 +211,10 @@ async function validateWiring(wiring: BazaarCompatibilityWiring): Promise<void> 
     const route = listing.routePath;
     const recipient = offer.payTo.toLowerCase();
     const commitment = offer.listingCommitment.toLowerCase();
-    if (routes.has(route) || recipients.has(recipient) || commitments.has(commitment)) {
+    if (
+      routes.has(route) || recipients.has(recipient) || commitments.has(commitment) ||
+      retiredCommitments.has(commitment)
+    ) {
       throw new Error("Bazaar listings must have unique routes, payTo values, and commitments");
     }
     routes.add(route);
@@ -203,6 +229,20 @@ async function validateWiring(wiring: BazaarCompatibilityWiring): Promise<void> 
     }
     offerIds.set(offerId, offerHash);
   }
+}
+
+function validatePublicOrigin(value: string): string {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error("Bazaar public origin is invalid");
+  }
+  if (
+    url.protocol !== "https:" || url.username || url.password || url.search ||
+    url.hash || url.pathname !== "/" || value !== url.origin
+  ) throw new Error("Bazaar public origin is invalid");
+  return url.origin;
 }
 
 function validateApprovedTermsOrigins(origins: string[]): Set<string> {

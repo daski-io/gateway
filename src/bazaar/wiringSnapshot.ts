@@ -14,6 +14,7 @@ export function snapshotBazaarCompatibilityWiring(
   return {
     ...wiring,
     listings: wiring.listings.map(snapshotListing),
+    retiredLifecycleCommitments: [...wiring.retiredLifecycleCommitments],
     approvedTermsOrigins: [...wiring.approvedTermsOrigins],
     challengeMac: {
       current: {
