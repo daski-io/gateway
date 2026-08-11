@@ -3,7 +3,7 @@ import type { ProviderAuthorityService } from "../payment/providerAuthority.js";
 import { logErrorWithId } from "../util/errorWrap.js";
 import { dispatchBazaarOrder } from "./outcomeDispatch.js";
 import { paymentResponseFromOrder } from "./outcomeHelpers.js";
-import { requireCurrentListing } from "./listingAuthority.js";
+import { requireAdmittedListingAuthority } from "./listingAuthority.js";
 import { type BazaarLeaseGuard, withBazaarLease } from "./lease.js";
 import { verifyBazaarSettlementEvidence } from "./settlementEvidence.js";
 import { BazaarObservationStore } from "./observationStore.js";
@@ -52,7 +52,10 @@ export class BazaarRecoveryRuntime {
       this.owner,
       this.shutdown.signal,
     );
-    this.listings = new Map(wiring.listings.map((listing) => [
+    this.listings = new Map([
+      ...wiring.listings,
+      ...wiring.recoveryListings,
+    ].map((listing) => [
       listing.listingCommitment.toLowerCase(), listing,
     ]));
   }
@@ -222,11 +225,10 @@ export class BazaarRecoveryRuntime {
       wiring: this.wiring,
       listing,
       leaseToken: leased.leaseToken,
-      assertListingCurrent: () => requireCurrentListing(
+      assertListingCurrent: () => requireAdmittedListingAuthority(
         listing,
         this.providerAuthority,
         BigInt(Math.floor((this.wiring.now?.() ?? new Date()).getTime() / 1000)),
-        true,
       ),
       lease,
     });

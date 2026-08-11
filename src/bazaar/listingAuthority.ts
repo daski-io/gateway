@@ -1,5 +1,8 @@
 import type { ProviderAuthorityService } from "../payment/providerAuthority.js";
-import { validateCompatibilityListing } from "./offer.js";
+import {
+  validateCompatibilityListing,
+  validateCompatibilityRecoveryListing,
+} from "./offer.js";
 import type { BazaarListing } from "./types.js";
 
 export async function requireCurrentListing(
@@ -13,6 +16,23 @@ export async function requireCurrentListing(
   if (listing.offer.message.validBefore - nowSeconds <= minimumRemainingSeconds) {
     throw new Error("Bazaar listing offer is too close to expiry");
   }
+  await requireProviderAuthority(listing, providerAuthority, forceAuthorityRefresh);
+}
+
+export async function requireAdmittedListingAuthority(
+  listing: BazaarListing,
+  providerAuthority: ProviderAuthorityService,
+  nowSeconds: bigint,
+): Promise<void> {
+  await validateCompatibilityRecoveryListing(listing, nowSeconds);
+  await requireProviderAuthority(listing, providerAuthority, true);
+}
+
+async function requireProviderAuthority(
+  listing: BazaarListing,
+  providerAuthority: ProviderAuthorityService,
+  forceAuthorityRefresh: boolean,
+): Promise<void> {
   const authority = forceAuthorityRefresh
     ? await providerAuthority.requireCurrent(listing.offer.message.providerAgentId)
     : await providerAuthority.requireFresh(listing.offer.message.providerAgentId);

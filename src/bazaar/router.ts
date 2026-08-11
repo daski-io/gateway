@@ -14,11 +14,8 @@ import {
   clearBazaarRequestContext,
   takeBazaarPaymentHeaders,
 } from "../http/bazaarRequestContext.js";
-import { isHexAddress } from "../util/evmValidation.js";
 import { BazaarLifecycleService } from "./lifecycleService.js";
-import { validateChallengeMacKeyring } from "./lifecycleChallenge.js";
 import { BazaarRecoveryRuntime } from "./recovery.js";
-import { validateCompatibilityListing } from "./offer.js";
 import { BazaarOutcomeService } from "./outcomeService.js";
 import type { BazaarOutcomeResult } from "./outcomeHelpers.js";
 import { validateStockFixedRequest } from "./requestBinding.js";
@@ -27,23 +24,13 @@ import { BazaarObservationStore } from "./observationStore.js";
 import { BazaarRefundStore } from "./refundStore.js";
 import { BazaarFulfillmentStore } from "./fulfillmentStore.js";
 import type { BazaarCompatibilityWiring } from "./types.js";
-import { registerListingBindings } from "./listingStore.js";
-import { validateSettlementCapacityPolicy } from "./settlementCapacity.js";
-import {
-  validateRefundRiskPolicies,
-  validateRefundWorkerPolicy,
-} from "./refundPolicy.js";
-import { validateSettlementObservationPolicy } from "./settlementObservation.js";
-import {
-  validateFulfillmentObservationPolicy,
-  validateFulfillmentSignerRoles,
-} from "./fulfillmentPolicy.js";
+import { reconcileListingRuntimeBindings } from "./listingStore.js";
 import { snapshotBazaarCompatibilityWiring } from "./wiringSnapshot.js";
 import {
   readLifecycleDomains,
   reconcileLifecycleDomains,
 } from "./lifecycleDomainRegistry.js";
-import { validateBazaarAdapterCallTimeout } from "./adapterCall.js";
+import { validateBazaarCompatibilityWiring } from "./wiringValidation.js";
 
 const MAX_X402_HEADER_BYTES = 8 * 1024;
 const MAX_PAYMENT_SIGNATURE_BYTES = 12 * 1024;
@@ -57,8 +44,12 @@ export async function createBazaarCompatibilityRouter(options: {
   shutdownSignal?: AbortSignal;
 }): Promise<{ router: Router; close(): Promise<void>; recovery: BazaarRecoveryRuntime }> {
   const wiring = snapshotBazaarCompatibilityWiring(options.wiring);
-  await validateWiring(wiring);
-  await registerListingBindings(options.pool, wiring.listings);
+  await validateBazaarCompatibilityWiring(wiring);
+  await reconcileListingRuntimeBindings({
+    pool: options.pool,
+    activeListings: wiring.listings,
+    recoveryListings: wiring.recoveryListings,
+  });
   await reconcileLifecycleDomains({
     pool: options.pool,
     listings: wiring.listings,
@@ -212,132 +203,6 @@ async function sendOutcome(
     response.setHeader("PAYMENT-RESPONSE", header);
   }
   response.status(result.status).json(result.body);
-}
-
-async function validateWiring(wiring: BazaarCompatibilityWiring): Promise<void> {
-  const publicOrigin = validatePublicOrigin(wiring.publicOrigin);
-  const termsOrigins = validateApprovedTermsOrigins(wiring.approvedTermsOrigins);
-  const routes = new Set<string>();
-  const recipients = new Set<string>();
-  const commitments = new Set<string>();
-  const retiredCommitments = new Set<string>();
-  const offerIds = new Map<string, string>();
-  const providerActionSigner = wiring.providerActionSigningBroker.address.toLowerCase();
-  const refundSigner = wiring.refundInstructionSigningBroker.address.toLowerCase();
-  const zeroAddress = `0x${"00".repeat(20)}`;
-  const now = BigInt(Math.floor((wiring.now?.() ?? new Date()).getTime() / 1000));
-  validateChallengeMacKeyring(wiring.challengeMac, now);
-  validateBazaarAdapterCallTimeout(wiring.adapterCallTimeoutMs);
-  validateSettlementCapacityPolicy(wiring.settlementCapacity);
-  validateSettlementObservationPolicy(wiring.settlementObservationPolicy);
-  validateFulfillmentObservationPolicy(wiring.fulfillmentObservationPolicy);
-  validateRefundRiskPolicies(wiring.refundRiskPolicies, wiring.listings);
-  validateRefundWorkerPolicy(wiring.refundWorkerPolicy);
-  if (
-    wiring.refundWorkerPolicy.instructionTtlSeconds <=
-      Math.ceil(wiring.adapterCallTimeoutMs / 1_000) * 2 + 5
-  ) throw new Error("Bazaar refund instruction TTL cannot cover adapter deadlines");
-  for (const commitment of wiring.retiredLifecycleCommitments) {
-    if (!/^0x[0-9a-fA-F]{64}$/.test(commitment)) {
-      throw new Error("Bazaar retired lifecycle commitment is malformed");
-    }
-    const normalized = commitment.toLowerCase();
-    if (retiredCommitments.has(normalized)) {
-      throw new Error("Bazaar retired lifecycle commitments must be unique");
-    }
-    retiredCommitments.add(normalized);
-  }
-  if (
-    !isHexAddress(wiring.providerActionSigningBroker.address) ||
-    providerActionSigner === zeroAddress ||
-    Object.values(wiring.refundRiskPolicies).some((policy) =>
-      policy.refundWallet.toLowerCase() === providerActionSigner)
-  ) throw new Error("Bazaar provider-action signer must be valid and purpose-separated");
-  if (
-    !isHexAddress(wiring.refundInstructionSigningBroker.address) ||
-    refundSigner === zeroAddress || refundSigner === providerActionSigner ||
-    Object.values(wiring.refundRiskPolicies).some((policy) =>
-      policy.refundWallet.toLowerCase() === refundSigner)
-  ) throw new Error("Bazaar refund signer must be valid and purpose-separated");
-  for (const listing of wiring.listings) {
-    await validateCompatibilityListing(listing, now);
-    const offer = listing.offer.message;
-    if (new URL(listing.resourceUrl).origin !== publicOrigin) {
-      throw new Error("Bazaar resource URL does not use the canonical public origin");
-    }
-    if (!termsOrigins.has(new URL(listing.termsUrl).origin)) {
-      throw new Error("Bazaar terms URL does not use an approved publication origin");
-    }
-    if (
-      providerActionSigner === offer.offerSigner.toLowerCase() ||
-      providerActionSigner === offer.payTo.toLowerCase()
-    ) throw new Error("Bazaar lifecycle keys cannot reuse listing or payment keys");
-    if (
-      refundSigner === offer.offerSigner.toLowerCase() ||
-      refundSigner === offer.payTo.toLowerCase()
-    ) throw new Error("Bazaar refund keys cannot reuse listing or payment keys");
-    validateFulfillmentSignerRoles({
-      offer, providerActionSigner, refundSigner,
-      refundRiskPolicies: wiring.refundRiskPolicies,
-      listings: wiring.listings,
-    });
-    if (offer.chainId !== 84532n) {
-      throw new Error("Bazaar compatibility harness is Base Sepolia only");
-    }
-    const route = listing.routePath;
-    const recipient = offer.payTo.toLowerCase();
-    const commitment = offer.listingCommitment.toLowerCase();
-    if (
-      routes.has(route) || recipients.has(recipient) || commitments.has(commitment) ||
-      retiredCommitments.has(commitment)
-    ) {
-      throw new Error("Bazaar listings must have unique routes, payTo values, and commitments");
-    }
-    routes.add(route);
-    recipients.add(recipient);
-    commitments.add(commitment);
-    const offerId = offer.offerId.toLowerCase();
-    const offerHash = JSON.stringify(offer, (_key, value) =>
-      typeof value === "bigint" ? value.toString() : value);
-    const priorOffer = offerIds.get(offerId);
-    if (priorOffer !== undefined && priorOffer !== offerHash) {
-      throw new Error("one Bazaar offerId cannot identify two offer bodies");
-    }
-    offerIds.set(offerId, offerHash);
-  }
-}
-
-function validatePublicOrigin(value: string): string {
-  let url: URL;
-  try {
-    url = new URL(value);
-  } catch {
-    throw new Error("Bazaar public origin is invalid");
-  }
-  if (
-    url.protocol !== "https:" || url.username || url.password || url.search ||
-    url.hash || url.pathname !== "/" || value !== url.origin
-  ) throw new Error("Bazaar public origin is invalid");
-  return url.origin;
-}
-
-function validateApprovedTermsOrigins(origins: string[]): Set<string> {
-  const approved = new Set<string>();
-  for (const value of origins) {
-    let url: URL;
-    try {
-      url = new URL(value);
-    } catch {
-      throw new Error("Bazaar approved terms origin is invalid");
-    }
-    if (
-      url.protocol !== "https:" || url.username || url.password || url.search ||
-      url.hash || url.pathname !== "/" || value !== url.origin || approved.has(value)
-    ) throw new Error("Bazaar approved terms origin is invalid");
-    approved.add(value);
-  }
-  if (approved.size === 0) throw new Error("Bazaar has no approved terms origin");
-  return approved;
 }
 
 function validLifecycleRequest(request: Request): boolean {

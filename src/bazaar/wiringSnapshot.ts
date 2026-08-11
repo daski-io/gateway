@@ -20,6 +20,7 @@ export function snapshotBazaarCompatibilityWiring(
     ...wiring,
     adapterCallTimeoutMs: wiring.adapterCallTimeoutMs,
     listings: wiring.listings.map(snapshotListing),
+    recoveryListings: wiring.recoveryListings.map(snapshotListing),
     retiredLifecycleCommitments: [...wiring.retiredLifecycleCommitments],
     approvedTermsOrigins: [...wiring.approvedTermsOrigins],
     challengeMac: {

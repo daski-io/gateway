@@ -3,6 +3,8 @@ import {
   decodePaymentResponseHeader,
   encodePaymentSignatureHeader,
 } from "@x402/core/http";
+import express, { type Router } from "express";
+import type { AddressInfo } from "node:net";
 import {
   validateDiscoveryExtension,
   validateDiscoveryExtensionSpec,
@@ -1173,6 +1175,121 @@ describe("Bazaar compatibility harness", () => {
     expect(recovered.rows[0]?.state).toBe("paid_unfulfilled");
     expect(harness.fulfillment.dispatchCalls).toBe(2);
     expect((await paid(gateway, payment)).response.status).toBe(200);
+  });
+
+  it("uses a previously admitted expired listing only for recovery", async () => {
+    await gateway.close();
+    const firstEvidence = deferred();
+    let evidenceCalls = 0;
+    harness.wiring.evidenceVerifier = {
+      verify: async (input) => {
+        evidenceCalls += 1;
+        if (evidenceCalls === 1) await firstEvidence.promise;
+        return {
+          ...input,
+          finalized: true,
+          authorizationUsedEventCount: 1,
+          matchingTransferEventCount: 1,
+        };
+      },
+    };
+    gateway = await startHarnessGateway(harness);
+    const required = await paymentRequired(gateway);
+    const payment = await createPaymentPayload({
+      paymentRequired: required,
+      buyer,
+      nonce: nonce(266),
+    });
+    const pending = paid(gateway, payment);
+    await waitForOrderState(gateway, "settle_confirmed");
+    await expireBazaarLeases(gateway);
+    await gateway.bundle.bazaarRecovery!.close();
+
+    const listing = harness.wiring.listings[0]!;
+    harness.wiring.listings = [];
+    harness.wiring.recoveryListings = [listing];
+    harness.wiring.refundRiskPolicies = {};
+    harness.wiring.retiredLifecycleCommitments = [listing.listingCommitment];
+    harness.wiring.now = () => new Date(
+      Number((listing.offer.message.validBefore + 1n) * 1_000n),
+    );
+    const recoveryOnly = await createBazaarCompatibilityRouter({
+      pool: gateway.bundle.pool,
+      providerAuthority: gateway.bundle.providerAuthority,
+      wiring: harness.wiring,
+      lifecycleDomainRetentionSeconds: gateway.config.taskRetentionSeconds,
+    });
+    try {
+      expect(await latestOrderState(gateway)).toBe("dispatched");
+      expect(harness.facilitator.settleCalls).toBe(1);
+      expect(harness.fulfillment.dispatchCalls).toBe(1);
+      const recoveryServer = await serveRouter(recoveryOnly.router);
+      try {
+        const response = await fetch(`${recoveryServer.baseUrl}${listing.routePath}`, {
+          method: "POST",
+        });
+        expect(response.status).toBe(404);
+      } finally {
+        await recoveryServer.close();
+      }
+    } finally {
+      await recoveryOnly.close();
+    }
+    firstEvidence.resolve();
+    expect((await pending).response.status).toBe(200);
+    expect(evidenceCalls).toBe(2);
+  });
+
+  it("fails startup when recoverable work loses its admitted listing", async () => {
+    harness.fulfillment.dispatchError = true;
+    const required = await paymentRequired(gateway);
+    const payment = await createPaymentPayload({
+      paymentRequired: required,
+      buyer,
+      nonce: nonce(267),
+    });
+    expect((await paid(gateway, payment)).response.status).toBe(202);
+    await gateway.bundle.bazaarRecovery!.close();
+
+    const commitment = harness.wiring.listings[0]!.listingCommitment;
+    harness.wiring.listings = [];
+    harness.wiring.recoveryListings = [];
+    harness.wiring.refundRiskPolicies = {};
+    harness.wiring.retiredLifecycleCommitments = [commitment];
+    await expect(createBazaarCompatibilityRouter({
+      pool: gateway.bundle.pool,
+      providerAuthority: gateway.bundle.providerAuthority,
+      wiring: harness.wiring,
+      lifecycleDomainRetentionSeconds: gateway.config.taskRetentionSeconds,
+    })).rejects.toThrow(/recovery listing is missing/);
+  });
+
+  it("rejects a recovery listing that was never admitted", async () => {
+    const newActive = await createListing(harness.providerAccount, {
+      payTo: privateKeyToAccount(SECOND_PAY_TO_KEY),
+      slug: "new-active-before-failure",
+      refundPolicy: harness.wiring.refundRiskPolicies["701"],
+    });
+    const unadmitted = await createListing(harness.providerAccount, {
+      payTo: privateKeyToAccount(`0x${"bb".repeat(32)}`),
+      slug: "unadmitted-recovery",
+      refundPolicy: harness.wiring.refundRiskPolicies["701"],
+    });
+    harness.wiring.listings = [newActive];
+    harness.wiring.recoveryListings = [unadmitted];
+    harness.wiring.retiredLifecycleCommitments = [unadmitted.listingCommitment];
+    await expect(createBazaarCompatibilityRouter({
+      pool: gateway.bundle.pool,
+      providerAuthority: gateway.bundle.providerAuthority,
+      wiring: harness.wiring,
+      lifecycleDomainRetentionSeconds: gateway.config.taskRetentionSeconds,
+    })).rejects.toThrow(/was not previously admitted/);
+    const rolledBack = await gateway.bundle.pool.query<{ count: string }>(
+      `SELECT count(*)::text AS count FROM bazaar_listing_bindings
+        WHERE listing_commitment = decode($1, 'hex')`,
+      [newActive.listingCommitment.slice(2)],
+    );
+    expect(rolledBack.rows[0]?.count).toBe("0");
   });
 
   it("releases exposure only after a valid signed fulfillment attestation", async () => {
@@ -2481,6 +2598,24 @@ function startHarnessGateway(
     }],
     bazaarCompatibility: harness.wiring,
   });
+}
+
+async function serveRouter(router: Router): Promise<{
+  baseUrl: string;
+  close(): Promise<void>;
+}> {
+  const app = express();
+  app.use(router);
+  const server = await new Promise<ReturnType<typeof app.listen>>((resolve) => {
+    const listening = app.listen(0, "127.0.0.1", () => resolve(listening));
+  });
+  const address = server.address() as AddressInfo;
+  return {
+    baseUrl: `http://127.0.0.1:${address.port}`,
+    close: () => new Promise<void>((resolve, reject) => {
+      server.close((error) => error ? reject(error) : resolve());
+    }),
+  };
 }
 
 async function paymentRequired(gateway: TestGateway) {

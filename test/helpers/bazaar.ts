@@ -91,6 +91,7 @@ export async function createBazaarHarness(options: {
   const refundEvidence = new FakeRefundEvidenceVerifier();
   const wiring: BazaarCompatibilityWiring = {
     listings: [listing],
+    recoveryListings: [],
     retiredLifecycleCommitments: [],
     adapterCallTimeoutMs: 1_000,
     publicOrigin: "https://gateway.test",

@@ -106,6 +106,33 @@ export async function validateCompatibilityListing(
   nowSeconds: bigint,
   maxOfferLifetimeSeconds = 30n * 24n * 60n * 60n,
 ): Promise<void> {
+  await validateCompatibilityListingForRuntime(
+    listing,
+    nowSeconds,
+    maxOfferLifetimeSeconds,
+    true,
+  );
+}
+
+export async function validateCompatibilityRecoveryListing(
+  listing: BazaarListing,
+  nowSeconds: bigint,
+  maxOfferLifetimeSeconds = 30n * 24n * 60n * 60n,
+): Promise<void> {
+  await validateCompatibilityListingForRuntime(
+    listing,
+    nowSeconds,
+    maxOfferLifetimeSeconds,
+    false,
+  );
+}
+
+async function validateCompatibilityListingForRuntime(
+  listing: BazaarListing,
+  nowSeconds: bigint,
+  maxOfferLifetimeSeconds: bigint,
+  requireUnexpired: boolean,
+): Promise<void> {
   const message = listing.offer.message;
   validateListingManifest(listing, message);
   await validatePayToControlProof(listing);
@@ -121,7 +148,8 @@ export async function validateCompatibilityListing(
     message.providerAgentId <= 0n ||
     message.paymentMaxTimeoutSeconds !== PAYMENT_MAX_TIMEOUT_SECONDS ||
     message.issuedAt > nowSeconds ||
-    message.validBefore <= nowSeconds ||
+    message.validBefore <= message.issuedAt ||
+    (requireUnexpired && message.validBefore <= nowSeconds) ||
     message.validBefore - message.issuedAt > maxOfferLifetimeSeconds
   ) {
     throw new Error("Bazaar listing offer has an invalid amount or time window");

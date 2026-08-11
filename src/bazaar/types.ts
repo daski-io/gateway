@@ -440,6 +440,7 @@ export interface BazaarFinancialStatus {
 
 export interface BazaarCompatibilityWiring {
   listings: BazaarListing[];
+  recoveryListings: BazaarListing[];
   retiredLifecycleCommitments: Hex[];
   adapterCallTimeoutMs: number;
   publicOrigin: string;
