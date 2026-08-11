@@ -38,7 +38,7 @@ CREATE TABLE bazaar_orders (
   pay_to BYTEA NOT NULL CHECK (octet_length(pay_to) = 20),
   authorization_valid_before NUMERIC(78, 0) NOT NULL,
   state TEXT NOT NULL CHECK (state IN (
-    'claimed', 'verify_rejected', 'verify_ambiguous', 'settle_started',
+    'attempt_opened', 'verify_rejected', 'verify_ambiguous', 'settle_started',
     'settle_rejected', 'settle_ambiguous', 'settle_confirmed',
     'evidence_rejected', 'settled', 'dispatch_started', 'dispatch_failed',
     'dispatched'
@@ -69,7 +69,9 @@ CREATE TABLE bazaar_orders (
     bazaar_rejected_reason_hash IS NULL OR
     octet_length(bazaar_rejected_reason_hash) = 32
   ),
-  task_id TEXT,
+  task_id TEXT CHECK (
+    task_id IS NULL OR task_id ~ '^[A-Za-z0-9._:-]{1,128}$'
+  ),
   task_id_hash BYTEA CHECK (task_id_hash IS NULL OR octet_length(task_id_hash) = 32),
   failure_code TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -77,14 +79,14 @@ CREATE TABLE bazaar_orders (
   UNIQUE (chain_id, token, payer, nonce),
   CHECK (
     (
-      state IN ('claimed', 'settle_started', 'settle_confirmed', 'settled',
+      state IN ('attempt_opened', 'settle_started', 'settle_confirmed', 'settled',
                 'dispatch_started')
       AND processing_lease_token IS NOT NULL
       AND processing_lease_owner IS NOT NULL
       AND processing_lease_expires_at IS NOT NULL
     )
     OR (
-      state NOT IN ('claimed', 'settle_started', 'settle_confirmed', 'settled',
+      state NOT IN ('attempt_opened', 'settle_started', 'settle_confirmed', 'settled',
                     'dispatch_started')
       AND processing_lease_token IS NULL
       AND processing_lease_owner IS NULL
@@ -95,13 +97,24 @@ CREATE TABLE bazaar_orders (
     state NOT IN ('settle_confirmed', 'settled', 'dispatch_started',
                   'dispatch_failed', 'dispatched')
     OR settlement_transaction IS NOT NULL
+  ),
+  CHECK (
+    state <> 'dispatched' OR (task_id IS NOT NULL AND task_id_hash IS NOT NULL)
   )
 );
 
 CREATE INDEX bazaar_orders_state_idx ON bazaar_orders (state, updated_at);
+CREATE INDEX bazaar_orders_listing_state_idx
+  ON bazaar_orders (listing_commitment, state);
+CREATE INDEX bazaar_orders_payer_state_idx ON bazaar_orders (payer, state);
+CREATE INDEX bazaar_orders_created_at_idx ON bazaar_orders (created_at);
+CREATE INDEX bazaar_orders_listing_created_at_idx
+  ON bazaar_orders (listing_commitment, created_at);
+CREATE INDEX bazaar_orders_payer_created_at_idx
+  ON bazaar_orders (payer, created_at);
 CREATE INDEX bazaar_orders_recovery_idx
   ON bazaar_orders (processing_lease_expires_at, updated_at)
-  WHERE state IN ('claimed', 'settle_started', 'settle_confirmed', 'settled',
+  WHERE state IN ('attempt_opened', 'settle_started', 'settle_confirmed', 'settled',
                   'dispatch_started');
 
 CREATE TABLE bazaar_lifecycle_consumptions (

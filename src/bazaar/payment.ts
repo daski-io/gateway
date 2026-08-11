@@ -9,6 +9,10 @@ import {
 } from "viem";
 import { canonicalJsonStringify } from "../auth/envelope.js";
 import { isHex32, isHexAddress } from "../util/evmValidation.js";
+import {
+  MAXIMUM_FUTURE_CLOCK_SKEW_SECONDS,
+  MINIMUM_SETTLEMENT_REMAINING_SECONDS,
+} from "./paymentPolicy.js";
 import type { ListingOfferV1 } from "./types.js";
 
 const TRANSFER_WITH_AUTHORIZATION_TYPES = {
@@ -50,7 +54,8 @@ export async function parseBazaarPayment(
   payload: PaymentPayload,
   requirements: PaymentRequirements,
   offer: ListingOfferV1,
-  nowSeconds: bigint,
+  currentTimeSeconds: bigint,
+  paidRetryReceivedAtSeconds = currentTimeSeconds,
 ): Promise<PaymentParseResult> {
   if (
     payload.x402Version !== 2 ||
@@ -70,9 +75,13 @@ export async function parseBazaarPayment(
   }
   if (
     authorization.to.toLowerCase() !== offer.payTo.toLowerCase() ||
+    authorization.from.toLowerCase() === offer.payTo.toLowerCase() ||
     authorization.value !== offer.grossAmount ||
-    authorization.validAfter > nowSeconds ||
-    authorization.validBefore <= nowSeconds + 10n ||
+    authorization.validAfter > paidRetryReceivedAtSeconds ||
+    authorization.validBefore <= authorization.validAfter ||
+    authorization.validBefore < currentTimeSeconds + MINIMUM_SETTLEMENT_REMAINING_SECONDS ||
+    authorization.validBefore > paidRetryReceivedAtSeconds + offer.paymentMaxTimeoutSeconds +
+      MAXIMUM_FUTURE_CLOCK_SKEW_SECONDS ||
     authorization.validBefore > offer.validBefore
   ) {
     return fail("authorization_binding_mismatch");

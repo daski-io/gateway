@@ -5,6 +5,7 @@ import type {
   VerifyResponse,
 } from "@x402/core/types";
 import { generateJwt } from "@coinbase/cdp-sdk/auth";
+import { hasDuplicateJsonObjectKeys } from "../http/jsonDuplicateKeys.js";
 import type {
   BazaarFacilitatorClient,
   FacilitatorCallResult,
@@ -61,6 +62,9 @@ export class CdpFacilitatorClient implements BazaarFacilitatorClient {
     ) {
       throw new Error("CDP facilitator URL must be credential-free HTTPS");
     }
+    if (options.allowInsecureTestUrl && !isLoopbackHost(url.hostname)) {
+      throw new Error("insecure CDP facilitator test URL must be loopback-only");
+    }
     if (
       !options.allowInsecureTestUrl &&
       (url.origin !== CDP_FACILITATOR_ORIGIN || url.pathname !== CDP_FACILITATOR_PATH)
@@ -70,21 +74,28 @@ export class CdpFacilitatorClient implements BazaarFacilitatorClient {
     this.baseUrl = url.toString().replace(/\/$/, "");
     this.fetchFn = options.fetchFn ?? fetch;
     this.timeoutMs = options.timeoutMs ?? 60_000;
+    if (
+      !Number.isSafeInteger(this.timeoutMs) ||
+      this.timeoutMs < 1 ||
+      this.timeoutMs > 60_000
+    ) throw new Error("CDP facilitator timeout is invalid");
   }
 
   async verify(
     payload: PaymentPayload,
     requirements: PaymentRequirements,
+    signal: AbortSignal,
   ): Promise<FacilitatorCallResult<VerifyResponse>> {
-    const result = await this.post("verify", payload, requirements);
+    const result = await this.post("verify", payload, requirements, signal);
     return { response: parseVerify(result.body), extensionResponses: result.extensionResponses };
   }
 
   async settle(
     payload: PaymentPayload,
     requirements: PaymentRequirements,
+    signal: AbortSignal,
   ): Promise<FacilitatorCallResult<SettleResponse>> {
-    const result = await this.post("settle", payload, requirements);
+    const result = await this.post("settle", payload, requirements, signal);
     return { response: parseSettle(result.body), extensionResponses: result.extensionResponses };
   }
 
@@ -92,13 +103,17 @@ export class CdpFacilitatorClient implements BazaarFacilitatorClient {
     path: "verify" | "settle",
     paymentPayload: PaymentPayload,
     paymentRequirements: PaymentRequirements,
+    signal: AbortSignal,
   ): Promise<{ body: Record<string, unknown>; extensionResponses: string | null }> {
+    signal.throwIfAborted();
     const authHeaders = validateAuthHeaders(await withTimeout(
       this.options.createAuthHeaders(path),
       this.timeoutMs,
       `CDP facilitator ${path} authentication timed out`,
+      signal,
     ),
     );
+    signal.throwIfAborted();
     const response = await this.fetchFn(`${this.baseUrl}/${path}`, {
       method: "POST",
       headers: { ...authHeaders, "content-type": "application/json" },
@@ -108,7 +123,7 @@ export class CdpFacilitatorClient implements BazaarFacilitatorClient {
         paymentRequirements,
       }),
       redirect: "error",
-      signal: AbortSignal.timeout(this.timeoutMs),
+      signal: AbortSignal.any([signal, AbortSignal.timeout(this.timeoutMs)]),
     });
     if (response.status >= 500 || response.status === 429) {
       await response.body?.cancel().catch(() => undefined);
@@ -132,6 +147,9 @@ export class CdpFacilitatorClient implements BazaarFacilitatorClient {
       throw new Error(`CDP facilitator ${path} response exceeded size limit`);
     }
     const bytes = await readBoundedBody(response, path);
+    if (hasDuplicateJsonObjectKeys(Buffer.from(bytes))) {
+      throw new Error(`CDP facilitator ${path} response contained duplicate JSON keys`);
+    }
     let body: unknown;
     try {
       body = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
@@ -217,16 +235,24 @@ async function withTimeout<T>(
   operation: Promise<T>,
   timeoutMs: number,
   message: string,
+  signal: AbortSignal,
 ): Promise<T> {
   let timer: NodeJS.Timeout | undefined;
+  let onAbort: (() => void) | undefined;
   const timeout = new Promise<never>((_resolve, reject) => {
     timer = setTimeout(() => reject(new Error(message)), timeoutMs);
     timer.unref();
   });
+  const aborted = new Promise<never>((_resolve, reject) => {
+    onAbort = () => reject(signal.reason ?? new Error("operation aborted"));
+    signal.addEventListener("abort", onAbort, { once: true });
+    if (signal.aborted) onAbort();
+  });
   try {
-    return await Promise.race([operation, timeout]);
+    return await Promise.race([operation, timeout, aborted]);
   } finally {
     if (timer) clearTimeout(timer);
+    if (onAbort) signal.removeEventListener("abort", onAbort);
   }
 }
 
@@ -273,4 +299,8 @@ function optionalRecords(value: Record<string, unknown>, keys: string[]): void {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function isLoopbackHost(hostname: string): boolean {
+  return hostname === "127.0.0.1" || hostname === "[::1]";
 }

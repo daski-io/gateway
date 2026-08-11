@@ -23,6 +23,7 @@ export interface ListingOfferV1 {
   token: Hex;
   grossAmount: bigint;
   payTo: Hex;
+  paymentMaxTimeoutSeconds: bigint;
   daskiCommissionReceiver: Hex;
   commissionBps: bigint;
   splitterCodeHash: Hex;
@@ -51,6 +52,9 @@ export interface BazaarListing {
   expectedDelivery: string;
   refundTerms: string;
   termsUrl: string;
+  termsDocumentHash: Hex;
+  termsDocumentMediaType: "text/markdown; charset=utf-8";
+  termsDocumentBase64: string;
   requestSchema: Record<string, unknown>;
   responseSchema: Record<string, unknown>;
   assetName: string;
@@ -72,10 +76,12 @@ export interface BazaarFacilitatorClient {
   verify(
     payload: PaymentPayload,
     requirements: PaymentRequirements,
+    signal: AbortSignal,
   ): Promise<FacilitatorCallResult<VerifyResponse>>;
   settle(
     payload: PaymentPayload,
     requirements: PaymentRequirements,
+    signal: AbortSignal,
   ): Promise<FacilitatorCallResult<SettleResponse>>;
 }
 
@@ -90,7 +96,7 @@ export interface SettlementEvidenceInput {
 }
 
 export interface SettlementEvidenceVerifier {
-  verify(input: SettlementEvidenceInput): Promise<SettlementEvidenceInput & {
+  verify(input: SettlementEvidenceInput, signal: AbortSignal): Promise<SettlementEvidenceInput & {
     finalized: true;
     authorizationUsedEventCount: 1;
     matchingTransferEventCount: 1;
@@ -117,7 +123,7 @@ export interface BazaarDispatchInput {
 }
 
 export interface BazaarFulfillmentService {
-  dispatch(input: BazaarDispatchInput): Promise<{ taskId: string }>;
+  dispatch(input: BazaarDispatchInput, signal: AbortSignal): Promise<{ taskId: string }>;
   performLifecycleAction(
     input: BazaarLifecycleDispatchInput,
   ): Promise<Record<string, unknown>>;
@@ -131,6 +137,8 @@ export type BazaarLifecycleAction =
 export interface BazaarLifecycleDispatchInput {
   taskId: string | null;
   action: BazaarLifecycleAction;
+  request: Record<string, unknown>;
+  contentTrust: "none" | "untrusted_buyer";
   assertion: {
     domain: Record<string, unknown>;
     types: Record<string, readonly { name: string; type: string }[]>;
@@ -140,30 +148,66 @@ export interface BazaarLifecycleDispatchInput {
   };
 }
 
-export interface BazaarLifecycleSigner {
+export interface BazaarProviderLifecycleSigningRequest {
+  chainId: string;
+  payTo: Hex;
+  message: {
+    orderRecordId: Hex;
+    taskIdHash: Hex;
+    providerAgentId: string;
+    actionHash: Hex;
+    requestHash: Hex;
+    buyerAuthorizationDigest: Hex;
+    nonce: Hex;
+    issuedAt: string;
+    expiresAt: string;
+  };
+}
+
+export interface BazaarProviderActionSigningBroker {
   address: Hex;
-  signTypedData(input: {
-    domain: Record<string, unknown>;
-    types: Record<string, readonly { name: string; type: string }[]>;
-    primaryType: string;
-    message: Record<string, unknown>;
-  }): Promise<Hex>;
+  signLifecycleAction(input: BazaarProviderLifecycleSigningRequest): Promise<Hex>;
+}
+
+export interface BazaarChallengeMacKey {
+  epoch: string;
+  secret: Buffer;
+}
+
+export interface BazaarRetainedChallengeMacKey extends BazaarChallengeMacKey {
+  acceptUntil: bigint;
+}
+
+export interface BazaarChallengeMacKeyring {
+  current: BazaarChallengeMacKey;
+  retained?: BazaarRetainedChallengeMacKey[];
+}
+
+export interface BazaarSettlementCapacityPolicy {
+  maxGlobalConcurrent: number;
+  maxPerListingConcurrent: number;
+  maxPerPayerConcurrent: number;
+  maxGlobalPerMinute: number;
+  maxPerListingPerMinute: number;
+  maxPerPayerPerMinute: number;
 }
 
 export interface BazaarCompatibilityWiring {
   listings: BazaarListing[];
+  approvedTermsOrigins: string[];
   facilitator: BazaarFacilitatorClient;
   evidenceVerifier: SettlementEvidenceVerifier;
   payerProfileVerifier: BazaarPayerProfileVerifier;
   fulfillment: BazaarFulfillmentService;
-  challengeSigner: BazaarLifecycleSigner;
-  providerActionSigner: BazaarLifecycleSigner;
+  challengeMac: BazaarChallengeMacKeyring;
+  settlementCapacity: BazaarSettlementCapacityPolicy;
+  providerActionSigningBroker: BazaarProviderActionSigningBroker;
   now?: () => Date;
   randomBytes?: (size: number) => Buffer;
 }
 
 export type BazaarOrderState =
-  | "claimed"
+  | "attempt_opened"
   | "verify_rejected"
   | "verify_ambiguous"
   | "settle_started"

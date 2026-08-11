@@ -6,8 +6,17 @@ import type {
   BazaarLifecycleAction,
   BazaarOrder,
   BazaarOrderState,
+  BazaarSettlementCapacityPolicy,
 } from "./types.js";
 import type { BazaarIndexingStatus } from "./extensionResponse.js";
+import {
+  listingSettlementCapacityAvailable,
+  settlementCapacityAvailable,
+} from "./settlementCapacity.js";
+import {
+  MAXIMUM_FUTURE_CLOCK_SKEW_SECONDS,
+  MINIMUM_SETTLEMENT_REMAINING_SECONDS,
+} from "./paymentPolicy.js";
 
 interface RawOrder {
   order_record_id: Buffer;
@@ -43,6 +52,9 @@ export interface ClaimOrderInput extends Omit<
   "state" | "settlementTransaction" | "taskId" | "taskIdHash" | "failureCode"
 > {
   signatureDigest: Hex;
+  authorizationValidAfter: bigint;
+  paidRetryReceivedAt: bigint;
+  paymentMaxTimeoutSeconds: bigint;
 }
 
 export interface LeasedBazaarOrder {
@@ -75,31 +87,8 @@ export class BazaarOrderStore {
     return result.rowCount === 1;
   }
 
-  async claim(
-    input: ClaimOrderInput,
-    leaseOwner: string,
-  ): Promise<{ created: boolean; order: BazaarOrder; leaseToken: string | null }> {
-    const leaseToken = randomUUID();
-    const values = orderValues(input);
-    const inserted = await this.pool.query<RawOrder>(
-      `INSERT INTO bazaar_orders (
-         order_record_id, order_handle, authorization_digest,
-         authorization_signature_digest, chain_id, token, payer, nonce,
-         provider_agent_id, listing_epoch, listing_commitment, outcome_id,
-         resource, request_hash, offer_hash, gross_amount, pay_to,
-         authorization_valid_before, state, processing_lease_token,
-         processing_lease_owner, processing_lease_expires_at
-       ) VALUES (
-         $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
-         $15, $16, $17, $18, 'claimed', $19, $20,
-         now() + make_interval(secs => $21)
-       ) ON CONFLICT DO NOTHING RETURNING ${SELECT_COLUMNS}`,
-      [...values, leaseToken, leaseOwner, BAZAAR_LEASE_SECONDS],
-    );
-    if (inserted.rows[0]) {
-      return { created: true, order: toOrder(inserted.rows[0]), leaseToken };
-    }
-    const existing = await this.pool.query<RawOrder>(
+  async findByAuthorization(input: ClaimOrderInput): Promise<BazaarOrder | null> {
+    const result = await this.pool.query<RawOrder>(
       `SELECT ${SELECT_COLUMNS} FROM bazaar_orders
         WHERE authorization_digest = $1
            OR (chain_id = $2 AND token = $3 AND payer = $4 AND nonce = $5)`,
@@ -108,10 +97,121 @@ export class BazaarOrderStore {
         hexToBytea(input.token), hexToBytea(input.payer), hexToBytea(input.nonce),
       ],
     );
-    if (existing.rows.length !== 1) {
+    if (result.rows.length > 1) {
       throw new Error("Bazaar authorization uniqueness invariant violated");
     }
-    return { created: false, order: toOrder(existing.rows[0]!), leaseToken: null };
+    return result.rows[0] ? toOrder(result.rows[0]) : null;
+  }
+
+  async hasSettlementCapacity(
+    input: ClaimOrderInput,
+    policy: BazaarSettlementCapacityPolicy,
+  ): Promise<boolean> {
+    return settlementCapacityAvailable({
+      queryable: this.pool,
+      policy,
+      listingCommitment: input.listingCommitment,
+      payer: input.payer,
+    });
+  }
+
+  async hasListingSettlementCapacity(
+    listingCommitment: Hex,
+    policy: BazaarSettlementCapacityPolicy,
+  ): Promise<boolean> {
+    return listingSettlementCapacityAvailable({
+      queryable: this.pool,
+      policy,
+      listingCommitment,
+    });
+  }
+
+  async claimWithCapacity(
+    input: ClaimOrderInput,
+    leaseOwner: string,
+    policy: BazaarSettlementCapacityPolicy,
+    nowSeconds: () => bigint,
+  ): Promise<
+    | { kind: "claimed"; created: boolean; order: BazaarOrder; leaseToken: string | null }
+    | { kind: "capacity_unavailable" }
+    | { kind: "authorization_expired" }
+  > {
+    const leaseToken = randomUUID();
+    const values = orderValues(input);
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const client = await this.pool.connect();
+      try {
+        await client.query("BEGIN ISOLATION LEVEL SERIALIZABLE READ WRITE");
+        const existing = await client.query<RawOrder>(
+          `SELECT ${SELECT_COLUMNS} FROM bazaar_orders
+            WHERE authorization_digest = $1
+               OR (chain_id = $2 AND token = $3 AND payer = $4 AND nonce = $5)`,
+          [
+            hexToBytea(input.authorizationDigest), input.chainId.toString(),
+            hexToBytea(input.token), hexToBytea(input.payer), hexToBytea(input.nonce),
+          ],
+        );
+        if (existing.rows.length > 1) {
+          throw new Error("Bazaar authorization uniqueness invariant violated");
+        }
+        if (existing.rows[0]) {
+          await client.query("COMMIT");
+          return {
+            kind: "claimed",
+            created: false,
+            order: toOrder(existing.rows[0]),
+            leaseToken: null,
+          };
+        }
+        const available = await settlementCapacityAvailable({
+          queryable: client,
+          policy,
+          listingCommitment: input.listingCommitment,
+          payer: input.payer,
+        });
+        const openedAt = nowSeconds();
+        if (!authorizationWindowIsOpen(input, openedAt)) {
+          await client.query("COMMIT");
+          return { kind: "authorization_expired" };
+        }
+        if (!available) {
+          await client.query("COMMIT");
+          return { kind: "capacity_unavailable" };
+        }
+        const inserted = await client.query<RawOrder>(
+          `INSERT INTO bazaar_orders (
+           order_record_id, order_handle, authorization_digest,
+           authorization_signature_digest, chain_id, token, payer, nonce,
+           provider_agent_id, listing_epoch, listing_commitment, outcome_id,
+           resource, request_hash, offer_hash, gross_amount, pay_to,
+           authorization_valid_before, state, processing_lease_token,
+           processing_lease_owner, processing_lease_expires_at
+         ) VALUES (
+           $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
+           $15, $16, $17, $18, 'attempt_opened', $19, $20,
+           now() + make_interval(secs => $21)
+         ) RETURNING ${SELECT_COLUMNS}`,
+          [...values, leaseToken, leaseOwner, BAZAAR_LEASE_SECONDS],
+        );
+        if (!inserted.rows[0]) throw new Error("Bazaar order insert returned no row");
+        await client.query("COMMIT");
+        return {
+          kind: "claimed",
+          created: true,
+          order: toOrder(inserted.rows[0]),
+          leaseToken,
+        };
+      } catch (error) {
+        await client.query("ROLLBACK").catch(() => undefined);
+        if (!retryableAdmissionConflict(error)) throw error;
+      } finally {
+        client.release();
+      }
+    }
+    const existing = await this.findByAuthorization(input);
+    return existing
+      ? { kind: "claimed", created: false, order: existing, leaseToken: null }
+      : { kind: "capacity_unavailable" };
   }
 
   async renewLease(orderRecordId: Hex, leaseToken: string): Promise<boolean> {
@@ -121,7 +221,7 @@ export class BazaarOrderStore {
                 now() + make_interval(secs => $3), updated_at = now()
         WHERE order_record_id = $1 AND processing_lease_token = $2
           AND processing_lease_expires_at > now()
-          AND state IN ('claimed', 'settle_started', 'settle_confirmed',
+          AND state IN ('attempt_opened', 'settle_started', 'settle_confirmed',
                         'settled', 'dispatch_started')`,
       [hexToBytea(orderRecordId), leaseToken, BAZAAR_LEASE_SECONDS],
     );
@@ -138,7 +238,7 @@ export class BazaarOrderStore {
       `UPDATE bazaar_orders
           SET state = 'settle_started', verify_extension_hash = $2,
               verify_bazaar_status = $3, updated_at = now()
-        WHERE order_record_id = $1 AND state = 'claimed'
+        WHERE order_record_id = $1 AND state = 'attempt_opened'
           AND processing_lease_token = $4
           AND processing_lease_expires_at > now()`,
       [
@@ -255,7 +355,7 @@ export class BazaarOrderStore {
               failure_code = 'process_interrupted_before_settlement',
               processing_lease_token = NULL, processing_lease_owner = NULL,
               processing_lease_expires_at = NULL, updated_at = now()
-        WHERE state = 'claimed' AND processing_lease_expires_at <= now()`,
+        WHERE state = 'attempt_opened' AND processing_lease_expires_at <= now()`,
     );
     const settlement = await this.pool.query(
       `UPDATE bazaar_orders
@@ -360,4 +460,22 @@ function toOrder(row: RawOrder): BazaarOrder {
 
 function nullableHex(value: Hex | null): Buffer | null {
   return value ? hexToBytea(value) : null;
+}
+
+function authorizationWindowIsOpen(
+  input: ClaimOrderInput,
+  openedAt: bigint,
+): boolean {
+  return input.authorizationValidAfter <= input.paidRetryReceivedAt &&
+    input.authorizationValidBefore > input.authorizationValidAfter &&
+    input.authorizationValidBefore >=
+      openedAt + MINIMUM_SETTLEMENT_REMAINING_SECONDS &&
+    input.authorizationValidBefore <= input.paidRetryReceivedAt +
+      input.paymentMaxTimeoutSeconds + MAXIMUM_FUTURE_CLOCK_SKEW_SECONDS;
+}
+
+function retryableAdmissionConflict(error: unknown): boolean {
+  if (error === null || typeof error !== "object" || !("code" in error)) return false;
+  const code = (error as { code?: unknown }).code;
+  return code === "40001" || code === "23505";
 }

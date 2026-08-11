@@ -21,6 +21,7 @@ export function createClaimInput(
   listing: BazaarListing,
   payment: ParsedBazaarPayment,
   random: (size: number) => Buffer,
+  paidRetryReceivedAt: bigint,
 ): ClaimOrderInput {
   const orderRecordId = nonzeroRandomHex(random);
   const offer = listing.offer.message;
@@ -43,6 +44,9 @@ export function createClaimInput(
     grossAmount: offer.grossAmount,
     payTo: offer.payTo.toLowerCase() as Hex,
     authorizationValidBefore: payment.authorization.validBefore,
+    authorizationValidAfter: payment.authorization.validAfter,
+    paidRetryReceivedAt,
+    paymentMaxTimeoutSeconds: offer.paymentMaxTimeoutSeconds,
   };
 }
 
@@ -102,7 +106,7 @@ export function existingOutcomeResult(order: BazaarOrder): BazaarOutcomeResult {
     });
   }
   if ([
-    "claimed", "settle_started", "settle_confirmed", "settled",
+    "attempt_opened", "settle_started", "settle_confirmed", "settled",
     "dispatch_started",
   ].includes(order.state)) {
     return { status: 202, body: { orderHandle: order.orderHandle, state: "processing" } };

@@ -7,7 +7,7 @@ import {
 } from "viem";
 import type {
   BazaarLifecycleAction,
-  BazaarLifecycleSigner,
+  BazaarProviderActionSigningBroker,
   BazaarOrder,
 } from "./types.js";
 
@@ -35,7 +35,7 @@ export async function createProviderLifecycleAssertion(input: {
   nonce: Hex;
   issuedAt: bigint;
   expiresAt: bigint;
-  signer: BazaarLifecycleSigner;
+  signer: BazaarProviderActionSigningBroker;
 }) {
   const typed = {
     domain: {
@@ -68,7 +68,11 @@ export async function createProviderLifecycleAssertion(input: {
       expiresAt: input.expiresAt,
     },
   };
-  const signature = await input.signer.signTypedData(signingData);
+  const signature = await input.signer.signLifecycleAction({
+    chainId: typed.domain.chainId,
+    payTo: typed.domain.verifyingContract,
+    message: typed.message,
+  });
   if (
     !/^0x[0-9a-fA-F]{130}$/.test(signature) ||
     BigInt(parseSignature(signature).s) > HALF_SECP256K1_N

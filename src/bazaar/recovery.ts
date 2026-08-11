@@ -4,7 +4,7 @@ import { logErrorWithId } from "../util/errorWrap.js";
 import { dispatchBazaarOrder } from "./outcomeDispatch.js";
 import { paymentResponseFromOrder } from "./outcomeHelpers.js";
 import { requireCurrentListing } from "./listingAuthority.js";
-import { withBazaarLease } from "./lease.js";
+import { type BazaarLeaseGuard, withBazaarLease } from "./lease.js";
 import { verifyBazaarSettlementEvidence } from "./settlementEvidence.js";
 import type { BazaarOrderStore, LeasedBazaarOrder } from "./store.js";
 import type {
@@ -41,8 +41,12 @@ export class BazaarRecoveryRuntime {
 
   async runOnce(): Promise<void> {
     await this.store.terminalizeExpiredAttempts();
-    const recoverable = await this.store.claimRecoverableOrders(this.owner);
-    for (const leased of recoverable) await this.recover(leased);
+    for (let processed = 0; processed < 50; processed += 1) {
+      const recoverable = await this.store.claimRecoverableOrders(this.owner, 1);
+      const leased = recoverable[0];
+      if (!leased) break;
+      await this.recover(leased);
+    }
   }
 
   async close(): Promise<void> {
@@ -70,21 +74,25 @@ export class BazaarRecoveryRuntime {
       store: this.store,
       orderRecordId: leased.order.orderRecordId,
       leaseToken: leased.leaseToken,
-      action: () => this.recoverLeased(leased),
+      action: (lease) => this.recoverLeased(leased, lease),
+      onOwnershipLost: () => undefined,
     });
   }
 
-  private async recoverLeased(leased: LeasedBazaarOrder): Promise<void> {
+  private async recoverLeased(
+    leased: LeasedBazaarOrder,
+    lease: BazaarLeaseGuard,
+  ): Promise<void> {
     let order = leased.order;
     const listing = this.listings.get(order.listingCommitment.toLowerCase());
     if (!listing) {
-      await this.failMissingListing(order, leased.leaseToken);
+      if (await this.failMissingListing(order, leased.leaseToken)) lease.complete();
       return;
     }
     if (order.state === "settle_confirmed") {
-      const evidence = await verifyBazaarSettlementEvidence(order, this.wiring);
+      const evidence = await verifyBazaarSettlementEvidence(order, this.wiring, lease);
       if (evidence.kind !== "valid") {
-        await this.store.markTerminal(
+        const marked = await this.store.markTerminal(
           order.orderRecordId,
           leased.leaseToken,
           "settle_confirmed",
@@ -93,8 +101,10 @@ export class BazaarRecoveryRuntime {
             ? "invalid_settlement_evidence"
             : "evidence_observation_ambiguous",
         );
+        if (marked) lease.complete();
         return;
       }
+      lease.assertOwned();
       if (!(await this.store.markSettled(order.orderRecordId, leased.leaseToken))) return;
       order = (await this.store.getByRecordId(order.orderRecordId)) ?? order;
     }
@@ -112,12 +122,13 @@ export class BazaarRecoveryRuntime {
         BigInt(Math.floor((this.wiring.now?.() ?? new Date()).getTime() / 1000)),
         true,
       ),
+      lease,
     });
   }
 
-  private async failMissingListing(order: BazaarOrder, leaseToken: string): Promise<void> {
+  private async failMissingListing(order: BazaarOrder, leaseToken: string): Promise<boolean> {
     const dispatchState = order.state === "settled" || order.state === "dispatch_started";
-    await this.store.markTerminal(
+    return this.store.markTerminal(
       order.orderRecordId,
       leaseToken,
       order.state,

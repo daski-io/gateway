@@ -10,7 +10,6 @@ import { canonicalJsonStringify } from "../auth/envelope.js";
 import { isHex32, isHexAddress } from "../util/evmValidation.js";
 import type {
   BazaarLifecycleAction,
-  BazaarLifecycleSigner,
 } from "./types.js";
 
 const HALF_SECP256K1_N =
@@ -65,13 +64,14 @@ export interface ParsedChallengeClaim {
   taskIdHash: Hex;
   action: BazaarLifecycleAction;
   requestHash: Hex;
+  request: Record<string, unknown>;
 }
 
 export function parseChallengeClaim(value: unknown): ParsedChallengeClaim | null {
   const body = asRecord(value);
   if (!body || !hasExactKeys(body, [
     "action", "chainId", "payTo", "payer", "providerAgentId", "requestHash",
-    "taskIdHash",
+    "request", "taskIdHash",
   ])) return null;
   if (
     !isCanonicalUint(body.chainId) ||
@@ -84,7 +84,10 @@ export function parseChallengeClaim(value: unknown): ParsedChallengeClaim | null
     !ACTIONS.has(body.action as BazaarLifecycleAction)
   ) return null;
   const action = body.action as BazaarLifecycleAction;
-  if (body.requestHash.toLowerCase() !== lifecycleRequestHash(action)) return null;
+  const request = parseLifecycleRequest(action, body.request);
+  if (!request || body.requestHash.toLowerCase() !== lifecycleRequestHash(action, request)) {
+    return null;
+  }
   return {
     chainId: BigInt(body.chainId),
     providerAgentId: BigInt(body.providerAgentId),
@@ -92,19 +95,19 @@ export function parseChallengeClaim(value: unknown): ParsedChallengeClaim | null
     payer: body.payer.toLowerCase() as Hex,
     taskIdHash: body.taskIdHash.toLowerCase() as Hex,
     requestHash: body.requestHash.toLowerCase() as Hex,
+    request,
     action,
   };
 }
 
-export async function createTaskAccessAuthorization(input: {
+export function createTaskAccessAuthorization(input: {
   orderRecordId: Hex;
   claim: ParsedChallengeClaim;
   nonce: Hex;
   issuedAt: bigint;
   expiresAt: bigint;
-  signer: BazaarLifecycleSigner;
-}): Promise<{ authorization: TaskAccessAuthorization; gatewaySignature: Hex }> {
-  const authorization: TaskAccessAuthorization = {
+}): TaskAccessAuthorization {
+  return {
     domain: taskAccessDomain(input.claim.chainId, input.claim.payTo),
     types: TASK_ACCESS_TYPES,
     primaryType: "DaskiBazaarTaskAccess",
@@ -120,39 +123,20 @@ export async function createTaskAccessAuthorization(input: {
       expiresAt: input.expiresAt.toString(),
     },
   };
-  const typed = toTypedData(authorization);
-  const gatewaySignature = await input.signer.signTypedData(typed);
-  if (!canonicalSignature(gatewaySignature)) {
-    throw new Error("Bazaar challenge signer returned a malformed signature");
-  }
-  const recovered = await recoverTypedDataAddress({ ...typed, signature: gatewaySignature });
-  if (recovered.toLowerCase() !== input.signer.address.toLowerCase()) {
-    throw new Error("Bazaar challenge signer returned the wrong signature");
-  }
-  return { authorization, gatewaySignature };
 }
 
-export async function verifyTaskAccessSignatures(input: {
+export async function verifyTaskAccessPayerSignature(input: {
   authorization: TaskAccessAuthorization;
-  gatewaySignature: Hex;
   payerSignature: Hex;
-  gatewaySigner: Hex;
 }): Promise<boolean> {
   try {
-    if (!canonicalSignature(input.gatewaySignature) || !canonicalSignature(input.payerSignature)) {
-      return false;
-    }
+    if (!canonicalSignature(input.payerSignature)) return false;
     const typed = toTypedData(input.authorization);
-    const gateway = await recoverTypedDataAddress({
-      ...typed,
-      signature: input.gatewaySignature,
-    });
     const payer = await recoverTypedDataAddress({
       ...typed,
       signature: input.payerSignature,
     });
-    return gateway.toLowerCase() === input.gatewaySigner.toLowerCase() &&
-      payer.toLowerCase() === input.authorization.message.payer.toLowerCase();
+    return payer.toLowerCase() === input.authorization.message.payer.toLowerCase();
   } catch {
     return false;
   }
@@ -183,11 +167,41 @@ export function actionFromHash(value: Hex): BazaarLifecycleAction | null {
   return null;
 }
 
-export function lifecycleRequestHash(action: BazaarLifecycleAction): Hex {
+export function lifecycleRequestHash(
+  action: BazaarLifecycleAction,
+  request: Record<string, unknown> = {},
+): Hex {
   return keccak256(encodeAbiParameters(
     [{ type: "bytes32" }, { type: "bytes32" }, { type: "bytes32" }],
-    [REQUEST_DOMAIN_HASH, actionHash(action), keccak256(toBytes("{}"))],
+    [
+      REQUEST_DOMAIN_HASH,
+      actionHash(action),
+      keccak256(toBytes(canonicalJsonStringify(request))),
+    ],
   ));
+}
+
+export function parseLifecycleRequest(
+  action: BazaarLifecycleAction,
+  value: unknown,
+): Record<string, unknown> | null {
+  const request = asRecord(value);
+  if (!request) return null;
+  if (action !== "SUPPORT_MESSAGE") {
+    return hasExactKeys(request, []) ? {} : null;
+  }
+  if (!hasExactKeys(request, ["message"]) || typeof request.message !== "string") {
+    return null;
+  }
+  const message = request.message.replace(/\r\n?/g, "\n").normalize("NFC");
+  if (
+    message.length === 0 ||
+    Array.from(message).length > 2_000 ||
+    hasUnpairedSurrogate(message) ||
+    /[\u0000-\u0009\u000b-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2060-\u206f\ufeff]/u
+      .test(message)
+  ) return null;
+  return { message };
 }
 
 export function taskAccessDomain(chainId: bigint, payTo: Hex) {
@@ -257,4 +271,18 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 
 function hasExactKeys(value: Record<string, unknown>, expected: string[]): boolean {
   return Object.keys(value).sort().join("\0") === [...expected].sort().join("\0");
+}
+
+function hasUnpairedSurrogate(value: string): boolean {
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code >= 0xd800 && code <= 0xdbff) {
+      const next = value.charCodeAt(index + 1);
+      if (next < 0xdc00 || next > 0xdfff) return true;
+      index += 1;
+    } else if (code >= 0xdc00 && code <= 0xdfff) {
+      return true;
+    }
+  }
+  return false;
 }

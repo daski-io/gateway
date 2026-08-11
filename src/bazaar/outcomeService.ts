@@ -7,7 +7,7 @@ import type { Hex } from "viem";
 import type { ProviderAuthorityService } from "../payment/providerAuthority.js";
 import { isHexAddress } from "../util/evmValidation.js";
 import { requireCurrentListing } from "./listingAuthority.js";
-import { withBazaarLease } from "./lease.js";
+import { type BazaarLeaseGuard, withBazaarLease } from "./lease.js";
 import { parseBazaarExtensionResponse } from "./extensionResponse.js";
 import { dispatchBazaarOrder } from "./outcomeDispatch.js";
 import { parseBazaarPayment, type ParsedBazaarPayment } from "./payment.js";
@@ -55,6 +55,10 @@ export class BazaarOutcomeService {
     if (await this.store.hasBlockingIncident(
       this.listing.offer.message.listingCommitment,
     )) return failureOutcome(503, "listing_paused");
+    if (!(await this.store.hasListingSettlementCapacity(
+      this.listing.offer.message.listingCommitment,
+      this.wiring.settlementCapacity,
+    ))) return failureOutcome(503, "settlement_capacity_unavailable");
     return {
       status: 402,
       paymentRequired: this.declaration.paymentRequired,
@@ -71,18 +75,90 @@ export class BazaarOutcomeService {
     };
   }
 
-  async paid(decoded: PaymentPayload): Promise<BazaarOutcomeResult> {
+  async paid(
+    decoded: PaymentPayload,
+    ingressAgeSeconds = 0n,
+  ): Promise<BazaarOutcomeResult> {
+    try {
+      return await this.processPaid(decoded, ingressAgeSeconds);
+    } finally {
+      scrubPaymentPayload(decoded);
+    }
+  }
+
+  private async processPaid(
+    decoded: PaymentPayload,
+    ingressAgeSeconds: bigint,
+  ): Promise<BazaarOutcomeResult> {
+    const currentTime = this.nowSeconds();
+    const paidRetryReceivedAt = currentTime >= ingressAgeSeconds
+      ? currentTime - ingressAgeSeconds
+      : 0n;
     const payload = bindServerPaymentPayload(decoded, this.declaration);
     if (!payload) return failureOutcome(400, "payment_declaration_mismatch");
     const parsed = await parseBazaarPayment(
       payload,
       this.declaration.requirements,
       this.listing.offer.message,
-      this.nowSeconds(),
+      currentTime,
+      paidRetryReceivedAt,
     );
     if (!parsed.ok) return failureOutcome(400, parsed.code);
-    const claimInput = createClaimInput(this.listing, parsed.payment, this.random);
-    const claim = await this.store.claim(claimInput, this.leaseOwner);
+    const claimInput = createClaimInput(
+      this.listing,
+      parsed.payment,
+      this.random,
+      paidRetryReceivedAt,
+    );
+    const existing = await this.store.findByAuthorization(claimInput);
+    if (existing) {
+      return sameOrderBinding(existing, claimInput)
+        ? existingOutcomeResult(existing)
+        : failureOutcome(409, "payment_authorization_conflict");
+    }
+    if (await this.store.hasBlockingIncident(
+      this.listing.offer.message.listingCommitment,
+    )) return failureOutcome(503, "listing_paused");
+    if (!(await this.store.hasSettlementCapacity(
+      claimInput,
+      this.wiring.settlementCapacity,
+    ))) return failureOutcome(503, "settlement_capacity_unavailable");
+    try {
+      await this.requireCurrentListing(true);
+    } catch {
+      return failureOutcome(409, "listing_authority_changed");
+    }
+    try {
+      const profile = await this.wiring.payerProfileVerifier.verifyBeforeSettlement({
+        chainId: this.listing.offer.message.chainId,
+        payer: parsed.payment.authorization.from,
+      });
+      if (profile.profile !== "eoa") {
+        return failureOutcome(402, "payer_profile_unsupported");
+      }
+    } catch {
+      return failureOutcome(503, "payer_profile_ambiguous");
+    }
+    const rechecked = await parseBazaarPayment(
+      payload,
+      this.declaration.requirements,
+      this.listing.offer.message,
+      this.nowSeconds(),
+      paidRetryReceivedAt,
+    );
+    if (!rechecked.ok) return failureOutcome(400, rechecked.code);
+    const claim = await this.store.claimWithCapacity(
+      claimInput,
+      this.leaseOwner,
+      this.wiring.settlementCapacity,
+      () => this.nowSeconds(),
+    );
+    if (claim.kind === "capacity_unavailable") {
+      return failureOutcome(503, "settlement_capacity_unavailable");
+    }
+    if (claim.kind === "authorization_expired") {
+      return failureOutcome(400, "authorization_binding_mismatch");
+    }
     if (!sameOrderBinding(claim.order, claimInput)) {
       return failureOutcome(409, "payment_authorization_conflict");
     }
@@ -92,12 +168,15 @@ export class BazaarOutcomeService {
       store: this.store,
       orderRecordId: claim.order.orderRecordId,
       leaseToken: claim.leaseToken,
-      action: () => this.processNewOrder(
+      action: (lease) => this.processNewOrder(
         claim.order,
         claim.leaseToken!,
         parsed.payment,
         this.declaration.requirements,
+        lease,
       ),
+      onOwnershipLost: () => failureOutcome(409, "processing_ownership_lost"),
+      onOwnershipLostCleanup: () => scrubPaymentPayload(parsed.payment.payload),
     });
   }
 
@@ -106,30 +185,19 @@ export class BazaarOutcomeService {
     leaseToken: string,
     payment: ParsedBazaarPayment,
     requirements: PaymentRequirements,
+    lease: BazaarLeaseGuard,
   ): Promise<BazaarOutcomeResult> {
-    if (await this.store.hasBlockingIncident(
-      this.listing.offer.message.listingCommitment,
-    )) {
-      await this.store.markTerminal(
-        order.orderRecordId, leaseToken, "claimed", "verify_rejected", "listing_paused",
-      );
-      return failureOutcome(503, "listing_paused");
-    }
     try {
-      await this.requireCurrentListing(true);
-    } catch {
-      await this.store.markTerminal(
-        order.orderRecordId, leaseToken, "claimed", "verify_rejected",
-        "provider_authority_changed",
+      return await this.verifySettleAndDispatch(
+        order,
+        leaseToken,
+        payment,
+        requirements,
+        lease,
       );
-      return failureOutcome(409, "listing_authority_changed");
+    } finally {
+      scrubPaymentPayload(payment.payload);
     }
-    return this.verifySettleAndDispatch(
-      order,
-      leaseToken,
-      payment,
-      requirements,
-    );
   }
 
   private async verifySettleAndDispatch(
@@ -137,37 +205,25 @@ export class BazaarOutcomeService {
     leaseToken: string,
     payment: ParsedBazaarPayment,
     requirements: PaymentRequirements,
+    lease: BazaarLeaseGuard,
   ): Promise<BazaarOutcomeResult> {
-    try {
-      const profile = await this.wiring.payerProfileVerifier.verifyBeforeSettlement({
-        chainId: order.chainId,
-        payer: order.payer,
-      });
-      if (profile.profile !== "eoa") {
-        await this.store.markTerminal(
-          order.orderRecordId, leaseToken, "claimed", "verify_rejected",
-          "payer_profile_unsupported",
-        );
-        return failureOutcome(402, "payer_profile_unsupported");
-      }
-    } catch {
-      await this.store.markTerminal(
-        order.orderRecordId, leaseToken, "claimed", "verify_ambiguous",
-        "payer_profile_ambiguous",
-      );
-      return failureOutcome(503, "payer_profile_ambiguous");
-    }
     let verify;
     try {
+      lease.assertOwned();
       verify = await this.wiring.facilitator.verify(
         payment.payload,
         requirements,
+        lease.signal,
       );
+      lease.assertOwned();
     } catch {
-      await this.store.markTerminal(
-        order.orderRecordId, leaseToken, "claimed", "verify_ambiguous",
+      if (lease.ownershipLost) return ownershipLost();
+      const marked = await this.store.markTerminal(
+        order.orderRecordId, leaseToken, "attempt_opened", "verify_ambiguous",
         "facilitator_verify_ambiguous",
       );
+      if (!marked) return existingOutcomeResult(await this.reload(order));
+      lease.complete();
       return failureOutcome(502, "payment_verification_ambiguous");
     }
     if (
@@ -175,13 +231,16 @@ export class BazaarOutcomeService {
       !isHexAddress(verify.response.payer) ||
       verify.response.payer.toLowerCase() !== order.payer.toLowerCase()
     ) {
-      await this.store.markTerminal(
-        order.orderRecordId, leaseToken, "claimed", "verify_rejected",
+      const marked = await this.store.markTerminal(
+        order.orderRecordId, leaseToken, "attempt_opened", "verify_rejected",
         "facilitator_verify_rejected",
       );
+      if (!marked) return existingOutcomeResult(await this.reload(order));
+      lease.complete();
       return failureOutcome(402, "payment_verification_rejected");
     }
     const verifyExtension = parseBazaarExtensionResponse(verify.extensionResponses);
+    lease.assertOwned();
     const began = await this.store.beginSettlement(
       order.orderRecordId,
       leaseToken,
@@ -190,15 +249,20 @@ export class BazaarOutcomeService {
     );
     if (!began) return existingOutcomeResult(await this.reload(order));
     try {
+      lease.assertOwned();
       await this.requireCurrentListing(true);
+      lease.assertOwned();
     } catch {
-      await this.store.markTerminal(
+      if (lease.ownershipLost) return ownershipLost();
+      const marked = await this.store.markTerminal(
         order.orderRecordId, leaseToken, "settle_started", "settle_rejected",
         "provider_authority_changed",
       );
+      if (!marked) return existingOutcomeResult(await this.reload(order));
+      lease.complete();
       return failureOutcome(409, "listing_authority_changed");
     }
-    return this.settleAndDispatch(order, leaseToken, payment, requirements);
+    return this.settleAndDispatch(order, leaseToken, payment, requirements, lease);
   }
 
   private async settleAndDispatch(
@@ -206,32 +270,47 @@ export class BazaarOutcomeService {
     leaseToken: string,
     payment: ParsedBazaarPayment,
     requirements: PaymentRequirements,
+    lease: BazaarLeaseGuard,
   ): Promise<BazaarOutcomeResult> {
     let settled;
     try {
-      settled = await this.wiring.facilitator.settle(payment.payload, requirements);
+      lease.assertOwned();
+      settled = await this.wiring.facilitator.settle(
+        payment.payload,
+        requirements,
+        lease.signal,
+      );
+      lease.assertOwned();
     } catch {
-      await this.store.markTerminal(
+      if (lease.ownershipLost) return ownershipLost();
+      const marked = await this.store.markTerminal(
         order.orderRecordId, leaseToken, "settle_started", "settle_ambiguous",
         "facilitator_settle_ambiguous",
       );
+      if (!marked) return existingOutcomeResult(await this.reload(order));
+      lease.complete();
       return failureOutcome(502, "payment_settlement_ambiguous");
     }
     if (!settled.response.success) {
-      await this.store.markTerminal(
+      const marked = await this.store.markTerminal(
         order.orderRecordId, leaseToken, "settle_started", "settle_rejected",
         "facilitator_settle_rejected",
       );
+      if (!marked) return existingOutcomeResult(await this.reload(order));
+      lease.complete();
       return failureOutcome(402, "payment_settlement_rejected");
     }
     if (!validSettlementEvidence(settled.response, order)) {
-      await this.store.markTerminal(
+      const marked = await this.store.markTerminal(
         order.orderRecordId, leaseToken, "settle_started", "evidence_rejected",
         "invalid_settlement_evidence",
       );
+      if (!marked) return existingOutcomeResult(await this.reload(order));
+      lease.complete();
       return failureOutcome(502, "payment_evidence_rejected");
     }
     const settleExtension = parseBazaarExtensionResponse(settled.extensionResponses);
+    lease.assertOwned();
     const confirmed = await this.store.markSettlementConfirmed({
       orderRecordId: order.orderRecordId,
       leaseToken,
@@ -243,9 +322,13 @@ export class BazaarOutcomeService {
     });
     if (!confirmed) return existingOutcomeResult(await this.reload(order));
     const confirmedOrder = await this.reload(order);
-    const evidence = await verifyBazaarSettlementEvidence(confirmedOrder, this.wiring);
+    const evidence = await verifyBazaarSettlementEvidence(
+      confirmedOrder,
+      this.wiring,
+      lease,
+    );
     if (evidence.kind !== "valid") {
-      await this.store.markTerminal(
+      const marked = await this.store.markTerminal(
         order.orderRecordId,
         leaseToken,
         "settle_confirmed",
@@ -254,6 +337,8 @@ export class BazaarOutcomeService {
           ? "invalid_settlement_evidence"
           : "evidence_observation_ambiguous",
       );
+      if (!marked) return existingOutcomeResult(await this.reload(order));
+      lease.complete();
       return failureOutcome(
         502,
         evidence.kind === "invalid"
@@ -261,6 +346,7 @@ export class BazaarOutcomeService {
           : "payment_settlement_ambiguous",
       );
     }
+    lease.assertOwned();
     const marked = await this.store.markSettled(order.orderRecordId, leaseToken);
     if (!marked) return existingOutcomeResult(await this.reload(order));
     return dispatchBazaarOrder({
@@ -271,6 +357,7 @@ export class BazaarOutcomeService {
       listing: this.listing,
       leaseToken,
       assertListingCurrent: () => this.requireCurrentListing(true),
+      lease,
     });
   }
 
@@ -294,4 +381,12 @@ export class BazaarOutcomeService {
   private nowSeconds(): bigint {
     return BigInt(Math.floor(this.now().getTime() / 1000));
   }
+}
+
+function scrubPaymentPayload(payload: PaymentPayload): void {
+  payload.payload = {};
+}
+
+function ownershipLost(): BazaarOutcomeResult {
+  return failureOutcome(409, "processing_ownership_lost");
 }

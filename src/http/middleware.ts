@@ -7,6 +7,11 @@ import type { Config } from "../config.js";
 import type { Queries } from "../db/queries.js";
 import { rateLimit, securityHeaders } from "../util/security.js";
 import { captureRawJsonBody } from "./rawJsonBody.js";
+import {
+  captureBazaarRequestContext,
+  clearBazaarRequestContext,
+  hasBazaarPaymentSignature,
+} from "./bazaarRequestContext.js";
 
 const MCP_STATE_CHANGE_TOOLS = new Set([
   "daski_buy_service",
@@ -40,12 +45,24 @@ function forMcpStateChange(middleware: RequestHandler): RequestHandler {
 
 function forPaidPurchaseRetry(middleware: RequestHandler): RequestHandler {
   return (req, res, next) => {
-    if (req.get("PAYMENT-SIGNATURE")) {
+    if (hasBazaarPaymentSignature(req)) {
       middleware(req, res, next);
       return;
     }
     next();
   };
+}
+
+function captureBazaarContext(
+  req: Parameters<RequestHandler>[0],
+  res: Parameters<RequestHandler>[1],
+  next: Parameters<RequestHandler>[2],
+): void {
+  captureBazaarRequestContext(req);
+  const cleanup = () => clearBazaarRequestContext(req);
+  res.once("finish", cleanup);
+  res.once("close", cleanup);
+  next();
 }
 
 function addRateLimits(
@@ -84,12 +101,21 @@ function rejectBazaarAlternateFraming(
   res: Parameters<RequestHandler>[1],
   next: Parameters<RequestHandler>[2],
 ): void {
+  const bodyLimit = req.originalUrl.startsWith("/x402/v1/orders")
+    ? 64 * 1024
+    : 1024;
+  const contentLength = req.headers["content-length"];
   if (
     req.headers["content-encoding"] !== undefined ||
-    req.headers["transfer-encoding"] !== undefined
+    req.headers["transfer-encoding"] !== undefined ||
+    Array.isArray(contentLength) ||
+    (contentLength !== undefined &&
+      (!/^(0|[1-9][0-9]*)$/.test(contentLength) ||
+        BigInt(contentLength) > BigInt(bodyLimit)))
   ) {
+    clearBazaarRequestContext(req);
     res.setHeader("Cache-Control", "no-store");
-    res.status(400).json({ error: "alternate_request_framing_forbidden" });
+    res.status(400).json({ error: "invalid_bazaar_request_framing" });
     return;
   }
   next();
@@ -115,6 +141,11 @@ export function configureMiddleware(
       // Mcp-Method, Mcp-Name, and schema-derived Mcp-Param-* headers, whose
       // complete names cannot be enumerated ahead of time.
     }),
+  );
+
+  app.use(
+    ["/x402/v1/outcomes", "/x402/v1/orders"],
+    captureBazaarContext,
   );
 
   if (config.nodeEnv !== "test") {

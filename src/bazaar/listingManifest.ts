@@ -5,12 +5,14 @@ import type { BazaarListing, ListingOfferV1 } from "./types.js";
 
 const MAX_SCHEMA_BYTES = 16 * 1024;
 const MAX_URL_LENGTH = 2_048;
+const MAX_TERMS_DOCUMENT_BYTES = 128 * 1024;
 export const BASE_SEPOLIA_USDC =
   "0x036cbd53842c5426634e7929541ec2318f3dcf7e";
 const LISTING_KEYS = [
   "assetName", "assetVersion", "description", "expectedDelivery",
   "listingCommitment", "listingEpoch", "offer", "policyVersion", "refundTerms",
   "payToControlProof", "requestSchema", "resourceUrl", "responseSchema", "routePath", "sellerName",
+  "termsDocumentBase64", "termsDocumentHash", "termsDocumentMediaType",
   "termsHash", "termsUrl",
 ];
 const OFFER_KEYS = ["message", "signature"];
@@ -19,7 +21,8 @@ const MESSAGE_KEYS = [
   "chainId", "listingEpoch", "listingCommitment", "providerAgentId",
   "offerSigner", "providerPayee", "outcomeId", "methodHash", "resourceHash",
   "requestSchemaHash", "responseSchemaHash", "requestBindingModeHash",
-  "routeModeHash", "token", "grossAmount", "payTo", "daskiCommissionReceiver",
+  "routeModeHash", "token", "grossAmount", "payTo", "paymentMaxTimeoutSeconds",
+  "daskiCommissionReceiver",
   "commissionBps", "splitterCodeHash", "termsHash", "policyVersion", "offerId",
   "issuedAt", "validBefore",
 ];
@@ -38,6 +41,7 @@ export function validateListingManifest(
     !hasExactKeys(message as unknown as Record<string, unknown>, MESSAGE_KEYS)
   ) throw new Error("Bazaar listing must use the closed manifest schema");
   validateUrlsAndMetadata(listing);
+  validatePackagedTerms(listing);
   validateFixedFields(listing, message);
   validateHashes(listing, message);
 }
@@ -54,17 +58,24 @@ function validateUrlsAndMetadata(listing: BazaarListing): void {
     !/^\/x402\/v1\/outcomes\/[a-z0-9]+(?:-[a-z0-9]+)*$/.test(listing.routePath)
   ) throw new Error("Bazaar resource must be one fixed HTTPS outcome route");
   const terms = parseUrl(listing.termsUrl, "Bazaar listing terms URL is invalid");
-  if (terms.protocol !== "https:" || terms.username || terms.password || terms.hash) {
+  if (
+    terms.protocol !== "https:" || terms.username || terms.password ||
+    terms.search || terms.hash ||
+    !/^\/terms\/v[1-9][0-9]*\/[a-z0-9]+(?:-[a-z0-9]+)*\.md$/.test(terms.pathname)
+  ) {
     throw new Error("Bazaar listing terms URL must use HTTPS");
   }
   if (
     !/^[\x20-\x7e]+$/.test(listing.sellerName) || listing.sellerName.length > 32 ||
+    looksLikeInstructionOrSecret(listing.sellerName) ||
     !boundedText(listing.description, 500) ||
     !boundedText(listing.expectedDelivery, 500) ||
     !boundedText(listing.refundTerms, 1_000) ||
     !boundedText(listing.assetName, 64) ||
     !boundedText(listing.assetVersion, 32)
   ) throw new Error("Bazaar listing metadata is malformed or oversized");
+  validateStaticDiscoveryObject(listing.requestSchema);
+  validateStaticDiscoveryObject(listing.responseSchema);
 }
 
 function validateFixedFields(listing: BazaarListing, message: ListingOfferV1): void {
@@ -74,7 +85,8 @@ function validateFixedFields(listing: BazaarListing, message: ListingOfferV1): v
     message.responseSchemaHash, message.requestBindingModeHash,
     message.routeModeHash, message.splitterCodeHash, message.termsHash,
     message.policyVersion, message.offerId, listing.listingEpoch,
-    listing.listingCommitment, listing.termsHash, listing.policyVersion,
+    listing.listingCommitment, listing.termsHash, listing.termsDocumentHash,
+    listing.policyVersion,
   ];
   const addresses = [
     message.offerSigner, message.providerPayee, message.token, message.payTo,
@@ -101,7 +113,8 @@ function validateFixedFields(listing: BazaarListing, message: ListingOfferV1): v
 
 export function computeListingTermsHash(listing: Pick<
   BazaarListing,
-  "description" | "expectedDelivery" | "refundTerms" | "sellerName" | "termsUrl"
+  "description" | "expectedDelivery" | "refundTerms" | "sellerName" |
+  "termsUrl" | "termsDocumentHash"
 >): `0x${string}` {
   return keccak256(toBytes(canonicalJsonStringify({
     description: listing.description,
@@ -109,7 +122,32 @@ export function computeListingTermsHash(listing: Pick<
     refundTerms: listing.refundTerms,
     sellerName: listing.sellerName,
     termsUrl: listing.termsUrl,
+    termsDocumentHash: listing.termsDocumentHash.toLowerCase(),
   })));
+}
+
+function validatePackagedTerms(listing: BazaarListing): void {
+  if (
+    listing.termsDocumentMediaType !== "text/markdown; charset=utf-8" ||
+    !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(
+      listing.termsDocumentBase64,
+    )
+  ) throw new Error("Bazaar packaged terms are malformed");
+  const bytes = Buffer.from(listing.termsDocumentBase64, "base64");
+  if (
+    bytes.length === 0 || bytes.length > MAX_TERMS_DOCUMENT_BYTES ||
+    bytes.toString("base64") !== listing.termsDocumentBase64 ||
+    keccak256(bytes).toLowerCase() !== listing.termsDocumentHash.toLowerCase()
+  ) throw new Error("Bazaar packaged terms do not match their signed hash");
+  let text: string;
+  try {
+    text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    throw new Error("Bazaar packaged terms are not valid UTF-8");
+  }
+  if (!safeNormalizedDocumentText(text)) {
+    throw new Error("Bazaar packaged terms contain unsafe text");
+  }
 }
 
 function validateHashes(listing: BazaarListing, message: ListingOfferV1): void {
@@ -143,5 +181,44 @@ function hasExactKeys(value: Record<string, unknown>, expected: readonly string[
 
 function boundedText(value: string, maximum: number): boolean {
   return typeof value === "string" && value.length > 0 && value.length <= maximum &&
-    !/[\u0000-\u001f\u007f]/.test(value);
+    safeNormalizedText(value) && !looksLikeInstructionOrSecret(value);
+}
+
+function safeNormalizedText(value: string): boolean {
+  return value.normalize("NFC") === value &&
+    !/[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2060-\u206f\ufeff]/u
+      .test(value);
+}
+
+function safeNormalizedDocumentText(value: string): boolean {
+  return value.normalize("NFC") === value && !value.includes("\r") &&
+    !/[\u0000-\u0009\u000b-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2060-\u206f\ufeff]/u
+      .test(value);
+}
+
+function looksLikeInstructionOrSecret(value: string): boolean {
+  return /(?:ignore (?:all |any )?(?:previous|prior)|system prompt|developer message|call (?:a )?tool|execute (?:this|code)|send (?:funds|money)|private key|api[_ -]?key|bearer [a-z0-9_.-]+|password\s*[:=]|secret\s*[:=]|<\/?[a-z][^>]*>)/iu
+    .test(value);
+}
+
+function validateStaticDiscoveryObject(value: unknown, depth = 0): void {
+  if (depth > 16) throw new Error("Bazaar discovery schema is too deeply nested");
+  if (typeof value === "string") {
+    if (!safeNormalizedText(value) || looksLikeInstructionOrSecret(value)) {
+      throw new Error("Bazaar discovery schema contains unsafe static text");
+    }
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) validateStaticDiscoveryObject(item, depth + 1);
+    return;
+  }
+  if (value !== null && typeof value === "object") {
+    for (const [key, item] of Object.entries(value)) {
+      if (!safeNormalizedText(key) || looksLikeInstructionOrSecret(key)) {
+        throw new Error("Bazaar discovery schema contains an unsafe key");
+      }
+      validateStaticDiscoveryObject(item, depth + 1);
+    }
+  }
 }

@@ -8,8 +8,6 @@ import { canonicalJsonStringify } from "../auth/envelope.js";
 import { buildBazaarDiscovery } from "./discovery.js";
 import type { BazaarListing } from "./types.js";
 
-const PAYMENT_TIMEOUT_SECONDS = 5 * 60;
-
 export interface BazaarPaymentDeclaration {
   paymentRequired: PaymentRequired;
   requirements: PaymentRequirements;
@@ -21,7 +19,7 @@ export function buildPaymentDeclaration(
 ): BazaarPaymentDeclaration {
   const offer = listing.offer.message;
   const remaining = offer.validBefore - nowSeconds;
-  if (remaining <= BigInt(PAYMENT_TIMEOUT_SECONDS + 10)) {
+  if (remaining <= offer.paymentMaxTimeoutSeconds + 10n) {
     throw new Error("Bazaar listing offer is too close to expiry");
   }
   const requirements: PaymentRequirements = {
@@ -30,7 +28,7 @@ export function buildPaymentDeclaration(
     asset: offer.token,
     amount: offer.grossAmount.toString(),
     payTo: offer.payTo,
-    maxTimeoutSeconds: PAYMENT_TIMEOUT_SECONDS,
+    maxTimeoutSeconds: Number(offer.paymentMaxTimeoutSeconds),
     extra: {
       name: listing.assetName,
       version: listing.assetVersion,

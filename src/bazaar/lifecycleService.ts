@@ -8,9 +8,14 @@ import {
   createTaskAccessAuthorization,
   lifecycleRequestHash,
   parseChallengeClaim,
+  parseLifecycleRequest,
   parseTaskAccessAuthorization,
-  verifyTaskAccessSignatures,
+  verifyTaskAccessPayerSignature,
 } from "./lifecycleAuthorization.js";
+import {
+  createTaskAccessChallengeEnvelope,
+  verifyTaskAccessChallengeEnvelope,
+} from "./lifecycleChallenge.js";
 import { createProviderLifecycleAssertion } from "./lifecycleAssertion.js";
 import type { BazaarOrderStore } from "./store.js";
 import type {
@@ -55,22 +60,32 @@ export class BazaarLifecycleService {
     }
     const issuedAt = this.nowSeconds();
     const nonce = nonzeroRandomHex(this.random);
-    const signed = await createTaskAccessAuthorization({
+    const authorization = createTaskAccessAuthorization({
       orderRecordId,
       claim,
       nonce,
       issuedAt,
       expiresAt: issuedAt + CHALLENGE_TTL_SECONDS,
-      signer: this.wiring.challengeSigner,
     });
-    return { status: 200, body: signed };
+    const envelope = createTaskAccessChallengeEnvelope({
+      authorization,
+      request: claim.request,
+      keyring: this.wiring.challengeMac,
+    });
+    return { status: 200, body: { envelope } };
   }
 
   async redeem(handle: string, body: unknown): Promise<LifecycleResult> {
     const orderRecordId = decodeOrderHandle(handle);
     const parsed = parseRedemption(body);
     if (!orderRecordId || !parsed) return denied();
-    const authorization = parseTaskAccessAuthorization(parsed.authorization);
+    const challenge = verifyTaskAccessChallengeEnvelope(
+      parsed.envelope,
+      this.wiring.challengeMac,
+      this.nowSeconds(),
+    );
+    const authorization = challenge &&
+      parseTaskAccessAuthorization(challenge.authorization);
     if (!authorization || authorization.message.orderRecordId !== orderRecordId) return denied();
     const now = this.nowSeconds();
     if (
@@ -79,16 +94,20 @@ export class BazaarLifecycleService {
       BigInt(authorization.message.expiresAt) - BigInt(authorization.message.issuedAt) >
         CHALLENGE_TTL_SECONDS
     ) return denied();
-    const signaturesValid = await verifyTaskAccessSignatures({
+    const signaturesValid = await verifyTaskAccessPayerSignature({
       authorization,
-      gatewaySignature: parsed.gatewaySignature,
       payerSignature: parsed.payerSignature,
-      gatewaySigner: this.wiring.challengeSigner.address,
     });
     if (!signaturesValid) return denied();
     const order = await this.store.getByRecordId(orderRecordId);
     const action = actionFromHash(authorization.message.actionHash);
-    if (!order || !action || !matchesOrder(authorization, order, action)) {
+    const request = action && parseLifecycleRequest(action, challenge.request);
+    if (!order || !action || !request || !matchesOrder(
+      authorization,
+      order,
+      action,
+      request,
+    )) {
       return denied();
     }
     const consumed = await this.store.consumeLifecycle({
@@ -115,11 +134,13 @@ export class BazaarLifecycleService {
       nonce: nonzeroRandomHex(this.random),
       issuedAt: now,
       expiresAt: now + PROVIDER_ASSERTION_TTL_SECONDS,
-      signer: this.wiring.providerActionSigner,
+      signer: this.wiring.providerActionSigningBroker,
     });
     const result = await this.wiring.fulfillment.performLifecycleAction({
       taskId: order.taskId,
       action,
+      request,
+      contentTrust: action === "SUPPORT_MESSAGE" ? "untrusted_buyer" : "none",
       assertion,
     });
     return { status: 200, body: boundedJsonObject(result) };
@@ -134,6 +155,7 @@ function matchesOrder(
   authorization: NonNullable<ReturnType<typeof parseTaskAccessAuthorization>>,
   order: BazaarOrder,
   action: BazaarLifecycleAction,
+  request: Record<string, unknown>,
 ): boolean {
   const { domain, message } = authorization;
   const expectedTaskHash = action === "ORDER_STATUS"
@@ -146,23 +168,21 @@ function matchesOrder(
     message.payer.toLowerCase() === order.payer.toLowerCase() &&
     BigInt(message.providerAgentId) === order.providerAgentId &&
     message.taskIdHash.toLowerCase() === expectedTaskHash?.toLowerCase() &&
-    message.requestHash.toLowerCase() === lifecycleRequestHash(action) &&
+    message.requestHash.toLowerCase() === lifecycleRequestHash(action, request) &&
     message.orderRecordId.toLowerCase() === order.orderRecordId.toLowerCase();
 }
 
 function parseRedemption(value: unknown): {
-  authorization: unknown;
-  gatewaySignature: Hex;
+  envelope: unknown;
   payerSignature: Hex;
 } | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const body = value as Record<string, unknown>;
   if (Object.keys(body).sort().join("\0") !==
-    ["authorization", "gatewaySignature", "payerSignature"].sort().join("\0")) return null;
-  if (!isSignature(body.gatewaySignature) || !isSignature(body.payerSignature)) return null;
+    ["envelope", "payerSignature"].sort().join("\0")) return null;
+  if (!isSignature(body.payerSignature)) return null;
   return {
-    authorization: body.authorization,
-    gatewaySignature: body.gatewaySignature,
+    envelope: body.envelope,
     payerSignature: body.payerSignature,
   };
 }

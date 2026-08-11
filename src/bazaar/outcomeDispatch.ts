@@ -7,6 +7,7 @@ import {
   type BazaarOutcomeResult,
 } from "./outcomeHelpers.js";
 import type { BazaarOrderStore } from "./store.js";
+import type { BazaarLeaseGuard } from "./lease.js";
 import type {
   BazaarCompatibilityWiring,
   BazaarListing,
@@ -21,27 +22,34 @@ export async function dispatchBazaarOrder(input: {
   listing: BazaarListing;
   leaseToken: string;
   assertListingCurrent: () => Promise<void>;
+  lease: BazaarLeaseGuard;
 }): Promise<BazaarOutcomeResult> {
-  const { order, paymentResponse, store, wiring, listing, leaseToken } = input;
+  const { order, paymentResponse, store, wiring, listing, leaseToken, lease } = input;
   if (order.state !== "dispatch_started") {
     try {
+      lease.assertOwned();
       await input.assertListingCurrent();
+      lease.assertOwned();
     } catch {
-      await store.markTerminal(
+      if (lease.ownershipLost) return ownershipLost();
+      const marked = await store.markTerminal(
         order.orderRecordId, leaseToken, "settled", "dispatch_failed",
         "provider_authority_changed_before_dispatch",
       );
+      if (!marked) return existingOutcomeResult(await reload(store, order));
+      lease.complete();
       return failureOutcome(409, "listing_authority_changed");
     }
   }
-  if (
-    order.state !== "dispatch_started" &&
-    !(await store.beginDispatch(order.orderRecordId, leaseToken))
-  ) {
-    return existingOutcomeResult(await reload(store, order));
+  if (order.state !== "dispatch_started") {
+    lease.assertOwned();
+    if (!(await store.beginDispatch(order.orderRecordId, leaseToken))) {
+      return existingOutcomeResult(await reload(store, order));
+    }
   }
   let dispatched;
   try {
+    lease.assertOwned();
     dispatched = await wiring.fulfillment.dispatch({
       orderRecordId: order.orderRecordId,
       orderHandle: order.orderHandle,
@@ -52,19 +60,25 @@ export async function dispatchBazaarOrder(input: {
       listingCommitment: order.listingCommitment,
       requestHash: order.requestHash,
       settlementTransaction: paymentResponse.transaction as Hex,
-    });
+    }, lease.signal);
+    lease.assertOwned();
   } catch {
-    await store.markTerminal(
+    if (lease.ownershipLost) return ownershipLost();
+    const marked = await store.markTerminal(
       order.orderRecordId, leaseToken, "dispatch_started", "dispatch_failed",
       "provider_dispatch_failed",
     );
+    if (!marked) return existingOutcomeResult(await reload(store, order));
+    lease.complete();
     return failureOutcome(502, "provider_dispatch_failed");
   }
   if (!/^[A-Za-z0-9._:-]{1,128}$/.test(dispatched.taskId)) {
-    await store.markTerminal(
+    const marked = await store.markTerminal(
       order.orderRecordId, leaseToken, "dispatch_started", "dispatch_failed",
       "provider_task_id_invalid",
     );
+    if (!marked) return existingOutcomeResult(await reload(store, order));
+    lease.complete();
     return failureOutcome(502, "provider_dispatch_failed");
   }
   const marked = await store.markDispatched(
@@ -74,7 +88,12 @@ export async function dispatchBazaarOrder(input: {
     keccak256(toBytes(dispatched.taskId)),
   );
   if (!marked) return existingOutcomeResult(await reload(store, order));
+  lease.complete();
   return successOutcome(order.orderHandle, listing.resourceUrl, paymentResponse);
+}
+
+function ownershipLost(): BazaarOutcomeResult {
+  return failureOutcome(409, "processing_ownership_lost");
 }
 
 async function reload(store: BazaarOrderStore, order: BazaarOrder): Promise<BazaarOrder> {

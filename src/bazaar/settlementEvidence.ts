@@ -1,4 +1,5 @@
 import type { BazaarCompatibilityWiring, BazaarOrder } from "./types.js";
+import type { BazaarLeaseGuard } from "./lease.js";
 
 export type SettlementEvidenceResult =
   | { kind: "valid" }
@@ -8,10 +9,12 @@ export type SettlementEvidenceResult =
 export async function verifyBazaarSettlementEvidence(
   order: BazaarOrder,
   wiring: BazaarCompatibilityWiring,
+  lease: BazaarLeaseGuard,
 ): Promise<SettlementEvidenceResult> {
   if (!order.settlementTransaction) return { kind: "invalid" };
   let evidence;
   try {
+    lease.assertOwned();
     evidence = await wiring.evidenceVerifier.verify({
       transaction: order.settlementTransaction,
       chainId: order.chainId,
@@ -20,7 +23,8 @@ export async function verifyBazaarSettlementEvidence(
       nonce: order.nonce,
       payTo: order.payTo,
       grossAmount: order.grossAmount,
-    });
+    }, lease.signal);
+    lease.assertOwned();
   } catch {
     return { kind: "ambiguous" };
   }

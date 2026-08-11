@@ -1,4 +1,5 @@
 import { keccak256, toBytes, type Hex } from "viem";
+import { hasDuplicateJsonObjectKeys } from "../http/jsonDuplicateKeys.js";
 
 export type BazaarIndexingStatus = "success" | "processing" | "rejected";
 
@@ -20,6 +21,7 @@ export function parseBazaarExtensionResponse(
     if (!/^[A-Za-z0-9+/]*={0,2}$/.test(header)) throw new Error("invalid base64");
     const bytes = Buffer.from(header, "base64");
     if (bytes.toString("base64") !== header) throw new Error("non-canonical base64");
+    if (hasDuplicateJsonObjectKeys(bytes)) throw new Error("duplicate JSON keys");
     decoded = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
   } catch {
     return { headerHash, status: null, rejectedReasonHash: null };

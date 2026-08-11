@@ -10,6 +10,7 @@ const payload: PaymentPayload = {
   payload: {},
   extensions: {},
 };
+const signal = new AbortController().signal;
 
 describe("strict CDP facilitator client", () => {
   it("pins the production origin and path", () => {
@@ -19,6 +20,13 @@ describe("strict CDP facilitator client", () => {
     expect(() => client(async () => json({ isValid: true, payer: payer() }), {
       baseUrl: "https://api.cdp.coinbase.com/other",
     })).toThrow(/pinned CDP endpoint/);
+    expect(() => client(async () => json({ isValid: true, payer: payer() }), {
+      allowInsecureTestUrl: true,
+      baseUrl: "http://attacker.example/x402",
+    })).toThrow(/loopback-only/);
+    expect(() => client(async () => json({ isValid: true, payer: payer() }), {
+      timeoutMs: 60_001,
+    })).toThrow(/timeout is invalid/);
   });
 
   it("allows only bounded CDP authentication headers", async () => {
@@ -32,7 +40,7 @@ describe("strict CDP facilitator client", () => {
       }),
       fetchFn: fetchFn as typeof fetch,
     });
-    await expect(unsafe.verify(payload, requirements())).rejects.toThrow(/unsafe header/);
+    await expect(unsafe.verify(payload, requirements(), signal)).rejects.toThrow(/unsafe header/);
 
     let received: Headers | undefined;
     const safe = new CdpFacilitatorClient({
@@ -47,7 +55,7 @@ describe("strict CDP facilitator client", () => {
         return json({ isValid: true, payer: payer() });
       }) as typeof fetch,
     });
-    await safe.verify(payload, requirements());
+    await safe.verify(payload, requirements(), signal);
     expect(received?.get("content-type")).toBe("application/json");
     expect(received?.get("authorization")).toBe("Bearer a.b.c");
   });
@@ -58,7 +66,7 @@ describe("strict CDP facilitator client", () => {
       calls += 1;
       return json({ error: "unavailable" }, 503);
     });
-    await expect(serverError.verify(payload, requirements())).rejects.toThrow(/returned 503/);
+    await expect(serverError.verify(payload, requirements(), signal)).rejects.toThrow(/returned 503/);
     expect(calls).toBe(1);
 
     const authTimeout = new CdpFacilitatorClient({
@@ -68,25 +76,51 @@ describe("strict CDP facilitator client", () => {
       createAuthHeaders: () => new Promise(() => undefined),
       fetchFn: (async () => json({ isValid: true, payer: payer() })) as typeof fetch,
     });
-    await expect(authTimeout.verify(payload, requirements())).rejects.toThrow(/timed out/);
+    await expect(authTimeout.verify(payload, requirements(), signal)).rejects.toThrow(/timed out/);
+  });
+
+  it("aborts facilitator transport when its fenced owner loses the lease", async () => {
+    const controller = new AbortController();
+    const transport: { signal: AbortSignal | null } = { signal: null };
+    let transportStarted!: () => void;
+    const started = new Promise<void>((resolve) => { transportStarted = resolve; });
+    const abortable = client((_unused, init) => {
+      transport.signal = init?.signal as AbortSignal;
+      transportStarted();
+      return new Promise<Response>((_resolve, reject) => {
+        transport.signal!.addEventListener("abort", () => {
+          reject(transport.signal!.reason ?? new Error("aborted"));
+        }, { once: true });
+      });
+    });
+    const pending = abortable.verify(payload, requirements(), controller.signal);
+    await started;
+    controller.abort(new Error("lease lost"));
+    await expect(pending).rejects.toThrow(/lease lost/);
+    expect(transport.signal?.aborted).toBe(true);
   });
 
   it("rejects non-JSON, oversized, unknown, and contradictory responses", async () => {
     await expect(client(async () => new Response("ok", {
       status: 200,
       headers: { "content-type": "text/plain" },
-    })).verify(payload, requirements())).rejects.toThrow(/not JSON/);
+    })).verify(payload, requirements(), signal)).rejects.toThrow(/not JSON/);
 
     await expect(client(async () => json({
       isValid: true,
       payer: payer(),
       unknown: true,
-    })).verify(payload, requirements())).rejects.toThrow(/unknown field/);
+    })).verify(payload, requirements(), signal)).rejects.toThrow(/unknown field/);
+
+    await expect(client(async () => new Response(
+      `{"isValid":false,"isValid":true,"payer":"${payer()}"}`,
+      { status: 200, headers: { "content-type": "application/json" } },
+    )).verify(payload, requirements(), signal)).rejects.toThrow(/duplicate JSON keys/);
 
     await expect(client(async () => json({
       isValid: true,
       payer: payer(),
-    }, 400)).verify(payload, requirements())).rejects.toThrow(/contradictory/);
+    }, 400)).verify(payload, requirements(), signal)).rejects.toThrow(/contradictory/);
 
     await expect(client(async () => new Response(JSON.stringify({
       isValid: false,
@@ -94,7 +128,7 @@ describe("strict CDP facilitator client", () => {
     }), {
       status: 200,
       headers: { "content-type": "application/json" },
-    })).verify(payload, requirements())).rejects.toThrow(/size limit/);
+    })).verify(payload, requirements(), signal)).rejects.toThrow(/size limit/);
 
     let canceled = false;
     const stream = new ReadableStream<Uint8Array>({
@@ -109,7 +143,7 @@ describe("strict CDP facilitator client", () => {
     await expect(client(async () => new Response(stream, {
       status: 200,
       headers: { "content-type": "application/json" },
-    })).verify(payload, requirements())).rejects.toThrow(/size limit/);
+    })).verify(payload, requirements(), signal)).rejects.toThrow(/size limit/);
     expect(canceled).toBe(true);
   });
 
@@ -124,11 +158,19 @@ describe("strict CDP facilitator client", () => {
       status: null,
       rejectedReasonHash: null,
     });
+    const duplicate = Buffer.from(
+      '{"bazaar":{"status":"rejected","status":"success"}}',
+      "utf8",
+    ).toString("base64");
+    expect(parseBazaarExtensionResponse(duplicate)).toMatchObject({
+      status: null,
+      rejectedReasonHash: null,
+    });
   });
 });
 
 function client(
-  fetchFn: () => Promise<Response>,
+  fetchFn: typeof fetch | (() => Promise<Response>),
   overrides: Partial<ConstructorParameters<typeof CdpFacilitatorClient>[0]> = {},
 ) {
   return new CdpFacilitatorClient({

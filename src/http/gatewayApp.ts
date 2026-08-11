@@ -28,6 +28,8 @@ import type { ProviderAuthorityService } from "../payment/providerAuthority.js";
 import { createBazaarCompatibilityRouter } from "../bazaar/router.js";
 import type { BazaarCompatibilityWiring } from "../bazaar/types.js";
 import type { BazaarRecoveryRuntime } from "../bazaar/recovery.js";
+import { clearRawJsonBody } from "./rawJsonBody.js";
+import { clearBazaarRequestContext } from "./bazaarRequestContext.js";
 
 export interface GatewayHttpOptions {
   config: Config;
@@ -159,7 +161,10 @@ export async function createGatewayHttp(
         buyerAgentCardFetch: options.buyerAgentCardFetch,
       })
     : null;
-  const errorHandler: ErrorRequestHandler = (error, _req, res, next) => {
+  const errorHandler: ErrorRequestHandler = (error, req, res, next) => {
+    clearRawJsonBody(req);
+    clearBazaarRequestContext(req);
+    req.body = {};
     if (res.headersSent) return next(error);
     if (sendBodyParserError(error, res)) return;
     const correlationId = logErrorWithId("http.request", error);

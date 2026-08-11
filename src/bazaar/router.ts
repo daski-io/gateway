@@ -7,9 +7,16 @@ import {
 import { Router, type Request, type Response } from "express";
 import type { Pool } from "../db/pool.js";
 import type { ProviderAuthorityService } from "../payment/providerAuthority.js";
-import { getRawJsonBody } from "../http/rawJsonBody.js";
+import { clearRawJsonBody, getRawJsonBody } from "../http/rawJsonBody.js";
+import { hasDuplicateJsonObjectKeys } from "../http/jsonDuplicateKeys.js";
+import {
+  bazaarIngressAgeSeconds,
+  clearBazaarRequestContext,
+  takeBazaarPaymentHeaders,
+} from "../http/bazaarRequestContext.js";
 import { isHexAddress } from "../util/evmValidation.js";
 import { BazaarLifecycleService } from "./lifecycleService.js";
+import { validateChallengeMacKeyring } from "./lifecycleChallenge.js";
 import { BazaarRecoveryRuntime } from "./recovery.js";
 import { validateCompatibilityListing } from "./offer.js";
 import { BazaarOutcomeService } from "./outcomeService.js";
@@ -18,6 +25,8 @@ import { validateStockFixedRequest } from "./requestBinding.js";
 import { BazaarOrderStore } from "./store.js";
 import type { BazaarCompatibilityWiring } from "./types.js";
 import { registerListingBindings } from "./listingStore.js";
+import { validateSettlementCapacityPolicy } from "./settlementCapacity.js";
+import { snapshotBazaarCompatibilityWiring } from "./wiringSnapshot.js";
 
 const MAX_X402_HEADER_BYTES = 8 * 1024;
 const MAX_PAYMENT_SIGNATURE_BYTES = 12 * 1024;
@@ -28,77 +37,96 @@ export async function createBazaarCompatibilityRouter(options: {
   providerAuthority: ProviderAuthorityService;
   wiring: BazaarCompatibilityWiring;
 }): Promise<{ router: Router; close(): Promise<void>; recovery: BazaarRecoveryRuntime }> {
-  await validateWiring(options.wiring);
-  await registerListingBindings(options.pool, options.wiring.listings);
+  const wiring = snapshotBazaarCompatibilityWiring(options.wiring);
+  await validateWiring(wiring);
+  await registerListingBindings(options.pool, wiring.listings);
   const router = Router();
   const store = new BazaarOrderStore(options.pool);
   const leaseOwner = `gateway-request:${randomUUID()}`;
-  const lifecycle = new BazaarLifecycleService(store, options.wiring);
+  const lifecycle = new BazaarLifecycleService(store, wiring);
   const recovery = new BazaarRecoveryRuntime(
     store,
-    options.wiring,
+    wiring,
     options.providerAuthority,
   );
 
-  for (const listing of options.wiring.listings) {
+  for (const listing of wiring.listings) {
     const service = new BazaarOutcomeService(
       listing,
       store,
-      options.wiring,
+      wiring,
       options.providerAuthority,
       leaseOwner,
     );
     router.post(listing.routePath, async (req, res) => {
-      res.setHeader("Cache-Control", "no-store");
-      const request = validateStockFixedRequest(req, listing.offer.message);
-      if (!request.ok) {
-        res.status(request.status).json({ error: request.code });
-        return;
-      }
-      if (hasLegacyPaymentHeader(req)) {
-        res.status(400).json({ error: "legacy_payment_header_forbidden" });
-        return;
-      }
-      const rawHeader = req.headers["payment-signature"];
-      if (rawHeader === undefined) {
-        await sendOutcome(res, await service.unpaid());
-        return;
-      }
-      if (
-        Array.isArray(rawHeader) ||
-        rawHeader.length === 0 ||
-        Buffer.byteLength(rawHeader, "utf8") > MAX_PAYMENT_SIGNATURE_BYTES
-      ) {
-        res.status(400).json({ error: "malformed_payment_signature" });
-        return;
-      }
-      let payload;
       try {
-        payload = decodePaymentSignatureHeader(rawHeader);
-      } catch {
-        res.status(400).json({ error: "malformed_payment_signature" });
-        return;
+        res.setHeader("Cache-Control", "no-store");
+        const request = validateStockFixedRequest(req, listing.offer.message);
+        if (!request.ok) {
+          res.status(request.status).json({ error: request.code });
+          return;
+        }
+        const headers = takeBazaarPaymentHeaders(req);
+        if (headers.legacyPaymentPresent) {
+          res.status(400).json({ error: "legacy_payment_header_forbidden" });
+          return;
+        }
+        const rawHeader = headers.paymentSignature;
+        if (rawHeader === undefined) {
+          await sendOutcome(res, await service.unpaid());
+          return;
+        }
+        if (
+          Array.isArray(rawHeader) ||
+          rawHeader.length === 0 ||
+          Buffer.byteLength(rawHeader, "utf8") > MAX_PAYMENT_SIGNATURE_BYTES ||
+          !validPaymentSignatureJson(rawHeader)
+        ) {
+          res.status(400).json({ error: "malformed_payment_signature" });
+          return;
+        }
+        let payload;
+        try {
+          payload = decodePaymentSignatureHeader(rawHeader);
+        } catch {
+          res.status(400).json({ error: "malformed_payment_signature" });
+          return;
+        }
+        await sendOutcome(
+          res,
+          await service.paid(payload, bazaarIngressAgeSeconds(req)),
+        );
+      } finally {
+        clearRawJsonBody(req);
+        clearBazaarRequestContext(req);
       }
-      await sendOutcome(res, await service.paid(payload));
     });
   }
 
   router.post("/x402/v1/orders/:handle/challenge", async (req, res) => {
     res.setHeader("Cache-Control", "no-store");
     if (!validLifecycleRequest(req)) {
+      discardLifecycleRequest(req);
       res.status(400).json({ error: "invalid_lifecycle_request" });
       return;
     }
-    const result = await lifecycle.challenge(req.params.handle, req.body);
+    const result = await runLifecycleRequest(
+      req,
+      () => lifecycle.challenge(req.params.handle, req.body),
+    );
     res.status(result.status).json(result.body);
   });
   router.post("/x402/v1/orders/:handle/actions", async (req, res) => {
     res.setHeader("Cache-Control", "no-store");
     if (!validLifecycleRequest(req)) {
+      discardLifecycleRequest(req);
       res.status(400).json({ error: "invalid_lifecycle_request" });
       return;
     }
-    const result = await lifecycle.redeem(req.params.handle, req.body);
+    const result = await runLifecycleRequest(
+      req,
+      () => lifecycle.redeem(req.params.handle, req.body),
+    );
     res.status(result.status).json(result.body);
   });
   await recovery.start();
@@ -130,26 +158,27 @@ async function sendOutcome(
 
 async function validateWiring(wiring: BazaarCompatibilityWiring): Promise<void> {
   if (wiring.listings.length === 0) throw new Error("Bazaar harness has no listings");
+  const termsOrigins = validateApprovedTermsOrigins(wiring.approvedTermsOrigins);
   const routes = new Set<string>();
   const recipients = new Set<string>();
   const commitments = new Set<string>();
   const offerIds = new Map<string, string>();
-  const challengeSigner = wiring.challengeSigner.address.toLowerCase();
-  const providerActionSigner = wiring.providerActionSigner.address.toLowerCase();
+  const providerActionSigner = wiring.providerActionSigningBroker.address.toLowerCase();
   const zeroAddress = `0x${"00".repeat(20)}`;
-  if (
-    !isHexAddress(wiring.challengeSigner.address) ||
-    !isHexAddress(wiring.providerActionSigner.address) ||
-    challengeSigner === zeroAddress || providerActionSigner === zeroAddress ||
-    challengeSigner === providerActionSigner
-  ) throw new Error("Bazaar lifecycle signers must be valid and purpose-separated");
   const now = BigInt(Math.floor((wiring.now?.() ?? new Date()).getTime() / 1000));
+  validateChallengeMacKeyring(wiring.challengeMac, now);
+  validateSettlementCapacityPolicy(wiring.settlementCapacity);
+  if (
+    !isHexAddress(wiring.providerActionSigningBroker.address) ||
+    providerActionSigner === zeroAddress
+  ) throw new Error("Bazaar provider-action signer must be valid");
   for (const listing of wiring.listings) {
     await validateCompatibilityListing(listing, now);
     const offer = listing.offer.message;
+    if (!termsOrigins.has(new URL(listing.termsUrl).origin)) {
+      throw new Error("Bazaar terms URL does not use an approved publication origin");
+    }
     if (
-      challengeSigner === offer.offerSigner.toLowerCase() ||
-      challengeSigner === offer.payTo.toLowerCase() ||
       providerActionSigner === offer.offerSigner.toLowerCase() ||
       providerActionSigner === offer.payTo.toLowerCase()
     ) throw new Error("Bazaar lifecycle keys cannot reuse listing or payment keys");
@@ -176,6 +205,25 @@ async function validateWiring(wiring: BazaarCompatibilityWiring): Promise<void> 
   }
 }
 
+function validateApprovedTermsOrigins(origins: string[]): Set<string> {
+  const approved = new Set<string>();
+  for (const value of origins) {
+    let url: URL;
+    try {
+      url = new URL(value);
+    } catch {
+      throw new Error("Bazaar approved terms origin is invalid");
+    }
+    if (
+      url.protocol !== "https:" || url.username || url.password || url.search ||
+      url.hash || url.pathname !== "/" || value !== url.origin || approved.has(value)
+    ) throw new Error("Bazaar approved terms origin is invalid");
+    approved.add(value);
+  }
+  if (approved.size === 0) throw new Error("Bazaar has no approved terms origin");
+  return approved;
+}
+
 function validLifecycleRequest(request: Request): boolean {
   const contentType = request.get("content-type")?.toLowerCase();
   const rawBody = getRawJsonBody(request);
@@ -184,9 +232,31 @@ function validLifecycleRequest(request: Request): boolean {
     request.headers["transfer-encoding"] === undefined &&
     (contentType === "application/json" ||
       contentType === "application/json; charset=utf-8") &&
-    rawBody.length > 0 && rawBody.length <= MAX_LIFECYCLE_BODY_BYTES;
+    rawBody.length > 0 && rawBody.length <= MAX_LIFECYCLE_BODY_BYTES &&
+    !hasDuplicateJsonObjectKeys(rawBody);
 }
 
-function hasLegacyPaymentHeader(request: Request): boolean {
-  return request.headers["x-payment"] !== undefined;
+async function runLifecycleRequest(
+  request: Request,
+  action: () => ReturnType<BazaarLifecycleService["challenge"]>,
+): Promise<Awaited<ReturnType<BazaarLifecycleService["challenge"]>>> {
+  try {
+    return await action();
+  } finally {
+    discardLifecycleRequest(request);
+  }
+}
+
+function discardLifecycleRequest(request: Request): void {
+  clearRawJsonBody(request);
+  clearBazaarRequestContext(request);
+  request.body = {};
+}
+
+function validPaymentSignatureJson(header: string): boolean {
+  if (!/^[A-Za-z0-9+/]*={0,2}$/.test(header)) {
+    return false;
+  }
+  const bytes = Buffer.from(header, "base64");
+  return !hasDuplicateJsonObjectKeys(bytes);
 }

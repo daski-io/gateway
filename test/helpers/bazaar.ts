@@ -17,7 +17,7 @@ import type {
   BazaarFacilitatorClient,
   BazaarFulfillmentService,
   BazaarLifecycleDispatchInput,
-  BazaarLifecycleSigner,
+  BazaarProviderActionSigningBroker,
   BazaarListing,
   ListingOfferV1,
 } from "../../src/bazaar/types.js";
@@ -25,8 +25,7 @@ import type {
 export const TEST_NOW = new Date("2026-08-10T18:00:00.000Z");
 export const PROVIDER_KEY =
   `0x${"22".repeat(32)}` as Hex;
-export const CHALLENGE_KEY =
-  `0x${"33".repeat(32)}` as Hex;
+export const CHALLENGE_MAC_SECRET = Buffer.from("33".repeat(32), "hex");
 export const PROVIDER_ACTION_KEY =
   `0x${"44".repeat(32)}` as Hex;
 export const SECOND_PAY_TO_KEY = `0x${"55".repeat(32)}` as Hex;
@@ -47,6 +46,7 @@ export async function createBazaarHarness(): Promise<BazaarHarness> {
   const fulfillment = new FakeFulfillment();
   const wiring: BazaarCompatibilityWiring = {
     listings: [listing],
+    approvedTermsOrigins: ["https://gateway.test"],
     facilitator,
     evidenceVerifier: {
       verify: async (input) => ({
@@ -60,8 +60,20 @@ export async function createBazaarHarness(): Promise<BazaarHarness> {
       verifyBeforeSettlement: async () => ({ profile: "eoa" }),
     },
     fulfillment,
-    challengeSigner: accountSigner(privateKeyToAccount(CHALLENGE_KEY)),
-    providerActionSigner: accountSigner(privateKeyToAccount(PROVIDER_ACTION_KEY)),
+    challengeMac: {
+      current: { epoch: "test-2026-08", secret: CHALLENGE_MAC_SECRET },
+    },
+    settlementCapacity: {
+      maxGlobalConcurrent: 16,
+      maxPerListingConcurrent: 8,
+      maxPerPayerConcurrent: 4,
+      maxGlobalPerMinute: 120,
+      maxPerListingPerMinute: 60,
+      maxPerPayerPerMinute: 30,
+    },
+    providerActionSigningBroker: accountLifecycleBroker(
+      privateKeyToAccount(PROVIDER_ACTION_KEY),
+    ),
     now: () => new Date(TEST_NOW),
   };
   return { wiring, providerAccount, facilitator, fulfillment };
@@ -99,12 +111,17 @@ export async function createListing(
   };
   const hashJson = (value: Record<string, unknown>) =>
     keccak256(toBytes(canonicalJsonStringify(value)));
+  const termsDocument = Buffer.from(
+    `# Test Provider Terms v1\n\nFixed test-report terms for ${slug}.\n`,
+    "utf8",
+  );
   const terms = {
     description: "Purchase one fixed test report from the named provider through Daski.",
     sellerName: "Test Provider",
     expectedDelivery: "Within five minutes",
     refundTerms: "Provider reviews failed fulfillment and issues any refund.",
-    termsUrl: `https://gateway.test/terms/${slug}`,
+    termsUrl: `https://gateway.test/terms/v1/${slug}.md`,
+    termsDocumentHash: keccak256(termsDocument),
   };
   const now = BigInt(Math.floor(TEST_NOW.getTime() / 1000));
   const message: ListingOfferV1 = {
@@ -124,6 +141,7 @@ export async function createListing(
     token: TEST_TOKEN,
     grossAmount: 10_000n,
     payTo: payTo.address,
+    paymentMaxTimeoutSeconds: 300n,
     daskiCommissionReceiver: "0x0000000000000000000000000000000000000000",
     commissionBps: 0n,
     splitterCodeHash: ZERO_BYTES32,
@@ -164,6 +182,8 @@ export async function createListing(
     routePath: `/x402/v1/outcomes/${slug}`,
     resourceUrl,
     ...terms,
+    termsDocumentMediaType: "text/markdown; charset=utf-8" as const,
+    termsDocumentBase64: termsDocument.toString("base64"),
     requestSchema,
     responseSchema,
     assetName: "USDC",
@@ -181,6 +201,8 @@ export async function createPaymentPayload(input: {
   paymentRequired: PaymentRequired;
   buyer: PrivateKeyAccount;
   nonce: Hex;
+  validAfter?: bigint;
+  validBefore?: bigint;
 }): Promise<PaymentPayload> {
   const requirements = input.paymentRequired.accepts[0]!;
   const now = BigInt(Math.floor(TEST_NOW.getTime() / 1000));
@@ -188,8 +210,8 @@ export async function createPaymentPayload(input: {
     from: input.buyer.address,
     to: requirements.payTo as Hex,
     value: BigInt(requirements.amount),
-    validAfter: now - 1n,
-    validBefore: now + 240n,
+    validAfter: input.validAfter ?? now - 1n,
+    validBefore: input.validBefore ?? now + 240n,
     nonce: input.nonce,
   };
   const signature = await input.buyer.signTypedData({
@@ -280,10 +302,39 @@ export class FakeFulfillment implements BazaarFulfillmentService {
   }
 }
 
-export function accountSigner(account: PrivateKeyAccount): BazaarLifecycleSigner {
+export function accountLifecycleBroker(
+  account: PrivateKeyAccount,
+): BazaarProviderActionSigningBroker {
   return {
     address: account.address,
-    signTypedData: (input) => account.signTypedData(input as never),
+    signLifecycleAction: (input) => account.signTypedData({
+      domain: {
+        name: "Daski Bazaar Lifecycle Action",
+        version: "1",
+        chainId: BigInt(input.chainId),
+        verifyingContract: input.payTo,
+      },
+      types: {
+        DaskiBazaarLifecycleAction: [
+          { name: "orderRecordId", type: "bytes32" },
+          { name: "taskIdHash", type: "bytes32" },
+          { name: "providerAgentId", type: "uint256" },
+          { name: "actionHash", type: "bytes32" },
+          { name: "requestHash", type: "bytes32" },
+          { name: "buyerAuthorizationDigest", type: "bytes32" },
+          { name: "nonce", type: "bytes32" },
+          { name: "issuedAt", type: "uint256" },
+          { name: "expiresAt", type: "uint256" },
+        ],
+      },
+      primaryType: "DaskiBazaarLifecycleAction",
+      message: {
+        ...input.message,
+        providerAgentId: BigInt(input.message.providerAgentId),
+        issuedAt: BigInt(input.message.issuedAt),
+        expiresAt: BigInt(input.message.expiresAt),
+      },
+    }),
   };
 }
 

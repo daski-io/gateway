@@ -8,6 +8,7 @@ import {
   type Hex,
 } from "viem";
 import { validateListingManifest } from "./listingManifest.js";
+import { PAYMENT_MAX_TIMEOUT_SECONDS } from "./paymentPolicy.js";
 import { validatePayToControlProof } from "./payToControl.js";
 import type { BazaarListing, ListingOfferV1 } from "./types.js";
 
@@ -29,6 +30,7 @@ export const LISTING_OFFER_V1_TYPES = {
     { name: "token", type: "address" },
     { name: "grossAmount", type: "uint256" },
     { name: "payTo", type: "address" },
+    { name: "paymentMaxTimeoutSeconds", type: "uint256" },
     { name: "daskiCommissionReceiver", type: "address" },
     { name: "commissionBps", type: "uint256" },
     { name: "splitterCodeHash", type: "bytes32" },
@@ -42,7 +44,7 @@ export const LISTING_OFFER_V1_TYPES = {
 
 const LISTING_COMMITMENT_TYPEHASH = keccak256(
   toBytes(
-    "DaskiBazaarListingCommitment(uint256 chainId,bytes32 listingEpoch,uint256 providerAgentId,address providerPayee,bytes32 outcomeId,bytes32 methodHash,bytes32 resourceHash,bytes32 requestSchemaHash,bytes32 responseSchemaHash,bytes32 requestBindingModeHash,bytes32 routeModeHash,address token,uint256 grossAmount,address daskiCommissionReceiver,uint256 commissionBps,bytes32 termsHash,bytes32 policyVersion)",
+    "DaskiBazaarListingCommitment(uint256 chainId,bytes32 listingEpoch,uint256 providerAgentId,address providerPayee,bytes32 outcomeId,bytes32 methodHash,bytes32 resourceHash,bytes32 requestSchemaHash,bytes32 responseSchemaHash,bytes32 requestBindingModeHash,bytes32 routeModeHash,address token,uint256 grossAmount,uint256 paymentMaxTimeoutSeconds,address daskiCommissionReceiver,uint256 commissionBps,bytes32 splitterCodeHash,bytes32 termsHash,bytes32 policyVersion)",
   ),
 );
 const ZERO_ADDRESS = `0x${"00".repeat(20)}` as Hex;
@@ -77,8 +79,9 @@ export function computeListingCommitment(message: ListingOfferV1): Hex {
         { type: "uint256" }, { type: "address" }, { type: "bytes32" },
         { type: "bytes32" }, { type: "bytes32" }, { type: "bytes32" },
         { type: "bytes32" }, { type: "bytes32" }, { type: "bytes32" },
-        { type: "address" }, { type: "uint256" }, { type: "address" },
-        { type: "uint256" }, { type: "bytes32" }, { type: "bytes32" },
+        { type: "address" }, { type: "uint256" }, { type: "uint256" },
+        { type: "address" }, { type: "uint256" }, { type: "bytes32" },
+        { type: "bytes32" }, { type: "bytes32" },
       ],
       [
         LISTING_COMMITMENT_TYPEHASH, message.chainId, message.listingEpoch,
@@ -86,7 +89,8 @@ export function computeListingCommitment(message: ListingOfferV1): Hex {
         message.methodHash, message.resourceHash, message.requestSchemaHash,
         message.responseSchemaHash, message.requestBindingModeHash,
         message.routeModeHash, message.token, message.grossAmount,
-        message.daskiCommissionReceiver, message.commissionBps,
+        message.paymentMaxTimeoutSeconds, message.daskiCommissionReceiver,
+        message.commissionBps, message.splitterCodeHash,
         message.termsHash, message.policyVersion,
       ],
     ),
@@ -103,12 +107,14 @@ export async function validateCompatibilityListing(
   await validatePayToControlProof(listing);
   const uints = [
     message.chainId, message.providerAgentId, message.grossAmount,
-    message.commissionBps, message.issuedAt, message.validBefore,
+    message.paymentMaxTimeoutSeconds, message.commissionBps, message.issuedAt,
+    message.validBefore,
   ];
   if (
     uints.some((value) => typeof value !== "bigint" || value < 0n || value > MAX_UINT256) ||
     message.grossAmount <= 0n ||
     message.providerAgentId <= 0n ||
+    message.paymentMaxTimeoutSeconds !== PAYMENT_MAX_TIMEOUT_SECONDS ||
     message.issuedAt > nowSeconds ||
     message.validBefore <= nowSeconds ||
     message.validBefore - message.issuedAt > maxOfferLifetimeSeconds
