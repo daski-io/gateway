@@ -1,11 +1,13 @@
 import cors from "cors";
 import express, {
   type Express,
+  type Request,
   type RequestHandler,
 } from "express";
 import type { Config } from "../config.js";
 import type { Queries } from "../db/queries.js";
 import { rateLimit, securityHeaders } from "../util/security.js";
+import { isHexAddress } from "../util/evmValidation.js";
 import { captureRawJsonBody } from "./rawJsonBody.js";
 import {
   captureBazaarRequestContext,
@@ -157,8 +159,34 @@ export function configureMiddleware(
   );
   app.use(express.json({ limit: "1mb", verify: captureRawJsonBody }));
   if (config.nodeEnv !== "test") {
+    app.use(
+      ["/x402/v1/orders"],
+      rateLimit({
+        windowMs: 60_000,
+        max: 30,
+        namespace: "bazaar-lifecycle-domain",
+        keyGenerator: bazaarLifecycleDomainRateKey,
+        store: queries,
+      }),
+    );
     configureParsedMcpRateLimits(app, queries, config);
   }
+}
+
+export function bazaarLifecycleDomainRateKey(request: Request): string {
+  const body = asRecord(request.body);
+  const envelope = asRecord(body?.envelope);
+  const payload = asRecord(envelope?.payload);
+  const authorization = asRecord(payload?.authorization);
+  const domain = asRecord(authorization?.domain);
+  const candidate = body?.payTo ?? domain?.verifyingContract;
+  return isHexAddress(candidate) ? candidate.toLowerCase() : "invalid";
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
 }
 
 function configurePreParserRateLimits(
@@ -246,6 +274,16 @@ function configurePreParserRateLimits(
       namespace: "bazaar-lifecycle",
       perClient: 30,
       global: config.stateChangeGlobalMaxPerMinute,
+      store: queries,
+    },
+  );
+  addRateLimits(
+    app,
+    ["/.well-known/daski-bazaar-lifecycle-domains-v1.json"],
+    {
+      namespace: "bazaar-lifecycle-registry",
+      perClient: 10,
+      global: 60,
       store: queries,
     },
   );

@@ -27,7 +27,10 @@ import type { BazaarCompatibilityWiring } from "./types.js";
 import { registerListingBindings } from "./listingStore.js";
 import { validateSettlementCapacityPolicy } from "./settlementCapacity.js";
 import { snapshotBazaarCompatibilityWiring } from "./wiringSnapshot.js";
-import { reconcileLifecycleDomains } from "./lifecycleDomainRegistry.js";
+import {
+  readLifecycleDomains,
+  reconcileLifecycleDomains,
+} from "./lifecycleDomainRegistry.js";
 
 const MAX_X402_HEADER_BYTES = 8 * 1024;
 const MAX_PAYMENT_SIGNATURE_BYTES = 12 * 1024;
@@ -58,6 +61,27 @@ export async function createBazaarCompatibilityRouter(options: {
     wiring,
     options.providerAuthority,
   );
+
+  router.get("/.well-known/daski-bazaar-lifecycle-domains-v1.json", async (_req, res) => {
+    res.setHeader("Cache-Control", "no-store");
+    const now = BigInt(Math.floor((wiring.now?.() ?? new Date()).getTime() / 1000));
+    const retainedKeys = (wiring.challengeMac.retained ?? [])
+      .filter((key) => key.acceptUntil >= now)
+      .map((key) => ({
+        epoch: key.epoch,
+        status: "retained",
+        acceptUntil: key.acceptUntil.toString(),
+      }));
+    res.json({
+      version: "1",
+      providerActionSigner: wiring.providerActionSigningBroker.address,
+      challengeMacKeys: [
+        { epoch: wiring.challengeMac.current.epoch, status: "current" },
+        ...retainedKeys,
+      ],
+      domains: await readLifecycleDomains(options.pool),
+    });
+  });
 
   for (const listing of wiring.listings) {
     const service = new BazaarOutcomeService(

@@ -43,6 +43,8 @@ export interface RateLimitOptions {
   namespace?: string;
   /** Global buckets cap aggregate work across clients and replicas. */
   keyScope?: "client" | "global";
+  /** Optional bounded application key for shared distributed buckets. */
+  keyGenerator?: (request: Request) => string;
   /** Shared store used by multi-replica deployments. */
   store?: {
     consumeRateLimitBucket(
@@ -114,10 +116,17 @@ export function rateLimit(opts: RateLimitOptions) {
     res: Response,
     next: NextFunction,
   ): void {
-    const clientKey =
-      opts.keyScope === "global"
-        ? "global"
-        : (req.ip ?? req.socket.remoteAddress ?? "unknown");
+    const generatedKey = opts.keyGenerator?.(req);
+    if (
+      generatedKey !== undefined &&
+      !/^[A-Za-z0-9._:-]{1,128}$/.test(generatedKey)
+    ) {
+      next(new Error("rate-limit key generator returned an invalid key"));
+      return;
+    }
+    const clientKey = generatedKey ?? (opts.keyScope === "global"
+      ? "global"
+      : (req.ip ?? req.socket.remoteAddress ?? "unknown"));
     const key = `${opts.namespace ?? "default"}:${clientKey}`;
     if (opts.store) {
       void opts.store

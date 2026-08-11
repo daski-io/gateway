@@ -102,6 +102,25 @@ describe("Bazaar compatibility harness", () => {
       bodyType: "json",
       body: {},
     });
+    const registryResponse = await fetch(
+      `${gateway.baseUrl}/.well-known/daski-bazaar-lifecycle-domains-v1.json`,
+    );
+    expect(registryResponse.status).toBe(200);
+    expect(registryResponse.headers.get("cache-control")).toBe("no-store");
+    const registry = await registryResponse.json() as any;
+    expect(registry).toMatchObject({
+      version: "1",
+      providerActionSigner: harness.wiring.providerActionSigningBroker.address,
+      challengeMacKeys: [{ epoch: "test-2026-08", status: "current" }],
+      domains: [{
+        chainId: "84532",
+        payTo: harness.providerAccount.address.toLowerCase(),
+        listingEpoch: harness.wiring.listings[0]!.listingEpoch.toLowerCase(),
+        listingCommitment:
+          harness.wiring.listings[0]!.listingCommitment.toLowerCase(),
+        status: "active",
+      }],
+    });
   });
 
   it("rejects displayed terms or token metadata that the provider did not sign", async () => {
@@ -625,6 +644,12 @@ describe("Bazaar compatibility harness", () => {
       providerActionSigner: harness.wiring.providerActionSigningBroker.address,
       retentionSeconds: gateway.config.taskRetentionSeconds,
     });
+    const retiredRegistry = await fetch(
+      `${gateway.baseUrl}/.well-known/daski-bazaar-lifecycle-domains-v1.json`,
+    );
+    expect(await retiredRegistry.json()).toMatchObject({
+      domains: [{ status: "retired", acceptUntil: expect.any(String) }],
+    });
     const retained = await postJson(
       gateway,
       `/x402/v1/orders/${handle}/challenge`,
@@ -687,6 +712,10 @@ describe("Bazaar compatibility harness", () => {
       claim,
     );
     expect(expired.response.status).toBe(400);
+    const expiredRegistry = await fetch(
+      `${gateway.baseUrl}/.well-known/daski-bazaar-lifecycle-domains-v1.json`,
+    );
+    expect(await expiredRegistry.json()).toMatchObject({ domains: [] });
   });
 
   it("rejects lifecycle compression and oversized uint claims before signing", async () => {

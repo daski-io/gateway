@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { NextFunction, Request, Response } from "express";
 import { rateLimit } from "../src/util/security.js";
+import { bazaarLifecycleDomainRateKey } from "../src/http/middleware.js";
 import { startTestGateway } from "./helpers/setup.js";
 
 function responseStub() {
@@ -71,6 +72,47 @@ describe("rateLimit", () => {
       "global-test:global",
       1000,
     );
+  });
+
+  it("uses a validated application key for distributed domain budgets", async () => {
+    const consumeRateLimitBucket = vi.fn().mockResolvedValue({
+      count: 1,
+      resetAt: new Date(Date.now() + 1000),
+    });
+    const middleware = rateLimit({
+      windowMs: 1000,
+      max: 2,
+      namespace: "domain-test",
+      keyGenerator: () => "0x1111111111111111111111111111111111111111",
+      store: { consumeRateLimitBucket },
+    });
+    const next = vi.fn() as unknown as NextFunction;
+    middleware({ socket: {} } as Request, responseStub().response, next);
+    await vi.waitFor(() => expect(next).toHaveBeenCalledOnce());
+    expect(consumeRateLimitBucket).toHaveBeenCalledWith(
+      "domain-test:0x1111111111111111111111111111111111111111",
+      1000,
+    );
+  });
+});
+
+describe("Bazaar lifecycle domain admission", () => {
+  it("extracts only canonical challenge or redemption domains", () => {
+    const address = "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd";
+    const uppercase = `0x${address.slice(2).toUpperCase()}`;
+    expect(bazaarLifecycleDomainRateKey({ body: { payTo: address } } as Request))
+      .toBe(address);
+    expect(bazaarLifecycleDomainRateKey({
+      body: {
+        envelope: {
+          payload: {
+            authorization: { domain: { verifyingContract: uppercase } },
+          },
+        },
+      },
+    } as Request)).toBe(address);
+    expect(bazaarLifecycleDomainRateKey({ body: { payTo: "not-an-address" } } as Request))
+      .toBe("invalid");
   });
 });
 

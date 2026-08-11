@@ -4,6 +4,8 @@ import type { Hex } from "../types.js";
 import { isHex32, isHexAddress } from "../util/evmValidation.js";
 import type { BazaarListing } from "./types.js";
 
+const MAX_PUBLISHED_LIFECYCLE_DOMAINS = 1_000;
+
 interface RawLifecycleDomain {
   chain_id: string;
   pay_to: Buffer;
@@ -12,6 +14,23 @@ interface RawLifecycleDomain {
   listing_commitment: Buffer;
   provider_agent_id: string;
   outcome_id: Buffer;
+}
+
+interface RawPublishedLifecycleDomain extends RawLifecycleDomain {
+  active: boolean;
+  accept_until: string | null;
+}
+
+export interface PublishedLifecycleDomainV1 {
+  chainId: string;
+  payTo: Hex;
+  offerSigner: Hex;
+  listingEpoch: Hex;
+  listingCommitment: Hex;
+  providerAgentId: string;
+  outcomeId: Hex;
+  status: "active" | "retired";
+  acceptUntil?: string;
 }
 
 export async function reconcileLifecycleDomains(input: {
@@ -114,6 +133,13 @@ export async function reconcileLifecycleDomains(input: {
         [hexToBytea(commitment), input.retentionSeconds],
       );
     }
+    const accepted = await client.query<{ count: string }>(
+      `SELECT count(*) AS count FROM bazaar_lifecycle_domains
+        WHERE active OR accept_until > now()`,
+    );
+    if (BigInt(accepted.rows[0]?.count ?? "0") > MAX_PUBLISHED_LIFECYCLE_DOMAINS) {
+      throw new Error("Bazaar lifecycle-domain registry exceeds its authority limit");
+    }
     await client.query("COMMIT");
   } catch (error) {
     await client.query("ROLLBACK").catch(() => undefined);
@@ -121,6 +147,36 @@ export async function reconcileLifecycleDomains(input: {
   } finally {
     client.release();
   }
+}
+
+export async function readLifecycleDomains(
+  pool: Pool,
+): Promise<PublishedLifecycleDomainV1[]> {
+  const result = await pool.query<RawPublishedLifecycleDomain>(
+    `SELECT chain_id, pay_to, offer_signer, listing_epoch, listing_commitment,
+            provider_agent_id, outcome_id, active,
+            CASE WHEN accept_until IS NULL THEN NULL
+                 ELSE floor(extract(epoch FROM accept_until))::text
+            END AS accept_until
+       FROM bazaar_lifecycle_domains
+      WHERE active OR accept_until > now()
+      ORDER BY chain_id, pay_to
+      LIMIT 1001`,
+  );
+  if (result.rows.length > MAX_PUBLISHED_LIFECYCLE_DOMAINS) {
+    throw new Error("Bazaar lifecycle-domain registry exceeds its publication limit");
+  }
+  return result.rows.map((row) => ({
+    chainId: row.chain_id,
+    payTo: toHex(row.pay_to),
+    offerSigner: toHex(row.offer_signer),
+    listingEpoch: toHex(row.listing_epoch),
+    listingCommitment: toHex(row.listing_commitment),
+    providerAgentId: row.provider_agent_id,
+    outcomeId: toHex(row.outcome_id),
+    status: row.active ? "active" : "retired",
+    ...(row.accept_until === null ? {} : { acceptUntil: row.accept_until }),
+  }));
 }
 
 function domainMatches(
@@ -132,4 +188,8 @@ function domainMatches(
     row.listing_epoch.compare(values[3]) === 0 &&
     row.listing_commitment.compare(values[4]) === 0 &&
     row.provider_agent_id === values[5] && row.outcome_id.compare(values[6]) === 0;
+}
+
+function toHex(value: Buffer): Hex {
+  return `0x${value.toString("hex")}` as Hex;
 }
