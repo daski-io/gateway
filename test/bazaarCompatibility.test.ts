@@ -154,6 +154,42 @@ describe("Bazaar compatibility harness", () => {
     }, BigInt(Math.floor(TEST_NOW.getTime() / 1000)))).rejects.toThrow(/unsafe key/);
     await expect(validateCompatibilityListing({
       ...listing,
+      requestSchema: {
+        ...listing.requestSchema,
+        properties: {
+          outcome: { $ref: "#/$defs/outcome" },
+        },
+      },
+    }, BigInt(Math.floor(TEST_NOW.getTime() / 1000))))
+      .rejects.toThrow(/forbidden reference/);
+    await expect(validateCompatibilityListing({
+      ...listing,
+      responseSchema: {
+        ...listing.responseSchema,
+        properties: {
+          outcome: { $dynamicRef: "https://attacker.example/dynamic.json" },
+        },
+      },
+    }, BigInt(Math.floor(TEST_NOW.getTime() / 1000))))
+      .rejects.toThrow(/forbidden reference/);
+    await expect(validateCompatibilityListing({
+      ...listing,
+      requestSchema: {
+        ...listing.requestSchema,
+        $schema: "https://attacker.example/dialect",
+      },
+    }, BigInt(Math.floor(TEST_NOW.getTime() / 1000))))
+      .rejects.toThrow(/unsupported dialect/);
+    await expect(validateCompatibilityListing({
+      ...listing,
+      responseSchema: {
+        ...listing.responseSchema,
+        $id: "urn:attacker:schema",
+      },
+    }, BigInt(Math.floor(TEST_NOW.getTime() / 1000))))
+      .rejects.toThrow(/forbidden reference/);
+    await expect(validateCompatibilityListing({
+      ...listing,
       offer: {
         ...listing.offer,
         message: {

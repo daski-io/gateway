@@ -6,6 +6,13 @@ import type { BazaarListing, ListingOfferV1 } from "./types.js";
 const MAX_SCHEMA_BYTES = 16 * 1024;
 const MAX_URL_LENGTH = 2_048;
 const MAX_TERMS_DOCUMENT_BYTES = 128 * 1024;
+const JSON_SCHEMA_DIALECT = "https://json-schema.org/draft/2020-12/schema";
+const SCHEMA_REFERENCE_KEYS = new Set([
+  "$dynamicRef",
+  "$id",
+  "$recursiveRef",
+  "$ref",
+]);
 export const BASE_SEPOLIA_USDC =
   "0x036cbd53842c5426634e7929541ec2318f3dcf7e";
 const LISTING_KEYS = [
@@ -217,6 +224,12 @@ function validateStaticDiscoveryObject(value: unknown, depth = 0): void {
     for (const [key, item] of Object.entries(value)) {
       if (!safeNormalizedText(key) || looksLikeInstructionOrSecret(key)) {
         throw new Error("Bazaar discovery schema contains an unsafe key");
+      }
+      if (SCHEMA_REFERENCE_KEYS.has(key)) {
+        throw new Error("Bazaar discovery schema contains a forbidden reference");
+      }
+      if (key === "$schema" && item !== JSON_SCHEMA_DIALECT) {
+        throw new Error("Bazaar discovery schema uses an unsupported dialect");
       }
       validateStaticDiscoveryObject(item, depth + 1);
     }
