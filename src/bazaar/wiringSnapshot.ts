@@ -32,6 +32,9 @@ export function snapshotBazaarCompatibilityWiring(
         : {}),
     },
     settlementCapacity: { ...wiring.settlementCapacity },
+    refundRiskPolicies: Object.fromEntries(Object.entries(
+      wiring.refundRiskPolicies,
+    ).map(([providerId, policy]) => [providerId, { ...policy }])),
     facilitator: {
       verify: facilitator.verify.bind(facilitator),
       settle: facilitator.settle.bind(facilitator),

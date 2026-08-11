@@ -122,8 +122,24 @@ export interface BazaarDispatchInput {
   settlementTransaction: Hex;
 }
 
+export type BazaarRefundReason =
+  | "AMBIGUOUS_PAID"
+  | "SETTLEMENT_EVIDENCE_INVALID"
+  | "SPLIT_OR_TOKEN_FAILURE"
+  | "PROVIDER_COMPLIANCE_FAILURE"
+  | "PROVIDER_FULFILLMENT_FAILURE"
+  | "DISPUTE_APPROVED";
+
+export type BazaarDispatchResult =
+  | { kind: "accepted"; taskId: string }
+  | {
+      kind: "rejected";
+      reason: Extract<BazaarRefundReason,
+        "PROVIDER_COMPLIANCE_FAILURE" | "PROVIDER_FULFILLMENT_FAILURE">;
+    };
+
 export interface BazaarFulfillmentService {
-  dispatch(input: BazaarDispatchInput, signal: AbortSignal): Promise<{ taskId: string }>;
+  dispatch(input: BazaarDispatchInput, signal: AbortSignal): Promise<BazaarDispatchResult>;
   performLifecycleAction(
     input: BazaarLifecycleDispatchInput,
   ): Promise<Record<string, unknown>>;
@@ -192,6 +208,28 @@ export interface BazaarSettlementCapacityPolicy {
   maxPerPayerPerMinute: number;
 }
 
+export interface BazaarRefundRiskPolicy {
+  assurance: "contractual-only" | "prefunded-reserve" | "bonded";
+  maxSingleGross: bigint;
+  maxAggregateReserved: bigint;
+  maxAggregatePaidUnfulfilled: bigint;
+  maxAggregateRefundDue: bigint;
+  refundSlaSeconds: number;
+}
+
+export interface BazaarFinancialStatus {
+  exposureState: "reserved" | "paid_unfulfilled" | "refund_due" | "released";
+  refund: null | {
+    refundId: Hex;
+    state: "due" | "broadcast" | "finalized" | "blocked_issuer";
+    payer: Hex;
+    token: Hex;
+    grossAmount: string;
+    primaryReason: BazaarRefundReason;
+    dueAt: string;
+  };
+}
+
 export interface BazaarCompatibilityWiring {
   listings: BazaarListing[];
   retiredLifecycleCommitments: Hex[];
@@ -203,6 +241,7 @@ export interface BazaarCompatibilityWiring {
   fulfillment: BazaarFulfillmentService;
   challengeMac: BazaarChallengeMacKeyring;
   settlementCapacity: BazaarSettlementCapacityPolicy;
+  refundRiskPolicies: Record<string, BazaarRefundRiskPolicy>;
   providerActionSigningBroker: BazaarProviderActionSigningBroker;
   now?: () => Date;
   randomBytes?: (size: number) => Buffer;
@@ -219,6 +258,7 @@ export type BazaarOrderState =
   | "evidence_rejected"
   | "settled"
   | "dispatch_started"
+  | "dispatch_ambiguous"
   | "dispatch_failed"
   | "dispatched";
 

@@ -107,7 +107,7 @@ export function existingOutcomeResult(order: BazaarOrder): BazaarOutcomeResult {
   }
   if ([
     "attempt_opened", "settle_started", "settle_confirmed", "settled",
-    "dispatch_started",
+    "dispatch_started", "dispatch_ambiguous",
   ].includes(order.state)) {
     return { status: 202, body: { orderHandle: order.orderHandle, state: "processing" } };
   }

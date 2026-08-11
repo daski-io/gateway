@@ -4,8 +4,11 @@ import { hexToBytea } from "../db/paymentChallengeCodec.js";
 import type { Hex } from "../types.js";
 import type {
   BazaarLifecycleAction,
+  BazaarFinancialStatus,
   BazaarOrder,
   BazaarOrderState,
+  BazaarRefundReason,
+  BazaarRefundRiskPolicy,
   BazaarSettlementCapacityPolicy,
 } from "./types.js";
 import type { BazaarIndexingStatus } from "./extensionResponse.js";
@@ -17,6 +20,17 @@ import {
   MAXIMUM_FUTURE_CLOCK_SKEW_SECONDS,
   MINIMUM_SETTLEMENT_REMAINING_SECONDS,
 } from "./paymentPolicy.js";
+import {
+  reserveBazaarExposure,
+} from "./refundAccounting.js";
+import { refundRiskHeadroomAvailable } from "./refundPolicy.js";
+import {
+  getBazaarFinancialStatus,
+  markBazaarDispatched,
+  markBazaarDispatchAmbiguous,
+  markBazaarDispatchRefundDue,
+  markBazaarSettled,
+} from "./financialStore.js";
 
 interface RawOrder {
   order_record_id: Buffer;
@@ -91,7 +105,7 @@ export class BazaarOrderStore {
       `SELECT 1 FROM bazaar_orders
         WHERE listing_commitment = $1 AND state IN (
           'verify_ambiguous', 'settle_ambiguous', 'evidence_rejected',
-          'dispatch_failed'
+          'dispatch_ambiguous', 'dispatch_failed'
         ) LIMIT 1`,
       [hexToBytea(listingCommitment)],
     );
@@ -137,14 +151,28 @@ export class BazaarOrderStore {
     });
   }
 
+  async hasRefundRiskHeadroom(
+    providerAgentId: bigint,
+    grossAmount: bigint,
+    policy: BazaarRefundRiskPolicy,
+  ): Promise<boolean> {
+    return refundRiskHeadroomAvailable({
+      queryable: this.pool,
+      providerAgentId,
+      grossAmount,
+      policy,
+    });
+  }
+
   async claimWithCapacity(
     input: ClaimOrderInput,
     leaseOwner: string,
-    policy: BazaarSettlementCapacityPolicy,
+    settlementPolicy: BazaarSettlementCapacityPolicy,
+    refundPolicy: BazaarRefundRiskPolicy,
     nowSeconds: () => bigint,
   ): Promise<
     | { kind: "claimed"; created: boolean; order: BazaarOrder; leaseToken: string | null }
-    | { kind: "capacity_unavailable" }
+    | { kind: "capacity_unavailable"; dimension: "settlement" | "refund_risk" }
     | { kind: "authorization_expired" }
   > {
     const leaseToken = randomUUID();
@@ -176,9 +204,15 @@ export class BazaarOrderStore {
         }
         const available = await settlementCapacityAvailable({
           queryable: client,
-          policy,
+          policy: settlementPolicy,
           listingCommitment: input.listingCommitment,
           payer: input.payer,
+        });
+        const refundHeadroom = await refundRiskHeadroomAvailable({
+          queryable: client,
+          providerAgentId: input.providerAgentId,
+          grossAmount: input.grossAmount,
+          policy: refundPolicy,
         });
         const openedAt = nowSeconds();
         if (!authorizationWindowIsOpen(input, openedAt)) {
@@ -187,7 +221,11 @@ export class BazaarOrderStore {
         }
         if (!available) {
           await client.query("COMMIT");
-          return { kind: "capacity_unavailable" };
+          return { kind: "capacity_unavailable", dimension: "settlement" };
+        }
+        if (!refundHeadroom) {
+          await client.query("COMMIT");
+          return { kind: "capacity_unavailable", dimension: "refund_risk" };
         }
         const inserted = await client.query<RawOrder>(
           `INSERT INTO bazaar_orders (
@@ -205,11 +243,13 @@ export class BazaarOrderStore {
           [...values, leaseToken, leaseOwner, BAZAAR_LEASE_SECONDS],
         );
         if (!inserted.rows[0]) throw new Error("Bazaar order insert returned no row");
+        const order = toOrder(inserted.rows[0]);
+        await reserveBazaarExposure(client, order);
         await client.query("COMMIT");
         return {
           kind: "claimed",
           created: true,
-          order: toOrder(inserted.rows[0]),
+          order,
           leaseToken,
         };
       } catch (error) {
@@ -220,9 +260,19 @@ export class BazaarOrderStore {
       }
     }
     const existing = await this.findByAuthorization(input);
-    return existing
-      ? { kind: "claimed", created: false, order: existing, leaseToken: null }
-      : { kind: "capacity_unavailable" };
+    if (existing) {
+      return { kind: "claimed", created: false, order: existing, leaseToken: null };
+    }
+    const refundHeadroom = await refundRiskHeadroomAvailable({
+      queryable: this.pool,
+      providerAgentId: input.providerAgentId,
+      grossAmount: input.grossAmount,
+      policy: refundPolicy,
+    });
+    return {
+      kind: "capacity_unavailable",
+      dimension: refundHeadroom ? "settlement" : "refund_risk",
+    };
   }
 
   async renewLease(orderRecordId: Hex, leaseToken: string): Promise<boolean> {
@@ -266,7 +316,7 @@ export class BazaarOrderStore {
     expected: BazaarOrderState,
     terminal: Extract<BazaarOrderState,
       "verify_rejected" | "verify_ambiguous" | "settle_rejected" |
-      "settle_ambiguous" | "evidence_rejected" | "dispatch_failed">,
+      "settle_ambiguous" | "evidence_rejected">,
     failureCode: string,
   ): Promise<boolean> {
     const result = await this.pool.query(
@@ -311,14 +361,7 @@ export class BazaarOrderStore {
   }
 
   async markSettled(orderRecordId: Hex, leaseToken: string): Promise<boolean> {
-    const result = await this.pool.query(
-      `UPDATE bazaar_orders SET state = 'settled', updated_at = now()
-        WHERE order_record_id = $1 AND state = 'settle_confirmed'
-          AND processing_lease_token = $2
-          AND processing_lease_expires_at > now()`,
-      [hexToBytea(orderRecordId), leaseToken],
-    );
-    return result.rowCount === 1;
+    return markBazaarSettled(this.pool, orderRecordId, leaseToken);
   }
 
   async beginDispatch(orderRecordId: Hex, leaseToken: string): Promise<boolean> {
@@ -338,17 +381,38 @@ export class BazaarOrderStore {
     taskId: string,
     taskIdHash: Hex,
   ): Promise<boolean> {
-    const result = await this.pool.query(
-      `UPDATE bazaar_orders
-          SET state = 'dispatched', task_id = $3, task_id_hash = $4,
-              processing_lease_token = NULL, processing_lease_owner = NULL,
-              processing_lease_expires_at = NULL, updated_at = now()
-        WHERE order_record_id = $1 AND state = 'dispatch_started'
-          AND processing_lease_token = $2
-          AND processing_lease_expires_at > now()`,
-      [hexToBytea(orderRecordId), leaseToken, taskId, hexToBytea(taskIdHash)],
-    );
-    return result.rowCount === 1;
+    return markBazaarDispatched({
+      pool: this.pool,
+      orderRecordId,
+      leaseToken,
+      taskId,
+      taskIdHash,
+    });
+  }
+
+  async markDispatchAmbiguous(
+    orderRecordId: Hex,
+    leaseToken: string,
+    failureCode: string,
+  ): Promise<boolean> {
+    return markBazaarDispatchAmbiguous({
+      pool: this.pool,
+      orderRecordId,
+      leaseToken,
+      failureCode,
+    });
+  }
+
+  async markDispatchRefundDue(input: {
+    orderRecordId: Hex;
+    leaseToken: string;
+    expected: "settled" | "dispatch_started";
+    reason: Extract<BazaarRefundReason,
+      "PROVIDER_COMPLIANCE_FAILURE" | "PROVIDER_FULFILLMENT_FAILURE">;
+    policy: BazaarRefundRiskPolicy;
+    failureCode: string;
+  }): Promise<boolean> {
+    return markBazaarDispatchRefundDue({ ...input, pool: this.pool });
   }
 
   async getByRecordId(orderRecordId: Hex): Promise<BazaarOrder | null> {
@@ -357,6 +421,10 @@ export class BazaarOrderStore {
       [hexToBytea(orderRecordId)],
     );
     return result.rows[0] ? toOrder(result.rows[0]) : null;
+  }
+
+  async getFinancialStatus(orderRecordId: Hex): Promise<BazaarFinancialStatus | null> {
+    return getBazaarFinancialStatus(this.pool, orderRecordId);
   }
 
   async terminalizeExpiredAttempts(): Promise<{ claimed: number; settlement: number }> {
@@ -388,8 +456,10 @@ export class BazaarOrderStore {
       await client.query("BEGIN");
       const due = await client.query<{ order_record_id: Buffer }>(
         `SELECT order_record_id FROM bazaar_orders
-          WHERE state IN ('settle_confirmed', 'settled', 'dispatch_started')
+          WHERE (
+            state IN ('settle_confirmed', 'settled', 'dispatch_started')
             AND processing_lease_expires_at <= now()
+          ) OR state = 'dispatch_ambiguous'
           ORDER BY processing_lease_expires_at, updated_at
           LIMIT $1 FOR UPDATE SKIP LOCKED`,
         [limit],
@@ -399,7 +469,9 @@ export class BazaarOrderStore {
         const leaseToken = randomUUID();
         const updated = await client.query<RawLeasedOrder>(
           `UPDATE bazaar_orders
-              SET processing_lease_token = $2, processing_lease_owner = $3,
+              SET state = CASE WHEN state = 'dispatch_ambiguous'
+                    THEN 'dispatch_started' ELSE state END,
+                  processing_lease_token = $2, processing_lease_owner = $3,
                   processing_lease_expires_at =
                     now() + make_interval(secs => $4), updated_at = now()
             WHERE order_record_id = $1

@@ -26,6 +26,7 @@ import { BazaarOrderStore } from "./store.js";
 import type { BazaarCompatibilityWiring } from "./types.js";
 import { registerListingBindings } from "./listingStore.js";
 import { validateSettlementCapacityPolicy } from "./settlementCapacity.js";
+import { validateRefundRiskPolicies } from "./refundPolicy.js";
 import { snapshotBazaarCompatibilityWiring } from "./wiringSnapshot.js";
 import {
   readLifecycleDomains,
@@ -202,6 +203,7 @@ async function validateWiring(wiring: BazaarCompatibilityWiring): Promise<void> 
   const now = BigInt(Math.floor((wiring.now?.() ?? new Date()).getTime() / 1000));
   validateChallengeMacKeyring(wiring.challengeMac, now);
   validateSettlementCapacityPolicy(wiring.settlementCapacity);
+  validateRefundRiskPolicies(wiring.refundRiskPolicies, wiring.listings);
   for (const commitment of wiring.retiredLifecycleCommitments) {
     if (!/^0x[0-9a-fA-F]{64}$/.test(commitment)) {
       throw new Error("Bazaar retired lifecycle commitment is malformed");

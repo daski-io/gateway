@@ -118,6 +118,7 @@ export class BazaarLifecycleService {
         body: {
           state: order.state,
           failureCode: order.failureCode,
+          financial: await this.store.getFinancialStatus(order.orderRecordId),
         },
       };
     }
@@ -138,6 +139,15 @@ export class BazaarLifecycleService {
       contentTrust: action === "SUPPORT_MESSAGE" ? "untrusted_buyer" : "none",
       assertion,
     });
+    if (action === "ORDER_STATUS") {
+      return {
+        status: 200,
+        body: boundedJsonObject({
+          ...result,
+          financial: await this.store.getFinancialStatus(order.orderRecordId),
+        }),
+      };
+    }
     return { status: 200, body: boundedJsonObject(result) };
   }
 

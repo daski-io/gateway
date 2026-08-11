@@ -8,6 +8,7 @@ import {
 } from "./outcomeHelpers.js";
 import type { BazaarOrderStore } from "./store.js";
 import type { BazaarLeaseGuard } from "./lease.js";
+import { refundRiskPolicyFor } from "./refundPolicy.js";
 import type {
   BazaarCompatibilityWiring,
   BazaarListing,
@@ -25,6 +26,10 @@ export async function dispatchBazaarOrder(input: {
   lease: BazaarLeaseGuard;
 }): Promise<BazaarOutcomeResult> {
   const { order, paymentResponse, store, wiring, listing, leaseToken, lease } = input;
+  const refundPolicy = refundRiskPolicyFor(
+    wiring.refundRiskPolicies,
+    order.providerAgentId,
+  );
   if (order.state !== "dispatch_started") {
     try {
       lease.assertOwned();
@@ -32,10 +37,14 @@ export async function dispatchBazaarOrder(input: {
       lease.assertOwned();
     } catch {
       if (lease.ownershipLost) return ownershipLost();
-      const marked = await store.markTerminal(
-        order.orderRecordId, leaseToken, "settled", "dispatch_failed",
-        "provider_authority_changed_before_dispatch",
-      );
+      const marked = await store.markDispatchRefundDue({
+        orderRecordId: order.orderRecordId,
+        leaseToken,
+        expected: "settled",
+        reason: "PROVIDER_COMPLIANCE_FAILURE",
+        policy: refundPolicy,
+        failureCode: "provider_authority_changed_before_dispatch",
+      });
       if (!marked) return existingOutcomeResult(await reload(store, order));
       lease.complete();
       return failureOutcome(409, "listing_authority_changed");
@@ -64,22 +73,37 @@ export async function dispatchBazaarOrder(input: {
     lease.assertOwned();
   } catch {
     if (lease.ownershipLost) return ownershipLost();
-    const marked = await store.markTerminal(
-      order.orderRecordId, leaseToken, "dispatch_started", "dispatch_failed",
-      "provider_dispatch_failed",
+    const marked = await store.markDispatchAmbiguous(
+      order.orderRecordId,
+      leaseToken,
+      "provider_dispatch_ambiguous",
     );
+    if (!marked) return existingOutcomeResult(await reload(store, order));
+    lease.complete();
+    return existingOutcomeResult(await reload(store, order));
+  }
+  if (dispatched.kind === "rejected") {
+    const marked = await store.markDispatchRefundDue({
+      orderRecordId: order.orderRecordId,
+      leaseToken,
+      expected: "dispatch_started",
+      reason: dispatched.reason,
+      policy: refundPolicy,
+      failureCode: "provider_dispatch_rejected",
+    });
     if (!marked) return existingOutcomeResult(await reload(store, order));
     lease.complete();
     return failureOutcome(502, "provider_dispatch_failed");
   }
   if (!/^[A-Za-z0-9._:-]{1,128}$/.test(dispatched.taskId)) {
-    const marked = await store.markTerminal(
-      order.orderRecordId, leaseToken, "dispatch_started", "dispatch_failed",
-      "provider_task_id_invalid",
+    const marked = await store.markDispatchAmbiguous(
+      order.orderRecordId,
+      leaseToken,
+      "provider_dispatch_response_invalid",
     );
     if (!marked) return existingOutcomeResult(await reload(store, order));
     lease.complete();
-    return failureOutcome(502, "provider_dispatch_failed");
+    return existingOutcomeResult(await reload(store, order));
   }
   const marked = await store.markDispatched(
     order.orderRecordId,

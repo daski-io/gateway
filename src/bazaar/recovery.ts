@@ -6,6 +6,7 @@ import { paymentResponseFromOrder } from "./outcomeHelpers.js";
 import { requireCurrentListing } from "./listingAuthority.js";
 import { type BazaarLeaseGuard, withBazaarLease } from "./lease.js";
 import { verifyBazaarSettlementEvidence } from "./settlementEvidence.js";
+import { refundRiskPolicyFor } from "./refundPolicy.js";
 import type { BazaarOrderStore, LeasedBazaarOrder } from "./store.js";
 import type {
   BazaarCompatibilityWiring,
@@ -127,12 +128,24 @@ export class BazaarRecoveryRuntime {
   }
 
   private async failMissingListing(order: BazaarOrder, leaseToken: string): Promise<boolean> {
-    const dispatchState = order.state === "settled" || order.state === "dispatch_started";
+    if (order.state === "settled" || order.state === "dispatch_started") {
+      return this.store.markDispatchRefundDue({
+        orderRecordId: order.orderRecordId,
+        leaseToken,
+        expected: order.state,
+        reason: "PROVIDER_COMPLIANCE_FAILURE",
+        policy: refundRiskPolicyFor(
+          this.wiring.refundRiskPolicies,
+          order.providerAgentId,
+        ),
+        failureCode: "listing_manifest_missing_during_recovery",
+      });
+    }
     return this.store.markTerminal(
       order.orderRecordId,
       leaseToken,
       order.state,
-      dispatchState ? "dispatch_failed" : "evidence_rejected",
+      "evidence_rejected",
       "listing_manifest_missing_during_recovery",
     );
   }

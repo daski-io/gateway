@@ -27,16 +27,19 @@ import {
 } from "./requirements.js";
 import type { BazaarOrderStore } from "./store.js";
 import { verifyBazaarSettlementEvidence } from "./settlementEvidence.js";
+import { refundRiskPolicyFor } from "./refundPolicy.js";
 import type {
   BazaarCompatibilityWiring,
   BazaarListing,
   BazaarOrder,
+  BazaarRefundRiskPolicy,
 } from "./types.js";
 
 export class BazaarOutcomeService {
   private readonly now: () => Date;
   private readonly random: (size: number) => Buffer;
   private readonly declaration: BazaarPaymentDeclaration;
+  private readonly refundPolicy: BazaarRefundRiskPolicy;
 
   constructor(
     readonly listing: BazaarListing,
@@ -48,6 +51,10 @@ export class BazaarOutcomeService {
     this.now = wiring.now ?? (() => new Date());
     this.random = wiring.randomBytes ?? randomBytes;
     this.declaration = buildPaymentDeclaration(listing, this.nowSeconds());
+    this.refundPolicy = refundRiskPolicyFor(
+      wiring.refundRiskPolicies,
+      listing.offer.message.providerAgentId,
+    );
   }
 
   async unpaid(): Promise<BazaarOutcomeResult> {
@@ -55,6 +62,11 @@ export class BazaarOutcomeService {
     if (await this.store.hasBlockingIncident(
       this.listing.offer.message.listingCommitment,
     )) return failureOutcome(503, "listing_paused");
+    if (!(await this.store.hasRefundRiskHeadroom(
+      this.listing.offer.message.providerAgentId,
+      this.listing.offer.message.grossAmount,
+      this.refundPolicy,
+    ))) return failureOutcome(503, "refund_risk_capacity_unavailable");
     if (!(await this.store.hasListingSettlementCapacity(
       this.listing.offer.message.listingCommitment,
       this.wiring.settlementCapacity,
@@ -119,6 +131,11 @@ export class BazaarOutcomeService {
     if (await this.store.hasBlockingIncident(
       this.listing.offer.message.listingCommitment,
     )) return failureOutcome(503, "listing_paused");
+    if (!(await this.store.hasRefundRiskHeadroom(
+      claimInput.providerAgentId,
+      claimInput.grossAmount,
+      this.refundPolicy,
+    ))) return failureOutcome(503, "refund_risk_capacity_unavailable");
     if (!(await this.store.hasSettlementCapacity(
       claimInput,
       this.wiring.settlementCapacity,
@@ -151,10 +168,13 @@ export class BazaarOutcomeService {
       claimInput,
       this.leaseOwner,
       this.wiring.settlementCapacity,
+      this.refundPolicy,
       () => this.nowSeconds(),
     );
     if (claim.kind === "capacity_unavailable") {
-      return failureOutcome(503, "settlement_capacity_unavailable");
+      return failureOutcome(503, claim.dimension === "refund_risk"
+        ? "refund_risk_capacity_unavailable"
+        : "settlement_capacity_unavailable");
     }
     if (claim.kind === "authorization_expired") {
       return failureOutcome(400, "authorization_binding_mismatch");

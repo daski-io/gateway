@@ -14,6 +14,7 @@ import { PAY_TO_CONTROL_TYPES } from "../../src/bazaar/payToControl.js";
 import type {
   BazaarCompatibilityWiring,
   BazaarDispatchInput,
+  BazaarDispatchResult,
   BazaarFacilitatorClient,
   BazaarFulfillmentService,
   BazaarLifecycleDispatchInput,
@@ -72,6 +73,16 @@ export async function createBazaarHarness(): Promise<BazaarHarness> {
       maxGlobalPerMinute: 120,
       maxPerListingPerMinute: 60,
       maxPerPayerPerMinute: 30,
+    },
+    refundRiskPolicies: {
+      "701": {
+        assurance: "contractual-only",
+        maxSingleGross: 10_000n,
+        maxAggregateReserved: 80_000n,
+        maxAggregatePaidUnfulfilled: 80_000n,
+        maxAggregateRefundDue: 80_000n,
+        refundSlaSeconds: 24 * 60 * 60,
+      },
     },
     providerActionSigningBroker: accountLifecycleBroker(
       privateKeyToAccount(PROVIDER_ACTION_KEY),
@@ -291,11 +302,17 @@ export class FakeFacilitator implements BazaarFacilitatorClient {
 
 export class FakeFulfillment implements BazaarFulfillmentService {
   dispatchCalls = 0;
+  dispatchError = false;
+  dispatchResult: BazaarDispatchResult | null = null;
   lifecycleCalls: BazaarLifecycleDispatchInput[] = [];
 
   async dispatch(input: BazaarDispatchInput) {
     this.dispatchCalls += 1;
-    return { taskId: `task-${input.orderRecordId.slice(-12)}` };
+    if (this.dispatchError) throw new Error("ambiguous provider dispatch");
+    return this.dispatchResult ?? {
+      kind: "accepted" as const,
+      taskId: `task-${input.orderRecordId.slice(-12)}`,
+    };
   }
 
   async performLifecycleAction(input: BazaarLifecycleDispatchInput) {

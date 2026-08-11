@@ -559,6 +559,188 @@ describe("Bazaar compatibility harness", () => {
     expect(harness.fulfillment.dispatchCalls).toBe(1);
   });
 
+  it("recovers an ambiguous provider dispatch without creating a refund", async () => {
+    harness.fulfillment.dispatchError = true;
+    const required = await paymentRequired(gateway);
+    const payment = await createPaymentPayload({
+      paymentRequired: required,
+      buyer,
+      nonce: nonce(42),
+    });
+    const first = await paid(gateway, payment);
+    expect(first.response.status).toBe(202);
+    expect(await latestOrderState(gateway)).toBe("dispatch_ambiguous");
+    const pending = await gateway.bundle.pool.query<{
+      exposure_state: string;
+      refunds: string;
+    }>(
+      `SELECT e.state AS exposure_state,
+              (SELECT count(*) FROM bazaar_refund_obligations)::text AS refunds
+         FROM bazaar_exposures e`,
+    );
+    expect(pending.rows[0]).toEqual({
+      exposure_state: "paid_unfulfilled",
+      refunds: "0",
+    });
+    expect((await unpaid(gateway)).status).toBe(503);
+
+    harness.fulfillment.dispatchError = false;
+    await gateway.bundle.bazaarRecovery!.runOnce();
+    expect(await latestOrderState(gateway)).toBe("dispatched");
+    const recovered = await gateway.bundle.pool.query<{ state: string }>(
+      "SELECT state FROM bazaar_exposures",
+    );
+    expect(recovered.rows[0]?.state).toBe("paid_unfulfilled");
+    expect(harness.fulfillment.dispatchCalls).toBe(2);
+    expect((await paid(gateway, payment)).response.status).toBe(200);
+  });
+
+  it("creates one exact payer-bound refund only after explicit provider rejection", async () => {
+    harness.fulfillment.dispatchResult = {
+      kind: "rejected",
+      reason: "PROVIDER_FULFILLMENT_FAILURE",
+    };
+    const required = await paymentRequired(gateway);
+    const payment = await createPaymentPayload({
+      paymentRequired: required,
+      buyer,
+      nonce: nonce(43),
+    });
+    const first = await paid(gateway, payment);
+    expect(first.response.status).toBe(502);
+    expect(first.body).toEqual({ error: "provider_dispatch_failed" });
+    expect(await latestOrderState(gateway)).toBe("dispatch_failed");
+    const obligation = await gateway.bundle.pool.query<{
+      exposure_state: string;
+      refunds: string;
+      reasons: string;
+      payer: string;
+      token: string;
+      gross_amount: string;
+      primary_reason: string;
+      refund_id: string;
+    }>(
+      `SELECT e.state AS exposure_state,
+              (SELECT count(*) FROM bazaar_refund_obligations)::text AS refunds,
+              (SELECT count(*) FROM bazaar_refund_reason_events)::text AS reasons,
+              encode(r.payer, 'hex') AS payer,
+              encode(r.token, 'hex') AS token,
+              r.gross_amount::text, r.primary_reason,
+              encode(r.refund_id, 'hex') AS refund_id
+         FROM bazaar_exposures e
+         JOIN bazaar_refund_obligations r USING (order_record_id)`,
+    );
+    expect(obligation.rows[0]).toMatchObject({
+      exposure_state: "refund_due",
+      refunds: "1",
+      reasons: "1",
+      payer: buyer.address.slice(2).toLowerCase(),
+      token: harness.wiring.listings[0]!.offer.message.token.slice(2).toLowerCase(),
+      gross_amount: "10000",
+      primary_reason: "PROVIDER_FULFILLMENT_FAILURE",
+    });
+    expect(obligation.rows[0]?.refund_id).toMatch(/^[0-9a-f]{64}$/);
+    const replay = await paid(gateway, payment);
+    expect(replay.response.status).toBe(409);
+    const handle = replay.body.orderHandle as string;
+    const challenge = await postJson(
+      gateway,
+      `/x402/v1/orders/${handle}/challenge`,
+      lifecycleClaim(buyer.address, harness.providerAccount.address),
+    );
+    const status = await postJson(
+      gateway,
+      `/x402/v1/orders/${handle}/actions`,
+      {
+        envelope: challenge.body.envelope,
+        payerSignature: await signTaskAccess(
+          buyer,
+          challenge.body.envelope.payload.authorization,
+        ),
+      },
+    );
+    expect(status.body).toMatchObject({
+      state: "dispatch_failed",
+      financial: {
+        exposureState: "refund_due",
+        refund: {
+          state: "due",
+          payer: buyer.address.toLowerCase(),
+          grossAmount: "10000",
+          primaryReason: "PROVIDER_FULFILLMENT_FAILURE",
+        },
+      },
+    });
+    const replayCount = await gateway.bundle.pool.query<{ count: string }>(
+      "SELECT count(*)::text AS count FROM bazaar_refund_obligations",
+    );
+    expect(replayCount.rows[0]?.count).toBe("1");
+    expect(harness.fulfillment.dispatchCalls).toBe(1);
+  });
+
+  it("reserves paid and refund headroom across a provider's outcome routes", async () => {
+    await gateway.close();
+    harness.wiring.listings.push(await createListing(harness.providerAccount, {
+      payTo: privateKeyToAccount(SECOND_PAY_TO_KEY),
+      slug: "second-report",
+    }));
+    Object.assign(harness.wiring.refundRiskPolicies["701"]!, {
+      maxAggregateReserved: 10_000n,
+      maxAggregatePaidUnfulfilled: 10_000n,
+      maxAggregateRefundDue: 10_000n,
+    });
+    harness.fulfillment.dispatchError = true;
+    gateway = await startHarnessGateway(harness);
+    const required = await paymentRequired(gateway);
+    const payment = await createPaymentPayload({
+      paymentRequired: required,
+      buyer,
+      nonce: nonce(44),
+    });
+    expect((await paid(gateway, payment)).response.status).toBe(202);
+    const second = await fetch(
+      `${gateway.baseUrl}/x402/v1/outcomes/second-report`,
+      { method: "POST" },
+    );
+    expect(second.status).toBe(503);
+    expect(await second.json()).toEqual({
+      error: "refund_risk_capacity_unavailable",
+    });
+    expect(second.headers.get("payment-required")).toBeNull();
+  });
+
+  it("admits one winner when paid authorizations race for refund headroom", async () => {
+    await gateway.close();
+    Object.assign(harness.wiring.refundRiskPolicies["701"]!, {
+      maxAggregateReserved: 10_000n,
+      maxAggregatePaidUnfulfilled: 10_000n,
+      maxAggregateRefundDue: 10_000n,
+    });
+    const gate = deferred();
+    harness.facilitator.settleGate = gate.promise;
+    gateway = await startHarnessGateway(harness);
+    const required = await paymentRequired(gateway);
+    const payments = await Promise.all([45, 46].map((value) =>
+      createPaymentPayload({ paymentRequired: required, buyer, nonce: nonce(value) })));
+    const attempts = payments.map((payment) => paid(gateway, payment));
+    const rejected = await Promise.race(attempts);
+    expect(rejected.response.status).toBe(503);
+    expect(rejected.body).toEqual({ error: "refund_risk_capacity_unavailable" });
+    gate.resolve();
+    const results = await Promise.all(attempts);
+    expect(results.map((result) => result.response.status).sort()).toEqual([200, 503]);
+    expect(harness.facilitator.verifyCalls).toBe(1);
+    expect(harness.facilitator.settleCalls).toBe(1);
+    const counts = await gateway.bundle.pool.query<{
+      orders: string;
+      exposures: string;
+    }>(
+      `SELECT (SELECT count(*) FROM bazaar_orders)::text AS orders,
+              (SELECT count(*) FROM bazaar_exposures)::text AS exposures`,
+    );
+    expect(counts.rows[0]).toEqual({ orders: "1", exposures: "1" });
+  });
+
   it("rejects unsupported payer profiles before CDP sees the authorization", async () => {
     await gateway.close();
     harness.wiring.payerProfileVerifier = {
@@ -651,7 +833,14 @@ describe("Bazaar compatibility harness", () => {
       redemption,
     );
     expect(first.response.status).toBe(200);
-    expect(first.body).toEqual({ state: "working", action: "ORDER_STATUS" });
+    expect(first.body).toMatchObject({
+      state: "working",
+      action: "ORDER_STATUS",
+      financial: {
+        exposureState: "paid_unfulfilled",
+        refund: null,
+      },
+    });
     const replay = await postJson(
       gateway,
       `/x402/v1/orders/${handle}/actions`,
