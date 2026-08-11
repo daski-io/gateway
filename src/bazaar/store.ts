@@ -115,6 +115,7 @@ export class BazaarOrderStore {
     return settlementCapacityAvailable({
       queryable: this.pool,
       policy,
+      providerAgentId: input.providerAgentId,
       listingCommitment: input.listingCommitment,
       payer: input.payer,
     });
@@ -122,11 +123,13 @@ export class BazaarOrderStore {
 
   async hasListingSettlementCapacity(
     listingCommitment: Hex,
+    providerAgentId: bigint,
     policy: BazaarSettlementCapacityPolicy,
   ): Promise<boolean> {
     return listingSettlementCapacityAvailable({
       queryable: this.pool,
       policy,
+      providerAgentId,
       listingCommitment,
     });
   }
@@ -185,6 +188,7 @@ export class BazaarOrderStore {
         const available = await settlementCapacityAvailable({
           queryable: client,
           policy: settlementPolicy,
+          providerAgentId: input.providerAgentId,
           listingCommitment: input.listingCommitment,
           payer: input.payer,
         });
@@ -363,7 +367,7 @@ export class BazaarOrderStore {
     leaseToken: string,
     taskId: string,
     taskIdHash: Hex,
-  ): Promise<boolean> {
+  ): Promise<"dispatched" | "task_conflict" | "ownership_lost"> {
     return markBazaarDispatched({
       pool: this.pool,
       orderRecordId,

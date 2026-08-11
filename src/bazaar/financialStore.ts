@@ -31,6 +31,7 @@ interface RawFinancialStatus {
   primary_reason: BazaarRefundReason | null;
   due_at: Date | null;
   refund_transaction: Buffer | null;
+  issuer_block_evidence_hash: Buffer | null;
 }
 
 export async function markBazaarSettled(
@@ -69,7 +70,7 @@ export async function markBazaarDispatched(input: {
   leaseToken: string;
   taskId: string;
   taskIdHash: Hex;
-}): Promise<boolean> {
+}): Promise<"dispatched" | "task_conflict" | "ownership_lost"> {
   const client = await input.pool.connect();
   try {
     await client.query("BEGIN");
@@ -88,20 +89,29 @@ export async function markBazaarDispatched(input: {
     );
     if (result.rowCount !== 1) {
       await client.query("ROLLBACK");
-      return false;
+      return "ownership_lost";
     }
     await transitionBazaarExposure(
       client, input.orderRecordId, "paid_unfulfilled", "paid_unfulfilled",
     );
     await createBazaarFulfillmentJob(client, input.orderRecordId);
     await client.query("COMMIT");
-    return true;
+    return "dispatched";
   } catch (error) {
     await client.query("ROLLBACK").catch(() => undefined);
+    if (isProviderTaskConflict(error)) return "task_conflict";
     throw error;
   } finally {
     client.release();
   }
+}
+
+function isProviderTaskConflict(error: unknown): boolean {
+  return error !== null && typeof error === "object" &&
+    "code" in error && "constraint" in error &&
+    (error as { code?: unknown }).code === "23505" &&
+    (error as { constraint?: unknown }).constraint ===
+      "bazaar_orders_provider_task_unique";
 }
 
 export async function markBazaarDispatchAmbiguous(input: {
@@ -201,7 +211,8 @@ export async function getBazaarFinancialStatus(
     `SELECT e.state AS exposure_state, r.refund_id,
             r.state AS refund_state, r.payer AS refund_payer,
             r.token AS refund_token, r.gross_amount AS refund_gross_amount,
-            r.primary_reason, r.due_at, r.refund_transaction
+            r.primary_reason, r.due_at, r.refund_transaction,
+            r.issuer_block_evidence_hash
        FROM bazaar_exposures e
        LEFT JOIN bazaar_refund_obligations r USING (order_record_id)
       WHERE e.order_record_id = $1`,
@@ -230,6 +241,9 @@ export async function getBazaarFinancialStatus(
       primaryReason: row.primary_reason!,
       dueAt: row.due_at!.toISOString(),
       transaction: row.refund_transaction ? toHex(row.refund_transaction) : null,
+      issuerBlockEvidenceHash: row.issuer_block_evidence_hash
+        ? toHex(row.issuer_block_evidence_hash)
+        : null,
     },
   };
 }

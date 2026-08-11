@@ -1,7 +1,6 @@
 import { randomBytes } from "node:crypto";
 import type { Hex } from "viem";
 import { isHex32 } from "../util/evmValidation.js";
-import { canonicalJsonStringify } from "../auth/envelope.js";
 import {
   ZERO_BYTES32,
   actionFromHash,
@@ -17,6 +16,10 @@ import {
   verifyTaskAccessChallengeEnvelope,
 } from "./lifecycleChallenge.js";
 import { createProviderLifecycleAssertion } from "./lifecycleAssertion.js";
+import {
+  boundedLifecycleResult,
+  parseLifecycleActionResult,
+} from "./lifecycleResult.js";
 import type { BazaarOrderStore } from "./store.js";
 import type {
   BazaarCompatibilityWiring,
@@ -30,7 +33,7 @@ const PROVIDER_ASSERTION_TTL_SECONDS = 60n;
 
 export type LifecycleResult =
   | { status: 200; body: Record<string, unknown> }
-  | { status: 400 | 403; body: { error: string } };
+  | { status: 400 | 403 | 502; body: { error: string } };
 
 export class BazaarLifecycleService {
   private readonly now: () => Date;
@@ -123,40 +126,49 @@ export class BazaarLifecycleService {
         },
       };
     }
-    const assertion = await callBazaarAdapter({
-      timeoutMs: this.wiring.adapterCallTimeoutMs,
-      operation: (signal) => createProviderLifecycleAssertion({
-        order,
-        action,
-        requestHash: authorization.message.requestHash,
-        taskIdHash: authorization.message.taskIdHash,
-        nonce: nonzeroRandomHex(this.random),
-        issuedAt: now,
-        expiresAt: now + PROVIDER_ASSERTION_TTL_SECONDS,
-        signer: this.wiring.providerActionSigningBroker,
-        signal,
-      }),
-    });
-    const result = await callBazaarAdapter({
-      timeoutMs: this.wiring.adapterCallTimeoutMs,
-      operation: (signal) => this.wiring.fulfillment.performLifecycleAction({
-        taskId: order.taskId,
-        action,
-        request,
-        contentTrust: action === "SUPPORT_MESSAGE" ? "untrusted_buyer" : "none",
-        assertion,
-      }, signal),
-    });
-    if (action === "ORDER_STATUS") {
-      return {
-        status: 200,
-        body: boundedJsonObject({
-          ...result,
-          financial: await this.store.getFinancialStatus(order.orderRecordId),
+    try {
+      const assertion = await callBazaarAdapter({
+        timeoutMs: this.wiring.adapterCallTimeoutMs,
+        operation: (signal) => createProviderLifecycleAssertion({
+          order,
+          action,
+          requestHash: authorization.message.requestHash,
+          taskIdHash: authorization.message.taskIdHash,
+          nonce: nonzeroRandomHex(this.random),
+          issuedAt: now,
+          expiresAt: now + PROVIDER_ASSERTION_TTL_SECONDS,
+          signer: this.wiring.providerActionSigningBroker,
+          signal,
         }),
-      };
+      });
+      const response: unknown = await callBazaarAdapter({
+        timeoutMs: this.wiring.adapterCallTimeoutMs,
+        operation: (signal) => this.wiring.fulfillment.performLifecycleAction({
+          taskId: order.taskId,
+          action,
+          request,
+          contentTrust: action === "SUPPORT_MESSAGE" ? "untrusted_buyer" : "none",
+          assertion,
+        }, signal),
+      });
+      const result = parseLifecycleActionResult(
+        response,
+        assertion.message.nonce,
+      );
+      if (!result) return lifecycleUnavailable();
+      if (action === "ORDER_STATUS") {
+        return {
+          status: 200,
+          body: boundedLifecycleResult({
+            ...result,
+            financial: await this.store.getFinancialStatus(order.orderRecordId),
+          }),
+        };
+      }
+      return { status: 200, body: boundedLifecycleResult(result) };
+    } catch {
+      return lifecycleUnavailable();
     }
-    return { status: 200, body: boundedJsonObject(result) };
   }
 
   private nowSeconds(): bigint {
@@ -221,22 +233,14 @@ function isSignature(value: unknown): value is Hex {
   return typeof value === "string" && /^0x[0-9a-fA-F]{130}$/.test(value);
 }
 
-function boundedJsonObject(value: Record<string, unknown>): Record<string, unknown> {
-  const json = canonicalJsonStringify(value);
-  if (Buffer.byteLength(json, "utf8") > 64 * 1024) {
-    throw new Error("Bazaar lifecycle response exceeded its size limit");
-  }
-  const parsed: unknown = JSON.parse(json);
-  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new Error("Bazaar lifecycle response was not an object");
-  }
-  return parsed as Record<string, unknown>;
-}
-
 function badRequest(): LifecycleResult {
   return { status: 400, body: { error: "invalid_lifecycle_request" } };
 }
 
 function denied(): LifecycleResult {
   return { status: 403, body: { error: "lifecycle_authorization_failed" } };
+}
+
+function lifecycleUnavailable(): LifecycleResult {
+  return { status: 502, body: { error: "provider_lifecycle_ambiguous" } };
 }

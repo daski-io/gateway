@@ -53,20 +53,25 @@ export async function markBazaarRefundBlocked(input: {
   pool: Pool;
   orderRecordId: Hex;
   leaseToken: string;
+  evidenceHash: Hex;
 }): Promise<boolean> {
   const client = await input.pool.connect();
   try {
     await client.query("BEGIN");
     const refund = await client.query(
       `UPDATE bazaar_refund_obligations
-          SET state = 'blocked_issuer', updated_at = now()
+          SET state = 'blocked_issuer', issuer_block_evidence_hash = $3,
+              issuer_blocked_at = now(), updated_at = now()
         WHERE order_record_id = $1 AND state = 'due'
           AND EXISTS (
             SELECT 1 FROM bazaar_refund_jobs
              WHERE order_record_id = $1 AND state = 'working'
                AND lease_token = $2 AND lease_expires_at > now()
           )`,
-      [hexToBytea(input.orderRecordId), input.leaseToken],
+      [
+        hexToBytea(input.orderRecordId), input.leaseToken,
+        hexToBytea(input.evidenceHash),
+      ],
     );
     const order = await client.query(
       `UPDATE bazaar_orders SET state = 'refund_blocked_issuer', updated_at = now()

@@ -390,6 +390,15 @@ describe("Bazaar compatibility harness", () => {
       wiring: shortInstruction.wiring,
       lifecycleDomainRetentionSeconds: gateway.config.taskRetentionSeconds,
     })).rejects.toThrow(/instruction TTL cannot cover adapter deadlines/);
+
+    const unsafeBacklog = await createBazaarHarness();
+    unsafeBacklog.wiring.settlementCapacity.maxGlobalConcurrent = 51;
+    await expect(createBazaarCompatibilityRouter({
+      pool: gateway.bundle.pool,
+      providerAuthority: gateway.bundle.providerAuthority,
+      wiring: unsafeBacklog.wiring,
+      lifecycleDomainRetentionSeconds: gateway.config.taskRetentionSeconds,
+    })).rejects.toThrow(/settlement capacity policy is invalid/);
   });
 
   it("rejects outcome URLs outside the configured public origin", async () => {
@@ -443,6 +452,7 @@ describe("Bazaar compatibility harness", () => {
     await gateway.close();
     Object.assign(harness.wiring.settlementCapacity, {
       maxGlobalConcurrent: 1,
+      maxPerProviderConcurrent: 1,
       maxPerListingConcurrent: 1,
       maxPerPayerConcurrent: 1,
     });
@@ -475,6 +485,48 @@ describe("Bazaar compatibility harness", () => {
 
     gate.resolve();
     expect((await first).response.status).toBe(200);
+  });
+
+  it("counts accepted unfulfilled work against provider-wide capacity", async () => {
+    await gateway.close();
+    Object.assign(harness.wiring.settlementCapacity, {
+      maxGlobalConcurrent: 2,
+      maxPerProviderConcurrent: 1,
+      maxPerListingConcurrent: 1,
+      maxPerPayerConcurrent: 1,
+    });
+    harness.wiring.listings.push(await createListing(harness.providerAccount, {
+      payTo: privateKeyToAccount(SECOND_PAY_TO_KEY),
+      slug: "second-report",
+      refundPolicy: harness.wiring.refundRiskPolicies["701"],
+    }));
+    gateway = await startHarnessGateway(harness);
+    const required = await paymentRequired(gateway);
+    const payment = await createPaymentPayload({
+      paymentRequired: required,
+      buyer,
+      nonce: nonce(23),
+    });
+    expect((await paid(gateway, payment)).response.status).toBe(200);
+
+    const blocked = await fetch(
+      `${gateway.baseUrl}/x402/v1/outcomes/second-report`,
+      { method: "POST" },
+    );
+    expect(blocked.status).toBe(503);
+    expect(await blocked.json()).toEqual({
+      error: "settlement_capacity_unavailable",
+    });
+    expect(blocked.headers.get("payment-required")).toBeNull();
+
+    harness.fulfillmentObserver.outcome = "FULFILLED";
+    await gateway.bundle.bazaarRecovery!.runOnce();
+    const reopened = await fetch(
+      `${gateway.baseUrl}/x402/v1/outcomes/second-report`,
+      { method: "POST" },
+    );
+    expect(reopened.status).toBe(402);
+    expect(reopened.headers.get("payment-required")).not.toBeNull();
   });
 
   it("rejects changed fixed input before any facilitator call", async () => {
@@ -705,11 +757,13 @@ describe("Bazaar compatibility harness", () => {
     expect(harness.settlementObserver.calls).toHaveLength(0);
 
     currentNow = new Date(TEST_NOW.getTime() + 301_000);
-    harness.settlementObserver.result = {
-      kind: "no_transfer",
-      observedThrough: BigInt(Math.floor(currentNow.getTime() / 1000)),
-      evidenceHash: nonce(61),
-    };
+    harness.settlementObserver.result = noTransferObservation(
+      harness,
+      buyer.address,
+      nonce(60),
+      BigInt(Math.floor(currentNow.getTime() / 1000)),
+      nonce(61),
+    );
     await gateway.bundle.bazaarRecovery!.runOnce();
     expect(await latestOrderState(gateway)).toBe("ambiguous_expired_no_transfer");
     expect(harness.settlementObserver.calls).toHaveLength(1);
@@ -748,11 +802,13 @@ describe("Bazaar compatibility harness", () => {
     await paid(gateway, payment);
     currentNow = new Date(TEST_NOW.getTime() + 301_000);
     const nowSeconds = BigInt(Math.floor(currentNow.getTime() / 1000));
-    harness.settlementObserver.result = {
-      kind: "no_transfer",
-      observedThrough: nowSeconds + 1n,
-      evidenceHash: nonce(68),
-    };
+    harness.settlementObserver.result = noTransferObservation(
+      harness,
+      buyer.address,
+      nonce(67),
+      nowSeconds + 1n,
+      nonce(68),
+    );
     await gateway.bundle.bazaarRecovery!.runOnce();
     expect(await latestOrderState(gateway)).toBe("settle_ambiguous");
     const deferred = await gateway.bundle.pool.query<{
@@ -802,6 +858,42 @@ describe("Bazaar compatibility harness", () => {
     });
   });
 
+  it("rejects settlement observation bound to a different payer", async () => {
+    await gateway.close();
+    let currentNow = new Date(TEST_NOW);
+    harness.wiring.now = () => new Date(currentNow);
+    harness.facilitator.settleError = true;
+    gateway = await startHarnessGateway(harness);
+    const required = await paymentRequired(gateway);
+    const payment = await createPaymentPayload({
+      paymentRequired: required,
+      buyer,
+      nonce: nonce(72),
+    });
+    await paid(gateway, payment);
+    currentNow = new Date(TEST_NOW.getTime() + 301_000);
+    harness.settlementObserver.result = matchingObservation(
+      harness,
+      harness.providerAccount.address,
+      nonce(72),
+      BigInt(Math.floor(currentNow.getTime() / 1000)),
+      nonce(73),
+    );
+    await gateway.bundle.bazaarRecovery!.runOnce();
+    const pending = await gateway.bundle.pool.query<{
+      observation_state: string;
+      exposure_state: string;
+    }>(
+      `SELECT o.state AS observation_state, e.state AS exposure_state
+         FROM bazaar_settlement_observations o
+         JOIN bazaar_exposures e USING (order_record_id)`,
+    );
+    expect(pending.rows[0]).toEqual({
+      observation_state: "pending",
+      exposure_state: "reserved",
+    });
+  });
+
   it("fences a stale observer and lets one replacement close the order", async () => {
     await gateway.close();
     let currentNow = new Date(TEST_NOW);
@@ -816,11 +908,13 @@ describe("Bazaar compatibility harness", () => {
     });
     await paid(gateway, payment);
     currentNow = new Date(TEST_NOW.getTime() + 301_000);
-    harness.settlementObserver.result = {
-      kind: "no_transfer",
-      observedThrough: BigInt(Math.floor(currentNow.getTime() / 1000)),
-      evidenceHash: nonce(70),
-    };
+    harness.settlementObserver.result = noTransferObservation(
+      harness,
+      buyer.address,
+      nonce(69),
+      BigInt(Math.floor(currentNow.getTime() / 1000)),
+      nonce(70),
+    );
     const gate = deferred();
     harness.settlementObserver.gate = gate.promise;
     const stale = gateway.bundle.bazaarRecovery!.runOnce();
@@ -860,6 +954,9 @@ describe("Bazaar compatibility harness", () => {
     expect((await paid(gateway, payment)).response.status).toBe(502);
     currentNow = new Date(TEST_NOW.getTime() + 301_000);
     harness.settlementObserver.result = matchingObservation(
+      harness,
+      buyer.address,
+      nonce(62),
       BigInt(Math.floor(currentNow.getTime() / 1000)),
       nonce(63),
     );
@@ -906,6 +1003,9 @@ describe("Bazaar compatibility harness", () => {
     expect(await latestOrderState(gateway)).toBe("settle_rejected");
     currentNow = new Date(TEST_NOW.getTime() + 301_000);
     harness.settlementObserver.result = matchingObservation(
+      harness,
+      buyer.address,
+      nonce(64),
       BigInt(Math.floor(currentNow.getTime() / 1000)),
       nonce(65),
     );
@@ -953,6 +1053,9 @@ describe("Bazaar compatibility harness", () => {
     expect(await latestOrderState(gateway)).toBe("evidence_rejected");
     currentNow = new Date(TEST_NOW.getTime() + 301_000);
     harness.settlementObserver.result = matchingObservation(
+      harness,
+      buyer.address,
+      nonce(66),
       BigInt(Math.floor(currentNow.getTime() / 1000)),
       nonce(66),
     );
@@ -1298,8 +1401,12 @@ describe("Bazaar compatibility harness", () => {
     }
   });
 
-  it("classifies a malformed provider result as dispatch ambiguity", async () => {
-    harness.fulfillment.rawDispatchResult = null;
+  it("classifies a cross-order provider result as dispatch ambiguity", async () => {
+    harness.fulfillment.rawDispatchResult = {
+      kind: "accepted",
+      orderRecordId: nonce(256),
+      taskId: "foreign-task",
+    };
     const required = await paymentRequired(gateway);
     const payment = await createPaymentPayload({
       paymentRequired: required,
@@ -1320,6 +1427,47 @@ describe("Bazaar compatibility harness", () => {
       exposure_state: "paid_unfulfilled",
       refunds: "0",
     });
+  });
+
+  it("rejects provider task identity reuse across orders", async () => {
+    harness.fulfillment.dispatchResult = {
+      kind: "accepted",
+      taskId: "shared-provider-task",
+    };
+    const required = await paymentRequired(gateway);
+    const firstPayment = await createPaymentPayload({
+      paymentRequired: required,
+      buyer,
+      nonce: nonce(262),
+    });
+    expect((await paid(gateway, firstPayment)).response.status).toBe(200);
+    const secondPayment = await createPaymentPayload({
+      paymentRequired: required,
+      buyer,
+      nonce: nonce(263),
+    });
+    expect((await paid(gateway, secondPayment)).response.status).toBe(202);
+    const states = await gateway.bundle.pool.query<{
+      state: string;
+      failure_code: string | null;
+    }>(
+      "SELECT state, failure_code FROM bazaar_orders ORDER BY nonce",
+    );
+    expect(states.rows).toEqual([
+      { state: "dispatched", failure_code: null },
+      {
+        state: "dispatch_ambiguous",
+        failure_code: "provider_task_identity_conflict",
+      },
+    ]);
+    const counts = await gateway.bundle.pool.query<{
+      jobs: string;
+      refunds: string;
+    }>(
+      `SELECT (SELECT count(*) FROM bazaar_fulfillment_jobs)::text AS jobs,
+              (SELECT count(*) FROM bazaar_refund_obligations)::text AS refunds`,
+    );
+    expect(counts.rows[0]).toEqual({ jobs: "1", refunds: "0" });
   });
 
   it("creates one exact payer-bound refund only after explicit provider rejection", async () => {
@@ -1519,16 +1667,19 @@ describe("Bazaar compatibility harness", () => {
 
   it("records issuer blocking without claiming that a refund occurred", async () => {
     await createProviderRefundDue(gateway, harness, buyer, 154);
-    harness.refundService.result = { kind: "blocked_issuer" };
+    const evidenceHash = nonce(157);
+    harness.refundService.result = { kind: "blocked_issuer", evidenceHash };
     await gateway.bundle.bazaarRecovery!.runOnce();
     expect(await latestOrderState(gateway)).toBe("refund_blocked_issuer");
     const blocked = await gateway.bundle.pool.query<{
       refund_state: string;
       refund_transaction: Buffer | null;
+      issuer_block_evidence_hash: Buffer;
       job_state: string;
       exposure_state: string;
     }>(
       `SELECT r.state AS refund_state, r.refund_transaction,
+              r.issuer_block_evidence_hash,
               j.state AS job_state, e.state AS exposure_state
          FROM bazaar_refund_obligations r
          JOIN bazaar_refund_jobs j USING (order_record_id)
@@ -1537,6 +1688,7 @@ describe("Bazaar compatibility harness", () => {
     expect(blocked.rows[0]).toEqual({
       refund_state: "blocked_issuer",
       refund_transaction: null,
+      issuer_block_evidence_hash: Buffer.from(evidenceHash.slice(2), "hex"),
       job_state: "blocked",
       exposure_state: "refund_due",
     });
@@ -1567,9 +1719,13 @@ describe("Bazaar compatibility harness", () => {
     expect(due.rows[0]).toEqual({ refund_state: "due", job_state: "pending" });
   });
 
-  it("defers a malformed refund-provider result without changing financial state", async () => {
+  it("defers a cross-refund provider result without changing financial state", async () => {
     await createProviderRefundDue(gateway, harness, buyer, 158);
-    harness.refundService.result = null as never;
+    harness.refundService.rawResult = {
+      kind: "blocked_issuer",
+      refundId: nonce(257),
+      evidenceHash: nonce(258),
+    };
     await gateway.bundle.bazaarRecovery!.runOnce();
     const due = await gateway.bundle.pool.query<{
       refund_state: string;
@@ -1744,7 +1900,10 @@ describe("Bazaar compatibility harness", () => {
   it("rejects unsupported payer profiles before CDP sees the authorization", async () => {
     await gateway.close();
     harness.wiring.payerProfileVerifier = {
-      verifyBeforeSettlement: async () => ({ profile: "unsupported" }),
+      verifyBeforeSettlement: async (input) => ({
+        ...input,
+        profile: "unsupported",
+      }),
     };
     gateway = await startHarnessGateway(harness);
     const required = await paymentRequired(gateway);
@@ -1756,6 +1915,29 @@ describe("Bazaar compatibility harness", () => {
     const result = await paid(gateway, payment);
     expect(result.response.status).toBe(402);
     expect(result.body).toEqual({ error: "payer_profile_unsupported" });
+    expect(harness.facilitator.verifyCalls).toBe(0);
+    expect(harness.facilitator.settleCalls).toBe(0);
+  });
+
+  it("rejects a payer-profile result bound to another payer", async () => {
+    await gateway.close();
+    harness.wiring.payerProfileVerifier = {
+      verifyBeforeSettlement: async (input) => ({
+        ...input,
+        payer: harness.providerAccount.address,
+        profile: "eoa",
+      }),
+    };
+    gateway = await startHarnessGateway(harness);
+    const required = await paymentRequired(gateway);
+    const payment = await createPaymentPayload({
+      paymentRequired: required,
+      buyer,
+      nonce: nonce(259),
+    });
+    const result = await paid(gateway, payment);
+    expect(result.response.status).toBe(503);
+    expect(result.body).toEqual({ error: "payer_profile_ambiguous" });
     expect(harness.facilitator.verifyCalls).toBe(0);
     expect(harness.facilitator.settleCalls).toBe(0);
   });
@@ -1878,6 +2060,42 @@ describe("Bazaar compatibility harness", () => {
     );
     expect(retried.response.status).toBe(200);
     expect(harness.fulfillment.lifecycleCalls).toHaveLength(2);
+  });
+
+  it("rejects a lifecycle result bound to another assertion", async () => {
+    const required = await paymentRequired(gateway);
+    const payment = await createPaymentPayload({
+      paymentRequired: required,
+      buyer,
+      nonce: nonce(260),
+    });
+    const purchase = await paid(gateway, payment);
+    const handle = purchase.body.orderHandle as string;
+    const claim = lifecycleClaim(buyer.address, harness.providerAccount.address);
+    const challenge = await postJson(
+      gateway,
+      `/x402/v1/orders/${handle}/challenge`,
+      claim,
+    );
+    harness.fulfillment.rawLifecycleResult = {
+      assertionNonce: nonce(261),
+      result: { secret: "cross-order-result" },
+    };
+    const result = await postJson(
+      gateway,
+      `/x402/v1/orders/${handle}/actions`,
+      {
+        envelope: challenge.body.envelope,
+        payerSignature: await signTaskAccess(
+          buyer,
+          challenge.body.envelope.payload.authorization,
+        ),
+      },
+    );
+    expect(result.response.status).toBe(502);
+    expect(result.body).toEqual({ error: "provider_lifecycle_ambiguous" });
+    expect(JSON.stringify(result.body)).not.toContain("cross-order-result");
+    expect(harness.fulfillment.lifecycleCalls).toHaveLength(1);
   });
 
   it("retains retired lifecycle domains only for the configured task window", async () => {
@@ -2240,19 +2458,53 @@ function nonce(value: number): Hex {
   return `0x${value.toString(16).padStart(64, "0")}` as Hex;
 }
 
-function matchingObservation(observedThrough: bigint, transaction: Hex) {
+function matchingObservation(
+  harness: Awaited<ReturnType<typeof createBazaarHarness>>,
+  payer: Hex,
+  authorizationNonce: Hex,
+  observedThrough: bigint,
+  transaction: Hex,
+) {
+  const offer = harness.wiring.listings[0]!.offer.message;
   return {
     kind: "matching_transfer" as const,
     observedThrough,
     evidenceHash: nonce(210),
     transaction,
     blockHash: nonce(211),
+    chainId: offer.chainId,
+    token: offer.token,
+    payer,
+    nonce: authorizationNonce,
+    payTo: offer.payTo,
+    grossAmount: offer.grossAmount,
     transactionIndex: 1,
     authorizationLogIndex: 2,
     transferLogIndex: 3,
     finalized: true as const,
     authorizationUsedEventCount: 1 as const,
     matchingTransferEventCount: 1 as const,
+  };
+}
+
+function noTransferObservation(
+  harness: Awaited<ReturnType<typeof createBazaarHarness>>,
+  payer: Hex,
+  authorizationNonce: Hex,
+  observedThrough: bigint,
+  evidenceHash: Hex,
+) {
+  const offer = harness.wiring.listings[0]!.offer.message;
+  return {
+    kind: "no_transfer" as const,
+    observedThrough,
+    evidenceHash,
+    chainId: offer.chainId,
+    token: offer.token,
+    payer,
+    nonce: authorizationNonce,
+    payTo: offer.payTo,
+    grossAmount: offer.grossAmount,
   };
 }
 

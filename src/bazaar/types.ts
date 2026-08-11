@@ -129,6 +129,12 @@ export type BazaarSettlementObservationResult =
       kind: "no_transfer";
       observedThrough: bigint;
       evidenceHash: Hex;
+      chainId: bigint;
+      token: Hex;
+      payer: Hex;
+      nonce: Hex;
+      payTo: Hex;
+      grossAmount: bigint;
     }
   | {
       kind: "matching_transfer";
@@ -136,6 +142,12 @@ export type BazaarSettlementObservationResult =
       evidenceHash: Hex;
       transaction: Hex;
       blockHash: Hex;
+      chainId: bigint;
+      token: Hex;
+      payer: Hex;
+      nonce: Hex;
+      payTo: Hex;
+      grossAmount: bigint;
       transactionIndex: number;
       authorizationLogIndex: number;
       transferLogIndex: number;
@@ -160,7 +172,11 @@ export interface BazaarPayerProfileVerifier {
   verifyBeforeSettlement(input: {
     chainId: bigint;
     payer: Hex;
-  }, signal: AbortSignal): Promise<{ profile: "eoa" } | { profile: "unsupported" }>;
+  }, signal: AbortSignal): Promise<{
+    chainId: bigint;
+    payer: Hex;
+    profile: "eoa" | "unsupported";
+  }>;
 }
 
 export interface BazaarDispatchInput {
@@ -184,9 +200,10 @@ export type BazaarRefundReason =
   | "DISPUTE_APPROVED";
 
 export type BazaarDispatchResult =
-  | { kind: "accepted"; taskId: string }
+  | { kind: "accepted"; orderRecordId: Hex; taskId: string }
   | {
       kind: "rejected";
+      orderRecordId: Hex;
       reason: Extract<BazaarRefundReason,
         "PROVIDER_COMPLIANCE_FAILURE" | "PROVIDER_FULFILLMENT_FAILURE">;
     };
@@ -196,7 +213,10 @@ export interface BazaarFulfillmentService {
   performLifecycleAction(
     input: BazaarLifecycleDispatchInput,
     signal: AbortSignal,
-  ): Promise<Record<string, unknown>>;
+  ): Promise<{
+    assertionNonce: Hex;
+    result: Record<string, unknown>;
+  }>;
 }
 
 export type BazaarFulfillmentOutcome =
@@ -264,7 +284,7 @@ export interface BazaarLifecycleDispatchInput {
     domain: Record<string, unknown>;
     types: Record<string, readonly { name: string; type: string }[]>;
     primaryType: "DaskiBazaarLifecycleAction";
-    message: Record<string, unknown>;
+    message: BazaarProviderLifecycleSigningRequest["message"];
     signature: Hex;
   };
 }
@@ -309,9 +329,11 @@ export interface BazaarChallengeMacKeyring {
 
 export interface BazaarSettlementCapacityPolicy {
   maxGlobalConcurrent: number;
+  maxPerProviderConcurrent: number;
   maxPerListingConcurrent: number;
   maxPerPayerConcurrent: number;
   maxGlobalPerMinute: number;
+  maxPerProviderPerMinute: number;
   maxPerListingPerMinute: number;
   maxPerPayerPerMinute: number;
 }
@@ -374,9 +396,9 @@ export interface BazaarRefundRequestService {
       signature: Hex;
     };
   }, signal: AbortSignal): Promise<
-    | { kind: "broadcast"; transaction: Hex }
-    | { kind: "blocked_issuer" }
-    | { kind: "deferred" }
+    | { kind: "broadcast"; refundId: Hex; transaction: Hex }
+    | { kind: "blocked_issuer"; refundId: Hex; evidenceHash: Hex }
+    | { kind: "deferred"; refundId: Hex }
   >;
 }
 
@@ -412,6 +434,7 @@ export interface BazaarFinancialStatus {
     primaryReason: BazaarRefundReason;
     dueAt: string;
     transaction: Hex | null;
+    issuerBlockEvidenceHash: Hex | null;
   };
 }
 

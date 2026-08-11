@@ -108,7 +108,7 @@ export async function createBazaarHarness(options: {
     fulfillmentObserver,
     fulfillmentObservationPolicy: { retryDelaySeconds: 30 },
     payerProfileVerifier: {
-      verifyBeforeSettlement: async () => ({ profile: "eoa" }),
+      verifyBeforeSettlement: async (input) => ({ ...input, profile: "eoa" }),
     },
     fulfillment,
     challengeMac: {
@@ -116,9 +116,11 @@ export async function createBazaarHarness(options: {
     },
     settlementCapacity: {
       maxGlobalConcurrent: 16,
+      maxPerProviderConcurrent: 12,
       maxPerListingConcurrent: 8,
       maxPerPayerConcurrent: 4,
       maxGlobalPerMinute: 120,
+      maxPerProviderPerMinute: 90,
       maxPerListingPerMinute: 60,
       maxPerPayerPerMinute: 30,
     },
@@ -411,27 +413,46 @@ export class FakeFacilitator implements BazaarFacilitatorClient {
 export class FakeFulfillment implements BazaarFulfillmentService {
   dispatchCalls = 0;
   dispatchError = false;
-  dispatchResult: BazaarDispatchResult | null = null;
+  dispatchResult: FakeDispatchResult | null = null;
   rawDispatchResult: unknown = undefined;
+  rawLifecycleResult: unknown = undefined;
   lifecycleCalls: BazaarLifecycleDispatchInput[] = [];
 
-  async dispatch(input: BazaarDispatchInput) {
+  async dispatch(input: BazaarDispatchInput): Promise<BazaarDispatchResult> {
     this.dispatchCalls += 1;
     if (this.dispatchError) throw new Error("ambiguous provider dispatch");
     if (this.rawDispatchResult !== undefined) {
       return this.rawDispatchResult as BazaarDispatchResult;
     }
-    return this.dispatchResult ?? {
+    return {
+      orderRecordId: input.orderRecordId,
+      ...(this.dispatchResult ?? {
       kind: "accepted" as const,
       taskId: `task-${input.orderRecordId.slice(-12)}`,
+      }),
     };
   }
 
   async performLifecycleAction(input: BazaarLifecycleDispatchInput) {
     this.lifecycleCalls.push(input);
-    return { state: "working", action: input.action };
+    if (this.rawLifecycleResult !== undefined) {
+      return this.rawLifecycleResult as Awaited<ReturnType<
+        BazaarFulfillmentService["performLifecycleAction"]
+      >>;
+    }
+    return {
+      assertionNonce: input.assertion.message.nonce,
+      result: { state: "working", action: input.action },
+    };
   }
 }
+
+type FakeDispatchResult =
+  | { kind: "accepted"; taskId: string }
+  | {
+      kind: "rejected";
+      reason: "PROVIDER_COMPLIANCE_FAILURE" | "PROVIDER_FULFILLMENT_FAILURE";
+    };
 
 export class FakeSettlementObserver {
   calls: BazaarSettlementObservationInput[] = [];
@@ -513,19 +534,32 @@ export class FakeFulfillmentObserver implements BazaarFulfillmentObserver {
 
 export class FakeRefundService implements BazaarRefundRequestService {
   calls: Parameters<BazaarRefundRequestService["requestRefund"]>[0][] = [];
-  result: Awaited<ReturnType<BazaarRefundRequestService["requestRefund"]>> = {
+  result: FakeRefundResult = {
     kind: "deferred",
   };
+  rawResult: unknown = undefined;
   error = false;
   gate: Promise<void> | null = null;
 
-  async requestRefund(input: Parameters<BazaarRefundRequestService["requestRefund"]>[0]) {
+  async requestRefund(
+    input: Parameters<BazaarRefundRequestService["requestRefund"]>[0],
+  ): Promise<Awaited<ReturnType<BazaarRefundRequestService["requestRefund"]>>> {
     this.calls.push(input);
     await this.gate;
     if (this.error) throw new Error("ambiguous provider refund request");
-    return this.result;
+    if (this.rawResult !== undefined) {
+      return this.rawResult as Awaited<ReturnType<
+        BazaarRefundRequestService["requestRefund"]
+      >>;
+    }
+    return { ...this.result, refundId: input.refundId };
   }
 }
+
+type FakeRefundResult =
+  | { kind: "broadcast"; transaction: Hex }
+  | { kind: "blocked_issuer"; evidenceHash: Hex }
+  | { kind: "deferred" };
 
 export class FakeRefundEvidenceVerifier {
   calls: BazaarRefundEvidenceInput[] = [];

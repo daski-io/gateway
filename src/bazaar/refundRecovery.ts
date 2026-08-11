@@ -10,9 +10,13 @@ import { callBazaarAdapter } from "./adapterCall.js";
 const MAX_REFUNDS_PER_RUN = 50;
 const ZERO_BYTES32 = `0x${"00".repeat(32)}`;
 type RefundRequestResult =
-  | { kind: "broadcast"; transaction: `0x${string}` }
-  | { kind: "blocked_issuer" }
-  | { kind: "deferred" };
+  | { kind: "broadcast"; refundId: `0x${string}`; transaction: `0x${string}` }
+  | {
+      kind: "blocked_issuer";
+      refundId: `0x${string}`;
+      evidenceHash: `0x${string}`;
+    }
+  | { kind: "deferred"; refundId: `0x${string}` };
 
 export class BazaarRefundRecovery {
   constructor(
@@ -110,6 +114,10 @@ export class BazaarRefundRecovery {
       return;
     }
     const result = parseRefundRequestResult(response);
+    if (!result || result.refundId.toLowerCase() !== work.refundId.toLowerCase()) {
+      if (await this.defer(work)) lease.complete();
+      return;
+    }
     let transitioned: boolean;
     if (result?.kind === "broadcast") {
       transitioned = await this.store.recordBroadcast(
@@ -118,7 +126,11 @@ export class BazaarRefundRecovery {
         result.transaction,
       );
     } else if (result?.kind === "blocked_issuer") {
-      transitioned = await this.store.markBlocked(work.orderRecordId, work.leaseToken);
+      transitioned = await this.store.markBlocked(
+        work.orderRecordId,
+        work.leaseToken,
+        result.evidenceHash,
+      );
     } else {
       transitioned = await this.defer(work);
     }
@@ -146,14 +158,30 @@ function parseRefundRequestResult(value: unknown): RefundRequestResult | null {
   if (!isRecord(value)) return null;
   const keys = Object.keys(value);
   if (
-    value.kind === "broadcast" && keys.length === 2 &&
-    Object.hasOwn(value, "kind") && Object.hasOwn(value, "transaction") &&
+    value.kind === "broadcast" && keys.length === 3 &&
+    Object.hasOwn(value, "kind") && Object.hasOwn(value, "refundId") &&
+    Object.hasOwn(value, "transaction") && isNonzeroHex32(value.refundId) &&
     isNonzeroHex32(value.transaction)
-  ) return { kind: "broadcast", transaction: value.transaction };
+  ) return {
+    kind: "broadcast",
+    refundId: value.refundId,
+    transaction: value.transaction,
+  };
   if (
-    (value.kind === "blocked_issuer" || value.kind === "deferred") &&
-    keys.length === 1 && Object.hasOwn(value, "kind")
-  ) return { kind: value.kind };
+    value.kind === "blocked_issuer" && keys.length === 3 &&
+    Object.hasOwn(value, "kind") && Object.hasOwn(value, "refundId") &&
+    Object.hasOwn(value, "evidenceHash") && isNonzeroHex32(value.refundId) &&
+    isNonzeroHex32(value.evidenceHash)
+  ) return {
+    kind: "blocked_issuer",
+    refundId: value.refundId,
+    evidenceHash: value.evidenceHash,
+  };
+  if (
+    value.kind === "deferred" && keys.length === 2 &&
+    Object.hasOwn(value, "kind") && Object.hasOwn(value, "refundId") &&
+    isNonzeroHex32(value.refundId)
+  ) return { kind: "deferred", refundId: value.refundId };
   return null;
 }
 

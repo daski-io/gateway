@@ -70,6 +70,7 @@ export class BazaarOutcomeService {
     ))) return failureOutcome(503, "refund_risk_capacity_unavailable");
     if (!(await this.store.hasListingSettlementCapacity(
       this.listing.offer.message.listingCommitment,
+      this.listing.offer.message.providerAgentId,
       this.wiring.settlementCapacity,
     ))) return failureOutcome(503, "settlement_capacity_unavailable");
     return {
@@ -162,6 +163,11 @@ export class BazaarOutcomeService {
           payer: parsed.payment.authorization.from,
         }, signal),
       });
+      if (!validPayerProfile(
+        profile,
+        this.listing.offer.message.chainId,
+        parsed.payment.authorization.from,
+      )) return failureOutcome(503, "payer_profile_ambiguous");
       if (profile.profile !== "eoa") {
         return failureOutcome(402, "payer_profile_unsupported");
       }
@@ -421,4 +427,18 @@ function scrubPaymentPayload(payload: PaymentPayload): void {
 
 function ownershipLost(): BazaarOutcomeResult {
   return failureOutcome(409, "processing_ownership_lost");
+}
+
+function validPayerProfile(
+  value: unknown,
+  chainId: bigint,
+  payer: Hex,
+): value is { chainId: bigint; payer: Hex; profile: "eoa" | "unsupported" } {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  const result = value as Record<string, unknown>;
+  return Object.keys(result).sort().join("\0") ===
+      ["chainId", "payer", "profile"].sort().join("\0") &&
+    result.chainId === chainId && typeof result.payer === "string" &&
+    result.payer.toLowerCase() === payer.toLowerCase() &&
+    (result.profile === "eoa" || result.profile === "unsupported");
 }

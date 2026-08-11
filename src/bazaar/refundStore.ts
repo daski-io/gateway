@@ -49,8 +49,17 @@ export class BazaarRefundStore {
     });
   }
 
-  markBlocked(orderRecordId: Hex, leaseToken: string): Promise<boolean> {
-    return markBazaarRefundBlocked({ pool: this.pool, orderRecordId, leaseToken });
+  markBlocked(
+    orderRecordId: Hex,
+    leaseToken: string,
+    evidenceHash: Hex,
+  ): Promise<boolean> {
+    return markBazaarRefundBlocked({
+      pool: this.pool,
+      orderRecordId,
+      leaseToken,
+      evidenceHash,
+    });
   }
 
   finalize(input: {

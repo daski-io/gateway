@@ -1,5 +1,6 @@
 import type { SettleResponse } from "@x402/core/types";
 import { keccak256, toBytes, type Hex } from "viem";
+import { isHex32 } from "../util/evmValidation.js";
 import {
   existingOutcomeResult,
   failureOutcome,
@@ -83,7 +84,10 @@ export async function dispatchBazaarOrder(input: {
     return existingOutcomeResult(await reload(store, order));
   }
   const dispatched = parseDispatchResult(response);
-  if (!dispatched) {
+  if (
+    !dispatched ||
+    dispatched.orderRecordId.toLowerCase() !== order.orderRecordId.toLowerCase()
+  ) {
     const marked = await store.markDispatchAmbiguous(
       order.orderRecordId,
       leaseToken,
@@ -111,7 +115,18 @@ export async function dispatchBazaarOrder(input: {
     dispatched.taskId,
     keccak256(toBytes(dispatched.taskId)),
   );
-  if (!marked) return existingOutcomeResult(await reload(store, order));
+  if (marked === "task_conflict") {
+    const conflicted = await store.markDispatchAmbiguous(
+      order.orderRecordId,
+      leaseToken,
+      "provider_task_identity_conflict",
+    );
+    if (conflicted) lease.complete();
+    return existingOutcomeResult(await reload(store, order));
+  }
+  if (marked === "ownership_lost") {
+    return existingOutcomeResult(await reload(store, order));
+  }
   lease.complete();
   return successOutcome(order.orderHandle, listing.resourceUrl, paymentResponse);
 }
@@ -119,15 +134,27 @@ export async function dispatchBazaarOrder(input: {
 function parseDispatchResult(value: unknown): BazaarDispatchResult | null {
   if (!isRecord(value)) return null;
   if (
-    value.kind === "accepted" && hasExactKeys(value, ["kind", "taskId"]) &&
+    value.kind === "accepted" &&
+    hasExactKeys(value, ["kind", "orderRecordId", "taskId"]) &&
+    isHex32(value.orderRecordId) &&
     typeof value.taskId === "string" &&
     /^[A-Za-z0-9._:-]{1,128}$/.test(value.taskId)
-  ) return { kind: "accepted", taskId: value.taskId };
+  ) return {
+    kind: "accepted",
+    orderRecordId: value.orderRecordId,
+    taskId: value.taskId,
+  };
   if (
-    value.kind === "rejected" && hasExactKeys(value, ["kind", "reason"]) &&
+    value.kind === "rejected" &&
+    hasExactKeys(value, ["kind", "orderRecordId", "reason"]) &&
+    isHex32(value.orderRecordId) &&
     (value.reason === "PROVIDER_COMPLIANCE_FAILURE" ||
       value.reason === "PROVIDER_FULFILLMENT_FAILURE")
-  ) return { kind: "rejected", reason: value.reason };
+  ) return {
+    kind: "rejected",
+    orderRecordId: value.orderRecordId,
+    reason: value.reason,
+  };
   return null;
 }
 

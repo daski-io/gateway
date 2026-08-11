@@ -73,7 +73,8 @@ export async function observeBazaarSettlement(input: {
   if (result.kind === "pending") return result;
   if (
     result.observedThrough < requiredThrough || result.observedThrough > now ||
-    !isNonzeroHex32(result.evidenceHash)
+    !isNonzeroHex32(result.evidenceHash) ||
+    !observationBindingMatches(order, result)
   ) return { kind: "pending" };
   if (result.kind === "no_transfer") return result;
   return validMatchingTransfer(result) ? result : { kind: "pending" };
@@ -96,6 +97,18 @@ function validMatchingTransfer(
     result.authorizationLogIndex !== result.transferLogIndex;
 }
 
+function observationBindingMatches(
+  order: BazaarOrder,
+  result: Exclude<BazaarSettlementObservationResult, { kind: "pending" }>,
+): boolean {
+  return result.chainId === order.chainId &&
+    result.token.toLowerCase() === order.token.toLowerCase() &&
+    result.payer.toLowerCase() === order.payer.toLowerCase() &&
+    result.nonce.toLowerCase() === order.nonce.toLowerCase() &&
+    result.payTo.toLowerCase() === order.payTo.toLowerCase() &&
+    result.grossAmount === order.grossAmount;
+}
+
 function isNonzeroHex32(value: unknown): boolean {
   return isHex32(value) && value.toLowerCase() !== ZERO_BYTES32;
 }
@@ -109,12 +122,19 @@ function parseObservationResult(
   }
   if (
     value.kind === "no_transfer" &&
-    hasExactKeys(value, ["kind", "observedThrough", "evidenceHash"]) &&
+    hasExactKeys(value, [
+      "kind", "observedThrough", "evidenceHash", "chainId", "token", "payer",
+      "nonce", "payTo", "grossAmount",
+    ]) &&
     typeof value.observedThrough === "bigint" &&
-    typeof value.evidenceHash === "string"
+    typeof value.evidenceHash === "string" && typeof value.chainId === "bigint" &&
+    typeof value.grossAmount === "bigint" &&
+    [value.token, value.payer, value.nonce, value.payTo]
+      .every((field) => typeof field === "string")
   ) return value as Extract<BazaarSettlementObservationResult, { kind: "no_transfer" }>;
   const matchingKeys = [
     "kind", "observedThrough", "evidenceHash", "transaction", "blockHash",
+    "chainId", "token", "payer", "nonce", "payTo", "grossAmount",
     "transactionIndex", "authorizationLogIndex", "transferLogIndex",
     "finalized", "authorizationUsedEventCount", "matchingTransferEventCount",
   ];
@@ -122,6 +142,9 @@ function parseObservationResult(
     value.kind === "matching_transfer" && hasExactKeys(value, matchingKeys) &&
     typeof value.observedThrough === "bigint" &&
     [value.evidenceHash, value.transaction, value.blockHash]
+      .every((field) => typeof field === "string") &&
+    typeof value.chainId === "bigint" && typeof value.grossAmount === "bigint" &&
+    [value.token, value.payer, value.nonce, value.payTo]
       .every((field) => typeof field === "string") &&
     [value.transactionIndex, value.authorizationLogIndex, value.transferLogIndex]
       .every((field) => typeof field === "number") &&
