@@ -1,6 +1,7 @@
 import { keccak256, toBytes } from "viem";
 import { canonicalJsonStringify } from "../auth/envelope.js";
 import { isHex32, isHexAddress } from "../util/evmValidation.js";
+import { validateStockFixedDiscoverySchemas } from "./discoverySchemas.js";
 import type { BazaarListing, ListingOfferV1 } from "./types.js";
 
 const MAX_SCHEMA_BYTES = 16 * 1024;
@@ -83,6 +84,7 @@ function validateUrlsAndMetadata(listing: BazaarListing): void {
   ) throw new Error("Bazaar listing metadata is malformed or oversized");
   validateStaticDiscoveryObject(listing.requestSchema);
   validateStaticDiscoveryObject(listing.responseSchema);
+  validateStockFixedDiscoverySchemas(listing);
 }
 
 function validateFixedFields(listing: BazaarListing, message: ListingOfferV1): void {

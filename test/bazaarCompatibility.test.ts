@@ -200,6 +200,43 @@ describe("Bazaar compatibility harness", () => {
     }, BigInt(Math.floor(TEST_NOW.getTime() / 1000)))).rejects.toThrow(/release manifest/);
   });
 
+  it("makes the gateway authoritative for stock-fixed discovery schemas", async () => {
+    const listing = harness.wiring.listings[0]!;
+    await expect(validateCompatibilityListing({
+      ...listing,
+      requestSchema: {
+        additionalProperties: false,
+        required: [],
+        properties: {},
+        type: "object",
+      },
+    }, BigInt(Math.floor(TEST_NOW.getTime() / 1000))))
+      .resolves.toBeUndefined();
+    await expect(validateCompatibilityListing({
+      ...listing,
+      requestSchema: {
+        type: "object",
+        properties: { prompt: { type: "string" } },
+        required: ["prompt"],
+        additionalProperties: false,
+      },
+    }, BigInt(Math.floor(TEST_NOW.getTime() / 1000))))
+      .rejects.toThrow(/canonical stock-fixed schemas/);
+    await expect(validateCompatibilityListing({
+      ...listing,
+      responseSchema: {
+        type: "object",
+        properties: {
+          orderHandle: { type: "string" },
+          lifecycle: { type: "object" },
+        },
+        required: ["orderHandle", "lifecycle"],
+        additionalProperties: false,
+      },
+    }, BigInt(Math.floor(TEST_NOW.getTime() / 1000))))
+      .rejects.toThrow(/canonical stock-fixed schemas/);
+  });
+
   it("enforces a valid challenge MAC and purpose-separated provider signer", async () => {
     harness.wiring.challengeMac.current.secret = Buffer.alloc(31);
     await expect(createBazaarCompatibilityRouter({
