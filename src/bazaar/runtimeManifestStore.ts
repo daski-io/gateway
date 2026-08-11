@@ -1,9 +1,26 @@
 import type { Pool, PoolClient } from "pg";
 import { hexToBytea } from "../db/paymentChallengeCodec.js";
 import type { Hex } from "../types.js";
-import type { ApprovedBazaarRuntimeManifestIdentity } from
-  "./runtimeManifestApproval.js";
-import type { BazaarRuntimeManifestApproval } from "./types.js";
+import type { BazaarRuntimeManifestIdentity } from "./runtimeManifest.js";
+import {
+  bazaarRuntimeManifestApprovalDigest,
+  type ApprovedBazaarRuntimeManifestIdentity,
+  validateBazaarRuntimeManifestApproval,
+} from "./runtimeManifestApproval.js";
+import {
+  completeBazaarRuntimeDrain,
+  establishBazaarRuntimeDrain,
+  hasBazaarRuntimeDrain,
+  hasLiveBazaarWork,
+} from "./runtimeManifestDrainStore.js";
+import { BAZAAR_RUNTIME_MANIFEST_LOCK_KEY } from
+  "./runtimeManifestAccess.js";
+import { bazaarNowSeconds } from "./runtimeTime.js";
+import type {
+  BazaarCompatibilityWiring,
+  BazaarRuntimeManifestApproval,
+  BazaarRuntimeManifestTrust,
+} from "./types.js";
 
 interface RawRuntimeManifest {
   manifest_epoch: string;
@@ -12,20 +29,51 @@ interface RawRuntimeManifest {
   deployment_id: Buffer | null;
 }
 
-export async function transitionBazaarRuntimeManifest(
-  pool: Pool,
-  identity: ApprovedBazaarRuntimeManifestIdentity,
-  approval: BazaarRuntimeManifestApproval,
-  approvalDigest: Hex,
-  reconcile: (client: PoolClient) => Promise<void>,
-): Promise<void> {
-  const client = await pool.connect();
+export type BazaarRuntimeTransitionResult = "active" | "draining";
+export {
+  isBazaarRuntimeManifestActive,
+  lockBazaarRuntimeManifestForAdmission,
+  lockCurrentBazaarRuntimeManifest,
+  withActiveBazaarRuntimeManifest,
+  withCurrentBazaarRuntimeManifest,
+} from "./runtimeManifestAccess.js";
+
+export async function transitionBazaarRuntimeManifest(input: {
+  pool: Pool;
+  identity: BazaarRuntimeManifestIdentity;
+  approval: BazaarRuntimeManifestApproval;
+  trust: BazaarRuntimeManifestTrust;
+  wiring: BazaarCompatibilityWiring;
+  reconcile: (
+    client: PoolClient,
+    identity: ApprovedBazaarRuntimeManifestIdentity,
+  ) => Promise<void>;
+}): Promise<{
+  state: BazaarRuntimeTransitionResult;
+  identity: ApprovedBazaarRuntimeManifestIdentity;
+}> {
+  const approval = { ...input.approval };
+  const trust = { ...input.trust };
+  const unsignedIdentity = { ...input.identity };
+  const client = await input.pool.connect();
   try {
     await client.query("BEGIN");
     await client.query(
       "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
-      ["daski-gateway:bazaar-runtime-manifest"],
+      [BAZAAR_RUNTIME_MANIFEST_LOCK_KEY],
     );
+    const identity = await validateBazaarRuntimeManifestApproval({
+      identity: unsignedIdentity,
+      approval,
+      trust,
+      wiring: input.wiring,
+      now: bazaarNowSeconds(),
+    });
+    const approvalDigest = bazaarRuntimeManifestApprovalDigest({
+      identity: unsignedIdentity,
+      approval,
+      trust,
+    });
     const active = await client.query<RawRuntimeManifest>(
       `SELECT manifest_epoch, manifest_hash, approval_authority, deployment_id
          FROM bazaar_runtime_manifests
@@ -36,10 +84,30 @@ export async function transitionBazaarRuntimeManifest(
     }
     const current = active.rows[0];
     assertPermittedTransition(current, identity);
-    if (!current || identity.epoch > BigInt(current.manifest_epoch)) {
-      await assertNoLiveBazaarWork(client);
+    if (current) {
+      const currentEpoch = BigInt(current.manifest_epoch);
+      if (identity.epoch === currentEpoch && await hasBazaarRuntimeDrain(client)) {
+        await client.query("COMMIT");
+        return { state: "draining", identity };
+      }
+      if (identity.epoch > currentEpoch) {
+        const liveWork = await hasLiveBazaarWork(client);
+        if (liveWork) {
+          await preflightReconciliation(
+            client,
+            (candidate) => input.reconcile(candidate, identity),
+          );
+        }
+        await establishBazaarRuntimeDrain({
+          client, current, identity, approval, approvalDigest,
+        });
+        if (liveWork) {
+          await client.query("COMMIT");
+          return { state: "draining", identity };
+        }
+      }
     }
-    await reconcile(client);
+    await input.reconcile(client, identity);
     if (!current) {
       await insertManifest(client, identity);
     } else {
@@ -52,10 +120,12 @@ export async function transitionBazaarRuntimeManifest(
           [current.manifest_epoch],
         );
         await insertManifest(client, identity);
+        await completeBazaarRuntimeDrain({ client, current, identity });
       }
     }
     await recordApproval(client, identity, approval, approvalDigest);
     await client.query("COMMIT");
+    return { state: "active", identity };
   } catch (error) {
     await client.query("ROLLBACK").catch(() => undefined);
     throw error;
@@ -87,53 +157,6 @@ function assertPermittedTransition(
   }
 }
 
-export async function isBazaarRuntimeManifestActive(
-  pool: Pool,
-  identity: ApprovedBazaarRuntimeManifestIdentity,
-): Promise<boolean> {
-  const active = await pool.query<RawRuntimeManifest>(
-    `SELECT manifest_epoch, manifest_hash, approval_authority, deployment_id
-       FROM bazaar_runtime_manifests
-      WHERE retired_at IS NULL`,
-  );
-  return matchesIdentity(active.rows, identity);
-}
-
-export async function lockBazaarRuntimeManifestForAdmission(
-  client: PoolClient,
-  identity: ApprovedBazaarRuntimeManifestIdentity,
-): Promise<boolean> {
-  const active = await client.query<RawRuntimeManifest>(
-    `SELECT manifest_epoch, manifest_hash, approval_authority, deployment_id
-       FROM bazaar_runtime_manifests
-      WHERE retired_at IS NULL FOR SHARE`,
-  );
-  return matchesIdentity(active.rows, identity);
-}
-
-export async function withActiveBazaarRuntimeManifest<T>(input: {
-  pool: Pool;
-  identity: ApprovedBazaarRuntimeManifestIdentity;
-  action: (client: PoolClient) => Promise<T>;
-}): Promise<{ active: false } | { active: true; value: T }> {
-  const client = await input.pool.connect();
-  try {
-    await client.query("BEGIN");
-    if (!(await lockBazaarRuntimeManifestForAdmission(client, input.identity))) {
-      await client.query("COMMIT");
-      return { active: false };
-    }
-    const value = await input.action(client);
-    await client.query("COMMIT");
-    return { active: true, value };
-  } catch (error) {
-    await client.query("ROLLBACK").catch(() => undefined);
-    throw error;
-  } finally {
-    client.release();
-  }
-}
-
 async function insertManifest(
   client: PoolClient,
   identity: ApprovedBazaarRuntimeManifestIdentity,
@@ -149,15 +172,13 @@ async function insertManifest(
   );
 }
 
-function matchesIdentity(
-  rows: RawRuntimeManifest[],
-  identity: ApprovedBazaarRuntimeManifestIdentity,
-): boolean {
-  return rows.length === 1 &&
-    BigInt(rows[0]!.manifest_epoch) === identity.epoch &&
-    rows[0]!.manifest_hash.equals(hexToBytea(identity.hash)) &&
-    rows[0]!.approval_authority?.equals(hexToBytea(identity.approvalAuthority)) === true &&
-    rows[0]!.deployment_id?.equals(hexToBytea(identity.deploymentId)) === true;
+async function preflightReconciliation(
+  client: PoolClient,
+  reconcile: (client: PoolClient) => Promise<void>,
+): Promise<void> {
+  await client.query("SAVEPOINT bazaar_runtime_reconciliation");
+  await reconcile(client);
+  await client.query("ROLLBACK TO SAVEPOINT bazaar_runtime_reconciliation");
 }
 
 async function recordApproval(
@@ -179,26 +200,4 @@ async function recordApproval(
       approval.validBefore.toString(),
     ],
   );
-}
-
-async function assertNoLiveBazaarWork(client: PoolClient): Promise<void> {
-  await client.query(
-    "DELETE FROM bazaar_runtime_executions WHERE lease_expires_at <= now()",
-  );
-  const live = await client.query(
-    `SELECT 1 WHERE EXISTS (
-       SELECT 1 FROM bazaar_orders WHERE processing_lease_expires_at > now()
-       UNION ALL
-       SELECT 1 FROM bazaar_settlement_observations WHERE lease_expires_at > now()
-       UNION ALL
-       SELECT 1 FROM bazaar_refund_jobs WHERE lease_expires_at > now()
-       UNION ALL
-       SELECT 1 FROM bazaar_fulfillment_jobs WHERE lease_expires_at > now()
-       UNION ALL
-       SELECT 1 FROM bazaar_runtime_executions WHERE lease_expires_at > now()
-     )`,
-  );
-  if (live.rowCount === 1) {
-    throw new Error("Bazaar runtime manifest transition is blocked by live work");
-  }
 }

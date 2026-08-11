@@ -4,7 +4,10 @@ import { hexToBytea } from "../db/paymentChallengeCodec.js";
 import type { Hex } from "../types.js";
 import type { ApprovedBazaarRuntimeManifestIdentity } from
   "./runtimeManifestApproval.js";
-import { withActiveBazaarRuntimeManifest } from "./runtimeManifestStore.js";
+import {
+  withActiveBazaarRuntimeManifest,
+  withCurrentBazaarRuntimeManifest,
+} from "./runtimeManifestStore.js";
 
 const RUNTIME_EXECUTION_LEASE_SECONDS = 120;
 
@@ -49,7 +52,7 @@ export class BazaarRuntimeExecutionStore {
   }
 
   async renewLease(executionId: Hex, leaseToken: string): Promise<boolean> {
-    const result = await withActiveBazaarRuntimeManifest({
+    const result = await withCurrentBazaarRuntimeManifest({
       pool: this.pool,
       identity: this.identity,
       action: async (client) => {

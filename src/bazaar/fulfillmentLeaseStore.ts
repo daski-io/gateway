@@ -4,7 +4,10 @@ import { hexToBytea } from "../db/paymentChallengeCodec.js";
 import type { Hex } from "../types.js";
 import type { ApprovedBazaarRuntimeManifestIdentity } from
   "./runtimeManifestApproval.js";
-import { withActiveBazaarRuntimeManifest } from "./runtimeManifestStore.js";
+import {
+  withActiveBazaarRuntimeManifest,
+  withCurrentBazaarRuntimeManifest,
+} from "./runtimeManifestStore.js";
 
 const FULFILLMENT_LEASE_SECONDS = 120;
 
@@ -102,7 +105,7 @@ export async function renewBazaarFulfillmentLease(
   orderRecordId: Hex,
   leaseToken: string,
 ): Promise<boolean> {
-  const result = await withActiveBazaarRuntimeManifest({
+  const result = await withCurrentBazaarRuntimeManifest({
     pool,
     identity: runtimeManifest,
     action: async (client) => {

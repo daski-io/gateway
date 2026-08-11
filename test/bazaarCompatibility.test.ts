@@ -1264,35 +1264,45 @@ describe("Bazaar compatibility harness", () => {
   it("serializes admission against an atomic runtime-manifest transition", async () => {
     const entered = deferred();
     const release = deferred();
-    const next = computeBazaarRuntimeManifestIdentity({
-      ...harness.wiring,
-      runtimeManifestEpoch: 2n,
-      adapterCallTimeoutMs: 999,
-    }, gateway.config.taskRetentionSeconds);
     const prior = computeBazaarRuntimeManifestIdentity(
       harness.wiring,
       gateway.config.taskRetentionSeconds,
     );
-    const approvedNext = {
-      ...next,
-      approvalAuthority: harness.runtimeManifestTrust.authority,
-      deploymentId: harness.runtimeManifestTrust.deploymentId,
-    };
     const approvedPrior = {
       ...prior,
       approvalAuthority: harness.runtimeManifestTrust.authority,
       deploymentId: harness.runtimeManifestTrust.deploymentId,
     };
-    const transition = transitionBazaarRuntimeManifest(
-      gateway.bundle.pool,
-      approvedNext,
-      harness.wiring.runtimeManifestApproval,
-      nonce(300),
-      async () => {
+    harness.wiring.runtimeManifestEpoch = 2n;
+    harness.wiring.adapterCallTimeoutMs = 999;
+    await expect(createBazaarCompatibilityRouter({
+      pool: gateway.bundle.pool,
+      providerAuthority: gateway.bundle.providerAuthority,
+      wiring: harness.wiring,
+      runtimeManifestTrust: harness.runtimeManifestTrust,
+      lifecycleDomainRetentionSeconds: gateway.config.taskRetentionSeconds,
+    })).rejects.toThrow(/approval authority is invalid/);
+    const unsignedDrains = await gateway.bundle.pool.query(
+      `SELECT 1 FROM bazaar_runtime_transition_intents WHERE state = 'draining'`,
+    );
+    expect(unsignedDrains.rowCount).toBe(0);
+    expect((await unpaid(gateway)).status).toBe(402);
+    await reapproveHarness(harness);
+    const next = computeBazaarRuntimeManifestIdentity(
+      harness.wiring,
+      gateway.config.taskRetentionSeconds,
+    );
+    const transition = transitionBazaarRuntimeManifest({
+      pool: gateway.bundle.pool,
+      identity: next,
+      approval: harness.wiring.runtimeManifestApproval,
+      trust: harness.runtimeManifestTrust,
+      wiring: harness.wiring,
+      reconcile: async () => {
         entered.resolve();
         await release.promise;
       },
-    );
+    });
     await entered.promise;
 
     const client = await gateway.bundle.pool.connect();
@@ -1316,6 +1326,114 @@ describe("Bazaar compatibility harness", () => {
       await client.query("ROLLBACK").catch(() => undefined);
       client.release();
     }
+  });
+
+  it("serializes admission against a newly committed runtime drain", async () => {
+    const prior = computeBazaarRuntimeManifestIdentity(
+      harness.wiring,
+      gateway.config.taskRetentionSeconds,
+    );
+    const approvedPrior = {
+      ...prior,
+      approvalAuthority: harness.runtimeManifestTrust.authority,
+      deploymentId: harness.runtimeManifestTrust.deploymentId,
+    };
+    const executionStore = new BazaarRuntimeExecutionStore(
+      gateway.bundle.pool,
+      approvedPrior,
+      "test-drain-admission-fence",
+    );
+    const execution = await executionStore.begin();
+    expect(execution).not.toBeNull();
+
+    harness.wiring.runtimeManifestEpoch = 2n;
+    harness.wiring.adapterCallTimeoutMs = 999;
+    await reapproveHarness(harness);
+    const next = computeBazaarRuntimeManifestIdentity(
+      harness.wiring,
+      gateway.config.taskRetentionSeconds,
+    );
+    const entered = deferred();
+    const release = deferred();
+    const transition = transitionBazaarRuntimeManifest({
+      pool: gateway.bundle.pool,
+      identity: next,
+      approval: harness.wiring.runtimeManifestApproval,
+      trust: harness.runtimeManifestTrust,
+      wiring: harness.wiring,
+      reconcile: async () => {
+        entered.resolve();
+        await release.promise;
+      },
+    });
+    await entered.promise;
+
+    const client = await gateway.bundle.pool.connect();
+    try {
+      await client.query("BEGIN");
+      let admissionCompleted = false;
+      const admission = lockBazaarRuntimeManifestForAdmission(client, approvedPrior)
+        .then((active) => {
+          admissionCompleted = true;
+          return active;
+        });
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      expect(admissionCompleted).toBe(false);
+
+      release.resolve();
+      expect((await transition).state).toBe("draining");
+      expect(await admission).toBe(false);
+      await client.query("COMMIT");
+    } finally {
+      release.resolve();
+      await client.query("ROLLBACK").catch(() => undefined);
+      client.release();
+      if (execution) {
+        await executionStore.complete(execution.executionId, execution.leaseToken);
+      }
+    }
+  });
+
+  it("revalidates manifest approval freshness after waiting for transition lock", async () => {
+    harness.wiring.runtimeManifestEpoch = 2n;
+    harness.wiring.adapterCallTimeoutMs = 999;
+    await reapproveHarness(harness);
+    const next = computeBazaarRuntimeManifestIdentity(
+      harness.wiring,
+      gateway.config.taskRetentionSeconds,
+    );
+    const blocker = await gateway.bundle.pool.connect();
+    try {
+      await blocker.query("BEGIN");
+      await blocker.query(
+        "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+        ["daski-gateway:bazaar-runtime-manifest"],
+      );
+      const transition = transitionBazaarRuntimeManifest({
+        pool: gateway.bundle.pool,
+        identity: next,
+        approval: harness.wiring.runtimeManifestApproval,
+        trust: harness.runtimeManifestTrust,
+        wiring: harness.wiring,
+        reconcile: async () => undefined,
+      });
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      vi.setSystemTime(Number(
+        (harness.wiring.runtimeManifestApproval.validBefore + 1n) * 1_000n,
+      ));
+      const rejected = expect(transition).rejects.toThrow(
+        /approval is malformed or stale/,
+      );
+      await blocker.query("COMMIT");
+      await rejected;
+    } finally {
+      await blocker.query("ROLLBACK").catch(() => undefined);
+      blocker.release();
+    }
+    const drains = await gateway.bundle.pool.query(
+      `SELECT 1 FROM bazaar_runtime_transition_intents WHERE state = 'draining'`,
+    );
+    expect(drains.rowCount).toBe(0);
   });
 
   it("fences stale admissions while preserving exact replay after rollover", async () => {
@@ -1482,13 +1600,24 @@ describe("Bazaar compatibility harness", () => {
       });
     } catch (error) {
       rolloverError = error;
+      const liveExecution = await gateway.bundle.pool.query<{
+        execution_id: string;
+        lease_token: string;
+      }>(
+        `SELECT encode(execution_id, 'hex') AS execution_id, lease_token
+           FROM bazaar_runtime_executions`,
+      );
+      expect(await executionStore.renewLease(
+        `0x${liveExecution.rows[0]!.execution_id}`,
+        liveExecution.rows[0]!.lease_token,
+      )).toBe(true);
     } finally {
       release.resolve();
       await execution;
       await unexpectedRouter?.close();
     }
     expect(rolloverError).toBeInstanceOf(Error);
-    expect((rolloverError as Error).message).toMatch(/blocked by live work/);
+    expect((rolloverError as Error).message).toMatch(/draining live work/);
     expect(published).toBe("old-runtime-response");
     const upgraded = await createBazaarCompatibilityRouter({
       pool: gateway.bundle.pool,
@@ -1602,7 +1731,67 @@ describe("Bazaar compatibility harness", () => {
       wiring: harness.wiring,
       runtimeManifestTrust: harness.runtimeManifestTrust,
       lifecycleDomainRetentionSeconds: gateway.config.taskRetentionSeconds,
-    })).rejects.toThrow(/blocked by live work/);
+    })).rejects.toThrow(/draining live work/);
+
+    const denied = await unpaid(gateway);
+    expect(denied.status).toBe(503);
+    expect(await denied.json()).toEqual({ error: "runtime_manifest_inactive" });
+    const registry = await fetch(
+      `${gateway.baseUrl}/.well-known/daski-bazaar-lifecycle-domains-v1.json`,
+    );
+    expect(registry.status).toBe(503);
+    const replay = await paid(gateway, payment);
+    expect(replay.response.status).toBe(202);
+    expect(harness.facilitator.settleCalls).toBe(1);
+    const intent = await gateway.bundle.pool.query<{
+      target_epoch: string;
+      state: string;
+      approval_signature: Buffer;
+    }>(
+      `SELECT target_epoch, state, approval_signature
+         FROM bazaar_runtime_transition_intents WHERE state = 'draining'`,
+    );
+    expect(intent.rows[0]).toMatchObject({ target_epoch: "2", state: "draining" });
+    expect(intent.rows[0]?.approval_signature).toHaveLength(65);
+    await gateway.bundle.pool.query(
+      `UPDATE bazaar_runtime_transition_intents
+          SET requested_at = now() + interval '1 hour'
+        WHERE state = 'draining'`,
+    );
+
+    harness.wiring.adapterCallTimeoutMs = 998;
+    await reapproveHarness(harness);
+    await expect(createBazaarCompatibilityRouter({
+      pool: gateway.bundle.pool,
+      providerAuthority: gateway.bundle.providerAuthority,
+      wiring: harness.wiring,
+      runtimeManifestTrust: harness.runtimeManifestTrust,
+      lifecycleDomainRetentionSeconds: gateway.config.taskRetentionSeconds,
+    })).rejects.toThrow(/drain target conflicts/);
+
+    harness.wiring.runtimeManifestEpoch = 3n;
+    await reapproveHarness(harness);
+    await expect(createBazaarCompatibilityRouter({
+      pool: gateway.bundle.pool,
+      providerAuthority: gateway.bundle.providerAuthority,
+      wiring: harness.wiring,
+      runtimeManifestTrust: harness.runtimeManifestTrust,
+      lifecycleDomainRetentionSeconds: gateway.config.taskRetentionSeconds,
+    })).rejects.toThrow(/draining live work/);
+    const intents = await gateway.bundle.pool.query<{
+      target_epoch: string;
+      state: string;
+      monotonic: boolean | null;
+    }>(
+      `SELECT target_epoch, state,
+              completed_at >= requested_at AS monotonic
+         FROM bazaar_runtime_transition_intents
+        ORDER BY target_epoch`,
+    );
+    expect(intents.rows).toEqual([
+      { target_epoch: "2", state: "superseded", monotonic: true },
+      { target_epoch: "3", state: "draining", monotonic: null },
+    ]);
 
     gate.resolve();
     expect((await settlement).response.status).toBe(200);
@@ -1614,6 +1803,68 @@ describe("Bazaar compatibility harness", () => {
       lifecycleDomainRetentionSeconds: gateway.config.taskRetentionSeconds,
     });
     await upgraded.close();
+  });
+
+  it("preflights a signed drain target before closing ingress", async () => {
+    const prior = computeBazaarRuntimeManifestIdentity(
+      harness.wiring,
+      gateway.config.taskRetentionSeconds,
+    );
+    const executionStore = new BazaarRuntimeExecutionStore(
+      gateway.bundle.pool,
+      {
+        ...prior,
+        approvalAuthority: harness.runtimeManifestTrust.authority,
+        deploymentId: harness.runtimeManifestTrust.deploymentId,
+      },
+      "test-drain-preflight",
+    );
+    const publishing = deferred();
+    const release = deferred();
+    const execution = withBazaarRuntimeExecution({
+      store: executionStore,
+      action: async () => "held-runtime-response",
+      publish: async () => {
+        publishing.resolve();
+        await release.promise;
+      },
+      unavailable: () => "runtime-inactive",
+    });
+    await publishing.promise;
+
+    const newActive = await createListing(harness.providerAccount, {
+      payTo: privateKeyToAccount(SECOND_PAY_TO_KEY),
+      slug: "preflight-new-active",
+      refundPolicy: harness.wiring.refundRiskPolicies["701"],
+    });
+    const unadmitted = await createListing(harness.providerAccount, {
+      payTo: privateKeyToAccount(`0x${"cc".repeat(32)}`),
+      slug: "preflight-unadmitted-recovery",
+      refundPolicy: harness.wiring.refundRiskPolicies["701"],
+    });
+    harness.wiring.listings = [newActive];
+    harness.wiring.recoveryListings = [unadmitted];
+    harness.wiring.retiredLifecycleCommitments = [unadmitted.listingCommitment];
+    harness.wiring.runtimeManifestEpoch = 2n;
+    await reapproveHarness(harness);
+    try {
+      await expect(createBazaarCompatibilityRouter({
+        pool: gateway.bundle.pool,
+        providerAuthority: gateway.bundle.providerAuthority,
+        wiring: harness.wiring,
+        runtimeManifestTrust: harness.runtimeManifestTrust,
+        lifecycleDomainRetentionSeconds: gateway.config.taskRetentionSeconds,
+      })).rejects.toThrow(/was not previously admitted/);
+      const drains = await gateway.bundle.pool.query(
+        `SELECT 1 FROM bazaar_runtime_transition_intents
+          WHERE state = 'draining'`,
+      );
+      expect(drains.rowCount).toBe(0);
+      expect((await unpaid(gateway)).status).toBe(402);
+    } finally {
+      release.resolve();
+      await execution;
+    }
   });
 
   it("blocks rollover during the pre-admission payer-profile call", async () => {
@@ -1646,10 +1897,12 @@ describe("Bazaar compatibility harness", () => {
       wiring: harness.wiring,
       runtimeManifestTrust: harness.runtimeManifestTrust,
       lifecycleDomainRetentionSeconds: gateway.config.taskRetentionSeconds,
-    })).rejects.toThrow(/blocked by live work/);
+    })).rejects.toThrow(/draining live work/);
 
     gate.resolve();
-    expect((await purchase).response.status).toBe(200);
+    expect((await purchase).response.status).toBe(503);
+    expect(harness.facilitator.verifyCalls).toBe(0);
+    expect(harness.facilitator.settleCalls).toBe(0);
     const upgraded = await createBazaarCompatibilityRouter({
       pool: gateway.bundle.pool,
       providerAuthority: gateway.bundle.providerAuthority,
@@ -1693,7 +1946,7 @@ describe("Bazaar compatibility harness", () => {
       wiring: harness.wiring,
       runtimeManifestTrust: harness.runtimeManifestTrust,
       lifecycleDomainRetentionSeconds: gateway.config.taskRetentionSeconds,
-    })).rejects.toThrow(/blocked by live work/);
+    })).rejects.toThrow(/draining live work/);
 
     gate.resolve();
     expect((await lifecycle).response.status).toBe(200);
@@ -1729,7 +1982,7 @@ describe("Bazaar compatibility harness", () => {
       wiring: harness.wiring,
       runtimeManifestTrust: harness.runtimeManifestTrust,
       lifecycleDomainRetentionSeconds: gateway.config.taskRetentionSeconds,
-    })).rejects.toThrow(/blocked by live work/);
+    })).rejects.toThrow(/draining live work/);
 
     gate.resolve();
     await recovery;

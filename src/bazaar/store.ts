@@ -46,6 +46,7 @@ import {
   isBazaarRuntimeManifestActive,
   lockBazaarRuntimeManifestForAdmission,
   withActiveBazaarRuntimeManifest,
+  withCurrentBazaarRuntimeManifest,
 } from "./runtimeManifestStore.js";
 
 interface RawLeasedOrder extends RawBazaarOrder {
@@ -291,7 +292,7 @@ export class BazaarOrderStore {
   }
 
   async renewLease(orderRecordId: Hex, leaseToken: string): Promise<boolean> {
-    const result = await withActiveBazaarRuntimeManifest({
+    const result = await withCurrentBazaarRuntimeManifest({
       pool: this.pool,
       identity: this.runtimeManifest,
       action: async (client) => {
