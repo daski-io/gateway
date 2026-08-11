@@ -32,7 +32,7 @@ import { validateBazaarCompatibilityWiring } from "./wiringValidation.js";
 import { activateBazaarRuntimeWiring } from "./runtimeWiringStore.js";
 import { BazaarRuntimeExecutionStore } from "./runtimeExecutionStore.js";
 import { withBazaarRuntimeExecution } from "./runtimeExecution.js";
-import { readBazaarLifecycleRegistry } from "./lifecycleRegistry.js";
+import { publishBazaarLifecycleRegistry } from "./lifecycleRegistry.js";
 
 const MAX_X402_HEADER_BYTES = 8 * 1024;
 const MAX_PAYMENT_SIGNATURE_BYTES = 12 * 1024;
@@ -76,16 +76,17 @@ export async function createBazaarCompatibilityRouter(options: {
 
   router.get("/.well-known/daski-bazaar-lifecycle-domains-v1.json", async (_req, res) => {
     res.setHeader("Cache-Control", "no-store");
-    const registry = await readBazaarLifecycleRegistry({
+    const published = await publishBazaarLifecycleRegistry({
       pool: options.pool,
       runtimeManifest,
       wiring,
+      publish: (registry) => {
+        res.json(registry);
+      },
     });
-    if (!registry) {
+    if (!published) {
       res.status(503).json({ error: "runtime_manifest_inactive" });
-      return;
     }
-    res.json(registry);
   });
 
   for (const listing of wiring.listings) {
@@ -113,7 +114,7 @@ export async function createBazaarCompatibilityRouter(options: {
         }
         const rawHeader = headers.paymentSignature;
         if (rawHeader === undefined) {
-          await sendOutcome(res, await service.unpaid());
+          await service.unpaid((result) => sendOutcome(res, result));
           return;
         }
         if (
@@ -132,9 +133,10 @@ export async function createBazaarCompatibilityRouter(options: {
           res.status(400).json({ error: "malformed_payment_signature" });
           return;
         }
-        await sendOutcome(
-          res,
-          await service.paid(payload, bazaarIngressAgeSeconds(req)),
+        await service.paid(
+          payload,
+          (result) => sendOutcome(res, result),
+          bazaarIngressAgeSeconds(req),
         );
       } finally {
         clearRawJsonBody(req);
@@ -150,13 +152,15 @@ export async function createBazaarCompatibilityRouter(options: {
       res.status(400).json({ error: "invalid_lifecycle_request" });
       return;
     }
-    const result = await runLifecycleRequest(req, () => withBazaarRuntimeExecution({
+    await runLifecycleRequest(req, () => withBazaarRuntimeExecution({
       store: runtimeExecutions,
       signal: options.shutdownSignal,
       action: () => lifecycle.challenge(req.params.handle, req.body),
+      publish: (result) => {
+        res.status(result.status).json(result.body);
+      },
       unavailable: runtimeManifestInactive,
     }));
-    res.status(result.status).json(result.body);
   });
   router.post("/x402/v1/orders/:handle/actions", async (req, res) => {
     res.setHeader("Cache-Control", "no-store");
@@ -165,13 +169,15 @@ export async function createBazaarCompatibilityRouter(options: {
       res.status(400).json({ error: "invalid_lifecycle_request" });
       return;
     }
-    const result = await runLifecycleRequest(req, () => withBazaarRuntimeExecution({
+    await runLifecycleRequest(req, () => withBazaarRuntimeExecution({
       store: runtimeExecutions,
       signal: options.shutdownSignal,
       action: (signal) => lifecycle.redeem(req.params.handle, req.body, signal),
+      publish: (result) => {
+        res.status(result.status).json(result.body);
+      },
       unavailable: runtimeManifestInactive,
     }));
-    res.status(result.status).json(result.body);
   });
   await recovery.start();
   return { router, close: () => recovery.close(), recovery };

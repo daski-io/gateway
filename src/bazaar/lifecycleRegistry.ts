@@ -6,11 +6,12 @@ import { withActiveBazaarRuntimeManifest } from "./runtimeManifestStore.js";
 import { bazaarNowSeconds } from "./runtimeTime.js";
 import type { BazaarCompatibilityWiring } from "./types.js";
 
-export async function readBazaarLifecycleRegistry(input: {
+export async function publishBazaarLifecycleRegistry(input: {
   pool: Pool;
   runtimeManifest: ApprovedBazaarRuntimeManifestIdentity;
   wiring: BazaarCompatibilityWiring;
-}) {
+  publish: (registry: Record<string, unknown>) => Promise<void> | void;
+}): Promise<boolean> {
   const registry = await withActiveBazaarRuntimeManifest({
     pool: input.pool,
     identity: input.runtimeManifest,
@@ -23,7 +24,7 @@ export async function readBazaarLifecycleRegistry(input: {
           status: "retained",
           acceptUntil: key.acceptUntil.toString(),
         }));
-      return {
+      const value = {
         version: "1",
         providerActionSigner:
           input.wiring.providerActionSigningBroker.address,
@@ -36,7 +37,8 @@ export async function readBazaarLifecycleRegistry(input: {
         ],
         domains: await readLifecycleDomains(client),
       };
+      await input.publish(value);
     },
   });
-  return registry.active ? registry.value : null;
+  return registry.active;
 }

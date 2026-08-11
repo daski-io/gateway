@@ -21,6 +21,11 @@ import {
 import { createBazaarCompatibilityRouter } from "../src/bazaar/router.js";
 import { captureRawJsonBody } from "../src/http/rawJsonBody.js";
 import { computeBazaarRuntimeManifestIdentity } from "../src/bazaar/runtimeManifest.js";
+import { withBazaarRuntimeExecution } from "../src/bazaar/runtimeExecution.js";
+import { BazaarRuntimeExecutionStore } from
+  "../src/bazaar/runtimeExecutionStore.js";
+import { publishBazaarLifecycleRegistry } from
+  "../src/bazaar/lifecycleRegistry.js";
 import {
   lockBazaarRuntimeManifestForAdmission,
   transitionBazaarRuntimeManifest,
@@ -1430,6 +1435,151 @@ describe("Bazaar compatibility harness", () => {
     } finally {
       await upgraded.close();
     }
+  });
+
+  it("holds the runtime fence until response publication completes", async () => {
+    const prior = computeBazaarRuntimeManifestIdentity(
+      harness.wiring,
+      gateway.config.taskRetentionSeconds,
+    );
+    const approvedPrior = {
+      ...prior,
+      approvalAuthority: harness.runtimeManifestTrust.authority,
+      deploymentId: harness.runtimeManifestTrust.deploymentId,
+    };
+    const executionStore = new BazaarRuntimeExecutionStore(
+      gateway.bundle.pool,
+      approvedPrior,
+      "test-response-publisher",
+    );
+    const publishing = deferred();
+    const release = deferred();
+    let published: string | null = null;
+    const execution = withBazaarRuntimeExecution({
+      store: executionStore,
+      action: async () => "old-runtime-response",
+      publish: async (value) => {
+        publishing.resolve();
+        await release.promise;
+        published = value;
+      },
+      unavailable: () => "runtime-inactive",
+    });
+    await publishing.promise;
+
+    harness.wiring.runtimeManifestEpoch = 2n;
+    harness.wiring.adapterCallTimeoutMs = 999;
+    await reapproveHarness(harness);
+    let rolloverError: unknown;
+    let unexpectedRouter: { close(): Promise<void> } | null = null;
+    try {
+      unexpectedRouter = await createBazaarCompatibilityRouter({
+        pool: gateway.bundle.pool,
+        providerAuthority: gateway.bundle.providerAuthority,
+        wiring: harness.wiring,
+        runtimeManifestTrust: harness.runtimeManifestTrust,
+        lifecycleDomainRetentionSeconds: gateway.config.taskRetentionSeconds,
+      });
+    } catch (error) {
+      rolloverError = error;
+    } finally {
+      release.resolve();
+      await execution;
+      await unexpectedRouter?.close();
+    }
+    expect(rolloverError).toBeInstanceOf(Error);
+    expect((rolloverError as Error).message).toMatch(/blocked by live work/);
+    expect(published).toBe("old-runtime-response");
+    const upgraded = await createBazaarCompatibilityRouter({
+      pool: gateway.bundle.pool,
+      providerAuthority: gateway.bundle.providerAuthority,
+      wiring: harness.wiring,
+      runtimeManifestTrust: harness.runtimeManifestTrust,
+      lifecycleDomainRetentionSeconds: gateway.config.taskRetentionSeconds,
+    });
+    await upgraded.close();
+  });
+
+  it("publishes only unavailable after losing the pre-publication fence", async () => {
+    const prior = computeBazaarRuntimeManifestIdentity(
+      harness.wiring,
+      gateway.config.taskRetentionSeconds,
+    );
+    const executionStore = new BazaarRuntimeExecutionStore(
+      gateway.bundle.pool,
+      {
+        ...prior,
+        approvalAuthority: harness.runtimeManifestTrust.authority,
+        deploymentId: harness.runtimeManifestTrust.deploymentId,
+      },
+      "test-lost-response-publisher",
+    );
+    const published: string[] = [];
+    await withBazaarRuntimeExecution({
+      store: executionStore,
+      action: async () => {
+        await gateway.bundle.pool.query(
+          `UPDATE bazaar_runtime_executions
+              SET lease_expires_at = now() - interval '1 second'`,
+        );
+        return "stale-runtime-response";
+      },
+      publish: (value) => {
+        published.push(value);
+      },
+      unavailable: () => "runtime-inactive",
+    });
+    expect(published).toEqual(["runtime-inactive"]);
+  });
+
+  it("serializes lifecycle-registry publication before rollover", async () => {
+    const prior = computeBazaarRuntimeManifestIdentity(
+      harness.wiring,
+      gateway.config.taskRetentionSeconds,
+    );
+    const publishing = deferred();
+    const release = deferred();
+    let published: Record<string, unknown> | null = null;
+    const publication = publishBazaarLifecycleRegistry({
+      pool: gateway.bundle.pool,
+      runtimeManifest: {
+        ...prior,
+        approvalAuthority: harness.runtimeManifestTrust.authority,
+        deploymentId: harness.runtimeManifestTrust.deploymentId,
+      },
+      wiring: harness.wiring,
+      publish: async (registry) => {
+        publishing.resolve();
+        await release.promise;
+        published = registry;
+      },
+    });
+    await publishing.promise;
+
+    harness.wiring.runtimeManifestEpoch = 2n;
+    harness.wiring.adapterCallTimeoutMs = 999;
+    await reapproveHarness(harness);
+    let activationCompleted = false;
+    const activation = createBazaarCompatibilityRouter({
+      pool: gateway.bundle.pool,
+      providerAuthority: gateway.bundle.providerAuthority,
+      wiring: harness.wiring,
+      runtimeManifestTrust: harness.runtimeManifestTrust,
+      lifecycleDomainRetentionSeconds: gateway.config.taskRetentionSeconds,
+    }).then((router) => {
+      activationCompleted = true;
+      return router;
+    });
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      expect(activationCompleted).toBe(false);
+    } finally {
+      release.resolve();
+    }
+    expect(await publication).toBe(true);
+    expect(published).toMatchObject({ version: "1" });
+    const upgraded = await activation;
+    await upgraded.close();
   });
 
   it("blocks runtime rollover until an active settlement lease drains", async () => {

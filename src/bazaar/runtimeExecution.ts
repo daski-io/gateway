@@ -5,29 +5,57 @@ export async function withBazaarRuntimeExecution<T, U>(input: {
   store: BazaarRuntimeExecutionStore;
   signal?: AbortSignal;
   action: (signal: AbortSignal) => Promise<T>;
+  publish: (value: T | U) => Promise<void> | void;
   unavailable: () => U;
-}): Promise<T | U> {
-  if (input.signal?.aborted) return input.unavailable();
+}): Promise<void> {
+  const publishUnavailable = () => input.publish(input.unavailable());
+  if (input.signal?.aborted) {
+    await publishUnavailable();
+    return;
+  }
   const execution = await input.store.begin();
-  if (!execution) return input.unavailable();
+  if (!execution) {
+    await publishUnavailable();
+    return;
+  }
   if (input.signal?.aborted) {
     await input.store.complete(execution.executionId, execution.leaseToken);
-    return input.unavailable();
+    await publishUnavailable();
+    return;
   }
-  return withBazaarLease({
+  let published = false;
+  await withBazaarLease({
     store: input.store,
     orderRecordId: execution.executionId,
     leaseToken: execution.leaseToken,
     action: async (lease) => {
       const result = await input.action(lease.signal);
-      if (!(await input.store.complete(
+      lease.assertOwned();
+      let renewed = false;
+      try {
+        renewed = await input.store.renewLease(
+          execution.executionId,
+          execution.leaseToken,
+        );
+      } catch {
+        lease.loseOwnership();
+        return;
+      }
+      if (!renewed) {
+        lease.loseOwnership();
+        return;
+      }
+      lease.assertOwned();
+      published = true;
+      await input.publish(result);
+      if (await input.store.complete(
         execution.executionId,
         execution.leaseToken,
-      ))) return input.unavailable();
-      lease.complete();
-      return result;
+      )) lease.complete();
     },
-    onOwnershipLost: input.unavailable,
+    onOwnershipLost: async () => {
+      if (!published) await publishUnavailable();
+    },
     signal: input.signal,
   });
 }

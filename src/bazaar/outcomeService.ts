@@ -59,12 +59,18 @@ export class BazaarOutcomeService {
     );
   }
 
-  async unpaid(): Promise<BazaarOutcomeResult> {
-    if (this.shutdownSignal?.aborted) return shuttingDown();
-    return withBazaarRuntimeExecution({
+  async unpaid(
+    publish: (result: BazaarOutcomeResult) => Promise<void> | void,
+  ): Promise<void> {
+    if (this.shutdownSignal?.aborted) {
+      await publish(shuttingDown());
+      return;
+    }
+    await withBazaarRuntimeExecution({
       store: this.runtimeExecutions,
       signal: this.shutdownSignal,
       action: () => this.unpaidWhileActive(),
+      publish,
       unavailable: () => this.runtimeUnavailable(),
     });
   }
@@ -102,10 +108,11 @@ export class BazaarOutcomeService {
 
   async paid(
     decoded: PaymentPayload,
+    publish: (result: BazaarOutcomeResult) => Promise<void> | void,
     ingressAgeSeconds = 0n,
-  ): Promise<BazaarOutcomeResult> {
+  ): Promise<void> {
     try {
-      return await this.processPaid(decoded, ingressAgeSeconds);
+      await this.processPaid(decoded, ingressAgeSeconds, publish);
     } finally {
       scrubPaymentPayload(decoded);
     }
@@ -114,14 +121,21 @@ export class BazaarOutcomeService {
   private async processPaid(
     decoded: PaymentPayload,
     ingressAgeSeconds: bigint,
-  ): Promise<BazaarOutcomeResult> {
-    if (this.shutdownSignal?.aborted) return shuttingDown();
+    publish: (result: BazaarOutcomeResult) => Promise<void> | void,
+  ): Promise<void> {
+    if (this.shutdownSignal?.aborted) {
+      await publish(shuttingDown());
+      return;
+    }
     const currentTime = this.nowSeconds();
     const paidRetryReceivedAt = currentTime >= ingressAgeSeconds
       ? currentTime - ingressAgeSeconds
       : 0n;
     const payload = bindServerPaymentPayload(decoded, this.declaration);
-    if (!payload) return failureOutcome(400, "payment_declaration_mismatch");
+    if (!payload) {
+      await publish(failureOutcome(400, "payment_declaration_mismatch"));
+      return;
+    }
     const parsed = await parseBazaarPayment(
       payload,
       this.declaration.requirements,
@@ -129,15 +143,24 @@ export class BazaarOutcomeService {
       currentTime,
       paidRetryReceivedAt,
     );
-    if (!parsed.ok) return failureOutcome(400, parsed.code);
+    if (!parsed.ok) {
+      await publish(failureOutcome(400, parsed.code));
+      return;
+    }
     if (
       parsed.payment.authorization.from.toLowerCase() ===
       this.refundPolicy.refundWallet.toLowerCase()
-    ) return failureOutcome(402, "payer_refund_wallet_conflict");
+    ) {
+      await publish(failureOutcome(402, "payer_refund_wallet_conflict"));
+      return;
+    }
     if (
       parsed.payment.authorization.from.toLowerCase() ===
       this.listing.offer.message.fulfillmentSigner.toLowerCase()
-    ) return failureOutcome(402, "payer_fulfillment_signer_conflict");
+    ) {
+      await publish(failureOutcome(402, "payer_fulfillment_signer_conflict"));
+      return;
+    }
     const claimInput = createClaimInput(
       this.listing,
       parsed.payment,
@@ -146,11 +169,12 @@ export class BazaarOutcomeService {
     );
     const existing = await this.store.findByAuthorization(claimInput);
     if (existing) {
-      return sameOrderBinding(existing, claimInput)
+      await publish(sameOrderBinding(existing, claimInput)
         ? existingOutcomeResult(existing)
-        : failureOutcome(409, "payment_authorization_conflict");
+        : failureOutcome(409, "payment_authorization_conflict"));
+      return;
     }
-    return withBazaarRuntimeExecution({
+    await withBazaarRuntimeExecution({
       store: this.runtimeExecutions,
       signal: this.shutdownSignal,
       action: (signal) => this.processUnclaimed({
@@ -160,6 +184,7 @@ export class BazaarOutcomeService {
         paidRetryReceivedAt,
         signal,
       }),
+      publish,
       unavailable: () => this.runtimeUnavailable(),
     });
   }
