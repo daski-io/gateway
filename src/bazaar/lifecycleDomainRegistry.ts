@@ -189,7 +189,7 @@ async function reconcileLifecycleListingDomains(
 }
 
 export async function readLifecycleDomains(
-  pool: Pool,
+  pool: Pool | PoolClient,
 ): Promise<PublishedLifecycleDomainV1[]> {
   const result = await pool.query<RawPublishedLifecycleDomain>(
     `SELECT chain_id, pay_to, offer_signer, listing_epoch, listing_commitment,

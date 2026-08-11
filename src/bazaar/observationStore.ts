@@ -1,5 +1,7 @@
 import type { Pool } from "../db/pool.js";
 import type { Hex } from "../types.js";
+import type { ApprovedBazaarRuntimeManifestIdentity } from
+  "./runtimeManifestApproval.js";
 import {
   completeBazaarNoTransfer,
   completeBazaarObservedTransfer,
@@ -31,7 +33,10 @@ type NoTransferState = Extract<BazaarOrderState,
   "invalid_evidence_expired_no_transfer">;
 
 export class BazaarObservationStore {
-  constructor(private readonly pool: Pool) {}
+  constructor(
+    private readonly pool: Pool,
+    private readonly runtimeManifest: ApprovedBazaarRuntimeManifestIdentity,
+  ) {}
 
   claim(
     leaseOwner: string,
@@ -43,11 +48,17 @@ export class BazaarObservationStore {
       leaseOwner,
       nowSeconds,
       finalityWindowSeconds: policy.finalityWindowSeconds,
+      runtimeManifest: this.runtimeManifest,
     });
   }
 
   renewLease(orderRecordId: Hex, leaseToken: string): Promise<boolean> {
-    return renewBazaarObservationLease(this.pool, orderRecordId, leaseToken);
+    return renewBazaarObservationLease(
+      this.pool,
+      this.runtimeManifest,
+      orderRecordId,
+      leaseToken,
+    );
   }
 
   defer(

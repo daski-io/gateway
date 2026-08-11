@@ -2,6 +2,9 @@ import { randomUUID } from "node:crypto";
 import type { Pool } from "../db/pool.js";
 import { hexToBytea } from "../db/paymentChallengeCodec.js";
 import type { Hex } from "../types.js";
+import type { ApprovedBazaarRuntimeManifestIdentity } from
+  "./runtimeManifestApproval.js";
+import { withActiveBazaarRuntimeManifest } from "./runtimeManifestStore.js";
 import {
   BAZAAR_ORDER_SELECT_COLUMNS,
   toBazaarOrder,
@@ -65,32 +68,22 @@ export async function markBazaarObservationRequired(input: {
   }
 }
 
-export async function terminalizeExpiredBazaarAttempts(
-  pool: Pool,
+export async function terminalizeExpiredBazaarAttemptsInTransaction(
+  client: import("pg").PoolClient,
 ): Promise<{ claimed: number; settlement: number }> {
-  const client = await pool.connect();
-  try {
-    await client.query("BEGIN");
-    const claimed = await terminalizeExpired(
-      client,
-      "attempt_opened",
-      "verify_ambiguous",
-      "process_interrupted_before_settlement",
-    );
-    const settlement = await terminalizeExpired(
-      client,
-      "settle_started",
-      "settle_ambiguous",
-      "process_interrupted_during_settlement",
-    );
-    await client.query("COMMIT");
-    return { claimed, settlement };
-  } catch (error) {
-    await client.query("ROLLBACK").catch(() => undefined);
-    throw error;
-  } finally {
-    client.release();
-  }
+  const claimed = await terminalizeExpired(
+    client,
+    "attempt_opened",
+    "verify_ambiguous",
+    "process_interrupted_before_settlement",
+  );
+  const settlement = await terminalizeExpired(
+    client,
+    "settle_started",
+    "settle_ambiguous",
+    "process_interrupted_during_settlement",
+  );
+  return { claimed, settlement };
 }
 
 export async function claimBazaarObservation(input: {
@@ -98,79 +91,85 @@ export async function claimBazaarObservation(input: {
   leaseOwner: string;
   nowSeconds: bigint;
   finalityWindowSeconds: number;
+  runtimeManifest: ApprovedBazaarRuntimeManifestIdentity;
 }): Promise<LeasedBazaarObservation | null> {
-  const client = await input.pool.connect();
-  try {
-    await client.query("BEGIN");
-    const due = await client.query<{ order_record_id: Buffer }>(
-      `SELECT j.order_record_id
-         FROM bazaar_settlement_observations j
-         JOIN bazaar_orders o USING (order_record_id)
-        WHERE (
-          (j.state = 'pending' AND j.next_attempt_at <= now())
-          OR (j.state = 'observing' AND j.lease_expires_at <= now())
-        )
-          AND o.state = j.origin_state
-          AND o.authorization_valid_before + $1 <= $2
-        ORDER BY j.next_attempt_at, j.updated_at
-        LIMIT 1 FOR UPDATE OF j SKIP LOCKED`,
-      [input.finalityWindowSeconds, input.nowSeconds.toString()],
-    );
-    const row = due.rows[0];
-    if (!row) {
-      await client.query("COMMIT");
-      return null;
-    }
-    const leaseToken = randomUUID();
-    const claimed = await client.query<{
-      origin_state: BazaarObservationOriginState;
-      lease_token: string;
-    }>(
-      `UPDATE bazaar_settlement_observations
-          SET state = 'observing', attempt_count = attempt_count + 1,
-              lease_token = $2, lease_owner = $3,
-              lease_expires_at = now() + make_interval(secs => $4),
-              updated_at = now()
-        WHERE order_record_id = $1
-        RETURNING origin_state, lease_token`,
-      [row.order_record_id, leaseToken, input.leaseOwner, OBSERVATION_LEASE_SECONDS],
-    );
-    const order = await client.query<RawBazaarOrder>(
-      `SELECT ${BAZAAR_ORDER_SELECT_COLUMNS} FROM bazaar_orders
-        WHERE order_record_id = $1`,
-      [row.order_record_id],
-    );
-    const claimedRow = claimed.rows[0];
-    const orderRow = order.rows[0];
-    if (!claimedRow || !orderRow) throw new Error("Bazaar observation claim disappeared");
-    await client.query("COMMIT");
-    return {
-      order: toBazaarOrder(orderRow),
-      originState: claimedRow.origin_state,
-      leaseToken: claimedRow.lease_token,
-    };
-  } catch (error) {
-    await client.query("ROLLBACK").catch(() => undefined);
-    throw error;
-  } finally {
-    client.release();
-  }
+  const result = await withActiveBazaarRuntimeManifest({
+    pool: input.pool,
+    identity: input.runtimeManifest,
+    action: async (client) => {
+      const due = await client.query<{ order_record_id: Buffer }>(
+        `SELECT j.order_record_id
+           FROM bazaar_settlement_observations j
+           JOIN bazaar_orders o USING (order_record_id)
+          WHERE (
+            (j.state = 'pending' AND j.next_attempt_at <= now())
+            OR (j.state = 'observing' AND j.lease_expires_at <= now())
+          )
+            AND o.state = j.origin_state
+            AND o.authorization_valid_before + $1 <= $2
+          ORDER BY j.next_attempt_at, j.updated_at
+          LIMIT 1 FOR UPDATE OF j SKIP LOCKED`,
+        [input.finalityWindowSeconds, input.nowSeconds.toString()],
+      );
+      const row = due.rows[0];
+      if (!row) return null;
+      const leaseToken = randomUUID();
+      const claimed = await client.query<{
+        origin_state: BazaarObservationOriginState;
+        lease_token: string;
+      }>(
+        `UPDATE bazaar_settlement_observations
+            SET state = 'observing', attempt_count = attempt_count + 1,
+                lease_token = $2, lease_owner = $3,
+                lease_expires_at = now() + make_interval(secs => $4),
+                updated_at = now()
+          WHERE order_record_id = $1
+          RETURNING origin_state, lease_token`,
+        [row.order_record_id, leaseToken, input.leaseOwner,
+          OBSERVATION_LEASE_SECONDS],
+      );
+      const order = await client.query<RawBazaarOrder>(
+        `SELECT ${BAZAAR_ORDER_SELECT_COLUMNS} FROM bazaar_orders
+          WHERE order_record_id = $1`,
+        [row.order_record_id],
+      );
+      const claimedRow = claimed.rows[0];
+      const orderRow = order.rows[0];
+      if (!claimedRow || !orderRow) {
+        throw new Error("Bazaar observation claim disappeared");
+      }
+      return {
+        order: toBazaarOrder(orderRow),
+        originState: claimedRow.origin_state,
+        leaseToken: claimedRow.lease_token,
+      };
+    },
+  });
+  return result.active ? result.value : null;
 }
 
 export async function renewBazaarObservationLease(
   pool: Pool,
+  runtimeManifest: ApprovedBazaarRuntimeManifestIdentity,
   orderRecordId: Hex,
   leaseToken: string,
 ): Promise<boolean> {
-  const result = await pool.query(
-    `UPDATE bazaar_settlement_observations
-        SET lease_expires_at = now() + make_interval(secs => $3),
-            updated_at = now()
-      WHERE order_record_id = $1 AND state = 'observing'
-        AND lease_token = $2 AND lease_expires_at > now()`,
-    [hexToBytea(orderRecordId), leaseToken, OBSERVATION_LEASE_SECONDS],
-  );
-  return result.rowCount === 1;
+  const result = await withActiveBazaarRuntimeManifest({
+    pool,
+    identity: runtimeManifest,
+    action: async (client) => {
+      const renewed = await client.query(
+        `UPDATE bazaar_settlement_observations
+            SET lease_expires_at = now() + make_interval(secs => $3),
+                updated_at = now()
+          WHERE order_record_id = $1 AND state = 'observing'
+            AND lease_token = $2 AND lease_expires_at > now()`,
+        [hexToBytea(orderRecordId), leaseToken, OBSERVATION_LEASE_SECONDS],
+      );
+      return renewed.rowCount === 1;
+    },
+  });
+  return result.active && result.value;
 }
 
 export async function deferBazaarObservation(input: {

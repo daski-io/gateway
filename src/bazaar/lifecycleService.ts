@@ -14,6 +14,7 @@ import {
 import {
   createTaskAccessChallengeEnvelope,
   verifyTaskAccessChallengeEnvelope,
+  BAZAAR_CHALLENGE_TTL_SECONDS,
 } from "./lifecycleChallenge.js";
 import { createProviderLifecycleAssertion } from "./lifecycleAssertion.js";
 import {
@@ -27,8 +28,8 @@ import type {
   BazaarOrder,
 } from "./types.js";
 import { callBazaarAdapter } from "./adapterCall.js";
+import { bazaarNowSeconds } from "./runtimeTime.js";
 
-const CHALLENGE_TTL_SECONDS = 5n * 60n;
 const PROVIDER_ASSERTION_TTL_SECONDS = 60n;
 
 export type LifecycleResult =
@@ -36,17 +37,10 @@ export type LifecycleResult =
   | { status: 400 | 403 | 502; body: { error: string } };
 
 export class BazaarLifecycleService {
-  private readonly now: () => Date;
-  private readonly random: (size: number) => Buffer;
-
   constructor(
     private readonly store: BazaarOrderStore,
     private readonly wiring: BazaarCompatibilityWiring,
-    private readonly shutdownSignal?: AbortSignal,
-  ) {
-    this.now = wiring.now ?? (() => new Date());
-    this.random = wiring.randomBytes ?? randomBytes;
-  }
+  ) {}
 
   async challenge(handle: string, body: unknown): Promise<LifecycleResult> {
     const orderRecordId = decodeOrderHandle(handle);
@@ -59,13 +53,13 @@ export class BazaarLifecycleService {
       return badRequest();
     }
     const issuedAt = this.nowSeconds();
-    const nonce = nonzeroRandomHex(this.random);
+    const nonce = nonzeroRandomHex(randomBytes);
     const authorization = createTaskAccessAuthorization({
       orderRecordId,
       claim,
       nonce,
       issuedAt,
-      expiresAt: issuedAt + CHALLENGE_TTL_SECONDS,
+      expiresAt: issuedAt + BAZAAR_CHALLENGE_TTL_SECONDS,
     });
     const envelope = createTaskAccessChallengeEnvelope({
       authorization,
@@ -75,7 +69,11 @@ export class BazaarLifecycleService {
     return { status: 200, body: { envelope } };
   }
 
-  async redeem(handle: string, body: unknown): Promise<LifecycleResult> {
+  async redeem(
+    handle: string,
+    body: unknown,
+    executionSignal: AbortSignal,
+  ): Promise<LifecycleResult> {
     const orderRecordId = decodeOrderHandle(handle);
     const parsed = parseRedemption(body);
     if (!orderRecordId || !parsed) return denied();
@@ -92,7 +90,7 @@ export class BazaarLifecycleService {
       BigInt(authorization.message.issuedAt) > now ||
       BigInt(authorization.message.expiresAt) <= now ||
       BigInt(authorization.message.expiresAt) - BigInt(authorization.message.issuedAt) >
-        CHALLENGE_TTL_SECONDS
+        BAZAAR_CHALLENGE_TTL_SECONDS
     ) return denied();
     const signaturesValid = await verifyTaskAccessPayerSignature({
       authorization,
@@ -130,13 +128,13 @@ export class BazaarLifecycleService {
     try {
       const assertion = await callBazaarAdapter({
         timeoutMs: this.wiring.adapterCallTimeoutMs,
-        signal: this.shutdownSignal,
+        signal: executionSignal,
         operation: (signal) => createProviderLifecycleAssertion({
           order,
           action,
           requestHash: authorization.message.requestHash,
           taskIdHash: authorization.message.taskIdHash,
-          nonce: nonzeroRandomHex(this.random),
+          nonce: nonzeroRandomHex(randomBytes),
           issuedAt: now,
           expiresAt: now + PROVIDER_ASSERTION_TTL_SECONDS,
           signer: this.wiring.providerActionSigningBroker,
@@ -145,7 +143,7 @@ export class BazaarLifecycleService {
       });
       const response: unknown = await callBazaarAdapter({
         timeoutMs: this.wiring.adapterCallTimeoutMs,
-        signal: this.shutdownSignal,
+        signal: executionSignal,
         operation: (signal) => this.wiring.fulfillment.performLifecycleAction({
           taskId: order.taskId,
           action,
@@ -175,7 +173,7 @@ export class BazaarLifecycleService {
   }
 
   private nowSeconds(): bigint {
-    return BigInt(Math.floor(this.now().getTime() / 1000));
+    return bazaarNowSeconds();
   }
 }
 

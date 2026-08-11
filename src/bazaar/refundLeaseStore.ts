@@ -2,6 +2,9 @@ import { randomUUID } from "node:crypto";
 import type { Pool } from "../db/pool.js";
 import { hexToBytea } from "../db/paymentChallengeCodec.js";
 import type { Hex } from "../types.js";
+import type { ApprovedBazaarRuntimeManifestIdentity } from
+  "./runtimeManifestApproval.js";
+import { withActiveBazaarRuntimeManifest } from "./runtimeManifestStore.js";
 import type { BazaarRefundReason } from "./types.js";
 
 const REFUND_LEASE_SECONDS = 120;
@@ -49,81 +52,85 @@ export interface BazaarRefundWorkItem {
 export async function claimBazaarRefund(input: {
   pool: Pool;
   leaseOwner: string;
+  runtimeManifest: ApprovedBazaarRuntimeManifestIdentity;
 }): Promise<BazaarRefundWorkItem | null> {
-  const client = await input.pool.connect();
-  try {
-    await client.query("BEGIN");
-    const due = await client.query<{ order_record_id: Buffer }>(
-      `SELECT j.order_record_id
-         FROM bazaar_refund_jobs j
-         JOIN bazaar_refund_obligations r USING (order_record_id)
-         JOIN bazaar_orders o USING (order_record_id)
-        WHERE (
-          (j.state = 'pending' AND j.next_attempt_at <= now())
-          OR (j.state = 'working' AND j.lease_expires_at <= now())
-        )
-          AND r.state IN ('due', 'broadcast')
-          AND r.evidence_hash IS NOT NULL
-          AND o.state IN (
-            'dispatch_failed', 'settlement_refund_due', 'fulfillment_refund_due'
+  const result = await withActiveBazaarRuntimeManifest({
+    pool: input.pool,
+    identity: input.runtimeManifest,
+    action: async (client) => {
+      const due = await client.query<{ order_record_id: Buffer }>(
+        `SELECT j.order_record_id
+           FROM bazaar_refund_jobs j
+           JOIN bazaar_refund_obligations r USING (order_record_id)
+           JOIN bazaar_orders o USING (order_record_id)
+          WHERE (
+            (j.state = 'pending' AND j.next_attempt_at <= now())
+            OR (j.state = 'working' AND j.lease_expires_at <= now())
           )
-        ORDER BY j.next_attempt_at, j.updated_at
-        LIMIT 1 FOR UPDATE OF j SKIP LOCKED`,
-    );
-    const row = due.rows[0];
-    if (!row) {
-      await client.query("COMMIT");
-      return null;
-    }
-    const leaseToken = randomUUID();
-    await client.query(
-      `UPDATE bazaar_refund_jobs
-          SET state = 'working', attempt_count = attempt_count + 1,
-              lease_token = $2, lease_owner = $3,
-              lease_expires_at = now() + make_interval(secs => $4),
-              updated_at = now()
-        WHERE order_record_id = $1`,
-      [row.order_record_id, leaseToken, input.leaseOwner, REFUND_LEASE_SECONDS],
-    );
-    const work = await client.query<RawRefundWorkItem>(
-      `SELECT r.order_record_id, r.refund_id, r.authorization_digest,
-              r.provider_agent_id, r.payer, r.token, r.gross_amount,
-              r.primary_reason, r.evidence_hash, r.state AS refund_state,
-              r.refund_transaction, r.refund_wallet,
-              r.refund_policy_version, o.chain_id, o.pay_to,
-              j.attempt_count, j.lease_token
-         FROM bazaar_refund_obligations r
-         JOIN bazaar_refund_jobs j USING (order_record_id)
-         JOIN bazaar_orders o USING (order_record_id)
-        WHERE r.order_record_id = $1`,
-      [row.order_record_id],
-    );
-    const workRow = work.rows[0];
-    if (!workRow) throw new Error("Bazaar refund claim disappeared");
-    await client.query("COMMIT");
-    return toWorkItem(workRow);
-  } catch (error) {
-    await client.query("ROLLBACK").catch(() => undefined);
-    throw error;
-  } finally {
-    client.release();
-  }
+            AND r.state IN ('due', 'broadcast')
+            AND r.evidence_hash IS NOT NULL
+            AND o.state IN (
+              'dispatch_failed', 'settlement_refund_due',
+              'fulfillment_refund_due'
+            )
+          ORDER BY j.next_attempt_at, j.updated_at
+          LIMIT 1 FOR UPDATE OF j SKIP LOCKED`,
+      );
+      const row = due.rows[0];
+      if (!row) return null;
+      const leaseToken = randomUUID();
+      await client.query(
+        `UPDATE bazaar_refund_jobs
+            SET state = 'working', attempt_count = attempt_count + 1,
+                lease_token = $2, lease_owner = $3,
+                lease_expires_at = now() + make_interval(secs => $4),
+                updated_at = now()
+          WHERE order_record_id = $1`,
+        [row.order_record_id, leaseToken, input.leaseOwner, REFUND_LEASE_SECONDS],
+      );
+      const work = await client.query<RawRefundWorkItem>(
+        `SELECT r.order_record_id, r.refund_id, r.authorization_digest,
+                r.provider_agent_id, r.payer, r.token, r.gross_amount,
+                r.primary_reason, r.evidence_hash, r.state AS refund_state,
+                r.refund_transaction, r.refund_wallet,
+                r.refund_policy_version, o.chain_id, o.pay_to,
+                j.attempt_count, j.lease_token
+           FROM bazaar_refund_obligations r
+           JOIN bazaar_refund_jobs j USING (order_record_id)
+           JOIN bazaar_orders o USING (order_record_id)
+          WHERE r.order_record_id = $1`,
+        [row.order_record_id],
+      );
+      const workRow = work.rows[0];
+      if (!workRow) throw new Error("Bazaar refund claim disappeared");
+      return toWorkItem(workRow);
+    },
+  });
+  return result.active ? result.value : null;
 }
 
 export async function renewBazaarRefundLease(
   pool: Pool,
+  runtimeManifest: ApprovedBazaarRuntimeManifestIdentity,
   orderRecordId: Hex,
   leaseToken: string,
 ): Promise<boolean> {
-  const result = await pool.query(
-    `UPDATE bazaar_refund_jobs
-        SET lease_expires_at = now() + make_interval(secs => $3),
-            updated_at = now()
-      WHERE order_record_id = $1 AND state = 'working'
-        AND lease_token = $2 AND lease_expires_at > now()`,
-    [hexToBytea(orderRecordId), leaseToken, REFUND_LEASE_SECONDS],
-  );
-  return result.rowCount === 1;
+  const result = await withActiveBazaarRuntimeManifest({
+    pool,
+    identity: runtimeManifest,
+    action: async (client) => {
+      const renewed = await client.query(
+        `UPDATE bazaar_refund_jobs
+            SET lease_expires_at = now() + make_interval(secs => $3),
+                updated_at = now()
+          WHERE order_record_id = $1 AND state = 'working'
+            AND lease_token = $2 AND lease_expires_at > now()`,
+        [hexToBytea(orderRecordId), leaseToken, REFUND_LEASE_SECONDS],
+      );
+      return renewed.rowCount === 1;
+    },
+  });
+  return result.active && result.value;
 }
 
 export async function deferBazaarRefund(input: {

@@ -2,6 +2,7 @@ import type { PaymentPayload, PaymentRequirements } from "@x402/core/types";
 import { describe, expect, it } from "vitest";
 import { CdpFacilitatorClient } from "../src/bazaar/facilitatorClient.js";
 import { parseBazaarExtensionResponse } from "../src/bazaar/extensionResponse.js";
+import { testAdapterIdentity } from "./helpers/bazaar.js";
 
 const payload: PaymentPayload = {
   x402Version: 2,
@@ -32,6 +33,7 @@ describe("strict CDP facilitator client", () => {
   it("allows only bounded CDP authentication headers", async () => {
     const fetchFn = async () => json({ isValid: true, payer: payer() });
     const unsafe = new CdpFacilitatorClient({
+      identity: testAdapterIdentity("cdp-client"),
       allowInsecureTestUrl: true,
       baseUrl: "http://127.0.0.1/x402",
       createAuthHeaders: async () => ({
@@ -44,6 +46,7 @@ describe("strict CDP facilitator client", () => {
 
     let received: Headers | undefined;
     const safe = new CdpFacilitatorClient({
+      identity: testAdapterIdentity("cdp-client"),
       allowInsecureTestUrl: true,
       baseUrl: "http://127.0.0.1/x402",
       createAuthHeaders: async () => ({
@@ -70,6 +73,7 @@ describe("strict CDP facilitator client", () => {
     expect(calls).toBe(1);
 
     const authTimeout = new CdpFacilitatorClient({
+      identity: testAdapterIdentity("cdp-client"),
       allowInsecureTestUrl: true,
       baseUrl: "http://127.0.0.1/x402",
       timeoutMs: 5,
@@ -174,6 +178,7 @@ function client(
   overrides: Partial<ConstructorParameters<typeof CdpFacilitatorClient>[0]> = {},
 ) {
   return new CdpFacilitatorClient({
+    identity: testAdapterIdentity("cdp-client"),
     createAuthHeaders: async () => ({ Authorization: "Bearer a.b.c" }),
     fetchFn: fetchFn as typeof fetch,
     ...overrides,

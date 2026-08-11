@@ -7,6 +7,7 @@ import type {
   BazaarSettlementObservationResult,
 } from "./types.js";
 import { callBazaarAdapter } from "./adapterCall.js";
+import { bazaarNowSeconds } from "./runtimeTime.js";
 
 const MAX_OBSERVATION_WINDOW_SECONDS = 7 * 24 * 60 * 60;
 const MAX_RETRY_DELAY_SECONDS = 60 * 60;
@@ -43,7 +44,7 @@ export async function observeBazaarSettlement(input: {
     order,
     wiring.settlementObservationPolicy,
   );
-  const now = BigInt(Math.floor((wiring.now?.() ?? new Date()).getTime() / 1000));
+  const now = bazaarNowSeconds();
   if (now < requiredThrough) return { kind: "pending" };
   let response: unknown;
   try {

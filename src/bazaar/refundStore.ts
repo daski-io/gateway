@@ -1,5 +1,7 @@
 import type { Pool } from "../db/pool.js";
 import type { Hex } from "../types.js";
+import type { ApprovedBazaarRuntimeManifestIdentity } from
+  "./runtimeManifestApproval.js";
 import {
   finalizeBazaarRefund,
   markBazaarRefundBlocked,
@@ -13,14 +15,26 @@ import {
 } from "./refundLeaseStore.js";
 
 export class BazaarRefundStore {
-  constructor(private readonly pool: Pool) {}
+  constructor(
+    private readonly pool: Pool,
+    private readonly runtimeManifest: ApprovedBazaarRuntimeManifestIdentity,
+  ) {}
 
   claim(leaseOwner: string): Promise<BazaarRefundWorkItem | null> {
-    return claimBazaarRefund({ pool: this.pool, leaseOwner });
+    return claimBazaarRefund({
+      pool: this.pool,
+      leaseOwner,
+      runtimeManifest: this.runtimeManifest,
+    });
   }
 
   renewLease(orderRecordId: Hex, leaseToken: string): Promise<boolean> {
-    return renewBazaarRefundLease(this.pool, orderRecordId, leaseToken);
+    return renewBazaarRefundLease(
+      this.pool,
+      this.runtimeManifest,
+      orderRecordId,
+      leaseToken,
+    );
   }
 
   defer(

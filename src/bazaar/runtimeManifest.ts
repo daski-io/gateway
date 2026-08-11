@@ -20,6 +20,7 @@ export function computeBazaarRuntimeManifestIdentity(
   const body = {
     version: "DaskiBazaarRuntimeManifestV1",
     epoch: wiring.runtimeManifestEpoch.toString(),
+    runtimeIdentity: adapterIdentity(wiring.runtimeIdentity),
     publicOrigin: wiring.publicOrigin,
     approvedTermsOrigins: [...wiring.approvedTermsOrigins].sort(),
     activeListings: listingIdentities(wiring.listings),
@@ -45,6 +46,23 @@ export function computeBazaarRuntimeManifestIdentity(
     providerActionSigner: wiring.providerActionSigningBroker.address.toLowerCase(),
     refundInstructionSigner:
       wiring.refundInstructionSigningBroker.address.toLowerCase(),
+    adapters: {
+      providerAuthority: adapterIdentity(wiring.providerAuthorityIdentity),
+      facilitator: adapterIdentity(wiring.facilitator.identity),
+      settlementEvidence: adapterIdentity(wiring.evidenceVerifier.identity),
+      settlementObservation: adapterIdentity(wiring.settlementObserver.identity),
+      payerProfile: adapterIdentity(wiring.payerProfileVerifier.identity),
+      providerDispatch: adapterIdentity(wiring.fulfillment.identity),
+      fulfillmentEvidence: adapterIdentity(wiring.fulfillmentObserver.identity),
+      providerActionSigning: adapterIdentity(
+        wiring.providerActionSigningBroker.identity,
+      ),
+      refundInstructionSigning: adapterIdentity(
+        wiring.refundInstructionSigningBroker.identity,
+      ),
+      refundRequest: adapterIdentity(wiring.refundRequestService.identity),
+      refundEvidence: adapterIdentity(wiring.refundEvidenceVerifier.identity),
+    },
     challengeMac: {
       current: challengeKeyIdentity(wiring.challengeMac.current),
       retained: (wiring.challengeMac.retained ?? [])
@@ -86,5 +104,17 @@ function challengeKeyIdentity(key: BazaarChallengeMacKey) {
   return {
     epoch: key.epoch,
     secretCommitment: keccak256(key.secret).toLowerCase(),
+  };
+}
+
+function adapterIdentity(identity: {
+  artifactHash: Hex;
+  configurationHash: Hex;
+  authorityEpoch: string;
+}) {
+  return {
+    artifactHash: identity.artifactHash.toLowerCase(),
+    configurationHash: identity.configurationHash.toLowerCase(),
+    authorityEpoch: identity.authorityEpoch,
   };
 }

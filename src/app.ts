@@ -25,7 +25,10 @@ import { logErrorWithId } from "./util/errorWrap.js";
 import { logger } from "./util/logger.js";
 import { ApplicationLifecycle } from "./runtime/applicationLifecycle.js";
 import { ProviderAuthorityService } from "./payment/providerAuthority.js";
-import type { BazaarCompatibilityWiring } from "./bazaar/types.js";
+import type {
+  BazaarCompatibilityWiring,
+  BazaarRuntimeManifestTrust,
+} from "./bazaar/types.js";
 import type { BazaarRecoveryRuntime } from "./bazaar/recovery.js";
 
 const ZERO_ADDRESS = `0x${"00".repeat(20)}` as const;
@@ -45,6 +48,7 @@ export interface CreateAppOptions {
   agentCardFetchTimeoutMs?: number;
   buyerAgentCardFetch?: FetchAgentCardOptions["fetchFn"];
   bazaarCompatibility?: BazaarCompatibilityWiring;
+  bazaarRuntimeManifestTrust?: BazaarRuntimeManifestTrust;
 }
 
 export interface AppBundle {

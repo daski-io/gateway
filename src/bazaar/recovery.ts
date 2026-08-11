@@ -20,6 +20,7 @@ import type {
   BazaarObservationOriginState,
   BazaarOrder,
 } from "./types.js";
+import { bazaarNowSeconds } from "./runtimeTime.js";
 
 const RECONCILE_INTERVAL_MS = 30_000;
 export class BazaarRecoveryRuntime {
@@ -228,7 +229,7 @@ export class BazaarRecoveryRuntime {
       assertListingCurrent: () => requireAdmittedListingAuthority(
         listing,
         this.providerAuthority,
-        BigInt(Math.floor((this.wiring.now?.() ?? new Date()).getTime() / 1000)),
+        bazaarNowSeconds(),
       ),
       lease,
     });
@@ -254,7 +255,7 @@ export class BazaarRecoveryRuntime {
   }
 
   private nowSeconds(): bigint {
-    return BigInt(Math.floor((this.wiring.now?.() ?? new Date()).getTime() / 1000));
+    return bazaarNowSeconds();
   }
 }
 

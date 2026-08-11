@@ -6,6 +6,7 @@ import type { BazaarChallengeMacKeyring } from "./types.js";
 const MAC_CONTEXT = Buffer.from("DASKI_BAZAAR_TASK_CHALLENGE_V1\0", "utf8");
 const EPOCH_PATTERN = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 const MAX_RETAINED_KEY_LIFETIME_SECONDS = 10n * 60n + 30n;
+export const BAZAAR_CHALLENGE_TTL_SECONDS = 5n * 60n;
 
 export interface TaskAccessChallengePayloadV1 {
   version: "1";
@@ -74,7 +75,7 @@ export function verifyTaskAccessChallengeEnvelope(
   const key = keyring.current.epoch === payload.keyEpoch
     ? keyring.current
     : (keyring.retained ?? []).find((candidate) =>
-      candidate.epoch === payload.keyEpoch && candidate.acceptUntil >= nowSeconds);
+      candidate.epoch === payload.keyEpoch && candidate.acceptUntil > nowSeconds);
   if (!key) return null;
   const expected = Buffer.from(computeTag(payload, key.secret).slice(2), "hex");
   const actual = Buffer.from(envelope.tag.slice(2), "hex");

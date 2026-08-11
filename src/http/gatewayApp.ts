@@ -26,7 +26,10 @@ import { configureMiddleware } from "./middleware.js";
 import type { ApplicationLifecycle } from "../runtime/applicationLifecycle.js";
 import type { ProviderAuthorityService } from "../payment/providerAuthority.js";
 import { createBazaarCompatibilityRouter } from "../bazaar/router.js";
-import type { BazaarCompatibilityWiring } from "../bazaar/types.js";
+import type {
+  BazaarCompatibilityWiring,
+  BazaarRuntimeManifestTrust,
+} from "../bazaar/types.js";
 import type { BazaarRecoveryRuntime } from "../bazaar/recovery.js";
 import { clearRawJsonBody } from "./rawJsonBody.js";
 import { clearBazaarRequestContext } from "./bazaarRequestContext.js";
@@ -48,6 +51,7 @@ export interface GatewayHttpOptions {
   a2aTimeoutMs?: number;
   buyerAgentCardFetch?: FetchAgentCardOptions["fetchFn"];
   bazaarCompatibility?: BazaarCompatibilityWiring;
+  bazaarRuntimeManifestTrust?: BazaarRuntimeManifestTrust;
 }
 
 export async function createGatewayHttp(
@@ -100,10 +104,14 @@ export async function createGatewayHttp(
   let closeBazaar = () => Promise.resolve();
   let bazaarRecovery: BazaarRecoveryRuntime | null = null;
   if (options.bazaarCompatibility) {
+    if (!options.bazaarRuntimeManifestTrust) {
+      throw new Error("Bazaar runtime manifest trust root is required");
+    }
     const bazaar = await createBazaarCompatibilityRouter({
       pool: options.pool,
       providerAuthority: options.providerAuthority,
       wiring: options.bazaarCompatibility,
+      runtimeManifestTrust: options.bazaarRuntimeManifestTrust,
       lifecycleDomainRetentionSeconds: config.taskRetentionSeconds,
       shutdownSignal: options.lifecycle.signal,
     });

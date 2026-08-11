@@ -25,7 +25,7 @@ import {
   buildPaymentDeclaration,
   type BazaarPaymentDeclaration,
 } from "./requirements.js";
-import type { BazaarOrderStore } from "./store.js";
+import type { BazaarOrderStore, ClaimOrderInput } from "./store.js";
 import { verifyBazaarSettlementEvidence } from "./settlementEvidence.js";
 import { refundRiskPolicyFor } from "./refundPolicy.js";
 import type {
@@ -35,11 +35,11 @@ import type {
   BazaarRefundRiskPolicy,
 } from "./types.js";
 import { callBazaarAdapter } from "./adapterCall.js";
-import type { BazaarRuntimeManifestIdentity } from "./runtimeManifest.js";
+import { bazaarNowSeconds } from "./runtimeTime.js";
+import type { BazaarRuntimeExecutionStore } from "./runtimeExecutionStore.js";
+import { withBazaarRuntimeExecution } from "./runtimeExecution.js";
 
 export class BazaarOutcomeService {
-  private readonly now: () => Date;
-  private readonly random: (size: number) => Buffer;
   private readonly declaration: BazaarPaymentDeclaration;
   private readonly refundPolicy: BazaarRefundRiskPolicy;
 
@@ -49,11 +49,9 @@ export class BazaarOutcomeService {
     private readonly wiring: BazaarCompatibilityWiring,
     private readonly providerAuthority: ProviderAuthorityService,
     private readonly leaseOwner: string,
-    private readonly runtimeManifest: BazaarRuntimeManifestIdentity,
+    private readonly runtimeExecutions: BazaarRuntimeExecutionStore,
     private readonly shutdownSignal?: AbortSignal,
   ) {
-    this.now = wiring.now ?? (() => new Date());
-    this.random = wiring.randomBytes ?? randomBytes;
     this.declaration = buildPaymentDeclaration(listing, this.nowSeconds());
     this.refundPolicy = refundRiskPolicyFor(
       wiring.refundRiskPolicies,
@@ -63,9 +61,15 @@ export class BazaarOutcomeService {
 
   async unpaid(): Promise<BazaarOutcomeResult> {
     if (this.shutdownSignal?.aborted) return shuttingDown();
-    if (!(await this.store.isRuntimeManifestActive(this.runtimeManifest))) {
-      return failureOutcome(503, "runtime_manifest_inactive");
-    }
+    return withBazaarRuntimeExecution({
+      store: this.runtimeExecutions,
+      signal: this.shutdownSignal,
+      action: () => this.unpaidWhileActive(),
+      unavailable: () => this.runtimeUnavailable(),
+    });
+  }
+
+  private async unpaidWhileActive(): Promise<BazaarOutcomeResult> {
     await this.requireCurrentListing(false, 310n);
     if (await this.store.hasBlockingIncident(
       this.listing.offer.message.listingCommitment,
@@ -137,7 +141,7 @@ export class BazaarOutcomeService {
     const claimInput = createClaimInput(
       this.listing,
       parsed.payment,
-      this.random,
+      randomBytes,
       paidRetryReceivedAt,
     );
     const existing = await this.store.findByAuthorization(claimInput);
@@ -146,7 +150,32 @@ export class BazaarOutcomeService {
         ? existingOutcomeResult(existing)
         : failureOutcome(409, "payment_authorization_conflict");
     }
-    if (!(await this.store.isRuntimeManifestActive(this.runtimeManifest))) {
+    return withBazaarRuntimeExecution({
+      store: this.runtimeExecutions,
+      signal: this.shutdownSignal,
+      action: (signal) => this.processUnclaimed({
+        payload,
+        payment: parsed.payment,
+        claimInput,
+        paidRetryReceivedAt,
+        signal,
+      }),
+      unavailable: () => this.runtimeUnavailable(),
+    });
+  }
+
+  private async processUnclaimed(input: {
+    payload: PaymentPayload;
+    payment: ParsedBazaarPayment;
+    claimInput: ClaimOrderInput;
+    paidRetryReceivedAt: bigint;
+    signal: AbortSignal;
+  }): Promise<BazaarOutcomeResult> {
+    const { payload, payment, claimInput, paidRetryReceivedAt } = input;
+    const signal = this.shutdownSignal
+      ? AbortSignal.any([this.shutdownSignal, input.signal])
+      : input.signal;
+    if (!(await this.store.isRuntimeManifestActive())) {
       return failureOutcome(503, "runtime_manifest_inactive");
     }
     if (await this.store.hasBlockingIncident(
@@ -169,26 +198,26 @@ export class BazaarOutcomeService {
     try {
       const profile = await callBazaarAdapter({
         timeoutMs: this.wiring.adapterCallTimeoutMs,
-        signal: this.shutdownSignal,
+        signal,
         operation: (signal) => this.wiring.payerProfileVerifier.verifyBeforeSettlement({
           chainId: this.listing.offer.message.chainId,
-          payer: parsed.payment.authorization.from,
+          payer: payment.authorization.from,
         }, signal),
       });
       if (!validPayerProfile(
         profile,
         this.listing.offer.message.chainId,
-        parsed.payment.authorization.from,
+        payment.authorization.from,
       )) return failureOutcome(503, "payer_profile_ambiguous");
       if (profile.profile !== "eoa") {
         return failureOutcome(402, "payer_profile_unsupported");
       }
     } catch {
-      return this.shutdownSignal?.aborted
-        ? shuttingDown()
+      return signal.aborted
+        ? this.runtimeUnavailable()
         : failureOutcome(503, "payer_profile_ambiguous");
     }
-    if (this.shutdownSignal?.aborted) return shuttingDown();
+    if (signal.aborted) return this.runtimeUnavailable();
     const rechecked = await parseBazaarPayment(
       payload,
       this.declaration.requirements,
@@ -202,7 +231,6 @@ export class BazaarOutcomeService {
       this.leaseOwner,
       this.wiring.settlementCapacity,
       this.refundPolicy,
-      this.runtimeManifest,
       () => this.nowSeconds(),
     );
     if (claim.kind === "runtime_manifest_inactive") {
@@ -228,16 +256,22 @@ export class BazaarOutcomeService {
       action: (lease) => this.processNewOrder(
         claim.order,
         claim.leaseToken!,
-        parsed.payment,
+        payment,
         this.declaration.requirements,
         lease,
       ),
-      onOwnershipLost: () => this.shutdownSignal?.aborted
-        ? shuttingDown()
+      onOwnershipLost: () => input.signal.aborted || this.shutdownSignal?.aborted
+        ? this.runtimeUnavailable()
         : failureOutcome(409, "processing_ownership_lost"),
-      onOwnershipLostCleanup: () => scrubPaymentPayload(parsed.payment.payload),
-      signal: this.shutdownSignal,
+      onOwnershipLostCleanup: () => scrubPaymentPayload(payment.payload),
+      signal,
     });
+  }
+
+  private runtimeUnavailable(): BazaarOutcomeResult {
+    return this.shutdownSignal?.aborted
+      ? shuttingDown()
+      : failureOutcome(503, "runtime_manifest_inactive");
   }
 
   private async processNewOrder(
@@ -439,7 +473,7 @@ export class BazaarOutcomeService {
   }
 
   private nowSeconds(): bigint {
-    return BigInt(Math.floor(this.now().getTime() / 1000));
+    return bazaarNowSeconds();
   }
 }
 

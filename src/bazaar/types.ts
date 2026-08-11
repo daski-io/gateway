@@ -79,7 +79,29 @@ export interface FacilitatorCallResult<T> {
   extensionResponses: string | null;
 }
 
-export interface BazaarFacilitatorClient {
+export interface BazaarRuntimeAdapterIdentity {
+  artifactHash: Hex;
+  configurationHash: Hex;
+  authorityEpoch: string;
+}
+
+export interface BazaarRuntimeAdapter {
+  identity: BazaarRuntimeAdapterIdentity;
+}
+
+export interface BazaarRuntimeManifestApproval {
+  issuedAt: bigint;
+  validBefore: bigint;
+  signature: Hex;
+}
+
+export interface BazaarRuntimeManifestTrust {
+  authority: Hex;
+  deploymentId: Hex;
+  chainId: bigint;
+}
+
+export interface BazaarFacilitatorClient extends BazaarRuntimeAdapter {
   verify(
     payload: PaymentPayload,
     requirements: PaymentRequirements,
@@ -102,7 +124,7 @@ export interface SettlementEvidenceInput {
   grossAmount: bigint;
 }
 
-export interface SettlementEvidenceVerifier {
+export interface SettlementEvidenceVerifier extends BazaarRuntimeAdapter {
   verify(input: SettlementEvidenceInput, signal: AbortSignal): Promise<SettlementEvidenceInput & {
     finalized: true;
     authorizationUsedEventCount: 1;
@@ -156,7 +178,7 @@ export type BazaarSettlementObservationResult =
       matchingTransferEventCount: 1;
     };
 
-export interface BazaarSettlementObserver {
+export interface BazaarSettlementObserver extends BazaarRuntimeAdapter {
   observe(
     input: BazaarSettlementObservationInput,
     signal: AbortSignal,
@@ -168,7 +190,7 @@ export interface BazaarSettlementObservationPolicy {
   retryDelaySeconds: number;
 }
 
-export interface BazaarPayerProfileVerifier {
+export interface BazaarPayerProfileVerifier extends BazaarRuntimeAdapter {
   verifyBeforeSettlement(input: {
     chainId: bigint;
     payer: Hex;
@@ -208,7 +230,7 @@ export type BazaarDispatchResult =
         "PROVIDER_COMPLIANCE_FAILURE" | "PROVIDER_FULFILLMENT_FAILURE">;
     };
 
-export interface BazaarFulfillmentService {
+export interface BazaarFulfillmentService extends BazaarRuntimeAdapter {
   dispatch(input: BazaarDispatchInput, signal: AbortSignal): Promise<BazaarDispatchResult>;
   performLifecycleAction(
     input: BazaarLifecycleDispatchInput,
@@ -252,7 +274,7 @@ export interface BazaarFulfillmentObservationInput {
   payTo: Hex;
 }
 
-export interface BazaarFulfillmentObserver {
+export interface BazaarFulfillmentObserver extends BazaarRuntimeAdapter {
   observe(
     input: BazaarFulfillmentObservationInput,
     signal: AbortSignal,
@@ -305,7 +327,7 @@ export interface BazaarProviderLifecycleSigningRequest {
   };
 }
 
-export interface BazaarProviderActionSigningBroker {
+export interface BazaarProviderActionSigningBroker extends BazaarRuntimeAdapter {
   address: Hex;
   signLifecycleAction(
     input: BazaarProviderLifecycleSigningRequest,
@@ -374,7 +396,7 @@ export interface BazaarRefundInstructionSigningRequest {
   };
 }
 
-export interface BazaarRefundInstructionSigningBroker {
+export interface BazaarRefundInstructionSigningBroker extends BazaarRuntimeAdapter {
   address: Hex;
   signRefundInstruction(
     input: BazaarRefundInstructionSigningRequest,
@@ -382,7 +404,7 @@ export interface BazaarRefundInstructionSigningBroker {
   ): Promise<Hex>;
 }
 
-export interface BazaarRefundRequestService {
+export interface BazaarRefundRequestService extends BazaarRuntimeAdapter {
   requestRefund(input: {
     refundId: Hex;
     providerAgentId: bigint;
@@ -411,7 +433,7 @@ export interface BazaarRefundEvidenceInput {
   grossAmount: bigint;
 }
 
-export interface BazaarRefundEvidenceVerifier {
+export interface BazaarRefundEvidenceVerifier extends BazaarRuntimeAdapter {
   verify(input: BazaarRefundEvidenceInput, signal: AbortSignal): Promise<
     BazaarRefundEvidenceInput & {
       finalized: true;
@@ -440,6 +462,9 @@ export interface BazaarFinancialStatus {
 
 export interface BazaarCompatibilityWiring {
   runtimeManifestEpoch: bigint;
+  runtimeManifestApproval: BazaarRuntimeManifestApproval;
+  runtimeIdentity: BazaarRuntimeAdapterIdentity;
+  providerAuthorityIdentity: BazaarRuntimeAdapterIdentity;
   listings: BazaarListing[];
   recoveryListings: BazaarListing[];
   retiredLifecycleCommitments: Hex[];
@@ -462,8 +487,6 @@ export interface BazaarCompatibilityWiring {
   refundRequestService: BazaarRefundRequestService;
   refundEvidenceVerifier: BazaarRefundEvidenceVerifier;
   providerActionSigningBroker: BazaarProviderActionSigningBroker;
-  now?: () => Date;
-  randomBytes?: (size: number) => Buffer;
 }
 
 export type BazaarOrderState =

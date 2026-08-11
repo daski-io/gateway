@@ -1,5 +1,7 @@
 import type { Pool } from "../db/pool.js";
 import type { Hex } from "../types.js";
+import type { ApprovedBazaarRuntimeManifestIdentity } from
+  "./runtimeManifestApproval.js";
 import { completeBazaarFulfillment } from "./fulfillmentCompletionStore.js";
 import type { VerifiedBazaarFulfillmentAttestation } from "./fulfillmentAttestation.js";
 import {
@@ -10,14 +12,26 @@ import {
 } from "./fulfillmentLeaseStore.js";
 
 export class BazaarFulfillmentStore {
-  constructor(private readonly pool: Pool) {}
+  constructor(
+    private readonly pool: Pool,
+    private readonly runtimeManifest: ApprovedBazaarRuntimeManifestIdentity,
+  ) {}
 
   claim(leaseOwner: string): Promise<BazaarFulfillmentWorkItem | null> {
-    return claimBazaarFulfillment({ pool: this.pool, leaseOwner });
+    return claimBazaarFulfillment({
+      pool: this.pool,
+      leaseOwner,
+      runtimeManifest: this.runtimeManifest,
+    });
   }
 
   renewLease(orderRecordId: Hex, leaseToken: string): Promise<boolean> {
-    return renewBazaarFulfillmentLease(this.pool, orderRecordId, leaseToken);
+    return renewBazaarFulfillmentLease(
+      this.pool,
+      this.runtimeManifest,
+      orderRecordId,
+      leaseToken,
+    );
   }
 
   defer(

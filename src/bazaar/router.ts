@@ -23,11 +23,16 @@ import { BazaarOrderStore } from "./store.js";
 import { BazaarObservationStore } from "./observationStore.js";
 import { BazaarRefundStore } from "./refundStore.js";
 import { BazaarFulfillmentStore } from "./fulfillmentStore.js";
-import type { BazaarCompatibilityWiring } from "./types.js";
+import type {
+  BazaarCompatibilityWiring,
+  BazaarRuntimeManifestTrust,
+} from "./types.js";
 import { snapshotBazaarCompatibilityWiring } from "./wiringSnapshot.js";
-import { readLifecycleDomains } from "./lifecycleDomainRegistry.js";
 import { validateBazaarCompatibilityWiring } from "./wiringValidation.js";
 import { activateBazaarRuntimeWiring } from "./runtimeWiringStore.js";
+import { BazaarRuntimeExecutionStore } from "./runtimeExecutionStore.js";
+import { withBazaarRuntimeExecution } from "./runtimeExecution.js";
+import { readBazaarLifecycleRegistry } from "./lifecycleRegistry.js";
 
 const MAX_X402_HEADER_BYTES = 8 * 1024;
 const MAX_PAYMENT_SIGNATURE_BYTES = 12 * 1024;
@@ -36,6 +41,7 @@ export async function createBazaarCompatibilityRouter(options: {
   pool: Pool;
   providerAuthority: ProviderAuthorityService;
   wiring: BazaarCompatibilityWiring;
+  runtimeManifestTrust: BazaarRuntimeManifestTrust;
   lifecycleDomainRetentionSeconds: number;
   shutdownSignal?: AbortSignal;
 }): Promise<{ router: Router; close(): Promise<void>; recovery: BazaarRecoveryRuntime }> {
@@ -44,15 +50,21 @@ export async function createBazaarCompatibilityRouter(options: {
   const runtimeManifest = await activateBazaarRuntimeWiring({
     pool: options.pool,
     wiring,
+    trust: options.runtimeManifestTrust,
     lifecycleDomainRetentionSeconds: options.lifecycleDomainRetentionSeconds,
   });
   const router = Router();
-  const store = new BazaarOrderStore(options.pool);
-  const observationStore = new BazaarObservationStore(options.pool);
-  const refundStore = new BazaarRefundStore(options.pool);
-  const fulfillmentStore = new BazaarFulfillmentStore(options.pool);
+  const store = new BazaarOrderStore(options.pool, runtimeManifest);
+  const observationStore = new BazaarObservationStore(options.pool, runtimeManifest);
+  const refundStore = new BazaarRefundStore(options.pool, runtimeManifest);
+  const fulfillmentStore = new BazaarFulfillmentStore(options.pool, runtimeManifest);
   const leaseOwner = `gateway-request:${randomUUID()}`;
-  const lifecycle = new BazaarLifecycleService(store, wiring, options.shutdownSignal);
+  const lifecycle = new BazaarLifecycleService(store, wiring);
+  const runtimeExecutions = new BazaarRuntimeExecutionStore(
+    options.pool,
+    runtimeManifest,
+    `gateway-runtime:${randomUUID()}`,
+  );
   const recovery = new BazaarRecoveryRuntime(
     store,
     observationStore,
@@ -64,23 +76,16 @@ export async function createBazaarCompatibilityRouter(options: {
 
   router.get("/.well-known/daski-bazaar-lifecycle-domains-v1.json", async (_req, res) => {
     res.setHeader("Cache-Control", "no-store");
-    const now = BigInt(Math.floor((wiring.now?.() ?? new Date()).getTime() / 1000));
-    const retainedKeys = (wiring.challengeMac.retained ?? [])
-      .filter((key) => key.acceptUntil >= now)
-      .map((key) => ({
-        epoch: key.epoch,
-        status: "retained",
-        acceptUntil: key.acceptUntil.toString(),
-      }));
-    res.json({
-      version: "1",
-      providerActionSigner: wiring.providerActionSigningBroker.address,
-      challengeMacKeys: [
-        { epoch: wiring.challengeMac.current.epoch, status: "current" },
-        ...retainedKeys,
-      ],
-      domains: await readLifecycleDomains(options.pool),
+    const registry = await readBazaarLifecycleRegistry({
+      pool: options.pool,
+      runtimeManifest,
+      wiring,
     });
+    if (!registry) {
+      res.status(503).json({ error: "runtime_manifest_inactive" });
+      return;
+    }
+    res.json(registry);
   });
 
   for (const listing of wiring.listings) {
@@ -90,7 +95,7 @@ export async function createBazaarCompatibilityRouter(options: {
       wiring,
       options.providerAuthority,
       leaseOwner,
-      runtimeManifest,
+      runtimeExecutions,
       options.shutdownSignal,
     );
     router.post(listing.routePath, async (req, res) => {
@@ -145,10 +150,12 @@ export async function createBazaarCompatibilityRouter(options: {
       res.status(400).json({ error: "invalid_lifecycle_request" });
       return;
     }
-    const result = await runLifecycleRequest(
-      req,
-      () => lifecycle.challenge(req.params.handle, req.body),
-    );
+    const result = await runLifecycleRequest(req, () => withBazaarRuntimeExecution({
+      store: runtimeExecutions,
+      signal: options.shutdownSignal,
+      action: () => lifecycle.challenge(req.params.handle, req.body),
+      unavailable: runtimeManifestInactive,
+    }));
     res.status(result.status).json(result.body);
   });
   router.post("/x402/v1/orders/:handle/actions", async (req, res) => {
@@ -158,10 +165,12 @@ export async function createBazaarCompatibilityRouter(options: {
       res.status(400).json({ error: "invalid_lifecycle_request" });
       return;
     }
-    const result = await runLifecycleRequest(
-      req,
-      () => lifecycle.redeem(req.params.handle, req.body),
-    );
+    const result = await runLifecycleRequest(req, () => withBazaarRuntimeExecution({
+      store: runtimeExecutions,
+      signal: options.shutdownSignal,
+      action: (signal) => lifecycle.redeem(req.params.handle, req.body, signal),
+      unavailable: runtimeManifestInactive,
+    }));
     res.status(result.status).json(result.body);
   });
   await recovery.start();
@@ -201,15 +210,19 @@ function validLifecycleRequest(request: Request): boolean {
     !hasDuplicateJsonObjectKeys(rawBody);
 }
 
-async function runLifecycleRequest(
+async function runLifecycleRequest<T>(
   request: Request,
-  action: () => ReturnType<BazaarLifecycleService["challenge"]>,
-): Promise<Awaited<ReturnType<BazaarLifecycleService["challenge"]>>> {
+  action: () => Promise<T>,
+): Promise<T> {
   try {
     return await action();
   } finally {
     discardLifecycleRequest(request);
   }
+}
+
+function runtimeManifestInactive() {
+  return { status: 503 as const, body: { error: "runtime_manifest_inactive" } };
 }
 
 function discardLifecycleRequest(request: Request): void {

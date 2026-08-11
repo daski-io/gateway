@@ -54,10 +54,37 @@ describe("Bazaar runtime manifest", () => {
       ...harness.wiring,
       runtimeManifestEpoch: harness.wiring.runtimeManifestEpoch + 1n,
     });
+    const adapterChange = identity({
+      ...harness.wiring,
+      facilitator: {
+        ...harness.wiring.facilitator,
+        identity: {
+          ...harness.wiring.facilitator.identity,
+          configurationHash: `0x${"ab".repeat(32)}`,
+        },
+      },
+    });
+    const runtimeChange = identity({
+      ...harness.wiring,
+      runtimeIdentity: {
+        ...harness.wiring.runtimeIdentity,
+        artifactHash: `0x${"31".repeat(32)}`,
+      },
+    });
+    const providerAuthorityChange = identity({
+      ...harness.wiring,
+      providerAuthorityIdentity: {
+        ...harness.wiring.providerAuthorityIdentity,
+        configurationHash: `0x${"32".repeat(32)}`,
+      },
+    });
 
     expect(policyChange.hash).not.toBe(original.hash);
     expect(secretChange.hash).not.toBe(original.hash);
     expect(epochChange.hash).not.toBe(original.hash);
+    expect(adapterChange.hash).not.toBe(original.hash);
+    expect(runtimeChange.hash).not.toBe(original.hash);
+    expect(providerAuthorityChange.hash).not.toBe(original.hash);
     expect(identity(harness.wiring, 3_601).hash).not.toBe(original.hash);
   });
 });

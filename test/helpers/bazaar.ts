@@ -23,6 +23,10 @@ import {
 } from "../../src/bazaar/fulfillmentAttestation.js";
 import { BAZAAR_REFUND_INSTRUCTION_TYPES } from "../../src/bazaar/refundInstruction.js";
 import { computeBazaarRefundPolicyVersion } from "../../src/bazaar/refundPolicy.js";
+import { computeBazaarRuntimeManifestIdentity } from
+  "../../src/bazaar/runtimeManifest.js";
+import { bazaarRuntimeManifestApprovalTypedData } from
+  "../../src/bazaar/runtimeManifestApproval.js";
 import type {
   BazaarCompatibilityWiring,
   BazaarDispatchInput,
@@ -42,6 +46,8 @@ import type {
   BazaarRefundRiskPolicy,
   BazaarListing,
   ListingOfferV1,
+  BazaarRuntimeAdapterIdentity,
+  BazaarRuntimeManifestTrust,
 } from "../../src/bazaar/types.js";
 
 export const TEST_NOW = new Date("2026-08-10T18:00:00.000Z");
@@ -54,6 +60,9 @@ export const SECOND_PAY_TO_KEY = `0x${"55".repeat(32)}` as Hex;
 export const REFUND_SIGNING_KEY = `0x${"66".repeat(32)}` as Hex;
 export const REFUND_WALLET_KEY = `0x${"77".repeat(32)}` as Hex;
 export const FULFILLMENT_SIGNING_KEY = `0x${"aa".repeat(32)}` as Hex;
+export const RUNTIME_MANIFEST_AUTHORITY_KEY = `0x${"bb".repeat(32)}` as Hex;
+export const TEST_RUNTIME_DEPLOYMENT_ID = keccak256(toBytes("daski-test-deployment"));
+export const TEST_LIFECYCLE_RETENTION_SECONDS = 365 * 24 * 60 * 60;
 export const TEST_TOKEN = "0x036cbd53842c5426634e7929541ec2318f3dcf7e" as Hex;
 export const ZERO_BYTES32 = `0x${"00".repeat(32)}` as Hex;
 const REFUND_EVIDENCE_HASH = `0x${"88".repeat(32)}` as Hex;
@@ -69,6 +78,8 @@ export interface BazaarHarness {
   settlementObserver: FakeSettlementObserver;
   refundService: FakeRefundService;
   refundEvidence: FakeRefundEvidenceVerifier;
+  runtimeManifestTrust: BazaarRuntimeManifestTrust;
+  runtimeManifestAuthority: PrivateKeyAccount;
 }
 
 export async function createBazaarHarness(options: {
@@ -89,8 +100,23 @@ export async function createBazaarHarness(options: {
   );
   const refundService = new FakeRefundService();
   const refundEvidence = new FakeRefundEvidenceVerifier();
+  const runtimeManifestAuthority = privateKeyToAccount(
+    RUNTIME_MANIFEST_AUTHORITY_KEY,
+  );
+  const runtimeManifestTrust: BazaarRuntimeManifestTrust = {
+    authority: runtimeManifestAuthority.address,
+    deploymentId: TEST_RUNTIME_DEPLOYMENT_ID,
+    chainId: 84532n,
+  };
   const wiring: BazaarCompatibilityWiring = {
     runtimeManifestEpoch: 1n,
+    runtimeManifestApproval: {
+      issuedAt: BigInt(Math.floor(TEST_NOW.getTime() / 1_000)) - 60n,
+      validBefore: BigInt(Math.floor(TEST_NOW.getTime() / 1_000)) + 3_600n,
+      signature: `0x${"11".repeat(65)}`,
+    },
+    runtimeIdentity: testAdapterIdentity("gateway-runtime"),
+    providerAuthorityIdentity: testAdapterIdentity("provider-authority"),
     listings: [listing],
     recoveryListings: [],
     retiredLifecycleCommitments: [],
@@ -99,6 +125,7 @@ export async function createBazaarHarness(options: {
     approvedTermsOrigins: ["https://gateway.test"],
     facilitator,
     evidenceVerifier: {
+      identity: testAdapterIdentity("settlement-evidence"),
       verify: async (input) => ({
         ...input,
         finalized: true,
@@ -114,6 +141,7 @@ export async function createBazaarHarness(options: {
     fulfillmentObserver,
     fulfillmentObservationPolicy: { retryDelaySeconds: 30 },
     payerProfileVerifier: {
+      identity: testAdapterIdentity("payer-profile"),
       verifyBeforeSettlement: async (input) => ({ ...input, profile: "eoa" }),
     },
     fulfillment,
@@ -145,8 +173,14 @@ export async function createBazaarHarness(options: {
     providerActionSigningBroker: accountLifecycleBroker(
       privateKeyToAccount(PROVIDER_ACTION_KEY),
     ),
-    now: () => new Date(TEST_NOW),
   };
+  await approveBazaarRuntimeWiring(
+    wiring,
+    runtimeManifestTrust,
+    runtimeManifestAuthority,
+    TEST_LIFECYCLE_RETENTION_SECONDS,
+    TEST_NOW,
+  );
   return {
     wiring,
     providerAccount,
@@ -157,7 +191,40 @@ export async function createBazaarHarness(options: {
     settlementObserver,
     refundService,
     refundEvidence,
+    runtimeManifestTrust,
+    runtimeManifestAuthority,
   };
+}
+
+export function testAdapterIdentity(role: string): BazaarRuntimeAdapterIdentity {
+  return {
+    artifactHash: keccak256(toBytes(`daski-test-adapter:${role}:artifact`)),
+    configurationHash: keccak256(toBytes(`daski-test-adapter:${role}:config`)),
+    authorityEpoch: "test-v1",
+  };
+}
+
+export async function approveBazaarRuntimeWiring(
+  wiring: BazaarCompatibilityWiring,
+  trust: BazaarRuntimeManifestTrust,
+  authority: PrivateKeyAccount,
+  lifecycleDomainRetentionSeconds = TEST_LIFECYCLE_RETENTION_SECONDS,
+  approvalTime = new Date(),
+): Promise<void> {
+  const now = BigInt(Math.floor(approvalTime.getTime() / 1_000));
+  wiring.runtimeManifestApproval.issuedAt = now - 60n;
+  wiring.runtimeManifestApproval.validBefore = now + 3_600n;
+  const identity = computeBazaarRuntimeManifestIdentity(
+    wiring,
+    lifecycleDomainRetentionSeconds,
+  );
+  wiring.runtimeManifestApproval.signature = await authority.signTypedData(
+    bazaarRuntimeManifestApprovalTypedData({
+      identity,
+      approval: wiring.runtimeManifestApproval,
+      trust,
+    }),
+  );
 }
 
 export async function createListing(
@@ -380,6 +447,7 @@ export async function createPaymentPayload(input: {
 }
 
 export class FakeFacilitator implements BazaarFacilitatorClient {
+  readonly identity = testAdapterIdentity("facilitator");
   verifyCalls = 0;
   settleCalls = 0;
   verifyError = false;
@@ -440,12 +508,14 @@ async function waitForGate(
 }
 
 export class FakeFulfillment implements BazaarFulfillmentService {
+  readonly identity = testAdapterIdentity("fulfillment-service");
   dispatchCalls = 0;
   dispatchError = false;
   dispatchResult: FakeDispatchResult | null = null;
   rawDispatchResult: unknown = undefined;
   rawLifecycleResult: unknown = undefined;
   lifecycleCalls: BazaarLifecycleDispatchInput[] = [];
+  lifecycleGate: Promise<void> | null = null;
 
   async dispatch(input: BazaarDispatchInput): Promise<BazaarDispatchResult> {
     this.dispatchCalls += 1;
@@ -462,8 +532,12 @@ export class FakeFulfillment implements BazaarFulfillmentService {
     };
   }
 
-  async performLifecycleAction(input: BazaarLifecycleDispatchInput) {
+  async performLifecycleAction(
+    input: BazaarLifecycleDispatchInput,
+    signal: AbortSignal,
+  ) {
     this.lifecycleCalls.push(input);
+    await waitForGate(this.lifecycleGate, signal);
     if (this.rawLifecycleResult !== undefined) {
       return this.rawLifecycleResult as Awaited<ReturnType<
         BazaarFulfillmentService["performLifecycleAction"]
@@ -484,6 +558,7 @@ type FakeDispatchResult =
     };
 
 export class FakeSettlementObserver {
+  readonly identity = testAdapterIdentity("settlement-observer");
   calls: BazaarSettlementObservationInput[] = [];
   result: BazaarSettlementObservationResult = { kind: "pending" };
   error = false;
@@ -498,6 +573,7 @@ export class FakeSettlementObserver {
 }
 
 export class FakeFulfillmentObserver implements BazaarFulfillmentObserver {
+  readonly identity = testAdapterIdentity("fulfillment-observer");
   calls: BazaarFulfillmentObservationInput[] = [];
   outcome: BazaarFulfillmentOutcome | null = null;
   evidenceHash = keccak256(toBytes("test-fulfillment-evidence"));
@@ -562,6 +638,7 @@ export class FakeFulfillmentObserver implements BazaarFulfillmentObserver {
 }
 
 export class FakeRefundService implements BazaarRefundRequestService {
+  readonly identity = testAdapterIdentity("refund-request");
   calls: Parameters<BazaarRefundRequestService["requestRefund"]>[0][] = [];
   result: FakeRefundResult = {
     kind: "deferred",
@@ -591,6 +668,7 @@ type FakeRefundResult =
   | { kind: "deferred" };
 
 export class FakeRefundEvidenceVerifier {
+  readonly identity = testAdapterIdentity("refund-evidence");
   calls: BazaarRefundEvidenceInput[] = [];
   error = false;
   mutate: ((input: BazaarRefundEvidenceInput) => BazaarRefundEvidenceInput) | null = null;
@@ -613,6 +691,7 @@ export function accountLifecycleBroker(
   account: PrivateKeyAccount,
 ): BazaarProviderActionSigningBroker {
   return {
+    identity: testAdapterIdentity("provider-action-signing"),
     address: account.address,
     signLifecycleAction: (input) => account.signTypedData({
       domain: {
@@ -649,6 +728,7 @@ export function accountRefundBroker(
   account: PrivateKeyAccount,
 ): BazaarRefundInstructionSigningBroker {
   return {
+    identity: testAdapterIdentity("refund-instruction-signing"),
     address: account.address,
     signRefundInstruction: (input) => account.signTypedData({
       domain: {

@@ -9,6 +9,7 @@ import { hasDuplicateJsonObjectKeys } from "../http/jsonDuplicateKeys.js";
 import type {
   BazaarFacilitatorClient,
   FacilitatorCallResult,
+  BazaarRuntimeAdapterIdentity,
 } from "./types.js";
 
 const MAX_RESPONSE_BYTES = 64 * 1024;
@@ -17,6 +18,7 @@ const CDP_FACILITATOR_ORIGIN = "https://api.cdp.coinbase.com";
 const CDP_FACILITATOR_PATH = "/platform/v2/x402";
 
 export interface CdpFacilitatorClientOptions {
+  identity: BazaarRuntimeAdapterIdentity;
   baseUrl?: string;
   createAuthHeaders: (
     path: "verify" | "settle",
@@ -45,11 +47,13 @@ export function createCdpAuthHeaders(credentials: {
 }
 
 export class CdpFacilitatorClient implements BazaarFacilitatorClient {
+  readonly identity: BazaarRuntimeAdapterIdentity;
   private readonly baseUrl: string;
   private readonly fetchFn: typeof fetch;
   private readonly timeoutMs: number;
 
   constructor(private readonly options: CdpFacilitatorClientOptions) {
+    this.identity = { ...options.identity };
     const url = new URL(
       options.baseUrl ?? "https://api.cdp.coinbase.com/platform/v2/x402",
     );

@@ -6,6 +6,7 @@ import type { BazaarRefundWorkItem } from "./refundLeaseStore.js";
 import type { BazaarRefundStore } from "./refundStore.js";
 import type { BazaarCompatibilityWiring } from "./types.js";
 import { callBazaarAdapter } from "./adapterCall.js";
+import { bazaarNowSeconds } from "./runtimeTime.js";
 
 const MAX_REFUNDS_PER_RUN = 50;
 const ZERO_BYTES32 = `0x${"00".repeat(32)}`;
@@ -149,7 +150,7 @@ export class BazaarRefundRecovery {
   }
 
   private nowSeconds(): bigint {
-    return BigInt(Math.floor((this.wiring.now?.() ?? new Date()).getTime() / 1000));
+    return bazaarNowSeconds();
   }
 }
 

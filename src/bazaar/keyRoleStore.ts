@@ -6,7 +6,8 @@ export type BazaarKeyRole =
   | "provider"
   | "fulfillment"
   | "daski_lifecycle"
-  | "daski_refund";
+  | "daski_refund"
+  | "daski_manifest";
 
 export async function bindBazaarKeyRole(
   client: PoolClient,

@@ -27,7 +27,10 @@ import type {
   PaymentRequired,
 } from "../../src/types.js";
 import { DaskiTaskService } from "../../src/tasks/taskService.js";
-import type { BazaarCompatibilityWiring } from "../../src/bazaar/types.js";
+import type {
+  BazaarCompatibilityWiring,
+  BazaarRuntimeManifestTrust,
+} from "../../src/bazaar/types.js";
 
 const IDENTITY_REGISTRY_ADDRESS = "0x000000000000000000000000000000000000a000" as Hex;
 // Daski AgentIndex — reverse lookup + delegated registerWithSig companion of
@@ -83,6 +86,7 @@ export interface TestGatewayOptions {
    */
   configOverrides?: Partial<Config>;
   bazaarCompatibility?: BazaarCompatibilityWiring;
+  bazaarRuntimeManifestTrust?: BazaarRuntimeManifestTrust;
 }
 
 /** Test-facing provider definition. `tokenId` is the ERC-8004 agentId. */
@@ -302,6 +306,7 @@ export async function startTestGateway(opts: TestGatewayOptions = {}): Promise<T
     a2aFetch: opts.a2aFetch ?? localProviderFetch,
     buyerAgentCardFetch,
     bazaarCompatibility: opts.bazaarCompatibility,
+    bazaarRuntimeManifestTrust: opts.bazaarRuntimeManifestTrust,
   });
 
   await bundle.cache.refresh();
