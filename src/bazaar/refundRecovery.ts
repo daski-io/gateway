@@ -5,6 +5,7 @@ import { createBazaarRefundInstruction } from "./refundInstruction.js";
 import type { BazaarRefundWorkItem } from "./refundLeaseStore.js";
 import type { BazaarRefundStore } from "./refundStore.js";
 import type { BazaarCompatibilityWiring } from "./types.js";
+import { callBazaarAdapter } from "./adapterCall.js";
 
 const MAX_REFUNDS_PER_RUN = 50;
 const ZERO_BYTES32 = `0x${"00".repeat(32)}`;
@@ -58,24 +59,31 @@ export class BazaarRefundRecovery {
     let instruction;
     try {
       lease.assertOwned();
-      instruction = await createBazaarRefundInstruction({
-        chainId: work.chainId,
-        payTo: work.payTo,
-        orderRecordId: work.orderRecordId,
-        refundId: work.refundId,
-        providerAgentId: work.providerAgentId,
-        authorizationDigest: work.authorizationDigest,
-        payer: work.payer,
-        token: work.token,
-        grossAmount: work.grossAmount,
-        refundWallet: work.refundWallet,
-        refundPolicyVersion: work.refundPolicyVersion,
-        refundReason: work.primaryReason,
-        evidenceHash: work.evidenceHash,
-        attemptCount: work.attemptCount,
-        issuedAt: now,
-        expiresAt: now + BigInt(this.wiring.refundWorkerPolicy.instructionTtlSeconds),
-        signer: this.wiring.refundInstructionSigningBroker,
+      instruction = await callBazaarAdapter({
+        timeoutMs: this.wiring.adapterCallTimeoutMs,
+        signal: lease.signal,
+        operation: (signal) => createBazaarRefundInstruction({
+          chainId: work.chainId,
+          payTo: work.payTo,
+          orderRecordId: work.orderRecordId,
+          refundId: work.refundId,
+          providerAgentId: work.providerAgentId,
+          authorizationDigest: work.authorizationDigest,
+          payer: work.payer,
+          token: work.token,
+          grossAmount: work.grossAmount,
+          refundWallet: work.refundWallet,
+          refundPolicyVersion: work.refundPolicyVersion,
+          refundReason: work.primaryReason,
+          evidenceHash: work.evidenceHash,
+          attemptCount: work.attemptCount,
+          issuedAt: now,
+          expiresAt: now + BigInt(
+            this.wiring.refundWorkerPolicy.instructionTtlSeconds,
+          ),
+          signer: this.wiring.refundInstructionSigningBroker,
+          signal,
+        }),
       });
       lease.assertOwned();
     } catch {
@@ -85,13 +93,17 @@ export class BazaarRefundRecovery {
     let response: unknown;
     try {
       lease.assertOwned();
-      response = await this.wiring.refundRequestService.requestRefund({
-        refundId: work.refundId,
-        providerAgentId: work.providerAgentId,
-        refundWallet: work.refundWallet,
-        refundPolicyVersion: work.refundPolicyVersion,
-        instruction,
-      }, lease.signal);
+      response = await callBazaarAdapter({
+        timeoutMs: this.wiring.adapterCallTimeoutMs,
+        signal: lease.signal,
+        operation: (signal) => this.wiring.refundRequestService.requestRefund({
+          refundId: work.refundId,
+          providerAgentId: work.providerAgentId,
+          refundWallet: work.refundWallet,
+          refundPolicyVersion: work.refundPolicyVersion,
+          instruction,
+        }, signal),
+      });
       lease.assertOwned();
     } catch {
       if (await this.defer(work)) lease.complete();

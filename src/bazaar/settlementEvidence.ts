@@ -4,6 +4,7 @@ import type {
   SettlementEvidenceInput,
 } from "./types.js";
 import type { BazaarLeaseGuard } from "./lease.js";
+import { callBazaarAdapter } from "./adapterCall.js";
 
 export type SettlementEvidenceResult =
   | { kind: "valid" }
@@ -19,15 +20,19 @@ export async function verifyBazaarSettlementEvidence(
   let response: unknown;
   try {
     lease.assertOwned();
-    response = await wiring.evidenceVerifier.verify({
-      transaction: order.settlementTransaction,
-      chainId: order.chainId,
-      token: order.token,
-      payer: order.payer,
-      nonce: order.nonce,
-      payTo: order.payTo,
-      grossAmount: order.grossAmount,
-    }, lease.signal);
+    response = await callBazaarAdapter({
+      timeoutMs: wiring.adapterCallTimeoutMs,
+      signal: lease.signal,
+      operation: (signal) => wiring.evidenceVerifier.verify({
+        transaction: order.settlementTransaction!,
+        chainId: order.chainId,
+        token: order.token,
+        payer: order.payer,
+        nonce: order.nonce,
+        payTo: order.payTo,
+        grossAmount: order.grossAmount,
+      }, signal),
+    });
     lease.assertOwned();
   } catch {
     return { kind: "ambiguous" };

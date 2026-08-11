@@ -43,6 +43,7 @@ import {
   readLifecycleDomains,
   reconcileLifecycleDomains,
 } from "./lifecycleDomainRegistry.js";
+import { validateBazaarAdapterCallTimeout } from "./adapterCall.js";
 
 const MAX_X402_HEADER_BYTES = 8 * 1024;
 const MAX_PAYMENT_SIGNATURE_BYTES = 12 * 1024;
@@ -224,11 +225,16 @@ async function validateWiring(wiring: BazaarCompatibilityWiring): Promise<void> 
   const zeroAddress = `0x${"00".repeat(20)}`;
   const now = BigInt(Math.floor((wiring.now?.() ?? new Date()).getTime() / 1000));
   validateChallengeMacKeyring(wiring.challengeMac, now);
+  validateBazaarAdapterCallTimeout(wiring.adapterCallTimeoutMs);
   validateSettlementCapacityPolicy(wiring.settlementCapacity);
   validateSettlementObservationPolicy(wiring.settlementObservationPolicy);
   validateFulfillmentObservationPolicy(wiring.fulfillmentObservationPolicy);
   validateRefundRiskPolicies(wiring.refundRiskPolicies, wiring.listings);
   validateRefundWorkerPolicy(wiring.refundWorkerPolicy);
+  if (
+    wiring.refundWorkerPolicy.instructionTtlSeconds <=
+      Math.ceil(wiring.adapterCallTimeoutMs / 1_000) * 2 + 5
+  ) throw new Error("Bazaar refund instruction TTL cannot cover adapter deadlines");
   for (const commitment of wiring.retiredLifecycleCommitments) {
     if (!/^0x[0-9a-fA-F]{64}$/.test(commitment)) {
       throw new Error("Bazaar retired lifecycle commitment is malformed");

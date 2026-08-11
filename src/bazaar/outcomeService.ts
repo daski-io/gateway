@@ -34,6 +34,7 @@ import type {
   BazaarOrder,
   BazaarRefundRiskPolicy,
 } from "./types.js";
+import { callBazaarAdapter } from "./adapterCall.js";
 
 export class BazaarOutcomeService {
   private readonly now: () => Date;
@@ -154,9 +155,12 @@ export class BazaarOutcomeService {
       return failureOutcome(409, "listing_authority_changed");
     }
     try {
-      const profile = await this.wiring.payerProfileVerifier.verifyBeforeSettlement({
-        chainId: this.listing.offer.message.chainId,
-        payer: parsed.payment.authorization.from,
+      const profile = await callBazaarAdapter({
+        timeoutMs: this.wiring.adapterCallTimeoutMs,
+        operation: (signal) => this.wiring.payerProfileVerifier.verifyBeforeSettlement({
+          chainId: this.listing.offer.message.chainId,
+          payer: parsed.payment.authorization.from,
+        }, signal),
       });
       if (profile.profile !== "eoa") {
         return failureOutcome(402, "payer_profile_unsupported");

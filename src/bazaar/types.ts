@@ -160,7 +160,7 @@ export interface BazaarPayerProfileVerifier {
   verifyBeforeSettlement(input: {
     chainId: bigint;
     payer: Hex;
-  }): Promise<{ profile: "eoa" } | { profile: "unsupported" }>;
+  }, signal: AbortSignal): Promise<{ profile: "eoa" } | { profile: "unsupported" }>;
 }
 
 export interface BazaarDispatchInput {
@@ -195,6 +195,7 @@ export interface BazaarFulfillmentService {
   dispatch(input: BazaarDispatchInput, signal: AbortSignal): Promise<BazaarDispatchResult>;
   performLifecycleAction(
     input: BazaarLifecycleDispatchInput,
+    signal: AbortSignal,
   ): Promise<Record<string, unknown>>;
 }
 
@@ -286,7 +287,10 @@ export interface BazaarProviderLifecycleSigningRequest {
 
 export interface BazaarProviderActionSigningBroker {
   address: Hex;
-  signLifecycleAction(input: BazaarProviderLifecycleSigningRequest): Promise<Hex>;
+  signLifecycleAction(
+    input: BazaarProviderLifecycleSigningRequest,
+    signal: AbortSignal,
+  ): Promise<Hex>;
 }
 
 export interface BazaarChallengeMacKey {
@@ -350,7 +354,10 @@ export interface BazaarRefundInstructionSigningRequest {
 
 export interface BazaarRefundInstructionSigningBroker {
   address: Hex;
-  signRefundInstruction(input: BazaarRefundInstructionSigningRequest): Promise<Hex>;
+  signRefundInstruction(
+    input: BazaarRefundInstructionSigningRequest,
+    signal: AbortSignal,
+  ): Promise<Hex>;
 }
 
 export interface BazaarRefundRequestService {
@@ -411,6 +418,7 @@ export interface BazaarFinancialStatus {
 export interface BazaarCompatibilityWiring {
   listings: BazaarListing[];
   retiredLifecycleCommitments: Hex[];
+  adapterCallTimeoutMs: number;
   publicOrigin: string;
   approvedTermsOrigins: string[];
   facilitator: BazaarFacilitatorClient;

@@ -6,6 +6,7 @@ import type {
   BazaarRefundEvidenceInput,
 } from "./types.js";
 import type { BazaarRefundWorkItem } from "./refundLeaseStore.js";
+import { callBazaarAdapter } from "./adapterCall.js";
 
 export interface VerifiedBazaarRefundEvidence {
   evidenceHash: Hex;
@@ -23,14 +24,18 @@ export async function verifyBazaarRefundEvidence(input: {
   let response: unknown;
   try {
     input.lease.assertOwned();
-    response = await input.wiring.refundEvidenceVerifier.verify({
-      transaction,
-      chainId: input.work.chainId,
-      token: input.work.token,
-      refundWallet: input.work.refundWallet,
-      payer: input.work.payer,
-      grossAmount: input.work.grossAmount,
-    }, input.lease.signal);
+    response = await callBazaarAdapter({
+      timeoutMs: input.wiring.adapterCallTimeoutMs,
+      signal: input.lease.signal,
+      operation: (signal) => input.wiring.refundEvidenceVerifier.verify({
+        transaction,
+        chainId: input.work.chainId,
+        token: input.work.token,
+        refundWallet: input.work.refundWallet,
+        payer: input.work.payer,
+        grossAmount: input.work.grossAmount,
+      }, signal),
+    });
     input.lease.assertOwned();
   } catch {
     return "pending";

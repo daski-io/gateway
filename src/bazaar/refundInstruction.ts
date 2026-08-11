@@ -54,6 +54,7 @@ export async function createBazaarRefundInstruction(input: {
   issuedAt: bigint;
   expiresAt: bigint;
   signer: BazaarRefundInstructionSigningBroker;
+  signal: AbortSignal;
 }) {
   const instructionNonce = keccak256(encodeAbiParameters(
     [{ type: "bytes32" }, { type: "bytes32" }, { type: "uint256" }],
@@ -89,7 +90,7 @@ export async function createBazaarRefundInstruction(input: {
     chainId: typed.domain.chainId,
     payTo: typed.domain.verifyingContract,
     message: typed.message,
-  });
+  }, input.signal);
   if (
     !/^0x[0-9a-fA-F]{130}$/.test(signature) ||
     BigInt(parseSignature(signature).s) > HALF_SECP256K1_N

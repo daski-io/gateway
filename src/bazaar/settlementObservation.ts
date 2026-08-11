@@ -6,6 +6,7 @@ import type {
   BazaarSettlementObservationPolicy,
   BazaarSettlementObservationResult,
 } from "./types.js";
+import { callBazaarAdapter } from "./adapterCall.js";
 
 const MAX_OBSERVATION_WINDOW_SECONDS = 7 * 24 * 60 * 60;
 const MAX_RETRY_DELAY_SECONDS = 60 * 60;
@@ -47,18 +48,22 @@ export async function observeBazaarSettlement(input: {
   let response: unknown;
   try {
     lease.assertOwned();
-    response = await wiring.settlementObserver.observe({
-      orderRecordId: order.orderRecordId,
-      authorizationDigest: order.authorizationDigest,
-      chainId: order.chainId,
-      token: order.token,
-      payer: order.payer,
-      nonce: order.nonce,
-      payTo: order.payTo,
-      grossAmount: order.grossAmount,
-      authorizationValidBefore: order.authorizationValidBefore,
-      requiredObservedThrough: requiredThrough,
-    }, lease.signal);
+    response = await callBazaarAdapter({
+      timeoutMs: wiring.adapterCallTimeoutMs,
+      signal: lease.signal,
+      operation: (signal) => wiring.settlementObserver.observe({
+        orderRecordId: order.orderRecordId,
+        authorizationDigest: order.authorizationDigest,
+        chainId: order.chainId,
+        token: order.token,
+        payer: order.payer,
+        nonce: order.nonce,
+        payTo: order.payTo,
+        grossAmount: order.grossAmount,
+        authorizationValidBefore: order.authorizationValidBefore,
+        requiredObservedThrough: requiredThrough,
+      }, signal),
+    });
     lease.assertOwned();
   } catch {
     return { kind: "pending" };

@@ -88,6 +88,7 @@ export async function createBazaarHarness(options: {
   const wiring: BazaarCompatibilityWiring = {
     listings: [listing],
     retiredLifecycleCommitments: [],
+    adapterCallTimeoutMs: 1_000,
     publicOrigin: "https://gateway.test",
     approvedTermsOrigins: ["https://gateway.test"],
     facilitator,

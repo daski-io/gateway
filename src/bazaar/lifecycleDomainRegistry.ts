@@ -3,6 +3,7 @@ import { hexToBytea } from "../db/paymentChallengeCodec.js";
 import type { Hex } from "../types.js";
 import { isHex32, isHexAddress } from "../util/evmValidation.js";
 import type { BazaarListing } from "./types.js";
+import { bindBazaarKeyRole } from "./keyRoleStore.js";
 
 const MAX_PUBLISHED_LIFECYCLE_DOMAINS = 1_000;
 
@@ -72,19 +73,16 @@ export async function reconcileLifecycleDomains(input: {
       "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
       ["daski-gateway:bazaar-lifecycle-domains"],
     );
-    const signerConflict = await client.query(
-      `SELECT 1
-         FROM bazaar_provider_key_roles
-        WHERE key_address IN ($1, $2)
-        LIMIT 1`,
-      [
-        hexToBytea(input.providerActionSigner),
-        hexToBytea(input.refundInstructionSigner),
-      ],
+    await bindBazaarKeyRole(
+      client,
+      input.providerActionSigner,
+      "daski_lifecycle",
     );
-    if (signerConflict.rowCount === 1) {
-      throw new Error("Bazaar Daski signer reuses a historical provider key");
-    }
+    await bindBazaarKeyRole(
+      client,
+      input.refundInstructionSigner,
+      "daski_refund",
+    );
     const refundSignerConflict = await client.query(
       `SELECT 1 FROM bazaar_exposures
         WHERE state <> 'released' AND refund_wallet IN ($1, $2)
@@ -155,7 +153,7 @@ export async function reconcileLifecycleDomains(input: {
       );
     }
     const providerRoleConflict = await client.query(
-      `SELECT 1 FROM bazaar_provider_key_roles r
+      `SELECT 1 FROM bazaar_key_roles r
         JOIN bazaar_exposures e ON r.key_address = e.refund_wallet
         WHERE r.key_role = 'fulfillment' AND e.state <> 'released'
         LIMIT 1`,
@@ -168,7 +166,7 @@ export async function reconcileLifecycleDomains(input: {
     for (const wallet of new Set(input.providerRefundWallets.map((value) =>
       value.toLowerCase()))) {
       const fulfillmentConflict = await client.query(
-        `SELECT 1 FROM bazaar_provider_key_roles
+        `SELECT 1 FROM bazaar_key_roles
           WHERE key_address = $1 AND key_role = 'fulfillment' LIMIT 1`,
         [hexToBytea(wallet as Hex)],
       );

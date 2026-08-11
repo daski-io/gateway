@@ -23,6 +23,7 @@ import type {
   BazaarLifecycleAction,
   BazaarOrder,
 } from "./types.js";
+import { callBazaarAdapter } from "./adapterCall.js";
 
 const CHALLENGE_TTL_SECONDS = 5n * 60n;
 const PROVIDER_ASSERTION_TTL_SECONDS = 60n;
@@ -122,22 +123,29 @@ export class BazaarLifecycleService {
         },
       };
     }
-    const assertion = await createProviderLifecycleAssertion({
-      order,
-      action,
-      requestHash: authorization.message.requestHash,
-      taskIdHash: authorization.message.taskIdHash,
-      nonce: nonzeroRandomHex(this.random),
-      issuedAt: now,
-      expiresAt: now + PROVIDER_ASSERTION_TTL_SECONDS,
-      signer: this.wiring.providerActionSigningBroker,
+    const assertion = await callBazaarAdapter({
+      timeoutMs: this.wiring.adapterCallTimeoutMs,
+      operation: (signal) => createProviderLifecycleAssertion({
+        order,
+        action,
+        requestHash: authorization.message.requestHash,
+        taskIdHash: authorization.message.taskIdHash,
+        nonce: nonzeroRandomHex(this.random),
+        issuedAt: now,
+        expiresAt: now + PROVIDER_ASSERTION_TTL_SECONDS,
+        signer: this.wiring.providerActionSigningBroker,
+        signal,
+      }),
     });
-    const result = await this.wiring.fulfillment.performLifecycleAction({
-      taskId: order.taskId,
-      action,
-      request,
-      contentTrust: action === "SUPPORT_MESSAGE" ? "untrusted_buyer" : "none",
-      assertion,
+    const result = await callBazaarAdapter({
+      timeoutMs: this.wiring.adapterCallTimeoutMs,
+      operation: (signal) => this.wiring.fulfillment.performLifecycleAction({
+        taskId: order.taskId,
+        action,
+        request,
+        contentTrust: action === "SUPPORT_MESSAGE" ? "untrusted_buyer" : "none",
+        assertion,
+      }, signal),
     });
     if (action === "ORDER_STATUS") {
       return {

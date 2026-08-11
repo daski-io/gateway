@@ -36,6 +36,7 @@ export async function createProviderLifecycleAssertion(input: {
   issuedAt: bigint;
   expiresAt: bigint;
   signer: BazaarProviderActionSigningBroker;
+  signal: AbortSignal;
 }) {
   const typed = {
     domain: {
@@ -72,7 +73,7 @@ export async function createProviderLifecycleAssertion(input: {
     chainId: typed.domain.chainId,
     payTo: typed.domain.verifyingContract,
     message: typed.message,
-  });
+  }, input.signal);
   if (
     !/^0x[0-9a-fA-F]{130}$/.test(signature) ||
     BigInt(parseSignature(signature).s) > HALF_SECP256K1_N

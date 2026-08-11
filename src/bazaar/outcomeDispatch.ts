@@ -14,6 +14,7 @@ import type {
   BazaarListing,
   BazaarOrder,
 } from "./types.js";
+import { callBazaarAdapter } from "./adapterCall.js";
 
 export async function dispatchBazaarOrder(input: {
   order: BazaarOrder;
@@ -54,17 +55,21 @@ export async function dispatchBazaarOrder(input: {
   let response: unknown;
   try {
     lease.assertOwned();
-    response = await wiring.fulfillment.dispatch({
-      orderRecordId: order.orderRecordId,
-      orderHandle: order.orderHandle,
-      providerAgentId: order.providerAgentId,
-      payer: order.payer,
-      buyerAuthorizationDigest: order.authorizationDigest,
-      outcomeId: order.outcomeId,
-      listingCommitment: order.listingCommitment,
-      requestHash: order.requestHash,
-      settlementTransaction: paymentResponse.transaction as Hex,
-    }, lease.signal);
+    response = await callBazaarAdapter({
+      timeoutMs: wiring.adapterCallTimeoutMs,
+      signal: lease.signal,
+      operation: (signal) => wiring.fulfillment.dispatch({
+        orderRecordId: order.orderRecordId,
+        orderHandle: order.orderHandle,
+        providerAgentId: order.providerAgentId,
+        payer: order.payer,
+        buyerAuthorizationDigest: order.authorizationDigest,
+        outcomeId: order.outcomeId,
+        listingCommitment: order.listingCommitment,
+        requestHash: order.requestHash,
+        settlementTransaction: paymentResponse.transaction as Hex,
+      }, signal),
+    });
     lease.assertOwned();
   } catch {
     if (lease.ownershipLost) return ownershipLost();

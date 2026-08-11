@@ -18,6 +18,7 @@ export function snapshotBazaarCompatibilityWiring(
   const refundEvidenceVerifier = wiring.refundEvidenceVerifier;
   return {
     ...wiring,
+    adapterCallTimeoutMs: wiring.adapterCallTimeoutMs,
     listings: wiring.listings.map(snapshotListing),
     retiredLifecycleCommitments: [...wiring.retiredLifecycleCommitments],
     approvedTermsOrigins: [...wiring.approvedTermsOrigins],

@@ -23,6 +23,7 @@ import {
   createListing,
   createPaymentPayload,
   accountRefundBroker,
+  PROVIDER_ACTION_KEY,
   PROVIDER_KEY,
   REFUND_WALLET_KEY,
   SECOND_PAY_TO_KEY,
@@ -370,6 +371,25 @@ describe("Bazaar compatibility harness", () => {
       wiring: invalidPolicy.wiring,
       lifecycleDomainRetentionSeconds: gateway.config.taskRetentionSeconds,
     })).rejects.toThrow(/fulfillment observation policy is invalid/);
+
+    const invalidTimeout = await createBazaarHarness();
+    invalidTimeout.wiring.adapterCallTimeoutMs = 99;
+    await expect(createBazaarCompatibilityRouter({
+      pool: gateway.bundle.pool,
+      providerAuthority: gateway.bundle.providerAuthority,
+      wiring: invalidTimeout.wiring,
+      lifecycleDomainRetentionSeconds: gateway.config.taskRetentionSeconds,
+    })).rejects.toThrow(/adapter-call timeout is invalid/);
+
+    const shortInstruction = await createBazaarHarness();
+    shortInstruction.wiring.adapterCallTimeoutMs = 15_000;
+    shortInstruction.wiring.refundWorkerPolicy.instructionTtlSeconds = 35;
+    await expect(createBazaarCompatibilityRouter({
+      pool: gateway.bundle.pool,
+      providerAuthority: gateway.bundle.providerAuthority,
+      wiring: shortInstruction.wiring,
+      lifecycleDomainRetentionSeconds: gateway.config.taskRetentionSeconds,
+    })).rejects.toThrow(/instruction TTL cannot cover adapter deadlines/);
   });
 
   it("rejects outcome URLs outside the configured public origin", async () => {
@@ -1027,6 +1047,10 @@ describe("Bazaar compatibility harness", () => {
     });
     expect((await paid(gateway, payment)).response.status).toBe(200);
     expect(await latestOrderState(gateway)).toBe("dispatched");
+    await expect(gateway.bundle.pool.query(
+      `UPDATE bazaar_orders SET state = 'fulfilled',
+          settlement_transaction = NULL WHERE state = 'dispatched'`,
+    )).rejects.toThrow(/bazaar_orders_fulfillment_settlement_check/);
 
     await gateway.bundle.bazaarRecovery!.runOnce();
     const terminal = await gateway.bundle.pool.query<{
@@ -1064,6 +1088,41 @@ describe("Bazaar compatibility harness", () => {
     expect(harness.facilitator.settleCalls).toBe(1);
     expect(harness.fulfillment.dispatchCalls).toBe(1);
     expect(harness.fulfillmentObserver.calls).toHaveLength(1);
+  });
+
+  it("bounds a non-cooperative fulfillment observer without releasing funds", async () => {
+    const required = await paymentRequired(gateway);
+    const payment = await createPaymentPayload({
+      paymentRequired: required,
+      buyer,
+      nonce: nonce(215),
+    });
+    expect((await paid(gateway, payment)).response.status).toBe(200);
+    harness.fulfillmentObserver.gate = new Promise(() => undefined);
+
+    const startedAt = Date.now();
+    await gateway.bundle.bazaarRecovery!.runOnce();
+    expect(Date.now() - startedAt).toBeLessThan(3_000);
+    const pending = await gateway.bundle.pool.query<{
+      order_state: string;
+      exposure_state: string;
+      job_state: string;
+      attestations: string;
+    }>(
+      `SELECT o.state AS order_state, e.state AS exposure_state,
+              j.state AS job_state,
+              (SELECT count(*) FROM bazaar_fulfillment_attestations)::text
+                AS attestations
+         FROM bazaar_orders o
+         JOIN bazaar_exposures e USING (order_record_id)
+         JOIN bazaar_fulfillment_jobs j USING (order_record_id)`,
+    );
+    expect(pending.rows[0]).toEqual({
+      order_state: "dispatched",
+      exposure_state: "paid_unfulfilled",
+      job_state: "pending",
+      attestations: "0",
+    });
   });
 
   it("creates an exact refund only for a valid signed terminal failure", async () => {
@@ -1911,7 +1970,7 @@ describe("Bazaar compatibility harness", () => {
       refundInstructionSigner: harness.wiring.refundInstructionSigningBroker.address,
       providerRefundWallets: [harness.wiring.refundRiskPolicies["701"]!.refundWallet],
       retentionSeconds: gateway.config.taskRetentionSeconds,
-    })).rejects.toThrow(/historical provider key/);
+    })).rejects.toThrow(/historical trust role/);
     await expect(reconcileLifecycleDomains({
       pool: gateway.bundle.pool,
       listings: harness.wiring.listings,
@@ -1957,7 +2016,30 @@ describe("Bazaar compatibility harness", () => {
       refundInstructionSigner: harness.fulfillmentSignerAccount.address,
       providerRefundWallets: [harness.wiring.refundRiskPolicies["701"]!.refundWallet],
       retentionSeconds: gateway.config.taskRetentionSeconds,
-    })).rejects.toThrow(/historical provider key/);
+    })).rejects.toThrow(/historical trust role/);
+
+    await expect(reconcileLifecycleDomains({
+      pool: gateway.bundle.pool,
+      listings: [],
+      retiredCommitments: [harness.wiring.listings[0]!.listingCommitment],
+      providerActionSigner: harness.wiring.refundInstructionSigningBroker.address,
+      refundInstructionSigner: harness.wiring.providerActionSigningBroker.address,
+      providerRefundWallets: [harness.wiring.refundRiskPolicies["701"]!.refundWallet],
+      retentionSeconds: gateway.config.taskRetentionSeconds,
+    })).rejects.toThrow(/historical trust role/);
+
+    const historicalDaskiAlias = await createListing(
+      privateKeyToAccount(PROVIDER_ACTION_KEY),
+      {
+        slug: "retired-daski-role-alias",
+        payTo: privateKeyToAccount(SECOND_PAY_TO_KEY),
+        refundPolicy: harness.wiring.refundRiskPolicies["701"],
+      },
+    );
+    await expect(registerListingBindings(
+      gateway.bundle.pool,
+      [historicalDaskiAlias],
+    )).rejects.toThrow(/historical trust role/);
 
     const historicalAlias = await createListing(
       privateKeyToAccount(SECOND_PAY_TO_KEY),
@@ -1970,7 +2052,7 @@ describe("Bazaar compatibility harness", () => {
     await expect(registerListingBindings(
       gateway.bundle.pool,
       [historicalAlias],
-    )).rejects.toThrow(/historical provider key/);
+    )).rejects.toThrow(/historical trust role/);
     const rejectedBinding = await gateway.bundle.pool.query(
       "SELECT 1 FROM bazaar_listing_bindings WHERE listing_commitment = $1",
       [Buffer.from(historicalAlias.listingCommitment.slice(2), "hex")],

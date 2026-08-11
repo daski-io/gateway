@@ -15,6 +15,7 @@ import type {
   BazaarFulfillmentAttestationMessage,
   BazaarFulfillmentOutcome,
 } from "./types.js";
+import { callBazaarAdapter } from "./adapterCall.js";
 
 export const BAZAAR_FULFILLMENT_ATTESTATION_TYPES = {
   DaskiBazaarFulfillmentAttestation: [
@@ -81,19 +82,23 @@ export async function observeBazaarFulfillment(input: {
   let response: unknown;
   try {
     input.lease.assertOwned();
-    response = await input.wiring.fulfillmentObserver.observe({
-      orderRecordId: input.work.orderRecordId,
-      taskId: input.work.taskId,
-      taskIdHash: input.work.taskIdHash,
-      providerAgentId: input.work.providerAgentId,
-      listingCommitment: input.work.listingCommitment,
-      authorizationDigest: input.work.authorizationDigest,
-      outcomeId: input.work.outcomeId,
-      requestHash: input.work.requestHash,
-      settlementTransaction: input.work.settlementTransaction,
-      chainId: input.work.chainId,
-      payTo: input.work.payTo,
-    }, input.lease.signal);
+    response = await callBazaarAdapter({
+      timeoutMs: input.wiring.adapterCallTimeoutMs,
+      signal: input.lease.signal,
+      operation: (signal) => input.wiring.fulfillmentObserver.observe({
+        orderRecordId: input.work.orderRecordId,
+        taskId: input.work.taskId,
+        taskIdHash: input.work.taskIdHash,
+        providerAgentId: input.work.providerAgentId,
+        listingCommitment: input.work.listingCommitment,
+        authorizationDigest: input.work.authorizationDigest,
+        outcomeId: input.work.outcomeId,
+        requestHash: input.work.requestHash,
+        settlementTransaction: input.work.settlementTransaction,
+        chainId: input.work.chainId,
+        payTo: input.work.payTo,
+      }, signal),
+    });
     input.lease.assertOwned();
   } catch {
     return "pending";

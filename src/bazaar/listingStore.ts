@@ -1,7 +1,7 @@
 import type { PoolClient } from "pg";
 import type { Pool } from "../db/pool.js";
 import { hexToBytea } from "../db/paymentChallengeCodec.js";
-import type { Hex } from "../types.js";
+import { bindBazaarKeyRole } from "./keyRoleStore.js";
 import { listingOfferHash } from "./offer.js";
 import type { BazaarListing } from "./types.js";
 
@@ -113,9 +113,9 @@ async function registerProviderKeyRoles(
 ): Promise<void> {
   for (const listing of listings) {
     const offer = listing.offer.message;
-    await bindProviderKeyRole(client, offer.payTo, "provider");
-    await bindProviderKeyRole(client, offer.offerSigner, "provider");
-    await bindProviderKeyRole(client, offer.fulfillmentSigner, "fulfillment");
+    await bindBazaarKeyRole(client, offer.payTo, "provider");
+    await bindBazaarKeyRole(client, offer.offerSigner, "provider");
+    await bindBazaarKeyRole(client, offer.fulfillmentSigner, "fulfillment");
     const refundConflict = await client.query(
       `SELECT 1 FROM bazaar_exposures
         WHERE state <> 'released' AND refund_wallet = $1 LIMIT 1`,
@@ -124,25 +124,5 @@ async function registerProviderKeyRoles(
     if (refundConflict.rowCount === 1) {
       throw new Error("Bazaar fulfillment signer reuses an outstanding refund key");
     }
-  }
-}
-
-async function bindProviderKeyRole(
-  client: PoolClient,
-  address: Hex,
-  role: "provider" | "fulfillment",
-): Promise<void> {
-  const value = hexToBytea(address);
-  await client.query(
-    `INSERT INTO bazaar_provider_key_roles (key_address, key_role)
-     VALUES ($1, $2) ON CONFLICT DO NOTHING`,
-    [value, role],
-  );
-  const stored = await client.query<{ key_role: string }>(
-    "SELECT key_role FROM bazaar_provider_key_roles WHERE key_address = $1",
-    [value],
-  );
-  if (stored.rows.length !== 1 || stored.rows[0]!.key_role !== role) {
-    throw new Error("Bazaar listing reuses a historical provider key");
   }
 }

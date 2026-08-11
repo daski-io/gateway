@@ -4,6 +4,7 @@ import {
   withBazaarLease,
 } from "../src/bazaar/lease.js";
 import type { Hex } from "../src/types.js";
+import { callBazaarAdapter } from "../src/bazaar/adapterCall.js";
 
 const ORDER_ID = `0x${"11".repeat(32)}` as Hex;
 
@@ -99,6 +100,32 @@ describe("Bazaar fenced lease heartbeat", () => {
     });
     expect(result).toBe("complete");
     expect(renewals).toBe(0);
+  });
+});
+
+describe("Bazaar adapter deadline", () => {
+  it("does not start an adapter after its parent signal is cancelled", async () => {
+    const controller = new AbortController();
+    controller.abort(new Error("cancelled"));
+    let called = false;
+    await expect(callBazaarAdapter({
+      timeoutMs: 100,
+      signal: controller.signal,
+      operation: async () => {
+        called = true;
+        return "unsafe";
+      },
+    })).rejects.toThrow(/cancelled/);
+    expect(called).toBe(false);
+  });
+
+  it("bounds an adapter that ignores cancellation", async () => {
+    const startedAt = Date.now();
+    await expect(callBazaarAdapter({
+      timeoutMs: 100,
+      operation: () => new Promise<string>(() => undefined),
+    })).rejects.toThrow();
+    expect(Date.now() - startedAt).toBeLessThan(1_000);
   });
 });
 
