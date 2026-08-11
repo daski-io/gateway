@@ -40,6 +40,11 @@ import {
   markBazaarObservationRequired,
   terminalizeExpiredBazaarAttempts,
 } from "./observationLeaseStore.js";
+import type { BazaarRuntimeManifestIdentity } from "./runtimeManifest.js";
+import {
+  isBazaarRuntimeManifestActive,
+  lockBazaarRuntimeManifestForAdmission,
+} from "./runtimeManifestStore.js";
 
 interface RawLeasedOrder extends RawBazaarOrder {
   processing_lease_token: string;
@@ -65,6 +70,10 @@ export const BAZAAR_LEASE_SECONDS = 120;
 
 export class BazaarOrderStore {
   constructor(private readonly pool: Pool) {}
+
+  isRuntimeManifestActive(identity: BazaarRuntimeManifestIdentity): Promise<boolean> {
+    return isBazaarRuntimeManifestActive(this.pool, identity);
+  }
 
   async hasLifecycleDomain(chainId: bigint, payTo: Hex): Promise<boolean> {
     const result = await this.pool.query(
@@ -152,11 +161,13 @@ export class BazaarOrderStore {
     leaseOwner: string,
     settlementPolicy: BazaarSettlementCapacityPolicy,
     refundPolicy: BazaarRefundRiskPolicy,
+    runtimeManifest: BazaarRuntimeManifestIdentity,
     nowSeconds: () => bigint,
   ): Promise<
     | { kind: "claimed"; created: boolean; order: BazaarOrder; leaseToken: string | null }
     | { kind: "capacity_unavailable"; dimension: "settlement" | "refund_risk" }
     | { kind: "authorization_expired" }
+    | { kind: "runtime_manifest_inactive" }
   > {
     const leaseToken = randomUUID();
     const values = orderValues(input);
@@ -184,6 +195,10 @@ export class BazaarOrderStore {
             order: toBazaarOrder(existing.rows[0]),
             leaseToken: null,
           };
+        }
+        if (!(await lockBazaarRuntimeManifestForAdmission(client, runtimeManifest))) {
+          await client.query("COMMIT");
+          return { kind: "runtime_manifest_inactive" };
         }
         const available = await settlementCapacityAvailable({
           queryable: client,
@@ -252,6 +267,9 @@ export class BazaarOrderStore {
     const existing = await this.findByAuthorization(input);
     if (existing) {
       return { kind: "claimed", created: false, order: existing, leaseToken: null };
+    }
+    if (!(await this.isRuntimeManifestActive(runtimeManifest))) {
+      return { kind: "runtime_manifest_inactive" };
     }
     const refundHeadroom = await refundRiskHeadroomAvailable({
       queryable: this.pool,

@@ -35,6 +35,7 @@ import type {
   BazaarRefundRiskPolicy,
 } from "./types.js";
 import { callBazaarAdapter } from "./adapterCall.js";
+import type { BazaarRuntimeManifestIdentity } from "./runtimeManifest.js";
 
 export class BazaarOutcomeService {
   private readonly now: () => Date;
@@ -48,6 +49,7 @@ export class BazaarOutcomeService {
     private readonly wiring: BazaarCompatibilityWiring,
     private readonly providerAuthority: ProviderAuthorityService,
     private readonly leaseOwner: string,
+    private readonly runtimeManifest: BazaarRuntimeManifestIdentity,
     private readonly shutdownSignal?: AbortSignal,
   ) {
     this.now = wiring.now ?? (() => new Date());
@@ -61,6 +63,9 @@ export class BazaarOutcomeService {
 
   async unpaid(): Promise<BazaarOutcomeResult> {
     if (this.shutdownSignal?.aborted) return shuttingDown();
+    if (!(await this.store.isRuntimeManifestActive(this.runtimeManifest))) {
+      return failureOutcome(503, "runtime_manifest_inactive");
+    }
     await this.requireCurrentListing(false, 310n);
     if (await this.store.hasBlockingIncident(
       this.listing.offer.message.listingCommitment,
@@ -141,6 +146,9 @@ export class BazaarOutcomeService {
         ? existingOutcomeResult(existing)
         : failureOutcome(409, "payment_authorization_conflict");
     }
+    if (!(await this.store.isRuntimeManifestActive(this.runtimeManifest))) {
+      return failureOutcome(503, "runtime_manifest_inactive");
+    }
     if (await this.store.hasBlockingIncident(
       this.listing.offer.message.listingCommitment,
     )) return failureOutcome(503, "listing_paused");
@@ -194,8 +202,12 @@ export class BazaarOutcomeService {
       this.leaseOwner,
       this.wiring.settlementCapacity,
       this.refundPolicy,
+      this.runtimeManifest,
       () => this.nowSeconds(),
     );
+    if (claim.kind === "runtime_manifest_inactive") {
+      return failureOutcome(503, "runtime_manifest_inactive");
+    }
     if (claim.kind === "capacity_unavailable") {
       return failureOutcome(503, claim.dimension === "refund_risk"
         ? "refund_risk_capacity_unavailable"

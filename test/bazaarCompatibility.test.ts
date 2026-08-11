@@ -19,6 +19,11 @@ import {
   validateCompatibilityListing,
 } from "../src/bazaar/offer.js";
 import { createBazaarCompatibilityRouter } from "../src/bazaar/router.js";
+import { computeBazaarRuntimeManifestIdentity } from "../src/bazaar/runtimeManifest.js";
+import {
+  lockBazaarRuntimeManifestForAdmission,
+  transitionBazaarRuntimeManifest,
+} from "../src/bazaar/runtimeManifestStore.js";
 import type { Hex } from "../src/types.js";
 import {
   createBazaarHarness,
@@ -1177,6 +1182,126 @@ describe("Bazaar compatibility harness", () => {
     expect((await paid(gateway, payment)).response.status).toBe(200);
   });
 
+  it("rejects declarative drift within one runtime-manifest epoch", async () => {
+    harness.wiring.adapterCallTimeoutMs = 999;
+    await expect(createBazaarCompatibilityRouter({
+      pool: gateway.bundle.pool,
+      providerAuthority: gateway.bundle.providerAuthority,
+      wiring: harness.wiring,
+      lifecycleDomainRetentionSeconds: gateway.config.taskRetentionSeconds,
+    })).rejects.toThrow(/changed within one epoch/);
+
+    const manifests = await gateway.bundle.pool.query<{
+      manifest_epoch: string;
+      retired_at: Date | null;
+    }>(
+      `SELECT manifest_epoch, retired_at FROM bazaar_runtime_manifests
+        ORDER BY manifest_epoch`,
+    );
+    expect(manifests.rows).toEqual([{
+      manifest_epoch: "1",
+      retired_at: null,
+    }]);
+    expect((await unpaid(gateway)).status).toBe(402);
+  });
+
+  it("serializes admission against an atomic runtime-manifest transition", async () => {
+    const entered = deferred();
+    const release = deferred();
+    const next = computeBazaarRuntimeManifestIdentity({
+      ...harness.wiring,
+      runtimeManifestEpoch: 2n,
+      adapterCallTimeoutMs: 999,
+    }, gateway.config.taskRetentionSeconds);
+    const prior = computeBazaarRuntimeManifestIdentity(
+      harness.wiring,
+      gateway.config.taskRetentionSeconds,
+    );
+    const transition = transitionBazaarRuntimeManifest(
+      gateway.bundle.pool,
+      next,
+      async () => {
+        entered.resolve();
+        await release.promise;
+      },
+    );
+    await entered.promise;
+
+    const client = await gateway.bundle.pool.connect();
+    try {
+      await client.query("BEGIN");
+      let admissionCompleted = false;
+      const admission = lockBazaarRuntimeManifestForAdmission(client, prior)
+        .then((active) => {
+          admissionCompleted = true;
+          return active;
+        });
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      expect(admissionCompleted).toBe(false);
+
+      release.resolve();
+      await transition;
+      expect(await admission).toBe(false);
+      await client.query("COMMIT");
+    } finally {
+      release.resolve();
+      await client.query("ROLLBACK").catch(() => undefined);
+      client.release();
+    }
+  });
+
+  it("fences stale admissions while preserving exact replay after rollover", async () => {
+    const staleWiring = { ...harness.wiring };
+    const required = await paymentRequired(gateway);
+    const completedPayment = await createPaymentPayload({
+      paymentRequired: required,
+      buyer,
+      nonce: nonce(264),
+    });
+    const unclaimedPayment = await createPaymentPayload({
+      paymentRequired: required,
+      buyer,
+      nonce: nonce(265),
+    });
+    expect((await paid(gateway, completedPayment)).response.status).toBe(200);
+
+    harness.wiring.runtimeManifestEpoch = 2n;
+    harness.wiring.adapterCallTimeoutMs = 999;
+    const current = await createBazaarCompatibilityRouter({
+      pool: gateway.bundle.pool,
+      providerAuthority: gateway.bundle.providerAuthority,
+      wiring: harness.wiring,
+      lifecycleDomainRetentionSeconds: gateway.config.taskRetentionSeconds,
+    });
+    try {
+      const noDeclaration = await unpaid(gateway);
+      expect(noDeclaration.status).toBe(503);
+      expect(await noDeclaration.json()).toEqual({
+        error: "runtime_manifest_inactive",
+      });
+
+      const rejected = await paid(gateway, unclaimedPayment);
+      expect(rejected.response.status).toBe(503);
+      expect(rejected.body).toEqual({ error: "runtime_manifest_inactive" });
+      expect(harness.facilitator.verifyCalls).toBe(1);
+      expect(harness.facilitator.settleCalls).toBe(1);
+
+      expect((await paid(gateway, completedPayment)).response.status).toBe(200);
+      expect(harness.facilitator.verifyCalls).toBe(1);
+      expect(harness.facilitator.settleCalls).toBe(1);
+      expect(harness.fulfillment.dispatchCalls).toBe(1);
+
+      await expect(createBazaarCompatibilityRouter({
+        pool: gateway.bundle.pool,
+        providerAuthority: gateway.bundle.providerAuthority,
+        wiring: staleWiring,
+        lifecycleDomainRetentionSeconds: gateway.config.taskRetentionSeconds,
+      })).rejects.toThrow(/epoch is stale/);
+    } finally {
+      await current.close();
+    }
+  });
+
   it("uses a previously admitted expired listing only for recovery", async () => {
     await gateway.close();
     const firstEvidence = deferred();
@@ -1210,6 +1335,7 @@ describe("Bazaar compatibility harness", () => {
     harness.wiring.recoveryListings = [listing];
     harness.wiring.refundRiskPolicies = {};
     harness.wiring.retiredLifecycleCommitments = [listing.listingCommitment];
+    harness.wiring.runtimeManifestEpoch = 2n;
     harness.wiring.now = () => new Date(
       Number((listing.offer.message.validBefore + 1n) * 1_000n),
     );
@@ -1256,6 +1382,7 @@ describe("Bazaar compatibility harness", () => {
     harness.wiring.recoveryListings = [];
     harness.wiring.refundRiskPolicies = {};
     harness.wiring.retiredLifecycleCommitments = [commitment];
+    harness.wiring.runtimeManifestEpoch = 2n;
     await expect(createBazaarCompatibilityRouter({
       pool: gateway.bundle.pool,
       providerAuthority: gateway.bundle.providerAuthority,
@@ -1278,6 +1405,7 @@ describe("Bazaar compatibility harness", () => {
     harness.wiring.listings = [newActive];
     harness.wiring.recoveryListings = [unadmitted];
     harness.wiring.retiredLifecycleCommitments = [unadmitted.listingCommitment];
+    harness.wiring.runtimeManifestEpoch = 2n;
     await expect(createBazaarCompatibilityRouter({
       pool: gateway.bundle.pool,
       providerAuthority: gateway.bundle.providerAuthority,
@@ -1578,6 +1706,7 @@ describe("Bazaar compatibility harness", () => {
     harness.wiring.listings = [];
     harness.wiring.refundRiskPolicies = {};
     harness.wiring.retiredLifecycleCommitments = [commitment];
+    harness.wiring.runtimeManifestEpoch = 2n;
     const retired = await createBazaarCompatibilityRouter({
       pool: gateway.bundle.pool,
       providerAuthority: gateway.bundle.providerAuthority,

@@ -439,6 +439,7 @@ export interface BazaarFinancialStatus {
 }
 
 export interface BazaarCompatibilityWiring {
+  runtimeManifestEpoch: bigint;
   listings: BazaarListing[];
   recoveryListings: BazaarListing[];
   retiredLifecycleCommitments: Hex[];

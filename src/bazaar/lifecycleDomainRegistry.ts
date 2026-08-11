@@ -1,9 +1,10 @@
+import type { PoolClient } from "pg";
 import type { Pool } from "../db/pool.js";
 import { hexToBytea } from "../db/paymentChallengeCodec.js";
 import type { Hex } from "../types.js";
-import { isHex32, isHexAddress } from "../util/evmValidation.js";
 import type { BazaarListing } from "./types.js";
 import { bindBazaarKeyRole } from "./keyRoleStore.js";
+import { validateLifecycleDomainInput } from "./lifecycleDomainValidation.js";
 
 const MAX_PUBLISHED_LIFECYCLE_DOMAINS = 1_000;
 
@@ -43,150 +44,147 @@ export async function reconcileLifecycleDomains(input: {
   providerRefundWallets: Hex[];
   retentionSeconds: number;
 }): Promise<void> {
-  if (!Number.isSafeInteger(input.retentionSeconds) || input.retentionSeconds < 1) {
-    throw new Error("Bazaar lifecycle-domain retention must be a positive integer");
-  }
-  if (
-    !isHexAddress(input.providerActionSigner) ||
-    !isHexAddress(input.refundInstructionSigner) ||
-    !input.providerRefundWallets.every(isHexAddress)
-  ) {
-    throw new Error("Bazaar lifecycle-domain signer is malformed");
-  }
-  const activeCommitments = new Set(
-    input.listings.map((listing) =>
-      listing.offer.message.listingCommitment.toLowerCase()),
-  );
-  const retiredCommitments = new Set<string>();
-  for (const commitment of input.retiredCommitments) {
-    const normalized = commitment.toLowerCase();
-    if (
-      !isHex32(commitment) || activeCommitments.has(normalized) ||
-      retiredCommitments.has(normalized)
-    ) throw new Error("Bazaar lifecycle-domain retirement set is invalid");
-    retiredCommitments.add(normalized);
-  }
+  validateLifecycleDomainInput(input);
   const client = await input.pool.connect();
   try {
     await client.query("BEGIN");
-    await client.query(
-      "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
-      ["daski-gateway:bazaar-lifecycle-domains"],
-    );
-    await bindBazaarKeyRole(
-      client,
-      input.providerActionSigner,
-      "daski_lifecycle",
-    );
-    await bindBazaarKeyRole(
-      client,
-      input.refundInstructionSigner,
-      "daski_refund",
-    );
-    const refundSignerConflict = await client.query(
-      `SELECT 1 FROM bazaar_exposures
-        WHERE state <> 'released' AND refund_wallet IN ($1, $2)
-        LIMIT 1`,
-      [
-        hexToBytea(input.providerActionSigner),
-        hexToBytea(input.refundInstructionSigner),
-      ],
-    );
-    if (refundSignerConflict.rowCount === 1) {
-      throw new Error("Bazaar Daski signer reuses an outstanding refund key");
-    }
-    for (const listing of input.listings) {
-      const offer = listing.offer.message;
-      const values = [
-        offer.chainId.toString(),
-        hexToBytea(offer.payTo),
-        hexToBytea(offer.offerSigner),
-        hexToBytea(offer.listingEpoch),
-        hexToBytea(offer.listingCommitment),
-        offer.providerAgentId.toString(),
-        hexToBytea(offer.outcomeId),
-      ] as const;
-      await client.query(
-        `INSERT INTO bazaar_lifecycle_domains
-           (chain_id, pay_to, offer_signer, listing_epoch, listing_commitment,
-            provider_agent_id, outcome_id)
-         VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT DO NOTHING`,
-        [...values],
-      );
-      const stored = await client.query<RawLifecycleDomain>(
-        `SELECT chain_id, pay_to, offer_signer, listing_epoch, listing_commitment,
-                provider_agent_id, outcome_id
-           FROM bazaar_lifecycle_domains
-          WHERE (chain_id = $1 AND pay_to = $2)
-             OR listing_epoch = $3 OR listing_commitment = $4`,
-        [values[0], values[1], values[3], values[4]],
-      );
-      if (stored.rows.length !== 1 || !domainMatches(stored.rows[0]!, values)) {
-        throw new Error("Bazaar lifecycle domain was previously rebound");
-      }
-      const active = await client.query<{ active: boolean }>(
-        `SELECT active FROM bazaar_lifecycle_domains
-          WHERE chain_id = $1 AND pay_to = $2`,
-        values.slice(0, 2),
-      );
-      if (active.rows[0]?.active !== true) {
-        throw new Error("Bazaar lifecycle domain cannot be reactivated after retirement");
-      }
-    }
-    for (const commitment of input.retiredCommitments) {
-      const retired = await client.query<{ active: boolean }>(
-        `SELECT active FROM bazaar_lifecycle_domains
-          WHERE listing_commitment = $1 FOR UPDATE`,
-        [hexToBytea(commitment)],
-      );
-      if (!retired.rows[0]) {
-        throw new Error("Bazaar lifecycle retirement references an unknown domain");
-      }
-      if (!retired.rows[0].active) continue;
-      await client.query(
-        `UPDATE bazaar_lifecycle_domains
-            SET active = FALSE, retired_at = now(),
-                accept_until = now() + make_interval(secs => $2),
-                updated_at = now()
-          WHERE listing_commitment = $1`,
-        [hexToBytea(commitment), input.retentionSeconds],
-      );
-    }
-    const providerRoleConflict = await client.query(
-      `SELECT 1 FROM bazaar_key_roles r
-        JOIN bazaar_exposures e ON r.key_address = e.refund_wallet
-        WHERE r.key_role = 'fulfillment' AND e.state <> 'released'
-        LIMIT 1`,
-    );
-    if (providerRoleConflict.rowCount === 1) {
-      throw new Error(
-        "Bazaar fulfillment signer reuses a historical provider key",
-      );
-    }
-    for (const wallet of new Set(input.providerRefundWallets.map((value) =>
-      value.toLowerCase()))) {
-      const fulfillmentConflict = await client.query(
-        `SELECT 1 FROM bazaar_key_roles
-          WHERE key_address = $1 AND key_role = 'fulfillment' LIMIT 1`,
-        [hexToBytea(wallet as Hex)],
-      );
-      if (fulfillmentConflict.rowCount === 1) {
-        throw new Error("Bazaar refund wallet reuses a fulfillment key");
-      }
-    }
-    const accepted = await client.query<{ count: string }>(
-      `SELECT count(*) AS count FROM bazaar_lifecycle_domains
-        WHERE active OR accept_until > now()`,
-    );
-    if (BigInt(accepted.rows[0]?.count ?? "0") > MAX_PUBLISHED_LIFECYCLE_DOMAINS) {
-      throw new Error("Bazaar lifecycle-domain registry exceeds its authority limit");
-    }
+    await reconcileLifecycleDomainsInTransaction(client, input);
     await client.query("COMMIT");
   } catch (error) {
     await client.query("ROLLBACK").catch(() => undefined);
     throw error;
   } finally {
     client.release();
+  }
+}
+
+export async function reconcileLifecycleDomainsInTransaction(
+  client: PoolClient,
+  input: Omit<Parameters<typeof reconcileLifecycleDomains>[0], "pool">,
+): Promise<void> {
+  validateLifecycleDomainInput(input);
+  await lockLifecycleDomainRegistry(client);
+  await bindBazaarKeyRole(
+    client,
+    input.providerActionSigner,
+    "daski_lifecycle",
+  );
+  await bindBazaarKeyRole(
+    client,
+    input.refundInstructionSigner,
+    "daski_refund",
+  );
+  const refundSignerConflict = await client.query(
+    `SELECT 1 FROM bazaar_exposures
+      WHERE state <> 'released' AND refund_wallet IN ($1, $2)
+      LIMIT 1`,
+    [
+      hexToBytea(input.providerActionSigner),
+      hexToBytea(input.refundInstructionSigner),
+    ],
+  );
+  if (refundSignerConflict.rowCount === 1) {
+    throw new Error("Bazaar Daski signer reuses an outstanding refund key");
+  }
+  await reconcileLifecycleListingDomains(client, input);
+}
+
+export async function lockLifecycleDomainRegistry(client: PoolClient): Promise<void> {
+  await client.query(
+    "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+    ["daski-gateway:bazaar-lifecycle-domains"],
+  );
+}
+
+async function reconcileLifecycleListingDomains(
+  client: PoolClient,
+  input: Omit<Parameters<typeof reconcileLifecycleDomains>[0], "pool">,
+): Promise<void> {
+  for (const listing of input.listings) {
+    const offer = listing.offer.message;
+    const values = [
+      offer.chainId.toString(),
+      hexToBytea(offer.payTo),
+      hexToBytea(offer.offerSigner),
+      hexToBytea(offer.listingEpoch),
+      hexToBytea(offer.listingCommitment),
+      offer.providerAgentId.toString(),
+      hexToBytea(offer.outcomeId),
+    ] as const;
+    await client.query(
+      `INSERT INTO bazaar_lifecycle_domains
+         (chain_id, pay_to, offer_signer, listing_epoch, listing_commitment,
+          provider_agent_id, outcome_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT DO NOTHING`,
+      [...values],
+    );
+    const stored = await client.query<RawLifecycleDomain>(
+      `SELECT chain_id, pay_to, offer_signer, listing_epoch, listing_commitment,
+              provider_agent_id, outcome_id
+         FROM bazaar_lifecycle_domains
+        WHERE (chain_id = $1 AND pay_to = $2)
+           OR listing_epoch = $3 OR listing_commitment = $4`,
+      [values[0], values[1], values[3], values[4]],
+    );
+    if (stored.rows.length !== 1 || !domainMatches(stored.rows[0]!, values)) {
+      throw new Error("Bazaar lifecycle domain was previously rebound");
+    }
+    const active = await client.query<{ active: boolean }>(
+      `SELECT active FROM bazaar_lifecycle_domains
+        WHERE chain_id = $1 AND pay_to = $2`,
+      values.slice(0, 2),
+    );
+    if (active.rows[0]?.active !== true) {
+      throw new Error("Bazaar lifecycle domain cannot be reactivated after retirement");
+    }
+  }
+  for (const commitment of input.retiredCommitments) {
+    const retired = await client.query<{ active: boolean }>(
+      `SELECT active FROM bazaar_lifecycle_domains
+        WHERE listing_commitment = $1 FOR UPDATE`,
+      [hexToBytea(commitment)],
+    );
+    if (!retired.rows[0]) {
+      throw new Error("Bazaar lifecycle retirement references an unknown domain");
+    }
+    if (!retired.rows[0].active) continue;
+    await client.query(
+      `UPDATE bazaar_lifecycle_domains
+          SET active = FALSE, retired_at = now(),
+              accept_until = now() + make_interval(secs => $2),
+              updated_at = now()
+        WHERE listing_commitment = $1`,
+      [hexToBytea(commitment), input.retentionSeconds],
+    );
+  }
+  const providerRoleConflict = await client.query(
+    `SELECT 1 FROM bazaar_key_roles r
+      JOIN bazaar_exposures e ON r.key_address = e.refund_wallet
+      WHERE r.key_role = 'fulfillment' AND e.state <> 'released'
+      LIMIT 1`,
+  );
+  if (providerRoleConflict.rowCount === 1) {
+    throw new Error(
+      "Bazaar fulfillment signer reuses a historical provider key",
+    );
+  }
+  for (const wallet of new Set(input.providerRefundWallets.map((value) =>
+    value.toLowerCase()))) {
+    const fulfillmentConflict = await client.query(
+      `SELECT 1 FROM bazaar_key_roles
+        WHERE key_address = $1 AND key_role = 'fulfillment' LIMIT 1`,
+      [hexToBytea(wallet as Hex)],
+    );
+    if (fulfillmentConflict.rowCount === 1) {
+      throw new Error("Bazaar refund wallet reuses a fulfillment key");
+    }
+  }
+  const accepted = await client.query<{ count: string }>(
+    `SELECT count(*) AS count FROM bazaar_lifecycle_domains
+      WHERE active OR accept_until > now()`,
+  );
+  if (BigInt(accepted.rows[0]?.count ?? "0") > MAX_PUBLISHED_LIFECYCLE_DOMAINS) {
+    throw new Error("Bazaar lifecycle-domain registry exceeds its authority limit");
   }
 }
 

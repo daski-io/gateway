@@ -18,6 +18,7 @@ export function snapshotBazaarCompatibilityWiring(
   const refundEvidenceVerifier = wiring.refundEvidenceVerifier;
   return {
     ...wiring,
+    runtimeManifestEpoch: wiring.runtimeManifestEpoch,
     adapterCallTimeoutMs: wiring.adapterCallTimeoutMs,
     listings: wiring.listings.map(snapshotListing),
     recoveryListings: wiring.recoveryListings.map(snapshotListing),

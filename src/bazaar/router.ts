@@ -24,18 +24,14 @@ import { BazaarObservationStore } from "./observationStore.js";
 import { BazaarRefundStore } from "./refundStore.js";
 import { BazaarFulfillmentStore } from "./fulfillmentStore.js";
 import type { BazaarCompatibilityWiring } from "./types.js";
-import { reconcileListingRuntimeBindings } from "./listingStore.js";
 import { snapshotBazaarCompatibilityWiring } from "./wiringSnapshot.js";
-import {
-  readLifecycleDomains,
-  reconcileLifecycleDomains,
-} from "./lifecycleDomainRegistry.js";
+import { readLifecycleDomains } from "./lifecycleDomainRegistry.js";
 import { validateBazaarCompatibilityWiring } from "./wiringValidation.js";
+import { activateBazaarRuntimeWiring } from "./runtimeWiringStore.js";
 
 const MAX_X402_HEADER_BYTES = 8 * 1024;
 const MAX_PAYMENT_SIGNATURE_BYTES = 12 * 1024;
 const MAX_LIFECYCLE_BODY_BYTES = 64 * 1024;
-
 export async function createBazaarCompatibilityRouter(options: {
   pool: Pool;
   providerAuthority: ProviderAuthorityService;
@@ -45,21 +41,10 @@ export async function createBazaarCompatibilityRouter(options: {
 }): Promise<{ router: Router; close(): Promise<void>; recovery: BazaarRecoveryRuntime }> {
   const wiring = snapshotBazaarCompatibilityWiring(options.wiring);
   await validateBazaarCompatibilityWiring(wiring);
-  await reconcileListingRuntimeBindings({
+  const runtimeManifest = await activateBazaarRuntimeWiring({
     pool: options.pool,
-    activeListings: wiring.listings,
-    recoveryListings: wiring.recoveryListings,
-  });
-  await reconcileLifecycleDomains({
-    pool: options.pool,
-    listings: wiring.listings,
-    retiredCommitments: wiring.retiredLifecycleCommitments,
-    providerActionSigner: wiring.providerActionSigningBroker.address,
-    refundInstructionSigner: wiring.refundInstructionSigningBroker.address,
-    providerRefundWallets: Object.values(wiring.refundRiskPolicies).map(
-      (policy) => policy.refundWallet,
-    ),
-    retentionSeconds: options.lifecycleDomainRetentionSeconds,
+    wiring,
+    lifecycleDomainRetentionSeconds: options.lifecycleDomainRetentionSeconds,
   });
   const router = Router();
   const store = new BazaarOrderStore(options.pool);
@@ -105,6 +90,7 @@ export async function createBazaarCompatibilityRouter(options: {
       wiring,
       options.providerAuthority,
       leaseOwner,
+      runtimeManifest,
       options.shutdownSignal,
     );
     router.post(listing.routePath, async (req, res) => {
@@ -181,7 +167,6 @@ export async function createBazaarCompatibilityRouter(options: {
   await recovery.start();
   return { router, close: () => recovery.close(), recovery };
 }
-
 async function sendOutcome(
   response: Response,
   result: BazaarOutcomeResult,
@@ -204,7 +189,6 @@ async function sendOutcome(
   }
   response.status(result.status).json(result.body);
 }
-
 function validLifecycleRequest(request: Request): boolean {
   const contentType = request.get("content-type")?.toLowerCase();
   const rawBody = getRawJsonBody(request);

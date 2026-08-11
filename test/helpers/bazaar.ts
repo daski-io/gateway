@@ -90,6 +90,7 @@ export async function createBazaarHarness(options: {
   const refundService = new FakeRefundService();
   const refundEvidence = new FakeRefundEvidenceVerifier();
   const wiring: BazaarCompatibilityWiring = {
+    runtimeManifestEpoch: 1n,
     listings: [listing],
     recoveryListings: [],
     retiredLifecycleCommitments: [],

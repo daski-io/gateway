@@ -17,6 +17,8 @@ import { validateSettlementCapacityPolicy } from "./settlementCapacity.js";
 import { validateSettlementObservationPolicy } from "./settlementObservation.js";
 import type { BazaarCompatibilityWiring, BazaarListing } from "./types.js";
 
+const MAX_UINT256 = (1n << 256n) - 1n;
+
 export async function validateBazaarCompatibilityWiring(
   wiring: BazaarCompatibilityWiring,
 ): Promise<void> {
@@ -31,6 +33,10 @@ export async function validateBazaarCompatibilityWiring(
 }
 
 function validatePolicies(wiring: BazaarCompatibilityWiring, now: bigint): void {
+  if (
+    typeof wiring.runtimeManifestEpoch !== "bigint" ||
+    wiring.runtimeManifestEpoch < 1n || wiring.runtimeManifestEpoch > MAX_UINT256
+  ) throw new Error("Bazaar runtime manifest epoch is invalid");
   validateChallengeMacKeyring(wiring.challengeMac, now);
   validateBazaarAdapterCallTimeout(wiring.adapterCallTimeoutMs);
   validateSettlementCapacityPolicy(wiring.settlementCapacity);

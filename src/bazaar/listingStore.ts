@@ -29,22 +29,23 @@ export async function registerListingBindings(
     registerActiveListings(client, listings));
 }
 
-export async function reconcileListingRuntimeBindings(input: {
-  pool: Pool;
-  activeListings: BazaarListing[];
-  recoveryListings: BazaarListing[];
-}): Promise<void> {
-  await withListingTransaction(input.pool, async (client) => {
-    await registerActiveListings(client, input.activeListings);
-    for (const listing of input.recoveryListings) {
-      await verifyStoredListing(client, listing);
-      await verifyStoredKeyRoles(client, listing);
-    }
-    await assertRecoveryListingCoverage(
-      client,
-      [...input.activeListings, ...input.recoveryListings],
-    );
-  });
+export async function reconcileListingRuntimeBindingsInTransaction(
+  client: PoolClient,
+  input: { activeListings: BazaarListing[]; recoveryListings: BazaarListing[] },
+): Promise<void> {
+  await client.query(
+    "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+    ["daski-gateway:bazaar-listings"],
+  );
+  await registerActiveListings(client, input.activeListings);
+  for (const listing of input.recoveryListings) {
+    await verifyStoredListing(client, listing);
+    await verifyStoredKeyRoles(client, listing);
+  }
+  await assertRecoveryListingCoverage(
+    client,
+    [...input.activeListings, ...input.recoveryListings],
+  );
 }
 
 async function withListingTransaction(
