@@ -64,7 +64,9 @@ export async function claimBazaarRefund(input: {
         )
           AND r.state IN ('due', 'broadcast')
           AND r.evidence_hash IS NOT NULL
-          AND o.state IN ('dispatch_failed', 'settlement_refund_due')
+          AND o.state IN (
+            'dispatch_failed', 'settlement_refund_due', 'fulfillment_refund_due'
+          )
         ORDER BY j.next_attempt_at, j.updated_at
         LIMIT 1 FOR UPDATE OF j SKIP LOCKED`,
     );

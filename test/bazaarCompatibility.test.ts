@@ -307,6 +307,71 @@ describe("Bazaar compatibility harness", () => {
     })).rejects.toThrow(/bind its refund-risk policy/);
   });
 
+  it("proves and purpose-separates the fulfillment signer", async () => {
+    const invalidProof = await createBazaarHarness();
+    expect(computeListingCommitment({
+      ...invalidProof.wiring.listings[0]!.offer.message,
+      fulfillmentSigner: invalidProof.providerAccount.address,
+    })).not.toBe(invalidProof.wiring.listings[0]!.listingCommitment);
+    invalidProof.wiring.listings[0]!.fulfillmentSignerControlProof.signature =
+      invalidProof.wiring.listings[0]!.offer.signature;
+    await expect(createBazaarCompatibilityRouter({
+      pool: gateway.bundle.pool,
+      providerAuthority: gateway.bundle.providerAuthority,
+      wiring: invalidProof.wiring,
+      lifecycleDomainRetentionSeconds: gateway.config.taskRetentionSeconds,
+    })).rejects.toThrow(/fulfillment-signer proof/);
+
+    const roleAlias = await createBazaarHarness();
+    roleAlias.wiring.listings = [await createListing(roleAlias.providerAccount, {
+      fulfillmentSigner: roleAlias.providerAccount,
+      refundPolicy: roleAlias.wiring.refundRiskPolicies["701"],
+    })];
+    await expect(createBazaarCompatibilityRouter({
+      pool: gateway.bundle.pool,
+      providerAuthority: gateway.bundle.providerAuthority,
+      wiring: roleAlias.wiring,
+      lifecycleDomainRetentionSeconds: gateway.config.taskRetentionSeconds,
+    })).rejects.toThrow(/fulfillment signer must be purpose-separated/);
+
+    const crossListingAlias = await createBazaarHarness();
+    crossListingAlias.wiring.listings.push(await createListing(
+      privateKeyToAccount(SECOND_PAY_TO_KEY),
+      {
+        slug: "cross-role",
+        fulfillmentSigner: crossListingAlias.providerAccount,
+        refundPolicy: crossListingAlias.wiring.refundRiskPolicies["701"],
+      },
+    ));
+    await expect(createBazaarCompatibilityRouter({
+      pool: gateway.bundle.pool,
+      providerAuthority: gateway.bundle.providerAuthority,
+      wiring: crossListingAlias.wiring,
+      lifecycleDomainRetentionSeconds: gateway.config.taskRetentionSeconds,
+    })).rejects.toThrow(/fulfillment signer must be purpose-separated/);
+
+    const lifecycleAlias = await createBazaarHarness();
+    lifecycleAlias.wiring.providerActionSigningBroker = {
+      ...lifecycleAlias.wiring.providerActionSigningBroker,
+      address: lifecycleAlias.fulfillmentSignerAccount.address,
+    };
+    await expect(createBazaarCompatibilityRouter({
+      pool: gateway.bundle.pool,
+      providerAuthority: gateway.bundle.providerAuthority,
+      wiring: lifecycleAlias.wiring,
+      lifecycleDomainRetentionSeconds: gateway.config.taskRetentionSeconds,
+    })).rejects.toThrow(/lifecycle keys cannot reuse listing or payment keys/);
+
+    const invalidPolicy = await createBazaarHarness();
+    invalidPolicy.wiring.fulfillmentObservationPolicy.retryDelaySeconds = 4;
+    await expect(createBazaarCompatibilityRouter({
+      pool: gateway.bundle.pool,
+      providerAuthority: gateway.bundle.providerAuthority,
+      wiring: invalidPolicy.wiring,
+      lifecycleDomainRetentionSeconds: gateway.config.taskRetentionSeconds,
+    })).rejects.toThrow(/fulfillment observation policy is invalid/);
+  });
+
   it("rejects outcome URLs outside the configured public origin", async () => {
     harness.wiring.publicOrigin = "https://attacker.example";
     await expect(createBazaarCompatibilityRouter({
@@ -533,6 +598,21 @@ describe("Bazaar compatibility harness", () => {
     expect(replay.body).toEqual({ error: "payment_declaration_mismatch" });
     expect(harness.facilitator.verifyCalls).toBe(0);
     expect(harness.facilitator.settleCalls).toBe(0);
+  });
+
+  it("rejects the fulfillment signer as payer before facilitator egress", async () => {
+    const required = await paymentRequired(gateway);
+    const payment = await createPaymentPayload({
+      paymentRequired: required,
+      buyer: harness.fulfillmentSignerAccount,
+      nonce: nonce(206),
+    });
+    const result = await paid(gateway, payment);
+    expect(result.response.status).toBe(402);
+    expect(result.body).toEqual({ error: "payer_fulfillment_signer_conflict" });
+    expect(harness.facilitator.verifyCalls).toBe(0);
+    expect(harness.facilitator.settleCalls).toBe(0);
+    expect(await latestOrderState(gateway)).toBeUndefined();
   });
 
   it("persists the rule that one payTo can never bind to a second outcome epoch", async () => {
@@ -935,6 +1015,228 @@ describe("Bazaar compatibility harness", () => {
     expect(recovered.rows[0]?.state).toBe("paid_unfulfilled");
     expect(harness.fulfillment.dispatchCalls).toBe(2);
     expect((await paid(gateway, payment)).response.status).toBe(200);
+  });
+
+  it("releases exposure only after a valid signed fulfillment attestation", async () => {
+    harness.fulfillmentObserver.outcome = "FULFILLED";
+    const required = await paymentRequired(gateway);
+    const payment = await createPaymentPayload({
+      paymentRequired: required,
+      buyer,
+      nonce: nonce(207),
+    });
+    expect((await paid(gateway, payment)).response.status).toBe(200);
+    expect(await latestOrderState(gateway)).toBe("dispatched");
+
+    await gateway.bundle.bazaarRecovery!.runOnce();
+    const terminal = await gateway.bundle.pool.query<{
+      order_state: string;
+      exposure_state: string;
+      job_state: string;
+      outcome: string;
+      evidence_id: string;
+      attestation_digest: string;
+      signature: string;
+      refunds: string;
+    }>(
+      `SELECT o.state AS order_state, e.state AS exposure_state,
+              j.state AS job_state, a.outcome,
+              encode(a.evidence_id, 'hex') AS evidence_id,
+              encode(a.attestation_digest, 'hex') AS attestation_digest,
+              encode(a.signature, 'hex') AS signature,
+              (SELECT count(*) FROM bazaar_refund_obligations)::text AS refunds
+         FROM bazaar_orders o
+         JOIN bazaar_exposures e USING (order_record_id)
+         JOIN bazaar_fulfillment_jobs j USING (order_record_id)
+         JOIN bazaar_fulfillment_attestations a USING (order_record_id)`,
+    );
+    expect(terminal.rows[0]).toMatchObject({
+      order_state: "fulfilled",
+      exposure_state: "released",
+      job_state: "complete",
+      outcome: "FULFILLED",
+      refunds: "0",
+    });
+    expect(terminal.rows[0]?.evidence_id).toMatch(/^[0-9a-f]{64}$/);
+    expect(terminal.rows[0]?.attestation_digest).toMatch(/^[0-9a-f]{64}$/);
+    expect(terminal.rows[0]?.signature).toMatch(/^[0-9a-f]{130}$/);
+    expect((await paid(gateway, payment)).response.status).toBe(200);
+    expect(harness.facilitator.settleCalls).toBe(1);
+    expect(harness.fulfillment.dispatchCalls).toBe(1);
+    expect(harness.fulfillmentObserver.calls).toHaveLength(1);
+  });
+
+  it("creates an exact refund only for a valid signed terminal failure", async () => {
+    harness.fulfillmentObserver.outcome = "PROVIDER_FULFILLMENT_FAILURE";
+    const required = await paymentRequired(gateway);
+    const payment = await createPaymentPayload({
+      paymentRequired: required,
+      buyer,
+      nonce: nonce(208),
+    });
+    expect((await paid(gateway, payment)).response.status).toBe(200);
+    await gateway.bundle.bazaarRecovery!.runOnce();
+
+    const failed = await gateway.bundle.pool.query<{
+      order_state: string;
+      exposure_state: string;
+      fulfillment_job_state: string;
+      outcome: string;
+      refund_state: string;
+      primary_reason: string;
+      payer: string;
+      token: string;
+      gross_amount: string;
+      refunds: string;
+    }>(
+      `SELECT o.state AS order_state, e.state AS exposure_state,
+              f.state AS fulfillment_job_state, a.outcome,
+              r.state AS refund_state, r.primary_reason,
+              encode(r.payer, 'hex') AS payer,
+              encode(r.token, 'hex') AS token, r.gross_amount::text,
+              (SELECT count(*) FROM bazaar_refund_obligations)::text AS refunds
+         FROM bazaar_orders o
+         JOIN bazaar_exposures e USING (order_record_id)
+         JOIN bazaar_fulfillment_jobs f USING (order_record_id)
+         JOIN bazaar_fulfillment_attestations a USING (order_record_id)
+         JOIN bazaar_refund_obligations r USING (order_record_id)`,
+    );
+    expect(failed.rows[0]).toEqual({
+      order_state: "fulfillment_refund_due",
+      exposure_state: "refund_due",
+      fulfillment_job_state: "complete",
+      outcome: "PROVIDER_FULFILLMENT_FAILURE",
+      refund_state: "due",
+      primary_reason: "PROVIDER_FULFILLMENT_FAILURE",
+      payer: buyer.address.slice(2).toLowerCase(),
+      token: TEST_TOKEN.slice(2).toLowerCase(),
+      gross_amount: "10000",
+      refunds: "1",
+    });
+    harness.refundService.result = { kind: "broadcast", transaction: nonce(212) };
+    await gateway.bundle.bazaarRecovery!.runOnce();
+    expect(await latestOrderState(gateway)).toBe("refund_finalized");
+    const released = await gateway.bundle.pool.query<{ state: string }>(
+      "SELECT state FROM bazaar_exposures",
+    );
+    expect(released.rows[0]?.state).toBe("released");
+  });
+
+  it("keeps malformed, mismatched, and wrongly signed completion pending", async () => {
+    const required = await paymentRequired(gateway);
+    const payment = await createPaymentPayload({
+      paymentRequired: required,
+      buyer,
+      nonce: nonce(209),
+    });
+    expect((await paid(gateway, payment)).response.status).toBe(200);
+
+    harness.fulfillmentObserver.rawResult = null;
+    await gateway.bundle.bazaarRecovery!.runOnce();
+    await makeFulfillmentJobDue(gateway);
+    harness.fulfillmentObserver.rawResult = undefined;
+    harness.fulfillmentObserver.outcome = "FULFILLED";
+    harness.fulfillmentObserver.mutate = (result) => ({
+      ...result,
+      message: {
+        ...(result.message as Record<string, unknown>),
+        requestHash: nonce(250),
+      },
+    });
+    await gateway.bundle.bazaarRecovery!.runOnce();
+    await makeFulfillmentJobDue(gateway);
+    harness.fulfillmentObserver.mutate = (result) => ({
+      ...result,
+      signature: harness.wiring.listings[0]!.offer.signature,
+    });
+    await gateway.bundle.bazaarRecovery!.runOnce();
+    await makeFulfillmentJobDue(gateway);
+    harness.fulfillmentObserver.mutate = (result) => ({
+      ...result,
+      message: {
+        ...(result.message as Record<string, unknown>),
+        evidenceId: nonce(251),
+      },
+    });
+    await gateway.bundle.bazaarRecovery!.runOnce();
+
+    const pending = await fulfillmentState(gateway);
+    expect(pending).toEqual({
+      order_state: "dispatched",
+      exposure_state: "paid_unfulfilled",
+      job_state: "pending",
+      attempt_count: 4,
+      attestations: "0",
+      refunds: "0",
+    });
+
+    await makeFulfillmentJobDue(gateway);
+    harness.fulfillmentObserver.mutate = null;
+    await gateway.bundle.bazaarRecovery!.runOnce();
+    expect(await latestOrderState(gateway)).toBe("fulfilled");
+  });
+
+  it("fences a stale fulfillment worker and permits one terminal transition", async () => {
+    const gate = deferred();
+    harness.fulfillmentObserver.outcome = "FULFILLED";
+    harness.fulfillmentObserver.gate = gate.promise;
+    const required = await paymentRequired(gateway);
+    const payment = await createPaymentPayload({
+      paymentRequired: required,
+      buyer,
+      nonce: nonce(210),
+    });
+    expect((await paid(gateway, payment)).response.status).toBe(200);
+
+    const stale = gateway.bundle.bazaarRecovery!.runOnce();
+    await waitForFulfillmentCalls(harness, 1);
+    await gateway.bundle.pool.query(
+      "UPDATE bazaar_fulfillment_jobs SET lease_expires_at = now() - interval '1 second'",
+    );
+    harness.fulfillmentObserver.gate = null;
+    await gateway.bundle.bazaarRecovery!.runOnce();
+    gate.resolve();
+    await stale;
+
+    const terminal = await fulfillmentState(gateway);
+    expect(terminal).toEqual({
+      order_state: "fulfilled",
+      exposure_state: "released",
+      job_state: "complete",
+      attempt_count: 2,
+      attestations: "1",
+      refunds: "0",
+    });
+  });
+
+  it("finishes admitted work after its listing is retired", async () => {
+    const required = await paymentRequired(gateway);
+    const payment = await createPaymentPayload({
+      paymentRequired: required,
+      buyer,
+      nonce: nonce(211),
+    });
+    expect((await paid(gateway, payment)).response.status).toBe(200);
+    expect(await latestOrderState(gateway)).toBe("dispatched");
+    await gateway.bundle.bazaarRecovery!.close();
+
+    const commitment = harness.wiring.listings[0]!.listingCommitment;
+    harness.fulfillmentObserver.outcome = "FULFILLED";
+    harness.wiring.listings = [];
+    harness.wiring.refundRiskPolicies = {};
+    harness.wiring.retiredLifecycleCommitments = [commitment];
+    const retired = await createBazaarCompatibilityRouter({
+      pool: gateway.bundle.pool,
+      providerAuthority: gateway.bundle.providerAuthority,
+      wiring: harness.wiring,
+      lifecycleDomainRetentionSeconds: gateway.config.taskRetentionSeconds,
+    });
+    try {
+      expect(await latestOrderState(gateway)).toBe("fulfilled");
+      expect(harness.fulfillmentObserver.calls).toHaveLength(1);
+    } finally {
+      await retired.close();
+    }
   });
 
   it("classifies a malformed provider result as dispatch ambiguity", async () => {
@@ -1535,6 +1837,8 @@ describe("Bazaar compatibility harness", () => {
       listings: harness.wiring.listings,
       retiredCommitments: [harness.wiring.listings[0]!.listingCommitment],
       providerActionSigner: harness.wiring.providerActionSigningBroker.address,
+      refundInstructionSigner: harness.wiring.refundInstructionSigningBroker.address,
+      providerRefundWallets: [harness.wiring.refundRiskPolicies["701"]!.refundWallet],
       retentionSeconds: gateway.config.taskRetentionSeconds,
     })).rejects.toThrow(/retirement set is invalid/);
 
@@ -1543,6 +1847,8 @@ describe("Bazaar compatibility harness", () => {
       listings: [],
       retiredCommitments: [harness.wiring.listings[0]!.listingCommitment],
       providerActionSigner: harness.wiring.providerActionSigningBroker.address,
+      refundInstructionSigner: harness.wiring.refundInstructionSigningBroker.address,
+      providerRefundWallets: [harness.wiring.refundRiskPolicies["701"]!.refundWallet],
       retentionSeconds: gateway.config.taskRetentionSeconds,
     });
     const retiredRegistry = await fetch(
@@ -1578,6 +1884,8 @@ describe("Bazaar compatibility harness", () => {
       listings: [],
       retiredCommitments: [harness.wiring.listings[0]!.listingCommitment],
       providerActionSigner: harness.wiring.providerActionSigningBroker.address,
+      refundInstructionSigner: harness.wiring.refundInstructionSigningBroker.address,
+      providerRefundWallets: [harness.wiring.refundRiskPolicies["701"]!.refundWallet],
       retentionSeconds: gateway.config.taskRetentionSeconds,
     });
     const repeatedRetention = await gateway.bundle.pool.query<{ accept_until: Date }>(
@@ -1590,14 +1898,27 @@ describe("Bazaar compatibility harness", () => {
       pool: gateway.bundle.pool,
       listings: [],
       retiredCommitments: [harness.wiring.listings[0]!.listingCommitment],
-      providerActionSigner: harness.providerAccount.address,
+      providerActionSigner: harness.wiring.refundRiskPolicies["701"]!.refundWallet,
+      refundInstructionSigner: harness.wiring.refundInstructionSigningBroker.address,
+      providerRefundWallets: [harness.wiring.refundRiskPolicies["701"]!.refundWallet],
       retentionSeconds: gateway.config.taskRetentionSeconds,
-    })).rejects.toThrow(/retained financial key/);
+    })).rejects.toThrow(/outstanding refund key/);
+    await expect(reconcileLifecycleDomains({
+      pool: gateway.bundle.pool,
+      listings: [],
+      retiredCommitments: [harness.wiring.listings[0]!.listingCommitment],
+      providerActionSigner: harness.providerAccount.address,
+      refundInstructionSigner: harness.wiring.refundInstructionSigningBroker.address,
+      providerRefundWallets: [harness.wiring.refundRiskPolicies["701"]!.refundWallet],
+      retentionSeconds: gateway.config.taskRetentionSeconds,
+    })).rejects.toThrow(/historical provider key/);
     await expect(reconcileLifecycleDomains({
       pool: gateway.bundle.pool,
       listings: harness.wiring.listings,
       retiredCommitments: [],
       providerActionSigner: harness.wiring.providerActionSigningBroker.address,
+      refundInstructionSigner: harness.wiring.refundInstructionSigningBroker.address,
+      providerRefundWallets: [harness.wiring.refundRiskPolicies["701"]!.refundWallet],
       retentionSeconds: gateway.config.taskRetentionSeconds,
     })).rejects.toThrow(/cannot be reactivated/);
 
@@ -1617,6 +1938,44 @@ describe("Bazaar compatibility harness", () => {
       `${gateway.baseUrl}/.well-known/daski-bazaar-lifecycle-domains-v1.json`,
     );
     expect(await expiredRegistry.json()).toMatchObject({ domains: [] });
+
+    await expect(reconcileLifecycleDomains({
+      pool: gateway.bundle.pool,
+      listings: [],
+      retiredCommitments: [harness.wiring.listings[0]!.listingCommitment],
+      providerActionSigner: harness.wiring.providerActionSigningBroker.address,
+      refundInstructionSigner: harness.wiring.refundInstructionSigningBroker.address,
+      providerRefundWallets: [harness.fulfillmentSignerAccount.address],
+      retentionSeconds: gateway.config.taskRetentionSeconds,
+    })).rejects.toThrow(/refund wallet reuses a fulfillment key/);
+
+    await expect(reconcileLifecycleDomains({
+      pool: gateway.bundle.pool,
+      listings: [],
+      retiredCommitments: [harness.wiring.listings[0]!.listingCommitment],
+      providerActionSigner: harness.wiring.providerActionSigningBroker.address,
+      refundInstructionSigner: harness.fulfillmentSignerAccount.address,
+      providerRefundWallets: [harness.wiring.refundRiskPolicies["701"]!.refundWallet],
+      retentionSeconds: gateway.config.taskRetentionSeconds,
+    })).rejects.toThrow(/historical provider key/);
+
+    const historicalAlias = await createListing(
+      privateKeyToAccount(SECOND_PAY_TO_KEY),
+      {
+        slug: "retired-role-alias",
+        fulfillmentSigner: harness.providerAccount,
+        refundPolicy: harness.wiring.refundRiskPolicies["701"],
+      },
+    );
+    await expect(registerListingBindings(
+      gateway.bundle.pool,
+      [historicalAlias],
+    )).rejects.toThrow(/historical provider key/);
+    const rejectedBinding = await gateway.bundle.pool.query(
+      "SELECT 1 FROM bazaar_listing_bindings WHERE listing_commitment = $1",
+      [Buffer.from(historicalAlias.listingCommitment.slice(2), "hex")],
+    );
+    expect(rejectedBinding.rowCount).toBe(0);
   });
 
   it("rejects lifecycle compression and oversized uint claims before signing", async () => {
@@ -1886,6 +2245,51 @@ async function waitForRefundCalls(
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
   throw new Error(`Bazaar refund service did not reach ${count} calls`);
+}
+
+async function waitForFulfillmentCalls(
+  harness: Awaited<ReturnType<typeof createBazaarHarness>>,
+  count: number,
+): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (harness.fulfillmentObserver.calls.length >= count) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`Bazaar fulfillment observer did not reach ${count} calls`);
+}
+
+async function makeFulfillmentJobDue(gateway: TestGateway): Promise<void> {
+  await gateway.bundle.pool.query(
+    "UPDATE bazaar_fulfillment_jobs SET next_attempt_at = now()",
+  );
+}
+
+async function fulfillmentState(gateway: TestGateway): Promise<{
+  order_state: string;
+  exposure_state: string;
+  job_state: string;
+  attempt_count: number;
+  attestations: string;
+  refunds: string;
+}> {
+  const result = await gateway.bundle.pool.query<{
+    order_state: string;
+    exposure_state: string;
+    job_state: string;
+    attempt_count: number;
+    attestations: string;
+    refunds: string;
+  }>(
+    `SELECT o.state AS order_state, e.state AS exposure_state,
+            j.state AS job_state, j.attempt_count,
+            (SELECT count(*) FROM bazaar_fulfillment_attestations)::text
+              AS attestations,
+            (SELECT count(*) FROM bazaar_refund_obligations)::text AS refunds
+       FROM bazaar_orders o
+       JOIN bazaar_exposures e USING (order_record_id)
+       JOIN bazaar_fulfillment_jobs j USING (order_record_id)`,
+  );
+  return result.rows[0]!;
 }
 
 async function latestOrderState(gateway: TestGateway): Promise<string | undefined> {

@@ -1,5 +1,7 @@
+import type { PoolClient } from "pg";
 import type { Pool } from "../db/pool.js";
 import { hexToBytea } from "../db/paymentChallengeCodec.js";
+import type { Hex } from "../types.js";
 import { listingOfferHash } from "./offer.js";
 import type { BazaarListing } from "./types.js";
 
@@ -8,6 +10,7 @@ interface RawBinding {
   listing_commitment: Buffer;
   listing_epoch: Buffer;
   provider_agent_id: string;
+  fulfillment_signer: Buffer;
   outcome_id: Buffer;
   resource: string;
 }
@@ -29,6 +32,7 @@ export async function registerListingBindings(
       "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
       ["daski-gateway:bazaar-listings"],
     );
+    await registerProviderKeyRoles(client, listings);
     for (const listing of listings) {
       const offer = listing.offer.message;
       const values = [
@@ -36,18 +40,20 @@ export async function registerListingBindings(
         hexToBytea(offer.listingCommitment),
         hexToBytea(offer.listingEpoch),
         offer.providerAgentId.toString(),
+        hexToBytea(offer.fulfillmentSigner),
         hexToBytea(offer.outcomeId),
         listing.resourceUrl,
       ];
       await client.query(
         `INSERT INTO bazaar_listing_bindings
-           (pay_to, listing_commitment, listing_epoch, provider_agent_id, outcome_id, resource)
-         VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT DO NOTHING`,
+           (pay_to, listing_commitment, listing_epoch, provider_agent_id,
+            fulfillment_signer, outcome_id, resource)
+         VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT DO NOTHING`,
         values,
       );
       const binding = await client.query<RawBinding>(
         `SELECT pay_to, listing_commitment, listing_epoch, provider_agent_id,
-                outcome_id, resource
+                fulfillment_signer, outcome_id, resource
            FROM bazaar_listing_bindings
           WHERE pay_to = $1 OR listing_commitment = $2 OR listing_epoch = $3`,
         values.slice(0, 3),
@@ -89,12 +95,54 @@ export async function registerListingBindings(
 }
 
 function bindingMatches(row: RawBinding, values: unknown[]): boolean {
-  const [payTo, commitment, epoch, providerId, outcomeId, resource] = values as [
-    Buffer, Buffer, Buffer, string, Buffer, string,
+  const [payTo, commitment, epoch, providerId, signer, outcomeId, resource] = values as [
+    Buffer, Buffer, Buffer, string, Buffer, Buffer, string,
   ];
   return row.pay_to.compare(payTo) === 0 &&
     row.listing_commitment.compare(commitment) === 0 &&
     row.listing_epoch.compare(epoch) === 0 &&
-    row.provider_agent_id === providerId && row.outcome_id.compare(outcomeId) === 0 &&
+    row.provider_agent_id === providerId &&
+    row.fulfillment_signer.compare(signer) === 0 &&
+    row.outcome_id.compare(outcomeId) === 0 &&
     row.resource === resource;
+}
+
+async function registerProviderKeyRoles(
+  client: PoolClient,
+  listings: BazaarListing[],
+): Promise<void> {
+  for (const listing of listings) {
+    const offer = listing.offer.message;
+    await bindProviderKeyRole(client, offer.payTo, "provider");
+    await bindProviderKeyRole(client, offer.offerSigner, "provider");
+    await bindProviderKeyRole(client, offer.fulfillmentSigner, "fulfillment");
+    const refundConflict = await client.query(
+      `SELECT 1 FROM bazaar_exposures
+        WHERE state <> 'released' AND refund_wallet = $1 LIMIT 1`,
+      [hexToBytea(offer.fulfillmentSigner)],
+    );
+    if (refundConflict.rowCount === 1) {
+      throw new Error("Bazaar fulfillment signer reuses an outstanding refund key");
+    }
+  }
+}
+
+async function bindProviderKeyRole(
+  client: PoolClient,
+  address: Hex,
+  role: "provider" | "fulfillment",
+): Promise<void> {
+  const value = hexToBytea(address);
+  await client.query(
+    `INSERT INTO bazaar_provider_key_roles (key_address, key_role)
+     VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+    [value, role],
+  );
+  const stored = await client.query<{ key_role: string }>(
+    "SELECT key_role FROM bazaar_provider_key_roles WHERE key_address = $1",
+    [value],
+  );
+  if (stored.rows.length !== 1 || stored.rows[0]!.key_role !== role) {
+    throw new Error("Bazaar listing reuses a historical provider key");
+  }
 }

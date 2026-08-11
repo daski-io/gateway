@@ -10,6 +10,7 @@ export interface RawBazaarOrder {
   payer: Buffer;
   nonce: Buffer;
   provider_agent_id: string;
+  fulfillment_signer: Buffer;
   listing_epoch: Buffer;
   listing_commitment: Buffer;
   outcome_id: Buffer;
@@ -28,7 +29,8 @@ export interface RawBazaarOrder {
 
 export const BAZAAR_ORDER_SELECT_COLUMNS = `
   order_record_id, order_handle, authorization_digest, chain_id, token, payer,
-  nonce, provider_agent_id, listing_epoch, listing_commitment, outcome_id,
+  nonce, provider_agent_id, fulfillment_signer, listing_epoch,
+  listing_commitment, outcome_id,
   resource, request_hash, offer_hash, gross_amount, pay_to,
   authorization_valid_before, state, settlement_transaction, task_id,
   task_id_hash, failure_code
@@ -40,7 +42,9 @@ export function toBazaarOrder(row: RawBazaarOrder): BazaarOrder {
     orderRecordId: hex(row.order_record_id), orderHandle: row.order_handle,
     authorizationDigest: hex(row.authorization_digest), chainId: BigInt(row.chain_id),
     token: hex(row.token), payer: hex(row.payer), nonce: hex(row.nonce),
-    providerAgentId: BigInt(row.provider_agent_id), listingEpoch: hex(row.listing_epoch),
+    providerAgentId: BigInt(row.provider_agent_id),
+    fulfillmentSigner: hex(row.fulfillment_signer),
+    listingEpoch: hex(row.listing_epoch),
     listingCommitment: hex(row.listing_commitment), outcomeId: hex(row.outcome_id),
     resource: row.resource, requestHash: hex(row.request_hash), offerHash: hex(row.offer_hash),
     grossAmount: BigInt(row.gross_amount), payTo: hex(row.pay_to),

@@ -11,6 +11,7 @@ export function snapshotBazaarCompatibilityWiring(
   const settlementObserver = wiring.settlementObserver;
   const payerProfileVerifier = wiring.payerProfileVerifier;
   const fulfillment = wiring.fulfillment;
+  const fulfillmentObserver = wiring.fulfillmentObserver;
   const signingBroker = wiring.providerActionSigningBroker;
   const refundSigningBroker = wiring.refundInstructionSigningBroker;
   const refundRequestService = wiring.refundRequestService;
@@ -37,6 +38,7 @@ export function snapshotBazaarCompatibilityWiring(
     },
     settlementCapacity: { ...wiring.settlementCapacity },
     settlementObservationPolicy: { ...wiring.settlementObservationPolicy },
+    fulfillmentObservationPolicy: { ...wiring.fulfillmentObservationPolicy },
     refundWorkerPolicy: { ...wiring.refundWorkerPolicy },
     refundRiskPolicies: Object.fromEntries(Object.entries(
       wiring.refundRiskPolicies,
@@ -59,6 +61,9 @@ export function snapshotBazaarCompatibilityWiring(
     fulfillment: {
       dispatch: fulfillment.dispatch.bind(fulfillment),
       performLifecycleAction: fulfillment.performLifecycleAction.bind(fulfillment),
+    },
+    fulfillmentObserver: {
+      observe: fulfillmentObserver.observe.bind(fulfillmentObserver),
     },
     providerActionSigningBroker: {
       address: signingBroker.address,
@@ -85,6 +90,7 @@ function snapshotListing(listing: BazaarListing): BazaarListing {
     requestSchema: cloneJsonObject(listing.requestSchema),
     responseSchema: cloneJsonObject(listing.responseSchema),
     payToControlProof: { ...listing.payToControlProof },
+    fulfillmentSignerControlProof: { ...listing.fulfillmentSignerControlProof },
     offer: {
       signature: listing.offer.signature,
       message: { ...listing.offer.message },

@@ -71,7 +71,9 @@ export async function markBazaarRefundBlocked(input: {
     const order = await client.query(
       `UPDATE bazaar_orders SET state = 'refund_blocked_issuer', updated_at = now()
         WHERE order_record_id = $1
-          AND state IN ('dispatch_failed', 'settlement_refund_due')`,
+          AND state IN (
+            'dispatch_failed', 'settlement_refund_due', 'fulfillment_refund_due'
+          )`,
       [hexToBytea(input.orderRecordId)],
     );
     const job = await client.query(
@@ -129,7 +131,9 @@ export async function finalizeBazaarRefund(input: {
     const order = await client.query(
       `UPDATE bazaar_orders SET state = 'refund_finalized', updated_at = now()
         WHERE order_record_id = $1
-          AND state IN ('dispatch_failed', 'settlement_refund_due')`,
+          AND state IN (
+            'dispatch_failed', 'settlement_refund_due', 'fulfillment_refund_due'
+          )`,
       [hexToBytea(input.orderRecordId)],
     );
     const job = await client.query(

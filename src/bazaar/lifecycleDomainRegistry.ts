@@ -38,12 +38,18 @@ export async function reconcileLifecycleDomains(input: {
   listings: BazaarListing[];
   retiredCommitments: Hex[];
   providerActionSigner: Hex;
+  refundInstructionSigner: Hex;
+  providerRefundWallets: Hex[];
   retentionSeconds: number;
 }): Promise<void> {
   if (!Number.isSafeInteger(input.retentionSeconds) || input.retentionSeconds < 1) {
     throw new Error("Bazaar lifecycle-domain retention must be a positive integer");
   }
-  if (!isHexAddress(input.providerActionSigner)) {
+  if (
+    !isHexAddress(input.providerActionSigner) ||
+    !isHexAddress(input.refundInstructionSigner) ||
+    !input.providerRefundWallets.every(isHexAddress)
+  ) {
     throw new Error("Bazaar lifecycle-domain signer is malformed");
   }
   const activeCommitments = new Set(
@@ -67,14 +73,29 @@ export async function reconcileLifecycleDomains(input: {
       ["daski-gateway:bazaar-lifecycle-domains"],
     );
     const signerConflict = await client.query(
-      `SELECT 1 FROM bazaar_lifecycle_domains
-        WHERE (pay_to = $1 OR offer_signer = $1)
-          AND (active OR accept_until > now())
+      `SELECT 1
+         FROM bazaar_provider_key_roles
+        WHERE key_address IN ($1, $2)
         LIMIT 1`,
-      [hexToBytea(input.providerActionSigner)],
+      [
+        hexToBytea(input.providerActionSigner),
+        hexToBytea(input.refundInstructionSigner),
+      ],
     );
     if (signerConflict.rowCount === 1) {
-      throw new Error("Bazaar lifecycle signer reuses a retained financial key");
+      throw new Error("Bazaar Daski signer reuses a historical provider key");
+    }
+    const refundSignerConflict = await client.query(
+      `SELECT 1 FROM bazaar_exposures
+        WHERE state <> 'released' AND refund_wallet IN ($1, $2)
+        LIMIT 1`,
+      [
+        hexToBytea(input.providerActionSigner),
+        hexToBytea(input.refundInstructionSigner),
+      ],
+    );
+    if (refundSignerConflict.rowCount === 1) {
+      throw new Error("Bazaar Daski signer reuses an outstanding refund key");
     }
     for (const listing of input.listings) {
       const offer = listing.offer.message;
@@ -132,6 +153,28 @@ export async function reconcileLifecycleDomains(input: {
           WHERE listing_commitment = $1`,
         [hexToBytea(commitment), input.retentionSeconds],
       );
+    }
+    const providerRoleConflict = await client.query(
+      `SELECT 1 FROM bazaar_provider_key_roles r
+        JOIN bazaar_exposures e ON r.key_address = e.refund_wallet
+        WHERE r.key_role = 'fulfillment' AND e.state <> 'released'
+        LIMIT 1`,
+    );
+    if (providerRoleConflict.rowCount === 1) {
+      throw new Error(
+        "Bazaar fulfillment signer reuses a historical provider key",
+      );
+    }
+    for (const wallet of new Set(input.providerRefundWallets.map((value) =>
+      value.toLowerCase()))) {
+      const fulfillmentConflict = await client.query(
+        `SELECT 1 FROM bazaar_provider_key_roles
+          WHERE key_address = $1 AND key_role = 'fulfillment' LIMIT 1`,
+        [hexToBytea(wallet as Hex)],
+      );
+      if (fulfillmentConflict.rowCount === 1) {
+        throw new Error("Bazaar refund wallet reuses a fulfillment key");
+      }
     }
     const accepted = await client.query<{ count: string }>(
       `SELECT count(*) AS count FROM bazaar_lifecycle_domains

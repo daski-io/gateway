@@ -12,6 +12,7 @@ export interface ListingOfferV1 {
   listingCommitment: Hex;
   providerAgentId: bigint;
   offerSigner: Hex;
+  fulfillmentSigner: Hex;
   providerPayee: Hex;
   outcomeId: Hex;
   methodHash: Hex;
@@ -44,6 +45,11 @@ export interface PayToControlProofV1 {
   signature: Hex;
 }
 
+export interface FulfillmentSignerControlProofV1 {
+  validBefore: bigint;
+  signature: Hex;
+}
+
 export interface BazaarListing {
   routePath: string;
   resourceUrl: string;
@@ -64,6 +70,7 @@ export interface BazaarListing {
   termsHash: Hex;
   policyVersion: Hex;
   payToControlProof: PayToControlProofV1;
+  fulfillmentSignerControlProof: FulfillmentSignerControlProofV1;
   offer: SignedListingOfferV1;
 }
 
@@ -189,6 +196,57 @@ export interface BazaarFulfillmentService {
   performLifecycleAction(
     input: BazaarLifecycleDispatchInput,
   ): Promise<Record<string, unknown>>;
+}
+
+export type BazaarFulfillmentOutcome =
+  | "FULFILLED"
+  | "PROVIDER_COMPLIANCE_FAILURE"
+  | "PROVIDER_FULFILLMENT_FAILURE";
+
+export interface BazaarFulfillmentAttestationMessage {
+  orderRecordId: Hex;
+  taskIdHash: Hex;
+  providerAgentId: string;
+  listingCommitment: Hex;
+  authorizationDigest: Hex;
+  outcomeId: Hex;
+  requestHash: Hex;
+  settlementTransaction: Hex;
+  outcomeHash: Hex;
+  evidenceHash: Hex;
+  evidenceId: Hex;
+}
+
+export interface BazaarFulfillmentObservationInput {
+  orderRecordId: Hex;
+  taskId: string;
+  taskIdHash: Hex;
+  providerAgentId: bigint;
+  listingCommitment: Hex;
+  authorizationDigest: Hex;
+  outcomeId: Hex;
+  requestHash: Hex;
+  settlementTransaction: Hex;
+  chainId: bigint;
+  payTo: Hex;
+}
+
+export interface BazaarFulfillmentObserver {
+  observe(
+    input: BazaarFulfillmentObservationInput,
+    signal: AbortSignal,
+  ): Promise<
+    | { kind: "pending" }
+    | {
+        kind: "attested";
+        message: BazaarFulfillmentAttestationMessage;
+        signature: Hex;
+      }
+  >;
+}
+
+export interface BazaarFulfillmentObservationPolicy {
+  retryDelaySeconds: number;
 }
 
 export type BazaarLifecycleAction =
@@ -359,6 +417,8 @@ export interface BazaarCompatibilityWiring {
   evidenceVerifier: SettlementEvidenceVerifier;
   settlementObserver: BazaarSettlementObserver;
   settlementObservationPolicy: BazaarSettlementObservationPolicy;
+  fulfillmentObserver: BazaarFulfillmentObserver;
+  fulfillmentObservationPolicy: BazaarFulfillmentObservationPolicy;
   payerProfileVerifier: BazaarPayerProfileVerifier;
   fulfillment: BazaarFulfillmentService;
   challengeMac: BazaarChallengeMacKeyring;
@@ -387,6 +447,8 @@ export type BazaarOrderState =
   | "dispatch_ambiguous"
   | "dispatch_failed"
   | "dispatched"
+  | "fulfilled"
+  | "fulfillment_refund_due"
   | "rejected_expired_no_transfer"
   | "ambiguous_expired_no_transfer"
   | "invalid_evidence_expired_no_transfer"
@@ -408,6 +470,7 @@ export interface BazaarOrder {
   payer: Hex;
   nonce: Hex;
   providerAgentId: bigint;
+  fulfillmentSigner: Hex;
   listingEpoch: Hex;
   listingCommitment: Hex;
   outcomeId: Hex;

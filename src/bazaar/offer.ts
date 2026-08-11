@@ -10,6 +10,7 @@ import {
 import { validateListingManifest } from "./listingManifest.js";
 import { PAYMENT_MAX_TIMEOUT_SECONDS } from "./paymentPolicy.js";
 import { validatePayToControlProof } from "./payToControl.js";
+import { validateFulfillmentSignerControlProof } from "./fulfillmentSignerControl.js";
 import type { BazaarListing, ListingOfferV1 } from "./types.js";
 
 export const LISTING_OFFER_V1_TYPES = {
@@ -19,6 +20,7 @@ export const LISTING_OFFER_V1_TYPES = {
     { name: "listingCommitment", type: "bytes32" },
     { name: "providerAgentId", type: "uint256" },
     { name: "offerSigner", type: "address" },
+    { name: "fulfillmentSigner", type: "address" },
     { name: "providerPayee", type: "address" },
     { name: "outcomeId", type: "bytes32" },
     { name: "methodHash", type: "bytes32" },
@@ -44,7 +46,7 @@ export const LISTING_OFFER_V1_TYPES = {
 
 const LISTING_COMMITMENT_TYPEHASH = keccak256(
   toBytes(
-    "DaskiBazaarListingCommitment(uint256 chainId,bytes32 listingEpoch,uint256 providerAgentId,address providerPayee,bytes32 outcomeId,bytes32 methodHash,bytes32 resourceHash,bytes32 requestSchemaHash,bytes32 responseSchemaHash,bytes32 requestBindingModeHash,bytes32 routeModeHash,address token,uint256 grossAmount,uint256 paymentMaxTimeoutSeconds,address daskiCommissionReceiver,uint256 commissionBps,bytes32 splitterCodeHash,bytes32 termsHash,bytes32 policyVersion)",
+    "DaskiBazaarListingCommitment(uint256 chainId,bytes32 listingEpoch,uint256 providerAgentId,address fulfillmentSigner,address providerPayee,bytes32 outcomeId,bytes32 methodHash,bytes32 resourceHash,bytes32 requestSchemaHash,bytes32 responseSchemaHash,bytes32 requestBindingModeHash,bytes32 routeModeHash,address token,uint256 grossAmount,uint256 paymentMaxTimeoutSeconds,address daskiCommissionReceiver,uint256 commissionBps,bytes32 splitterCodeHash,bytes32 termsHash,bytes32 policyVersion)",
   ),
 );
 const ZERO_ADDRESS = `0x${"00".repeat(20)}` as Hex;
@@ -76,7 +78,8 @@ export function computeListingCommitment(message: ListingOfferV1): Hex {
     encodeAbiParameters(
       [
         { type: "bytes32" }, { type: "uint256" }, { type: "bytes32" },
-        { type: "uint256" }, { type: "address" }, { type: "bytes32" },
+        { type: "uint256" }, { type: "address" }, { type: "address" },
+        { type: "bytes32" },
         { type: "bytes32" }, { type: "bytes32" }, { type: "bytes32" },
         { type: "bytes32" }, { type: "bytes32" }, { type: "bytes32" },
         { type: "address" }, { type: "uint256" }, { type: "uint256" },
@@ -85,7 +88,8 @@ export function computeListingCommitment(message: ListingOfferV1): Hex {
       ],
       [
         LISTING_COMMITMENT_TYPEHASH, message.chainId, message.listingEpoch,
-        message.providerAgentId, message.providerPayee, message.outcomeId,
+        message.providerAgentId, message.fulfillmentSigner,
+        message.providerPayee, message.outcomeId,
         message.methodHash, message.resourceHash, message.requestSchemaHash,
         message.responseSchemaHash, message.requestBindingModeHash,
         message.routeModeHash, message.token, message.grossAmount,
@@ -105,6 +109,7 @@ export async function validateCompatibilityListing(
   const message = listing.offer.message;
   validateListingManifest(listing, message);
   await validatePayToControlProof(listing);
+  await validateFulfillmentSignerControlProof(listing);
   const uints = [
     message.chainId, message.providerAgentId, message.grossAmount,
     message.paymentMaxTimeoutSeconds, message.commissionBps, message.issuedAt,

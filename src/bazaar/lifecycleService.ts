@@ -166,7 +166,8 @@ function matchesOrder(
   const expectedTaskHash = action === "ORDER_STATUS"
     ? ZERO_BYTES32
     : order.taskIdHash;
-  const actionStateIsValid = action === "ORDER_STATUS" || order.state === "dispatched";
+  const actionStateIsValid = action === "ORDER_STATUS" ||
+    order.state === "dispatched" || order.state === "fulfilled";
   return actionStateIsValid &&
     domain.chainId === order.chainId.toString() &&
     domain.verifyingContract.toLowerCase() === order.payTo.toLowerCase() &&

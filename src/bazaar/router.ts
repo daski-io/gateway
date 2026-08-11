@@ -25,6 +25,7 @@ import { validateStockFixedRequest } from "./requestBinding.js";
 import { BazaarOrderStore } from "./store.js";
 import { BazaarObservationStore } from "./observationStore.js";
 import { BazaarRefundStore } from "./refundStore.js";
+import { BazaarFulfillmentStore } from "./fulfillmentStore.js";
 import type { BazaarCompatibilityWiring } from "./types.js";
 import { registerListingBindings } from "./listingStore.js";
 import { validateSettlementCapacityPolicy } from "./settlementCapacity.js";
@@ -33,6 +34,10 @@ import {
   validateRefundWorkerPolicy,
 } from "./refundPolicy.js";
 import { validateSettlementObservationPolicy } from "./settlementObservation.js";
+import {
+  validateFulfillmentObservationPolicy,
+  validateFulfillmentSignerRoles,
+} from "./fulfillmentPolicy.js";
 import { snapshotBazaarCompatibilityWiring } from "./wiringSnapshot.js";
 import {
   readLifecycleDomains,
@@ -57,18 +62,24 @@ export async function createBazaarCompatibilityRouter(options: {
     listings: wiring.listings,
     retiredCommitments: wiring.retiredLifecycleCommitments,
     providerActionSigner: wiring.providerActionSigningBroker.address,
+    refundInstructionSigner: wiring.refundInstructionSigningBroker.address,
+    providerRefundWallets: Object.values(wiring.refundRiskPolicies).map(
+      (policy) => policy.refundWallet,
+    ),
     retentionSeconds: options.lifecycleDomainRetentionSeconds,
   });
   const router = Router();
   const store = new BazaarOrderStore(options.pool);
   const observationStore = new BazaarObservationStore(options.pool);
   const refundStore = new BazaarRefundStore(options.pool);
+  const fulfillmentStore = new BazaarFulfillmentStore(options.pool);
   const leaseOwner = `gateway-request:${randomUUID()}`;
   const lifecycle = new BazaarLifecycleService(store, wiring);
   const recovery = new BazaarRecoveryRuntime(
     store,
     observationStore,
     refundStore,
+    fulfillmentStore,
     wiring,
     options.providerAuthority,
   );
@@ -215,6 +226,7 @@ async function validateWiring(wiring: BazaarCompatibilityWiring): Promise<void> 
   validateChallengeMacKeyring(wiring.challengeMac, now);
   validateSettlementCapacityPolicy(wiring.settlementCapacity);
   validateSettlementObservationPolicy(wiring.settlementObservationPolicy);
+  validateFulfillmentObservationPolicy(wiring.fulfillmentObservationPolicy);
   validateRefundRiskPolicies(wiring.refundRiskPolicies, wiring.listings);
   validateRefundWorkerPolicy(wiring.refundWorkerPolicy);
   for (const commitment of wiring.retiredLifecycleCommitments) {
@@ -256,6 +268,11 @@ async function validateWiring(wiring: BazaarCompatibilityWiring): Promise<void> 
       refundSigner === offer.offerSigner.toLowerCase() ||
       refundSigner === offer.payTo.toLowerCase()
     ) throw new Error("Bazaar refund keys cannot reuse listing or payment keys");
+    validateFulfillmentSignerRoles({
+      offer, providerActionSigner, refundSigner,
+      refundRiskPolicies: wiring.refundRiskPolicies,
+      listings: wiring.listings,
+    });
     if (offer.chainId !== 84532n) {
       throw new Error("Bazaar compatibility harness is Base Sepolia only");
     }

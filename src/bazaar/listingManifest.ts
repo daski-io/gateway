@@ -19,7 +19,8 @@ export const BASE_SEPOLIA_USDC =
 const LISTING_KEYS = [
   "assetName", "assetVersion", "description", "expectedDelivery",
   "listingCommitment", "listingEpoch", "offer", "policyVersion", "refundTerms",
-  "payToControlProof", "requestSchema", "resourceUrl", "responseSchema", "routePath", "sellerName",
+  "fulfillmentSignerControlProof", "payToControlProof", "requestSchema",
+  "resourceUrl", "responseSchema", "routePath", "sellerName",
   "termsDocumentBase64", "termsDocumentHash", "termsDocumentMediaType",
   "termsHash", "termsUrl",
 ];
@@ -27,7 +28,8 @@ const OFFER_KEYS = ["message", "signature"];
 const PAY_TO_PROOF_KEYS = ["signature", "validBefore"];
 const MESSAGE_KEYS = [
   "chainId", "listingEpoch", "listingCommitment", "providerAgentId",
-  "offerSigner", "providerPayee", "outcomeId", "methodHash", "resourceHash",
+  "offerSigner", "fulfillmentSigner", "providerPayee", "outcomeId",
+  "methodHash", "resourceHash",
   "requestSchemaHash", "responseSchemaHash", "requestBindingModeHash",
   "routeModeHash", "token", "grossAmount", "payTo", "paymentMaxTimeoutSeconds",
   "daskiCommissionReceiver",
@@ -44,6 +46,10 @@ export function validateListingManifest(
     !hasExactKeys(listing.offer as unknown as Record<string, unknown>, OFFER_KEYS) ||
     !hasExactKeys(
       listing.payToControlProof as unknown as Record<string, unknown>,
+      PAY_TO_PROOF_KEYS,
+    ) ||
+    !hasExactKeys(
+      listing.fulfillmentSignerControlProof as unknown as Record<string, unknown>,
       PAY_TO_PROOF_KEYS,
     ) ||
     !hasExactKeys(message as unknown as Record<string, unknown>, MESSAGE_KEYS)
@@ -98,14 +104,17 @@ function validateFixedFields(listing: BazaarListing, message: ListingOfferV1): v
     listing.policyVersion,
   ];
   const addresses = [
-    message.offerSigner, message.providerPayee, message.token, message.payTo,
-    message.daskiCommissionReceiver,
+    message.offerSigner, message.fulfillmentSigner, message.providerPayee,
+    message.token, message.payTo, message.daskiCommissionReceiver,
   ];
   if (!bytes32.every(isHex32) || !addresses.every(isHexAddress)) {
     throw new Error("Bazaar listing contains malformed fixed-width fields");
   }
   const zeroAddress = `0x${"00".repeat(20)}`;
-  if ([message.offerSigner, message.providerPayee, message.token, message.payTo]
+  if ([
+    message.offerSigner, message.fulfillmentSigner, message.providerPayee,
+    message.token, message.payTo,
+  ]
     .some((address) => address.toLowerCase() === zeroAddress)) {
     throw new Error("Bazaar listing cannot use a zero financial address");
   }

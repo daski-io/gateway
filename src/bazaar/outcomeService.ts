@@ -120,6 +120,10 @@ export class BazaarOutcomeService {
       parsed.payment.authorization.from.toLowerCase() ===
       this.refundPolicy.refundWallet.toLowerCase()
     ) return failureOutcome(402, "payer_refund_wallet_conflict");
+    if (
+      parsed.payment.authorization.from.toLowerCase() ===
+      this.listing.offer.message.fulfillmentSigner.toLowerCase()
+    ) return failureOutcome(402, "payer_fulfillment_signer_conflict");
     const claimInput = createClaimInput(
       this.listing,
       parsed.payment,

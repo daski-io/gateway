@@ -11,6 +11,8 @@ import type { LeasedBazaarObservation } from "./observationLeaseStore.js";
 import { observeBazaarSettlement } from "./settlementObservation.js";
 import { BazaarRefundRecovery } from "./refundRecovery.js";
 import type { BazaarRefundStore } from "./refundStore.js";
+import { BazaarFulfillmentRecovery } from "./fulfillmentRecovery.js";
+import type { BazaarFulfillmentStore } from "./fulfillmentStore.js";
 import type { BazaarOrderStore, LeasedBazaarOrder } from "./store.js";
 import type {
   BazaarCompatibilityWiring,
@@ -20,7 +22,6 @@ import type {
 } from "./types.js";
 
 const RECONCILE_INTERVAL_MS = 30_000;
-
 export class BazaarRecoveryRuntime {
   private readonly owner = `gateway-recovery:${randomUUID()}`;
   private readonly listings: Map<string, BazaarListing>;
@@ -28,15 +29,20 @@ export class BazaarRecoveryRuntime {
   private active: Promise<void> | null = null;
   private stopping = false;
   private readonly refundRecovery: BazaarRefundRecovery;
+  private readonly fulfillmentRecovery: BazaarFulfillmentRecovery;
 
   constructor(
     private readonly store: BazaarOrderStore,
     private readonly observationStore: BazaarObservationStore,
     refundStore: BazaarRefundStore,
+    fulfillmentStore: BazaarFulfillmentStore,
     private readonly wiring: BazaarCompatibilityWiring,
     private readonly providerAuthority: ProviderAuthorityService,
   ) {
     this.refundRecovery = new BazaarRefundRecovery(refundStore, wiring, this.owner);
+    this.fulfillmentRecovery = new BazaarFulfillmentRecovery(
+      fulfillmentStore, wiring, this.owner,
+    );
     this.listings = new Map(wiring.listings.map((listing) => [
       listing.listingCommitment.toLowerCase(), listing,
     ]));
@@ -67,6 +73,7 @@ export class BazaarRecoveryRuntime {
       if (!leased) break;
       await this.recover(leased);
     }
+    await this.fulfillmentRecovery.runOnce();
   }
 
   private async observe(leased: LeasedBazaarObservation): Promise<void> {

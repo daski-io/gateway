@@ -84,7 +84,8 @@ export class BazaarOrderStore {
           'verify_ambiguous', 'settle_ambiguous', 'evidence_rejected',
           'dispatch_ambiguous', 'dispatch_failed',
           'ambiguous_expired_no_transfer', 'invalid_evidence_expired_no_transfer',
-          'unapproved_direct_inbound', 'settlement_refund_due'
+          'unapproved_direct_inbound', 'settlement_refund_due',
+          'fulfillment_refund_due'
         ) LIMIT 1`,
       [hexToBytea(listingCommitment)],
     );
@@ -210,14 +211,15 @@ export class BazaarOrderStore {
           `INSERT INTO bazaar_orders (
            order_record_id, order_handle, authorization_digest,
            authorization_signature_digest, chain_id, token, payer, nonce,
-           provider_agent_id, listing_epoch, listing_commitment, outcome_id,
-           resource, request_hash, offer_hash, gross_amount, pay_to,
+           provider_agent_id, fulfillment_signer, listing_epoch,
+           listing_commitment, outcome_id, resource, request_hash, offer_hash,
+           gross_amount, pay_to,
            authorization_valid_before, state, processing_lease_token,
            processing_lease_owner, processing_lease_expires_at
          ) VALUES (
            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
-           $15, $16, $17, $18, 'attempt_opened', $19, $20,
-           now() + make_interval(secs => $21)
+           $15, $16, $17, $18, $19, 'attempt_opened', $20, $21,
+           now() + make_interval(secs => $22)
          ) RETURNING ${BAZAAR_ORDER_SELECT_COLUMNS}`,
           [...values, leaseToken, leaseOwner, BAZAAR_LEASE_SECONDS],
         );
@@ -479,8 +481,9 @@ function orderValues(input: ClaimOrderInput): unknown[] {
   return [
     input.orderRecordId, input.orderHandle, input.authorizationDigest,
     input.signatureDigest, input.chainId.toString(), input.token, input.payer,
-    input.nonce, input.providerAgentId.toString(), input.listingEpoch,
-    input.listingCommitment, input.outcomeId, input.resource, input.requestHash,
+    input.nonce, input.providerAgentId.toString(), input.fulfillmentSigner,
+    input.listingEpoch, input.listingCommitment, input.outcomeId,
+    input.resource, input.requestHash,
     input.offerHash, input.grossAmount.toString(), input.payTo,
     input.authorizationValidBefore.toString(),
   ].map((value) => typeof value === "string" && value.startsWith("0x")

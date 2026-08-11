@@ -11,6 +11,12 @@ import {
   listingOfferDomain,
 } from "../../src/bazaar/offer.js";
 import { PAY_TO_CONTROL_TYPES } from "../../src/bazaar/payToControl.js";
+import { FULFILLMENT_SIGNER_CONTROL_TYPES } from
+  "../../src/bazaar/fulfillmentSignerControl.js";
+import {
+  BAZAAR_FULFILLMENT_ATTESTATION_TYPES,
+  computeBazaarFulfillmentEvidenceId,
+} from "../../src/bazaar/fulfillmentAttestation.js";
 import { BAZAAR_REFUND_INSTRUCTION_TYPES } from "../../src/bazaar/refundInstruction.js";
 import { computeBazaarRefundPolicyVersion } from "../../src/bazaar/refundPolicy.js";
 import type {
@@ -19,6 +25,9 @@ import type {
   BazaarDispatchResult,
   BazaarFacilitatorClient,
   BazaarFulfillmentService,
+  BazaarFulfillmentObserver,
+  BazaarFulfillmentObservationInput,
+  BazaarFulfillmentOutcome,
   BazaarLifecycleDispatchInput,
   BazaarSettlementObservationInput,
   BazaarSettlementObservationResult,
@@ -40,6 +49,7 @@ export const PROVIDER_ACTION_KEY =
 export const SECOND_PAY_TO_KEY = `0x${"55".repeat(32)}` as Hex;
 export const REFUND_SIGNING_KEY = `0x${"66".repeat(32)}` as Hex;
 export const REFUND_WALLET_KEY = `0x${"77".repeat(32)}` as Hex;
+export const FULFILLMENT_SIGNING_KEY = `0x${"aa".repeat(32)}` as Hex;
 export const TEST_TOKEN = "0x036cbd53842c5426634e7929541ec2318f3dcf7e" as Hex;
 export const ZERO_BYTES32 = `0x${"00".repeat(32)}` as Hex;
 const REFUND_EVIDENCE_HASH = `0x${"88".repeat(32)}` as Hex;
@@ -48,8 +58,10 @@ const REFUND_BLOCK_HASH = `0x${"99".repeat(32)}` as Hex;
 export interface BazaarHarness {
   wiring: BazaarCompatibilityWiring;
   providerAccount: PrivateKeyAccount;
+  fulfillmentSignerAccount: PrivateKeyAccount;
   facilitator: FakeFacilitator;
   fulfillment: FakeFulfillment;
+  fulfillmentObserver: FakeFulfillmentObserver;
   settlementObserver: FakeSettlementObserver;
   refundService: FakeRefundService;
   refundEvidence: FakeRefundEvidenceVerifier;
@@ -59,11 +71,18 @@ export async function createBazaarHarness(options: {
   refundPolicyOverrides?: Partial<BazaarRefundRiskPolicy>;
 } = {}): Promise<BazaarHarness> {
   const providerAccount = privateKeyToAccount(PROVIDER_KEY);
+  const fulfillmentSignerAccount = privateKeyToAccount(FULFILLMENT_SIGNING_KEY);
   const refundPolicy = createTestRefundPolicy(options.refundPolicyOverrides);
-  const listing = await createListing(providerAccount, { refundPolicy });
+  const listing = await createListing(providerAccount, {
+    refundPolicy,
+    fulfillmentSigner: fulfillmentSignerAccount,
+  });
   const facilitator = new FakeFacilitator();
   const fulfillment = new FakeFulfillment();
   const settlementObserver = new FakeSettlementObserver();
+  const fulfillmentObserver = new FakeFulfillmentObserver(
+    fulfillmentSignerAccount,
+  );
   const refundService = new FakeRefundService();
   const refundEvidence = new FakeRefundEvidenceVerifier();
   const wiring: BazaarCompatibilityWiring = {
@@ -85,6 +104,8 @@ export async function createBazaarHarness(options: {
       finalityWindowSeconds: 60,
       retryDelaySeconds: 30,
     },
+    fulfillmentObserver,
+    fulfillmentObservationPolicy: { retryDelaySeconds: 30 },
     payerProfileVerifier: {
       verifyBeforeSettlement: async () => ({ profile: "eoa" }),
     },
@@ -120,8 +141,10 @@ export async function createBazaarHarness(options: {
   return {
     wiring,
     providerAccount,
+    fulfillmentSignerAccount,
     facilitator,
     fulfillment,
+    fulfillmentObserver,
     settlementObserver,
     refundService,
     refundEvidence,
@@ -134,9 +157,12 @@ export async function createListing(
     payTo?: PrivateKeyAccount;
     slug?: string;
     refundPolicy?: BazaarRefundRiskPolicy;
+    fulfillmentSigner?: PrivateKeyAccount;
   } = {},
 ): Promise<BazaarListing> {
   const payTo = options.payTo ?? provider;
+  const fulfillmentSigner = options.fulfillmentSigner ??
+    privateKeyToAccount(FULFILLMENT_SIGNING_KEY);
   const slug = options.slug ?? "test-report";
   const resourceUrl = `https://gateway.test/x402/v1/outcomes/${slug}`;
   const requestSchema = {
@@ -183,6 +209,7 @@ export async function createListing(
     listingCommitment: ZERO_BYTES32,
     providerAgentId: 701n,
     offerSigner: provider.address,
+    fulfillmentSigner: fulfillmentSigner.address,
     providerPayee: payTo.address,
     outcomeId: keccak256(toBytes(slug)),
     methodHash: keccak256(toBytes("POST")),
@@ -228,6 +255,26 @@ export async function createListing(
       },
     }),
   };
+  const fulfillmentSignerControlProof = {
+    validBefore: message.validBefore,
+    signature: await fulfillmentSigner.signTypedData({
+      domain: {
+        name: "Daski Bazaar Fulfillment Signer Control",
+        version: "1",
+        chainId: message.chainId,
+        verifyingContract: message.payTo,
+      },
+      types: FULFILLMENT_SIGNER_CONTROL_TYPES,
+      primaryType: "DaskiBazaarFulfillmentSignerControl",
+      message: {
+        providerAgentId: message.providerAgentId,
+        listingEpoch: message.listingEpoch,
+        listingCommitment: message.listingCommitment,
+        fulfillmentSigner: message.fulfillmentSigner,
+        validBefore: message.validBefore,
+      },
+    }),
+  };
   const signature = await provider.signTypedData({
     domain: listingOfferDomain(message),
     types: LISTING_OFFER_V1_TYPES,
@@ -249,6 +296,7 @@ export async function createListing(
     termsHash: message.termsHash,
     policyVersion: message.policyVersion,
     payToControlProof,
+    fulfillmentSignerControlProof,
     offer: { message, signature },
   };
 }
@@ -395,6 +443,70 @@ export class FakeSettlementObserver {
     await this.gate;
     if (this.error) throw new Error("ambiguous settlement observation");
     return this.result;
+  }
+}
+
+export class FakeFulfillmentObserver implements BazaarFulfillmentObserver {
+  calls: BazaarFulfillmentObservationInput[] = [];
+  outcome: BazaarFulfillmentOutcome | null = null;
+  evidenceHash = keccak256(toBytes("test-fulfillment-evidence"));
+  rawResult: unknown = undefined;
+  mutate: ((result: Record<string, unknown>) => unknown) | null = null;
+  error = false;
+  gate: Promise<void> | null = null;
+
+  constructor(private readonly signer: PrivateKeyAccount) {}
+
+  async observe(input: BazaarFulfillmentObservationInput): Promise<
+    Awaited<ReturnType<BazaarFulfillmentObserver["observe"]>>
+  > {
+    this.calls.push(input);
+    await this.gate;
+    if (this.error) throw new Error("ambiguous fulfillment observation");
+    if (this.rawResult !== undefined) {
+      return this.rawResult as Awaited<
+        ReturnType<BazaarFulfillmentObserver["observe"]>
+      >;
+    }
+    if (!this.outcome) return { kind: "pending" };
+    const outcomeHash = keccak256(toBytes(this.outcome));
+    const evidenceId = computeBazaarFulfillmentEvidenceId({
+      orderRecordId: input.orderRecordId,
+      taskIdHash: input.taskIdHash,
+      outcome: this.outcome,
+      evidenceHash: this.evidenceHash,
+    });
+    const message = {
+      orderRecordId: input.orderRecordId,
+      taskIdHash: input.taskIdHash,
+      providerAgentId: input.providerAgentId.toString(),
+      listingCommitment: input.listingCommitment,
+      authorizationDigest: input.authorizationDigest,
+      outcomeId: input.outcomeId,
+      requestHash: input.requestHash,
+      settlementTransaction: input.settlementTransaction,
+      outcomeHash,
+      evidenceHash: this.evidenceHash,
+      evidenceId,
+    };
+    const result = {
+      kind: "attested",
+      message,
+      signature: await this.signer.signTypedData({
+        domain: {
+          name: "Daski Bazaar Fulfillment Attestation",
+          version: "1",
+          chainId: input.chainId,
+          verifyingContract: input.payTo,
+        },
+        types: BAZAAR_FULFILLMENT_ATTESTATION_TYPES,
+        primaryType: "DaskiBazaarFulfillmentAttestation",
+        message: { ...message, providerAgentId: input.providerAgentId },
+      }),
+    };
+    return (this.mutate?.(result) ?? result) as Awaited<
+      ReturnType<BazaarFulfillmentObserver["observe"]>
+    >;
   }
 }
 

@@ -35,6 +35,7 @@ export function createClaimInput(
     payer: payment.authorization.from,
     nonce: payment.authorization.nonce,
     providerAgentId: offer.providerAgentId,
+    fulfillmentSigner: offer.fulfillmentSigner.toLowerCase() as Hex,
     listingEpoch: offer.listingEpoch,
     listingCommitment: offer.listingCommitment,
     outcomeId: offer.outcomeId,
@@ -56,6 +57,7 @@ export function sameOrderBinding(order: BazaarOrder, input: ClaimOrderInput): bo
     order.chainId === input.chainId && order.token === input.token &&
     order.payer === input.payer && order.nonce === input.nonce &&
     order.providerAgentId === input.providerAgentId &&
+    order.fulfillmentSigner === input.fulfillmentSigner &&
     order.listingEpoch === input.listingEpoch &&
     order.listingCommitment === input.listingCommitment &&
     order.outcomeId === input.outcomeId && order.resource === input.resource &&
@@ -97,7 +99,10 @@ export function paymentResponseFromOrder(
 }
 
 export function existingOutcomeResult(order: BazaarOrder): BazaarOutcomeResult {
-  if (order.state === "dispatched" && order.settlementTransaction) {
+  if (
+    (order.state === "dispatched" || order.state === "fulfilled") &&
+    order.settlementTransaction
+  ) {
     return successOutcome(order.orderHandle, order.resource, {
       success: true,
       transaction: order.settlementTransaction,

@@ -10,6 +10,7 @@ import {
 import type {
   BazaarFinancialStatus, BazaarRefundReason,
 } from "./types.js";
+import { createBazaarFulfillmentJob } from "./fulfillmentJobStore.js";
 
 interface RawRefundOrder {
   order_record_id: Buffer;
@@ -92,6 +93,7 @@ export async function markBazaarDispatched(input: {
     await transitionBazaarExposure(
       client, input.orderRecordId, "paid_unfulfilled", "paid_unfulfilled",
     );
+    await createBazaarFulfillmentJob(client, input.orderRecordId);
     await client.query("COMMIT");
     return true;
   } catch (error) {
