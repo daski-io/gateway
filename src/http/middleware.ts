@@ -22,10 +22,6 @@ const MCP_STATE_CHANGE_TOOLS = new Set([
   "daski_request_refund",
   "daski_get_order_artifact",
   "daski_contact_order_support",
-  "daski_buy_service",
-  "daski_confirm_delivery",
-  "daski_register_agent",
-  "daski_submit_task",
 ]);
 
 function forMcpStateChange(middleware: RequestHandler): RequestHandler {
@@ -147,7 +143,7 @@ function configurePreParserRateLimits(
 ): void {
   addRateLimits(
     app,
-    ["/purchase", "/outcomes", "/uploads", "/orders"],
+    ["/outcomes", "/uploads", "/orders"],
     {
       namespace: "payment-resource",
       perClient: 30,
@@ -156,7 +152,7 @@ function configurePreParserRateLimits(
     },
   );
   app.use(
-    "/purchase",
+    "/outcomes",
     forPaidPurchaseRetry(
       rateLimit({
         windowMs: 60_000,
@@ -167,7 +163,7 @@ function configurePreParserRateLimits(
     ),
   );
   app.use(
-    "/purchase",
+    "/outcomes",
     forPaidPurchaseRetry(
       rateLimit({
         windowMs: 60_000,
@@ -180,50 +176,8 @@ function configurePreParserRateLimits(
   );
   addRateLimits(
     app,
-    ["/verify"],
-    {
-      namespace: "facilitator-verify",
-      perClient: 30,
-      global: config.stateChangeGlobalMaxPerMinute,
-      store: queries,
-    },
-  );
-  addRateLimits(
-    app,
-    ["/settle"],
-    {
-      namespace: "facilitator-settle",
-      perClient: 30,
-      global: config.stateChangeGlobalMaxPerMinute,
-      store: queries,
-    },
-  );
-  addRateLimits(
-    app,
-    ["/confirm", "/register-transaction", "/register-prep"],
-    {
-      namespace: "state-change",
-      perClient: 30,
-      global: config.stateChangeGlobalMaxPerMinute,
-      store: queries,
-    },
-  );
-  addRateLimits(
-    app,
-    ["/identity/by-wallet", "/eas/nonce", "/confirm-prep"],
-    {
-      namespace: "rpc-read",
-      perClient: 60,
-      global: config.rpcReadMaxPerMinute,
-      store: queries,
-    },
-  );
-  addRateLimits(
-    app,
     [
-      "/public",
-      "/discover",
-      "/providers",
+      "/public/v2",
       "/skill.md",
       "/SKILL.md",
       "/.well-known",

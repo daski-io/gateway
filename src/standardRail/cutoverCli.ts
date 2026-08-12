@@ -31,7 +31,6 @@ async function fileSha256(file: string): Promise<Hex> {
 async function main(): Promise<void> {
   const appConfig = loadConfig();
   const standardConfig = loadStandardRailConfig();
-  if (!standardConfig) throw new Error("PAYMENT_RAIL=standard is required");
   await verifyStandardRailManifest(standardConfig.manifest, {
     environment: standardConfig.environment,
     chainId: appConfig.chainId,

@@ -7,7 +7,7 @@ import {
 } from "../db/pool.js";
 import { createRateLimitQueries } from "../db/rateLimitQueries.js";
 import { createStandardGatewayHttp } from "../http/gatewayApp.js";
-import type { McpWiring } from "../mcp/server.js";
+import type { McpWiring } from "../mcp/httpTransport.js";
 import { ApplicationLifecycle } from "../runtime/applicationLifecycle.js";
 import type { StandardRailConfig } from "./config.js";
 import { canonicalHash } from "./canonical.js";

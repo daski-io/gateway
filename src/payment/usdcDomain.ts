@@ -4,7 +4,6 @@ import {
   toBytes,
   type Address,
 } from "viem";
-import type { ChainMode } from "../runtimeConfig.js";
 import type { ChainId, Hex } from "../types.js";
 
 const EIP712_DOMAIN_TYPEHASH = keccak256(
@@ -68,39 +67,11 @@ export function computeUsdcDomainSeparator(
 
 interface LoadUsdcDomainInput {
   chainId: ChainId;
-  chainMode: ChainMode;
   address: Hex;
   env: NodeJS.ProcessEnv;
 }
 
 export function loadUsdcDomain(input: LoadUsdcDomainInput): UsdcDomainConfig {
-  if (input.chainMode === "mock") {
-    const name = input.env.USDC_NAME?.trim() || "USDC";
-    const version = input.env.USDC_VERSION?.trim() || "2";
-    const decimals = parseDecimals(input.env.USDC_DECIMALS ?? "6");
-    const computed = computeUsdcDomainSeparator(
-      input.chainId,
-      input.address,
-      name,
-      version,
-    );
-    const configured =
-      (input.env.USDC_DOMAIN_SEPARATOR?.toLowerCase() as Hex | undefined) ??
-      computed;
-    if (configured !== computed) {
-      throw new Error(
-        "USDC_DOMAIN_SEPARATOR does not match the configured mock token domain",
-      );
-    }
-    return {
-      address: input.address,
-      decimals,
-      name,
-      version,
-      domainSeparator: configured,
-    };
-  }
-
   const reviewed = REVIEWED_USDC_DOMAINS[input.chainId];
   const name = requireValue("USDC_NAME", input.env.USDC_NAME);
   const version = requireValue("USDC_VERSION", input.env.USDC_VERSION);

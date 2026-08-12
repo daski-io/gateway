@@ -7,13 +7,11 @@
   },
   "scripts": {
     "dev": "tsx src/index.ts",
-    "build": "tsc -p tsconfig.build.json && cp -r src/db/migrations dist/db/migrations && mkdir -p dist/static && cp src/static/SKILL.md dist/static/SKILL.md",
+    "build": "tsc -p tsconfig.build.json && cp -r src/db/migrations dist/db/migrations",
     "start": "node dist/index.js",
     "test": "NODE_ENV=test vitest run",
     "test:watch": "NODE_ENV=test vitest",
     "typecheck": "tsc --noEmit",
-    "live-e2e": "tsx scripts/live-e2e.ts",
-    "validate-provider-legal": "tsx scripts/validate-provider-legal.ts",
     "standard-rail:measure": "node dist/standardRail/measureCli.js",
     "standard-rail:cutover": "node dist/standardRail/cutoverCli.js"
   },
@@ -24,13 +22,10 @@
     "@modelcontextprotocol/node": "2.0.0",
     "@modelcontextprotocol/server": "2.0.0",
     "@x402/core": "2.20.0",
-    "@x402/evm": "2.20.0",
     "@x402/extensions": "2.20.0",
-    "@xenova/transformers": "^2.17.2",
     "ajv": "8.20.0",
     "cors": "^2.8.5",
     "express": "^5.2.1",
-    "iso-3166": "4.4.0",
     "pg": "^8.22.0",
     "viem": "^2.55.4",
     "zod": "4.4.3"
@@ -43,13 +38,10 @@
     "sharp": "^0.35.0"
   },
   "devDependencies": {
-    "@modelcontextprotocol/client": "2.0.0",
-    "@modelcontextprotocol/sdk": "1.30.0",
     "@types/cors": "^2.8.17",
     "@types/express": "^5.0.0",
     "@types/node": "^22.20.1",
     "@types/pg": "^8.11.0",
-    "@x402/mcp": "2.20.0",
     "tsx": "^4.23.1",
     "typescript": "^5.9.3",
     "vitest": "^4.1.10"

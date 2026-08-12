@@ -96,13 +96,7 @@ function databaseUrl(name: string, value: string): string {
 
 export function loadStandardRailConfig(
   env: NodeJS.ProcessEnv = process.env,
-): StandardRailConfig | null {
-  if (env.PAYMENT_RAIL !== "standard") {
-    if (env.NODE_ENV !== "test") {
-      throw new Error("PAYMENT_RAIL=standard is required; the native rail is retired");
-    }
-    return null;
-  }
+): StandardRailConfig {
   const evidenceRpcUrls = required(env, "STANDARD_RAIL_EVIDENCE_RPC_URLS")
     .split(",")
     .map((url, index) => httpsUrl(`STANDARD_RAIL_EVIDENCE_RPC_URLS[${index}]`, url.trim()))
