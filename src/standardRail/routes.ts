@@ -19,6 +19,25 @@ function assertExactKeys(value: unknown, expected: readonly string[]): void {
   }
 }
 
+export function standardPaymentError(error: unknown): {
+  status: number;
+  code: string;
+  message: string;
+} | null {
+  const internal = error instanceof Error ? error.message : "STANDARD_RAIL_ERROR";
+  if (internal === "OUTCOME_NOT_FOUND") {
+    return { status: 404, code: "OUTCOME_NOT_FOUND", message: "Outcome not found" };
+  }
+  if (/malformed|invalid|mismatch|Unsupported|Missing|required|forbidden|differ/i.test(internal)) {
+    return {
+      status: 400,
+      code: "INVALID_STANDARD_PAYMENT",
+      message: "The standard payment was rejected",
+    };
+  }
+  return null;
+}
+
 export function createStandardRailRouter(service: StandardRailService, publicUrl?: string): Router {
   const router = Router();
 
@@ -129,13 +148,11 @@ export function createStandardRailRouter(service: StandardRailService, publicUrl
         receipt,
       });
     } catch (error) {
-      const code = error instanceof Error ? error.message : "STANDARD_RAIL_ERROR";
-      if (code === "OUTCOME_NOT_FOUND") {
-        res.status(404).json({ error: { code, message: "Outcome not found" } });
-        return;
-      }
-      if (/malformed|invalid|mismatch|Unsupported|Missing|required|forbidden|differ/i.test(code)) {
-        res.status(400).json({ error: { code: "INVALID_STANDARD_PAYMENT", message: code } });
+      const publicError = standardPaymentError(error);
+      if (publicError) {
+        res.status(publicError.status).json({
+          error: { code: publicError.code, message: publicError.message },
+        });
         return;
       }
       next(error);

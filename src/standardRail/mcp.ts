@@ -128,10 +128,10 @@ export async function createStandardRailMcp(
             orderHandle: result.handle,
             receipt: await service.signedReceipt(result.order),
           });
-        } catch (error) {
+        } catch {
           return mcpError({
             code: "STANDARD_RAIL_PURCHASE_FAILED",
-            message: error instanceof Error ? error.message : "Purchase failed",
+            message: "The standard purchase was rejected",
             retryable: false,
           });
         }
@@ -174,10 +174,10 @@ export async function createStandardRailMcp(
               authorization: args.authorization as never,
             });
             return mcpJson(isolateProviderResult(result));
-          } catch (error) {
+          } catch {
             return mcpError({
               code: "STANDARD_RAIL_ORDER_ACTION_FAILED",
-              message: error instanceof Error ? error.message : "Order action failed",
+              message: "The standard order action was rejected",
               retryable: false,
             });
           }

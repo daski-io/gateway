@@ -23,8 +23,23 @@ import {
   assertPaymentIdentifierExtension,
 } from "../src/standardRail/payment.js";
 import { declarePaymentIdentifierExtension } from "@x402/extensions/payment-identifier";
+import { assertCutoverReady } from "../src/standardRail/cutover.js";
+import { standardPaymentError } from "../src/standardRail/routes.js";
 
 describe("standard rail primitives", () => {
+  it("requires drained cutover prerequisites and sanitizes payment errors", () => {
+    expect(() => assertCutoverReady({
+      legacyDatabase: true,
+      pendingChallenges: 1,
+      unresolvedTransactions: 0,
+      approved: false,
+    })).toThrow("STANDARD_RAIL_CUTOVER_NOT_DRAINED");
+    expect(standardPaymentError(new Error("payer mismatch: secret upstream detail"))).toEqual({
+      status: 400,
+      code: "INVALID_STANDARD_PAYMENT",
+      message: "The standard payment was rejected",
+    });
+  });
   it("canonicalizes object keys and hashes equivalent objects identically", () => {
     expect(canonicalJson({ z: 1, a: [true, "x"] })).toBe('{"a":[true,"x"],"z":1}');
     expect(canonicalHash({ z: 1, a: [true, "x"] })).toBe(

@@ -11,6 +11,7 @@ interface RecoveryOptions {
   resumePaid(order: StandardOrderRecord): Promise<void>;
   releaseExposure(order: StandardOrderRecord): Promise<"released" | "legal_hold">;
   cleanupUploads(): Promise<void>;
+  recordRecoveryApprovalExpiry(order: StandardOrderRecord): Promise<void>;
 }
 
 export class StandardRailRecoveryWorker {
@@ -56,6 +57,7 @@ export class StandardRailRecoveryWorker {
           this.options.config.manifest.runtimeRelease.payload.recoveryValidBefore,
         ) * 1_000;
         if (Date.now() >= recoveryCutoff) {
+          await this.options.recordRecoveryApprovalExpiry(order);
           logger.error("standard-rail recovery approval expired", {
             orderId: order.orderId,
             state: order.state,

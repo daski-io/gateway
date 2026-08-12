@@ -40,6 +40,7 @@ import type {
 } from "./types.js";
 import { verifyStandardRailManifest } from "./artifacts.js";
 import { StandardRailRecoveryWorker } from "./recovery.js";
+import { StandardRailIncidentStore } from "./incidents.js";
 import { StandardUploadService } from "./uploads.js";
 import {
   assertSchema,
@@ -163,6 +164,7 @@ export class StandardRailService {
   private readonly publicArtifacts = new Map<Hex, import("./types.js").SignedEnvelope<unknown>>();
   private readonly recovery: StandardRailRecoveryWorker;
   private readonly uploads: StandardUploadService;
+  private readonly incidents: StandardRailIncidentStore;
   private dependenciesReady = false;
   private readinessInterval: NodeJS.Timeout | null = null;
   private readinessRefresh: Promise<void> | null = null;
@@ -178,6 +180,7 @@ export class StandardRailService {
     private readonly fetchFn: typeof fetch = fetch,
   ) {
     this.store = new StandardRailStore(pool);
+    this.incidents = new StandardRailIncidentStore(pool);
     this.journal = new StandardRailJournal(pool);
     this.uploads = new StandardUploadService(railConfig, pool);
     this.railProfileHash = canonicalHash(railConfig.manifest.activeRailProfile);
@@ -226,6 +229,9 @@ export class StandardRailService {
       cleanupUploads: async () => {
         await this.uploads.cleanupExpired();
         await this.journal.cleanupExpiredActionAuthorizations();
+      },
+      recordRecoveryApprovalExpiry: async (order) => {
+        await this.incidents.recordRecoveryApprovalExpiry(order);
       },
     });
   }
@@ -463,6 +469,17 @@ export class StandardRailService {
       return order;
     }
     await this.screenParticipants(listing, getAddress(order.payer!));
+    if (await this.evidence.authorizationUsed(
+      getAddress(listing.commitment.payload.canonicalToken),
+      getAddress(order.payer!),
+      this.paymentNonce(order),
+    )) {
+      return this.store.transition(
+        order,
+        "EXTERNAL_OR_UNPROVEN_DEPOSIT",
+        "authorization_consumed_before_recovered_facilitator_egress",
+      );
+    }
     const mayInvokeFacilitator = await this.journal.markSettleInvoked(order.orderId);
     order = await this.store.transition(order, "SETTLE_INVOKED", "recovered_settle_invocation_persisted");
     if (!mayInvokeFacilitator) {
@@ -745,6 +762,7 @@ export class StandardRailService {
       fixedGrossAmount: listing.offer.payload.fixedGrossAmount,
       token: listing.commitment.payload.canonicalToken,
       payTo: listing.manifest.payload.splitterAddress,
+      splitterDeploymentBlockNumber: listing.manifest.payload.splitterDeploymentBlockNumber,
       providerPayee: listing.commitment.payload.providerPayee,
       daskiCommissionReceiver: listing.commitment.payload.daskiCommissionReceiver,
       commissionBps: listing.commitment.payload.commissionBps,
@@ -915,15 +933,27 @@ export class StandardRailService {
       signature: args.authorization.signature,
     });
     if (!valid) throw new Error("ACTION_AUTHORIZATION_INVALID");
-    await this.journal.consumeActionChallenge({
-      orderId: order.orderId,
-      action: args.action,
-      requestHash,
-      absoluteResourceUri: args.authorization.absoluteResourceUri,
-      nonce: args.authorization.nonce,
-      issuedAt: args.authorization.issuedAt,
-      validBefore: args.authorization.validBefore,
-    });
+    try {
+      await this.journal.consumeActionChallenge({
+        orderId: order.orderId,
+        action: args.action,
+        requestHash,
+        absoluteResourceUri: args.authorization.absoluteResourceUri,
+        nonce: args.authorization.nonce,
+        issuedAt: args.authorization.issuedAt,
+        validBefore: args.authorization.validBefore,
+      });
+    } catch (error) {
+      if (error instanceof Error && error.message === "ACTION_CHALLENGE_INVALID_OR_REPLAYED") {
+        await this.incidents.record({
+          kind: "action_authorization_reuse_or_tamper",
+          orderId: order.orderId,
+          state: order.state,
+          details: { action: args.action, nonce: args.authorization.nonce },
+        });
+      }
+      throw error;
+    }
     if (args.action === "status" && !order.providerTaskId) {
       return { receipt: await this.signedReceipt(order) };
     }
@@ -1053,7 +1083,8 @@ export class StandardRailService {
         attestation.payload.orderId !== initial.orderId ||
         attestation.payload.taskId !== initial.providerTaskId ||
         attestation.payload.state !== response.state ||
-        ("result" in response && attestation.payload.resultHash !== canonicalHash(response.result))
+        (action !== "artifact" && "result" in response &&
+          attestation.payload.resultHash !== canonicalHash(response.result))
       ) throw new Error("PROVIDER_TERMINAL_ATTESTATION_INVALID");
       if (response.state === "completed" && ["DISPATCHED", "KYC_REQUIRED"].includes(order.state)) {
         order = await this.store.transition(order, "FULFILLED", "provider_terminal_completed");
@@ -1195,7 +1226,15 @@ export class StandardRailService {
         existing.order.outcomeId !== args.outcomeId ||
         canonicalHash(existing.order.canonicalRequest) !== canonicalHash(args.body) ||
         existing.order.paymentPayloadHash !== canonicalHash(args.payment)
-      ) throw new Error("Changed authorization replay rejected");
+      ) {
+        await this.incidents.record({
+          kind: "changed_payment_authorization_replay",
+          orderId: existing.order.orderId,
+          state: existing.order.state,
+          details: { presentedPaymentHash: canonicalHash(args.payment) },
+        });
+        throw new Error("Changed authorization replay rejected");
+      }
       return { ...existing, replay: true };
     }
     const challenge = await this.issueChallenge(args);
@@ -1268,6 +1307,18 @@ export class StandardRailService {
         return { handle: challenge.handle, order, replay: false };
       }
       await this.screenParticipants(listing, authorization.payer);
+      if (await this.evidence.authorizationUsed(
+        getAddress(listing.commitment.payload.canonicalToken),
+        authorization.payer,
+        authorization.nonce,
+      )) {
+        order = await this.store.transition(
+          order,
+          "EXTERNAL_OR_UNPROVEN_DEPOSIT",
+          "authorization_consumed_before_facilitator_egress",
+        );
+        return { handle: challenge.handle, order, replay: false };
+      }
       const mayInvokeFacilitator = await this.journal.markSettleInvoked(order.orderId);
       order = await this.store.transition(order, "SETTLE_INVOKED", "settle_invocation_persisted");
       if (!mayInvokeFacilitator) {
@@ -1887,7 +1938,11 @@ export class StandardRailService {
       await this.journal.closeExposure(order.orderId, "refunded");
       order = await this.store.transition(order, "REFUNDED", "refund_credits_final");
       await this.store.releaseCapacity(order.orderId);
-      return { receipt: await this.signedReceipt(order) };
+      return {
+        state: order.state,
+        refundTransactionHash,
+        receipt: await this.signedReceipt(order),
+      };
     } catch {
       if (!refundCreditFinal) {
         await this.journal.resolveRefundLeg(order.orderId, "gross", "ambiguous");
@@ -1906,7 +1961,7 @@ export class StandardRailService {
         );
         await this.store.releaseCapacity(order.orderId);
       }
-      return { receipt: await this.signedReceipt(order) };
+      return { state: order.state, receipt: await this.signedReceipt(order) };
     }
   }
 

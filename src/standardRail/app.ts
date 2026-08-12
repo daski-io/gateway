@@ -10,6 +10,8 @@ import { createStandardGatewayHttp } from "../http/gatewayApp.js";
 import type { McpWiring } from "../mcp/server.js";
 import { ApplicationLifecycle } from "../runtime/applicationLifecycle.js";
 import type { StandardRailConfig } from "./config.js";
+import { canonicalHash } from "./canonical.js";
+import { assertDestructiveCutoverApproved } from "./cutover.js";
 
 function quotedIdentifier(value: string): string {
   return `"${value.replaceAll('"', '""')}"`;
@@ -137,6 +139,12 @@ export async function createStandardApp(options: {
       max: 1,
     });
     try {
+      await assertDestructiveCutoverApproved(migrationPool, {
+        environment: options.standardRailConfig.environment,
+        chainId: options.config.chainId,
+        releaseCommit: options.standardRailConfig.releaseCommit,
+        manifestHash: canonicalHash(options.standardRailConfig.manifest),
+      });
       await runMigrations(migrationPool);
       await configureRuntimePrivileges(
         migrationPool,
