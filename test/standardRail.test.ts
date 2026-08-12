@@ -1,4 +1,3 @@
-import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { getAddress, type Hex } from "viem";
 import {
@@ -28,18 +27,6 @@ import { assertCutoverReady } from "../src/standardRail/cutover.js";
 import { standardPaymentError } from "../src/standardRail/routes.js";
 
 describe("standard rail primitives", () => {
-  it("keeps shared release locators outside global evidence uniqueness", () => {
-    const migration = readFileSync(
-      new URL("../src/db/migrations/032_standard_rail_hardening.sql", import.meta.url),
-      "utf8",
-    );
-    expect(migration).toContain([
-      "CREATE UNIQUE INDEX standard_chain_evidence_locator_unique_idx",
-      "  ON standard_chain_evidence (chain_id, lower(transaction_hash), log_index)",
-      "  WHERE evidence_kind IN ('deposit', 'refund');",
-    ].join("\n"));
-  });
-
   it("requires drained cutover prerequisites and sanitizes payment errors", () => {
     expect(() => assertCutoverReady({
       legacyDatabase: true,

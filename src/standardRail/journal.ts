@@ -114,7 +114,8 @@ export class StandardRailJournal {
       [
         bytes(result.evidenceHash), orderId, kind, chainId,
         result.blockNumber.toString(), result.blockHash, result.transactionHash,
-        result.transactionIndex, result.logIndex, result.sources, result.canonicalEvidence,
+        result.transactionIndex, result.logIndex,
+        JSON.stringify(result.sources), result.canonicalEvidence,
       ],
     );
     if (inserted.rowCount !== 1) throw new Error("CHAIN_EVIDENCE_REPLAYED_ACROSS_ORDERS");
