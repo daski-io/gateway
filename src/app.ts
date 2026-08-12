@@ -25,6 +25,10 @@ import { logErrorWithId } from "./util/errorWrap.js";
 import { logger } from "./util/logger.js";
 import { ApplicationLifecycle } from "./runtime/applicationLifecycle.js";
 import { ProviderAuthorityService } from "./payment/providerAuthority.js";
+import {
+  loadStandardRailConfig,
+  type StandardRailConfig,
+} from "./standardRail/config.js";
 
 const ZERO_ADDRESS = `0x${"00".repeat(20)}` as const;
 
@@ -42,6 +46,7 @@ export interface CreateAppOptions {
   startCacheRefreshLoop?: boolean;
   agentCardFetchTimeoutMs?: number;
   buyerAgentCardFetch?: FetchAgentCardOptions["fetchFn"];
+  standardRailConfig?: StandardRailConfig | null;
 }
 
 export interface AppBundle {
@@ -63,12 +68,15 @@ export interface AppBundle {
 
 export async function createApp(options: CreateAppOptions): Promise<AppBundle> {
   const { config, reader } = options;
+  const standardRailConfig = options.standardRailConfig === undefined
+    ? loadStandardRailConfig()
+    : options.standardRailConfig;
   const pools =
     options.pools ??
     createDatabasePools({ connectionString: config.databaseUrl });
   const pool = pools.main;
   const ownsPools = options.pools === undefined;
-  await runMigrations(pool);
+  await runMigrations(pool, { through: "030_gateway_task_identity.sql" });
   const queries = createQueries(pools);
   const reputationWorker = new ReputationMirrorWorker({ config, reader, queries });
   const indexer = new ChainEventsIndexer(
@@ -85,10 +93,12 @@ export async function createApp(options: CreateAppOptions): Promise<AppBundle> {
     },
     { pollIntervalMs: config.chainIndexerPollIntervalMs },
   );
-  await indexer.initialize();
+  if (!standardRailConfig) await indexer.initialize();
   const deploymentReadiness = new ChainDeploymentReadinessProbe(reader);
   const lifecycle = new ApplicationLifecycle();
-  const embedder = options.embedder === null ? null : (options.embedder ?? xenovaEmbedder());
+  const embedder = standardRailConfig || options.embedder === null
+    ? null
+    : (options.embedder ?? xenovaEmbedder());
   const embeddingSync = embedder ? new CatalogEmbeddingSynchronizer(pool, embedder) : null;
   const cache = new DiscoveryCache({
     reader,
@@ -108,7 +118,7 @@ export async function createApp(options: CreateAppOptions): Promise<AppBundle> {
     embedder?.warmup?.().catch((error) => {
       logErrorWithId("embedder.warmup", error);
     }) ?? Promise.resolve();
-  const { app, mcp } = await createGatewayHttp({
+  const { app, mcp, standardRailStop } = await createGatewayHttp({
     ...options,
     pool,
     queries,
@@ -120,9 +130,10 @@ export async function createApp(options: CreateAppOptions): Promise<AppBundle> {
     deploymentReadiness,
     lifecycle,
     providerAuthority,
+    standardRailConfig,
   });
   const background = startBackgroundRuntime({
-    enabled: options.startCacheRefreshLoop !== false,
+    enabled: !standardRailConfig && options.startCacheRefreshLoop !== false,
     config,
     reader,
     queries,
@@ -144,6 +155,7 @@ export async function createApp(options: CreateAppOptions): Promise<AppBundle> {
         httpClosed,
         backgroundDrain,
         mcpClose,
+        standardRailStop?.() ?? Promise.resolve(),
       ]);
       const bootstrap = await Promise.allSettled([
         embedderWarmup,

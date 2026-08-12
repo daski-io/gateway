@@ -2,6 +2,7 @@ import pg from "pg";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { createHash } from "node:crypto";
 import { logger } from "../util/logger.js";
 
 export type Pool = pg.Pool;
@@ -82,7 +83,10 @@ export function createDatabasePools(
  * in the `_migrations` table so it isn't re-applied. Mirrors the
  * provider's runner so the operational surface is identical.
  */
-export async function runMigrations(pool: Pool): Promise<void> {
+export async function runMigrations(
+  pool: Pool,
+  options: { through?: string } = {},
+): Promise<void> {
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
   const migrationsDir = path.join(__dirname, "migrations");
   const client = await pool.connect();
@@ -94,25 +98,38 @@ export async function runMigrations(pool: Pool): Promise<void> {
     await client.query(`
       CREATE TABLE IF NOT EXISTS _migrations (
         name TEXT PRIMARY KEY,
+        checksum TEXT,
         applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
       )
     `);
-    const applied = await client.query<{ name: string }>(
-      "SELECT name FROM _migrations ORDER BY name",
+    await client.query("ALTER TABLE _migrations ADD COLUMN IF NOT EXISTS checksum TEXT");
+    const applied = await client.query<{ name: string; checksum: string | null }>(
+      "SELECT name,checksum FROM _migrations ORDER BY name",
     );
-    const appliedSet = new Set(applied.rows.map((r) => r.name));
+    const appliedMap = new Map(applied.rows.map((row) => [row.name, row.checksum]));
     const files = fs
       .readdirSync(migrationsDir)
       .filter((f) => f.endsWith(".sql"))
+      .filter((f) => options.through === undefined || f <= options.through)
       .sort();
 
     for (const file of files) {
-      if (appliedSet.has(file)) continue;
       const sql = fs.readFileSync(path.join(migrationsDir, file), "utf-8");
+      const checksum = createHash("sha256").update(sql, "utf8").digest("hex");
+      if (appliedMap.has(file)) {
+        const recorded = appliedMap.get(file);
+        if (recorded && recorded !== checksum) {
+          throw new Error(`Applied migration checksum changed: ${file}`);
+        }
+        if (!recorded) {
+          await client.query("UPDATE _migrations SET checksum=$2 WHERE name=$1 AND checksum IS NULL", [file, checksum]);
+        }
+        continue;
+      }
       await client.query("BEGIN");
       try {
         await client.query(sql);
-        await client.query("INSERT INTO _migrations (name) VALUES ($1)", [file]);
+        await client.query("INSERT INTO _migrations (name,checksum) VALUES ($1,$2)", [file, checksum]);
         await client.query("COMMIT");
         logger.info("database migration applied", { migration: file });
       } catch (err) {
@@ -120,6 +137,7 @@ export async function runMigrations(pool: Pool): Promise<void> {
         throw err;
       }
     }
+    await client.query("ALTER TABLE _migrations ALTER COLUMN checksum SET NOT NULL");
   } finally {
     await client
       .query("SELECT pg_advisory_unlock(hashtextextended($1, 0))", [

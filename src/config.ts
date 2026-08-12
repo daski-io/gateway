@@ -86,7 +86,7 @@ export interface Config extends RuntimeConfig {
   // Live indexing always begins here; mock mode defaults to block zero.
   chainIndexerStartBlock: bigint;
   usdc: UsdcDomainConfig;
-  facilitatorPrivateKey: Hex;
+  facilitatorPrivateKey: Hex | null;
   // Empty admits every active ProviderRegistry entry on Base Sepolia.
   // Base mainnet requires at least one explicitly admitted agentId.
   whitelistedAgentIds: bigint[];
@@ -332,6 +332,7 @@ function requirePrivateKey(name: string, raw: string | undefined): Hex {
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const chainId = parseChainId(env.CHAIN_ID);
   const runtime = loadRuntimeConfig(env);
+  const standardRail = env.PAYMENT_RAIL === "standard";
   const production = runtime.nodeEnv === "production";
   const port = positiveInteger("PORT", env.PORT, 3000, 65535);
   const publicUrl = requireHttpUrl(
@@ -339,11 +340,16 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     env.PUBLIC_URL ?? `http://localhost:${port}`,
     { requireHttps: production },
   );
-  const oracleAddress = requireAddress(
-    "SANCTIONS_ORACLE_ADDRESS",
-    env.SANCTIONS_ORACLE_ADDRESS,
-  );
-  const oracleMode = sanctionsOracleMode(env.SANCTIONS_ORACLE_MODE);
+  const retiredAddress = "0x0000000000000000000000000000000000000000" as Hex;
+  const retiredHash = `0x${"00".repeat(32)}` as Hex;
+  const oracleAddress = standardRail
+    ? (production
+        ? requireAddress("SANCTIONS_ORACLE_ADDRESS", env.SANCTIONS_ORACLE_ADDRESS)
+        : optionalAddress("SANCTIONS_ORACLE_ADDRESS", env.SANCTIONS_ORACLE_ADDRESS) ?? retiredAddress)
+    : requireAddress("SANCTIONS_ORACLE_ADDRESS", env.SANCTIONS_ORACLE_ADDRESS);
+  const oracleMode = standardRail
+    ? sanctionsOracleMode(env.SANCTIONS_ORACLE_MODE ?? "production")
+    : sanctionsOracleMode(env.SANCTIONS_ORACLE_MODE);
   if (
     chainId === 8453 &&
     oracleAddress !== BASE_MAINNET_SANCTIONS_ORACLE
@@ -361,7 +367,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   if (chainId === 8453 && runtime.chainMode !== "live") {
     throw new Error("Base mainnet requires CHAIN_MODE=live");
   }
-  if (runtime.nodeEnv === "production" && oracleMode === "mock") {
+  if (!standardRail && runtime.nodeEnv === "production" && oracleMode === "mock") {
     throw new Error("SANCTIONS_ORACLE_MODE=mock is forbidden in production");
   }
   const whitelistedAgentIds = parseAgentIds(env.WHITELISTED_AGENT_IDS);
@@ -374,11 +380,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     "REPUTATION_STORAGE_ADDRESS",
     env.REPUTATION_STORAGE_ADDRESS,
   );
-  if (runtime.chainMode === "live" && !reputationStorageAddress) {
+  if (!standardRail && runtime.chainMode === "live" && !reputationStorageAddress) {
     throw new Error("REPUTATION_STORAGE_ADDRESS env var is required in live chain mode");
   }
   const chainIndexerStartBlock =
-    runtime.chainMode === "live"
+    standardRail
+      ? 0n
+      : runtime.chainMode === "live"
       ? nonNegativeBigInt(
           "CHAIN_INDEXER_START_BLOCK",
           env.CHAIN_INDEXER_START_BLOCK,
@@ -517,32 +525,26 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     chainId,
     network: networkForChain(chainId),
     x402Network: `eip155:${chainId}`,
-    identityRegistryAddress: requireAddress(
-      "IDENTITY_REGISTRY_ADDRESS",
-      env.IDENTITY_REGISTRY_ADDRESS,
-    ),
-    agentIndexAddress: requireAddress(
-      "AGENT_INDEX_ADDRESS",
-      env.AGENT_INDEX_ADDRESS,
-    ),
-    providerRegistryAddress: requireAddress(
-      "PROVIDER_REGISTRY_ADDRESS",
-      env.PROVIDER_REGISTRY_ADDRESS,
-    ),
-    serviceRegistryAddress: requireAddress(
-      "SERVICE_REGISTRY_ADDRESS",
-      env.SERVICE_REGISTRY_ADDRESS,
-    ),
-    paymentRouterAddress: requireAddress(
-      "PAYMENT_ROUTER_ADDRESS",
-      env.PAYMENT_ROUTER_ADDRESS,
-    ),
+    identityRegistryAddress: standardRail
+      ? optionalAddress("IDENTITY_REGISTRY_ADDRESS", env.IDENTITY_REGISTRY_ADDRESS) ?? retiredAddress
+      : requireAddress("IDENTITY_REGISTRY_ADDRESS", env.IDENTITY_REGISTRY_ADDRESS),
+    agentIndexAddress: standardRail
+      ? optionalAddress("AGENT_INDEX_ADDRESS", env.AGENT_INDEX_ADDRESS) ?? retiredAddress
+      : requireAddress("AGENT_INDEX_ADDRESS", env.AGENT_INDEX_ADDRESS),
+    providerRegistryAddress: standardRail
+      ? optionalAddress("PROVIDER_REGISTRY_ADDRESS", env.PROVIDER_REGISTRY_ADDRESS) ?? retiredAddress
+      : requireAddress("PROVIDER_REGISTRY_ADDRESS", env.PROVIDER_REGISTRY_ADDRESS),
+    serviceRegistryAddress: standardRail
+      ? retiredAddress
+      : requireAddress("SERVICE_REGISTRY_ADDRESS", env.SERVICE_REGISTRY_ADDRESS),
+    paymentRouterAddress: standardRail
+      ? retiredAddress
+      : requireAddress("PAYMENT_ROUTER_ADDRESS", env.PAYMENT_ROUTER_ADDRESS),
     sanctionsOracleAddress: oracleAddress,
     sanctionsOracleMode: oracleMode,
-    x402AdapterAddress: requireAddress(
-      "X402_ADAPTER_ADDRESS",
-      env.X402_ADAPTER_ADDRESS,
-    ),
+    x402AdapterAddress: standardRail
+      ? retiredAddress
+      : requireAddress("X402_ADAPTER_ADDRESS", env.X402_ADAPTER_ADDRESS),
     permitAdapterAddress: optionalAddress(
       "PERMIT_ADAPTER_ADDRESS",
       env.PERMIT_ADAPTER_ADDRESS,
@@ -561,23 +563,19 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     ),
     reputationStorageAddress,
     chainIndexerStartBlock,
-    easAddress: requireAddress(
-      "EAS_ADDRESS",
-      env.EAS_ADDRESS ?? "0x4200000000000000000000000000000000000021",
-    ),
-    easConfirmationSchemaUid: requireBytes32(
-      "EAS_CONFIRMATION_SCHEMA_UID",
-      env.EAS_CONFIRMATION_SCHEMA_UID,
-    ),
-    easOutcomeSchemaUid: requireBytes32(
-      "EAS_OUTCOME_SCHEMA_UID",
-      env.EAS_OUTCOME_SCHEMA_UID,
-    ),
+    easAddress: standardRail
+      ? retiredAddress
+      : requireAddress("EAS_ADDRESS", env.EAS_ADDRESS ?? "0x4200000000000000000000000000000000000021"),
+    easConfirmationSchemaUid: standardRail
+      ? retiredHash
+      : requireBytes32("EAS_CONFIRMATION_SCHEMA_UID", env.EAS_CONFIRMATION_SCHEMA_UID),
+    easOutcomeSchemaUid: standardRail
+      ? retiredHash
+      : requireBytes32("EAS_OUTCOME_SCHEMA_UID", env.EAS_OUTCOME_SCHEMA_UID),
     usdc,
-    facilitatorPrivateKey: requirePrivateKey(
-      "FACILITATOR_PRIVATE_KEY",
-      env.FACILITATOR_PRIVATE_KEY,
-    ),
+    facilitatorPrivateKey: standardRail
+      ? null
+      : requirePrivateKey("FACILITATOR_PRIVATE_KEY", env.FACILITATOR_PRIVATE_KEY),
     whitelistedAgentIds,
     a2aTimeoutMs: positiveInteger(
       "GATEWAY_A2A_TIMEOUT_MS",

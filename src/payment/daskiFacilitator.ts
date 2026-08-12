@@ -106,6 +106,9 @@ class DaskiExactEvmFacilitator implements SchemeNetworkFacilitator {
   private readonly facilitatorAddress: Hex;
 
   constructor(private readonly deps: DaskiFacilitatorDeps) {
+    if (!deps.config.facilitatorPrivateKey) {
+      throw new Error("native facilitator requires FACILITATOR_PRIVATE_KEY");
+    }
     const account = privateKeyToAccount(deps.config.facilitatorPrivateKey);
     this.facilitatorAddress = account.address.toLowerCase() as Hex;
   }

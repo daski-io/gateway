@@ -47,6 +47,9 @@ export function createConfiguredChainReader(config: Config): ChainReader {
   if (!config.reputationStorageAddress) {
     throw new Error("live chain mode requires ReputationStorage");
   }
+  if (!config.facilitatorPrivateKey) {
+    throw new Error("native chain reader requires FACILITATOR_PRIVATE_KEY");
+  }
   return createViemChainReader({
     rpcUrl: config.baseRpcUrl,
     rpcFallbackUrls: config.baseRpcFallbackUrls,

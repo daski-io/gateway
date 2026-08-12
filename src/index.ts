@@ -7,9 +7,18 @@ import {
   createConfiguredChainReader,
   createConfiguredProjectionReader,
 } from "./chain/configuredReader.js";
+import { loadStandardRailConfig } from "./standardRail/config.js";
+import { createStandardApp } from "./standardRail/app.js";
 
 async function main() {
   const config = loadConfig();
+  const standardRailConfig = loadStandardRailConfig();
+
+  if (standardRailConfig) {
+    const bundle = await createStandardApp({ config, standardRailConfig });
+    await listen(bundle, config, "standard");
+    return;
+  }
 
   // CHAIN_MODE=mock swaps the on-chain reader for an in-process auto-success
   // stub. Used by daski-test's `e2e:local:managed` orchestration so the
@@ -50,20 +59,34 @@ async function main() {
       "chain-events indexer on dedicated RPC route (CHAIN_INDEXER_RPC_URL)",
     );
   }
-  const bundle = await createApp({ config, reader, projectionReader });
+  const bundle = await createApp({ config, reader, projectionReader, standardRailConfig: null });
 
   // Await an initial discovery refresh so readiness and /discover have data
   // before we accept any HTTP traffic. We log on failure but still start
   // listening — the periodic refresh loop inside the cache may recover.
-  try {
-    await bundle.cache.refresh();
-  } catch (err) {
-    logger.error("initial cache refresh failed", { error: err });
+  if (!standardRailConfig) {
+    try {
+      await bundle.cache.refresh();
+    } catch (err) {
+      logger.error("initial cache refresh failed", { error: err });
+    }
   }
 
+  await listen(bundle, config, "native");
+}
+
+async function listen(
+  bundle: {
+    app: import("express").Express;
+    beginShutdown(): void;
+    shutdown(httpClosed?: Promise<void>): Promise<void>;
+  },
+  config: ReturnType<typeof loadConfig>,
+  rail: "standard" | "native",
+): Promise<void> {
   const server = bundle.app.listen(config.port, () => {
     logger.info(
-      `daski-gateway listening on :${config.port} (chain ${config.chainId}, mcp ${
+      `daski-gateway listening on :${config.port} (chain ${config.chainId}, rail ${rail}, mcp ${
         config.mcpEnabled ? config.mcpPath : "off"
       })`,
     );

@@ -4,10 +4,24 @@ import express, {
   type RequestHandler,
 } from "express";
 import type { Config } from "../config.js";
-import type { Queries } from "../db/queries.js";
 import { rateLimit, securityHeaders } from "../util/security.js";
+import { assertNoDuplicateJsonKeys } from "../standardRail/canonical.js";
+
+interface RateLimitStore {
+  consumeRateLimitBucket(
+    key: string,
+    windowMs: number,
+  ): Promise<{ count: number; resetAt: Date }>;
+}
 
 const MCP_STATE_CHANGE_TOOLS = new Set([
+  "daski_buy_outcome",
+  "daski_get_order_status",
+  "daski_submit_order_input",
+  "daski_cancel_order",
+  "daski_request_refund",
+  "daski_get_order_artifact",
+  "daski_contact_order_support",
   "daski_buy_service",
   "daski_confirm_delivery",
   "daski_register_agent",
@@ -54,7 +68,7 @@ function addRateLimits(
     namespace: string;
     perClient: number;
     global: number;
-    store: Queries;
+    store: RateLimitStore;
   },
 ): void {
   app.use(
@@ -80,7 +94,7 @@ function addRateLimits(
 
 export function configureMiddleware(
   app: Express,
-  queries: Queries,
+  queries: RateLimitStore,
   config: Config,
 ): void {
   app.set("trust proxy", config.trustProxy);
@@ -92,6 +106,9 @@ export function configureMiddleware(
         "PAYMENT-REQUIRED",
         "PAYMENT-SIGNATURE",
         "PAYMENT-RESPONSE",
+        "DASKI-ORDER-HANDLE",
+        "DASKI-RAIL-PROFILE",
+        "DASKI-RAIL-PROFILE-HASH",
         "MCP-Protocol-Version",
       ],
       // Reflect the browser's requested header list. Modern MCP adds
@@ -103,7 +120,21 @@ export function configureMiddleware(
   if (config.nodeEnv !== "test") {
     configurePreParserRateLimits(app, queries, config);
   }
-  app.use(express.json({ limit: "1mb" }));
+  app.use(express.json({
+    limit: "1mb",
+    inflate: false,
+    verify: (req, _res, buffer) => {
+      if (buffer.length === 0) return;
+      try {
+        assertNoDuplicateJsonKeys(buffer.toString("utf8"));
+      } catch {
+        const error = new SyntaxError("Request JSON contains a duplicate key") as SyntaxError & { type: string };
+        error.type = "entity.parse.failed";
+        throw error;
+      }
+      (req as express.Request & { rawBody?: Buffer }).rawBody = buffer;
+    },
+  }));
   if (config.nodeEnv !== "test") {
     configureParsedMcpRateLimits(app, queries, config);
   }
@@ -111,12 +142,12 @@ export function configureMiddleware(
 
 function configurePreParserRateLimits(
   app: Express,
-  queries: Queries,
+  queries: RateLimitStore,
   config: Config,
 ): void {
   addRateLimits(
     app,
-    ["/purchase"],
+    ["/purchase", "/outcomes", "/uploads", "/orders"],
     {
       namespace: "payment-resource",
       perClient: 30,
@@ -217,7 +248,7 @@ function configurePreParserRateLimits(
 
 function configureParsedMcpRateLimits(
   app: Express,
-  queries: Queries,
+  queries: RateLimitStore,
   config: Config,
 ): void {
   app.post(

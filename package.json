@@ -13,15 +13,20 @@
     "test:watch": "NODE_ENV=test vitest",
     "typecheck": "tsc --noEmit",
     "live-e2e": "tsx scripts/live-e2e.ts",
-    "validate-provider-legal": "tsx scripts/validate-provider-legal.ts"
+    "validate-provider-legal": "tsx scripts/validate-provider-legal.ts",
+    "standard-rail:measure": "node dist/standardRail/measureCli.js"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "3.1108.0",
+    "@coinbase/cdp-sdk": "1.53.0",
     "@modelcontextprotocol/express": "2.0.0",
     "@modelcontextprotocol/node": "2.0.0",
     "@modelcontextprotocol/server": "2.0.0",
     "@x402/core": "2.20.0",
     "@x402/evm": "2.20.0",
+    "@x402/extensions": "2.20.0",
     "@xenova/transformers": "^2.17.2",
+    "ajv": "8.20.0",
     "cors": "^2.8.5",
     "express": "^5.2.1",
     "iso-3166": "4.4.0",
@@ -30,12 +35,13 @@
     "zod": "4.4.3"
   },
   "overrides": {
+    "@hono/node-server": "2.1.0",
     "axios": "^1.18.1",
+    "nanoid": "3.3.17",
     "protobufjs": "^7.6.3",
     "sharp": "^0.35.0"
   },
   "devDependencies": {
-    "@coinbase/cdp-sdk": "^1.53.0",
     "@modelcontextprotocol/client": "2.0.0",
     "@modelcontextprotocol/sdk": "1.30.0",
     "@types/cors": "^2.8.17",
