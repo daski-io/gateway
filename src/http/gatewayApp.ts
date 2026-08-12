@@ -4,6 +4,8 @@ import type { Config } from "../config.js";
 import type { Pool } from "../db/pool.js";
 import type { McpWiring } from "../mcp/httpTransport.js";
 import type { ApplicationLifecycle } from "../runtime/applicationLifecycle.js";
+import { ViemMarketplaceChainReader } from "../marketplace/reader.js";
+import { createMarketplaceRouter } from "../marketplace/routes.js";
 import { CdpStandardFacilitator } from "../standardRail/facilitator.js";
 import { StandardChainEvidence } from "../standardRail/evidence.js";
 import type { StandardRailConfig } from "../standardRail/config.js";
@@ -86,6 +88,11 @@ export async function createStandardGatewayHttp(
     evidence,
     options.a2aFetch,
   );
+  const marketplace = new ViemMarketplaceChainReader(
+    options.config,
+    options.standardRailConfig,
+    options.config.chainId === 8453 ? base : baseSepolia,
+  );
   await standardRail.initialize();
   app.use(createStandardMetaRouter({
     config: options.config,
@@ -93,9 +100,10 @@ export async function createStandardGatewayHttp(
     lifecycle: options.lifecycle,
     service: standardRail,
   }));
+  app.use(createMarketplaceRouter(marketplace));
   app.use(createStandardRailRouter(standardRail, options.config.publicUrl));
   const mcp = options.config.mcpEnabled
-    ? await createStandardRailMcp(app, options.config, standardRail)
+    ? await createStandardRailMcp(app, options.config, standardRail, marketplace)
     : null;
   app.use((error: unknown, _req: express.Request, res: express.Response, next: express.NextFunction) => {
     if (res.headersSent) return next(error);

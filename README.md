@@ -19,7 +19,14 @@ the standard Exact-EVM wire format.
 - `/uploads/*` provides short-lived, single-use attachment capabilities.
 - `/.well-known/x402` and `/public/v2/*` publish the active signed rail and
   listing artifacts.
+- `/public/v2/registry/*` exposes read-only ERC-8004 identity, Daski provider
+  and service catalog, and historical native-rail reputation state.
 - `/mcp` exposes `daski_buy_outcome` and the standard order lifecycle tools.
+
+The MCP surface also exposes read-only provider discovery, identity resolution,
+and service lookup tools. Identity and catalog registration remain independent
+of payment. The previously deployed `ReputationStorage` is retained for
+historical reads only; standard Exact-EVM purchases do not write it.
 - `/health/live` and `/health/ready` report process and dependency readiness.
 
 There is no alternate payment rail, native facilitator endpoint, or legacy
@@ -97,6 +104,8 @@ Deployment coordination lives in
 
 - `src/standardRail/` contains signed artifacts, standard payment handling,
   evidence verification, state transitions, dispatch, refunds, and recovery.
+- `src/marketplace/` contains payment-independent identity/catalog reads and
+  the historical reputation projection.
 - `src/http/` mounts only the standard HTTP surface.
 - `src/mcp/` contains the shared stateless MCP transport.
 - `src/db/` contains migration history and the standard runtime database

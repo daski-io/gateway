@@ -4,6 +4,8 @@ import { z } from "zod";
 import type { Config } from "../config.js";
 import { mountMcpHttpTransport, type McpWiring } from "../mcp/httpTransport.js";
 import { mcpError, mcpJson } from "../mcp/util.js";
+import { registerMarketplaceTools } from "../marketplace/mcp.js";
+import type { MarketplaceChainReader } from "../marketplace/reader.js";
 import { GATEWAY_VERSION } from "../version.js";
 import type { StandardRailService } from "./service.js";
 import type { PaymentPayload } from "@x402/core/types";
@@ -64,6 +66,7 @@ export async function createStandardRailMcp(
   app: Express,
   config: Config,
   service: StandardRailService,
+  marketplace: MarketplaceChainReader,
 ): Promise<McpWiring> {
   function createServer(_context: McpRequestContext): McpServer {
     const server = new McpServer(
@@ -184,6 +187,7 @@ export async function createStandardRailMcp(
         },
       );
     }
+    registerMarketplaceTools(server, marketplace);
     return server;
   }
 

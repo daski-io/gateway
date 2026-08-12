@@ -77,6 +77,9 @@ export async function measureRuntimeIntegrity(
       chainId: app.chainId,
       network: app.x402Network,
       token: app.usdc,
+      marketplaceContracts: Object.fromEntries(
+        Object.entries(app.marketplaceContracts).map(([name, value]) => [name, value.toLowerCase()]),
+      ),
       sanctionsOracleAddress: app.sanctionsOracleAddress.toLowerCase(),
       sanctionsOracleMode: app.sanctionsOracleMode,
       facilitatorBaseUrl: rail.facilitatorBaseUrl,

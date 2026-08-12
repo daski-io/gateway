@@ -22,6 +22,14 @@ export interface Config {
   usdc: UsdcDomainConfig;
   sanctionsOracleAddress: Hex;
   sanctionsOracleMode: SanctionsOracleMode;
+  marketplaceContracts: {
+    identityRegistry: Hex;
+    agentIndex: Hex;
+    providerRegistry: Hex;
+    serviceRegistry: Hex;
+    validationRegistry: Hex;
+    historicalReputationStorage: Hex;
+  };
   rpcReadMaxPerMinute: number;
   stateChangeGlobalMaxPerMinute: number;
   mcpGlobalMaxPerMinute: number;
@@ -141,6 +149,20 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     usdc: loadUsdcDomain({ chainId: configuredChainId, address: tokenAddress, env }),
     sanctionsOracleAddress: oracleAddress,
     sanctionsOracleMode: oracleMode,
+    marketplaceContracts: {
+      identityRegistry: address("IDENTITY_REGISTRY_ADDRESS", env.IDENTITY_REGISTRY_ADDRESS),
+      agentIndex: address("AGENT_INDEX_ADDRESS", env.AGENT_INDEX_ADDRESS),
+      providerRegistry: address("PROVIDER_REGISTRY_ADDRESS", env.PROVIDER_REGISTRY_ADDRESS),
+      serviceRegistry: address("SERVICE_REGISTRY_ADDRESS", env.SERVICE_REGISTRY_ADDRESS),
+      validationRegistry: address(
+        "DASKI_VALIDATION_REGISTRY_ADDRESS",
+        env.DASKI_VALIDATION_REGISTRY_ADDRESS,
+      ),
+      historicalReputationStorage: address(
+        "REPUTATION_STORAGE_ADDRESS",
+        env.REPUTATION_STORAGE_ADDRESS,
+      ),
+    },
     rpcReadMaxPerMinute: integer("RPC_READ_MAX_PER_MINUTE", env.RPC_READ_MAX_PER_MINUTE, 300),
     stateChangeGlobalMaxPerMinute: integer(
       "STATE_CHANGE_GLOBAL_MAX_PER_MINUTE",

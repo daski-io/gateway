@@ -56,6 +56,10 @@ export function createStandardMetaRouter(args: {
       description: "Daski outcome marketplace over standard x402 Exact-EVM.",
       transport: { type: "streamable-http", url: `${args.config.publicUrl}${args.config.mcpPath}` },
       tools: [
+        "daski_list_providers",
+        "daski_get_provider",
+        "daski_get_service",
+        "daski_resolve_agent",
         "daski_buy_outcome",
         "daski_get_order_status",
         "daski_submit_order_input",
@@ -74,7 +78,9 @@ export function createStandardMetaRouter(args: {
       "Use the separately named order tools for status, input, cancellation, refunds, artifacts, and support.",
       "Each order action is a challenge/sign/retry exchange authorized by the payer wallet.",
       "Payments are standard x402 V2 Exact-EVM transfers to immutable outcome splitters.",
-      "There is no separate paid task submission, payment-time registration, or on-chain reputation write.",
+      "ERC-8004 identity and the Daski provider/service catalogs remain independent of the payment rail.",
+      "Historical native-rail reputation stays readable, but standard-rail orders never write it.",
+      "There is no separate paid task submission or payment-time registration.",
       `Network: ${args.config.x402Network}`,
     ].join("\n"));
   });
