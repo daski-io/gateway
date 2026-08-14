@@ -180,6 +180,36 @@ export class StandardChainEvidence {
     }
   }
 
+  async revalidateProviderIdentitySnapshot(snapshot: ProviderIdentitySnapshotV1): Promise<void> {
+    const observations = await Promise.all(this.clients.map(async ({ client }) => {
+      const finalized = await client.getBlock({ blockTag: "finalized" });
+      const blockNumber = finalized.number;
+      const [owner, agentWallet, provider, settlement] = await Promise.all([
+        client.readContract({ address: getAddress(snapshot.identityRegistry), abi: identitySnapshotAbi,
+          functionName: "ownerOf", args: [BigInt(snapshot.providerAgentId)], blockNumber }),
+        client.readContract({ address: getAddress(snapshot.identityRegistry), abi: identitySnapshotAbi,
+          functionName: "getAgentWallet", args: [BigInt(snapshot.providerAgentId)], blockNumber }),
+        client.readContract({ address: getAddress(snapshot.providerRegistry), abi: providerSnapshotAbi,
+          functionName: "getProvider", args: [BigInt(snapshot.providerAgentId)], blockNumber }),
+        client.readContract({ address: getAddress(snapshot.serviceRegistry), abi: serviceSnapshotAbi,
+          functionName: "resolveSettlement", args: [snapshot.serviceId], blockNumber }),
+      ]);
+      return { owner, agentWallet, provider, settlement };
+    }));
+    for (const observation of observations) {
+      const [providerAgentId, active, providerOwner, providerWallet, payee] = observation.settlement;
+      if (
+        getAddress(observation.owner) !== getAddress(snapshot.providerOwner) ||
+        getAddress(observation.agentWallet) !== getAddress(snapshot.providerAgentWallet) ||
+        observation.provider.agentId !== BigInt(snapshot.providerAgentId) || !observation.provider.isActive ||
+        providerAgentId !== BigInt(snapshot.providerAgentId) || !active ||
+        getAddress(providerOwner) !== getAddress(snapshot.providerOwner) ||
+        getAddress(providerWallet) !== getAddress(snapshot.providerAgentWallet) ||
+        getAddress(payee) !== getAddress(snapshot.providerPayee)
+      ) throw new Error("Provider identity changed after listing admission");
+    }
+  }
+
   async finalizedBlockTimestamp(blockNumber: bigint, expectedHash: Hex): Promise<number> {
     const blocks = await Promise.all(this.clients.map(({ client }) =>
       client.getBlock({ blockNumber })

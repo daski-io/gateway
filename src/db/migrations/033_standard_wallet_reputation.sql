@@ -85,6 +85,7 @@ CREATE TABLE standard_asset_action_claims (
   action_catalog_epoch BIGINT NOT NULL,
   action_definition_hash BYTEA NOT NULL CHECK (octet_length(action_definition_hash)=32),
   state TEXT NOT NULL CHECK (state IN ('claimed','staged','completed','failed','canceled')),
+  expires_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -96,6 +97,7 @@ CREATE TABLE standard_reputation_operations (
   logical_key BYTEA NOT NULL CHECK (octet_length(logical_key)=32),
   intent_hash BYTEA NOT NULL CHECK (octet_length(intent_hash)=32),
   canonical_intent JSONB NOT NULL,
+  intent_predecessors JSONB NOT NULL DEFAULT '[]'::jsonb,
   state TEXT NOT NULL CHECK (state IN (
     'pending','broadcast','final','operator_attention','aborted_unattested',
     'aborted_unmirrored','blocked_parent_aborted'
@@ -129,9 +131,11 @@ CREATE TABLE standard_reputation_transactions (
   block_hash TEXT,
   final_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  UNIQUE(chain_id,relayer_address,nonce)
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+CREATE UNIQUE INDEX standard_reputation_transactions_active_nonce_idx
+  ON standard_reputation_transactions(chain_id,relayer_address,nonce)
+  WHERE state IN ('prepared','broadcast','operator_attention');
 
 CREATE INDEX standard_reputation_transactions_state_idx
   ON standard_reputation_transactions(state,created_at)
@@ -238,9 +242,11 @@ CREATE TABLE standard_reputation_mirror_transactions (
   state TEXT NOT NULL CHECK (state IN ('prepared','broadcast','final','failed','operator_attention')),
   block_number BIGINT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  UNIQUE(chain_id,nonce)
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+CREATE UNIQUE INDEX standard_reputation_mirror_transactions_active_nonce_idx
+  ON standard_reputation_mirror_transactions(chain_id,nonce)
+  WHERE state IN ('prepared','broadcast','operator_attention');
 
 CREATE TABLE standard_order_notification_subscriptions (
   subscription_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

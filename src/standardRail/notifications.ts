@@ -66,13 +66,18 @@ export class StandardNotifications {
 
   async keySet(publicUrl: string) {
     const now = Math.floor(Date.now() / 1_000);
-    const payload = { activeKeyId: this.config.notification.keyId, keys: [{
+    const keys = [{
       keyId: this.config.notification.keyId,
       address: privateKeyToAccount(this.config.notification.privateKey).address,
       algorithm: "secp256k1-eip191-keccak256-rfc8785-v1",
       notBefore: now - 300,
       notAfter: now + 31_536_000,
-    }], discoveryUrl: `${publicUrl.replace(/\/$/, "")}/.well-known/daski-order-events.json` };
+    }, ...this.config.notification.previousKeys.map((key) => ({
+      ...key,
+      algorithm: "secp256k1-eip191-keccak256-rfc8785-v1" as const,
+    }))].sort((left, right) => left.keyId.localeCompare(right.keyId));
+    const payload = { activeKeyId: this.config.notification.keyId, keys,
+      discoveryUrl: `${publicUrl.replace(/\/$/, "")}/.well-known/daski-order-events.json` };
     return signEnvelope({ artifactType: "DaskiOrderEventKeySetV1", environment: this.config.environment,
       chainId: this.chainId, audience: "daski-order-event-key-discovery", signerKeyId: "gateway-release",
       privateKey: this.config.releasePrivateKey, issuedAt: now, validBefore: now + 86_400, payload });

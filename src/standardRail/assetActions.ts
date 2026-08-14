@@ -89,6 +89,7 @@ export class StandardAssetActions {
     const request = actionRequest({ ...args, payer });
     const resolved = this.resolve(args.providerAgentId, args.actionId);
     const action = actionName(args.providerAgentId, args.actionId, args.input);
+    this.assertCurrentAuthorization(args.authorization, resolved, action, request);
     const eligible = await this.pool.query(
       `SELECT 1 FROM standard_orders WHERE lower(payer)=$1 AND provider_agent_id=$2
         AND state NOT IN ('DRAFT','CHALLENGE_ISSUED','ATTEMPT_OPENED','VERIFIED','VERIFY_REJECTED',
@@ -101,6 +102,13 @@ export class StandardAssetActions {
     const presentedWalletHash = walletAuthorizationHash(args.authorization.message, this.chainId);
     const followUp = destructiveFollowUp(args.input);
     const recovery = actionRecovery(args.input);
+    if (followUp && !resolved.definition.destructive) throw new Error("wallet authorization denied");
+    const expectedResponse = resolved.definition.destructive && recovery === null && followUp?.operation !== "confirm"
+      ? {
+          artifactType: "ProviderAssetActionStageResponseV1" as const,
+          status: followUp?.operation === "cancel" ? "canceled" as const : "staged" as const,
+        }
+      : { artifactType: "ProviderAssetActionResponseV1" as const, status: null };
     const executionId = followUp?.operation === "confirm"
       ? canonicalHash({
           operation: "confirm-destructive",
@@ -147,6 +155,13 @@ export class StandardAssetActions {
       actionCatalogSchemaHash: resolved.active.admissionEnvelope.payload.actionCatalogSchemaHash,
       actionCatalogEpoch: resolved.active.admissionEnvelope.payload.actionCatalogEpoch,
       actionDefinitionHash: resolved.definition.actionDefinitionHash,
+      stageValidBefore: resolved.definition.destructive && followUp === null && recovery === null
+        ? Math.min(
+            Math.floor(Date.now() / 1_000) + 86_400,
+            resolved.definition.validBefore,
+            resolved.active.admissionEnvelope.payload.validBefore,
+          )
+        : null,
     });
     const grant = await this.grant(resolved, payer, request, walletHash, args.authorization);
     const response = await this.providerFetch(
@@ -160,7 +175,7 @@ export class StandardAssetActions {
         redirect: "error",
       },
     );
-    if (!response.ok) throw new Error("provider unavailable");
+    if (!response.ok) throw new Error("ASSET_ACTION_REJECTED");
     const body = await readBoundedJsonResponse(response, resolved.active.listing.providerControlProfile.payload.maxResponseBytes);
     const payload = await this.verifyResponse(
       resolved,
@@ -170,6 +185,7 @@ export class StandardAssetActions {
       request,
       walletHash,
       recovery?.originalExecutionId ?? followUp?.stagedExecutionId ?? executionId,
+      expectedResponse,
     );
     const state = payload.status as "staged" | "completed" | "failed" | "canceled";
     const retryable = state === "failed" && payload.errorClass === "provider_retryable";
@@ -182,7 +198,7 @@ export class StandardAssetActions {
 
   private resolve(providerAgentId: string, actionId: string): ResolvedAction {
     const active = this.federation.activeServicing(providerAgentId);
-    if (!active) throw new Error("wallet authorization denied");
+    if (!active) throw new Error("ASSET_ACTION_NOT_ADMITTED");
     const catalogEnvelope = this.config.manifest.actionCatalogs.find((item) =>
       item.payload.providerAgentId === providerAgentId &&
       canonicalHash(item) === active.admissionEnvelope.payload.actionCatalogHash
@@ -192,8 +208,30 @@ export class StandardAssetActions {
     if (
       !catalogEnvelope || !definition || definition.validFrom > now || definition.validBefore <= now ||
       definition.actionDefinitionHash !== canonicalHash(omitHash(definition))
-    ) throw new Error("wallet authorization denied");
+    ) throw new Error("ASSET_ACTION_NOT_ADMITTED");
     return { active, catalogEnvelope, definition };
+  }
+
+  private assertCurrentAuthorization(
+    authorization: WalletAuthorizationTransport,
+    resolved: ResolvedAction,
+    action: string,
+    request: unknown,
+  ): void {
+    const message = authorization.message;
+    const admission = resolved.active.admissionEnvelope.payload;
+    if (
+      message.providerAgentId !== admission.providerAgentId ||
+      message.serviceId !== resolved.definition.serviceId ||
+      message.providerControlProfileHash !== admission.providerControlProfileHash ||
+      message.servicingAdmissionHash !== resolved.active.admissionHash ||
+      message.actionCatalogHash !== canonicalHash(resolved.catalogEnvelope) ||
+      message.actionCatalogSchemaHash !== admission.actionCatalogSchemaHash ||
+      message.actionCatalogEpoch !== admission.actionCatalogEpoch ||
+      message.actionDefinitionHash !== resolved.definition.actionDefinitionHash ||
+      message.actionHash !== utf8Hash(action) ||
+      message.requestHash !== canonicalHash(request)
+    ) throw new Error("wallet authorization denied");
   }
 
   private grant(
@@ -246,6 +284,10 @@ export class StandardAssetActions {
     request: unknown,
     walletHash: Hex,
     expectedProviderExecutionId: Hex,
+    expectedResponse: {
+      artifactType: "ProviderAssetActionResponseV1" | "ProviderAssetActionStageResponseV1";
+      status: "staged" | "canceled" | null;
+    },
   ): Promise<Record<string, unknown>> {
     if (!body || typeof body !== "object" || Array.isArray(body)) throw new Error("invalid response");
     const envelope = body as SignedEnvelope<Record<string, unknown>>;
@@ -279,12 +321,14 @@ export class StandardAssetActions {
       Number(payload.earliestExecutionAt) < Number(payload.stageValidBefore)
     );
     if (
-      !["ProviderAssetActionResponseV1", "ProviderAssetActionStageResponseV1"].includes(envelope.artifactType) ||
+      envelope.artifactType !== expectedResponse.artifactType ||
       envelope.schemaVersion !== 1 || envelope.issuedAt > now + 30 || envelope.issuedAt >= envelope.validBefore ||
       envelope.validBefore - envelope.issuedAt > 60 ||
       envelope.environment !== this.config.environment || envelope.chainId !== this.chainId ||
       envelope.audience !== this.config.gatewayAudience || envelope.signerKeyId !== profile.assetResponseKeyId ||
-      envelope.validBefore <= now || !statusValid || !resultSemanticsValid || !stageSemanticsValid
+      envelope.validBefore <= now || envelope.validBefore > grant.validBefore ||
+      !statusValid || !resultSemanticsValid || !stageSemanticsValid ||
+      (expectedResponse.status !== null && payload.status !== expectedResponse.status)
     ) throw new Error("invalid response");
     const recovered = await recoverMessageAddress({
       message: { raw: artifactPayloadHash(envelope as unknown as Record<string, unknown> & { signature?: Hex }) },
@@ -326,6 +370,7 @@ export class StandardAssetActions {
           effectSummary: payload.effectSummary,
           providerControlProfileHash: resolved.active.admissionEnvelope.payload.providerControlProfileHash,
           servicingAdmissionHash: resolved.active.admissionHash,
+          servicingProfileEpoch: resolved.active.admissionEnvelope.payload.servicingProfileEpoch,
           actionCatalogHash: canonicalHash(resolved.catalogEnvelope),
           actionCatalogSchemaHash: resolved.active.admissionEnvelope.payload.actionCatalogSchemaHash,
           actionCatalogEpoch: resolved.active.admissionEnvelope.payload.actionCatalogEpoch,
@@ -352,7 +397,6 @@ function actionRequest(args: {
   input: Record<string, unknown>;
 }) {
   return {
-    payer: args.payer.toLowerCase(), providerAgentId: args.providerAgentId,
     actionId: args.actionId, providerAssetId: args.providerAssetId, input: args.input,
   };
 }
@@ -381,6 +425,7 @@ function destructiveFollowUp(input: Record<string, unknown>): {
   confirmationHash: Hex;
 } | null {
   if (input.operation !== "confirm-destructive" && input.operation !== "cancel-staged-action") return null;
+  exact(input, ["operation", "actionExecutionId", "confirmationHash"]);
   if (
     typeof input.actionExecutionId !== "string" || !/^0x[0-9a-f]{64}$/.test(input.actionExecutionId) ||
     typeof input.confirmationHash !== "string" || !/^0x[0-9a-f]{64}$/.test(input.confirmationHash)

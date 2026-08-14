@@ -7,6 +7,8 @@ import type {
   StandardListing,
   StandardOrderRecord,
 } from "./types.js";
+import type { ReputationOperationIntent } from "./reputationOperation.js";
+import { isReputationEligiblePayer } from "./reputationEligibility.js";
 
 export interface StandardReputationOrderV1 {
   orderKey: Hex;
@@ -100,7 +102,7 @@ export async function buildReputationRegistration(args: {
     providerIdentitySnapshotHash: args.listing.commitment.payload.providerIdentitySnapshotHash,
     listingManifestHash: args.order.listingManifestHash,
     releaseEvidenceHash: args.releaseEvidenceHash,
-    reputationEligible: true,
+    reputationEligible: isReputationEligiblePayer(args.order.payer, args.listing, args.config),
     validBefore: BigInt(now + args.config.reputationPermitTtlSeconds),
   };
   const signature = await privateKeyToAccount(args.config.reputationOrderPrivateKey).signTypedData({
@@ -138,6 +140,60 @@ const refundTypes = {
     { name: "validBefore", type: "uint64" },
   ],
 } as const;
+
+export function reputationPermitDeadline(intent: ReputationOperationIntent): bigint | null {
+  if (intent.operation === "register-order" || intent.operation === "record-refund") {
+    return BigInt(intent.permit.validBefore);
+  }
+  return null;
+}
+
+export async function refreshReputationPermit(
+  intent: ReputationOperationIntent,
+  config: StandardRailConfig,
+  chainId: number,
+): Promise<ReputationOperationIntent> {
+  const validBefore = BigInt(Math.floor(Date.now() / 1_000) + config.reputationPermitTtlSeconds);
+  const account = privateKeyToAccount(config.reputationOrderPrivateKey);
+  const domain = {
+    name: "Daski Reputation" as const,
+    version: "1" as const,
+    chainId,
+    verifyingContract: config.reputationContract,
+  };
+  if (intent.operation === "register-order") {
+    const permit = { ...intent.permit, validBefore: validBefore.toString() };
+    const signature = await account.signTypedData({
+      domain,
+      primaryType: "StandardReputationOrderV1",
+      types: orderTypes,
+      message: {
+        ...permit,
+        providerAgentId: BigInt(permit.providerAgentId),
+        blockNumber: BigInt(permit.blockNumber),
+        grossAmount: BigInt(permit.grossAmount),
+        paidAt: BigInt(permit.paidAt),
+        validBefore,
+      },
+    });
+    return { ...intent, permit, signature };
+  }
+  if (intent.operation === "record-refund") {
+    const permit = { ...intent.permit, validBefore: validBefore.toString() };
+    const signature = await account.signTypedData({
+      domain,
+      primaryType: "StandardReputationRefundV1",
+      types: refundTypes,
+      message: {
+        ...permit,
+        cumulativeRefundedAmount: BigInt(permit.cumulativeRefundedAmount),
+        validBefore,
+      },
+    });
+    return { ...intent, permit, signature };
+  }
+  return intent;
+}
 
 export async function buildReputationRefund(args: {
   order: StandardOrderRecord;

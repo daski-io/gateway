@@ -19,6 +19,24 @@ function assertExactKeys(value: unknown, expected: readonly string[]): void {
   }
 }
 
+function sendWalletError(
+  res: import("express").Response,
+  error: unknown,
+  fallback = "WALLET_ACCESS_DENIED",
+): void {
+  const internal = error instanceof Error ? error.message : fallback;
+  const code = internal === "WALLET_QUERY_INVALID" ? "WALLET_QUERY_INVALID"
+    : internal === "WALLET_RATE_LIMITED" ? "WALLET_RATE_LIMITED"
+      : internal === "ASSET_ACTION_NOT_ADMITTED" ? "ASSET_ACTION_NOT_ADMITTED"
+        : internal === "ASSET_ACTION_REJECTED" ? "ASSET_ACTION_REJECTED" : fallback;
+  const status = code === "WALLET_QUERY_INVALID" ? 400
+    : code === "WALLET_RATE_LIMITED" ? 429
+      : code.startsWith("ASSET_ACTION_") ? 409 : 401;
+  if (status === 429) res.setHeader("Retry-After", "60");
+  res.status(status).json({ error: { code, message: code === "WALLET_ACCESS_DENIED"
+    ? "Wallet authorization rejected" : "The wallet request could not be completed" } });
+}
+
 export function standardPaymentError(error: unknown): {
   status: number;
   code: string;
@@ -50,11 +68,12 @@ export function createStandardRailRouter(service: StandardRailService, publicUrl
         typeof body.payer !== "string" || !/^0x[0-9a-fA-F]{40}$/.test(body.payer) ||
         !Number.isSafeInteger(body.limit) || Number(body.limit) < 1 || Number(body.limit) > 100 ||
         !(body.cursor === null || typeof body.cursor === "string")
-      ) throw new Error("WALLET_ACCESS_DENIED");
-      const request = { payer: body.payer.toLowerCase(), limit: body.limit, cursor: body.cursor };
+      ) throw new Error("WALLET_QUERY_INVALID");
+      const request = { limit: body.limit, cursor: body.cursor };
       res.setHeader("Cache-Control", "private, no-store");
       if (body.authorization === null) {
-        res.json({ authorizationRequired: true, challenge: await service.issueWalletChallenge({
+        res.json({ authorizationRequired: true, code: "WALLET_AUTHORIZATION_REQUIRED",
+          challenge: await service.issueWalletChallenge({
           action: "list-orders", payer: body.payer, request,
           absoluteResourceUri: `${origin}/wallet/orders`,
           clientKey: req.ip ?? req.socket.remoteAddress ?? "unknown",
@@ -67,9 +86,7 @@ export function createStandardRailRouter(service: StandardRailService, publicUrl
         cursor: body.cursor as string | null,
         authorization: body.authorization as never,
       }));
-    } catch {
-      res.status(401).json({ error: { code: "WALLET_ACCESS_DENIED", message: "Wallet authorization rejected" } });
-    }
+    } catch (error) { sendWalletError(res, error); }
   });
 
   router.post("/wallet/reputation", async (req, res) => {
@@ -77,12 +94,13 @@ export function createStandardRailRouter(service: StandardRailService, publicUrl
       assertExactKeys(req.body, ["payer", "authorization"]);
       const body = req.body as Record<string, unknown>;
       if (typeof body.payer !== "string" || !/^0x[0-9a-fA-F]{40}$/.test(body.payer)) {
-        throw new Error("WALLET_ACCESS_DENIED");
+        throw new Error("WALLET_QUERY_INVALID");
       }
-      const request = { payer: body.payer.toLowerCase() };
+      const request = {};
       res.setHeader("Cache-Control", "private, no-store");
       if (body.authorization === null) {
-        res.json({ authorizationRequired: true, challenge: await service.issueWalletChallenge({
+        res.json({ authorizationRequired: true, code: "WALLET_AUTHORIZATION_REQUIRED",
+          challenge: await service.issueWalletChallenge({
           action: "get-buyer-reputation", payer: body.payer, request,
           absoluteResourceUri: `${origin}/wallet/reputation`,
           clientKey: req.ip ?? req.socket.remoteAddress ?? "unknown",
@@ -93,9 +111,7 @@ export function createStandardRailRouter(service: StandardRailService, publicUrl
         payer: body.payer,
         authorization: body.authorization as never,
       }));
-    } catch {
-      res.status(401).json({ error: { code: "WALLET_ACCESS_DENIED", message: "Wallet authorization rejected" } });
-    }
+    } catch (error) { sendWalletError(res, error); }
   });
 
   router.post("/wallet/assets", async (req, res) => {
@@ -109,14 +125,14 @@ export function createStandardRailRouter(service: StandardRailService, publicUrl
         !Number.isSafeInteger(body.limit) || Number(body.limit) < 1 || Number(body.limit) > 100 ||
         !(body.cursor === null || typeof body.cursor === "string") ||
         (body.providerAgentId === null && body.cursor !== null)
-      ) throw new Error("WALLET_ACCESS_DENIED");
+      ) throw new Error("WALLET_QUERY_INVALID");
       const request = {
-        payer: body.payer.toLowerCase(), providerAgentId: body.providerAgentId,
-        limit: body.limit, cursor: body.cursor,
+        providerAgentId: body.providerAgentId, limit: body.limit, cursor: body.cursor,
       };
       res.setHeader("Cache-Control", "private, no-store");
       if (body.authorization === null) {
-        res.json({ authorizationRequired: true, challenge: await service.issueWalletChallenge({
+        res.json({ authorizationRequired: true, code: "WALLET_AUTHORIZATION_REQUIRED",
+          challenge: await service.issueWalletChallenge({
           action: "list-assets", payer: body.payer, request,
           absoluteResourceUri: `${origin}/wallet/assets`,
           clientKey: req.ip ?? req.socket.remoteAddress ?? "unknown",
@@ -130,9 +146,7 @@ export function createStandardRailRouter(service: StandardRailService, publicUrl
         cursor: body.cursor as string | null,
         authorization: body.authorization as never,
       }));
-    } catch {
-      res.status(401).json({ error: { code: "WALLET_ACCESS_DENIED", message: "Wallet authorization rejected" } });
-    }
+    } catch (error) { sendWalletError(res, error); }
   });
 
   router.post("/wallet/assets/action", async (req, res) => {
@@ -147,7 +161,7 @@ export function createStandardRailRouter(service: StandardRailService, publicUrl
         typeof body.actionId !== "string" || !/^[a-z0-9][a-z0-9-]{0,95}$/.test(body.actionId) ||
         typeof body.providerAssetId !== "string" || !/^[0-9a-f-]{36}$/.test(body.providerAssetId) ||
         !body.input || typeof body.input !== "object" || Array.isArray(body.input)
-      ) throw new Error("WALLET_ACCESS_DENIED");
+      ) throw new Error("WALLET_QUERY_INVALID");
       const args = {
         payer: body.payer,
         providerAgentId: body.providerAgentId,
@@ -157,16 +171,15 @@ export function createStandardRailRouter(service: StandardRailService, publicUrl
       };
       res.setHeader("Cache-Control", "private, no-store");
       if (body.authorization === null) {
-        res.json({ authorizationRequired: true, challenge: await service.issueAssetActionChallenge({
+        res.json({ authorizationRequired: true, code: "WALLET_AUTHORIZATION_REQUIRED",
+          challenge: await service.issueAssetActionChallenge({
           ...args, absoluteResourceUri: `${origin}/wallet/assets/action`,
           clientKey: req.ip ?? req.socket.remoteAddress ?? "unknown",
         }) });
         return;
       }
       res.json(await service.performAssetAction({ ...args, authorization: body.authorization as never }));
-    } catch {
-      res.status(401).json({ error: { code: "WALLET_ACCESS_DENIED", message: "Wallet authorization rejected" } });
-    }
+    } catch (error) { sendWalletError(res, error); }
   });
 
   router.post("/uploads/capabilities", async (_req, res, next) => {
@@ -332,6 +345,17 @@ export function createStandardRailRouter(service: StandardRailService, publicUrl
       res.json(result);
     } catch (error) {
       const code = error instanceof Error ? error.message : "ACTION_FAILED";
+      if (["REPUTATION_NOT_READY", "REPUTATION_UNAVAILABLE",
+        "CONFIRMATION_SPONSORSHIP_LIMITED", "CONFIRMATION_SPONSORSHIP_UNAVAILABLE",
+        "CONFIRMATION_SUBMISSION_PENDING"].includes(code) || code.includes("SPONSORSHIP_LIMIT")) {
+        const publicCode = code.includes("SPONSORSHIP_LIMIT")
+          ? "CONFIRMATION_SPONSORSHIP_LIMITED" : code;
+        res.status(publicCode === "REPUTATION_NOT_READY" ||
+          publicCode === "CONFIRMATION_SUBMISSION_PENDING" ? 409 : 503).json({
+          error: { code: publicCode, message: "The confirmation request could not be completed" },
+        });
+        return;
+      }
       if (/NOT_FOUND|AUTHORIZATION/.test(code)) {
         res.status(401).json({
           error: { code: "ORDER_ACCESS_DENIED", message: "Order authorization rejected" },

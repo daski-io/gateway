@@ -164,6 +164,8 @@ export async function verifyRuntimeIntegrity(app: Config, rail: StandardRailConf
   const gatewayRoleAddresses = new Set([
     rail.dispatchPrivateKey, rail.lifecyclePrivateKey, rail.quotePrivateKey,
     rail.receiptPrivateKey, rail.refundPrivateKey, rail.releasePrivateKey,
+    rail.reputationOrderPrivateKey, rail.reputationRelayerPrivateKey,
+    rail.mirror.privateKey, rail.notification.privateKey,
   ].map((key) => privateKeyToAccount(key).address.toLowerCase()));
   const externalRoleAddresses = rail.manifest.listings.flatMap((listing) => [
     listing.commitment.payload.providerAuthorityKey,

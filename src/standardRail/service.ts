@@ -13,7 +13,6 @@ import {
   verifyTypedData,
   type Hex,
 } from "viem";
-import { privateKeyToAccount } from "viem/accounts";
 import type { Config } from "../config.js";
 import type { Pool } from "../db/pool.js";
 import { assertNoDuplicateJsonKeys, canonicalHash, providerIdentitySnapshotHash } from "./canonical.js";
@@ -62,6 +61,7 @@ import type { WalletAuthorizationTransport } from "./types.js";
 import { StandardAssetFederation } from "./assetFederation.js";
 import { StandardAssetActions } from "./assetActions.js";
 import { buildReputationRefund, buildReputationRegistration } from "./reputationOrders.js";
+import { isReputationEligiblePayer } from "./reputationEligibility.js";
 import { StandardReputationWorker } from "./reputationWorker.js";
 import { StandardConfirmations } from "./confirmations.js";
 import { StandardReputationMirror } from "./reputationMirror.js";
@@ -314,6 +314,7 @@ export class StandardRailService {
       cleanupUploads: async () => {
         await this.uploads.cleanupExpired();
         await this.journal.cleanupExpiredActionAuthorizations();
+        await this.walletStore.cleanupExpiredAuthorizations();
       },
       recordRecoveryApprovalExpiry: async (order) => {
         await this.incidents.recordRecoveryApprovalExpiry(order);
@@ -357,6 +358,7 @@ export class StandardRailService {
       await this.evidence.verifyProviderIdentitySnapshot(snapshot.payload);
     }));
     await this.store.admitManifest(this.railConfig.manifest);
+    await this.assetFederation.activateAdmissions();
     await this.reputationIndexer.start();
     await this.refreshDependencyReadiness();
     this.recovery.start();
@@ -389,7 +391,7 @@ export class StandardRailService {
   }
 
   areDependenciesReady(): boolean {
-    return this.dependenciesReady && this.reputationIndexer.isReady();
+    return this.dependenciesReady;
   }
 
   async operationalHealth() {
@@ -958,7 +960,7 @@ export class StandardRailService {
         listing.commitment.payload.providerIdentitySnapshotHash
     );
     if (!snapshot) throw new Error("LISTING_IDENTITY_SNAPSHOT_UNAVAILABLE");
-    await this.evidence.verifyProviderIdentitySnapshot(snapshot.payload);
+    await this.evidence.revalidateProviderIdentitySnapshot(snapshot.payload);
   }
 
   listOutcomes(): Array<Record<string, unknown>> {
@@ -1308,6 +1310,9 @@ export class StandardRailService {
       signature: args.authorization.signature,
     });
     if (!valid) throw new Error("ACTION_AUTHORIZATION_INVALID");
+    if (args.action === "confirmation" || args.action === "revoke-confirmation") {
+      await this.confirmations.assertReady(order);
+    }
     try {
       await this.journal.consumeActionChallenge({
         orderId: order.orderId,
@@ -1643,15 +1648,7 @@ export class StandardRailService {
       payment: args.payment,
       railProfileHash: this.railProfileHash,
     });
-    const operationalAddresses = [
-      this.railConfig.quotePrivateKey,
-      this.railConfig.dispatchPrivateKey,
-      this.railConfig.receiptPrivateKey,
-      this.railConfig.lifecyclePrivateKey,
-      this.railConfig.releasePrivateKey,
-      this.railConfig.refundPrivateKey,
-    ].map((key) => privateKeyToAccount(key).address.toLowerCase());
-    if (operationalAddresses.includes(authorization.payer.toLowerCase())) {
+    if (!isReputationEligiblePayer(authorization.payer, listing, this.railConfig)) {
       throw new Error("Known operational-wallet self-purchase is forbidden");
     }
     try {
@@ -1812,7 +1809,7 @@ export class StandardRailService {
         orderId: order.orderId,
         orderKey: order.orderKey,
         serviceId: listing.commitment.payload.serviceId,
-        reputationEligible: true,
+        reputationEligible: isReputationEligiblePayer(order.payer!, listing, this.railConfig),
         reputationContract: this.railConfig.reputationContract,
         outcomeSchemaUid: this.railConfig.reputationOutcomeSchemaUid,
         dispatchNonce: nonce,

@@ -6,7 +6,8 @@ import { isNonPublicAddress } from "./network.js";
 
 export function normalizeCallbackUrl(input: string): { canonical: string; displayOrigin: string } {
   const url = new URL(input);
-  if (url.protocol !== "https:" || url.username || url.password || url.search || url.hash) {
+  if (url.protocol !== "https:" || url.username || url.password || url.search || url.hash ||
+    input.includes("?") || input.includes("#")) {
     throw new Error("NOTIFICATION_CALLBACK_INVALID");
   }
   url.hostname = url.hostname.toLowerCase();

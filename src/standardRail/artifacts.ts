@@ -17,14 +17,12 @@ const LAUNCH_ACTION_CLASSIFICATION = new Map<string, boolean>([
   ["list-dns-records", false],
   ["set-dns-record", false],
   ["delete-dns-record", false],
-  ["transfer-domain-out", true],
   ["get-mailbox-info", false],
   ["change-password", false],
   ["delete-mailbox", true],
   ["get-entity-status", false],
   ["list-entity-documents", false],
   ["download-entity-document", false],
-  ["file-dissolution", true],
 ]);
 
 const LAUNCH_REPLAY_POLICIES = new Map<string, AssetActionDefinitionV1["replayPolicy"]>([
@@ -32,14 +30,12 @@ const LAUNCH_REPLAY_POLICIES = new Map<string, AssetActionDefinitionV1["replayPo
   ["list-dns-records", "stable-result"],
   ["set-dns-record", "stable-result"],
   ["delete-dns-record", "stable-result"],
-  ["transfer-domain-out", "redacted-after-window"],
   ["get-mailbox-info", "stable-result"],
   ["change-password", "redacted-after-window"],
   ["delete-mailbox", "stable-result"],
   ["get-entity-status", "stable-result"],
   ["list-entity-documents", "stable-result"],
   ["download-entity-document", "regenerate-ephemeral"],
-  ["file-dissolution", "stable-result"],
 ]);
 
 export interface ArtifactTrust {
@@ -206,6 +202,9 @@ export async function verifyStandardRailManifest(
       if (action.destructive) {
         const validateSummary = compileClosedResponseSchema(action.confirmationSummarySchema!);
         assertSchema(validateSummary, action.confirmationSummaryTemplate, "Response");
+        if (!summaryBindsRequest(action)) {
+          throw new Error("Destructive confirmation summary must bind a request field");
+        }
       }
       actionIds.add(action.actionId);
     }
@@ -221,7 +220,7 @@ export async function verifyStandardRailManifest(
       canonicalHash(item.providerControlProfile) === admission.payload.providerControlProfileHash
     );
     if (
-      !catalog || !listing || !admission.payload.servicingEnabled ||
+      !catalog || !listing ||
       admission.payload.servicingProfileEpoch !== catalog.payload.servicingProfileEpoch ||
       admission.payload.actionCatalogSchemaHash !== catalog.payload.actionCatalogSchemaHash ||
       admission.payload.actionCatalogEpoch !== catalog.payload.actionCatalogEpoch ||
@@ -434,6 +433,19 @@ export async function verifyStandardRailManifest(
   }
 }
 
+function summaryBindsRequest(action: AssetActionDefinitionV1): boolean {
+  const requestProperties = action.requestSchema.properties as Record<string, Record<string, unknown>>;
+  const summaryProperties = action.confirmationSummarySchema!.properties as Record<string, Record<string, unknown>>;
+  const bindable = new Set(["actionId", "providerAssetId", ...Object.keys(requestProperties)]);
+  return Object.keys(action.confirmationSummaryTemplate!).some((key) => {
+    if (!bindable.has(key)) return false;
+    const requestType = key === "actionId" || key === "providerAssetId"
+      ? "string"
+      : requestProperties[key]?.type;
+    return requestType === summaryProperties[key]?.type;
+  });
+}
+
 async function verifyListing(listing: StandardListing, trust: ArtifactTrust): Promise<void> {
   requireClosedKeys(listing as unknown as Record<string, unknown>, [
     "commitment", "manifest", "offer", "providerControlProfile", "title", "description", "discovery",
@@ -573,6 +585,7 @@ async function verifyListing(listing: StandardListing, trust: ArtifactTrust): Pr
     !/^0x[0-9a-fA-F]{64}$/.test(commitment.serviceId) ||
     !/^0x[0-9a-fA-F]{64}$/.test(commitment.providerIdentitySnapshotHash) ||
     !control.assetResponseKeyId || !/^0x[0-9a-fA-F]{40}$/.test(control.assetResponseKey) ||
+    /^0x0{40}$/i.test(control.assetResponseKey) ||
     !Number.isSafeInteger(control.servicingProfileEpoch) || control.servicingProfileEpoch < 1 ||
     control.tlsPolicy !== "webpki-v1" || control.workloadAuthentication !== "signed-envelopes-v1" ||
     !Number.isSafeInteger(control.maxResponseBytes) || control.maxResponseBytes <= 0 ||

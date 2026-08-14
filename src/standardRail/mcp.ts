@@ -87,6 +87,20 @@ function isolateProviderResult(value: unknown): unknown {
   };
 }
 
+function walletMcpError(error: unknown) {
+  const internal = error instanceof Error ? error.message : "WALLET_ACCESS_DENIED";
+  const code = internal === "WALLET_RATE_LIMITED" ? "WALLET_RATE_LIMITED"
+    : internal === "ASSET_ACTION_NOT_ADMITTED" ? "ASSET_ACTION_NOT_ADMITTED"
+      : internal === "ASSET_ACTION_REJECTED" ? "ASSET_ACTION_REJECTED"
+        : "WALLET_ACCESS_DENIED";
+  return mcpError({
+    code,
+    message: code === "WALLET_ACCESS_DENIED"
+      ? "Wallet authorization rejected" : "The wallet request could not be completed",
+    retryable: code === "WALLET_RATE_LIMITED" || code === "ASSET_ACTION_REJECTED",
+  });
+}
+
 export async function createStandardRailMcp(
   app: Express,
   config: Config,
@@ -264,9 +278,17 @@ export async function createStandardRailMcp(
             challenge: await service.issueActionChallenge({ handle: args.orderHandle, action, request }) });
           return mcpJson(await service.performAction({ handle: args.orderHandle, action, request,
             authorization: args.authorization as never }));
-        } catch {
-          return mcpError({ code: "CONFIRMATION_REJECTED",
-            message: "The delivery confirmation request was rejected", retryable: false });
+        } catch (error) {
+          const internal = error instanceof Error ? error.message : "CONFIRMATION_ACCESS_DENIED";
+          const code = ["REPUTATION_NOT_READY", "REPUTATION_UNAVAILABLE",
+            "CONFIRMATION_SPONSORSHIP_LIMITED", "CONFIRMATION_SPONSORSHIP_UNAVAILABLE",
+            "CONFIRMATION_SUBMISSION_PENDING"].includes(internal)
+            ? internal : internal.includes("SPONSORSHIP_LIMIT")
+              ? "CONFIRMATION_SPONSORSHIP_LIMITED" : "CONFIRMATION_ACCESS_DENIED";
+          return mcpError({ code,
+            message: "The delivery confirmation request could not be completed",
+            retryable: ["REPUTATION_NOT_READY", "CONFIRMATION_SPONSORSHIP_UNAVAILABLE",
+              "CONFIRMATION_SUBMISSION_PENDING"].includes(code) });
         }
       });
     }
@@ -308,11 +330,11 @@ export async function createStandardRailMcp(
           idempotentHint: false, openWorldHint: false },
       },
       async ({ payer, limit, cursor, authorization }) => {
-        const normalized = payer.toLowerCase();
-        const request = { payer: normalized, limit, cursor };
+        const request = { limit, cursor };
         try {
           if (!authorization) return mcpJson({
             authorizationRequired: true,
+            code: "WALLET_AUTHORIZATION_REQUIRED",
             challenge: await service.issueWalletChallenge({
               action: "list-orders", payer, request,
               absoluteResourceUri: `${config.publicUrl.replace(/\/$/, "")}/wallet/orders`,
@@ -321,9 +343,7 @@ export async function createStandardRailMcp(
           return mcpJson(await service.listWalletOrders({
             payer, limit, cursor, authorization: authorization as never,
           }));
-        } catch {
-          return mcpError({ code: "WALLET_ACCESS_DENIED", message: "Wallet authorization rejected", retryable: false });
-        }
+        } catch (error) { return walletMcpError(error); }
       },
     );
     server.registerTool(
@@ -338,19 +358,18 @@ export async function createStandardRailMcp(
           idempotentHint: false, openWorldHint: false },
       },
       async ({ payer, authorization }) => {
-        const request = { payer: payer.toLowerCase() };
+        const request = {};
         try {
           if (!authorization) return mcpJson({
             authorizationRequired: true,
+            code: "WALLET_AUTHORIZATION_REQUIRED",
             challenge: await service.issueWalletChallenge({
               action: "get-buyer-reputation", payer, request,
               absoluteResourceUri: `${config.publicUrl.replace(/\/$/, "")}/wallet/reputation`,
             }),
           });
           return mcpJson(await service.getWalletReputation({ payer, authorization: authorization as never }));
-        } catch {
-          return mcpError({ code: "WALLET_ACCESS_DENIED", message: "Wallet authorization rejected", retryable: false });
-        }
+        } catch (error) { return walletMcpError(error); }
       },
     );
     server.registerTool(
@@ -371,10 +390,11 @@ export async function createStandardRailMcp(
         if (providerAgentId === null && cursor !== null) {
           return mcpError({ code: "WALLET_ACCESS_DENIED", message: "Wallet authorization rejected", retryable: false });
         }
-        const request = { payer: payer.toLowerCase(), providerAgentId, limit, cursor };
+        const request = { providerAgentId, limit, cursor };
         try {
           if (!authorization) return mcpJson({
             authorizationRequired: true,
+            code: "WALLET_AUTHORIZATION_REQUIRED",
             challenge: await service.issueWalletChallenge({
               action: "list-assets", payer, request,
               absoluteResourceUri: `${config.publicUrl.replace(/\/$/, "")}/wallet/assets`,
@@ -383,9 +403,7 @@ export async function createStandardRailMcp(
           return mcpJson(await service.listWalletAssets({
             payer, providerAgentId, limit, cursor, authorization: authorization as never,
           }));
-        } catch {
-          return mcpError({ code: "WALLET_ACCESS_DENIED", message: "Wallet authorization rejected", retryable: false });
-        }
+        } catch (error) { return walletMcpError(error); }
       },
     );
     server.registerTool(
@@ -407,6 +425,7 @@ export async function createStandardRailMcp(
         try {
           if (!authorization) return mcpJson({
             authorizationRequired: true,
+            code: "WALLET_AUTHORIZATION_REQUIRED",
             challenge: await service.issueAssetActionChallenge({
               ...args,
               absoluteResourceUri: `${config.publicUrl.replace(/\/$/, "")}/wallet/assets/action`,
@@ -415,9 +434,7 @@ export async function createStandardRailMcp(
           return mcpJson(isolateProviderResult(await service.performAssetAction({
             ...args, authorization: authorization as never,
           })));
-        } catch {
-          return mcpError({ code: "WALLET_ACCESS_DENIED", message: "Wallet authorization rejected", retryable: false });
-        }
+        } catch (error) { return walletMcpError(error); }
       },
     );
     registerMarketplaceTools(server, marketplace, () => service.listOutcomes());

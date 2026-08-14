@@ -1,5 +1,6 @@
 import { createHmac, randomBytes } from "node:crypto";
 import { getAddress, type Hex } from "viem";
+import type { PoolClient } from "pg";
 import type { Pool } from "../db/pool.js";
 import { canonicalHash } from "./canonical.js";
 import type { StandardRailConfig } from "./config.js";
@@ -70,7 +71,7 @@ export class StandardWalletStore {
       await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))", [
         "standard:wallet-challenge-cap",
       ]);
-      await client.query("DELETE FROM standard_wallet_action_challenges WHERE valid_before<now()-interval '1 day'");
+      await this.cleanupExpired(client);
       const outstanding = await client.query<{ client_count: string; global_count: string }>(
         `SELECT count(*) FILTER (WHERE client_key_hash=$1)::text AS client_count,
                 count(*)::text AS global_count
@@ -141,7 +142,11 @@ export class StandardWalletStore {
             args.action === "notification-get"
           ? this.config.abuse.protectedReadsPerPayerPerMinute
           : this.config.abuse.assetStateChangesPerPayerPerMinute;
-      const bucket = canonicalHash({ scope: `wallet-action:${args.action}`, payer: expected.payer });
+      const rateScope = args.action === "list-assets" ? "asset-list"
+        : args.action === "list-orders" || args.action === "get-buyer-reputation" ||
+            args.action === "notification-get"
+          ? "protected-read" : "asset-state-change";
+      const bucket = canonicalHash({ scope: `wallet-action:${rateScope}`, payer: expected.payer });
       const rate = await client.query<{ request_count: number }>(
         `INSERT INTO rate_limit_buckets(bucket_key,window_started_at,request_count)
          VALUES ($1,now(),1) ON CONFLICT (bucket_key) DO UPDATE SET
@@ -151,7 +156,7 @@ export class StandardWalletStore {
              THEN 1 ELSE rate_limit_buckets.request_count+1 END RETURNING request_count`,
         [`standard-wallet:${bucket}`],
       );
-      if ((rate.rows[0]?.request_count ?? max + 1) > max) throw new Error("wallet authorization denied");
+      if ((rate.rows[0]?.request_count ?? max + 1) > max) throw new Error("WALLET_RATE_LIMITED");
       if (args.additionalRate) {
         const extraBucket = canonicalHash({ scope: args.additionalRate.scope, payer: expected.payer });
         const extra = await client.query<{ request_count: number }>(
@@ -166,7 +171,7 @@ export class StandardWalletStore {
           [`standard-wallet:${extraBucket}`, args.additionalRate.window],
         );
         if ((extra.rows[0]?.request_count ?? args.additionalRate.maximum + 1) >
-          args.additionalRate.maximum) throw new Error("wallet authorization denied");
+          args.additionalRate.maximum) throw new Error("WALLET_RATE_LIMITED");
       }
       const operationHash = args.operationHash ?? canonicalHash({
         action: args.action,
@@ -204,6 +209,23 @@ export class StandardWalletStore {
       await client.query("ROLLBACK");
       throw error;
     } finally { client.release(); }
+  }
+
+  async cleanupExpiredAuthorizations(): Promise<void> {
+    const client = await this.pool.connect();
+    try { await this.cleanupExpired(client); }
+    finally { client.release(); }
+  }
+
+  private async cleanupExpired(client: PoolClient): Promise<void> {
+    await client.query(
+      "DELETE FROM standard_wallet_action_nonces WHERE consumed_at<now()-interval '10 minutes'",
+    );
+    await client.query(
+      `DELETE FROM standard_wallet_action_challenges
+        WHERE valid_before<now()-interval '5 minutes'
+           OR consumed_at<now()-interval '5 minutes'`,
+    );
   }
 
   orderCursorBinding(payer: string, limit: number): CursorBinding {

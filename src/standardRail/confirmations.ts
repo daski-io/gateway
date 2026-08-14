@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import {
   createPublicClient,
   encodeAbiParameters,
+  fallback,
   getAddress,
   http,
   parseAbi,
@@ -65,9 +66,25 @@ export class StandardConfirmations {
   private readonly client;
 
   constructor(private readonly pool: Pool, private readonly config: StandardRailConfig, chain: Chain) {
-    this.client = createPublicClient({ chain, transport: http(config.evidenceRpcUrls[0], {
-      retryCount: 0, timeout: 20_000,
-    }) });
+    this.client = createPublicClient({
+      chain,
+      transport: fallback(config.evidenceRpcUrls.map((url) =>
+        http(url, { retryCount: 0, timeout: 20_000 })), { rank: false }),
+    });
+  }
+
+  async assertReady(order: StandardOrderRecord): Promise<void> {
+    const result = await this.pool.query<{ state: string }>(
+      `SELECT state FROM standard_reputation_operations
+        WHERE order_id=$1 AND kind='register'`,
+      [order.orderId],
+    );
+    const state = result.rows[0]?.state;
+    if (state === "final") return;
+    if (state === "aborted_unattested" || state === "blocked_parent_aborted") {
+      throw new Error("REPUTATION_UNAVAILABLE");
+    }
+    throw new Error("REPUTATION_NOT_READY");
   }
 
   async handle(order: StandardOrderRecord, action: "confirmation" | "revoke-confirmation",
@@ -78,8 +95,13 @@ export class StandardConfirmations {
   }
 
   private async current(order: StandardOrderRecord) {
-    const record = await this.client.readContract({ address: this.config.reputationContract,
-      abi: reads, functionName: "getRecord", args: [order.orderKey] });
+    let record;
+    try {
+      record = await this.client.readContract({ address: this.config.reputationContract,
+        abi: reads, functionName: "getRecord", args: [order.orderKey] });
+    } catch {
+      throw new Error("CONFIRMATION_SPONSORSHIP_UNAVAILABLE");
+    }
     if (record.orderKey === ZERO || getAddress(record.payer) !== getAddress(order.payer!)) {
       throw new Error("CONFIRMATION_ORDER_UNAVAILABLE");
     }
@@ -112,8 +134,13 @@ export class StandardConfirmations {
       signableTypedData: null,
     };
     const payer = getAddress(order.payer!);
-    const nonce = await this.client.readContract({ address: this.config.easAddress, abi: reads,
-      functionName: "getNonce", args: [payer] });
+    let nonce;
+    try {
+      nonce = await this.client.readContract({ address: this.config.easAddress, abi: reads,
+        functionName: "getNonce", args: [payer] });
+    } catch {
+      throw new Error("CONFIRMATION_SPONSORSHIP_UNAVAILABLE");
+    }
     const deadline = BigInt(Math.floor(Date.now() / 1_000) + this.config.confirmationDeadlineSeconds);
     const recipient = current.providerAgentWallet === "0x0000000000000000000000000000000000000000"
       ? current.providerOwner : current.providerAgentWallet;
@@ -177,8 +204,13 @@ export class StandardConfirmations {
     if (!valid) throw new Error("CONFIRMATION_SIGNATURE_INVALID");
     const current = await this.current(order);
     const expectedUid = prep.current_uid ? `0x${prep.current_uid.toString("hex")}` : ZERO;
-    const nonce = await this.client.readContract({ address: this.config.easAddress, abi: reads,
-      functionName: "getNonce", args: [getAddress(order.payer!)] });
+    let nonce;
+    try {
+      nonce = await this.client.readContract({ address: this.config.easAddress, abi: reads,
+        functionName: "getNonce", args: [getAddress(order.payer!)] });
+    } catch {
+      throw new Error("CONFIRMATION_SPONSORSHIP_UNAVAILABLE");
+    }
     if (Number(current.confirmationTransitions) !== prep.transitions_used ||
       current.currentConfirmationUid.toLowerCase() !== expectedUid.toLowerCase() || nonce.toString() !== prep.eas_nonce) {
       throw new Error("CONFIRMATION_PREPARATION_STALE");

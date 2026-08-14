@@ -67,6 +67,12 @@ export interface StandardRailConfig {
   notification: {
     privateKey: Hex;
     keyId: string;
+    previousKeys: readonly {
+      keyId: string;
+      address: Address;
+      notBefore: number;
+      notAfter: number;
+    }[];
     verificationTimeoutMs: number;
     verificationTtlSeconds: number;
     maxResponseBytes: number;
@@ -190,9 +196,14 @@ export function loadStandardRailConfig(
   let launchOutcomeIds: string[];
   try { launchOutcomeIds = JSON.parse(required(env, "MARKETPLACE_LAUNCH_OUTCOME_IDS_JSON")); }
   catch { throw new Error("MARKETPLACE_LAUNCH_OUTCOME_IDS_JSON is malformed"); }
-  if (launchOutcomeIds.length !== 3 || new Set(launchOutcomeIds).size !== 3 ||
-    launchOutcomeIds.some((value) => !/^[a-z0-9][a-z0-9-]{0,127}$/.test(value))) {
-    throw new Error("The launch outcome allowlist must contain exactly three outcome IDs");
+  const reviewedLaunchOutcomes = [
+    "register-domain",
+    "create-agent-mailbox",
+    "form-wyoming-llc",
+  ];
+  if (JSON.stringify([...launchOutcomeIds].sort()) !==
+      JSON.stringify([...reviewedLaunchOutcomes].sort())) {
+    throw new Error("The launch outcome allowlist differs from the reviewed launch set");
   }
   const evidenceRpcUrls = required(env, "STANDARD_RAIL_EVIDENCE_RPC_URLS")
     .split(",")
@@ -367,6 +378,49 @@ export function loadStandardRailConfig(
     notificationRetryDelays.some((value, index) =>
       !Number.isSafeInteger(value) || value < 1 || (index > 0 && value <= notificationRetryDelays[index - 1]!))
   ) throw new Error("ORDER_EVENT_RETRY_DELAYS_SECONDS must contain increasing delays");
+  let notificationPreviousKeys: Array<{
+    keyId: string;
+    address: Address;
+    notBefore: number;
+    notAfter: number;
+  }> = [];
+  const previousKeysText = env.ORDER_EVENT_PREVIOUS_KEYS_JSON?.trim();
+  if (previousKeysText) {
+    try {
+      assertNoDuplicateJsonKeys(previousKeysText);
+      const parsed = JSON.parse(previousKeysText) as unknown;
+      if (!Array.isArray(parsed) || parsed.length > 5) throw new Error();
+      notificationPreviousKeys = parsed.map((value) => {
+        if (!value || typeof value !== "object" || Array.isArray(value) ||
+            Object.keys(value).sort().join(",") !== "address,keyId,notAfter,notBefore") throw new Error();
+        const key = value as Record<string, unknown>;
+        if (typeof key.keyId !== "string" || !/^[A-Za-z0-9._-]{1,64}$/.test(key.keyId) ||
+            typeof key.address !== "string" || !Number.isSafeInteger(key.notBefore) ||
+            !Number.isSafeInteger(key.notAfter) || Number(key.notBefore) < 0 ||
+            Number(key.notAfter) <= Number(key.notBefore)) throw new Error();
+        return {
+          keyId: key.keyId,
+          address: getAddress(key.address),
+          notBefore: Number(key.notBefore),
+          notAfter: Number(key.notAfter),
+        };
+      });
+    } catch {
+      throw new Error("ORDER_EVENT_PREVIOUS_KEYS_JSON is malformed");
+    }
+  }
+  const previousIds = notificationPreviousKeys.map((key) => key.keyId);
+  const previousAddresses = notificationPreviousKeys.map((key) => key.address.toLowerCase());
+  const retryWindow = notificationRetryDelays.reduce((sum, value) => sum + value, 0) + 3_600;
+  const now = Math.floor(Date.now() / 1_000);
+  if (
+    new Set(previousIds).size !== previousIds.length ||
+    new Set(previousAddresses).size !== previousAddresses.length ||
+    previousIds.includes(notificationKeyId) || previousAddresses.includes(notificationAddress) ||
+    notificationPreviousKeys.some((key) =>
+      key.notAfter < now + retryWindow || key.notAfter - key.notBefore > 63_072_000 ||
+      operationalAddresses.includes(key.address.toLowerCase()))
+  ) throw new Error("Order-event previous keys do not provide a safe rotation overlap");
   const notificationVerificationTtlSeconds = requiredPositiveInteger(
     env,
     "ORDER_EVENT_VERIFICATION_TTL_SECONDS",
@@ -473,6 +527,7 @@ export function loadStandardRailConfig(
     notification: {
       privateKey: notificationPrivateKey,
       keyId: notificationKeyId,
+      previousKeys: notificationPreviousKeys,
       verificationTimeoutMs: requiredPositiveInteger(env, "ORDER_EVENT_VERIFICATION_TIMEOUT_MS"),
       verificationTtlSeconds: notificationVerificationTtlSeconds,
       maxResponseBytes: notificationMaxResponseBytes,

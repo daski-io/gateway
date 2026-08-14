@@ -16,7 +16,7 @@ const events = parseAbi([
   "event StandardOrderRegistered(bytes32 indexed orderKey,bytes32 indexed authorizationKey,uint256 indexed providerAgentId,bytes32 serviceId,address payer,uint256 grossAmount,bool reputationEligible)",
   "event OutcomeRecorded(bytes32 indexed orderKey,uint256 indexed providerAgentId,address indexed payer,bytes32 serviceId,uint8 outcome,uint256 attestationDelay,bytes32 attestationUid)",
   "event BuyerConfirmationSubmitted(bytes32 indexed orderKey,uint256 indexed providerAgentId,address indexed payer,bytes32 serviceId,uint8 confirmation,bytes32 attestationUid,bytes32 refUid,uint8 transitionCount)",
-  "event BuyerConfirmationRevoked(bytes32 indexed orderKey,bytes32 indexed attestationUid,address indexed payer,uint8 transitionCount)",
+  "event BuyerConfirmationRevoked(bytes32 indexed orderKey,bytes32 indexed attestationUid,uint256 indexed providerAgentId,bytes32 serviceId,address payer,uint8 transitionCount)",
   "event ReputationRefunded(bytes32 indexed orderKey,bytes32 indexed serviceId,uint256 delta,uint256 cumulativeRefunded,bytes32 refundEvidenceHash)",
 ]);
 

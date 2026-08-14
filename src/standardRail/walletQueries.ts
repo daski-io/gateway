@@ -17,6 +17,7 @@ interface OrderHistoryRow {
   confirmation_state: number | null;
   confirmation_transitions: number | null;
   created_at: Date;
+  created_at_cursor: string;
   updated_at: Date;
 }
 
@@ -33,13 +34,14 @@ export class StandardWalletQueries {
     authorization: WalletAuthorizationTransport;
   }) {
     const payer = getAddress(args.payer).toLowerCase();
-    const request = { payer, limit: args.limit, cursor: args.cursor };
+    const request = { limit: args.limit, cursor: args.cursor };
     await this.wallet.consume({ authorization: args.authorization, action: "list-orders", request });
     const binding = this.wallet.orderCursorBinding(payer, args.limit);
     const last = args.cursor ? this.wallet.decodeOrderCursor(args.cursor, binding) : null;
     const result = await this.pool.query<OrderHistoryRow>(
       `SELECT o.order_id,o.order_handle,o.order_key,o.provider_agent_id,o.outcome_id,
-              o.state,o.gross_amount,o.canonical_listing,o.created_at,o.updated_at,
+              o.state,o.gross_amount,o.canonical_listing,o.created_at,
+              o.created_at::text AS created_at_cursor,o.updated_at,
               CASE WHEN p.order_key IS NOT NULL AND p.reputation_eligible THEN 'final'
                 WHEN p.order_key IS NOT NULL THEN 'unavailable'
                 WHEN r.state IN ('aborted_unattested','blocked_parent_aborted') THEN 'unavailable'
@@ -78,7 +80,7 @@ export class StandardWalletQueries {
       })),
       nextCursor: hasMore && rows.length > 0
         ? this.wallet.encodeOrderCursor({
-            createdAt: rows.at(-1)!.created_at.toISOString(),
+            createdAt: rows.at(-1)!.created_at_cursor,
             id: rows.at(-1)!.order_id,
           }, binding)
         : null,
@@ -90,7 +92,7 @@ export class StandardWalletQueries {
     authorization: WalletAuthorizationTransport;
   }) {
     const payer = getAddress(args.payer).toLowerCase();
-    const request = { payer };
+    const request = {};
     await this.wallet.consume({
       authorization: args.authorization,
       action: "get-buyer-reputation",
@@ -109,11 +111,10 @@ export class StandardWalletQueries {
               count(*) FILTER (WHERE p.confirmation=2)::text AS not_confirmed_count,
               COALESCE(sum(p.gross_amount),0)::text AS total_paid,
               COALESCE(sum(p.cumulative_refunded),0)::text AS total_refunded,
-              state.last_indexed_block::text AS finalized_block
-         FROM standard_reputation_projection_state state
-         LEFT JOIN standard_reputation_projection_records p
-           ON lower(p.payer)=$1 AND p.reputation_eligible
-        GROUP BY state.last_indexed_block`,
+              (SELECT last_indexed_block::text FROM standard_reputation_projection_state
+                WHERE singleton=true) AS finalized_block
+         FROM standard_reputation_projection_records p
+        WHERE lower(p.payer)=$1 AND p.reputation_eligible`,
       [payer],
     );
     const row = result.rows[0]!;

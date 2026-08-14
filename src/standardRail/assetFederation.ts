@@ -14,8 +14,8 @@ import type {
 } from "./types.js";
 import { utf8Hash, ZERO_HASH } from "./walletAuthorization.js";
 import type { StandardWalletStore } from "./walletStore.js";
-import { BoundedSemaphore } from "./semaphore.js";
 import { readBoundedJsonResponse } from "./boundedJson.js";
+import { withFederationPermit } from "./federationPermit.js";
 
 export interface ActiveServicing {
   admissionEnvelope: SignedEnvelope<ProviderServicingAdmissionV1>;
@@ -33,8 +33,7 @@ function exact(value: unknown, keys: readonly string[]): void {
 }
 
 export class StandardAssetFederation {
-  private readonly globalSemaphore: BoundedSemaphore;
-  private readonly providerSemaphores = new Map<string, BoundedSemaphore>();
+  private readonly activeAdmissions = new Map<string, SignedEnvelope<ProviderServicingAdmissionV1>>();
 
   constructor(
     private readonly pool: Pool,
@@ -47,8 +46,78 @@ export class StandardAssetFederation {
       init: RequestInit,
     ) => Promise<Response>,
     private readonly providerReputation?: (providerAgentId: string) => Promise<unknown>,
-  ) {
-    this.globalSemaphore = new BoundedSemaphore(config.abuse.federationGlobalConcurrency);
+  ) {}
+
+  async activateAdmissions(): Promise<void> {
+    const grouped = new Map<string, Array<SignedEnvelope<ProviderServicingAdmissionV1>>>();
+    for (const admission of this.config.manifest.servicingAdmissions) {
+      const values = grouped.get(admission.payload.providerAgentId) ?? [];
+      values.push(admission);
+      grouped.set(admission.payload.providerAgentId, values);
+    }
+    for (const [providerAgentId, admissions] of grouped) {
+      const client = await this.pool.connect();
+      try {
+        await client.query("BEGIN");
+        await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))", [
+          `standard:servicing-admission:${providerAgentId}`,
+        ]);
+        const current = await client.query<{
+          admission_hash: Buffer;
+          canonical_admission: SignedEnvelope<ProviderServicingAdmissionV1>;
+        }>(
+          `SELECT admission_hash,canonical_admission
+             FROM standard_provider_servicing_admissions
+            WHERE provider_agent_id=$1 AND current=true FOR UPDATE`,
+          [providerAgentId],
+        );
+        let active = current.rows[0]?.canonical_admission ?? null;
+        for (const admission of admissions.sort((left, right) =>
+          left.payload.servicingProfileEpoch - right.payload.servicingProfileEpoch)) {
+          const admissionHash = canonicalHash(admission);
+          if (active && canonicalHash(active) === admissionHash) continue;
+          if (active && admission.payload.servicingProfileEpoch <= active.payload.servicingProfileEpoch) {
+            if (admission.payload.servicingProfileEpoch === active.payload.servicingProfileEpoch) {
+              throw new Error("Servicing admission epoch conflicts with the activated admission");
+            }
+            continue;
+          }
+          if (
+            (!active && (admission.payload.servicingProfileEpoch !== 1 ||
+              admission.payload.previousAdmissionHash !== ZERO_HASH)) ||
+            (active && (
+              admission.payload.servicingProfileEpoch !== active.payload.servicingProfileEpoch + 1 ||
+              admission.payload.previousAdmissionHash !== canonicalHash(active)
+            ))
+          ) throw new Error("Servicing admission chain is invalid");
+          await client.query(
+            `UPDATE standard_provider_servicing_admissions SET current=false
+              WHERE provider_agent_id=$1 AND current=true`,
+            [providerAgentId],
+          );
+          await client.query(
+            `INSERT INTO standard_provider_servicing_admissions
+              (provider_agent_id,admission_hash,profile_hash,canonical_admission,current,valid_before)
+             VALUES ($1,$2,$3,$4,true,to_timestamp($5))
+             ON CONFLICT (admission_hash) DO UPDATE SET current=true,
+               canonical_admission=EXCLUDED.canonical_admission,
+               valid_before=EXCLUDED.valid_before`,
+            [providerAgentId, Buffer.from(admissionHash.slice(2), "hex"),
+              Buffer.from(admission.payload.providerControlProfileHash.slice(2), "hex"),
+              admission, admission.payload.validBefore],
+          );
+          active = admission;
+        }
+        if (!active || !admissions.some((item) => canonicalHash(item) === canonicalHash(active!))) {
+          throw new Error("Current servicing admission is absent from the runtime release");
+        }
+        await client.query("COMMIT");
+        this.activeAdmissions.set(providerAgentId, active);
+      } catch (error) {
+        await client.query("ROLLBACK").catch(() => undefined);
+        throw error;
+      } finally { client.release(); }
+    }
   }
 
   async listAssets(args: {
@@ -59,11 +128,11 @@ export class StandardAssetFederation {
     authorization: WalletAuthorizationTransport;
   }) {
     const payer = getAddress(args.payer).toLowerCase() as Hex;
-    const request = { payer, providerAgentId: args.providerAgentId, limit: args.limit, cursor: args.cursor };
+    const walletRequest = { providerAgentId: args.providerAgentId, limit: args.limit, cursor: args.cursor };
     const walletHash = await this.wallet.consume({
       authorization: args.authorization,
       action: "list-assets",
-      request,
+      request: walletRequest,
     });
     const eligible = await this.pool.query<{ provider_agent_id: string }>(
       `SELECT DISTINCT provider_agent_id FROM standard_orders
@@ -77,34 +146,39 @@ export class StandardAssetFederation {
     );
     const ids = eligible.rows.map((row) => row.provider_agent_id);
     const responses: Array<Record<string, unknown>> = [];
-    responses.push(...await Promise.all(ids.map(
-      (providerAgentId) => this.withFederationPermit(providerAgentId, () => this.queryProvider({
-          providerAgentId, payer, request, walletHash, authorization: args.authorization,
-        })),
-    )));
-    return { providers: responses };
-  }
-
-  private withFederationPermit<T>(providerAgentId: string, work: () => Promise<T>): Promise<T> {
-    let provider = this.providerSemaphores.get(providerAgentId);
-    if (!provider) {
-      provider = new BoundedSemaphore(this.config.abuse.federationPerProviderConcurrency);
-      this.providerSemaphores.set(providerAgentId, provider);
-    }
-    return this.globalSemaphore.run(
-      () => provider!.run(work, this.config.dispatchTimeoutMs),
-      this.config.dispatchTimeoutMs,
-    );
+    responses.push(...await Promise.all(ids.map(async (providerAgentId) => {
+      try {
+        return await withFederationPermit({
+          pool: this.pool,
+          providerAgentId,
+          providerLimit: this.config.abuse.federationPerProviderConcurrency,
+          globalLimit: this.config.abuse.federationGlobalConcurrency,
+          timeoutMs: this.config.dispatchTimeoutMs,
+          work: () => this.queryProvider({
+            providerAgentId,
+            payer,
+            request: { limit: args.limit, cursor: args.cursor },
+            walletHash,
+            authorization: args.authorization,
+          }),
+        });
+      } catch {
+        return { providerAgentId, availability: "unavailable", assets: [], nextCursor: null };
+      }
+    })));
+    return {
+      providers: responses,
+      warning: responses.some((item) => item.availability === "unavailable")
+        ? { code: "ASSET_PROVIDERS_PARTIALLY_UNAVAILABLE" }
+        : null,
+    };
   }
 
   activeServicing(providerAgentId: string): ActiveServicing | null {
     const now = Math.floor(Date.now() / 1_000);
-    const admissions = this.config.manifest.servicingAdmissions
-      .filter((item) => item.payload.providerAgentId === providerAgentId &&
-        item.payload.servicingEnabled && item.payload.validFrom <= now && item.payload.validBefore > now)
-      .sort((left, right) => right.payload.servicingProfileEpoch - left.payload.servicingProfileEpoch);
-    const admissionEnvelope = admissions[0];
-    if (!admissionEnvelope) return null;
+    const admissionEnvelope = this.activeAdmissions.get(providerAgentId);
+    if (!admissionEnvelope || !admissionEnvelope.payload.servicingEnabled ||
+      admissionEnvelope.payload.validFrom > now || admissionEnvelope.payload.validBefore <= now) return null;
     const listing = this.config.manifest.listings.find((item) =>
       item.commitment.payload.providerAgentId === providerAgentId &&
       canonicalHash(item.providerControlProfile) === admissionEnvelope.payload.providerControlProfileHash
@@ -119,7 +193,7 @@ export class StandardAssetFederation {
   private async queryProvider(args: {
     providerAgentId: string;
     payer: Hex;
-    request: { payer: string; providerAgentId: string | null; limit: number; cursor: string | null };
+    request: { limit: number; cursor: string | null };
     walletHash: Hex;
     authorization: WalletAuthorizationTransport;
   }): Promise<Record<string, unknown>> {
@@ -238,7 +312,7 @@ export class StandardAssetFederation {
       envelope.issuedAt >= envelope.validBefore || envelope.validBefore - envelope.issuedAt > 60 ||
       envelope.environment !== this.config.environment || envelope.chainId !== this.chainId ||
       envelope.audience !== this.config.gatewayAudience || envelope.signerKeyId !== profile.assetResponseKeyId ||
-      envelope.validBefore <= now
+      envelope.validBefore <= now || envelope.validBefore > grant.validBefore
     ) throw new Error("invalid provider response");
     const recovered = await recoverMessageAddress({
       message: { raw: artifactPayloadHash(envelope as unknown as Record<string, unknown> & { signature?: Hex }) },
@@ -258,6 +332,8 @@ export class StandardAssetFederation {
       payload.providerControlProfileHash !== active.admissionEnvelope.payload.providerControlProfileHash ||
       payload.servicingAdmissionHash !== active.admissionHash ||
       payload.servicingProfileEpoch !== active.admissionEnvelope.payload.servicingProfileEpoch ||
+      !(payload.nextCursor === null || (typeof payload.nextCursor === "string" &&
+        payload.nextCursor.length >= 4 && payload.nextCursor.length <= 4096)) ||
       !/^0x[0-9a-fA-F]{64}$/.test(payload.responseNonce) || !Array.isArray(payload.assets) ||
       payload.assets.length > 100 || payload.assets.some((asset) => {
         try { exact(asset, ["providerAssetId", "serviceSlug", "type", "identifier", "status",

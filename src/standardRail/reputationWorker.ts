@@ -1,9 +1,12 @@
 import { createCipheriv, createDecipheriv, randomBytes, randomUUID } from "node:crypto";
 import {
   createPublicClient,
+  fallback,
   getAddress,
   http,
   keccak256,
+  TransactionNotFoundError,
+  TransactionReceiptNotFoundError,
   type Chain,
   type Hex,
 } from "viem";
@@ -11,12 +14,14 @@ import { privateKeyToAccount } from "viem/accounts";
 import type { PoolClient } from "pg";
 import type { Pool } from "../db/pool.js";
 import { logger } from "../util/logger.js";
+import { canonicalHash } from "./canonical.js";
 import type { StandardRailConfig } from "./config.js";
 import { finalizeReputationOperation } from "./reputationFinalization.js";
 import {
   encodeReputationOperation,
   type ReputationOperationIntent,
 } from "./reputationOperation.js";
+import { refreshReputationPermit, reputationPermitDeadline } from "./reputationOrders.js";
 
 interface OperationRow {
   operation_id: string;
@@ -36,6 +41,7 @@ interface TransactionRow {
 }
 
 class AmbiguousReputationWrite extends Error {}
+class ReputationRpcUnavailable extends Error {}
 
 const bytes = (value: Hex): Buffer => Buffer.from(value.slice(2), "hex");
 
@@ -72,7 +78,8 @@ export class StandardReputationWorker {
     this.account = privateKeyToAccount(config.reputationRelayerPrivateKey);
     this.client = createPublicClient({
       chain,
-      transport: http(config.evidenceRpcUrls[0], { retryCount: 0, timeout: 20_000 }),
+      transport: fallback(config.evidenceRpcUrls.map((url) =>
+        http(url, { retryCount: 0, timeout: 20_000 })), { rank: false }),
     });
   }
 
@@ -134,7 +141,8 @@ export class StandardReputationWorker {
         await this.process(operation);
       } catch (error) {
         if (!(error instanceof AmbiguousReputationWrite)) {
-          await this.fail(operation, "application_fault");
+          await this.fail(operation, error instanceof ReputationRpcUnavailable
+            ? "rpc_finality" : "application_fault");
         }
       }
     }
@@ -175,15 +183,54 @@ export class StandardReputationWorker {
       await this.reconcile(operation, existing.rows[0]);
       return;
     }
-    await this.prepareAndBroadcast(operation);
+    await this.prepareAndBroadcast(await this.refreshPermitIfNeeded(operation));
+  }
+
+  private async refreshPermitIfNeeded(operation: OperationRow): Promise<OperationRow> {
+    const deadline = reputationPermitDeadline(operation.canonical_intent);
+    if (deadline === null || deadline > BigInt(Math.floor(Date.now() / 1_000) + 60)) return operation;
+    const refreshed = await refreshReputationPermit(operation.canonical_intent, this.config, this.chain.id);
+    const refreshedHash = canonicalHash(refreshed);
+    const previousHash = `0x${operation.intent_hash.toString("hex")}`;
+    const result = await this.pool.query<OperationRow>(
+      `UPDATE standard_reputation_operations
+          SET canonical_intent=$2,intent_hash=$3,
+              intent_predecessors=intent_predecessors||jsonb_build_array(jsonb_build_object(
+                'intentHash',$4::text,'validBefore',$5::text,'replacedAt',now())),
+              updated_at=now()
+        WHERE operation_id=$1 AND intent_hash=$6
+          AND state IN ('pending','broadcast')
+          AND NOT EXISTS (
+            SELECT 1 FROM standard_reputation_transactions
+             WHERE operation_id=$1 AND state IN ('prepared','broadcast','operator_attention','final')
+          )
+      RETURNING *`,
+      [operation.operation_id, refreshed, bytes(refreshedHash), previousHash,
+        deadline.toString(), operation.intent_hash],
+    );
+    if (result.rows[0]) return result.rows[0];
+    const current = await this.pool.query<OperationRow>(
+      "SELECT * FROM standard_reputation_operations WHERE operation_id=$1",
+      [operation.operation_id],
+    );
+    if (!current.rows[0]) throw new Error("REPUTATION_OPERATION_MISSING");
+    return current.rows[0];
   }
 
   private async reconcile(operation: OperationRow, transaction: TransactionRow): Promise<void> {
-    const receipt = await this.client.getTransactionReceipt({ hash: transaction.transaction_hash })
-      .catch(() => null);
+    let receipt;
+    try {
+      receipt = await this.client.getTransactionReceipt({ hash: transaction.transaction_hash });
+    } catch (error) {
+      if (!(error instanceof TransactionReceiptNotFoundError)) throw new ReputationRpcUnavailable();
+    }
     if (!receipt) {
-      const pending = await this.client.getTransaction({ hash: transaction.transaction_hash })
-        .catch(() => null);
+      let pending;
+      try {
+        pending = await this.client.getTransaction({ hash: transaction.transaction_hash });
+      } catch (error) {
+        if (!(error instanceof TransactionNotFoundError)) throw new ReputationRpcUnavailable();
+      }
       if (pending) {
         await this.markBroadcastAndDefer(operation.operation_id, transaction.transaction_id);
         return;
@@ -196,8 +243,12 @@ export class StandardReputationWorker {
       await this.defer(operation.operation_id);
       return;
     }
-    const canonicalBlock = await this.client.getBlock({ blockNumber: receipt.blockNumber })
-      .catch(() => null);
+    let canonicalBlock;
+    try {
+      canonicalBlock = await this.client.getBlock({ blockNumber: receipt.blockNumber });
+    } catch {
+      throw new ReputationRpcUnavailable();
+    }
     if (!canonicalBlock || canonicalBlock.hash.toLowerCase() !== receipt.blockHash.toLowerCase()) {
       await this.defer(operation.operation_id);
       return;
@@ -266,16 +317,20 @@ export class StandardReputationWorker {
       address: this.account.address,
       blockTag: "pending",
     });
-    const local = await client.query<{ next_nonce: string | null }>(
-      `SELECT (max(nonce)+1)::text AS next_nonce FROM standard_reputation_transactions
-        WHERE chain_id=$1 AND relayer_address=$2`,
-      [this.chain.id, this.account.address.toLowerCase()],
+    const local = await client.query<{ nonce: string }>(
+      `SELECT nonce::text FROM standard_reputation_transactions
+        WHERE chain_id=$1 AND relayer_address=$2
+          AND state IN ('prepared','broadcast','operator_attention') AND nonce >= $3
+        ORDER BY nonce`,
+      [this.chain.id, this.account.address.toLowerCase(), chainNonce],
     );
-    const localNonce = local.rows[0]?.next_nonce === null
-      ? chainNonce
-      : Number(local.rows[0]!.next_nonce!);
-    if (!Number.isSafeInteger(localNonce)) throw new Error("RELAYER_NONCE_INVALID");
-    const nonce = chainNonce > localNonce ? chainNonce : localNonce;
+    let nonce = chainNonce;
+    for (const row of local.rows) {
+      const occupied = Number(row.nonce);
+      if (!Number.isSafeInteger(occupied)) throw new Error("RELAYER_NONCE_INVALID");
+      if (occupied === nonce) nonce += 1;
+      else if (occupied > nonce) break;
+    }
     const raw = await this.account.signTransaction({
       chainId: this.chain.id,
       to: encoded.destination,
@@ -340,10 +395,10 @@ export class StandardReputationWorker {
         if (transaction.state === "prepared") {
           await this.fail(operation, "balance_fee", transaction.transaction_id);
         } else {
-          await this.defer(operation.operation_id);
+          await this.fail(operation, "balance_fee");
         }
       } else {
-        await this.defer(operation.operation_id);
+        await this.fail(operation, "rpc_finality");
       }
     }
   }
@@ -387,11 +442,26 @@ export class StandardReputationWorker {
   }
 
   private async resolveNonceConflict(operation: OperationRow, transaction: TransactionRow): Promise<void> {
-    const finalizedNonce = await this.client.getTransactionCount({
-      address: this.account.address,
-      blockTag: "finalized",
-    }).catch(() => null);
-    if (finalizedNonce !== null && BigInt(finalizedNonce) > BigInt(transaction.nonce)) {
+    let receipt;
+    try {
+      receipt = await this.client.getTransactionReceipt({ hash: transaction.transaction_hash });
+    } catch (error) {
+      if (!(error instanceof TransactionReceiptNotFoundError)) throw new ReputationRpcUnavailable();
+    }
+    if (receipt) {
+      await this.reconcile(operation, transaction);
+      return;
+    }
+    let finalizedNonce;
+    try {
+      finalizedNonce = await this.client.getTransactionCount({
+        address: this.account.address,
+        blockTag: "finalized",
+      });
+    } catch {
+      throw new ReputationRpcUnavailable();
+    }
+    if (BigInt(finalizedNonce) > BigInt(transaction.nonce)) {
       const result = await this.pool.query(
         `WITH marked AS (
            UPDATE standard_reputation_transactions SET state='failed',updated_at=now()

@@ -2,10 +2,13 @@ import { createCipheriv, createDecipheriv, randomBytes, randomUUID } from "node:
 import {
   createPublicClient,
   encodeFunctionData,
+  fallback,
   http,
   keccak256,
   parseAbi,
   parseEventLogs,
+  TransactionNotFoundError,
+  TransactionReceiptNotFoundError,
   type Chain,
   type Hex,
   type TransactionReceipt,
@@ -18,7 +21,7 @@ import type { StandardRailConfig } from "./config.js";
 const abi = parseAbi([
   "function giveFeedback(uint256 agentId,int128 value,uint8 valueDecimals,string tag1,string tag2,string endpoint,string feedbackURI,bytes32 feedbackHash)",
   "function revokeFeedback(uint256 agentId,uint64 feedbackIndex)",
-  "event NewFeedback(uint256 indexed agentId,address indexed clientAddress,uint64 feedbackIndex,int128 value,uint8 valueDecimals,string indexedTag1,string tag1,string tag2,string endpoint,string feedbackURI,bytes32 feedbackHash)",
+  "event NewFeedback(uint256 indexed agentId,address indexed clientAddress,uint64 feedbackIndex,int128 value,uint8 valueDecimals,string indexed indexedTag1,string tag1,string tag2,string endpoint,string feedbackURI,bytes32 feedbackHash)",
 ]);
 
 interface MirrorRow {
@@ -45,6 +48,7 @@ interface TxRow {
   encrypted_raw_transaction: Buffer;
   state: "prepared" | "broadcast" | "operator_attention";
 }
+class MirrorRpcUnavailable extends Error {}
 
 function crypt(raw: Hex, key: Buffer, orderId: string): Buffer {
   const iv = randomBytes(12);
@@ -69,9 +73,11 @@ export class StandardReputationMirror {
   constructor(private readonly pool: Pool, private readonly config: StandardRailConfig,
     private readonly chain: Chain) {
     this.account = privateKeyToAccount(config.mirror.privateKey);
-    this.client = createPublicClient({ chain, transport: http(config.evidenceRpcUrls[0], {
-      retryCount: 0, timeout: 20_000,
-    }) });
+    this.client = createPublicClient({
+      chain,
+      transport: fallback(config.evidenceRpcUrls.map((url) =>
+        http(url, { retryCount: 0, timeout: 20_000 })), { rank: false }),
+    });
   }
 
   start(): void {
@@ -115,7 +121,12 @@ export class StandardReputationMirror {
            AND (m.next_attempt_at IS NULL OR m.next_attempt_at<=now())
          ORDER BY m.updated_at LIMIT 1`);
       if (!result.rows[0]) return;
-      await this.process(result.rows[0]);
+      try {
+        await this.process(result.rows[0]);
+      } catch (error) {
+        await this.retry(result.rows[0], error instanceof MirrorRpcUnavailable
+          ? "rpc_finality" : "application_fault");
+      }
     }
   }
   private async process(row: MirrorRow): Promise<void> {
@@ -216,11 +227,17 @@ export class StandardReputationMirror {
             `${this.chain.id === 8453 ? "https://base.easscan.org" : "https://base-sepolia.easscan.org"}/attestation/view/${uid}`,
             uid!] });
       const chainNonce = await this.client.getTransactionCount({ address: this.account.address, blockTag: "pending" });
-      const local = await db.query<{ nonce: string | null }>(
-        "SELECT (max(nonce)+1)::text AS nonce FROM standard_reputation_mirror_transactions WHERE chain_id=$1",
-        [this.chain.id]);
-      const localNonce = local.rows[0]?.nonce === null ? BigInt(chainNonce) : BigInt(local.rows[0]!.nonce!);
-      const nonceValue = BigInt(chainNonce) > localNonce ? BigInt(chainNonce) : localNonce;
+      const local = await db.query<{ nonce: string }>(
+        `SELECT nonce::text FROM standard_reputation_mirror_transactions
+          WHERE chain_id=$1 AND state IN ('prepared','broadcast','operator_attention') AND nonce >= $2
+          ORDER BY nonce`,
+        [this.chain.id, chainNonce]);
+      let nonceValue = BigInt(chainNonce);
+      for (const row of local.rows) {
+        const occupied = BigInt(row.nonce);
+        if (occupied === nonceValue) nonceValue += 1n;
+        else if (occupied > nonceValue) break;
+      }
       if (nonceValue > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error("MIRROR_NONCE_INVALID");
       const nonce = Number(nonceValue);
       const raw = await this.account.signTransaction({ chainId: this.chain.id,
@@ -252,9 +269,19 @@ export class StandardReputationMirror {
     finally { db.release(); }
   }
   private async reconcile(row: MirrorRow, tx: TxRow): Promise<void> {
-    const receipt = await this.client.getTransactionReceipt({ hash: tx.transaction_hash }).catch(() => null);
+    let receipt;
+    try {
+      receipt = await this.client.getTransactionReceipt({ hash: tx.transaction_hash });
+    } catch (error) {
+      if (!(error instanceof TransactionReceiptNotFoundError)) throw new MirrorRpcUnavailable();
+    }
     if (!receipt) {
-      const pending = await this.client.getTransaction({ hash: tx.transaction_hash }).catch(() => null);
+      let pending;
+      try {
+        pending = await this.client.getTransaction({ hash: tx.transaction_hash });
+      } catch (error) {
+        if (!(error instanceof TransactionNotFoundError)) throw new MirrorRpcUnavailable();
+      }
       if (pending) {
         await this.markBroadcastAndDefer(row.order_id, tx.transaction_id);
         return;
@@ -268,7 +295,12 @@ export class StandardReputationMirror {
       await this.defer(row.order_id);
       return;
     }
-    const canonicalBlock = await this.client.getBlock({ blockNumber: receipt.blockNumber }).catch(() => null);
+    let canonicalBlock;
+    try {
+      canonicalBlock = await this.client.getBlock({ blockNumber: receipt.blockNumber });
+    } catch {
+      throw new MirrorRpcUnavailable();
+    }
     if (!canonicalBlock || canonicalBlock.hash.toLowerCase() !== receipt.blockHash.toLowerCase()) {
       await this.defer(row.order_id);
       return;
@@ -368,7 +400,7 @@ export class StandardReputationMirror {
           );
         }
       } else {
-        await this.defer(row.order_id);
+        await this.retry(row, "rpc_finality");
       }
     }
   }
@@ -394,11 +426,26 @@ export class StandardReputationMirror {
   }
 
   private async resolveNonceConflict(row: MirrorRow, tx: TxRow): Promise<void> {
-    const finalizedNonce = await this.client.getTransactionCount({
-      address: this.account.address,
-      blockTag: "finalized",
-    }).catch(() => null);
-    if (finalizedNonce !== null && BigInt(finalizedNonce) > BigInt(tx.nonce)) {
+    let receipt;
+    try {
+      receipt = await this.client.getTransactionReceipt({ hash: tx.transaction_hash });
+    } catch (error) {
+      if (!(error instanceof TransactionReceiptNotFoundError)) throw new MirrorRpcUnavailable();
+    }
+    if (receipt) {
+      await this.reconcile(row, tx);
+      return;
+    }
+    let finalizedNonce;
+    try {
+      finalizedNonce = await this.client.getTransactionCount({
+        address: this.account.address,
+        blockTag: "finalized",
+      });
+    } catch {
+      throw new MirrorRpcUnavailable();
+    }
+    if (BigInt(finalizedNonce) > BigInt(tx.nonce)) {
       const result = await this.pool.query(
         `WITH marked AS (
            UPDATE standard_reputation_mirror_transactions SET state='failed',updated_at=now()
