@@ -6,6 +6,7 @@ import express, {
 import type { Config } from "../config.js";
 import { rateLimit, securityHeaders } from "../util/security.js";
 import { assertNoDuplicateJsonKeys } from "../standardRail/canonical.js";
+import type { StandardRailConfig } from "../standardRail/config.js";
 
 interface RateLimitStore {
   consumeRateLimitBucket(
@@ -22,9 +23,34 @@ const MCP_STATE_CHANGE_TOOLS = new Set([
   "daski_request_refund",
   "daski_get_order_artifact",
   "daski_contact_order_support",
+  "daski_use_asset",
+  "daski_confirm_delivery",
+  "daski_revoke_delivery_confirmation",
+  "daski_set_order_notification",
+  "daski_delete_order_notification",
+]);
+
+const MCP_PROTECTED_READ_TOOLS = new Set([
+  "daski_list_my_orders",
+  "daski_get_my_reputation",
+  "daski_list_assets",
+  "daski_get_order_notification",
+]);
+
+const MCP_WALLET_CHALLENGE_TOOLS = new Set([
+  ...MCP_PROTECTED_READ_TOOLS,
+  "daski_use_asset",
+  "daski_confirm_delivery",
+  "daski_revoke_delivery_confirmation",
+  "daski_set_order_notification",
+  "daski_delete_order_notification",
 ]);
 
 function forMcpStateChange(middleware: RequestHandler): RequestHandler {
+  return forMcpTools(MCP_STATE_CHANGE_TOOLS, middleware);
+}
+
+function forMcpTools(names: ReadonlySet<string>, middleware: RequestHandler): RequestHandler {
   return (req, res, next) => {
     const requests = Array.isArray(req.body) ? req.body : [req.body];
     const hasStateChange = requests.some((value: unknown) => {
@@ -36,7 +62,7 @@ function forMcpStateChange(middleware: RequestHandler): RequestHandler {
       return (
         body.method === "tools/call" &&
         typeof body.params?.name === "string" &&
-        MCP_STATE_CHANGE_TOOLS.has(body.params.name)
+        names.has(body.params.name)
       );
     });
     if (hasStateChange) {
@@ -92,6 +118,7 @@ export function configureMiddleware(
   app: Express,
   queries: RateLimitStore,
   config: Config,
+  railConfig: StandardRailConfig,
 ): void {
   app.set("trust proxy", config.trustProxy);
   app.use(securityHeaders);
@@ -114,7 +141,7 @@ export function configureMiddleware(
   );
 
   if (config.nodeEnv !== "test") {
-    configurePreParserRateLimits(app, queries, config);
+    configurePreParserRateLimits(app, queries, config, railConfig);
   }
   app.use(express.json({
     limit: "1mb",
@@ -132,7 +159,7 @@ export function configureMiddleware(
     },
   }));
   if (config.nodeEnv !== "test") {
-    configureParsedMcpRateLimits(app, queries, config);
+    configureParsedMcpRateLimits(app, queries, config, railConfig);
   }
 }
 
@@ -140,6 +167,7 @@ function configurePreParserRateLimits(
   app: Express,
   queries: RateLimitStore,
   config: Config,
+  railConfig: StandardRailConfig,
 ): void {
   addRateLimits(
     app,
@@ -151,6 +179,12 @@ function configurePreParserRateLimits(
       store: queries,
     },
   );
+  addRateLimits(app, ["/wallet"], {
+    namespace: "wallet-challenge",
+    perClient: railConfig.abuse.walletChallengesPerClientPerMinute,
+    global: railConfig.abuse.walletChallengesGlobalPerMinute,
+    store: queries,
+  });
   app.use(
     "/outcomes",
     forPaidPurchaseRetry(
@@ -204,7 +238,33 @@ function configureParsedMcpRateLimits(
   app: Express,
   queries: RateLimitStore,
   config: Config,
+  railConfig: StandardRailConfig,
 ): void {
+  app.post(
+    config.mcpPath,
+    forMcpTools(
+      MCP_WALLET_CHALLENGE_TOOLS,
+      rateLimit({
+        windowMs: 60_000,
+        max: railConfig.abuse.walletChallengesPerClientPerMinute,
+        namespace: "wallet-challenge",
+        store: queries,
+      }),
+    ),
+  );
+  app.post(
+    config.mcpPath,
+    forMcpTools(
+      MCP_WALLET_CHALLENGE_TOOLS,
+      rateLimit({
+        windowMs: 60_000,
+        max: railConfig.abuse.walletChallengesGlobalPerMinute,
+        namespace: "wallet-challenge-global",
+        keyScope: "global",
+        store: queries,
+      }),
+    ),
+  );
   app.post(
     config.mcpPath,
     forMcpStateChange(
@@ -226,6 +286,14 @@ function configureParsedMcpRateLimits(
         keyScope: "global",
         store: queries,
       }),
+    ),
+  );
+  app.post(
+    config.mcpPath,
+    forMcpTools(
+      MCP_PROTECTED_READ_TOOLS,
+      rateLimit({ windowMs: 60_000, max: railConfig.abuse.protectedReadsPerPayerPerMinute,
+        namespace: "protected-read", store: queries }),
     ),
   );
 }

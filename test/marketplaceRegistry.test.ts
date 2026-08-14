@@ -17,7 +17,7 @@ function reader(): MarketplaceChainReader {
       providerRegistry: address,
       serviceRegistry: address,
       validationRegistry: address,
-      historicalReputationStorage: address,
+      reputationStorage: address,
     },
     resolveWallet: vi.fn(async () => ({ agentId: "7", found: true })),
     listProviders: vi.fn(async (offset, limit) => ({ offset, limit, total: "1", providers: [] })),
@@ -70,12 +70,12 @@ describe("payment-independent marketplace registry", () => {
     expect(chainReader.getService).not.toHaveBeenCalled();
   });
 
-  it("labels retained reputation as historical and read-only", async () => {
+  it("publishes the standard-order reputation trust boundary", async () => {
     const baseUrl = await start(reader());
     const response = await fetch(`${baseUrl}/public/v2/registry/contracts`);
     expect(await response.json()).toMatchObject({
-      historicalReputationOnly: true,
-      standardRailWritesReputation: false,
+      reputationModel: "standard-order-v1",
+      eligibilityTrustBoundary: expect.stringContaining("final x402 chain evidence"),
     });
     expect(serviceId).toMatch(/^0x[0-9a-f]{64}$/);
   });

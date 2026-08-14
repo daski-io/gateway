@@ -11,7 +11,7 @@ import type { Config } from "../config.js";
 import type { StandardRailConfig } from "../standardRail/config.js";
 import {
   agentIndexAbi,
-  historicalReputationAbi,
+  reputationStorageAbi,
   identityRegistryAbi,
   providerRegistryAbi,
   serviceRegistryAbi,
@@ -23,7 +23,7 @@ interface MarketplaceAddresses {
   providerRegistry: Address;
   serviceRegistry: Address;
   validationRegistry: Address;
-  historicalReputationStorage: Address;
+  reputationStorage: Address;
 }
 
 export interface MarketplaceChainReader {
@@ -88,57 +88,64 @@ export class ViemMarketplaceChainReader implements MarketplaceChainReader {
     return { agentId: agentId.toString(), found };
   }
 
-  private async getIdentity(agentId: bigint) {
+  private async getIdentity(agentId: bigint, blockNumber: bigint) {
     const [owner, agentWallet, agentUri] = await Promise.all([
       this.client.readContract({
         address: this.addresses.identityRegistry,
         abi: identityRegistryAbi,
         functionName: "ownerOf",
         args: [agentId],
+        blockNumber,
       }),
       this.client.readContract({
         address: this.addresses.identityRegistry,
         abi: identityRegistryAbi,
         functionName: "getAgentWallet",
         args: [agentId],
+        blockNumber,
       }),
       this.client.readContract({
         address: this.addresses.identityRegistry,
         abi: identityRegistryAbi,
         functionName: "tokenURI",
         args: [agentId],
+        blockNumber,
       }),
     ]);
     return identity([owner, agentWallet, agentUri]);
   }
 
   async listProviders(offset: number, limit: number): Promise<unknown> {
+    const blockNumber = (await this.client.getBlock({ blockTag: "finalized" })).number;
     const [total, ids] = await Promise.all([
       this.client.readContract({
         address: this.addresses.providerRegistry,
         abi: providerRegistryAbi,
         functionName: "getProviderCount",
+        blockNumber,
       }),
       this.client.readContract({
         address: this.addresses.providerRegistry,
         abi: providerRegistryAbi,
         functionName: "getProviderIdsPaginated",
         args: [BigInt(offset), BigInt(limit)],
+        blockNumber,
       }),
     ]);
-    const providers = await Promise.all(ids.map((agentId) => this.providerSummary(agentId)));
-    return { offset, limit, total: total.toString(), providers };
+    const providers = await Promise.all(ids.map((agentId) => this.providerSummary(agentId, blockNumber)));
+    return { offset, limit, total: total.toString(), providers, finalizedBlock: blockNumber.toString() };
   }
 
-  private async providerSummary(agentId: bigint) {
+  private async providerSummary(agentId: bigint, blockNumber: bigint) {
     const [provider, agent] = await Promise.all([
       this.client.readContract({
         address: this.addresses.providerRegistry,
         abi: providerRegistryAbi,
         functionName: "getProvider",
         args: [agentId],
+        blockNumber,
       }),
-      this.getIdentity(agentId),
+      this.getIdentity(agentId, blockNumber),
     ]);
     return {
       agentId: provider.agentId.toString(),
@@ -149,48 +156,55 @@ export class ViemMarketplaceChainReader implements MarketplaceChainReader {
   }
 
   async getProvider(agentId: bigint): Promise<unknown> {
+    const blockNumber = (await this.client.getBlock({ blockTag: "finalized" })).number;
     const [provider, serviceCount, serviceIds, reputation] = await Promise.all([
-      this.providerSummary(agentId),
+      this.providerSummary(agentId, blockNumber),
       this.client.readContract({
         address: this.addresses.serviceRegistry,
         abi: serviceRegistryAbi,
         functionName: "getServiceCountByProvider",
         args: [agentId],
+        blockNumber,
       }),
       this.client.readContract({
         address: this.addresses.serviceRegistry,
         abi: serviceRegistryAbi,
         functionName: "getServicesByProviderPaginated",
         args: [agentId, 0n, 100n],
+        blockNumber,
       }),
       this.client.readContract({
-        address: this.addresses.historicalReputationStorage,
-        abi: historicalReputationAbi,
+        address: this.addresses.reputationStorage,
+        abi: reputationStorageAbi,
         functionName: "getProviderStats",
         args: [agentId],
+        blockNumber,
       }),
     ]);
     return {
       ...provider as object,
       serviceCount: serviceCount.toString(),
       serviceIds,
-      historicalNativeRailReputation: providerStats(reputation),
+      standardReputation: { ...providerStats(reputation), finalizedBlock: blockNumber.toString() },
     };
   }
 
   async getService(serviceId: Hex): Promise<unknown> {
+    const blockNumber = (await this.client.getBlock({ blockTag: "finalized" })).number;
     const [service, reputation] = await Promise.all([
       this.client.readContract({
         address: this.addresses.serviceRegistry,
         abi: serviceRegistryAbi,
         functionName: "getService",
         args: [serviceId],
+        blockNumber,
       }),
       this.client.readContract({
-        address: this.addresses.historicalReputationStorage,
-        abi: historicalReputationAbi,
+        address: this.addresses.reputationStorage,
+        abi: reputationStorageAbi,
         functionName: "getServiceStats",
         args: [serviceId],
+        blockNumber,
       }),
     ]);
     return {
@@ -202,7 +216,7 @@ export class ViemMarketplaceChainReader implements MarketplaceChainReader {
       serviceWallet: service.serviceWallet,
       createdAt: service.createdAt.toString(),
       active: service.active,
-      historicalNativeRailReputation: serviceStats(reputation),
+      standardReputation: { ...serviceStats(reputation), finalizedBlock: blockNumber.toString() },
     };
   }
 }

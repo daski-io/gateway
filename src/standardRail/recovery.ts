@@ -102,7 +102,7 @@ export class StandardRailRecoveryWorker {
         case "DISPATCH_STARTED":
         case "DISPATCH_AMBIGUOUS": return 30;
         case "DISPATCHED":
-        case "KYC_REQUIRED": return 30;
+        case "INPUT_REQUIRED": return 30;
         case "PROVIDER_FAILED": return 30;
         case "FULFILLED": return listing.refundPolicy.requestDeadlineSeconds;
         case "REFUND_DUE":
@@ -136,7 +136,7 @@ export class StandardRailRecoveryWorker {
       case "DISPATCH_STARTED":
       case "DISPATCH_AMBIGUOUS":
       case "DISPATCHED":
-      case "KYC_REQUIRED":
+      case "INPUT_REQUIRED":
         await this.options.resumePaid(order);
         return;
       case "PROVIDER_FAILED":

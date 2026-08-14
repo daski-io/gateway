@@ -1,16 +1,54 @@
 import { getAddress, recoverMessageAddress, type Address } from "viem";
-import { artifactPayloadHash, canonicalHash } from "./canonical.js";
+import { artifactPayloadHash, canonicalHash, providerIdentitySnapshotHash } from "./canonical.js";
 import type {
+  AssetActionDefinitionV1,
   SignedEnvelope,
   StandardListing,
   StandardRailManifest,
 } from "./types.js";
+import {
+  assertSchema,
+  compileClosedRequestSchema,
+  compileClosedResponseSchema,
+} from "./schema.js";
+
+const LAUNCH_ACTION_CLASSIFICATION = new Map<string, boolean>([
+  ["get-domain-info", false],
+  ["list-dns-records", false],
+  ["set-dns-record", false],
+  ["delete-dns-record", false],
+  ["transfer-domain-out", true],
+  ["get-mailbox-info", false],
+  ["change-password", false],
+  ["delete-mailbox", true],
+  ["get-entity-status", false],
+  ["list-entity-documents", false],
+  ["download-entity-document", false],
+  ["file-dissolution", true],
+]);
+
+const LAUNCH_REPLAY_POLICIES = new Map<string, AssetActionDefinitionV1["replayPolicy"]>([
+  ["get-domain-info", "stable-result"],
+  ["list-dns-records", "stable-result"],
+  ["set-dns-record", "stable-result"],
+  ["delete-dns-record", "stable-result"],
+  ["transfer-domain-out", "redacted-after-window"],
+  ["get-mailbox-info", "stable-result"],
+  ["change-password", "redacted-after-window"],
+  ["delete-mailbox", "stable-result"],
+  ["get-entity-status", "stable-result"],
+  ["list-entity-documents", "stable-result"],
+  ["download-entity-document", "regenerate-ephemeral"],
+  ["file-dissolution", "stable-result"],
+]);
 
 export interface ArtifactTrust {
   environment: string;
   chainId: number;
   gatewayAudience: string;
   signers: ReadonlyMap<string, Address>;
+  marketplaceCommissionBps?: number;
+  launchOutcomeIds?: readonly string[];
 }
 
 export async function verifyEnvelope<T>(
@@ -69,7 +107,9 @@ export async function verifyStandardRailManifest(
 ): Promise<void> {
   requireClosedKeys(manifest as unknown as Record<string, unknown>, [
     "facilitatorProfile", "facilitatorCredentialBinding", "railCapabilityRequirements",
-    "activeRailProfile", "chainEvidencePolicy", "runtimeRelease", "listings",
+    "activeRailProfile", "chainEvidencePolicy", "runtimeRelease", "providerIdentitySnapshots",
+    "servicingAdmissions",
+    "actionCatalogs", "listings",
   ], "standard rail manifest");
   verifyClosedEnvelope(manifest.facilitatorProfile, "facilitator profile envelope");
   verifyClosedEnvelope(manifest.facilitatorCredentialBinding, "facilitator credential binding envelope");
@@ -87,6 +127,122 @@ export async function verifyStandardRailManifest(
   await verifyEnvelope(manifest.activeRailProfile, "ActiveRailProfileV1", trust);
   await verifyEnvelope(manifest.chainEvidencePolicy, "ChainEvidencePolicyV1", trust);
   await verifyEnvelope(manifest.runtimeRelease, "RuntimeReleaseManifestV1", trust);
+  for (const snapshot of manifest.providerIdentitySnapshots) {
+    verifyClosedEnvelope(snapshot, "provider identity snapshot envelope");
+    await verifyEnvelope(snapshot, "ProviderIdentitySnapshotV1", trust);
+    requireClosedKeys(snapshot.payload as unknown as Record<string, unknown>, [
+      "providerAgentId", "serviceId", "identityRegistry", "providerRegistry", "serviceRegistry",
+      "providerOwner", "providerAgentWallet", "providerPayee", "blockNumber", "blockHash",
+    ], "provider identity snapshot payload");
+    if (
+      !/^[1-9]\d*$/.test(snapshot.payload.providerAgentId) ||
+      !/^[1-9]\d*$/.test(snapshot.payload.blockNumber) ||
+      !/^0x[0-9a-fA-F]{64}$/.test(snapshot.payload.serviceId) ||
+      !/^0x[0-9a-fA-F]{64}$/.test(snapshot.payload.blockHash) ||
+      [snapshot.payload.identityRegistry, snapshot.payload.providerRegistry,
+        snapshot.payload.serviceRegistry, snapshot.payload.providerOwner,
+        snapshot.payload.providerAgentWallet, snapshot.payload.providerPayee]
+        .some((value) => !/^0x[0-9a-fA-F]{40}$/.test(value) || /^0x0{40}$/i.test(value))
+    ) throw new Error("Provider identity snapshot is invalid");
+  }
+  for (const admission of manifest.servicingAdmissions) {
+    verifyClosedEnvelope(admission, "provider servicing admission envelope");
+    await verifyEnvelope(admission, "ProviderServicingAdmissionV1", trust);
+    requireClosedKeys(admission.payload as unknown as Record<string, unknown>, [
+      "providerAgentId", "providerControlProfileHash", "servicingProfileEpoch",
+      "actionCatalogHash", "actionCatalogSchemaHash", "actionCatalogEpoch",
+      "servicingEnabled", "previousAdmissionHash", "validFrom", "validBefore",
+    ], "provider servicing admission payload");
+  }
+  for (const catalog of manifest.actionCatalogs) {
+    verifyClosedEnvelope(catalog, "provider action catalog envelope");
+    await verifyEnvelope(catalog, "ProviderAssetActionCatalogV1", trust);
+    requireClosedKeys(catalog.payload as unknown as Record<string, unknown>, [
+      "providerAgentId", "providerControlProfileHash", "servicingProfileEpoch",
+      "actionCatalogSchemaHash", "actionCatalogEpoch", "actions",
+    ], "provider action catalog payload");
+    if (
+      !/^[1-9]\d*$/.test(catalog.payload.providerAgentId) ||
+      !/^0x[0-9a-fA-F]{64}$/.test(catalog.payload.providerControlProfileHash) ||
+      !/^0x[0-9a-fA-F]{64}$/.test(catalog.payload.actionCatalogSchemaHash) ||
+      !Number.isSafeInteger(catalog.payload.servicingProfileEpoch) ||
+      catalog.payload.servicingProfileEpoch < 1 ||
+      !Number.isSafeInteger(catalog.payload.actionCatalogEpoch) || catalog.payload.actionCatalogEpoch < 1 ||
+      !Array.isArray(catalog.payload.actions)
+    ) throw new Error("Provider action catalog is invalid");
+    const actionIds = new Set<string>();
+    for (const action of catalog.payload.actions) {
+      requireClosedKeys(action as unknown as Record<string, unknown>, [
+        "providerAgentId", "serviceId", "serviceSlug", "actionId", "assetType",
+        "ownershipPolicy", "destructive", "requestSchema", "responseSchema",
+        "confirmationSummarySchema", "confirmationSummaryTemplate", "endpoint",
+        "replayPolicy", "retentionSeconds", "validFrom", "validBefore", "actionDefinitionHash",
+      ], "provider action definition");
+      const { actionDefinitionHash, ...preimage } = action;
+      const destructive = LAUNCH_ACTION_CLASSIFICATION.get(action.actionId);
+      const replayPolicy = LAUNCH_REPLAY_POLICIES.get(action.actionId);
+      let endpoint: URL;
+      try { endpoint = new URL(action.endpoint); } catch { throw new Error("Action endpoint is invalid"); }
+      if (
+        actionIds.has(action.actionId) || action.providerAgentId !== catalog.payload.providerAgentId ||
+        destructive === undefined || action.destructive !== destructive ||
+        replayPolicy === undefined || action.replayPolicy !== replayPolicy ||
+        action.ownershipPolicy !== "owner-only" || actionDefinitionHash !== canonicalHash(preimage) ||
+        !/^0x[0-9a-fA-F]{64}$/.test(action.serviceId) ||
+        !/^[a-z0-9][a-z0-9-]{0,95}$/.test(action.actionId) || !action.serviceSlug || !action.assetType ||
+        endpoint.protocol !== "https:" || endpoint.username || endpoint.password || endpoint.search || endpoint.hash ||
+        !["stable-result", "regenerate-ephemeral", "redacted-after-window"].includes(action.replayPolicy) ||
+        !Number.isSafeInteger(action.retentionSeconds) || action.retentionSeconds < 1 ||
+        (action.replayPolicy === "redacted-after-window" && action.retentionSeconds > 604_800) ||
+        (action.destructive && action.retentionSeconds <= 600) ||
+        !Number.isSafeInteger(action.validFrom) || !Number.isSafeInteger(action.validBefore) ||
+        action.validFrom < catalog.issuedAt || action.validBefore > catalog.validBefore ||
+        action.validFrom >= action.validBefore ||
+        (action.destructive !==
+          (action.confirmationSummarySchema !== null && action.confirmationSummaryTemplate !== null))
+      ) throw new Error("Provider action definition is invalid");
+      compileClosedRequestSchema(action.requestSchema);
+      compileClosedResponseSchema(action.responseSchema);
+      if (action.destructive) {
+        const validateSummary = compileClosedResponseSchema(action.confirmationSummarySchema!);
+        assertSchema(validateSummary, action.confirmationSummaryTemplate, "Response");
+      }
+      actionIds.add(action.actionId);
+    }
+  }
+  const admittedActions = new Set<string>();
+  for (const admission of manifest.servicingAdmissions) {
+    const catalog = manifest.actionCatalogs.find((item) =>
+      item.payload.providerAgentId === admission.payload.providerAgentId &&
+      canonicalHash(item) === admission.payload.actionCatalogHash
+    );
+    const listing = manifest.listings.find((item) =>
+      item.commitment.payload.providerAgentId === admission.payload.providerAgentId &&
+      canonicalHash(item.providerControlProfile) === admission.payload.providerControlProfileHash
+    );
+    if (
+      !catalog || !listing || !admission.payload.servicingEnabled ||
+      admission.payload.servicingProfileEpoch !== catalog.payload.servicingProfileEpoch ||
+      admission.payload.actionCatalogSchemaHash !== catalog.payload.actionCatalogSchemaHash ||
+      admission.payload.actionCatalogEpoch !== catalog.payload.actionCatalogEpoch ||
+      listing.providerControlProfile.payload.servicingProfileEpoch !==
+        admission.payload.servicingProfileEpoch
+    ) throw new Error("Servicing admission does not bind an active control profile and action catalog");
+    for (const action of catalog.payload.actions) {
+      if (
+        action.endpoint !== listing.providerControlProfile.payload.assetActionUrl ||
+        !manifest.listings.some((item) =>
+          item.commitment.payload.providerAgentId === action.providerAgentId &&
+          item.commitment.payload.serviceId === action.serviceId)
+      ) throw new Error("Action definition is outside its admitted provider service");
+      if (admittedActions.has(action.actionId)) throw new Error("Launch action is admitted more than once");
+      admittedActions.add(action.actionId);
+    }
+  }
+  if (
+    admittedActions.size !== LAUNCH_ACTION_CLASSIFICATION.size ||
+    [...LAUNCH_ACTION_CLASSIFICATION.keys()].some((actionId) => !admittedActions.has(actionId))
+  ) throw new Error("Servicing admissions do not contain the exact reviewed launch action set");
   requireClosedKeys(manifest.facilitatorProfile.payload as unknown as Record<string, unknown>, [
     "profileEpoch", "profileId", "baseUrl", "scheme", "network", "asset",
     "assetTransferMethod", "authenticationMethod", "credentialPolicyHash", "tlsPolicyHash",
@@ -120,6 +276,7 @@ export async function verifyStandardRailManifest(
     "runtimeEpoch", "gatewayReleaseDigest", "containerOrBinaryDigest", "databaseSchemaVersion",
     "canonicalConfigurationHash", "activeRailProfileHash", "facilitatorCredentialBindingHash",
     "chainEvidencePolicyHash", "activeListingManifestSetHash", "providerControlProfileSetHash",
+    "providerServicingAdmissionSetHash",
     "adapterArtifactSetHash", "keyPolicySetHash", "environment", "chainId", "issuedAt",
     "admissionValidBefore", "recoveryValidBefore",
   ], "runtime release payload");
@@ -198,8 +355,15 @@ export async function verifyStandardRailManifest(
     rail.recoveryValidBefore > manifest.activeRailProfile.validBefore ||
     ((rail.priorRailEpoch === "0") !== (rail.priorActiveRailProfileHash.toLowerCase() === zeroHash))
   ) throw new Error("Active rail profile chronology or predecessor is invalid");
+  if (trust.launchOutcomeIds) {
+    const actual = manifest.listings.map((item) => item.commitment.payload.outcomeId).sort();
+    const expected = [...trust.launchOutcomeIds].sort();
+    if (actual.length !== expected.length || actual.some((value, index) => value !== expected[index])) {
+      throw new Error("Active listings do not match the reviewed launch outcome allowlist");
+    }
+  }
   if (
-    !/^[1-9]\d*$/.test(runtime.runtimeEpoch) || runtime.databaseSchemaVersion !== "031_standard_rail.sql" ||
+    !/^[1-9]\d*$/.test(runtime.runtimeEpoch) || runtime.databaseSchemaVersion !== "033_standard_wallet_reputation.sql" ||
     runtime.environment !== trust.environment || runtime.chainId !== trust.chainId ||
     runtime.issuedAt !== manifest.runtimeRelease.issuedAt ||
     runtime.admissionValidBefore <= runtime.issuedAt || runtime.recoveryValidBefore <= runtime.admissionValidBefore ||
@@ -234,6 +398,15 @@ export async function verifyStandardRailManifest(
   const seen = new Set<string>();
   for (const listing of manifest.listings) {
     await verifyListing(listing, trust);
+    const snapshot = manifest.providerIdentitySnapshots.find((item) =>
+      providerIdentitySnapshotHash(item.payload, trust.chainId) ===
+        listing.commitment.payload.providerIdentitySnapshotHash
+    );
+    if (
+      !snapshot || snapshot.payload.providerAgentId !== listing.commitment.payload.providerAgentId ||
+      snapshot.payload.serviceId !== listing.commitment.payload.serviceId ||
+      getAddress(snapshot.payload.providerPayee) !== getAddress(listing.commitment.payload.providerPayee)
+    ) throw new Error("Listing provider identity snapshot is missing or inconsistent");
     const key = `${listing.commitment.payload.providerAgentId}:${listing.commitment.payload.outcomeId}`;
     if (seen.has(key)) throw new Error(`Duplicate active listing ${key}`);
     seen.add(key);
@@ -248,17 +421,22 @@ export async function verifyStandardRailManifest(
     .map((listing) => canonicalHash(listing.manifest).toLowerCase()).sort());
   const controlProfileSetHash = canonicalHash(manifest.listings
     .map((listing) => canonicalHash(listing.providerControlProfile).toLowerCase()).sort());
+  const servicingSetHash = canonicalHash(manifest.servicingAdmissions
+    .map((admission) => canonicalHash(admission).toLowerCase()).sort());
   if (manifest.runtimeRelease.payload.activeListingManifestSetHash.toLowerCase() !== listingSetHash) {
     throw new Error("Runtime release active listing set hash mismatch");
   }
   if (manifest.runtimeRelease.payload.providerControlProfileSetHash.toLowerCase() !== controlProfileSetHash) {
     throw new Error("Runtime release provider control profile set hash mismatch");
   }
+  if (manifest.runtimeRelease.payload.providerServicingAdmissionSetHash.toLowerCase() !== servicingSetHash) {
+    throw new Error("Runtime release provider servicing admission set hash mismatch");
+  }
 }
 
 async function verifyListing(listing: StandardListing, trust: ArtifactTrust): Promise<void> {
   requireClosedKeys(listing as unknown as Record<string, unknown>, [
-    "commitment", "manifest", "offer", "providerControlProfile", "title", "description",
+    "commitment", "manifest", "offer", "providerControlProfile", "title", "description", "discovery",
     "requestSchema", "responseSchema", "terms", "screeningPolicy", "buyerIdentityPolicy",
     "extensionPolicy", "quotePolicy", "deliveryCommitment", "capacityPolicy", "deadlinePolicy",
     "refundPolicy",
@@ -278,7 +456,8 @@ async function verifyListing(listing: StandardListing, trust: ArtifactTrust): Pr
   const manifestHash = canonicalHash(listing.manifest);
   const controlProfileHash = canonicalHash(listing.providerControlProfile);
   requireClosedKeys(listing.commitment.payload as unknown as Record<string, unknown>, [
-    "canonicalToken", "railCapabilityRequirementsHash", "providerAgentId", "providerAuthorityKey",
+    "canonicalToken", "railCapabilityRequirementsHash", "providerAgentId", "serviceId",
+    "providerIdentitySnapshotHash", "providerAuthorityKey",
     "providerTerminalAttestationKey", "providerPayee", "providerControlProfileHash", "outcomeId",
     "method", "absoluteResourceUri", "bindingProfile", "requestSchemaHash", "responseSchemaHash",
     "canonicalizationProfile", "buyerIdentityPolicyHash", "daskiCommissionReceiver", "commissionBps",
@@ -299,6 +478,21 @@ async function verifyListing(listing: StandardListing, trust: ArtifactTrust): Pr
     "marketplaceTermsUrl", "marketplacePrivacyUrl", "providerLegalName", "providerTermsUrl",
     "providerPrivacyUrl",
   ], "listing terms");
+  requireClosedKeys(listing.discovery as unknown as Record<string, unknown>, [
+    "categoryFamily", "serviceType", "jurisdictions", "tags", "persistentAsset",
+    "fulfillmentObligationHash", "jurisdictionObligationHashes",
+  ], "listing discovery metadata");
+  if (
+    !listing.discovery.categoryFamily || !listing.discovery.serviceType ||
+    listing.discovery.jurisdictions.length < 1 ||
+    new Set(listing.discovery.jurisdictions).size !== listing.discovery.jurisdictions.length ||
+    new Set(listing.discovery.tags).size !== listing.discovery.tags.length ||
+    !/^0x[0-9a-fA-F]{64}$/.test(listing.discovery.fulfillmentObligationHash) ||
+    Object.keys(listing.discovery.jurisdictionObligationHashes).sort().join(",") !==
+      [...listing.discovery.jurisdictions].sort().join(",") ||
+    Object.values(listing.discovery.jurisdictionObligationHashes)
+      .some((value) => !/^0x[0-9a-fA-F]{64}$/.test(value))
+  ) throw new Error("Listing discovery metadata is invalid");
   requireClosedKeys(listing.screeningPolicy as unknown as Record<string, unknown>, [
     "policyId", "sanctionsOracle", "sanctionsOracleRuntimeCodeHash", "screenPayer", "screenedRoles",
     "providerControlledWallets",
@@ -347,7 +541,9 @@ async function verifyListing(listing: StandardListing, trust: ArtifactTrust): Pr
   const control = listing.providerControlProfile.payload;
   requireClosedKeys(control as unknown as Record<string, unknown>, [
     "providerAgentId", "providerAudience", "origin", "quoteUrl", "reserveUrl", "dispatchUrl",
-    "dispatchStatusUrl", "lifecycleUrl", "tlsPolicy", "workloadAuthentication",
+    "dispatchStatusUrl", "lifecycleUrl", "assetQueryUrl", "assetActionUrl",
+    "assetResponseKeyId", "assetResponseKey", "servicingProfileEpoch",
+    "tlsPolicy", "workloadAuthentication",
     "maxResponseBytes", "timeoutMs",
   ], "provider control profile payload");
   const origin = new URL(control.origin);
@@ -360,6 +556,8 @@ async function verifyListing(listing: StandardListing, trust: ArtifactTrust): Pr
     dispatchUrl: control.dispatchUrl,
     dispatchStatusUrl: control.dispatchStatusUrl,
     lifecycleUrl: control.lifecycleUrl,
+    assetQueryUrl: control.assetQueryUrl,
+    assetActionUrl: control.assetActionUrl,
     absoluteResourceUri: commitment.absoluteResourceUri,
   })) {
     const url = new URL(value);
@@ -372,6 +570,10 @@ async function verifyListing(listing: StandardListing, trust: ArtifactTrust): Pr
   }
   if (
     control.providerAgentId !== commitment.providerAgentId || !control.providerAudience ||
+    !/^0x[0-9a-fA-F]{64}$/.test(commitment.serviceId) ||
+    !/^0x[0-9a-fA-F]{64}$/.test(commitment.providerIdentitySnapshotHash) ||
+    !control.assetResponseKeyId || !/^0x[0-9a-fA-F]{40}$/.test(control.assetResponseKey) ||
+    !Number.isSafeInteger(control.servicingProfileEpoch) || control.servicingProfileEpoch < 1 ||
     control.tlsPolicy !== "webpki-v1" || control.workloadAuthentication !== "signed-envelopes-v1" ||
     !Number.isSafeInteger(control.maxResponseBytes) || control.maxResponseBytes <= 0 ||
     control.maxResponseBytes > 1_000_000 || !Number.isSafeInteger(control.timeoutMs) ||
@@ -386,6 +588,8 @@ async function verifyListing(listing: StandardListing, trust: ArtifactTrust): Pr
     offer.issuedAt < commitment.validFrom || offer.validBefore > commitment.validUntil ||
     !Number.isSafeInteger(commitment.commissionBps) || commitment.commissionBps <= 0 ||
     commitment.commissionBps >= 10_000 ||
+    (trust.marketplaceCommissionBps !== undefined &&
+      commitment.commissionBps !== trust.marketplaceCommissionBps) ||
     (offer.pricingMode === "fixed" && !/^[1-9][0-9]*$/.test(offer.fixedGrossAmount)) ||
     (offer.pricingMode === "dynamic" && offer.fixedGrossAmount !== "0") ||
     (offer.pricingMode === "fixed" && offer.quotePolicyHash.toLowerCase() !== `0x${"00".repeat(32)}`) ||

@@ -26,6 +26,7 @@ const readOnlyAnnotations = {
 export function registerMarketplaceTools(
   server: McpServer,
   reader: MarketplaceChainReader,
+  activeOutcomes: () => Array<Record<string, unknown>>,
 ): void {
   server.registerTool(
     "daski_list_providers",
@@ -37,17 +38,38 @@ export function registerMarketplaceTools(
       },
       annotations: { title: "List Daski providers", ...readOnlyAnnotations },
     },
-    async ({ offset, limit }) => chainRead(() => reader.listProviders(offset, limit)),
+    async ({ offset, limit }) => chainRead(async () => {
+      const ids = [...new Set(activeOutcomes().map((item) => String(item.providerAgentId)))];
+      const page = ids.slice(offset, offset + limit);
+      return {
+        offset,
+        limit,
+        total: ids.length.toString(),
+        providers: await Promise.all(page.map(async (id) => ({
+          ...await reader.getProvider(BigInt(id)) as object,
+          marketplaceAdmitted: true,
+          activeOutcomeIds: activeOutcomes()
+            .filter((item) => item.providerAgentId === id).map((item) => item.outcomeId),
+        }))),
+      };
+    }),
   );
   server.registerTool(
     "daski_get_provider",
     {
       description:
-        "Read a provider's canonical identity, catalog services, and historical native-rail reputation.",
+        "Read a provider's canonical identity, catalog services, and standard-order reputation.",
       inputSchema: { agentId: z.string().regex(/^(0|[1-9]\d{0,77})$/) },
       annotations: { title: "Get a Daski provider", ...readOnlyAnnotations },
     },
-    async ({ agentId }) => chainRead(() => reader.getProvider(BigInt(agentId))),
+    async ({ agentId }) => chainRead(async () => {
+      const outcomes = activeOutcomes().filter((item) => item.providerAgentId === agentId);
+      return {
+        ...await reader.getProvider(BigInt(agentId)) as object,
+        marketplaceAdmitted: outcomes.length > 0,
+        activeOutcomeIds: outcomes.map((item) => item.outcomeId),
+      };
+    }),
   );
   server.registerTool(
     "daski_get_service",
@@ -56,7 +78,16 @@ export function registerMarketplaceTools(
       inputSchema: { serviceId: z.string().regex(/^0x[0-9a-fA-F]{64}$/) },
       annotations: { title: "Get a Daski service", ...readOnlyAnnotations },
     },
-    async ({ serviceId }) => chainRead(() => reader.getService(serviceId as Hex)),
+    async ({ serviceId }) => chainRead(async () => {
+      const outcomes = activeOutcomes().filter(
+        (item) => String(item.serviceId).toLowerCase() === serviceId.toLowerCase(),
+      );
+      return {
+        ...await reader.getService(serviceId as Hex) as object,
+        marketplaceAdmitted: outcomes.length > 0,
+        activeOutcomeIds: outcomes.map((item) => item.outcomeId),
+      };
+    }),
   );
   server.registerTool(
     "daski_resolve_agent",

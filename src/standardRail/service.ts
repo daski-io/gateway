@@ -16,7 +16,7 @@ import {
 import { privateKeyToAccount } from "viem/accounts";
 import type { Config } from "../config.js";
 import type { Pool } from "../db/pool.js";
-import { assertNoDuplicateJsonKeys, canonicalHash } from "./canonical.js";
+import { assertNoDuplicateJsonKeys, canonicalHash, providerIdentitySnapshotHash } from "./canonical.js";
 import type { StandardRailConfig } from "./config.js";
 import type { StandardChainEvidence } from "./evidence.js";
 import type { StandardFacilitator } from "./facilitator.js";
@@ -56,6 +56,36 @@ import {
   type GrossRefundIntent,
   validateGrossRefundIntent,
 } from "./refund.js";
+import { StandardWalletStore } from "./walletStore.js";
+import { StandardWalletQueries } from "./walletQueries.js";
+import type { WalletAuthorizationTransport } from "./types.js";
+import { StandardAssetFederation } from "./assetFederation.js";
+import { StandardAssetActions } from "./assetActions.js";
+import { buildReputationRefund, buildReputationRegistration } from "./reputationOrders.js";
+import { StandardReputationWorker } from "./reputationWorker.js";
+import { StandardConfirmations } from "./confirmations.js";
+import { StandardReputationMirror } from "./reputationMirror.js";
+import { StandardNotifications } from "./notifications.js";
+import { StandardNotificationWorker } from "./notificationWorker.js";
+import { StandardReputationProjection } from "./reputationProjection.js";
+import { StandardReputationIndexer } from "./reputationIndexer.js";
+import { base, baseSepolia } from "viem/chains";
+import { activeRequestKey } from "../mcp/requestContext.js";
+
+interface OperationalSummary {
+  pending: number;
+  attention: number;
+  aborted: number;
+  blocked: number;
+  exhausted: number;
+  oldest_pending_seconds: number;
+}
+
+interface GroupCount { key: string; count: number }
+
+function keyedCounts(rows: GroupCount[]): Record<string, number> {
+  return Object.fromEntries(rows.map((row) => [row.key, row.count]));
+}
 
 const ZERO_HASH = `0x${"00".repeat(32)}` as Hex;
 
@@ -70,7 +100,7 @@ function assertExactKeys(value: unknown, expected: readonly string[], label: str
   }
 }
 
-async function readBoundedJson(response: Response, maxBytes: number): Promise<unknown> {
+export async function readBoundedJson(response: Response, maxBytes: number): Promise<unknown> {
   const mediaType = response.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase();
   const encoding = response.headers.get("content-encoding")?.trim().toLowerCase();
   if (mediaType !== "application/json" || (encoding && encoding !== "identity")) {
@@ -105,7 +135,7 @@ async function readBoundedJson(response: Response, maxBytes: number): Promise<un
   return JSON.parse(text);
 }
 
-async function assertPublicProviderEndpoint(profileOrigin: string, endpoint: string): Promise<void> {
+export async function assertPublicProviderEndpoint(profileOrigin: string, endpoint: string): Promise<void> {
   const origin = new URL(profileOrigin);
   const target = new URL(endpoint);
   if (target.origin !== origin.origin) throw new Error("PROVIDER_ENDPOINT_ORIGIN_MISMATCH");
@@ -117,7 +147,7 @@ async function assertPublicProviderEndpoint(profileOrigin: string, endpoint: str
   }
 }
 
-async function pinnedProviderFetch(
+export async function pinnedProviderFetch(
   endpoint: string,
   init: RequestInit,
   addresses: Array<{ address: string; family?: number }>,
@@ -165,6 +195,17 @@ export class StandardRailService {
   private readonly recovery: StandardRailRecoveryWorker;
   private readonly uploads: StandardUploadService;
   private readonly incidents: StandardRailIncidentStore;
+  private readonly walletStore: StandardWalletStore;
+  private readonly walletQueries: StandardWalletQueries;
+  private readonly assetFederation: StandardAssetFederation;
+  private readonly assetActions: StandardAssetActions;
+  private readonly reputationWorker: StandardReputationWorker;
+  private readonly confirmations: StandardConfirmations;
+  private readonly reputationMirror: StandardReputationMirror;
+  private readonly notifications: StandardNotifications;
+  private readonly notificationWorker: StandardNotificationWorker;
+  private readonly reputationProjection: StandardReputationProjection;
+  private readonly reputationIndexer: StandardReputationIndexer;
   private dependenciesReady = false;
   private readinessInterval: NodeJS.Timeout | null = null;
   private readinessRefresh: Promise<void> | null = null;
@@ -174,15 +215,56 @@ export class StandardRailService {
   constructor(
     private readonly appConfig: Config,
     private readonly railConfig: StandardRailConfig,
-    pool: Pool,
+    private readonly pool: Pool,
     private readonly facilitator: StandardFacilitator,
     private readonly evidence: StandardChainEvidence,
     private readonly fetchFn: typeof fetch = fetch,
   ) {
-    this.store = new StandardRailStore(pool);
+    this.notifications = new StandardNotifications(pool, railConfig, appConfig.chainId);
+    this.notificationWorker = new StandardNotificationWorker(pool, railConfig);
+    this.reputationProjection = new StandardReputationProjection(pool);
+    this.reputationIndexer = new StandardReputationIndexer(
+      pool,
+      railConfig,
+      appConfig.chainId === 8453 ? base : baseSepolia,
+    );
+    this.store = new StandardRailStore(pool, this.notifications);
     this.incidents = new StandardRailIncidentStore(pool);
     this.journal = new StandardRailJournal(pool);
     this.uploads = new StandardUploadService(railConfig, pool);
+    this.walletStore = new StandardWalletStore(pool, railConfig, appConfig.chainId);
+    this.walletQueries = new StandardWalletQueries(pool, this.walletStore);
+    this.assetFederation = new StandardAssetFederation(
+      pool,
+      railConfig,
+      appConfig.chainId,
+      this.walletStore,
+      (listing, endpoint, init) => this.providerFetch(listing, endpoint, init),
+      (providerAgentId) => this.reputationProjection.provider(providerAgentId),
+    );
+    this.assetActions = new StandardAssetActions(
+      pool,
+      railConfig,
+      appConfig.chainId,
+      this.walletStore,
+      this.assetFederation,
+      (active, endpoint, init) => this.providerFetch(active.listing, endpoint, init),
+    );
+    this.reputationWorker = new StandardReputationWorker(
+      pool,
+      railConfig,
+      appConfig.chainId === 8453 ? base : baseSepolia,
+    );
+    this.confirmations = new StandardConfirmations(
+      pool,
+      railConfig,
+      appConfig.chainId === 8453 ? base : baseSepolia,
+    );
+    this.reputationMirror = new StandardReputationMirror(
+      pool,
+      railConfig,
+      appConfig.chainId === 8453 ? base : baseSepolia,
+    );
     this.railProfileHash = canonicalHash(railConfig.manifest.activeRailProfile);
     this.runtimeProfileHash = canonicalHash(railConfig.manifest.runtimeRelease);
     for (const artifact of [
@@ -192,6 +274,9 @@ export class StandardRailService {
       railConfig.manifest.activeRailProfile,
       railConfig.manifest.chainEvidencePolicy,
       railConfig.manifest.runtimeRelease,
+      ...railConfig.manifest.providerIdentitySnapshots,
+      ...railConfig.manifest.servicingAdmissions,
+      ...railConfig.manifest.actionCatalogs,
       ...railConfig.manifest.listings.flatMap((listing) => [
         listing.commitment,
         listing.manifest,
@@ -242,6 +327,8 @@ export class StandardRailService {
       chainId: this.appConfig.chainId,
       gatewayAudience: this.railConfig.gatewayAudience,
       signers: this.railConfig.trustedSigners,
+      marketplaceCommissionBps: this.railConfig.marketplaceCommissionBps,
+      launchOutcomeIds: this.railConfig.launchOutcomeIds,
     });
     await verifyRuntimeIntegrity(this.appConfig, this.railConfig);
     if (
@@ -261,9 +348,21 @@ export class StandardRailService {
     await Promise.all(this.railConfig.manifest.listings.map(
       (listing) => this.evidence.verifyListingDeployment(listing, this.appConfig.chainId),
     ));
+    await Promise.all(this.railConfig.manifest.providerIdentitySnapshots.map(async (snapshot) => {
+      if (
+        getAddress(snapshot.payload.identityRegistry) !== getAddress(this.appConfig.marketplaceContracts.identityRegistry) ||
+        getAddress(snapshot.payload.providerRegistry) !== getAddress(this.appConfig.marketplaceContracts.providerRegistry) ||
+        getAddress(snapshot.payload.serviceRegistry) !== getAddress(this.appConfig.marketplaceContracts.serviceRegistry)
+      ) throw new Error("Provider identity snapshot registry domain mismatch");
+      await this.evidence.verifyProviderIdentitySnapshot(snapshot.payload);
+    }));
     await this.store.admitManifest(this.railConfig.manifest);
+    await this.reputationIndexer.start();
     await this.refreshDependencyReadiness();
     this.recovery.start();
+    this.reputationWorker.start();
+    this.reputationMirror.start();
+    this.notificationWorker.start();
     this.readinessInterval = setInterval(() => {
       void this.refreshDependencyReadiness().catch(() => undefined);
     }, 30_000);
@@ -274,7 +373,13 @@ export class StandardRailService {
     if (this.readinessInterval) clearInterval(this.readinessInterval);
     this.readinessInterval = null;
     await this.readinessRefresh?.catch(() => undefined);
-    await this.recovery.stop();
+    await Promise.all([
+      this.recovery.stop(),
+      this.reputationWorker.stop(),
+      this.reputationMirror.stop(),
+      this.notificationWorker.stop(),
+      this.reputationIndexer.stop(),
+    ]);
   }
 
   isAdmissionOpen(now = Math.floor(Date.now() / 1_000)): boolean {
@@ -284,12 +389,95 @@ export class StandardRailService {
   }
 
   areDependenciesReady(): boolean {
-    return this.dependenciesReady;
+    return this.dependenciesReady && this.reputationIndexer.isReady();
+  }
+
+  async operationalHealth() {
+    const [operations, operationCauses, oldestByKind, transactionStates, mirrors,
+      mirrorCauses, mirrorTransactionStates, notifications, relayer, mirrorAccount] = await Promise.all([
+      this.pool.query<OperationalSummary>(
+        `SELECT count(*) FILTER (WHERE state IN ('pending','broadcast'))::int AS pending,
+                count(*) FILTER (WHERE state='operator_attention')::int AS attention,
+                count(*) FILTER (WHERE state='aborted_unattested')::int AS aborted,
+                count(*) FILTER (WHERE state='blocked_parent_aborted')::int AS blocked,
+                count(*) FILTER (WHERE state='operator_attention' AND attempts>=5)::int AS exhausted,
+                COALESCE(extract(epoch FROM now()-min(created_at) FILTER
+                  (WHERE state IN ('pending','broadcast'))),0)::int AS oldest_pending_seconds
+           FROM standard_reputation_operations`,
+      ),
+      this.pool.query<GroupCount>(
+        `SELECT last_error_class AS key,count(*)::int AS count
+           FROM standard_reputation_operations WHERE last_error_class IS NOT NULL
+          GROUP BY last_error_class`,
+      ),
+      this.pool.query<{ key: string; oldest_pending_seconds: number }>(
+        `SELECT kind AS key,COALESCE(extract(epoch FROM now()-min(created_at)),0)::int
+                  AS oldest_pending_seconds
+           FROM standard_reputation_operations WHERE state IN ('pending','broadcast') GROUP BY kind`,
+      ),
+      this.pool.query<GroupCount>(
+        `SELECT state AS key,count(*)::int AS count FROM standard_reputation_transactions
+          WHERE state IN ('prepared','broadcast','operator_attention') GROUP BY state`,
+      ),
+      this.pool.query<OperationalSummary>(
+        `SELECT count(*) FILTER (WHERE state IN ('pending','broadcast','paused'))::int AS pending,
+                count(*) FILTER (WHERE state='operator_attention')::int AS attention,
+                count(*) FILTER (WHERE state='aborted_unmirrored')::int AS aborted,
+                0::int AS blocked,
+                count(*) FILTER (WHERE state='operator_attention' AND attempts>=5)::int AS exhausted,
+                COALESCE(extract(epoch FROM now()-min(updated_at) FILTER
+                  (WHERE state IN ('pending','broadcast','paused'))),0)::int AS oldest_pending_seconds
+           FROM standard_reputation_mirrors`,
+      ),
+      this.pool.query<GroupCount>(
+        `SELECT last_error_class AS key,count(*)::int AS count
+           FROM standard_reputation_mirrors WHERE last_error_class IS NOT NULL GROUP BY last_error_class`,
+      ),
+      this.pool.query<GroupCount>(
+        `SELECT state AS key,count(*)::int AS count FROM standard_reputation_mirror_transactions
+          WHERE state IN ('prepared','broadcast','operator_attention') GROUP BY state`,
+      ),
+      this.pool.query<OperationalSummary>(
+        `SELECT count(*) FILTER (WHERE state IN ('pending','delivering'))::int AS pending,
+                count(*) FILTER (WHERE state='operator_attention')::int AS attention,
+                count(*) FILTER (WHERE state='deleted')::int AS aborted,
+                0::int AS blocked,
+                count(*) FILTER (WHERE state='operator_attention')::int AS exhausted,
+                COALESCE(extract(epoch FROM now()-min(created_at) FILTER
+                  (WHERE state IN ('pending','delivering'))),0)::int AS oldest_pending_seconds
+           FROM standard_order_notification_events`,
+      ),
+      this.reputationWorker.accountHealth(),
+      this.reputationMirror.accountHealth(),
+    ]);
+    return {
+      reputation: {
+        ...operations.rows[0],
+        causes: keyedCounts(operationCauses.rows),
+        oldestPendingSecondsByKind: Object.fromEntries(oldestByKind.rows.map(
+          (row) => [row.key, row.oldest_pending_seconds],
+        )),
+        transactionStates: keyedCounts(transactionStates.rows),
+        relayer,
+      },
+      mirror: {
+        ...mirrors.rows[0],
+        causes: keyedCounts(mirrorCauses.rows),
+        transactionStates: keyedCounts(mirrorTransactionStates.rows),
+        account: mirrorAccount,
+      },
+      notifications: notifications.rows[0],
+      projection: this.reputationIndexer.status(),
+    };
   }
 
   publicArtifact(hash: string): import("./types.js").SignedEnvelope<unknown> | null {
     if (!/^0x[0-9a-fA-F]{64}$/.test(hash)) return null;
     return this.publicArtifacts.get(hash.toLowerCase() as Hex) ?? null;
+  }
+
+  orderEventKeySet() {
+    return this.notifications.keySet(this.appConfig.publicUrl);
   }
 
   private refreshDependencyReadiness(): Promise<void> {
@@ -518,12 +706,12 @@ export class StandardRailService {
         "ATTEMPT_OPENED", "VERIFIED", "VERIFY_REJECTED", "SETTLE_INVOKED",
         "FACILITATOR_CONFIRMED", "SETTLEMENT_AMBIGUOUS", "SETTLEMENT_FAILED",
         "EXTERNAL_OR_UNPROVEN_DEPOSIT", "DEPOSIT_FINAL", "RELEASE_FINAL",
-        "DISPATCH_STARTED", "DISPATCH_AMBIGUOUS", "DISPATCHED", "KYC_REQUIRED",
+        "DISPATCH_STARTED", "DISPATCH_AMBIGUOUS", "DISPATCHED", "INPUT_REQUIRED",
       ].includes(order.state)) return;
       const listing = order.listing;
       order = await this.resumePreSettlement(order, listing);
       if (["NO_REFUND", "LEGAL_HOLD"].includes(order.state)) return;
-      if (["DISPATCHED", "KYC_REQUIRED"].includes(order.state)) {
+      if (["DISPATCHED", "INPUT_REQUIRED"].includes(order.state)) {
         const claim = await this.journal.dispatchClaim(order.orderId);
         if (!claim) throw new Error("Dispatch recovery is missing its persisted claim");
         const resolvedAt = await this.journal.dispatchResolvedAt(order.orderId) ?? order.updatedAt;
@@ -690,12 +878,25 @@ export class StandardRailService {
           const release = await this.withRuntimeFence(() =>
             this.evidence.releaseAndProve({ order: depositOrder, listing, deposit }));
           await this.journal.recordEvidence(order.orderId, "release", release, this.appConfig.chainId);
+          const reputation = await buildReputationRegistration({
+            order,
+            listing,
+            deposit,
+            releaseEvidenceHash: release.evidenceHash,
+            config: this.railConfig,
+            chainId: this.appConfig.chainId,
+            evidence: this.evidence,
+          });
           order = await this.store.transition(order, "RELEASE_FINAL", "release_evidence_recovered", {
             releaseTxHash: release.transactionHash,
             releaseEvidenceHash: release.evidenceHash,
             providerNetAmount: release.providerNetAmount.toString(),
             daskiCommissionAmount: release.daskiCommissionAmount.toString(),
             encryptedPaymentPayload: null,
+          }, {
+            kind: "register",
+            logicalKey: order.orderKey,
+            ...reputation,
           });
         } catch (error) {
           if (Date.now() < order.updatedAt.getTime() + listing.deadlinePolicy.releaseEvidenceSeconds * 1_000) throw error;
@@ -751,12 +952,42 @@ export class StandardRailService {
     return listing;
   }
 
+  private async verifyListingIdentity(listing: StandardListing): Promise<void> {
+    const snapshot = this.railConfig.manifest.providerIdentitySnapshots.find((item) =>
+      providerIdentitySnapshotHash(item.payload, this.appConfig.chainId) ===
+        listing.commitment.payload.providerIdentitySnapshotHash
+    );
+    if (!snapshot) throw new Error("LISTING_IDENTITY_SNAPSHOT_UNAVAILABLE");
+    await this.evidence.verifyProviderIdentitySnapshot(snapshot.payload);
+  }
+
   listOutcomes(): Array<Record<string, unknown>> {
+    const emptyReputation = {
+      transactionCount: "0",
+      completedCount: "0",
+      failedCount: "0",
+      canceledCount: "0",
+      completionSampleSize: "0",
+      completionRate: null,
+      confirmedCount: "0",
+      notConfirmedCount: "0",
+      confirmationSampleSize: "0",
+      buyerSatisfactionRate: null,
+      valueWeightedBuyerSatisfactionRate: null,
+      totalPaid: "0",
+      totalRefunded: "0",
+      averageFulfillmentSeconds: null,
+      fulfillmentSampleSize: "0",
+      recentPurchases: [],
+      finalizedBlock: null,
+    };
     return [...this.listings.values()].map((listing) => ({
       providerAgentId: listing.commitment.payload.providerAgentId,
+      serviceId: listing.commitment.payload.serviceId,
       outcomeId: listing.commitment.payload.outcomeId,
       title: listing.title,
       description: listing.description,
+      ...listing.discovery,
       bindingProfile: listing.commitment.payload.bindingProfile,
       pricingMode: listing.offer.payload.pricingMode,
       fixedGrossAmount: listing.offer.payload.fixedGrossAmount,
@@ -774,7 +1005,140 @@ export class StandardRailService {
       refundPolicy: listing.refundPolicy,
       deadlinePolicy: listing.deadlinePolicy,
       capacityPolicy: listing.capacityPolicy,
+      providerReputation: emptyReputation,
+      serviceReputation: emptyReputation,
+      reputation: emptyReputation,
     }));
+  }
+
+  async publicOutcomes(): Promise<Array<Record<string, unknown>>> {
+    const [reputation, providers, services, finalizedBlock] = await Promise.all([
+      this.reputationProjection.outcomes(),
+      this.reputationProjection.providers(),
+      this.reputationProjection.services(),
+      this.reputationProjection.finalizedBlock(),
+    ]);
+    return this.listOutcomes().map((outcome) => ({
+      ...outcome,
+      reputation: reputation.get(`${outcome.providerAgentId}:${outcome.outcomeId}`) ??
+        { ...(outcome.reputation as object), finalizedBlock },
+      providerReputation: providers.get(String(outcome.providerAgentId)) ??
+        { ...(outcome.providerReputation as object), finalizedBlock },
+      serviceReputation: services.get(String(outcome.serviceId)) ??
+        { ...(outcome.serviceReputation as object), finalizedBlock },
+    }));
+  }
+
+  async searchOutcomes(filters: {
+    text?: string;
+    providerAgentId?: string;
+    categoryFamily?: string;
+    serviceType?: string;
+    jurisdiction?: string;
+    pricingMode?: "fixed" | "dynamic";
+    persistentAsset?: boolean;
+    limit: number;
+  }): Promise<Array<Record<string, unknown>>> {
+    const tokens = (filters.text ?? "").toLowerCase().match(/[a-z0-9]+/g)?.slice(0, 12) ?? [];
+    return (await this.publicOutcomes()).filter((outcome) => {
+      const row = outcome as Record<string, unknown>;
+      const haystack = [row.title, row.description, ...(row.tags as string[])]
+        .join(" ").toLowerCase().match(/[a-z0-9]+/g) ?? [];
+      return (
+        tokens.every((token) => haystack.some((word) => word.includes(token))) &&
+        (!filters.providerAgentId || row.providerAgentId === filters.providerAgentId) &&
+        (!filters.categoryFamily || row.categoryFamily === filters.categoryFamily) &&
+        (!filters.serviceType || row.serviceType === filters.serviceType) &&
+        (!filters.jurisdiction || (row.jurisdictions as string[]).includes(filters.jurisdiction)) &&
+        (!filters.pricingMode || row.pricingMode === filters.pricingMode) &&
+        (filters.persistentAsset === undefined || row.persistentAsset === filters.persistentAsset)
+      );
+    }).sort((left, right) =>
+      `${left.providerAgentId}:${left.outcomeId}`.localeCompare(`${right.providerAgentId}:${right.outcomeId}`)
+    ).slice(0, filters.limit);
+  }
+
+  async getOutcome(providerAgentId: string, outcomeId: string): Promise<Record<string, unknown>> {
+    const outcome = (await this.publicOutcomes()).find((item) =>
+      item.providerAgentId === providerAgentId && item.outcomeId === outcomeId
+    );
+    if (!outcome) throw new Error("OUTCOME_NOT_FOUND");
+    const listing = this.listing(providerAgentId, outcomeId);
+    return {
+      ...outcome,
+      requestSchema: listing.requestSchema,
+      responseSchema: listing.responseSchema,
+      artifacts: {
+        commitment: canonicalHash(listing.commitment),
+        manifest: canonicalHash(listing.manifest),
+        offer: canonicalHash(listing.offer),
+      },
+    };
+  }
+
+  issueWalletChallenge(args: {
+    action: "list-orders" | "get-buyer-reputation" | "list-assets";
+    payer: string;
+    request: unknown;
+    absoluteResourceUri: string;
+    clientKey?: string;
+  }) {
+    return this.walletStore.issue({
+      ...args,
+      clientKey: args.clientKey ?? activeRequestKey("unknown"),
+    });
+  }
+
+  listWalletOrders(args: {
+    payer: string;
+    limit: number;
+    cursor: string | null;
+    authorization: WalletAuthorizationTransport;
+  }) {
+    return this.walletQueries.listOrders(args);
+  }
+
+  getWalletReputation(args: {
+    payer: string;
+    authorization: WalletAuthorizationTransport;
+  }) {
+    return this.walletQueries.getReputation(args);
+  }
+
+  listWalletAssets(args: {
+    payer: string;
+    providerAgentId: string | null;
+    limit: number;
+    cursor: string | null;
+    authorization: WalletAuthorizationTransport;
+  }) {
+    return this.assetFederation.listAssets(args);
+  }
+
+  issueAssetActionChallenge(args: {
+    payer: string;
+    providerAgentId: string;
+    actionId: string;
+    providerAssetId: string;
+    input: Record<string, unknown>;
+    absoluteResourceUri: string;
+    clientKey?: string;
+  }) {
+    return this.assetActions.issue({
+      ...args,
+      clientKey: args.clientKey ?? activeRequestKey("unknown"),
+    });
+  }
+
+  performAssetAction(args: {
+    payer: string;
+    providerAgentId: string;
+    actionId: string;
+    providerAssetId: string;
+    input: Record<string, unknown>;
+    authorization: WalletAuthorizationTransport;
+  }) {
+    return this.assetActions.perform(args);
   }
 
   async signedReceipt(order: StandardOrderRecord) {
@@ -828,8 +1192,11 @@ export class StandardRailService {
 
   async issueActionChallenge(args: {
     handle: string;
-    action: "status" | "input" | "cancel" | "refund" | "artifact" | "support";
+    action: "status" | "input" | "cancel" | "refund" | "artifact" | "support" |
+      "confirmation" | "revoke-confirmation" | "notification-set" |
+      "notification-get" | "notification-delete";
     request: Record<string, unknown>;
+    clientKey?: string;
   }): Promise<Record<string, unknown>> {
     await this.assertRuntimeFence();
     const order = await this.store.findByHandle(args.handle);
@@ -847,6 +1214,12 @@ export class StandardRailService {
       nonce,
       issuedAt: now,
       validBefore,
+      clientKeyHash: createHmac("sha256", this.railConfig.encryptionKey)
+        .update("wallet-challenge-client\0")
+        .update(args.clientKey ?? activeRequestKey("unknown"))
+        .digest(),
+      outstandingPerClient: this.railConfig.abuse.walletChallengesOutstandingPerClient,
+      outstandingGlobal: this.railConfig.abuse.walletChallengesOutstandingGlobal,
     });
     return {
       orderId,
@@ -872,7 +1245,9 @@ export class StandardRailService {
 
   async performAction(args: {
     handle: string;
-    action: "status" | "input" | "cancel" | "refund" | "artifact" | "support";
+    action: "status" | "input" | "cancel" | "refund" | "artifact" | "support" |
+      "confirmation" | "revoke-confirmation" | "notification-set" |
+      "notification-get" | "notification-delete";
     request: Record<string, unknown>;
     authorization: {
       orderId: string;
@@ -942,6 +1317,11 @@ export class StandardRailService {
         nonce: args.authorization.nonce,
         issuedAt: args.authorization.issuedAt,
         validBefore: args.authorization.validBefore,
+        payerRate: args.action === "notification-get"
+          ? { scope: "protected-read", maximum: this.railConfig.abuse.protectedReadsPerPayerPerMinute }
+          : ["confirmation", "revoke-confirmation", "notification-set", "notification-delete"].includes(args.action)
+            ? { scope: "wallet-state-change", maximum: this.railConfig.abuse.assetStateChangesPerPayerPerMinute }
+            : undefined,
       });
     } catch (error) {
       if (error instanceof Error && error.message === "ACTION_CHALLENGE_INVALID_OR_REPLAYED") {
@@ -953,6 +1333,13 @@ export class StandardRailService {
         });
       }
       throw error;
+    }
+    if (args.action === "confirmation" || args.action === "revoke-confirmation") {
+      return this.confirmations.handle(order, args.action, args.request);
+    }
+    if (args.action === "notification-set" || args.action === "notification-get" ||
+      args.action === "notification-delete") {
+      return this.notifications.handle(order, args.action, args.request);
     }
     if (args.action === "status" && !order.providerTaskId) {
       return { receipt: await this.signedReceipt(order) };
@@ -1054,8 +1441,8 @@ export class StandardRailService {
     if ("result" in response) this.validateResponse(listing, response.result);
     let order = initial;
     if (response.state === "input-required" && order.state === "DISPATCHED") {
-      order = await this.store.transition(order, "KYC_REQUIRED", "provider_input_required");
-    } else if (response.state === "working" && order.state === "KYC_REQUIRED") {
+      order = await this.store.transition(order, "INPUT_REQUIRED", "provider_input_required");
+    } else if (response.state === "working" && order.state === "INPUT_REQUIRED") {
       order = await this.store.transition(order, "DISPATCHED", "provider_input_accepted");
     } else if (["completed", "failed", "canceled"].includes(String(response.state))) {
       const attestation = response.terminalAttestation;
@@ -1086,9 +1473,9 @@ export class StandardRailService {
         (action !== "artifact" && "result" in response &&
           attestation.payload.resultHash !== canonicalHash(response.result))
       ) throw new Error("PROVIDER_TERMINAL_ATTESTATION_INVALID");
-      if (response.state === "completed" && ["DISPATCHED", "KYC_REQUIRED"].includes(order.state)) {
+      if (response.state === "completed" && ["DISPATCHED", "INPUT_REQUIRED"].includes(order.state)) {
         order = await this.store.transition(order, "FULFILLED", "provider_terminal_completed");
-      } else if (["failed", "canceled"].includes(String(response.state)) && ["DISPATCHED", "KYC_REQUIRED"].includes(order.state)) {
+      } else if (["failed", "canceled"].includes(String(response.state)) && ["DISPATCHED", "INPUT_REQUIRED"].includes(order.state)) {
         order = await this.store.transition(order, "PROVIDER_FAILED", "provider_terminal_failed");
       }
       await this.store.releaseCapacity(order.orderId);
@@ -1105,6 +1492,7 @@ export class StandardRailService {
     this.assertAdmissionOpen();
     await this.assertRuntimeFence();
     const listing = this.listing(args.providerAgentId, args.outcomeId);
+    await this.verifyListingIdentity(listing);
     this.validateRequest(listing, args.body);
     const attachments = this.attachmentReferences(args.body);
     const canonicalRequestHash = canonicalHash({
@@ -1307,6 +1695,7 @@ export class StandardRailService {
         return { handle: challenge.handle, order, replay: false };
       }
       await this.screenParticipants(listing, authorization.payer);
+      await this.verifyListingIdentity(listing);
       if (await this.evidence.authorizationUsed(
         getAddress(listing.commitment.payload.canonicalToken),
         authorization.payer,
@@ -1355,12 +1744,25 @@ export class StandardRailService {
       const release = await this.withRuntimeFence(() =>
         this.evidence.releaseAndProve({ order, listing, deposit }));
       await this.journal.recordEvidence(order.orderId, "release", release, this.appConfig.chainId);
+      const reputation = await buildReputationRegistration({
+        order,
+        listing,
+        deposit,
+        releaseEvidenceHash: release.evidenceHash,
+        config: this.railConfig,
+        chainId: this.appConfig.chainId,
+        evidence: this.evidence,
+      });
       order = await this.store.transition(order, "RELEASE_FINAL", "release_evidence_final", {
         releaseTxHash: release.transactionHash,
         releaseEvidenceHash: release.evidenceHash,
         providerNetAmount: release.providerNetAmount.toString(),
         daskiCommissionAmount: release.daskiCommissionAmount.toString(),
         encryptedPaymentPayload: null,
+      }, {
+        kind: "register",
+        logicalKey: order.orderKey,
+        ...reputation,
       });
       order = await this.dispatch(
         order,
@@ -1408,6 +1810,11 @@ export class StandardRailService {
         providerAudience: listing.providerControlProfile.payload.providerAudience,
         providerControlProfileHash: listing.commitment.payload.providerControlProfileHash,
         orderId: order.orderId,
+        orderKey: order.orderKey,
+        serviceId: listing.commitment.payload.serviceId,
+        reputationEligible: true,
+        reputationContract: this.railConfig.reputationContract,
+        outcomeSchemaUid: this.railConfig.reputationOutcomeSchemaUid,
         dispatchNonce: nonce,
         payer: order.payer!,
         listingManifestHash: order.listingManifestHash,
@@ -1586,8 +1993,8 @@ export class StandardRailService {
       throw new Error("provider_dispatch_task_binding_invalid");
     }
     if (body.state === "input-required" && order.state === "DISPATCHED") {
-      order = await this.store.transition(order, "KYC_REQUIRED", "provider_pre_execute_hold");
-    } else if (["dispatching", "submitted", "working"].includes(String(body.state)) && order.state === "KYC_REQUIRED") {
+      order = await this.store.transition(order, "INPUT_REQUIRED", "provider_pre_execute_hold");
+    } else if (["dispatching", "submitted", "working"].includes(String(body.state)) && order.state === "INPUT_REQUIRED") {
       order = await this.store.transition(order, "DISPATCHED", "provider_input_accepted");
     } else if (terminal) {
       const attestation = body.terminalAttestation;
@@ -1616,7 +2023,7 @@ export class StandardRailService {
         attestation.payload.taskId !== body.taskId || attestation.payload.dispatchHash !== dispatchHash ||
         attestation.payload.state !== body.state
       ) throw new Error("provider_terminal_attestation_invalid");
-      if (["DISPATCHED", "KYC_REQUIRED"].includes(order.state)) {
+      if (["DISPATCHED", "INPUT_REQUIRED"].includes(order.state)) {
         order = await this.store.transition(
           order,
           body.state === "completed" ? "FULFILLED" : "PROVIDER_FAILED",
@@ -1936,7 +2343,26 @@ export class StandardRailService {
         transactionHash: refundTransactionHash,
       });
       await this.journal.closeExposure(order.orderId, "refunded");
-      order = await this.store.transition(order, "REFUNDED", "refund_credits_final");
+      const refundEvidence = await this.journal.loadEvidence(order.orderId, "refund");
+      const reputationRefund = await buildReputationRefund({
+        order,
+        cumulativeRefundedAmount: grossAmount,
+        refundEvidenceHash: refundEvidence.evidenceHash,
+        config: this.railConfig,
+        chainId: this.appConfig.chainId,
+      });
+      order = await this.store.transition(
+        order,
+        "REFUNDED",
+        "refund_credits_final",
+        {},
+        {
+          kind: "refund",
+          logicalKey: canonicalHash({ orderKey: order.orderKey,
+            cumulativeRefundedAmount: grossAmount.toString() }),
+          ...reputationRefund,
+        },
+      );
       await this.store.releaseCapacity(order.orderId);
       return {
         state: order.state,

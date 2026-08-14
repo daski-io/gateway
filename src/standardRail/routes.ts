@@ -40,6 +40,134 @@ export function standardPaymentError(error: unknown): {
 
 export function createStandardRailRouter(service: StandardRailService, publicUrl?: string): Router {
   const router = Router();
+  const origin = (publicUrl ?? "https://invalid.local").replace(/\/$/, "");
+
+  router.post("/wallet/orders", async (req, res) => {
+    try {
+      assertExactKeys(req.body, ["payer", "limit", "cursor", "authorization"]);
+      const body = req.body as Record<string, unknown>;
+      if (
+        typeof body.payer !== "string" || !/^0x[0-9a-fA-F]{40}$/.test(body.payer) ||
+        !Number.isSafeInteger(body.limit) || Number(body.limit) < 1 || Number(body.limit) > 100 ||
+        !(body.cursor === null || typeof body.cursor === "string")
+      ) throw new Error("WALLET_ACCESS_DENIED");
+      const request = { payer: body.payer.toLowerCase(), limit: body.limit, cursor: body.cursor };
+      res.setHeader("Cache-Control", "private, no-store");
+      if (body.authorization === null) {
+        res.json({ authorizationRequired: true, challenge: await service.issueWalletChallenge({
+          action: "list-orders", payer: body.payer, request,
+          absoluteResourceUri: `${origin}/wallet/orders`,
+          clientKey: req.ip ?? req.socket.remoteAddress ?? "unknown",
+        }) });
+        return;
+      }
+      res.json(await service.listWalletOrders({
+        payer: body.payer,
+        limit: Number(body.limit),
+        cursor: body.cursor as string | null,
+        authorization: body.authorization as never,
+      }));
+    } catch {
+      res.status(401).json({ error: { code: "WALLET_ACCESS_DENIED", message: "Wallet authorization rejected" } });
+    }
+  });
+
+  router.post("/wallet/reputation", async (req, res) => {
+    try {
+      assertExactKeys(req.body, ["payer", "authorization"]);
+      const body = req.body as Record<string, unknown>;
+      if (typeof body.payer !== "string" || !/^0x[0-9a-fA-F]{40}$/.test(body.payer)) {
+        throw new Error("WALLET_ACCESS_DENIED");
+      }
+      const request = { payer: body.payer.toLowerCase() };
+      res.setHeader("Cache-Control", "private, no-store");
+      if (body.authorization === null) {
+        res.json({ authorizationRequired: true, challenge: await service.issueWalletChallenge({
+          action: "get-buyer-reputation", payer: body.payer, request,
+          absoluteResourceUri: `${origin}/wallet/reputation`,
+          clientKey: req.ip ?? req.socket.remoteAddress ?? "unknown",
+        }) });
+        return;
+      }
+      res.json(await service.getWalletReputation({
+        payer: body.payer,
+        authorization: body.authorization as never,
+      }));
+    } catch {
+      res.status(401).json({ error: { code: "WALLET_ACCESS_DENIED", message: "Wallet authorization rejected" } });
+    }
+  });
+
+  router.post("/wallet/assets", async (req, res) => {
+    try {
+      assertExactKeys(req.body, ["payer", "providerAgentId", "limit", "cursor", "authorization"]);
+      const body = req.body as Record<string, unknown>;
+      if (
+        typeof body.payer !== "string" || !/^0x[0-9a-fA-F]{40}$/.test(body.payer) ||
+        !(body.providerAgentId === null ||
+          (typeof body.providerAgentId === "string" && /^[1-9]\d*$/.test(body.providerAgentId))) ||
+        !Number.isSafeInteger(body.limit) || Number(body.limit) < 1 || Number(body.limit) > 100 ||
+        !(body.cursor === null || typeof body.cursor === "string") ||
+        (body.providerAgentId === null && body.cursor !== null)
+      ) throw new Error("WALLET_ACCESS_DENIED");
+      const request = {
+        payer: body.payer.toLowerCase(), providerAgentId: body.providerAgentId,
+        limit: body.limit, cursor: body.cursor,
+      };
+      res.setHeader("Cache-Control", "private, no-store");
+      if (body.authorization === null) {
+        res.json({ authorizationRequired: true, challenge: await service.issueWalletChallenge({
+          action: "list-assets", payer: body.payer, request,
+          absoluteResourceUri: `${origin}/wallet/assets`,
+          clientKey: req.ip ?? req.socket.remoteAddress ?? "unknown",
+        }) });
+        return;
+      }
+      res.json(await service.listWalletAssets({
+        payer: body.payer,
+        providerAgentId: body.providerAgentId as string | null,
+        limit: Number(body.limit),
+        cursor: body.cursor as string | null,
+        authorization: body.authorization as never,
+      }));
+    } catch {
+      res.status(401).json({ error: { code: "WALLET_ACCESS_DENIED", message: "Wallet authorization rejected" } });
+    }
+  });
+
+  router.post("/wallet/assets/action", async (req, res) => {
+    try {
+      assertExactKeys(req.body, [
+        "payer", "providerAgentId", "actionId", "providerAssetId", "input", "authorization",
+      ]);
+      const body = req.body as Record<string, unknown>;
+      if (
+        typeof body.payer !== "string" || !/^0x[0-9a-fA-F]{40}$/.test(body.payer) ||
+        typeof body.providerAgentId !== "string" || !/^[1-9]\d*$/.test(body.providerAgentId) ||
+        typeof body.actionId !== "string" || !/^[a-z0-9][a-z0-9-]{0,95}$/.test(body.actionId) ||
+        typeof body.providerAssetId !== "string" || !/^[0-9a-f-]{36}$/.test(body.providerAssetId) ||
+        !body.input || typeof body.input !== "object" || Array.isArray(body.input)
+      ) throw new Error("WALLET_ACCESS_DENIED");
+      const args = {
+        payer: body.payer,
+        providerAgentId: body.providerAgentId,
+        actionId: body.actionId,
+        providerAssetId: body.providerAssetId,
+        input: body.input as Record<string, unknown>,
+      };
+      res.setHeader("Cache-Control", "private, no-store");
+      if (body.authorization === null) {
+        res.json({ authorizationRequired: true, challenge: await service.issueAssetActionChallenge({
+          ...args, absoluteResourceUri: `${origin}/wallet/assets/action`,
+          clientKey: req.ip ?? req.socket.remoteAddress ?? "unknown",
+        }) });
+        return;
+      }
+      res.json(await service.performAssetAction({ ...args, authorization: body.authorization as never }));
+    } catch {
+      res.status(401).json({ error: { code: "WALLET_ACCESS_DENIED", message: "Wallet authorization rejected" } });
+    }
+  });
 
   router.post("/uploads/capabilities", async (_req, res, next) => {
     try {
@@ -92,8 +220,9 @@ export function createStandardRailRouter(service: StandardRailService, publicUrl
     });
   });
 
-  router.get("/public/v2/outcomes", (_req, res) => {
-    res.json({ version: 2, outcomes: service.listOutcomes() });
+  router.get("/public/v2/outcomes", async (_req, res, next) => {
+    try { res.json({ version: 2, outcomes: await service.publicOutcomes() }); }
+    catch (error) { next(error); }
   });
 
   router.get("/public/v2/artifacts/:hash", (req, res) => {
@@ -141,7 +270,7 @@ export function createStandardRailRouter(service: StandardRailService, publicUrl
       const receipt = await service.signedReceipt(result.order);
       if (receipt) res.setHeader("PAYMENT-RESPONSE", encoded(receipt));
       res.setHeader("Cache-Control", "private, no-store");
-      const accepted = receipt !== null && ["DISPATCHED", "FULFILLED", "KYC_REQUIRED"].includes(result.order.state);
+      const accepted = receipt !== null && ["DISPATCHED", "FULFILLED", "INPUT_REQUIRED"].includes(result.order.state);
       res.status(accepted ? 200 : 202).json({
         orderHandle: result.handle,
         state: result.order.state,
@@ -162,7 +291,8 @@ export function createStandardRailRouter(service: StandardRailService, publicUrl
   router.post("/orders/:handle/actions/:action", async (req, res, next) => {
     try {
       const action = String(req.params.action);
-      if (!["status", "input", "cancel", "refund", "artifact", "support"].includes(action)) {
+      if (!["status", "input", "cancel", "refund", "artifact", "support", "confirmation", "revoke-confirmation",
+        "notification-set", "notification-get", "notification-delete"].includes(action)) {
         res.status(404).json({ error: { code: "ACTION_NOT_FOUND", message: "Unknown action" } });
         return;
       }
@@ -193,7 +323,8 @@ export function createStandardRailRouter(service: StandardRailService, publicUrl
       ]);
       const result = await service.performAction({
         handle: String(req.params.handle),
-        action: action as "status" | "input" | "cancel" | "refund" | "artifact" | "support",
+        action: action as "status" | "input" | "cancel" | "refund" | "artifact" | "support" |
+          "confirmation" | "revoke-confirmation" | "notification-set" | "notification-get" | "notification-delete",
         request: body.request,
         authorization: authorization as never,
       });
@@ -214,7 +345,8 @@ export function createStandardRailRouter(service: StandardRailService, publicUrl
   router.post("/orders/:handle/actions/:action/challenge", async (req, res, next) => {
     try {
       const action = String(req.params.action);
-      if (!["status", "input", "cancel", "refund", "artifact", "support"].includes(action)) {
+      if (!["status", "input", "cancel", "refund", "artifact", "support", "confirmation", "revoke-confirmation",
+        "notification-set", "notification-get", "notification-delete"].includes(action)) {
         res.status(404).json({ error: { code: "ACTION_NOT_FOUND", message: "Unknown action" } });
         return;
       }
@@ -227,8 +359,10 @@ export function createStandardRailRouter(service: StandardRailService, publicUrl
       res.setHeader("Cache-Control", "private, no-store");
       res.json(await service.issueActionChallenge({
         handle: String(req.params.handle),
-        action: action as "status" | "input" | "cancel" | "refund" | "artifact" | "support",
+        action: action as "status" | "input" | "cancel" | "refund" | "artifact" | "support" |
+          "confirmation" | "revoke-confirmation" | "notification-set" | "notification-get" | "notification-delete",
         request: request as Record<string, unknown>,
+        clientKey: req.ip ?? req.socket.remoteAddress ?? "unknown",
       }));
     } catch (error) { next(error); }
   });

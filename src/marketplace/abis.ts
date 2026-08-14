@@ -22,7 +22,7 @@ export const serviceRegistryAbi = parseAbi([
   "function getServiceCountByProvider(uint256 providerAgentId) view returns (uint256)",
 ]);
 
-export const historicalReputationAbi = parseAbi([
+export const reputationStorageAbi = parseAbi([
   "function getProviderStats(uint256 id) view returns (uint256 completed,uint256 failed,uint256 canceled,uint256 confirmed,uint256 notConfirmed,uint256 transactions)",
   "function getServiceStats(bytes32 id) view returns (uint256 completed,uint256 failed,uint256 canceled,uint256 confirmed,uint256 notConfirmed,uint256 refundedAmount,uint256 transactions)",
 ]);

@@ -16,6 +16,7 @@ import { StandardRailService } from "../standardRail/service.js";
 import { logErrorWithId } from "../util/errorWrap.js";
 import { sendBodyParserError } from "./bodyErrors.js";
 import { configureMiddleware } from "./middleware.js";
+import { createReputationAdminRouter } from "../standardRail/reputationAdmin.js";
 
 interface RateLimitStore {
   consumeRateLimitBucket(
@@ -61,7 +62,7 @@ export async function createStandardGatewayHttp(
 ): Promise<{ app: Express; mcp: McpWiring | null; standardRailStop: () => Promise<void> }> {
   const app = express();
   app.use(requireStandardJson);
-  configureMiddleware(app, options.rateLimitStore, options.config);
+  configureMiddleware(app, options.rateLimitStore, options.config, options.standardRailConfig);
   app.use((req, res, next) => {
     if (
       options.lifecycle.isStopping() &&
@@ -101,6 +102,7 @@ export async function createStandardGatewayHttp(
     service: standardRail,
   }));
   app.use(createMarketplaceRouter(marketplace));
+  app.use(createReputationAdminRouter(options.pool, options.standardRailConfig));
   app.use(createStandardRailRouter(standardRail, options.config.publicUrl));
   const mcp = options.config.mcpEnabled
     ? await createStandardRailMcp(app, options.config, standardRail, marketplace)

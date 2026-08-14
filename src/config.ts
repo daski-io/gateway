@@ -28,7 +28,7 @@ export interface Config {
     providerRegistry: Hex;
     serviceRegistry: Hex;
     validationRegistry: Hex;
-    historicalReputationStorage: Hex;
+    reputationStorage: Hex;
   };
   rpcReadMaxPerMinute: number;
   stateChangeGlobalMaxPerMinute: number;
@@ -158,7 +158,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
         "DASKI_VALIDATION_REGISTRY_ADDRESS",
         env.DASKI_VALIDATION_REGISTRY_ADDRESS,
       ),
-      historicalReputationStorage: address(
+      reputationStorage: address(
         "REPUTATION_STORAGE_ADDRESS",
         env.REPUTATION_STORAGE_ADDRESS,
       ),

@@ -121,7 +121,7 @@ export class StandardRailJournal {
     if (inserted.rowCount !== 1) throw new Error("CHAIN_EVIDENCE_REPLAYED_ACROSS_ORDERS");
   }
 
-  async loadEvidence(orderId: string, kind: "deposit" | "release"): Promise<EvidenceResult> {
+  async loadEvidence(orderId: string, kind: "deposit" | "release" | "refund"): Promise<EvidenceResult> {
     const result = await this.pool.query<{
       transaction_hash: Hex;
       block_number: string;
@@ -363,16 +363,47 @@ export class StandardRailJournal {
     nonce: Hex;
     issuedAt: number;
     validBefore: number;
+    clientKeyHash: Buffer;
+    outstandingPerClient: number;
+    outstandingGlobal: number;
   }): Promise<void> {
-    await this.pool.query(
-      `INSERT INTO standard_action_challenges
-        (nonce,order_id,action,canonical_request_hash,absolute_resource_uri,issued_at,valid_before)
-       VALUES ($1,$2,$3,$4,$5,to_timestamp($6),to_timestamp($7))`,
-      [
-        bytes(args.nonce), args.orderId, args.action, bytes(args.requestHash),
-        args.absoluteResourceUri, args.issuedAt, args.validBefore,
-      ],
-    );
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN ISOLATION LEVEL SERIALIZABLE");
+      await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))", [
+        "standard:wallet-challenge-cap",
+      ]);
+      const outstanding = await client.query<{ client_count: string; global_count: string }>(
+        `SELECT count(*) FILTER (WHERE client_key_hash=$1)::text AS client_count,
+                count(*)::text AS global_count
+           FROM (
+             SELECT client_key_hash FROM standard_wallet_action_challenges
+              WHERE consumed_at IS NULL AND valid_before>now()
+             UNION ALL
+             SELECT client_key_hash FROM standard_action_challenges
+              WHERE consumed_at IS NULL AND valid_before>now()
+           ) active`,
+        [args.clientKeyHash],
+      );
+      if (
+        Number(outstanding.rows[0]?.client_count ?? "0") >= args.outstandingPerClient ||
+        Number(outstanding.rows[0]?.global_count ?? "0") >= args.outstandingGlobal
+      ) throw new Error("ACTION_CHALLENGE_CAPACITY_EXCEEDED");
+      await client.query(
+        `INSERT INTO standard_action_challenges
+          (nonce,client_key_hash,order_id,action,canonical_request_hash,absolute_resource_uri,
+           issued_at,valid_before)
+         VALUES ($1,$2,$3,$4,$5,$6,to_timestamp($7),to_timestamp($8))`,
+        [
+          bytes(args.nonce), args.clientKeyHash, args.orderId, args.action, bytes(args.requestHash),
+          args.absoluteResourceUri, args.issuedAt, args.validBefore,
+        ],
+      );
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK").catch(() => undefined);
+      throw error;
+    } finally { client.release(); }
   }
 
   async cleanupExpiredActionAuthorizations(): Promise<void> {
@@ -395,6 +426,7 @@ export class StandardRailJournal {
     nonce: Hex;
     issuedAt: number;
     validBefore: number;
+    payerRate?: { scope: string; maximum: number };
   }): Promise<void> {
     const client = await this.pool.connect();
     try {
@@ -415,6 +447,27 @@ export class StandardRailJournal {
          SELECT payer,$2,order_id,$3 FROM standard_orders WHERE order_id=$1`,
         [args.orderId, bytes(args.nonce), args.action],
       );
+      if (args.payerRate) {
+        const payer = await client.query<{ payer: string }>(
+          "SELECT lower(payer) AS payer FROM standard_orders WHERE order_id=$1",
+          [args.orderId],
+        );
+        const wallet = payer.rows[0]?.payer;
+        if (!wallet) throw new Error("ACTION_CHALLENGE_INVALID_OR_REPLAYED");
+        const bucket = canonicalHash({ scope: args.payerRate.scope, payer: wallet });
+        const rate = await client.query<{ request_count: number }>(
+          `INSERT INTO rate_limit_buckets(bucket_key,window_started_at,request_count)
+           VALUES ($1,now(),1) ON CONFLICT (bucket_key) DO UPDATE SET
+             window_started_at=CASE WHEN rate_limit_buckets.window_started_at<=now()-interval '1 minute'
+               THEN now() ELSE rate_limit_buckets.window_started_at END,
+             request_count=CASE WHEN rate_limit_buckets.window_started_at<=now()-interval '1 minute'
+               THEN 1 ELSE rate_limit_buckets.request_count+1 END RETURNING request_count`,
+          [`standard-order:${bucket}`],
+        );
+        if ((rate.rows[0]?.request_count ?? args.payerRate.maximum + 1) > args.payerRate.maximum) {
+          throw new Error("ACTION_CHALLENGE_INVALID_OR_REPLAYED");
+        }
+      }
       await client.query("COMMIT");
     } catch (error) {
       await client.query("ROLLBACK");

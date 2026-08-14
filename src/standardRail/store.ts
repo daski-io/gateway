@@ -1,10 +1,12 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { keccak256, toBytes } from "viem";
 import type { Pool } from "../db/pool.js";
 import type { Hex } from "../types.js";
 import { assertTransition } from "./stateMachine.js";
 import type { StandardAttachmentRef, StandardOrderRecord, StandardOrderState } from "./types.js";
 import type { SignedEnvelope, StandardListing, StandardRailManifest } from "./types.js";
 import { canonicalHash } from "./canonical.js";
+import type { StandardNotifications } from "./notifications.js";
 
 const bytes = (value: Hex): Buffer => Buffer.from(value.slice(2), "hex");
 const hex = (value: Buffer | null): Hex | null =>
@@ -12,6 +14,7 @@ const hex = (value: Buffer | null): Hex | null =>
 
 interface OrderRow {
   order_id: string;
+  order_key: Buffer;
   order_handle: string;
   handle_hash: Buffer;
   state: StandardOrderState;
@@ -51,6 +54,7 @@ interface OrderRow {
 function record(row: OrderRow): StandardOrderRecord {
   return {
     orderId: row.order_id,
+    orderKey: hex(row.order_key)!,
     handleHash: row.handle_hash,
     state: row.state,
     providerAgentId: row.provider_agent_id,
@@ -110,7 +114,7 @@ export interface CreateDraftInput {
 }
 
 export class StandardRailStore {
-  constructor(private readonly pool: Pool) {}
+  constructor(private readonly pool: Pool, private readonly notifications?: StandardNotifications) {}
 
   async loadReceipt(orderId: string): Promise<SignedEnvelope<Record<string, unknown>> | null> {
     const result = await this.pool.query<{ canonical_receipt: SignedEnvelope<Record<string, unknown>> }>(
@@ -419,16 +423,17 @@ export class StandardRailStore {
       const handle = randomBytes(32).toString("base64url");
       const handleHash = createHash("sha256").update(handle).digest();
       const orderId = `ord_${randomUUID()}`;
+      const orderKey = keccak256(toBytes(orderId));
       const inserted = await client.query<OrderRow>(
         `INSERT INTO standard_orders (
-          order_id,order_handle,handle_hash,state,provider_agent_id,outcome_id,binding_profile,
+          order_id,order_key,order_handle,handle_hash,state,provider_agent_id,outcome_id,binding_profile,
           listing_manifest_hash,provider_offer_hash,canonical_listing,quote_hash,canonical_quote,canonical_request_hash,
           canonical_request,attachment_set_hash,order_nonce,gross_amount,runtime_epoch,rail_epoch,
           listing_epoch,expires_at)
-         VALUES ($1,$2,$3,'CHALLENGE_ISSUED',$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
+         VALUES ($1,$2,$3,$4,'CHALLENGE_ISSUED',$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
          RETURNING *`,
         [
-          orderId, handle, handleHash, input.providerAgentId, input.outcomeId,
+          orderId, bytes(orderKey), handle, handleHash, input.providerAgentId, input.outcomeId,
           input.bindingProfile, bytes(input.listingManifestHash),
           bytes(input.providerOfferHash), input.listing, bytes(input.quoteHash), input.quote,
           bytes(input.canonicalRequestHash), input.canonicalRequest,
@@ -531,7 +536,7 @@ export class StandardRailStore {
           "CHALLENGE_ISSUED", "ATTEMPT_OPENED", "VERIFIED", "VERIFY_REJECTED",
           "SETTLE_INVOKED", "FACILITATOR_CONFIRMED", "SETTLEMENT_AMBIGUOUS",
           "SETTLEMENT_FAILED", "EXTERNAL_OR_UNPROVEN_DEPOSIT", "DEPOSIT_FINAL", "RELEASE_FINAL", "DISPATCH_STARTED",
-          "DISPATCHED", "DISPATCH_AMBIGUOUS", "FULFILLED", "PROVIDER_FAILED", "KYC_REQUIRED",
+          "DISPATCHED", "DISPATCH_AMBIGUOUS", "FULFILLED", "PROVIDER_FAILED", "INPUT_REQUIRED",
           "REFUND_DUE", "REFUND_RESERVED", "REFUND_INVOKED", "REFUND_AMBIGUOUS",
         ], excludedOrderIds],
       );
@@ -669,6 +674,12 @@ export class StandardRailStore {
     to: StandardOrderState,
     reason: string,
     changes: Record<string, unknown> = {},
+    reputationIntent?: {
+      kind: "register" | "confirmation" | "refund" | "mirror";
+      logicalKey: Hex;
+      intentHash: Hex;
+      canonicalIntent: unknown;
+    },
   ): Promise<StandardOrderRecord> {
     assertTransition(order.state, to);
     const allowed = new Map<string, string>([
@@ -703,12 +714,69 @@ export class StandardRailStore {
         values,
       );
       if (!result.rows[0]) throw new Error("ORDER_TRANSITION_CONFLICT");
-      await client.query(
+      const transition = await client.query<{ transition_id: string; created_at: Date }>(
         `INSERT INTO standard_order_transitions
           (order_id,from_state,to_state,reason_code,fence)
-         VALUES ($1,$2,$3,$4,$5)`,
+         VALUES ($1,$2,$3,$4,$5) RETURNING transition_id,created_at`,
         [order.orderId, order.state, to, reason, result.rows[0].lease_fence],
       );
+      if (this.notifications) {
+        const subscription = await client.query<{
+          subscription_id: string;
+          callback_audience_hash: Buffer;
+        }>(
+          `SELECT subscription_id,callback_audience_hash
+             FROM standard_order_notification_subscriptions
+            WHERE order_id=$1 AND state='active' FOR UPDATE`,
+          [order.orderId],
+        );
+        const active = subscription.rows[0];
+        const eventTransition = transition.rows[0];
+        if (active && eventTransition) {
+          const sequenceResult = await client.query<{ sequence: string }>(
+            `SELECT (COALESCE(max(sequence),0)+1)::text AS sequence
+               FROM standard_order_notification_events WHERE order_id=$1`,
+            [order.orderId],
+          );
+          const sequence = Number(sequenceResult.rows[0]!.sequence);
+          if (!Number.isSafeInteger(sequence)) throw new Error("ORDER_EVENT_SEQUENCE_INVALID");
+          const eventId = randomUUID();
+          const payload = {
+            eventId,
+            subscriptionId: active.subscription_id,
+            callbackAudienceHash: `0x${active.callback_audience_hash.toString("hex")}` as Hex,
+            orderHandle: result.rows[0].order_handle,
+            state: to,
+            reasonClass: notificationReason(to),
+            eventTime: Math.floor(eventTransition.created_at.getTime() / 1_000),
+            sequence,
+          };
+          const envelope = await this.notifications.signEvent(payload);
+          await client.query(
+            `INSERT INTO standard_order_notification_events
+              (event_id,order_id,transition_id,subscription_id,sequence,canonical_event,
+               signed_envelope,state,next_attempt_at)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,'pending',now())`,
+            [eventId, order.orderId, eventTransition.transition_id, active.subscription_id,
+              sequence, payload, envelope],
+          );
+        }
+      }
+      if (reputationIntent) {
+        await client.query(
+          `INSERT INTO standard_reputation_operations
+             (order_id,kind,logical_key,intent_hash,canonical_intent,state,next_attempt_at)
+           VALUES ($1,$2,$3,$4,$5,'pending',now())
+           ON CONFLICT (kind,logical_key) DO NOTHING`,
+          [
+            order.orderId,
+            reputationIntent.kind,
+            bytes(reputationIntent.logicalKey),
+            bytes(reputationIntent.intentHash),
+            reputationIntent.canonicalIntent,
+          ],
+        );
+      }
       await client.query("COMMIT");
       return record(result.rows[0]);
     } catch (error) {
@@ -726,4 +794,13 @@ export class StandardRailStore {
       [orderId],
     );
   }
+}
+
+function notificationReason(state: StandardOrderState): string {
+  if (state === "INPUT_REQUIRED") return "input_required";
+  if (state === "FULFILLED") return "fulfilled";
+  if (state === "PROVIDER_FAILED") return "provider_failed";
+  if (state.startsWith("REFUND") || state === "REFUNDED" || state === "NO_REFUND") return "refund";
+  if (state === "LEGAL_HOLD") return "review";
+  return "state_changed";
 }

@@ -30,8 +30,9 @@ export function createMarketplaceRouter(reader: MarketplaceChainReader): Router 
   router.get("/public/v2/registry/contracts", (_req, res) => {
     res.json({
       ...reader.addresses,
-      historicalReputationOnly: true,
-      standardRailWritesReputation: false,
+      reputationModel: "standard-order-v1",
+      eligibilityTrustBoundary:
+        "Standard-order eligibility is attested by Daski after final x402 chain evidence, including the provider identity snapshot admitted for the listing; provider outcomes and buyer confirmations are signed by their respective parties.",
     });
   });
   router.get("/public/v2/registry/identity/:wallet", async (req, res) => {

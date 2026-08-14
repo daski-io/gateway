@@ -1,5 +1,6 @@
 import { encodeAbiParameters, keccak256, stringToHex, type Address } from "viem";
 import type { Hex } from "../types.js";
+import type { ProviderIdentitySnapshotV1 } from "./types.js";
 
 function assertValidUnicode(value: string): void {
   for (let index = 0; index < value.length; index += 1) {
@@ -167,4 +168,23 @@ export function artifactPayloadHash(envelope: {
 }): Hex {
   const { signature: _signature, ...unsigned } = envelope;
   return canonicalHash(unsigned);
+}
+
+export function providerIdentitySnapshotHash(
+  snapshot: ProviderIdentitySnapshotV1,
+  chainId: number,
+): Hex {
+  const typeHash = keccak256(stringToHex(
+    "ProviderIdentitySnapshotV1(uint256 chainId,uint256 providerAgentId,bytes32 serviceId,address identityRegistry,address providerRegistry,address serviceRegistry,address providerOwner,address providerAgentWallet,address providerPayee,uint256 blockNumber,bytes32 blockHash)",
+  ));
+  return keccak256(encodeAbiParameters([
+    { type: "bytes32" }, { type: "uint256" }, { type: "uint256" }, { type: "bytes32" },
+    { type: "address" }, { type: "address" }, { type: "address" }, { type: "address" },
+    { type: "address" }, { type: "address" }, { type: "uint256" }, { type: "bytes32" },
+  ], [
+    typeHash, BigInt(chainId), BigInt(snapshot.providerAgentId), snapshot.serviceId,
+    snapshot.identityRegistry, snapshot.providerRegistry, snapshot.serviceRegistry,
+    snapshot.providerOwner, snapshot.providerAgentWallet, snapshot.providerPayee,
+    BigInt(snapshot.blockNumber), snapshot.blockHash,
+  ]));
 }

@@ -20,7 +20,7 @@ export type StandardOrderState =
   | "DISPATCH_AMBIGUOUS"
   | "FULFILLED"
   | "PROVIDER_FAILED"
-  | "KYC_REQUIRED"
+  | "INPUT_REQUIRED"
   | "LEGAL_HOLD"
   | "REFUND_DUE"
   | "REFUND_RESERVED"
@@ -46,6 +46,8 @@ export interface ListingCommitmentV1 {
   canonicalToken: Hex;
   railCapabilityRequirementsHash: Hex;
   providerAgentId: string;
+  serviceId: Hex;
+  providerIdentitySnapshotHash: Hex;
   providerAuthorityKey: Hex;
   providerTerminalAttestationKey: Hex;
   providerPayee: Hex;
@@ -110,6 +112,11 @@ export interface ProviderControlProfileV1 {
   dispatchUrl: string;
   dispatchStatusUrl: string;
   lifecycleUrl: string;
+  assetQueryUrl: string;
+  assetActionUrl: string;
+  assetResponseKeyId: string;
+  assetResponseKey: Hex;
+  servicingProfileEpoch: number;
   tlsPolicy: "webpki-v1";
   workloadAuthentication: "signed-envelopes-v1";
   maxResponseBytes: number;
@@ -154,6 +161,15 @@ export interface StandardListing {
   providerControlProfile: SignedEnvelope<ProviderControlProfileV1>;
   title: string;
   description: string;
+  discovery: {
+    categoryFamily: string;
+    serviceType: string;
+    jurisdictions: string[];
+    tags: string[];
+    persistentAsset: boolean;
+    fulfillmentObligationHash: Hex;
+    jurisdictionObligationHashes: Record<string, Hex>;
+  };
   requestSchema: Record<string, unknown>;
   responseSchema: Record<string, unknown>;
   terms: {
@@ -268,13 +284,14 @@ export interface RuntimeReleaseManifestV1 {
   runtimeEpoch: string;
   gatewayReleaseDigest: Hex;
   containerOrBinaryDigest: Hex;
-  databaseSchemaVersion: "031_standard_rail.sql";
+  databaseSchemaVersion: "033_standard_wallet_reputation.sql";
   canonicalConfigurationHash: Hex;
   activeRailProfileHash: Hex;
   facilitatorCredentialBindingHash: Hex;
   chainEvidencePolicyHash: Hex;
   activeListingManifestSetHash: Hex;
   providerControlProfileSetHash: Hex;
+  providerServicingAdmissionSetHash: Hex;
   adapterArtifactSetHash: Hex;
   keyPolicySetHash: Hex;
   environment: string;
@@ -304,6 +321,11 @@ export interface StandardRailDispatchV1 {
   providerAudience: string;
   providerControlProfileHash: Hex;
   orderId: string;
+  orderKey: Hex;
+  serviceId: Hex;
+  reputationEligible: boolean;
+  reputationContract: Hex;
+  outcomeSchemaUid: Hex;
   dispatchNonce: Hex;
   payer: Hex;
   listingManifestHash: Hex;
@@ -340,6 +362,9 @@ export interface StandardRailManifest {
   activeRailProfile: SignedEnvelope<ActiveRailProfileV1>;
   chainEvidencePolicy: SignedEnvelope<ChainEvidencePolicyV1>;
   runtimeRelease: SignedEnvelope<RuntimeReleaseManifestV1>;
+  providerIdentitySnapshots: SignedEnvelope<ProviderIdentitySnapshotV1>[];
+  servicingAdmissions: SignedEnvelope<ProviderServicingAdmissionV1>[];
+  actionCatalogs: SignedEnvelope<ProviderAssetActionCatalogV1>[];
   listings: StandardListing[];
 }
 
@@ -374,6 +399,7 @@ export interface Eip3009Payload {
 
 export interface StandardOrderRecord {
   orderId: string;
+  orderKey: Hex;
   handleHash: Buffer;
   state: StandardOrderState;
   providerAgentId: string;
@@ -407,6 +433,171 @@ export interface StandardOrderRecord {
   expiresAt: Date;
   createdAt: Date;
   updatedAt: Date;
+}
+
+export interface WalletActionAuthorizationV1 {
+  payer: Hex;
+  providerAgentId: string;
+  serviceId: Hex;
+  providerControlProfileHash: Hex;
+  servicingAdmissionHash: Hex;
+  actionCatalogHash: Hex;
+  actionCatalogSchemaHash: Hex;
+  actionDefinitionHash: Hex;
+  actionCatalogEpoch: number;
+  actionHash: Hex;
+  methodHash: Hex;
+  absoluteResourceUriHash: Hex;
+  requestHash: Hex;
+  audienceHash: Hex;
+  nonce: Hex;
+  issuedAt: number;
+  validBefore: number;
+}
+
+export interface WalletAuthorizationTransport {
+  message: WalletActionAuthorizationV1;
+  signature: Hex;
+}
+
+export interface ProviderServicingAdmissionV1 {
+  providerAgentId: string;
+  providerControlProfileHash: Hex;
+  servicingProfileEpoch: number;
+  actionCatalogHash: Hex;
+  actionCatalogSchemaHash: Hex;
+  actionCatalogEpoch: number;
+  servicingEnabled: boolean;
+  previousAdmissionHash: Hex;
+  validFrom: number;
+  validBefore: number;
+}
+
+export interface ProviderIdentitySnapshotV1 {
+  providerAgentId: string;
+  serviceId: Hex;
+  identityRegistry: Hex;
+  providerRegistry: Hex;
+  serviceRegistry: Hex;
+  providerOwner: Hex;
+  providerAgentWallet: Hex;
+  providerPayee: Hex;
+  blockNumber: string;
+  blockHash: Hex;
+}
+
+export interface AssetActionDefinitionV1 {
+  providerAgentId: string;
+  serviceId: Hex;
+  serviceSlug: string;
+  actionId: string;
+  assetType: string;
+  ownershipPolicy: "owner-only";
+  destructive: boolean;
+  requestSchema: Record<string, unknown>;
+  responseSchema: Record<string, unknown>;
+  confirmationSummarySchema: Record<string, unknown> | null;
+  confirmationSummaryTemplate: Record<string, unknown> | null;
+  endpoint: string;
+  replayPolicy: "stable-result" | "regenerate-ephemeral" | "redacted-after-window";
+  retentionSeconds: number;
+  validFrom: number;
+  validBefore: number;
+  actionDefinitionHash: Hex;
+}
+
+export interface ProviderAssetActionCatalogV1 {
+  providerAgentId: string;
+  providerControlProfileHash: Hex;
+  servicingProfileEpoch: number;
+  actionCatalogSchemaHash: Hex;
+  actionCatalogEpoch: number;
+  actions: AssetActionDefinitionV1[];
+}
+
+export interface ProviderWalletActionGrantV1 {
+  payer: Hex;
+  providerAgentId: string;
+  serviceId: Hex;
+  actionHash: Hex;
+  methodHash: Hex;
+  absoluteResourceUriHash: Hex;
+  requestHash: Hex;
+  walletAuthorizationHash: Hex;
+  providerControlProfileHash: Hex;
+  servicingAdmissionHash: Hex;
+  servicingProfileEpoch: number;
+  actionCatalogHash: Hex;
+  actionCatalogSchemaHash: Hex;
+  actionCatalogEpoch: number;
+  actionDefinitionHash: Hex;
+  gatewayAudienceHash: Hex;
+  providerAudienceHash: Hex;
+  grantNonce: Hex;
+}
+
+export interface ProviderAssetQueryResponseV1 {
+  providerAgentId: string;
+  payer: Hex;
+  assets: Array<{
+    providerAssetId: string;
+    serviceSlug: string;
+    type: string;
+    identifier: string;
+    status: string;
+    createdAt: string;
+    expiresAt: string | null;
+  }>;
+  nextCursor: string | null;
+  responseNonce: Hex;
+  requestHash: Hex;
+  walletAuthorizationHash: Hex;
+  grantHash: Hex;
+  providerControlProfileHash: Hex;
+  servicingAdmissionHash: Hex;
+  servicingProfileEpoch: number;
+}
+
+export interface ProviderAssetActionResponseV1 {
+  providerAgentId: string;
+  payer: Hex;
+  actionExecutionId: Hex;
+  status: "completed" | "failed";
+  responseNonce: Hex;
+  requestHash: Hex;
+  walletAuthorizationHash: Hex;
+  grantHash: Hex;
+  providerControlProfileHash: Hex;
+  servicingAdmissionHash: Hex;
+  servicingProfileEpoch: number;
+  actionCatalogHash: Hex;
+  actionCatalogSchemaHash: Hex;
+  actionCatalogEpoch: number;
+  actionDefinitionHash: Hex;
+  result: Record<string, unknown> | null;
+  errorClass: string | null;
+}
+
+export interface ProviderAssetActionStageResponseV1 {
+  providerAgentId: string;
+  payer: Hex;
+  actionExecutionId: Hex;
+  status: "staged" | "canceled";
+  effectSummary: Record<string, unknown>;
+  confirmationHash: Hex;
+  earliestExecutionAt: number;
+  stageValidBefore: number;
+  responseNonce: Hex;
+  requestHash: Hex;
+  walletAuthorizationHash: Hex;
+  grantHash: Hex;
+  providerControlProfileHash: Hex;
+  servicingAdmissionHash: Hex;
+  servicingProfileEpoch: number;
+  actionCatalogHash: Hex;
+  actionCatalogSchemaHash: Hex;
+  actionCatalogEpoch: number;
+  actionDefinitionHash: Hex;
 }
 
 export interface StandardAttachmentRef {

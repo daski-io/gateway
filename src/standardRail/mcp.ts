@@ -38,6 +38,31 @@ const actionInputSchema = {
   authorization: actionAuthorizationSchema.optional(),
 };
 
+const walletMessageSchema = z.object({
+  payer: z.string().regex(/^0x[0-9a-f]{40}$/),
+  providerAgentId: z.string().regex(/^(0|[1-9]\d*)$/),
+  serviceId: z.string().regex(/^0x[0-9a-f]{64}$/),
+  providerControlProfileHash: z.string().regex(/^0x[0-9a-f]{64}$/),
+  servicingAdmissionHash: z.string().regex(/^0x[0-9a-f]{64}$/),
+  actionCatalogHash: z.string().regex(/^0x[0-9a-f]{64}$/),
+  actionCatalogSchemaHash: z.string().regex(/^0x[0-9a-f]{64}$/),
+  actionDefinitionHash: z.string().regex(/^0x[0-9a-f]{64}$/),
+  actionCatalogEpoch: z.number().int().nonnegative(),
+  actionHash: z.string().regex(/^0x[0-9a-f]{64}$/),
+  methodHash: z.string().regex(/^0x[0-9a-f]{64}$/),
+  absoluteResourceUriHash: z.string().regex(/^0x[0-9a-f]{64}$/),
+  requestHash: z.string().regex(/^0x[0-9a-f]{64}$/),
+  audienceHash: z.string().regex(/^0x[0-9a-f]{64}$/),
+  nonce: z.string().regex(/^0x[0-9a-f]{64}$/),
+  issuedAt: z.number().int().nonnegative(),
+  validBefore: z.number().int().positive(),
+}).strict();
+
+const walletAuthorizationSchema = z.object({
+  message: walletMessageSchema,
+  signature: z.string().regex(/^0x[0-9a-f]{130}$/),
+}).strict();
+
 const lifecycleTools = [
   ["daski_get_order_status", "status", "Get the current state of a purchased outcome."],
   ["daski_submit_order_input", "input", "Submit requested customer input for an order."],
@@ -140,6 +165,41 @@ export async function createStandardRailMcp(
         }
       },
     );
+    server.registerTool(
+      "daski_list_outcomes",
+      {
+        description: "Search the currently admitted, purchasable Daski outcomes.",
+        inputSchema: {
+          text: z.string().max(200).optional(),
+          providerAgentId: z.string().regex(/^[1-9]\d*$/).optional(),
+          categoryFamily: z.string().max(64).optional(),
+          serviceType: z.string().max(64).optional(),
+          jurisdiction: z.string().max(64).optional(),
+          pricingMode: z.enum(["fixed", "dynamic"]).optional(),
+          persistentAsset: z.boolean().optional(),
+          limit: z.number().int().min(1).max(100).default(25),
+        },
+        annotations: { title: "List Daski outcomes", readOnlyHint: true, destructiveHint: false,
+          idempotentHint: true, openWorldHint: false },
+      },
+      async (args) => mcpJson({ outcomes: await service.searchOutcomes(args) }),
+    );
+    server.registerTool(
+      "daski_get_outcome",
+      {
+        description: "Get the complete public presentation for one admitted Daski outcome.",
+        inputSchema: {
+          providerAgentId: z.string().regex(/^[1-9]\d*$/),
+          outcomeId: z.string().min(1).max(128),
+        },
+        annotations: { title: "Get a Daski outcome", readOnlyHint: true, destructiveHint: false,
+          idempotentHint: true, openWorldHint: false },
+      },
+      async ({ providerAgentId, outcomeId }) => {
+        try { return mcpJson(await service.getOutcome(providerAgentId, outcomeId)); }
+        catch { return mcpError({ code: "OUTCOME_NOT_FOUND", message: "Outcome not found", retryable: false }); }
+      },
+    );
     for (const [name, action, description] of lifecycleTools) {
       server.registerTool(
         name,
@@ -187,7 +247,180 @@ export async function createStandardRailMcp(
         },
       );
     }
-    registerMarketplaceTools(server, marketplace);
+    for (const [name, action, description] of [
+      ["daski_confirm_delivery", "confirmation", "Prepare or submit a payer-signed delivery confirmation."],
+      ["daski_revoke_delivery_confirmation", "revoke-confirmation", "Prepare or submit withdrawal of the payer's current delivery confirmation."],
+    ] as const) {
+      server.registerTool(name, {
+        description: `${description} Call once without authorization for an order-action challenge, then retry with a fresh payer authorization.`,
+        inputSchema: actionInputSchema,
+        annotations: { title: description, readOnlyHint: false, destructiveHint: true,
+          idempotentHint: false, openWorldHint: true },
+      }, async (args) => {
+        const request = args.request ?? {};
+        try {
+          if (!args.authorization) return mcpJson({ authorizationRequired: true,
+            authorizationType: "OrderActionAuthorizationV1",
+            challenge: await service.issueActionChallenge({ handle: args.orderHandle, action, request }) });
+          return mcpJson(await service.performAction({ handle: args.orderHandle, action, request,
+            authorization: args.authorization as never }));
+        } catch {
+          return mcpError({ code: "CONFIRMATION_REJECTED",
+            message: "The delivery confirmation request was rejected", retryable: false });
+        }
+      });
+    }
+    for (const [name, action, description, readOnly] of [
+      ["daski_set_order_notification", "notification-set", "Set and verify an HTTPS callback for one order.", false],
+      ["daski_get_order_notification", "notification-get", "Read the notification state for one order.", true],
+      ["daski_delete_order_notification", "notification-delete", "Delete the notification callback for one order.", false],
+    ] as const) {
+      server.registerTool(name, {
+        description: `${description} A fresh payer order-action signature is required.`,
+        inputSchema: actionInputSchema,
+        annotations: { title: description, readOnlyHint: readOnly, destructiveHint: !readOnly,
+          idempotentHint: readOnly, openWorldHint: action === "notification-set" },
+      }, async (args) => {
+        const request = args.request ?? {};
+        try {
+          if (!args.authorization) return mcpJson({ authorizationRequired: true,
+            authorizationType: "OrderActionAuthorizationV1",
+            challenge: await service.issueActionChallenge({ handle: args.orderHandle, action, request }) });
+          return mcpJson(await service.performAction({ handle: args.orderHandle, action, request,
+            authorization: args.authorization as never }));
+        } catch {
+          return mcpError({ code: "ORDER_NOTIFICATION_REJECTED",
+            message: "The order notification request was rejected", retryable: false });
+        }
+      });
+    }
+    server.registerTool(
+      "daski_list_my_orders",
+      {
+        description: "List the connected payer wallet's private Daski order history.",
+        inputSchema: {
+          payer: z.string().regex(/^0x[0-9a-fA-F]{40}$/),
+          limit: z.number().int().min(1).max(100).default(25),
+          cursor: z.string().min(1).nullable().default(null),
+          authorization: walletAuthorizationSchema.nullable().default(null),
+        },
+        annotations: { title: "List my Daski orders", readOnlyHint: true, destructiveHint: false,
+          idempotentHint: false, openWorldHint: false },
+      },
+      async ({ payer, limit, cursor, authorization }) => {
+        const normalized = payer.toLowerCase();
+        const request = { payer: normalized, limit, cursor };
+        try {
+          if (!authorization) return mcpJson({
+            authorizationRequired: true,
+            challenge: await service.issueWalletChallenge({
+              action: "list-orders", payer, request,
+              absoluteResourceUri: `${config.publicUrl.replace(/\/$/, "")}/wallet/orders`,
+            }),
+          });
+          return mcpJson(await service.listWalletOrders({
+            payer, limit, cursor, authorization: authorization as never,
+          }));
+        } catch {
+          return mcpError({ code: "WALLET_ACCESS_DENIED", message: "Wallet authorization rejected", retryable: false });
+        }
+      },
+    );
+    server.registerTool(
+      "daski_get_my_reputation",
+      {
+        description: "Get private aggregate Daski reputation participation for a payer wallet.",
+        inputSchema: {
+          payer: z.string().regex(/^0x[0-9a-fA-F]{40}$/),
+          authorization: walletAuthorizationSchema.nullable().default(null),
+        },
+        annotations: { title: "Get my Daski reputation", readOnlyHint: true, destructiveHint: false,
+          idempotentHint: false, openWorldHint: false },
+      },
+      async ({ payer, authorization }) => {
+        const request = { payer: payer.toLowerCase() };
+        try {
+          if (!authorization) return mcpJson({
+            authorizationRequired: true,
+            challenge: await service.issueWalletChallenge({
+              action: "get-buyer-reputation", payer, request,
+              absoluteResourceUri: `${config.publicUrl.replace(/\/$/, "")}/wallet/reputation`,
+            }),
+          });
+          return mcpJson(await service.getWalletReputation({ payer, authorization: authorization as never }));
+        } catch {
+          return mcpError({ code: "WALLET_ACCESS_DENIED", message: "Wallet authorization rejected", retryable: false });
+        }
+      },
+    );
+    server.registerTool(
+      "daski_list_assets",
+      {
+        description: "List provider-owned assets controlled by the connected payer wallet.",
+        inputSchema: {
+          payer: z.string().regex(/^0x[0-9a-fA-F]{40}$/),
+          providerAgentId: z.string().regex(/^[1-9]\d*$/).nullable().default(null),
+          limit: z.number().int().min(1).max(100).default(25),
+          cursor: z.string().min(1).nullable().default(null),
+          authorization: walletAuthorizationSchema.nullable().default(null),
+        },
+        annotations: { title: "List my provider assets", readOnlyHint: true, destructiveHint: false,
+          idempotentHint: false, openWorldHint: true },
+      },
+      async ({ payer, providerAgentId, limit, cursor, authorization }) => {
+        if (providerAgentId === null && cursor !== null) {
+          return mcpError({ code: "WALLET_ACCESS_DENIED", message: "Wallet authorization rejected", retryable: false });
+        }
+        const request = { payer: payer.toLowerCase(), providerAgentId, limit, cursor };
+        try {
+          if (!authorization) return mcpJson({
+            authorizationRequired: true,
+            challenge: await service.issueWalletChallenge({
+              action: "list-assets", payer, request,
+              absoluteResourceUri: `${config.publicUrl.replace(/\/$/, "")}/wallet/assets`,
+            }),
+          });
+          return mcpJson(await service.listWalletAssets({
+            payer, providerAgentId, limit, cursor, authorization: authorization as never,
+          }));
+        } catch {
+          return mcpError({ code: "WALLET_ACCESS_DENIED", message: "Wallet authorization rejected", retryable: false });
+        }
+      },
+    );
+    server.registerTool(
+      "daski_use_asset",
+      {
+        description: "Run an admitted provider action against an asset controlled by the payer wallet.",
+        inputSchema: {
+          payer: z.string().regex(/^0x[0-9a-fA-F]{40}$/),
+          providerAgentId: z.string().regex(/^[1-9]\d*$/),
+          actionId: z.string().regex(/^[a-z0-9][a-z0-9-]{0,95}$/),
+          providerAssetId: z.string().uuid(),
+          input: z.record(z.string(), z.unknown()),
+          authorization: walletAuthorizationSchema.nullable().default(null),
+        },
+        annotations: { title: "Use a Daski asset", readOnlyHint: false, destructiveHint: true,
+          idempotentHint: false, openWorldHint: true },
+      },
+      async ({ authorization, ...args }) => {
+        try {
+          if (!authorization) return mcpJson({
+            authorizationRequired: true,
+            challenge: await service.issueAssetActionChallenge({
+              ...args,
+              absoluteResourceUri: `${config.publicUrl.replace(/\/$/, "")}/wallet/assets/action`,
+            }),
+          });
+          return mcpJson(isolateProviderResult(await service.performAssetAction({
+            ...args, authorization: authorization as never,
+          })));
+        } catch {
+          return mcpError({ code: "WALLET_ACCESS_DENIED", message: "Wallet authorization rejected", retryable: false });
+        }
+      },
+    );
+    registerMarketplaceTools(server, marketplace, () => service.listOutcomes());
     return server;
   }
 

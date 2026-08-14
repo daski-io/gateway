@@ -19,6 +19,7 @@ export function createStandardMetaRouter(args: {
     const databaseReady = await args.pool.query("SELECT 1").then(() => true, () => false);
     const admissionOpen = args.service.isAdmissionOpen();
     const dependenciesReady = args.service.areDependenciesReady();
+    const operations = databaseReady ? await args.service.operationalHealth().catch(() => null) : null;
     const ready = databaseReady && admissionOpen && dependenciesReady && !args.lifecycle.isStopping();
     res.status(ready ? 200 : 503).json({
       status: ready ? "ready" : "unready",
@@ -30,10 +31,11 @@ export function createStandardMetaRouter(args: {
         admission: admissionOpen ? "ready" : "expired",
         standardRail: dependenciesReady ? "ready" : "unready",
       },
+      operations,
     });
   });
-  router.get("/.well-known/daski-chain.json", (_req, res) => {
-    res.json({
+  router.get("/.well-known/daski-chain.json", async (_req, res, next) => {
+    try { res.json({
       version: 2,
       chainId: args.config.chainId,
       network: args.config.network,
@@ -46,8 +48,8 @@ export function createStandardMetaRouter(args: {
         activeRailProfileUrl:
           `${args.config.publicUrl}/public/v2/artifacts/${args.service.railProfileHash}`,
       },
-      outcomes: args.service.listOutcomes(),
-    });
+      outcomes: await args.service.publicOutcomes(),
+    }); } catch (error) { next(error); }
   });
   router.get("/.well-known/mcp.json", (_req, res) => {
     res.json({
@@ -60,15 +62,32 @@ export function createStandardMetaRouter(args: {
         "daski_get_provider",
         "daski_get_service",
         "daski_resolve_agent",
+        "daski_list_outcomes",
+        "daski_get_outcome",
         "daski_buy_outcome",
+        "daski_list_my_orders",
+        "daski_get_my_reputation",
+        "daski_list_assets",
+        "daski_use_asset",
         "daski_get_order_status",
         "daski_submit_order_input",
         "daski_cancel_order",
         "daski_request_refund",
         "daski_get_order_artifact",
         "daski_contact_order_support",
+        "daski_confirm_delivery",
+        "daski_revoke_delivery_confirmation",
+        "daski_set_order_notification",
+        "daski_get_order_notification",
+        "daski_delete_order_notification",
       ],
     });
+  });
+  router.get("/.well-known/daski-order-events.json", async (_req, res, next) => {
+    try {
+      res.setHeader("Cache-Control", "public, max-age=300");
+      res.json(await args.service.orderEventKeySet());
+    } catch (error) { next(error); }
   });
   router.get(["/llms.txt", "/llms-full.txt", "/skill.md", "/SKILL.md"], (_req, res) => {
     res.type("text/markdown").send([
@@ -79,7 +98,7 @@ export function createStandardMetaRouter(args: {
       "Each order action is a challenge/sign/retry exchange authorized by the payer wallet.",
       "Payments are standard x402 V2 Exact-EVM transfers to immutable outcome splitters.",
       "ERC-8004 identity and the Daski provider/service catalogs remain independent of the payment rail.",
-      "Historical native-rail reputation stays readable, but standard-rail orders never write it.",
+      "Standard-order reputation is recorded independently after finalized x402 evidence.",
       "There is no separate paid task submission or payment-time registration.",
       `Network: ${args.config.x402Network}`,
     ].join("\n"));

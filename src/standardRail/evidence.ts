@@ -21,7 +21,7 @@ import { privateKeyToAccount } from "viem/accounts";
 import type { StandardRailConfig } from "./config.js";
 import type { PaymentPayload } from "@x402/core/types";
 import { canonicalHash } from "./canonical.js";
-import type { StandardListing, StandardOrderRecord } from "./types.js";
+import type { ProviderIdentitySnapshotV1, StandardListing, StandardOrderRecord } from "./types.js";
 
 const transferAuthorizationAbi = parseAbi([
   "function transferWithAuthorization(address from,address to,uint256 value,uint256 validAfter,uint256 validBefore,bytes32 nonce,bytes signature)",
@@ -51,6 +51,16 @@ const transferEvent = parseAbiItem("event Transfer(address indexed from,address 
 const authorizationUsedEvent = parseAbiItem("event AuthorizationUsed(address indexed authorizer,bytes32 indexed nonce)");
 const releasedEvent = parseAbiItem("event Released(bytes32 indexed outcomeIdHash,uint64 indexed listingEpoch,uint64 indexed releaseSequence,bytes32 policyVersionHash,bytes32 listingCommitmentHash,uint256 grossAmount,uint256 providerNetAmount,uint256 daskiCommissionAmount)");
 const tokenPolicyAbi = parseAbi(["function DOMAIN_SEPARATOR() view returns (bytes32)"]);
+const identitySnapshotAbi = parseAbi([
+  "function ownerOf(uint256 agentId) view returns (address)",
+  "function getAgentWallet(uint256 agentId) view returns (address)",
+]);
+const providerSnapshotAbi = parseAbi([
+  "function getProvider(uint256 agentId) view returns ((uint256 agentId,uint256 registrationTime,bool isActive))",
+]);
+const serviceSnapshotAbi = parseAbi([
+  "function resolveSettlement(bytes32 serviceId) view returns (uint256 providerAgentId,bool active,address providerOwner,address providerWallet,address payee)",
+]);
 
 interface SourceObservation {
   source: string;
@@ -137,6 +147,49 @@ export class StandardChainEvidence {
       chain,
       transport: http(config.evidenceRpcUrls[0], { retryCount: 0, timeout: 20_000 }),
     }).extend(publicActions);
+  }
+
+  async verifyProviderIdentitySnapshot(snapshot: ProviderIdentitySnapshotV1): Promise<void> {
+    const blockNumber = BigInt(snapshot.blockNumber);
+    const observations = await Promise.all(this.clients.map(async ({ client }) => {
+      const [block, owner, agentWallet, provider, settlement] = await Promise.all([
+        client.getBlock({ blockNumber }),
+        client.readContract({ address: getAddress(snapshot.identityRegistry), abi: identitySnapshotAbi,
+          functionName: "ownerOf", args: [BigInt(snapshot.providerAgentId)], blockNumber }),
+        client.readContract({ address: getAddress(snapshot.identityRegistry), abi: identitySnapshotAbi,
+          functionName: "getAgentWallet", args: [BigInt(snapshot.providerAgentId)], blockNumber }),
+        client.readContract({ address: getAddress(snapshot.providerRegistry), abi: providerSnapshotAbi,
+          functionName: "getProvider", args: [BigInt(snapshot.providerAgentId)], blockNumber }),
+        client.readContract({ address: getAddress(snapshot.serviceRegistry), abi: serviceSnapshotAbi,
+          functionName: "resolveSettlement", args: [snapshot.serviceId], blockNumber }),
+      ]);
+      return { block, owner, agentWallet, provider, settlement };
+    }));
+    for (const observation of observations) {
+      const [providerAgentId, active, providerOwner, providerWallet, payee] = observation.settlement;
+      if (
+        observation.block.hash !== snapshot.blockHash ||
+        getAddress(observation.owner) !== getAddress(snapshot.providerOwner) ||
+        getAddress(observation.agentWallet) !== getAddress(snapshot.providerAgentWallet) ||
+        observation.provider.agentId !== BigInt(snapshot.providerAgentId) || !observation.provider.isActive ||
+        providerAgentId !== BigInt(snapshot.providerAgentId) || !active ||
+        getAddress(providerOwner) !== getAddress(snapshot.providerOwner) ||
+        getAddress(providerWallet) !== getAddress(snapshot.providerAgentWallet) ||
+        getAddress(payee) !== getAddress(snapshot.providerPayee)
+      ) throw new Error("Provider identity snapshot does not match finalized chain state");
+    }
+  }
+
+  async finalizedBlockTimestamp(blockNumber: bigint, expectedHash: Hex): Promise<number> {
+    const blocks = await Promise.all(this.clients.map(({ client }) =>
+      client.getBlock({ blockNumber })
+    ));
+    if (blocks.some((block) => block.hash !== expectedHash || block.timestamp > BigInt(Number.MAX_SAFE_INTEGER))) {
+      throw new Error("Finalized evidence block timestamp is unavailable");
+    }
+    const timestamps = new Set(blocks.map((block) => block.timestamp.toString()));
+    if (timestamps.size !== 1) throw new Error("Finalized evidence sources disagree on timestamp");
+    return Number(blocks[0]!.timestamp);
   }
 
   async verifyCanonicalToken(chainId: number): Promise<void> {
