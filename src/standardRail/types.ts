@@ -284,7 +284,7 @@ export interface RuntimeReleaseManifestV1 {
   runtimeEpoch: string;
   gatewayReleaseDigest: Hex;
   containerOrBinaryDigest: Hex;
-  databaseSchemaVersion: "033_standard_wallet_reputation.sql";
+  databaseSchemaVersion: "034_standard_wallet_reputation_hardening.sql";
   canonicalConfigurationHash: Hex;
   activeRailProfileHash: Hex;
   facilitatorCredentialBindingHash: Hex;

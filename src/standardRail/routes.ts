@@ -29,11 +29,13 @@ function sendWalletError(
     : internal === "WALLET_RATE_LIMITED" ? "WALLET_RATE_LIMITED"
       : internal === "ASSET_ACTION_NOT_ADMITTED" ? "ASSET_ACTION_NOT_ADMITTED"
         : internal === "ASSET_ACTION_REJECTED" ? "ASSET_ACTION_REJECTED" : fallback;
-  const status = code === "WALLET_QUERY_INVALID" ? 400
-    : code === "WALLET_RATE_LIMITED" ? 429
-      : code.startsWith("ASSET_ACTION_") ? 409 : 401;
+  const publicCode = ["ASSET_DESTRUCTIVE_CONFIRMATION_REQUIRED", "ASSET_DESTRUCTIVE_DELAY_ACTIVE"]
+    .includes(internal) ? internal : code;
+  const status = publicCode === "WALLET_QUERY_INVALID" ? 400
+    : publicCode === "WALLET_RATE_LIMITED" ? 429
+      : publicCode.startsWith("ASSET_") ? 409 : 401;
   if (status === 429) res.setHeader("Retry-After", "60");
-  res.status(status).json({ error: { code, message: code === "WALLET_ACCESS_DENIED"
+  res.status(status).json({ error: { code: publicCode, message: publicCode === "WALLET_ACCESS_DENIED"
     ? "Wallet authorization rejected" : "The wallet request could not be completed" } });
 }
 

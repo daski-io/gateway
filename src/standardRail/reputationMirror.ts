@@ -6,17 +6,17 @@ import {
   http,
   keccak256,
   parseAbi,
-  parseEventLogs,
   TransactionNotFoundError,
   TransactionReceiptNotFoundError,
   type Chain,
   type Hex,
-  type TransactionReceipt,
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import type { Pool, } from "../db/pool.js";
 import { logger } from "../util/logger.js";
 import type { StandardRailConfig } from "./config.js";
+import { hasFinalizedNonceConflict } from "./nonceConflict.js";
+import { finalizeReputationMirrorTransaction } from "./reputationMirrorFinalization.js";
 
 const abi = parseAbi([
   "function giveFeedback(uint256 agentId,int128 value,uint8 valueDecimals,string tag1,string tag2,string endpoint,string feedbackURI,bytes32 feedbackHash)",
@@ -67,6 +67,7 @@ function decrypt(value: Buffer, key: Buffer, orderId: string): Hex {
 export class StandardReputationMirror {
   private readonly account;
   private readonly client;
+  private readonly evidenceClients: Array<ReturnType<typeof createPublicClient>>;
   private timer: NodeJS.Timeout | null = null;
   private running: Promise<void> | null = null;
 
@@ -78,6 +79,10 @@ export class StandardReputationMirror {
       transport: fallback(config.evidenceRpcUrls.map((url) =>
         http(url, { retryCount: 0, timeout: 20_000 })), { rank: false }),
     });
+    this.evidenceClients = config.evidenceRpcUrls.map((url) => createPublicClient({
+      chain,
+      transport: http(url, { retryCount: 0, timeout: 20_000 }),
+    }));
   }
 
   start(): void {
@@ -311,7 +316,14 @@ export class StandardReputationMirror {
       return this.retry(row, "contract_rejection");
     }
     try {
-      await this.finish(row, tx, receipt);
+      await finalizeReputationMirrorTransaction({
+        pool: this.pool,
+        registry: this.config.mirror.registry,
+        clientAddress: this.account.address,
+        row,
+        transaction: tx,
+        receipt,
+      });
     } catch {
       await this.pool.query(
         `WITH marked AS (
@@ -327,37 +339,6 @@ export class StandardReputationMirror {
         reason: "application_fault",
       });
     }
-  }
-  private async finish(row: MirrorRow, tx: TxRow, receipt: TransactionReceipt): Promise<void> {
-    let feedbackIndex: bigint | null = null;
-    if (tx.operation === "give") {
-      const logs = parseEventLogs({ abi, logs: receipt.logs, strict: false });
-      const event = logs.find((item) => item.eventName === "NewFeedback");
-      if (!event || !("feedbackIndex" in event.args)) throw new Error("MIRROR_FEEDBACK_INDEX_MISSING");
-      const uid = tx.target_uid ? `0x${tx.target_uid.toString("hex")}`.toLowerCase() : null;
-      if (!uid || !event.args.clientAddress || !event.args.feedbackHash ||
-        event.args.agentId !== BigInt(row.provider_agent_id) ||
-        event.args.clientAddress.toLowerCase() !== this.account.address.toLowerCase() ||
-        event.args.feedbackHash.toLowerCase() !== uid ||
-        event.args.value !== (tx.target_confirmation === "Confirmed" ? 100n : 0n) ||
-        event.args.valueDecimals !== 0 || event.args.tag1 !== "daski" || event.args.tag2 !== row.outcome_id) {
-        throw new Error("MIRROR_FEEDBACK_EVENT_MISMATCH");
-      }
-      feedbackIndex = event.args.feedbackIndex as bigint;
-    }
-    await this.pool.query(
-      `WITH done AS (UPDATE standard_reputation_mirror_transactions SET state='final',block_number=$2,
-         updated_at=now() WHERE transaction_id=$1)
-       UPDATE standard_reputation_mirrors SET active_feedback_index=$3,
-         active_uid=CASE WHEN $4='give' THEN $5 ELSE NULL END,
-         state=CASE WHEN desired_revision=$6::bigint
-           THEN CASE WHEN $4='give' OR desired_uid IS NULL THEN 'current' ELSE 'pending' END
-           ELSE 'pending' END,
-         attempts=0,next_attempt_at=CASE WHEN desired_revision=$6::bigint
-           AND ($4='give' OR desired_uid IS NULL) THEN NULL ELSE now() END,
-         updated_at=now() WHERE order_id=$7`,
-      [tx.transaction_id, receipt.blockNumber.toString(), feedbackIndex?.toString() ?? null,
-        tx.operation, tx.target_uid, tx.desired_revision, row.order_id]);
   }
   private async retry(row: MirrorRow, reason: string): Promise<void> {
     const attempts = row.attempts + 1;
@@ -426,26 +407,23 @@ export class StandardReputationMirror {
   }
 
   private async resolveNonceConflict(row: MirrorRow, tx: TxRow): Promise<void> {
-    let receipt;
-    try {
-      receipt = await this.client.getTransactionReceipt({ hash: tx.transaction_hash });
-    } catch (error) {
-      if (!(error instanceof TransactionReceiptNotFoundError)) throw new MirrorRpcUnavailable();
-    }
+    const receipts = await Promise.all(this.evidenceClients.map(async (client) => {
+      try {
+        return await client.getTransactionReceipt({ hash: tx.transaction_hash });
+      } catch (error) {
+        if (error instanceof TransactionReceiptNotFoundError) return null;
+        throw new MirrorRpcUnavailable();
+      }
+    }));
+    const receipt = receipts.find((candidate) => candidate !== null);
     if (receipt) {
       await this.reconcile(row, tx);
       return;
     }
-    let finalizedNonce;
-    try {
-      finalizedNonce = await this.client.getTransactionCount({
-        address: this.account.address,
-        blockTag: "finalized",
-      });
-    } catch {
-      throw new MirrorRpcUnavailable();
-    }
-    if (BigInt(finalizedNonce) > BigInt(tx.nonce)) {
+    const finalizedNonces = await Promise.all(this.evidenceClients.map((client) =>
+      client.getTransactionCount({ address: this.account.address, blockTag: "finalized" })
+        .catch(() => { throw new MirrorRpcUnavailable(); })));
+    if (hasFinalizedNonceConflict(finalizedNonces.map(BigInt), BigInt(tx.nonce))) {
       const result = await this.pool.query(
         `WITH marked AS (
            UPDATE standard_reputation_mirror_transactions SET state='failed',updated_at=now()
@@ -463,17 +441,7 @@ export class StandardReputationMirror {
       }
       return;
     }
-    const result = await this.pool.query(
-      `UPDATE standard_reputation_mirrors SET state='operator_attention',last_error_class='nonce_conflict',
-         next_attempt_at=NULL,updated_at=now() WHERE order_id=$1`,
-      [row.order_id],
-    );
-    if (result.rowCount === 1) {
-      logger.warn("reputation mirror requires attention", {
-        orderId: row.order_id,
-        reason: "nonce_conflict",
-      });
-    }
+    await this.defer(row.order_id);
   }
   private async pause(row: MirrorRow, reason: string, terminal: boolean, nextDay = false): Promise<void> {
     await this.pool.query(`UPDATE standard_reputation_mirrors SET state=$2,last_error_class=$3,

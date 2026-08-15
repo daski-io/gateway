@@ -19,7 +19,12 @@ import {
 } from "./walletAuthorization.js";
 import type { StandardWalletStore } from "./walletStore.js";
 import { readBoundedJsonResponse } from "./boundedJson.js";
-import { claimAssetAction, recordAssetActionState } from "./assetActionClaims.js";
+import {
+  assertDestructiveFollowUp,
+  claimAssetAction,
+  recordAssetActionStage,
+  recordAssetActionState,
+} from "./assetActionClaims.js";
 import { assertSchema, compileClosedResponseSchema } from "./schema.js";
 
 interface ResolvedAction {
@@ -140,6 +145,17 @@ export class StandardAssetActions {
       allowExactReplay: true,
     });
     if (walletHash !== presentedWalletHash) throw new Error("wallet authorization denied");
+    if (followUp) {
+      await assertDestructiveFollowUp(this.pool, {
+        payer,
+        providerAgentId: args.providerAgentId,
+        actionDefinitionHash: resolved.definition.actionDefinitionHash,
+        executionId: followUp.stagedExecutionId,
+        followUpExecutionId: executionId,
+        confirmationHash: followUp.confirmationHash,
+        operation: followUp.operation,
+      });
+    }
     await claimAssetAction(this.pool, {
       executionId,
       payer,
@@ -157,7 +173,9 @@ export class StandardAssetActions {
       actionDefinitionHash: resolved.definition.actionDefinitionHash,
       stageValidBefore: resolved.definition.destructive && followUp === null && recovery === null
         ? Math.min(
-            Math.floor(Date.now() / 1_000) + 86_400,
+            Math.floor(Date.now() / 1_000) +
+              Math.min(86_400, resolved.definition.retentionSeconds) +
+              Math.ceil(resolved.active.listing.providerControlProfile.payload.timeoutMs / 1_000),
             resolved.definition.validBefore,
             resolved.active.admissionEnvelope.payload.validBefore,
           )
@@ -175,7 +193,9 @@ export class StandardAssetActions {
         redirect: "error",
       },
     );
-    if (!response.ok) throw new Error("ASSET_ACTION_REJECTED");
+    if (!response.ok) {
+      throw new Error(response.status === 429 ? "WALLET_RATE_LIMITED" : "ASSET_ACTION_REJECTED");
+    }
     const body = await readBoundedJsonResponse(response, resolved.active.listing.providerControlProfile.payload.maxResponseBytes);
     const payload = await this.verifyResponse(
       resolved,
@@ -190,7 +210,17 @@ export class StandardAssetActions {
     const state = payload.status as "staged" | "completed" | "failed" | "canceled";
     const retryable = state === "failed" && payload.errorClass === "provider_retryable";
     if (!retryable) {
-      await recordAssetActionState(this.pool, executionId, state);
+      if (state === "staged") {
+        await recordAssetActionStage(
+          this.pool,
+          executionId,
+          payload.confirmationHash as Hex,
+          Number(payload.earliestExecutionAt),
+          Number(payload.stageValidBefore),
+        );
+      } else {
+        await recordAssetActionState(this.pool, executionId, state);
+      }
       if (followUp) await recordAssetActionState(this.pool, followUp.stagedExecutionId, state);
     }
     return payload;
@@ -318,7 +348,13 @@ export class StandardAssetActions {
       !Array.isArray(payload.effectSummary) &&
       typeof payload.confirmationHash === "string" && /^0x[0-9a-f]{64}$/.test(payload.confirmationHash) &&
       Number.isSafeInteger(payload.earliestExecutionAt) && Number.isSafeInteger(payload.stageValidBefore) &&
-      Number(payload.earliestExecutionAt) < Number(payload.stageValidBefore)
+      Number(payload.earliestExecutionAt) < Number(payload.stageValidBefore) &&
+      Number(payload.stageValidBefore) <= Math.min(
+        envelope.issuedAt + 86_400,
+        envelope.issuedAt + resolved.definition.retentionSeconds,
+        resolved.definition.validBefore,
+        resolved.active.admissionEnvelope.payload.validBefore,
+      )
     );
     if (
       envelope.artifactType !== expectedResponse.artifactType ||

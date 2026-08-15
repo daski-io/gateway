@@ -22,6 +22,7 @@ import {
   type ReputationOperationIntent,
 } from "./reputationOperation.js";
 import { refreshReputationPermit, reputationPermitDeadline } from "./reputationOrders.js";
+import { hasFinalizedNonceConflict } from "./nonceConflict.js";
 
 interface OperationRow {
   operation_id: string;
@@ -66,6 +67,7 @@ function decryptRaw(value: Buffer, key: Buffer, operationId: string): Hex {
 export class StandardReputationWorker {
   private readonly account;
   private readonly client;
+  private readonly evidenceClients: Array<ReturnType<typeof createPublicClient>>;
   private timer: NodeJS.Timeout | null = null;
   private running: Promise<void> | null = null;
   private nextKind = 0;
@@ -81,6 +83,10 @@ export class StandardReputationWorker {
       transport: fallback(config.evidenceRpcUrls.map((url) =>
         http(url, { retryCount: 0, timeout: 20_000 })), { rank: false }),
     });
+    this.evidenceClients = config.evidenceRpcUrls.map((url) => createPublicClient({
+      chain,
+      transport: http(url, { retryCount: 0, timeout: 20_000 }),
+    }));
   }
 
   start(): void {
@@ -258,6 +264,7 @@ export class StandardReputationWorker {
         pool: this.pool,
         operation,
         transactionId: transaction.transaction_id,
+        easAddress: this.config.easAddress,
         receipt,
       });
       return;
@@ -425,43 +432,24 @@ export class StandardReputationWorker {
     );
   }
 
-  private async moveToAttention(operationId: string, transactionId: string, reason: string): Promise<void> {
-    const result = await this.pool.query(
-      `WITH marked AS (
-         UPDATE standard_reputation_transactions SET state='operator_attention',updated_at=now()
-          WHERE transaction_id=$2 AND state IN ('prepared','broadcast')
-       )
-       UPDATE standard_reputation_operations
-          SET state='operator_attention',next_attempt_at=NULL,last_error_class=$3,updated_at=now()
-        WHERE operation_id=$1 AND state IN ('pending','broadcast')`,
-      [operationId, transactionId, reason],
-    );
-    if (result.rowCount === 1) {
-      logger.warn("standard reputation operation requires attention", { operationId, reason });
-    }
-  }
-
   private async resolveNonceConflict(operation: OperationRow, transaction: TransactionRow): Promise<void> {
-    let receipt;
-    try {
-      receipt = await this.client.getTransactionReceipt({ hash: transaction.transaction_hash });
-    } catch (error) {
-      if (!(error instanceof TransactionReceiptNotFoundError)) throw new ReputationRpcUnavailable();
-    }
+    const receipts = await Promise.all(this.evidenceClients.map(async (client) => {
+      try {
+        return await client.getTransactionReceipt({ hash: transaction.transaction_hash });
+      } catch (error) {
+        if (error instanceof TransactionReceiptNotFoundError) return null;
+        throw new ReputationRpcUnavailable();
+      }
+    }));
+    const receipt = receipts.find((candidate) => candidate !== null);
     if (receipt) {
       await this.reconcile(operation, transaction);
       return;
     }
-    let finalizedNonce;
-    try {
-      finalizedNonce = await this.client.getTransactionCount({
-        address: this.account.address,
-        blockTag: "finalized",
-      });
-    } catch {
-      throw new ReputationRpcUnavailable();
-    }
-    if (BigInt(finalizedNonce) > BigInt(transaction.nonce)) {
+    const finalizedNonces = await Promise.all(this.evidenceClients.map((client) =>
+      client.getTransactionCount({ address: this.account.address, blockTag: "finalized" })
+        .catch(() => { throw new ReputationRpcUnavailable(); })));
+    if (hasFinalizedNonceConflict(finalizedNonces.map(BigInt), BigInt(transaction.nonce))) {
       const result = await this.pool.query(
         `WITH marked AS (
            UPDATE standard_reputation_transactions SET state='failed',updated_at=now()
@@ -480,7 +468,7 @@ export class StandardReputationWorker {
       }
       return;
     }
-    await this.moveToAttention(operation.operation_id, transaction.transaction_id, "nonce_conflict");
+    await this.defer(operation.operation_id);
   }
 
   private async fail(operation: OperationRow, reason: string, transactionId?: string): Promise<void> {

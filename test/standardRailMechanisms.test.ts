@@ -1,0 +1,190 @@
+import { TransactionReceiptNotFoundError } from "viem";
+import { describe, expect, it, vi } from "vitest";
+import { baseSepolia } from "viem/chains";
+import type { Pool } from "../src/db/pool.js";
+import { StandardChainEvidence } from "../src/standardRail/evidence.js";
+import { withFederationPermit } from "../src/standardRail/federationPermit.js";
+import { retainedPreviousNotificationKeys } from "../src/standardRail/notifications.js";
+import {
+  refreshReputationPermit,
+  reputationPermitDeadline,
+} from "../src/standardRail/reputationOrders.js";
+import type { StandardRailConfig } from "../src/standardRail/config.js";
+import type { RegisterIntent } from "../src/standardRail/reputationOperation.js";
+import { StandardReputationWorker } from "../src/standardRail/reputationWorker.js";
+import type { ProviderIdentitySnapshotV1 } from "../src/standardRail/types.js";
+
+const privateKey = `0x${"01".repeat(32)}` as const;
+const hash = (digit: string) => `0x${digit.repeat(64)}` as const;
+
+describe("standard rail hardened mechanisms", () => {
+  it("acquires provider then global slots only from the isolated permit pool", async () => {
+    const acquired: string[] = [];
+    const client = {
+      async query(sql: string, values: unknown[]) {
+        if (sql.includes("pg_try_advisory_lock")) {
+          acquired.push(String(values[0]));
+          return { rows: [{ acquired: true }] };
+        }
+        return { rows: [{ pg_advisory_unlock: true }] };
+      },
+      release: vi.fn(),
+    };
+    const permitPool = { connect: async () => client } as unknown as Pool;
+    await expect(withFederationPermit({
+      pool: permitPool,
+      providerAgentId: "provider-1",
+      providerLimit: 4,
+      globalLimit: 40,
+      timeoutMs: 100,
+      work: async () => "complete",
+    })).resolves.toBe("complete");
+    expect(acquired).toEqual([
+      "standard:federation:provider:provider-1:0",
+      "standard:federation:global:0",
+    ]);
+    expect(client.release).toHaveBeenCalledOnce();
+  });
+
+  it("keeps a rotated notification key only through its retry window", () => {
+    const keys = [
+      { keyId: "expired", notAfter: 100 },
+      { keyId: "retryable", notAfter: 190 },
+      { keyId: "current-previous", notAfter: 300 },
+    ];
+    expect(retainedPreviousNotificationKeys(keys, 20, 211).map((key) => key.keyId))
+      .toEqual(["current-previous"]);
+    expect(retainedPreviousNotificationKeys(keys, 20, 210).map((key) => key.keyId))
+      .toEqual(["retryable", "current-previous"]);
+  });
+
+  it("refreshes an expiring reputation permit without changing its facts", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2_000_000_000 * 1_000));
+    try {
+      const intent = {
+        operation: "register-order",
+        permit: {
+          orderKey: hash("1"), authorizationKey: hash("2"), providerAgentId: "1",
+          serviceId: hash("3"), payer: "0x1111111111111111111111111111111111111111",
+          providerOwner: "0x2222222222222222222222222222222222222222",
+          providerAgentWallet: "0x3333333333333333333333333333333333333333",
+          providerPayee: "0x4444444444444444444444444444444444444444",
+          identityRegistry: "0x5555555555555555555555555555555555555555",
+          providerRegistry: "0x6666666666666666666666666666666666666666",
+          serviceRegistry: "0x7777777777777777777777777777777777777777",
+          blockNumber: "10", blockHash: hash("4"),
+          canonicalToken: "0x8888888888888888888888888888888888888888",
+          grossAmount: "1000000", paidAt: "1999999000",
+          providerIdentitySnapshotHash: hash("5"), listingManifestHash: hash("6"),
+          releaseEvidenceHash: hash("7"), reputationEligible: true,
+          validBefore: "2000000010",
+        },
+        signature: `0x${"00".repeat(65)}`,
+      } as RegisterIntent;
+      const config = {
+        reputationPermitTtlSeconds: 900,
+        reputationOrderPrivateKey: privateKey,
+        reputationContract: "0x9999999999999999999999999999999999999999",
+      } as unknown as StandardRailConfig;
+      const refreshed = await refreshReputationPermit(intent, config, 84_532);
+      if (refreshed.operation !== "register-order") throw new Error("expected a register-order intent");
+      expect(reputationPermitDeadline(refreshed)).toBe(2_000_000_900n);
+      expect(refreshed).toMatchObject({
+        operation: "register-order",
+        permit: { orderKey: hash("1"), grossAmount: "1000000" },
+      });
+      expect(refreshed.signature).toMatch(/^0x[0-9a-f]{130}$/);
+      expect(refreshed.signature).not.toBe(intent.signature);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("revalidates provider identity at current finalized state and rejects rotation", async () => {
+    const owner = "0x1111111111111111111111111111111111111111";
+    const wallet = "0x2222222222222222222222222222222222222222";
+    const originalPayee = "0x3333333333333333333333333333333333333333";
+    let payee = originalPayee;
+    const getBlock = vi.fn(async () => ({ number: 123n }));
+    const client = {
+      getBlock,
+      readContract: vi.fn(async ({ functionName }: { functionName: string }) => {
+        if (functionName === "ownerOf") return owner;
+        if (functionName === "getAgentWallet") return wallet;
+        if (functionName === "getProvider") return { agentId: 1n, isActive: true };
+        return [1n, true, owner, wallet, payee];
+      }),
+    };
+    const config = {
+      evidenceRpcUrls: ["https://rpc-a.example", "https://rpc-b.example"],
+      releasePrivateKey: privateKey,
+      refundPrivateKey: `0x${"02".repeat(32)}`,
+    } as unknown as StandardRailConfig;
+    const evidence = new StandardChainEvidence(config, baseSepolia);
+    Object.assign(evidence as unknown as { clients: unknown[] }, {
+      clients: [{ client }, { client }],
+    });
+    const snapshot = {
+      providerAgentId: "1", serviceId: hash("8"),
+      identityRegistry: "0x4444444444444444444444444444444444444444",
+      providerRegistry: "0x5555555555555555555555555555555555555555",
+      serviceRegistry: "0x6666666666666666666666666666666666666666",
+      providerOwner: owner, providerAgentWallet: wallet, providerPayee: originalPayee,
+      blockNumber: "10", blockHash: hash("9"),
+    } as ProviderIdentitySnapshotV1;
+    await expect(evidence.revalidateProviderIdentitySnapshot(snapshot)).resolves.toBeUndefined();
+    expect(getBlock).toHaveBeenCalledWith({ blockTag: "finalized" });
+    payee = "0x7777777777777777777777777777777777777777";
+    await expect(evidence.revalidateProviderIdentitySnapshot(snapshot))
+      .rejects.toThrow("Provider identity changed after listing admission");
+  });
+
+  it("resumes a persisted reputation transaction after restart without preparing another", async () => {
+    const transactionHash = hash("a");
+    let operationSelected = false;
+    const statements: string[] = [];
+    const pool = {
+      query: vi.fn(async (sql: string, values?: unknown[]) => {
+        statements.push(sql);
+        if (sql.includes("FROM standard_reputation_operations") && sql.includes("kind=$1")) {
+          if (!operationSelected && values?.[0] === "register") {
+            operationSelected = true;
+            return { rows: [{
+              operation_id: "operation-1", order_id: "order-1", kind: "register",
+              intent_hash: Buffer.from("11".repeat(32), "hex"), canonical_intent: {}, attempts: 0,
+            }] };
+          }
+          return { rows: [] };
+        }
+        if (sql.includes("FROM standard_reputation_transactions")) {
+          return { rows: [{
+            transaction_id: "transaction-1", nonce: "7",
+            encrypted_raw_transaction: Buffer.alloc(1), transaction_hash: transactionHash,
+            state: "broadcast",
+          }] };
+        }
+        return { rows: [], rowCount: 1 };
+      }),
+    } as unknown as Pool;
+    const worker = new StandardReputationWorker(pool, {
+      reputationRelayerPrivateKey: privateKey,
+      evidenceRpcUrls: ["https://rpc-a.example", "https://rpc-b.example"],
+    } as unknown as StandardRailConfig, baseSepolia);
+    Object.assign(worker as unknown as { client: unknown }, {
+      client: {
+        getTransactionReceipt: vi.fn(async () => {
+          throw new TransactionReceiptNotFoundError({ hash: transactionHash });
+        }),
+        getTransaction: vi.fn(async () => ({ hash: transactionHash })),
+      },
+    });
+
+    await (worker as unknown as { runBatch(): Promise<void> }).runBatch();
+
+    expect(statements.some((sql) => sql.includes("INSERT INTO standard_reputation_transactions")))
+      .toBe(false);
+    expect(statements.some((sql) => sql.includes("SET state='broadcast',next_attempt_at")))
+      .toBe(true);
+  });
+});

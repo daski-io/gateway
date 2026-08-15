@@ -46,6 +46,7 @@ export class StandardAssetFederation {
       init: RequestInit,
     ) => Promise<Response>,
     private readonly providerReputation?: (providerAgentId: string) => Promise<unknown>,
+    private readonly permitPool: Pool = pool,
   ) {}
 
   async activateAdmissions(): Promise<void> {
@@ -149,7 +150,7 @@ export class StandardAssetFederation {
     responses.push(...await Promise.all(ids.map(async (providerAgentId) => {
       try {
         return await withFederationPermit({
-          pool: this.pool,
+          pool: this.permitPool,
           providerAgentId,
           providerLimit: this.config.abuse.federationPerProviderConcurrency,
           globalLimit: this.config.abuse.federationGlobalConcurrency,

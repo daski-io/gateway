@@ -20,6 +20,16 @@ interface ClaimRow {
   action_definition_hash: Buffer;
 }
 
+interface StagedClaimRow {
+  payer: string;
+  provider_agent_id: string;
+  action_definition_hash: Buffer;
+  state: string;
+  confirmation_hash: Buffer | null;
+  earliest_execution_at: Date | null;
+  expires_at: Date | null;
+}
+
 export interface AssetActionClaim {
   executionId: Hex;
   payer: Hex;
@@ -70,7 +80,7 @@ export async function claimAssetAction(
         if (Number(counts?.payer_count ?? "0") >= 5 ||
           Number(counts?.provider_count ?? "0") >= 100 ||
           Number(counts?.global_count ?? "0") >= 1_000) {
-          throw new Error("destructive stage capacity exceeded");
+          throw new Error("WALLET_RATE_LIMITED");
         }
       }
     }
@@ -121,14 +131,80 @@ export async function recordAssetActionState(
   pool: Pool,
   executionId: Hex,
   state: "staged" | "completed" | "failed" | "canceled",
+  stageValidBefore: number | null = null,
 ): Promise<void> {
   const result = await pool.query(
-    `UPDATE standard_asset_action_claims SET state=$2,updated_at=now()
+    `UPDATE standard_asset_action_claims SET state=$2,
+        expires_at=CASE WHEN $2='staged' THEN to_timestamp($3) ELSE expires_at END,
+        updated_at=now()
       WHERE execution_id=$1 AND (
         state IN ('claimed',$2) OR
         (state='staged' AND $2 IN ('completed','failed','canceled'))
       )`,
-    [bytes(executionId), state],
+    [bytes(executionId), state, stageValidBefore],
   );
   if (result.rowCount !== 1) throw new Error("asset action claim state mismatch");
+}
+
+export async function recordAssetActionStage(
+  pool: Pool,
+  executionId: Hex,
+  confirmationHash: Hex,
+  earliestExecutionAt: number,
+  stageValidBefore: number,
+): Promise<void> {
+  const result = await pool.query(
+    `UPDATE standard_asset_action_claims
+        SET state='staged',confirmation_hash=$2,
+            earliest_execution_at=to_timestamp($3),expires_at=to_timestamp($4),updated_at=now()
+      WHERE execution_id=$1 AND state IN ('claimed','staged') AND
+        (confirmation_hash IS NULL OR confirmation_hash=$2)`,
+    [bytes(executionId), bytes(confirmationHash), earliestExecutionAt, stageValidBefore],
+  );
+  if (result.rowCount !== 1) throw new Error("asset action claim state mismatch");
+}
+
+export async function assertDestructiveFollowUp(
+  pool: Pool,
+  args: {
+    payer: Hex;
+    providerAgentId: string;
+    actionDefinitionHash: Hex;
+    executionId: Hex;
+    followUpExecutionId: Hex;
+    confirmationHash: Hex;
+    operation: "confirm" | "cancel";
+  },
+): Promise<void> {
+  const result = await pool.query<StagedClaimRow>(
+    `SELECT payer,provider_agent_id,action_definition_hash,state,confirmation_hash,
+            earliest_execution_at,expires_at
+       FROM standard_asset_action_claims WHERE execution_id=$1`,
+    [bytes(args.executionId)],
+  );
+  const row = result.rows[0];
+  if (!row || row.payer !== args.payer || row.provider_agent_id !== args.providerAgentId ||
+      hex(row.action_definition_hash) !== args.actionDefinitionHash ||
+      !row.confirmation_hash || hex(row.confirmation_hash) !== args.confirmationHash) {
+    throw new Error("ASSET_DESTRUCTIVE_CONFIRMATION_REQUIRED");
+  }
+  if (["completed", "failed", "canceled"].includes(row.state)) {
+    const replay = await pool.query<{ operation: string; staged_execution_id: Buffer | null }>(
+      `SELECT operation,staged_execution_id FROM standard_asset_action_claims
+        WHERE execution_id=$1`,
+      [bytes(args.followUpExecutionId)],
+    );
+    const prior = replay.rows[0];
+    if (!prior || prior.operation !== args.operation ||
+        !prior.staged_execution_id || hex(prior.staged_execution_id) !== args.executionId) {
+      throw new Error("ASSET_DESTRUCTIVE_CONFIRMATION_REQUIRED");
+    }
+    return;
+  }
+  if (row.state !== "staged") throw new Error("ASSET_DESTRUCTIVE_CONFIRMATION_REQUIRED");
+  if (!row.expires_at || row.expires_at <= new Date()) throw new Error("ASSET_ACTION_REJECTED");
+  if (args.operation === "confirm" &&
+      (!row.earliest_execution_at || row.earliest_execution_at > new Date())) {
+    throw new Error("ASSET_DESTRUCTIVE_DELAY_ACTIVE");
+  }
 }

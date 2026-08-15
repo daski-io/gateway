@@ -131,6 +131,7 @@ export async function createStandardApp(options: {
   config: Config;
   standardRailConfig: StandardRailConfig;
   pool?: Pool;
+  federationPermitPool?: Pool;
   a2aFetch?: typeof fetch;
 }): Promise<StandardAppBundle> {
   if (!options.pool) {
@@ -160,11 +161,19 @@ export async function createStandardApp(options: {
     max: 10,
   });
   const ownsPool = options.pool === undefined;
+  const federationPermitPool = options.federationPermitPool ?? (options.pool
+    ? pool
+    : createPool({
+      connectionString: options.config.databaseUrl,
+      max: options.standardRailConfig.abuse.federationGlobalConcurrency,
+    }));
+  const ownsFederationPermitPool = options.federationPermitPool === undefined && options.pool === undefined;
   const lifecycle = new ApplicationLifecycle();
   const rateLimitStore = createRateLimitQueries(pool);
   const { app, mcp, standardRailStop } = await createStandardGatewayHttp({
     config: options.config,
     pool,
+    federationPermitPool,
     lifecycle,
     standardRailConfig: options.standardRailConfig,
     rateLimitStore,
@@ -181,9 +190,10 @@ export async function createStandardApp(options: {
         mcp?.close() ?? Promise.resolve(),
         standardRailStop(),
       ]);
-      const poolClose = ownsPool
-        ? await Promise.allSettled([pool.end()])
-        : [];
+      const poolClose = await Promise.allSettled([
+        ...(ownsPool ? [pool.end()] : []),
+        ...(ownsFederationPermitPool ? [federationPermitPool.end()] : []),
+      ]);
       const failure = [...drains, ...poolClose].find((result) => result.status === "rejected");
       if (failure?.status === "rejected") throw failure.reason;
     })();

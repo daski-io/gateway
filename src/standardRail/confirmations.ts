@@ -195,8 +195,12 @@ export class StandardConfirmations {
         `SELECT o.operation_id,o.state FROM standard_confirmation_sponsorships s
           JOIN standard_reputation_operations o ON o.operation_id=s.operation_id
          WHERE s.preparation_id=$1`, [prep.preparation_id]);
-      if (existing.rows[0]) return { operationId: existing.rows[0].operation_id,
-        state: existing.rows[0].state };
+      if (existing.rows[0]) {
+        if (["pending", "broadcast", "operator_attention"].includes(existing.rows[0].state)) {
+          throw new Error("CONFIRMATION_SUBMISSION_PENDING");
+        }
+        return { operationId: existing.rows[0].operation_id, state: existing.rows[0].state };
+      }
       throw new Error("CONFIRMATION_PREPARATION_STALE");
     }
     const valid = await verifyTypedData({ address: getAddress(order.payer!),
@@ -215,7 +219,8 @@ export class StandardConfirmations {
       current.currentConfirmationUid.toLowerCase() !== expectedUid.toLowerCase() || nonce.toString() !== prep.eas_nonce) {
       throw new Error("CONFIRMATION_PREPARATION_STALE");
     }
-    return this.reserve(order, prep, request.signature as Hex);
+    await this.reserve(order, prep, request.signature as Hex);
+    throw new Error("CONFIRMATION_SUBMISSION_PENDING");
   }
 
   private async reserve(order: StandardOrderRecord, prep: PreparationRow, signature: Hex) {

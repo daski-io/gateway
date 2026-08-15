@@ -19,6 +19,14 @@ export interface OrderEventPayload {
   sequence: number;
 }
 
+export function retainedPreviousNotificationKeys<T extends { notAfter: number }>(
+  keys: readonly T[],
+  retryWindowSeconds: number,
+  nowSeconds: number,
+): T[] {
+  return keys.filter((key) => key.notAfter + retryWindowSeconds >= nowSeconds);
+}
+
 export function encryptCallback(value: string, key: Buffer, id: string): Buffer {
   const iv = randomBytes(12);
   const cipher = createCipheriv("aes-256-gcm", key, iv);
@@ -66,16 +74,18 @@ export class StandardNotifications {
 
   async keySet(publicUrl: string) {
     const now = Math.floor(Date.now() / 1_000);
+    const retryWindow = this.config.notification.retryDelaysSeconds.reduce((sum, value) => sum + value, 0);
     const keys = [{
       keyId: this.config.notification.keyId,
       address: privateKeyToAccount(this.config.notification.privateKey).address,
       algorithm: "secp256k1-eip191-keccak256-rfc8785-v1",
       notBefore: now - 300,
       notAfter: now + 31_536_000,
-    }, ...this.config.notification.previousKeys.map((key) => ({
-      ...key,
-      algorithm: "secp256k1-eip191-keccak256-rfc8785-v1" as const,
-    }))].sort((left, right) => left.keyId.localeCompare(right.keyId));
+    }, ...retainedPreviousNotificationKeys(this.config.notification.previousKeys, retryWindow, now)
+      .map((key) => ({
+        ...key,
+        algorithm: "secp256k1-eip191-keccak256-rfc8785-v1" as const,
+      }))].sort((left, right) => left.keyId.localeCompare(right.keyId));
     const payload = { activeKeyId: this.config.notification.keyId, keys,
       discoveryUrl: `${publicUrl.replace(/\/$/, "")}/.well-known/daski-order-events.json` };
     return signEnvelope({ artifactType: "DaskiOrderEventKeySetV1", environment: this.config.environment,

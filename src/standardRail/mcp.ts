@@ -92,12 +92,14 @@ function walletMcpError(error: unknown) {
   const code = internal === "WALLET_RATE_LIMITED" ? "WALLET_RATE_LIMITED"
     : internal === "ASSET_ACTION_NOT_ADMITTED" ? "ASSET_ACTION_NOT_ADMITTED"
       : internal === "ASSET_ACTION_REJECTED" ? "ASSET_ACTION_REJECTED"
-        : "WALLET_ACCESS_DENIED";
+        : ["ASSET_DESTRUCTIVE_CONFIRMATION_REQUIRED", "ASSET_DESTRUCTIVE_DELAY_ACTIVE"]
+          .includes(internal) ? internal : "WALLET_ACCESS_DENIED";
   return mcpError({
     code,
     message: code === "WALLET_ACCESS_DENIED"
       ? "Wallet authorization rejected" : "The wallet request could not be completed",
-    retryable: code === "WALLET_RATE_LIMITED" || code === "ASSET_ACTION_REJECTED",
+    retryable: code === "WALLET_RATE_LIMITED" || code === "ASSET_ACTION_REJECTED" ||
+      code === "ASSET_DESTRUCTIVE_DELAY_ACTIVE",
   });
 }
 

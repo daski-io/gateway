@@ -11,6 +11,7 @@ import {
   compileClosedRequestSchema,
   compileClosedResponseSchema,
 } from "./schema.js";
+import type { ReviewedListingAllowlist } from "./listingAllowlist.js";
 
 const LAUNCH_ACTION_CLASSIFICATION = new Map<string, boolean>([
   ["get-domain-info", false],
@@ -43,8 +44,9 @@ export interface ArtifactTrust {
   chainId: number;
   gatewayAudience: string;
   signers: ReadonlyMap<string, Address>;
-  marketplaceCommissionBps?: number;
-  launchOutcomeIds?: readonly string[];
+  marketplaceCommissionBps: number;
+  launchOutcomeIds: readonly string[];
+  reviewedListings: ReviewedListingAllowlist;
 }
 
 export async function verifyEnvelope<T>(
@@ -354,15 +356,13 @@ export async function verifyStandardRailManifest(
     rail.recoveryValidBefore > manifest.activeRailProfile.validBefore ||
     ((rail.priorRailEpoch === "0") !== (rail.priorActiveRailProfileHash.toLowerCase() === zeroHash))
   ) throw new Error("Active rail profile chronology or predecessor is invalid");
-  if (trust.launchOutcomeIds) {
-    const actual = manifest.listings.map((item) => item.commitment.payload.outcomeId).sort();
-    const expected = [...trust.launchOutcomeIds].sort();
-    if (actual.length !== expected.length || actual.some((value, index) => value !== expected[index])) {
-      throw new Error("Active listings do not match the reviewed launch outcome allowlist");
-    }
+  const actual = manifest.listings.map((item) => item.commitment.payload.outcomeId).sort();
+  const expected = [...trust.launchOutcomeIds].sort();
+  if (actual.length !== expected.length || actual.some((value, index) => value !== expected[index])) {
+    throw new Error("Active listings do not match the reviewed launch outcome allowlist");
   }
   if (
-    !/^[1-9]\d*$/.test(runtime.runtimeEpoch) || runtime.databaseSchemaVersion !== "033_standard_wallet_reputation.sql" ||
+    !/^[1-9]\d*$/.test(runtime.runtimeEpoch) || runtime.databaseSchemaVersion !== "034_standard_wallet_reputation_hardening.sql" ||
     runtime.environment !== trust.environment || runtime.chainId !== trust.chainId ||
     runtime.issuedAt !== manifest.runtimeRelease.issuedAt ||
     runtime.admissionValidBefore <= runtime.issuedAt || runtime.recoveryValidBefore <= runtime.admissionValidBefore ||
@@ -596,13 +596,24 @@ async function verifyListing(listing: StandardListing, trust: ArtifactTrust): Pr
     canonicalHash(listing.requestSchema) !== commitment.requestSchemaHash ||
     canonicalHash(listing.responseSchema) !== commitment.responseSchemaHash
   ) throw new Error("Listing schema content hash mismatch");
+  const approved = trust.reviewedListings.content[commitment.outcomeId];
+  const approvedJurisdictions = trust.reviewedListings.jurisdictionObligationHashes[commitment.outcomeId];
+  if (!approved || !approvedJurisdictions ||
+      commitment.serviceId.toLowerCase() !== approved.serviceId ||
+      commitment.requestSchemaHash.toLowerCase() !== approved.requestSchemaHash ||
+      commitment.responseSchemaHash.toLowerCase() !== approved.responseSchemaHash ||
+      commitment.termsHash.toLowerCase() !== approved.termsHash ||
+      offer.deliveryCommitment.toLowerCase() !== approved.deliveryCommitmentHash ||
+      listing.discovery.fulfillmentObligationHash.toLowerCase() !== approved.fulfillmentObligationHash ||
+      canonicalHash(listing.discovery.jurisdictionObligationHashes) !== canonicalHash(approvedJurisdictions)) {
+    throw new Error("Listing content differs from the reviewed launch allowlist");
+  }
   if (
     !/^\d+$/.test(commitment.listingEpoch) || commitment.validFrom >= commitment.validUntil ||
     offer.issuedAt < commitment.validFrom || offer.validBefore > commitment.validUntil ||
     !Number.isSafeInteger(commitment.commissionBps) || commitment.commissionBps <= 0 ||
     commitment.commissionBps >= 10_000 ||
-    (trust.marketplaceCommissionBps !== undefined &&
-      commitment.commissionBps !== trust.marketplaceCommissionBps) ||
+    commitment.commissionBps !== trust.marketplaceCommissionBps ||
     (offer.pricingMode === "fixed" && !/^[1-9][0-9]*$/.test(offer.fixedGrossAmount)) ||
     (offer.pricingMode === "dynamic" && offer.fixedGrossAmount !== "0") ||
     (offer.pricingMode === "fixed" && offer.quotePolicyHash.toLowerCase() !== `0x${"00".repeat(32)}`) ||

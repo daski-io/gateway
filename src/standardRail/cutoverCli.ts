@@ -36,6 +36,9 @@ async function main(): Promise<void> {
     chainId: appConfig.chainId,
     gatewayAudience: standardConfig.gatewayAudience,
     signers: standardConfig.trustedSigners,
+    marketplaceCommissionBps: standardConfig.marketplaceCommissionBps,
+    launchOutcomeIds: standardConfig.launchOutcomeIds,
+    reviewedListings: standardConfig.reviewedListings,
   });
   await verifyRuntimeIntegrity(appConfig, standardConfig);
   const archiveSha256 = hex32(

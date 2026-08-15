@@ -25,8 +25,40 @@ import {
 import { declarePaymentIdentifierExtension } from "@x402/extensions/payment-identifier";
 import { assertCutoverReady } from "../src/standardRail/cutover.js";
 import { standardPaymentError } from "../src/standardRail/routes.js";
+import { loadReviewedListingAllowlist } from "../src/standardRail/listingAllowlist.js";
+import { hasFinalizedNonceConflict } from "../src/standardRail/nonceConflict.js";
 
 describe("standard rail primitives", () => {
+  it("requires independent finalized nonce agreement before declaring a conflict", () => {
+    expect(hasFinalizedNonceConflict([12n, 12n], 11n)).toBe(true);
+    expect(hasFinalizedNonceConflict([12n, 11n], 11n)).toBe(false);
+    expect(hasFinalizedNonceConflict([12n], 11n)).toBe(false);
+  });
+
+  it("loads only the exact reviewed listing content and non-empty jurisdictions", () => {
+    const hash = (digit: string) => `0x${digit.repeat(64)}`;
+    const content = {
+      alpha: {
+        serviceId: hash("1"), deliveryCommitmentHash: hash("2"), termsHash: hash("3"),
+        requestSchemaHash: hash("4"), responseSchemaHash: hash("5"),
+        fulfillmentObligationHash: hash("6"),
+      },
+    };
+    expect(loadReviewedListingAllowlist(
+      JSON.stringify(content), JSON.stringify({ alpha: { US_WY: hash("7") } }), ["alpha"],
+    ).content.alpha?.termsHash).toBe(hash("3"));
+    expect(() => loadReviewedListingAllowlist(
+      JSON.stringify(content), JSON.stringify({ alpha: {} }), ["alpha"],
+    )).toThrow(/jurisdiction/);
+    expect(() => loadReviewedListingAllowlist(
+      JSON.stringify({ ...content, unreviewed: content.alpha }),
+      JSON.stringify({ alpha: { US_WY: hash("7") } }), ["alpha"],
+    )).toThrow(/exact launch outcome set/);
+    expect(() => loadReviewedListingAllowlist(
+      JSON.stringify({ alpha: { ...content.alpha, termsHash: hash("0") } }),
+      JSON.stringify({ alpha: { US_WY: hash("7") } }), ["alpha"],
+    )).toThrow(/content is invalid/);
+  });
   it("requires drained cutover prerequisites and sanitizes payment errors", () => {
     expect(() => assertCutoverReady({
       legacyDatabase: true,

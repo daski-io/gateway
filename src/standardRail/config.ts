@@ -2,6 +2,10 @@ import { getAddress, type Address, type Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import type { StandardRailManifest } from "./types.js";
 import { assertNoDuplicateJsonKeys } from "./canonical.js";
+import {
+  loadReviewedListingAllowlist,
+  type ReviewedListingAllowlist,
+} from "./listingAllowlist.js";
 
 export interface StandardRailConfig {
   environment: string;
@@ -84,6 +88,7 @@ export interface StandardRailConfig {
   admin: { bearerToken: string; csrfToken: string };
   marketplaceCommissionBps: number;
   launchOutcomeIds: readonly string[];
+  reviewedListings: ReviewedListingAllowlist;
   abuse: {
     walletChallengesPerClientPerMinute: number;
     walletChallengesGlobalPerMinute: number;
@@ -205,6 +210,11 @@ export function loadStandardRailConfig(
       JSON.stringify([...reviewedLaunchOutcomes].sort())) {
     throw new Error("The launch outcome allowlist differs from the reviewed launch set");
   }
+  const reviewedListings = loadReviewedListingAllowlist(
+    required(env, "MARKETPLACE_REVIEWED_CONTENT_HASHES_JSON"),
+    required(env, "MARKETPLACE_APPROVED_JURISDICTION_OBLIGATION_HASHES_JSON"),
+    launchOutcomeIds,
+  );
   const evidenceRpcUrls = required(env, "STANDARD_RAIL_EVIDENCE_RPC_URLS")
     .split(",")
     .map((url, index) => httpsUrl(`STANDARD_RAIL_EVIDENCE_RPC_URLS[${index}]`, url.trim()))
@@ -411,16 +421,14 @@ export function loadStandardRailConfig(
   }
   const previousIds = notificationPreviousKeys.map((key) => key.keyId);
   const previousAddresses = notificationPreviousKeys.map((key) => key.address.toLowerCase());
-  const retryWindow = notificationRetryDelays.reduce((sum, value) => sum + value, 0) + 3_600;
-  const now = Math.floor(Date.now() / 1_000);
   if (
     new Set(previousIds).size !== previousIds.length ||
     new Set(previousAddresses).size !== previousAddresses.length ||
     previousIds.includes(notificationKeyId) || previousAddresses.includes(notificationAddress) ||
     notificationPreviousKeys.some((key) =>
-      key.notAfter < now + retryWindow || key.notAfter - key.notBefore > 63_072_000 ||
+      key.notAfter - key.notBefore > 63_072_000 ||
       operationalAddresses.includes(key.address.toLowerCase()))
-  ) throw new Error("Order-event previous keys do not provide a safe rotation overlap");
+  ) throw new Error("Order-event previous keys violate the rotation policy");
   const notificationVerificationTtlSeconds = requiredPositiveInteger(
     env,
     "ORDER_EVENT_VERIFICATION_TTL_SECONDS",
@@ -542,6 +550,7 @@ export function loadStandardRailConfig(
     },
     marketplaceCommissionBps,
     launchOutcomeIds,
+    reviewedListings,
     abuse,
     objectStore: {
       endpoint: httpsUrl("STANDARD_RAIL_OBJECT_STORE_ENDPOINT", required(env, "STANDARD_RAIL_OBJECT_STORE_ENDPOINT")),

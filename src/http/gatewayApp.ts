@@ -28,6 +28,7 @@ interface RateLimitStore {
 export interface StandardGatewayHttpOptions {
   config: Config;
   pool: Pool;
+  federationPermitPool?: Pool;
   lifecycle: ApplicationLifecycle;
   standardRailConfig: StandardRailConfig;
   rateLimitStore: RateLimitStore;
@@ -88,6 +89,7 @@ export async function createStandardGatewayHttp(
     facilitator,
     evidence,
     options.a2aFetch,
+    options.federationPermitPool,
   );
   const marketplace = new ViemMarketplaceChainReader(
     options.config,

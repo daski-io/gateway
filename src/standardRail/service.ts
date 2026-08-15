@@ -219,6 +219,7 @@ export class StandardRailService {
     private readonly facilitator: StandardFacilitator,
     private readonly evidence: StandardChainEvidence,
     private readonly fetchFn: typeof fetch = fetch,
+    federationPermitPool: Pool = pool,
   ) {
     this.notifications = new StandardNotifications(pool, railConfig, appConfig.chainId);
     this.notificationWorker = new StandardNotificationWorker(pool, railConfig);
@@ -241,6 +242,7 @@ export class StandardRailService {
       this.walletStore,
       (listing, endpoint, init) => this.providerFetch(listing, endpoint, init),
       (providerAgentId) => this.reputationProjection.provider(providerAgentId),
+      federationPermitPool,
     );
     this.assetActions = new StandardAssetActions(
       pool,
@@ -330,6 +332,7 @@ export class StandardRailService {
       signers: this.railConfig.trustedSigners,
       marketplaceCommissionBps: this.railConfig.marketplaceCommissionBps,
       launchOutcomeIds: this.railConfig.launchOutcomeIds,
+      reviewedListings: this.railConfig.reviewedListings,
     });
     await verifyRuntimeIntegrity(this.appConfig, this.railConfig);
     if (
