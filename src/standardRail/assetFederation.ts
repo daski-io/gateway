@@ -110,7 +110,7 @@ export class StandardAssetFederation {
           active = admission;
         }
         if (!active || !admissions.some((item) => canonicalHash(item) === canonicalHash(active!))) {
-          throw new Error("Current servicing admission is absent from the runtime release");
+          throw new Error("Current servicing admission is absent from the marketplace manifest");
         }
         await client.query("COMMIT");
         this.activeAdmissions.set(providerAgentId, active);
@@ -139,8 +139,7 @@ export class StandardAssetFederation {
       `SELECT DISTINCT provider_agent_id FROM standard_orders
         WHERE lower(payer)=$1 AND state IN (
           'RELEASE_FINAL','DISPATCH_STARTED','DISPATCHED','DISPATCH_AMBIGUOUS',
-          'FULFILLED','PROVIDER_FAILED','INPUT_REQUIRED','LEGAL_HOLD','REFUND_DUE',
-          'REFUND_RESERVED','REFUND_INVOKED','REFUND_AMBIGUOUS','REFUNDED','NO_REFUND'
+          'FULFILLED','PROVIDER_FAILED','INPUT_REQUIRED','LEGAL_HOLD','NOT_SETTLED'
         ) AND ($2::text IS NULL OR provider_agent_id=$2)
         ORDER BY provider_agent_id LIMIT $3`,
       [payer, args.providerAgentId, this.config.abuse.federationMaxProviders],

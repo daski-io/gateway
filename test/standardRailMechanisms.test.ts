@@ -4,7 +4,6 @@ import { baseSepolia } from "viem/chains";
 import type { Pool } from "../src/db/pool.js";
 import { StandardChainEvidence } from "../src/standardRail/evidence.js";
 import { withFederationPermit } from "../src/standardRail/federationPermit.js";
-import { retainedPreviousNotificationKeys } from "../src/standardRail/notifications.js";
 import {
   refreshReputationPermit,
   reputationPermitDeadline,
@@ -44,18 +43,6 @@ describe("standard rail hardened mechanisms", () => {
       "standard:federation:global:0",
     ]);
     expect(client.release).toHaveBeenCalledOnce();
-  });
-
-  it("keeps a rotated notification key only through its retry window", () => {
-    const keys = [
-      { keyId: "expired", notAfter: 100 },
-      { keyId: "retryable", notAfter: 190 },
-      { keyId: "current-previous", notAfter: 300 },
-    ];
-    expect(retainedPreviousNotificationKeys(keys, 20, 211).map((key) => key.keyId))
-      .toEqual(["current-previous"]);
-    expect(retainedPreviousNotificationKeys(keys, 20, 210).map((key) => key.keyId))
-      .toEqual(["retryable", "current-previous"]);
   });
 
   it("refreshes an expiring reputation permit without changing its facts", async () => {
@@ -119,7 +106,6 @@ describe("standard rail hardened mechanisms", () => {
     const config = {
       evidenceRpcUrls: ["https://rpc-a.example", "https://rpc-b.example"],
       releasePrivateKey: privateKey,
-      refundPrivateKey: `0x${"02".repeat(32)}`,
     } as unknown as StandardRailConfig;
     const evidence = new StandardChainEvidence(config, baseSepolia);
     Object.assign(evidence as unknown as { clients: unknown[] }, {

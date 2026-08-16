@@ -131,18 +131,8 @@ export async function buildReputationRegistration(args: {
   return { canonicalIntent, intentHash: canonicalHash(canonicalIntent) };
 }
 
-const refundTypes = {
-  StandardReputationRefundV1: [
-    { name: "orderKey", type: "bytes32" },
-    { name: "authorizationKey", type: "bytes32" },
-    { name: "cumulativeRefundedAmount", type: "uint256" },
-    { name: "refundEvidenceHash", type: "bytes32" },
-    { name: "validBefore", type: "uint64" },
-  ],
-} as const;
-
 export function reputationPermitDeadline(intent: ReputationOperationIntent): bigint | null {
-  if (intent.operation === "register-order" || intent.operation === "record-refund") {
+  if (intent.operation === "register-order") {
     return BigInt(intent.permit.validBefore);
   }
   return null;
@@ -178,53 +168,5 @@ export async function refreshReputationPermit(
     });
     return { ...intent, permit, signature };
   }
-  if (intent.operation === "record-refund") {
-    const permit = { ...intent.permit, validBefore: validBefore.toString() };
-    const signature = await account.signTypedData({
-      domain,
-      primaryType: "StandardReputationRefundV1",
-      types: refundTypes,
-      message: {
-        ...permit,
-        cumulativeRefundedAmount: BigInt(permit.cumulativeRefundedAmount),
-        validBefore,
-      },
-    });
-    return { ...intent, permit, signature };
-  }
   return intent;
-}
-
-export async function buildReputationRefund(args: {
-  order: StandardOrderRecord;
-  cumulativeRefundedAmount: bigint;
-  refundEvidenceHash: Hex;
-  config: StandardRailConfig;
-  chainId: number;
-}) {
-  if (!args.order.authorizationKey || args.cumulativeRefundedAmount <= 0n ||
-    args.cumulativeRefundedAmount > BigInt(args.order.grossAmount)) {
-    throw new Error("Reputation refund facts are invalid");
-  }
-  const permit = {
-    orderKey: args.order.orderKey,
-    authorizationKey: args.order.authorizationKey,
-    cumulativeRefundedAmount: args.cumulativeRefundedAmount,
-    refundEvidenceHash: args.refundEvidenceHash,
-    validBefore: BigInt(Math.floor(Date.now() / 1_000) + args.config.reputationPermitTtlSeconds),
-  };
-  const signature = await privateKeyToAccount(args.config.reputationOrderPrivateKey).signTypedData({
-    domain: { name: "Daski Reputation", version: "1", chainId: args.chainId,
-      verifyingContract: args.config.reputationContract },
-    primaryType: "StandardReputationRefundV1",
-    types: refundTypes,
-    message: permit,
-  });
-  const canonicalIntent = {
-    operation: "record-refund" as const,
-    permit: { ...permit, cumulativeRefundedAmount: permit.cumulativeRefundedAmount.toString(),
-      validBefore: permit.validBefore.toString() },
-    signature,
-  };
-  return { canonicalIntent, intentHash: canonicalHash(canonicalIntent) };
 }

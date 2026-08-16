@@ -72,29 +72,19 @@ export function createStandardMetaRouter(args: {
         "daski_get_order_status",
         "daski_submit_order_input",
         "daski_cancel_order",
-        "daski_request_refund",
         "daski_get_order_artifact",
         "daski_contact_order_support",
         "daski_confirm_delivery",
         "daski_revoke_delivery_confirmation",
-        "daski_set_order_notification",
-        "daski_get_order_notification",
-        "daski_delete_order_notification",
       ],
     });
-  });
-  router.get("/.well-known/daski-order-events.json", async (_req, res, next) => {
-    try {
-      res.setHeader("Cache-Control", "public, max-age=300");
-      res.json(await args.service.orderEventKeySet());
-    } catch (error) { next(error); }
   });
   router.get(["/llms.txt", "/llms-full.txt", "/skill.md", "/SKILL.md"], (_req, res) => {
     res.type("text/markdown").send([
       "# Daski standard outcome rail",
       "",
       "Use `daski_buy_outcome` for both the unpaid challenge and identical paid retry.",
-      "Use the separately named order tools for status, input, cancellation, refunds, artifacts, and support.",
+      "Use the separately named order tools for status, input, cancellation, artifacts, and support.",
       "Each order action is a challenge/sign/retry exchange authorized by the payer wallet.",
       "Payments are standard x402 V2 Exact-EVM transfers to immutable outcome splitters.",
       "ERC-8004 identity and the Daski provider/service catalogs remain independent of the payment rail.",

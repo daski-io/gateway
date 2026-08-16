@@ -105,11 +105,10 @@ export function paymentRequired(args: {
         providerTermsUrl: args.listing.terms.providerTermsUrl,
         providerPrivacyUrl: args.listing.terms.providerPrivacyUrl,
         commissionBps: args.listing.commitment.payload.commissionBps,
-        refundPolicy: args.listing.refundPolicy,
         purchaseRetryPolicy: args.listing.commitment.payload.bindingProfile === "stock-fixed-v1"
           ? {
               identicalSignedAuthorization: "transport-retry-same-purchase",
-              newlySignedAuthorization: "distinct-purchase-subject-to-advertised-refund-policy",
+              newlySignedAuthorization: "distinct-purchase",
             }
           : {
               identicalSignedAuthorization: "transport-retry-same-purchase",
@@ -276,7 +275,6 @@ export async function validatePayment(args: {
     listing.commitment.payload.daskiCommissionReceiver,
     listing.commitment.payload.providerAuthorityKey,
     listing.commitment.payload.providerTerminalAttestationKey,
-    listing.refundPolicy.executionReserveAddress,
     ...listing.screeningPolicy.providerControlledWallets,
   ].map(getAddress);
   if (forbidden.includes(payer)) throw new Error("Known self-purchase is forbidden");

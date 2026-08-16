@@ -22,12 +22,7 @@ export type StandardOrderState =
   | "PROVIDER_FAILED"
   | "INPUT_REQUIRED"
   | "LEGAL_HOLD"
-  | "REFUND_DUE"
-  | "REFUND_RESERVED"
-  | "REFUND_INVOKED"
-  | "REFUND_AMBIGUOUS"
-  | "REFUNDED"
-  | "NO_REFUND";
+  | "NOT_SETTLED";
 
 export interface SignedEnvelope<T> {
   artifactType: string;
@@ -63,7 +58,6 @@ export interface ListingCommitmentV1 {
   daskiCommissionReceiver: Hex;
   commissionBps: number;
   termsHash: Hex;
-  refundPolicyHash: Hex;
   screeningPolicyHash: Hex;
   chainEvidencePolicyHash: Hex;
   extensionPolicyHash: Hex;
@@ -97,7 +91,6 @@ export interface ProviderOutcomeOfferV1 {
   deadlinePolicyHash: Hex;
   deliveryCommitment: Hex;
   termsHash: Hex;
-  refundPolicyHash: Hex;
   issuedAt: number;
   validBefore: number;
   offerNonce: Hex;
@@ -108,7 +101,6 @@ export interface ProviderControlProfileV1 {
   providerAudience: string;
   origin: string;
   quoteUrl: string;
-  reserveUrl: string;
   dispatchUrl: string;
   dispatchStatusUrl: string;
   lifecycleUrl: string;
@@ -195,16 +187,6 @@ export interface StandardListing {
     releaseEvidenceSeconds: number;
     dispatchSeconds: number;
     fulfillmentSeconds: number;
-    refundSeconds: number;
-  };
-  refundPolicy: {
-    buyerRequested: boolean;
-    requestDeadlineSeconds: number;
-    executionReserveAddress: Hex;
-    releaseFailureDisposition: "legal_hold";
-    providerFailureDisposition: "refund_due";
-    dispatchAmbiguityDisposition: "refund_due";
-    kycFailureDisposition: "refund_due";
   };
 }
 
@@ -243,18 +225,6 @@ export interface FacilitatorProfileV1 {
   recoveryValidBefore: number;
 }
 
-export interface FacilitatorCredentialBindingV1 {
-  credentialEpoch: string;
-  facilitatorProfileHash: Hex;
-  credentialKeyIdHash: Hex;
-  authenticationMethod: "cdp-jwt-v1";
-  workloadIdentityHash: Hex;
-  priorCredentialBindingHash: Hex;
-  activatedAt: number;
-  admissionValidBefore: number;
-  recoveryValidBefore: number;
-}
-
 export interface RailCapabilityRequirementsV1 {
   requirementId: string;
   scheme: "exact";
@@ -278,27 +248,6 @@ export interface ChainEvidencePolicyV1 {
   maximumSourceLagBlocks: number;
   finalityBlockTimeSeconds: number;
   maximumIntervalEvents: number;
-}
-
-export interface RuntimeReleaseManifestV1 {
-  runtimeEpoch: string;
-  gatewayReleaseDigest: Hex;
-  containerOrBinaryDigest: Hex;
-  databaseSchemaVersion: "034_standard_wallet_reputation_hardening.sql";
-  canonicalConfigurationHash: Hex;
-  activeRailProfileHash: Hex;
-  facilitatorCredentialBindingHash: Hex;
-  chainEvidencePolicyHash: Hex;
-  activeListingManifestSetHash: Hex;
-  providerControlProfileSetHash: Hex;
-  providerServicingAdmissionSetHash: Hex;
-  adapterArtifactSetHash: Hex;
-  keyPolicySetHash: Hex;
-  environment: string;
-  chainId: number;
-  issuedAt: number;
-  admissionValidBefore: number;
-  recoveryValidBefore: number;
 }
 
 export interface QuoteV1 {
@@ -357,11 +306,9 @@ export interface DispatchStatusQueryV1 {
 
 export interface StandardRailManifest {
   facilitatorProfile: SignedEnvelope<FacilitatorProfileV1>;
-  facilitatorCredentialBinding: SignedEnvelope<FacilitatorCredentialBindingV1>;
   railCapabilityRequirements: SignedEnvelope<RailCapabilityRequirementsV1>;
   activeRailProfile: SignedEnvelope<ActiveRailProfileV1>;
   chainEvidencePolicy: SignedEnvelope<ChainEvidencePolicyV1>;
-  runtimeRelease: SignedEnvelope<RuntimeReleaseManifestV1>;
   providerIdentitySnapshots: SignedEnvelope<ProviderIdentitySnapshotV1>[];
   servicingAdmissions: SignedEnvelope<ProviderServicingAdmissionV1>[];
   actionCatalogs: SignedEnvelope<ProviderAssetActionCatalogV1>[];
@@ -412,7 +359,6 @@ export interface StandardOrderRecord {
   quote: SignedEnvelope<QuoteV1>;
   canonicalRequestHash: Hex;
   canonicalRequest: unknown;
-  attachmentSetHash: Hex | null;
   orderNonce: Hex;
   authorizationKey: Hex | null;
   paymentPayloadHash: Hex | null;
@@ -426,7 +372,6 @@ export interface StandardOrderRecord {
   releaseTxHash: Hex | null;
   releaseEvidenceHash: Hex | null;
   providerTaskId: string | null;
-  runtimeEpoch: string;
   railEpoch: string;
   version: number;
   leaseFence: number;
@@ -598,12 +543,4 @@ export interface ProviderAssetActionStageResponseV1 {
   actionCatalogSchemaHash: Hex;
   actionCatalogEpoch: number;
   actionDefinitionHash: Hex;
-}
-
-export interface StandardAttachmentRef {
-  objectId: string;
-  contentHash: Hex;
-  byteSize: number;
-  mediaType: string;
-  expiresAt: number;
 }

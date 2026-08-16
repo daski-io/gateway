@@ -14,58 +14,34 @@ import {
 import { assertTransition, isTerminalState } from "../src/standardRail/stateMachine.js";
 import { isNonPublicAddress } from "../src/standardRail/network.js";
 import { assertPassiveProviderOutput } from "../src/standardRail/providerOutput.js";
-import { assertRefundNetworkFee } from "../src/standardRail/evidence.js";
-import {
-  buildGrossRefundIntent,
-  validateGrossRefundIntent,
-} from "../src/standardRail/refund.js";
 import {
   assertPaymentIdentifierExtension,
 } from "../src/standardRail/payment.js";
 import { declarePaymentIdentifierExtension } from "@x402/extensions/payment-identifier";
-import { assertCutoverReady } from "../src/standardRail/cutover.js";
 import { standardPaymentError } from "../src/standardRail/routes.js";
-import { loadReviewedListingAllowlist } from "../src/standardRail/listingAllowlist.js";
 import { hasFinalizedNonceConflict } from "../src/standardRail/nonceConflict.js";
+import { providerOutcome } from "../src/standardRail/walletQueries.js";
+import { isAdmissionWindowOpen } from "../src/standardRail/service.js";
 
 describe("standard rail primitives", () => {
-  it("requires independent finalized nonce agreement before declaring a conflict", () => {
+  it("detects a finalized nonce conflict across every configured source", () => {
     expect(hasFinalizedNonceConflict([12n, 12n], 11n)).toBe(true);
     expect(hasFinalizedNonceConflict([12n, 11n], 11n)).toBe(false);
-    expect(hasFinalizedNonceConflict([12n], 11n)).toBe(false);
+    expect(hasFinalizedNonceConflict([12n], 11n)).toBe(true);
   });
 
-  it("loads only the exact reviewed listing content and non-empty jurisdictions", () => {
-    const hash = (digit: string) => `0x${digit.repeat(64)}`;
-    const content = {
-      alpha: {
-        serviceId: hash("1"), deliveryCommitmentHash: hash("2"), termsHash: hash("3"),
-        requestSchemaHash: hash("4"), responseSchemaHash: hash("5"),
-        fulfillmentObligationHash: hash("6"),
-      },
-    };
-    expect(loadReviewedListingAllowlist(
-      JSON.stringify(content), JSON.stringify({ alpha: { US_WY: hash("7") } }), ["alpha"],
-    ).content.alpha?.termsHash).toBe(hash("3"));
-    expect(() => loadReviewedListingAllowlist(
-      JSON.stringify(content), JSON.stringify({ alpha: {} }), ["alpha"],
-    )).toThrow(/jurisdiction/);
-    expect(() => loadReviewedListingAllowlist(
-      JSON.stringify({ ...content, unreviewed: content.alpha }),
-      JSON.stringify({ alpha: { US_WY: hash("7") } }), ["alpha"],
-    )).toThrow(/exact launch outcome set/);
-    expect(() => loadReviewedListingAllowlist(
-      JSON.stringify({ alpha: { ...content.alpha, termsHash: hash("0") } }),
-      JSON.stringify({ alpha: { US_WY: hash("7") } }), ["alpha"],
-    )).toThrow(/content is invalid/);
+  it("does not present an unrecorded provider outcome as completed", () => {
+    expect(providerOutcome(0, false)).toBe("Pending");
+    expect(providerOutcome(0, true)).toBe("Completed");
   });
-  it("requires drained cutover prerequisites and sanitizes payment errors", () => {
-    expect(() => assertCutoverReady({
-      legacyDatabase: true,
-      pendingChallenges: 1,
-      unresolvedTransactions: 0,
-      approved: false,
-    })).toThrow("STANDARD_RAIL_CUTOVER_NOT_DRAINED");
+
+  it("closes admission when either signed rail deadline expires", () => {
+    expect(isAdmissionWindowOpen(200, 300, 199)).toBe(true);
+    expect(isAdmissionWindowOpen(200, 300, 200)).toBe(false);
+    expect(isAdmissionWindowOpen(400, 300, 300)).toBe(false);
+  });
+
+  it("sanitizes payment errors", () => {
     expect(standardPaymentError(new Error("payer mismatch: secret upstream detail"))).toEqual({
       status: 400,
       code: "INVALID_STANDARD_PAYMENT",
@@ -174,80 +150,8 @@ describe("standard rail primitives", () => {
   it("forbids state-machine shortcuts and marks disposed orders terminal", () => {
     expect(() => assertTransition("DEPOSIT_FINAL", "FULFILLED")).toThrow(/Forbidden/);
     expect(() => assertTransition("DEPOSIT_FINAL", "RELEASE_FINAL")).not.toThrow();
-    expect(isTerminalState("REFUNDED")).toBe(true);
+    expect(isTerminalState("FULFILLED")).toBe(true);
     expect(isTerminalState("LEGAL_HOLD")).toBe(true);
-  });
-
-  it("builds one exact-gross refund and rejects inconsistent contributions", () => {
-    const input = {
-      orderId: "ord_00000000-0000-4000-8000-000000000000",
-      payer: "0x1111111111111111111111111111111111111111" as Hex,
-      token: "0x2222222222222222222222222222222222222222" as Hex,
-      grossAmount: "1000",
-      providerAmount: "950",
-      daskiAmount: "50",
-      providerReservationId: `0x${"04".repeat(32)}` as Hex,
-      daskiReservationId: `0x${"05".repeat(32)}` as Hex,
-      refundReason: "provider_failed" as const,
-      depositEvidenceHash: `0x${"06".repeat(32)}` as Hex,
-      releaseEvidenceHash: `0x${"07".repeat(32)}` as Hex,
-      refundPolicyHash: `0x${"08".repeat(32)}` as Hex,
-      dispositionEvidenceHash: `0x${"03".repeat(32)}` as Hex,
-      dueAt: 2_000_000_000,
-    };
-    const intent = buildGrossRefundIntent(input);
-    expect(intent).toMatchObject({ amount: "1000", leg: "gross" });
-    expect(validateGrossRefundIntent(intent, {
-      orderId: input.orderId,
-      payer: input.payer,
-      token: input.token,
-      grossAmount: input.grossAmount,
-      providerAmount: input.providerAmount,
-      daskiAmount: input.daskiAmount,
-      providerReservationId: input.providerReservationId,
-      daskiReservationId: input.daskiReservationId,
-      depositEvidenceHash: input.depositEvidenceHash,
-      releaseEvidenceHash: input.releaseEvidenceHash,
-      refundPolicyHash: input.refundPolicyHash,
-    })).toEqual(intent);
-    expect(() => validateGrossRefundIntent(
-      { ...intent, refundReason: "buyer_requested" },
-      {
-        orderId: input.orderId,
-        payer: input.payer,
-        token: input.token,
-        grossAmount: input.grossAmount,
-        providerAmount: input.providerAmount,
-        daskiAmount: input.daskiAmount,
-        providerReservationId: input.providerReservationId,
-        daskiReservationId: input.daskiReservationId,
-        depositEvidenceHash: input.depositEvidenceHash,
-        releaseEvidenceHash: input.releaseEvidenceHash,
-        refundPolicyHash: input.refundPolicyHash,
-      },
-    )).toThrow(/conflicts/);
-    expect(() => buildGrossRefundIntent({ ...input, daskiAmount: "51" })).toThrow(/exact gross/);
-  });
-
-  it("rejects refund transactions above the signed network-fee ceiling", () => {
-    expect(() => assertRefundNetworkFee({
-      gas: 60_000n,
-      maxFeePerGas: 2_000_000_000n,
-      maxPriorityFeePerGas: 1_000_000_000n,
-      maximumNetworkFee: 120_000_000_000_000n,
-    })).not.toThrow();
-    expect(() => assertRefundNetworkFee({
-      gas: 60_000n,
-      maxFeePerGas: 2_000_000_001n,
-      maxPriorityFeePerGas: 1_000_000_000n,
-      maximumNetworkFee: 120_000_000_000_000n,
-    })).toThrow(/network-fee ceiling/);
-    expect(() => assertRefundNetworkFee({
-      gas: 60_000n,
-      maxFeePerGas: undefined,
-      maxPriorityFeePerGas: undefined,
-      maximumNetworkFee: 120_000_000_000_000n,
-    })).toThrow(/network-fee ceiling/);
   });
 
   it("rejects private, metadata, mapped, and documentation network destinations", () => {

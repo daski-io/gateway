@@ -7,16 +7,14 @@
   },
   "scripts": {
     "dev": "tsx src/index.ts",
-    "build": "tsc -p tsconfig.build.json && cp -r src/db/migrations dist/db/migrations",
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
+    "build": "npm run clean && tsc -p tsconfig.build.json && cp -r src/db/migrations dist/db/migrations",
     "start": "node dist/index.js",
     "test": "NODE_ENV=test vitest run",
     "test:watch": "NODE_ENV=test vitest",
-    "typecheck": "tsc --noEmit",
-    "standard-rail:measure": "node dist/standardRail/measureCli.js",
-    "standard-rail:cutover": "node dist/standardRail/cutoverCli.js"
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@aws-sdk/client-s3": "3.1108.0",
     "@coinbase/cdp-sdk": "1.53.0",
     "@modelcontextprotocol/express": "2.0.0",
     "@modelcontextprotocol/node": "2.0.0",

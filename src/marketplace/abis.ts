@@ -25,4 +25,12 @@ export const serviceRegistryAbi = parseAbi([
 export const reputationStorageAbi = parseAbi([
   "function getProviderStats(uint256 id) view returns (uint256 completed,uint256 failed,uint256 canceled,uint256 confirmed,uint256 notConfirmed,uint256 transactions)",
   "function getServiceStats(bytes32 id) view returns (uint256 completed,uint256 failed,uint256 canceled,uint256 confirmed,uint256 notConfirmed,uint256 refundedAmount,uint256 transactions)",
+  "function totalPaidByProvider(uint256 id) view returns (uint256)",
+  "function refundedAmountByProvider(uint256 id) view returns (uint256)",
+  "function outcomeDelayTotalByProvider(uint256 id) view returns (uint256)",
+  "function confirmedWeightByProvider(uint256 id) view returns (uint256)",
+  "function notConfirmedWeightByProvider(uint256 id) view returns (uint256)",
+  "function totalPaidByService(bytes32 id) view returns (uint256)",
+  "function confirmedWeightByService(bytes32 id) view returns (uint256)",
+  "function notConfirmedWeightByService(bytes32 id) view returns (uint256)",
 ]);

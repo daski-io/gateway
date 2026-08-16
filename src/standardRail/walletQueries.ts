@@ -1,5 +1,14 @@
-import { getAddress } from "viem";
+import {
+  createPublicClient,
+  fallback,
+  getAddress,
+  http,
+  parseAbi,
+  type Address,
+  type Chain,
+} from "viem";
 import type { Pool } from "../db/pool.js";
+import type { StandardRailConfig } from "./config.js";
 import type { StandardWalletStore } from "./walletStore.js";
 import type { WalletAuthorizationTransport } from "./types.js";
 
@@ -12,20 +21,41 @@ interface OrderHistoryRow {
   state: string;
   gross_amount: string;
   canonical_listing: { commitment: { payload: { serviceId: string } } };
-  registration_state: string | null;
-  provider_outcome: number | null;
-  confirmation_state: number | null;
-  confirmation_transitions: number | null;
+  registration_operation_state: string | null;
   created_at: Date;
   created_at_cursor: string;
   updated_at: Date;
 }
 
+const reputationAbi = parseAbi([
+  "function getRecord(bytes32 orderKey) view returns ((bytes32 orderKey,bytes32 authorizationKey,uint256 providerAgentId,bytes32 serviceId,address payer,address providerOwner,address providerAgentWallet,address providerPayee,address canonicalToken,uint256 grossAmount,uint64 paidAt,bytes32 providerIdentitySnapshotHash,bytes32 listingManifestHash,bytes32 releaseEvidenceHash,uint8 outcome,uint8 confirmation,uint64 outcomeAttestationDelay,uint64 outcomeTimestamp,uint64 confirmationTimestamp,uint8 confirmationTransitions,bool outcomeRecorded,bool reputationEligible,bytes32 currentConfirmationUid))",
+  "function getBuyerStats(address payer) view returns (uint256,uint256,uint256)",
+  "function totalPaidByPayer(address payer) view returns (uint256)",
+  "function refundedAmountByPayer(address payer) view returns (uint256)",
+]);
+
+const ZERO_HASH = `0x${"00".repeat(32)}`;
+
 export class StandardWalletQueries {
+  private readonly chain;
+
   constructor(
     private readonly pool: Pool,
     private readonly wallet: StandardWalletStore,
-  ) {}
+    config: StandardRailConfig,
+    chain: Chain,
+  ) {
+    this.chain = createPublicClient({
+      chain,
+      transport: fallback(config.evidenceRpcUrls.map((url) => http(url, {
+        retryCount: 0,
+        timeout: 20_000,
+      }))),
+    });
+    this.reputationContract = config.reputationContract;
+  }
+
+  private readonly reputationContract: Address;
 
   async listOrders(args: {
     payer: string;
@@ -42,16 +72,10 @@ export class StandardWalletQueries {
       `SELECT o.order_id,o.order_handle,o.order_key,o.provider_agent_id,o.outcome_id,
               o.state,o.gross_amount,o.canonical_listing,o.created_at,
               o.created_at::text AS created_at_cursor,o.updated_at,
-              CASE WHEN p.order_key IS NOT NULL AND p.reputation_eligible THEN 'final'
-                WHEN p.order_key IS NOT NULL THEN 'unavailable'
-                WHEN r.state IN ('aborted_unattested','blocked_parent_aborted') THEN 'unavailable'
-                ELSE 'pending' END AS registration_state,
-              p.outcome AS provider_outcome,p.confirmation AS confirmation_state,
-              p.confirmation_transitions AS confirmation_transitions
+              r.state AS registration_operation_state
          FROM standard_orders o
          LEFT JOIN standard_reputation_operations r
            ON r.order_id=o.order_id AND r.kind='register'
-         LEFT JOIN standard_reputation_projection_records p ON p.order_key=o.order_key
         WHERE lower(o.payer)=$1
           AND ($2::timestamptz IS NULL OR (o.created_at,o.order_id)<($2::timestamptz,$3))
         ORDER BY o.created_at DESC,o.order_id DESC
@@ -60,8 +84,19 @@ export class StandardWalletQueries {
     );
     const rows = result.rows.slice(0, args.limit);
     const hasMore = result.rows.length > args.limit;
+    const block = await this.chain.getBlock({ blockTag: "finalized" });
+    const records = await Promise.all(rows.map((row) => this.chain.readContract({
+      address: this.reputationContract,
+      abi: reputationAbi,
+      functionName: "getRecord",
+      args: [`0x${row.order_key.toString("hex")}`],
+      blockNumber: block.number,
+    })));
     return {
-      orders: rows.map((row) => ({
+      orders: rows.map((row, index) => {
+        const reputation = records[index]!;
+        const registered = reputation.orderKey !== ZERO_HASH;
+        return ({
         orderHandle: row.order_handle,
         orderKey: `0x${row.order_key.toString("hex")}`,
         providerAgentId: row.provider_agent_id,
@@ -70,14 +105,18 @@ export class StandardWalletQueries {
         state: row.state,
         grossAmount: row.gross_amount,
         reputation: {
-          registrationState: reputationState(row.registration_state),
-          providerOutcome: providerOutcome(row.provider_outcome),
-          buyerConfirmation: confirmation(row.confirmation_state),
-          confirmationTransitionsUsed: row.confirmation_transitions ?? 0,
+          registrationState: registered
+            ? reputation.reputationEligible ? "final" : "unavailable"
+            : reputationState(row.registration_operation_state),
+          providerOutcome: registered
+            ? providerOutcome(reputation.outcome, reputation.outcomeRecorded)
+            : "Pending",
+          buyerConfirmation: registered ? confirmation(reputation.confirmation) : "Pending",
+          confirmationTransitionsUsed: registered ? reputation.confirmationTransitions : 0,
         },
         createdAt: row.created_at.toISOString(),
         updatedAt: row.updated_at.toISOString(),
-      })),
+      }); }),
       nextCursor: hasMore && rows.length > 0
         ? this.wallet.encodeOrderCursor({
             createdAt: rows.at(-1)!.created_at_cursor,
@@ -98,33 +137,38 @@ export class StandardWalletQueries {
       action: "get-buyer-reputation",
       request,
     });
-    const result = await this.pool.query<{
-      eligible_count: string;
-      confirmed_count: string;
-      not_confirmed_count: string;
-      total_paid: string;
-      total_refunded: string;
-      finalized_block: string | null;
-    }>(
-      `SELECT count(p.order_key)::text AS eligible_count,
-              count(*) FILTER (WHERE p.confirmation=1)::text AS confirmed_count,
-              count(*) FILTER (WHERE p.confirmation=2)::text AS not_confirmed_count,
-              COALESCE(sum(p.gross_amount),0)::text AS total_paid,
-              COALESCE(sum(p.cumulative_refunded),0)::text AS total_refunded,
-              (SELECT last_indexed_block::text FROM standard_reputation_projection_state
-                WHERE singleton=true) AS finalized_block
-         FROM standard_reputation_projection_records p
-        WHERE lower(p.payer)=$1 AND p.reputation_eligible`,
-      [payer],
-    );
-    const row = result.rows[0]!;
+    const block = await this.chain.getBlock({ blockTag: "finalized" });
+    const address = getAddress(payer);
+    const [[eligible, confirmed, notConfirmed], totalPaid, totalRefunded] = await Promise.all([
+      this.chain.readContract({
+        address: this.reputationContract,
+        abi: reputationAbi,
+        functionName: "getBuyerStats",
+        args: [address],
+        blockNumber: block.number,
+      }),
+      this.chain.readContract({
+        address: this.reputationContract,
+        abi: reputationAbi,
+        functionName: "totalPaidByPayer",
+        args: [address],
+        blockNumber: block.number,
+      }),
+      this.chain.readContract({
+        address: this.reputationContract,
+        abi: reputationAbi,
+        functionName: "refundedAmountByPayer",
+        args: [address],
+        blockNumber: block.number,
+      }),
+    ]);
     return {
-      eligibleTransactionCount: row.eligible_count,
-      confirmedCount: row.confirmed_count,
-      notConfirmedCount: row.not_confirmed_count,
-      totalPaid: row.total_paid,
-      totalRefunded: row.total_refunded,
-      finalizedBlock: row.finalized_block,
+      eligibleTransactionCount: eligible.toString(),
+      confirmedCount: confirmed.toString(),
+      notConfirmedCount: notConfirmed.toString(),
+      totalPaid: totalPaid.toString(),
+      totalRefunded: totalRefunded.toString(),
+      finalizedBlock: block.number.toString(),
     };
   }
 }
@@ -135,7 +179,8 @@ function reputationState(state: string | null): string {
   return "pending";
 }
 
-function providerOutcome(outcome: number | null): string {
+export function providerOutcome(outcome: number | null, recorded: boolean): string {
+  if (!recorded) return "Pending";
   if (outcome === 0) return "Completed";
   if (outcome === 1) return "Failed";
   if (outcome === 2) return "Canceled";

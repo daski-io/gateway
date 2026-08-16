@@ -138,13 +138,11 @@ export class StandardWalletStore {
       });
       const max = args.action === "list-assets"
         ? this.config.abuse.assetListsPerPayerPerMinute
-        : args.action === "list-orders" || args.action === "get-buyer-reputation" ||
-            args.action === "notification-get"
+        : args.action === "list-orders" || args.action === "get-buyer-reputation"
           ? this.config.abuse.protectedReadsPerPayerPerMinute
           : this.config.abuse.assetStateChangesPerPayerPerMinute;
       const rateScope = args.action === "list-assets" ? "asset-list"
-        : args.action === "list-orders" || args.action === "get-buyer-reputation" ||
-            args.action === "notification-get"
+        : args.action === "list-orders" || args.action === "get-buyer-reputation"
           ? "protected-read" : "asset-state-change";
       const bucket = canonicalHash({ scope: `wallet-action:${rateScope}`, payer: expected.payer });
       const rate = await client.query<{ request_count: number }>(

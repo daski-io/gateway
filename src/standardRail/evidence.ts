@@ -73,7 +73,6 @@ interface SourceObservation {
   logIndex: number;
   input: Hex;
   logsHash: Hex;
-  traceHash: Hex;
 }
 
 export interface EvidenceResult {
@@ -111,25 +110,9 @@ function comparePosition(
   return 0;
 }
 
-export function assertRefundNetworkFee(args: {
-  gas: bigint | undefined;
-  maxFeePerGas: bigint | undefined;
-  maxPriorityFeePerGas: bigint | undefined;
-  maximumNetworkFee: bigint;
-}): void {
-  if (
-    args.gas === undefined || args.maxFeePerGas === undefined ||
-    args.maxPriorityFeePerGas === undefined || args.gas <= 0n ||
-    args.maxFeePerGas <= 0n || args.maxPriorityFeePerGas < 0n ||
-    args.maxPriorityFeePerGas > args.maxFeePerGas ||
-    args.gas * args.maxFeePerGas > args.maximumNetworkFee
-  ) throw new Error("Refund transaction exceeds the signed runtime network-fee ceiling");
-}
-
 export class StandardChainEvidence {
   private readonly clients;
   private readonly wallet;
-  private readonly refundWallet;
 
   constructor(private readonly config: StandardRailConfig, chain: Chain) {
     this.clients = config.evidenceRpcUrls.map((url) => ({
@@ -139,11 +122,6 @@ export class StandardChainEvidence {
     }));
     this.wallet = createWalletClient({
       account: privateKeyToAccount(config.releasePrivateKey),
-      chain,
-      transport: http(config.evidenceRpcUrls[0], { retryCount: 0, timeout: 20_000 }),
-    }).extend(publicActions);
-    this.refundWallet = createWalletClient({
-      account: privateKeyToAccount(config.refundPrivateKey),
       chain,
       transport: http(config.evidenceRpcUrls[0], { retryCount: 0, timeout: 20_000 }),
     }).extend(publicActions);
@@ -239,10 +217,9 @@ export class StandardChainEvidence {
     if (lag > BigInt(policy.maximumSourceLagBlocks)) {
       throw new Error("Canonical-token evidence sources exceed the approved lag");
     }
-    if (
-      new Set(observations.map(({ host }) => host)).size < 2 ||
-      new Set(observations.map(({ facts }) => canonicalHash(facts))).size !== 1
-    ) throw new Error("Canonical-token evidence sources disagree");
+    if (new Set(observations.map(({ facts }) => canonicalHash(facts))).size !== 1) {
+      throw new Error("Canonical-token evidence sources disagree");
+    }
   }
 
   private async tokenPolicyFacts(
@@ -342,10 +319,7 @@ export class StandardChainEvidence {
         immutableHash,
       }) };
     }));
-    if (
-      new Set(observations.map(({ source }) => source)).size < 2 ||
-      new Set(observations.map(({ hash }) => hash)).size !== 1
-    ) {
+    if (new Set(observations.map(({ hash }) => hash)).size !== 1) {
       throw new Error("Splitter deployment evidence sources disagree");
     }
   }
@@ -368,7 +342,6 @@ export class StandardChainEvidence {
       heads.reduce((min, value) => value < min ? value : min);
     if (
       lag > BigInt(this.config.manifest.chainEvidencePolicy.payload.maximumSourceLagBlocks) ||
-      new Set(observations.map(({ host }) => host)).size < 2 ||
       new Set(observations.map(({ codeHash }) => codeHash)).size !== 1
     ) throw new Error("Screening oracle evidence is unavailable or inconsistent");
   }
@@ -382,11 +355,10 @@ export class StandardChainEvidence {
   }): Promise<EvidenceResult> {
     await this.assertSourceLag();
     const observations = await Promise.all(this.clients.map(async ({ client, host }) => {
-      const [receipt, transaction, head, trace] = await Promise.all([
+      const [receipt, transaction, head] = await Promise.all([
         client.getTransactionReceipt({ hash: args.transactionHash }),
         client.getTransaction({ hash: args.transactionHash }),
         client.getBlockNumber(),
-        this.trace(client, args.transactionHash),
       ]);
       if (receipt.status !== "success" || head - receipt.blockNumber < BigInt(this.config.finalityConfirmations)) {
         throw new Error("Settlement transaction is not finalized");
@@ -436,41 +408,9 @@ export class StandardChainEvidence {
         logIndex: Number(matching[0]!.logIndex),
         input: transaction.input,
         logsHash: canonicalHash(receipt.logs),
-        traceHash: canonicalHash(trace),
       } satisfies SourceObservation;
     }));
     return this.agree(observations, "deposit");
-  }
-
-  async tokenBalance(token: Address, account: Address): Promise<bigint> {
-    const policy = this.config.manifest.chainEvidencePolicy.payload;
-    if (getAddress(token) !== getAddress(policy.canonicalToken)) {
-      throw new Error("Reserve token is not the admitted canonical token");
-    }
-    const observations = await Promise.all(this.clients.map(async ({ client, host }) => {
-      const head = await client.getBlockNumber();
-      const [balance, facts] = await Promise.all([
-        client.readContract({
-          address: token,
-          abi: erc20Abi,
-          functionName: "balanceOf",
-          args: [account],
-          blockNumber: head,
-        }),
-        this.tokenPolicyFacts(client, head),
-      ]);
-      return { host, head, balance, facts };
-    }));
-    const heads = observations.map(({ head }) => head);
-    const lag = heads.reduce((max, value) => value > max ? value : max) -
-      heads.reduce((min, value) => value < min ? value : min);
-    if (
-      lag > BigInt(policy.maximumSourceLagBlocks) ||
-      new Set(observations.map(({ host }) => host)).size !== observations.length ||
-      new Set(observations.map(({ balance }) => String(balance))).size !== 1 ||
-      new Set(observations.map(({ facts }) => canonicalHash(facts))).size !== 1
-    ) throw new Error("Reserve balance sources disagree or exceed the approved lag");
-    return observations[0]!.balance;
   }
 
   async assertNotSanctioned(
@@ -506,9 +446,7 @@ export class StandardChainEvidence {
     if (
       lag > BigInt(this.config.manifest.chainEvidencePolicy.payload.maximumSourceLagBlocks) ||
       new Set(observations.map(({ results }) => canonicalHash(results))).size !== 1
-    ) {
-      throw new Error("Screening evidence sources disagree");
-    }
+    ) throw new Error("Screening evidence sources disagree");
     if (observations[0]!.results.some(Boolean)) throw new Error("SANCTIONS_ADDRESS_REJECTED");
   }
 
@@ -559,88 +497,6 @@ export class StandardChainEvidence {
     return hashes[0];
   }
 
-  async prepareRefund(token: Address, payer: Address, amount: bigint): Promise<{
-    rawTransaction: Hex;
-    transactionHash: Hex;
-  }> {
-    const request = await this.refundWallet.prepareTransactionRequest({
-      account: this.refundWallet.account!,
-      to: token,
-      data: encodeFunctionData({ abi: erc20Abi, functionName: "transfer", args: [payer, amount] }),
-      value: 0n,
-    });
-    assertRefundNetworkFee({
-      gas: request.gas,
-      maxFeePerGas: request.maxFeePerGas,
-      maxPriorityFeePerGas: request.maxPriorityFeePerGas,
-      maximumNetworkFee: BigInt(this.config.refundMaxNetworkFeeWei),
-    });
-    const rawTransaction = await this.refundWallet.signTransaction(request);
-    return { rawTransaction, transactionHash: keccak256(rawTransaction) };
-  }
-
-  async broadcastRefund(rawTransaction: Hex, expectedHash: Hex): Promise<Hex> {
-    if (keccak256(rawTransaction) !== expectedHash) throw new Error("Refund transaction hash mismatch");
-    try {
-      const transactionHash = await this.refundWallet.sendRawTransaction({
-        serializedTransaction: rawTransaction,
-      });
-      if (transactionHash !== expectedHash) throw new Error("Refund broadcast hash changed");
-      return transactionHash;
-    } catch (error) {
-      const transaction = await this.clients[0]!.client.getTransaction({ hash: expectedHash }).catch(() => null);
-      if (!transaction) throw error;
-      return expectedHash;
-    }
-  }
-
-  async proveRefund(args: {
-    transactionHash: Hex;
-    token: Address;
-    from: Address;
-    payer: Address;
-    amount: bigint;
-  }): Promise<EvidenceResult> {
-    await this.assertSourceLag();
-    const observations = await Promise.all(this.clients.map(async ({ client, host }) => {
-      const [receipt, transaction, head, trace] = await Promise.all([
-        client.waitForTransactionReceipt({ hash: args.transactionHash, confirmations: this.config.finalityConfirmations }),
-        client.getTransaction({ hash: args.transactionHash }),
-        client.getBlockNumber(),
-        this.trace(client, args.transactionHash),
-      ]);
-      if (
-        receipt.status !== "success" || head - receipt.blockNumber < BigInt(this.config.finalityConfirmations) ||
-        !transaction.to || getAddress(transaction.to) !== args.token || getAddress(transaction.from) !== args.from ||
-        transaction.value !== 0n || transaction.input.toLowerCase() !== encodeFunctionData({
-          abi: erc20Abi,
-          functionName: "transfer",
-          args: [args.payer, args.amount],
-        }).toLowerCase()
-      ) throw new Error("Refund transaction is not finalized or has the wrong source");
-      await this.tokenPolicyFacts(client, receipt.blockNumber);
-      const transfers = parseEventLogs({ abi: erc20Abi, logs: receipt.logs, eventName: "Transfer" }).filter(
-        (event) => event.address.toLowerCase() === args.token.toLowerCase() &&
-          event.args.from === args.from && event.args.to === args.payer && event.args.value === args.amount,
-      );
-      if (transfers.length !== 1) throw new Error("Refund credit evidence is missing or ambiguous");
-      return {
-        source: host,
-        blockNumber: receipt.blockNumber.toString(),
-        blockHash: receipt.blockHash,
-        transactionHash: receipt.transactionHash,
-        transactionTo: transaction.to,
-        transactionFrom: transaction.from,
-        transactionIndex: receipt.transactionIndex,
-        logIndex: Number(transfers[0]!.logIndex),
-        input: transaction.input,
-        logsHash: canonicalHash(receipt.logs),
-        traceHash: canonicalHash(trace),
-      } satisfies SourceObservation;
-    }));
-    return this.agree(observations, "refund");
-  }
-
   async releaseAndProve(args: {
     order: StandardOrderRecord;
     listing: StandardListing;
@@ -666,7 +522,7 @@ export class StandardChainEvidence {
         hash: args.listing.manifest.payload.splitterDeploymentTransaction,
       });
       const maximumIntervalEvents = this.config.manifest.chainEvidencePolicy.payload.maximumIntervalEvents;
-      const [transaction, head, token, payee, receiver, bps, commitment, policyHash, trace,
+      const [transaction, head, token, payee, receiver, bps, commitment, policyHash,
         releaseHistory, credits, endingBalance] = await Promise.all([
         client.getTransaction({ hash }),
         client.getBlockNumber(),
@@ -676,7 +532,6 @@ export class StandardChainEvidence {
         client.readContract({ address: splitter, abi: splitterAbi, functionName: "commissionBps" }),
         client.readContract({ address: splitter, abi: splitterAbi, functionName: "listingCommitmentHash" }),
         client.readContract({ address: splitter, abi: splitterAbi, functionName: "policyVersionHash" }),
-        this.trace(client, hash),
         this.boundedLogs({
           fromBlock: deployment.blockNumber,
           toBlock: receipt.blockNumber,
@@ -778,7 +633,6 @@ export class StandardChainEvidence {
         logIndex: Number(release.logIndex),
         input: transaction.input,
         logsHash: canonicalHash(receipt.logs),
-        traceHash: canonicalHash(trace),
       };
       const allocation = {
         providerNetAmount: providerNetAmount.toString(),
@@ -866,13 +720,6 @@ export class StandardChainEvidence {
     return logs;
   }
 
-  private async trace(client: (typeof this.clients)[number]["client"], hash: Hex): Promise<unknown> {
-    return (client.request as (request: { method: string; params: unknown[] }) => Promise<unknown>)({
-      method: "debug_traceTransaction",
-      params: [hash, { tracer: "prestateTracer", tracerConfig: { diffMode: true } }],
-    });
-  }
-
   private async assertSourceLag(): Promise<void> {
     const heads = await Promise.all(this.clients.map(({ client }) => client.getBlockNumber()));
     const lag = heads.reduce((max, value) => value > max ? value : max) -
@@ -883,8 +730,9 @@ export class StandardChainEvidence {
   }
 
   private agree(observations: SourceObservation[], kind: string): EvidenceResult {
-    if (observations.length < 2 || new Set(observations.map((item) => item.source)).size < 2) {
-      throw new Error("Two independent evidence sources are required");
+    if (observations.length === 0 ||
+      new Set(observations.map((item) => item.source)).size !== observations.length) {
+      throw new Error("Chain evidence source set is invalid");
     }
     const comparable = observations.map(({ source: _source, ...value }) => canonicalHash(value));
     if (new Set(comparable).size !== 1) throw new Error(`${kind} evidence sources disagree`);

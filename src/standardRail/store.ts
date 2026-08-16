@@ -3,10 +3,9 @@ import { keccak256, toBytes } from "viem";
 import type { Pool } from "../db/pool.js";
 import type { Hex } from "../types.js";
 import { assertTransition } from "./stateMachine.js";
-import type { StandardAttachmentRef, StandardOrderRecord, StandardOrderState } from "./types.js";
+import type { StandardOrderRecord, StandardOrderState } from "./types.js";
 import type { SignedEnvelope, StandardListing, StandardRailManifest } from "./types.js";
 import { canonicalHash } from "./canonical.js";
-import type { StandardNotifications } from "./notifications.js";
 
 const bytes = (value: Hex): Buffer => Buffer.from(value.slice(2), "hex");
 const hex = (value: Buffer | null): Hex | null =>
@@ -28,7 +27,6 @@ interface OrderRow {
   canonical_quote: SignedEnvelope<import("./types.js").QuoteV1>;
   canonical_request_hash: Buffer;
   canonical_request: unknown;
-  attachment_set_hash: Buffer | null;
   order_nonce: Buffer;
   authorization_key: Buffer | null;
   payment_payload_hash: Buffer | null;
@@ -42,7 +40,6 @@ interface OrderRow {
   release_tx_hash: Hex | null;
   release_evidence_hash: Buffer | null;
   provider_task_id: string | null;
-  runtime_epoch: string;
   rail_epoch: string;
   version: string;
   lease_fence: string;
@@ -67,7 +64,6 @@ function record(row: OrderRow): StandardOrderRecord {
     quote: row.canonical_quote,
     canonicalRequestHash: hex(row.canonical_request_hash)!,
     canonicalRequest: row.canonical_request,
-    attachmentSetHash: hex(row.attachment_set_hash),
     orderNonce: hex(row.order_nonce)!,
     authorizationKey: hex(row.authorization_key),
     paymentPayloadHash: hex(row.payment_payload_hash),
@@ -81,7 +77,6 @@ function record(row: OrderRow): StandardOrderRecord {
     releaseTxHash: row.release_tx_hash,
     releaseEvidenceHash: hex(row.release_evidence_hash),
     providerTaskId: row.provider_task_id,
-    runtimeEpoch: row.runtime_epoch,
     railEpoch: row.rail_epoch,
     version: Number(row.version),
     leaseFence: Number(row.lease_fence),
@@ -104,17 +99,13 @@ export interface CreateDraftInput {
   canonicalRequestHash: Hex;
   canonicalRequest: unknown;
   grossAmount: string;
-  runtimeEpoch: string;
   railEpoch: string;
   listingEpoch: string;
   expiresAt: Date;
-  uploadCapability?: string;
-  attachments: StandardAttachmentRef[];
-  gatewayAudience: string;
 }
 
 export class StandardRailStore {
-  constructor(private readonly pool: Pool, private readonly notifications?: StandardNotifications) {}
+  constructor(private readonly pool: Pool) {}
 
   async loadReceipt(orderId: string): Promise<SignedEnvelope<Record<string, unknown>> | null> {
     const result = await this.pool.query<{ canonical_receipt: SignedEnvelope<Record<string, unknown>> }>(
@@ -151,21 +142,20 @@ export class StandardRailStore {
     }
   }
 
-  async assertActiveEpochs(args: { railProfileHash: Hex; runtimeProfileHash: Hex }): Promise<void> {
-    await this.assertActiveEpochsWithQuery(this.pool, args);
+  async assertActiveRail(railProfileHash: Hex): Promise<void> {
+    await this.assertActiveRailWithQuery(this.pool, railProfileHash);
   }
 
-  async withRuntimeFence<T>(args: {
+  async withRailFence<T>(args: {
     environment: string;
     chainId: number;
     railProfileHash: Hex;
-    runtimeProfileHash: Hex;
   }, work: () => Promise<T>): Promise<T> {
     const client = await this.pool.connect();
     const lockName = `standard-rail:${args.environment}:${args.chainId}`;
     try {
       await client.query("SELECT pg_advisory_lock_shared(hashtextextended($1,0))", [lockName]);
-      await this.assertActiveEpochsWithQuery(client, args);
+      await this.assertActiveRailWithQuery(client, args.railProfileHash);
       return await work();
     } finally {
       await client.query("SELECT pg_advisory_unlock_shared(hashtextextended($1,0))", [lockName])
@@ -174,32 +164,19 @@ export class StandardRailStore {
     }
   }
 
-  private async assertActiveEpochsWithQuery(
+  private async assertActiveRailWithQuery(
     queryable: Pick<Pool, "query">,
-    args: { railProfileHash: Hex; runtimeProfileHash: Hex },
+    railProfileHash: Hex,
   ): Promise<void> {
-    const result = await queryable.query<{
-      artifact_type: string;
-      artifact_hash: Buffer;
-      recovery_valid_before: Date | null;
-    }>(
-      `SELECT DISTINCT ON (artifact_type) artifact_type,artifact_hash,recovery_valid_before
+    const result = await queryable.query<{ artifact_hash: Buffer }>(
+      `SELECT artifact_hash
          FROM standard_rail_artifacts
-        WHERE artifact_type IN ('ActiveRailProfileV1','RuntimeReleaseManifestV1')
-        ORDER BY artifact_type,epoch DESC,admitted_at DESC`,
+        WHERE artifact_type='ActiveRailProfileV1'
+        ORDER BY epoch DESC,admitted_at DESC LIMIT 1`,
     );
-    const active = new Map(result.rows.map((row) => [
-      row.artifact_type,
-      `0x${row.artifact_hash.toString("hex")}`.toLowerCase(),
-    ]));
-    if (
-      active.get("ActiveRailProfileV1") !== args.railProfileHash.toLowerCase() ||
-      active.get("RuntimeReleaseManifestV1") !== args.runtimeProfileHash.toLowerCase()
-    ) throw new Error("STANDARD_RAIL_RUNTIME_FENCE_LOST");
-    if (result.rows.some(
-      (row) => !row.recovery_valid_before || row.recovery_valid_before.getTime() <= Date.now(),
-    )) {
-      throw new Error("STANDARD_RAIL_RECOVERY_APPROVAL_EXPIRED");
+    const active = result.rows[0]?.artifact_hash;
+    if (!active || `0x${active.toString("hex")}`.toLowerCase() !== railProfileHash.toLowerCase()) {
+      throw new Error("STANDARD_RAIL_PROFILE_FENCE_LOST");
     }
   }
 
@@ -233,22 +210,18 @@ export class StandardRailStore {
 
   async admitManifest(manifest: StandardRailManifest): Promise<void> {
     const rail = manifest.activeRailProfile;
-    const runtime = manifest.runtimeRelease;
     const artifacts: Array<{ envelope: SignedEnvelope<unknown>; epoch: string | null; recovery: number | null }> = [
       {
         envelope: manifest.facilitatorProfile,
         epoch: manifest.facilitatorProfile.payload.profileEpoch,
         recovery: manifest.facilitatorProfile.payload.recoveryValidBefore,
       },
-      {
-        envelope: manifest.facilitatorCredentialBinding,
-        epoch: manifest.facilitatorCredentialBinding.payload.credentialEpoch,
-        recovery: manifest.facilitatorCredentialBinding.payload.recoveryValidBefore,
-      },
-      { envelope: manifest.railCapabilityRequirements, epoch: null, recovery: rail.payload.recoveryValidBefore },
+      { envelope: manifest.railCapabilityRequirements, epoch: null, recovery: null },
       { envelope: rail, epoch: rail.payload.railEpoch, recovery: rail.payload.recoveryValidBefore },
-      { envelope: manifest.chainEvidencePolicy, epoch: null, recovery: rail.payload.recoveryValidBefore },
-      { envelope: runtime, epoch: runtime.payload.runtimeEpoch, recovery: runtime.payload.recoveryValidBefore },
+      { envelope: manifest.chainEvidencePolicy, epoch: null, recovery: null },
+      ...manifest.providerIdentitySnapshots.map((envelope) => ({ envelope, epoch: null, recovery: null })),
+      ...manifest.servicingAdmissions.map((envelope) => ({ envelope, epoch: null, recovery: null })),
+      ...manifest.actionCatalogs.map((envelope) => ({ envelope, epoch: null, recovery: null })),
       ...manifest.listings.flatMap((listing) => [
         { envelope: listing.commitment as SignedEnvelope<unknown>, epoch: listing.commitment.payload.listingEpoch, recovery: null },
         { envelope: listing.manifest as SignedEnvelope<unknown>, epoch: listing.commitment.payload.listingEpoch, recovery: null },
@@ -301,48 +274,6 @@ export class StandardRailStore {
         BigInt(profile.payload.profileEpoch) === BigInt(previousProfile.rows[0].epoch) &&
         canonicalHash(profile).toLowerCase() !== `0x${previousProfile.rows[0].artifact_hash.toString("hex")}`
       ) throw new Error("FACILITATOR_PROFILE_EPOCH_EQUIVOCATION");
-      const credential = manifest.facilitatorCredentialBinding;
-      const previousCredential = await client.query<{ artifact_hash: Buffer; epoch: string }>(
-        `SELECT artifact_hash,epoch FROM standard_rail_artifacts
-         WHERE artifact_type='FacilitatorCredentialBindingV1' AND environment=$1 AND chain_id=$2
-         ORDER BY epoch DESC LIMIT 1`,
-        [credential.environment, credential.chainId],
-      );
-      const credentialHash = canonicalHash(credential);
-      if (
-        previousCredential.rows[0] &&
-        BigInt(credential.payload.credentialEpoch) < BigInt(previousCredential.rows[0].epoch)
-      ) throw new Error("FACILITATOR_CREDENTIAL_EPOCH_ROLLBACK");
-      if (
-        !previousCredential.rows[0] &&
-        credential.payload.priorCredentialBindingHash.toLowerCase() !== `0x${"00".repeat(32)}`
-      ) throw new Error("FACILITATOR_CREDENTIAL_INITIAL_PREDECESSOR_INVALID");
-      if (
-        previousCredential.rows[0] &&
-        BigInt(credential.payload.credentialEpoch) === BigInt(previousCredential.rows[0].epoch) &&
-        credentialHash.toLowerCase() !== `0x${previousCredential.rows[0].artifact_hash.toString("hex")}`
-      ) throw new Error("FACILITATOR_CREDENTIAL_EPOCH_EQUIVOCATION");
-      if (
-        previousCredential.rows[0] &&
-        BigInt(credential.payload.credentialEpoch) > BigInt(previousCredential.rows[0].epoch) &&
-        credential.payload.priorCredentialBindingHash.toLowerCase() !==
-          `0x${previousCredential.rows[0].artifact_hash.toString("hex")}`
-      ) throw new Error("FACILITATOR_CREDENTIAL_EPOCH_CHAIN_BROKEN");
-      const previousRuntime = await client.query<{ artifact_hash: Buffer; epoch: string }>(
-        `SELECT artifact_hash,epoch FROM standard_rail_artifacts
-         WHERE artifact_type='RuntimeReleaseManifestV1' AND environment=$1 AND chain_id=$2
-         ORDER BY epoch DESC LIMIT 1`,
-        [runtime.environment, runtime.chainId],
-      );
-      if (
-        previousRuntime.rows[0] &&
-        BigInt(runtime.payload.runtimeEpoch) < BigInt(previousRuntime.rows[0].epoch)
-      ) throw new Error("RUNTIME_EPOCH_ROLLBACK");
-      if (
-        previousRuntime.rows[0] &&
-        BigInt(runtime.payload.runtimeEpoch) === BigInt(previousRuntime.rows[0].epoch) &&
-        canonicalHash(runtime).toLowerCase() !== `0x${previousRuntime.rows[0].artifact_hash.toString("hex")}`
-      ) throw new Error("RUNTIME_EPOCH_EQUIVOCATION");
       for (const listing of manifest.listings) {
         const current = listing.commitment;
         const previousListing = await client.query<{ artifact_hash: Buffer; epoch: string }>(
@@ -394,29 +325,16 @@ export class StandardRailStore {
           WHERE provider_agent_id=$1 AND outcome_id=$2
             AND canonical_request_hash=$3 AND state IN ('DRAFT','CHALLENGE_ISSUED')
             AND listing_manifest_hash=$4 AND provider_offer_hash=$5
-            AND runtime_epoch=$6 AND rail_epoch=$7
+            AND rail_epoch=$6
             AND expires_at > now()
           ORDER BY created_at DESC LIMIT 1 FOR UPDATE`,
         [
           input.providerAgentId, input.outcomeId, bytes(input.canonicalRequestHash),
           bytes(input.listingManifestHash), bytes(input.providerOfferHash),
-          input.runtimeEpoch, input.railEpoch,
+          input.railEpoch,
         ],
       );
       if (existing.rows[0]) {
-        if (input.attachments.length > 0) {
-          if (!input.uploadCapability || !/^[A-Za-z0-9_-]{32,128}$/.test(input.uploadCapability)) {
-            throw new Error("UPLOAD_CAPABILITY_REQUIRED");
-          }
-          const session = await client.query(
-            `SELECT 1 FROM standard_upload_sessions
-              WHERE session_hash=$1 AND bound_order_id=$2 AND consumed_at IS NOT NULL`,
-            [createHash("sha256").update(input.uploadCapability).digest(), existing.rows[0].order_id],
-          );
-          if (session.rowCount !== 1) throw new Error("UPLOAD_CAPABILITY_DOES_NOT_BIND_DRAFT");
-        } else if (input.uploadCapability) {
-          throw new Error("UPLOAD_CAPABILITY_WITHOUT_ATTACHMENTS");
-        }
         await client.query("COMMIT");
         return { order: record(existing.rows[0]), handle: existing.rows[0].order_handle };
       }
@@ -428,61 +346,19 @@ export class StandardRailStore {
         `INSERT INTO standard_orders (
           order_id,order_key,order_handle,handle_hash,state,provider_agent_id,outcome_id,binding_profile,
           listing_manifest_hash,provider_offer_hash,canonical_listing,quote_hash,canonical_quote,canonical_request_hash,
-          canonical_request,attachment_set_hash,order_nonce,gross_amount,runtime_epoch,rail_epoch,
+          canonical_request,order_nonce,gross_amount,rail_epoch,
           listing_epoch,expires_at)
-         VALUES ($1,$2,$3,$4,'CHALLENGE_ISSUED',$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
+         VALUES ($1,$2,$3,$4,'CHALLENGE_ISSUED',$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
          RETURNING *`,
         [
           orderId, bytes(orderKey), handle, handleHash, input.providerAgentId, input.outcomeId,
           input.bindingProfile, bytes(input.listingManifestHash),
           bytes(input.providerOfferHash), input.listing, bytes(input.quoteHash), input.quote,
           bytes(input.canonicalRequestHash), input.canonicalRequest,
-          input.attachments.length > 0 ? bytes(canonicalHash(input.attachments)) : null,
-          bytes(input.orderNonce), input.grossAmount, input.runtimeEpoch, input.railEpoch,
+          bytes(input.orderNonce), input.grossAmount, input.railEpoch,
           input.listingEpoch, input.expiresAt,
         ],
       );
-      if (input.attachments.length > 0) {
-        if (!input.uploadCapability || !/^[A-Za-z0-9_-]{32,128}$/.test(input.uploadCapability)) {
-          throw new Error("UPLOAD_CAPABILITY_REQUIRED");
-        }
-        const sessionHash = createHash("sha256").update(input.uploadCapability).digest();
-        const session = await client.query<{
-          audience: string; bound_order_id: string | null; consumed_at: Date | null;
-          expires_at: Date; canonical_request_hash: Buffer | null;
-        }>(
-          "SELECT * FROM standard_upload_sessions WHERE session_hash=$1 FOR UPDATE",
-          [sessionHash],
-        );
-        const found = session.rows[0];
-        if (
-          !found || found.audience !== input.gatewayAudience || found.bound_order_id ||
-          found.consumed_at || found.expires_at <= new Date()
-        ) throw new Error("UPLOAD_CAPABILITY_INVALID_OR_CONSUMED");
-        const objects = await client.query<{
-          object_id: string; content_hash: Buffer; media_type: string; byte_size: string; expires_at: Date;
-        }>(
-          `SELECT object_id,content_hash,media_type,byte_size::text,expires_at
-           FROM standard_upload_objects WHERE session_hash=$1 ORDER BY object_id`,
-          [sessionHash],
-        );
-        const actual = objects.rows.map((item) => ({
-          objectId: item.object_id,
-          contentHash: `0x${item.content_hash.toString("hex")}`,
-          byteSize: Number(item.byte_size),
-          mediaType: item.media_type,
-          expiresAt: Math.floor(item.expires_at.getTime() / 1_000),
-        })).sort((left, right) => left.objectId.localeCompare(right.objectId));
-        const expected = [...input.attachments].sort((left, right) => left.objectId.localeCompare(right.objectId));
-        if (canonicalHash(actual) !== canonicalHash(expected)) throw new Error("ATTACHMENT_SET_MISMATCH");
-        await client.query(
-          `UPDATE standard_upload_sessions SET bound_order_id=$2,canonical_request_hash=$3,consumed_at=now()
-           WHERE session_hash=$1`,
-          [sessionHash, orderId, bytes(input.canonicalRequestHash)],
-        );
-      } else if (input.uploadCapability) {
-        throw new Error("UPLOAD_CAPABILITY_WITHOUT_ATTACHMENTS");
-      }
       await client.query(
         `INSERT INTO standard_order_transitions
           (order_id,from_state,to_state,reason_code,fence)
@@ -537,7 +413,6 @@ export class StandardRailStore {
           "SETTLE_INVOKED", "FACILITATOR_CONFIRMED", "SETTLEMENT_AMBIGUOUS",
           "SETTLEMENT_FAILED", "EXTERNAL_OR_UNPROVEN_DEPOSIT", "DEPOSIT_FINAL", "RELEASE_FINAL", "DISPATCH_STARTED",
           "DISPATCHED", "DISPATCH_AMBIGUOUS", "FULFILLED", "PROVIDER_FAILED", "INPUT_REQUIRED",
-          "REFUND_DUE", "REFUND_RESERVED", "REFUND_INVOKED", "REFUND_AMBIGUOUS",
         ], excludedOrderIds],
       );
       if (!candidate.rows[0]) {
@@ -575,19 +450,18 @@ export class StandardRailStore {
     requestHash: Hex,
     listingManifestHash: Hex,
     providerOfferHash: Hex,
-    runtimeEpoch: string,
     railEpoch: string,
   ): Promise<{ order: StandardOrderRecord; handle: string } | null> {
     const result = await this.pool.query<OrderRow>(
       `SELECT * FROM standard_orders
         WHERE provider_agent_id=$1 AND outcome_id=$2 AND canonical_request_hash=$3
           AND listing_manifest_hash=$4 AND provider_offer_hash=$5
-          AND runtime_epoch=$6 AND rail_epoch=$7
+          AND rail_epoch=$6
           AND state='CHALLENGE_ISSUED' AND expires_at>now()
         ORDER BY created_at DESC LIMIT 1`,
       [
         providerAgentId, outcomeId, bytes(requestHash), bytes(listingManifestHash),
-        bytes(providerOfferHash), runtimeEpoch, railEpoch,
+        bytes(providerOfferHash), railEpoch,
       ],
     );
     return result.rows[0]
@@ -675,7 +549,7 @@ export class StandardRailStore {
     reason: string,
     changes: Record<string, unknown> = {},
     reputationIntent?: {
-      kind: "register" | "confirmation" | "refund" | "mirror";
+      kind: "register" | "confirmation";
       logicalKey: Hex;
       intentHash: Hex;
       canonicalIntent: unknown;
@@ -714,54 +588,12 @@ export class StandardRailStore {
         values,
       );
       if (!result.rows[0]) throw new Error("ORDER_TRANSITION_CONFLICT");
-      const transition = await client.query<{ transition_id: string; created_at: Date }>(
+      await client.query(
         `INSERT INTO standard_order_transitions
           (order_id,from_state,to_state,reason_code,fence)
-         VALUES ($1,$2,$3,$4,$5) RETURNING transition_id,created_at`,
+         VALUES ($1,$2,$3,$4,$5)`,
         [order.orderId, order.state, to, reason, result.rows[0].lease_fence],
       );
-      if (this.notifications) {
-        const subscription = await client.query<{
-          subscription_id: string;
-          callback_audience_hash: Buffer;
-        }>(
-          `SELECT subscription_id,callback_audience_hash
-             FROM standard_order_notification_subscriptions
-            WHERE order_id=$1 AND state='active' FOR UPDATE`,
-          [order.orderId],
-        );
-        const active = subscription.rows[0];
-        const eventTransition = transition.rows[0];
-        if (active && eventTransition) {
-          const sequenceResult = await client.query<{ sequence: string }>(
-            `SELECT (COALESCE(max(sequence),0)+1)::text AS sequence
-               FROM standard_order_notification_events WHERE order_id=$1`,
-            [order.orderId],
-          );
-          const sequence = Number(sequenceResult.rows[0]!.sequence);
-          if (!Number.isSafeInteger(sequence)) throw new Error("ORDER_EVENT_SEQUENCE_INVALID");
-          const eventId = randomUUID();
-          const payload = {
-            eventId,
-            subscriptionId: active.subscription_id,
-            callbackAudienceHash: `0x${active.callback_audience_hash.toString("hex")}` as Hex,
-            orderHandle: result.rows[0].order_handle,
-            state: to,
-            reasonClass: notificationReason(to),
-            eventTime: Math.floor(eventTransition.created_at.getTime() / 1_000),
-            sequence,
-          };
-          const envelope = await this.notifications.signEvent(payload);
-          await client.query(
-            `INSERT INTO standard_order_notification_events
-              (event_id,order_id,transition_id,subscription_id,sequence,canonical_event,
-               signed_envelope,state,next_attempt_at)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,'pending',now())`,
-            [eventId, order.orderId, eventTransition.transition_id, active.subscription_id,
-              sequence, payload, envelope],
-          );
-        }
-      }
       if (reputationIntent) {
         await client.query(
           `INSERT INTO standard_reputation_operations
@@ -794,13 +626,4 @@ export class StandardRailStore {
       [orderId],
     );
   }
-}
-
-function notificationReason(state: StandardOrderState): string {
-  if (state === "INPUT_REQUIRED") return "input_required";
-  if (state === "FULFILLED") return "fulfilled";
-  if (state === "PROVIDER_FAILED") return "provider_failed";
-  if (state.startsWith("REFUND") || state === "REFUNDED" || state === "NO_REFUND") return "refund";
-  if (state === "LEGAL_HOLD") return "review";
-  return "state_changed";
 }

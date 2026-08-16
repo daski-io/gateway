@@ -27,7 +27,7 @@ import { hasFinalizedNonceConflict } from "./nonceConflict.js";
 interface OperationRow {
   operation_id: string;
   order_id: string;
-  kind: "register" | "confirmation" | "refund" | "mirror";
+  kind: "register" | "confirmation";
   intent_hash: Buffer;
   canonical_intent: ReputationOperationIntent;
   attempts: number;
@@ -116,8 +116,6 @@ export class StandardReputationWorker {
       finalizedNonce,
       pendingNonce,
       balanceWei: balance?.toString() ?? null,
-      minimumReserveWei: this.config.reputationMinimumReserveWei.toString(),
-      reserveReady: balance === null ? null : balance >= this.config.reputationMinimumReserveWei,
       maxFeePerGasWei: this.config.reputationMaxFeePerGasWei.toString(),
       maxPriorityFeePerGasWei: this.config.reputationMaxPriorityFeePerGasWei.toString(),
     };
@@ -131,7 +129,7 @@ export class StandardReputationWorker {
   }
 
   private async runBatch(): Promise<void> {
-    const kinds = ["register", "refund", "confirmation"] as const;
+    const kinds = ["register", "confirmation"] as const;
     for (let count = 0; count < 12; count += 1) {
       const kind = kinds[this.nextKind % kinds.length]!;
       this.nextKind += 1;
@@ -277,11 +275,6 @@ export class StandardReputationWorker {
   }
 
   private async prepareAndBroadcast(operation: OperationRow): Promise<void> {
-    const balance = await this.client.getBalance({ address: this.account.address });
-    if (balance < this.config.reputationMinimumReserveWei) {
-      await this.fail(operation, "balance_fee");
-      return;
-    }
     const encoded = encodeReputationOperation(operation.canonical_intent, this.config);
     const client = await this.pool.connect();
     let prepared: TransactionRow | null = null;

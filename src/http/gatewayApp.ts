@@ -16,7 +16,6 @@ import { StandardRailService } from "../standardRail/service.js";
 import { logErrorWithId } from "../util/errorWrap.js";
 import { sendBodyParserError } from "./bodyErrors.js";
 import { configureMiddleware } from "./middleware.js";
-import { createReputationAdminRouter } from "../standardRail/reputationAdmin.js";
 
 interface RateLimitStore {
   consumeRateLimitBucket(
@@ -104,7 +103,6 @@ export async function createStandardGatewayHttp(
     service: standardRail,
   }));
   app.use(createMarketplaceRouter(marketplace));
-  app.use(createReputationAdminRouter(options.pool, options.standardRailConfig));
   app.use(createStandardRailRouter(standardRail, options.config.publicUrl));
   const mcp = options.config.mcpEnabled
     ? await createStandardRailMcp(app, options.config, standardRail, marketplace)

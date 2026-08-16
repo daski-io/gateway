@@ -4,7 +4,17 @@ import { decodePaymentHeader } from "./payment.js";
 import type { StandardRailService } from "./service.js";
 
 const PAYMENT_HEADER = "payment-signature";
-const UPLOAD_HEADER = "daski-upload-capability";
+const ORDER_ACTIONS = [
+  "status",
+  "input",
+  "cancel",
+  "artifact",
+  "support",
+  "confirmation",
+  "revoke-confirmation",
+] as const;
+
+type OrderAction = typeof ORDER_ACTIONS[number];
 
 function encoded(value: unknown): string {
   return Buffer.from(JSON.stringify(value), "utf8").toString("base64url");
@@ -184,46 +194,6 @@ export function createStandardRailRouter(service: StandardRailService, publicUrl
     } catch (error) { sendWalletError(res, error); }
   });
 
-  router.post("/uploads/capabilities", async (_req, res, next) => {
-    try {
-      res.status(201).json(await service.issueUploadCapability());
-    } catch (error) { next(error); }
-  });
-
-  router.put("/uploads/objects/:objectId", async (req, res, next) => {
-    try {
-      const capability = req.header(UPLOAD_HEADER);
-      const body = req.body as { mediaType?: unknown; contentBase64?: unknown; contentHash?: unknown };
-      assertExactKeys(body, ["mediaType", "contentBase64", "contentHash"]);
-      if (
-        !capability || typeof body.mediaType !== "string" ||
-        typeof body.contentBase64 !== "string" || typeof body.contentHash !== "string"
-      ) {
-        res.status(400).json({ error: { code: "UPLOAD_REQUEST_INVALID", message: "Upload capability and object fields are required" } });
-        return;
-      }
-      res.status(201).json(await service.putUpload({
-        capability,
-        objectId: req.params.objectId ? String(req.params.objectId) : undefined,
-        mediaType: body.mediaType,
-        contentBase64: body.contentBase64,
-        contentHash: body.contentHash,
-      }));
-    } catch (error) { next(error); }
-  });
-
-  router.delete("/uploads/objects/:objectId", async (req, res, next) => {
-    try {
-      const capability = req.header(UPLOAD_HEADER);
-      if (!capability) {
-        res.status(401).json({ error: { code: "UPLOAD_CAPABILITY_REQUIRED", message: "Upload capability required" } });
-        return;
-      }
-      await service.removeUpload(capability, String(req.params.objectId));
-      res.status(204).end();
-    } catch (error) { next(error); }
-  });
-
   router.get("/.well-known/x402", (_req, res) => {
     res.json({
       version: 2,
@@ -258,7 +228,6 @@ export function createStandardRailRouter(service: StandardRailService, publicUrl
       if (!paymentHeader) {
         const challenge = await service.issueChallenge({
           providerAgentId, outcomeId, body: req.body,
-          uploadCapability: req.header(UPLOAD_HEADER),
         });
         res.setHeader("PAYMENT-REQUIRED", encoded(challenge.paymentRequired));
         res.setHeader("DASKI-ORDER-HANDLE", challenge.handle);
@@ -275,7 +244,6 @@ export function createStandardRailRouter(service: StandardRailService, publicUrl
       const payment: PaymentPayload = decodePaymentHeader(paymentHeader);
       const result = await service.submitPayment({
         providerAgentId, outcomeId, body: req.body, payment,
-        uploadCapability: req.header(UPLOAD_HEADER),
       });
       if (result.replay) {
         res.setHeader("Cache-Control", "private, no-store");
@@ -306,8 +274,7 @@ export function createStandardRailRouter(service: StandardRailService, publicUrl
   router.post("/orders/:handle/actions/:action", async (req, res, next) => {
     try {
       const action = String(req.params.action);
-      if (!["status", "input", "cancel", "refund", "artifact", "support", "confirmation", "revoke-confirmation",
-        "notification-set", "notification-get", "notification-delete"].includes(action)) {
+      if (!ORDER_ACTIONS.includes(action as OrderAction)) {
         res.status(404).json({ error: { code: "ACTION_NOT_FOUND", message: "Unknown action" } });
         return;
       }
@@ -338,8 +305,7 @@ export function createStandardRailRouter(service: StandardRailService, publicUrl
       ]);
       const result = await service.performAction({
         handle: String(req.params.handle),
-        action: action as "status" | "input" | "cancel" | "refund" | "artifact" | "support" |
-          "confirmation" | "revoke-confirmation" | "notification-set" | "notification-get" | "notification-delete",
+        action: action as OrderAction,
         request: body.request,
         authorization: authorization as never,
       });
@@ -371,8 +337,7 @@ export function createStandardRailRouter(service: StandardRailService, publicUrl
   router.post("/orders/:handle/actions/:action/challenge", async (req, res, next) => {
     try {
       const action = String(req.params.action);
-      if (!["status", "input", "cancel", "refund", "artifact", "support", "confirmation", "revoke-confirmation",
-        "notification-set", "notification-get", "notification-delete"].includes(action)) {
+      if (!ORDER_ACTIONS.includes(action as OrderAction)) {
         res.status(404).json({ error: { code: "ACTION_NOT_FOUND", message: "Unknown action" } });
         return;
       }
@@ -385,8 +350,7 @@ export function createStandardRailRouter(service: StandardRailService, publicUrl
       res.setHeader("Cache-Control", "private, no-store");
       res.json(await service.issueActionChallenge({
         handle: String(req.params.handle),
-        action: action as "status" | "input" | "cancel" | "refund" | "artifact" | "support" |
-          "confirmation" | "revoke-confirmation" | "notification-set" | "notification-get" | "notification-delete",
+        action: action as OrderAction,
         request: request as Record<string, unknown>,
         clientKey: req.ip ?? req.socket.remoteAddress ?? "unknown",
       }));

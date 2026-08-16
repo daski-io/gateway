@@ -37,7 +37,7 @@ function locatorIndexSql(): string {
 }
 
 describe("standard evidence locator migration", () => {
-  it("admits shared releases but rejects reused deposit and refund locators", async () => {
+  it("admits shared releases but rejects reused deposit locators", async () => {
     const schema = `standard_evidence_${randomUUID().replaceAll("-", "")}`;
     const bootstrap = createPool({ connectionString: databaseUrl, max: 1 });
     await bootstrap.query(`CREATE SCHEMA "${schema}"`);
@@ -77,14 +77,6 @@ describe("standard evidence locator migration", () => {
         84532,
       )).rejects.toMatchObject({ code: "23505" });
 
-      const refundTransaction = hash("c");
-      await journal.recordEvidence("order-refund-a", "refund", evidence(hash("5"), refundTransaction, 9), 84532);
-      await expect(journal.recordEvidence(
-        "order-refund-b",
-        "refund",
-        evidence(hash("6"), refundTransaction, 9),
-        84532,
-      )).rejects.toMatchObject({ code: "23505" });
     } finally {
       await pool.end();
       await bootstrap.query(`DROP SCHEMA "${schema}" CASCADE`).catch(() => undefined);

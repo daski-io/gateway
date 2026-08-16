@@ -20,21 +20,17 @@ const MCP_STATE_CHANGE_TOOLS = new Set([
   "daski_get_order_status",
   "daski_submit_order_input",
   "daski_cancel_order",
-  "daski_request_refund",
   "daski_get_order_artifact",
   "daski_contact_order_support",
   "daski_use_asset",
   "daski_confirm_delivery",
   "daski_revoke_delivery_confirmation",
-  "daski_set_order_notification",
-  "daski_delete_order_notification",
 ]);
 
 const MCP_PROTECTED_READ_TOOLS = new Set([
   "daski_list_my_orders",
   "daski_get_my_reputation",
   "daski_list_assets",
-  "daski_get_order_notification",
 ]);
 
 const MCP_WALLET_CHALLENGE_TOOLS = new Set([
@@ -42,8 +38,6 @@ const MCP_WALLET_CHALLENGE_TOOLS = new Set([
   "daski_use_asset",
   "daski_confirm_delivery",
   "daski_revoke_delivery_confirmation",
-  "daski_set_order_notification",
-  "daski_delete_order_notification",
 ]);
 
 function forMcpStateChange(middleware: RequestHandler): RequestHandler {

@@ -33,44 +33,31 @@ import type {
   QuoteV1,
   DispatchStatusQueryV1,
   StandardListing,
-  StandardAttachmentRef,
   StandardOrderRecord,
   StandardRailDispatchV1,
 } from "./types.js";
 import { verifyStandardRailManifest } from "./artifacts.js";
 import { StandardRailRecoveryWorker } from "./recovery.js";
 import { StandardRailIncidentStore } from "./incidents.js";
-import { StandardUploadService } from "./uploads.js";
 import {
   assertSchema,
   compileClosedRequestSchema,
   compileClosedResponseSchema,
 } from "./schema.js";
-import { verifyRuntimeIntegrity } from "./runtimeIntegrity.js";
 import { isNonPublicAddress } from "./network.js";
 import { assertPassiveProviderOutput } from "./providerOutput.js";
-import {
-  buildGrossRefundIntent,
-  contributionReservationId,
-  type GrossRefundIntent,
-  validateGrossRefundIntent,
-} from "./refund.js";
 import { StandardWalletStore } from "./walletStore.js";
 import { StandardWalletQueries } from "./walletQueries.js";
 import type { WalletAuthorizationTransport } from "./types.js";
 import { StandardAssetFederation } from "./assetFederation.js";
 import { StandardAssetActions } from "./assetActions.js";
-import { buildReputationRefund, buildReputationRegistration } from "./reputationOrders.js";
+import { buildReputationRegistration } from "./reputationOrders.js";
 import { isReputationEligiblePayer } from "./reputationEligibility.js";
 import { StandardReputationWorker } from "./reputationWorker.js";
 import { StandardConfirmations } from "./confirmations.js";
-import { StandardReputationMirror } from "./reputationMirror.js";
-import { StandardNotifications } from "./notifications.js";
-import { StandardNotificationWorker } from "./notificationWorker.js";
-import { StandardReputationProjection } from "./reputationProjection.js";
-import { StandardReputationIndexer } from "./reputationIndexer.js";
 import { base, baseSepolia } from "viem/chains";
 import { activeRequestKey } from "../mcp/requestContext.js";
+import { DirectReputationReader } from "./reputationReader.js";
 
 interface OperationalSummary {
   pending: number;
@@ -88,6 +75,14 @@ function keyedCounts(rows: GroupCount[]): Record<string, number> {
 }
 
 const ZERO_HASH = `0x${"00".repeat(32)}` as Hex;
+
+export function isAdmissionWindowOpen(
+  railValidBefore: number,
+  facilitatorValidBefore: number,
+  nowSeconds = Math.floor(Date.now() / 1_000),
+): boolean {
+  return nowSeconds < Math.min(railValidBefore, facilitatorValidBefore);
+}
 
 function assertExactKeys(value: unknown, expected: readonly string[], label: string): void {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -193,7 +188,6 @@ export class StandardRailService {
   private readonly responseValidators = new Map<string, ValidateFunction>();
   private readonly publicArtifacts = new Map<Hex, import("./types.js").SignedEnvelope<unknown>>();
   private readonly recovery: StandardRailRecoveryWorker;
-  private readonly uploads: StandardUploadService;
   private readonly incidents: StandardRailIncidentStore;
   private readonly walletStore: StandardWalletStore;
   private readonly walletQueries: StandardWalletQueries;
@@ -201,16 +195,11 @@ export class StandardRailService {
   private readonly assetActions: StandardAssetActions;
   private readonly reputationWorker: StandardReputationWorker;
   private readonly confirmations: StandardConfirmations;
-  private readonly reputationMirror: StandardReputationMirror;
-  private readonly notifications: StandardNotifications;
-  private readonly notificationWorker: StandardNotificationWorker;
-  private readonly reputationProjection: StandardReputationProjection;
-  private readonly reputationIndexer: StandardReputationIndexer;
+  private readonly reputationReader: DirectReputationReader;
   private dependenciesReady = false;
   private readinessInterval: NodeJS.Timeout | null = null;
   private readinessRefresh: Promise<void> | null = null;
   readonly railProfileHash: Hex;
-  private readonly runtimeProfileHash: Hex;
 
   constructor(
     private readonly appConfig: Config,
@@ -221,27 +210,23 @@ export class StandardRailService {
     private readonly fetchFn: typeof fetch = fetch,
     federationPermitPool: Pool = pool,
   ) {
-    this.notifications = new StandardNotifications(pool, railConfig, appConfig.chainId);
-    this.notificationWorker = new StandardNotificationWorker(pool, railConfig);
-    this.reputationProjection = new StandardReputationProjection(pool);
-    this.reputationIndexer = new StandardReputationIndexer(
+    this.store = new StandardRailStore(pool);
+    this.incidents = new StandardRailIncidentStore(pool);
+    this.journal = new StandardRailJournal(pool);
+    this.walletStore = new StandardWalletStore(pool, railConfig, appConfig.chainId);
+    this.walletQueries = new StandardWalletQueries(
       pool,
+      this.walletStore,
       railConfig,
       appConfig.chainId === 8453 ? base : baseSepolia,
     );
-    this.store = new StandardRailStore(pool, this.notifications);
-    this.incidents = new StandardRailIncidentStore(pool);
-    this.journal = new StandardRailJournal(pool);
-    this.uploads = new StandardUploadService(railConfig, pool);
-    this.walletStore = new StandardWalletStore(pool, railConfig, appConfig.chainId);
-    this.walletQueries = new StandardWalletQueries(pool, this.walletStore);
     this.assetFederation = new StandardAssetFederation(
       pool,
       railConfig,
       appConfig.chainId,
       this.walletStore,
       (listing, endpoint, init) => this.providerFetch(listing, endpoint, init),
-      (providerAgentId) => this.reputationProjection.provider(providerAgentId),
+      undefined,
       federationPermitPool,
     );
     this.assetActions = new StandardAssetActions(
@@ -262,20 +247,16 @@ export class StandardRailService {
       railConfig,
       appConfig.chainId === 8453 ? base : baseSepolia,
     );
-    this.reputationMirror = new StandardReputationMirror(
-      pool,
+    this.reputationReader = new DirectReputationReader(
       railConfig,
       appConfig.chainId === 8453 ? base : baseSepolia,
     );
     this.railProfileHash = canonicalHash(railConfig.manifest.activeRailProfile);
-    this.runtimeProfileHash = canonicalHash(railConfig.manifest.runtimeRelease);
     for (const artifact of [
       railConfig.manifest.facilitatorProfile,
-      railConfig.manifest.facilitatorCredentialBinding,
       railConfig.manifest.railCapabilityRequirements,
       railConfig.manifest.activeRailProfile,
       railConfig.manifest.chainEvidencePolicy,
-      railConfig.manifest.runtimeRelease,
       ...railConfig.manifest.providerIdentitySnapshots,
       ...railConfig.manifest.servicingAdmissions,
       ...railConfig.manifest.actionCatalogs,
@@ -298,28 +279,10 @@ export class StandardRailService {
     this.recovery = new StandardRailRecoveryWorker({
       config: railConfig,
       store: this.store,
-      refund: async (order) => { await this.executeDueRefund(order); },
       resumePaid: async (order) => { await this.resumePaidOrder(order); },
-      releaseExposure: async (order) => {
-        try {
-          await this.releaseRefundExposure(order);
-          return "released";
-        } catch (error) {
-          const deadline = order.updatedAt.getTime() +
-            (order.listing.refundPolicy.requestDeadlineSeconds +
-              order.listing.deadlinePolicy.refundSeconds) * 1_000;
-          if (Date.now() < deadline) throw error;
-          await this.journal.closeExposure(order.orderId, "legal_hold");
-          return "legal_hold";
-        }
-      },
-      cleanupUploads: async () => {
-        await this.uploads.cleanupExpired();
+      cleanup: async () => {
         await this.journal.cleanupExpiredActionAuthorizations();
         await this.walletStore.cleanupExpiredAuthorizations();
-      },
-      recordRecoveryApprovalExpiry: async (order) => {
-        await this.incidents.recordRecoveryApprovalExpiry(order);
       },
     });
   }
@@ -330,25 +293,21 @@ export class StandardRailService {
       chainId: this.appConfig.chainId,
       gatewayAudience: this.railConfig.gatewayAudience,
       signers: this.railConfig.trustedSigners,
-      marketplaceCommissionBps: this.railConfig.marketplaceCommissionBps,
       launchOutcomeIds: this.railConfig.launchOutcomeIds,
-      reviewedListings: this.railConfig.reviewedListings,
     });
-    await verifyRuntimeIntegrity(this.appConfig, this.railConfig);
     if (
       getAddress(this.railConfig.manifest.chainEvidencePolicy.payload.canonicalToken) !==
       getAddress(this.appConfig.usdc.address)
     ) throw new Error("Standard-rail canonical token does not match the reviewed USDC domain");
     await this.evidence.verifyCanonicalToken(this.appConfig.chainId);
     const rail = this.railConfig.manifest.activeRailProfile.payload;
-    const runtime = this.railConfig.manifest.runtimeRelease.payload;
     if (
       rail.chainId !== this.appConfig.chainId || rail.environment !== this.railConfig.environment ||
-      runtime.chainId !== this.appConfig.chainId || runtime.environment !== this.railConfig.environment
+      getAddress(this.railConfig.manifest.facilitatorProfile.payload.asset) !==
+        getAddress(this.appConfig.usdc.address) ||
+      this.railConfig.manifest.facilitatorProfile.payload.baseUrl !==
+        this.railConfig.facilitatorBaseUrl
     ) throw new Error("Standard-rail manifest does not match this runtime");
-    if (Math.floor(Date.now() / 1_000) >= Math.min(rail.recoveryValidBefore, runtime.recoveryValidBefore)) {
-      throw new Error("Standard-rail recovery approval has expired");
-    }
     await Promise.all(this.railConfig.manifest.listings.map(
       (listing) => this.evidence.verifyListingDeployment(listing, this.appConfig.chainId),
     ));
@@ -362,12 +321,9 @@ export class StandardRailService {
     }));
     await this.store.admitManifest(this.railConfig.manifest);
     await this.assetFederation.activateAdmissions();
-    await this.reputationIndexer.start();
     await this.refreshDependencyReadiness();
     this.recovery.start();
     this.reputationWorker.start();
-    this.reputationMirror.start();
-    this.notificationWorker.start();
     this.readinessInterval = setInterval(() => {
       void this.refreshDependencyReadiness().catch(() => undefined);
     }, 30_000);
@@ -381,16 +337,14 @@ export class StandardRailService {
     await Promise.all([
       this.recovery.stop(),
       this.reputationWorker.stop(),
-      this.reputationMirror.stop(),
-      this.notificationWorker.stop(),
-      this.reputationIndexer.stop(),
     ]);
   }
 
-  isAdmissionOpen(now = Math.floor(Date.now() / 1_000)): boolean {
-    const rail = this.railConfig.manifest.activeRailProfile.payload;
-    const runtime = this.railConfig.manifest.runtimeRelease.payload;
-    return now < Math.min(rail.admissionValidBefore, runtime.admissionValidBefore);
+  isAdmissionOpen(): boolean {
+    return isAdmissionWindowOpen(
+      this.railConfig.manifest.activeRailProfile.payload.admissionValidBefore,
+      this.railConfig.manifest.facilitatorProfile.payload.admissionValidBefore,
+    );
   }
 
   areDependenciesReady(): boolean {
@@ -398,8 +352,7 @@ export class StandardRailService {
   }
 
   async operationalHealth() {
-    const [operations, operationCauses, oldestByKind, transactionStates, mirrors,
-      mirrorCauses, mirrorTransactionStates, notifications, relayer, mirrorAccount] = await Promise.all([
+    const [operations, operationCauses, oldestByKind, transactionStates, relayer] = await Promise.all([
       this.pool.query<OperationalSummary>(
         `SELECT count(*) FILTER (WHERE state IN ('pending','broadcast'))::int AS pending,
                 count(*) FILTER (WHERE state='operator_attention')::int AS attention,
@@ -424,36 +377,7 @@ export class StandardRailService {
         `SELECT state AS key,count(*)::int AS count FROM standard_reputation_transactions
           WHERE state IN ('prepared','broadcast','operator_attention') GROUP BY state`,
       ),
-      this.pool.query<OperationalSummary>(
-        `SELECT count(*) FILTER (WHERE state IN ('pending','broadcast','paused'))::int AS pending,
-                count(*) FILTER (WHERE state='operator_attention')::int AS attention,
-                count(*) FILTER (WHERE state='aborted_unmirrored')::int AS aborted,
-                0::int AS blocked,
-                count(*) FILTER (WHERE state='operator_attention' AND attempts>=5)::int AS exhausted,
-                COALESCE(extract(epoch FROM now()-min(updated_at) FILTER
-                  (WHERE state IN ('pending','broadcast','paused'))),0)::int AS oldest_pending_seconds
-           FROM standard_reputation_mirrors`,
-      ),
-      this.pool.query<GroupCount>(
-        `SELECT last_error_class AS key,count(*)::int AS count
-           FROM standard_reputation_mirrors WHERE last_error_class IS NOT NULL GROUP BY last_error_class`,
-      ),
-      this.pool.query<GroupCount>(
-        `SELECT state AS key,count(*)::int AS count FROM standard_reputation_mirror_transactions
-          WHERE state IN ('prepared','broadcast','operator_attention') GROUP BY state`,
-      ),
-      this.pool.query<OperationalSummary>(
-        `SELECT count(*) FILTER (WHERE state IN ('pending','delivering'))::int AS pending,
-                count(*) FILTER (WHERE state='operator_attention')::int AS attention,
-                count(*) FILTER (WHERE state='deleted')::int AS aborted,
-                0::int AS blocked,
-                count(*) FILTER (WHERE state='operator_attention')::int AS exhausted,
-                COALESCE(extract(epoch FROM now()-min(created_at) FILTER
-                  (WHERE state IN ('pending','delivering'))),0)::int AS oldest_pending_seconds
-           FROM standard_order_notification_events`,
-      ),
       this.reputationWorker.accountHealth(),
-      this.reputationMirror.accountHealth(),
     ]);
     return {
       reputation: {
@@ -465,14 +389,6 @@ export class StandardRailService {
         transactionStates: keyedCounts(transactionStates.rows),
         relayer,
       },
-      mirror: {
-        ...mirrors.rows[0],
-        causes: keyedCounts(mirrorCauses.rows),
-        transactionStates: keyedCounts(mirrorTransactionStates.rows),
-        account: mirrorAccount,
-      },
-      notifications: notifications.rows[0],
-      projection: this.reputationIndexer.status(),
     };
   }
 
@@ -481,15 +397,11 @@ export class StandardRailService {
     return this.publicArtifacts.get(hash.toLowerCase() as Hex) ?? null;
   }
 
-  orderEventKeySet() {
-    return this.notifications.keySet(this.appConfig.publicUrl);
-  }
-
   private refreshDependencyReadiness(): Promise<void> {
     if (this.readinessRefresh) return this.readinessRefresh;
     this.readinessRefresh = (async () => {
       try {
-        await this.assertRuntimeFence();
+        await this.assertRailFence();
         await this.facilitator.assertSupported(this.appConfig.x402Network);
         await this.evidence.verifyCanonicalToken(this.appConfig.chainId);
         await Promise.all(this.railConfig.manifest.listings.map(
@@ -518,7 +430,7 @@ export class StandardRailService {
     endpoint: string,
     init: RequestInit,
   ): Promise<Response> {
-    return this.withRuntimeFence(async () => {
+    return this.withRailFence(async () => {
       await assertPublicProviderEndpoint(listing.providerControlProfile.payload.origin, endpoint);
       if (this.fetchFn !== fetch) return this.fetchFn(endpoint, init);
       const hostname = new URL(endpoint).hostname;
@@ -530,27 +442,6 @@ export class StandardRailService {
       }
       return pinnedProviderFetch(endpoint, init, addresses);
     });
-  }
-
-  async issueUploadCapability(): Promise<Record<string, unknown>> {
-    this.assertAdmissionOpen();
-    await this.assertRuntimeFence();
-    return this.uploads.issue();
-  }
-
-  async putUpload(args: {
-    capability: string;
-    objectId?: string;
-    mediaType: string;
-    contentBase64: string;
-    contentHash: string;
-  }): Promise<StandardAttachmentRef> {
-    this.assertAdmissionOpen();
-    return this.withRuntimeFence(() => this.uploads.put(args));
-  }
-
-  removeUpload(capability: string, objectId: string): Promise<void> {
-    return this.withRuntimeFence(() => this.uploads.remove(capability, objectId));
   }
 
   private async settlementCaptured(order: StandardOrderRecord): Promise<boolean> {
@@ -640,13 +531,12 @@ export class StandardRailService {
       this.orderPaymentTimeout(order),
     );
     if (order.state === "ATTEMPT_OPENED") {
-      await this.ensureRefundExposure(order, listing, getAddress(order.payer));
       await this.screenParticipants(listing, getAddress(order.payer));
       const recorded = await this.journal.verifyRecord(order.orderId);
       let verified = recorded?.valid;
       if (verified === undefined) {
         await this.journal.markVerifyInvoked(order.orderId);
-        const verify = await this.withRuntimeFence(() => this.facilitator.verify(payment, requirements));
+        const verify = await this.withRailFence(() => this.facilitator.verify(payment, requirements));
         verified = Boolean(
           verify.isValid && verify.payer && getAddress(verify.payer) === getAddress(order.payer),
         );
@@ -680,7 +570,7 @@ export class StandardRailService {
     }
     let settlement;
     try {
-      settlement = await this.withRuntimeFence(() => this.facilitator.settle(payment, requirements));
+      settlement = await this.withRailFence(() => this.facilitator.settle(payment, requirements));
     } catch {
       return this.store.transition(order, "SETTLEMENT_AMBIGUOUS", "recovered_settle_response_unknown");
     }
@@ -704,7 +594,7 @@ export class StandardRailService {
   }
 
   private async resumePaidOrder(initial: StandardOrderRecord): Promise<void> {
-    await this.assertRuntimeFence();
+    await this.assertRailFence();
     await this.store.withListingSettlementLock(initial.listingManifestHash, async () => {
       let order = await this.store.findById(initial.orderId);
       if (!order || ![
@@ -715,7 +605,7 @@ export class StandardRailService {
       ].includes(order.state)) return;
       const listing = order.listing;
       order = await this.resumePreSettlement(order, listing);
-      if (["NO_REFUND", "LEGAL_HOLD"].includes(order.state)) return;
+      if (["NOT_SETTLED", "LEGAL_HOLD"].includes(order.state)) return;
       if (["DISPATCHED", "INPUT_REQUIRED"].includes(order.state)) {
         const claim = await this.journal.dispatchClaim(order.orderId);
         if (!claim) throw new Error("Dispatch recovery is missing its persisted claim");
@@ -797,7 +687,6 @@ export class StandardRailService {
             } catch (error) {
               if (Date.now() < order.updatedAt.getTime() +
                 listing.deadlinePolicy.settlementEvidenceSeconds * 1_000) throw error;
-              await this.journal.closeExposure(order.orderId, "legal_hold");
               await this.store.transition(order, "LEGAL_HOLD", "unproven_external_deposit_evidence_deadline", {
                 encryptedPaymentPayload: null,
               });
@@ -817,17 +706,13 @@ export class StandardRailService {
                 listing.deadlinePolicy.settlementEvidenceSeconds * 1_000) {
                 throw new Error("Captured settlement transaction is not yet discoverable");
               }
-              await this.journal.closeExposure(order.orderId, "legal_hold");
               await this.store.transition(order, "LEGAL_HOLD", "captured_settlement_evidence_unavailable", {
                 encryptedPaymentPayload: null,
               });
               await this.store.releaseCapacity(order.orderId);
               return;
             }
-            if (await this.journal.hasRefundExposure(order.orderId)) {
-              await this.releaseRefundExposure(order);
-            }
-            await this.store.transition(order, "NO_REFUND", "independent_chain_observation_no_capture", {
+            await this.store.transition(order, "NOT_SETTLED", "independent_chain_observation_no_capture", {
               encryptedPaymentPayload: null,
             });
             await this.store.releaseCapacity(order.orderId);
@@ -839,7 +724,6 @@ export class StandardRailService {
             listing.deadlinePolicy.settlementEvidenceSeconds * 1_000) {
             throw new Error("External deposit awaits authenticated facilitator evidence");
           }
-          await this.journal.closeExposure(order.orderId, "legal_hold");
           await this.store.transition(order, "LEGAL_HOLD", "facilitator_attestation_deadline_elapsed", {
             encryptedPaymentPayload: null,
           });
@@ -862,7 +746,6 @@ export class StandardRailService {
           });
         } catch (error) {
           if (Date.now() < order.updatedAt.getTime() + listing.deadlinePolicy.settlementEvidenceSeconds * 1_000) throw error;
-          await this.journal.closeExposure(order.orderId, "legal_hold");
           await this.store.transition(order, "LEGAL_HOLD", "signed_deposit_evidence_deadline_elapsed", {
             encryptedPaymentPayload: null,
           });
@@ -880,7 +763,7 @@ export class StandardRailService {
       if (order.state === "DEPOSIT_FINAL") {
         try {
           const depositOrder = order;
-          const release = await this.withRuntimeFence(() =>
+          const release = await this.withRailFence(() =>
             this.evidence.releaseAndProve({ order: depositOrder, listing, deposit }));
           await this.journal.recordEvidence(order.orderId, "release", release, this.appConfig.chainId);
           const reputation = await buildReputationRegistration({
@@ -905,7 +788,6 @@ export class StandardRailService {
           });
         } catch (error) {
           if (Date.now() < order.updatedAt.getTime() + listing.deadlinePolicy.releaseEvidenceSeconds * 1_000) throw error;
-          await this.journal.closeExposure(order.orderId, "legal_hold");
           await this.store.transition(order, "LEGAL_HOLD", "signed_release_evidence_deadline_elapsed", {
             encryptedPaymentPayload: null,
           });
@@ -937,18 +819,6 @@ export class StandardRailService {
         }
       }
     });
-  }
-
-  async executeDueRefund(order: StandardOrderRecord): Promise<unknown> {
-    if (!["REFUND_DUE", "REFUND_RESERVED", "REFUND_INVOKED", "REFUND_AMBIGUOUS"].includes(order.state)) {
-      throw new Error("ORDER_NOT_REFUNDABLE");
-    }
-    return this.executeRefund(order, order.listing, {
-      state: "refund_due",
-      orderId: order.orderId,
-      taskId: order.providerTaskId,
-      refundReason: "provider_failed",
-    }, true);
   }
 
   listing(providerAgentId: string, outcomeId: string): StandardListing {
@@ -1007,7 +877,6 @@ export class StandardRailService {
       listingManifestHash: canonicalHash(listing.manifest),
       providerOfferHash: canonicalHash(listing.offer),
       terms: listing.terms,
-      refundPolicy: listing.refundPolicy,
       deadlinePolicy: listing.deadlinePolicy,
       capacityPolicy: listing.capacityPolicy,
       providerReputation: emptyReputation,
@@ -1017,20 +886,22 @@ export class StandardRailService {
   }
 
   async publicOutcomes(): Promise<Array<Record<string, unknown>>> {
-    const [reputation, providers, services, finalizedBlock] = await Promise.all([
-      this.reputationProjection.outcomes(),
-      this.reputationProjection.providers(),
-      this.reputationProjection.services(),
-      this.reputationProjection.finalizedBlock(),
-    ]);
-    return this.listOutcomes().map((outcome) => ({
+    const outcomes = this.listOutcomes();
+    let snapshot;
+    try {
+      snapshot = await this.reputationReader.forOutcomes(outcomes);
+    } catch {
+      return outcomes;
+    }
+    const { providers, services, finalizedBlock } = snapshot;
+    return outcomes.map((outcome) => ({
       ...outcome,
-      reputation: reputation.get(`${outcome.providerAgentId}:${outcome.outcomeId}`) ??
-        { ...(outcome.reputation as object), finalizedBlock },
       providerReputation: providers.get(String(outcome.providerAgentId)) ??
         { ...(outcome.providerReputation as object), finalizedBlock },
-      serviceReputation: services.get(String(outcome.serviceId)) ??
+      serviceReputation: services.get(outcome.serviceId as Hex) ??
         { ...(outcome.serviceReputation as object), finalizedBlock },
+      reputation: services.get(outcome.serviceId as Hex) ??
+        { ...(outcome.reputation as object), finalizedBlock },
     }));
   }
 
@@ -1173,12 +1044,10 @@ export class StandardRailService {
         outcomeId: order.outcomeId,
         bindingProfile: order.bindingProfile,
         activeRailProfileHash: this.railProfileHash,
-        runtimeReleaseHash: this.runtimeProfileHash,
         listingManifestHash: order.listingManifestHash,
         providerOfferHash: order.providerOfferHash,
         quoteHash: order.quoteHash,
         canonicalRequestHash: order.canonicalRequestHash,
-        attachmentSetHash: order.attachmentSetHash,
         orderNonce: order.orderNonce,
         authorizationKey: order.authorizationKey,
         paymentPayloadHash: order.paymentPayloadHash,
@@ -1197,13 +1066,12 @@ export class StandardRailService {
 
   async issueActionChallenge(args: {
     handle: string;
-    action: "status" | "input" | "cancel" | "refund" | "artifact" | "support" |
-      "confirmation" | "revoke-confirmation" | "notification-set" |
-      "notification-get" | "notification-delete";
+    action: "status" | "input" | "cancel" | "artifact" | "support" |
+      "confirmation" | "revoke-confirmation";
     request: Record<string, unknown>;
     clientKey?: string;
   }): Promise<Record<string, unknown>> {
-    await this.assertRuntimeFence();
+    await this.assertRailFence();
     const order = await this.store.findByHandle(args.handle);
     const now = Math.floor(Date.now() / 1_000);
     const validBefore = now + 300;
@@ -1250,9 +1118,8 @@ export class StandardRailService {
 
   async performAction(args: {
     handle: string;
-    action: "status" | "input" | "cancel" | "refund" | "artifact" | "support" |
-      "confirmation" | "revoke-confirmation" | "notification-set" |
-      "notification-get" | "notification-delete";
+    action: "status" | "input" | "cancel" | "artifact" | "support" |
+      "confirmation" | "revoke-confirmation";
     request: Record<string, unknown>;
     authorization: {
       orderId: string;
@@ -1266,7 +1133,7 @@ export class StandardRailService {
       signature: Hex;
     };
   }): Promise<unknown> {
-    await this.assertRuntimeFence();
+    await this.assertRailFence();
     const order = await this.store.findByHandle(args.handle);
     if (!order || !order.payer) throw new Error("ORDER_NOT_FOUND");
     const now = Math.floor(Date.now() / 1_000);
@@ -1325,11 +1192,9 @@ export class StandardRailService {
         nonce: args.authorization.nonce,
         issuedAt: args.authorization.issuedAt,
         validBefore: args.authorization.validBefore,
-        payerRate: args.action === "notification-get"
-          ? { scope: "protected-read", maximum: this.railConfig.abuse.protectedReadsPerPayerPerMinute }
-          : ["confirmation", "revoke-confirmation", "notification-set", "notification-delete"].includes(args.action)
-            ? { scope: "wallet-state-change", maximum: this.railConfig.abuse.assetStateChangesPerPayerPerMinute }
-            : undefined,
+        payerRate: ["confirmation", "revoke-confirmation"].includes(args.action)
+          ? { scope: "wallet-state-change", maximum: this.railConfig.abuse.assetStateChangesPerPayerPerMinute }
+          : undefined,
       });
     } catch (error) {
       if (error instanceof Error && error.message === "ACTION_CHALLENGE_INVALID_OR_REPLAYED") {
@@ -1345,20 +1210,11 @@ export class StandardRailService {
     if (args.action === "confirmation" || args.action === "revoke-confirmation") {
       return this.confirmations.handle(order, args.action, args.request);
     }
-    if (args.action === "notification-set" || args.action === "notification-get" ||
-      args.action === "notification-delete") {
-      return this.notifications.handle(order, args.action, args.request);
-    }
     if (args.action === "status" && !order.providerTaskId) {
       return { receipt: await this.signedReceipt(order) };
     }
     if (!order.providerTaskId) throw new Error("PROVIDER_TASK_NOT_AVAILABLE");
     const listing = order.listing;
-    if (
-      args.action === "refund" &&
-      (!listing.refundPolicy.buyerRequested ||
-        Date.now() > order.createdAt.getTime() + listing.refundPolicy.requestDeadlineSeconds * 1_000)
-    ) throw new Error("REFUND_POLICY_REJECTED");
     const grantIssuedAt = Math.floor(Date.now() / 1_000);
     const lifecycleGrant = await signEnvelope({
       artifactType: "ProviderLifecycleGrantV1",
@@ -1402,9 +1258,6 @@ export class StandardRailService {
       response,
       listing.providerControlProfile.payload.maxResponseBytes,
     );
-    if (args.action === "refund") {
-      return this.executeRefund(order, listing, providerResult);
-    }
     return this.applyLifecycleResult(order, listing, providerResult, args.action);
   }
 
@@ -1495,14 +1348,12 @@ export class StandardRailService {
     providerAgentId: string;
     outcomeId: string;
     body: unknown;
-    uploadCapability?: string;
   }): Promise<{ handle: string; order: StandardOrderRecord; paymentRequired: unknown }> {
     this.assertAdmissionOpen();
-    await this.assertRuntimeFence();
+    await this.assertRailFence();
     const listing = this.listing(args.providerAgentId, args.outcomeId);
     await this.verifyListingIdentity(listing);
     this.validateRequest(listing, args.body);
-    const attachments = this.attachmentReferences(args.body);
     const canonicalRequestHash = canonicalHash({
       method: "POST",
       resource: listing.commitment.payload.absoluteResourceUri,
@@ -1512,7 +1363,6 @@ export class StandardRailService {
     });
     const listingManifestHash = canonicalHash(listing.manifest);
     const providerOfferHash = canonicalHash(listing.offer);
-    const runtimeEpoch = this.railConfig.manifest.runtimeRelease.payload.runtimeEpoch;
     const railEpoch = this.railConfig.manifest.activeRailProfile.payload.railEpoch;
     const existing = await this.store.findOpenDraft(
       args.providerAgentId,
@@ -1520,18 +1370,9 @@ export class StandardRailService {
       canonicalRequestHash,
       listingManifestHash,
       providerOfferHash,
-      runtimeEpoch,
       railEpoch,
     );
     if (existing) {
-      if (attachments.length > 0) {
-        if (!args.uploadCapability || !await this.uploads.capabilityBindsOrder(
-          args.uploadCapability,
-          existing.order.orderId,
-        )) throw new Error("UPLOAD_CAPABILITY_DOES_NOT_BIND_DRAFT");
-      } else if (args.uploadCapability) {
-        throw new Error("UPLOAD_CAPABILITY_WITHOUT_ATTACHMENTS");
-      }
       return this.challengeResponse(listing, existing.order, existing.handle);
     }
 
@@ -1549,7 +1390,6 @@ export class StandardRailService {
       pricing.validBefore,
       listing.commitment.payload.validUntil,
       listing.commitment.validBefore,
-      ...attachments.map((attachment) => attachment.expiresAt),
     );
     if (
       expiresAt <= quoteIssuedAt + minimumPaymentWindowSeconds
@@ -1593,13 +1433,9 @@ export class StandardRailService {
       canonicalRequestHash,
       canonicalRequest: args.body,
       grossAmount,
-      runtimeEpoch,
       railEpoch,
       listingEpoch: listing.commitment.payload.listingEpoch,
       expiresAt: new Date(expiresAt * 1_000),
-      uploadCapability: args.uploadCapability,
-      attachments,
-      gatewayAudience: this.railConfig.gatewayAudience,
     });
     return this.challengeResponse(listing, created.order, created.handle);
   }
@@ -1609,10 +1445,9 @@ export class StandardRailService {
     outcomeId: string;
     body: unknown;
     payment: PaymentPayload;
-    uploadCapability?: string;
   }): Promise<{ handle: string; order: StandardOrderRecord; replay: boolean }> {
     this.assertAdmissionOpen();
-    await this.assertRuntimeFence();
+    await this.assertRailFence();
     const existing = await this.store.findByAuthorizationKey(
       paymentAuthorizationLookupKey(this.appConfig, args.payment),
     );
@@ -1675,17 +1510,15 @@ export class StandardRailService {
       ) return { ...claimed, replay: true };
       throw error;
     }
-    await this.ensureRefundExposure(order, listing, authorization.payer);
     await this.screenParticipants(listing, authorization.payer);
     await this.journal.markVerifyInvoked(order.orderId);
-    const verify = await this.withRuntimeFence(() => this.facilitator.verify(args.payment, requirements));
+    const verify = await this.withRailFence(() => this.facilitator.verify(args.payment, requirements));
     const facilitatorVerified = Boolean(
       verify.isValid && verify.payer && getAddress(verify.payer) === authorization.payer,
     );
     await this.journal.recordVerify(order.orderId, canonicalHash(verify), facilitatorVerified);
     if (!facilitatorVerified) {
       order = await this.store.transition(order, "VERIFY_REJECTED", "facilitator_verify_rejected");
-      await this.releaseRefundExposure(order);
       await this.store.releaseCapacity(order.orderId);
       return { handle: challenge.handle, order, replay: false };
     }
@@ -1716,7 +1549,7 @@ export class StandardRailService {
       }
       let settlement;
       try {
-        settlement = await this.withRuntimeFence(() => this.facilitator.settle(args.payment, requirements));
+        settlement = await this.withRailFence(() => this.facilitator.settle(args.payment, requirements));
       } catch {
         order = await this.store.transition(order, "SETTLEMENT_AMBIGUOUS", "settle_response_unknown");
         return { handle: challenge.handle, order, replay: false };
@@ -1741,7 +1574,7 @@ export class StandardRailService {
       });
       await this.journal.recordEvidence(order.orderId, "deposit", deposit, this.appConfig.chainId);
       order = await this.store.transition(order, "DEPOSIT_FINAL", "deposit_evidence_final", { depositEvidenceHash: deposit.evidenceHash });
-      const release = await this.withRuntimeFence(() =>
+      const release = await this.withRailFence(() =>
         this.evidence.releaseAndProve({ order, listing, deposit }));
       await this.journal.recordEvidence(order.orderId, "release", release, this.appConfig.chainId);
       const reputation = await buildReputationRegistration({
@@ -1869,9 +1702,7 @@ export class StandardRailService {
           order.orderId,
           dispatchHash,
         );
-        const applied = await this.applyDispatchResponse(order, listing, dispatchHash, response);
-        await this.uploads.cleanupBound(order.orderId).catch(() => undefined);
-        return applied;
+        return this.applyDispatchResponse(order, listing, dispatchHash, response);
       } catch {
         return order.state === "DISPATCH_STARTED"
           ? this.store.transition(order, "DISPATCH_AMBIGUOUS", "provider_dispatch_outcome_unknown")
@@ -1884,14 +1715,10 @@ export class StandardRailService {
       Math.min(this.railConfig.dispatchTimeoutMs, listing.providerControlProfile.payload.timeoutMs),
     );
     try {
-      const attachmentBundle = await this.uploads.boundContent(
-        order.orderId,
-        this.attachmentReferences(effectiveRequest),
-      );
       const response = await this.providerFetch(listing, listing.providerControlProfile.payload.dispatchUrl, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ dispatch, quote: order.quote, request: effectiveRequest, evidenceBundle, attachmentBundle }, (_, value) =>
+        body: JSON.stringify({ dispatch, quote: order.quote, request: effectiveRequest, evidenceBundle }, (_, value) =>
           typeof value === "bigint" ? value.toString() : value,
         ),
         signal: controller.signal,
@@ -1902,9 +1729,7 @@ export class StandardRailService {
         response,
         listing.providerControlProfile.payload.maxResponseBytes,
       );
-      const applied = await this.applyDispatchResponse(order, listing, dispatchHash, body);
-      await this.uploads.cleanupBound(order.orderId).catch(() => undefined);
-      return applied;
+      return this.applyDispatchResponse(order, listing, dispatchHash, body);
     } catch {
       return order.state === "DISPATCH_STARTED"
         ? this.store.transition(order, "DISPATCH_AMBIGUOUS", "provider_dispatch_response_unknown")
@@ -2035,473 +1860,6 @@ export class StandardRailService {
       await this.store.releaseCapacity(order.orderId);
     }
     return order;
-  }
-
-  private async reserveProviderExposure(args: {
-    order: StandardOrderRecord;
-    listing: StandardListing;
-    providerAmount: string;
-    daskiAmount: string;
-    providerReservationId: Hex;
-    daskiReservationId: Hex;
-  }): Promise<void> {
-    const now = Math.floor(Date.now() / 1_000);
-    const reservation = await signEnvelope({
-      artifactType: "RefundExposureReservationV1",
-      environment: this.railConfig.environment,
-      chainId: this.appConfig.chainId,
-      audience: args.listing.providerControlProfile.payload.providerAudience,
-      signerKeyId: "gateway-dispatch",
-      privateKey: this.railConfig.dispatchPrivateKey,
-      issuedAt: now,
-      validBefore: now + 120,
-      payload: {
-        orderId: args.order.orderId,
-        payer: args.order.payer,
-        outcomeId: args.listing.commitment.payload.outcomeId,
-        listingManifestHash: args.order.listingManifestHash,
-        token: args.listing.commitment.payload.canonicalToken,
-        executionReserveAddress: args.listing.refundPolicy.executionReserveAddress,
-        grossAmount: args.order.grossAmount,
-        providerAmount: args.providerAmount,
-        daskiAmount: args.daskiAmount,
-        providerReservationId: args.providerReservationId,
-        daskiReservationId: args.daskiReservationId,
-        expiresAt: Math.floor(args.order.expiresAt.getTime() / 1_000) +
-          args.listing.deadlinePolicy.settlementEvidenceSeconds +
-          args.listing.deadlinePolicy.releaseEvidenceSeconds +
-          args.listing.deadlinePolicy.dispatchSeconds +
-          args.listing.deadlinePolicy.fulfillmentSeconds +
-          args.listing.refundPolicy.requestDeadlineSeconds +
-          args.listing.deadlinePolicy.refundSeconds,
-      },
-    });
-    const reservationHash = canonicalHash(reservation);
-    const response = await this.providerFetch(args.listing, args.listing.providerControlProfile.payload.reserveUrl, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ reservation }),
-      redirect: "error",
-      signal: AbortSignal.timeout(Math.min(
-        this.railConfig.dispatchTimeoutMs,
-        args.listing.providerControlProfile.payload.timeoutMs,
-      )),
-    });
-    if (!response.ok) throw new Error("PROVIDER_REFUND_RESERVE_UNAVAILABLE");
-    const body = await readBoundedJson(
-      response,
-      args.listing.providerControlProfile.payload.maxResponseBytes,
-    ) as { orderId?: unknown; reservationHash?: unknown; signature?: unknown };
-    assertExactKeys(body, ["orderId", "reservationHash", "signature"], "provider reservation response");
-    if (
-      body.orderId !== args.order.orderId || body.reservationHash !== reservationHash ||
-      typeof body.signature !== "string"
-    ) throw new Error("PROVIDER_REFUND_RESERVATION_RESPONSE_INVALID");
-    const responseHash = canonicalHash({ orderId: body.orderId, reservationHash });
-    const signer = await recoverMessageAddress({ message: { raw: responseHash }, signature: body.signature as Hex });
-    if (getAddress(signer) !== getAddress(args.listing.commitment.payload.providerAuthorityKey)) {
-      throw new Error("PROVIDER_REFUND_RESERVATION_SIGNATURE_INVALID");
-    }
-  }
-
-  private async ensureRefundExposure(
-    order: StandardOrderRecord,
-    listing: StandardListing,
-    payer: Hex,
-  ): Promise<void> {
-    const gross = BigInt(order.grossAmount);
-    if (gross > BigInt(this.railConfig.refundMaxTransactionAmount)) {
-      throw new Error("REFUND_TRANSACTION_CAP_EXCEEDED");
-    }
-    const daskiAmount = gross * BigInt(listing.commitment.payload.commissionBps) / 10_000n;
-    const providerAmount = gross - daskiAmount;
-    if (providerAmount <= 0n || daskiAmount <= 0n) {
-      throw new Error("REFUND_ALLOCATION_INVALID");
-    }
-    const reservationIdentity = {
-      orderId: order.orderId,
-      payer,
-      token: listing.commitment.payload.canonicalToken,
-      listingManifestHash: order.listingManifestHash,
-    };
-    const providerReservationId = contributionReservationId({
-      ...reservationIdentity,
-      contribution: "provider",
-      amount: providerAmount.toString(),
-    });
-    const daskiReservationId = contributionReservationId({
-      ...reservationIdentity,
-      contribution: "daski",
-      amount: daskiAmount.toString(),
-    });
-    if (
-      getAddress(listing.refundPolicy.executionReserveAddress) !==
-      this.railConfig.refundExecutionReserveAddress
-    ) throw new Error("REFUND_EXECUTION_RESERVE_POLICY_MISMATCH");
-    await this.journal.withRefundExecutionWalletLock(async () => {
-      await this.journal.assertRefundExecutionNonceAvailable(order.orderId);
-      const available = await this.evidence.tokenBalance(
-        getAddress(listing.commitment.payload.canonicalToken),
-        this.railConfig.refundExecutionReserveAddress,
-      );
-      await this.journal.reserveExposure({
-        orderId: order.orderId,
-        providerReservationId,
-        daskiReservationId,
-        token: listing.commitment.payload.canonicalToken,
-        payer,
-        grossAmount: order.grossAmount,
-        providerAmount: providerAmount.toString(),
-        daskiAmount: daskiAmount.toString(),
-        executionReserveAvailable: available.toString(),
-        maximumReservedAmount: this.railConfig.refundMaxReservedAmount,
-      });
-    });
-    await this.reserveProviderExposure({
-      order,
-      listing,
-      providerAmount: providerAmount.toString(),
-      daskiAmount: daskiAmount.toString(),
-      providerReservationId,
-      daskiReservationId,
-    });
-  }
-
-  private async executeRefund(
-    initialOrder: StandardOrderRecord,
-    listing: StandardListing,
-    providerLifecycleResult: unknown,
-    trustedDisposition = false,
-  ): Promise<unknown> {
-    if (
-      !providerLifecycleResult || typeof providerLifecycleResult !== "object" ||
-      (providerLifecycleResult as { state?: unknown }).state !== "refund_due" ||
-      (providerLifecycleResult as { orderId?: unknown }).orderId !== initialOrder.orderId ||
-      ((providerLifecycleResult as { taskId?: unknown }).taskId !== undefined &&
-        (providerLifecycleResult as { taskId?: unknown }).taskId !== initialOrder.providerTaskId)
-    ) throw new Error("PROVIDER_REFUND_NOT_DUE");
-    const lifecycle = providerLifecycleResult as Record<string, unknown>;
-    assertExactKeys(
-      lifecycle,
-      trustedDisposition
-        ? ["state", "orderId", "taskId", "refundReason"]
-        : ["state", "orderId", "taskId", "signature"],
-      "provider refund-due response",
-    );
-    if (!trustedDisposition) {
-      if (typeof lifecycle.signature !== "string") throw new Error("PROVIDER_REFUND_SIGNATURE_MISSING");
-      const signedPayload = {
-        orderId: lifecycle.orderId,
-        taskId: lifecycle.taskId,
-        state: lifecycle.state,
-      };
-      const signer = await recoverMessageAddress({
-        message: { raw: canonicalHash(signedPayload) },
-        signature: lifecycle.signature as Hex,
-      });
-      if (getAddress(signer) !== getAddress(listing.commitment.payload.providerAuthorityKey)) {
-        throw new Error("PROVIDER_REFUND_SIGNATURE_INVALID");
-      }
-    }
-    const refundReason = (providerLifecycleResult as { refundReason?: unknown }).refundReason === "provider_failed"
-      ? "provider_failed" as const
-      : "buyer_requested" as const;
-    const dispositionEvidenceHash = canonicalHash(providerLifecycleResult);
-    let order = initialOrder;
-    if (![
-      "REFUND_DUE", "REFUND_RESERVED", "REFUND_INVOKED", "REFUND_AMBIGUOUS",
-    ].includes(order.state)) {
-      order = await this.store.transition(order, "REFUND_DUE", "payer_refund_authorized");
-    }
-    if (order.state === "REFUND_DUE") {
-      order = await this.store.transition(order, "REFUND_RESERVED", "refund_exposure_reserved");
-    }
-    if (order.state === "REFUND_RESERVED") {
-      order = await this.store.transition(order, "REFUND_INVOKED", "refund_invocation_persisted");
-    }
-    if (!order.providerNetAmount || !order.daskiCommissionAmount) {
-      throw new Error("Refund requires a finalized per-order release allocation");
-    }
-    if (!order.depositEvidenceHash || !order.releaseEvidenceHash) {
-      throw new Error("Refund requires finalized deposit and release evidence");
-    }
-    const exposure = await this.journal.refundExposure(order.orderId);
-    if (
-      exposure.grossAmount !== order.grossAmount ||
-      BigInt(exposure.providerAmount) + BigInt(exposure.daskiAmount) !== BigInt(order.grossAmount)
-    ) throw new Error("Reserved refund contributions conflict with the gross obligation");
-    const reservationIdentity = {
-      orderId: order.orderId,
-      payer: order.payer!,
-      token: listing.commitment.payload.canonicalToken,
-      listingManifestHash: order.listingManifestHash,
-    };
-    if (
-      contributionReservationId({
-        ...reservationIdentity,
-        contribution: "provider",
-        amount: exposure.providerAmount,
-      }) !== exposure.providerReservationId ||
-      contributionReservationId({
-        ...reservationIdentity,
-        contribution: "daski",
-        amount: exposure.daskiAmount,
-      }) !== exposure.daskiReservationId
-    ) throw new Error("Reserved refund contribution identity is invalid");
-    const expectedIntent = {
-      orderId: order.orderId,
-      payer: order.payer!,
-      token: listing.commitment.payload.canonicalToken,
-      grossAmount: order.grossAmount,
-      providerAmount: order.providerNetAmount,
-      daskiAmount: order.daskiCommissionAmount,
-      providerReservationId: exposure.providerReservationId,
-      daskiReservationId: exposure.daskiReservationId,
-      depositEvidenceHash: order.depositEvidenceHash,
-      releaseEvidenceHash: order.releaseEvidenceHash,
-      refundPolicyHash: canonicalHash(listing.refundPolicy),
-    };
-    let attempt = await this.journal.refundLeg(order.orderId, "gross");
-    let refundIntent: GrossRefundIntent;
-    if (!attempt) {
-      refundIntent = buildGrossRefundIntent({
-        ...expectedIntent,
-        refundReason,
-        dispositionEvidenceHash,
-        dueAt: Math.floor(order.updatedAt.getTime() / 1_000) + listing.deadlinePolicy.refundSeconds,
-      });
-      const refundIntentHash = canonicalHash(refundIntent);
-      attempt = await this.journal.beginRefundLeg({
-        orderId: order.orderId,
-        leg: "gross",
-        intentHash: refundIntentHash,
-        intent: refundIntent,
-      });
-    } else {
-      if (canonicalHash(attempt.intent) !== attempt.intentHash) {
-        throw new Error("Persisted refund intent hash is invalid");
-      }
-      refundIntent = validateGrossRefundIntent(attempt.intent, expectedIntent);
-    }
-    const grossAmount = BigInt(refundIntent.amount);
-    if (grossAmount > BigInt(this.railConfig.refundMaxTransactionAmount)) {
-      throw new Error("Refund obligation exceeds the signed runtime transaction cap");
-    }
-    let refundCreditFinal = attempt.state === "refunded";
-    let refundTransactionHash = attempt.transactionHash;
-    try {
-      if (!refundCreditFinal) {
-        await this.screenParticipants(listing, getAddress(order.payer!));
-        const refundTx = await this.journal.withRefundExecutionWalletLock(async () => {
-          await this.journal.assertRefundExecutionNonceAvailable(order.orderId);
-          const current = await this.journal.refundLeg(order.orderId, "gross");
-          if (!current) throw new Error("Refund execution journal is missing");
-          let rawTransaction = current.rawTransaction;
-          let expectedTransactionHash = current.transactionHash;
-          if (!rawTransaction || !expectedTransactionHash) {
-            const prepared = await this.evidence.prepareRefund(
-              getAddress(listing.commitment.payload.canonicalToken),
-              getAddress(order.payer!),
-              grossAmount,
-            );
-            await this.journal.recordRefundPrepared(
-              order.orderId,
-              "gross",
-              prepared.rawTransaction,
-              prepared.transactionHash,
-            );
-            rawTransaction = prepared.rawTransaction;
-            expectedTransactionHash = prepared.transactionHash;
-          }
-          const transactionHash = await this.withRuntimeFence(() =>
-            this.evidence.broadcastRefund(rawTransaction!, expectedTransactionHash!));
-          await this.journal.recordRefundBroadcast(order.orderId, "gross", transactionHash);
-          return transactionHash;
-        });
-        refundTransactionHash = refundTx;
-        const refundEvidence = await this.evidence.proveRefund({
-          transactionHash: refundTx,
-          token: getAddress(listing.commitment.payload.canonicalToken),
-          from: this.railConfig.refundExecutionReserveAddress,
-          payer: getAddress(order.payer!),
-          amount: grossAmount,
-        });
-        await this.journal.recordEvidence(
-          order.orderId,
-          "refund",
-          refundEvidence,
-          this.appConfig.chainId,
-        );
-        await this.journal.resolveRefundLeg(order.orderId, "gross", "refunded");
-        refundCreditFinal = true;
-      }
-      if (!refundTransactionHash) throw new Error("Final refund transaction hash is missing");
-      await this.confirmProviderRefund({
-        order,
-        listing,
-        refundIntent,
-        transactionHash: refundTransactionHash,
-      });
-      await this.journal.closeExposure(order.orderId, "refunded");
-      const refundEvidence = await this.journal.loadEvidence(order.orderId, "refund");
-      const reputationRefund = await buildReputationRefund({
-        order,
-        cumulativeRefundedAmount: grossAmount,
-        refundEvidenceHash: refundEvidence.evidenceHash,
-        config: this.railConfig,
-        chainId: this.appConfig.chainId,
-      });
-      order = await this.store.transition(
-        order,
-        "REFUNDED",
-        "refund_credits_final",
-        {},
-        {
-          kind: "refund",
-          logicalKey: canonicalHash({ orderKey: order.orderKey,
-            cumulativeRefundedAmount: grossAmount.toString() }),
-          ...reputationRefund,
-        },
-      );
-      await this.store.releaseCapacity(order.orderId);
-      return {
-        state: order.state,
-        refundTransactionHash,
-        receipt: await this.signedReceipt(order),
-      };
-    } catch {
-      if (!refundCreditFinal) {
-        await this.journal.resolveRefundLeg(order.orderId, "gross", "ambiguous");
-      }
-      if (order.state === "REFUND_INVOKED") {
-        order = await this.store.transition(order, "REFUND_AMBIGUOUS", "refund_credit_unresolved");
-      }
-      if (Date.now() >= refundIntent.dueAt * 1_000) {
-        await this.journal.closeExposure(order.orderId, "legal_hold");
-        order = await this.store.transition(
-          order,
-          "LEGAL_HOLD",
-          refundCreditFinal
-            ? "provider_refund_resolution_deadline_elapsed"
-            : "signed_refund_evidence_deadline_elapsed",
-        );
-        await this.store.releaseCapacity(order.orderId);
-      }
-      return { state: order.state, receipt: await this.signedReceipt(order) };
-    }
-  }
-
-  private async confirmProviderRefund(args: {
-    order: StandardOrderRecord;
-    listing: StandardListing;
-    refundIntent: GrossRefundIntent;
-    transactionHash: Hex;
-  }): Promise<void> {
-    const now = Math.floor(Date.now() / 1_000);
-    const resolution = await signEnvelope({
-      artifactType: "RefundExposureResolutionV1",
-      environment: this.railConfig.environment,
-      chainId: this.appConfig.chainId,
-      audience: args.listing.providerControlProfile.payload.providerAudience,
-      signerKeyId: "gateway-dispatch",
-      privateKey: this.railConfig.dispatchPrivateKey,
-      issuedAt: now,
-      validBefore: now + 120,
-      payload: {
-        orderId: args.order.orderId,
-        payer: args.order.payer!,
-        listingManifestHash: args.order.listingManifestHash,
-        providerReservationId: args.refundIntent.providerReservationId,
-        daskiReservationId: args.refundIntent.daskiReservationId,
-        refundId: args.refundIntent.refundId,
-        transactionHash: args.transactionHash,
-        grossAmount: args.refundIntent.amount,
-      },
-    });
-    const resolutionHash = canonicalHash(resolution);
-    const response = await this.providerFetch(
-      args.listing,
-      `${args.listing.providerControlProfile.payload.reserveUrl.replace(/\/$/, "")}/resolve`,
-      {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ resolution }),
-        redirect: "error",
-        signal: AbortSignal.timeout(Math.min(
-          this.railConfig.dispatchTimeoutMs,
-          args.listing.providerControlProfile.payload.timeoutMs,
-        )),
-      },
-    );
-    if (!response.ok) throw new Error("PROVIDER_REFUND_RESOLUTION_FAILED");
-    const body = await readBoundedJson(
-      response,
-      args.listing.providerControlProfile.payload.maxResponseBytes,
-    ) as { orderId?: unknown; resolutionHash?: unknown; signature?: unknown };
-    assertExactKeys(body, ["orderId", "resolutionHash", "signature"], "provider refund-resolution response");
-    if (
-      body.orderId !== args.order.orderId || body.resolutionHash !== resolutionHash ||
-      typeof body.signature !== "string"
-    ) throw new Error("PROVIDER_REFUND_RESOLUTION_INVALID");
-    const signer = await recoverMessageAddress({
-      message: { raw: canonicalHash({ orderId: body.orderId, resolutionHash }) },
-      signature: body.signature as Hex,
-    });
-    if (getAddress(signer) !== getAddress(args.listing.commitment.payload.providerAuthorityKey)) {
-      throw new Error("PROVIDER_REFUND_RESOLUTION_SIGNATURE_INVALID");
-    }
-  }
-
-  private async releaseRefundExposure(order: StandardOrderRecord): Promise<void> {
-    const listing = order.listing;
-    const now = Math.floor(Date.now() / 1_000);
-    const release = await signEnvelope({
-      artifactType: "RefundExposureReleaseV1",
-      environment: this.railConfig.environment,
-      chainId: this.appConfig.chainId,
-      audience: listing.providerControlProfile.payload.providerAudience,
-      signerKeyId: "gateway-dispatch",
-      privateKey: this.railConfig.dispatchPrivateKey,
-      issuedAt: now,
-      validBefore: now + 120,
-      payload: {
-        orderId: order.orderId,
-        payer: order.payer!,
-        listingManifestHash: order.listingManifestHash,
-      },
-    });
-    const releaseHash = canonicalHash(release);
-    const response = await this.providerFetch(
-      listing,
-      `${listing.providerControlProfile.payload.reserveUrl.replace(/\/$/, "")}/release`,
-      {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ release }),
-        redirect: "error",
-        signal: AbortSignal.timeout(Math.min(
-          this.railConfig.dispatchTimeoutMs,
-          listing.providerControlProfile.payload.timeoutMs,
-        )),
-      },
-    );
-    if (!response.ok) throw new Error("PROVIDER_REFUND_RESERVE_RELEASE_FAILED");
-    const body = await readBoundedJson(
-      response,
-      listing.providerControlProfile.payload.maxResponseBytes,
-    ) as { orderId?: unknown; releaseHash?: unknown; signature?: unknown };
-    assertExactKeys(body, ["orderId", "releaseHash", "signature"], "provider reserve-release response");
-    if (body.orderId !== order.orderId || body.releaseHash !== releaseHash || typeof body.signature !== "string") {
-      throw new Error("PROVIDER_REFUND_RESERVE_RELEASE_INVALID");
-    }
-    const signer = await recoverMessageAddress({
-      message: { raw: canonicalHash({ orderId: body.orderId, releaseHash }) },
-      signature: body.signature as Hex,
-    });
-    if (getAddress(signer) !== getAddress(listing.commitment.payload.providerAuthorityKey)) {
-      throw new Error("PROVIDER_REFUND_RESERVE_RELEASE_SIGNATURE_INVALID");
-    }
-    await this.journal.closeExposure(order.orderId, "released");
   }
 
   private challengeResponse(listing: StandardListing, order: StandardOrderRecord, handle: string) {
@@ -2645,11 +2003,8 @@ export class StandardRailService {
     assertPassiveProviderOutput(result);
   }
 
-  private assertRuntimeFence(): Promise<void> {
-    return this.store.assertActiveEpochs({
-      railProfileHash: this.railProfileHash,
-      runtimeProfileHash: this.runtimeProfileHash,
-    });
+  private assertRailFence(): Promise<void> {
+    return this.store.assertActiveRail(this.railProfileHash);
   }
 
   private screenParticipants(listing: StandardListing, payer?: Hex): Promise<void> {
@@ -2663,40 +2018,18 @@ export class StandardRailService {
         commitment.providerPayee,
         commitment.daskiCommissionReceiver,
         listing.manifest.payload.splitterAddress,
-        listing.refundPolicy.executionReserveAddress,
         ...listing.screeningPolicy.providerControlledWallets,
         ...(payer ? [payer] : []),
       ].map(getAddress),
     );
   }
 
-  private withRuntimeFence<T>(work: () => Promise<T>): Promise<T> {
-    return this.store.withRuntimeFence({
+  private withRailFence<T>(work: () => Promise<T>): Promise<T> {
+    return this.store.withRailFence({
       environment: this.railConfig.environment,
       chainId: this.appConfig.chainId,
       railProfileHash: this.railProfileHash,
-      runtimeProfileHash: this.runtimeProfileHash,
     }, work);
   }
 
-  private attachmentReferences(body: unknown): StandardAttachmentRef[] {
-    if (!body || typeof body !== "object" || Array.isArray(body)) return [];
-    const attachments = (body as Record<string, unknown>).attachments;
-    if (attachments === undefined) return [];
-    if (!Array.isArray(attachments) || attachments.length === 0) throw new Error("ATTACHMENT_SET_INVALID");
-    return attachments.map((value) => {
-      if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("ATTACHMENT_REFERENCE_INVALID");
-      const item = value as Record<string, unknown>;
-      const keys = ["objectId", "contentHash", "byteSize", "mediaType", "expiresAt"];
-      if (Object.keys(item).sort().join(",") !== keys.sort().join(",")) throw new Error("ATTACHMENT_REFERENCE_OPEN_SHAPE");
-      if (
-        typeof item.objectId !== "string" || typeof item.contentHash !== "string" ||
-        !/^0x[0-9a-fA-F]{64}$/.test(item.contentHash) ||
-        typeof item.byteSize !== "number" || !Number.isSafeInteger(item.byteSize) || item.byteSize <= 0 ||
-        typeof item.mediaType !== "string" || typeof item.expiresAt !== "number" ||
-        !Number.isSafeInteger(item.expiresAt) || item.expiresAt <= Math.floor(Date.now() / 1_000)
-      ) throw new Error("ATTACHMENT_REFERENCE_INVALID");
-      return item as unknown as StandardAttachmentRef;
-    });
-  }
 }

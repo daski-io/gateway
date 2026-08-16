@@ -1,5 +1,9 @@
 import type { Network } from "@x402/core/types";
-import { loadUsdcDomain, type UsdcDomainConfig } from "./payment/usdcDomain.js";
+import {
+  loadUsdcDomain,
+  REVIEWED_USDC_DOMAINS,
+  type UsdcDomainConfig,
+} from "./payment/usdcDomain.js";
 import type { ChainId, Hex } from "./types.js";
 import { isHexAddress } from "./util/evmValidation.js";
 
@@ -106,6 +110,7 @@ function mcpPath(raw: string | undefined): string {
 }
 
 function sanctionsMode(raw: string | undefined): SanctionsOracleMode {
+  if (raw === undefined) return "production";
   if (raw === "production" || raw === "mock") return raw;
   throw new Error("SANCTIONS_ORACLE_MODE must be explicitly set to production or mock");
 }
@@ -134,7 +139,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   if (production && oracleMode === "mock") {
     throw new Error("SANCTIONS_ORACLE_MODE=mock is forbidden in production");
   }
-  const tokenAddress = address("USDC_ADDRESS", env.USDC_ADDRESS);
+  const tokenAddress = address(
+    "USDC_ADDRESS",
+    env.USDC_ADDRESS ?? REVIEWED_USDC_DOMAINS[configuredChainId].address,
+  );
   return {
     nodeEnv,
     port: integer("PORT", env.PORT, 3000, { maximum: 65535 }),

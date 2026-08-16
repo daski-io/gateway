@@ -73,14 +73,12 @@ interface LoadUsdcDomainInput {
 
 export function loadUsdcDomain(input: LoadUsdcDomainInput): UsdcDomainConfig {
   const reviewed = REVIEWED_USDC_DOMAINS[input.chainId];
-  const name = requireValue("USDC_NAME", input.env.USDC_NAME);
-  const version = requireValue("USDC_VERSION", input.env.USDC_VERSION);
-  const decimals = parseDecimals(
-    requireValue("USDC_DECIMALS", input.env.USDC_DECIMALS),
-  );
+  const name = input.env.USDC_NAME?.trim() || reviewed.name;
+  const version = input.env.USDC_VERSION?.trim() || reviewed.version;
+  const decimals = parseDecimals(input.env.USDC_DECIMALS ?? String(reviewed.decimals));
   const domainSeparator = requireHex32(
     "USDC_DOMAIN_SEPARATOR",
-    input.env.USDC_DOMAIN_SEPARATOR,
+    input.env.USDC_DOMAIN_SEPARATOR ?? reviewed.domainSeparator,
   );
   const configured: UsdcDomainConfig = {
     address: input.address,

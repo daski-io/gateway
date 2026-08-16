@@ -10,7 +10,6 @@ import type { StandardReputationOrderV1 } from "./reputationOrders.js";
 
 const reputationAbi = parseAbi([
   "function registerOrder((bytes32 orderKey,bytes32 authorizationKey,uint256 providerAgentId,bytes32 serviceId,address payer,address providerOwner,address providerAgentWallet,address providerPayee,address identityRegistry,address providerRegistry,address serviceRegistry,uint256 blockNumber,bytes32 blockHash,address canonicalToken,uint256 grossAmount,uint64 paidAt,bytes32 providerIdentitySnapshotHash,bytes32 listingManifestHash,bytes32 releaseEvidenceHash,bool reputationEligible,uint64 validBefore) permit,bytes signature)",
-  "function recordRefund((bytes32 orderKey,bytes32 authorizationKey,uint256 cumulativeRefundedAmount,bytes32 refundEvidenceHash,uint64 validBefore) permit,bytes signature)",
 ]);
 
 const easAbi = parseAbi([
@@ -30,18 +29,6 @@ type StoredOrderPermit = Omit<StandardReputationOrderV1,
 export interface RegisterIntent {
   operation: "register-order";
   permit: StoredOrderPermit;
-  signature: Hex;
-}
-
-export interface RefundIntent {
-  operation: "record-refund";
-  permit: {
-    orderKey: Hex;
-    authorizationKey: Hex;
-    cumulativeRefundedAmount: string;
-    refundEvidenceHash: Hex;
-    validBefore: string;
-  };
   signature: Hex;
 }
 
@@ -87,7 +74,6 @@ export interface RevokeConfirmationIntent {
 
 export type ReputationOperationIntent =
   | RegisterIntent
-  | RefundIntent
   | ConfirmationIntent
   | RevokeConfirmationIntent;
 
@@ -108,21 +94,6 @@ export function encodeReputationOperation(
           blockNumber: BigInt(intent.permit.blockNumber),
           grossAmount: BigInt(intent.permit.grossAmount),
           paidAt: BigInt(intent.permit.paidAt),
-          validBefore: BigInt(intent.permit.validBefore),
-        }, intent.signature],
-      }),
-    };
-  }
-  if (intent.operation === "record-refund") {
-    return {
-      destination: config.reputationContract,
-      gas: config.reputationRefundGasLimit,
-      data: encodeFunctionData({
-        abi: reputationAbi,
-        functionName: "recordRefund",
-        args: [{
-          ...intent.permit,
-          cumulativeRefundedAmount: BigInt(intent.permit.cumulativeRefundedAmount),
           validBefore: BigInt(intent.permit.validBefore),
         }, intent.signature],
       }),

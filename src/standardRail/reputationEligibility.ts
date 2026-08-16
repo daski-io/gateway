@@ -17,11 +17,8 @@ export function isReputationEligiblePayer(
     config.receiptPrivateKey,
     config.lifecyclePrivateKey,
     config.releasePrivateKey,
-    config.refundPrivateKey,
     config.reputationOrderPrivateKey,
     config.reputationRelayerPrivateKey,
-    config.mirror.privateKey,
-    config.notification.privateKey,
   ];
   const controlled = new Set([
     listing.commitment.payload.providerAuthorityKey,
@@ -29,7 +26,6 @@ export function isReputationEligiblePayer(
     listing.commitment.payload.providerPayee,
     listing.commitment.payload.daskiCommissionReceiver,
     listing.manifest.payload.splitterAddress,
-    listing.refundPolicy.executionReserveAddress,
     ...listing.screeningPolicy.providerControlledWallets,
     ...(snapshot ? [snapshot.payload.providerOwner, snapshot.payload.providerAgentWallet,
       snapshot.payload.providerPayee] : []),

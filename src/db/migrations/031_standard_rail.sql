@@ -40,8 +40,7 @@ CREATE TABLE standard_orders (
     'SETTLE_INVOKED','FACILITATOR_CONFIRMED','SETTLEMENT_AMBIGUOUS',
     'SETTLEMENT_FAILED','EXTERNAL_OR_UNPROVEN_DEPOSIT','DEPOSIT_FINAL',
     'RELEASE_FINAL','DISPATCH_STARTED','DISPATCHED','DISPATCH_AMBIGUOUS',
-    'FULFILLED','PROVIDER_FAILED','KYC_REQUIRED','LEGAL_HOLD','REFUND_DUE',
-    'REFUND_RESERVED','REFUND_INVOKED','REFUND_AMBIGUOUS','REFUNDED','NO_REFUND'
+    'FULFILLED','PROVIDER_FAILED','INPUT_REQUIRED','LEGAL_HOLD','NOT_SETTLED'
   )),
   provider_agent_id TEXT NOT NULL,
   outcome_id TEXT NOT NULL,
@@ -54,7 +53,6 @@ CREATE TABLE standard_orders (
   canonical_quote JSONB NOT NULL,
   canonical_request_hash BYTEA NOT NULL CHECK (octet_length(canonical_request_hash) = 32),
   canonical_request JSONB NOT NULL,
-  attachment_set_hash BYTEA CHECK (attachment_set_hash IS NULL OR octet_length(attachment_set_hash) = 32),
   order_nonce BYTEA NOT NULL UNIQUE CHECK (octet_length(order_nonce) = 32),
   authorization_key BYTEA UNIQUE CHECK (authorization_key IS NULL OR octet_length(authorization_key) = 32),
   payment_payload_hash BYTEA CHECK (payment_payload_hash IS NULL OR octet_length(payment_payload_hash) = 32),
@@ -68,7 +66,6 @@ CREATE TABLE standard_orders (
   release_tx_hash TEXT,
   release_evidence_hash BYTEA CHECK (release_evidence_hash IS NULL OR octet_length(release_evidence_hash) = 32),
   provider_task_id TEXT,
-  runtime_epoch BIGINT NOT NULL,
   rail_epoch BIGINT NOT NULL,
   listing_epoch BIGINT NOT NULL,
   lease_owner TEXT,
@@ -136,7 +133,7 @@ CREATE TABLE standard_settlement_attempts (
 CREATE TABLE standard_chain_evidence (
   evidence_hash BYTEA PRIMARY KEY CHECK (octet_length(evidence_hash) = 32),
   order_id TEXT NOT NULL REFERENCES standard_orders(order_id),
-  evidence_kind TEXT NOT NULL CHECK (evidence_kind IN ('deposit', 'release', 'refund')),
+  evidence_kind TEXT NOT NULL CHECK (evidence_kind IN ('deposit', 'release')),
   chain_id BIGINT NOT NULL,
   block_number BIGINT NOT NULL,
   block_hash TEXT NOT NULL,
@@ -161,37 +158,6 @@ CREATE TABLE standard_dispatch_claims (
   canonical_request JSONB NOT NULL,
   invoked_at TIMESTAMPTZ,
   resolved_at TIMESTAMPTZ
-);
-
-CREATE TABLE standard_refund_exposure (
-  order_id TEXT PRIMARY KEY REFERENCES standard_orders(order_id),
-  provider_reservation_id BYTEA NOT NULL UNIQUE CHECK (octet_length(provider_reservation_id) = 32),
-  daski_reservation_id BYTEA NOT NULL UNIQUE CHECK (octet_length(daski_reservation_id) = 32),
-  token TEXT NOT NULL,
-  payer TEXT NOT NULL,
-  gross_amount NUMERIC(78,0) NOT NULL CHECK (gross_amount > 0),
-  provider_reserved NUMERIC(78,0) NOT NULL CHECK (provider_reserved >= 0),
-  daski_reserved NUMERIC(78,0) NOT NULL CHECK (daski_reserved >= 0),
-  state TEXT NOT NULL CHECK (state IN (
-    'reserved','refund_due','invoked','ambiguous','refunded','released','legal_hold'
-  )),
-  reserved_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  released_at TIMESTAMPTZ
-);
-
-CREATE TABLE standard_refund_attempts (
-  order_id TEXT NOT NULL REFERENCES standard_orders(order_id),
-  leg TEXT NOT NULL CHECK (leg='gross'),
-  attempt_sequence INTEGER NOT NULL CHECK (attempt_sequence > 0),
-  intent_hash BYTEA NOT NULL UNIQUE CHECK (octet_length(intent_hash) = 32),
-  canonical_intent JSONB NOT NULL,
-  raw_transaction TEXT,
-  expected_transaction_hash TEXT,
-  transaction_hash TEXT,
-  state TEXT NOT NULL CHECK (state IN ('invoked','broadcast','ambiguous','refunded')),
-  invoked_at TIMESTAMPTZ,
-  resolved_at TIMESTAMPTZ,
-  PRIMARY KEY (order_id, leg, attempt_sequence)
 );
 
 CREATE TABLE standard_action_nonces (
@@ -221,33 +187,3 @@ CREATE INDEX standard_action_challenges_expiry_idx
 
 CREATE INDEX standard_action_challenges_consumed_idx
   ON standard_action_challenges(consumed_at) WHERE consumed_at IS NOT NULL;
-
-CREATE TABLE standard_upload_sessions (
-  session_hash BYTEA PRIMARY KEY CHECK (octet_length(session_hash) = 32),
-  audience TEXT NOT NULL,
-  policy JSONB NOT NULL,
-  bound_order_id TEXT REFERENCES standard_orders(order_id),
-  canonical_request_hash BYTEA CHECK (canonical_request_hash IS NULL OR octet_length(canonical_request_hash) = 32),
-  expires_at TIMESTAMPTZ NOT NULL,
-  consumed_at TIMESTAMPTZ,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
-CREATE TABLE standard_upload_attempts (
-  storage_key TEXT PRIMARY KEY,
-  session_hash BYTEA NOT NULL CHECK (octet_length(session_hash) = 32),
-  object_id TEXT NOT NULL,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
-CREATE TABLE standard_upload_objects (
-  object_id TEXT NOT NULL,
-  session_hash BYTEA NOT NULL REFERENCES standard_upload_sessions(session_hash),
-  content_hash BYTEA NOT NULL CHECK (octet_length(content_hash) = 32),
-  media_type TEXT NOT NULL,
-  byte_size BIGINT NOT NULL CHECK (byte_size >= 0),
-  storage_key TEXT NOT NULL UNIQUE,
-  expires_at TIMESTAMPTZ NOT NULL,
-  PRIMARY KEY (session_hash, object_id),
-  UNIQUE (session_hash, content_hash)
-);

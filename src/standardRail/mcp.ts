@@ -67,7 +67,6 @@ const lifecycleTools = [
   ["daski_get_order_status", "status", "Get the current state of a purchased outcome."],
   ["daski_submit_order_input", "input", "Submit requested customer input for an order."],
   ["daski_cancel_order", "cancel", "Request cancellation of an order."],
-  ["daski_request_refund", "refund", "Request a refund under the signed listing policy."],
   ["daski_get_order_artifact", "artifact", "Retrieve the protected result artifact for a completed order."],
   ["daski_contact_order_support", "support", "Send a support request for an order."],
 ] as const;
@@ -226,7 +225,7 @@ export async function createStandardRailMcp(
           annotations: {
             title: description,
             readOnlyHint: action === "status" || action === "artifact",
-            destructiveHint: action === "cancel" || action === "refund",
+            destructiveHint: action === "cancel",
             idempotentHint: action === "status" || action === "artifact",
             openWorldHint: true,
           },
@@ -291,30 +290,6 @@ export async function createStandardRailMcp(
             message: "The delivery confirmation request could not be completed",
             retryable: ["REPUTATION_NOT_READY", "CONFIRMATION_SPONSORSHIP_UNAVAILABLE",
               "CONFIRMATION_SUBMISSION_PENDING"].includes(code) });
-        }
-      });
-    }
-    for (const [name, action, description, readOnly] of [
-      ["daski_set_order_notification", "notification-set", "Set and verify an HTTPS callback for one order.", false],
-      ["daski_get_order_notification", "notification-get", "Read the notification state for one order.", true],
-      ["daski_delete_order_notification", "notification-delete", "Delete the notification callback for one order.", false],
-    ] as const) {
-      server.registerTool(name, {
-        description: `${description} A fresh payer order-action signature is required.`,
-        inputSchema: actionInputSchema,
-        annotations: { title: description, readOnlyHint: readOnly, destructiveHint: !readOnly,
-          idempotentHint: readOnly, openWorldHint: action === "notification-set" },
-      }, async (args) => {
-        const request = args.request ?? {};
-        try {
-          if (!args.authorization) return mcpJson({ authorizationRequired: true,
-            authorizationType: "OrderActionAuthorizationV1",
-            challenge: await service.issueActionChallenge({ handle: args.orderHandle, action, request }) });
-          return mcpJson(await service.performAction({ handle: args.orderHandle, action, request,
-            authorization: args.authorization as never }));
-        } catch {
-          return mcpError({ code: "ORDER_NOTIFICATION_REJECTED",
-            message: "The order notification request was rejected", retryable: false });
         }
       });
     }

@@ -37,7 +37,7 @@ export async function finalizeReputationOperation(args: {
     if (intent.operation === "attest-confirmation") {
       const uid = attestationUid(args.receipt, args.easAddress);
       const uidBytes = Buffer.from(uid.slice(2), "hex");
-      const applied = await client.query(
+      await client.query(
         `INSERT INTO standard_reputation_confirmations
           (order_id,order_key,current_uid,confirmation,transitions_used,finalized_block,finalized_block_hash)
          VALUES ($1,$2,$3,$4,$5,$6,$7)
@@ -54,22 +54,9 @@ export async function finalizeReputationOperation(args: {
           intent.confirmation, intent.transitionsUsed + 1, args.receipt.blockNumber.toString(),
           args.receipt.blockHash],
       );
-      if (applied.rowCount === 1) {
-        await client.query(
-          `INSERT INTO standard_reputation_mirrors
-            (order_id,desired_revision,desired_confirmation,desired_uid,state,next_attempt_at)
-           VALUES ($1,$2,$3,$4,'pending',now())
-           ON CONFLICT (order_id) DO UPDATE SET desired_revision=EXCLUDED.desired_revision,
-             desired_confirmation=EXCLUDED.desired_confirmation,desired_uid=EXCLUDED.desired_uid,
-             state=CASE WHEN standard_reputation_mirrors.state='broadcast' THEN 'broadcast' ELSE 'pending' END,
-             next_attempt_at=CASE WHEN standard_reputation_mirrors.state='broadcast'
-               THEN standard_reputation_mirrors.next_attempt_at ELSE now() END,updated_at=now()`,
-          [args.operation.order_id, intent.transitionsUsed + 1, intent.confirmation, uidBytes],
-        );
-      }
       result = { attestationUid: uid, confirmation: intent.confirmation };
     } else if (intent.operation === "revoke-confirmation") {
-      const applied = await client.query(
+      await client.query(
         `UPDATE standard_reputation_confirmations SET current_uid=NULL,confirmation='Pending',
            transitions_used=$2,finalized_block=$3,finalized_block_hash=$4,updated_at=now()
          WHERE order_id=$1 AND current_uid=$5 AND transitions_used=$2-1
@@ -77,19 +64,6 @@ export async function finalizeReputationOperation(args: {
         [args.operation.order_id, intent.transitionsUsed + 1, args.receipt.blockNumber.toString(),
           args.receipt.blockHash, Buffer.from(intent.request.data.uid.slice(2), "hex")],
       );
-      if (applied.rowCount === 1) {
-        await client.query(
-          `INSERT INTO standard_reputation_mirrors
-            (order_id,desired_revision,desired_confirmation,desired_uid,state,next_attempt_at)
-           VALUES ($1,$2,NULL,NULL,'pending',now())
-           ON CONFLICT (order_id) DO UPDATE SET desired_revision=EXCLUDED.desired_revision,
-             desired_confirmation=NULL,desired_uid=NULL,
-             state=CASE WHEN standard_reputation_mirrors.state='broadcast' THEN 'broadcast' ELSE 'pending' END,
-             next_attempt_at=CASE WHEN standard_reputation_mirrors.state='broadcast'
-               THEN standard_reputation_mirrors.next_attempt_at ELSE now() END,updated_at=now()`,
-          [args.operation.order_id, intent.transitionsUsed + 1],
-        );
-      }
       result = { revokedUid: intent.request.data.uid, confirmation: "Pending" };
     }
     await client.query(

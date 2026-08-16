@@ -9,11 +9,11 @@ CREATE UNIQUE INDEX standard_orders_provider_task_unique_idx
   ON standard_orders (provider_agent_id, provider_task_id)
   WHERE provider_task_id IS NOT NULL;
 
--- A release event covers an interval of orders, while each deposit and refund
--- transfer funds exactly one order under the admitted profile.
+-- A release event covers an interval of orders, while each deposit funds
+-- exactly one order under the admitted profile.
 CREATE UNIQUE INDEX standard_chain_evidence_locator_unique_idx
   ON standard_chain_evidence (chain_id, lower(transaction_hash), log_index)
-  WHERE evidence_kind IN ('deposit', 'refund');
+  WHERE evidence_kind = 'deposit';
 
 CREATE UNIQUE INDEX standard_settlement_attempts_tx_unique_idx
   ON standard_settlement_attempts (lower(settlement_tx_hash))

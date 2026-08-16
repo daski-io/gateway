@@ -7,11 +7,8 @@ import type { StandardOrderRecord } from "./types.js";
 interface RecoveryOptions {
   config: StandardRailConfig;
   store: StandardRailStore;
-  refund(order: StandardOrderRecord): Promise<void>;
   resumePaid(order: StandardOrderRecord): Promise<void>;
-  releaseExposure(order: StandardOrderRecord): Promise<"released" | "legal_hold">;
-  cleanupUploads(): Promise<void>;
-  recordRecoveryApprovalExpiry(order: StandardOrderRecord): Promise<void>;
+  cleanup(): Promise<void>;
 }
 
 export class StandardRailRecoveryWorker {
@@ -42,7 +39,7 @@ export class StandardRailRecoveryWorker {
   }
 
   private async runBatch(): Promise<void> {
-    await this.options.cleanupUploads();
+    await this.options.cleanup();
     const skipped: string[] = [];
     for (let count = 0; count < 50; count += 1) {
       const order = await this.options.store.leaseRecoverable(
@@ -52,20 +49,6 @@ export class StandardRailRecoveryWorker {
       );
       if (!order) return;
       try {
-        const recoveryCutoff = Math.min(
-          this.options.config.manifest.activeRailProfile.payload.recoveryValidBefore,
-          this.options.config.manifest.runtimeRelease.payload.recoveryValidBefore,
-        ) * 1_000;
-        if (Date.now() >= recoveryCutoff) {
-          await this.options.recordRecoveryApprovalExpiry(order);
-          logger.error("standard-rail recovery approval expired", {
-            orderId: order.orderId,
-            state: order.state,
-          });
-          await this.options.store.releaseLease(order.orderId, this.workerId, order.leaseFence);
-          skipped.push(order.orderId);
-          continue;
-        }
         if (!this.isDue(order)) {
           await this.options.store.releaseLease(order.orderId, this.workerId, order.leaseFence);
           skipped.push(order.orderId);
@@ -104,23 +87,17 @@ export class StandardRailRecoveryWorker {
         case "DISPATCHED":
         case "INPUT_REQUIRED": return 30;
         case "PROVIDER_FAILED": return 30;
-        case "FULFILLED": return listing.refundPolicy.requestDeadlineSeconds;
-        case "REFUND_DUE":
-        case "REFUND_RESERVED":
-        case "REFUND_INVOKED":
-        case "REFUND_AMBIGUOUS": return 30;
-        default: return policy.refundSeconds;
+        default: return policy.fulfillmentSeconds;
       }
     })();
-    const policyCutoff = this.options.config.manifest.activeRailProfile.payload.recoveryValidBefore * 1_000;
     const dueAt = order.updatedAt.getTime() + seconds * 1_000;
-    return Date.now() >= Math.min(dueAt, policyCutoff);
+    return Date.now() >= dueAt;
   }
 
   private async recover(order: StandardOrderRecord): Promise<void> {
     switch (order.state) {
       case "CHALLENGE_ISSUED":
-        await this.options.store.transition(order, "NO_REFUND", "signed_deadline_no_captured_payment");
+        await this.options.store.transition(order, "NOT_SETTLED", "signed_deadline_no_captured_payment");
         await this.options.store.releaseCapacity(order.orderId);
         return;
       case "SETTLEMENT_FAILED":
@@ -141,25 +118,9 @@ export class StandardRailRecoveryWorker {
         return;
       case "PROVIDER_FAILED":
         await this.options.store.releaseCapacity(order.orderId);
-        await this.options.store.transition(order, "REFUND_DUE", "provider_failure_refund_due");
         return;
       case "FULFILLED":
-        if (await this.options.releaseExposure(order) === "released") {
-          await this.options.store.transition(order, "NO_REFUND", "buyer_refund_window_elapsed");
-        } else {
-          await this.options.store.transition(
-            order,
-            "LEGAL_HOLD",
-            "provider_exposure_release_deadline_elapsed",
-          );
-          await this.options.store.releaseCapacity(order.orderId);
-        }
-        return;
-      case "REFUND_DUE":
-      case "REFUND_RESERVED":
-      case "REFUND_INVOKED":
-      case "REFUND_AMBIGUOUS":
-        await this.options.refund(order);
+        await this.options.store.releaseCapacity(order.orderId);
         return;
       default:
         await this.options.store.releaseLease(order.orderId, this.workerId, order.leaseFence);
