@@ -1,7 +1,7 @@
 import { generateJwt } from "@coinbase/cdp-sdk/auth";
 import { lookup } from "node:dns/promises";
 import { request as httpsRequest } from "node:https";
-import { isIP } from "node:net";
+import { isIP, type LookupFunction } from "node:net";
 import { Readable } from "node:stream";
 import type {
   PaymentPayload,
@@ -185,9 +185,7 @@ function pinnedFetch(
       method: init.method,
       headers: init.headers,
       signal: init.signal,
-      lookup: (_hostname, _options, callback) => {
-        callback(null, selected.address, selected.family === 6 ? 6 : 4);
-      },
+      lookup: createPinnedLookup(selected),
     }, (incoming) => {
       const headers = new Headers();
       for (const [name, value] of Object.entries(incoming.headers)) {
@@ -205,4 +203,15 @@ function pinnedFetch(
     if (init.body !== undefined) request.write(init.body);
     request.end();
   });
+}
+
+export function createPinnedLookup(selected: { address: string; family: number }): LookupFunction {
+  const family = selected.family === 6 ? 6 : 4;
+  return (_hostname, options, callback) => {
+    if (options.all) {
+      callback(null, [{ address: selected.address, family }]);
+      return;
+    }
+    callback(null, selected.address, family);
+  };
 }
