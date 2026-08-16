@@ -69,11 +69,11 @@ core groups are:
   facilitator profile in `STANDARD_RAIL_MANIFEST_JSON`.
 - Evidence and screening: `BASE_RPC_URL`, optional `BASE_RPC_FALLBACK_URLS`, and
   `SANCTIONS_ORACLE_ADDRESS`.
-- Signing roles: `FACILITATOR_PRIVATE_KEY` for protocol artifacts
-  and `REPUTATION_RELAYER_PRIVATE_KEY` for gas-funded reputation writes.
+- Signing role: `FACILITATOR_PRIVATE_KEY` for protocol artifacts and
+  gas-funded Testnet reputation writes.
 
 The runtime rejects mock chain mode, unknown USDC domains, missing standard
-artifacts, signer-role overlap, and configuration that does not match the
+artifacts and configuration that does not match the
 signed marketplace manifest.
 
 ## Verification

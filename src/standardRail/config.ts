@@ -161,10 +161,6 @@ export function loadStandardRailConfig(
   const manifest = parseManifest(required(env, "STANDARD_RAIL_MANIFEST_JSON"));
   const protocolPrivateKey = privateKey(env, "FACILITATOR_PRIVATE_KEY");
   const protocolAddress = privateKeyToAccount(protocolPrivateKey).address;
-  const relayerPrivateKey = privateKey(env, "REPUTATION_RELAYER_PRIVATE_KEY");
-  if (privateKeyToAccount(relayerPrivateKey).address === protocolAddress) {
-    throw new Error("The protocol signer and reputation relayer must use different keys");
-  }
   const encryptionHex = required(env, "STANDARD_RAIL_ENCRYPTION_KEY");
   if (!/^[0-9a-fA-F]{64}$/.test(encryptionHex)) {
     throw new Error("STANDARD_RAIL_ENCRYPTION_KEY must be 32 bytes of hex without 0x");
@@ -221,7 +217,7 @@ export function loadStandardRailConfig(
     reputationConfirmationSchemaUid: hash(env, "EAS_CONFIRMATION_SCHEMA_UID"),
     reputationRetryDelaysSeconds: DEFAULTS.reputationRetryDelaysSeconds,
     reputationOrderPrivateKey: protocolPrivateKey,
-    reputationRelayerPrivateKey: relayerPrivateKey,
+    reputationRelayerPrivateKey: protocolPrivateKey,
     reputationPermitTtlSeconds: integer(env, "REPUTATION_PERMIT_TTL_SECONDS", 900),
     reputationMaxFeePerGasWei: maxFee,
     reputationMaxPriorityFeePerGasWei: priorityFee,

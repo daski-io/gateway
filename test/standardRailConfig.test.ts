@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import { loadStandardRailConfig } from "../src/standardRail/config.js";
 
 const protocolKey = `0x${"11".repeat(32)}`;
-const relayerKey = `0x${"22".repeat(32)}`;
 
 function standardEnv(): NodeJS.ProcessEnv {
   return {
@@ -11,7 +10,6 @@ function standardEnv(): NodeJS.ProcessEnv {
     CDP_API_KEY_ID: "cdp-key-id",
     CDP_API_KEY_SECRET: "cdp-key-secret",
     FACILITATOR_PRIVATE_KEY: protocolKey,
-    REPUTATION_RELAYER_PRIVATE_KEY: relayerKey,
     STANDARD_RAIL_ENCRYPTION_KEY: "33".repeat(32),
     BASE_RPC_URL: "https://primary-rpc.example.test",
     BASE_RPC_FALLBACK_URLS: "https://fallback-rpc.example.test",
@@ -31,6 +29,7 @@ describe("standard rail environment contract", () => {
 
     expect(config.quotePrivateKey).toBe(protocolKey);
     expect(config.receiptPrivateKey).toBe(protocolKey);
+    expect(config.reputationRelayerPrivateKey).toBe(protocolKey);
     expect(config.evidenceRpcUrls).toEqual([
       "https://primary-rpc.example.test",
       "https://fallback-rpc.example.test",
