@@ -1,7 +1,6 @@
 import {
   createPublicClient,
   createWalletClient,
-  decodeFunctionData,
   encodeAbiParameters,
   encodeFunctionData,
   erc20Abi,
@@ -21,6 +20,7 @@ import { privateKeyToAccount } from "viem/accounts";
 import type { StandardRailConfig } from "./config.js";
 import type { PaymentPayload } from "@x402/core/types";
 import { canonicalHash } from "./canonical.js";
+import { decodeSettlementCalldata } from "./settlementCalldata.js";
 import type { ProviderIdentitySnapshotV1, StandardListing, StandardOrderRecord } from "./types.js";
 
 const transferAuthorizationAbi = parseAbi([
@@ -378,6 +378,14 @@ export class StandardChainEvidence {
     paymentNonce: Hex;
     payment: PaymentPayload;
   }): Promise<EvidenceResult> {
+    const finalityDeadline = args.order.updatedAt.getTime() +
+      args.listing.deadlinePolicy.settlementEvidenceSeconds * 1_000;
+    await Promise.all(this.clients.map(({ client }) => client.waitForTransactionReceipt({
+      hash: args.transactionHash,
+      confirmations: this.config.finalityConfirmations,
+      pollingInterval: 1_000,
+      timeout: Math.max(1, finalityDeadline - Date.now()),
+    })));
     await this.assertSourceLag();
     const observations = await Promise.all(this.clients.map(async ({ client, host }) => {
       const [receipt, transaction, head] = await Promise.all([
@@ -392,34 +400,28 @@ export class StandardChainEvidence {
       if (!transaction.to || getAddress(transaction.to) !== getAddress(args.listing.commitment.payload.canonicalToken)) {
         throw new Error("Settlement transaction target is not canonical USDC");
       }
-      const call = decodeFunctionData({ abi: transferAuthorizationAbi, data: transaction.input });
-      if (call.functionName !== "transferWithAuthorization") throw new Error("Unexpected settlement calldata");
-      const [from, to, value, validAfter, validBefore, nonce, signature] = call.args;
-      const exactInput = encodeFunctionData({
-        abi: transferAuthorizationAbi,
-        functionName: "transferWithAuthorization",
-        args: [from, to, value, validAfter, validBefore, nonce, signature],
-      });
+      const call = decodeSettlementCalldata(transaction.input);
       const expectedAuthorization = args.payment.payload.authorization as Record<string, unknown>;
       const expectedSignature = args.payment.payload.signature;
       if (
-        getAddress(from) !== getAddress(args.order.payer!) ||
-        getAddress(to) !== getAddress(args.listing.manifest.payload.splitterAddress) ||
-        value !== BigInt(args.order.grossAmount) || nonce !== args.paymentNonce ||
-        validAfter !== BigInt(String(expectedAuthorization.validAfter)) ||
-        validBefore !== BigInt(String(expectedAuthorization.validBefore)) ||
-        typeof expectedSignature !== "string" || signature.toLowerCase() !== expectedSignature.toLowerCase() ||
-        transaction.value !== 0n || transaction.input.toLowerCase() !== exactInput.toLowerCase()
+        getAddress(call.from) !== getAddress(args.order.payer!) ||
+        getAddress(call.to) !== getAddress(args.listing.manifest.payload.splitterAddress) ||
+        call.value !== BigInt(args.order.grossAmount) || call.nonce !== args.paymentNonce ||
+        call.validAfter !== BigInt(String(expectedAuthorization.validAfter)) ||
+        call.validBefore !== BigInt(String(expectedAuthorization.validBefore)) ||
+        typeof expectedSignature !== "string" || call.signature.toLowerCase() !== expectedSignature.toLowerCase() ||
+        transaction.value !== 0n ||
+        !transaction.input.toLowerCase().startsWith(call.canonicalPrefix.toLowerCase())
       ) throw new Error("Settlement calldata does not match the order");
       const used = parseEventLogs({ abi: transferAuthorizationAbi, logs: receipt.logs, eventName: "AuthorizationUsed" })
         .filter((event) => event.address.toLowerCase() === args.listing.commitment.payload.canonicalToken.toLowerCase());
       const transfers = parseEventLogs({ abi: erc20Abi, logs: receipt.logs, eventName: "Transfer" });
-      if (used.length !== 1 || used[0]!.args.authorizer !== from || used[0]!.args.nonce !== nonce) {
+      if (used.length !== 1 || used[0]!.args.authorizer !== call.from || used[0]!.args.nonce !== call.nonce) {
         throw new Error("AuthorizationUsed evidence is missing or ambiguous");
       }
       const matching = transfers.filter((event) =>
         event.address.toLowerCase() === args.listing.commitment.payload.canonicalToken.toLowerCase() &&
-        event.args.from === from && event.args.to === to && event.args.value === value,
+        event.args.from === call.from && event.args.to === call.to && event.args.value === call.value,
       );
       if (matching.length !== 1) throw new Error("Transfer evidence is missing or ambiguous");
       return {
