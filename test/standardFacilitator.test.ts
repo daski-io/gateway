@@ -1,5 +1,44 @@
 import { describe, expect, it, vi } from "vitest";
-import { createPinnedLookup } from "../src/standardRail/facilitator.js";
+import {
+  advertisesExactEip3009,
+  createPinnedLookup,
+} from "../src/standardRail/facilitator.js";
+
+describe("standard facilitator capabilities", () => {
+  it("accepts the generic exact rail returned by CDP", () => {
+    expect(advertisesExactEip3009({
+      kinds: [{ network: "eip155:84532", scheme: "exact", x402Version: 2 }],
+      extensions: [],
+      signers: {},
+    }, "eip155:84532")).toBe(true);
+  });
+
+  it("accepts an explicitly advertised EIP-3009 rail", () => {
+    expect(advertisesExactEip3009({
+      kinds: [{
+        network: "eip155:84532",
+        scheme: "exact",
+        x402Version: 2,
+        extra: { assetTransferMethod: "eip3009" },
+      }],
+      extensions: [],
+      signers: {},
+    }, "eip155:84532")).toBe(true);
+  });
+
+  it("rejects a rail that only advertises another transfer method", () => {
+    expect(advertisesExactEip3009({
+      kinds: [{
+        network: "eip155:84532",
+        scheme: "exact",
+        x402Version: 2,
+        extra: { assetTransferMethod: "permit2" },
+      }],
+      extensions: [],
+      signers: {},
+    }, "eip155:84532")).toBe(false);
+  });
+});
 
 describe("standard facilitator DNS pinning", () => {
   it("returns an address array when Node requests all lookup results", () => {

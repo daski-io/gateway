@@ -34,12 +34,8 @@ export class CdpStandardFacilitator implements StandardFacilitator {
 
   async assertSupported(network: string): Promise<void> {
     const supported = await this.call<SupportedResponse>("supported", "GET");
-    const exact = supported.kinds.filter(
-      (kind) => kind.x402Version === 2 && kind.scheme === "exact" && kind.network === network &&
-        kind.extra?.assetTransferMethod === "eip3009",
-    );
-    if (exact.length !== 1) {
-      throw new Error(`Selected facilitator does not advertise one exact EIP-3009 ${network} rail`);
+    if (!advertisesExactEip3009(supported, network)) {
+      throw new Error(`Selected facilitator does not advertise an exact EIP-3009 ${network} rail`);
     }
   }
 
@@ -173,6 +169,13 @@ export class CdpStandardFacilitator implements StandardFacilitator {
       (response.payer !== undefined && typeof response.payer !== "string")
     ) throw new Error("Facilitator settle response is malformed");
   }
+}
+
+export function advertisesExactEip3009(supported: SupportedResponse, network: string): boolean {
+  return supported.kinds.some((kind) =>
+    kind.x402Version === 2 && kind.scheme === "exact" && kind.network === network &&
+      (kind.extra?.assetTransferMethod === undefined || kind.extra.assetTransferMethod === "eip3009"),
+  );
 }
 
 function pinnedFetch(
