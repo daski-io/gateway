@@ -18,7 +18,7 @@ import type { Pool } from "../db/pool.js";
 import { assertNoDuplicateJsonKeys, canonicalHash, providerIdentitySnapshotHash } from "./canonical.js";
 import type { StandardRailConfig } from "./config.js";
 import type { StandardChainEvidence } from "./evidence.js";
-import type { StandardFacilitator } from "./facilitator.js";
+import { createPinnedLookup, type StandardFacilitator } from "./facilitator.js";
 import { StandardRailJournal } from "./journal.js";
 import {
   paymentRequired,
@@ -158,9 +158,10 @@ export async function pinnedProviderFetch(
       method: init.method,
       headers,
       signal: init.signal ?? undefined,
-      lookup: (_hostname, _options, callback) => {
-        callback(null, selected.address, selected.family === 6 ? 6 : 4);
-      },
+      lookup: createPinnedLookup({
+        address: selected.address,
+        family: selected.family === 6 ? 6 : 4,
+      }),
     }, (incoming) => {
       const responseHeaders = new Headers();
       for (const [name, value] of Object.entries(incoming.headers)) {
