@@ -126,6 +126,46 @@ describe("standard rail hardened mechanisms", () => {
       .rejects.toThrow("Provider identity changed after listing admission");
   });
 
+  it("serializes finalized identity reads across evidence sources", async () => {
+    const owner = "0x1111111111111111111111111111111111111111";
+    const wallet = "0x2222222222222222222222222222222222222222";
+    const payee = "0x3333333333333333333333333333333333333333";
+    let active = 0;
+    let maximumActive = 0;
+    const tracked = async <T>(value: T): Promise<T> => {
+      active += 1;
+      maximumActive = Math.max(maximumActive, active);
+      await Promise.resolve();
+      active -= 1;
+      return value;
+    };
+    const client = {
+      getBlock: () => tracked({ hash: hash("9") }),
+      readContract: ({ functionName }: { functionName: string }) => {
+        if (functionName === "ownerOf") return tracked(owner);
+        if (functionName === "getAgentWallet") return tracked(wallet);
+        if (functionName === "getProvider") return tracked({ agentId: 1n, isActive: true });
+        return tracked([1n, true, owner, wallet, payee] as const);
+      },
+    };
+    const evidence = new StandardChainEvidence({
+      evidenceRpcUrls: ["https://rpc-a.example", "https://rpc-b.example"],
+      releasePrivateKey: privateKey,
+    } as unknown as StandardRailConfig, baseSepolia);
+    Object.assign(evidence as unknown as { clients: unknown[] }, {
+      clients: [{ client }, { client }],
+    });
+    await expect(evidence.verifyProviderIdentitySnapshot({
+      providerAgentId: "1", serviceId: hash("8"),
+      identityRegistry: "0x4444444444444444444444444444444444444444",
+      providerRegistry: "0x5555555555555555555555555555555555555555",
+      serviceRegistry: "0x6666666666666666666666666666666666666666",
+      providerOwner: owner, providerAgentWallet: wallet, providerPayee: payee,
+      blockNumber: "10", blockHash: hash("9"),
+    })).resolves.toBeUndefined();
+    expect(maximumActive).toBe(1);
+  });
+
   it("resumes a persisted reputation transaction after restart without preparing another", async () => {
     const transactionHash = hash("a");
     let operationSelected = false;

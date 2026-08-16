@@ -308,17 +308,17 @@ export class StandardRailService {
       this.railConfig.manifest.facilitatorProfile.payload.baseUrl !==
         this.railConfig.facilitatorBaseUrl
     ) throw new Error("Standard-rail manifest does not match this runtime");
-    await Promise.all(this.railConfig.manifest.listings.map(
-      (listing) => this.evidence.verifyListingDeployment(listing, this.appConfig.chainId),
-    ));
-    await Promise.all(this.railConfig.manifest.providerIdentitySnapshots.map(async (snapshot) => {
+    for (const listing of this.railConfig.manifest.listings) {
+      await this.evidence.verifyListingDeployment(listing, this.appConfig.chainId);
+    }
+    for (const snapshot of this.railConfig.manifest.providerIdentitySnapshots) {
       if (
         getAddress(snapshot.payload.identityRegistry) !== getAddress(this.appConfig.marketplaceContracts.identityRegistry) ||
         getAddress(snapshot.payload.providerRegistry) !== getAddress(this.appConfig.marketplaceContracts.providerRegistry) ||
         getAddress(snapshot.payload.serviceRegistry) !== getAddress(this.appConfig.marketplaceContracts.serviceRegistry)
       ) throw new Error("Provider identity snapshot registry domain mismatch");
       await this.evidence.verifyProviderIdentitySnapshot(snapshot.payload);
-    }));
+    }
     await this.store.admitManifest(this.railConfig.manifest);
     await this.assetFederation.activateAdmissions();
     await this.refreshDependencyReadiness();

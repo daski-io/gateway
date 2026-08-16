@@ -129,20 +129,27 @@ export class StandardChainEvidence {
 
   async verifyProviderIdentitySnapshot(snapshot: ProviderIdentitySnapshotV1): Promise<void> {
     const blockNumber = BigInt(snapshot.blockNumber);
-    const observations = await Promise.all(this.clients.map(async ({ client }) => {
-      const [block, owner, agentWallet, provider, settlement] = await Promise.all([
-        client.getBlock({ blockNumber }),
-        client.readContract({ address: getAddress(snapshot.identityRegistry), abi: identitySnapshotAbi,
-          functionName: "ownerOf", args: [BigInt(snapshot.providerAgentId)], blockNumber }),
-        client.readContract({ address: getAddress(snapshot.identityRegistry), abi: identitySnapshotAbi,
-          functionName: "getAgentWallet", args: [BigInt(snapshot.providerAgentId)], blockNumber }),
-        client.readContract({ address: getAddress(snapshot.providerRegistry), abi: providerSnapshotAbi,
-          functionName: "getProvider", args: [BigInt(snapshot.providerAgentId)], blockNumber }),
-        client.readContract({ address: getAddress(snapshot.serviceRegistry), abi: serviceSnapshotAbi,
-          functionName: "resolveSettlement", args: [snapshot.serviceId], blockNumber }),
-      ]);
-      return { block, owner, agentWallet, provider, settlement };
-    }));
+    const observations = [];
+    for (const { client } of this.clients) {
+      const block = await client.getBlock({ blockNumber });
+      const owner = await client.readContract({
+        address: getAddress(snapshot.identityRegistry), abi: identitySnapshotAbi,
+        functionName: "ownerOf", args: [BigInt(snapshot.providerAgentId)], blockNumber,
+      });
+      const agentWallet = await client.readContract({
+        address: getAddress(snapshot.identityRegistry), abi: identitySnapshotAbi,
+        functionName: "getAgentWallet", args: [BigInt(snapshot.providerAgentId)], blockNumber,
+      });
+      const provider = await client.readContract({
+        address: getAddress(snapshot.providerRegistry), abi: providerSnapshotAbi,
+        functionName: "getProvider", args: [BigInt(snapshot.providerAgentId)], blockNumber,
+      });
+      const settlement = await client.readContract({
+        address: getAddress(snapshot.serviceRegistry), abi: serviceSnapshotAbi,
+        functionName: "resolveSettlement", args: [snapshot.serviceId], blockNumber,
+      });
+      observations.push({ block, owner, agentWallet, provider, settlement });
+    }
     for (const observation of observations) {
       const [providerAgentId, active, providerOwner, providerWallet, payee] = observation.settlement;
       if (
@@ -259,22 +266,40 @@ export class StandardChainEvidence {
   async verifyListingDeployment(listing: StandardListing, chainId: number): Promise<void> {
     const splitter = getAddress(listing.manifest.payload.splitterAddress);
     const expectedCommitmentHash = canonicalHash(listing.commitment);
-    const observations = await Promise.all(this.clients.map(async ({ client, host }) => {
-      const [code, receipt, head, canonicalChainId, token, payee, receiver, bps, policyHash,
-        outcomeHash, listingEpoch, commitmentHash] = await Promise.all([
-        client.getBytecode({ address: splitter }),
-        client.getTransactionReceipt({ hash: listing.manifest.payload.splitterDeploymentTransaction }),
-        client.getBlockNumber(),
-        client.readContract({ address: splitter, abi: splitterAbi, functionName: "canonicalChainId" }),
-        client.readContract({ address: splitter, abi: splitterAbi, functionName: "canonicalToken" }),
-        client.readContract({ address: splitter, abi: splitterAbi, functionName: "providerPayee" }),
-        client.readContract({ address: splitter, abi: splitterAbi, functionName: "daskiCommissionReceiver" }),
-        client.readContract({ address: splitter, abi: splitterAbi, functionName: "commissionBps" }),
-        client.readContract({ address: splitter, abi: splitterAbi, functionName: "policyVersionHash" }),
-        client.readContract({ address: splitter, abi: splitterAbi, functionName: "outcomeIdHash" }),
-        client.readContract({ address: splitter, abi: splitterAbi, functionName: "listingEpoch" }),
-        client.readContract({ address: splitter, abi: splitterAbi, functionName: "listingCommitmentHash" }),
-      ]);
+    const observations: Array<{ source: string; hash: Hex }> = [];
+    for (const { client, host } of this.clients) {
+      const code = await client.getBytecode({ address: splitter });
+      const receipt = await client.getTransactionReceipt({
+        hash: listing.manifest.payload.splitterDeploymentTransaction,
+      });
+      const head = await client.getBlockNumber();
+      const canonicalChainId = await client.readContract({
+        address: splitter, abi: splitterAbi, functionName: "canonicalChainId",
+      });
+      const token = await client.readContract({
+        address: splitter, abi: splitterAbi, functionName: "canonicalToken",
+      });
+      const payee = await client.readContract({
+        address: splitter, abi: splitterAbi, functionName: "providerPayee",
+      });
+      const receiver = await client.readContract({
+        address: splitter, abi: splitterAbi, functionName: "daskiCommissionReceiver",
+      });
+      const bps = await client.readContract({
+        address: splitter, abi: splitterAbi, functionName: "commissionBps",
+      });
+      const policyHash = await client.readContract({
+        address: splitter, abi: splitterAbi, functionName: "policyVersionHash",
+      });
+      const outcomeHash = await client.readContract({
+        address: splitter, abi: splitterAbi, functionName: "outcomeIdHash",
+      });
+      const listingEpoch = await client.readContract({
+        address: splitter, abi: splitterAbi, functionName: "listingEpoch",
+      });
+      const commitmentHash = await client.readContract({
+        address: splitter, abi: splitterAbi, functionName: "listingCommitmentHash",
+      });
       if (!code || keccak256(code) !== listing.manifest.payload.splitterRuntimeCodeHash) {
         throw new Error("Splitter runtime code does not match its listing manifest");
       }
@@ -312,13 +337,13 @@ export class StandardChainEvidence {
         event.args.listingCommitmentHash === commitmentHash,
       );
       if (deployments.length !== 1) throw new Error("Splitter factory deployment event is missing or ambiguous");
-      return { source: host, hash: canonicalHash({
+      observations.push({ source: host, hash: canonicalHash({
         codeHash: keccak256(code),
         transactionHash: receipt.transactionHash,
         blockHash: receipt.blockHash,
         immutableHash,
-      }) };
-    }));
+      }) });
+    }
     if (new Set(observations.map(({ hash }) => hash)).size !== 1) {
       throw new Error("Splitter deployment evidence sources disagree");
     }
