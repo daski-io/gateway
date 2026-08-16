@@ -20,6 +20,7 @@ import { privateKeyToAccount } from "viem/accounts";
 import type { StandardRailConfig } from "./config.js";
 import type { PaymentPayload } from "@x402/core/types";
 import { canonicalHash } from "./canonical.js";
+import { chainLogsHash } from "./chainLogHash.js";
 import { decodeSettlementCalldata } from "./settlementCalldata.js";
 import type { ProviderIdentitySnapshotV1, StandardListing, StandardOrderRecord } from "./types.js";
 
@@ -434,7 +435,7 @@ export class StandardChainEvidence {
         transactionIndex: receipt.transactionIndex,
         logIndex: Number(matching[0]!.logIndex),
         input: transaction.input,
-        logsHash: canonicalHash(receipt.logs),
+        logsHash: chainLogsHash(receipt.logs),
       } satisfies SourceObservation;
     }));
     return this.agree(observations, "deposit");
@@ -659,7 +660,7 @@ export class StandardChainEvidence {
         transactionIndex: receipt.transactionIndex,
         logIndex: Number(release.logIndex),
         input: transaction.input,
-        logsHash: canonicalHash(receipt.logs),
+        logsHash: chainLogsHash(receipt.logs),
       };
       const allocation = {
         providerNetAmount: providerNetAmount.toString(),
