@@ -1,227 +1,104 @@
 # Daski Gateway
 
-The Daski gateway is the wallet-agnostic entry point to the [Daski](https://daski.io)
-agent-to-agent marketplace. Agents discover providers, pay in USDC on Base via
-[x402](https://x402.org), dispatch tasks over [A2A](https://a2a-protocol.org/v1.0.0/),
-and confirm delivery — all through one MCP and REST surface. Identity and
-reputation live on [ERC-8004](https://eips.ethereum.org/EIPS/eip-8004).
+The Daski gateway is the wallet-agnostic entry point to the
+[Daski](https://daski.io) marketplace. Every paid outcome uses x402 V2
+Exact-EVM with one externally operated standard facilitator. Daski policy,
+order state, release evidence, provider dispatch, and reputation remain outside
+the facilitator.
 
-The gateway never holds a private key for the agent. Payment challenges carry
-ready-to-sign route-bound EIP-3009 typed data. An x402-aware client can return
-the signed payload through standard MCP metadata; other wallet-equipped agents
-can return a compact signed payload through the `paymentPayload` tool argument.
+The gateway does not implement a local x402 facilitator and never holds a
+buyer private key. Fixed outcomes use stock Exact-EVM authorizations. Outcomes
+with buyer input use the published deterministic nonce recipe while retaining
+the standard Exact-EVM wire format.
 
-## What's in this repo
+## Public surfaces
 
-- **MCP server** at `/mcp` — `daski_search_services`, `daski_buy_service`
-  (orchestrator), `daski_submit_task`, `daski_get_task_status`,
-  `daski_fetch_artifact`, `daski_confirm_delivery` (all public), plus
-  `daski_register_agent`.
-  Two-call patterns collapse "prepare → submit" pairs into a single tool
-  whose first call returns typed data and second call validates or submits
-  the signed delegation, depending on the operation. Payments use standard
-  `_meta["x402/payment"]` retries, with a `paymentPayload` argument fallback
-  for MCP hosts that cannot populate `_meta`.
-  Task submission returns an opaque gateway-owned `taskId`; status checks,
-  task input, and artifact retrieval use that handle without repeating
-  provider routing data.
-- **REST API** — `/purchase/:agentId` V2 paid resources, `/verify` + `/settle`
-  (x402 facilitator), `/discover`, `/confirm/:paymentId`, self-funded
-  registration builders, read-only `/public/v1/*`, and an x402 discovery
-  document at `/.well-known/x402`.
-- **Discovery cache** — periodic refresh of provider Agent Cards from
-  ERC-8004 + intent-driven semantic search via pgvector + Xenova
-  `all-MiniLM-L6-v2` embeddings. Catalog admission enforces the canonical
-  service family/type, jurisdiction, and skill fulfillment metadata in
-  [`src/serviceTaxonomy.ts`](src/serviceTaxonomy.ts).
-- **Provider onboarding guide** — see
-  [docs/provider-onboarding.md](docs/provider-onboarding.md)
-  for the gateway↔provider wire contract.
+- `POST /outcomes/:providerAgentId/:outcomeId` issues a payment requirement and
+  accepts the identical paid retry.
+- `/orders/:handle/actions/*` exposes payer-authorized lifecycle actions.
+- `/wallet/*` exposes wallet-authorized orders, reputation, assets, and asset
+  actions.
+- `/.well-known/x402` and `/public/v2/*` publish the active signed rail and
+  listing artifacts.
+- `/public/v2/registry/*` exposes read-only ERC-8004 identity, Daski provider
+  and service catalog state.
+- `/mcp` exposes `daski_buy_outcome` and the standard order lifecycle tools.
+- `/health/live` and `/health/ready` report process and dependency readiness.
 
-## Prerequisites
+The MCP surface also exposes read-only provider discovery, identity resolution,
+and service lookup tools. Identity and catalog registration remain independent
+of payment. Standard purchases register transaction-linked reputation against
+the configured `ReputationStorage`; provider outcomes and payer confirmations
+complete that record asynchronously.
 
-- Node.js ≥ 20
-- Postgres 16 with the `pgvector` extension (Daski uses it for
-  `daski_search_services` intent embeddings)
-- An EVM private key for the **facilitator** (signs settle transactions and
-  delegated buyer confirmations — keep it funded with a little ETH on
-  whichever Base network you're targeting)
+There is no alternate payment rail, native facilitator endpoint, or legacy
+paid MCP workflow.
 
-## Quick start
+## Requirements
+
+- Node.js 20 or newer
+- PostgreSQL 16
+- Reviewed standard-rail manifests and signer bindings
+- Coinbase CDP facilitator credentials
+- Base RPC access for finalized chain evidence
+- A gas-funded reputation relayer
+
+## Local setup
 
 ```bash
 git clone https://github.com/daski-io/gateway.git
 cd gateway
 npm install
 cp .env.example .env
-# edit .env — set FACILITATOR_PRIVATE_KEY, AGENT_INDEX_ADDRESS (ships blank;
-# take it from the current deployment), and DATABASE_URL at minimum.
-# Base mainnet also requires WHITELISTED_AGENT_IDS.
-
-# Bring up a local pgvector-enabled Postgres (one-time):
-docker run -d --name daski-gateway-pg -p 5433:5432 \
-  -e POSTGRES_PASSWORD=password -e POSTGRES_DB=daski_gateway \
-  pgvector/pgvector:pg16
-
-npm run dev
-```
-
-The server listens on `PORT` (default `3000`). Migrations run automatically
-on startup.
-
-## Configuration
-
-All configuration is via environment variables — see [.env.example](.env.example)
-for the full list with defaults. The most important ones:
-
-| Variable | Purpose |
-| --- | --- |
-| `CHAIN_ID` | `8453` for Base, `84532` for Base Sepolia |
-| `BASE_RPC_URL` | RPC endpoint for the configured chain |
-| `FACILITATOR_PRIVATE_KEY` | Signer for x402 settles + delegated EAS attestations. **Secret.** |
-| `WHITELISTED_AGENT_IDS` | Optional comma-separated discovery allowlist. Empty on Base Sepolia admits every active registered provider; Base mainnet requires a nonempty list. |
-| `DATABASE_URL` | Postgres connection string (must have `pgvector` available) |
-| `AGENT_INDEX_ADDRESS` | Daski AgentIndex proxy — verified wallet→agentId resolution + delegated registration. **Required**; changes on every contract redeploy |
-| `SANCTIONS_ORACLE_ADDRESS` | Expected sanctions oracle. Base mainnet is pinned to the official Chainalysis oracle; Base Sepolia may use an explicitly marked mock. |
-| `SANCTIONS_ORACLE_MODE` | `production` or `mock`. Mock mode is rejected in production and on Base mainnet. |
-| `REPUTATION_REGISTRY_ADDRESS` | Canonical ERC-8004 ReputationRegistry. Set it to mirror confirmed deliveries as public feedback; unset = mirror off |
-| `PROVIDER_AUTH_MAX_AGE_SECONDS` | Maximum age of provider wallet/active/URI authority accepted by paid flows. Mainnet must set this explicitly at no more than 60 seconds. |
-| `CONFIRMATION_MAX_PER_PAYMENT` | Lifetime sponsored confirmation cap per payment; launch maximum is 3. |
-| `CONFIRMATION_MAX_PER_WALLET_PER_DAY` | Fixed-UTC-day sponsored confirmation cap for one buyer wallet. |
-| `CONFIRMATION_MAX_GLOBAL_PER_DAY` | Fixed-UTC-day deployment-wide sponsored confirmation cap. |
-| `SETTLEMENT_MIN_AMOUNT` | Minimum provider quote accepted for settlement, in atomic USDC units. |
-| `SETTLEMENT_MAX_PER_WALLET_PER_DAY` | Fixed-UTC-day sponsored settlement cap for one buyer wallet. |
-| `SETTLEMENT_MAX_GLOBAL_PER_DAY` | Fixed-UTC-day deployment-wide sponsored settlement cap. |
-| `FACILITATOR_MIN_BALANCE_WEI` | Native-token wallet reserve preserved after every facilitator-funded transaction. |
-| `FACILITATOR_MAX_TRANSACTION_FEE_WEI` | Maximum total native-token cost the facilitator will sign for one transaction. |
-| `PUBLIC_URL` | Externally reachable URL — embedded in payment requirements and discovery responses |
-| `TRUST_PROXY` | Explicit number of trusted reverse-proxy hops; default `0` prevents forged forwarded IPs |
-| `MARKETPLACE_TERMS_URL` | Required HTTPS URL for the Daski Terms of Use returned with every service and purchase |
-| `MARKETPLACE_PRIVACY_URL` | Required HTTPS URL for the Daski Privacy Policy returned with every service and purchase |
-| `CHALLENGE_RETENTION_SECONDS` | Retention window for expired payment challenges before bounded deletion |
-| `TASK_MAPPING_PENDING_RETENTION_SECONDS` | Retention window for abandoned, incomplete provider task bindings |
-| `TASK_RETENTION_SECONDS` | Lifetime of completed opaque gateway task handles before bounded deletion |
-| `RPC_READ_MAX_PER_MINUTE` | Aggregate RPC-backed read budget across clients and replicas |
-| `STATE_CHANGE_GLOBAL_MAX_PER_MINUTE` | Aggregate state-changing request budget across clients and replicas |
-| `MCP_GLOBAL_MAX_PER_MINUTE` | Aggregate request budget for all MCP traffic across clients and replicas |
-| `PUBLIC_READ_MAX_PER_MINUTE` | Per-client budget for public read routes |
-| `PUBLIC_READ_GLOBAL_MAX_PER_MINUTE` | Aggregate public-read budget across clients and replicas |
-| `PUBLIC_CACHE_MAX_ENTRIES` | Maximum entries retained by each keyed public read cache |
-
-The .env.example ships with the post-audit Base Sepolia deployment addresses
-for the Daski contracts. Replace them when redeploying.
-
-## MCP conformance
-
-The gateway uses the MCP TypeScript SDK v2 split packages and serves the
-stateless 2026 protocol through `server/discover`. Every HTTP request gets a
-fresh MCP server instance; the gateway does not issue or consume
-`Mcp-Session-Id`, and `/mcp` has no GET or DELETE session lifecycle.
-
-SDK v2 clients must opt into version negotiation (`mode: "auto"` or a pinned
-2026 revision) because the SDK client defaults to the 2025 handshake. Existing
-2025 clients continue to work through the SDK's stateless legacy fallback on
-the same `/mcp` endpoint. The gateway does not implement or advertise the
-Tasks extension yet.
-
-## x402 conformance
-
-The gateway targets `x402-foundation/x402` commit
-`17fc9890ade45a570a019352a3573391ad5d1e1f`, including the v2 MCP transport
-and `PaymentPayload` schema. The `@x402/core`, `@x402/evm`, and `@x402/mcp`
-packages are each exactly pinned to `2.20.0`. Upstream changes are adopted
-deliberately by updating these pins and the gateway's conformance tests.
-
-## Delivery confirmation
-
-Delivery confirmation is a two-call EAS delegation flow. First call
-`daski_confirm_delivery` without a signature (or use the confirmation-prep
-endpoint) and sign the returned EIP-712 data. The submit call must echo the
-returned `deadline` and `easNonce` with signature `{v,r,s}`; omitted or stale
-nonces are rejected. REST submits the same body to
-`POST /confirm/:paymentId`.
-
-The gateway sponsors one initial confirmation and at most two canonical
-revisions per payment. Revisions must set `refUid` to the current on-chain
-confirmation UID. Wallet and global daily sponsorship limits can return
-`confirmation_sponsorship_limited` or
-`confirmation_sponsorship_unavailable`; ambiguous writes return a retryable
-reconciliation error and should be retried with the identical signed request.
-
-Discovery results include `authorityFresh`. Treat `false` as read-only catalog
-data: challenge creation and first settlement independently require a fresh,
-active on-chain provider wallet and agent URI.
-
-Each admitted Agent Card may advertise at most 64 uniquely identified skills.
-Cards above that budget are rejected before embedding or catalog publication.
-
-Providers should run the one-time legal metadata and unauthenticated-reachability
-check before registering on Base Sepolia. Marketplace operators must run it
-before adding a provider to the Base mainnet allowlist:
-
-```bash
-npm run validate-provider-legal -- https://provider.example/.well-known/agent.json
-```
-
-This onboarding check is deliberately not part of periodic discovery refreshes;
-the gateway does not archive, compare, or continuously monitor Provider legal
-documents.
-
-## Tests
-
-```bash
+# Replace every placeholder. Do not use production or Testnet secrets locally.
+npm run build
 npm test
 ```
 
-The test suite uses real Postgres (per-test schema isolation) and a mock
-chain reader. There's also a live end-to-end script that exercises a real
-Base Sepolia path:
+The runtime always starts the standard rail. `PAYMENT_RAIL` is intentionally
+not a configuration option.
+
+## Configuration
+
+See [.env.example](.env.example) for the complete Base Sepolia template. The
+core groups are:
+
+- Runtime and database: `NODE_ENV`, `CHAIN_ID`, `PUBLIC_URL`, `DATABASE_URL`,
+  `MIGRATION_DATABASE_URL`, and `TRUST_PROXY`.
+- Standard facilitator: `CDP_API_KEY_ID`, `CDP_API_KEY_SECRET`, and the signed
+  facilitator profile in `STANDARD_RAIL_MANIFEST_JSON`.
+- Evidence and screening: `BASE_RPC_URL`, optional `BASE_RPC_FALLBACK_URLS`, and
+  `SANCTIONS_ORACLE_ADDRESS`.
+- Signing role: `FACILITATOR_PRIVATE_KEY` for protocol artifacts and
+  gas-funded Testnet reputation writes.
+
+The runtime rejects mock chain mode, unknown USDC domains, missing standard
+artifacts and configuration that does not match the
+signed marketplace manifest.
+
+## Verification
 
 ```bash
-# Requires CDP_API_KEY_ID, CDP_API_KEY_SECRET, CDP_WALLET_SECRET in env
-npm run live-e2e
-```
-
-## Build & deploy
-
-```bash
+npm run typecheck
 npm run build
-npm start
+npm test
 ```
 
-The repo ships a `Dockerfile` and `railway.json` for Railway deploys; any
-host that can run a Node 20 container with a Postgres + pgvector add-on
-works. Release coordination (develop→main merges, semver tags, env cascade
-on contract redeploys, DB resets) lives in
-[daski-io/deploy-testnet](https://github.com/daski-io/deploy-testnet).
-Chain projection incidents use the tracked
-[projection recovery runbook](docs/runbooks/chain-projection-recovery.md).
+The tests include a complete clean-schema migration smoke and PostgreSQL-backed
+evidence-locator behavior: one aggregated release event may cover multiple
+orders, while each deposit is globally single-use. Deployment coordination
+lives in [daski-io/deploy-testnet](https://github.com/daski-io/deploy-testnet).
 
 ## Architecture
 
-- `src/app.ts` — Express wiring, route registration, MCP mount
-- `src/mcp/` — MCP tools plus stateless modern/legacy HTTP transport
-- `src/discovery/` — Agent Card cache + pgvector embedding sync
-- `src/serviceTaxonomy.ts` — the 16 service families, controlled service
-  types, jurisdiction rules, and fulfillment-mode vocabulary
-- `src/payment/` — x402 challenge / verify / settle and EAS confirmation
-- `src/identity/` — ERC-8004 lookups + self-funded registration building
-- `src/chain/` — viem-backed reader for the Daski contracts (+ hand-mirrored ABIs in `abis.ts`)
-- `src/indexer/` — `PaymentSettled` event poller feeding `/public/v1/activity`
-- `src/reputation/` — feedback mirror to the canonical ERC-8004 ReputationRegistry
-- `src/auth/` — EIP-712 A2A envelope auth (byte-for-byte shared shape with daski-provider)
-- `src/db/` — Postgres pool, migrations, queries
-- `src/public/` — read-only `/public/v1/*` API
-- `src/http/` — health, discovery metadata, and crawler-facing documents
-- [docs/provider-onboarding.md](docs/provider-onboarding.md) — what a provider
-  has to ship to be reachable from this gateway
-
-## Status
-
-Daski runs an open provider testnet on Base Sepolia. Any active provider in the
-ProviderRegistry is discoverable when the testnet gateway allowlist is empty.
-The contracts and gateway move together; expect breaking changes until v1
-ships on Base mainnet.
+- `src/standardRail/` contains signed artifacts, standard payment handling,
+  evidence verification, state transitions, dispatch, reputation, and recovery.
+- `src/marketplace/` contains payment-independent identity/catalog reads and
+  provider/service discovery.
+- `src/http/` mounts only the standard HTTP surface.
+- `src/mcp/` contains the shared stateless MCP transport.
+- `src/db/` contains migration history and the standard runtime database
+  boundary.
 
 ## License
 
@@ -229,5 +106,5 @@ ships on Base mainnet.
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md). Security reports should go through
-GitHub's private vulnerability reporting, not public issues.
+See [CONTRIBUTING.md](CONTRIBUTING.md). Report security issues through GitHub's
+private vulnerability reporting.

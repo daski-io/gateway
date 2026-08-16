@@ -272,42 +272,6 @@ export function phoneWhoisWarnings(args: Record<string, unknown>): string[] {
 }
 
 /**
- * Buyer-name divergence note for an atomic first purchase: the identity
- * minted alongside this quote is permanent, so a resolved name that
- * diverges from the request's own stated organization — `companyName`
- * (entity formation) or `registrantOrganization` (domain registration,
- * the shape of the original buyer-0b83e2 incident) — is worth one warning
- * before anything is signed. A deliberate mismatch (a parent company
- * buying for a subsidiary) is legitimate — this never blocks.
- */
-export function buyerNameMismatchWarning(
-  resolvedName: string | null,
-  serviceArgs: Record<string, unknown>,
-): string | null {
-  const statedEntry = [
-    ["companyName", serviceArgs.companyName],
-    ["registrantOrganization", serviceArgs.registrantOrganization],
-  ].find((entry): entry is [string, string] => {
-    const value = entry[1];
-    return typeof value === "string" && value.trim() !== "";
-  });
-  if (!resolvedName || !statedEntry) return null;
-  const [statedField, stated] = statedEntry;
-  const canon = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, "");
-  const a = canon(resolvedName);
-  const b = canon(stated);
-  // Empty canonical forms (fully non-alphanumeric names) make the
-  // containment test vacuously true — treat as incomparable, warn.
-  if (a !== "" && b !== "" && (a.includes(b) || b.includes(a))) return null;
-  return (
-    "This purchase permanently registers the buyer identity, while " +
-    `the request field '${statedField}' differs from it. If that is ` +
-    "unintended, re-send with the corrected `name` BEFORE signing the " +
-    "registration typed-data — the registered name cannot be changed later."
-  );
-}
-
-/**
  * Keys in the buyer's raw serviceArgs that no advertised field consumes —
  * the skill will silently ignore them (observed: an agent passed
  * `displayName` to create-mailbox and only discovered at delivery that

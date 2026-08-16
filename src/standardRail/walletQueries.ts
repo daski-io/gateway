@@ -1,0 +1,192 @@
+import {
+  createPublicClient,
+  fallback,
+  getAddress,
+  http,
+  parseAbi,
+  type Address,
+  type Chain,
+} from "viem";
+import type { Pool } from "../db/pool.js";
+import type { StandardRailConfig } from "./config.js";
+import type { StandardWalletStore } from "./walletStore.js";
+import type { WalletAuthorizationTransport } from "./types.js";
+
+interface OrderHistoryRow {
+  order_id: string;
+  order_handle: string;
+  order_key: Buffer;
+  provider_agent_id: string;
+  outcome_id: string;
+  state: string;
+  gross_amount: string;
+  canonical_listing: { commitment: { payload: { serviceId: string } } };
+  registration_operation_state: string | null;
+  created_at: Date;
+  created_at_cursor: string;
+  updated_at: Date;
+}
+
+const reputationAbi = parseAbi([
+  "function getRecord(bytes32 orderKey) view returns ((bytes32 orderKey,bytes32 authorizationKey,uint256 providerAgentId,bytes32 serviceId,address payer,address providerOwner,address providerAgentWallet,address providerPayee,address canonicalToken,uint256 grossAmount,uint64 paidAt,bytes32 providerIdentitySnapshotHash,bytes32 listingManifestHash,bytes32 releaseEvidenceHash,uint8 outcome,uint8 confirmation,uint64 outcomeAttestationDelay,uint64 outcomeTimestamp,uint64 confirmationTimestamp,uint8 confirmationTransitions,bool outcomeRecorded,bool reputationEligible,bytes32 currentConfirmationUid))",
+  "function getBuyerStats(address payer) view returns (uint256,uint256,uint256)",
+  "function totalPaidByPayer(address payer) view returns (uint256)",
+  "function refundedAmountByPayer(address payer) view returns (uint256)",
+]);
+
+const ZERO_HASH = `0x${"00".repeat(32)}`;
+
+export class StandardWalletQueries {
+  private readonly chain;
+
+  constructor(
+    private readonly pool: Pool,
+    private readonly wallet: StandardWalletStore,
+    config: StandardRailConfig,
+    chain: Chain,
+  ) {
+    this.chain = createPublicClient({
+      chain,
+      transport: fallback(config.evidenceRpcUrls.map((url) => http(url, {
+        retryCount: 0,
+        timeout: 20_000,
+      }))),
+    });
+    this.reputationContract = config.reputationContract;
+  }
+
+  private readonly reputationContract: Address;
+
+  async listOrders(args: {
+    payer: string;
+    limit: number;
+    cursor: string | null;
+    authorization: WalletAuthorizationTransport;
+  }) {
+    const payer = getAddress(args.payer).toLowerCase();
+    const request = { limit: args.limit, cursor: args.cursor };
+    await this.wallet.consume({ authorization: args.authorization, action: "list-orders", request });
+    const binding = this.wallet.orderCursorBinding(payer, args.limit);
+    const last = args.cursor ? this.wallet.decodeOrderCursor(args.cursor, binding) : null;
+    const result = await this.pool.query<OrderHistoryRow>(
+      `SELECT o.order_id,o.order_handle,o.order_key,o.provider_agent_id,o.outcome_id,
+              o.state,o.gross_amount,o.canonical_listing,o.created_at,
+              o.created_at::text AS created_at_cursor,o.updated_at,
+              r.state AS registration_operation_state
+         FROM standard_orders o
+         LEFT JOIN standard_reputation_operations r
+           ON r.order_id=o.order_id AND r.kind='register'
+        WHERE lower(o.payer)=$1
+          AND ($2::timestamptz IS NULL OR (o.created_at,o.order_id)<($2::timestamptz,$3))
+        ORDER BY o.created_at DESC,o.order_id DESC
+        LIMIT $4`,
+      [payer, last?.createdAt ?? null, last?.id ?? null, args.limit + 1],
+    );
+    const rows = result.rows.slice(0, args.limit);
+    const hasMore = result.rows.length > args.limit;
+    const block = await this.chain.getBlock({ blockTag: "finalized" });
+    const records = await Promise.all(rows.map((row) => this.chain.readContract({
+      address: this.reputationContract,
+      abi: reputationAbi,
+      functionName: "getRecord",
+      args: [`0x${row.order_key.toString("hex")}`],
+      blockNumber: block.number,
+    })));
+    return {
+      orders: rows.map((row, index) => {
+        const reputation = records[index]!;
+        const registered = reputation.orderKey !== ZERO_HASH;
+        return ({
+        orderHandle: row.order_handle,
+        orderKey: `0x${row.order_key.toString("hex")}`,
+        providerAgentId: row.provider_agent_id,
+        serviceId: row.canonical_listing.commitment.payload.serviceId,
+        outcomeId: row.outcome_id,
+        state: row.state,
+        grossAmount: row.gross_amount,
+        reputation: {
+          registrationState: registered
+            ? reputation.reputationEligible ? "final" : "unavailable"
+            : reputationState(row.registration_operation_state),
+          providerOutcome: registered
+            ? providerOutcome(reputation.outcome, reputation.outcomeRecorded)
+            : "Pending",
+          buyerConfirmation: registered ? confirmation(reputation.confirmation) : "Pending",
+          confirmationTransitionsUsed: registered ? reputation.confirmationTransitions : 0,
+        },
+        createdAt: row.created_at.toISOString(),
+        updatedAt: row.updated_at.toISOString(),
+      }); }),
+      nextCursor: hasMore && rows.length > 0
+        ? this.wallet.encodeOrderCursor({
+            createdAt: rows.at(-1)!.created_at_cursor,
+            id: rows.at(-1)!.order_id,
+          }, binding)
+        : null,
+    };
+  }
+
+  async getReputation(args: {
+    payer: string;
+    authorization: WalletAuthorizationTransport;
+  }) {
+    const payer = getAddress(args.payer).toLowerCase();
+    const request = {};
+    await this.wallet.consume({
+      authorization: args.authorization,
+      action: "get-buyer-reputation",
+      request,
+    });
+    const block = await this.chain.getBlock({ blockTag: "finalized" });
+    const address = getAddress(payer);
+    const [[eligible, confirmed, notConfirmed], totalPaid, totalRefunded] = await Promise.all([
+      this.chain.readContract({
+        address: this.reputationContract,
+        abi: reputationAbi,
+        functionName: "getBuyerStats",
+        args: [address],
+        blockNumber: block.number,
+      }),
+      this.chain.readContract({
+        address: this.reputationContract,
+        abi: reputationAbi,
+        functionName: "totalPaidByPayer",
+        args: [address],
+        blockNumber: block.number,
+      }),
+      this.chain.readContract({
+        address: this.reputationContract,
+        abi: reputationAbi,
+        functionName: "refundedAmountByPayer",
+        args: [address],
+        blockNumber: block.number,
+      }),
+    ]);
+    return {
+      eligibleTransactionCount: eligible.toString(),
+      confirmedCount: confirmed.toString(),
+      notConfirmedCount: notConfirmed.toString(),
+      totalPaid: totalPaid.toString(),
+      totalRefunded: totalRefunded.toString(),
+      finalizedBlock: block.number.toString(),
+    };
+  }
+}
+
+function reputationState(state: string | null): string {
+  if (state === "final") return "final";
+  if (state === "unavailable" || state?.startsWith("aborted")) return "unavailable";
+  return "pending";
+}
+
+export function providerOutcome(outcome: number | null, recorded: boolean): string {
+  if (!recorded) return "Pending";
+  if (outcome === 0) return "Completed";
+  if (outcome === 1) return "Failed";
+  if (outcome === 2) return "Canceled";
+  return "Pending";
+}
+
+function confirmation(value: number | null): string {
+  return value === 1 ? "Confirmed" : value === 2 ? "NotConfirmed" : "Pending";
+}

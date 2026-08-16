@@ -1,0 +1,102 @@
+{
+  "schemaVersion": 1,
+  "domains": {
+    "wallet": { "name": "DaskiStandardWallet", "version": "1", "chainId": 84532 },
+    "reputation": {
+      "name": "Daski Reputation",
+      "version": "1",
+      "chainId": 84532,
+      "verifyingContract": "0x2121212121212121212121212121212121212121"
+    }
+  },
+  "typeStrings": {
+    "walletActionAuthorizationV1": "WalletActionAuthorizationV1(address payer,uint256 providerAgentId,bytes32 serviceId,bytes32 providerControlProfileHash,bytes32 servicingAdmissionHash,bytes32 actionCatalogHash,bytes32 actionCatalogSchemaHash,bytes32 actionDefinitionHash,uint64 actionCatalogEpoch,bytes32 actionHash,bytes32 methodHash,bytes32 absoluteResourceUriHash,bytes32 requestHash,bytes32 audienceHash,bytes32 nonce,uint64 issuedAt,uint64 validBefore)",
+    "actionExecutionV1": "ActionExecutionV1(bytes32 walletAuthorizationHash,uint256 providerAgentId,bytes32 serviceId,bytes32 providerControlProfileHash,bytes32 servicingAdmissionHash,bytes32 actionCatalogHash,bytes32 actionCatalogSchemaHash,uint64 actionCatalogEpoch,bytes32 actionDefinitionHash,bytes32 requestHash)",
+    "standardReputationOrderV1": "StandardReputationOrderV1(bytes32 orderKey,bytes32 authorizationKey,uint256 providerAgentId,bytes32 serviceId,address payer,address providerOwner,address providerAgentWallet,address providerPayee,address identityRegistry,address providerRegistry,address serviceRegistry,uint256 blockNumber,bytes32 blockHash,address canonicalToken,uint256 grossAmount,uint64 paidAt,bytes32 providerIdentitySnapshotHash,bytes32 listingManifestHash,bytes32 releaseEvidenceHash,bool reputationEligible,uint64 validBefore)",
+    "standardReputationRefundV1": "StandardReputationRefundV1(bytes32 orderKey,bytes32 authorizationKey,uint256 cumulativeRefundedAmount,bytes32 refundEvidenceHash,uint64 validBefore)",
+    "providerIdentitySnapshotV1": "ProviderIdentitySnapshotV1(uint256 chainId,uint256 providerAgentId,bytes32 serviceId,address identityRegistry,address providerRegistry,address serviceRegistry,address providerOwner,address providerAgentWallet,address providerPayee,uint256 blockNumber,bytes32 blockHash)"
+  },
+  "typeHashes": {
+    "walletActionAuthorizationV1": "0x401405a2d7115851c071d2c2b910a87d8f43a702ee644b508a390be325253ca1",
+    "actionExecutionV1": "0xf5b8bc3541c6d38621866bf4754b6c43b143daf4a0a4315a4169a07175ef6f02",
+    "standardReputationOrderV1": "0x687c38759e553277de2157d04bcb5bee98a121ac0e4b9e3575866a768bb8d2ea",
+    "standardReputationRefundV1": "0xee5b62c3e934195a045134fcc68f571ba421a01fd35504334bcc365ec392fa6c",
+    "providerIdentitySnapshotV1": "0xdbe9ab91d93e0c204609996623e649314ec7ddae5e564edbcfedc2bac2332915"
+  },
+  "walletAuthorization": {
+    "message": {
+      "payer": "0x1111111111111111111111111111111111111111",
+      "providerAgentId": "42",
+      "serviceId": "0x2222222222222222222222222222222222222222222222222222222222222222",
+      "providerControlProfileHash": "0x3333333333333333333333333333333333333333333333333333333333333333",
+      "servicingAdmissionHash": "0x4444444444444444444444444444444444444444444444444444444444444444",
+      "actionCatalogHash": "0x5555555555555555555555555555555555555555555555555555555555555555",
+      "actionCatalogSchemaHash": "0x6666666666666666666666666666666666666666666666666666666666666666",
+      "actionDefinitionHash": "0x7777777777777777777777777777777777777777777777777777777777777777",
+      "actionCatalogEpoch": "9",
+      "actionHash": "0x8888888888888888888888888888888888888888888888888888888888888888",
+      "methodHash": "0x9999999999999999999999999999999999999999999999999999999999999999",
+      "absoluteResourceUriHash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "requestHash": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "audienceHash": "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "nonce": "0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "issuedAt": 1800000000,
+      "validBefore": 1800000300
+    },
+    "digest": "0x7d281a33e877add31078aac24af846887907c9425480b680b186c6182373bbd5",
+    "actionExecutionId": "0xe5ebbbd468128179ed660e78646b3bf8bf1f4b00a8f1d7cfcf7bee5cbf3808dc"
+  },
+  "identitySnapshot": {
+    "value": {
+      "providerAgentId": "42",
+      "serviceId": "0x2222222222222222222222222222222222222222222222222222222222222222",
+      "identityRegistry": "0x1212121212121212121212121212121212121212",
+      "providerRegistry": "0x1313131313131313131313131313131313131313",
+      "serviceRegistry": "0x1414141414141414141414141414141414141414",
+      "providerOwner": "0x1515151515151515151515151515151515151515",
+      "providerAgentWallet": "0x1616161616161616161616161616161616161616",
+      "providerPayee": "0x1717171717171717171717171717171717171717",
+      "blockNumber": "12345678",
+      "blockHash": "0x1818181818181818181818181818181818181818181818181818181818181818"
+    },
+    "hash": "0xe75a09ea4388db3ded512dffc4888996580e87f29452813db160d638cfec27eb"
+  },
+  "orderKeys": {
+    "orderId": "ord_12345678-1234-4123-8123-123456789abc",
+    "orderKey": "0xe664d7ca5d2ad0ca8774a3e5f0f77174f4926b3c534344d8792ac298cc4ca0d6",
+    "canonicalToken": "0x1919191919191919191919191919191919191919",
+    "paymentNonce": "0x2020202020202020202020202020202020202020202020202020202020202020",
+    "authorizationKey": "0x306c7a6c2d9d9fe4bf6ef9e7eb6ca38461d0fed728358b543c82be28fbbfae07"
+  },
+  "cursor": {
+    "profile": "daski-cursor-a256gcm-v1",
+    "keyId": "k1",
+    "keyHex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    "nonceHex": "000102030405060708090a0b",
+    "binding": {
+      "kind": "standard-orders",
+      "environment": "base-sepolia",
+      "chainId": 84532,
+      "issuer": "https://gateway.example",
+      "audience": "daski-wallet",
+      "payer": "0x1111111111111111111111111111111111111111",
+      "providerAgentId": "0",
+      "queryHash": "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+    },
+    "aadHex": "682a2f584cd314e2c781eb5b7579a03a363d7ad83af1210ac71d257870beab03",
+    "plaintext": {
+      "kind": "standard-orders",
+      "environment": "base-sepolia",
+      "payer": "0x1111111111111111111111111111111111111111",
+      "providerAgentId": "0",
+      "queryHash": "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "last": {
+        "createdAt": "2026-08-14 12:34:56.123456+00",
+        "id": "ord_12345678-1234-4123-8123-123456789abc"
+      },
+      "issuedAt": 1800000000,
+      "validBefore": 1800000900
+    },
+    "token": "v1.k1.AAECAwQFBgcICQoLPCCzdbOMsHTjLPLlxctCT-G39FHdCDoMVwuM5D9FIttyY9uZy4Bmuk6VR924txgI3mlQoXi9yrRbtRA7a5eUgJRdtB7-vlQFeSbZTMOtYolL_utYDUEwGpic6qkcsc2v8dpr1pZ35SqmMQ-GaEQTRYlTWJ7V6xSofsti-6nWXiyXcGmilu3pPHqFF5AP6Xj3AMPbGAQjoH6ha9lFyf_R36GksyTbzPhLkVTlw77i5Zng4uhS6tIWzkfl4vcJ9IbCIn27yzzs5_gGZ-LXi3DotdBPyUcMMYvAQKCr9nB5vstyEuWe1wIvByI1137cdRkj6fTcG-l57YctSVdRp74z9HGji9j8qSAcTf1Cf9JIX2-_0a-o5e7kyhRKCDRvkd8uZGa7Ld-gq3L3WV8_b_DFtv2vPjss8apy_VR4c_JYIIys8BpP7gUdjMaFHkV__z8U8na-4N5x42c7xlpcvIl4z2kfyeC1ZA8mFS8w4eNJe4lfnyLnoPE4"
+  }
+}

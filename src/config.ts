@@ -1,258 +1,101 @@
-import type { ChainId, Hex } from "./types.js";
 import type { Network } from "@x402/core/types";
-import { requireMarketplaceHttpsUrl } from "./legal/validation.js";
-import { isHex32, isHexAddress } from "./util/evmValidation.js";
-import {
-  loadRuntimeConfig,
-  type RuntimeConfig,
-} from "./runtimeConfig.js";
 import {
   loadUsdcDomain,
+  REVIEWED_USDC_DOMAINS,
   type UsdcDomainConfig,
 } from "./payment/usdcDomain.js";
-
-export const DASKI_A2A_EXTENSION_URI = "https://daski.xyz/a2a/v1";
-export const DASKI_X402_EXTENSION_URI = "https://daski.xyz/x402/v2";
-
-export const X402_VERSION = 2 as const;
+import type { ChainId, Hex } from "./types.js";
+import { isHexAddress } from "./util/evmValidation.js";
 
 export const BASE_MAINNET_SANCTIONS_ORACLE =
   "0x3a91a31cb3dc49b4db9ce721f50a9d076c8d739b" as Hex;
 
 export type SanctionsOracleMode = "production" | "mock";
 
-export interface Config extends RuntimeConfig {
+export interface Config {
+  nodeEnv: string;
   port: number;
-  // Hosted MCP transport at this path (default /mcp). The MCP is the
-  // wallet-agnostic tool surface; signing happens in the agent's wallet,
-  // not here. Set MCP_ENABLED=false to run the gateway as REST-only.
+  trustProxy: number;
   mcpEnabled: boolean;
   mcpPath: string;
-  baseRpcUrl: string;
-  // Ordered failover RPC endpoints tried after baseRpcUrl. Empty = no
-  // fallback (single-endpoint behavior, the pre-2026-08 default). A flap
-  // on the primary otherwise turns the /purchase readiness gate into a
-  // silent 503 window — see the 2026-08-01 deployment record.
-  baseRpcFallbackUrls: string[];
-  // Chain-events indexer cadence. The projection deliberately trails the
-  // head by 12 confirmation blocks (~24s on Base Sepolia), so sub-30s
-  // polling buys nothing — the old hardcoded 5s tick was ~87% of all RPC
-  // traffic (2026-08-01 post-mortem).
-  chainIndexerPollIntervalMs: number;
-  // Optional dedicated RPC route for the indexer's bulk getLogs polling
-  // (e.g. public primary + keyed fallback), keeping baseRpcUrl for the
-  // payment path. Unset = the indexer shares the main reader.
-  chainIndexerRpcUrl?: string;
-  chainIndexerRpcFallbackUrls: string[];
   chainId: ChainId;
   network: "base" | "base-sepolia";
   x402Network: Network;
-  // CANONICAL per-chain ERC-8004 IdentityRegistry (0x8004A… singleton) —
-  // Daski no longer deploys an identity registry of its own.
-  identityRegistryAddress: Hex;
-  // Daski AgentIndex proxy — verified wallet→agentId reverse lookup plus
-  // delegated registerWithSig; the companion that fills the canonical
-  // registry's gaps. Also the EIP-712 verifyingContract for the
-  // RegisterAgent typed-data buyers sign.
-  agentIndexAddress: Hex;
-  providerRegistryAddress: Hex;
-  // ServiceRegistry — service-identity refactor (2026-05). serviceId is
-  // computed off-chain from (providerAgentId, serviceSlug, version) and the
-  // gateway threads it into PaymentRouter.settle so each payment is bound
-  // to a specific catalog row. The EIP-3009 nonce remains client-random.
-  serviceRegistryAddress: Hex;
-  paymentRouterAddress: Hex;
-  sanctionsOracleAddress: Hex;
-  sanctionsOracleMode: SanctionsOracleMode;
-  // The x402 (EIP-3009) adapter is what the facilitator actually submits
-  // settle calls to. The router emits the PaymentSettled event but no longer
-  // exposes a rail-specific entry point.
-  x402AdapterAddress: Hex;
-  // Informational only — not submitted by the server-side facilitator flow,
-  // but handy for clients that want to advertise which rails are live.
-  permitAdapterAddress?: Hex;
-  approvalAdapterAddress?: Hex;
-  validationRegistryAddress?: Hex;
-  // Canonical ERC-8004 ReputationRegistry (0x8004B… singleton). When set,
-  // the gateway mirrors every buyer confirmation as public feedback for
-  // the provider (facilitator wallet = the ERC-8004 client, EAS
-  // attestation = evidence). Unset = mirroring off; everything else works.
-  reputationRegistryAddress?: Hex;
-  // Daski ReputationStorage — used by the gateway only as a view source.
-  // Writes go through EAS; this stays in config so discovery can read
-  // aggregate stats for ranking.
-  reputationStorageAddress?: Hex;
-  // Earliest deployment block among PaymentRouter and ReputationStorage.
-  // Live indexing always begins here; mock mode defaults to block zero.
-  chainIndexerStartBlock: bigint;
-  usdc: UsdcDomainConfig;
-  facilitatorPrivateKey: Hex;
-  // Empty admits every active ProviderRegistry entry on Base Sepolia.
-  // Base mainnet requires at least one explicitly admitted agentId.
-  whitelistedAgentIds: bigint[];
-  // Outbound A2A deadline for provider calls that are expected to answer
-  // immediately (quote, poll, artifact fetch). The 10s this used to be
-  // hardcoded at was below the observed server-side latency of a real
-  // registrar-backed submit, so successful work surfaced to buyers as
-  // PROVIDER_TIMEOUT.
-  a2aTimeoutMs: number;
-  // Separate, longer deadline for daski_submit_task. Submit is the one
-  // call that can carry synchronous upstream work (a registrar
-  // registration ran 4.6s → 15.6s over a single day and was still
-  // climbing), and unlike a poll there is no cheap retry: the taskId is
-  // assigned in the response body we just threw away.
-  a2aSubmitTimeoutMs: number;
-  cacheRefreshIntervalSeconds: number;
-  providerAuthMaxAgeSeconds: number;
-  confirmationMaxPerPayment: number;
-  confirmationMaxPerWalletPerDay: number;
-  confirmationMaxGlobalPerDay: number;
-  settlementMinAmount: bigint;
-  settlementMaxPerWalletPerDay: number;
-  settlementMaxGlobalPerDay: number;
-  // Reserve retained after every facilitator-funded write.
-  facilitatorMinBalanceWei: bigint;
-  // Maximum native-token cost accepted from an RPC-prepared transaction.
-  facilitatorMaxTransactionFeeWei: bigint;
-  // How long the discovery cache keeps serving a provider's last-known-good
-  // Agent Card when refresh fetches fail (provider restarting, card host
-  // down). Past the cap the provider degrades to a card-less catalog entry
-  // until a fetch succeeds again. Safe to keep generous: paid flows still
-  // require a live signed /quote from the provider, so a stale card can't
-  // capture funds while the provider is unreachable.
-  cacheMaxStalenessSeconds: number;
-  challengeTtlSeconds: number;
   databaseUrl: string;
   publicUrl: string;
-  marketplaceTermsUrl: string;
-  marketplacePrivacyUrl: string;
-  // Public IPFS HTTP gateway used to resolve `ipfs://` agentURIs for
-  // optional buyer registration. Trailing slash is required. Override with
-  // a self-hosted gateway in production to avoid relying on a public
-  // service for liveness.
-  ipfsGatewayUrl: string;
-  // EAS wiring: the facilitator submits delegated buyer confirmations
-  // against the registered schema. All three are required.
-  easAddress: Hex;
-  easConfirmationSchemaUid: Hex;
-  // Outcome schema is passed through to clients that want to check the
-  // provider's on-chain attestation exists; gateway itself never writes
-  // outcome attestations.
-  easOutcomeSchemaUid: Hex;
+  usdc: UsdcDomainConfig;
+  sanctionsOracleAddress: Hex;
+  sanctionsOracleMode: SanctionsOracleMode;
+  marketplaceContracts: {
+    identityRegistry: Hex;
+    agentIndex: Hex;
+    providerRegistry: Hex;
+    serviceRegistry: Hex;
+    validationRegistry: Hex;
+    reputationStorage: Hex;
+  };
+  rpcReadMaxPerMinute: number;
+  stateChangeGlobalMaxPerMinute: number;
+  mcpGlobalMaxPerMinute: number;
+  publicReadMaxPerMinute: number;
+  publicReadGlobalMaxPerMinute: number;
+  shutdownGraceMs: number;
 }
 
-function parseChainId(raw: string | undefined): ChainId {
-  const n = Number(raw ?? 8453);
-  if (n === 8453 || n === 84532) return n;
-  throw new Error(`Unsupported chainId: ${n}`);
-}
-
-function networkForChain(chainId: ChainId): "base" | "base-sepolia" {
-  return chainId === 8453 ? "base" : "base-sepolia";
-}
-
-function parseAgentIds(raw: string | undefined): bigint[] {
-  if (!raw) return [];
-  try {
-    return raw
-      .split(",")
-      .map((s) => s.trim())
-      .filter((s) => s.length > 0)
-      .map((s) => {
-        const value = BigInt(s);
-        if (value < 0n) throw new Error("negative");
-        return value;
-      });
-  } catch {
-    throw new Error("WHITELISTED_AGENT_IDS must contain unsigned integers");
-  }
-}
-
-function nonNegativeBigInt(name: string, raw: string | undefined): bigint {
-  if (raw === undefined) {
-    throw new Error(`${name} env var is required in live chain mode`);
-  }
-  try {
-    const value = BigInt(raw);
-    if (value < 0n) throw new Error("negative");
-    return value;
-  } catch {
-    throw new Error(`${name} must be a non-negative integer`);
-  }
-}
-
-function positiveBigInt(
-  name: string,
-  raw: string | undefined,
-  fallback: bigint,
-): bigint {
-  try {
-    const value = raw === undefined ? fallback : BigInt(raw);
-    if (value <= 0n) throw new Error("non-positive");
-    return value;
-  } catch {
-    throw new Error(`${name} must be a positive integer`);
-  }
-}
-
-function nonNegativeBigIntWithDefault(
-  name: string,
-  raw: string | undefined,
-  fallback: bigint,
-): bigint {
-  try {
-    const value = raw === undefined ? fallback : BigInt(raw);
-    if (value < 0n) throw new Error("negative");
-    return value;
-  } catch {
-    throw new Error(`${name} must be a non-negative integer`);
-  }
-}
-
-function positiveInteger(
+function integer(
   name: string,
   raw: string | undefined,
   fallback: number,
-  maximum = Number.MAX_SAFE_INTEGER,
+  options: { allowZero?: boolean; maximum?: number } = {},
 ): number {
   const value = Number(raw ?? fallback);
-  if (!Number.isSafeInteger(value) || value <= 0 || value > maximum) {
-    throw new Error(`${name} must be an integer between 1 and ${maximum}`);
+  const minimum = options.allowZero ? 0 : 1;
+  const maximum = options.maximum ?? Number.MAX_SAFE_INTEGER;
+  if (!Number.isSafeInteger(value) || value < minimum || value > maximum) {
+    throw new Error(`${name} must be an integer between ${minimum} and ${maximum}`);
   }
   return value;
 }
 
-function booleanValue(
-  name: string,
-  raw: string | undefined,
-  fallback: boolean,
-): boolean {
+function booleanValue(name: string, raw: string | undefined, fallback: boolean): boolean {
   if (raw === undefined) return fallback;
   if (raw === "true") return true;
   if (raw === "false") return false;
   throw new Error(`${name} must be either 'true' or 'false'`);
 }
 
-function requireHttpUrl(
-  name: string,
-  raw: string,
-  options: { requireHttps?: boolean } = {},
-): string {
-  let parsed: URL;
-  try {
-    parsed = new URL(raw);
-  } catch {
-    throw new Error(`${name} must be an absolute HTTP(S) URL`);
-  }
+function chainId(raw: string | undefined): ChainId {
+  const value = Number(raw ?? 84532);
+  if (value !== 8453 && value !== 84532) throw new Error(`Unsupported chainId: ${value}`);
+  return value;
+}
+
+function address(name: string, raw: string | undefined): Hex {
+  if (!raw || !isHexAddress(raw)) throw new Error(`${name} must be a 20-byte hex address`);
+  return raw.toLowerCase() as Hex;
+}
+
+function databaseUrl(raw: string | undefined): string {
+  if (!raw) throw new Error("DATABASE_URL is required");
+  const parsed = new URL(raw);
   if (
-    (parsed.protocol !== "http:" && parsed.protocol !== "https:") ||
-    parsed.username ||
-    parsed.password
+    !["postgres:", "postgresql:"].includes(parsed.protocol) ||
+    !parsed.hostname || !parsed.username || parsed.pathname === "/"
   ) {
-    throw new Error(`${name} must be an absolute HTTP(S) URL without credentials`);
+    throw new Error("DATABASE_URL must identify a PostgreSQL database and role");
   }
-  if (options.requireHttps && parsed.protocol !== "https:") {
-    throw new Error(`${name} must use HTTPS in production`);
+  return raw;
+}
+
+function httpUrl(name: string, raw: string | undefined, requireHttps: boolean): string {
+  if (!raw) throw new Error(`${name} is required`);
+  const parsed = new URL(raw);
+  if (
+    !["http:", "https:"].includes(parsed.protocol) ||
+    parsed.username || parsed.password ||
+    (requireHttps && parsed.protocol !== "https:")
+  ) {
+    throw new Error(`${name} must be a credential-free ${requireHttps ? "HTTPS" : "HTTP(S)"} URL`);
   }
   return raw.replace(/\/$/, "");
 }
@@ -260,372 +103,87 @@ function requireHttpUrl(
 function mcpPath(raw: string | undefined): string {
   const value = raw ?? "/mcp";
   if (
-    !/^\/[A-Za-z0-9/_-]*$/.test(value) ||
-    value.includes("//") ||
+    !/^\/[A-Za-z0-9/_-]*$/.test(value) || value.includes("//") ||
     (value.length > 1 && value.endsWith("/"))
-  ) {
-    throw new Error("MCP_PATH must be a normalized absolute URL path");
-  }
+  ) throw new Error("MCP_PATH must be a normalized absolute URL path");
   return value;
 }
 
-function optionalAddress(name: string, raw: string | undefined): Hex | undefined {
-  if (!raw) return undefined;
-  if (!isHexAddress(raw)) {
-    throw new Error(`${name} must be a 20-byte hex address, got: ${raw}`);
-  }
-  return raw.toLowerCase() as Hex;
-}
-
-function requireBytes32(name: string, raw: string | undefined): Hex {
-  if (!raw) throw new Error(`${name} env var is required`);
-  if (!isHex32(raw)) {
-    throw new Error(`${name} must be a 32-byte hex value, got: ${raw}`);
-  }
-  return raw.toLowerCase() as Hex;
-}
-
-function requireAddress(name: string, raw: string | undefined): Hex {
-  if (!raw) throw new Error(`${name} env var is required`);
-  if (!isHexAddress(raw)) {
-    throw new Error(`${name} must be a 20-byte hex address, got: ${raw}`);
-  }
-  return raw.toLowerCase() as Hex;
-}
-
-function sanctionsOracleMode(
-  raw: string | undefined,
-): SanctionsOracleMode {
+function sanctionsMode(raw: string | undefined): SanctionsOracleMode {
+  if (raw === undefined) return "production";
   if (raw === "production" || raw === "mock") return raw;
-  throw new Error(
-    "SANCTIONS_ORACLE_MODE must be explicitly set to production or mock",
-  );
-}
-
-function requireDatabaseUrl(raw: string | undefined): string {
-  if (!raw) {
-    throw new Error(
-      "DATABASE_URL env var is required (e.g. postgresql://user:pass@host:5432/db)",
-    );
-  }
-  return raw;
-}
-
-function requirePrivateKey(name: string, raw: string | undefined): Hex {
-  if (!raw) throw new Error(`${name} env var is required`);
-  if (!/^0x[0-9a-fA-F]{64}$/.test(raw)) {
-    throw new Error(`${name} must be a 32-byte hex private key`);
-  }
-  // Reject the all-zero key. It's the placeholder we ship in .env.example
-  // and a tempting `cp .env.example .env` foot-gun: the zero key derives a
-  // valid, well-known secp256k1 keypair (public address 0x39443885…), so
-  // booting with it would silently use a publicly-compromised facilitator
-  // wallet. Fail loudly at config load instead.
-  if (/^0x0+$/.test(raw)) {
-    throw new Error(
-      `${name} cannot be the all-zero key — replace the placeholder in .env`,
-    );
-  }
-  return raw as Hex;
+  throw new Error("SANCTIONS_ORACLE_MODE must be explicitly set to production or mock");
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
-  const chainId = parseChainId(env.CHAIN_ID);
-  const runtime = loadRuntimeConfig(env);
-  const production = runtime.nodeEnv === "production";
-  const port = positiveInteger("PORT", env.PORT, 3000, 65535);
-  const publicUrl = requireHttpUrl(
-    "PUBLIC_URL",
-    env.PUBLIC_URL ?? `http://localhost:${port}`,
-    { requireHttps: production },
-  );
-  const oracleAddress = requireAddress(
-    "SANCTIONS_ORACLE_ADDRESS",
-    env.SANCTIONS_ORACLE_ADDRESS,
-  );
-  const oracleMode = sanctionsOracleMode(env.SANCTIONS_ORACLE_MODE);
-  if (
-    chainId === 8453 &&
-    oracleAddress !== BASE_MAINNET_SANCTIONS_ORACLE
-  ) {
-    throw new Error(
-      `Base mainnet SANCTIONS_ORACLE_ADDRESS must be ${BASE_MAINNET_SANCTIONS_ORACLE}`,
-    );
+  if (env.PAYMENT_RAIL !== undefined) {
+    throw new Error("PAYMENT_RAIL is retired; the gateway always uses standard Exact-EVM");
   }
-  if (chainId === 8453 && oracleMode !== "production") {
-    throw new Error("Base mainnet SANCTIONS_ORACLE_MODE must be production");
+  if (env.CHAIN_MODE !== undefined && env.CHAIN_MODE !== "live") {
+    throw new Error("The standard gateway supports only live chain evidence");
   }
-  if (chainId === 8453 && runtime.nodeEnv !== "production") {
-    throw new Error("Base mainnet requires NODE_ENV=production");
+  const nodeEnv = (env.NODE_ENV ?? "development").trim().toLowerCase();
+  const production = nodeEnv === "production";
+  if (production && env.TRUST_PROXY === undefined) {
+    throw new Error("TRUST_PROXY must be set explicitly in production");
   }
-  if (chainId === 8453 && runtime.chainMode !== "live") {
-    throw new Error("Base mainnet requires CHAIN_MODE=live");
+  const configuredChainId = chainId(env.CHAIN_ID);
+  const oracleAddress = address("SANCTIONS_ORACLE_ADDRESS", env.SANCTIONS_ORACLE_ADDRESS);
+  const oracleMode = sanctionsMode(env.SANCTIONS_ORACLE_MODE);
+  if (configuredChainId === 8453 && oracleAddress !== BASE_MAINNET_SANCTIONS_ORACLE) {
+    throw new Error(`Base mainnet SANCTIONS_ORACLE_ADDRESS must be ${BASE_MAINNET_SANCTIONS_ORACLE}`);
   }
-  if (runtime.nodeEnv === "production" && oracleMode === "mock") {
+  if (configuredChainId === 8453 && (oracleMode !== "production" || !production)) {
+    throw new Error("Base mainnet requires production sanctions screening and NODE_ENV=production");
+  }
+  if (production && oracleMode === "mock") {
     throw new Error("SANCTIONS_ORACLE_MODE=mock is forbidden in production");
   }
-  const whitelistedAgentIds = parseAgentIds(env.WHITELISTED_AGENT_IDS);
-  if (chainId === 8453 && whitelistedAgentIds.length === 0) {
-    throw new Error(
-      "WHITELISTED_AGENT_IDS must contain at least one agentId on Base mainnet",
-    );
-  }
-  const reputationStorageAddress = optionalAddress(
-    "REPUTATION_STORAGE_ADDRESS",
-    env.REPUTATION_STORAGE_ADDRESS,
+  const tokenAddress = address(
+    "USDC_ADDRESS",
+    env.USDC_ADDRESS ?? REVIEWED_USDC_DOMAINS[configuredChainId].address,
   );
-  if (runtime.chainMode === "live" && !reputationStorageAddress) {
-    throw new Error("REPUTATION_STORAGE_ADDRESS env var is required in live chain mode");
-  }
-  const chainIndexerStartBlock =
-    runtime.chainMode === "live"
-      ? nonNegativeBigInt(
-          "CHAIN_INDEXER_START_BLOCK",
-          env.CHAIN_INDEXER_START_BLOCK,
-        )
-      : env.CHAIN_INDEXER_START_BLOCK === undefined
-        ? 0n
-        : nonNegativeBigInt(
-            "CHAIN_INDEXER_START_BLOCK",
-            env.CHAIN_INDEXER_START_BLOCK,
-          );
-  const usdc = loadUsdcDomain({
-    chainId,
-    chainMode: runtime.chainMode,
-    address: requireAddress("USDC_ADDRESS", env.USDC_ADDRESS),
-    env,
-  });
-  const mainnetRequired = (name: string): string | undefined => {
-    if (chainId === 8453 && env[name] === undefined) {
-      throw new Error(`${name} must be explicitly set on Base mainnet`);
-    }
-    return env[name];
-  };
-  const confirmationMaxPerPayment = positiveInteger(
-    "CONFIRMATION_MAX_PER_PAYMENT",
-    mainnetRequired("CONFIRMATION_MAX_PER_PAYMENT"),
-    3,
-    3,
-  );
-  const confirmationMaxPerWalletPerDay = positiveInteger(
-    "CONFIRMATION_MAX_PER_WALLET_PER_DAY",
-    mainnetRequired("CONFIRMATION_MAX_PER_WALLET_PER_DAY"),
-    20,
-    100,
-  );
-  const confirmationMaxGlobalPerDay = positiveInteger(
-    "CONFIRMATION_MAX_GLOBAL_PER_DAY",
-    mainnetRequired("CONFIRMATION_MAX_GLOBAL_PER_DAY"),
-    500,
-    1_000,
-  );
-  const settlementMinAmount = positiveBigInt(
-    "SETTLEMENT_MIN_AMOUNT",
-    mainnetRequired("SETTLEMENT_MIN_AMOUNT"),
-    1n,
-  );
-  const settlementMaxPerWalletPerDay = positiveInteger(
-    "SETTLEMENT_MAX_PER_WALLET_PER_DAY",
-    mainnetRequired("SETTLEMENT_MAX_PER_WALLET_PER_DAY"),
-    100,
-  );
-  const settlementMaxGlobalPerDay = positiveInteger(
-    "SETTLEMENT_MAX_GLOBAL_PER_DAY",
-    mainnetRequired("SETTLEMENT_MAX_GLOBAL_PER_DAY"),
-    1_000,
-  );
-  if (settlementMaxPerWalletPerDay > settlementMaxGlobalPerDay) {
-    throw new Error(
-      "SETTLEMENT_MAX_PER_WALLET_PER_DAY cannot exceed SETTLEMENT_MAX_GLOBAL_PER_DAY",
-    );
-  }
-  const facilitatorMinBalanceWei =
-    chainId === 8453
-      ? positiveBigInt(
-          "FACILITATOR_MIN_BALANCE_WEI",
-          mainnetRequired("FACILITATOR_MIN_BALANCE_WEI"),
-          1n,
-        )
-      : nonNegativeBigIntWithDefault(
-          "FACILITATOR_MIN_BALANCE_WEI",
-          env.FACILITATOR_MIN_BALANCE_WEI,
-          0n,
-        );
-  const facilitatorMaxTransactionFeeWei = positiveBigInt(
-    "FACILITATOR_MAX_TRANSACTION_FEE_WEI",
-    mainnetRequired("FACILITATOR_MAX_TRANSACTION_FEE_WEI"),
-    10_000_000_000_000_000n,
-  );
-  const providerAuthMaxAgeSeconds = positiveInteger(
-    "PROVIDER_AUTH_MAX_AGE_SECONDS",
-    mainnetRequired("PROVIDER_AUTH_MAX_AGE_SECONDS"),
-    30,
-    60,
-  );
-  const cacheRefreshIntervalSeconds = positiveInteger(
-    "CACHE_REFRESH_INTERVAL",
-    env.CACHE_REFRESH_INTERVAL,
-    300,
-  );
-  if (
-    chainId === 8453 &&
-    cacheRefreshIntervalSeconds > providerAuthMaxAgeSeconds
-  ) {
-    throw new Error(
-      "CACHE_REFRESH_INTERVAL cannot exceed PROVIDER_AUTH_MAX_AGE_SECONDS on Base mainnet",
-    );
-  }
   return {
-    ...runtime,
-    port,
+    nodeEnv,
+    port: integer("PORT", env.PORT, 3000, { maximum: 65535 }),
+    trustProxy: integer("TRUST_PROXY", env.TRUST_PROXY, 0, { allowZero: true }),
     mcpEnabled: booleanValue("MCP_ENABLED", env.MCP_ENABLED, true),
     mcpPath: mcpPath(env.MCP_PATH),
-    baseRpcUrl: requireHttpUrl(
-      "BASE_RPC_URL",
-      env.BASE_RPC_URL ?? "https://mainnet.base.org",
-      { requireHttps: production },
-    ),
-    baseRpcFallbackUrls: (env.BASE_RPC_FALLBACK_URLS ?? "")
-      .split(",")
-      .map((url) => url.trim())
-      .filter(Boolean)
-      .map((url, index) =>
-        requireHttpUrl(`BASE_RPC_FALLBACK_URLS[${index}]`, url, {
-          requireHttps: production,
-        }),
-      ),
-    chainIndexerPollIntervalMs: positiveInteger(
-      "CHAIN_INDEXER_POLL_INTERVAL_MS",
-      env.CHAIN_INDEXER_POLL_INTERVAL_MS,
-      30_000,
-      600_000,
-    ),
-    chainIndexerRpcUrl: env.CHAIN_INDEXER_RPC_URL
-      ? requireHttpUrl("CHAIN_INDEXER_RPC_URL", env.CHAIN_INDEXER_RPC_URL, {
-          requireHttps: production,
-        })
-      : undefined,
-    chainIndexerRpcFallbackUrls: (env.CHAIN_INDEXER_RPC_FALLBACK_URLS ?? "")
-      .split(",")
-      .map((url) => url.trim())
-      .filter(Boolean)
-      .map((url, index) =>
-        requireHttpUrl(`CHAIN_INDEXER_RPC_FALLBACK_URLS[${index}]`, url, {
-          requireHttps: production,
-        }),
-      ),
-    chainId,
-    network: networkForChain(chainId),
-    x402Network: `eip155:${chainId}`,
-    identityRegistryAddress: requireAddress(
-      "IDENTITY_REGISTRY_ADDRESS",
-      env.IDENTITY_REGISTRY_ADDRESS,
-    ),
-    agentIndexAddress: requireAddress(
-      "AGENT_INDEX_ADDRESS",
-      env.AGENT_INDEX_ADDRESS,
-    ),
-    providerRegistryAddress: requireAddress(
-      "PROVIDER_REGISTRY_ADDRESS",
-      env.PROVIDER_REGISTRY_ADDRESS,
-    ),
-    serviceRegistryAddress: requireAddress(
-      "SERVICE_REGISTRY_ADDRESS",
-      env.SERVICE_REGISTRY_ADDRESS,
-    ),
-    paymentRouterAddress: requireAddress(
-      "PAYMENT_ROUTER_ADDRESS",
-      env.PAYMENT_ROUTER_ADDRESS,
-    ),
+    chainId: configuredChainId,
+    network: configuredChainId === 8453 ? "base" : "base-sepolia",
+    x402Network: `eip155:${configuredChainId}`,
+    databaseUrl: databaseUrl(env.DATABASE_URL),
+    publicUrl: httpUrl("PUBLIC_URL", env.PUBLIC_URL, production),
+    usdc: loadUsdcDomain({ chainId: configuredChainId, address: tokenAddress, env }),
     sanctionsOracleAddress: oracleAddress,
     sanctionsOracleMode: oracleMode,
-    x402AdapterAddress: requireAddress(
-      "X402_ADAPTER_ADDRESS",
-      env.X402_ADAPTER_ADDRESS,
+    marketplaceContracts: {
+      identityRegistry: address("IDENTITY_REGISTRY_ADDRESS", env.IDENTITY_REGISTRY_ADDRESS),
+      agentIndex: address("AGENT_INDEX_ADDRESS", env.AGENT_INDEX_ADDRESS),
+      providerRegistry: address("PROVIDER_REGISTRY_ADDRESS", env.PROVIDER_REGISTRY_ADDRESS),
+      serviceRegistry: address("SERVICE_REGISTRY_ADDRESS", env.SERVICE_REGISTRY_ADDRESS),
+      validationRegistry: address(
+        "VALIDATION_REGISTRY_ADDRESS",
+        env.VALIDATION_REGISTRY_ADDRESS,
+      ),
+      reputationStorage: address(
+        "REPUTATION_STORAGE_ADDRESS",
+        env.REPUTATION_STORAGE_ADDRESS,
+      ),
+    },
+    rpcReadMaxPerMinute: integer("RPC_READ_MAX_PER_MINUTE", env.RPC_READ_MAX_PER_MINUTE, 300),
+    stateChangeGlobalMaxPerMinute: integer(
+      "STATE_CHANGE_GLOBAL_MAX_PER_MINUTE",
+      env.STATE_CHANGE_GLOBAL_MAX_PER_MINUTE,
+      300,
     ),
-    permitAdapterAddress: optionalAddress(
-      "PERMIT_ADAPTER_ADDRESS",
-      env.PERMIT_ADAPTER_ADDRESS,
+    mcpGlobalMaxPerMinute: integer("MCP_GLOBAL_MAX_PER_MINUTE", env.MCP_GLOBAL_MAX_PER_MINUTE, 300),
+    publicReadMaxPerMinute: integer("PUBLIC_READ_MAX_PER_MINUTE", env.PUBLIC_READ_MAX_PER_MINUTE, 120),
+    publicReadGlobalMaxPerMinute: integer(
+      "PUBLIC_READ_GLOBAL_MAX_PER_MINUTE",
+      env.PUBLIC_READ_GLOBAL_MAX_PER_MINUTE,
+      1200,
     ),
-    approvalAdapterAddress: optionalAddress(
-      "APPROVAL_ADAPTER_ADDRESS",
-      env.APPROVAL_ADAPTER_ADDRESS,
-    ),
-    reputationRegistryAddress: optionalAddress(
-      "REPUTATION_REGISTRY_ADDRESS",
-      env.REPUTATION_REGISTRY_ADDRESS,
-    ),
-    validationRegistryAddress: optionalAddress(
-      "VALIDATION_REGISTRY_ADDRESS",
-      env.VALIDATION_REGISTRY_ADDRESS,
-    ),
-    reputationStorageAddress,
-    chainIndexerStartBlock,
-    easAddress: requireAddress(
-      "EAS_ADDRESS",
-      env.EAS_ADDRESS ?? "0x4200000000000000000000000000000000000021",
-    ),
-    easConfirmationSchemaUid: requireBytes32(
-      "EAS_CONFIRMATION_SCHEMA_UID",
-      env.EAS_CONFIRMATION_SCHEMA_UID,
-    ),
-    easOutcomeSchemaUid: requireBytes32(
-      "EAS_OUTCOME_SCHEMA_UID",
-      env.EAS_OUTCOME_SCHEMA_UID,
-    ),
-    usdc,
-    facilitatorPrivateKey: requirePrivateKey(
-      "FACILITATOR_PRIVATE_KEY",
-      env.FACILITATOR_PRIVATE_KEY,
-    ),
-    whitelistedAgentIds,
-    a2aTimeoutMs: positiveInteger(
-      "GATEWAY_A2A_TIMEOUT_MS",
-      env.GATEWAY_A2A_TIMEOUT_MS,
-      30_000,
-      600_000,
-    ),
-    a2aSubmitTimeoutMs: positiveInteger(
-      "GATEWAY_A2A_SUBMIT_TIMEOUT_MS",
-      env.GATEWAY_A2A_SUBMIT_TIMEOUT_MS,
-      90_000,
-      600_000,
-    ),
-    cacheRefreshIntervalSeconds,
-    providerAuthMaxAgeSeconds,
-    confirmationMaxPerPayment,
-    confirmationMaxPerWalletPerDay,
-    confirmationMaxGlobalPerDay,
-    settlementMinAmount,
-    settlementMaxPerWalletPerDay,
-    settlementMaxGlobalPerDay,
-    facilitatorMinBalanceWei,
-    facilitatorMaxTransactionFeeWei,
-    cacheMaxStalenessSeconds: positiveInteger(
-      "CACHE_MAX_STALENESS_SECONDS",
-      env.CACHE_MAX_STALENESS_SECONDS,
-      86400,
-    ),
-    challengeTtlSeconds: positiveInteger(
-      "CHALLENGE_TTL_SECONDS",
-      env.CHALLENGE_TTL_SECONDS,
-      3600,
-    ),
-    databaseUrl: requireDatabaseUrl(env.DATABASE_URL),
-    publicUrl,
-    marketplaceTermsUrl: requireMarketplaceHttpsUrl(
-      "MARKETPLACE_TERMS_URL",
-      env.MARKETPLACE_TERMS_URL,
-    ),
-    marketplacePrivacyUrl: requireMarketplaceHttpsUrl(
-      "MARKETPLACE_PRIVACY_URL",
-      env.MARKETPLACE_PRIVACY_URL,
-    ),
-    ipfsGatewayUrl:
-      requireHttpUrl(
-        "IPFS_GATEWAY_URL",
-        env.IPFS_GATEWAY_URL ?? "https://ipfs.io/ipfs/",
-        { requireHttps: production },
-      ) + "/",
+    shutdownGraceMs: integer("SHUTDOWN_GRACE_MS", env.SHUTDOWN_GRACE_MS, 25_000),
   };
 }
