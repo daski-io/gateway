@@ -62,6 +62,7 @@ export class StandardRailRecoveryWorker {
           error,
         });
         await this.options.store.releaseLease(order.orderId, this.workerId, order.leaseFence);
+        skipped.push(order.orderId);
       }
     }
   }
