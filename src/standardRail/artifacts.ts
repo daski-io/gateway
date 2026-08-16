@@ -11,6 +11,7 @@ import {
   compileClosedRequestSchema,
   compileClosedResponseSchema,
 } from "./schema.js";
+import { assertListingRoleSeparation } from "./listingRoles.js";
 
 const LAUNCH_ACTION_CLASSIFICATION = new Map<string, boolean>([
   ["get-domain-info", false],
@@ -551,9 +552,11 @@ async function verifyListing(listing: StandardListing, trust: ArtifactTrust): Pr
     commitment.providerPayee,
     commitment.daskiCommissionReceiver,
   ].map((value) => getAddress(value).toLowerCase());
-  if (new Set(roleAddresses).size !== roleAddresses.length) {
-    throw new Error("Listing provider, payee, and commission roles must be distinct");
-  }
+  assertListingRoleSeparation(
+    commitment.providerAuthorityKey,
+    commitment.providerPayee,
+    commitment.daskiCommissionReceiver,
+  );
   if (
     canonicalHash(listing.screeningPolicy) !== commitment.screeningPolicyHash ||
     !listing.screeningPolicy.policyId || listing.screeningPolicy.screenPayer !== true ||
