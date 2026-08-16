@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { gunzipSync } from "node:zlib";
 import { getAddress, type Address, type Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { assertNoDuplicateJsonKeys } from "./canonical.js";
@@ -137,8 +138,15 @@ function databaseUrl(raw: string): string {
 
 function parseManifest(text: string): StandardRailManifest {
   try {
-    assertNoDuplicateJsonKeys(text);
-    return JSON.parse(text) as StandardRailManifest;
+    const prefix = "gzip-base64:";
+    if (!text.startsWith(prefix)) throw new Error();
+    const encoded = text.slice(prefix.length);
+    if (!/^[A-Za-z0-9+/]+={0,2}$/.test(encoded)) throw new Error();
+    const decoded = gunzipSync(Buffer.from(encoded, "base64"), {
+      maxOutputLength: 1_000_000,
+    }).toString("utf8");
+    assertNoDuplicateJsonKeys(decoded);
+    return JSON.parse(decoded) as StandardRailManifest;
   } catch {
     throw new Error("STANDARD_RAIL_MANIFEST_JSON is malformed");
   }
