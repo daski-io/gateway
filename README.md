@@ -67,9 +67,9 @@ core groups are:
   `MIGRATION_DATABASE_URL`, and `TRUST_PROXY`.
 - Standard facilitator: `CDP_API_KEY_ID`, `CDP_API_KEY_SECRET`, and the signed
   facilitator profile in `STANDARD_RAIL_MANIFEST_JSON`.
-- Evidence and screening: `STANDARD_RAIL_RPC_URL` and
+- Evidence and screening: `BASE_RPC_URL`, optional `BASE_RPC_FALLBACK_URLS`, and
   `SANCTIONS_ORACLE_ADDRESS`.
-- Signing roles: `STANDARD_RAIL_PROTOCOL_PRIVATE_KEY` for protocol artifacts
+- Signing roles: `FACILITATOR_PRIVATE_KEY` for protocol artifacts
   and `REPUTATION_RELAYER_PRIVATE_KEY` for gas-funded reputation writes.
 
 The runtime rejects mock chain mode, unknown USDC domains, missing standard

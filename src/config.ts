@@ -163,8 +163,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       providerRegistry: address("PROVIDER_REGISTRY_ADDRESS", env.PROVIDER_REGISTRY_ADDRESS),
       serviceRegistry: address("SERVICE_REGISTRY_ADDRESS", env.SERVICE_REGISTRY_ADDRESS),
       validationRegistry: address(
-        "DASKI_VALIDATION_REGISTRY_ADDRESS",
-        env.DASKI_VALIDATION_REGISTRY_ADDRESS,
+        "VALIDATION_REGISTRY_ADDRESS",
+        env.VALIDATION_REGISTRY_ADDRESS,
       ),
       reputationStorage: address(
         "REPUTATION_STORAGE_ADDRESS",

@@ -159,7 +159,7 @@ export function loadStandardRailConfig(
   env: NodeJS.ProcessEnv = process.env,
 ): StandardRailConfig {
   const manifest = parseManifest(required(env, "STANDARD_RAIL_MANIFEST_JSON"));
-  const protocolPrivateKey = privateKey(env, "STANDARD_RAIL_PROTOCOL_PRIVATE_KEY");
+  const protocolPrivateKey = privateKey(env, "FACILITATOR_PRIVATE_KEY");
   const protocolAddress = privateKeyToAccount(protocolPrivateKey).address;
   const relayerPrivateKey = privateKey(env, "REPUTATION_RELAYER_PRIVATE_KEY");
   if (privateKeyToAccount(relayerPrivateKey).address === protocolAddress) {
@@ -171,10 +171,13 @@ export function loadStandardRailConfig(
   }
   const encryptionKey = Buffer.from(encryptionHex, "hex");
   const cursorKey = createHash("sha256").update("daski:cursor:v1").update(encryptionKey).digest();
-  const evidenceRpcUrls = required(env, "STANDARD_RAIL_RPC_URL").split(",")
-    .map((value, index) => httpsUrl(`STANDARD_RAIL_RPC_URL[${index}]`, value.trim()))
-    .filter(Boolean);
-  if (evidenceRpcUrls.length === 0) throw new Error("STANDARD_RAIL_RPC_URL cannot be empty");
+  const evidenceRpcUrls = [
+    required(env, "BASE_RPC_URL"),
+    ...(env.BASE_RPC_FALLBACK_URLS ?? "").split(",").map((value) => value.trim()).filter(Boolean),
+  ].map((value, index) => httpsUrl(
+    index === 0 ? "BASE_RPC_URL" : `BASE_RPC_FALLBACK_URLS[${index - 1}]`,
+    value,
+  ));
   const facilitatorBaseUrl = httpsUrl(
     "CDP_FACILITATOR_BASE_URL",
     env.CDP_FACILITATOR_BASE_URL ?? "https://api.cdp.coinbase.com/platform/v2/x402",
@@ -214,8 +217,8 @@ export function loadStandardRailConfig(
     cursorKeyRing: { activeKeyId: "derived-v1", keys: new Map([["derived-v1", cursorKey]]) },
     reputationContract: getAddress(required(env, "REPUTATION_STORAGE_ADDRESS")),
     easAddress: getAddress(required(env, "EAS_ADDRESS")),
-    reputationOutcomeSchemaUid: hash(env, "REPUTATION_OUTCOME_SCHEMA_UID"),
-    reputationConfirmationSchemaUid: hash(env, "REPUTATION_CONFIRMATION_SCHEMA_UID"),
+    reputationOutcomeSchemaUid: hash(env, "EAS_OUTCOME_SCHEMA_UID"),
+    reputationConfirmationSchemaUid: hash(env, "EAS_CONFIRMATION_SCHEMA_UID"),
     reputationRetryDelaysSeconds: DEFAULTS.reputationRetryDelaysSeconds,
     reputationOrderPrivateKey: protocolPrivateKey,
     reputationRelayerPrivateKey: relayerPrivateKey,
