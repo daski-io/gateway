@@ -54,6 +54,12 @@ interface PreparationRow {
   expires_at: Date;
 }
 
+export const CONFIRMATION_PREPARATION_INSERT_SQL = `INSERT INTO standard_confirmation_preparations
+  (preparation_id,order_id,order_key,payer,operation,confirmation,current_uid,transitions_used,
+   eas_nonce,deadline,request_hash,canonical_typed_data,final_transition_acknowledged,expires_at)
+ VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::numeric,$10::bigint,$11,$12,$13,
+   to_timestamp($10::double precision))`;
+
 function exact(value: Record<string, unknown>, keys: string[]): void {
   const actual = Object.keys(value).sort();
   const expected = [...keys].sort();
@@ -163,11 +169,7 @@ export class StandardConfirmations {
     const requestHash = canonicalHash({ orderKey: order.orderKey, operation: action,
       currentUid: current.currentConfirmationUid, transitionsUsed: used, nonce: nonce.toString(),
       deadline: deadline.toString(), typedData });
-    await this.pool.query(
-      `INSERT INTO standard_confirmation_preparations
-        (preparation_id,order_id,order_key,payer,operation,confirmation,current_uid,transitions_used,
-         eas_nonce,deadline,request_hash,canonical_typed_data,final_transition_acknowledged,expires_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,to_timestamp($10))`,
+    await this.pool.query(CONFIRMATION_PREPARATION_INSERT_SQL,
       [preparationId, order.orderId, Buffer.from(order.orderKey.slice(2), "hex"), payer.toLowerCase(),
         action === "confirmation" ? "attest-confirmation" : "revoke-confirmation",
         action === "confirmation" ? request.confirmation : null,
