@@ -857,7 +857,7 @@ export class StandardRailService {
       averageFulfillmentSeconds: null,
       fulfillmentSampleSize: "0",
       recentPurchases: [],
-      finalizedBlock: null,
+      safeBlock: null,
     };
     return [...this.listings.values()].map((listing) => ({
       providerAgentId: listing.commitment.payload.providerAgentId,
@@ -896,15 +896,15 @@ export class StandardRailService {
     } catch {
       return outcomes;
     }
-    const { providers, services, finalizedBlock } = snapshot;
+    const { providers, services, safeBlock } = snapshot;
     return outcomes.map((outcome) => ({
       ...outcome,
       providerReputation: providers.get(String(outcome.providerAgentId)) ??
-        { ...(outcome.providerReputation as object), finalizedBlock },
+        { ...(outcome.providerReputation as object), safeBlock },
       serviceReputation: services.get(outcome.serviceId as Hex) ??
-        { ...(outcome.serviceReputation as object), finalizedBlock },
+        { ...(outcome.serviceReputation as object), safeBlock },
       reputation: services.get(outcome.serviceId as Hex) ??
-        { ...(outcome.reputation as object), finalizedBlock },
+        { ...(outcome.reputation as object), safeBlock },
     }));
   }
 

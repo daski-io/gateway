@@ -45,7 +45,7 @@ function timestamp(seconds: bigint): string {
 
 export function presentReputation(
   source: readonly ProjectedReputationRecord[],
-  finalizedBlock: bigint,
+  safeBlock: bigint,
 ) {
   const records = source.filter((record) => record.reputationEligible);
   const completed = records.filter((record) => record.outcomeRecorded && record.outcome === 0);
@@ -103,6 +103,6 @@ export function presentReputation(
       : null,
     fulfillmentSampleSize: completed.length.toString(),
     recentPurchases,
-    finalizedBlock: finalizedBlock.toString(),
+    safeBlock: safeBlock.toString(),
   };
 }

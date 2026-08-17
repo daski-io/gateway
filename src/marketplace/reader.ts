@@ -156,7 +156,11 @@ export class ViemMarketplaceChainReader implements MarketplaceChainReader {
   }
 
   async getProvider(agentId: bigint): Promise<unknown> {
-    const blockNumber = (await this.client.getBlock({ blockTag: "finalized" })).number;
+    const [finalizedBlock, safeBlock] = await Promise.all([
+      this.client.getBlock({ blockTag: "finalized" }),
+      this.client.getBlock({ blockTag: "safe" }),
+    ]);
+    const blockNumber = finalizedBlock.number;
     const [provider, serviceCount, serviceIds, reputation] = await Promise.all([
       this.providerSummary(agentId, blockNumber),
       this.client.readContract({
@@ -178,33 +182,36 @@ export class ViemMarketplaceChainReader implements MarketplaceChainReader {
         abi: reputationStorageAbi,
         functionName: "getProviderStats",
         args: [agentId],
-        blockNumber,
+        blockNumber: safeBlock.number,
       }),
     ]);
     return {
       ...provider as object,
       serviceCount: serviceCount.toString(),
       serviceIds,
-      standardReputation: { ...providerStats(reputation), finalizedBlock: blockNumber.toString() },
+      standardReputation: { ...providerStats(reputation), safeBlock: safeBlock.number.toString() },
     };
   }
 
   async getService(serviceId: Hex): Promise<unknown> {
-    const blockNumber = (await this.client.getBlock({ blockTag: "finalized" })).number;
+    const [finalizedBlock, safeBlock] = await Promise.all([
+      this.client.getBlock({ blockTag: "finalized" }),
+      this.client.getBlock({ blockTag: "safe" }),
+    ]);
     const [service, reputation] = await Promise.all([
       this.client.readContract({
         address: this.addresses.serviceRegistry,
         abi: serviceRegistryAbi,
         functionName: "getService",
         args: [serviceId],
-        blockNumber,
+        blockNumber: finalizedBlock.number,
       }),
       this.client.readContract({
         address: this.addresses.reputationStorage,
         abi: reputationStorageAbi,
         functionName: "getServiceStats",
         args: [serviceId],
-        blockNumber,
+        blockNumber: safeBlock.number,
       }),
     ]);
     return {
@@ -216,7 +223,7 @@ export class ViemMarketplaceChainReader implements MarketplaceChainReader {
       serviceWallet: service.serviceWallet,
       createdAt: service.createdAt.toString(),
       active: service.active,
-      standardReputation: { ...serviceStats(reputation), finalizedBlock: blockNumber.toString() },
+      standardReputation: { ...serviceStats(reputation), safeBlock: safeBlock.number.toString() },
     };
   }
 }
