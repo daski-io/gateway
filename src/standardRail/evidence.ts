@@ -22,6 +22,7 @@ import type { PaymentPayload } from "@x402/core/types";
 import { canonicalHash } from "./canonical.js";
 import { chainLogsHash } from "./chainLogHash.js";
 import { decodeSettlementCalldata } from "./settlementCalldata.js";
+import { hasRequiredConfirmations } from "./finality.js";
 import type { ProviderIdentitySnapshotV1, StandardListing, StandardOrderRecord } from "./types.js";
 
 const transferAuthorizationAbi = parseAbi([
@@ -308,7 +309,7 @@ export class StandardChainEvidence {
         receipt.status !== "success" ||
         receipt.blockNumber !== BigInt(listing.manifest.payload.splitterDeploymentBlockNumber) ||
         receipt.blockHash !== listing.manifest.payload.splitterDeploymentBlockHash ||
-        head - receipt.blockNumber < BigInt(this.config.finalityConfirmations)
+        !hasRequiredConfirmations(head, receipt.blockNumber, this.config.finalityConfirmations)
       ) throw new Error("Splitter deployment transaction is not final or manifest-bound");
       const immutableHash = keccak256(encodeAbiParameters(
         [
@@ -394,7 +395,10 @@ export class StandardChainEvidence {
         client.getTransaction({ hash: args.transactionHash }),
         client.getBlockNumber(),
       ]);
-      if (receipt.status !== "success" || head - receipt.blockNumber < BigInt(this.config.finalityConfirmations)) {
+      if (
+        receipt.status !== "success" ||
+        !hasRequiredConfirmations(head, receipt.blockNumber, this.config.finalityConfirmations)
+      ) {
         throw new Error("Settlement transaction is not finalized");
       }
       await this.tokenPolicyFacts(client, receipt.blockNumber);
@@ -593,7 +597,8 @@ export class StandardChainEvidence {
       ]);
       await this.tokenPolicyFacts(client, receipt.blockNumber);
       if (
-        receipt.status !== "success" || head - receipt.blockNumber < BigInt(this.config.finalityConfirmations) ||
+        receipt.status !== "success" ||
+        !hasRequiredConfirmations(head, receipt.blockNumber, this.config.finalityConfirmations) ||
         !transaction.to || getAddress(transaction.to) !== splitter ||
         transaction.input !== encodeFunctionData({ abi: splitterAbi, functionName: "releaseAll" })
       ) throw new Error("Release transaction is not finalized or has unexpected calldata");
