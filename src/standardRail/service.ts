@@ -58,6 +58,11 @@ import { StandardConfirmations } from "./confirmations.js";
 import { base, baseSepolia } from "viem/chains";
 import { activeRequestKey } from "../mcp/requestContext.js";
 import { DirectReputationReader } from "./reputationReader.js";
+import type { MarketplaceChainReader } from "../marketplace/reader.js";
+import {
+  AdmittedServiceResolver,
+  type ServicePresentation,
+} from "../marketplace/servicePresentation.js";
 
 interface OperationalSummary {
   pending: number;
@@ -197,6 +202,7 @@ export class StandardRailService {
   private readonly reputationWorker: StandardReputationWorker;
   private readonly confirmations: StandardConfirmations;
   private readonly reputationReader: DirectReputationReader;
+  private readonly serviceResolver: AdmittedServiceResolver;
   private dependenciesReady = false;
   private readinessInterval: NodeJS.Timeout | null = null;
   private readinessRefresh: Promise<void> | null = null;
@@ -208,6 +214,7 @@ export class StandardRailService {
     private readonly pool: Pool,
     private readonly facilitator: StandardFacilitator,
     private readonly evidence: StandardChainEvidence,
+    marketplace: MarketplaceChainReader,
     private readonly fetchFn: typeof fetch = fetch,
     federationPermitPool: Pool = pool,
   ) {
@@ -253,6 +260,21 @@ export class StandardRailService {
       appConfig.chainId === 8453 ? base : baseSepolia,
       pool,
       appConfig.marketplaceContracts,
+    );
+    this.serviceResolver = new AdmittedServiceResolver(
+      marketplace,
+      async (listing, endpoint) => {
+        const response = await this.providerFetch(listing, endpoint, {
+          method: "GET",
+          headers: { accept: "application/json" },
+          signal: AbortSignal.timeout(listing.providerControlProfile.payload.timeoutMs),
+        });
+        if (!response.ok) throw new Error("PROVIDER_AGENT_CARD_UNAVAILABLE");
+        return readBoundedJson(
+          response,
+          Math.min(256_000, listing.providerControlProfile.payload.maxResponseBytes),
+        );
+      },
     );
     this.railProfileHash = canonicalHash(railConfig.manifest.activeRailProfile);
     for (const artifact of [
@@ -863,8 +885,7 @@ export class StandardRailService {
       providerAgentId: listing.commitment.payload.providerAgentId,
       serviceId: listing.commitment.payload.serviceId,
       outcomeId: listing.commitment.payload.outcomeId,
-      title: listing.title,
-      description: listing.description,
+      skillId: listing.offer.payload.skillId,
       ...listing.discovery,
       bindingProfile: listing.commitment.payload.bindingProfile,
       pricingMode: listing.offer.payload.pricingMode,
@@ -889,7 +910,12 @@ export class StandardRailService {
   }
 
   async publicOutcomes(): Promise<Array<Record<string, unknown>>> {
-    const outcomes = this.listOutcomes();
+    const outcomes: Array<Record<string, unknown>> = await Promise.all(
+      this.listOutcomes().map(async (outcome): Promise<Record<string, unknown>> => {
+        const listing = this.listing(String(outcome.providerAgentId), String(outcome.outcomeId));
+        return { ...outcome, ...await this.serviceResolver.resolve(listing) };
+      }),
+    );
     let snapshot;
     try {
       snapshot = await this.reputationReader.forOutcomes(outcomes);
@@ -921,7 +947,14 @@ export class StandardRailService {
     const tokens = (filters.text ?? "").toLowerCase().match(/[a-z0-9]+/g)?.slice(0, 12) ?? [];
     return (await this.publicOutcomes()).filter((outcome) => {
       const row = outcome as Record<string, unknown>;
-      const haystack = [row.title, row.description, ...(row.tags as string[])]
+      const presentation = row as unknown as ServicePresentation;
+      const haystack = [
+        presentation.service.name,
+        presentation.service.description,
+        presentation.skill.name,
+        presentation.skill.description,
+        ...(row.tags as string[]),
+      ]
         .join(" ").toLowerCase().match(/[a-z0-9]+/g) ?? [];
       return (
         tokens.every((token) => haystack.some((word) => word.includes(token))) &&
@@ -1875,7 +1908,12 @@ export class StandardRailService {
     return {
       handle,
       order,
-      paymentRequired: paymentRequired({ requirements, listing, order, railProfileHash: this.railProfileHash }),
+      paymentRequired: paymentRequired({
+        requirements,
+        listing,
+        order,
+        railProfileHash: this.railProfileHash,
+      }),
     };
   }
 

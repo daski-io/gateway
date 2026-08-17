@@ -194,15 +194,17 @@ export function createStandardRailRouter(service: StandardRailService, publicUrl
     } catch (error) { sendWalletError(res, error); }
   });
 
-  router.get("/.well-known/x402", (_req, res) => {
-    res.json({
-      version: 2,
-      resources: service.listOutcomes().map((outcome) => ({
-        resource: outcome,
-        transport: "http",
-      })),
-      railProfileHash: service.railProfileHash,
-    });
+  router.get("/.well-known/x402", async (_req, res, next) => {
+    try {
+      res.json({
+        version: 2,
+        resources: (await service.publicOutcomes()).map((outcome) => ({
+          resource: outcome,
+          transport: "http",
+        })),
+        railProfileHash: service.railProfileHash,
+      });
+    } catch (error) { next(error); }
   });
 
   router.get("/public/v2/outcomes", async (_req, res, next) => {

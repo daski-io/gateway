@@ -81,19 +81,20 @@ export async function createStandardGatewayHttp(
     options.standardRailConfig,
     options.config.chainId === 8453 ? base : baseSepolia,
   );
+  const marketplace = new ViemMarketplaceChainReader(
+    options.config,
+    options.standardRailConfig,
+    options.config.chainId === 8453 ? base : baseSepolia,
+  );
   const standardRail = new StandardRailService(
     options.config,
     options.standardRailConfig,
     options.pool,
     facilitator,
     evidence,
+    marketplace,
     options.a2aFetch,
     options.federationPermitPool,
-  );
-  const marketplace = new ViemMarketplaceChainReader(
-    options.config,
-    options.standardRailConfig,
-    options.config.chainId === 8453 ? base : baseSepolia,
   );
   await standardRail.initialize();
   app.use(createStandardMetaRouter({

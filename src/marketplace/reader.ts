@@ -31,7 +31,19 @@ export interface MarketplaceChainReader {
   resolveWallet(wallet: Address): Promise<{ agentId: string; found: boolean }>;
   listProviders(offset: number, limit: number): Promise<unknown>;
   getProvider(agentId: bigint): Promise<unknown>;
-  getService(serviceId: Hex): Promise<unknown>;
+  getService(serviceId: Hex): Promise<MarketplaceServiceRecord>;
+}
+
+export interface MarketplaceServiceRecord {
+  providerAgentId: string;
+  serviceId: Hex;
+  serviceSlug: string;
+  version: string;
+  serviceUri: string;
+  serviceWallet: Address;
+  createdAt: string;
+  active: boolean;
+  standardReputation: ReturnType<typeof serviceStats> & { safeBlock: string };
 }
 
 function identity(value: readonly [Address, Address, string]) {
@@ -193,7 +205,7 @@ export class ViemMarketplaceChainReader implements MarketplaceChainReader {
     };
   }
 
-  async getService(serviceId: Hex): Promise<unknown> {
+  async getService(serviceId: Hex): Promise<MarketplaceServiceRecord> {
     const [finalizedBlock, safeBlock] = await Promise.all([
       this.client.getBlock({ blockTag: "finalized" }),
       this.client.getBlock({ blockTag: "safe" }),

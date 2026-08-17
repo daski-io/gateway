@@ -375,7 +375,7 @@ function summaryBindsRequest(action: AssetActionDefinitionV1): boolean {
 
 async function verifyListing(listing: StandardListing, trust: ArtifactTrust): Promise<void> {
   requireClosedKeys(listing as unknown as Record<string, unknown>, [
-    "commitment", "manifest", "offer", "providerControlProfile", "title", "description", "discovery",
+    "commitment", "manifest", "offer", "providerControlProfile", "discovery",
     "requestSchema", "responseSchema", "terms", "screeningPolicy", "buyerIdentityPolicy",
     "extensionPolicy", "quotePolicy", "deliveryCommitment", "capacityPolicy", "deadlinePolicy",
   ], "standard listing");
@@ -408,7 +408,7 @@ async function verifyListing(listing: StandardListing, trust: ArtifactTrust): Pr
     "splitterDeploymentTransaction", "splitterDeploymentBlockNumber", "splitterDeploymentBlockHash",
   ], "listing manifest payload");
   requireClosedKeys(listing.offer.payload as unknown as Record<string, unknown>, [
-    "listingManifestHash", "outcomeId", "providerAgentId", "providerPayee", "pricingMode",
+    "listingManifestHash", "outcomeId", "skillId", "providerAgentId", "providerPayee", "pricingMode",
     "fixedGrossAmount", "quotePolicyHash", "capacityPolicyHash", "deadlinePolicyHash",
     "deliveryCommitment", "termsHash", "issuedAt", "validBefore", "offerNonce",
   ], "provider offer payload");
@@ -517,7 +517,7 @@ async function verifyListing(listing: StandardListing, trust: ArtifactTrust): Pr
     canonicalHash(listing.responseSchema) !== commitment.responseSchemaHash
   ) throw new Error("Listing schema content hash mismatch");
   if (
-    !/^\d+$/.test(commitment.listingEpoch) || commitment.validFrom >= commitment.validUntil ||
+    !offer.skillId || !/^\d+$/.test(commitment.listingEpoch) || commitment.validFrom >= commitment.validUntil ||
     offer.issuedAt < commitment.validFrom || offer.validBefore > commitment.validUntil ||
     !Number.isSafeInteger(commitment.commissionBps) || commitment.commissionBps <= 0 ||
     commitment.commissionBps >= 10_000 ||

@@ -82,6 +82,7 @@ export interface ListingEpochManifestV1 {
 export interface ProviderOutcomeOfferV1 {
   listingManifestHash: Hex;
   outcomeId: string;
+  skillId: string;
   providerAgentId: string;
   providerPayee: Hex;
   pricingMode: "fixed" | "dynamic";
@@ -151,8 +152,6 @@ export interface StandardListing {
   manifest: SignedEnvelope<ListingEpochManifestV1>;
   offer: SignedEnvelope<ProviderOutcomeOfferV1>;
   providerControlProfile: SignedEnvelope<ProviderControlProfileV1>;
-  title: string;
-  description: string;
   discovery: {
     categoryFamily: string;
     serviceType: string;
