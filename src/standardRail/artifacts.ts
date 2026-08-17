@@ -1,4 +1,10 @@
-import { getAddress, recoverMessageAddress, type Address } from "viem";
+import {
+  getAddress,
+  keccak256,
+  recoverMessageAddress,
+  stringToHex,
+  type Address,
+} from "viem";
 import { artifactPayloadHash, canonicalHash, providerIdentitySnapshotHash } from "./canonical.js";
 import type {
   AssetActionDefinitionV1,
@@ -12,6 +18,7 @@ import {
   compileClosedResponseSchema,
 } from "./schema.js";
 import { assertListingRoleSeparation } from "./listingRoles.js";
+import { deriveSplitterProvenance } from "./splitterProvenance.js";
 
 const LAUNCH_ACTION_CLASSIFICATION = new Map<string, boolean>([
   ["get-domain-info", false],
@@ -45,15 +52,22 @@ export interface ArtifactTrust {
   gatewayAudience: string;
   signers: ReadonlyMap<string, Address>;
   launchOutcomeIds: readonly string[];
+  splitterFactoryRuntimeCodeHash: `0x${string}`;
+  splitterCreationCodeHash: `0x${string}`;
 }
 
 export async function verifyEnvelope<T>(
-  envelope: SignedEnvelope<T>,
+  envelope: SignedEnvelope<T, number>,
   expectedType: string,
   trust: ArtifactTrust,
   nowSeconds = Math.floor(Date.now() / 1_000),
 ): Promise<void> {
-  if (envelope.artifactType !== expectedType || envelope.schemaVersion !== 1) {
+  const version = Number(expectedType.match(/V([0-9]+)$/)?.[1]);
+  if (
+    !Number.isSafeInteger(version) ||
+    envelope.artifactType !== expectedType ||
+    envelope.schemaVersion !== version
+  ) {
     throw new Error(`Unsupported ${expectedType} artifact version`);
   }
   if (
@@ -93,7 +107,7 @@ const ENVELOPE_KEYS = [
   "signerKeyId", "issuedAt", "validBefore", "payload", "signature",
 ] as const;
 
-function verifyClosedEnvelope(envelope: SignedEnvelope<unknown>, label: string): void {
+function verifyClosedEnvelope(envelope: SignedEnvelope<unknown, number>, label: string): void {
   requireClosedKeys(envelope as unknown as Record<string, unknown>, ENVELOPE_KEYS, label);
 }
 
@@ -114,7 +128,7 @@ export async function verifyStandardRailManifest(
   await verifyEnvelope(manifest.facilitatorProfile, "FacilitatorProfileV1", trust);
   await verifyEnvelope(manifest.railCapabilityRequirements, "RailCapabilityRequirementsV1", trust);
   await verifyEnvelope(manifest.activeRailProfile, "ActiveRailProfileV1", trust);
-  await verifyEnvelope(manifest.chainEvidencePolicy, "ChainEvidencePolicyV1", trust);
+  await verifyEnvelope(manifest.chainEvidencePolicy, "ChainEvidencePolicyV2", trust);
   for (const snapshot of manifest.providerIdentitySnapshots) {
     verifyClosedEnvelope(snapshot, "provider identity snapshot envelope");
     await verifyEnvelope(snapshot, "ProviderIdentitySnapshotV1", trust);
@@ -257,7 +271,7 @@ export async function verifyStandardRailManifest(
   requireClosedKeys(manifest.chainEvidencePolicy.payload as unknown as Record<string, unknown>, [
     "policyId", "canonicalToken", "canonicalTokenRuntimeCodeHash", "tokenImplementationAddress",
     "tokenImplementationRuntimeCodeHash", "tokenImplementationSlot", "tokenDomainSeparator",
-    "maximumSourceLagBlocks", "finalityBlockTimeSeconds", "maximumIntervalEvents",
+    "maximumSourceLagBlocks", "finalityBlockTimeSeconds", "maximumLogPageEvents",
   ], "chain evidence policy payload");
   const rail = manifest.activeRailProfile.payload;
   const facilitator = manifest.facilitatorProfile.payload;
@@ -331,8 +345,8 @@ export async function verifyStandardRailManifest(
     !/^0x[0-9a-fA-F]{64}$/.test(chainPolicy.tokenDomainSeparator) ||
     !Number.isSafeInteger(chainPolicy.maximumSourceLagBlocks) || chainPolicy.maximumSourceLagBlocks < 0 ||
     !Number.isSafeInteger(chainPolicy.finalityBlockTimeSeconds) || chainPolicy.finalityBlockTimeSeconds < 1 ||
-    !Number.isSafeInteger(chainPolicy.maximumIntervalEvents) || chainPolicy.maximumIntervalEvents < 1 ||
-    chainPolicy.maximumIntervalEvents > 100_000
+    !Number.isSafeInteger(chainPolicy.maximumLogPageEvents) || chainPolicy.maximumLogPageEvents < 1 ||
+    chainPolicy.maximumLogPageEvents > 100_000
   ) throw new Error("Chain evidence policy is invalid");
   const seen = new Set<string>();
   for (const listing of manifest.listings) {
@@ -383,8 +397,8 @@ async function verifyListing(listing: StandardListing, trust: ArtifactTrust): Pr
   verifyClosedEnvelope(listing.manifest, "listing manifest envelope");
   verifyClosedEnvelope(listing.offer, "provider offer envelope");
   verifyClosedEnvelope(listing.providerControlProfile, "provider control profile envelope");
-  await verifyEnvelope(listing.commitment, "ListingCommitmentV1", trust);
-  await verifyEnvelope(listing.manifest, "ListingEpochManifestV1", trust);
+  await verifyEnvelope(listing.commitment, "ListingCommitmentV2", trust);
+  await verifyEnvelope(listing.manifest, "ListingEpochManifestV2", trust);
   await verifyEnvelope(listing.providerControlProfile, "ProviderControlProfileV1", trust);
   await verifyEnvelope(listing.offer, "ProviderOutcomeOfferV1", {
     ...trust,
@@ -401,11 +415,18 @@ async function verifyListing(listing: StandardListing, trust: ArtifactTrust): Pr
     "canonicalizationProfile", "buyerIdentityPolicyHash", "daskiCommissionReceiver", "commissionBps",
     "termsHash", "screeningPolicyHash", "chainEvidencePolicyHash",
     "extensionPolicyHash", "listingEpoch", "validFrom", "validUntil", "splitterFactory",
-    "splitterCreationCodeHash", "splitterDeploymentSalt",
+    "splitterFactoryRuntimeCodeHash", "splitterCreationCodeHash", "splitterDeploymentSalt",
   ], "listing commitment payload");
   requireClosedKeys(listing.manifest.payload as unknown as Record<string, unknown>, [
-    "listingCommitmentHash", "splitterAddress", "splitterRuntimeCodeHash", "splitterImmutableHash",
-    "splitterDeploymentTransaction", "splitterDeploymentBlockNumber", "splitterDeploymentBlockHash",
+    "chainId", "canonicalToken", "providerPayee", "daskiCommissionReceiver", "commissionBps",
+    "policyVersionHash", "outcomeIdHash", "listingEpoch", "listingCommitmentHash",
+    "splitterAddress", "splitterFactory", "splitterFactoryRuntimeCodeHash",
+    "splitterDeploymentSalt", "splitterCreationCode", "splitterCreationCodeHash",
+    "splitterInitCodeHash", "splitterDeploymentTransaction", "splitterDeploymentBlockNumber",
+    "splitterDeploymentBlockHash", "splitterDeploymentTransactionIndex",
+    "splitterDeploymentLogIndex", "splitterRuntimeCodeHash", "splitterImmutableHash",
+    "splitterActivationBlockNumber", "splitterActivationBlockHash", "splitterActivationPosition",
+    "splitterStartingTokenBalance", "splitterStartingReleaseSequence",
   ], "listing manifest payload");
   requireClosedKeys(listing.offer.payload as unknown as Record<string, unknown>, [
     "listingManifestHash", "outcomeId", "skillId", "providerAgentId", "providerPayee", "pricingMode",
@@ -459,9 +480,51 @@ async function verifyListing(listing: StandardListing, trust: ArtifactTrust): Pr
   if (listing.manifest.payload.listingCommitmentHash !== commitmentHash) {
     throw new Error("Listing manifest commitment hash mismatch");
   }
-  if (!/^\d+$/.test(listing.manifest.payload.splitterDeploymentBlockNumber)) {
-    throw new Error("Listing deployment block number is invalid");
-  }
+  const manifestPayload = listing.manifest.payload;
+  const unsignedInteger = /^(0|[1-9][0-9]*)$/;
+  const hashValue = /^0x[0-9a-fA-F]{64}$/;
+  const addressValue = /^0x[0-9a-fA-F]{40}$/;
+  if (
+    manifestPayload.chainId !== trust.chainId ||
+    !addressValue.test(manifestPayload.canonicalToken) ||
+    !addressValue.test(manifestPayload.providerPayee) ||
+    !addressValue.test(manifestPayload.daskiCommissionReceiver) ||
+    !Number.isSafeInteger(manifestPayload.commissionBps) ||
+    manifestPayload.commissionBps < 1 ||
+    manifestPayload.commissionBps >= 10_000 ||
+    !hashValue.test(manifestPayload.policyVersionHash) ||
+    !hashValue.test(manifestPayload.outcomeIdHash) ||
+    !unsignedInteger.test(manifestPayload.listingEpoch) ||
+    BigInt(manifestPayload.listingEpoch) < 1n ||
+    BigInt(manifestPayload.listingEpoch) >= 1n << 64n ||
+    !hashValue.test(manifestPayload.listingCommitmentHash) ||
+    !addressValue.test(manifestPayload.splitterAddress) ||
+    !addressValue.test(manifestPayload.splitterFactory) ||
+    !hashValue.test(manifestPayload.splitterFactoryRuntimeCodeHash) ||
+    !hashValue.test(manifestPayload.splitterDeploymentSalt) ||
+    !/^0x(?:[0-9a-fA-F]{2})+$/.test(manifestPayload.splitterCreationCode) ||
+    manifestPayload.splitterCreationCode.length > 200_002 ||
+    !hashValue.test(manifestPayload.splitterCreationCodeHash) ||
+    !hashValue.test(manifestPayload.splitterInitCodeHash) ||
+    !hashValue.test(manifestPayload.splitterDeploymentTransaction) ||
+    !unsignedInteger.test(manifestPayload.splitterDeploymentBlockNumber) ||
+    !hashValue.test(manifestPayload.splitterDeploymentBlockHash) ||
+    !Number.isSafeInteger(manifestPayload.splitterDeploymentTransactionIndex) ||
+    manifestPayload.splitterDeploymentTransactionIndex < 0 ||
+    !Number.isSafeInteger(manifestPayload.splitterDeploymentLogIndex) ||
+    manifestPayload.splitterDeploymentLogIndex < 0 ||
+    !hashValue.test(manifestPayload.splitterRuntimeCodeHash) ||
+    !hashValue.test(manifestPayload.splitterImmutableHash) ||
+    !unsignedInteger.test(manifestPayload.splitterActivationBlockNumber) ||
+    !hashValue.test(manifestPayload.splitterActivationBlockHash) ||
+    manifestPayload.splitterActivationPosition !== "END_OF_BLOCK" ||
+    !unsignedInteger.test(manifestPayload.splitterStartingTokenBalance) ||
+    BigInt(manifestPayload.splitterStartingTokenBalance) >= 1n << 256n ||
+    !unsignedInteger.test(manifestPayload.splitterStartingReleaseSequence) ||
+    BigInt(manifestPayload.splitterStartingReleaseSequence) >= 1n << 64n ||
+    BigInt(manifestPayload.splitterActivationBlockNumber) <
+      BigInt(manifestPayload.splitterDeploymentBlockNumber)
+  ) throw new Error("Listing manifest V2 chain provenance is invalid");
   if (listing.offer.payload.listingManifestHash !== manifestHash) {
     throw new Error("Provider offer listing hash mismatch");
   }
@@ -471,6 +534,46 @@ async function verifyListing(listing: StandardListing, trust: ArtifactTrust): Pr
   const commitment = listing.commitment.payload;
   const offer = listing.offer.payload;
   const control = listing.providerControlProfile.payload;
+  if (
+    getAddress(manifestPayload.canonicalToken) !== getAddress(commitment.canonicalToken) ||
+    getAddress(manifestPayload.providerPayee) !== getAddress(commitment.providerPayee) ||
+    getAddress(manifestPayload.daskiCommissionReceiver) !==
+      getAddress(commitment.daskiCommissionReceiver) ||
+    manifestPayload.commissionBps !== commitment.commissionBps ||
+    manifestPayload.policyVersionHash !== commitment.chainEvidencePolicyHash ||
+    manifestPayload.outcomeIdHash !== keccak256(stringToHex(commitment.outcomeId)) ||
+    manifestPayload.listingEpoch !== commitment.listingEpoch ||
+    getAddress(manifestPayload.splitterFactory) !== getAddress(commitment.splitterFactory) ||
+    manifestPayload.splitterFactoryRuntimeCodeHash !==
+      commitment.splitterFactoryRuntimeCodeHash ||
+    manifestPayload.splitterCreationCodeHash !== commitment.splitterCreationCodeHash ||
+    manifestPayload.splitterDeploymentSalt !== commitment.splitterDeploymentSalt
+  ) throw new Error("Listing manifest differs from its V2 commitment");
+  deriveSplitterProvenance({
+    constructor: {
+      chainId: manifestPayload.chainId,
+      canonicalToken: getAddress(manifestPayload.canonicalToken),
+      providerPayee: getAddress(manifestPayload.providerPayee),
+      daskiCommissionReceiver: getAddress(manifestPayload.daskiCommissionReceiver),
+      commissionBps: manifestPayload.commissionBps,
+      policyVersionHash: manifestPayload.policyVersionHash,
+      outcomeIdHash: manifestPayload.outcomeIdHash,
+      listingCommitmentHash: manifestPayload.listingCommitmentHash,
+      listingEpoch: BigInt(manifestPayload.listingEpoch),
+    },
+    provenance: {
+      splitterAddress: getAddress(manifestPayload.splitterAddress),
+      splitterFactory: getAddress(manifestPayload.splitterFactory),
+      splitterFactoryRuntimeCodeHash: manifestPayload.splitterFactoryRuntimeCodeHash,
+      splitterDeploymentSalt: manifestPayload.splitterDeploymentSalt,
+      splitterCreationCode: manifestPayload.splitterCreationCode,
+      splitterCreationCodeHash: manifestPayload.splitterCreationCodeHash,
+      splitterInitCodeHash: manifestPayload.splitterInitCodeHash,
+      splitterImmutableHash: manifestPayload.splitterImmutableHash,
+    },
+    trustedSplitterCreationCodeHash: trust.splitterCreationCodeHash,
+    trustedSplitterFactoryRuntimeCodeHash: trust.splitterFactoryRuntimeCodeHash,
+  });
   requireClosedKeys(control as unknown as Record<string, unknown>, [
     "providerAgentId", "providerAudience", "origin", "quoteUrl", "dispatchUrl",
     "dispatchStatusUrl", "lifecycleUrl", "assetQueryUrl", "assetActionUrl",
@@ -518,6 +621,14 @@ async function verifyListing(listing: StandardListing, trust: ArtifactTrust): Pr
   ) throw new Error("Listing schema content hash mismatch");
   if (
     !offer.skillId || !/^\d+$/.test(commitment.listingEpoch) || commitment.validFrom >= commitment.validUntil ||
+    !/^0x[0-9a-fA-F]{40}$/.test(commitment.splitterFactory) ||
+    commitment.splitterFactoryRuntimeCodeHash.toLowerCase() !==
+      trust.splitterFactoryRuntimeCodeHash.toLowerCase() ||
+    commitment.splitterCreationCodeHash.toLowerCase() !==
+      trust.splitterCreationCodeHash.toLowerCase() ||
+    !/^0x[0-9a-fA-F]{64}$/.test(commitment.splitterFactoryRuntimeCodeHash) ||
+    !/^0x[0-9a-fA-F]{64}$/.test(commitment.splitterCreationCodeHash) ||
+    !/^0x[0-9a-fA-F]{64}$/.test(commitment.splitterDeploymentSalt) ||
     offer.issuedAt < commitment.validFrom || offer.validBefore > commitment.validUntil ||
     !Number.isSafeInteger(commitment.commissionBps) || commitment.commissionBps <= 0 ||
     commitment.commissionBps >= 10_000 ||

@@ -17,7 +17,11 @@ import type { Config } from "../config.js";
 import type { Pool } from "../db/pool.js";
 import { assertNoDuplicateJsonKeys, canonicalHash, providerIdentitySnapshotHash } from "./canonical.js";
 import type { StandardRailConfig } from "./config.js";
-import type { StandardChainEvidence } from "./evidence.js";
+import type {
+  EvidenceResult,
+  ReleaseEvidenceResult,
+  StandardChainEvidence,
+} from "./evidence.js";
 import { createPinnedLookup, type StandardFacilitator } from "./facilitator.js";
 import { StandardRailJournal } from "./journal.js";
 import {
@@ -34,7 +38,8 @@ import type {
   DispatchStatusQueryV1,
   StandardListing,
   StandardOrderRecord,
-  StandardRailDispatchV1,
+  StandardRailDispatchV2,
+  StandardRailReceiptV2,
 } from "./types.js";
 import { verifyStandardRailManifest } from "./artifacts.js";
 import { StandardRailRecoveryWorker } from "./recovery.js";
@@ -59,6 +64,9 @@ import { base, baseSepolia } from "viem/chains";
 import { activeRequestKey } from "../mcp/requestContext.js";
 import { DirectReputationReader } from "./reputationReader.js";
 import type { MarketplaceChainReader } from "../marketplace/reader.js";
+import {
+  buildStandardEvidenceBundleV2,
+} from "./wireContracts.js";
 import {
   AdmittedServiceResolver,
   type ServicePresentation,
@@ -192,7 +200,7 @@ export class StandardRailService {
   private readonly listings = new Map<string, StandardListing>();
   private readonly requestValidators = new Map<string, ValidateFunction>();
   private readonly responseValidators = new Map<string, ValidateFunction>();
-  private readonly publicArtifacts = new Map<Hex, import("./types.js").SignedEnvelope<unknown>>();
+  private readonly publicArtifacts = new Map<Hex, import("./types.js").SignedEnvelope<unknown, number>>();
   private readonly recovery: StandardRailRecoveryWorker;
   private readonly incidents: StandardRailIncidentStore;
   private readonly walletStore: StandardWalletStore;
@@ -292,7 +300,7 @@ export class StandardRailService {
         listing.providerControlProfile,
       ]),
     ]) {
-      this.publicArtifacts.set(canonicalHash(artifact), artifact as import("./types.js").SignedEnvelope<unknown>);
+      this.publicArtifacts.set(canonicalHash(artifact), artifact as import("./types.js").SignedEnvelope<unknown, number>);
     }
     for (const listing of railConfig.manifest.listings) {
       const payload = listing.commitment.payload;
@@ -319,6 +327,8 @@ export class StandardRailService {
       gatewayAudience: this.railConfig.gatewayAudience,
       signers: this.railConfig.trustedSigners,
       launchOutcomeIds: this.railConfig.launchOutcomeIds,
+      splitterFactoryRuntimeCodeHash: this.railConfig.splitterFactoryRuntimeCodeHash,
+      splitterCreationCodeHash: this.railConfig.splitterCreationCodeHash,
     });
     if (
       getAddress(this.railConfig.manifest.chainEvidencePolicy.payload.canonicalToken) !==
@@ -417,7 +427,7 @@ export class StandardRailService {
     };
   }
 
-  publicArtifact(hash: string): import("./types.js").SignedEnvelope<unknown> | null {
+  publicArtifact(hash: string): import("./types.js").SignedEnvelope<unknown, number> | null {
     if (!/^0x[0-9a-fA-F]{64}$/.test(hash)) return null;
     return this.publicArtifacts.get(hash.toLowerCase() as Hex) ?? null;
   }
@@ -692,7 +702,6 @@ export class StandardRailService {
                 listing,
                 transactionHash,
                 paymentNonce: nonce,
-                payment: this.storedPayment(order),
               });
               await this.journal.recordEvidence(
                 order.orderId,
@@ -767,7 +776,6 @@ export class StandardRailService {
             listing,
             transactionHash,
             paymentNonce: nonce,
-            payment: this.storedPayment(order),
           });
         } catch (error) {
           if (Date.now() < order.updatedAt.getTime() + listing.deadlinePolicy.settlementEvidenceSeconds * 1_000) throw error;
@@ -1054,17 +1062,72 @@ export class StandardRailService {
   }
 
   async signedReceipt(order: StandardOrderRecord) {
-    const existing = await this.store.loadReceipt(order.orderId);
-    if (existing) return existing;
     if (
-      !order.payer || !order.providerNetAmount || !order.daskiCommissionAmount ||
+      !order.payer || !order.authorizationKey || !order.paymentPayloadHash ||
+      !order.providerNetAmount || !order.daskiCommissionAmount ||
       !order.settlementTxHash || !order.depositEvidenceHash ||
       !order.releaseTxHash || !order.releaseEvidenceHash
     ) return null;
-    const facilitatorConfirmationHash = await this.journal.settlementResponseHash(order.orderId);
+    const [facilitatorConfirmationHash, deposit, release] = await Promise.all([
+      this.journal.settlementResponseHash(order.orderId),
+      this.journal.loadEvidence(order.orderId, "deposit"),
+      this.journal.loadEvidence(order.orderId, "release"),
+    ]);
+    if (
+      deposit.transactionHash !== order.settlementTxHash ||
+      deposit.evidenceHash !== order.depositEvidenceHash ||
+      release.transactionHash !== order.releaseTxHash ||
+      release.evidenceHash !== order.releaseEvidenceHash ||
+      release.providerNetAmount.toString() !== order.providerNetAmount ||
+      release.daskiCommissionAmount.toString() !== order.daskiCommissionAmount
+    ) throw new Error("Persisted receipt evidence does not match the order");
+    const payload: StandardRailReceiptV2 = {
+      orderId: order.orderId,
+      state: "RELEASE_FINAL",
+      payer: order.payer,
+      providerAgentId: order.providerAgentId,
+      outcomeId: order.outcomeId,
+      bindingProfile: order.bindingProfile,
+      activeRailProfileHash: this.railProfileHash,
+      listingManifestHash: order.listingManifestHash,
+      providerOfferHash: order.providerOfferHash,
+      quoteHash: order.quoteHash,
+      canonicalRequestHash: order.canonicalRequestHash,
+      orderNonce: order.orderNonce,
+      authorizationKey: order.authorizationKey,
+      paymentPayloadHash: order.paymentPayloadHash,
+      grossAmount: order.grossAmount,
+      providerNetAmount: order.providerNetAmount,
+      daskiCommissionAmount: order.daskiCommissionAmount,
+      facilitatorConfirmationHash,
+      settlementTxHash: order.settlementTxHash,
+      depositEvidenceHash: deposit.evidenceHash,
+      depositBlockNumber: deposit.blockNumber.toString(),
+      depositBlockHash: deposit.blockHash,
+      depositTransactionIndex: deposit.transactionIndex,
+      depositLogIndex: deposit.logIndex,
+      releaseTxHash: order.releaseTxHash,
+      releaseEvidenceHash: release.evidenceHash,
+      releaseBlockNumber: release.blockNumber.toString(),
+      releaseBlockHash: release.blockHash,
+      releaseTransactionIndex: release.transactionIndex,
+      releaseLogIndex: release.logIndex,
+      releaseSequence: release.releaseSequence.toString(),
+    };
+    const existing = await this.store.loadReceipt(order.orderId);
+    if (existing) {
+      if (
+        existing.environment !== this.railConfig.environment ||
+        existing.chainId !== this.appConfig.chainId || existing.audience !== order.payer ||
+        existing.signerKeyId !== "gateway-receipt" ||
+        canonicalHash(existing.payload) !== canonicalHash(payload)
+      ) throw new Error("Persisted StandardRailReceiptV2 does not match the order");
+      return existing;
+    }
     const now = Math.floor(Date.now() / 1_000);
-    const receipt = await signEnvelope<Record<string, unknown>>({
-      artifactType: "StandardRailReceiptV1",
+    const receipt = await signEnvelope<StandardRailReceiptV2, 2>({
+      artifactType: "StandardRailReceiptV2",
+      schemaVersion: 2,
       environment: this.railConfig.environment,
       chainId: this.appConfig.chainId,
       audience: order.payer ?? this.railConfig.gatewayAudience,
@@ -1072,30 +1135,7 @@ export class StandardRailService {
       privateKey: this.railConfig.receiptPrivateKey,
       issuedAt: now,
       validBefore: Math.floor(order.expiresAt.getTime() / 1_000) + 31_536_000,
-      payload: {
-        orderId: order.orderId,
-        state: "RELEASE_FINAL",
-        payer: order.payer,
-        providerAgentId: order.providerAgentId,
-        outcomeId: order.outcomeId,
-        bindingProfile: order.bindingProfile,
-        activeRailProfileHash: this.railProfileHash,
-        listingManifestHash: order.listingManifestHash,
-        providerOfferHash: order.providerOfferHash,
-        quoteHash: order.quoteHash,
-        canonicalRequestHash: order.canonicalRequestHash,
-        orderNonce: order.orderNonce,
-        authorizationKey: order.authorizationKey,
-        paymentPayloadHash: order.paymentPayloadHash,
-        grossAmount: order.grossAmount,
-        providerNetAmount: order.providerNetAmount,
-        daskiCommissionAmount: order.daskiCommissionAmount,
-        facilitatorConfirmationHash,
-        settlementTxHash: order.settlementTxHash,
-        depositEvidenceHash: order.depositEvidenceHash,
-        releaseTxHash: order.releaseTxHash,
-        releaseEvidenceHash: order.releaseEvidenceHash,
-      },
+      payload,
     });
     return this.store.persistReceipt(order.orderId, receipt);
   }
@@ -1606,7 +1646,6 @@ export class StandardRailService {
         listing,
         transactionHash,
         paymentNonce: authorization.nonce,
-        payment: args.payment,
       });
       await this.journal.recordEvidence(order.orderId, "deposit", deposit, this.appConfig.chainId);
       order = await this.store.transition(order, "DEPOSIT_FINAL", "deposit_evidence_final", { depositEvidenceHash: deposit.evidenceHash });
@@ -1649,64 +1688,107 @@ export class StandardRailService {
     listing: StandardListing,
     request: unknown,
     confirmationHash: Hex,
-    evidenceBundle: { deposit: import("./evidence.js").EvidenceResult; release: import("./evidence.js").EvidenceResult },
+    evidenceBundle: { deposit: EvidenceResult; release: ReleaseEvidenceResult },
   ): Promise<StandardOrderRecord> {
+    if (
+      !order.payer || !order.settlementTxHash || !order.depositEvidenceHash ||
+      !order.releaseTxHash || !order.releaseEvidenceHash ||
+      !order.providerNetAmount || !order.daskiCommissionAmount ||
+      order.settlementTxHash !== evidenceBundle.deposit.transactionHash ||
+      order.depositEvidenceHash !== evidenceBundle.deposit.evidenceHash ||
+      order.releaseTxHash !== evidenceBundle.release.transactionHash ||
+      order.releaseEvidenceHash !== evidenceBundle.release.evidenceHash ||
+      order.providerNetAmount !== evidenceBundle.release.providerNetAmount.toString() ||
+      order.daskiCommissionAmount !== evidenceBundle.release.daskiCommissionAmount.toString()
+    ) throw new Error("Dispatch evidence does not match the order");
+    const payer = order.payer;
+    const providerNetAmount = order.providerNetAmount;
+    const daskiCommissionAmount = order.daskiCommissionAmount;
+    const wireEvidenceBundle = buildStandardEvidenceBundleV2(
+      evidenceBundle.deposit,
+      evidenceBundle.release,
+    );
+    const buildPayload = (
+      nonce: Hex,
+      issuedAt: number,
+      validBefore: number,
+      providerRequest: unknown,
+    ): StandardRailDispatchV2 => ({
+      environment: this.railConfig.environment,
+      chainId: this.appConfig.chainId,
+      gatewayAudience: this.railConfig.gatewayAudience,
+      providerAudience: listing.providerControlProfile.payload.providerAudience,
+      providerControlProfileHash: listing.commitment.payload.providerControlProfileHash,
+      orderId: order.orderId,
+      orderKey: order.orderKey,
+      serviceId: listing.commitment.payload.serviceId,
+      reputationEligible: isReputationEligiblePayer(payer, listing, this.railConfig),
+      reputationContract: this.railConfig.reputationContract,
+      outcomeSchemaUid: this.railConfig.reputationOutcomeSchemaUid,
+      dispatchNonce: nonce,
+      payer,
+      listingManifestHash: order.listingManifestHash,
+      providerOfferHash: order.providerOfferHash,
+      quoteHash: order.quoteHash,
+      bindingProfile: listing.commitment.payload.bindingProfile,
+      canonicalRequestHash: order.canonicalRequestHash,
+      orderNonce: order.orderNonce,
+      buyerIdentityProofHash: ZERO_HASH,
+      activeRailProfileHash: this.railProfileHash,
+      facilitatorConfirmationHash: confirmationHash,
+      settlementTxHash: wireEvidenceBundle.deposit.transactionHash,
+      depositEvidenceHash: wireEvidenceBundle.deposit.evidenceHash,
+      depositBlockNumber: wireEvidenceBundle.deposit.blockNumber,
+      depositBlockHash: wireEvidenceBundle.deposit.blockHash,
+      depositTransactionIndex: wireEvidenceBundle.deposit.transactionIndex,
+      depositLogIndex: wireEvidenceBundle.deposit.logIndex,
+      releaseTxHash: wireEvidenceBundle.release.transactionHash,
+      releaseEvidenceHash: wireEvidenceBundle.release.evidenceHash,
+      releaseBlockNumber: wireEvidenceBundle.release.blockNumber,
+      releaseBlockHash: wireEvidenceBundle.release.blockHash,
+      releaseTransactionIndex: wireEvidenceBundle.release.transactionIndex,
+      releaseLogIndex: wireEvidenceBundle.release.logIndex,
+      releaseSequence: wireEvidenceBundle.release.releaseSequence,
+      grossAmount: order.grossAmount,
+      providerNetAmount,
+      daskiCommissionAmount,
+      canonicalProviderRequestHash: canonicalHash(providerRequest),
+      dispatchDeadlineSeconds: listing.deadlinePolicy.dispatchSeconds,
+      issuedAt,
+      validBefore,
+    });
     const persisted = await this.journal.dispatchClaim(order.orderId);
     const mayInvokeProvider = persisted === null;
-    let dispatch: import("./types.js").SignedEnvelope<StandardRailDispatchV1>;
+    let dispatch: import("./types.js").SignedEnvelope<StandardRailDispatchV2, 2>;
     let dispatchHash: Hex;
     let effectiveRequest = request;
     if (persisted) {
       dispatch = persisted.dispatch;
       dispatchHash = canonicalHash(dispatch);
       effectiveRequest = persisted.request;
+      const expectedPayload = buildPayload(
+        dispatch.payload.dispatchNonce,
+        dispatch.payload.issuedAt,
+        dispatch.payload.validBefore,
+        effectiveRequest,
+      );
       if (
-        dispatch.payload.orderId !== order.orderId ||
-        dispatch.payload.listingManifestHash !== order.listingManifestHash ||
-        dispatch.payload.canonicalProviderRequestHash !== canonicalHash(effectiveRequest)
+        dispatch.payload.validBefore !==
+          dispatch.payload.issuedAt + listing.deadlinePolicy.dispatchSeconds ||
+        canonicalHash(dispatch.payload) !== canonicalHash(expectedPayload)
       ) throw new Error("Persisted dispatch does not match the order");
     } else {
       const nonce = `0x${randomBytes(32).toString("hex")}` as Hex;
       const now = Math.floor(Date.now() / 1_000);
-      const gross = BigInt(order.grossAmount);
-      if (!order.providerNetAmount || !order.daskiCommissionAmount) {
-        throw new Error("Release allocation is missing from the order");
-      }
-      const payload: StandardRailDispatchV1 = {
-        environment: this.railConfig.environment,
-        chainId: this.appConfig.chainId,
-        gatewayAudience: this.railConfig.gatewayAudience,
-        providerAudience: listing.providerControlProfile.payload.providerAudience,
-        providerControlProfileHash: listing.commitment.payload.providerControlProfileHash,
-        orderId: order.orderId,
-        orderKey: order.orderKey,
-        serviceId: listing.commitment.payload.serviceId,
-        reputationEligible: isReputationEligiblePayer(order.payer!, listing, this.railConfig),
-        reputationContract: this.railConfig.reputationContract,
-        outcomeSchemaUid: this.railConfig.reputationOutcomeSchemaUid,
-        dispatchNonce: nonce,
-        payer: order.payer!,
-        listingManifestHash: order.listingManifestHash,
-        providerOfferHash: order.providerOfferHash,
-        quoteHash: order.quoteHash,
-        bindingProfile: listing.commitment.payload.bindingProfile,
-        canonicalRequestHash: order.canonicalRequestHash,
-        orderNonce: order.orderNonce,
-        buyerIdentityProofHash: ZERO_HASH,
-        activeRailProfileHash: this.railProfileHash,
-        facilitatorConfirmationHash: confirmationHash,
-        depositEvidenceHash: order.depositEvidenceHash!,
-        releaseEvidenceHash: order.releaseEvidenceHash!,
-        grossAmount: gross.toString(),
-        providerNetAmount: order.providerNetAmount,
-        daskiCommissionAmount: order.daskiCommissionAmount,
-        canonicalProviderRequestHash: canonicalHash(request),
-        dispatchDeadlineSeconds: listing.deadlinePolicy.dispatchSeconds,
-        issuedAt: now,
-        validBefore: now + listing.deadlinePolicy.dispatchSeconds,
-      };
-      dispatch = await signEnvelope({
-        artifactType: "StandardRailDispatchV1",
+      const payload = buildPayload(
+        nonce,
+        now,
+        now + listing.deadlinePolicy.dispatchSeconds,
+        request,
+      );
+      dispatch = await signEnvelope<StandardRailDispatchV2, 2>({
+        artifactType: "StandardRailDispatchV2",
+        schemaVersion: 2,
         environment: this.railConfig.environment,
         chainId: this.appConfig.chainId,
         audience: listing.providerControlProfile.payload.providerAudience,
@@ -1754,9 +1836,12 @@ export class StandardRailService {
       const response = await this.providerFetch(listing, listing.providerControlProfile.payload.dispatchUrl, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ dispatch, quote: order.quote, request: effectiveRequest, evidenceBundle }, (_, value) =>
-          typeof value === "bigint" ? value.toString() : value,
-        ),
+        body: JSON.stringify({
+          dispatch,
+          quote: order.quote,
+          request: effectiveRequest,
+          evidenceBundle: wireEvidenceBundle,
+        }),
         signal: controller.signal,
         redirect: "error",
       });
