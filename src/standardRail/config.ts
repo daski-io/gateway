@@ -193,7 +193,7 @@ export function loadStandardRailConfig(
   const maxFee = positiveBigInt(env, "REPUTATION_MAX_FEE_PER_GAS_WEI", 100_000_000_000n);
   const priorityFee = positiveBigInt(env, "REPUTATION_MAX_PRIORITY_FEE_PER_GAS_WEI", 2_000_000_000n);
   const registerGas = positiveBigInt(env, "REPUTATION_REGISTER_GAS_LIMIT", 1_500_000n);
-  const confirmationGas = positiveBigInt(env, "REPUTATION_CONFIRMATION_GAS_LIMIT", 500_000n);
+  const confirmationGas = positiveBigInt(env, "REPUTATION_CONFIRMATION_GAS_LIMIT", 750_000n);
   if (
     maxFee > 500_000_000_000n || priorityFee > 5_000_000_000n || priorityFee > maxFee
   ) throw new Error("Reputation relayer fee ceiling is invalid");

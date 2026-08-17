@@ -38,6 +38,7 @@ describe("standard rail environment contract", () => {
     ]);
     expect(config.reputationOutcomeSchemaUid).toBe(`0x${"44".repeat(32)}`);
     expect(config.reputationConfirmationSchemaUid).toBe(`0x${"55".repeat(32)}`);
+    expect(config.reputationConfirmationGasLimit).toBe(750_000n);
   });
 
   it("rejects an uncompressed manifest value", () => {
