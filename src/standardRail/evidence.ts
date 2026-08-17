@@ -546,13 +546,16 @@ export class StandardChainEvidence {
       }
     }
     const observations = await Promise.all(this.clients.map(async ({ client, host }) => {
-      const receipt = await client.waitForTransactionReceipt({
+      await client.waitForTransactionReceipt({
         hash,
         confirmations: this.config.finalityConfirmations,
       });
-      const deployment = await client.getTransactionReceipt({
-        hash: args.listing.manifest.payload.splitterDeploymentTransaction,
-      });
+      const [receipt, deployment] = await Promise.all([
+        client.getTransactionReceipt({ hash }),
+        client.getTransactionReceipt({
+          hash: args.listing.manifest.payload.splitterDeploymentTransaction,
+        }),
+      ]);
       const maximumIntervalEvents = this.config.manifest.chainEvidencePolicy.payload.maximumIntervalEvents;
       const [transaction, head, token, payee, receiver, bps, commitment, policyHash,
         releaseHistory, credits, endingBalance] = await Promise.all([
