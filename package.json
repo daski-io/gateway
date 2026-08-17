@@ -1,6 +1,6 @@
 {
   "name": "daski-gateway",
-  "version": "0.20.8",
+  "version": "0.20.10",
   "type": "module",
   "engines": {
     "node": ">=20.0.0"
