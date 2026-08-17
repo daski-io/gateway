@@ -101,6 +101,7 @@ export async function createStandardGatewayHttp(
     pool: options.pool,
     lifecycle: options.lifecycle,
     service: standardRail,
+    railConfig: options.standardRailConfig,
   }));
   app.use(createMarketplaceRouter(marketplace));
   app.use(createStandardRailRouter(standardRail, options.config.publicUrl));

@@ -251,6 +251,8 @@ export class StandardRailService {
     this.reputationReader = new DirectReputationReader(
       railConfig,
       appConfig.chainId === 8453 ? base : baseSepolia,
+      pool,
+      appConfig.marketplaceContracts,
     );
     this.railProfileHash = canonicalHash(railConfig.manifest.activeRailProfile);
     for (const artifact of [

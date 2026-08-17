@@ -23,6 +23,10 @@ export const serviceRegistryAbi = parseAbi([
 ]);
 
 export const reputationStorageAbi = parseAbi([
+  "function getRecordCount() view returns (uint256)",
+  "function recordKeys(uint256 index) view returns (bytes32)",
+  "function getRecord(bytes32 orderKey) view returns ((bytes32 orderKey,bytes32 authorizationKey,uint256 providerAgentId,bytes32 serviceId,address payer,address providerOwner,address providerAgentWallet,address providerPayee,address canonicalToken,uint256 grossAmount,uint64 paidAt,bytes32 providerIdentitySnapshotHash,bytes32 listingManifestHash,bytes32 releaseEvidenceHash,uint8 outcome,uint8 confirmation,uint64 outcomeAttestationDelay,uint64 outcomeTimestamp,uint64 confirmationTimestamp,uint8 confirmationTransitions,bool outcomeRecorded,bool reputationEligible,bytes32 currentConfirmationUid))",
+  "function refundedAmount(bytes32 orderKey) view returns (uint256)",
   "function getProviderStats(uint256 id) view returns (uint256 completed,uint256 failed,uint256 canceled,uint256 confirmed,uint256 notConfirmed,uint256 transactions)",
   "function getServiceStats(bytes32 id) view returns (uint256 completed,uint256 failed,uint256 canceled,uint256 confirmed,uint256 notConfirmed,uint256 refundedAmount,uint256 transactions)",
   "function totalPaidByProvider(uint256 id) view returns (uint256)",
