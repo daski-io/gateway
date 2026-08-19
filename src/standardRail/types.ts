@@ -24,9 +24,9 @@ export type StandardOrderState =
   | "LEGAL_HOLD"
   | "NOT_SETTLED";
 
-export interface SignedEnvelope<T> {
+export interface SignedEnvelope<T, Version extends number = 1> {
   artifactType: string;
-  schemaVersion: 1;
+  schemaVersion: Version;
   environment: string;
   chainId: number;
   audience: string;
@@ -37,7 +37,7 @@ export interface SignedEnvelope<T> {
   signature: Hex;
 }
 
-export interface ListingCommitmentV1 {
+export interface ListingCommitmentV2 {
   canonicalToken: Hex;
   railCapabilityRequirementsHash: Hex;
   providerAgentId: string;
@@ -65,23 +65,46 @@ export interface ListingCommitmentV1 {
   validFrom: number;
   validUntil: number;
   splitterFactory: Hex;
+  splitterFactoryRuntimeCodeHash: Hex;
   splitterCreationCodeHash: Hex;
   splitterDeploymentSalt: Hex;
 }
 
-export interface ListingEpochManifestV1 {
+export interface ListingEpochManifestV2 {
+  chainId: number;
+  canonicalToken: Hex;
+  providerPayee: Hex;
+  daskiCommissionReceiver: Hex;
+  commissionBps: number;
+  policyVersionHash: Hex;
+  outcomeIdHash: Hex;
+  listingEpoch: string;
   listingCommitmentHash: Hex;
   splitterAddress: Hex;
-  splitterRuntimeCodeHash: Hex;
-  splitterImmutableHash: Hex;
+  splitterFactory: Hex;
+  splitterFactoryRuntimeCodeHash: Hex;
+  splitterDeploymentSalt: Hex;
+  splitterCreationCode: Hex;
+  splitterCreationCodeHash: Hex;
+  splitterInitCodeHash: Hex;
   splitterDeploymentTransaction: Hex;
   splitterDeploymentBlockNumber: string;
   splitterDeploymentBlockHash: Hex;
+  splitterDeploymentTransactionIndex: number;
+  splitterDeploymentLogIndex: number;
+  splitterRuntimeCodeHash: Hex;
+  splitterImmutableHash: Hex;
+  splitterActivationBlockNumber: string;
+  splitterActivationBlockHash: Hex;
+  splitterActivationPosition: "END_OF_BLOCK";
+  splitterStartingTokenBalance: string;
+  splitterStartingReleaseSequence: string;
 }
 
 export interface ProviderOutcomeOfferV1 {
   listingManifestHash: Hex;
   outcomeId: string;
+  skillId: string;
   providerAgentId: string;
   providerPayee: Hex;
   pricingMode: "fixed" | "dynamic";
@@ -147,12 +170,10 @@ export interface DeliveryCommitmentV1 {
 }
 
 export interface StandardListing {
-  commitment: SignedEnvelope<ListingCommitmentV1>;
-  manifest: SignedEnvelope<ListingEpochManifestV1>;
+  commitment: SignedEnvelope<ListingCommitmentV2, 2>;
+  manifest: SignedEnvelope<ListingEpochManifestV2, 2>;
   offer: SignedEnvelope<ProviderOutcomeOfferV1>;
   providerControlProfile: SignedEnvelope<ProviderControlProfileV1>;
-  title: string;
-  description: string;
   discovery: {
     categoryFamily: string;
     serviceType: string;
@@ -237,7 +258,7 @@ export interface RailCapabilityRequirementsV1 {
   allowedExtensionSetHash: Hex;
 }
 
-export interface ChainEvidencePolicyV1 {
+export interface ChainEvidencePolicyV2 {
   policyId: string;
   canonicalToken: Hex;
   canonicalTokenRuntimeCodeHash: Hex;
@@ -247,7 +268,7 @@ export interface ChainEvidencePolicyV1 {
   tokenDomainSeparator: Hex;
   maximumSourceLagBlocks: number;
   finalityBlockTimeSeconds: number;
-  maximumIntervalEvents: number;
+  maximumLogPageEvents: number;
 }
 
 export interface QuoteV1 {
@@ -263,7 +284,65 @@ export interface QuoteV1 {
   validBefore: number;
 }
 
-export interface StandardRailDispatchV1 {
+export interface StandardRailReceiptV2 {
+  orderId: string;
+  state: "RELEASE_FINAL";
+  payer: Hex;
+  providerAgentId: string;
+  outcomeId: string;
+  bindingProfile: BindingProfile;
+  activeRailProfileHash: Hex;
+  listingManifestHash: Hex;
+  providerOfferHash: Hex;
+  quoteHash: Hex;
+  canonicalRequestHash: Hex;
+  orderNonce: Hex;
+  authorizationKey: Hex;
+  paymentPayloadHash: Hex;
+  grossAmount: string;
+  providerNetAmount: string;
+  daskiCommissionAmount: string;
+  facilitatorConfirmationHash: Hex;
+  settlementTxHash: Hex;
+  depositEvidenceHash: Hex;
+  depositBlockNumber: string;
+  depositBlockHash: Hex;
+  depositTransactionIndex: number;
+  depositLogIndex: number;
+  releaseTxHash: Hex;
+  releaseEvidenceHash: Hex;
+  releaseBlockNumber: string;
+  releaseBlockHash: Hex;
+  releaseTransactionIndex: number;
+  releaseLogIndex: number;
+  releaseSequence: string;
+}
+
+export interface StandardEvidenceBundleV2 {
+  deposit: {
+    transactionHash: Hex;
+    blockNumber: string;
+    blockHash: Hex;
+    transactionIndex: number;
+    logIndex: number;
+    evidenceHash: Hex;
+    canonicalEvidence: Record<string, unknown>;
+    sources: string[];
+  };
+  release: {
+    transactionHash: Hex;
+    blockNumber: string;
+    blockHash: Hex;
+    transactionIndex: number;
+    logIndex: number;
+    releaseSequence: string;
+    evidenceHash: Hex;
+    canonicalEvidence: Record<string, unknown>;
+    sources: string[];
+  };
+}
+
+export interface StandardRailDispatchV2 {
   environment: string;
   chainId: number;
   gatewayAudience: string;
@@ -286,8 +365,19 @@ export interface StandardRailDispatchV1 {
   buyerIdentityProofHash: Hex;
   activeRailProfileHash: Hex;
   facilitatorConfirmationHash: Hex;
+  settlementTxHash: Hex;
   depositEvidenceHash: Hex;
+  depositBlockNumber: string;
+  depositBlockHash: Hex;
+  depositTransactionIndex: number;
+  depositLogIndex: number;
+  releaseTxHash: Hex;
   releaseEvidenceHash: Hex;
+  releaseBlockNumber: string;
+  releaseBlockHash: Hex;
+  releaseTransactionIndex: number;
+  releaseLogIndex: number;
+  releaseSequence: string;
   grossAmount: string;
   providerNetAmount: string;
   daskiCommissionAmount: string;
@@ -308,7 +398,7 @@ export interface StandardRailManifest {
   facilitatorProfile: SignedEnvelope<FacilitatorProfileV1>;
   railCapabilityRequirements: SignedEnvelope<RailCapabilityRequirementsV1>;
   activeRailProfile: SignedEnvelope<ActiveRailProfileV1>;
-  chainEvidencePolicy: SignedEnvelope<ChainEvidencePolicyV1>;
+  chainEvidencePolicy: SignedEnvelope<ChainEvidencePolicyV2, 2>;
   providerIdentitySnapshots: SignedEnvelope<ProviderIdentitySnapshotV1>[];
   servicingAdmissions: SignedEnvelope<ProviderServicingAdmissionV1>[];
   actionCatalogs: SignedEnvelope<ProviderAssetActionCatalogV1>[];

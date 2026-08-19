@@ -3,9 +3,14 @@ import { keccak256, toBytes } from "viem";
 import type { Pool } from "../db/pool.js";
 import type { Hex } from "../types.js";
 import { assertTransition } from "./stateMachine.js";
-import type { StandardOrderRecord, StandardOrderState } from "./types.js";
+import type {
+  StandardOrderRecord,
+  StandardOrderState,
+  StandardRailReceiptV2,
+} from "./types.js";
 import type { SignedEnvelope, StandardListing, StandardRailManifest } from "./types.js";
 import { canonicalHash } from "./canonical.js";
+import { parseStandardRailReceiptV2 } from "./wireContracts.js";
 
 const bytes = (value: Hex): Buffer => Buffer.from(value.slice(2), "hex");
 const hex = (value: Buffer | null): Hex | null =>
@@ -107,18 +112,20 @@ export interface CreateDraftInput {
 export class StandardRailStore {
   constructor(private readonly pool: Pool) {}
 
-  async loadReceipt(orderId: string): Promise<SignedEnvelope<Record<string, unknown>> | null> {
-    const result = await this.pool.query<{ canonical_receipt: SignedEnvelope<Record<string, unknown>> }>(
+  async loadReceipt(orderId: string): Promise<SignedEnvelope<StandardRailReceiptV2, 2> | null> {
+    const result = await this.pool.query<{ canonical_receipt: unknown }>(
       "SELECT canonical_receipt FROM standard_rail_receipts WHERE order_id=$1",
       [orderId],
     );
-    return result.rows[0]?.canonical_receipt ?? null;
+    const receipt = result.rows[0]?.canonical_receipt;
+    return receipt === undefined ? null : parseStandardRailReceiptV2(receipt);
   }
 
   async persistReceipt(
     orderId: string,
-    receipt: SignedEnvelope<Record<string, unknown>>,
-  ): Promise<SignedEnvelope<Record<string, unknown>>> {
+    receipt: SignedEnvelope<StandardRailReceiptV2, 2>,
+  ): Promise<SignedEnvelope<StandardRailReceiptV2, 2>> {
+    parseStandardRailReceiptV2(receipt);
     const hash = canonicalHash(receipt);
     await this.pool.query(
       `INSERT INTO standard_rail_receipts(order_id,receipt_hash,canonical_receipt)
@@ -210,7 +217,11 @@ export class StandardRailStore {
 
   async admitManifest(manifest: StandardRailManifest): Promise<void> {
     const rail = manifest.activeRailProfile;
-    const artifacts: Array<{ envelope: SignedEnvelope<unknown>; epoch: string | null; recovery: number | null }> = [
+    const artifacts: Array<{
+      envelope: SignedEnvelope<unknown, number>;
+      epoch: string | null;
+      recovery: number | null;
+    }> = [
       {
         envelope: manifest.facilitatorProfile,
         epoch: manifest.facilitatorProfile.payload.profileEpoch,
@@ -223,8 +234,8 @@ export class StandardRailStore {
       ...manifest.servicingAdmissions.map((envelope) => ({ envelope, epoch: null, recovery: null })),
       ...manifest.actionCatalogs.map((envelope) => ({ envelope, epoch: null, recovery: null })),
       ...manifest.listings.flatMap((listing) => [
-        { envelope: listing.commitment as SignedEnvelope<unknown>, epoch: listing.commitment.payload.listingEpoch, recovery: null },
-        { envelope: listing.manifest as SignedEnvelope<unknown>, epoch: listing.commitment.payload.listingEpoch, recovery: null },
+        { envelope: listing.commitment as SignedEnvelope<unknown, number>, epoch: listing.commitment.payload.listingEpoch, recovery: null },
+        { envelope: listing.manifest as SignedEnvelope<unknown, number>, epoch: listing.commitment.payload.listingEpoch, recovery: null },
         { envelope: listing.offer as SignedEnvelope<unknown>, epoch: listing.commitment.payload.listingEpoch, recovery: null },
         { envelope: listing.providerControlProfile as SignedEnvelope<unknown>, epoch: listing.commitment.payload.listingEpoch, recovery: null },
       ]),
@@ -278,7 +289,7 @@ export class StandardRailStore {
         const current = listing.commitment;
         const previousListing = await client.query<{ artifact_hash: Buffer; epoch: string }>(
           `SELECT artifact_hash,epoch FROM standard_rail_artifacts
-           WHERE artifact_type='ListingCommitmentV1' AND environment=$1 AND chain_id=$2
+           WHERE artifact_type='ListingCommitmentV2' AND environment=$1 AND chain_id=$2
              AND canonical_json->'payload'->>'providerAgentId'=$3
              AND canonical_json->'payload'->>'outcomeId'=$4
            ORDER BY epoch DESC LIMIT 1`,

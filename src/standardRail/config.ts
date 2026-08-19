@@ -21,6 +21,8 @@ export interface StandardRailConfig {
   releasePrivateKey: Hex;
   trustedSigners: ReadonlyMap<string, Address>;
   manifest: StandardRailManifest;
+  splitterFactoryRuntimeCodeHash: Hex;
+  splitterCreationCodeHash: Hex;
   finalityConfirmations: number;
   facilitatorTimeoutMs: number;
   dispatchTimeoutMs: number;
@@ -115,7 +117,9 @@ function positiveBigInt(env: NodeJS.ProcessEnv, name: string, fallback: bigint):
 
 function hash(env: NodeJS.ProcessEnv, name: string): Hex {
   const value = required(env, name).toLowerCase();
-  if (!/^0x[0-9a-f]{64}$/.test(value)) throw new Error(`${name} must be a bytes32 value`);
+  if (!/^0x[0-9a-f]{64}$/.test(value) || /^0x0+$/.test(value)) {
+    throw new Error(`${name} must be a non-zero bytes32 value`);
+  }
   return value as Hex;
 }
 
@@ -213,6 +217,8 @@ export function loadStandardRailConfig(
     releasePrivateKey: protocolPrivateKey,
     trustedSigners: parseTrustedSigners(env.STANDARD_RAIL_TRUSTED_SIGNERS_JSON, protocolAddress),
     manifest,
+    splitterFactoryRuntimeCodeHash: hash(env, "STANDARD_RAIL_SPLITTER_FACTORY_RUNTIME_CODE_HASH"),
+    splitterCreationCodeHash: hash(env, "STANDARD_RAIL_SPLITTER_CREATION_CODE_HASH"),
     finalityConfirmations: integer(env, "STANDARD_RAIL_FINALITY_CONFIRMATIONS", DEFAULTS.finalityConfirmations),
     facilitatorTimeoutMs: integer(env, "STANDARD_RAIL_FACILITATOR_TIMEOUT_MS", DEFAULTS.facilitatorTimeoutMs),
     dispatchTimeoutMs: integer(env, "STANDARD_RAIL_DISPATCH_TIMEOUT_MS", DEFAULTS.dispatchTimeoutMs),

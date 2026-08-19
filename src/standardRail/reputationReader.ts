@@ -28,7 +28,7 @@ interface OutcomeDescriptor {
 interface ReputationSnapshot {
   providers: Map<string, ReturnType<typeof presentReputation>>;
   services: Map<Hex, ReturnType<typeof presentReputation>>;
-  finalizedBlock: string;
+  safeBlock: string;
 }
 
 interface SettlementRow {
@@ -117,7 +117,7 @@ export class DirectReputationReader {
   }
 
   private async readOutcomes(outcomes: OutcomeDescriptor[]): Promise<ReputationSnapshot> {
-    const block = await this.client.getBlock({ blockTag: "finalized" });
+    const block = await this.client.getBlock({ blockTag: "safe" });
     const count = await this.client.readContract({
       address: this.config.reputationContract,
       abi: reputationStorageAbi,
@@ -211,7 +211,7 @@ export class DirectReputationReader {
           block.number,
         ),
       ])),
-      finalizedBlock: block.number.toString(),
+      safeBlock: block.number.toString(),
     };
   }
 

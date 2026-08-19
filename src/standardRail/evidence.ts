@@ -1,7 +1,6 @@
 import {
   createPublicClient,
   createWalletClient,
-  encodeAbiParameters,
   encodeFunctionData,
   erc20Abi,
   getAddress,
@@ -11,19 +10,29 @@ import {
   parseEventLogs,
   publicActions,
   keccak256,
-  stringToHex,
   type Address,
   type Chain,
   type Hex,
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import type { StandardRailConfig } from "./config.js";
-import type { PaymentPayload } from "@x402/core/types";
 import { canonicalHash } from "./canonical.js";
 import { chainLogsHash } from "./chainLogHash.js";
-import { decodeSettlementCalldata } from "./settlementCalldata.js";
 import { hasRequiredConfirmations } from "./finality.js";
 import type { ProviderIdentitySnapshotV1, StandardListing, StandardOrderRecord } from "./types.js";
+import { loadLogsPaged } from "./chainLogPagination.js";
+import { deriveSplitterProvenance } from "./splitterProvenance.js";
+import {
+  assertActivationCheckpoint,
+  compareEvidencePosition,
+  selectBoundDeposit,
+  selectBoundRelease,
+  verifyReleaseInterval,
+  type LogBinding,
+  type PositionedEvidence,
+  type ReleasedEvidence,
+  type TransferEvidence,
+} from "./releaseEvidence.js";
 
 const transferAuthorizationAbi = parseAbi([
   "function transferWithAuthorization(address from,address to,uint256 value,uint256 validAfter,uint256 validBefore,bytes32 nonce,bytes signature)",
@@ -44,9 +53,11 @@ const splitterAbi = parseAbi([
   "function outcomeIdHash() view returns (bytes32)",
   "function listingEpoch() view returns (uint64)",
   "function listingCommitmentHash() view returns (bytes32)",
+  "function releaseSequence() view returns (uint64)",
   "event Released(bytes32 indexed outcomeIdHash,uint64 indexed listingEpoch,uint64 indexed releaseSequence,bytes32 policyVersionHash,bytes32 listingCommitmentHash,uint256 grossAmount,uint256 providerNetAmount,uint256 daskiCommissionAmount)",
 ]);
 const splitterFactoryAbi = parseAbi([
+  "function deploy(bytes32 salt,uint256 canonicalChainId,address canonicalToken,address providerPayee,address daskiCommissionReceiver,uint16 commissionBps,bytes32 policyVersionHash,bytes32 outcomeIdHash,bytes32 listingCommitmentHash,uint64 listingEpoch) returns (address splitter)",
   "event OutcomeSplitterDeployed(address indexed splitter,bytes32 indexed salt,bytes32 indexed outcomeIdHash,uint64 listingEpoch,bytes32 listingCommitmentHash)",
 ]);
 const transferEvent = parseAbiItem("event Transfer(address indexed from,address indexed to,uint256 value)");
@@ -69,11 +80,8 @@ interface SourceObservation {
   blockNumber: string;
   blockHash: Hex;
   transactionHash: Hex;
-  transactionTo: Address;
-  transactionFrom: Address;
   transactionIndex: number;
   logIndex: number;
-  input: Hex;
   logsHash: Hex;
 }
 
@@ -94,22 +102,129 @@ export interface ReleaseEvidenceResult extends EvidenceResult {
   releaseSequence: bigint;
 }
 
-function position(value: { blockNumber: bigint | null; transactionIndex: number | null; logIndex: number | null }) {
-  if (value.blockNumber === null || value.transactionIndex === null || value.logIndex === null) {
-    throw new Error("Chain log position is incomplete");
-  }
-  return [value.blockNumber, BigInt(value.transactionIndex), BigInt(value.logIndex)] as const;
+interface ReleaseReference extends LogBinding {
+  releaseSequence: bigint;
 }
 
-function comparePosition(
-  left: readonly [bigint, bigint, bigint],
-  right: readonly [bigint, bigint, bigint],
-): number {
-  for (let index = 0; index < left.length; index += 1) {
-    if (left[index]! < right[index]!) return -1;
-    if (left[index]! > right[index]!) return 1;
+interface DeploymentEvidence extends PositionedEvidence {
+  factory: Address;
+  splitter: Address;
+  salt: Hex;
+  outcomeIdHash: Hex;
+  listingEpoch: bigint;
+  listingCommitmentHash: Hex;
+}
+
+function positioned(event: {
+  blockNumber: bigint | null;
+  blockHash: Hex | null;
+  transactionIndex: number | null;
+  logIndex: number | null;
+  transactionHash: Hex | null;
+}): PositionedEvidence {
+  if (
+    event.blockNumber === null ||
+    event.blockHash === null ||
+    event.transactionIndex === null ||
+    event.logIndex === null ||
+    event.transactionHash === null
+  ) {
+    throw new Error("Chain log position is incomplete");
   }
-  return 0;
+  return {
+    blockNumber: event.blockNumber,
+    blockHash: event.blockHash,
+    transactionIndex: event.transactionIndex,
+    logIndex: event.logIndex,
+    transactionHash: event.transactionHash,
+  };
+}
+
+function normalizeTransfers(logs: readonly unknown[]): TransferEvidence[] {
+  return parseEventLogs({
+    abi: erc20Abi,
+    logs: logs as never,
+    eventName: "Transfer",
+  }).map((event) => {
+    if (
+      event.args.from === undefined ||
+      event.args.to === undefined ||
+      event.args.value === undefined
+    ) throw new Error("ERC-20 transfer log is incomplete");
+    return {
+      ...positioned(event),
+      token: getAddress(event.address),
+      from: getAddress(event.args.from),
+      to: getAddress(event.args.to),
+      value: event.args.value,
+    };
+  });
+}
+
+function normalizeReleases(logs: readonly unknown[]): ReleasedEvidence[] {
+  return parseEventLogs({
+    abi: splitterAbi,
+    logs: logs as never,
+    eventName: "Released",
+  }).map((event) => {
+    const value = event.args;
+    if (
+      value.outcomeIdHash === undefined ||
+      value.listingEpoch === undefined ||
+      value.releaseSequence === undefined ||
+      value.policyVersionHash === undefined ||
+      value.listingCommitmentHash === undefined ||
+      value.grossAmount === undefined ||
+      value.providerNetAmount === undefined ||
+      value.daskiCommissionAmount === undefined
+    ) throw new Error("Released log is incomplete");
+    return {
+      ...positioned(event),
+      splitter: getAddress(event.address),
+      outcomeIdHash: value.outcomeIdHash,
+      listingEpoch: value.listingEpoch,
+      releaseSequence: value.releaseSequence,
+      policyVersionHash: value.policyVersionHash,
+      listingCommitmentHash: value.listingCommitmentHash,
+      grossAmount: value.grossAmount,
+      providerNetAmount: value.providerNetAmount,
+      daskiCommissionAmount: value.daskiCommissionAmount,
+    };
+  });
+}
+
+function normalizeDeployments(logs: readonly unknown[]): DeploymentEvidence[] {
+  return parseEventLogs({
+    abi: splitterFactoryAbi,
+    logs: logs as never,
+    eventName: "OutcomeSplitterDeployed",
+  }).map((event) => {
+    const value = event.args;
+    if (
+      value.splitter === undefined ||
+      value.salt === undefined ||
+      value.outcomeIdHash === undefined ||
+      value.listingEpoch === undefined ||
+      value.listingCommitmentHash === undefined
+    ) throw new Error("OutcomeSplitterDeployed log is incomplete");
+    return {
+      ...positioned(event),
+      factory: getAddress(event.address),
+      splitter: getAddress(value.splitter),
+      salt: value.salt,
+      outcomeIdHash: value.outcomeIdHash,
+      listingEpoch: value.listingEpoch,
+      listingCommitmentHash: value.listingCommitmentHash,
+    };
+  });
+}
+
+function sameBoundPosition(value: PositionedEvidence, binding: LogBinding): boolean {
+  return (
+    compareEvidencePosition(value, binding) === 0 &&
+    value.blockHash === binding.blockHash &&
+    value.transactionHash === binding.transactionHash
+  );
 }
 
 export class StandardChainEvidence {
@@ -266,84 +381,179 @@ export class StandardChainEvidence {
   }
 
   async verifyListingDeployment(listing: StandardListing, chainId: number): Promise<void> {
-    const splitter = getAddress(listing.manifest.payload.splitterAddress);
+    const manifest = listing.manifest.payload;
+    const splitter = getAddress(manifest.splitterAddress);
+    const factory = getAddress(manifest.splitterFactory);
     const expectedCommitmentHash = canonicalHash(listing.commitment);
+    const provenance = deriveSplitterProvenance({
+      constructor: {
+        chainId,
+        canonicalToken: getAddress(manifest.canonicalToken),
+        providerPayee: getAddress(manifest.providerPayee),
+        daskiCommissionReceiver: getAddress(manifest.daskiCommissionReceiver),
+        commissionBps: manifest.commissionBps,
+        policyVersionHash: manifest.policyVersionHash,
+        outcomeIdHash: manifest.outcomeIdHash,
+        listingCommitmentHash: manifest.listingCommitmentHash,
+        listingEpoch: BigInt(manifest.listingEpoch),
+      },
+      provenance: {
+        splitterAddress: splitter,
+        splitterFactory: factory,
+        splitterFactoryRuntimeCodeHash: manifest.splitterFactoryRuntimeCodeHash,
+        splitterDeploymentSalt: manifest.splitterDeploymentSalt,
+        splitterCreationCode: manifest.splitterCreationCode,
+        splitterCreationCodeHash: manifest.splitterCreationCodeHash,
+        splitterInitCodeHash: manifest.splitterInitCodeHash,
+        splitterImmutableHash: manifest.splitterImmutableHash,
+      },
+      trustedSplitterCreationCodeHash: this.config.splitterCreationCodeHash,
+      trustedSplitterFactoryRuntimeCodeHash: this.config.splitterFactoryRuntimeCodeHash,
+    });
+    const deploymentBlockNumber = BigInt(manifest.splitterDeploymentBlockNumber);
+    const activationBlockNumber = BigInt(manifest.splitterActivationBlockNumber);
+    const deploymentBinding: LogBinding = {
+      blockNumber: deploymentBlockNumber,
+      blockHash: manifest.splitterDeploymentBlockHash,
+      transactionIndex: manifest.splitterDeploymentTransactionIndex,
+      logIndex: manifest.splitterDeploymentLogIndex,
+      transactionHash: manifest.splitterDeploymentTransaction,
+    };
     const observations: Array<{ source: string; hash: Hex }> = [];
     for (const { client, host } of this.clients) {
-      const code = await client.getBytecode({ address: splitter });
       const receipt = await client.getTransactionReceipt({
-        hash: listing.manifest.payload.splitterDeploymentTransaction,
+        hash: manifest.splitterDeploymentTransaction,
       });
-      const head = await client.getBlockNumber();
-      const canonicalChainId = await client.readContract({
-        address: splitter, abi: splitterAbi, functionName: "canonicalChainId",
+      const deploymentTransaction = await client.getTransaction({
+        hash: manifest.splitterDeploymentTransaction,
       });
-      const token = await client.readContract({
-        address: splitter, abi: splitterAbi, functionName: "canonicalToken",
+      const [head, deploymentBlock, activationBlock, codeAtDeployment, codeAtActivation,
+        factoryCodeAtDeployment, factoryCodeAtActivation, activationTokenPolicy,
+        startingTokenBalance, startingReleaseSequence, canonicalChainId, token,
+        payee, receiver, bps, policyHash, outcomeHash, listingEpoch, commitmentHash] =
+        await Promise.all([
+          client.getBlockNumber(),
+          client.getBlock({ blockNumber: deploymentBlockNumber }),
+          client.getBlock({ blockNumber: activationBlockNumber }),
+          client.getBytecode({ address: splitter, blockNumber: deploymentBlockNumber }),
+          client.getBytecode({ address: splitter, blockNumber: activationBlockNumber }),
+          client.getBytecode({ address: factory, blockNumber: deploymentBlockNumber }),
+          client.getBytecode({ address: factory, blockNumber: activationBlockNumber }),
+          this.tokenPolicyFacts(client, activationBlockNumber),
+          client.readContract({
+            address: getAddress(manifest.canonicalToken),
+            abi: erc20Abi,
+            functionName: "balanceOf",
+            args: [splitter],
+            blockNumber: activationBlockNumber,
+          }),
+          client.readContract({ address: splitter, abi: splitterAbi,
+            functionName: "releaseSequence", blockNumber: activationBlockNumber }),
+          client.readContract({ address: splitter, abi: splitterAbi,
+            functionName: "canonicalChainId", blockNumber: activationBlockNumber }),
+          client.readContract({ address: splitter, abi: splitterAbi,
+            functionName: "canonicalToken", blockNumber: activationBlockNumber }),
+          client.readContract({ address: splitter, abi: splitterAbi,
+            functionName: "providerPayee", blockNumber: activationBlockNumber }),
+          client.readContract({ address: splitter, abi: splitterAbi,
+            functionName: "daskiCommissionReceiver", blockNumber: activationBlockNumber }),
+          client.readContract({ address: splitter, abi: splitterAbi,
+            functionName: "commissionBps", blockNumber: activationBlockNumber }),
+          client.readContract({ address: splitter, abi: splitterAbi,
+            functionName: "policyVersionHash", blockNumber: activationBlockNumber }),
+          client.readContract({ address: splitter, abi: splitterAbi,
+            functionName: "outcomeIdHash", blockNumber: activationBlockNumber }),
+          client.readContract({ address: splitter, abi: splitterAbi,
+            functionName: "listingEpoch", blockNumber: activationBlockNumber }),
+          client.readContract({ address: splitter, abi: splitterAbi,
+            functionName: "listingCommitmentHash", blockNumber: activationBlockNumber }),
+        ]);
+      assertActivationCheckpoint({
+        activationBlockNumber,
+        expectedBlockHash: manifest.splitterActivationBlockHash,
+        observedBlockHash: activationBlock.hash,
+        expectedTokenBalance: BigInt(manifest.splitterStartingTokenBalance),
+        observedTokenBalance: startingTokenBalance,
+        expectedReleaseSequence: BigInt(manifest.splitterStartingReleaseSequence),
+        observedReleaseSequence: startingReleaseSequence,
       });
-      const payee = await client.readContract({
-        address: splitter, abi: splitterAbi, functionName: "providerPayee",
-      });
-      const receiver = await client.readContract({
-        address: splitter, abi: splitterAbi, functionName: "daskiCommissionReceiver",
-      });
-      const bps = await client.readContract({
-        address: splitter, abi: splitterAbi, functionName: "commissionBps",
-      });
-      const policyHash = await client.readContract({
-        address: splitter, abi: splitterAbi, functionName: "policyVersionHash",
-      });
-      const outcomeHash = await client.readContract({
-        address: splitter, abi: splitterAbi, functionName: "outcomeIdHash",
-      });
-      const listingEpoch = await client.readContract({
-        address: splitter, abi: splitterAbi, functionName: "listingEpoch",
-      });
-      const commitmentHash = await client.readContract({
-        address: splitter, abi: splitterAbi, functionName: "listingCommitmentHash",
-      });
-      if (!code || keccak256(code) !== listing.manifest.payload.splitterRuntimeCodeHash) {
-        throw new Error("Splitter runtime code does not match its listing manifest");
-      }
       if (
         receipt.status !== "success" ||
-        receipt.blockNumber !== BigInt(listing.manifest.payload.splitterDeploymentBlockNumber) ||
-        receipt.blockHash !== listing.manifest.payload.splitterDeploymentBlockHash ||
-        !hasRequiredConfirmations(head, receipt.blockNumber, this.config.finalityConfirmations)
+        receipt.transactionHash !== manifest.splitterDeploymentTransaction ||
+        receipt.blockNumber !== deploymentBlockNumber ||
+        receipt.blockHash !== manifest.splitterDeploymentBlockHash ||
+        receipt.transactionIndex !== manifest.splitterDeploymentTransactionIndex ||
+        deploymentBlock.hash !== manifest.splitterDeploymentBlockHash ||
+        !hasRequiredConfirmations(head, deploymentBlockNumber, this.config.finalityConfirmations) ||
+        !hasRequiredConfirmations(head, activationBlockNumber, this.config.finalityConfirmations)
       ) throw new Error("Splitter deployment transaction is not final or manifest-bound");
-      const immutableHash = keccak256(encodeAbiParameters(
-        [
-          { type: "uint256" }, { type: "address" }, { type: "address" }, { type: "address" },
-          { type: "uint16" }, { type: "bytes32" }, { type: "bytes32" }, { type: "bytes32" },
-          { type: "uint64" },
-        ],
-        [canonicalChainId, token, payee, receiver, bps, policyHash, outcomeHash, commitmentHash, listingEpoch],
-      ));
-      if (
-        canonicalChainId !== BigInt(chainId) || getAddress(token) !== getAddress(listing.commitment.payload.canonicalToken) ||
-        getAddress(payee) !== getAddress(listing.commitment.payload.providerPayee) ||
-        getAddress(receiver) !== getAddress(listing.commitment.payload.daskiCommissionReceiver) ||
-        bps !== listing.commitment.payload.commissionBps || commitmentHash !== expectedCommitmentHash ||
-        listingEpoch !== BigInt(listing.commitment.payload.listingEpoch) ||
-        outcomeHash !== keccak256(stringToHex(listing.commitment.payload.outcomeId)) ||
-        immutableHash !== listing.manifest.payload.splitterImmutableHash
-      ) throw new Error("Splitter immutable values do not match the listing");
-      const deployments = parseEventLogs({
+      const expectedDeploymentInput = encodeFunctionData({
         abi: splitterFactoryAbi,
-        logs: receipt.logs,
-        eventName: "OutcomeSplitterDeployed",
-      }).filter((event) =>
-        event.address.toLowerCase() === listing.commitment.payload.splitterFactory.toLowerCase() &&
-        event.args.splitter === splitter && event.args.salt === listing.commitment.payload.splitterDeploymentSalt &&
-        event.args.outcomeIdHash === outcomeHash && event.args.listingEpoch === listingEpoch &&
-        event.args.listingCommitmentHash === commitmentHash,
-      );
-      if (deployments.length !== 1) throw new Error("Splitter factory deployment event is missing or ambiguous");
+        functionName: "deploy",
+        args: [
+          manifest.splitterDeploymentSalt,
+          BigInt(manifest.chainId),
+          getAddress(manifest.canonicalToken),
+          getAddress(manifest.providerPayee),
+          getAddress(manifest.daskiCommissionReceiver),
+          manifest.commissionBps,
+          manifest.policyVersionHash,
+          manifest.outcomeIdHash,
+          manifest.listingCommitmentHash,
+          BigInt(manifest.listingEpoch),
+        ],
+      });
+      if (
+        deploymentTransaction.hash !== manifest.splitterDeploymentTransaction ||
+        !deploymentTransaction.to || getAddress(deploymentTransaction.to) !== factory ||
+        deploymentTransaction.value !== 0n ||
+        deploymentTransaction.input.toLowerCase() !== expectedDeploymentInput.toLowerCase() ||
+        deploymentTransaction.blockNumber !== deploymentBlockNumber ||
+        deploymentTransaction.blockHash !== manifest.splitterDeploymentBlockHash ||
+        deploymentTransaction.transactionIndex !== manifest.splitterDeploymentTransactionIndex
+      ) throw new Error("Splitter deployment transaction calldata or position is invalid");
+      if (
+        !codeAtDeployment || !codeAtActivation ||
+        !factoryCodeAtDeployment || !factoryCodeAtActivation ||
+        keccak256(codeAtDeployment) !== manifest.splitterRuntimeCodeHash ||
+        keccak256(codeAtActivation) !== manifest.splitterRuntimeCodeHash ||
+        keccak256(factoryCodeAtDeployment) !== this.config.splitterFactoryRuntimeCodeHash ||
+        keccak256(factoryCodeAtActivation) !== this.config.splitterFactoryRuntimeCodeHash ||
+        canonicalChainId !== BigInt(chainId) ||
+        getAddress(token) !== getAddress(manifest.canonicalToken) ||
+        getAddress(payee) !== getAddress(manifest.providerPayee) ||
+        getAddress(receiver) !== getAddress(manifest.daskiCommissionReceiver) ||
+        bps !== manifest.commissionBps || policyHash !== manifest.policyVersionHash ||
+        outcomeHash !== manifest.outcomeIdHash || listingEpoch !== BigInt(manifest.listingEpoch) ||
+        commitmentHash !== expectedCommitmentHash ||
+        provenance.immutableHash !== manifest.splitterImmutableHash
+      ) throw new Error("Splitter immutable values do not match the listing");
+      const deployments = normalizeDeployments(receipt.logs)
+        .filter((event) => sameBoundPosition(event, deploymentBinding));
+      if (deployments.length !== 1) {
+        throw new Error("Receipt-bound splitter deployment event is missing or ambiguous");
+      }
+      const deployment = deployments[0]!;
+      if (
+        deployment.factory !== factory || deployment.splitter !== splitter ||
+        deployment.salt !== manifest.splitterDeploymentSalt ||
+        deployment.outcomeIdHash !== manifest.outcomeIdHash ||
+        deployment.listingEpoch !== BigInt(manifest.listingEpoch) ||
+        deployment.listingCommitmentHash !== expectedCommitmentHash
+      ) throw new Error("Receipt-bound splitter deployment event is invalid");
       observations.push({ source: host, hash: canonicalHash({
-        codeHash: keccak256(code),
+        codeHash: keccak256(codeAtActivation),
+        factoryCodeHash: keccak256(factoryCodeAtActivation),
+        activationTokenPolicy,
+        initCodeHash: provenance.initCodeHash,
         transactionHash: receipt.transactionHash,
+        transactionIndex: receipt.transactionIndex,
+        logIndex: deployment.logIndex,
         blockHash: receipt.blockHash,
-        immutableHash,
+        activationBlockHash: activationBlock.hash,
+        startingTokenBalance: startingTokenBalance.toString(),
+        startingReleaseSequence: startingReleaseSequence.toString(),
+        immutableHash: provenance.immutableHash,
       }) });
     }
     if (new Set(observations.map(({ hash }) => hash)).size !== 1) {
@@ -378,7 +588,6 @@ export class StandardChainEvidence {
     listing: StandardListing;
     transactionHash: Hex;
     paymentNonce: Hex;
-    payment: PaymentPayload;
   }): Promise<EvidenceResult> {
     const finalityDeadline = args.order.updatedAt.getTime() +
       args.listing.deadlinePolicy.settlementEvidenceSeconds * 1_000;
@@ -390,55 +599,50 @@ export class StandardChainEvidence {
     })));
     await this.assertSourceLag();
     const observations = await Promise.all(this.clients.map(async ({ client, host }) => {
-      const [receipt, transaction, head] = await Promise.all([
+      const [receipt, head] = await Promise.all([
         client.getTransactionReceipt({ hash: args.transactionHash }),
-        client.getTransaction({ hash: args.transactionHash }),
         client.getBlockNumber(),
       ]);
       if (
         receipt.status !== "success" ||
-        !hasRequiredConfirmations(head, receipt.blockNumber, this.config.finalityConfirmations)
+        !hasRequiredConfirmations(head, receipt.blockNumber, this.config.finalityConfirmations) ||
+        receipt.blockNumber <= BigInt(args.listing.manifest.payload.splitterActivationBlockNumber)
       ) {
-        throw new Error("Settlement transaction is not finalized");
+        throw new Error("Settlement transaction is not finalized after splitter activation");
       }
       await this.tokenPolicyFacts(client, receipt.blockNumber);
-      if (!transaction.to || getAddress(transaction.to) !== getAddress(args.listing.commitment.payload.canonicalToken)) {
-        throw new Error("Settlement transaction target is not canonical USDC");
-      }
-      const call = decodeSettlementCalldata(transaction.input);
-      const expectedAuthorization = args.payment.payload.authorization as Record<string, unknown>;
-      const expectedSignature = args.payment.payload.signature;
-      if (
-        getAddress(call.from) !== getAddress(args.order.payer!) ||
-        getAddress(call.to) !== getAddress(args.listing.manifest.payload.splitterAddress) ||
-        call.value !== BigInt(args.order.grossAmount) || call.nonce !== args.paymentNonce ||
-        call.validAfter !== BigInt(String(expectedAuthorization.validAfter)) ||
-        call.validBefore !== BigInt(String(expectedAuthorization.validBefore)) ||
-        typeof expectedSignature !== "string" || call.signature.toLowerCase() !== expectedSignature.toLowerCase() ||
-        transaction.value !== 0n ||
-        !transaction.input.toLowerCase().startsWith(call.canonicalPrefix.toLowerCase())
-      ) throw new Error("Settlement calldata does not match the order");
       const used = parseEventLogs({ abi: transferAuthorizationAbi, logs: receipt.logs, eventName: "AuthorizationUsed" })
-        .filter((event) => event.address.toLowerCase() === args.listing.commitment.payload.canonicalToken.toLowerCase());
-      const transfers = parseEventLogs({ abi: erc20Abi, logs: receipt.logs, eventName: "Transfer" });
-      if (used.length !== 1 || used[0]!.args.authorizer !== call.from || used[0]!.args.nonce !== call.nonce) {
+        .filter((event) =>
+          event.address.toLowerCase() === args.listing.commitment.payload.canonicalToken.toLowerCase() &&
+          event.args.authorizer !== undefined && args.order.payer !== null &&
+          getAddress(event.args.authorizer) === getAddress(args.order.payer) &&
+          event.args.nonce === args.paymentNonce
+        );
+      if (used.length !== 1 || args.order.payer === null) {
         throw new Error("AuthorizationUsed evidence is missing or ambiguous");
       }
-      const matching = transfers.filter((event) =>
-        event.address.toLowerCase() === args.listing.commitment.payload.canonicalToken.toLowerCase() &&
-        event.args.from === call.from && event.args.to === call.to && event.args.value === call.value,
+      const matching = normalizeTransfers(receipt.logs).filter((event) =>
+        event.token === getAddress(args.listing.commitment.payload.canonicalToken) &&
+        event.from === getAddress(args.order.payer!) &&
+        event.to === getAddress(args.listing.manifest.payload.splitterAddress) &&
+        event.value === BigInt(args.order.grossAmount)
       );
       if (matching.length !== 1) throw new Error("Transfer evidence is missing or ambiguous");
+      const deposit = selectBoundDeposit({
+        transfers: matching,
+        binding: matching[0]!,
+        token: getAddress(args.listing.commitment.payload.canonicalToken),
+        payer: getAddress(args.order.payer),
+        splitter: getAddress(args.listing.manifest.payload.splitterAddress),
+        grossAmount: BigInt(args.order.grossAmount),
+      });
       return {
         source: host,
         blockNumber: receipt.blockNumber.toString(),
         blockHash: receipt.blockHash,
         transactionHash: receipt.transactionHash,
-        transactionTo: transaction.to,
-        transactionFrom: transaction.from,
         transactionIndex: receipt.transactionIndex,
-        logIndex: Number(matching[0]!.logIndex),
-        input: transaction.input,
+        logIndex: deposit.logIndex,
         logsHash: chainLogsHash(receipt.logs),
       } satisfies SourceObservation;
     }));
@@ -503,14 +707,11 @@ export class StandardChainEvidence {
     nonce: Hex;
   }): Promise<Hex | null> {
     const hashes = await Promise.all(this.clients.map(async ({ client }) => {
-      const deployment = await client.getTransactionReceipt({
-        hash: args.listing.manifest.payload.splitterDeploymentTransaction,
-      });
       const head = await client.getBlockNumber();
       const logs = await this.boundedLogs({
-        fromBlock: deployment.blockNumber,
+        fromBlock: BigInt(args.listing.manifest.payload.splitterActivationBlockNumber) + 1n,
         toBlock: head,
-        maxEvents: 2,
+        maxEvents: this.config.manifest.chainEvidencePolicy.payload.maximumLogPageEvents,
         load: (fromBlock, toBlock) => client.getLogs({
           address: getAddress(args.listing.commitment.payload.canonicalToken),
           event: authorizationUsedEvent,
@@ -536,152 +737,186 @@ export class StandardChainEvidence {
   }): Promise<ReleaseEvidenceResult> {
     await this.assertSourceLag();
     const splitter = getAddress(args.listing.manifest.payload.splitterAddress);
-    let hash = await this.findCoveringRelease(this.clients[0]!.client, args);
-    if (!hash) {
+    let releaseReference = await this.findCoveringRelease(this.clients[0]!.client, args);
+    if (!releaseReference) {
       try {
-        hash = await this.wallet.writeContract({ address: splitter, abi: splitterAbi, functionName: "releaseAll" });
+        const submitted = await this.wallet.writeContract({
+          address: splitter,
+          abi: splitterAbi,
+          functionName: "releaseAll",
+        });
+        await this.clients[0]!.client.waitForTransactionReceipt({
+          hash: submitted,
+          confirmations: this.config.finalityConfirmations,
+        });
       } catch (error) {
-        hash = await this.findCoveringRelease(this.clients[0]!.client, args);
-        if (!hash) throw error;
+        releaseReference = await this.findCoveringRelease(this.clients[0]!.client, args);
+        if (!releaseReference) throw error;
       }
+      releaseReference ??= await this.findCoveringRelease(this.clients[0]!.client, args);
+      if (!releaseReference) throw new Error("Finalized release event was not found after release submission");
     }
+    const hash = releaseReference.transactionHash;
     const observations = await Promise.all(this.clients.map(async ({ client, host }) => {
       await client.waitForTransactionReceipt({
         hash,
         confirmations: this.config.finalityConfirmations,
       });
-      const [receipt, deployment] = await Promise.all([
-        client.getTransactionReceipt({ hash }),
-        client.getTransactionReceipt({
-          hash: args.listing.manifest.payload.splitterDeploymentTransaction,
-        }),
-      ]);
-      const maximumIntervalEvents = this.config.manifest.chainEvidencePolicy.payload.maximumIntervalEvents;
-      const [transaction, head, token, payee, receiver, bps, commitment, policyHash,
-        releaseHistory, credits, endingBalance] = await Promise.all([
-        client.getTransaction({ hash }),
+      const manifest = args.listing.manifest.payload;
+      const activationBlockNumber = BigInt(manifest.splitterActivationBlockNumber);
+      const maximumPageEvents =
+        this.config.manifest.chainEvidencePolicy.payload.maximumLogPageEvents;
+      const receipt = await client.getTransactionReceipt({ hash });
+      const [head, activationBlock, releaseCode, startingTokenBalance,
+        startingReleaseSequence, token, payee, receiver, bps, commitment,
+        policyHash, outcomeIdHash, listingEpoch] = await Promise.all([
         client.getBlockNumber(),
-        client.readContract({ address: splitter, abi: splitterAbi, functionName: "canonicalToken" }),
-        client.readContract({ address: splitter, abi: splitterAbi, functionName: "providerPayee" }),
-        client.readContract({ address: splitter, abi: splitterAbi, functionName: "daskiCommissionReceiver" }),
-        client.readContract({ address: splitter, abi: splitterAbi, functionName: "commissionBps" }),
-        client.readContract({ address: splitter, abi: splitterAbi, functionName: "listingCommitmentHash" }),
-        client.readContract({ address: splitter, abi: splitterAbi, functionName: "policyVersionHash" }),
-        this.boundedLogs({
-          fromBlock: deployment.blockNumber,
-          toBlock: receipt.blockNumber,
-          maxEvents: maximumIntervalEvents,
-          load: (fromBlock, toBlock) => client.getLogs({
-            address: splitter,
-            event: releasedEvent,
-            fromBlock,
-            toBlock,
-          }),
-        }),
-        this.boundedLogs({
-          fromBlock: deployment.blockNumber,
-          toBlock: receipt.blockNumber,
-          maxEvents: maximumIntervalEvents,
-          load: (fromBlock, toBlock) => client.getLogs({
-            address: getAddress(args.listing.commitment.payload.canonicalToken),
-            event: transferEvent,
-            args: { to: splitter },
-            fromBlock,
-            toBlock,
-          }),
-        }),
+        client.getBlock({ blockNumber: activationBlockNumber }),
+        client.getBytecode({ address: splitter, blockNumber: receipt.blockNumber }),
         client.readContract({
-          address: getAddress(args.listing.commitment.payload.canonicalToken),
+          address: getAddress(manifest.canonicalToken),
           abi: erc20Abi,
           functionName: "balanceOf",
           args: [splitter],
-          blockNumber: receipt.blockNumber,
+          blockNumber: activationBlockNumber,
         }),
+        client.readContract({ address: splitter, abi: splitterAbi,
+          functionName: "releaseSequence", blockNumber: activationBlockNumber }),
+        client.readContract({ address: splitter, abi: splitterAbi,
+          functionName: "canonicalToken", blockNumber: activationBlockNumber }),
+        client.readContract({ address: splitter, abi: splitterAbi,
+          functionName: "providerPayee", blockNumber: activationBlockNumber }),
+        client.readContract({ address: splitter, abi: splitterAbi,
+          functionName: "daskiCommissionReceiver", blockNumber: activationBlockNumber }),
+        client.readContract({ address: splitter, abi: splitterAbi,
+          functionName: "commissionBps", blockNumber: activationBlockNumber }),
+        client.readContract({ address: splitter, abi: splitterAbi,
+          functionName: "listingCommitmentHash", blockNumber: activationBlockNumber }),
+        client.readContract({ address: splitter, abi: splitterAbi,
+          functionName: "policyVersionHash", blockNumber: activationBlockNumber }),
+        client.readContract({ address: splitter, abi: splitterAbi,
+          functionName: "outcomeIdHash", blockNumber: activationBlockNumber }),
+        client.readContract({ address: splitter, abi: splitterAbi,
+          functionName: "listingEpoch", blockNumber: activationBlockNumber }),
       ]);
       await this.tokenPolicyFacts(client, receipt.blockNumber);
       if (
         receipt.status !== "success" ||
-        !hasRequiredConfirmations(head, receipt.blockNumber, this.config.finalityConfirmations) ||
-        !transaction.to || getAddress(transaction.to) !== splitter ||
-        transaction.input !== encodeFunctionData({ abi: splitterAbi, functionName: "releaseAll" })
-      ) throw new Error("Release transaction is not finalized or has unexpected calldata");
-      const releases = parseEventLogs({ abi: splitterAbi, logs: receipt.logs, eventName: "Released" })
-        .filter((event) => event.address.toLowerCase() === splitter.toLowerCase());
-      if (releases.length !== 1) throw new Error("Release event is missing or ambiguous");
-      const release = releases[0]!;
-      const releasePosition = position(release);
-      const previous = releaseHistory
-        .filter((event) => comparePosition(position(event), releasePosition) < 0)
-        .sort((left, right) => comparePosition(position(left), position(right)))
-        .at(-1);
-      const previousPosition = previous ? position(previous) : null;
-      const interval = credits
-        .filter((credit) =>
-          (!previousPosition || comparePosition(position(credit), previousPosition) > 0) &&
-          comparePosition(position(credit), releasePosition) < 0,
-        )
-        .sort((left, right) => comparePosition(position(left), position(right)));
-      const targetIndex = interval.findIndex((credit) =>
-        credit.transactionHash === args.deposit.transactionHash &&
-        credit.args.from !== undefined && getAddress(credit.args.from) === getAddress(args.order.payer!) &&
-        credit.args.value !== undefined && credit.args.value === BigInt(args.order.grossAmount) &&
-        Number(credit.logIndex) === args.deposit.logIndex,
+        receipt.transactionHash !== releaseReference.transactionHash ||
+        receipt.blockNumber !== releaseReference.blockNumber ||
+        receipt.blockHash !== releaseReference.blockHash ||
+        receipt.transactionIndex !== releaseReference.transactionIndex ||
+        !hasRequiredConfirmations(head, receipt.blockNumber, this.config.finalityConfirmations)
+      ) throw new Error("Release transaction is not finalized or receipt-bound");
+      assertActivationCheckpoint({
+        activationBlockNumber,
+        expectedBlockHash: manifest.splitterActivationBlockHash,
+        observedBlockHash: activationBlock.hash,
+        expectedTokenBalance: BigInt(manifest.splitterStartingTokenBalance),
+        observedTokenBalance: startingTokenBalance,
+        expectedReleaseSequence: BigInt(manifest.splitterStartingReleaseSequence),
+        observedReleaseSequence: startingReleaseSequence,
+        depositBlockNumber: args.deposit.blockNumber,
+        releaseBlockNumber: receipt.blockNumber,
+      });
+      if (!releaseCode || keccak256(releaseCode) !== manifest.splitterRuntimeCodeHash) {
+        throw new Error("Splitter runtime code changed before the selected release");
+      }
+      const release = selectBoundRelease({
+        releases: normalizeReleases(receipt.logs),
+        binding: releaseReference,
+        splitter,
+        releaseSequence: releaseReference.releaseSequence,
+      });
+      const previous = await this.previousRelease(
+        client,
+        splitter,
+        activationBlockNumber,
+        BigInt(manifest.splitterStartingReleaseSequence),
+        release,
+        maximumPageEvents,
       );
-      if (targetIndex < 0) throw new Error("Release interval does not contain the order deposit");
-      const intervalGross = interval.reduce((total, credit) => total + credit.args.value!, 0n);
-      const cumulativeBefore = interval.slice(0, targetIndex).reduce((total, credit) => total + credit.args.value!, 0n);
-      const cumulativeAfter = cumulativeBefore + BigInt(args.order.grossAmount);
-      const commissionBefore = cumulativeBefore * BigInt(bps) / 10_000n;
-      const commissionAfter = cumulativeAfter * BigInt(bps) / 10_000n;
-      const daskiCommissionAmount = commissionAfter - commissionBefore;
-      const providerNetAmount = BigInt(args.order.grossAmount) - daskiCommissionAmount;
-      const totalCommission = intervalGross * BigInt(bps) / 10_000n;
-      const payoutTransfers = parseEventLogs({ abi: erc20Abi, logs: receipt.logs, eventName: "Transfer" })
-        .filter((event) => event.address.toLowerCase() === getAddress(token).toLowerCase());
-      const providerTransfers = payoutTransfers.filter((event) =>
-        event.args.from === splitter && event.args.to === getAddress(payee) &&
-        event.args.value === intervalGross - totalCommission,
-      );
-      const daskiTransfers = payoutTransfers.filter((event) =>
-        event.args.from === splitter && event.args.to === getAddress(receiver) &&
-        event.args.value === totalCommission,
-      );
+      const creditLogs = await this.boundedLogs({
+        fromBlock: previous?.blockNumber ?? activationBlockNumber + 1n,
+        toBlock: receipt.blockNumber,
+        maxEvents: maximumPageEvents,
+        load: (fromBlock, toBlock) => client.getLogs({
+          address: getAddress(manifest.canonicalToken),
+          event: transferEvent,
+          args: { to: splitter },
+          fromBlock,
+          toBlock,
+        }),
+      });
       if (
-        getAddress(token) !== getAddress(args.listing.commitment.payload.canonicalToken) ||
-        getAddress(payee) !== getAddress(args.listing.commitment.payload.providerPayee) ||
-        getAddress(receiver) !== getAddress(args.listing.commitment.payload.daskiCommissionReceiver) ||
-        bps !== args.listing.commitment.payload.commissionBps || commitment !== canonicalHash(args.listing.commitment) ||
-        release.args.outcomeIdHash !== keccak256(stringToHex(args.listing.commitment.payload.outcomeId)) ||
-        release.args.listingEpoch !== BigInt(args.listing.commitment.payload.listingEpoch) ||
-        release.args.policyVersionHash !== policyHash || release.args.listingCommitmentHash !== commitment ||
-        release.args.grossAmount !== intervalGross || release.args.providerNetAmount !== intervalGross - totalCommission ||
-        release.args.daskiCommissionAmount !== totalCommission || providerTransfers.length !== 1 || daskiTransfers.length !== 1 ||
-        providerNetAmount <= 0n || daskiCommissionAmount <= 0n || endingBalance !== 0n
-      ) throw new Error("Release interval, payout, or immutable evidence mismatch");
+        getAddress(token) !== getAddress(manifest.canonicalToken) ||
+        getAddress(payee) !== getAddress(manifest.providerPayee) ||
+        getAddress(receiver) !== getAddress(manifest.daskiCommissionReceiver) ||
+        bps !== manifest.commissionBps || commitment !== canonicalHash(args.listing.commitment) ||
+        policyHash !== manifest.policyVersionHash || outcomeIdHash !== manifest.outcomeIdHash ||
+        listingEpoch !== BigInt(manifest.listingEpoch) || args.order.payer === null
+      ) throw new Error("Splitter immutable evidence changed before release");
+      const transfers = normalizeTransfers(creditLogs);
+      const deposit = selectBoundDeposit({
+        transfers,
+        binding: {
+          blockNumber: args.deposit.blockNumber,
+          blockHash: args.deposit.blockHash,
+          transactionIndex: args.deposit.transactionIndex,
+          logIndex: args.deposit.logIndex,
+          transactionHash: args.deposit.transactionHash,
+        },
+        token: getAddress(manifest.canonicalToken),
+        payer: getAddress(args.order.payer),
+        splitter,
+        grossAmount: BigInt(args.order.grossAmount),
+      });
+      const result = verifyReleaseInterval({
+        activationBlockNumber,
+        startingTokenBalance,
+        startingReleaseSequence,
+        deposit,
+        release,
+        previousRelease: previous,
+        credits: transfers,
+        payoutTransfers: normalizeTransfers(receipt.logs),
+        token: getAddress(manifest.canonicalToken),
+        splitter,
+        providerPayee: getAddress(manifest.providerPayee),
+        daskiCommissionReceiver: getAddress(manifest.daskiCommissionReceiver),
+        commissionBps: manifest.commissionBps,
+        outcomeIdHash: manifest.outcomeIdHash,
+        listingEpoch: BigInt(manifest.listingEpoch),
+        policyVersionHash: manifest.policyVersionHash,
+        listingCommitmentHash: manifest.listingCommitmentHash,
+      });
       const observation: SourceObservation = {
         source: host,
         blockNumber: receipt.blockNumber.toString(),
         blockHash: receipt.blockHash,
         transactionHash: receipt.transactionHash,
-        transactionTo: transaction.to,
-        transactionFrom: transaction.from,
         transactionIndex: receipt.transactionIndex,
-        logIndex: Number(release.logIndex),
-        input: transaction.input,
+        logIndex: release.logIndex,
         logsHash: chainLogsHash(receipt.logs),
       };
       const allocation = {
-        providerNetAmount: providerNetAmount.toString(),
-        daskiCommissionAmount: daskiCommissionAmount.toString(),
-        releaseSequence: release.args.releaseSequence.toString(),
-        interval: interval.map((credit) => ({
-          blockNumber: credit.blockNumber!.toString(),
+        providerNetAmount: result.providerNetAmount.toString(),
+        daskiCommissionAmount: result.daskiCommissionAmount.toString(),
+        releaseSequence: release.releaseSequence.toString(),
+        initialBalance: (previous ? 0n : startingTokenBalance).toString(),
+        interval: result.interval.map((credit) => ({
+          blockNumber: credit.blockNumber.toString(),
+          blockHash: credit.blockHash,
           transactionIndex: credit.transactionIndex,
           logIndex: credit.logIndex,
           transactionHash: credit.transactionHash,
-          from: credit.args.from,
-          amount: credit.args.value!.toString(),
-          recognizedOrder: credit.transactionHash === args.deposit.transactionHash && Number(credit.logIndex) === args.deposit.logIndex,
+          token: credit.token,
+          from: credit.from,
+          to: credit.to,
+          amount: credit.value.toString(),
+          recognizedOrder: compareEvidencePosition(credit, deposit) === 0 &&
+            credit.blockHash === deposit.blockHash &&
+            credit.transactionHash === deposit.transactionHash,
         })),
       };
       return { observation, allocation };
@@ -711,28 +946,81 @@ export class StandardChainEvidence {
   private async findCoveringRelease(
     client: (typeof this.clients)[number]["client"],
     args: { order: StandardOrderRecord; listing: StandardListing; deposit: EvidenceResult },
-  ): Promise<Hex | null> {
-    const depositPosition = [
-      args.deposit.blockNumber,
-      BigInt(args.deposit.transactionIndex),
-      BigInt(args.deposit.logIndex),
-    ] as const;
+  ): Promise<ReleaseReference | null> {
     const head = await client.getBlockNumber();
-    const releases = await this.boundedLogs({
-      fromBlock: args.deposit.blockNumber,
-      toBlock: head,
-      maxEvents: this.config.manifest.chainEvidencePolicy.payload.maximumIntervalEvents,
-      load: (fromBlock, toBlock) => client.getLogs({
+    const confirmationDepth = BigInt(this.config.finalityConfirmations - 1);
+    if (head < confirmationDepth) return null;
+    const finalizedBlock = head - confirmationDepth;
+    const activationBlock = BigInt(args.listing.manifest.payload.splitterActivationBlockNumber);
+    const fromBlock = args.deposit.blockNumber > activationBlock
+      ? args.deposit.blockNumber
+      : activationBlock + 1n;
+    if (finalizedBlock < fromBlock) return null;
+    const raw = await loadLogsPaged({
+      fromBlock,
+      toBlock: finalizedBlock,
+      maximumPageEvents: this.config.manifest.chainEvidencePolicy.payload.maximumLogPageEvents,
+      load: (pageFrom, pageTo) => client.getLogs({
         address: getAddress(args.listing.manifest.payload.splitterAddress),
         event: releasedEvent,
+        fromBlock: pageFrom,
+        toBlock: pageTo,
+      }),
+    });
+    const depositBinding: LogBinding = {
+      blockNumber: args.deposit.blockNumber,
+      blockHash: args.deposit.blockHash,
+      transactionIndex: args.deposit.transactionIndex,
+      logIndex: args.deposit.logIndex,
+      transactionHash: args.deposit.transactionHash,
+    };
+    const covering = normalizeReleases(raw)
+      .filter((event) =>
+        compareEvidencePosition(event, depositBinding) > 0 &&
+        event.releaseSequence > BigInt(args.listing.manifest.payload.splitterStartingReleaseSequence)
+      )
+      .sort(compareEvidencePosition)[0];
+    if (!covering) return null;
+    return {
+      blockNumber: covering.blockNumber,
+      blockHash: covering.blockHash,
+      transactionIndex: covering.transactionIndex,
+      logIndex: covering.logIndex,
+      transactionHash: covering.transactionHash,
+      releaseSequence: covering.releaseSequence,
+    };
+  }
+
+  private async previousRelease(
+    client: (typeof this.clients)[number]["client"],
+    splitter: Address,
+    activationBlock: bigint,
+    startingReleaseSequence: bigint,
+    release: ReleasedEvidence,
+    maximumPageEvents: number,
+  ): Promise<ReleasedEvidence | null> {
+    if (release.releaseSequence === startingReleaseSequence + 1n) return null;
+    if (release.releaseSequence <= startingReleaseSequence + 1n) {
+      throw new Error("Release sequence is outside the activated history");
+    }
+    const raw = await loadLogsPaged({
+      fromBlock: activationBlock + 1n,
+      toBlock: release.blockNumber,
+      maximumPageEvents,
+      load: (fromBlock, toBlock) => client.getLogs({
+        address: splitter,
+        event: releasedEvent,
+        args: { releaseSequence: release.releaseSequence - 1n },
         fromBlock,
         toBlock,
       }),
     });
-    const covering = releases
-      .filter((event) => comparePosition(position(event), depositPosition) > 0)
-      .sort((left, right) => comparePosition(position(left), position(right)))[0];
-    return covering?.transactionHash ?? null;
+    const previous = normalizeReleases(raw).filter((event) =>
+      event.releaseSequence === release.releaseSequence - 1n &&
+      compareEvidencePosition(event, release) < 0
+    );
+    if (previous.length !== 1) throw new Error("Previous release event is missing or ambiguous");
+    return previous[0]!;
   }
 
   private async boundedLogs<T>(args: {
@@ -741,19 +1029,12 @@ export class StandardChainEvidence {
     maxEvents: number;
     load(fromBlock: bigint, toBlock: bigint): Promise<readonly T[]>;
   }): Promise<T[]> {
-    if (args.toBlock < args.fromBlock) return [];
-    const logs: T[] = [];
-    const blockWindow = 10_000n;
-    for (let fromBlock = args.fromBlock; fromBlock <= args.toBlock; fromBlock += blockWindow) {
-      const toBlock = fromBlock + blockWindow - 1n > args.toBlock
-        ? args.toBlock
-        : fromBlock + blockWindow - 1n;
-      logs.push(...await args.load(fromBlock, toBlock));
-      if (logs.length > args.maxEvents) {
-        throw new Error("Chain history exceeds the approved evidence event budget");
-      }
-    }
-    return logs;
+    return loadLogsPaged({
+      fromBlock: args.fromBlock,
+      toBlock: args.toBlock,
+      maximumPageEvents: args.maxEvents,
+      load: args.load,
+    });
   }
 
   private async assertSourceLag(): Promise<void> {

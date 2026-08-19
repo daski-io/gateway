@@ -137,7 +137,7 @@ export class StandardWalletQueries {
       action: "get-buyer-reputation",
       request,
     });
-    const block = await this.chain.getBlock({ blockTag: "finalized" });
+    const block = await this.chain.getBlock({ blockTag: "safe" });
     const address = getAddress(payer);
     const [[eligible, confirmed, notConfirmed], totalPaid, totalRefunded] = await Promise.all([
       this.chain.readContract({
@@ -168,7 +168,7 @@ export class StandardWalletQueries {
       notConfirmedCount: notConfirmed.toString(),
       totalPaid: totalPaid.toString(),
       totalRefunded: totalRefunded.toString(),
-      finalizedBlock: block.number.toString(),
+      safeBlock: block.number.toString(),
     };
   }
 }

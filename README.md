@@ -67,8 +67,9 @@ core groups are:
   `MIGRATION_DATABASE_URL`, and `TRUST_PROXY`.
 - Standard facilitator: `CDP_API_KEY_ID`, `CDP_API_KEY_SECRET`, and the signed
   facilitator profile in `STANDARD_RAIL_MANIFEST_JSON`.
-- Evidence and screening: `BASE_RPC_URL`, optional `BASE_RPC_FALLBACK_URLS`, and
-  `SANCTIONS_ORACLE_ADDRESS`.
+- Evidence and screening: `BASE_RPC_URL`, optional `BASE_RPC_FALLBACK_URLS`,
+  `STANDARD_RAIL_SPLITTER_FACTORY_RUNTIME_CODE_HASH`,
+  `STANDARD_RAIL_SPLITTER_CREATION_CODE_HASH`, and `SANCTIONS_ORACLE_ADDRESS`.
 - Signing role: `FACILITATOR_PRIVATE_KEY` for protocol artifacts and
   gas-funded Testnet reputation writes.
 

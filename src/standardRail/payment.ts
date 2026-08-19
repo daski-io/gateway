@@ -71,9 +71,9 @@ export function paymentRequired(args: {
     x402Version: 2,
     resource: {
       url: args.listing.commitment.payload.absoluteResourceUri,
-      description: args.listing.description,
+      description: `Daski outcome ${args.listing.commitment.payload.outcomeId}`,
       mimeType: "application/json",
-      serviceName: args.listing.title,
+      serviceName: args.listing.offer.payload.skillId,
     },
     accepts: [args.requirements],
     extensions: {

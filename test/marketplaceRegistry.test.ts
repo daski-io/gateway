@@ -22,7 +22,20 @@ function reader(): MarketplaceChainReader {
     resolveWallet: vi.fn(async () => ({ agentId: "7", found: true })),
     listProviders: vi.fn(async (offset, limit) => ({ offset, limit, total: "1", providers: [] })),
     getProvider: vi.fn(async (agentId) => ({ agentId: agentId.toString() })),
-    getService: vi.fn(async (id) => ({ serviceId: id })),
+    getService: vi.fn(async (id) => ({
+      providerAgentId: "7",
+      serviceId: id,
+      serviceSlug: "service",
+      version: "1",
+      serviceUri: "https://provider.example/agent-cards/service.json",
+      serviceWallet: address,
+      createdAt: "1",
+      active: true,
+      standardReputation: {
+        completed: "0", failed: "0", canceled: "0", confirmed: "0",
+        notConfirmed: "0", refundedAmount: "0", transactions: "0", safeBlock: "1",
+      },
+    })),
   };
 }
 

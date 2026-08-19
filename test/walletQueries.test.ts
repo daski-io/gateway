@@ -9,6 +9,7 @@ import type { StandardWalletStore } from "../src/standardRail/walletStore.js";
 describe("wallet reputation queries", () => {
   it("returns the buyer's on-chain value totals with their feedback counts", async () => {
     const consume = vi.fn(async () => undefined);
+    const getBlock = vi.fn(async () => ({ number: 123n }));
     const readContract = vi.fn(async ({ functionName }: { functionName: string }) => {
       if (functionName === "getBuyerStats") return [4n, 3n, 1n];
       if (functionName === "totalPaidByPayer") return 12_000_000n;
@@ -25,7 +26,7 @@ describe("wallet reputation queries", () => {
       baseSepolia,
     );
     Object.assign(queries as unknown as { chain: unknown }, {
-      chain: { getBlock: vi.fn(async () => ({ number: 123n })), readContract },
+      chain: { getBlock, readContract },
     });
 
     await expect(queries.getReputation({
@@ -37,9 +38,10 @@ describe("wallet reputation queries", () => {
       notConfirmedCount: "1",
       totalPaid: "12000000",
       totalRefunded: "2000000",
-      finalizedBlock: "123",
+      safeBlock: "123",
     });
     expect(consume).toHaveBeenCalledOnce();
+    expect(getBlock).toHaveBeenCalledWith({ blockTag: "safe" });
     expect(readContract).toHaveBeenCalledTimes(3);
   });
 });

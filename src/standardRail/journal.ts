@@ -1,8 +1,9 @@
 import type { Pool } from "../db/pool.js";
 import type { Hex } from "../types.js";
-import type { EvidenceResult } from "./evidence.js";
+import type { EvidenceResult, ReleaseEvidenceResult } from "./evidence.js";
 import { canonicalHash } from "./canonical.js";
-import type { SignedEnvelope, StandardRailDispatchV1 } from "./types.js";
+import type { SignedEnvelope, StandardRailDispatchV2 } from "./types.js";
+import { parseStandardRailDispatchV2 } from "./wireContracts.js";
 
 const bytes = (value: Hex): Buffer => Buffer.from(value.slice(2), "hex");
 
@@ -97,7 +98,12 @@ export class StandardRailJournal {
     if (inserted.rowCount !== 1) throw new Error("CHAIN_EVIDENCE_REPLAYED_ACROSS_ORDERS");
   }
 
-  async loadEvidence(orderId: string, kind: "deposit" | "release"): Promise<EvidenceResult> {
+  async loadEvidence(orderId: string, kind: "deposit"): Promise<EvidenceResult>;
+  async loadEvidence(orderId: string, kind: "release"): Promise<ReleaseEvidenceResult>;
+  async loadEvidence(
+    orderId: string,
+    kind: "deposit" | "release",
+  ): Promise<EvidenceResult | ReleaseEvidenceResult> {
     const result = await this.pool.query<{
       transaction_hash: Hex;
       block_number: string;
@@ -116,15 +122,52 @@ export class StandardRailJournal {
     );
     const row = result.rows[0];
     if (!row) throw new Error(`Missing ${kind} evidence for recovery`);
-    return {
+    const evidenceHash = `0x${row.evidence_hash.toString("hex")}` as Hex;
+    if (canonicalHash(row.canonical_evidence) !== evidenceHash) {
+      throw new Error(`Persisted ${kind} evidence hash is invalid`);
+    }
+    const base: EvidenceResult = {
       transactionHash: row.transaction_hash,
       blockNumber: BigInt(row.block_number),
       blockHash: row.block_hash,
       transactionIndex: row.transaction_index,
       logIndex: row.log_index,
-      evidenceHash: `0x${row.evidence_hash.toString("hex")}`,
+      evidenceHash,
       canonicalEvidence: row.canonical_evidence,
       sources: row.source_fingerprints,
+    };
+    if (kind === "deposit") return base;
+    const observations = row.canonical_evidence.observations;
+    if (!Array.isArray(observations) || observations.length === 0) {
+      throw new Error("Persisted release evidence has no observations");
+    }
+    const allocations = observations.map((entry) => {
+      if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+        throw new Error("Persisted release evidence observation is invalid");
+      }
+      const allocation = (entry as Record<string, unknown>).allocation;
+      if (!allocation || typeof allocation !== "object" || Array.isArray(allocation)) {
+        throw new Error("Persisted release allocation is invalid");
+      }
+      return allocation as Record<string, unknown>;
+    });
+    const values = allocations.map((allocation) => ({
+      providerNetAmount: String(allocation.providerNetAmount),
+      daskiCommissionAmount: String(allocation.daskiCommissionAmount),
+      releaseSequence: String(allocation.releaseSequence),
+    }));
+    if (
+      values.some((value) =>
+        !/^[1-9][0-9]*$/.test(value.providerNetAmount) ||
+        !/^[1-9][0-9]*$/.test(value.daskiCommissionAmount) ||
+        !/^[1-9][0-9]*$/.test(value.releaseSequence)
+      ) || new Set(values.map((value) => canonicalHash(value))).size !== 1
+    ) throw new Error("Persisted release allocations disagree");
+    return {
+      ...base,
+      providerNetAmount: BigInt(values[0]!.providerNetAmount),
+      daskiCommissionAmount: BigInt(values[0]!.daskiCommissionAmount),
+      releaseSequence: BigInt(values[0]!.releaseSequence),
     };
   }
 
@@ -162,9 +205,10 @@ export class StandardRailJournal {
     nonce: Hex;
     dispatchHash: Hex;
     requestHash: Hex;
-    dispatch: SignedEnvelope<StandardRailDispatchV1>;
+    dispatch: SignedEnvelope<StandardRailDispatchV2, 2>;
     request: unknown;
   }): Promise<boolean> {
+    parseStandardRailDispatchV2(args.dispatch);
     const result = await this.pool.query(
       `INSERT INTO standard_dispatch_claims
         (order_id,dispatch_nonce,dispatch_hash,request_hash,canonical_dispatch,canonical_request,
@@ -177,18 +221,19 @@ export class StandardRailJournal {
   }
 
   async dispatchClaim(orderId: string): Promise<{
-    dispatch: SignedEnvelope<StandardRailDispatchV1>;
+    dispatch: SignedEnvelope<StandardRailDispatchV2, 2>;
     request: unknown;
   } | null> {
     const result = await this.pool.query<{
-      canonical_dispatch: SignedEnvelope<StandardRailDispatchV1>;
+      canonical_dispatch: unknown;
       canonical_request: unknown;
     }>(
       "SELECT canonical_dispatch,canonical_request FROM standard_dispatch_claims WHERE order_id=$1",
       [orderId],
     );
-    return result.rows[0]
-      ? { dispatch: result.rows[0].canonical_dispatch, request: result.rows[0].canonical_request }
+    const row = result.rows[0];
+    return row
+      ? { dispatch: parseStandardRailDispatchV2(row.canonical_dispatch), request: row.canonical_request }
       : null;
   }
 

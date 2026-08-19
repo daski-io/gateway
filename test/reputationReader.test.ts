@@ -82,7 +82,7 @@ describe("direct reputation presentation", () => {
       totalRefunded: "50000",
       averageFulfillmentSeconds: 200,
       fulfillmentSampleSize: "2",
-      finalizedBlock: "123",
+      safeBlock: "123",
     });
     expect(result.recentPurchases[0]).toMatchObject({
       amount: "1000000",
@@ -165,6 +165,7 @@ describe("direct reputation presentation", () => {
     });
     expect(first.services.get(SERVICE_ID)?.averageFulfillmentSeconds).toBe(90);
     expect(getBlock).toHaveBeenCalledOnce();
+    expect(getBlock).toHaveBeenCalledWith({ blockTag: "safe" });
     expect(query).toHaveBeenCalledOnce();
   });
 });
