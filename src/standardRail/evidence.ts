@@ -352,16 +352,17 @@ export class StandardChainEvidence {
   ): Promise<Record<string, unknown>> {
     const policy = this.config.manifest.chainEvidencePolicy.payload;
     const token = getAddress(policy.canonicalToken);
-    const [tokenCode, implementationStorage, domainSeparator] = await Promise.all([
-      client.getBytecode({ address: token, blockNumber }),
-      client.getStorageAt({ address: token, slot: policy.tokenImplementationSlot, blockNumber }),
-      client.readContract({
-        address: token,
-        abi: tokenPolicyAbi,
-        functionName: "DOMAIN_SEPARATOR",
-        blockNumber,
-      }),
-    ]);
+    // Keep per-source archive reads ordered because public RPCs reject large historical bursts.
+    const tokenCode = await client.getBytecode({ address: token, blockNumber });
+    const implementationStorage = await client.getStorageAt({
+      address: token, slot: policy.tokenImplementationSlot, blockNumber,
+    });
+    const domainSeparator = await client.readContract({
+      address: token,
+      abi: tokenPolicyAbi,
+      functionName: "DOMAIN_SEPARATOR",
+      blockNumber,
+    });
     if (!tokenCode || !implementationStorage) throw new Error("Canonical-token code or implementation is unavailable");
     const implementation = getAddress(`0x${implementationStorage.slice(-40)}`);
     const implementationCode = await client.getBytecode({ address: implementation, blockNumber });
@@ -427,47 +428,50 @@ export class StandardChainEvidence {
       const deploymentTransaction = await client.getTransaction({
         hash: manifest.splitterDeploymentTransaction,
       });
-      const [head, deploymentBlock, activationBlock, codeAtDeployment, codeAtActivation,
-        factoryCodeAtDeployment, factoryCodeAtActivation, activationTokenPolicy,
-        startingTokenBalance, startingReleaseSequence, canonicalChainId, token,
-        payee, receiver, bps, policyHash, outcomeHash, listingEpoch, commitmentHash] =
-        await Promise.all([
-          client.getBlockNumber(),
-          client.getBlock({ blockNumber: deploymentBlockNumber }),
-          client.getBlock({ blockNumber: activationBlockNumber }),
-          client.getBytecode({ address: splitter, blockNumber: deploymentBlockNumber }),
-          client.getBytecode({ address: splitter, blockNumber: activationBlockNumber }),
-          client.getBytecode({ address: factory, blockNumber: deploymentBlockNumber }),
-          client.getBytecode({ address: factory, blockNumber: activationBlockNumber }),
-          this.tokenPolicyFacts(client, activationBlockNumber),
-          client.readContract({
-            address: getAddress(manifest.canonicalToken),
-            abi: erc20Abi,
-            functionName: "balanceOf",
-            args: [splitter],
-            blockNumber: activationBlockNumber,
-          }),
-          client.readContract({ address: splitter, abi: splitterAbi,
-            functionName: "releaseSequence", blockNumber: activationBlockNumber }),
-          client.readContract({ address: splitter, abi: splitterAbi,
-            functionName: "canonicalChainId", blockNumber: activationBlockNumber }),
-          client.readContract({ address: splitter, abi: splitterAbi,
-            functionName: "canonicalToken", blockNumber: activationBlockNumber }),
-          client.readContract({ address: splitter, abi: splitterAbi,
-            functionName: "providerPayee", blockNumber: activationBlockNumber }),
-          client.readContract({ address: splitter, abi: splitterAbi,
-            functionName: "daskiCommissionReceiver", blockNumber: activationBlockNumber }),
-          client.readContract({ address: splitter, abi: splitterAbi,
-            functionName: "commissionBps", blockNumber: activationBlockNumber }),
-          client.readContract({ address: splitter, abi: splitterAbi,
-            functionName: "policyVersionHash", blockNumber: activationBlockNumber }),
-          client.readContract({ address: splitter, abi: splitterAbi,
-            functionName: "outcomeIdHash", blockNumber: activationBlockNumber }),
-          client.readContract({ address: splitter, abi: splitterAbi,
-            functionName: "listingEpoch", blockNumber: activationBlockNumber }),
-          client.readContract({ address: splitter, abi: splitterAbi,
-            functionName: "listingCommitmentHash", blockNumber: activationBlockNumber }),
-        ]);
+      // Verify one historical fact at a time so an independent source remains usable under load.
+      const head = await client.getBlockNumber();
+      const deploymentBlock = await client.getBlock({ blockNumber: deploymentBlockNumber });
+      const activationBlock = await client.getBlock({ blockNumber: activationBlockNumber });
+      const codeAtDeployment = await client.getBytecode({
+        address: splitter, blockNumber: deploymentBlockNumber,
+      });
+      const codeAtActivation = await client.getBytecode({
+        address: splitter, blockNumber: activationBlockNumber,
+      });
+      const factoryCodeAtDeployment = await client.getBytecode({
+        address: factory, blockNumber: deploymentBlockNumber,
+      });
+      const factoryCodeAtActivation = await client.getBytecode({
+        address: factory, blockNumber: activationBlockNumber,
+      });
+      const activationTokenPolicy = await this.tokenPolicyFacts(client, activationBlockNumber);
+      const startingTokenBalance = await client.readContract({
+        address: getAddress(manifest.canonicalToken),
+        abi: erc20Abi,
+        functionName: "balanceOf",
+        args: [splitter],
+        blockNumber: activationBlockNumber,
+      });
+      const startingReleaseSequence = await client.readContract({ address: splitter,
+        abi: splitterAbi, functionName: "releaseSequence", blockNumber: activationBlockNumber });
+      const canonicalChainId = await client.readContract({ address: splitter,
+        abi: splitterAbi, functionName: "canonicalChainId", blockNumber: activationBlockNumber });
+      const token = await client.readContract({ address: splitter,
+        abi: splitterAbi, functionName: "canonicalToken", blockNumber: activationBlockNumber });
+      const payee = await client.readContract({ address: splitter,
+        abi: splitterAbi, functionName: "providerPayee", blockNumber: activationBlockNumber });
+      const receiver = await client.readContract({ address: splitter,
+        abi: splitterAbi, functionName: "daskiCommissionReceiver", blockNumber: activationBlockNumber });
+      const bps = await client.readContract({ address: splitter,
+        abi: splitterAbi, functionName: "commissionBps", blockNumber: activationBlockNumber });
+      const policyHash = await client.readContract({ address: splitter,
+        abi: splitterAbi, functionName: "policyVersionHash", blockNumber: activationBlockNumber });
+      const outcomeHash = await client.readContract({ address: splitter,
+        abi: splitterAbi, functionName: "outcomeIdHash", blockNumber: activationBlockNumber });
+      const listingEpoch = await client.readContract({ address: splitter,
+        abi: splitterAbi, functionName: "listingEpoch", blockNumber: activationBlockNumber });
+      const commitmentHash = await client.readContract({ address: splitter,
+        abi: splitterAbi, functionName: "listingCommitmentHash", blockNumber: activationBlockNumber });
       assertActivationCheckpoint({
         activationBlockNumber,
         expectedBlockHash: manifest.splitterActivationBlockHash,
