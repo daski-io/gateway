@@ -622,7 +622,7 @@ export class StandardChainEvidence {
     await Promise.all(this.clients.map(({ client }) => client.waitForTransactionReceipt({
       hash: args.transactionHash,
       confirmations: this.config.finalityConfirmations,
-      pollingInterval: 1_000,
+      pollingInterval: 2_000,
       timeout: Math.max(1, finalityDeadline - Date.now()),
     })));
     await this.assertSourceLag();
@@ -689,15 +689,19 @@ export class StandardChainEvidence {
       .map((account) => getAddress(account));
     const observations = await Promise.all(this.clients.map(async ({ client }) => {
       const head = await client.getBlockNumber();
+      // Aggregate the per-account reads into one pinned eth_call; keyed RPC quota is the constraint.
       const [code, results] = await Promise.all([
         client.getBytecode({ address: oracle, blockNumber: head }),
-        Promise.all(unique.map((account) => client.readContract({
-          address: oracle,
-          abi: sanctionsOracleAbi,
-          functionName: "isSanctioned",
-          args: [account],
+        client.multicall({
+          contracts: unique.map((account) => ({
+            address: oracle,
+            abi: sanctionsOracleAbi,
+            functionName: "isSanctioned",
+            args: [account],
+          } as const)),
+          allowFailure: false,
           blockNumber: head,
-        }))),
+        }),
       ]);
       if (!code || keccak256(code) !== expectedRuntimeCodeHash) {
         throw new Error("Screening oracle runtime code changed");

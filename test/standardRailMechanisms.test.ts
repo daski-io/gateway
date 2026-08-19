@@ -1,4 +1,4 @@
-import { TransactionReceiptNotFoundError } from "viem";
+import { TransactionReceiptNotFoundError, keccak256 } from "viem";
 import { describe, expect, it, vi } from "vitest";
 import { baseSepolia } from "viem/chains";
 import type { Pool } from "../src/db/pool.js";
@@ -165,6 +165,54 @@ describe("standard rail hardened mechanisms", () => {
       blockNumber: "10", blockHash: hash("9"),
     })).resolves.toBeUndefined();
     expect(maximumActive).toBe(1);
+  });
+
+  it("aggregates sanctions screening into one pinned read per source", async () => {
+    const oracleCode = "0x6001600101" as const;
+    const multicall = vi.fn(async ({ contracts, allowFailure, blockNumber }: {
+      contracts: Array<{ functionName: string; args: readonly unknown[] }>;
+      allowFailure?: boolean;
+      blockNumber?: bigint;
+    }) => {
+      expect(allowFailure).toBe(false);
+      expect(blockNumber).toBe(123n);
+      expect(contracts.every(({ functionName }) => functionName === "isSanctioned")).toBe(true);
+      return contracts.map(() => false);
+    });
+    const client = {
+      getBlockNumber: vi.fn(async () => 123n),
+      getBytecode: vi.fn(async () => oracleCode),
+      multicall,
+    };
+    const evidence = new StandardChainEvidence({
+      evidenceRpcUrls: ["https://rpc-a.example", "https://rpc-b.example"],
+      releasePrivateKey: privateKey,
+      manifest: { chainEvidencePolicy: { payload: { maximumSourceLagBlocks: 4 } } },
+    } as unknown as StandardRailConfig, baseSepolia, unlockedFacilitatorNonceLock);
+    Object.assign(evidence as unknown as { clients: unknown[] }, {
+      clients: [{ client }, { client }],
+    });
+    await expect(evidence.assertNotSanctioned(
+      "0x1111111111111111111111111111111111111111",
+      keccak256(oracleCode),
+      [
+        "0x2222222222222222222222222222222222222222",
+        "0x2222222222222222222222222222222222222222",
+        "0x3333333333333333333333333333333333333333",
+      ],
+    )).resolves.toBeUndefined();
+    expect(multicall).toHaveBeenCalledTimes(2);
+    expect(multicall.mock.calls[0]![0].contracts).toHaveLength(2);
+
+    multicall.mockImplementation(async ({ contracts }) => contracts.map((_, index) => index === 1));
+    await expect(evidence.assertNotSanctioned(
+      "0x1111111111111111111111111111111111111111",
+      keccak256(oracleCode),
+      [
+        "0x2222222222222222222222222222222222222222",
+        "0x3333333333333333333333333333333333333333",
+      ],
+    )).rejects.toThrow("SANCTIONS_ADDRESS_REJECTED");
   });
 
   it("resumes a persisted reputation transaction after restart without preparing another", async () => {

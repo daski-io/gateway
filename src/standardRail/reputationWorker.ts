@@ -87,6 +87,7 @@ export class StandardReputationWorker {
         chain.id,
         privateKeyToAccount(config.reputationRelayerPrivateKey).address,
       ),
+    private readonly onRecordFinalized: () => void = () => undefined,
   ) {
     this.account = privateKeyToAccount(config.reputationRelayerPrivateKey);
     this.broadcastClient = createPublicClient({
@@ -284,6 +285,11 @@ export class StandardReputationWorker {
         easAddress: this.config.easAddress,
         receipt,
       });
+      try {
+        this.onRecordFinalized();
+      } catch {
+        // Cache invalidation must never disturb reconciliation.
+      }
       return;
     }
     await this.pool.query(

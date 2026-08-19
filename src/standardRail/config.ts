@@ -28,6 +28,7 @@ export interface StandardRailConfig {
   dispatchTimeoutMs: number;
   leaseSeconds: number;
   recoveryIntervalMs: number;
+  readinessIntervalMs: number;
   cursorKeyRing: { activeKeyId: string; keys: ReadonlyMap<string, Buffer> };
   reputationContract: Address;
   easAddress: Address;
@@ -69,6 +70,7 @@ const DEFAULTS = {
   dispatchTimeoutMs: 90_000,
   leaseSeconds: 45,
   recoveryIntervalMs: 10_000,
+  readinessIntervalMs: 300_000,
   reputationRetryDelaysSeconds: [5, 60, 3_000, 30_000] as const,
   abuse: {
     walletChallengesPerClientPerMinute: 30,
@@ -224,6 +226,7 @@ export function loadStandardRailConfig(
     dispatchTimeoutMs: integer(env, "STANDARD_RAIL_DISPATCH_TIMEOUT_MS", DEFAULTS.dispatchTimeoutMs),
     leaseSeconds: integer(env, "STANDARD_RAIL_LEASE_SECONDS", DEFAULTS.leaseSeconds),
     recoveryIntervalMs: integer(env, "STANDARD_RAIL_RECOVERY_INTERVAL_MS", DEFAULTS.recoveryIntervalMs),
+    readinessIntervalMs: integer(env, "STANDARD_RAIL_READINESS_INTERVAL_MS", DEFAULTS.readinessIntervalMs),
     cursorKeyRing: { activeKeyId: "derived-v1", keys: new Map([["derived-v1", cursorKey]]) },
     reputationContract: getAddress(required(env, "REPUTATION_STORAGE_ADDRESS")),
     easAddress: getAddress(required(env, "EAS_ADDRESS")),
