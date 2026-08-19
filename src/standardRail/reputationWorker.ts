@@ -15,6 +15,10 @@ import type { PoolClient } from "pg";
 import type { Pool } from "../db/pool.js";
 import { logger } from "../util/logger.js";
 import { canonicalHash } from "./canonical.js";
+import {
+  type FacilitatorNonceLock,
+  PostgresFacilitatorNonceLock,
+} from "./facilitatorNonceLock.js";
 import type { StandardRailConfig } from "./config.js";
 import { finalizeReputationOperation } from "./reputationFinalization.js";
 import {
@@ -67,6 +71,7 @@ function decryptRaw(value: Buffer, key: Buffer, operationId: string): Hex {
 export class StandardReputationWorker {
   private readonly account;
   private readonly client;
+  private readonly broadcastClient;
   private readonly evidenceClients: Array<ReturnType<typeof createPublicClient>>;
   private timer: NodeJS.Timeout | null = null;
   private running: Promise<void> | null = null;
@@ -76,8 +81,18 @@ export class StandardReputationWorker {
     private readonly pool: Pool,
     private readonly config: StandardRailConfig,
     private readonly chain: Chain,
+    private readonly nonceLock: FacilitatorNonceLock =
+      new PostgresFacilitatorNonceLock(
+        pool,
+        chain.id,
+        privateKeyToAccount(config.reputationRelayerPrivateKey).address,
+      ),
   ) {
     this.account = privateKeyToAccount(config.reputationRelayerPrivateKey);
+    this.broadcastClient = createPublicClient({
+      chain,
+      transport: http(config.evidenceRpcUrls[0], { retryCount: 0, timeout: 20_000 }),
+    });
     this.client = createPublicClient({
       chain,
       transport: fallback(config.evidenceRpcUrls.map((url) =>
@@ -221,7 +236,11 @@ export class StandardReputationWorker {
     return current.rows[0];
   }
 
-  private async reconcile(operation: OperationRow, transaction: TransactionRow): Promise<void> {
+  private async reconcile(
+    operation: OperationRow,
+    transaction: TransactionRow,
+    nonceLocked = false,
+  ): Promise<void> {
     let receipt;
     try {
       receipt = await this.client.getTransactionReceipt({ hash: transaction.transaction_hash });
@@ -239,7 +258,7 @@ export class StandardReputationWorker {
         await this.markBroadcastAndDefer(operation.operation_id, transaction.transaction_id);
         return;
       }
-      await this.broadcastPersisted(operation, transaction);
+      await this.broadcastPersisted(operation, transaction, nonceLocked);
       return;
     }
     const head = await this.client.getBlockNumber();
@@ -276,36 +295,50 @@ export class StandardReputationWorker {
 
   private async prepareAndBroadcast(operation: OperationRow): Promise<void> {
     const encoded = encodeReputationOperation(operation.canonical_intent, this.config);
-    const client = await this.pool.connect();
-    let prepared: TransactionRow | null = null;
-    try {
-      await client.query("BEGIN");
-      await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))", [
-        `reputation-relayer:${this.chain.id}:${this.account.address.toLowerCase()}`,
-      ]);
-      const current = await client.query<{ state: string }>(
-        "SELECT state FROM standard_reputation_operations WHERE operation_id=$1 FOR UPDATE",
-        [operation.operation_id],
-      );
-      if (!current.rows[0] || !["pending", "broadcast"].includes(current.rows[0].state)) {
+    await this.nonceLock.run(async () => {
+      const client = await this.pool.connect();
+      let prepared: TransactionRow | null = null;
+      try {
+        await client.query("BEGIN");
+        const current = await client.query<{ state: string }>(
+          "SELECT state FROM standard_reputation_operations WHERE operation_id=$1 FOR UPDATE",
+          [operation.operation_id],
+        );
+        if (!current.rows[0] || !["pending", "broadcast"].includes(current.rows[0].state)) {
+          await client.query("COMMIT");
+          return;
+        }
+        const raced = await client.query<TransactionRow>(
+          `SELECT * FROM standard_reputation_transactions
+            WHERE operation_id=$1 AND state IN ('prepared','broadcast','operator_attention')
+            ORDER BY created_at DESC LIMIT 1`,
+          [operation.operation_id],
+        );
+        prepared = raced.rows[0] ?? await this.persistPrepared(client, operation, encoded);
         await client.query("COMMIT");
-        return;
+      } catch (error) {
+        await client.query("ROLLBACK").catch(() => undefined);
+        throw error;
+      } finally {
+        client.release();
       }
-      const raced = await client.query<TransactionRow>(
-        `SELECT * FROM standard_reputation_transactions
-          WHERE operation_id=$1 AND state IN ('prepared','broadcast','operator_attention')
-          ORDER BY created_at DESC LIMIT 1`,
-        [operation.operation_id],
-      );
-      prepared = raced.rows[0] ?? await this.persistPrepared(client, operation, encoded);
-      await client.query("COMMIT");
-    } catch (error) {
-      await client.query("ROLLBACK").catch(() => undefined);
-      throw error;
-    } finally {
-      client.release();
+      if (prepared) await this.reconcile(operation, prepared, true);
+    });
+  }
+
+  private async highestObservedNonce(): Promise<number> {
+    try {
+      const observations = await Promise.all(this.evidenceClients.map(async (client) => {
+        const [latest, pending] = await Promise.all([
+          client.getTransactionCount({ address: this.account.address, blockTag: "latest" }),
+          client.getTransactionCount({ address: this.account.address, blockTag: "pending" }),
+        ]);
+        return Math.max(latest, pending);
+      }));
+      return Math.max(...observations);
+    } catch {
+      throw new ReputationRpcUnavailable();
     }
-    if (prepared) await this.reconcile(operation, prepared);
   }
 
   private async persistPrepared(
@@ -313,10 +346,7 @@ export class StandardReputationWorker {
     operation: OperationRow,
     encoded: { data: Hex; destination: `0x${string}`; gas: bigint },
   ): Promise<TransactionRow> {
-    const chainNonce = await this.client.getTransactionCount({
-      address: this.account.address,
-      blockTag: "pending",
-    });
+    const chainNonce = await this.highestObservedNonce();
     const local = await client.query<{ nonce: string }>(
       `SELECT nonce::text FROM standard_reputation_transactions
         WHERE chain_id=$1 AND relayer_address=$2
@@ -367,14 +397,55 @@ export class StandardReputationWorker {
     };
   }
 
-  private async broadcastPersisted(operation: OperationRow, transaction: TransactionRow): Promise<void> {
+  private async transactionVisible(hash: Hex): Promise<boolean> {
+    try {
+      const observations = await Promise.all(this.evidenceClients.map(async (client) => {
+        try {
+          await client.getTransaction({ hash });
+          return true;
+        } catch (error) {
+          if (error instanceof TransactionNotFoundError) return false;
+          throw error;
+        }
+      }));
+      return observations.some(Boolean);
+    } catch {
+      throw new ReputationRpcUnavailable();
+    }
+  }
+
+  private async broadcastPersisted(
+    operation: OperationRow,
+    transaction: TransactionRow,
+    nonceLocked = false,
+  ): Promise<void> {
+    const submit = async () => {
+      if (await this.transactionVisible(transaction.transaction_hash)) {
+        await this.markBroadcastAndDefer(operation.operation_id, transaction.transaction_id);
+        return;
+      }
+      const nonce = Number(transaction.nonce);
+      if (!Number.isSafeInteger(nonce)) throw new Error("RELAYER_NONCE_INVALID");
+      if (await this.highestObservedNonce() > nonce) {
+        await this.resolveNonceConflict(operation, transaction);
+        return;
+      }
+      await this.sendPersisted(operation, transaction);
+    };
+    if (nonceLocked) await submit();
+    else await this.nonceLock.run(submit);
+  }
+
+  private async sendPersisted(operation: OperationRow, transaction: TransactionRow): Promise<void> {
     const raw = decryptRaw(
       transaction.encrypted_raw_transaction,
       this.config.encryptionKey,
       operation.operation_id,
     );
     try {
-      const submitted = await this.client.sendRawTransaction({ serializedTransaction: raw });
+      const submitted = await this.broadcastClient.sendRawTransaction({
+        serializedTransaction: raw,
+      });
       if (submitted.toLowerCase() !== transaction.transaction_hash.toLowerCase()) {
         await this.resolveNonceConflict(operation, transaction);
         return;
