@@ -15,6 +15,7 @@ import {
   type Hex,
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
+import type { FacilitatorNonceLock } from "./facilitatorNonceLock.js";
 import type { StandardRailConfig } from "./config.js";
 import { canonicalHash } from "./canonical.js";
 import { chainLogsHash } from "./chainLogHash.js";
@@ -231,7 +232,11 @@ export class StandardChainEvidence {
   private readonly clients;
   private readonly wallet;
 
-  constructor(private readonly config: StandardRailConfig, chain: Chain) {
+  constructor(
+    private readonly config: StandardRailConfig,
+    chain: Chain,
+    private readonly nonceLock: FacilitatorNonceLock,
+  ) {
     this.clients = config.evidenceRpcUrls.map((url) => ({
       url,
       host: new URL(url).hostname,
@@ -242,6 +247,21 @@ export class StandardChainEvidence {
       chain,
       transport: http(config.evidenceRpcUrls[0], { retryCount: 0, timeout: 20_000 }),
     }).extend(publicActions);
+  }
+
+  private async submitRelease(splitter: Address): Promise<Hex> {
+    return this.nonceLock.run(async () => {
+      const submitted = await this.wallet.writeContract({
+        address: splitter,
+        abi: splitterAbi,
+        functionName: "releaseAll",
+      });
+      await this.clients[0]!.client.waitForTransactionReceipt({
+        hash: submitted,
+        confirmations: this.config.finalityConfirmations,
+      });
+      return submitted;
+    });
   }
 
   async verifyProviderIdentitySnapshot(snapshot: ProviderIdentitySnapshotV1): Promise<void> {
@@ -744,15 +764,7 @@ export class StandardChainEvidence {
     let releaseReference = await this.findCoveringRelease(this.clients[0]!.client, args);
     if (!releaseReference) {
       try {
-        const submitted = await this.wallet.writeContract({
-          address: splitter,
-          abi: splitterAbi,
-          functionName: "releaseAll",
-        });
-        await this.clients[0]!.client.waitForTransactionReceipt({
-          hash: submitted,
-          confirmations: this.config.finalityConfirmations,
-        });
+        await this.submitRelease(splitter);
       } catch (error) {
         releaseReference = await this.findCoveringRelease(this.clients[0]!.client, args);
         if (!releaseReference) throw error;

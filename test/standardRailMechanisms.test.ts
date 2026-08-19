@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { baseSepolia } from "viem/chains";
 import type { Pool } from "../src/db/pool.js";
 import { StandardChainEvidence } from "../src/standardRail/evidence.js";
+import { unlockedFacilitatorNonceLock } from "../src/standardRail/facilitatorNonceLock.js";
 import { withFederationPermit } from "../src/standardRail/federationPermit.js";
 import {
   refreshReputationPermit,
@@ -107,7 +108,7 @@ describe("standard rail hardened mechanisms", () => {
       evidenceRpcUrls: ["https://rpc-a.example", "https://rpc-b.example"],
       releasePrivateKey: privateKey,
     } as unknown as StandardRailConfig;
-    const evidence = new StandardChainEvidence(config, baseSepolia);
+    const evidence = new StandardChainEvidence(config, baseSepolia, unlockedFacilitatorNonceLock);
     Object.assign(evidence as unknown as { clients: unknown[] }, {
       clients: [{ client }, { client }],
     });
@@ -151,7 +152,7 @@ describe("standard rail hardened mechanisms", () => {
     const evidence = new StandardChainEvidence({
       evidenceRpcUrls: ["https://rpc-a.example", "https://rpc-b.example"],
       releasePrivateKey: privateKey,
-    } as unknown as StandardRailConfig, baseSepolia);
+    } as unknown as StandardRailConfig, baseSepolia, unlockedFacilitatorNonceLock);
     Object.assign(evidence as unknown as { clients: unknown[] }, {
       clients: [{ client }, { client }],
     });

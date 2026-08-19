@@ -1,5 +1,6 @@
 import express, { type Express } from "express";
 import { base, baseSepolia } from "viem/chains";
+import { privateKeyToAccount } from "viem/accounts";
 import type { Config } from "../config.js";
 import type { Pool } from "../db/pool.js";
 import type { McpWiring } from "../mcp/httpTransport.js";
@@ -9,6 +10,7 @@ import { createMarketplaceRouter } from "../marketplace/routes.js";
 import { CdpStandardFacilitator } from "../standardRail/facilitator.js";
 import { StandardChainEvidence } from "../standardRail/evidence.js";
 import type { StandardRailConfig } from "../standardRail/config.js";
+import { PostgresFacilitatorNonceLock } from "../standardRail/facilitatorNonceLock.js";
 import { createStandardRailMcp } from "../standardRail/mcp.js";
 import { createStandardMetaRouter } from "../standardRail/meta.js";
 import { createStandardRailRouter } from "../standardRail/routes.js";
@@ -77,14 +79,21 @@ export async function createStandardGatewayHttp(
     next();
   });
   const facilitator = new CdpStandardFacilitator(options.standardRailConfig);
+  const chain = options.config.chainId === 8453 ? base : baseSepolia;
+  const nonceLock = new PostgresFacilitatorNonceLock(
+    options.pool,
+    chain.id,
+    privateKeyToAccount(options.standardRailConfig.releasePrivateKey).address,
+  );
   const evidence = new StandardChainEvidence(
     options.standardRailConfig,
-    options.config.chainId === 8453 ? base : baseSepolia,
+    chain,
+    nonceLock,
   );
   const marketplace = new ViemMarketplaceChainReader(
     options.config,
     options.standardRailConfig,
-    options.config.chainId === 8453 ? base : baseSepolia,
+    chain,
   );
   const standardRail = new StandardRailService(
     options.config,
