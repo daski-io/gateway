@@ -71,6 +71,11 @@ import {
   AdmittedServiceResolver,
   type ServicePresentation,
 } from "../marketplace/servicePresentation.js";
+import { logger } from "../util/logger.js";
+
+// Stays under the resolver's five-minute presentation TTL so buyer requests
+// keep hitting fresh cache entries instead of paying for upstream reloads.
+const PRESENTATION_REFRESH_INTERVAL_MS = 4 * 60_000;
 
 interface OperationalSummary {
   pending: number;
@@ -215,6 +220,8 @@ export class StandardRailService {
   private readinessInterval: NodeJS.Timeout | null = null;
   private readinessRetry: NodeJS.Timeout | null = null;
   private readinessRefresh: Promise<void> | null = null;
+  private presentationInterval: NodeJS.Timeout | null = null;
+  private presentationRefresh: Promise<void> | null = null;
   readonly railProfileHash: Hex;
 
   constructor(
@@ -366,6 +373,13 @@ export class StandardRailService {
       void this.refreshDependencyReadiness().catch(() => undefined);
     }, this.railConfig.readinessIntervalMs);
     this.readinessInterval.unref();
+    // Warm without blocking startup: an upstream outage at boot degrades the
+    // catalog instead of delaying or failing the deployment.
+    void this.refreshServicePresentations();
+    this.presentationInterval = setInterval(() => {
+      void this.refreshServicePresentations();
+    }, PRESENTATION_REFRESH_INTERVAL_MS);
+    this.presentationInterval.unref();
   }
 
   async stop(): Promise<void> {
@@ -373,6 +387,9 @@ export class StandardRailService {
     this.readinessInterval = null;
     if (this.readinessRetry) clearTimeout(this.readinessRetry);
     this.readinessRetry = null;
+    if (this.presentationInterval) clearInterval(this.presentationInterval);
+    this.presentationInterval = null;
+    await this.presentationRefresh?.catch(() => undefined);
     await this.readinessRefresh?.catch(() => undefined);
     await Promise.all([
       this.recovery.stop(),
@@ -472,6 +489,33 @@ export class StandardRailService {
       void this.refreshDependencyReadiness().catch(() => undefined);
     }, Math.min(30_000, this.railConfig.readinessIntervalMs));
     this.readinessRetry.unref();
+  }
+
+  // Keeps every listing presentation fresh off the request path, one listing
+  // at a time to spare RPC quota; buyer reads then stay cache-served even
+  // while the registry RPC or a provider card endpoint is flaky.
+  private refreshServicePresentations(): Promise<void> {
+    this.presentationRefresh ??= (async () => {
+      try {
+        for (const listing of this.listings.values()) {
+          try {
+            await this.serviceResolver.refresh(listing);
+          } catch (error) {
+            const payload = listing.commitment.payload;
+            logger.warn("standard service presentation refresh failed", {
+              providerAgentId: payload.providerAgentId,
+              outcomeId: payload.outcomeId,
+              reason: error instanceof Error && /^[A-Za-z0-9 _-]{1,120}$/.test(error.message)
+                ? error.message : "UNCLASSIFIED",
+              error,
+            });
+          }
+        }
+      } finally {
+        this.presentationRefresh = null;
+      }
+    })();
+    return this.presentationRefresh;
   }
 
   private assertAdmissionOpen(): void {
@@ -936,12 +980,18 @@ export class StandardRailService {
   }
 
   async publicOutcomes(): Promise<Array<Record<string, unknown>>> {
-    const outcomes: Array<Record<string, unknown>> = await Promise.all(
-      this.listOutcomes().map(async (outcome): Promise<Record<string, unknown>> => {
+    // A listing without a servable presentation is omitted rather than failing
+    // the whole catalog; the background refresh reports the underlying cause.
+    const outcomes: Array<Record<string, unknown>> = (await Promise.all(
+      this.listOutcomes().map(async (outcome): Promise<Record<string, unknown> | null> => {
         const listing = this.listing(String(outcome.providerAgentId), String(outcome.outcomeId));
-        return { ...outcome, ...await this.serviceResolver.resolve(listing) };
+        try {
+          return { ...outcome, ...await this.serviceResolver.resolve(listing) };
+        } catch {
+          return null;
+        }
       }),
-    );
+    )).filter((outcome): outcome is Record<string, unknown> => outcome !== null);
     let snapshot;
     try {
       snapshot = await this.reputationReader.forOutcomes(outcomes);
