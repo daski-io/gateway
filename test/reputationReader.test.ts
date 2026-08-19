@@ -135,6 +135,15 @@ describe("direct reputation presentation", () => {
       }
       throw new Error(`unexpected read ${functionName}`);
     });
+    const multicall = vi.fn(async ({ contracts, allowFailure }: {
+      contracts: Array<{ functionName: string; args?: readonly unknown[] }>;
+      allowFailure?: boolean;
+    }) => {
+      const results = await Promise.all(contracts.map((contract) => readContract(contract)));
+      return allowFailure === false
+        ? results
+        : results.map((result) => ({ status: "success", result }));
+    });
     const query = vi.fn(async () => ({
       rows: [{ order_key: ORDER_KEY, settlement_tx_hash: TX_HASH }],
     }));
@@ -145,7 +154,9 @@ describe("direct reputation presentation", () => {
       agentIndex: ADDRESS,
       identityRegistry: ADDRESS,
     });
-    Object.assign(reader as unknown as { client: unknown }, { client: { getBlock, readContract } });
+    Object.assign(reader as unknown as { client: unknown }, {
+      client: { getBlock, readContract, multicall },
+    });
     const outcomes = [{
       providerAgentId: "1",
       serviceId: SERVICE_ID,
@@ -167,5 +178,9 @@ describe("direct reputation presentation", () => {
     expect(getBlock).toHaveBeenCalledOnce();
     expect(getBlock).toHaveBeenCalledWith({ blockTag: "safe" });
     expect(query).toHaveBeenCalledOnce();
+
+    reader.invalidate();
+    await reader.forOutcomes(outcomes);
+    expect(getBlock).toHaveBeenCalledTimes(2);
   });
 });

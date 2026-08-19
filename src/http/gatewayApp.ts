@@ -5,6 +5,7 @@ import type { Config } from "../config.js";
 import type { Pool } from "../db/pool.js";
 import type { McpWiring } from "../mcp/httpTransport.js";
 import type { ApplicationLifecycle } from "../runtime/applicationLifecycle.js";
+import { CachedMarketplaceChainReader } from "../marketplace/cachedReader.js";
 import { ViemMarketplaceChainReader } from "../marketplace/reader.js";
 import { createMarketplaceRouter } from "../marketplace/routes.js";
 import { CdpStandardFacilitator } from "../standardRail/facilitator.js";
@@ -90,11 +91,11 @@ export async function createStandardGatewayHttp(
     chain,
     nonceLock,
   );
-  const marketplace = new ViemMarketplaceChainReader(
+  const marketplace = new CachedMarketplaceChainReader(new ViemMarketplaceChainReader(
     options.config,
     options.standardRailConfig,
     chain,
-  );
+  ));
   const standardRail = new StandardRailService(
     options.config,
     options.standardRailConfig,

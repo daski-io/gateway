@@ -213,6 +213,7 @@ export class StandardRailService {
   private readonly serviceResolver: AdmittedServiceResolver;
   private dependenciesReady = false;
   private readinessInterval: NodeJS.Timeout | null = null;
+  private readinessRetry: NodeJS.Timeout | null = null;
   private readinessRefresh: Promise<void> | null = null;
   readonly railProfileHash: Hex;
 
@@ -257,6 +258,8 @@ export class StandardRailService {
       pool,
       railConfig,
       appConfig.chainId === 8453 ? base : baseSepolia,
+      undefined,
+      () => this.reputationReader.invalidate(),
     );
     this.confirmations = new StandardConfirmations(
       pool,
@@ -361,13 +364,15 @@ export class StandardRailService {
     this.reputationWorker.start();
     this.readinessInterval = setInterval(() => {
       void this.refreshDependencyReadiness().catch(() => undefined);
-    }, 30_000);
+    }, this.railConfig.readinessIntervalMs);
     this.readinessInterval.unref();
   }
 
   async stop(): Promise<void> {
     if (this.readinessInterval) clearInterval(this.readinessInterval);
     this.readinessInterval = null;
+    if (this.readinessRetry) clearTimeout(this.readinessRetry);
+    this.readinessRetry = null;
     await this.readinessRefresh?.catch(() => undefined);
     await Promise.all([
       this.recovery.stop(),
@@ -446,14 +451,27 @@ export class StandardRailService {
           },
         ));
         this.dependenciesReady = true;
+        if (this.readinessRetry) clearTimeout(this.readinessRetry);
+        this.readinessRetry = null;
       } catch (error) {
         this.dependenciesReady = false;
+        this.scheduleReadinessRetry();
         throw error;
       } finally {
         this.readinessRefresh = null;
       }
     })();
     return this.readinessRefresh;
+  }
+
+  // The steady readiness cadence is slow to spare RPC quota; a failed probe must clear faster.
+  private scheduleReadinessRetry(): void {
+    if (!this.readinessInterval || this.readinessRetry) return;
+    this.readinessRetry = setTimeout(() => {
+      this.readinessRetry = null;
+      void this.refreshDependencyReadiness().catch(() => undefined);
+    }, Math.min(30_000, this.railConfig.readinessIntervalMs));
+    this.readinessRetry.unref();
   }
 
   private assertAdmissionOpen(): void {

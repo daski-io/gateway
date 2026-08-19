@@ -41,7 +41,10 @@ interface BuyerIdentity {
   name: string | null;
 }
 
-const CACHE_MILLISECONDS = 30_000;
+// Refreshes stay O(records) even with aggregated reads, so the snapshot is held until
+// the reputation worker reports a new on-chain write or the safety TTL lapses.
+const CACHE_MILLISECONDS = 300_000;
+const MULTICALL_BATCH_BYTES = 8_192;
 
 function inlineAgentName(uri: string): string | null {
   if (!uri.startsWith("data:") || uri.length > 90_000) return null;
@@ -95,6 +98,10 @@ export class DirectReputationReader {
     });
   }
 
+  invalidate(): void {
+    this.cached = null;
+  }
+
   async forOutcomes(outcomes: Array<Record<string, unknown>>): Promise<ReputationSnapshot> {
     const descriptors = outcomes.map(asOutcome);
     const key = descriptors.map((item) =>
@@ -127,37 +134,46 @@ export class DirectReputationReader {
     if (count > BigInt(Number.MAX_SAFE_INTEGER)) {
       throw new Error("Public reputation record count exceeds the supported integer range");
     }
-    const keys = await Promise.all(Array.from({ length: Number(count) }, (_, index) =>
-      this.client.readContract({
+    const keys = Number(count) === 0 ? [] : await this.client.multicall({
+      contracts: Array.from({ length: Number(count) }, (_, index) => ({
         address: this.config.reputationContract,
         abi: reputationStorageAbi,
         functionName: "recordKeys",
         args: [BigInt(index)],
+      } as const)),
+      allowFailure: false,
+      batchSize: MULTICALL_BATCH_BYTES,
+      blockNumber: block.number,
+    });
+    const [recordValues, refundValues, settlementRows] = await Promise.all([
+      keys.length === 0 ? [] : this.client.multicall({
+        contracts: keys.map((orderKey) => ({
+          address: this.config.reputationContract,
+          abi: reputationStorageAbi,
+          functionName: "getRecord",
+          args: [orderKey],
+        } as const)),
+        allowFailure: false,
+        batchSize: MULTICALL_BATCH_BYTES,
         blockNumber: block.number,
-      })
-    ));
-    const [chainRows, settlementRows] = await Promise.all([
-      Promise.all(keys.map(async (orderKey) => {
-        const [record, refundedAmount] = await Promise.all([
-          this.client.readContract({
-            address: this.config.reputationContract,
-            abi: reputationStorageAbi,
-            functionName: "getRecord",
-            args: [orderKey],
-            blockNumber: block.number,
-          }),
-          this.client.readContract({
-            address: this.config.reputationContract,
-            abi: reputationStorageAbi,
-            functionName: "refundedAmount",
-            args: [orderKey],
-            blockNumber: block.number,
-          }),
-        ]);
-        return { record, refundedAmount };
-      })),
+      }),
+      keys.length === 0 ? [] : this.client.multicall({
+        contracts: keys.map((orderKey) => ({
+          address: this.config.reputationContract,
+          abi: reputationStorageAbi,
+          functionName: "refundedAmount",
+          args: [orderKey],
+        } as const)),
+        allowFailure: false,
+        batchSize: MULTICALL_BATCH_BYTES,
+        blockNumber: block.number,
+      }),
       this.settlementRows(keys),
     ]);
+    const chainRows = keys.map((_, index) => ({
+      record: recordValues[index]!,
+      refundedAmount: refundValues[index]!,
+    }));
     const settlementByOrder = new Map(settlementRows.map((row) => [
       row.order_key.toLowerCase(),
       /^0x[0-9a-f]{64}$/i.test(row.settlement_tx_hash ?? "")
@@ -167,11 +183,7 @@ export class DirectReputationReader {
     const eligiblePayers = [...new Set(chainRows
       .filter(({ record }) => record.reputationEligible)
       .map(({ record }) => record.payer.toLowerCase()))] as Address[];
-    const buyerRows = await Promise.all(eligiblePayers.map(async (payer) => [
-      payer,
-      await this.resolveBuyer(payer, block.number),
-    ] as const));
-    const buyers = new Map(buyerRows);
+    const buyers = await this.resolveBuyers(eligiblePayers, block.number);
     const byManifest = new Map(outcomes.map((outcome) => [outcome.listingManifestHash.toLowerCase(), outcome]));
     const byService = new Map(outcomes.map((outcome) => [outcome.serviceId.toLowerCase(), outcome]));
     const records: ProjectedReputationRecord[] = chainRows.map(({ record, refundedAmount }) => {
@@ -225,26 +237,52 @@ export class DirectReputationReader {
     ).then((result) => result.rows, () => []);
   }
 
-  private async resolveBuyer(payer: Address, blockNumber: bigint): Promise<BuyerIdentity> {
+  private async resolveBuyers(
+    payers: readonly Address[],
+    blockNumber: bigint,
+  ): Promise<Map<Address, BuyerIdentity>> {
+    const buyers = new Map<Address, BuyerIdentity>(
+      payers.map((payer) => [payer, { agentId: null, name: null }]),
+    );
+    if (payers.length === 0) return buyers;
     try {
-      const [agentId, found] = await this.client.readContract({
-        address: this.addresses.agentIndex,
-        abi: agentIndexAbi,
-        functionName: "resolve",
-        args: [payer],
+      const resolutions = await this.client.multicall({
+        contracts: payers.map((payer) => ({
+          address: this.addresses.agentIndex,
+          abi: agentIndexAbi,
+          functionName: "resolve",
+          args: [payer],
+        } as const)),
+        batchSize: MULTICALL_BATCH_BYTES,
         blockNumber,
       });
-      if (!found) return { agentId: null, name: null };
-      const uri = await this.client.readContract({
-        address: this.addresses.identityRegistry,
-        abi: identityRegistryAbi,
-        functionName: "tokenURI",
-        args: [agentId],
+      const found: Array<{ payer: Address; agentId: bigint }> = [];
+      resolutions.forEach((resolution, index) => {
+        if (resolution.status !== "success") return;
+        const [agentId, isRegistered] = resolution.result;
+        if (isRegistered) found.push({ payer: payers[index]!, agentId });
+      });
+      if (found.length === 0) return buyers;
+      const uris = await this.client.multicall({
+        contracts: found.map(({ agentId }) => ({
+          address: this.addresses.identityRegistry,
+          abi: identityRegistryAbi,
+          functionName: "tokenURI",
+          args: [agentId],
+        } as const)),
+        batchSize: MULTICALL_BATCH_BYTES,
         blockNumber,
       });
-      return { agentId: agentId.toString(), name: inlineAgentName(uri) };
+      found.forEach(({ payer, agentId }, index) => {
+        const uri = uris[index];
+        buyers.set(payer, {
+          agentId: agentId.toString(),
+          name: uri?.status === "success" ? inlineAgentName(uri.result) : null,
+        });
+      });
+      return buyers;
     } catch {
-      return { agentId: null, name: null };
+      return buyers;
     }
   }
 }
