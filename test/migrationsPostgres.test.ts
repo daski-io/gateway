@@ -30,6 +30,26 @@ describe("gateway migrations", () => {
         count: migrationCount,
         checksums: migrationCount,
       });
+
+      await pool.query(
+        `INSERT INTO standard_rail_artifacts
+          (artifact_hash,artifact_type,schema_version,environment,chain_id,canonical_json,valid_before)
+         VALUES ($1,'ListingCommitmentV2',2,'sandbox',84532,'{}',now() + interval '1 hour')`,
+        [Buffer.alloc(32, 2)],
+      );
+      await expect(
+        pool.query(
+          `INSERT INTO standard_rail_artifacts
+            (artifact_hash,artifact_type,schema_version,environment,chain_id,canonical_json,valid_before)
+           VALUES ($1,'FutureArtifactV3',3,'sandbox',84532,'{}',now() + interval '1 hour')`,
+          [Buffer.alloc(32, 3)],
+        ),
+      ).rejects.toMatchObject({ code: "23514" });
+
+      const versions = await pool.query<{ schema_version: number }>(
+        "SELECT schema_version FROM standard_rail_artifacts ORDER BY schema_version",
+      );
+      expect(versions.rows).toEqual([{ schema_version: 2 }]);
     } finally {
       await pool.end();
       await bootstrap.query(`DROP SCHEMA "${schema}" CASCADE`).catch(() => undefined);
