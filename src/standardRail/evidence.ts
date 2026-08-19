@@ -17,6 +17,7 @@ import {
 import { privateKeyToAccount } from "viem/accounts";
 import type { FacilitatorNonceLock } from "./facilitatorNonceLock.js";
 import type { StandardRailConfig } from "./config.js";
+import { orderedRpcTransport } from "./orderedRpcTransport.js";
 import { canonicalHash } from "./canonical.js";
 import { chainLogsHash } from "./chainLogHash.js";
 import { hasRequiredConfirmations } from "./finality.js";
@@ -240,7 +241,10 @@ export class StandardChainEvidence {
     this.clients = config.evidenceRpcUrls.map((url) => ({
       url,
       host: new URL(url).hostname,
-      client: createPublicClient({ chain, transport: http(url, { retryCount: 0, timeout: 20_000 }) }),
+      client: createPublicClient({
+        chain,
+        transport: orderedRpcTransport(http(url, { retryCount: 2, timeout: 20_000 })),
+      }),
     }));
     this.wallet = createWalletClient({
       account: privateKeyToAccount(config.releasePrivateKey),
