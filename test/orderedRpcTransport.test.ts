@@ -1,6 +1,6 @@
 import { custom } from "viem";
 import { describe, expect, it } from "vitest";
-import { orderedRpcTransport } from "../src/standardRail/orderedRpcTransport.js";
+import { orderedRpcTransport } from "../src/rpc/orderedTransport.js";
 
 interface Request {
   method: string;

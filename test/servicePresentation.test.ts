@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Address, Hex } from "viem";
 import type { MarketplaceChainReader } from "../src/marketplace/reader.js";
-import { AdmittedServiceResolver } from "../src/marketplace/servicePresentation.js";
+import { AdmittedServiceResolver } from "../src/integration/admittedServicePresentation.js";
 import type { StandardListing } from "../src/standardRail/types.js";
 
 const ADDRESS = "0x1111111111111111111111111111111111111111" as Address;

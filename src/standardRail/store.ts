@@ -2,7 +2,7 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { keccak256, toBytes } from "viem";
 import type { Pool } from "../db/pool.js";
 import type { Hex } from "../types.js";
-import { assertTransition } from "./stateMachine.js";
+import { assertTransition, isTerminalState } from "./stateMachine.js";
 import type {
   StandardOrderRecord,
   StandardOrderState,
@@ -15,6 +15,14 @@ import { parseStandardRailReceiptV2 } from "./wireContracts.js";
 const bytes = (value: Hex): Buffer => Buffer.from(value.slice(2), "hex");
 const hex = (value: Buffer | null): Hex | null =>
   value ? (`0x${value.toString("hex")}` as Hex) : null;
+
+export const RECOVERABLE_ORDER_STATES = [
+  "CHALLENGE_ISSUED", "ATTEMPT_OPENED", "VERIFIED", "VERIFY_REJECTED",
+  "SETTLE_INVOKED", "FACILITATOR_CONFIRMED", "SETTLEMENT_AMBIGUOUS",
+  "SETTLEMENT_FAILED", "EXTERNAL_OR_UNPROVEN_DEPOSIT", "DEPOSIT_FINAL",
+  "RELEASE_FINAL", "DISPATCH_STARTED", "DISPATCHED", "DISPATCH_AMBIGUOUS",
+  "INPUT_REQUIRED",
+] as const satisfies readonly StandardOrderState[];
 
 interface OrderRow {
   order_id: string;
@@ -419,12 +427,7 @@ export class StandardRailStore {
            AND NOT (order_id = ANY($2::text[]))
          ORDER BY updated_at ASC
          LIMIT 1 FOR UPDATE SKIP LOCKED`,
-        [[
-          "CHALLENGE_ISSUED", "ATTEMPT_OPENED", "VERIFIED", "VERIFY_REJECTED",
-          "SETTLE_INVOKED", "FACILITATOR_CONFIRMED", "SETTLEMENT_AMBIGUOUS",
-          "SETTLEMENT_FAILED", "EXTERNAL_OR_UNPROVEN_DEPOSIT", "DEPOSIT_FINAL", "RELEASE_FINAL", "DISPATCH_STARTED",
-          "DISPATCHED", "DISPATCH_AMBIGUOUS", "FULFILLED", "PROVIDER_FAILED", "INPUT_REQUIRED",
-        ], excludedOrderIds],
+        [RECOVERABLE_ORDER_STATES, excludedOrderIds],
       );
       if (!candidate.rows[0]) {
         await client.query("COMMIT");
@@ -618,6 +621,13 @@ export class StandardRailStore {
             bytes(reputationIntent.intentHash),
             reputationIntent.canonicalIntent,
           ],
+        );
+      }
+      if (isTerminalState(to)) {
+        await client.query(
+          `UPDATE standard_capacity_reservations SET state='released',released_at=now()
+           WHERE order_id=$1 AND state='open'`,
+          [order.orderId],
         );
       }
       await client.query("COMMIT");

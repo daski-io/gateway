@@ -3,7 +3,6 @@ import { baseSepolia } from "viem/chains";
 import { describe, expect, it, vi } from "vitest";
 import type { Config } from "../src/config.js";
 import { ViemMarketplaceChainReader } from "../src/marketplace/reader.js";
-import type { StandardRailConfig } from "../src/standardRail/config.js";
 
 const ADDRESS = getAddress("0x1111111111111111111111111111111111111111");
 const SERVICE_ID = `0x${"22".repeat(32)}` as Hex;
@@ -18,9 +17,7 @@ function reader() {
       validationRegistry: ADDRESS,
       reputationStorage: ADDRESS,
     },
-  } as Config, {
-    evidenceRpcUrls: ["https://rpc.example"],
-  } as unknown as StandardRailConfig, baseSepolia);
+  } as Config, ["https://rpc.example"], baseSepolia);
   const getBlock = vi.fn(async ({ blockTag }: { blockTag: string }) => ({
     number: blockTag === "safe" ? 110n : 100n,
   }));

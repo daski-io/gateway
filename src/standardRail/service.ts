@@ -1,9 +1,4 @@
 import { createHmac, randomBytes } from "node:crypto";
-import { lookup } from "node:dns/promises";
-import { request as httpsRequest } from "node:https";
-import { isIP } from "node:net";
-import { Readable } from "node:stream";
-import type { ValidateFunction } from "ajv";
 import type { PaymentPayload } from "@x402/core/types";
 import {
   getAddress,
@@ -15,14 +10,14 @@ import {
 } from "viem";
 import type { Config } from "../config.js";
 import type { Pool } from "../db/pool.js";
-import { assertNoDuplicateJsonKeys, canonicalHash, providerIdentitySnapshotHash } from "./canonical.js";
+import { canonicalHash } from "./canonical.js";
 import type { StandardRailConfig } from "./config.js";
 import type {
   EvidenceResult,
   ReleaseEvidenceResult,
   StandardChainEvidence,
 } from "./evidence.js";
-import { createPinnedLookup, type StandardFacilitator } from "./facilitator.js";
+import type { StandardFacilitator } from "./facilitator.js";
 import { StandardRailJournal } from "./journal.js";
 import {
   paymentRequired,
@@ -35,22 +30,13 @@ import { signEnvelope } from "./signing.js";
 import { StandardRailStore } from "./store.js";
 import type {
   QuoteV1,
-  DispatchStatusQueryV1,
   StandardListing,
   StandardOrderRecord,
-  StandardRailDispatchV2,
   StandardRailReceiptV2,
 } from "./types.js";
 import { verifyStandardRailManifest } from "./artifacts.js";
 import { StandardRailRecoveryWorker } from "./recovery.js";
 import { StandardRailIncidentStore } from "./incidents.js";
-import {
-  assertSchema,
-  compileClosedRequestSchema,
-  compileClosedResponseSchema,
-} from "./schema.js";
-import { isNonPublicAddress } from "./network.js";
-import { assertPassiveProviderOutput } from "./providerOutput.js";
 import { StandardWalletStore } from "./walletStore.js";
 import { StandardWalletQueries } from "./walletQueries.js";
 import type { WalletAuthorizationTransport } from "./types.js";
@@ -64,35 +50,11 @@ import { base, baseSepolia } from "viem/chains";
 import { activeRequestKey } from "../mcp/requestContext.js";
 import { DirectReputationReader } from "./reputationReader.js";
 import type { MarketplaceChainReader } from "../marketplace/reader.js";
-import {
-  buildStandardEvidenceBundleV2,
-} from "./wireContracts.js";
-import {
-  AdmittedServiceResolver,
-  type ServicePresentation,
-} from "../marketplace/servicePresentation.js";
-import { logger } from "../util/logger.js";
-
-// Stays under the resolver's five-minute presentation TTL so buyer requests
-// keep hitting fresh cache entries instead of paying for upstream reloads.
-const PRESENTATION_REFRESH_INTERVAL_MS = 4 * 60_000;
-
-interface OperationalSummary {
-  pending: number;
-  attention: number;
-  aborted: number;
-  blocked: number;
-  exhausted: number;
-  oldest_pending_seconds: number;
-}
-
-interface GroupCount { key: string; count: number }
-
-function keyedCounts(rows: GroupCount[]): Record<string, number> {
-  return Object.fromEntries(rows.map((row) => [row.key, row.count]));
-}
-
-const ZERO_HASH = `0x${"00".repeat(32)}` as Hex;
+import { readBoundedJsonResponse as readBoundedJson } from "./boundedJson.js";
+import { StandardProviderTransport } from "./providerTransport.js";
+import { StandardRailCatalog } from "./catalog.js";
+import { StandardProviderDispatch } from "./providerDispatch.js";
+import { StandardOperationalHealth } from "./operationalHealth.js";
 
 export function isAdmissionWindowOpen(
   railValidBefore: number,
@@ -113,99 +75,13 @@ function assertExactKeys(value: unknown, expected: readonly string[], label: str
   }
 }
 
-export async function readBoundedJson(response: Response, maxBytes: number): Promise<unknown> {
-  const mediaType = response.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase();
-  const encoding = response.headers.get("content-encoding")?.trim().toLowerCase();
-  if (mediaType !== "application/json" || (encoding && encoding !== "identity")) {
-    throw new Error("PROVIDER_RESPONSE_MEDIA_TYPE_INVALID");
-  }
-  const declared = response.headers.get("content-length");
-  if (declared && (!/^\d+$/.test(declared) || Number(declared) > maxBytes)) {
-    throw new Error("PROVIDER_RESPONSE_TOO_LARGE");
-  }
-  if (!response.body) throw new Error("PROVIDER_RESPONSE_EMPTY");
-  const reader = response.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  while (true) {
-    const next = await reader.read();
-    if (next.done) break;
-    total += next.value.byteLength;
-    if (total > maxBytes) {
-      await reader.cancel();
-      throw new Error("PROVIDER_RESPONSE_TOO_LARGE");
-    }
-    chunks.push(next.value);
-  }
-  const joined = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    joined.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  const text = new TextDecoder("utf-8", { fatal: true }).decode(joined);
-  assertNoDuplicateJsonKeys(text);
-  return JSON.parse(text);
-}
-
-export async function assertPublicProviderEndpoint(profileOrigin: string, endpoint: string): Promise<void> {
-  const origin = new URL(profileOrigin);
-  const target = new URL(endpoint);
-  if (target.origin !== origin.origin) throw new Error("PROVIDER_ENDPOINT_ORIGIN_MISMATCH");
-  const addresses = isIP(target.hostname)
-    ? [{ address: target.hostname }]
-    : await lookup(target.hostname, { all: true, verbatim: true });
-  if (addresses.length === 0 || addresses.some(({ address }) => isNonPublicAddress(address))) {
-    throw new Error("PROVIDER_ENDPOINT_DNS_REJECTED");
-  }
-}
-
-export async function pinnedProviderFetch(
-  endpoint: string,
-  init: RequestInit,
-  addresses: Array<{ address: string; family?: number }>,
-): Promise<Response> {
-  if (init.body !== undefined && typeof init.body !== "string") {
-    throw new Error("PROVIDER_REQUEST_BODY_INVALID");
-  }
-  const selected = addresses[0];
-  if (!selected) throw new Error("PROVIDER_ENDPOINT_DNS_REJECTED");
-  return new Promise<Response>((resolve, reject) => {
-    const headers = Object.fromEntries(new Headers(init.headers).entries());
-    const request = httpsRequest(endpoint, {
-      method: init.method,
-      headers,
-      signal: init.signal ?? undefined,
-      lookup: createPinnedLookup({
-        address: selected.address,
-        family: selected.family === 6 ? 6 : 4,
-      }),
-    }, (incoming) => {
-      const responseHeaders = new Headers();
-      for (const [name, value] of Object.entries(incoming.headers)) {
-        for (const item of Array.isArray(value) ? value : value === undefined ? [] : [value]) {
-          responseHeaders.append(name, String(item));
-        }
-      }
-      resolve(new Response(Readable.toWeb(incoming) as ReadableStream, {
-        status: incoming.statusCode ?? 500,
-        statusText: incoming.statusMessage,
-        headers: responseHeaders,
-      }));
-    });
-    request.once("error", reject);
-    if (init.body !== undefined) request.write(init.body);
-    request.end();
-  });
-}
-
 export class StandardRailService {
   private readonly store: StandardRailStore;
   private readonly journal: StandardRailJournal;
-  private readonly listings = new Map<string, StandardListing>();
-  private readonly requestValidators = new Map<string, ValidateFunction>();
-  private readonly responseValidators = new Map<string, ValidateFunction>();
-  private readonly publicArtifacts = new Map<Hex, import("./types.js").SignedEnvelope<unknown, number>>();
+  private readonly providerTransport: StandardProviderTransport;
+  private readonly catalog: StandardRailCatalog;
+  private readonly dispatcher: StandardProviderDispatch;
+  private readonly operationalHealthReporter: StandardOperationalHealth;
   private readonly recovery: StandardRailRecoveryWorker;
   private readonly incidents: StandardRailIncidentStore;
   private readonly walletStore: StandardWalletStore;
@@ -215,28 +91,26 @@ export class StandardRailService {
   private readonly reputationWorker: StandardReputationWorker;
   private readonly confirmations: StandardConfirmations;
   private readonly reputationReader: DirectReputationReader;
-  private readonly serviceResolver: AdmittedServiceResolver;
   private dependenciesReady = false;
   private readinessInterval: NodeJS.Timeout | null = null;
   private readinessRetry: NodeJS.Timeout | null = null;
   private readinessRefresh: Promise<void> | null = null;
-  private presentationInterval: NodeJS.Timeout | null = null;
-  private presentationRefresh: Promise<void> | null = null;
   readonly railProfileHash: Hex;
 
   constructor(
     private readonly appConfig: Config,
     private readonly railConfig: StandardRailConfig,
-    private readonly pool: Pool,
+    pool: Pool,
     private readonly facilitator: StandardFacilitator,
     private readonly evidence: StandardChainEvidence,
     marketplace: MarketplaceChainReader,
-    private readonly fetchFn: typeof fetch = fetch,
+    fetchFn: typeof fetch = fetch,
     federationPermitPool: Pool = pool,
   ) {
     this.store = new StandardRailStore(pool);
     this.incidents = new StandardRailIncidentStore(pool);
     this.journal = new StandardRailJournal(pool);
+    this.providerTransport = new StandardProviderTransport(fetchFn);
     this.walletStore = new StandardWalletStore(pool, railConfig, appConfig.chainId);
     this.walletQueries = new StandardWalletQueries(
       pool,
@@ -268,6 +142,7 @@ export class StandardRailService {
       undefined,
       () => this.reputationReader.invalidate(),
     );
+    this.operationalHealthReporter = new StandardOperationalHealth(pool, this.reputationWorker);
     this.confirmations = new StandardConfirmations(
       pool,
       railConfig,
@@ -279,14 +154,18 @@ export class StandardRailService {
       pool,
       appConfig.marketplaceContracts,
     );
-    this.serviceResolver = new AdmittedServiceResolver(
+    this.catalog = new StandardRailCatalog(
+      railConfig,
+      appConfig.chainId,
+      evidence,
       marketplace,
+      this.reputationReader,
       async (listing, endpoint) => {
         const response = await this.providerFetch(listing, endpoint, {
           method: "GET",
           headers: { accept: "application/json" },
           signal: AbortSignal.timeout(listing.providerControlProfile.payload.timeoutMs),
-        });
+        }, true);
         if (!response.ok) throw new Error("PROVIDER_AGENT_CARD_UNAVAILABLE");
         return readBoundedJson(
           response,
@@ -295,30 +174,14 @@ export class StandardRailService {
       },
     );
     this.railProfileHash = canonicalHash(railConfig.manifest.activeRailProfile);
-    for (const artifact of [
-      railConfig.manifest.facilitatorProfile,
-      railConfig.manifest.railCapabilityRequirements,
-      railConfig.manifest.activeRailProfile,
-      railConfig.manifest.chainEvidencePolicy,
-      ...railConfig.manifest.providerIdentitySnapshots,
-      ...railConfig.manifest.servicingAdmissions,
-      ...railConfig.manifest.actionCatalogs,
-      ...railConfig.manifest.listings.flatMap((listing) => [
-        listing.commitment,
-        listing.manifest,
-        listing.offer,
-        listing.providerControlProfile,
-      ]),
-    ]) {
-      this.publicArtifacts.set(canonicalHash(artifact), artifact as import("./types.js").SignedEnvelope<unknown, number>);
-    }
-    for (const listing of railConfig.manifest.listings) {
-      const payload = listing.commitment.payload;
-      const key = `${payload.providerAgentId}:${payload.outcomeId}`;
-      this.listings.set(key, listing);
-      this.requestValidators.set(key, compileClosedRequestSchema(listing.requestSchema));
-      this.responseValidators.set(key, compileClosedResponseSchema(listing.responseSchema));
-    }
+    this.dispatcher = new StandardProviderDispatch(
+      appConfig,
+      railConfig,
+      this.journal,
+      this.store,
+      (listing, endpoint, init) => this.providerFetch(listing, endpoint, init),
+      this.railProfileHash,
+    );
     this.recovery = new StandardRailRecoveryWorker({
       config: railConfig,
       store: this.store,
@@ -373,13 +236,7 @@ export class StandardRailService {
       void this.refreshDependencyReadiness().catch(() => undefined);
     }, this.railConfig.readinessIntervalMs);
     this.readinessInterval.unref();
-    // Warm without blocking startup: an upstream outage at boot degrades the
-    // catalog instead of delaying or failing the deployment.
-    void this.refreshServicePresentations();
-    this.presentationInterval = setInterval(() => {
-      void this.refreshServicePresentations();
-    }, PRESENTATION_REFRESH_INTERVAL_MS);
-    this.presentationInterval.unref();
+    this.catalog.start();
   }
 
   async stop(): Promise<void> {
@@ -387,9 +244,7 @@ export class StandardRailService {
     this.readinessInterval = null;
     if (this.readinessRetry) clearTimeout(this.readinessRetry);
     this.readinessRetry = null;
-    if (this.presentationInterval) clearInterval(this.presentationInterval);
-    this.presentationInterval = null;
-    await this.presentationRefresh?.catch(() => undefined);
+    await this.catalog.stop();
     await this.readinessRefresh?.catch(() => undefined);
     await Promise.all([
       this.recovery.stop(),
@@ -408,50 +263,12 @@ export class StandardRailService {
     return this.dependenciesReady;
   }
 
-  async operationalHealth() {
-    const [operations, operationCauses, oldestByKind, transactionStates, relayer] = await Promise.all([
-      this.pool.query<OperationalSummary>(
-        `SELECT count(*) FILTER (WHERE state IN ('pending','broadcast'))::int AS pending,
-                count(*) FILTER (WHERE state='operator_attention')::int AS attention,
-                count(*) FILTER (WHERE state='aborted_unattested')::int AS aborted,
-                count(*) FILTER (WHERE state='blocked_parent_aborted')::int AS blocked,
-                count(*) FILTER (WHERE state='operator_attention' AND attempts>=5)::int AS exhausted,
-                COALESCE(extract(epoch FROM now()-min(created_at) FILTER
-                  (WHERE state IN ('pending','broadcast'))),0)::int AS oldest_pending_seconds
-           FROM standard_reputation_operations`,
-      ),
-      this.pool.query<GroupCount>(
-        `SELECT last_error_class AS key,count(*)::int AS count
-           FROM standard_reputation_operations WHERE last_error_class IS NOT NULL
-          GROUP BY last_error_class`,
-      ),
-      this.pool.query<{ key: string; oldest_pending_seconds: number }>(
-        `SELECT kind AS key,COALESCE(extract(epoch FROM now()-min(created_at)),0)::int
-                  AS oldest_pending_seconds
-           FROM standard_reputation_operations WHERE state IN ('pending','broadcast') GROUP BY kind`,
-      ),
-      this.pool.query<GroupCount>(
-        `SELECT state AS key,count(*)::int AS count FROM standard_reputation_transactions
-          WHERE state IN ('prepared','broadcast','operator_attention') GROUP BY state`,
-      ),
-      this.reputationWorker.accountHealth(),
-    ]);
-    return {
-      reputation: {
-        ...operations.rows[0],
-        causes: keyedCounts(operationCauses.rows),
-        oldestPendingSecondsByKind: Object.fromEntries(oldestByKind.rows.map(
-          (row) => [row.key, row.oldest_pending_seconds],
-        )),
-        transactionStates: keyedCounts(transactionStates.rows),
-        relayer,
-      },
-    };
+  operationalHealth() {
+    return this.operationalHealthReporter.read();
   }
 
   publicArtifact(hash: string): import("./types.js").SignedEnvelope<unknown, number> | null {
-    if (!/^0x[0-9a-fA-F]{64}$/.test(hash)) return null;
-    return this.publicArtifacts.get(hash.toLowerCase() as Hex) ?? null;
+    return this.catalog.publicArtifact(hash);
   }
 
   private refreshDependencyReadiness(): Promise<void> {
@@ -491,33 +308,6 @@ export class StandardRailService {
     this.readinessRetry.unref();
   }
 
-  // Keeps every listing presentation fresh off the request path, one listing
-  // at a time to spare RPC quota; buyer reads then stay cache-served even
-  // while the registry RPC or a provider card endpoint is flaky.
-  private refreshServicePresentations(): Promise<void> {
-    this.presentationRefresh ??= (async () => {
-      try {
-        for (const listing of this.listings.values()) {
-          try {
-            await this.serviceResolver.refresh(listing);
-          } catch (error) {
-            const payload = listing.commitment.payload;
-            logger.warn("standard service presentation refresh failed", {
-              providerAgentId: payload.providerAgentId,
-              outcomeId: payload.outcomeId,
-              reason: error instanceof Error && /^[A-Za-z0-9 _-]{1,120}$/.test(error.message)
-                ? error.message : "UNCLASSIFIED",
-              error,
-            });
-          }
-        }
-      } finally {
-        this.presentationRefresh = null;
-      }
-    })();
-    return this.presentationRefresh;
-  }
-
   private assertAdmissionOpen(): void {
     if (!this.isAdmissionOpen()) throw new Error("STANDARD_RAIL_ADMISSION_EXPIRED");
   }
@@ -526,19 +316,14 @@ export class StandardRailService {
     listing: StandardListing,
     endpoint: string,
     init: RequestInit,
+    requestScoped = false,
   ): Promise<Response> {
-    return this.withRailFence(async () => {
-      await assertPublicProviderEndpoint(listing.providerControlProfile.payload.origin, endpoint);
-      if (this.fetchFn !== fetch) return this.fetchFn(endpoint, init);
-      const hostname = new URL(endpoint).hostname;
-      const addresses = isIP(hostname)
-        ? [{ address: hostname, family: isIP(hostname) }]
-        : await lookup(hostname, { all: true, verbatim: true });
-      if (addresses.length === 0 || addresses.some(({ address }) => isNonPublicAddress(address))) {
-        throw new Error("PROVIDER_ENDPOINT_DNS_REJECTED");
-      }
-      return pinnedProviderFetch(endpoint, init, addresses);
-    });
+    return this.withRailFence(() => this.providerTransport.fetch(
+      listing,
+      endpoint,
+      init,
+      { requestScoped },
+    ));
   }
 
   private async settlementCaptured(order: StandardOrderRecord): Promise<boolean> {
@@ -708,16 +493,10 @@ export class StandardRailService {
         if (!claim) throw new Error("Dispatch recovery is missing its persisted claim");
         const resolvedAt = await this.journal.dispatchResolvedAt(order.orderId) ?? order.updatedAt;
         try {
-          const response = await this.queryProviderDispatchStatus(
-            listing,
-            order.orderId,
-            canonicalHash(claim.dispatch),
-          );
-          order = await this.applyDispatchResponse(
+          order = await this.dispatcher.reconcile(
             order,
             listing,
             canonicalHash(claim.dispatch),
-            response,
           );
           if (["FULFILLED", "PROVIDER_FAILED"].includes(order.state)) return;
         } catch (error) {
@@ -727,7 +506,6 @@ export class StandardRailService {
         }
         if (Date.now() >= resolvedAt.getTime() + listing.deadlinePolicy.fulfillmentSeconds * 1_000) {
           await this.store.transition(order, "PROVIDER_FAILED", "signed_provider_deadline_elapsed");
-          await this.store.releaseCapacity(order.orderId);
         }
         return;
       }
@@ -786,7 +564,6 @@ export class StandardRailService {
               await this.store.transition(order, "LEGAL_HOLD", "unproven_external_deposit_evidence_deadline", {
                 encryptedPaymentPayload: null,
               });
-              await this.store.releaseCapacity(order.orderId);
               return;
             }
           } else {
@@ -805,13 +582,11 @@ export class StandardRailService {
               await this.store.transition(order, "LEGAL_HOLD", "captured_settlement_evidence_unavailable", {
                 encryptedPaymentPayload: null,
               });
-              await this.store.releaseCapacity(order.orderId);
               return;
             }
             await this.store.transition(order, "NOT_SETTLED", "independent_chain_observation_no_capture", {
               encryptedPaymentPayload: null,
             });
-            await this.store.releaseCapacity(order.orderId);
             return;
           }
         }
@@ -823,7 +598,6 @@ export class StandardRailService {
           await this.store.transition(order, "LEGAL_HOLD", "facilitator_attestation_deadline_elapsed", {
             encryptedPaymentPayload: null,
           });
-          await this.store.releaseCapacity(order.orderId);
           return;
         }
       }
@@ -844,7 +618,6 @@ export class StandardRailService {
           await this.store.transition(order, "LEGAL_HOLD", "signed_deposit_evidence_deadline_elapsed", {
             encryptedPaymentPayload: null,
           });
-          await this.store.releaseCapacity(order.orderId);
           return;
         }
         await this.journal.recordEvidence(order.orderId, "deposit", deposit, this.appConfig.chainId);
@@ -886,7 +659,6 @@ export class StandardRailService {
           await this.store.transition(order, "LEGAL_HOLD", "signed_release_evidence_deadline_elapsed", {
             encryptedPaymentPayload: null,
           });
-          await this.store.releaseCapacity(order.orderId);
           return;
         }
       }
@@ -917,100 +689,22 @@ export class StandardRailService {
   }
 
   listing(providerAgentId: string, outcomeId: string): StandardListing {
-    const listing = this.listings.get(`${providerAgentId}:${outcomeId}`);
-    if (!listing) throw new Error("OUTCOME_NOT_FOUND");
-    return listing;
+    return this.catalog.listing(providerAgentId, outcomeId);
   }
 
-  private async verifyListingIdentity(listing: StandardListing): Promise<void> {
-    const snapshot = this.railConfig.manifest.providerIdentitySnapshots.find((item) =>
-      providerIdentitySnapshotHash(item.payload, this.appConfig.chainId) ===
-        listing.commitment.payload.providerIdentitySnapshotHash
-    );
-    if (!snapshot) throw new Error("LISTING_IDENTITY_SNAPSHOT_UNAVAILABLE");
-    await this.evidence.revalidateProviderIdentitySnapshot(snapshot.payload);
+  private verifyListingIdentity(listing: StandardListing): Promise<void> {
+    return this.catalog.verifyListingIdentity(listing);
   }
 
   listOutcomes(): Array<Record<string, unknown>> {
-    const emptyReputation = {
-      transactionCount: "0",
-      completedCount: "0",
-      failedCount: "0",
-      canceledCount: "0",
-      completionSampleSize: "0",
-      completionRate: null,
-      confirmedCount: "0",
-      notConfirmedCount: "0",
-      confirmationSampleSize: "0",
-      buyerSatisfactionRate: null,
-      valueWeightedBuyerSatisfactionRate: null,
-      totalPaid: "0",
-      totalRefunded: "0",
-      averageFulfillmentSeconds: null,
-      fulfillmentSampleSize: "0",
-      recentPurchases: [],
-      safeBlock: null,
-    };
-    return [...this.listings.values()].map((listing) => ({
-      providerAgentId: listing.commitment.payload.providerAgentId,
-      serviceId: listing.commitment.payload.serviceId,
-      outcomeId: listing.commitment.payload.outcomeId,
-      skillId: listing.offer.payload.skillId,
-      ...listing.discovery,
-      bindingProfile: listing.commitment.payload.bindingProfile,
-      pricingMode: listing.offer.payload.pricingMode,
-      fixedGrossAmount: listing.offer.payload.fixedGrossAmount,
-      token: listing.commitment.payload.canonicalToken,
-      payTo: listing.manifest.payload.splitterAddress,
-      splitterDeploymentBlockNumber: listing.manifest.payload.splitterDeploymentBlockNumber,
-      providerPayee: listing.commitment.payload.providerPayee,
-      daskiCommissionReceiver: listing.commitment.payload.daskiCommissionReceiver,
-      commissionBps: listing.commitment.payload.commissionBps,
-      providerAudience: listing.providerControlProfile.payload.providerAudience,
-      absoluteResourceUri: listing.commitment.payload.absoluteResourceUri,
-      listingManifestHash: canonicalHash(listing.manifest),
-      providerOfferHash: canonicalHash(listing.offer),
-      terms: listing.terms,
-      deadlinePolicy: listing.deadlinePolicy,
-      capacityPolicy: listing.capacityPolicy,
-      providerReputation: emptyReputation,
-      serviceReputation: emptyReputation,
-      reputation: emptyReputation,
-    }));
+    return this.catalog.listOutcomes();
   }
 
-  async publicOutcomes(): Promise<Array<Record<string, unknown>>> {
-    // A listing without a servable presentation is omitted rather than failing
-    // the whole catalog; the background refresh reports the underlying cause.
-    const outcomes: Array<Record<string, unknown>> = (await Promise.all(
-      this.listOutcomes().map(async (outcome): Promise<Record<string, unknown> | null> => {
-        const listing = this.listing(String(outcome.providerAgentId), String(outcome.outcomeId));
-        try {
-          return { ...outcome, ...await this.serviceResolver.resolve(listing) };
-        } catch {
-          return null;
-        }
-      }),
-    )).filter((outcome): outcome is Record<string, unknown> => outcome !== null);
-    let snapshot;
-    try {
-      snapshot = await this.reputationReader.forOutcomes(outcomes);
-    } catch {
-      return outcomes;
-    }
-    const { providers, services, safeBlock } = snapshot;
-    return outcomes.map((outcome) => ({
-      ...outcome,
-      providerReputation: providers.get(String(outcome.providerAgentId)) ??
-        { ...(outcome.providerReputation as object), safeBlock },
-      serviceReputation: services.get(outcome.serviceId as Hex) ??
-        { ...(outcome.serviceReputation as object), safeBlock },
-      reputation: services.get(outcome.serviceId as Hex) ??
-        { ...(outcome.reputation as object), safeBlock },
-    }));
+  publicOutcomes(): Promise<Array<Record<string, unknown>>> {
+    return this.catalog.publicOutcomes();
   }
 
-  async searchOutcomes(filters: {
+  searchOutcomes(filters: {
     text?: string;
     providerAgentId?: string;
     categoryFamily?: string;
@@ -1020,48 +714,11 @@ export class StandardRailService {
     persistentAsset?: boolean;
     limit: number;
   }): Promise<Array<Record<string, unknown>>> {
-    const tokens = (filters.text ?? "").toLowerCase().match(/[a-z0-9]+/g)?.slice(0, 12) ?? [];
-    return (await this.publicOutcomes()).filter((outcome) => {
-      const row = outcome as Record<string, unknown>;
-      const presentation = row as unknown as ServicePresentation;
-      const haystack = [
-        presentation.service.name,
-        presentation.service.description,
-        presentation.skill.name,
-        presentation.skill.description,
-        ...(row.tags as string[]),
-      ]
-        .join(" ").toLowerCase().match(/[a-z0-9]+/g) ?? [];
-      return (
-        tokens.every((token) => haystack.some((word) => word.includes(token))) &&
-        (!filters.providerAgentId || row.providerAgentId === filters.providerAgentId) &&
-        (!filters.categoryFamily || row.categoryFamily === filters.categoryFamily) &&
-        (!filters.serviceType || row.serviceType === filters.serviceType) &&
-        (!filters.jurisdiction || (row.jurisdictions as string[]).includes(filters.jurisdiction)) &&
-        (!filters.pricingMode || row.pricingMode === filters.pricingMode) &&
-        (filters.persistentAsset === undefined || row.persistentAsset === filters.persistentAsset)
-      );
-    }).sort((left, right) =>
-      `${left.providerAgentId}:${left.outcomeId}`.localeCompare(`${right.providerAgentId}:${right.outcomeId}`)
-    ).slice(0, filters.limit);
+    return this.catalog.searchOutcomes(filters);
   }
 
-  async getOutcome(providerAgentId: string, outcomeId: string): Promise<Record<string, unknown>> {
-    const outcome = (await this.publicOutcomes()).find((item) =>
-      item.providerAgentId === providerAgentId && item.outcomeId === outcomeId
-    );
-    if (!outcome) throw new Error("OUTCOME_NOT_FOUND");
-    const listing = this.listing(providerAgentId, outcomeId);
-    return {
-      ...outcome,
-      requestSchema: listing.requestSchema,
-      responseSchema: listing.responseSchema,
-      artifacts: {
-        commitment: canonicalHash(listing.commitment),
-        manifest: canonicalHash(listing.manifest),
-        offer: canonicalHash(listing.offer),
-      },
-    };
+  getOutcome(providerAgentId: string, outcomeId: string): Promise<Record<string, unknown>> {
+    return this.catalog.getOutcome(providerAgentId, outcomeId);
   }
 
   issueWalletChallenge(args: {
@@ -1483,7 +1140,6 @@ export class StandardRailService {
       } else if (["failed", "canceled"].includes(String(response.state)) && ["DISPATCHED", "INPUT_REQUIRED"].includes(order.state)) {
         order = await this.store.transition(order, "PROVIDER_FAILED", "provider_terminal_failed");
       }
-      await this.store.releaseCapacity(order.orderId);
     }
     return { ...response, receipt: await this.signedReceipt(order) };
   }
@@ -1751,304 +1407,14 @@ export class StandardRailService {
     });
   }
 
-  private async dispatch(
+  private dispatch(
     order: StandardOrderRecord,
     listing: StandardListing,
     request: unknown,
     confirmationHash: Hex,
     evidenceBundle: { deposit: EvidenceResult; release: ReleaseEvidenceResult },
   ): Promise<StandardOrderRecord> {
-    if (
-      !order.payer || !order.settlementTxHash || !order.depositEvidenceHash ||
-      !order.releaseTxHash || !order.releaseEvidenceHash ||
-      !order.providerNetAmount || !order.daskiCommissionAmount ||
-      order.settlementTxHash !== evidenceBundle.deposit.transactionHash ||
-      order.depositEvidenceHash !== evidenceBundle.deposit.evidenceHash ||
-      order.releaseTxHash !== evidenceBundle.release.transactionHash ||
-      order.releaseEvidenceHash !== evidenceBundle.release.evidenceHash ||
-      order.providerNetAmount !== evidenceBundle.release.providerNetAmount.toString() ||
-      order.daskiCommissionAmount !== evidenceBundle.release.daskiCommissionAmount.toString()
-    ) throw new Error("Dispatch evidence does not match the order");
-    const payer = order.payer;
-    const providerNetAmount = order.providerNetAmount;
-    const daskiCommissionAmount = order.daskiCommissionAmount;
-    const wireEvidenceBundle = buildStandardEvidenceBundleV2(
-      evidenceBundle.deposit,
-      evidenceBundle.release,
-    );
-    const buildPayload = (
-      nonce: Hex,
-      issuedAt: number,
-      validBefore: number,
-      providerRequest: unknown,
-    ): StandardRailDispatchV2 => ({
-      environment: this.railConfig.environment,
-      chainId: this.appConfig.chainId,
-      gatewayAudience: this.railConfig.gatewayAudience,
-      providerAudience: listing.providerControlProfile.payload.providerAudience,
-      providerControlProfileHash: listing.commitment.payload.providerControlProfileHash,
-      orderId: order.orderId,
-      orderKey: order.orderKey,
-      serviceId: listing.commitment.payload.serviceId,
-      reputationEligible: isReputationEligiblePayer(payer, listing, this.railConfig),
-      reputationContract: this.railConfig.reputationContract,
-      outcomeSchemaUid: this.railConfig.reputationOutcomeSchemaUid,
-      dispatchNonce: nonce,
-      payer,
-      listingManifestHash: order.listingManifestHash,
-      providerOfferHash: order.providerOfferHash,
-      quoteHash: order.quoteHash,
-      bindingProfile: listing.commitment.payload.bindingProfile,
-      canonicalRequestHash: order.canonicalRequestHash,
-      orderNonce: order.orderNonce,
-      buyerIdentityProofHash: ZERO_HASH,
-      activeRailProfileHash: this.railProfileHash,
-      facilitatorConfirmationHash: confirmationHash,
-      settlementTxHash: wireEvidenceBundle.deposit.transactionHash,
-      depositEvidenceHash: wireEvidenceBundle.deposit.evidenceHash,
-      depositBlockNumber: wireEvidenceBundle.deposit.blockNumber,
-      depositBlockHash: wireEvidenceBundle.deposit.blockHash,
-      depositTransactionIndex: wireEvidenceBundle.deposit.transactionIndex,
-      depositLogIndex: wireEvidenceBundle.deposit.logIndex,
-      releaseTxHash: wireEvidenceBundle.release.transactionHash,
-      releaseEvidenceHash: wireEvidenceBundle.release.evidenceHash,
-      releaseBlockNumber: wireEvidenceBundle.release.blockNumber,
-      releaseBlockHash: wireEvidenceBundle.release.blockHash,
-      releaseTransactionIndex: wireEvidenceBundle.release.transactionIndex,
-      releaseLogIndex: wireEvidenceBundle.release.logIndex,
-      releaseSequence: wireEvidenceBundle.release.releaseSequence,
-      grossAmount: order.grossAmount,
-      providerNetAmount,
-      daskiCommissionAmount,
-      canonicalProviderRequestHash: canonicalHash(providerRequest),
-      dispatchDeadlineSeconds: listing.deadlinePolicy.dispatchSeconds,
-      issuedAt,
-      validBefore,
-    });
-    const persisted = await this.journal.dispatchClaim(order.orderId);
-    const mayInvokeProvider = persisted === null;
-    let dispatch: import("./types.js").SignedEnvelope<StandardRailDispatchV2, 2>;
-    let dispatchHash: Hex;
-    let effectiveRequest = request;
-    if (persisted) {
-      dispatch = persisted.dispatch;
-      dispatchHash = canonicalHash(dispatch);
-      effectiveRequest = persisted.request;
-      const expectedPayload = buildPayload(
-        dispatch.payload.dispatchNonce,
-        dispatch.payload.issuedAt,
-        dispatch.payload.validBefore,
-        effectiveRequest,
-      );
-      if (
-        dispatch.payload.validBefore !==
-          dispatch.payload.issuedAt + listing.deadlinePolicy.dispatchSeconds ||
-        canonicalHash(dispatch.payload) !== canonicalHash(expectedPayload)
-      ) throw new Error("Persisted dispatch does not match the order");
-    } else {
-      const nonce = `0x${randomBytes(32).toString("hex")}` as Hex;
-      const now = Math.floor(Date.now() / 1_000);
-      const payload = buildPayload(
-        nonce,
-        now,
-        now + listing.deadlinePolicy.dispatchSeconds,
-        request,
-      );
-      dispatch = await signEnvelope<StandardRailDispatchV2, 2>({
-        artifactType: "StandardRailDispatchV2",
-        schemaVersion: 2,
-        environment: this.railConfig.environment,
-        chainId: this.appConfig.chainId,
-        audience: listing.providerControlProfile.payload.providerAudience,
-        signerKeyId: "gateway-dispatch",
-        privateKey: this.railConfig.dispatchPrivateKey,
-        issuedAt: now,
-        validBefore: now + listing.deadlinePolicy.dispatchSeconds,
-        payload,
-      });
-      dispatchHash = canonicalHash(dispatch);
-      if (!await this.journal.claimDispatch({
-        orderId: order.orderId,
-        nonce,
-        dispatchHash,
-        requestHash: canonicalHash(request),
-        dispatch,
-        request,
-      })) throw new Error("Dispatch claim changed concurrently");
-    }
-    if (order.state === "RELEASE_FINAL") {
-      order = await this.store.transition(order, "DISPATCH_STARTED", "dispatch_invocation_persisted");
-    } else if (order.state !== "DISPATCH_STARTED" && order.state !== "DISPATCH_AMBIGUOUS") {
-      throw new Error(`Order ${order.orderId} is not dispatchable from ${order.state}`);
-    }
-    if (!mayInvokeProvider || order.state === "DISPATCH_AMBIGUOUS") {
-      try {
-        const response = await this.queryProviderDispatchStatus(
-          listing,
-          order.orderId,
-          dispatchHash,
-        );
-        return this.applyDispatchResponse(order, listing, dispatchHash, response);
-      } catch {
-        return order.state === "DISPATCH_STARTED"
-          ? this.store.transition(order, "DISPATCH_AMBIGUOUS", "provider_dispatch_outcome_unknown")
-          : order;
-      }
-    }
-    const controller = new AbortController();
-    const timeout = setTimeout(
-      () => controller.abort(),
-      Math.min(this.railConfig.dispatchTimeoutMs, listing.providerControlProfile.payload.timeoutMs),
-    );
-    try {
-      const response = await this.providerFetch(listing, listing.providerControlProfile.payload.dispatchUrl, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          dispatch,
-          quote: order.quote,
-          request: effectiveRequest,
-          evidenceBundle: wireEvidenceBundle,
-        }),
-        signal: controller.signal,
-        redirect: "error",
-      });
-      if (!response.ok) throw new Error("provider_dispatch_rejected");
-      const body = await readBoundedJson(
-        response,
-        listing.providerControlProfile.payload.maxResponseBytes,
-      );
-      return this.applyDispatchResponse(order, listing, dispatchHash, body);
-    } catch {
-      return order.state === "DISPATCH_STARTED"
-        ? this.store.transition(order, "DISPATCH_AMBIGUOUS", "provider_dispatch_response_unknown")
-        : order;
-    } finally {
-      clearTimeout(timeout);
-    }
-  }
-
-  private async queryProviderDispatchStatus(
-    listing: StandardListing,
-    orderId: string,
-    dispatchHash: Hex,
-  ): Promise<unknown> {
-    const now = Math.floor(Date.now() / 1_000);
-    const query = await signEnvelope<DispatchStatusQueryV1>({
-      artifactType: "DispatchStatusQueryV1",
-      environment: this.railConfig.environment,
-      chainId: this.appConfig.chainId,
-      audience: listing.providerControlProfile.payload.providerAudience,
-      signerKeyId: "gateway-dispatch",
-      privateKey: this.railConfig.dispatchPrivateKey,
-      issuedAt: now,
-      validBefore: now + 60,
-      payload: { orderId, dispatchHash, issuedAt: now, validBefore: now + 60 },
-    });
-    const response = await this.providerFetch(
-      listing,
-      listing.providerControlProfile.payload.dispatchStatusUrl,
-      {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ query }),
-        redirect: "error",
-        signal: AbortSignal.timeout(Math.min(
-          this.railConfig.dispatchTimeoutMs,
-          listing.providerControlProfile.payload.timeoutMs,
-        )),
-      },
-    );
-    if (!response.ok) throw new Error("PROVIDER_DISPATCH_STATUS_UNAVAILABLE");
-    return readBoundedJson(response, listing.providerControlProfile.payload.maxResponseBytes);
-  }
-
-  private async applyDispatchResponse(
-    initial: StandardOrderRecord,
-    listing: StandardListing,
-    dispatchHash: Hex,
-    value: unknown,
-  ): Promise<StandardOrderRecord> {
-    if (!value || typeof value !== "object" || Array.isArray(value)) {
-      throw new Error("provider_dispatch_response_malformed");
-    }
-    const body = value as {
-      taskId?: unknown; dispatchHash?: unknown; signature?: unknown; state?: unknown;
-      terminalAttestation?: { payload?: Record<string, unknown>; signature?: unknown };
-    };
-    const terminal = ["completed", "failed", "canceled"].includes(String(body.state));
-    assertExactKeys(
-      body,
-      terminal
-        ? ["taskId", "dispatchHash", "signature", "state", "terminalAttestation"]
-        : ["taskId", "dispatchHash", "signature", "state"],
-      "provider dispatch response",
-    );
-    if (
-      typeof body.taskId !== "string" || body.taskId.length === 0 || body.taskId.length > 128 ||
-      body.dispatchHash !== dispatchHash || typeof body.signature !== "string" ||
-      !["dispatching", "submitted", "working", "input-required", "completed", "failed", "canceled"].includes(String(body.state))
-    ) throw new Error("provider_dispatch_response_malformed");
-    const responseHash = canonicalHash({ taskId: body.taskId, dispatchHash, state: body.state });
-    const signer = await recoverMessageAddress({
-      message: { raw: responseHash },
-      signature: body.signature as Hex,
-    });
-    if (getAddress(signer) !== getAddress(listing.commitment.payload.providerAuthorityKey)) {
-      throw new Error("provider_dispatch_response_signature_invalid");
-    }
-    await this.journal.resolveDispatch(initial.orderId, body.taskId, responseHash);
-    let order = initial;
-    if (["DISPATCH_STARTED", "DISPATCH_AMBIGUOUS"].includes(order.state)) {
-      order = await this.store.transition(order, "DISPATCHED", "provider_dispatch_accepted", {
-        providerTaskId: body.taskId,
-      });
-    } else if (order.providerTaskId !== body.taskId) {
-      throw new Error("provider_dispatch_task_binding_invalid");
-    }
-    if (body.state === "input-required" && order.state === "DISPATCHED") {
-      order = await this.store.transition(order, "INPUT_REQUIRED", "provider_pre_execute_hold");
-    } else if (["dispatching", "submitted", "working"].includes(String(body.state)) && order.state === "INPUT_REQUIRED") {
-      order = await this.store.transition(order, "DISPATCHED", "provider_input_accepted");
-    } else if (terminal) {
-      const attestation = body.terminalAttestation;
-      if (!attestation?.payload || typeof attestation.signature !== "string") {
-        throw new Error("provider_terminal_attestation_missing");
-      }
-      assertExactKeys(attestation, ["payload", "signature"], "provider terminal attestation");
-      assertExactKeys(
-        attestation.payload,
-        ["taskId", "dispatchHash", "state", "resultHash", "completedAt"],
-        "provider terminal attestation payload",
-      );
-      const completedAt = attestation.payload.completedAt;
-      if (
-        typeof completedAt !== "number" || !Number.isSafeInteger(completedAt) || completedAt <= 0 ||
-        completedAt > Math.floor(Date.now() / 1_000) + 30 ||
-        typeof attestation.payload.resultHash !== "string" ||
-        !/^0x[0-9a-fA-F]{64}$/.test(attestation.payload.resultHash)
-      ) throw new Error("provider_terminal_attestation_time_invalid");
-      const terminalSigner = await recoverMessageAddress({
-        message: { raw: canonicalHash(attestation.payload) },
-        signature: attestation.signature as Hex,
-      });
-      if (
-        getAddress(terminalSigner) !== getAddress(listing.commitment.payload.providerTerminalAttestationKey) ||
-        attestation.payload.taskId !== body.taskId || attestation.payload.dispatchHash !== dispatchHash ||
-        attestation.payload.state !== body.state
-      ) throw new Error("provider_terminal_attestation_invalid");
-      if (["DISPATCHED", "INPUT_REQUIRED"].includes(order.state)) {
-        order = await this.store.transition(
-          order,
-          body.state === "completed" ? "FULFILLED" : "PROVIDER_FAILED",
-          body.state === "completed" ? "provider_terminal_completed" : "provider_terminal_failed",
-        );
-      }
-    }
-    if (["FULFILLED", "PROVIDER_FAILED"].includes(order.state)) {
-      await this.store.releaseCapacity(order.orderId);
-    }
-    return order;
+    return this.dispatcher.dispatch(order, listing, request, confirmationHash, evidenceBundle);
   }
 
   private challengeResponse(listing: StandardListing, order: StandardOrderRecord, handle: string) {
@@ -2122,7 +1488,7 @@ export class StandardRailService {
         this.railConfig.dispatchTimeoutMs,
         listing.providerControlProfile.payload.timeoutMs,
       )),
-    });
+    }, true);
     if (!response.ok) throw new Error("PROVIDER_QUOTE_UNAVAILABLE");
     const quote = await readBoundedJson(
       response,
@@ -2182,23 +1548,16 @@ export class StandardRailService {
     };
   }
 
+  private assertRailFence(): Promise<void> {
+    return this.store.assertActiveRail(this.railProfileHash);
+  }
+
   private validateRequest(listing: StandardListing, body: unknown): void {
-    const payload = listing.commitment.payload;
-    const validate = this.requestValidators.get(`${payload.providerAgentId}:${payload.outcomeId}`);
-    if (!validate) throw new Error("Outcome request validator is unavailable");
-    assertSchema(validate, body);
+    this.catalog.validateRequest(listing, body);
   }
 
   private validateResponse(listing: StandardListing, result: unknown): void {
-    const payload = listing.commitment.payload;
-    const validate = this.responseValidators.get(`${payload.providerAgentId}:${payload.outcomeId}`);
-    if (!validate) throw new Error("Outcome response validator is unavailable");
-    assertSchema(validate, result, "Response");
-    assertPassiveProviderOutput(result);
-  }
-
-  private assertRailFence(): Promise<void> {
-    return this.store.assertActiveRail(this.railProfileHash);
+    this.catalog.validateResponse(listing, result);
   }
 
   private screenParticipants(listing: StandardListing, payer?: Hex): Promise<void> {

@@ -18,23 +18,6 @@ export interface CreatePoolOptions {
   max?: number;
 }
 
-/**
- * Isolates session-level advisory locks from the queries executed while those
- * locks are held. Separate lock domains prevent nested work from exhausting
- * the pool that its outer lock already occupies.
- */
-export interface DatabasePools {
-  main: Pool;
-  challengeSettlement: Pool;
-  facilitatorTransaction: Pool;
-  providerFeedback: Pool;
-}
-
-const MAIN_POOL_MAX = 10;
-const CHALLENGE_SETTLEMENT_POOL_MAX = 10;
-const FACILITATOR_TRANSACTION_POOL_MAX = 2;
-const PROVIDER_FEEDBACK_POOL_MAX = 2;
-
 export function createPool(opts: CreatePoolOptions): Pool {
   let options: string | undefined;
   if (opts.searchPath !== undefined) {
@@ -55,26 +38,6 @@ export function createPool(opts: CreatePoolOptions): Pool {
     ...(opts.max === undefined ? {} : { max: opts.max }),
     ...(options ? { options } : {}),
   });
-}
-
-export function createDatabasePools(
-  opts: Omit<CreatePoolOptions, "max">,
-): DatabasePools {
-  return {
-    main: createPool({ ...opts, max: MAIN_POOL_MAX }),
-    challengeSettlement: createPool({
-      ...opts,
-      max: CHALLENGE_SETTLEMENT_POOL_MAX,
-    }),
-    facilitatorTransaction: createPool({
-      ...opts,
-      max: FACILITATOR_TRANSACTION_POOL_MAX,
-    }),
-    providerFeedback: createPool({
-      ...opts,
-      max: PROVIDER_FEEDBACK_POOL_MAX,
-    }),
-  };
 }
 
 /**

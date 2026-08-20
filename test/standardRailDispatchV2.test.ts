@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Hex } from "viem";
-import { StandardRailService } from "../src/standardRail/service.js";
+import { StandardProviderDispatch } from "../src/standardRail/providerDispatch.js";
 import type { EvidenceResult, ReleaseEvidenceResult } from "../src/standardRail/evidence.js";
 import type {
   SignedEnvelope,
@@ -106,43 +106,48 @@ function service(args: {
   capture?: (dispatch: SignedEnvelope<StandardRailDispatchV2, 2>, body: string) => void;
 } = {}): DispatchInvoker {
   let claimed: SignedEnvelope<StandardRailDispatchV2, 2> | null = null;
-  const instance = Object.create(StandardRailService.prototype) as Record<string, unknown>;
-  Object.assign(instance, {
-    appConfig: { chainId: 84532 },
-    railConfig: {
-      environment: "testnet",
-      gatewayAudience: "gateway.example",
-      reputationContract: address("6"),
-      reputationOutcomeSchemaUid: hash("9"),
-      dispatchPrivateKey: privateKey,
-      quotePrivateKey: privateKey,
-      receiptPrivateKey: privateKey,
-      lifecyclePrivateKey: privateKey,
-      releasePrivateKey: privateKey,
-      reputationOrderPrivateKey: privateKey,
-      reputationRelayerPrivateKey: privateKey,
-      dispatchTimeoutMs: 1_000,
-      manifest: { providerIdentitySnapshots: [] },
-    },
-    railProfileHash: hash("0"),
-    journal: {
+  const config = {
+    environment: "testnet",
+    gatewayAudience: "gateway.example",
+    reputationContract: address("6"),
+    reputationOutcomeSchemaUid: hash("9"),
+    dispatchPrivateKey: privateKey,
+    quotePrivateKey: privateKey,
+    receiptPrivateKey: privateKey,
+    lifecyclePrivateKey: privateKey,
+    releasePrivateKey: privateKey,
+    reputationOrderPrivateKey: privateKey,
+    reputationRelayerPrivateKey: privateKey,
+    dispatchTimeoutMs: 1_000,
+    manifest: { providerIdentitySnapshots: [] },
+  };
+  return new StandardProviderDispatch(
+    { chainId: 84532 } as never,
+    config as never,
+    {
       dispatchClaim: async () => args.persisted ?? null,
-      claimDispatch: async (claim: { dispatch: SignedEnvelope<StandardRailDispatchV2, 2> }) => {
+      claimDispatch: async (
+        claim: { dispatch: SignedEnvelope<StandardRailDispatchV2, 2> },
+      ) => {
         claimed = claim.dispatch;
         return true;
       },
-    },
-    store: {
-      transition: async (value: StandardOrderRecord, state: StandardOrderRecord["state"]) =>
-        ({ ...value, state }),
-    },
-    providerFetch: async (_listing: StandardListing, _url: string, init: RequestInit) => {
-      if (!claimed || typeof init.body !== "string") throw new Error("Dispatch was not serialized");
+    } as never,
+    {
+      transition: async (
+        value: StandardOrderRecord,
+        state: StandardOrderRecord["state"],
+      ) => ({ ...value, state }),
+    } as never,
+    async (_listing: StandardListing, _url: string, init: RequestInit) => {
+      if (!claimed || typeof init.body !== "string") {
+        throw new Error("Dispatch was not serialized");
+      }
       args.capture?.(claimed, init.body);
       return new Response(null, { status: 503 });
     },
-  });
-  return instance as unknown as DispatchInvoker;
+    hash("0"),
+  );
 }
 
 describe("StandardRailDispatchV2 service handoff", () => {

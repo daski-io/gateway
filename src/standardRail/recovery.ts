@@ -87,7 +87,6 @@ export class StandardRailRecoveryWorker {
         case "DISPATCH_AMBIGUOUS": return 30;
         case "DISPATCHED":
         case "INPUT_REQUIRED": return 30;
-        case "PROVIDER_FAILED": return 30;
         default: return policy.fulfillmentSeconds;
       }
     })();
@@ -99,7 +98,6 @@ export class StandardRailRecoveryWorker {
     switch (order.state) {
       case "CHALLENGE_ISSUED":
         await this.options.store.transition(order, "NOT_SETTLED", "signed_deadline_no_captured_payment");
-        await this.options.store.releaseCapacity(order.orderId);
         return;
       case "SETTLEMENT_FAILED":
       case "ATTEMPT_OPENED":
@@ -116,12 +114,6 @@ export class StandardRailRecoveryWorker {
       case "DISPATCHED":
       case "INPUT_REQUIRED":
         await this.options.resumePaid(order);
-        return;
-      case "PROVIDER_FAILED":
-        await this.options.store.releaseCapacity(order.orderId);
-        return;
-      case "FULFILLED":
-        await this.options.store.releaseCapacity(order.orderId);
         return;
       default:
         await this.options.store.releaseLease(order.orderId, this.workerId, order.leaseFence);

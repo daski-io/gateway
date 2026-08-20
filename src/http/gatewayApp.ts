@@ -93,7 +93,7 @@ export async function createStandardGatewayHttp(
   );
   const marketplace = new CachedMarketplaceChainReader(new ViemMarketplaceChainReader(
     options.config,
-    options.standardRailConfig,
+    options.standardRailConfig.evidenceRpcUrls,
     chain,
   ));
   const standardRail = new StandardRailService(

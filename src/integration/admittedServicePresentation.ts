@@ -1,6 +1,6 @@
 import type { Hex } from "viem";
 import type { StandardListing } from "../standardRail/types.js";
-import type { MarketplaceChainReader, MarketplaceServiceRecord } from "./reader.js";
+import type { MarketplaceChainReader, MarketplaceServiceRecord } from "../marketplace/reader.js";
 
 const DASKI_EXTENSION_URI = "https://daski.xyz/a2a/v1";
 // Presentations are re-verified on a short TTL, but a failed refresh must not

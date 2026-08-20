@@ -13,6 +13,7 @@ import type {
 import type { StandardRailConfig } from "./config.js";
 import { isNonPublicAddress } from "./network.js";
 import { assertNoDuplicateJsonKeys } from "./canonical.js";
+import { activeRequestSignal } from "../mcp/requestContext.js";
 
 export interface StandardFacilitator {
   verify(payload: PaymentPayload, requirements: PaymentRequirements): Promise<VerifyResponse>;
@@ -85,7 +86,9 @@ export class CdpStandardFacilitator implements StandardFacilitator {
       body: body === undefined ? undefined : JSON.stringify(body, (_, value) =>
         typeof value === "bigint" ? value.toString() : value,
       ),
-      signal: AbortSignal.timeout(this.config.facilitatorTimeoutMs),
+      signal: operation === "verify"
+        ? activeRequestSignal(AbortSignal.timeout(this.config.facilitatorTimeoutMs))
+        : AbortSignal.timeout(this.config.facilitatorTimeoutMs),
     }, addresses[0]!);
     const value = await this.readBoundedJson(response, 256_000);
     if (!response.ok) throw new Error(`Facilitator ${operation} rejected the request`);

@@ -17,7 +17,7 @@ import {
 import { privateKeyToAccount } from "viem/accounts";
 import type { FacilitatorNonceLock } from "./facilitatorNonceLock.js";
 import type { StandardRailConfig } from "./config.js";
-import { orderedRpcTransport } from "./orderedRpcTransport.js";
+import { orderedRpcTransport } from "../rpc/orderedTransport.js";
 import { canonicalHash } from "./canonical.js";
 import { chainLogsHash } from "./chainLogHash.js";
 import { hasRequiredConfirmations } from "./finality.js";
