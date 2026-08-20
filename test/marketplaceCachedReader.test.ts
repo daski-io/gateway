@@ -47,4 +47,35 @@ describe("cached marketplace reader", () => {
     await expect(reader.getProvider(7n)).resolves.toMatchObject({ agentId: "7" });
     expect(inner.getProvider).toHaveBeenCalledTimes(2);
   });
+
+  it("keeps serving the last good value while refreshes fail", async () => {
+    vi.useFakeTimers();
+    try {
+      const inner = source();
+      const reader = new CachedMarketplaceChainReader(inner as unknown as MarketplaceChainReader);
+      const first = await reader.getService(SERVICE_ID);
+
+      vi.advanceTimersByTime(61_000);
+      inner.getService.mockRejectedValue(new Error("RPC_DOWN"));
+      await expect(reader.getService(SERVICE_ID)).resolves.toEqual(first);
+      expect(inner.getService).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("stops serving stale values past the stale window", async () => {
+    vi.useFakeTimers();
+    try {
+      const inner = source();
+      const reader = new CachedMarketplaceChainReader(inner as unknown as MarketplaceChainReader);
+      await reader.getService(SERVICE_ID);
+
+      vi.advanceTimersByTime(24 * 60 * 60_000 + 1_000);
+      inner.getService.mockRejectedValue(new Error("RPC_DOWN"));
+      await expect(reader.getService(SERVICE_ID)).rejects.toThrow("RPC_DOWN");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

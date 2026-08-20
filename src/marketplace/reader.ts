@@ -9,6 +9,7 @@ import {
 } from "viem";
 import type { Config } from "../config.js";
 import type { StandardRailConfig } from "../standardRail/config.js";
+import { orderedRpcTransport } from "../standardRail/orderedRpcTransport.js";
 import {
   agentIndexAbi,
   reputationStorageAbi,
@@ -81,12 +82,14 @@ export class ViemMarketplaceChainReader implements MarketplaceChainReader {
     this.addresses = Object.fromEntries(
       Object.entries(config.marketplaceContracts).map(([key, value]) => [key, getAddress(value)]),
     ) as unknown as MarketplaceAddresses;
+    // Registry reads refresh caches off the request path, so they favor the
+    // serialized, retrying transport shape evidence reads use over latency.
     this.client = createPublicClient({
       chain,
-      transport: fallback(railConfig.evidenceRpcUrls.map((url) => http(url, {
-        retryCount: 0,
+      transport: fallback(railConfig.evidenceRpcUrls.map((url) => orderedRpcTransport(http(url, {
+        retryCount: 2,
         timeout: 20_000,
-      }))),
+      })))),
     });
   }
 

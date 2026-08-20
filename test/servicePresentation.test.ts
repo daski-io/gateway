@@ -14,6 +14,23 @@ function listing(skillId = "form-entity"): StandardListing {
   } as StandardListing;
 }
 
+function serviceRecord(providerAgentId = "8327") {
+  return {
+    providerAgentId,
+    serviceId: SERVICE_ID,
+    serviceSlug: "entity-formation",
+    version: "1",
+    serviceUri: "https://provider.example/agent-cards/entity-formation.json",
+    serviceWallet: ADDRESS,
+    createdAt: "1",
+    active: true,
+    standardReputation: {
+      completed: "0", failed: "0", canceled: "0", confirmed: "0",
+      notConfirmed: "0", refundedAmount: "0", transactions: "0", safeBlock: "1",
+    },
+  };
+}
+
 function reader(providerAgentId = "8327"): MarketplaceChainReader {
   return {
     addresses: {
@@ -27,20 +44,7 @@ function reader(providerAgentId = "8327"): MarketplaceChainReader {
     resolveWallet: vi.fn(),
     listProviders: vi.fn(),
     getProvider: vi.fn(),
-    getService: vi.fn(async () => ({
-      providerAgentId,
-      serviceId: SERVICE_ID,
-      serviceSlug: "entity-formation",
-      version: "1",
-      serviceUri: "https://provider.example/agent-cards/entity-formation.json",
-      serviceWallet: ADDRESS,
-      createdAt: "1",
-      active: true,
-      standardReputation: {
-        completed: "0", failed: "0", canceled: "0", confirmed: "0",
-        notConfirmed: "0", refundedAmount: "0", transactions: "0", safeBlock: "1",
-      },
-    })),
+    getService: vi.fn(async () => serviceRecord(providerAgentId)),
   };
 }
 
@@ -120,5 +124,65 @@ describe("admitted service presentation", () => {
     });
 
     expect(fetchCard).toHaveBeenCalledTimes(2);
+  });
+
+  it("serves the stale presentation while upstream reads fail", async () => {
+    const chainReader = reader();
+    const fetchCard = vi.fn(async () => agentCard());
+    const resolver = new AdmittedServiceResolver(chainReader, fetchCard, 0);
+
+    const first = await resolver.resolve(listing());
+    vi.mocked(chainReader.getService).mockRejectedValue(new Error("RPC_DOWN"));
+
+    await expect(resolver.resolve(listing())).resolves.toEqual(first);
+    await expect(resolver.refresh(listing())).rejects.toThrow("RPC_DOWN");
+    await expect(resolver.resolve(listing())).resolves.toEqual(first);
+  });
+
+  it("stops serving a presentation past the stale limit", async () => {
+    const chainReader = reader();
+    const fetchCard = vi.fn(async () => agentCard());
+    const resolver = new AdmittedServiceResolver(chainReader, fetchCard, 0, 0);
+
+    await resolver.resolve(listing());
+    vi.mocked(chainReader.getService).mockRejectedValue(new Error("RPC_DOWN"));
+
+    await expect(resolver.resolve(listing())).rejects.toThrow("RPC_DOWN");
+  });
+
+  it("evicts the stale presentation when the registry rejects the listing", async () => {
+    const chainReader = reader();
+    const fetchCard = vi.fn(async () => agentCard());
+    const resolver = new AdmittedServiceResolver(chainReader, fetchCard, 0);
+
+    await resolver.resolve(listing());
+    vi.mocked(chainReader.getService).mockResolvedValue({ ...serviceRecord(), active: false });
+
+    await expect(resolver.refresh(listing())).rejects.toThrow("ADMITTED_SERVICE_REGISTRY_MISMATCH");
+    await expect(resolver.resolve(listing())).rejects.toThrow("ADMITTED_SERVICE_REGISTRY_MISMATCH");
+  });
+
+  it("evicts the stale presentation when the provider card stops publishing the skill", async () => {
+    const chainReader = reader();
+    const fetchCard = vi.fn(async () => agentCard());
+    const resolver = new AdmittedServiceResolver(chainReader, fetchCard, 0);
+
+    await resolver.resolve(listing());
+    fetchCard.mockResolvedValue({ ...agentCard(), skills: [] });
+
+    await expect(resolver.refresh(listing())).rejects.toThrow("ADMITTED_SKILL_NOT_PUBLISHED");
+    await expect(resolver.resolve(listing())).rejects.toThrow("ADMITTED_SKILL_NOT_PUBLISHED");
+  });
+
+  it("refresh reuses a fresh presentation without reloading", async () => {
+    const chainReader = reader();
+    const fetchCard = vi.fn(async () => agentCard());
+    const resolver = new AdmittedServiceResolver(chainReader, fetchCard);
+
+    await resolver.resolve(listing());
+    await resolver.refresh(listing());
+
+    expect(chainReader.getService).toHaveBeenCalledTimes(1);
+    expect(fetchCard).toHaveBeenCalledTimes(1);
   });
 });

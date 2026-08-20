@@ -3,7 +3,13 @@ import type { StandardListing } from "../standardRail/types.js";
 import type { MarketplaceChainReader, MarketplaceServiceRecord } from "./reader.js";
 
 const DASKI_EXTENSION_URI = "https://daski.xyz/a2a/v1";
+// Presentations are re-verified on a short TTL, but a failed refresh must not
+// take the public catalog down: the last verified value stays servable for the
+// stale window while refreshes keep retrying. Only an authoritative rejection
+// (the registry or the provider card no longer matching the admitted listing)
+// evicts a stale presentation early.
 const DEFAULT_CACHE_TTL_MS = 5 * 60_000;
+const DEFAULT_STALE_LIMIT_MS = 24 * 60 * 60_000;
 
 export interface ServicePresentation {
   service: {
@@ -29,6 +35,16 @@ export interface ServicePresentation {
 }
 
 type AgentCardFetch = (listing: StandardListing, serviceUri: string) => Promise<unknown>;
+
+// Raised when an upstream read completed and rejected the listing, as opposed
+// to the read itself failing; only these rejections invalidate a stale value.
+class AdmittedServiceRejectedError extends Error {}
+
+function rejected(error: unknown): AdmittedServiceRejectedError {
+  return new AdmittedServiceRejectedError(
+    error instanceof Error ? error.message : "ADMITTED_SERVICE_REJECTED",
+  );
+}
 
 function record(value: unknown, label: string): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -131,34 +147,77 @@ function parsePresentation(
   };
 }
 
+interface PresentationCacheEntry {
+  freshUntil: number;
+  staleUntil: number;
+  value: ServicePresentation;
+}
+
 export class AdmittedServiceResolver {
-  private readonly cache = new Map<string, { expiresAt: number; value: ServicePresentation }>();
+  private readonly cache = new Map<string, PresentationCacheEntry>();
   private readonly inFlight = new Map<string, Promise<ServicePresentation>>();
 
   constructor(
     private readonly reader: MarketplaceChainReader,
     private readonly fetchAgentCard: AgentCardFetch,
     private readonly cacheTtlMs = DEFAULT_CACHE_TTL_MS,
+    private readonly staleLimitMs = DEFAULT_STALE_LIMIT_MS,
   ) {}
 
   async resolve(listing: StandardListing): Promise<ServicePresentation> {
     const cacheKey = this.cacheKey(listing);
     const cached = this.cache.get(cacheKey);
-    if (cached && cached.expiresAt > Date.now()) return cached.value;
+    const now = Date.now();
+    if (cached && cached.freshUntil > now) return cached.value;
+    const loading = this.startLoad(listing, cacheKey);
+    if (cached && cached.staleUntil > now) {
+      loading.catch(() => undefined);
+      return cached.value;
+    }
+    return loading;
+  }
+
+  // Awaits an actual reload unless the cached value is still fresh, and
+  // propagates the failure; resolve() never surfaces one while a stale value
+  // is servable, so the background refresh uses this to observe and report it.
+  async refresh(listing: StandardListing): Promise<void> {
+    const cacheKey = this.cacheKey(listing);
+    const cached = this.cache.get(cacheKey);
+    if (cached && cached.freshUntil > Date.now()) return;
+    await this.startLoad(listing, cacheKey);
+  }
+
+  private startLoad(listing: StandardListing, cacheKey: string): Promise<ServicePresentation> {
     const active = this.inFlight.get(cacheKey);
     if (active) return active;
-    const resolving = this.load(listing).finally(() => this.inFlight.delete(cacheKey));
-    this.inFlight.set(cacheKey, resolving);
-    return resolving;
+    const loading = this.load(listing)
+      .catch((error: unknown) => {
+        if (error instanceof AdmittedServiceRejectedError) this.cache.delete(cacheKey);
+        throw error;
+      })
+      .finally(() => this.inFlight.delete(cacheKey));
+    this.inFlight.set(cacheKey, loading);
+    return loading;
   }
 
   private async load(listing: StandardListing): Promise<ServicePresentation> {
     const registered = await this.reader.getService(listing.commitment.payload.serviceId);
-    assertRegistryBinding(registered, listing);
+    try {
+      assertRegistryBinding(registered, listing);
+    } catch (error) {
+      throw rejected(error);
+    }
     const card = await this.fetchAgentCard(listing, registered.serviceUri);
-    const presentation = parsePresentation(card, registered, listing);
+    let presentation: ServicePresentation;
+    try {
+      presentation = parsePresentation(card, registered, listing);
+    } catch (error) {
+      throw rejected(error);
+    }
+    const now = Date.now();
     this.cache.set(this.cacheKey(listing), {
-      expiresAt: Date.now() + this.cacheTtlMs,
+      freshUntil: now + this.cacheTtlMs,
+      staleUntil: now + this.staleLimitMs,
       value: presentation,
     });
     return presentation;
