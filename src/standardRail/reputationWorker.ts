@@ -1,7 +1,6 @@
 import { createCipheriv, createDecipheriv, randomBytes, randomUUID } from "node:crypto";
 import {
   createPublicClient,
-  fallback,
   getAddress,
   http,
   keccak256,
@@ -20,6 +19,7 @@ import {
   PostgresFacilitatorNonceLock,
 } from "./facilitatorNonceLock.js";
 import type { StandardRailConfig } from "./config.js";
+import { withRpcFailover } from "../rpc/failover.js";
 import { finalizeReputationOperation } from "./reputationFinalization.js";
 import {
   encodeReputationOperation,
@@ -70,9 +70,8 @@ function decryptRaw(value: Buffer, key: Buffer, operationId: string): Hex {
 
 export class StandardReputationWorker {
   private readonly account;
-  private readonly client;
   private readonly broadcastClient;
-  private readonly evidenceClients: Array<ReturnType<typeof createPublicClient>>;
+  private readonly evidenceClients: Array<{ host: string; client: ReturnType<typeof createPublicClient> }>;
   private timer: NodeJS.Timeout | null = null;
   private running: Promise<void> | null = null;
   private nextKind = 0;
@@ -94,16 +93,27 @@ export class StandardReputationWorker {
       chain,
       transport: http(config.evidenceRpcUrls[0], { retryCount: 0, timeout: 20_000 }),
     });
-    this.client = createPublicClient({
-      chain,
-      transport: fallback(config.evidenceRpcUrls.map((url) =>
-        http(url, { retryCount: 0, timeout: 20_000 })), { rank: false }),
-    });
-    this.evidenceClients = config.evidenceRpcUrls.map((url) => createPublicClient({
-      chain,
-      transport: http(url, { retryCount: 0, timeout: 20_000 }),
+    this.evidenceClients = config.evidenceRpcUrls.map((url) => ({
+      host: new URL(url).hostname,
+      client: createPublicClient({
+        chain,
+        transport: http(url, { retryCount: 0, timeout: 20_000 }),
+      }),
     }));
   }
+  private observe<Result>(
+    work: (endpoint: (typeof this.evidenceClients)[number]) => Promise<Result>,
+  ): Promise<Result> {
+    return withRpcFailover(this.evidenceClients, work, {
+      onFallback: ({ primaryHost, selectedHost }) => {
+        logger.warn("standard reputation RPC fallback selected", {
+          primaryHost,
+          selectedHost,
+        });
+      },
+    });
+  }
+
 
   start(): void {
     if (this.timer) return;
@@ -119,19 +129,24 @@ export class StandardReputationWorker {
   }
 
   async accountHealth(): Promise<Record<string, unknown>> {
-    const [finalizedNonce, pendingNonce, balance] = await Promise.all([
-      this.client.getTransactionCount({ address: this.account.address, blockTag: "finalized" })
-        .then(String).catch(() => null),
-      this.client.getTransactionCount({ address: this.account.address, blockTag: "pending" })
-        .then(String).catch(() => null),
-      this.client.getBalance({ address: this.account.address }).catch(() => null),
-    ]);
+    const observation = await this.observe(async ({ client }) => {
+      const [finalizedNonce, pendingNonce, balance] = await Promise.all([
+        client.getTransactionCount({ address: this.account.address, blockTag: "finalized" }),
+        client.getTransactionCount({ address: this.account.address, blockTag: "pending" }),
+        client.getBalance({ address: this.account.address }),
+      ]);
+      return {
+        finalizedNonce: finalizedNonce.toString(),
+        pendingNonce: pendingNonce.toString(),
+        balanceWei: balance.toString(),
+      };
+    }).catch(() => null);
     return {
       chainId: this.chain.id,
       address: this.account.address,
-      finalizedNonce,
-      pendingNonce,
-      balanceWei: balance?.toString() ?? null,
+      finalizedNonce: observation?.finalizedNonce ?? null,
+      pendingNonce: observation?.pendingNonce ?? null,
+      balanceWei: observation?.balanceWei ?? null,
       maxFeePerGasWei: this.config.reputationMaxFeePerGasWei.toString(),
       maxPriorityFeePerGasWei: this.config.reputationMaxPriorityFeePerGasWei.toString(),
     };
@@ -242,37 +257,51 @@ export class StandardReputationWorker {
     transaction: TransactionRow,
     nonceLocked = false,
   ): Promise<void> {
-    let receipt;
+    let observation;
     try {
-      receipt = await this.client.getTransactionReceipt({ hash: transaction.transaction_hash });
-    } catch (error) {
-      if (!(error instanceof TransactionReceiptNotFoundError)) throw new ReputationRpcUnavailable();
+      observation = await this.observe(async ({ client }) => {
+        let receipt;
+        try {
+          receipt = await client.getTransactionReceipt({ hash: transaction.transaction_hash });
+        } catch (error) {
+          if (!(error instanceof TransactionReceiptNotFoundError)) throw error;
+        }
+        if (!receipt) {
+          let pending;
+          try {
+            pending = await client.getTransaction({ hash: transaction.transaction_hash });
+          } catch (error) {
+            if (!(error instanceof TransactionNotFoundError)) throw error;
+          }
+          return {
+            receipt: null,
+            pending: Boolean(pending),
+            head: null,
+            canonicalBlock: null,
+          };
+        }
+        const head = await client.getBlockNumber();
+        const canonicalBlock = await client.getBlock({ blockNumber: receipt.blockNumber });
+        return { receipt, pending: false, head, canonicalBlock };
+      });
+    } catch {
+      throw new ReputationRpcUnavailable();
     }
+    const { receipt } = observation;
     if (!receipt) {
-      let pending;
-      try {
-        pending = await this.client.getTransaction({ hash: transaction.transaction_hash });
-      } catch (error) {
-        if (!(error instanceof TransactionNotFoundError)) throw new ReputationRpcUnavailable();
-      }
-      if (pending) {
+      if (observation.pending) {
         await this.markBroadcastAndDefer(operation.operation_id, transaction.transaction_id);
         return;
       }
       await this.broadcastPersisted(operation, transaction, nonceLocked);
       return;
     }
-    const head = await this.client.getBlockNumber();
+    const head = observation.head!;
     if (head < receipt.blockNumber + BigInt(this.config.finalityConfirmations - 1)) {
       await this.defer(operation.operation_id);
       return;
     }
-    let canonicalBlock;
-    try {
-      canonicalBlock = await this.client.getBlock({ blockNumber: receipt.blockNumber });
-    } catch {
-      throw new ReputationRpcUnavailable();
-    }
+    const canonicalBlock = observation.canonicalBlock!;
     if (!canonicalBlock || canonicalBlock.hash.toLowerCase() !== receipt.blockHash.toLowerCase()) {
       await this.defer(operation.operation_id);
       return;
@@ -334,14 +363,13 @@ export class StandardReputationWorker {
 
   private async highestObservedNonce(): Promise<number> {
     try {
-      const observations = await Promise.all(this.evidenceClients.map(async (client) => {
+      return await this.observe(async ({ client }) => {
         const [latest, pending] = await Promise.all([
           client.getTransactionCount({ address: this.account.address, blockTag: "latest" }),
           client.getTransactionCount({ address: this.account.address, blockTag: "pending" }),
         ]);
         return Math.max(latest, pending);
-      }));
-      return Math.max(...observations);
+      });
     } catch {
       throw new ReputationRpcUnavailable();
     }
@@ -405,7 +433,7 @@ export class StandardReputationWorker {
 
   private async transactionVisible(hash: Hex): Promise<boolean> {
     try {
-      const observations = await Promise.all(this.evidenceClients.map(async (client) => {
+      return await this.observe(async ({ client }) => {
         try {
           await client.getTransaction({ hash });
           return true;
@@ -413,8 +441,7 @@ export class StandardReputationWorker {
           if (error instanceof TransactionNotFoundError) return false;
           throw error;
         }
-      }));
-      return observations.some(Boolean);
+      });
     } catch {
       throw new ReputationRpcUnavailable();
     }
@@ -503,23 +530,27 @@ export class StandardReputationWorker {
   }
 
   private async resolveNonceConflict(operation: OperationRow, transaction: TransactionRow): Promise<void> {
-    const receipts = await Promise.all(this.evidenceClients.map(async (client) => {
-      try {
-        return await client.getTransactionReceipt({ hash: transaction.transaction_hash });
-      } catch (error) {
-        if (error instanceof TransactionReceiptNotFoundError) return null;
-        throw new ReputationRpcUnavailable();
-      }
-    }));
-    const receipt = receipts.find((candidate) => candidate !== null);
+    let receipt;
+    let finalizedNonce;
+    try {
+      receipt = await this.observe(async ({ client }) => {
+        try {
+          return await client.getTransactionReceipt({ hash: transaction.transaction_hash });
+        } catch (error) {
+          if (error instanceof TransactionReceiptNotFoundError) return null;
+          throw error;
+        }
+      });
+      finalizedNonce = receipt ? null : await this.observe(({ client }) =>
+        client.getTransactionCount({ address: this.account.address, blockTag: "finalized" }));
+    } catch {
+      throw new ReputationRpcUnavailable();
+    }
     if (receipt) {
       await this.reconcile(operation, transaction);
       return;
     }
-    const finalizedNonces = await Promise.all(this.evidenceClients.map((client) =>
-      client.getTransactionCount({ address: this.account.address, blockTag: "finalized" })
-        .catch(() => { throw new ReputationRpcUnavailable(); })));
-    if (hasFinalizedNonceConflict(finalizedNonces.map(BigInt), BigInt(transaction.nonce))) {
+    if (hasFinalizedNonceConflict([BigInt(finalizedNonce!)], BigInt(transaction.nonce))) {
       const result = await this.pool.query(
         `WITH marked AS (
            UPDATE standard_reputation_transactions SET state='failed',updated_at=now()

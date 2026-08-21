@@ -144,18 +144,22 @@ describe("direct reputation presentation", () => {
         ? results
         : results.map((result) => ({ status: "success", result }));
     });
+    const fallback = { getBlock: vi.fn(), readContract: vi.fn(), multicall: vi.fn() };
     const query = vi.fn(async () => ({
       rows: [{ order_key: ORDER_KEY, settlement_tx_hash: TX_HASH }],
     }));
     const reader = new DirectReputationReader({
-      evidenceRpcUrls: ["https://rpc.example"],
+      evidenceRpcUrls: ["https://rpc.example", "https://fallback.example"],
       reputationContract: ADDRESS,
     } as unknown as StandardRailConfig, baseSepolia, { query } as never, {
       agentIndex: ADDRESS,
       identityRegistry: ADDRESS,
     });
-    Object.assign(reader as unknown as { client: unknown }, {
-      client: { getBlock, readContract, multicall },
+    Object.assign(reader as unknown as { clients: unknown[] }, {
+      clients: [
+        { host: "rpc.example", client: { getBlock, readContract, multicall } },
+        { host: "fallback.example", client: fallback },
+      ],
     });
     const outcomes = [{
       providerAgentId: "1",
@@ -182,5 +186,8 @@ describe("direct reputation presentation", () => {
     reader.invalidate();
     await reader.forOutcomes(outcomes);
     expect(getBlock).toHaveBeenCalledTimes(2);
+    expect(fallback.getBlock).not.toHaveBeenCalled();
+    expect(fallback.readContract).not.toHaveBeenCalled();
+    expect(fallback.multicall).not.toHaveBeenCalled();
   });
 });

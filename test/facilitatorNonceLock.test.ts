@@ -67,6 +67,7 @@ describe("facilitator nonce coordination", () => {
         }),
       },
       clients: [{
+        host: "rpc-a.example",
         client: {
           waitForTransactionReceipt: vi.fn(async () => {
             events.push("finalized");
@@ -82,19 +83,24 @@ describe("facilitator nonce coordination", () => {
     expect(lockUsed).toHaveBeenCalledOnce();
   });
 
-  it("uses the highest latest-or-pending nonce reported by every RPC", async () => {
+  it("uses the highest latest-or-pending nonce from the selected RPC", async () => {
     const worker = new StandardReputationWorker({} as Pool, {
       reputationRelayerPrivateKey: privateKey,
       evidenceRpcUrls: ["https://rpc-a.example", "https://rpc-b.example"],
     } as unknown as StandardRailConfig, baseSepolia, unlockedFacilitatorNonceLock);
+    const fallback = { getTransactionCount: vi.fn(async () => 13) };
     Object.assign(worker as unknown as { evidenceClients: unknown[] }, {
       evidenceClients: [
         {
-          getTransactionCount: vi.fn(async ({ blockTag }: { blockTag: string }) =>
-            blockTag === "latest" ? 13 : 11),
+          host: "rpc-a.example",
+          client: {
+            getTransactionCount: vi.fn(async ({ blockTag }: { blockTag: string }) =>
+              blockTag === "latest" ? 13 : 11),
+          },
         },
         {
-          getTransactionCount: vi.fn(async () => 13),
+          host: "rpc-b.example",
+          client: fallback,
         },
       ],
     });
@@ -102,6 +108,7 @@ describe("facilitator nonce coordination", () => {
     await expect((worker as unknown as {
       highestObservedNonce(): Promise<number>;
     }).highestObservedNonce()).resolves.toBe(13);
+    expect(fallback.getTransactionCount).not.toHaveBeenCalled();
   });
 
   it("does not broadcast a persisted raw transaction after its nonce is occupied", async () => {

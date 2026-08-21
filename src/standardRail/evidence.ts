@@ -17,7 +17,9 @@ import {
 import { privateKeyToAccount } from "viem/accounts";
 import type { FacilitatorNonceLock } from "./facilitatorNonceLock.js";
 import type { StandardRailConfig } from "./config.js";
+import { withRpcFailover } from "../rpc/failover.js";
 import { orderedRpcTransport } from "../rpc/orderedTransport.js";
+import { logger } from "../util/logger.js";
 import { canonicalHash } from "./canonical.js";
 import { chainLogsHash } from "./chainLogHash.js";
 import { hasRequiredConfirmations } from "./finality.js";
@@ -243,7 +245,7 @@ export class StandardChainEvidence {
       host: new URL(url).hostname,
       client: createPublicClient({
         chain,
-        transport: orderedRpcTransport(http(url, { retryCount: 2, timeout: 20_000 })),
+        transport: orderedRpcTransport(http(url, { retryCount: 0, timeout: 20_000 })),
       }),
     }));
     this.wallet = createWalletClient({
@@ -253,6 +255,19 @@ export class StandardChainEvidence {
     }).extend(publicActions);
   }
 
+  private observe<Result>(
+    work: (endpoint: (typeof this.clients)[number]) => Promise<Result>,
+  ): Promise<Result> {
+    return withRpcFailover(this.clients, work, {
+      onFallback: ({ primaryHost, selectedHost }) => {
+        logger.warn("standard-rail RPC fallback selected", {
+          primaryHost,
+          selectedHost,
+        });
+      },
+    });
+  }
+
   private async submitRelease(splitter: Address): Promise<Hex> {
     return this.nonceLock.run(async () => {
       const submitted = await this.wallet.writeContract({
@@ -260,18 +275,19 @@ export class StandardChainEvidence {
         abi: splitterAbi,
         functionName: "releaseAll",
       });
-      await this.clients[0]!.client.waitForTransactionReceipt({
-        hash: submitted,
-        confirmations: this.config.finalityConfirmations,
-      });
+      await this.observe(({ client }) =>
+        client.waitForTransactionReceipt({
+          hash: submitted,
+          confirmations: this.config.finalityConfirmations,
+        })
+      );
       return submitted;
     });
   }
 
   async verifyProviderIdentitySnapshot(snapshot: ProviderIdentitySnapshotV1): Promise<void> {
     const blockNumber = BigInt(snapshot.blockNumber);
-    const observations = [];
-    for (const { client } of this.clients) {
+    const observation = await this.observe(async ({ client }) => {
       const block = await client.getBlock({ blockNumber });
       const owner = await client.readContract({
         address: getAddress(snapshot.identityRegistry), abi: identitySnapshotAbi,
@@ -289,25 +305,23 @@ export class StandardChainEvidence {
         address: getAddress(snapshot.serviceRegistry), abi: serviceSnapshotAbi,
         functionName: "resolveSettlement", args: [snapshot.serviceId], blockNumber,
       });
-      observations.push({ block, owner, agentWallet, provider, settlement });
-    }
-    for (const observation of observations) {
-      const [providerAgentId, active, providerOwner, providerWallet, payee] = observation.settlement;
-      if (
-        observation.block.hash !== snapshot.blockHash ||
-        getAddress(observation.owner) !== getAddress(snapshot.providerOwner) ||
-        getAddress(observation.agentWallet) !== getAddress(snapshot.providerAgentWallet) ||
-        observation.provider.agentId !== BigInt(snapshot.providerAgentId) || !observation.provider.isActive ||
-        providerAgentId !== BigInt(snapshot.providerAgentId) || !active ||
-        getAddress(providerOwner) !== getAddress(snapshot.providerOwner) ||
-        getAddress(providerWallet) !== getAddress(snapshot.providerAgentWallet) ||
-        getAddress(payee) !== getAddress(snapshot.providerPayee)
-      ) throw new Error("Provider identity snapshot does not match finalized chain state");
-    }
+      return { block, owner, agentWallet, provider, settlement };
+    });
+    const [providerAgentId, active, providerOwner, providerWallet, payee] = observation.settlement;
+    if (
+      observation.block.hash !== snapshot.blockHash ||
+      getAddress(observation.owner) !== getAddress(snapshot.providerOwner) ||
+      getAddress(observation.agentWallet) !== getAddress(snapshot.providerAgentWallet) ||
+      observation.provider.agentId !== BigInt(snapshot.providerAgentId) || !observation.provider.isActive ||
+      providerAgentId !== BigInt(snapshot.providerAgentId) || !active ||
+      getAddress(providerOwner) !== getAddress(snapshot.providerOwner) ||
+      getAddress(providerWallet) !== getAddress(snapshot.providerAgentWallet) ||
+      getAddress(payee) !== getAddress(snapshot.providerPayee)
+    ) throw new Error("Provider identity snapshot does not match finalized chain state");
   }
 
   async revalidateProviderIdentitySnapshot(snapshot: ProviderIdentitySnapshotV1): Promise<void> {
-    const observations = await Promise.all(this.clients.map(async ({ client }) => {
+    const observation = await this.observe(async ({ client }) => {
       const finalized = await client.getBlock({ blockTag: "finalized" });
       const blockNumber = finalized.number;
       const [owner, agentWallet, provider, settlement] = await Promise.all([
@@ -321,53 +335,36 @@ export class StandardChainEvidence {
           functionName: "resolveSettlement", args: [snapshot.serviceId], blockNumber }),
       ]);
       return { owner, agentWallet, provider, settlement };
-    }));
-    for (const observation of observations) {
-      const [providerAgentId, active, providerOwner, providerWallet, payee] = observation.settlement;
-      if (
-        getAddress(observation.owner) !== getAddress(snapshot.providerOwner) ||
-        getAddress(observation.agentWallet) !== getAddress(snapshot.providerAgentWallet) ||
-        observation.provider.agentId !== BigInt(snapshot.providerAgentId) || !observation.provider.isActive ||
-        providerAgentId !== BigInt(snapshot.providerAgentId) || !active ||
-        getAddress(providerOwner) !== getAddress(snapshot.providerOwner) ||
-        getAddress(providerWallet) !== getAddress(snapshot.providerAgentWallet) ||
-        getAddress(payee) !== getAddress(snapshot.providerPayee)
-      ) throw new Error("Provider identity changed after listing admission");
-    }
+    });
+    const [providerAgentId, active, providerOwner, providerWallet, payee] = observation.settlement;
+    if (
+      getAddress(observation.owner) !== getAddress(snapshot.providerOwner) ||
+      getAddress(observation.agentWallet) !== getAddress(snapshot.providerAgentWallet) ||
+      observation.provider.agentId !== BigInt(snapshot.providerAgentId) || !observation.provider.isActive ||
+      providerAgentId !== BigInt(snapshot.providerAgentId) || !active ||
+      getAddress(providerOwner) !== getAddress(snapshot.providerOwner) ||
+      getAddress(providerWallet) !== getAddress(snapshot.providerAgentWallet) ||
+      getAddress(payee) !== getAddress(snapshot.providerPayee)
+    ) throw new Error("Provider identity changed after listing admission");
   }
 
   async finalizedBlockTimestamp(blockNumber: bigint, expectedHash: Hex): Promise<number> {
-    const blocks = await Promise.all(this.clients.map(({ client }) =>
-      client.getBlock({ blockNumber })
-    ));
-    if (blocks.some((block) => block.hash !== expectedHash || block.timestamp > BigInt(Number.MAX_SAFE_INTEGER))) {
+    const block = await this.observe(({ client }) => client.getBlock({ blockNumber }));
+    if (block.hash !== expectedHash || block.timestamp > BigInt(Number.MAX_SAFE_INTEGER)) {
       throw new Error("Finalized evidence block timestamp is unavailable");
     }
-    const timestamps = new Set(blocks.map((block) => block.timestamp.toString()));
-    if (timestamps.size !== 1) throw new Error("Finalized evidence sources disagree on timestamp");
-    return Number(blocks[0]!.timestamp);
+    return Number(block.timestamp);
   }
 
   async verifyCanonicalToken(chainId: number): Promise<void> {
-    const policy = this.config.manifest.chainEvidencePolicy.payload;
     if (
       this.config.manifest.chainEvidencePolicy.chainId !== chainId ||
       this.config.manifest.chainEvidencePolicy.environment !== this.config.environment
     ) throw new Error("Chain evidence policy domain mismatch");
-    const observations = await Promise.all(this.clients.map(async ({ client, host }) => ({
-      host,
-      head: await client.getBlockNumber(),
-      facts: await this.tokenPolicyFacts(client),
-    })));
-    const heads = observations.map(({ head }) => head);
-    const lag = heads.reduce((max, value) => value > max ? value : max) -
-      heads.reduce((min, value) => value < min ? value : min);
-    if (lag > BigInt(policy.maximumSourceLagBlocks)) {
-      throw new Error("Canonical-token evidence sources exceed the approved lag");
-    }
-    if (new Set(observations.map(({ facts }) => canonicalHash(facts))).size !== 1) {
-      throw new Error("Canonical-token evidence sources disagree");
-    }
+    await this.observe(async ({ client }) => {
+      const head = await client.getBlockNumber();
+      await this.tokenPolicyFacts(client, head);
+    });
   }
 
   private async tokenPolicyFacts(
@@ -444,15 +441,14 @@ export class StandardChainEvidence {
       logIndex: manifest.splitterDeploymentLogIndex,
       transactionHash: manifest.splitterDeploymentTransaction,
     };
-    const observations: Array<{ source: string; hash: Hex }> = [];
-    for (const { client, host } of this.clients) {
+    await this.observe(async ({ client }) => {
       const receipt = await client.getTransactionReceipt({
         hash: manifest.splitterDeploymentTransaction,
       });
       const deploymentTransaction = await client.getTransaction({
         hash: manifest.splitterDeploymentTransaction,
       });
-      // Verify one historical fact at a time so an independent source remains usable under load.
+      // Verify one historical fact at a time so the selected RPC remains usable under load.
       const head = await client.getBlockNumber();
       const deploymentBlock = await client.getBlock({ blockNumber: deploymentBlockNumber });
       const activationBlock = await client.getBlock({ blockNumber: activationBlockNumber });
@@ -468,7 +464,7 @@ export class StandardChainEvidence {
       const factoryCodeAtActivation = await client.getBytecode({
         address: factory, blockNumber: activationBlockNumber,
       });
-      const activationTokenPolicy = await this.tokenPolicyFacts(client, activationBlockNumber);
+      await this.tokenPolicyFacts(client, activationBlockNumber);
       const startingTokenBalance = await client.readContract({
         address: getAddress(manifest.canonicalToken),
         abi: erc20Abi,
@@ -569,46 +565,19 @@ export class StandardChainEvidence {
         deployment.listingEpoch !== BigInt(manifest.listingEpoch) ||
         deployment.listingCommitmentHash !== expectedCommitmentHash
       ) throw new Error("Receipt-bound splitter deployment event is invalid");
-      observations.push({ source: host, hash: canonicalHash({
-        codeHash: keccak256(codeAtActivation),
-        factoryCodeHash: keccak256(factoryCodeAtActivation),
-        activationTokenPolicy,
-        initCodeHash: provenance.initCodeHash,
-        transactionHash: receipt.transactionHash,
-        transactionIndex: receipt.transactionIndex,
-        logIndex: deployment.logIndex,
-        blockHash: receipt.blockHash,
-        activationBlockHash: activationBlock.hash,
-        startingTokenBalance: startingTokenBalance.toString(),
-        startingReleaseSequence: startingReleaseSequence.toString(),
-        immutableHash: provenance.immutableHash,
-      }) });
-    }
-    if (new Set(observations.map(({ hash }) => hash)).size !== 1) {
-      throw new Error("Splitter deployment evidence sources disagree");
-    }
+    });
   }
 
   async verifyScreeningPolicy(listing: StandardListing): Promise<void> {
     const policy = listing.screeningPolicy;
     const oracle = getAddress(policy.sanctionsOracle);
-    const observations = await Promise.all(this.clients.map(async ({ client, host }) => {
-      const [head, code] = await Promise.all([
-        client.getBlockNumber(),
-        client.getBytecode({ address: oracle }),
-      ]);
+    await this.observe(async ({ client }) => {
+      const head = await client.getBlockNumber();
+      const code = await client.getBytecode({ address: oracle, blockNumber: head });
       if (!code || keccak256(code) !== policy.sanctionsOracleRuntimeCodeHash) {
         throw new Error("Screening oracle runtime code does not match the signed policy");
       }
-      return { host, head, codeHash: keccak256(code) };
-    }));
-    const heads = observations.map(({ head }) => head);
-    const lag = heads.reduce((max, value) => value > max ? value : max) -
-      heads.reduce((min, value) => value < min ? value : min);
-    if (
-      lag > BigInt(this.config.manifest.chainEvidencePolicy.payload.maximumSourceLagBlocks) ||
-      new Set(observations.map(({ codeHash }) => codeHash)).size !== 1
-    ) throw new Error("Screening oracle evidence is unavailable or inconsistent");
+    });
   }
 
   async proveDeposit(args: {
@@ -619,14 +588,13 @@ export class StandardChainEvidence {
   }): Promise<EvidenceResult> {
     const finalityDeadline = args.order.updatedAt.getTime() +
       args.listing.deadlinePolicy.settlementEvidenceSeconds * 1_000;
-    await Promise.all(this.clients.map(({ client }) => client.waitForTransactionReceipt({
-      hash: args.transactionHash,
-      confirmations: this.config.finalityConfirmations,
-      pollingInterval: 2_000,
-      timeout: Math.max(1, finalityDeadline - Date.now()),
-    })));
-    await this.assertSourceLag();
-    const observations = await Promise.all(this.clients.map(async ({ client, host }) => {
+    const observation = await this.observe(async ({ client, host }) => {
+      await client.waitForTransactionReceipt({
+        hash: args.transactionHash,
+        confirmations: this.config.finalityConfirmations,
+        pollingInterval: 2_000,
+        timeout: Math.max(1, finalityDeadline - Date.now()),
+      });
       const [receipt, head] = await Promise.all([
         client.getTransactionReceipt({ hash: args.transactionHash }),
         client.getBlockNumber(),
@@ -673,8 +641,8 @@ export class StandardChainEvidence {
         logIndex: deposit.logIndex,
         logsHash: chainLogsHash(receipt.logs),
       } satisfies SourceObservation;
-    }));
-    return this.agree(observations, "deposit");
+    });
+    return this.agree([observation], "deposit");
   }
 
   async assertNotSanctioned(
@@ -687,7 +655,7 @@ export class StandardChainEvidence {
     }
     const unique = [...new Set(accounts.map((account) => getAddress(account).toLowerCase()))]
       .map((account) => getAddress(account));
-    const observations = await Promise.all(this.clients.map(async ({ client }) => {
+    const observation = await this.observe(async ({ client }) => {
       const head = await client.getBlockNumber();
       // Aggregate the per-account reads into one pinned eth_call; keyed RPC quota is the constraint.
       const [code, results] = await Promise.all([
@@ -706,31 +674,20 @@ export class StandardChainEvidence {
       if (!code || keccak256(code) !== expectedRuntimeCodeHash) {
         throw new Error("Screening oracle runtime code changed");
       }
-      return { head, results };
-    }));
-    const heads = observations.map(({ head }) => head);
-    const lag = heads.reduce((max, value) => value > max ? value : max) -
-      heads.reduce((min, value) => value < min ? value : min);
-    if (
-      lag > BigInt(this.config.manifest.chainEvidencePolicy.payload.maximumSourceLagBlocks) ||
-      new Set(observations.map(({ results }) => canonicalHash(results))).size !== 1
-    ) throw new Error("Screening evidence sources disagree");
-    if (observations[0]!.results.some(Boolean)) throw new Error("SANCTIONS_ADDRESS_REJECTED");
+      return results;
+    });
+    if (observation.some(Boolean)) throw new Error("SANCTIONS_ADDRESS_REJECTED");
   }
 
   async authorizationUsed(token: Address, payer: Address, nonce: Hex): Promise<boolean> {
-    const states = await Promise.all(this.clients.map(({ client }) =>
+    return this.observe(({ client }) =>
       client.readContract({
         address: token,
         abi: transferAuthorizationAbi,
         functionName: "authorizationState",
         args: [payer, nonce],
-      }),
-    ));
-    if (new Set(states.map(String)).size !== 1) {
-      throw new Error("Authorization-state evidence sources disagree");
-    }
-    return states[0]!;
+      })
+    );
   }
 
   async findSettlementTransaction(args: {
@@ -738,7 +695,7 @@ export class StandardChainEvidence {
     payer: Address;
     nonce: Hex;
   }): Promise<Hex | null> {
-    const hashes = await Promise.all(this.clients.map(async ({ client }) => {
+    return this.observe(async ({ client }) => {
       const head = await client.getBlockNumber();
       const logs = await this.boundedLogs({
         fromBlock: BigInt(args.listing.manifest.payload.splitterActivationBlockNumber) + 1n,
@@ -757,9 +714,7 @@ export class StandardChainEvidence {
         throw new Error("Authorization use history is ambiguous");
       }
       return logs[0]!.transactionHash;
-    }));
-    if (new Set(hashes).size !== 1) throw new Error("Authorization history sources disagree");
-    return hashes[0];
+    });
   }
 
   async releaseAndProve(args: {
@@ -767,21 +722,22 @@ export class StandardChainEvidence {
     listing: StandardListing;
     deposit: EvidenceResult;
   }): Promise<ReleaseEvidenceResult> {
-    await this.assertSourceLag();
     const splitter = getAddress(args.listing.manifest.payload.splitterAddress);
-    let releaseReference = await this.findCoveringRelease(this.clients[0]!.client, args);
+    const findRelease = () =>
+      this.observe(({ client }) => this.findCoveringRelease(client, args));
+    let releaseReference = await findRelease();
     if (!releaseReference) {
       try {
         await this.submitRelease(splitter);
       } catch (error) {
-        releaseReference = await this.findCoveringRelease(this.clients[0]!.client, args);
+        releaseReference = await findRelease();
         if (!releaseReference) throw error;
       }
-      releaseReference ??= await this.findCoveringRelease(this.clients[0]!.client, args);
+      releaseReference ??= await findRelease();
       if (!releaseReference) throw new Error("Finalized release event was not found after release submission");
     }
     const hash = releaseReference.transactionHash;
-    const observations = await Promise.all(this.clients.map(async ({ client, host }) => {
+    const selected = await this.observe(async ({ client, host }) => {
       await client.waitForTransactionReceipt({
         hash,
         confirmations: this.config.finalityConfirmations,
@@ -944,13 +900,9 @@ export class StandardChainEvidence {
         })),
       };
       return { observation, allocation };
-    }));
-    const comparable = observations.map(({ observation, allocation }) => {
-      const { source: _source, ...withoutSource } = observation;
-      return canonicalHash({ ...withoutSource, allocation });
     });
-    if (new Set(comparable).size !== 1) throw new Error("release evidence sources disagree");
-    const first = observations[0]!;
+    const observations = [selected];
+    const first = selected;
     const canonicalEvidence = { kind: "release", observations };
     return {
       transactionHash: first.observation.transactionHash,
@@ -1061,22 +1013,10 @@ export class StandardChainEvidence {
     });
   }
 
-  private async assertSourceLag(): Promise<void> {
-    const heads = await Promise.all(this.clients.map(({ client }) => client.getBlockNumber()));
-    const lag = heads.reduce((max, value) => value > max ? value : max) -
-      heads.reduce((min, value) => value < min ? value : min);
-    if (lag > BigInt(this.config.manifest.chainEvidencePolicy.payload.maximumSourceLagBlocks)) {
-      throw new Error("Chain evidence sources exceed the approved lag");
-    }
-  }
-
   private agree(observations: SourceObservation[], kind: string): EvidenceResult {
-    if (observations.length === 0 ||
-      new Set(observations.map((item) => item.source)).size !== observations.length) {
-      throw new Error("Chain evidence source set is invalid");
+    if (observations.length !== 1) {
+      throw new Error("Chain evidence requires one selected RPC source");
     }
-    const comparable = observations.map(({ source: _source, ...value }) => canonicalHash(value));
-    if (new Set(comparable).size !== 1) throw new Error(`${kind} evidence sources disagree`);
     const first = observations[0]!;
     const canonicalEvidence = { kind, observations };
     return {

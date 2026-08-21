@@ -1,6 +1,5 @@
 import {
   createPublicClient,
-  fallback,
   getAddress,
   http,
   parseAbi,
@@ -8,6 +7,8 @@ import {
   type Chain,
 } from "viem";
 import type { Pool } from "../db/pool.js";
+import { withRpcFailover } from "../rpc/failover.js";
+import { logger } from "../util/logger.js";
 import type { StandardRailConfig } from "./config.js";
 import type { StandardWalletStore } from "./walletStore.js";
 import type { WalletAuthorizationTransport } from "./types.js";
@@ -37,7 +38,7 @@ const reputationAbi = parseAbi([
 const ZERO_HASH = `0x${"00".repeat(32)}`;
 
 export class StandardWalletQueries {
-  private readonly chain;
+  private readonly clients;
 
   constructor(
     private readonly pool: Pool,
@@ -45,17 +46,30 @@ export class StandardWalletQueries {
     config: StandardRailConfig,
     chain: Chain,
   ) {
-    this.chain = createPublicClient({
-      chain,
-      transport: fallback(config.evidenceRpcUrls.map((url) => http(url, {
-        retryCount: 0,
-        timeout: 20_000,
-      }))),
-    });
+    this.clients = config.evidenceRpcUrls.map((url) => ({
+      host: new URL(url).hostname,
+      client: createPublicClient({
+        chain,
+        transport: http(url, { retryCount: 0, timeout: 20_000 }),
+      }),
+    }));
     this.reputationContract = config.reputationContract;
   }
 
   private readonly reputationContract: Address;
+
+  private observe<Result>(
+    work: (endpoint: (typeof this.clients)[number]) => Promise<Result>,
+  ): Promise<Result> {
+    return withRpcFailover(this.clients, work, {
+      onFallback: ({ primaryHost, selectedHost }) => {
+        logger.warn("standard wallet RPC fallback selected", {
+          primaryHost,
+          selectedHost,
+        });
+      },
+    });
+  }
 
   async listOrders(args: {
     payer: string;
@@ -84,14 +98,16 @@ export class StandardWalletQueries {
     );
     const rows = result.rows.slice(0, args.limit);
     const hasMore = result.rows.length > args.limit;
-    const block = await this.chain.getBlock({ blockTag: "finalized" });
-    const records = await Promise.all(rows.map((row) => this.chain.readContract({
-      address: this.reputationContract,
-      abi: reputationAbi,
-      functionName: "getRecord",
-      args: [`0x${row.order_key.toString("hex")}`],
-      blockNumber: block.number,
-    })));
+    const records = await this.observe(async ({ client }) => {
+      const block = await client.getBlock({ blockTag: "finalized" });
+      return Promise.all(rows.map((row) => client.readContract({
+        address: this.reputationContract,
+        abi: reputationAbi,
+        functionName: "getRecord",
+        args: [`0x${row.order_key.toString("hex")}`],
+        blockNumber: block.number,
+      })));
+    });
     return {
       orders: rows.map((row, index) => {
         const reputation = records[index]!;
@@ -137,39 +153,41 @@ export class StandardWalletQueries {
       action: "get-buyer-reputation",
       request,
     });
-    const block = await this.chain.getBlock({ blockTag: "safe" });
     const address = getAddress(payer);
-    const [[eligible, confirmed, notConfirmed], totalPaid, totalRefunded] = await Promise.all([
-      this.chain.readContract({
-        address: this.reputationContract,
-        abi: reputationAbi,
-        functionName: "getBuyerStats",
-        args: [address],
-        blockNumber: block.number,
-      }),
-      this.chain.readContract({
-        address: this.reputationContract,
-        abi: reputationAbi,
-        functionName: "totalPaidByPayer",
-        args: [address],
-        blockNumber: block.number,
-      }),
-      this.chain.readContract({
-        address: this.reputationContract,
-        abi: reputationAbi,
-        functionName: "refundedAmountByPayer",
-        args: [address],
-        blockNumber: block.number,
-      }),
-    ]);
-    return {
-      eligibleTransactionCount: eligible.toString(),
-      confirmedCount: confirmed.toString(),
-      notConfirmedCount: notConfirmed.toString(),
-      totalPaid: totalPaid.toString(),
-      totalRefunded: totalRefunded.toString(),
-      safeBlock: block.number.toString(),
-    };
+    return this.observe(async ({ client }) => {
+      const block = await client.getBlock({ blockTag: "safe" });
+      const [[eligible, confirmed, notConfirmed], totalPaid, totalRefunded] = await Promise.all([
+        client.readContract({
+          address: this.reputationContract,
+          abi: reputationAbi,
+          functionName: "getBuyerStats",
+          args: [address],
+          blockNumber: block.number,
+        }),
+        client.readContract({
+          address: this.reputationContract,
+          abi: reputationAbi,
+          functionName: "totalPaidByPayer",
+          args: [address],
+          blockNumber: block.number,
+        }),
+        client.readContract({
+          address: this.reputationContract,
+          abi: reputationAbi,
+          functionName: "refundedAmountByPayer",
+          args: [address],
+          blockNumber: block.number,
+        }),
+      ]);
+      return {
+        eligibleTransactionCount: eligible.toString(),
+        confirmedCount: confirmed.toString(),
+        notConfirmedCount: notConfirmed.toString(),
+        totalPaid: totalPaid.toString(),
+        totalRefunded: totalRefunded.toString(),
+        safeBlock: block.number.toString(),
+      };
+    });
   }
 }
 

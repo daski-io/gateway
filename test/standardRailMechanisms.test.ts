@@ -110,7 +110,7 @@ describe("standard rail hardened mechanisms", () => {
     } as unknown as StandardRailConfig;
     const evidence = new StandardChainEvidence(config, baseSepolia, unlockedFacilitatorNonceLock);
     Object.assign(evidence as unknown as { clients: unknown[] }, {
-      clients: [{ client }, { client }],
+      clients: [{ host: "rpc-a.example", client }, { host: "rpc-b.example", client }],
     });
     const snapshot = {
       providerAgentId: "1", serviceId: hash("8"),
@@ -154,7 +154,7 @@ describe("standard rail hardened mechanisms", () => {
       releasePrivateKey: privateKey,
     } as unknown as StandardRailConfig, baseSepolia, unlockedFacilitatorNonceLock);
     Object.assign(evidence as unknown as { clients: unknown[] }, {
-      clients: [{ client }, { client }],
+      clients: [{ host: "rpc-a.example", client }, { host: "rpc-b.example", client }],
     });
     await expect(evidence.verifyProviderIdentitySnapshot({
       providerAgentId: "1", serviceId: hash("8"),
@@ -167,7 +167,7 @@ describe("standard rail hardened mechanisms", () => {
     expect(maximumActive).toBe(1);
   });
 
-  it("aggregates sanctions screening into one pinned read per source", async () => {
+  it("aggregates sanctions screening into one pinned read through the selected RPC", async () => {
     const oracleCode = "0x6001600101" as const;
     const multicall = vi.fn(async ({ contracts, allowFailure, blockNumber }: {
       contracts: Array<{ functionName: string; args: readonly unknown[] }>;
@@ -190,7 +190,7 @@ describe("standard rail hardened mechanisms", () => {
       manifest: { chainEvidencePolicy: { payload: { maximumSourceLagBlocks: 4 } } },
     } as unknown as StandardRailConfig, baseSepolia, unlockedFacilitatorNonceLock);
     Object.assign(evidence as unknown as { clients: unknown[] }, {
-      clients: [{ client }, { client }],
+      clients: [{ host: "rpc-a.example", client }, { host: "rpc-b.example", client }],
     });
     await expect(evidence.assertNotSanctioned(
       "0x1111111111111111111111111111111111111111",
@@ -201,7 +201,7 @@ describe("standard rail hardened mechanisms", () => {
         "0x3333333333333333333333333333333333333333",
       ],
     )).resolves.toBeUndefined();
-    expect(multicall).toHaveBeenCalledTimes(2);
+    expect(multicall).toHaveBeenCalledTimes(1);
     expect(multicall.mock.calls[0]![0].contracts).toHaveLength(2);
 
     multicall.mockImplementation(async ({ contracts }) => contracts.map((_, index) => index === 1));
@@ -246,13 +246,16 @@ describe("standard rail hardened mechanisms", () => {
       reputationRelayerPrivateKey: privateKey,
       evidenceRpcUrls: ["https://rpc-a.example", "https://rpc-b.example"],
     } as unknown as StandardRailConfig, baseSepolia);
-    Object.assign(worker as unknown as { client: unknown }, {
-      client: {
-        getTransactionReceipt: vi.fn(async () => {
-          throw new TransactionReceiptNotFoundError({ hash: transactionHash });
-        }),
-        getTransaction: vi.fn(async () => ({ hash: transactionHash })),
-      },
+    Object.assign(worker as unknown as { evidenceClients: unknown[] }, {
+      evidenceClients: [{
+        host: "rpc-a.example",
+        client: {
+          getTransactionReceipt: vi.fn(async () => {
+            throw new TransactionReceiptNotFoundError({ hash: transactionHash });
+          }),
+          getTransaction: vi.fn(async () => ({ hash: transactionHash })),
+        },
+      }],
     });
 
     await (worker as unknown as { runBatch(): Promise<void> }).runBatch();

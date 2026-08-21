@@ -2,7 +2,6 @@ import { randomUUID } from "node:crypto";
 import {
   createPublicClient,
   encodeAbiParameters,
-  fallback,
   getAddress,
   http,
   parseAbi,
@@ -13,6 +12,8 @@ import {
   type Hex,
 } from "viem";
 import type { Pool } from "../db/pool.js";
+import { withRpcFailover } from "../rpc/failover.js";
+import { logger } from "../util/logger.js";
 import { canonicalHash } from "./canonical.js";
 import type { StandardRailConfig } from "./config.js";
 import type { ConfirmationIntent, RevokeConfirmationIntent } from "./reputationOperation.js";
@@ -69,13 +70,30 @@ function exact(value: Record<string, unknown>, keys: string[]): void {
 }
 
 export class StandardConfirmations {
-  private readonly client;
+  private readonly clients;
+  private readonly chainId: number;
 
   constructor(private readonly pool: Pool, private readonly config: StandardRailConfig, chain: Chain) {
-    this.client = createPublicClient({
-      chain,
-      transport: fallback(config.evidenceRpcUrls.map((url) =>
-        http(url, { retryCount: 0, timeout: 20_000 })), { rank: false }),
+    this.chainId = chain.id;
+    this.clients = config.evidenceRpcUrls.map((url) => ({
+      host: new URL(url).hostname,
+      client: createPublicClient({
+        chain,
+        transport: http(url, { retryCount: 0, timeout: 20_000 }),
+      }),
+    }));
+  }
+
+  private observe<Result>(
+    work: (endpoint: (typeof this.clients)[number]) => Promise<Result>,
+  ): Promise<Result> {
+    return withRpcFailover(this.clients, work, {
+      onFallback: ({ primaryHost, selectedHost }) => {
+        logger.warn("standard confirmation RPC fallback selected", {
+          primaryHost,
+          selectedHost,
+        });
+      },
     });
   }
 
@@ -103,8 +121,9 @@ export class StandardConfirmations {
   private async current(order: StandardOrderRecord) {
     let record;
     try {
-      record = await this.client.readContract({ address: this.config.reputationContract,
-        abi: reads, functionName: "getRecord", args: [order.orderKey] });
+      record = await this.observe(({ client }) => client.readContract({
+        address: this.config.reputationContract, abi: reads,
+        functionName: "getRecord", args: [order.orderKey] }));
     } catch {
       throw new Error("CONFIRMATION_SPONSORSHIP_UNAVAILABLE");
     }
@@ -142,15 +161,16 @@ export class StandardConfirmations {
     const payer = getAddress(order.payer!);
     let nonce;
     try {
-      nonce = await this.client.readContract({ address: this.config.easAddress, abi: reads,
-        functionName: "getNonce", args: [payer] });
+      nonce = await this.observe(({ client }) => client.readContract({
+        address: this.config.easAddress, abi: reads,
+        functionName: "getNonce", args: [payer] }));
     } catch {
       throw new Error("CONFIRMATION_SPONSORSHIP_UNAVAILABLE");
     }
     const deadline = BigInt(Math.floor(Date.now() / 1_000) + this.config.confirmationDeadlineSeconds);
     const recipient = current.providerAgentWallet === "0x0000000000000000000000000000000000000000"
       ? current.providerOwner : current.providerAgentWallet;
-    const domain = { name: "EAS", version: "1.2.0", chainId: this.client.chain!.id,
+    const domain = { name: "EAS", version: "1.2.0", chainId: this.chainId,
       verifyingContract: this.config.easAddress };
     const typedData = action === "confirmation" ? {
       domain, types: attestTypes, primaryType: "Attest" as const,
@@ -212,8 +232,9 @@ export class StandardConfirmations {
     const expectedUid = prep.current_uid ? `0x${prep.current_uid.toString("hex")}` : ZERO;
     let nonce;
     try {
-      nonce = await this.client.readContract({ address: this.config.easAddress, abi: reads,
-        functionName: "getNonce", args: [getAddress(order.payer!)] });
+      nonce = await this.observe(({ client }) => client.readContract({
+        address: this.config.easAddress, abi: reads,
+        functionName: "getNonce", args: [getAddress(order.payer!)] }));
     } catch {
       throw new Error("CONFIRMATION_SPONSORSHIP_UNAVAILABLE");
     }

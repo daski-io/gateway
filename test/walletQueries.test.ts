@@ -16,17 +16,21 @@ describe("wallet reputation queries", () => {
       if (functionName === "refundedAmountByPayer") return 2_000_000n;
       throw new Error(`unexpected contract read: ${functionName}`);
     });
+    const fallback = { getBlock: vi.fn(), readContract: vi.fn() };
     const queries = new StandardWalletQueries(
       {} as Pool,
       { consume } as unknown as StandardWalletStore,
       {
-        evidenceRpcUrls: ["https://rpc.example"],
+        evidenceRpcUrls: ["https://rpc.example", "https://fallback.example"],
         reputationContract: "0x1111111111111111111111111111111111111111",
       } as unknown as StandardRailConfig,
       baseSepolia,
     );
-    Object.assign(queries as unknown as { chain: unknown }, {
-      chain: { getBlock, readContract },
+    Object.assign(queries as unknown as { clients: unknown[] }, {
+      clients: [
+        { host: "rpc.example", client: { getBlock, readContract } },
+        { host: "fallback.example", client: fallback },
+      ],
     });
 
     await expect(queries.getReputation({
@@ -42,6 +46,8 @@ describe("wallet reputation queries", () => {
     });
     expect(consume).toHaveBeenCalledOnce();
     expect(getBlock).toHaveBeenCalledWith({ blockTag: "safe" });
+    expect(fallback.getBlock).not.toHaveBeenCalled();
+    expect(fallback.readContract).not.toHaveBeenCalled();
     expect(readContract).toHaveBeenCalledTimes(3);
   });
 });
