@@ -405,34 +405,6 @@ export interface StandardRailManifest {
   listings: StandardListing[];
 }
 
-export interface Eip3009Payload {
-  x402Version: 2;
-  accepted: {
-    scheme: "exact";
-    network: string;
-    asset: Hex;
-    amount: string;
-    payTo: Hex;
-    maxTimeoutSeconds: number;
-    extra: {
-      assetTransferMethod: "eip3009";
-      name: string;
-      version: string;
-    };
-  };
-  payload: {
-    signature: Hex;
-    authorization: {
-      from: Hex;
-      to: Hex;
-      value: string;
-      validAfter: string;
-      validBefore: string;
-      nonce: Hex;
-    };
-  };
-  extensions?: Record<string, unknown>;
-}
 
 export interface StandardOrderRecord {
   orderId: string;

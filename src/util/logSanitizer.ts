@@ -16,13 +16,6 @@ const PUBLIC_HASH_KEY =
 const SAFE_TOKEN = /^[A-Za-z0-9_.:-]{1,128}$/;
 const URL_TEXT = /https?:\/\/[^\s"'<>]+/gi;
 
-export interface SafeOperationalError {
-  name: string;
-  code: string;
-  message: string;
-  stage?: string;
-  retryable?: boolean;
-}
 
 export function sanitizeLogMessage(message: string): string {
   return sanitizeString(message).replace(SECRET_SIZED_HEX, REDACTED);
@@ -36,35 +29,6 @@ export function sanitizeLogDetails(value: unknown): unknown {
   }
 }
 
-export function classifyOperationalError(
-  error: unknown,
-  fallbackCode: string,
-  fallbackMessage: string,
-): SafeOperationalError {
-  const record = objectRecord(error);
-  const name =
-    error instanceof Error && SAFE_TOKEN.test(error.name)
-      ? error.name
-      : "Error";
-  const candidateCode = record?.code;
-  const code =
-    (typeof candidateCode === "number" && Number.isFinite(candidateCode)) ||
-    (typeof candidateCode === "string" && SAFE_TOKEN.test(candidateCode))
-      ? String(candidateCode)
-      : fallbackCode;
-  const result: SafeOperationalError = {
-    name,
-    code,
-    message: fallbackMessage,
-  };
-  if (typeof record?.stage === "string" && SAFE_TOKEN.test(record.stage)) {
-    result.stage = record.stage;
-  }
-  if (typeof record?.retryable === "boolean") {
-    result.retryable = record.retryable;
-  }
-  return result;
-}
 
 function sanitizeValue(
   value: unknown,

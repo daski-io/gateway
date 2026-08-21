@@ -8,8 +8,7 @@ import {
   type Hex,
 } from "viem";
 import type { Config } from "../config.js";
-import type { StandardRailConfig } from "../standardRail/config.js";
-import { orderedRpcTransport } from "../standardRail/orderedRpcTransport.js";
+import { orderedRpcTransport } from "../rpc/orderedTransport.js";
 import {
   agentIndexAbi,
   reputationStorageAbi,
@@ -78,7 +77,11 @@ export class ViemMarketplaceChainReader implements MarketplaceChainReader {
   readonly addresses: MarketplaceAddresses;
   private readonly client;
 
-  constructor(config: Config, railConfig: StandardRailConfig, chain: Chain) {
+  constructor(
+    config: Pick<Config, "marketplaceContracts">,
+    rpcUrls: readonly [string, ...string[]],
+    chain: Chain,
+  ) {
     this.addresses = Object.fromEntries(
       Object.entries(config.marketplaceContracts).map(([key, value]) => [key, getAddress(value)]),
     ) as unknown as MarketplaceAddresses;
@@ -86,7 +89,7 @@ export class ViemMarketplaceChainReader implements MarketplaceChainReader {
     // serialized, retrying transport shape evidence reads use over latency.
     this.client = createPublicClient({
       chain,
-      transport: fallback(railConfig.evidenceRpcUrls.map((url) => orderedRpcTransport(http(url, {
+      transport: fallback(rpcUrls.map((url) => orderedRpcTransport(http(url, {
         retryCount: 2,
         timeout: 20_000,
       })))),
