@@ -159,7 +159,7 @@ describe("standard rail orchestration", () => {
       action,
       request,
       authorization: { ...authorization, signature },
-    })).resolves.toEqual({ receipt });
+    })).resolves.toEqual({ orderHandle: "handle-1", state: "FULFILLED", receipt });
     expect(consumeActionChallenge).toHaveBeenCalledOnce();
   });
 

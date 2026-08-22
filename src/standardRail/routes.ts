@@ -247,11 +247,9 @@ export function createStandardRailRouter(service: StandardRailService, publicUrl
       const result = await service.submitPayment({
         providerAgentId, outcomeId, body: req.body, payment,
       });
-      if (result.replay) {
-        res.setHeader("Cache-Control", "private, no-store");
-        res.status(200).json({ orderHandle: result.handle });
-        return;
-      }
+      // A replayed identical authorization answers exactly like the first
+      // submission: the same handle, the order's current state, and its
+      // receipt when one exists. One reply shape, whichever attempt arrives.
       const receipt = await service.signedReceipt(result.order);
       if (receipt) res.setHeader("PAYMENT-RESPONSE", encoded(receipt));
       res.setHeader("Cache-Control", "private, no-store");

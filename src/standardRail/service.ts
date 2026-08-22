@@ -1012,7 +1012,7 @@ export class StandardRailService {
       return this.confirmations.handle(order, args.action, args.request);
     }
     if (args.action === "status" && !order.providerTaskId) {
-      return { receipt: await this.signedReceipt(order) };
+      return { orderHandle: args.handle, state: order.state, receipt: await this.signedReceipt(order) };
     }
     if (!order.providerTaskId) throw new Error("PROVIDER_TASK_NOT_AVAILABLE");
     const listing = order.listing;
@@ -1059,7 +1059,7 @@ export class StandardRailService {
       response,
       listing.providerControlProfile.payload.maxResponseBytes,
     );
-    return this.applyLifecycleResult(order, listing, providerResult, args.action);
+    return this.applyLifecycleResult(order, listing, providerResult, args.action, args.handle);
   }
 
   private async applyLifecycleResult(
@@ -1067,6 +1067,7 @@ export class StandardRailService {
     listing: StandardListing,
     result: unknown,
     action: "status" | "input" | "cancel" | "artifact" | "support",
+    handle: string,
   ): Promise<unknown> {
     if (!result || typeof result !== "object") throw new Error("PROVIDER_LIFECYCLE_RESPONSE_INVALID");
     const response = result as {
@@ -1141,7 +1142,10 @@ export class StandardRailService {
         order = await this.store.transition(order, "PROVIDER_FAILED", "provider_terminal_failed");
       }
     }
-    return { ...response, receipt: await this.signedReceipt(order) };
+    // Every order action answers with the order handle and the gateway's own
+    // order state beside the provider's lifecycle state, so a client can
+    // always recover from the handle alone.
+    return { ...response, orderHandle: handle, orderState: order.state, receipt: await this.signedReceipt(order) };
   }
 
   async issueChallenge(args: {
