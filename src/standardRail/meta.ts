@@ -2,7 +2,7 @@ import { Router } from "express";
 import type { Config } from "../config.js";
 import type { Pool } from "../db/pool.js";
 import type { ApplicationLifecycle } from "../runtime/applicationLifecycle.js";
-import { GATEWAY_VERSION } from "../version.js";
+import { GATEWAY_COMMIT, GATEWAY_VERSION } from "../version.js";
 import type { StandardRailConfig } from "./config.js";
 import type { StandardRailService } from "./service.js";
 
@@ -15,7 +15,7 @@ export function createStandardMetaRouter(args: {
 }): Router {
   const router = Router();
   router.get("/health/live", (_req, res) => {
-    res.json({ status: "alive", version: GATEWAY_VERSION });
+    res.json({ status: "alive", version: GATEWAY_VERSION, commit: GATEWAY_COMMIT });
   });
   router.get("/health/ready", async (_req, res) => {
     const databaseReady = await args.pool.query("SELECT 1").then(() => true, () => false);
@@ -26,6 +26,7 @@ export function createStandardMetaRouter(args: {
     res.status(ready ? 200 : 503).json({
       status: ready ? "ready" : "unready",
       version: GATEWAY_VERSION,
+      commit: GATEWAY_COMMIT,
       rail: "standard-exact-evm",
       railProfileHash: args.service.railProfileHash,
       dependencies: {

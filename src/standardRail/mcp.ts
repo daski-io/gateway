@@ -163,9 +163,8 @@ export async function createStandardRailMcp(
             body: args.request,
             payment,
           });
-          if (result.replay) {
-            return mcpJson({ orderHandle: result.handle, replay: true });
-          }
+          // One reply shape: a replayed identical authorization answers
+          // exactly like the first submission.
           return mcpJson({
             status: result.order.state,
             orderHandle: result.handle,
