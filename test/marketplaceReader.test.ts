@@ -17,7 +17,7 @@ function reader() {
       validationRegistry: ADDRESS,
       reputationStorage: ADDRESS,
     },
-  } as Config, ["https://rpc.example"], baseSepolia);
+  } as Config, ["https://rpc.example", "https://fallback.example"], baseSepolia);
   const getBlock = vi.fn(async ({ blockTag }: { blockTag: string }) => ({
     number: blockTag === "safe" ? 110n : 100n,
   }));
@@ -45,15 +45,19 @@ function reader() {
     if (functionName === "getServiceStats") return [1n, 2n, 3n, 4n, 5n, 6n, 7n];
     throw new Error(`unexpected contract read: ${functionName}`);
   });
-  Object.assign(instance as unknown as { client: unknown }, {
-    client: { getBlock, readContract },
+  const fallback = { getBlock: vi.fn(), readContract: vi.fn() };
+  Object.assign(instance as unknown as { clients: unknown[] }, {
+    clients: [
+      { host: "rpc.example", client: { getBlock, readContract } },
+      { host: "fallback.example", client: fallback },
+    ],
   });
-  return { instance, getBlock, readContract };
+  return { instance, getBlock, readContract, fallback };
 }
 
 describe("marketplace reputation reads", () => {
   it("reads provider stats at safe while retaining finalized registry metadata", async () => {
-    const { instance, getBlock, readContract } = reader();
+    const { instance, getBlock, readContract, fallback } = reader();
 
     await expect(instance.getProvider(7n)).resolves.toMatchObject({
       agentId: "7",
@@ -70,10 +74,12 @@ describe("marketplace reputation reads", () => {
       functionName: "getProvider",
       blockNumber: 100n,
     }));
+    expect(fallback.getBlock).not.toHaveBeenCalled();
+    expect(fallback.readContract).not.toHaveBeenCalled();
   });
 
   it("reads service stats at safe while retaining finalized registry metadata", async () => {
-    const { instance, readContract } = reader();
+    const { instance, readContract, fallback } = reader();
 
     await expect(instance.getService(SERVICE_ID)).resolves.toMatchObject({
       serviceId: SERVICE_ID,
@@ -88,5 +94,7 @@ describe("marketplace reputation reads", () => {
       functionName: "getService",
       blockNumber: 100n,
     }));
+    expect(fallback.getBlock).not.toHaveBeenCalled();
+    expect(fallback.readContract).not.toHaveBeenCalled();
   });
 });

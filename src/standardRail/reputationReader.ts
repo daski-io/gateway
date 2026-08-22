@@ -1,12 +1,13 @@
 import {
   createPublicClient,
-  fallback,
   http,
   type Address,
   type Chain,
   type Hex,
 } from "viem";
 import type { Pool } from "../db/pool.js";
+import { withRpcFailover } from "../rpc/failover.js";
+import { logger } from "../util/logger.js";
 import {
   agentIndexAbi,
   identityRegistryAbi,
@@ -79,7 +80,7 @@ function asOutcome(value: Record<string, unknown>): OutcomeDescriptor {
 export { presentReputation } from "./reputationProjection.js";
 
 export class DirectReputationReader {
-  private readonly client;
+  private readonly clients;
   private cached: { key: string; expiresAt: number; value: ReputationSnapshot } | null = null;
   private loading: { key: string; promise: Promise<ReputationSnapshot> } | null = null;
 
@@ -89,12 +90,25 @@ export class DirectReputationReader {
     private readonly pool: Pick<Pool, "query">,
     private readonly addresses: { agentIndex: Address; identityRegistry: Address },
   ) {
-    this.client = createPublicClient({
-      chain,
-      transport: fallback(config.evidenceRpcUrls.map((url) => http(url, {
-        retryCount: 0,
-        timeout: 20_000,
-      }))),
+    this.clients = config.evidenceRpcUrls.map((url) => ({
+      host: new URL(url).hostname,
+      client: createPublicClient({
+        chain,
+        transport: http(url, { retryCount: 0, timeout: 20_000 }),
+      }),
+    }));
+  }
+
+  private observe<Result>(
+    work: (endpoint: (typeof this.clients)[number]) => Promise<Result>,
+  ): Promise<Result> {
+    return withRpcFailover(this.clients, work, {
+      onFallback: ({ primaryHost, selectedHost }) => {
+        logger.warn("direct reputation RPC fallback selected", {
+          primaryHost,
+          selectedHost,
+        });
+      },
     });
   }
 
@@ -124,56 +138,59 @@ export class DirectReputationReader {
   }
 
   private async readOutcomes(outcomes: OutcomeDescriptor[]): Promise<ReputationSnapshot> {
-    const block = await this.client.getBlock({ blockTag: "safe" });
-    const count = await this.client.readContract({
-      address: this.config.reputationContract,
-      abi: reputationStorageAbi,
-      functionName: "getRecordCount",
-      blockNumber: block.number,
-    });
-    if (count > BigInt(Number.MAX_SAFE_INTEGER)) {
-      throw new Error("Public reputation record count exceeds the supported integer range");
-    }
-    const keys = Number(count) === 0 ? [] : await this.client.multicall({
-      contracts: Array.from({ length: Number(count) }, (_, index) => ({
+    const { block, chainRows, settlementRows } = await this.observe(async ({ client }) => {
+      const block = await client.getBlock({ blockTag: "safe" });
+      const count = await client.readContract({
         address: this.config.reputationContract,
         abi: reputationStorageAbi,
-        functionName: "recordKeys",
-        args: [BigInt(index)],
-      } as const)),
-      allowFailure: false,
-      batchSize: MULTICALL_BATCH_BYTES,
-      blockNumber: block.number,
+        functionName: "getRecordCount",
+        blockNumber: block.number,
+      });
+      if (count > BigInt(Number.MAX_SAFE_INTEGER)) {
+        throw new Error("Public reputation record count exceeds the supported integer range");
+      }
+      const keys = Number(count) === 0 ? [] : await client.multicall({
+        contracts: Array.from({ length: Number(count) }, (_, index) => ({
+          address: this.config.reputationContract,
+          abi: reputationStorageAbi,
+          functionName: "recordKeys",
+          args: [BigInt(index)],
+        } as const)),
+        allowFailure: false,
+        batchSize: MULTICALL_BATCH_BYTES,
+        blockNumber: block.number,
+      });
+      const [recordValues, refundValues, settlementRows] = await Promise.all([
+        keys.length === 0 ? [] : client.multicall({
+          contracts: keys.map((orderKey) => ({
+            address: this.config.reputationContract,
+            abi: reputationStorageAbi,
+            functionName: "getRecord",
+            args: [orderKey],
+          } as const)),
+          allowFailure: false,
+          batchSize: MULTICALL_BATCH_BYTES,
+          blockNumber: block.number,
+        }),
+        keys.length === 0 ? [] : client.multicall({
+          contracts: keys.map((orderKey) => ({
+            address: this.config.reputationContract,
+            abi: reputationStorageAbi,
+            functionName: "refundedAmount",
+            args: [orderKey],
+          } as const)),
+          allowFailure: false,
+          batchSize: MULTICALL_BATCH_BYTES,
+          blockNumber: block.number,
+        }),
+        this.settlementRows(keys),
+      ]);
+      const chainRows = keys.map((_, index) => ({
+        record: recordValues[index]!,
+        refundedAmount: refundValues[index]!,
+      }));
+      return { block, chainRows, settlementRows };
     });
-    const [recordValues, refundValues, settlementRows] = await Promise.all([
-      keys.length === 0 ? [] : this.client.multicall({
-        contracts: keys.map((orderKey) => ({
-          address: this.config.reputationContract,
-          abi: reputationStorageAbi,
-          functionName: "getRecord",
-          args: [orderKey],
-        } as const)),
-        allowFailure: false,
-        batchSize: MULTICALL_BATCH_BYTES,
-        blockNumber: block.number,
-      }),
-      keys.length === 0 ? [] : this.client.multicall({
-        contracts: keys.map((orderKey) => ({
-          address: this.config.reputationContract,
-          abi: reputationStorageAbi,
-          functionName: "refundedAmount",
-          args: [orderKey],
-        } as const)),
-        allowFailure: false,
-        batchSize: MULTICALL_BATCH_BYTES,
-        blockNumber: block.number,
-      }),
-      this.settlementRows(keys),
-    ]);
-    const chainRows = keys.map((_, index) => ({
-      record: recordValues[index]!,
-      refundedAmount: refundValues[index]!,
-    }));
     const settlementByOrder = new Map(settlementRows.map((row) => [
       row.order_key.toLowerCase(),
       /^0x[0-9a-f]{64}$/i.test(row.settlement_tx_hash ?? "")
@@ -241,48 +258,53 @@ export class DirectReputationReader {
     payers: readonly Address[],
     blockNumber: bigint,
   ): Promise<Map<Address, BuyerIdentity>> {
-    const buyers = new Map<Address, BuyerIdentity>(
+    const emptyBuyers = new Map<Address, BuyerIdentity>(
       payers.map((payer) => [payer, { agentId: null, name: null }]),
     );
-    if (payers.length === 0) return buyers;
+    if (payers.length === 0) return emptyBuyers;
     try {
-      const resolutions = await this.client.multicall({
-        contracts: payers.map((payer) => ({
-          address: this.addresses.agentIndex,
-          abi: agentIndexAbi,
-          functionName: "resolve",
-          args: [payer],
-        } as const)),
-        batchSize: MULTICALL_BATCH_BYTES,
-        blockNumber,
-      });
-      const found: Array<{ payer: Address; agentId: bigint }> = [];
-      resolutions.forEach((resolution, index) => {
-        if (resolution.status !== "success") return;
-        const [agentId, isRegistered] = resolution.result;
-        if (isRegistered) found.push({ payer: payers[index]!, agentId });
-      });
-      if (found.length === 0) return buyers;
-      const uris = await this.client.multicall({
-        contracts: found.map(({ agentId }) => ({
-          address: this.addresses.identityRegistry,
-          abi: identityRegistryAbi,
-          functionName: "tokenURI",
-          args: [agentId],
-        } as const)),
-        batchSize: MULTICALL_BATCH_BYTES,
-        blockNumber,
-      });
-      found.forEach(({ payer, agentId }, index) => {
-        const uri = uris[index];
-        buyers.set(payer, {
-          agentId: agentId.toString(),
-          name: uri?.status === "success" ? inlineAgentName(uri.result) : null,
+      return await this.observe(async ({ client }) => {
+        const buyers = new Map<Address, BuyerIdentity>(
+          payers.map((payer) => [payer, { agentId: null, name: null }]),
+        );
+        const resolutions = await client.multicall({
+          contracts: payers.map((payer) => ({
+            address: this.addresses.agentIndex,
+            abi: agentIndexAbi,
+            functionName: "resolve",
+            args: [payer],
+          } as const)),
+          batchSize: MULTICALL_BATCH_BYTES,
+          blockNumber,
         });
+        const found: Array<{ payer: Address; agentId: bigint }> = [];
+        resolutions.forEach((resolution, index) => {
+          if (resolution.status !== "success") return;
+          const [agentId, isRegistered] = resolution.result;
+          if (isRegistered) found.push({ payer: payers[index]!, agentId });
+        });
+        if (found.length === 0) return buyers;
+        const uris = await client.multicall({
+          contracts: found.map(({ agentId }) => ({
+            address: this.addresses.identityRegistry,
+            abi: identityRegistryAbi,
+            functionName: "tokenURI",
+            args: [agentId],
+          } as const)),
+          batchSize: MULTICALL_BATCH_BYTES,
+          blockNumber,
+        });
+        found.forEach(({ payer, agentId }, index) => {
+          const uri = uris[index];
+          buyers.set(payer, {
+            agentId: agentId.toString(),
+            name: uri?.status === "success" ? inlineAgentName(uri.result) : null,
+          });
+        });
+        return buyers;
       });
-      return buyers;
     } catch {
-      return buyers;
+      return emptyBuyers;
     }
   }
 }
