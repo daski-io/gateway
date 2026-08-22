@@ -458,6 +458,43 @@ export class StandardRailStore {
     );
   }
 
+  // An in-flight driver (the purchase request) leases the order it is
+  // advancing so recovery treats the order as attended while, for example, a
+  // finality wait runs past the recovery due time. The fence bump fences out
+  // any stale holder exactly as a worker lease does. Null when another
+  // driver holds a live lease: that driver owns the order now.
+  async leaseOrder(
+    orderId: string,
+    owner: string,
+    leaseSeconds: number,
+  ): Promise<StandardOrderRecord | null> {
+    const result = await this.pool.query<OrderRow>(
+      `UPDATE standard_orders SET lease_owner=$2,
+         lease_until=now()+($3::text || ' seconds')::interval,
+         lease_fence=lease_fence+1
+       WHERE order_id=$1 AND (lease_until IS NULL OR lease_until < now())
+       RETURNING *`,
+      [orderId, owner, leaseSeconds],
+    );
+    return result.rows[0] ? record(result.rows[0]) : null;
+  }
+
+  // Extends a lease the caller still holds. False means the fence moved on:
+  // another driver leased the order and this caller must stop advancing it.
+  async renewLease(
+    orderId: string,
+    owner: string,
+    fence: number,
+    leaseSeconds: number,
+  ): Promise<boolean> {
+    const result = await this.pool.query(
+      `UPDATE standard_orders SET lease_until=now()+($4::text || ' seconds')::interval
+       WHERE order_id=$1 AND lease_owner=$2 AND lease_fence=$3 AND lease_until>now()`,
+      [orderId, owner, fence, leaseSeconds],
+    );
+    return result.rowCount === 1;
+  }
+
   async findOpenDraft(
     providerAgentId: string,
     outcomeId: string,
@@ -581,9 +618,14 @@ export class StandardRailStore {
       ["encryptedPaymentPayload", "encrypted_payment_payload"],
     ]);
     const values: unknown[] = [to];
+    // A live lease belongs to the driver performing this transition (the
+    // fence the UPDATE checks is the one that lease issued), so it survives
+    // the transition and keeps the order attended; an expired lease is
+    // cleared. Drivers release their lease explicitly when they stop.
     const sets = [
       "state=$1", "version=version+1", "updated_at=now()",
-      "lease_owner=NULL", "lease_until=NULL",
+      "lease_owner=CASE WHEN lease_until>now() THEN lease_owner END",
+      "lease_until=CASE WHEN lease_until>now() THEN lease_until END",
     ];
     for (const [key, value] of Object.entries(changes)) {
       const column = allowed.get(key);
