@@ -48,22 +48,21 @@ export class StandardRailRecoveryWorker {
         skipped,
       );
       if (!order) return;
+      let recovered = false;
       try {
-        if (!this.isDue(order)) {
-          await this.options.store.releaseLease(order.orderId, this.workerId, order.leaseFence);
-          skipped.push(order.orderId);
-          continue;
-        }
-        await this.recover(order);
+        if (this.isDue(order)) recovered = await this.recover(order);
       } catch (error) {
         logger.error("standard-rail order recovery failed", {
           orderId: order.orderId,
           state: order.state,
           error,
         });
-        await this.options.store.releaseLease(order.orderId, this.workerId, order.leaseFence);
-        skipped.push(order.orderId);
       }
+      if (!recovered) skipped.push(order.orderId);
+      // Transitions keep a live lease with its driver, so the worker hands
+      // the order back explicitly once it is done with it; the next due
+      // check then runs on the usual cadence.
+      await this.options.store.releaseLease(order.orderId, this.workerId, order.leaseFence);
     }
   }
 
@@ -94,11 +93,13 @@ export class StandardRailRecoveryWorker {
     return Date.now() >= dueAt;
   }
 
-  private async recover(order: StandardOrderRecord): Promise<void> {
+  // True when the worker acted on the order; false leaves it skipped for
+  // the rest of the batch instead of re-leasing it in a tight loop.
+  private async recover(order: StandardOrderRecord): Promise<boolean> {
     switch (order.state) {
       case "CHALLENGE_ISSUED":
         await this.options.store.transition(order, "NOT_SETTLED", "signed_deadline_no_captured_payment");
-        return;
+        return true;
       case "SETTLEMENT_FAILED":
       case "ATTEMPT_OPENED":
       case "VERIFIED":
@@ -114,9 +115,9 @@ export class StandardRailRecoveryWorker {
       case "DISPATCHED":
       case "INPUT_REQUIRED":
         await this.options.resumePaid(order);
-        return;
+        return true;
       default:
-        await this.options.store.releaseLease(order.orderId, this.workerId, order.leaseFence);
+        return false;
     }
   }
 }

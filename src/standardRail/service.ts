@@ -1,5 +1,5 @@
-import { createHmac, randomBytes } from "node:crypto";
-import type { PaymentPayload } from "@x402/core/types";
+import { createHmac, randomBytes, randomUUID } from "node:crypto";
+import type { PaymentPayload, PaymentRequirements } from "@x402/core/types";
 import {
   getAddress,
   keccak256,
@@ -24,6 +24,7 @@ import {
   paymentAuthorizationLookupKey,
   paymentRequirements,
   validatePayment,
+  type ValidatedAuthorization,
 } from "./payment.js";
 import { decryptPaymentPayload, encryptPaymentPayload } from "./secrets.js";
 import { signEnvelope } from "./signing.js";
@@ -73,6 +74,10 @@ function assertExactKeys(value: unknown, expected: readonly string[], label: str
   if (actual.length !== required.length || actual.some((key, index) => key !== required[index])) {
     throw new Error(`${label} fields are invalid`);
   }
+}
+
+function isTransitionConflict(error: unknown): boolean {
+  return error instanceof Error && error.message === "ORDER_TRANSITION_CONFLICT";
 }
 
 export class StandardRailService {
@@ -1314,6 +1319,85 @@ export class StandardRailService {
       ) return { ...claimed, replay: true };
       throw error;
     }
+    return this.driveClaimedOrder(challenge.handle, order, (claimed) =>
+      this.settleClaimedOrder({
+        order: claimed, listing, requirements, authorization, body: args.body, payment: args.payment,
+      }));
+  }
+
+  // Runs `work` as the claimed order's driver. The request leases the order
+  // for as long as it is advancing it and renews that lease on a heartbeat,
+  // so the recovery worker does not read a long finality wait as
+  // abandonment, lease the order from underneath the request, and fence the
+  // request's next transition out (2026-08-22: ORDER_TRANSITION_CONFLICT at
+  // the RELEASE_FINAL transition answered a captured purchase with a 5xx).
+  // Should another driver still hold the fence, the order's current state is
+  // the truthful one-shape answer: it is the same order, carried on by
+  // recovery, and the client recovers from the handle alone.
+  private async driveClaimedOrder(
+    handle: string,
+    claimed: StandardOrderRecord,
+    work: (order: StandardOrderRecord) => Promise<StandardOrderRecord>,
+  ): Promise<{ handle: string; order: StandardOrderRecord; replay: boolean }> {
+    const driver = `standard-request-${randomUUID()}`;
+    const order = await this.store.leaseOrder(claimed.orderId, driver, this.railConfig.leaseSeconds);
+    if (!order) return this.currentOrderReply(handle, claimed, driver);
+    const heartbeat = this.renewLeaseWhileDriving(order, driver);
+    try {
+      return { handle, order: await work(order), replay: false };
+    } catch (error) {
+      if (!isTransitionConflict(error)) throw error;
+      return this.currentOrderReply(handle, order, driver);
+    } finally {
+      heartbeat.stop();
+      await this.store.releaseLease(order.orderId, driver, order.leaseFence);
+    }
+  }
+
+  private renewLeaseWhileDriving(
+    order: StandardOrderRecord,
+    driver: string,
+  ): { stop(): void } {
+    const seconds = this.railConfig.leaseSeconds;
+    const timer = setInterval(() => {
+      this.store.renewLease(order.orderId, driver, order.leaseFence, seconds)
+        .then((renewed) => { if (!renewed) clearInterval(timer); })
+        .catch(() => undefined);
+    }, Math.max(1_000, Math.floor((seconds * 1_000) / 3)));
+    timer.unref();
+    return { stop: () => clearInterval(timer) };
+  }
+
+  // The order as the database holds it now, recorded as an incident because
+  // this request stopped driving it before it reached a terminal state.
+  private async currentOrderReply(
+    handle: string,
+    fallback: StandardOrderRecord,
+    driver: string,
+  ): Promise<{ handle: string; order: StandardOrderRecord; replay: boolean }> {
+    const order = await this.store.findById(fallback.orderId) ?? fallback;
+    await this.incidents.record({
+      kind: "in_flight_purchase_fenced_out",
+      orderId: order.orderId,
+      state: order.state,
+      details: { driver, fence: fallback.leaseFence },
+    }).catch(() => undefined);
+    return { handle, order, replay: false };
+  }
+
+  // The post-claim purchase path: facilitator verify and settle, deposit and
+  // release evidence, reputation registration, and dispatch. Resolves to the
+  // order as far as this driver carried it.
+  private async settleClaimedOrder(args: {
+    order: StandardOrderRecord;
+    listing: StandardListing;
+    requirements: PaymentRequirements;
+    authorization: ValidatedAuthorization;
+    body: unknown;
+    payment: PaymentPayload;
+  }): Promise<StandardOrderRecord> {
+    const { listing, requirements, authorization } = args;
+    let order = args.order;
     await this.screenParticipants(listing, authorization.payer);
     await this.journal.markVerifyInvoked(order.orderId);
     const verify = await this.withRailFence(() => this.facilitator.verify(args.payment, requirements));
@@ -1324,12 +1408,12 @@ export class StandardRailService {
     if (!facilitatorVerified) {
       order = await this.store.transition(order, "VERIFY_REJECTED", "facilitator_verify_rejected");
       await this.store.releaseCapacity(order.orderId);
-      return { handle: challenge.handle, order, replay: false };
+      return order;
     }
     order = await this.store.transition(order, "VERIFIED", "facilitator_verified");
     return this.store.withListingSettlementLock(order.listingManifestHash, async () => {
       if (!await this.store.listingSettlementAvailable(order.listingManifestHash, order.orderId)) {
-        return { handle: challenge.handle, order, replay: false };
+        return order;
       }
       await this.screenParticipants(listing, authorization.payer);
       await this.verifyListingIdentity(listing);
@@ -1343,20 +1427,20 @@ export class StandardRailService {
           "EXTERNAL_OR_UNPROVEN_DEPOSIT",
           "authorization_consumed_before_facilitator_egress",
         );
-        return { handle: challenge.handle, order, replay: false };
+        return order;
       }
       const mayInvokeFacilitator = await this.journal.markSettleInvoked(order.orderId);
       order = await this.store.transition(order, "SETTLE_INVOKED", "settle_invocation_persisted");
       if (!mayInvokeFacilitator) {
         order = await this.store.transition(order, "SETTLEMENT_AMBIGUOUS", "settle_invocation_outcome_unknown");
-        return { handle: challenge.handle, order, replay: false };
+        return order;
       }
       let settlement;
       try {
         settlement = await this.withRailFence(() => this.facilitator.settle(args.payment, requirements));
       } catch {
         order = await this.store.transition(order, "SETTLEMENT_AMBIGUOUS", "settle_response_unknown");
-        return { handle: challenge.handle, order, replay: false };
+        return order;
       }
       if (
         !settlement.success || !/^0x[0-9a-fA-F]{64}$/.test(settlement.transaction) ||
@@ -1364,7 +1448,7 @@ export class StandardRailService {
         settlement.network !== this.appConfig.x402Network
       ) {
         order = await this.store.transition(order, "SETTLEMENT_FAILED", "facilitator_settlement_failed");
-        return { handle: challenge.handle, order, replay: false };
+        return order;
       }
       const transactionHash = settlement.transaction as Hex;
       await this.journal.recordSettlement(order.orderId, canonicalHash(settlement), transactionHash);
@@ -1407,7 +1491,7 @@ export class StandardRailService {
         canonicalHash(settlement),
         { deposit, release },
       );
-      return { handle: challenge.handle, order, replay: false };
+      return order;
     });
   }
 
