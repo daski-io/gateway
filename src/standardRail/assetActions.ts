@@ -138,10 +138,6 @@ export class StandardAssetActions {
       action,
       request,
       operationHash: executionId,
-      additionalRate: resolved.definition.destructive && followUp === null && recovery === null
-        ? { scope: "destructive-stage", maximum: this.config.abuse.destructiveStagesPerPayerPerHour,
-            window: "hour" }
-        : undefined,
       allowExactReplay: true,
     });
     if (walletHash !== presentedWalletHash) throw new Error("wallet authorization denied");

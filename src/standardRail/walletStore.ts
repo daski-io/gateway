@@ -108,7 +108,6 @@ export class StandardWalletStore {
     action: string;
     request: unknown;
     operationHash?: Hex;
-    additionalRate?: { scope: string; maximum: number; window: "minute" | "hour" };
     allowExactReplay?: boolean;
   }): Promise<Hex> {
     const client = await this.pool.connect();
@@ -155,22 +154,6 @@ export class StandardWalletStore {
         [`standard-wallet:${bucket}`],
       );
       if ((rate.rows[0]?.request_count ?? max + 1) > max) throw new Error("WALLET_RATE_LIMITED");
-      if (args.additionalRate) {
-        const extraBucket = canonicalHash({ scope: args.additionalRate.scope, payer: expected.payer });
-        const extra = await client.query<{ request_count: number }>(
-          `INSERT INTO rate_limit_buckets(bucket_key,window_started_at,request_count)
-           VALUES ($1,now(),1) ON CONFLICT (bucket_key) DO UPDATE SET
-             window_started_at=CASE WHEN rate_limit_buckets.window_started_at<=now()-
-               CASE WHEN $2='hour' THEN interval '1 hour' ELSE interval '1 minute' END
-               THEN now() ELSE rate_limit_buckets.window_started_at END,
-             request_count=CASE WHEN rate_limit_buckets.window_started_at<=now()-
-               CASE WHEN $2='hour' THEN interval '1 hour' ELSE interval '1 minute' END
-               THEN 1 ELSE rate_limit_buckets.request_count+1 END RETURNING request_count`,
-          [`standard-wallet:${extraBucket}`, args.additionalRate.window],
-        );
-        if ((extra.rows[0]?.request_count ?? args.additionalRate.maximum + 1) >
-          args.additionalRate.maximum) throw new Error("WALLET_RATE_LIMITED");
-      }
       const operationHash = args.operationHash ?? canonicalHash({
         action: args.action,
         request: args.request,
