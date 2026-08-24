@@ -55,7 +55,6 @@ export interface StandardRailConfig {
     protectedReadsPerPayerPerMinute: number;
     assetListsPerPayerPerMinute: number;
     assetStateChangesPerPayerPerMinute: number;
-    destructiveStagesPerPayerPerHour: number;
     federationGlobalConcurrency: number;
     federationPerProviderConcurrency: number;
     federationMaxProviders: number;
@@ -80,7 +79,6 @@ const DEFAULTS = {
     protectedReadsPerPayerPerMinute: 30,
     assetListsPerPayerPerMinute: 6,
     assetStateChangesPerPayerPerMinute: 10,
-    destructiveStagesPerPayerPerHour: 3,
     federationGlobalConcurrency: 20,
     federationPerProviderConcurrency: 4,
     federationMaxProviders: 20,
