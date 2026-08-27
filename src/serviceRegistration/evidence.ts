@@ -38,6 +38,11 @@ const splitterReadAbi = parseAbi([
   "function outcomeIdHash() view returns (bytes32)",
   "function listingCommitmentHash() view returns (bytes32)",
   "function listingEpoch() view returns (uint64)",
+  "function releaseSequence() view returns (uint64)",
+]);
+
+const tokenReadAbi = parseAbi([
+  "function balanceOf(address holder) view returns (uint256)",
 ]);
 
 const splitterDeployedTopic = keccak256(stringToHex(
@@ -138,11 +143,28 @@ export function assertSplitterDeploymentTransaction(args: {
   }
 }
 
+/**
+ * Chain facts captured at the deployment block of a freshly verified
+ * splitter. Settlement evidence later relies on these exact values; a reused
+ * listing keeps the checkpoint recorded at its original activation.
+ */
+export interface SplitterActivationCheckpoint {
+  splitterDeploymentTransactionHash: Hex;
+  splitterDeploymentBlockNumber: string;
+  splitterDeploymentBlockHash: Hex;
+  splitterRuntimeCodeHash: Hex;
+  splitterActivationBlockNumber: string;
+  splitterActivationBlockHash: Hex;
+  splitterActivationPosition: "END_OF_BLOCK";
+  splitterStartingTokenBalance: string;
+  splitterStartingReleaseSequence: string;
+}
+
 export interface RegistrationEvidenceVerifier {
   verify(
     registration: StoredRegistration,
     evidence: ProviderServiceRegistrationEvidenceEnvelope,
-  ): Promise<void>;
+  ): Promise<Map<string, SplitterActivationCheckpoint>>;
 }
 
 interface RpcEndpoint {
@@ -194,7 +216,7 @@ implements RegistrationEvidenceVerifier {
       listingEpoch: bigint;
       listingCommitmentHash: Hex;
     },
-  ): Promise<bigint> {
+  ): Promise<{ blockNumber: bigint; blockHash: Hex }> {
     return this.observe(async ({ client }) => {
       const [transaction, receipt, finalized] = await Promise.all([
         client.getTransaction({ hash: args.transactionHash }),
@@ -224,7 +246,7 @@ implements RegistrationEvidenceVerifier {
         !factoryCode ||
         keccak256(factoryCode) !== this.policy.splitterFactoryRuntimeCodeHash
       ) throw new Error("splitter factory runtime bytecode is not trusted");
-      return receipt.blockNumber;
+      return { blockNumber: receipt.blockNumber, blockHash: receipt.blockHash };
     });
   }
 
@@ -252,7 +274,7 @@ implements RegistrationEvidenceVerifier {
     registration: StoredRegistration;
     listing: StoredRegistration["prepared"]["listings"][number];
     transactionHash: Hex;
-  }): Promise<void> {
+  }): Promise<SplitterActivationCheckpoint> {
     if (
       !args.listing.splitterAddress ||
       !args.listing.preparation ||
@@ -263,7 +285,7 @@ implements RegistrationEvidenceVerifier {
     const expected = args.listing.preparation.payload;
     const listingCommitmentHash = canonicalHash(args.listing.preparation);
     const listingKey = args.listing.listingKey;
-    const blockNumber = await this.verifyFinalTransaction({
+    const deployment = await this.verifyFinalTransaction({
       transactionHash: args.transactionHash,
       providerSigner: getAddress(args.registration.providerSigner),
       transactionData: args.listing.transaction.data,
@@ -273,7 +295,8 @@ implements RegistrationEvidenceVerifier {
       listingEpoch: BigInt(expected.listingEpoch),
       listingCommitmentHash,
     });
-    await this.observe(async ({ client }) => {
+    const blockNumber = deployment.blockNumber;
+    return this.observe(async ({ client }) => {
       const code = await client.getCode({
         address: args.listing.splitterAddress!,
         blockNumber,
@@ -290,6 +313,7 @@ implements RegistrationEvidenceVerifier {
       const [
         chainId, token, providerPayee, commissionReceiver, commissionBps,
         policyVersionHash, actualOutcomeIdHash, actualCommitmentHash, listingEpoch,
+        releaseSequence, startingBalance,
       ] = await Promise.all([
         read<bigint>("canonicalChainId"),
         read<Address>("canonicalToken"),
@@ -300,6 +324,14 @@ implements RegistrationEvidenceVerifier {
         read<Hex>("outcomeIdHash"),
         read<Hex>("listingCommitmentHash"),
         read<bigint>("listingEpoch"),
+        read<bigint>("releaseSequence"),
+        client.readContract({
+          address: this.policy.canonicalToken,
+          abi: tokenReadAbi,
+          functionName: "balanceOf",
+          args: [args.listing.splitterAddress!],
+          blockNumber,
+        }) as Promise<bigint>,
       ]);
       if (
         chainId !== BigInt(this.config.chainId) ||
@@ -312,13 +344,24 @@ implements RegistrationEvidenceVerifier {
         actualCommitmentHash !== listingCommitmentHash ||
         listingEpoch !== BigInt(expected.listingEpoch)
       ) throw new Error("splitter immutable bindings do not match preparation");
+      return {
+        splitterDeploymentTransactionHash: args.transactionHash,
+        splitterDeploymentBlockNumber: blockNumber.toString(),
+        splitterDeploymentBlockHash: deployment.blockHash,
+        splitterRuntimeCodeHash: keccak256(code),
+        splitterActivationBlockNumber: blockNumber.toString(),
+        splitterActivationBlockHash: deployment.blockHash,
+        splitterActivationPosition: "END_OF_BLOCK" as const,
+        splitterStartingTokenBalance: startingBalance.toString(),
+        splitterStartingReleaseSequence: releaseSequence.toString(),
+      };
     });
   }
 
   async verify(
     registration: StoredRegistration,
     evidence: ProviderServiceRegistrationEvidenceEnvelope,
-  ): Promise<void> {
+  ): Promise<Map<string, SplitterActivationCheckpoint>> {
     await this.verifyRegisteredService(registration);
     const provider = await this.marketplace.getProvider(
       BigInt(registration.providerAgentId),
@@ -350,12 +393,14 @@ implements RegistrationEvidenceVerifier {
       provided.size !== paid.length ||
       paid.some((listing) => !provided.has(listing.listingId))
     ) throw new Error("splitter evidence must exactly cover paid skills");
+    const checkpoints = new Map<string, SplitterActivationCheckpoint>();
     for (const listing of paid) {
-      await this.verifySplitter({
+      checkpoints.set(listing.listingId, await this.verifySplitter({
         registration,
         listing,
         transactionHash: provided.get(listing.listingId)!,
-      });
+      }));
     }
+    return checkpoints;
   }
 }

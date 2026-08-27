@@ -512,6 +512,22 @@ export class ServiceRegistrationStore {
     );
   }
 
+  // Written once per listing: a checkpoint never changes after its splitter
+  // is verified, and reused listings keep their original record.
+  async recordActivationCheckpoints(entries: readonly {
+    listingId: string;
+    checkpoint: unknown;
+  }[]): Promise<void> {
+    for (const entry of entries) {
+      await this.pool.query(
+        `UPDATE standard_service_listings
+            SET activation_checkpoint=$2,updated_at=now()
+          WHERE listing_id=$1 AND activation_checkpoint IS NULL`,
+        [entry.listingId, entry.checkpoint],
+      );
+    }
+  }
+
   // Keyed by listing id, not registration id: a reused listing's row belongs
   // to the registration that first admitted it.
   async listingCommitments(listingIds: readonly string[]): Promise<Array<{

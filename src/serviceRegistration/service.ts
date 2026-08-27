@@ -539,8 +539,9 @@ export class ServiceRegistrationService {
     const pending = persistedReplay
       ? record
       : await this.recordEvidencePending(registrationId, evidence);
+    let checkpoints: Map<string, unknown>;
     try {
-      await this.evidenceVerifier.verify(pending, evidence);
+      checkpoints = await this.evidenceVerifier.verify(pending, evidence);
     } catch {
       throw new RegistrationError(
         409,
@@ -548,6 +549,9 @@ export class ServiceRegistrationService {
         "Splitter evidence is incomplete, non-final, or does not match the preparation.",
       );
     }
+    await this.store.recordActivationCheckpoints(
+      [...checkpoints].map(([listingId, checkpoint]) => ({ listingId, checkpoint })),
+    );
     await this.requirePreparedRegistrationCurrent(pending);
     const commitments = this.runtimeCommitmentsFor(pending);
     const active = await this.store.activate(registrationId, commitments);
