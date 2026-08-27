@@ -20,38 +20,11 @@ import {
 import { assertListingRoleSeparation } from "./listingRoles.js";
 import { deriveSplitterProvenance } from "./splitterProvenance.js";
 
-const LAUNCH_ACTION_CLASSIFICATION = new Map<string, boolean>([
-  ["get-domain-info", false],
-  ["list-dns-records", false],
-  ["set-dns-record", false],
-  ["delete-dns-record", false],
-  ["get-mailbox-info", false],
-  ["change-password", false],
-  ["delete-mailbox", true],
-  ["get-entity-status", false],
-  ["list-entity-documents", false],
-  ["download-entity-document", false],
-]);
-
-const LAUNCH_REPLAY_POLICIES = new Map<string, AssetActionDefinitionV1["replayPolicy"]>([
-  ["get-domain-info", "stable-result"],
-  ["list-dns-records", "stable-result"],
-  ["set-dns-record", "stable-result"],
-  ["delete-dns-record", "stable-result"],
-  ["get-mailbox-info", "stable-result"],
-  ["change-password", "redacted-after-window"],
-  ["delete-mailbox", "stable-result"],
-  ["get-entity-status", "stable-result"],
-  ["list-entity-documents", "stable-result"],
-  ["download-entity-document", "regenerate-ephemeral"],
-]);
-
 export interface ArtifactTrust {
   environment: string;
   chainId: number;
   gatewayAudience: string;
   signers: ReadonlyMap<string, Address>;
-  launchOutcomeIds: readonly string[];
   splitterFactoryRuntimeCodeHash: `0x${string}`;
   splitterCreationCodeHash: `0x${string}`;
 }
@@ -172,7 +145,7 @@ export async function verifyStandardRailManifest(
       !Number.isSafeInteger(catalog.payload.actionCatalogEpoch) || catalog.payload.actionCatalogEpoch < 1 ||
       !Array.isArray(catalog.payload.actions)
     ) throw new Error("Provider action catalog is invalid");
-    const actionIds = new Set<string>();
+    const actionKeys = new Set<string>();
     for (const action of catalog.payload.actions) {
       requireClosedKeys(action as unknown as Record<string, unknown>, [
         "providerAgentId", "serviceId", "serviceSlug", "actionId", "assetType",
@@ -181,14 +154,12 @@ export async function verifyStandardRailManifest(
         "replayPolicy", "retentionSeconds", "validFrom", "validBefore", "actionDefinitionHash",
       ], "provider action definition");
       const { actionDefinitionHash, ...preimage } = action;
-      const destructive = LAUNCH_ACTION_CLASSIFICATION.get(action.actionId);
-      const replayPolicy = LAUNCH_REPLAY_POLICIES.get(action.actionId);
+      const actionKey = `${action.serviceId.toLowerCase()}:${action.actionId}`;
       let endpoint: URL;
       try { endpoint = new URL(action.endpoint); } catch { throw new Error("Action endpoint is invalid"); }
       if (
-        actionIds.has(action.actionId) || action.providerAgentId !== catalog.payload.providerAgentId ||
-        destructive === undefined || action.destructive !== destructive ||
-        replayPolicy === undefined || action.replayPolicy !== replayPolicy ||
+        actionKeys.has(actionKey) || action.providerAgentId !== catalog.payload.providerAgentId ||
+        typeof action.destructive !== "boolean" ||
         action.ownershipPolicy !== "owner-only" || actionDefinitionHash !== canonicalHash(preimage) ||
         !/^0x[0-9a-fA-F]{64}$/.test(action.serviceId) ||
         !/^[a-z0-9][a-z0-9-]{0,95}$/.test(action.actionId) || !action.serviceSlug || !action.assetType ||
@@ -212,7 +183,7 @@ export async function verifyStandardRailManifest(
           throw new Error("Destructive confirmation summary must bind a request field");
         }
       }
-      actionIds.add(action.actionId);
+      actionKeys.add(actionKey);
     }
   }
   const admittedActions = new Set<string>();
@@ -240,14 +211,11 @@ export async function verifyStandardRailManifest(
           item.commitment.payload.providerAgentId === action.providerAgentId &&
           item.commitment.payload.serviceId === action.serviceId)
       ) throw new Error("Action definition is outside its admitted provider service");
-      if (admittedActions.has(action.actionId)) throw new Error("Launch action is admitted more than once");
-      admittedActions.add(action.actionId);
+      const actionKey = `${action.providerAgentId}:${action.serviceId.toLowerCase()}:${action.actionId}`;
+      if (admittedActions.has(actionKey)) throw new Error("Provider service action is admitted more than once");
+      admittedActions.add(actionKey);
     }
   }
-  if (
-    admittedActions.size !== LAUNCH_ACTION_CLASSIFICATION.size ||
-    [...LAUNCH_ACTION_CLASSIFICATION.keys()].some((actionId) => !admittedActions.has(actionId))
-  ) throw new Error("Servicing admissions do not contain the exact reviewed launch action set");
   requireClosedKeys(manifest.facilitatorProfile.payload as unknown as Record<string, unknown>, [
     "profileEpoch", "profileId", "baseUrl", "scheme", "network", "asset",
     "assetTransferMethod", "authenticationMethod", "credentialPolicyHash", "tlsPolicyHash",
@@ -326,11 +294,6 @@ export async function verifyStandardRailManifest(
     rail.recoveryValidBefore > manifest.activeRailProfile.validBefore ||
     ((rail.priorRailEpoch === "0") !== (rail.priorActiveRailProfileHash.toLowerCase() === zeroHash))
   ) throw new Error("Active rail profile chronology or predecessor is invalid");
-  const actual = manifest.listings.map((item) => item.commitment.payload.outcomeId).sort();
-  const expected = [...trust.launchOutcomeIds].sort();
-  if (actual.length !== expected.length || actual.some((value, index) => value !== expected[index])) {
-    throw new Error("Active listings do not match the reviewed launch outcome allowlist");
-  }
   if (rail.facilitatorProfileHash.toLowerCase() !== canonicalHash(manifest.facilitatorProfile).toLowerCase()) {
     throw new Error("Active rail profile does not bind the facilitator profile");
   }

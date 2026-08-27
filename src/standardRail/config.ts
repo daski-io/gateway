@@ -46,7 +46,6 @@ export interface StandardRailConfig {
   confirmationMaxPerOrder: number;
   confirmationMaxPerPayerPerDay: number;
   confirmationMaxGlobalPerDay: number;
-  launchOutcomeIds: readonly string[];
   abuse: {
     walletChallengesPerClientPerMinute: number;
     walletChallengesGlobalPerMinute: number;
@@ -190,10 +189,6 @@ export function loadStandardRailConfig(
     "CDP_FACILITATOR_BASE_URL",
     env.CDP_FACILITATOR_BASE_URL ?? "https://api.cdp.coinbase.com/platform/v2/x402",
   );
-  const launchOutcomeIds = manifest.listings.map((listing) => listing.commitment.payload.outcomeId);
-  if (launchOutcomeIds.length === 0 || new Set(launchOutcomeIds).size !== launchOutcomeIds.length) {
-    throw new Error("The marketplace manifest must contain uniquely named outcomes");
-  }
   const maxFee = positiveBigInt(env, "REPUTATION_MAX_FEE_PER_GAS_WEI", 100_000_000_000n);
   const priorityFee = positiveBigInt(env, "REPUTATION_MAX_PRIORITY_FEE_PER_GAS_WEI", 2_000_000_000n);
   const registerGas = positiveBigInt(env, "REPUTATION_REGISTER_GAS_LIMIT", 1_500_000n);
@@ -242,7 +237,6 @@ export function loadStandardRailConfig(
     confirmationMaxPerOrder: 3,
     confirmationMaxPerPayerPerDay: 20,
     confirmationMaxGlobalPerDay: 500,
-    launchOutcomeIds,
     abuse: { ...DEFAULTS.abuse },
   };
 }

@@ -204,7 +204,6 @@ export class StandardRailService {
       chainId: this.appConfig.chainId,
       gatewayAudience: this.railConfig.gatewayAudience,
       signers: this.railConfig.trustedSigners,
-      launchOutcomeIds: this.railConfig.launchOutcomeIds,
       splitterFactoryRuntimeCodeHash: this.railConfig.splitterFactoryRuntimeCodeHash,
       splitterCreationCodeHash: this.railConfig.splitterCreationCodeHash,
     });

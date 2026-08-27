@@ -27,19 +27,32 @@ function assertRecursivelyClosed(schema: Record<string, unknown>, label: string)
       current.type as string,
     )) throw new Error(`Outcome ${label} schema must declare an explicit type at ${path}`);
     if (current.type === "object") {
+      const properties = current.properties;
+      const boundedRecord =
+        current.additionalProperties === true &&
+        properties !== null &&
+        typeof properties === "object" &&
+        !Array.isArray(properties) &&
+        Object.keys(properties as Record<string, unknown>).length === 0 &&
+        current.required === undefined &&
+        Number.isSafeInteger(current.maxProperties) &&
+        (current.maxProperties as number) >= 1 &&
+        (current.maxProperties as number) <= 128;
       if (
-        current.additionalProperties !== false ||
-        !current.properties || typeof current.properties !== "object" ||
-        Array.isArray(current.properties)
-      ) throw new Error(`Outcome ${label} schema must close object at ${path}`);
-      const properties = current.properties as Record<string, unknown>;
-      if (Object.keys(properties).some((name) => UNSAFE_PROPERTY_NAMES.has(name))) {
+        !boundedRecord &&
+        (current.additionalProperties !== false ||
+          !properties || typeof properties !== "object" ||
+          Array.isArray(properties))
+      ) throw new Error(`Outcome ${label} schema must close object or use a bounded dynamic record at ${path}`);
+      if (boundedRecord) return;
+      const propertyMap = properties as Record<string, unknown>;
+      if (Object.keys(propertyMap).some((name) => UNSAFE_PROPERTY_NAMES.has(name))) {
         throw new Error(`Outcome ${label} schema contains an unsafe property name at ${path}`);
       }
       if (current.required !== undefined && (!Array.isArray(current.required) || current.required.some(
-        (key) => typeof key !== "string" || !(key in properties),
+        (key) => typeof key !== "string" || !(key in propertyMap),
       ))) throw new Error(`Outcome ${label} schema has invalid required fields at ${path}`);
-      for (const [name, child] of Object.entries(properties)) {
+      for (const [name, child] of Object.entries(propertyMap)) {
         visit(child, `${path}.properties.${name}`, depth + 1);
       }
     }
