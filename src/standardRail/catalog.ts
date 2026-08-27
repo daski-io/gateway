@@ -669,6 +669,7 @@ export class StandardRailCatalog {
       providerOfferHash: listing.providerIntentHash,
       runtimeCommitmentHash: listing.runtimeCommitmentHash,
       providerIntentHash: listing.providerIntentHash,
+      splitter: { ...listing.manifest.payload },
       terms: listing.terms,
       deadlinePolicy: listing.deadlinePolicy,
       capacityPolicy: listing.capacityPolicy,
