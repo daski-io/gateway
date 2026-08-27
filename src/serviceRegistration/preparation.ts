@@ -48,7 +48,6 @@ export interface DynamicRegistrationPolicy {
   splitterCreationCode: Hex;
   splitterCreationCodeHash: Hex;
   splitterFactoryRuntimeCodeHash: Hex;
-  splitterRuntimeCodeHash: Hex;
   policyVersionHash: Hex;
 }
 
@@ -88,7 +87,6 @@ export function dynamicRegistrationPolicy(
     splitterCreationCode: deployment.splitterCreationCode,
     splitterCreationCodeHash: railConfig.splitterCreationCodeHash,
     splitterFactoryRuntimeCodeHash: railConfig.splitterFactoryRuntimeCodeHash,
-    splitterRuntimeCodeHash: deployment.splitterRuntimeCodeHash,
     policyVersionHash,
   };
 }

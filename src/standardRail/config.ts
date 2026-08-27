@@ -30,7 +30,6 @@ export interface StandardRailConfig {
     daskiCommissionReceiver: Address;
     commissionBps: number;
     splitterCreationCode: Hex;
-    splitterRuntimeCodeHash: Hex;
   };
   /** Sanctions screening pins applied to every dynamic listing. */
   screeningPolicy: {
@@ -267,7 +266,6 @@ export function loadStandardRailConfig(
       daskiCommissionReceiver: address(env, "STANDARD_RAIL_COMMISSION_RECEIVER"),
       commissionBps,
       splitterCreationCode: parseSplitterCreationCode(env, splitterCreationCodeHash),
-      splitterRuntimeCodeHash: hash(env, "STANDARD_RAIL_SPLITTER_RUNTIME_CODE_HASH"),
     },
     screeningPolicy: {
       sanctionsOracle: address(env, "STANDARD_RAIL_SANCTIONS_ORACLE"),

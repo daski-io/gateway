@@ -301,8 +301,12 @@ implements RegistrationEvidenceVerifier {
         address: args.listing.splitterAddress!,
         blockNumber,
       });
-      if (!code || keccak256(code) !== this.policy.splitterRuntimeCodeHash) {
-        throw new Error("splitter runtime bytecode is not trusted");
+      // Immutables live in runtime code, so every splitter hashes differently;
+      // authenticity comes from the verified chain: trusted factory runtime,
+      // exact deployment calldata over the pinned creation code, and the
+      // CREATE2 address match. The observed hash is recorded, not pinned.
+      if (!code) {
+        throw new Error("splitter has no runtime bytecode at its deployment block");
       }
       const read = <T>(functionName: string) => client.readContract({
         address: args.listing.splitterAddress!,

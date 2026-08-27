@@ -243,7 +243,6 @@ export class ServiceRegistrationService {
       splitterFactory: policy.splitterFactory,
       splitterCreationCodeHash: policy.splitterCreationCodeHash,
       splitterFactoryRuntimeCodeHash: policy.splitterFactoryRuntimeCodeHash,
-      splitterRuntimeCodeHash: policy.splitterRuntimeCodeHash,
       intentMaximumLifetimeSeconds: 600,
     };
   }

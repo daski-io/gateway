@@ -25,7 +25,6 @@ function standardEnv(): NodeJS.ProcessEnv {
     STANDARD_RAIL_SPLITTER_CREATION_CODE_HASH: creationCodeHash,
     STANDARD_RAIL_SPLITTER_CREATION_CODE:
       `gzip-base64:${gzipSync(creationCode).toString("base64")}`,
-    STANDARD_RAIL_SPLITTER_RUNTIME_CODE_HASH: `0x${"88".repeat(32)}`,
     STANDARD_RAIL_SPLITTER_FACTORY: "0x9999999999999999999999999999999999999999",
     STANDARD_RAIL_COMMISSION_RECEIVER: "0x8888888888888888888888888888888888888888",
     STANDARD_RAIL_COMMISSION_BPS: "250",
@@ -64,7 +63,6 @@ describe("standard rail environment contract", () => {
       daskiCommissionReceiver: "0x8888888888888888888888888888888888888888",
       commissionBps: 250,
       splitterCreationCode: creationCode,
-      splitterRuntimeCodeHash: `0x${"88".repeat(32)}`,
     });
     expect(config.screeningPolicy).toEqual({
       sanctionsOracle: "0x7777777777777777777777777777777777777777",
@@ -95,7 +93,6 @@ describe("standard rail environment contract", () => {
   it.each([
     "STANDARD_RAIL_SPLITTER_FACTORY_RUNTIME_CODE_HASH",
     "STANDARD_RAIL_SPLITTER_CREATION_CODE_HASH",
-    "STANDARD_RAIL_SPLITTER_RUNTIME_CODE_HASH",
     "STANDARD_RAIL_SANCTIONS_ORACLE_RUNTIME_CODE_HASH",
   ])("rejects a missing %s trust anchor", (name) => {
     const env = standardEnv();
@@ -106,7 +103,6 @@ describe("standard rail environment contract", () => {
   it.each([
     "STANDARD_RAIL_SPLITTER_FACTORY_RUNTIME_CODE_HASH",
     "STANDARD_RAIL_SPLITTER_CREATION_CODE_HASH",
-    "STANDARD_RAIL_SPLITTER_RUNTIME_CODE_HASH",
     "STANDARD_RAIL_SANCTIONS_ORACLE_RUNTIME_CODE_HASH",
   ])("rejects a malformed %s trust anchor", (name) => {
     const env = standardEnv();
@@ -117,7 +113,6 @@ describe("standard rail environment contract", () => {
   it.each([
     "STANDARD_RAIL_SPLITTER_FACTORY_RUNTIME_CODE_HASH",
     "STANDARD_RAIL_SPLITTER_CREATION_CODE_HASH",
-    "STANDARD_RAIL_SPLITTER_RUNTIME_CODE_HASH",
     "STANDARD_RAIL_SANCTIONS_ORACLE_RUNTIME_CODE_HASH",
   ])("rejects an all-zero %s trust anchor", (name) => {
     const env = standardEnv();
