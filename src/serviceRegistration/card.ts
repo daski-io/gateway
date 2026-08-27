@@ -41,6 +41,17 @@ function text(value: unknown, label: string, maximum: number): string {
   return value;
 }
 
+// Long-form presentation copy: tabs and newlines are legitimate content;
+// every other control character stays banned.
+function multilineText(value: unknown, label: string, maximum: number): string {
+  if (
+    typeof value !== "string" || value.length < 1 ||
+    value.length > maximum ||
+    /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(value)
+  ) throw new Error(`${label} is invalid`);
+  return value;
+}
+
 function normalizedId(value: unknown, label: string, maximum: number): string {
   const found = text(value, label, maximum);
   if (!/^[a-z0-9][a-z0-9-]*$/.test(found)) throw new Error(`${label} is invalid`);
@@ -190,7 +201,7 @@ function parseSkill(
     ),
     presentation: {
       name: text(presentation.name, "skill name", 160),
-      description: text(presentation.description, "skill description", 32_000),
+      description: multilineText(presentation.description, "skill description", 32_000),
       examples: stringArray(presentation.examples, "skill examples", 32),
       tags: stringArray(presentation.tags, "skill tags", 64),
       documentationUrl: documentationUrl.toString(),
@@ -324,7 +335,7 @@ export function parseProviderServiceCard(
   });
   return {
     name: text(card.name, "service name", 160),
-    description: text(card.description, "service description", 32_000),
+    description: multilineText(card.description, "service description", 32_000),
     providerAgentId,
     service: {
       serviceId,
