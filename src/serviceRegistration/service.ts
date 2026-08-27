@@ -368,11 +368,17 @@ export class ServiceRegistrationService {
           serviceVersion: envelope.payload.serviceVersion,
           agentCardUrl: service.serviceUri,
         });
-      } catch {
+      } catch (error) {
+        // The reason is the provider's own card content — actionable for
+        // them, sensitive to no one. Bounded to a safe charset and length.
+        const reason = error instanceof Error &&
+          /^[\x20-\x7e]{1,160}$/.test(error.message)
+          ? `: ${error.message}`
+          : "";
         throw new RegistrationError(
           422,
           "AGENT_CARD_INVALID",
-          "The chain-recorded Agent Card does not satisfy the published contract.",
+          `The chain-recorded Agent Card does not satisfy the published contract${reason}.`,
         );
       }
       let validated;
