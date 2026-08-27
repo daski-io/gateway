@@ -13,21 +13,21 @@ import type { SignedEnvelope } from "../standardRail/types.js";
  * the same artifacts — equality is the cross-check.
  *
  * Identity rules:
- * - Paid listings derive every identity field from the ORIGINAL gateway
- *   preparation envelope (listing id, intent hash, slug/version, audience,
- *   economics), which reused listings retain verbatim — so re-registering a
- *   changed sibling skill can never rotate an unchanged skill's commitment.
- * - The CURRENT registration's linkage and deployment transaction hashes are
- *   operational, not identity, and appear in no direct field; the original
- *   admission's registration id still rides inside the referenced signed
- *   artifacts, which is fixed forever and therefore rotation-safe.
- * - Mutable state (visibility, freshness, reputation, capacity utilization)
- *   is excluded, and the rail binding is the splitter-level policyVersionHash
- *   — never the replaceable facilitator profile.
- * - The service contract and skill-set hashes are bound transitively through
- *   the provider intent referenced here.
- * - A paid listing with neither preparation nor splitter is a valid
- *   provider-controlled take-down; only a mixed state is rejected.
+ * - The builder runs only for NEW admissions; a reused listing's persisted
+ *   commitment is returned verbatim by callers and never reconstructed, so
+ *   re-registering a changed sibling cannot rotate an unchanged skill.
+ * - Paid listings derive identity from the ORIGINAL gateway preparation
+ *   envelope (listing id, intent hash, economics). Service slug and version
+ *   are not direct fields — they bind transitively through the provider
+ *   intent, and the serviceId already fixes them.
+ * - The CURRENT registration's linkage and deployment transaction hashes
+ *   appear in no direct field; the original admission's registration id
+ *   rides inside the referenced signed artifacts, fixed forever.
+ * - Mutable state (availability, visibility, freshness, reputation,
+ *   capacity utilization) is excluded, and the rail binding is the
+ *   splitter-level policyVersionHash — never the facilitator profile.
+ * - Every paid listing has its deployment artifacts regardless of
+ *   availability; artifact presence must match the payment mode exactly.
  */
 export interface RuntimeListingCommitmentV1 {
   artifactType: "RuntimeListingCommitmentV1";
@@ -40,8 +40,6 @@ export interface RuntimeListingCommitmentV1 {
   listingEpoch: string;
   providerAgentId: string;
   serviceId: Hex;
-  serviceSlug: string;
-  serviceVersion: string;
   skillId: string;
   skillContractHash: Hex;
   providerIntentHash: Hex;
@@ -65,8 +63,6 @@ export interface RuntimeCommitmentInputs {
   gatewayAudience: string;
   providerAgentId: string;
   serviceId: Hex;
-  serviceSlug: string;
-  serviceVersion: string;
   /** Intent hash of the CURRENT registration; used only for free skills
    *  without an original admission envelope of their own. */
   currentProviderIntentHash: Hex;
@@ -95,10 +91,9 @@ export function buildRuntimeListingCommitment(
 ): RuntimeListingCommitmentV1 {
   const envelope = args.listing.preparation ?? null;
   const preparation = envelope?.payload ?? null;
-  // A paid listing either has both deployment artifacts (accepting orders)
-  // or neither (a provider-controlled take-down); a mixed state is corrupt.
-  if ((envelope === null) !== (args.listing.splitterAddress === null)) {
-    throw new Error("Listing preparation and splitter address are inconsistent");
+  const paid = args.listing.paymentRequired;
+  if ((envelope !== null) !== paid || (args.listing.splitterAddress !== null) !== paid) {
+    throw new Error("Listing deployment artifacts do not match its payment mode");
   }
   if (preparation && preparation.skillId !== args.listing.skillId) {
     throw new Error("Listing preparation does not describe this skill");
@@ -107,16 +102,14 @@ export function buildRuntimeListingCommitment(
   return {
     artifactType: "RuntimeListingCommitmentV1",
     schemaVersion: 1,
-    environment: envelope?.environment ?? args.environment,
-    chainId: envelope?.chainId ?? args.chainId,
-    gatewayAudience: envelope?.audience ?? args.gatewayAudience,
+    environment: args.environment,
+    chainId: args.chainId,
+    gatewayAudience: args.gatewayAudience,
     listingId: preparation?.listingId ?? args.listing.listingId,
     listingKey: args.listing.listingKey,
     listingEpoch: preparation?.listingEpoch ?? "0",
     providerAgentId: args.providerAgentId,
     serviceId: args.serviceId,
-    serviceSlug: preparation?.serviceSlug ?? args.serviceSlug,
-    serviceVersion: preparation?.serviceVersion ?? args.serviceVersion,
     skillId: args.listing.skillId,
     skillContractHash: preparation?.skillContractHash ?? args.listing.skillContractHash,
     providerIntentHash: preparation?.providerIntentHash ??

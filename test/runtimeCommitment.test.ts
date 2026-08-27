@@ -89,8 +89,6 @@ function inputs(overrides: Partial<RuntimeCommitmentInputs["listing"]> = {}): Ru
     gatewayAudience: "https://gateway.example",
     providerAgentId: "42",
     serviceId: hash("1"),
-    serviceSlug: "orbital-logistics",
-    serviceVersion: "1",
     currentProviderIntentHash: hash("f"),
     currentProviderPayee: address("b"),
     policy: {
@@ -128,26 +126,10 @@ describe("runtime listing commitment", () => {
     const original = runtimeCommitmentHash(buildRuntimeListingCommitment(inputs()));
     const reRegistered = runtimeCommitmentHash(buildRuntimeListingCommitment({
       ...inputs({ listingId: "44444444-4444-4444-8444-444444444444" }),
-      environment: "other-environment",
-      gatewayAudience: "https://other-gateway.example",
-      serviceSlug: "renamed-slug",
-      serviceVersion: "9",
       currentProviderIntentHash: hash("0"),
       currentProviderPayee: address("9"),
     }));
     expect(reRegistered).toBe(original);
-  });
-
-  it("accepts a paid provider take-down with neither preparation nor splitter", () => {
-    const commitment = buildRuntimeListingCommitment(inputs({
-      splitterAddress: null,
-      preparation: null,
-      controlProfile: null,
-    }));
-    expect(commitment.paymentRequired).toBe(true);
-    expect(commitment.preparationHash).toBeNull();
-    expect(commitment.splitterAddress).toBeNull();
-    expect(commitment.listingEpoch).toBe("0");
   });
 
   it("binds free skills to the current registration intent", () => {
@@ -163,11 +145,13 @@ describe("runtime listing commitment", () => {
     expect(commitment.splitterFactory).toBeNull();
   });
 
-  it("rejects a listing whose preparation and splitter disagree", () => {
+  it("rejects deployment artifacts that disagree with the payment mode", () => {
     expect(() => buildRuntimeListingCommitment(inputs({ preparation: null })))
-      .toThrow(/inconsistent/);
+      .toThrow(/payment mode/);
     expect(() => buildRuntimeListingCommitment(inputs({ splitterAddress: null })))
-      .toThrow(/inconsistent/);
+      .toThrow(/payment mode/);
+    expect(() => buildRuntimeListingCommitment(inputs({ paymentRequired: false })))
+      .toThrow(/payment mode/);
   });
 
   it("rejects a preparation describing another skill", () => {
@@ -186,9 +170,9 @@ describe("runtime listing commitment", () => {
       controlProfile: null,
     }));
     expect(runtimeCommitmentHash(paid))
-      .toBe("0x75d678ab5c640597ef8d1729bcc1970da7c122c45e2ee42384123bb918ed86a1");
+      .toBe("0xd0dcaeaf88bce6b478d793d42ce33e4154dd859139acaa0850ab2fddfa4fdb70");
     expect(runtimeCommitmentHash(free))
-      .toBe("0xf62de0cefcbcdfe8ace73772dbf535c3b8d35a5d4ee857d9e81e7c00a13b2f4d");
+      .toBe("0x5caad8a68dce18b33c11c5b75b0a3efe7649678899a5fcd9c3df8ddc3a91b662");
     expect(recipeNonceV2({
       chainId: 84532,
       canonicalToken: address("a"),
@@ -200,6 +184,6 @@ describe("runtime listing commitment", () => {
       quoteHash: hash("0"),
       canonicalRequestHash: hash("2"),
       orderNonce: hash("3"),
-    })).toBe("0x6da9682da3392331ca83db893571f4b42294c8a2e7ca51b3a759e77c467a3889");
+    })).toBe("0x6e421e6825b79637e4f46a3d0c64ae4146ae1ad218380973eadc871f5f6d1dd3");
   });
 });

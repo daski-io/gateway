@@ -280,7 +280,17 @@ export class ServiceRegistrationStore {
         args.intent as unknown as SignedEnvelope<unknown, number>,
       );
       for (const listing of args.prepared.listings) {
-        if (listing.reused) continue;
+        if (listing.reused) {
+          // The reused row lives under its original registration; only its
+          // mutable availability follows the current card.
+          await client.query(
+            `UPDATE standard_service_listings
+                SET accepting_new_orders=$2,updated_at=now()
+              WHERE listing_id=$1`,
+            [listing.listingId, listing.acceptingNewOrders],
+          );
+          continue;
+        }
         await client.query(
           `INSERT INTO standard_service_listings
             (listing_id,registration_id,listing_key,skill_id,skill_contract_hash,
@@ -528,6 +538,14 @@ export class ServiceRegistrationStore {
     );
   }
 
+  async getArtifact(hash: `0x${string}`): Promise<unknown | null> {
+    const result = await this.pool.query<{ canonical_json: unknown }>(
+      "SELECT canonical_json FROM standard_rail_artifacts WHERE artifact_hash=$1",
+      [bytes(hash)],
+    );
+    return result.rows[0]?.canonical_json ?? null;
+  }
+
   // Keyed by listing id, not registration id: a reused listing's row belongs
   // to the registration that first admitted it. The commitment preimage is
   // returned so callers can expose it for independent re-derivation.
@@ -588,7 +606,19 @@ export class ServiceRegistrationStore {
     card: ProviderServiceCard;
     cardHash: `0x${string}`;
     chainActive: boolean;
+    listingAvailability?: readonly {
+      listingId: string;
+      acceptingNewOrders: boolean;
+    }[];
   }): Promise<void> {
+    for (const listing of args.listingAvailability ?? []) {
+      await this.pool.query(
+        `UPDATE standard_service_listings
+            SET accepting_new_orders=$2,updated_at=now()
+          WHERE listing_id=$1`,
+        [listing.listingId, listing.acceptingNewOrders],
+      );
+    }
     await this.pool.query(
       `UPDATE standard_service_registrations
           SET card_json=$2,card_hash=$3,skill_contract_set_hash=$4,

@@ -248,6 +248,7 @@ async function prepareListing(args: {
     return {
       ...args.priorListing,
       skillContractHash: args.skill.skillContractHash,
+      acceptingNewOrders: args.skill.acceptingNewOrders,
       deploymentRequired: false,
       reused: true,
       transaction: null,
@@ -267,17 +268,16 @@ async function prepareListing(args: {
     config: args.config,
     railConfig: args.railConfig,
   });
-  if (
-    !args.skill.contract.paymentRequired ||
-    !args.skill.contract.acceptingNewOrders
-  ) {
+  // Availability never shapes deployment: every paid skill gets its splitter
+  // so the provider can pause and resume through card refresh alone.
+  if (!args.skill.contract.paymentRequired) {
     return {
       listingId,
       listingKey,
       skillId: args.skill.skillId,
       skillContractHash: args.skill.skillContractHash,
-      paymentRequired: args.skill.contract.paymentRequired,
-      acceptingNewOrders: args.skill.contract.acceptingNewOrders,
+      paymentRequired: false,
+      acceptingNewOrders: args.skill.acceptingNewOrders,
       deploymentRequired: false,
       reused: false,
       splitterAddress: null,
@@ -346,7 +346,7 @@ async function prepareListing(args: {
     skillId: args.skill.skillId,
     skillContractHash: args.skill.skillContractHash,
     paymentRequired: true,
-    acceptingNewOrders: true,
+    acceptingNewOrders: args.skill.acceptingNewOrders,
     deploymentRequired: true,
     reused: false,
     splitterAddress: splitter.address,

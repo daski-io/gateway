@@ -124,6 +124,17 @@ export function createServiceRegistrationRouter(args: {
     res.json(await args.service.getPublic(serviceId.toLowerCase() as Hex));
   }));
 
+  // Signed admission artifacts (intents, preparations, control profiles) by
+  // content hash, so a runtime commitment's references resolve publicly.
+  router.get("/public/v3/artifacts/:hash", handler(async (req, res) => {
+    const hash = req.params.hash;
+    if (typeof hash !== "string" || !SERVICE_ID.test(hash)) {
+      throw new RegistrationError(400, "INVALID_ARTIFACT_HASH", "hash must be bytes32.");
+    }
+    res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+    res.json(await args.service.publicArtifact(hash.toLowerCase() as Hex));
+  }));
+
   router.put(
     "/operator/v1/services/:registrationId/visibility",
     handler(async (req, res) => {

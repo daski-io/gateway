@@ -95,7 +95,7 @@ function parseContract(
   const value = closed(raw, [
     "inputSchema", "resultSchema", "pricing", "paymentRequired",
     "requiresAssetOwnership", "assetType", "fulfillmentMode",
-    "acceptingNewOrders", "capacity", "deadlines", "assetAction",
+    "capacity", "deadlines", "assetAction",
   ], "skill contract");
   const inputSchema = record(value.inputSchema, "skill input schema");
   const resultSchema = record(value.resultSchema, "skill result schema");
@@ -144,7 +144,6 @@ function parseContract(
     requiresAssetOwnership,
     assetType,
     fulfillmentMode: fulfillmentMode as "automated" | "human" | "hybrid",
-    acceptingNewOrders: booleanValue(value.acceptingNewOrders, "acceptingNewOrders"),
     capacity: { maxOpenOrders: capacity.maxOpenOrders as number },
     deadlines,
     assetAction,
@@ -166,7 +165,7 @@ function parseSkill(
   serviceVersion: string,
 ): PublishedSkillContract {
   const value = closed(raw, [
-    "skillId", "skillContractHash", "presentation", "contract",
+    "skillId", "skillContractHash", "acceptingNewOrders", "presentation", "contract",
   ], "published skill");
   const skillId = normalizedId(value.skillId, "skill id", 96);
   const skillContractHash = hash(value.skillContractHash, "skill contract hash");
@@ -185,6 +184,10 @@ function parseSkill(
   return {
     skillId,
     skillContractHash,
+    acceptingNewOrders: booleanValue(
+      value.acceptingNewOrders,
+      "skill acceptingNewOrders",
+    ),
     presentation: {
       name: text(presentation.name, "skill name", 160),
       description: text(presentation.description, "skill description", 32_000),

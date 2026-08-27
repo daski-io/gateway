@@ -39,7 +39,6 @@ function card(overrides: {
     requiresAssetOwnership: overrides.requiresAssetOwnership ?? false,
     assetType: overrides.requiresAssetOwnership ? "orbital-slot" : null,
     fulfillmentMode: "hybrid",
-    acceptingNewOrders: true,
     capacity: { maxOpenOrders: overrides.maxOpenOrders ?? 17 },
     deadlines: { dispatchSeconds: 300 },
     assetAction: overrides.assetAction ?? null,
@@ -96,6 +95,7 @@ function card(overrides: {
         skills: [{
           skillId: "reserve-orbit",
           skillContractHash,
+          acceptingNewOrders: true,
           presentation: {
             name: "Reserve orbit",
             description: "Reserve an orbital slot.",

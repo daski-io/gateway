@@ -57,6 +57,12 @@ export interface PublishedAssetActionContract {
 export interface PublishedSkillContract {
   skillId: string;
   skillContractHash: Hex;
+  /**
+   * Mutable availability, deliberately OUTSIDE the hashed contract: a
+   * provider pauses or resumes a skill through card refresh without minting
+   * a new listing version or splitter.
+   */
+  acceptingNewOrders: boolean;
   presentation: {
     name: string;
     description: string;
@@ -72,7 +78,6 @@ export interface PublishedSkillContract {
     requiresAssetOwnership: boolean;
     assetType: string | null;
     fulfillmentMode: "automated" | "human" | "hybrid";
-    acceptingNewOrders: boolean;
     capacity: { maxOpenOrders: number };
     deadlines: Record<string, unknown>;
     assetAction: PublishedAssetActionContract | null;

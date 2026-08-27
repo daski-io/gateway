@@ -88,6 +88,7 @@ function card(name: string): ProviderServiceCard {
     skills: [{
       skillId: "track-orbit",
       skillContractHash: hash("5"),
+      acceptingNewOrders: true,
       presentation: {
         name: "Track orbit",
         description: "Track an orbital slot.",
@@ -112,7 +113,6 @@ function card(name: string): ProviderServiceCard {
         requiresAssetOwnership: false,
         assetType: null,
         fulfillmentMode: "automated",
-        acceptingNewOrders: true,
         capacity: { maxOpenOrders: 100 },
         deadlines: { dispatchSeconds: 30 },
         assetAction: null,

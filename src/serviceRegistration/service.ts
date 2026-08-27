@@ -131,6 +131,21 @@ function sameTransactions(
   return canonicalHash(normalize(left)) === canonicalHash(normalize(right));
 }
 
+// Per-skill availability is mutable card state that follows every refresh;
+// it is not part of listing identity.
+function listingAvailability(
+  record: StoredRegistration,
+  card: ProviderServiceCard,
+): Array<{ listingId: string; acceptingNewOrders: boolean }> {
+  const skills = new Map(
+    card.skills.map((skill) => [skill.skillId, skill.acceptingNewOrders]),
+  );
+  return record.prepared.listings.map((listing) => ({
+    listingId: listing.listingId,
+    acceptingNewOrders: skills.get(listing.skillId) ?? false,
+  }));
+}
+
 function registrationView(record: StoredRegistration) {
   return {
     registrationId: record.registrationId,
@@ -397,6 +412,7 @@ export class ServiceRegistrationService {
           card,
           cardHash: canonicalHash(card),
           chainActive: true,
+          listingAvailability: listingAvailability(active, card),
         });
         return {
           created: false,
@@ -546,7 +562,7 @@ export class ServiceRegistrationService {
       );
     }
     await this.requirePreparedRegistrationCurrent(pending);
-    const commitments = this.runtimeCommitmentsFor(pending);
+    const commitments = await this.runtimeCommitmentsFor(pending);
     const active = await this.store.activate(
       registrationId,
       commitments,
@@ -572,23 +588,40 @@ export class ServiceRegistrationService {
   }
 
   // The runtime commitment fixes each listing head's immutable identity at
-  // activation. Reused listings derive identity from their original signed
-  // preparation, so re-registering a changed sibling never rotates them.
-  private runtimeCommitmentsFor(record: StoredRegistration): Array<{
+  // activation. Reused listings return their PERSISTED commitment verbatim —
+  // nothing is reconstructed from the current registration — so a changed
+  // sibling can never rotate them; the builder runs only for new admissions.
+  private async runtimeCommitmentsFor(record: StoredRegistration): Promise<Array<{
     listingId: string;
     runtimeCommitmentHash: `0x${string}`;
     runtimeCommitment: unknown;
-  }> {
+  }>> {
+    const persisted = new Map(
+      (await this.store.listingCommitments(
+        record.prepared.listings
+          .filter((listing) => listing.reused)
+          .map((listing) => listing.listingId),
+      ))
+        .filter((item) =>
+          item.runtimeCommitmentHash !== null && item.runtimeCommitment !== null)
+        .map((item) => [item.listingId, item] as const),
+    );
     const policy = dynamicRegistrationPolicy(this.config, this.railConfig);
     return record.prepared.listings.map((listing) => {
+      const verbatim = listing.reused ? persisted.get(listing.listingId) : undefined;
+      if (verbatim) {
+        return {
+          listingId: listing.listingId,
+          runtimeCommitmentHash: verbatim.runtimeCommitmentHash!,
+          runtimeCommitment: verbatim.runtimeCommitment,
+        };
+      }
       const commitment = buildRuntimeListingCommitment({
         environment: this.railConfig.environment,
         chainId: this.config.chainId,
         gatewayAudience: this.config.publicUrl,
         providerAgentId: record.providerAgentId,
         serviceId: record.serviceId,
-        serviceSlug: record.serviceSlug,
-        serviceVersion: record.serviceVersion,
         currentProviderIntentHash: record.prepared.providerIntentHash,
         currentProviderPayee: getAddress(record.providerPayee),
         policy: {
@@ -732,6 +765,14 @@ export class ServiceRegistrationService {
     return this.get(registrationId);
   }
 
+  async publicArtifact(hash: Hex) {
+    const artifact = await this.store.getArtifact(hash);
+    if (!artifact) {
+      throw new RegistrationError(404, "ARTIFACT_NOT_FOUND", "Artifact not found.");
+    }
+    return artifact;
+  }
+
   async listPublic(limit: number) {
     return {
       services: (await this.store.listPublic(limit))
@@ -851,6 +892,7 @@ export class ServiceRegistrationService {
       card,
       cardHash: canonicalHash(card),
       chainActive: true,
+      listingAvailability: listingAvailability(record, card),
     });
   }
 
