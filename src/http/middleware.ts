@@ -144,8 +144,12 @@ export function configureMiddleware(
       if (buffer.length === 0) return;
       try {
         assertNoDuplicateJsonKeys(buffer.toString("utf8"));
-      } catch {
-        const error = new SyntaxError("Request JSON contains a duplicate key") as SyntaxError & { type: string };
+      } catch (cause) {
+        // The scanner enforces the ingress belt (duplicate keys, depth, node
+        // count, key bounds, unsafe keys) for every JSON body on every route.
+        const error = new SyntaxError(
+          cause instanceof Error ? cause.message : "Request JSON is invalid",
+        ) as SyntaxError & { type: string };
         error.type = "entity.parse.failed";
         throw error;
       }
