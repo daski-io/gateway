@@ -656,7 +656,30 @@ export class ServiceRegistrationService {
   async getPublic(serviceId: Hex) {
     const record = await this.store.getPublicByServiceId(serviceId);
     if (!record) throw new RegistrationError(404, "SERVICE_NOT_FOUND", "Visible service not found.");
-    return publicServiceView(record);
+    return { ...publicServiceView(record), ...await this.publicReputation(record) };
+  }
+
+  // Separate provider- and service-scoped blocks on the detail view, sourced
+  // from the cached chain reader. Reputation is a nullable enrichment: a read
+  // failure must never take the public catalog down with it.
+  private async publicReputation(record: StoredRegistration): Promise<{
+    providerReputation: Record<string, string> | null;
+    serviceReputation: Record<string, string> | null;
+  }> {
+    try {
+      const [provider, service] = await Promise.all([
+        this.marketplace.getProvider(BigInt(record.providerAgentId)),
+        this.marketplace.getService(record.serviceId),
+      ]);
+      return {
+        providerReputation: (provider as {
+          standardReputation?: Record<string, string>;
+        } | null)?.standardReputation ?? null,
+        serviceReputation: service.standardReputation ?? null,
+      };
+    } catch {
+      return { providerReputation: null, serviceReputation: null };
+    }
   }
 
   private async refreshOne(record: StoredRegistration): Promise<void> {
