@@ -14,17 +14,20 @@ import type { SignedEnvelope } from "../standardRail/types.js";
  *
  * Identity rules:
  * - Paid listings derive every identity field from the ORIGINAL gateway
- *   preparation envelope (listing id, intent hash, economics), which reused
- *   listings retain verbatim — so re-registering a changed sibling skill can
- *   never rotate an unchanged skill's commitment.
- * - Registration ids and deployment transaction hashes are operational
- *   linkage, not identity, and stay out of the hash; the splitter address
- *   plus the preparation hash already pin the deployment deterministically.
+ *   preparation envelope (listing id, intent hash, slug/version, audience,
+ *   economics), which reused listings retain verbatim — so re-registering a
+ *   changed sibling skill can never rotate an unchanged skill's commitment.
+ * - The CURRENT registration's linkage and deployment transaction hashes are
+ *   operational, not identity, and appear in no direct field; the original
+ *   admission's registration id still rides inside the referenced signed
+ *   artifacts, which is fixed forever and therefore rotation-safe.
  * - Mutable state (visibility, freshness, reputation, capacity utilization)
  *   is excluded, and the rail binding is the splitter-level policyVersionHash
  *   — never the replaceable facilitator profile.
  * - The service contract and skill-set hashes are bound transitively through
  *   the provider intent referenced here.
+ * - A paid listing with neither preparation nor splitter is a valid
+ *   provider-controlled take-down; only a mixed state is rejected.
  */
 export interface RuntimeListingCommitmentV1 {
   artifactType: "RuntimeListingCommitmentV1";
@@ -90,9 +93,12 @@ export interface RuntimeCommitmentInputs {
 export function buildRuntimeListingCommitment(
   args: RuntimeCommitmentInputs,
 ): RuntimeListingCommitmentV1 {
-  const preparation = args.listing.preparation?.payload ?? null;
-  if (args.listing.paymentRequired && (!preparation || !args.listing.splitterAddress)) {
-    throw new Error("Paid listing runtime commitment requires preparation and splitter");
+  const envelope = args.listing.preparation ?? null;
+  const preparation = envelope?.payload ?? null;
+  // A paid listing either has both deployment artifacts (accepting orders)
+  // or neither (a provider-controlled take-down); a mixed state is corrupt.
+  if ((envelope === null) !== (args.listing.splitterAddress === null)) {
+    throw new Error("Listing preparation and splitter address are inconsistent");
   }
   if (preparation && preparation.skillId !== args.listing.skillId) {
     throw new Error("Listing preparation does not describe this skill");
@@ -101,16 +107,16 @@ export function buildRuntimeListingCommitment(
   return {
     artifactType: "RuntimeListingCommitmentV1",
     schemaVersion: 1,
-    environment: args.environment,
-    chainId: args.chainId,
-    gatewayAudience: args.gatewayAudience,
+    environment: envelope?.environment ?? args.environment,
+    chainId: envelope?.chainId ?? args.chainId,
+    gatewayAudience: envelope?.audience ?? args.gatewayAudience,
     listingId: preparation?.listingId ?? args.listing.listingId,
     listingKey: args.listing.listingKey,
     listingEpoch: preparation?.listingEpoch ?? "0",
     providerAgentId: args.providerAgentId,
     serviceId: args.serviceId,
-    serviceSlug: args.serviceSlug,
-    serviceVersion: args.serviceVersion,
+    serviceSlug: preparation?.serviceSlug ?? args.serviceSlug,
+    serviceVersion: preparation?.serviceVersion ?? args.serviceVersion,
     skillId: args.listing.skillId,
     skillContractHash: preparation?.skillContractHash ?? args.listing.skillContractHash,
     providerIntentHash: preparation?.providerIntentHash ??

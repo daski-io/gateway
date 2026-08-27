@@ -128,10 +128,26 @@ describe("runtime listing commitment", () => {
     const original = runtimeCommitmentHash(buildRuntimeListingCommitment(inputs()));
     const reRegistered = runtimeCommitmentHash(buildRuntimeListingCommitment({
       ...inputs({ listingId: "44444444-4444-4444-8444-444444444444" }),
+      environment: "other-environment",
+      gatewayAudience: "https://other-gateway.example",
+      serviceSlug: "renamed-slug",
+      serviceVersion: "9",
       currentProviderIntentHash: hash("0"),
       currentProviderPayee: address("9"),
     }));
     expect(reRegistered).toBe(original);
+  });
+
+  it("accepts a paid provider take-down with neither preparation nor splitter", () => {
+    const commitment = buildRuntimeListingCommitment(inputs({
+      splitterAddress: null,
+      preparation: null,
+      controlProfile: null,
+    }));
+    expect(commitment.paymentRequired).toBe(true);
+    expect(commitment.preparationHash).toBeNull();
+    expect(commitment.splitterAddress).toBeNull();
+    expect(commitment.listingEpoch).toBe("0");
   });
 
   it("binds free skills to the current registration intent", () => {
@@ -147,9 +163,11 @@ describe("runtime listing commitment", () => {
     expect(commitment.splitterFactory).toBeNull();
   });
 
-  it("rejects a paid listing without preparation or splitter", () => {
+  it("rejects a listing whose preparation and splitter disagree", () => {
     expect(() => buildRuntimeListingCommitment(inputs({ preparation: null })))
-      .toThrow(/requires preparation/);
+      .toThrow(/inconsistent/);
+    expect(() => buildRuntimeListingCommitment(inputs({ splitterAddress: null })))
+      .toThrow(/inconsistent/);
   });
 
   it("rejects a preparation describing another skill", () => {

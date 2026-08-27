@@ -154,7 +154,10 @@ function registrationView(record: StoredRegistration) {
 
 function publicServiceView(
   record: StoredRegistration,
-  runtimeCommitments: ReadonlyMap<string, `0x${string}`> = new Map(),
+  runtimeCommitments: ReadonlyMap<string, {
+    runtimeCommitmentHash: `0x${string}`;
+    runtimeCommitment: unknown;
+  }> = new Map(),
 ) {
   const listings = new Map(record.prepared.listings.map((item) => [item.skillId, item]));
   return {
@@ -170,6 +173,7 @@ function publicServiceView(
     standardRail: record.card.standardRail,
     skills: record.card.skills.map((skill) => {
       const listing = listings.get(skill.skillId)!;
+      const commitment = runtimeCommitments.get(listing.listingId) ?? null;
       return {
         ...skill,
         listing: {
@@ -177,7 +181,10 @@ function publicServiceView(
           listingKey: listing.listingKey,
           paymentRequired: listing.paymentRequired,
           splitterAddress: listing.splitterAddress,
-          runtimeCommitmentHash: runtimeCommitments.get(listing.listingId) ?? null,
+          runtimeCommitmentHash: commitment?.runtimeCommitmentHash ?? null,
+          // The preimage is public so any party can re-derive the hash and
+          // fetch the referenced signed artifacts by content hash.
+          runtimeCommitment: commitment?.runtimeCommitment ?? null,
         },
       };
     }),
@@ -460,18 +467,7 @@ export class ServiceRegistrationService {
     const record = await this.store.get(registrationId);
     if (!record) throw new RegistrationError(404, "REGISTRATION_NOT_FOUND", "Registration not found.");
     if (record.state !== "ACTIVE") return registrationView(record);
-    const commitments = await this.store.listingCommitments(
-      record.prepared.listings.map((listing) => listing.listingId),
-    );
-    return {
-      ...registrationView(record),
-      runtimeCommitments: commitments
-        .filter((item) => item.runtimeCommitmentHash !== null)
-        .map(({ listingId, runtimeCommitmentHash: hash }) => ({
-          listingId,
-          runtimeCommitmentHash: hash,
-        })),
-    };
+    return this.activeView(record);
   }
 
   async submitEvidence(registrationId: string, raw: unknown) {
@@ -490,7 +486,7 @@ export class ServiceRegistrationService {
       record.evidence !== null &&
       canonicalHash(raw) === canonicalHash(record.evidence);
     if (record.state === "ACTIVE" && persistedReplay) {
-      return registrationView(record);
+      return this.activeView(record);
     }
 
     let evidence: ProviderServiceRegistrationEvidenceEnvelope;
@@ -523,7 +519,7 @@ export class ServiceRegistrationService {
     );
     if (record.state === "ACTIVE") {
       if (record.evidence && sameTransactions(record.evidence, evidence)) {
-        return registrationView(record);
+        return this.activeView(record);
       }
       throw new RegistrationError(409, "REGISTRATION_ALREADY_ACTIVE", "Registration is already active.");
     }
@@ -549,17 +545,28 @@ export class ServiceRegistrationService {
         "Splitter evidence is incomplete, non-final, or does not match the preparation.",
       );
     }
-    await this.store.recordActivationCheckpoints(
-      [...checkpoints].map(([listingId, checkpoint]) => ({ listingId, checkpoint })),
-    );
     await this.requirePreparedRegistrationCurrent(pending);
     const commitments = this.runtimeCommitmentsFor(pending);
-    const active = await this.store.activate(registrationId, commitments);
+    const active = await this.store.activate(
+      registrationId,
+      commitments,
+      [...checkpoints].map(([listingId, checkpoint]) => ({ listingId, checkpoint })),
+    );
+    return this.activeView(active);
+  }
+
+  // Every ACTIVE response carries the per-listing runtime commitments, so a
+  // provider recovering after any crash always receives the values it must
+  // cross-check before promoting its own catalog.
+  private async activeView(record: StoredRegistration) {
+    const commitments = (await this.store.listingCommitments(
+      record.prepared.listings.map((listing) => listing.listingId),
+    )).filter((item) => item.runtimeCommitmentHash !== null);
     return {
-      ...registrationView(active),
-      runtimeCommitments: commitments.map(({ listingId, runtimeCommitmentHash: hash }) => ({
-        listingId,
-        runtimeCommitmentHash: hash,
+      ...registrationView(record),
+      runtimeCommitments: commitments.map((item) => ({
+        listingId: item.listingId,
+        runtimeCommitmentHash: item.runtimeCommitmentHash!,
       })),
     };
   }
@@ -740,7 +747,10 @@ export class ServiceRegistrationService {
         record.prepared.listings.map((listing) => listing.listingId),
       ))
         .filter((item) => item.runtimeCommitmentHash !== null)
-        .map((item) => [item.listingId, item.runtimeCommitmentHash!] as const),
+        .map((item) => [item.listingId, {
+          runtimeCommitmentHash: item.runtimeCommitmentHash!,
+          runtimeCommitment: item.runtimeCommitment,
+        }] as const),
     );
     return {
       ...publicServiceView(record, commitments),

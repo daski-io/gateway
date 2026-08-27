@@ -417,6 +417,10 @@ export class ServiceRegistrationStore {
       runtimeCommitmentHash: `0x${string}`;
       runtimeCommitment: unknown;
     }[],
+    checkpoints: readonly {
+      listingId: string;
+      checkpoint: unknown;
+    }[] = [],
   ): Promise<StoredRegistration> {
     const client = await this.pool.connect();
     try {
@@ -465,6 +469,18 @@ export class ServiceRegistrationStore {
         );
         if (updated.rowCount !== 1) throw new Error("RUNTIME_COMMITMENT_LISTING_MISMATCH");
       }
+      // Checkpoints activate fail-closed in the same transaction: a fresh
+      // write must land, and a replay must match the recorded value exactly.
+      for (const entry of checkpoints) {
+        const updated = await client.query(
+          `UPDATE standard_service_listings
+              SET activation_checkpoint=$2,updated_at=now()
+            WHERE listing_id=$1
+              AND (activation_checkpoint IS NULL OR activation_checkpoint=$2::jsonb)`,
+          [entry.listingId, entry.checkpoint],
+        );
+        if (updated.rowCount !== 1) throw new Error("ACTIVATION_CHECKPOINT_MISMATCH");
+      }
       const result = await client.query<RegistrationRow>(
         `UPDATE standard_service_registrations
             SET state='ACTIVE',chain_active=true,registration_healthy=true,
@@ -512,36 +528,24 @@ export class ServiceRegistrationStore {
     );
   }
 
-  // Written once per listing: a checkpoint never changes after its splitter
-  // is verified, and reused listings keep their original record.
-  async recordActivationCheckpoints(entries: readonly {
-    listingId: string;
-    checkpoint: unknown;
-  }[]): Promise<void> {
-    for (const entry of entries) {
-      await this.pool.query(
-        `UPDATE standard_service_listings
-            SET activation_checkpoint=$2,updated_at=now()
-          WHERE listing_id=$1 AND activation_checkpoint IS NULL`,
-        [entry.listingId, entry.checkpoint],
-      );
-    }
-  }
-
   // Keyed by listing id, not registration id: a reused listing's row belongs
-  // to the registration that first admitted it.
+  // to the registration that first admitted it. The commitment preimage is
+  // returned so callers can expose it for independent re-derivation.
   async listingCommitments(listingIds: readonly string[]): Promise<Array<{
     listingId: string;
     runtimeCommitmentHash: `0x${string}` | null;
+    runtimeCommitment: unknown;
     splitterTransactionHash: `0x${string}` | null;
   }>> {
     if (listingIds.length === 0) return [];
     const result = await this.pool.query<{
       listing_id: string;
       runtime_commitment_hash: Buffer | null;
+      runtime_commitment_json: unknown;
       splitter_transaction_hash: string | null;
     }>(
-      `SELECT listing_id,runtime_commitment_hash,splitter_transaction_hash
+      `SELECT listing_id,runtime_commitment_hash,runtime_commitment_json,
+              splitter_transaction_hash
          FROM standard_service_listings WHERE listing_id=ANY($1::uuid[])`,
       [listingIds],
     );
@@ -550,6 +554,7 @@ export class ServiceRegistrationStore {
       runtimeCommitmentHash: row.runtime_commitment_hash
         ? hex(row.runtime_commitment_hash)
         : null,
+      runtimeCommitment: row.runtime_commitment_json ?? null,
       splitterTransactionHash: row.splitter_transaction_hash as `0x${string}` | null,
     }));
   }
