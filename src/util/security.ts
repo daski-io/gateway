@@ -43,9 +43,9 @@ export interface RateLimitOptions {
   namespace?: string;
   /** Global buckets cap aggregate work across clients and replicas. */
   keyScope?: "client" | "global";
-  /** Shared store used by multi-replica deployments. */
   /** Optional bounded resource key, combined with the namespace. */
   key?: (req: Request) => string;
+  /** Shared store used by multi-replica deployments. */
   store?: {
     consumeRateLimitBucket(
       key: string,
