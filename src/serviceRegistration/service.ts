@@ -22,6 +22,10 @@ import {
   validateServiceRegistrationContract,
 } from "./preparation.js";
 import {
+  buildRuntimeListingCommitment,
+  runtimeCommitmentHash,
+} from "./runtimeCommitment.js";
+import {
   ServiceRegistrationStore,
   type StoredRegistration,
 } from "./store.js";
@@ -148,7 +152,10 @@ function registrationView(record: StoredRegistration) {
   };
 }
 
-function publicServiceView(record: StoredRegistration) {
+function publicServiceView(
+  record: StoredRegistration,
+  runtimeCommitments: ReadonlyMap<string, `0x${string}`> = new Map(),
+) {
   const listings = new Map(record.prepared.listings.map((item) => [item.skillId, item]));
   return {
     gatewayRegistrationId: record.registrationId,
@@ -170,6 +177,7 @@ function publicServiceView(record: StoredRegistration) {
           listingKey: listing.listingKey,
           paymentRequired: listing.paymentRequired,
           splitterAddress: listing.splitterAddress,
+          runtimeCommitmentHash: runtimeCommitments.get(listing.listingId) ?? null,
         },
       };
     }),
@@ -451,7 +459,19 @@ export class ServiceRegistrationService {
   async get(registrationId: string) {
     const record = await this.store.get(registrationId);
     if (!record) throw new RegistrationError(404, "REGISTRATION_NOT_FOUND", "Registration not found.");
-    return registrationView(record);
+    if (record.state !== "ACTIVE") return registrationView(record);
+    const commitments = await this.store.listingCommitments(
+      record.prepared.listings.map((listing) => listing.listingId),
+    );
+    return {
+      ...registrationView(record),
+      runtimeCommitments: commitments
+        .filter((item) => item.runtimeCommitmentHash !== null)
+        .map(({ listingId, runtimeCommitmentHash: hash }) => ({
+          listingId,
+          runtimeCommitmentHash: hash,
+        })),
+    };
   }
 
   async submitEvidence(registrationId: string, raw: unknown) {
@@ -529,7 +549,61 @@ export class ServiceRegistrationService {
       );
     }
     await this.requirePreparedRegistrationCurrent(pending);
-    return registrationView(await this.store.activate(registrationId));
+    const commitments = this.runtimeCommitmentsFor(pending);
+    const active = await this.store.activate(registrationId, commitments);
+    return {
+      ...registrationView(active),
+      runtimeCommitments: commitments.map(({ listingId, runtimeCommitmentHash: hash }) => ({
+        listingId,
+        runtimeCommitmentHash: hash,
+      })),
+    };
+  }
+
+  // The runtime commitment fixes each listing head's immutable identity at
+  // activation. Reused listings derive identity from their original signed
+  // preparation, so re-registering a changed sibling never rotates them.
+  private runtimeCommitmentsFor(record: StoredRegistration): Array<{
+    listingId: string;
+    runtimeCommitmentHash: `0x${string}`;
+    runtimeCommitment: unknown;
+  }> {
+    const policy = dynamicRegistrationPolicy(this.config, this.railConfig);
+    return record.prepared.listings.map((listing) => {
+      const commitment = buildRuntimeListingCommitment({
+        environment: this.railConfig.environment,
+        chainId: this.config.chainId,
+        gatewayAudience: this.config.publicUrl,
+        providerAgentId: record.providerAgentId,
+        serviceId: record.serviceId,
+        serviceSlug: record.serviceSlug,
+        serviceVersion: record.serviceVersion,
+        currentProviderIntentHash: record.prepared.providerIntentHash,
+        currentProviderPayee: getAddress(record.providerPayee),
+        policy: {
+          canonicalToken: policy.canonicalToken,
+          daskiCommissionReceiver: policy.daskiCommissionReceiver,
+          commissionBps: policy.commissionBps,
+          policyVersionHash: policy.policyVersionHash,
+          splitterFactory: policy.splitterFactory,
+        },
+        listing: {
+          listingId: listing.listingId,
+          listingKey: listing.listingKey,
+          skillId: listing.skillId,
+          skillContractHash: listing.skillContractHash,
+          paymentRequired: listing.paymentRequired,
+          splitterAddress: listing.splitterAddress,
+          preparation: listing.preparation,
+          controlProfile: listing.controlProfile,
+        },
+      });
+      return {
+        listingId: listing.listingId,
+        runtimeCommitmentHash: runtimeCommitmentHash(commitment),
+        runtimeCommitment: commitment,
+      };
+    });
   }
 
   private async recordEvidencePending(
@@ -649,14 +723,25 @@ export class ServiceRegistrationService {
 
   async listPublic(limit: number) {
     return {
-      services: (await this.store.listPublic(limit)).map(publicServiceView),
+      services: (await this.store.listPublic(limit))
+        .map((record) => publicServiceView(record)),
     };
   }
 
   async getPublic(serviceId: Hex) {
     const record = await this.store.getPublicByServiceId(serviceId);
     if (!record) throw new RegistrationError(404, "SERVICE_NOT_FOUND", "Visible service not found.");
-    return { ...publicServiceView(record), ...await this.publicReputation(record) };
+    const commitments = new Map(
+      (await this.store.listingCommitments(
+        record.prepared.listings.map((listing) => listing.listingId),
+      ))
+        .filter((item) => item.runtimeCommitmentHash !== null)
+        .map((item) => [item.listingId, item.runtimeCommitmentHash!] as const),
+    );
+    return {
+      ...publicServiceView(record, commitments),
+      ...await this.publicReputation(record),
+    };
   }
 
   // Separate provider- and service-scoped blocks on the detail view, sourced

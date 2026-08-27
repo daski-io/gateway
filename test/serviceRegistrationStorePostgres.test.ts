@@ -220,12 +220,21 @@ describe("dynamic service registration storage", () => {
         evidence: firstEvidence,
       });
 
-      await store.activate(firstPrepared.registrationId);
+      await store.activate(firstPrepared.registrationId, [{
+        listingId: firstPrepared.listings[0]!.listingId,
+        runtimeCommitmentHash: hash("d"),
+        runtimeCommitment: { artifactType: "RuntimeListingCommitmentV1" },
+      }]);
       expect(await store.getActiveByServiceId(serviceId)).toMatchObject({
         registrationId: firstPrepared.registrationId,
         marketplaceEnabled: true,
         state: "ACTIVE",
       });
+      expect(await store.listingCommitments([firstPrepared.listings[0]!.listingId]))
+        .toMatchObject([{
+          listingId: firstPrepared.listings[0]!.listingId,
+          runtimeCommitmentHash: hash("d"),
+        }]);
 
       const secondIntent = intent("b");
       const secondCard = card("Orbital Logistics, refreshed");
@@ -233,6 +242,9 @@ describe("dynamic service registration storage", () => {
         registrationId: randomUUID(),
         reused: true,
       });
+      // Real reuse retains the prior listing verbatim (same listing id and
+      // artifacts); its row stays under the first registration.
+      secondPrepared.listings[0] = { ...firstPrepared.listings[0]!, reused: true };
       await store.create({
         intent: secondIntent,
         requestHash: canonicalHash(secondIntent),
@@ -250,7 +262,18 @@ describe("dynamic service registration storage", () => {
         registrationId: secondPrepared.registrationId,
         evidence: evidence(secondPrepared, "c"),
       });
-      await store.activate(secondPrepared.registrationId);
+      // A reused listing must arrive with its original commitment hash; a
+      // different hash would mean the sibling change rotated its identity.
+      await expect(store.activate(secondPrepared.registrationId, [{
+        listingId: secondPrepared.listings[0]!.listingId,
+        runtimeCommitmentHash: hash("e"),
+        runtimeCommitment: { artifactType: "RuntimeListingCommitmentV1" },
+      }])).rejects.toThrow(/RUNTIME_COMMITMENT_LISTING_MISMATCH/);
+      await store.activate(secondPrepared.registrationId, [{
+        listingId: secondPrepared.listings[0]!.listingId,
+        runtimeCommitmentHash: hash("d"),
+        runtimeCommitment: { artifactType: "RuntimeListingCommitmentV1" },
+      }]);
 
       expect(await store.get(firstPrepared.registrationId)).toMatchObject({
         state: "SUPERSEDED",

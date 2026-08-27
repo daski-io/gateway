@@ -152,6 +152,57 @@ export interface RecipeNonceInput {
   orderNonce: Hex;
 }
 
+/**
+ * V2 order binding for dynamic-catalog listings. Identical slot layout to
+ * V1 with the deal-document slots swapped: the listing manifest hash becomes
+ * the runtime listing commitment hash, and the provider offer hash becomes
+ * the provider intent hash. Verifiers must additionally check that the
+ * intent hash equals the one embedded in the runtime commitment.
+ */
+export interface RecipeNonceV2Input {
+  chainId: number;
+  canonicalToken: Address;
+  payer: Address;
+  splitter: Address;
+  grossAmount: bigint;
+  runtimeCommitmentHash: Hex;
+  providerIntentHash: Hex;
+  quoteHash: Hex;
+  canonicalRequestHash: Hex;
+  orderNonce: Hex;
+}
+
+export function recipeNonceV2(input: RecipeNonceV2Input): Hex {
+  return keccak256(encodeAbiParameters(
+    [
+      { type: "bytes32" },
+      { type: "uint256" },
+      { type: "address" },
+      { type: "address" },
+      { type: "address" },
+      { type: "uint256" },
+      { type: "bytes32" },
+      { type: "bytes32" },
+      { type: "bytes32" },
+      { type: "bytes32" },
+      { type: "bytes32" },
+    ],
+    [
+      keccak256(stringToHex("DaskiStandardExactOrderV2")),
+      BigInt(input.chainId),
+      input.canonicalToken,
+      input.payer,
+      input.splitter,
+      input.grossAmount,
+      input.runtimeCommitmentHash,
+      input.providerIntentHash,
+      input.quoteHash,
+      input.canonicalRequestHash,
+      input.orderNonce,
+    ],
+  ));
+}
+
 export function recipeNonce(input: RecipeNonceInput): Hex {
   return keccak256(encodeAbiParameters(
     [

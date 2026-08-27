@@ -410,7 +410,14 @@ export class ServiceRegistrationStore {
     }
   }
 
-  async activate(registrationId: string): Promise<StoredRegistration> {
+  async activate(
+    registrationId: string,
+    commitments: readonly {
+      listingId: string;
+      runtimeCommitmentHash: `0x${string}`;
+      runtimeCommitment: unknown;
+    }[],
+  ): Promise<StoredRegistration> {
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN ISOLATION LEVEL SERIALIZABLE");
@@ -440,6 +447,24 @@ export class ServiceRegistrationStore {
           WHERE registration_id=$1`,
         [registrationId],
       );
+      // Every listing head gets its immutable runtime commitment exactly
+      // once, in the same transaction that makes the head active. Reused
+      // listings live on their original registration's row and must arrive
+      // with the identical hash — a live check of the non-rotation invariant.
+      for (const commitment of commitments) {
+        const updated = await client.query(
+          `UPDATE standard_service_listings
+              SET runtime_commitment_hash=$2,runtime_commitment_json=$3,updated_at=now()
+            WHERE listing_id=$1
+              AND (runtime_commitment_hash IS NULL OR runtime_commitment_hash=$2)`,
+          [
+            commitment.listingId,
+            bytes(commitment.runtimeCommitmentHash),
+            commitment.runtimeCommitment,
+          ],
+        );
+        if (updated.rowCount !== 1) throw new Error("RUNTIME_COMMITMENT_LISTING_MISMATCH");
+      }
       const result = await client.query<RegistrationRow>(
         `UPDATE standard_service_registrations
             SET state='ACTIVE',chain_active=true,registration_healthy=true,
@@ -485,6 +510,32 @@ export class ServiceRegistrationStore {
           AND last_refreshed_at >= now() - interval '24 hours'`,
       [bytes(serviceId)],
     );
+  }
+
+  // Keyed by listing id, not registration id: a reused listing's row belongs
+  // to the registration that first admitted it.
+  async listingCommitments(listingIds: readonly string[]): Promise<Array<{
+    listingId: string;
+    runtimeCommitmentHash: `0x${string}` | null;
+    splitterTransactionHash: `0x${string}` | null;
+  }>> {
+    if (listingIds.length === 0) return [];
+    const result = await this.pool.query<{
+      listing_id: string;
+      runtime_commitment_hash: Buffer | null;
+      splitter_transaction_hash: string | null;
+    }>(
+      `SELECT listing_id,runtime_commitment_hash,splitter_transaction_hash
+         FROM standard_service_listings WHERE listing_id=ANY($1::uuid[])`,
+      [listingIds],
+    );
+    return result.rows.map((row) => ({
+      listingId: row.listing_id,
+      runtimeCommitmentHash: row.runtime_commitment_hash
+        ? hex(row.runtime_commitment_hash)
+        : null,
+      splitterTransactionHash: row.splitter_transaction_hash as `0x${string}` | null,
+    }));
   }
 
   async listPublic(limit: number): Promise<StoredRegistration[]> {
