@@ -1,15 +1,12 @@
 import {
   getAddress,
-  keccak256,
   recoverMessageAddress,
-  stringToHex,
   type Address,
 } from "viem";
-import { artifactPayloadHash, canonicalHash, providerIdentitySnapshotHash } from "./canonical.js";
+import { artifactPayloadHash, canonicalHash } from "./canonical.js";
 import type {
   AssetActionDefinitionV1,
   SignedEnvelope,
-  StandardListing,
   StandardRailManifest,
 } from "./types.js";
 import {
@@ -17,8 +14,6 @@ import {
   compileClosedRequestSchema,
   compileClosedResponseSchema,
 } from "./schema.js";
-import { assertListingRoleSeparation } from "./listingRoles.js";
-import { deriveSplitterProvenance } from "./splitterProvenance.js";
 
 export interface ArtifactTrust {
   environment: string;
@@ -90,9 +85,9 @@ export async function verifyStandardRailManifest(
 ): Promise<void> {
   requireClosedKeys(manifest as unknown as Record<string, unknown>, [
     "facilitatorProfile", "railCapabilityRequirements", "activeRailProfile",
-    "chainEvidencePolicy", "providerIdentitySnapshots",
+    "chainEvidencePolicy",
     "servicingAdmissions",
-    "actionCatalogs", "listings",
+    "actionCatalogs", "providerControlProfiles",
   ], "standard rail manifest");
   verifyClosedEnvelope(manifest.facilitatorProfile, "facilitator profile envelope");
   verifyClosedEnvelope(manifest.railCapabilityRequirements, "rail capability requirements envelope");
@@ -102,23 +97,50 @@ export async function verifyStandardRailManifest(
   await verifyEnvelope(manifest.railCapabilityRequirements, "RailCapabilityRequirementsV1", trust);
   await verifyEnvelope(manifest.activeRailProfile, "ActiveRailProfileV1", trust);
   await verifyEnvelope(manifest.chainEvidencePolicy, "ChainEvidencePolicyV2", trust);
-  for (const snapshot of manifest.providerIdentitySnapshots) {
-    verifyClosedEnvelope(snapshot, "provider identity snapshot envelope");
-    await verifyEnvelope(snapshot, "ProviderIdentitySnapshotV1", trust);
-    requireClosedKeys(snapshot.payload as unknown as Record<string, unknown>, [
-      "providerAgentId", "serviceId", "identityRegistry", "providerRegistry", "serviceRegistry",
-      "providerOwner", "providerAgentWallet", "providerPayee", "blockNumber", "blockHash",
-    ], "provider identity snapshot payload");
+  const controlProfileIds = new Set<string>();
+  for (const profile of manifest.providerControlProfiles) {
+    verifyClosedEnvelope(profile, "provider control profile envelope");
+    await verifyEnvelope(profile, "ProviderControlProfileV1", trust);
+    const control = profile.payload;
+    requireClosedKeys(control as unknown as Record<string, unknown>, [
+      "providerAgentId", "providerAudience", "origin", "quoteUrl", "dispatchUrl",
+      "dispatchStatusUrl", "lifecycleUrl", "assetQueryUrl", "assetActionUrl",
+      "assetResponseKeyId", "assetResponseKey", "servicingProfileEpoch",
+      "tlsPolicy", "workloadAuthentication",
+      "maxResponseBytes", "timeoutMs",
+    ], "provider control profile payload");
+    const origin = new URL(control.origin);
+    if (origin.href !== `${origin.origin}/` || origin.protocol !== "https:" || origin.username || origin.password) {
+      throw new Error("Provider control profile origin must be a credential-free HTTPS origin");
+    }
+    for (const [name, value] of Object.entries({
+      quoteUrl: control.quoteUrl,
+      dispatchUrl: control.dispatchUrl,
+      dispatchStatusUrl: control.dispatchStatusUrl,
+      lifecycleUrl: control.lifecycleUrl,
+      assetQueryUrl: control.assetQueryUrl,
+      assetActionUrl: control.assetActionUrl,
+    })) {
+      const url = new URL(value);
+      if (
+        url.protocol !== "https:" || url.username || url.password || url.hash ||
+        url.origin !== origin.origin || url.search
+      ) {
+        throw new Error(`${name} must be a credential-free query-free URL on the pinned provider origin`);
+      }
+    }
     if (
-      !/^[1-9]\d*$/.test(snapshot.payload.providerAgentId) ||
-      !/^[1-9]\d*$/.test(snapshot.payload.blockNumber) ||
-      !/^0x[0-9a-fA-F]{64}$/.test(snapshot.payload.serviceId) ||
-      !/^0x[0-9a-fA-F]{64}$/.test(snapshot.payload.blockHash) ||
-      [snapshot.payload.identityRegistry, snapshot.payload.providerRegistry,
-        snapshot.payload.serviceRegistry, snapshot.payload.providerOwner,
-        snapshot.payload.providerAgentWallet, snapshot.payload.providerPayee]
-        .some((value) => !/^0x[0-9a-fA-F]{40}$/.test(value) || /^0x0{40}$/i.test(value))
-    ) throw new Error("Provider identity snapshot is invalid");
+      !/^[1-9]\d*$/.test(control.providerAgentId) || !control.providerAudience ||
+      controlProfileIds.has(control.providerAgentId) ||
+      control.assetResponseKeyId !== "provider-wallet" ||
+      !/^0x[0-9a-fA-F]{40}$/.test(control.assetResponseKey) ||
+      !Number.isSafeInteger(control.servicingProfileEpoch) || control.servicingProfileEpoch < 1 ||
+      control.tlsPolicy !== "webpki-v1" || control.workloadAuthentication !== "signed-envelopes-v1" ||
+      !Number.isSafeInteger(control.maxResponseBytes) || control.maxResponseBytes <= 0 ||
+      control.maxResponseBytes > 1_000_000 || !Number.isSafeInteger(control.timeoutMs) ||
+      control.timeoutMs < 1_000 || control.timeoutMs > 120_000
+    ) throw new Error("Provider control profile policy is invalid");
+    controlProfileIds.add(control.providerAgentId);
   }
   for (const admission of manifest.servicingAdmissions) {
     verifyClosedEnvelope(admission, "provider servicing admission envelope");
@@ -192,25 +214,24 @@ export async function verifyStandardRailManifest(
       item.payload.providerAgentId === admission.payload.providerAgentId &&
       canonicalHash(item) === admission.payload.actionCatalogHash
     );
-    const listing = manifest.listings.find((item) =>
-      item.commitment.payload.providerAgentId === admission.payload.providerAgentId &&
-      canonicalHash(item.providerControlProfile) === admission.payload.providerControlProfileHash
+    const controlProfile = manifest.providerControlProfiles.find((item) =>
+      item.payload.providerAgentId === admission.payload.providerAgentId &&
+      canonicalHash(item) === admission.payload.providerControlProfileHash
     );
     if (
-      !catalog || !listing ||
+      !catalog || !controlProfile ||
       admission.payload.servicingProfileEpoch !== catalog.payload.servicingProfileEpoch ||
       admission.payload.actionCatalogSchemaHash !== catalog.payload.actionCatalogSchemaHash ||
       admission.payload.actionCatalogEpoch !== catalog.payload.actionCatalogEpoch ||
-      listing.providerControlProfile.payload.servicingProfileEpoch !==
+      controlProfile.payload.servicingProfileEpoch !==
         admission.payload.servicingProfileEpoch
     ) throw new Error("Servicing admission does not bind an active control profile and action catalog");
     for (const action of catalog.payload.actions) {
-      if (
-        action.endpoint !== listing.providerControlProfile.payload.assetActionUrl ||
-        !manifest.listings.some((item) =>
-          item.commitment.payload.providerAgentId === action.providerAgentId &&
-          item.commitment.payload.serviceId === action.serviceId)
-      ) throw new Error("Action definition is outside its admitted provider service");
+      // Service admission itself lives in the registration database now; the
+      // sealed check pins only the transport binding and uniqueness.
+      if (action.endpoint !== controlProfile.payload.assetActionUrl) {
+        throw new Error("Action definition is outside its admitted provider service");
+      }
       const actionKey = `${action.providerAgentId}:${action.serviceId.toLowerCase()}:${action.actionId}`;
       if (admittedActions.has(actionKey)) throw new Error("Provider service action is admitted more than once");
       admittedActions.add(actionKey);
@@ -287,7 +308,7 @@ export async function verifyStandardRailManifest(
     requirements.allowedExtensionSetHash.toLowerCase() !== facilitator.allowedExtensionSetHash.toLowerCase()
   ) throw new Error("Facilitator profile does not satisfy the rail capability requirements");
   if (
-    manifest.listings.length === 0 || !/^[1-9]\d*$/.test(rail.railEpoch) ||
+    !/^[1-9]\d*$/.test(rail.railEpoch) ||
     rail.environment !== trust.environment || rail.chainId !== trust.chainId ||
     rail.activatedAt < manifest.activeRailProfile.issuedAt ||
     rail.admissionValidBefore <= rail.activatedAt || rail.recoveryValidBefore <= rail.admissionValidBefore ||
@@ -298,7 +319,6 @@ export async function verifyStandardRailManifest(
     throw new Error("Active rail profile does not bind the facilitator profile");
   }
   const chainPolicy = manifest.chainEvidencePolicy.payload;
-  const chainPolicyHash = canonicalHash(manifest.chainEvidencePolicy);
   if (
     !/^0x[0-9a-fA-F]{40}$/.test(chainPolicy.canonicalToken) ||
     !/^0x[0-9a-fA-F]{64}$/.test(chainPolicy.canonicalTokenRuntimeCodeHash) ||
@@ -311,30 +331,6 @@ export async function verifyStandardRailManifest(
     !Number.isSafeInteger(chainPolicy.maximumLogPageEvents) || chainPolicy.maximumLogPageEvents < 1 ||
     chainPolicy.maximumLogPageEvents > 100_000
   ) throw new Error("Chain evidence policy is invalid");
-  const seen = new Set<string>();
-  for (const listing of manifest.listings) {
-    await verifyListing(listing, trust);
-    const snapshot = manifest.providerIdentitySnapshots.find((item) =>
-      providerIdentitySnapshotHash(item.payload, trust.chainId) ===
-        listing.commitment.payload.providerIdentitySnapshotHash
-    );
-    if (
-      !snapshot || snapshot.payload.providerAgentId !== listing.commitment.payload.providerAgentId ||
-      snapshot.payload.serviceId !== listing.commitment.payload.serviceId ||
-      getAddress(snapshot.payload.providerAgentWallet) !==
-        getAddress(listing.commitment.payload.providerAuthorityKey) ||
-      getAddress(snapshot.payload.providerPayee) !== getAddress(listing.commitment.payload.providerPayee)
-    ) throw new Error("Listing provider identity snapshot is missing or inconsistent");
-    const key = `${listing.commitment.payload.providerAgentId}:${listing.commitment.payload.outcomeId}`;
-    if (seen.has(key)) throw new Error(`Duplicate active listing ${key}`);
-    seen.add(key);
-    if (
-      listing.commitment.payload.chainEvidencePolicyHash.toLowerCase() !== chainPolicyHash.toLowerCase() ||
-      listing.commitment.payload.railCapabilityRequirementsHash.toLowerCase() !==
-        canonicalHash(manifest.railCapabilityRequirements).toLowerCase() ||
-      getAddress(listing.commitment.payload.canonicalToken) !== getAddress(chainPolicy.canonicalToken)
-    ) throw new Error("Listing does not bind the active chain evidence policy");
-  }
 }
 
 function summaryBindsRequest(action: AssetActionDefinitionV1): boolean {
@@ -350,365 +346,3 @@ function summaryBindsRequest(action: AssetActionDefinitionV1): boolean {
   });
 }
 
-async function verifyListing(listing: StandardListing, trust: ArtifactTrust): Promise<void> {
-  requireClosedKeys(listing as unknown as Record<string, unknown>, [
-    "commitment", "manifest", "offer", "providerControlProfile", "discovery",
-    "requestSchema", "responseSchema", "terms", "screeningPolicy", "buyerIdentityPolicy",
-    "extensionPolicy", "quotePolicy", "deliveryCommitment", "capacityPolicy", "deadlinePolicy",
-  ], "standard listing");
-  verifyClosedEnvelope(listing.commitment, "listing commitment envelope");
-  verifyClosedEnvelope(listing.manifest, "listing manifest envelope");
-  verifyClosedEnvelope(listing.offer, "provider offer envelope");
-  verifyClosedEnvelope(listing.providerControlProfile, "provider control profile envelope");
-  await verifyEnvelope(listing.commitment, "ListingCommitmentV2", trust);
-  await verifyEnvelope(listing.manifest, "ListingEpochManifestV2", trust);
-  await verifyEnvelope(listing.providerControlProfile, "ProviderControlProfileV1", trust);
-  await verifyEnvelope(listing.offer, "ProviderOutcomeOfferV1", {
-    ...trust,
-    signers: new Map([[listing.offer.signerKeyId, listing.commitment.payload.providerAuthorityKey]]),
-  });
-  const commitmentHash = canonicalHash(listing.commitment);
-  const manifestHash = canonicalHash(listing.manifest);
-  const controlProfileHash = canonicalHash(listing.providerControlProfile);
-  requireClosedKeys(listing.commitment.payload as unknown as Record<string, unknown>, [
-    "canonicalToken", "railCapabilityRequirementsHash", "providerAgentId", "serviceId",
-    "providerIdentitySnapshotHash", "providerAuthorityKey",
-    "providerTerminalAttestationKey", "providerPayee", "providerControlProfileHash", "outcomeId",
-    "method", "absoluteResourceUri", "bindingProfile", "requestSchemaHash", "responseSchemaHash",
-    "canonicalizationProfile", "buyerIdentityPolicyHash", "daskiCommissionReceiver", "commissionBps",
-    "termsHash", "screeningPolicyHash", "chainEvidencePolicyHash",
-    "extensionPolicyHash", "listingEpoch", "validFrom", "validUntil", "splitterFactory",
-    "splitterFactoryRuntimeCodeHash", "splitterCreationCodeHash", "splitterDeploymentSalt",
-  ], "listing commitment payload");
-  requireClosedKeys(listing.manifest.payload as unknown as Record<string, unknown>, [
-    "chainId", "canonicalToken", "providerPayee", "daskiCommissionReceiver", "commissionBps",
-    "policyVersionHash", "outcomeIdHash", "listingEpoch", "listingCommitmentHash",
-    "splitterAddress", "splitterFactory", "splitterFactoryRuntimeCodeHash",
-    "splitterDeploymentSalt", "splitterCreationCode", "splitterCreationCodeHash",
-    "splitterInitCodeHash", "splitterDeploymentTransaction", "splitterDeploymentBlockNumber",
-    "splitterDeploymentBlockHash", "splitterDeploymentTransactionIndex",
-    "splitterDeploymentLogIndex", "splitterRuntimeCodeHash", "splitterImmutableHash",
-    "splitterActivationBlockNumber", "splitterActivationBlockHash", "splitterActivationPosition",
-    "splitterStartingTokenBalance", "splitterStartingReleaseSequence",
-  ], "listing manifest payload");
-  requireClosedKeys(listing.offer.payload as unknown as Record<string, unknown>, [
-    "listingManifestHash", "outcomeId", "skillId", "providerAgentId", "providerPayee", "pricingMode",
-    "fixedGrossAmount", "quotePolicyHash", "capacityPolicyHash", "deadlinePolicyHash",
-    "deliveryCommitment", "termsHash", "issuedAt", "validBefore", "offerNonce",
-  ], "provider offer payload");
-  requireClosedKeys(listing.terms as unknown as Record<string, unknown>, [
-    "marketplaceTermsUrl", "marketplacePrivacyUrl", "providerLegalName", "providerTermsUrl",
-    "providerPrivacyUrl",
-  ], "listing terms");
-  requireClosedKeys(listing.discovery as unknown as Record<string, unknown>, [
-    "categoryFamily", "serviceType", "jurisdictions", "tags", "persistentAsset",
-    "fulfillmentObligationHash", "jurisdictionObligationHashes",
-  ], "listing discovery metadata");
-  if (
-    !listing.discovery.categoryFamily || !listing.discovery.serviceType ||
-    listing.discovery.jurisdictions.length < 1 ||
-    new Set(listing.discovery.jurisdictions).size !== listing.discovery.jurisdictions.length ||
-    new Set(listing.discovery.tags).size !== listing.discovery.tags.length ||
-    !/^0x[0-9a-fA-F]{64}$/.test(listing.discovery.fulfillmentObligationHash) ||
-    Object.keys(listing.discovery.jurisdictionObligationHashes).sort().join(",") !==
-      [...listing.discovery.jurisdictions].sort().join(",") ||
-    Object.values(listing.discovery.jurisdictionObligationHashes)
-      .some((value) => !/^0x[0-9a-fA-F]{64}$/.test(value))
-  ) throw new Error("Listing discovery metadata is invalid");
-  requireClosedKeys(listing.screeningPolicy as unknown as Record<string, unknown>, [
-    "policyId", "sanctionsOracle", "sanctionsOracleRuntimeCodeHash", "screenPayer", "screenedRoles",
-    "providerControlledWallets",
-  ], "screening policy");
-  requireClosedKeys(listing.buyerIdentityPolicy as unknown as Record<string, unknown>, [
-    "policyId",
-  ], "buyer identity policy");
-  requireClosedKeys(listing.extensionPolicy as unknown as Record<string, unknown>, [
-    "requiredExtensions", "optionalExtensions",
-  ], "extension policy");
-  if (listing.quotePolicy) {
-    requireClosedKeys(listing.quotePolicy as unknown as Record<string, unknown>, [
-      "maximumLifetimeSeconds", "minimumPaymentWindowSeconds", "personalizedPricing",
-    ], "quote policy");
-  }
-  requireClosedKeys(listing.deliveryCommitment as unknown as Record<string, unknown>, [
-    "deliveryMode", "customerKyc", "terminalAttestation", "responseValidation",
-  ], "delivery commitment");
-  requireClosedKeys(listing.capacityPolicy as unknown as Record<string, unknown>, [
-    "maxOpenOrders",
-  ], "capacity policy");
-  requireClosedKeys(listing.deadlinePolicy as unknown as Record<string, unknown>, [
-    "draftSeconds", "minimumPaymentWindowSeconds", "verificationSeconds",
-    "settlementEvidenceSeconds", "releaseEvidenceSeconds", "dispatchSeconds", "fulfillmentSeconds",
-  ], "deadline policy");
-  if (listing.manifest.payload.listingCommitmentHash !== commitmentHash) {
-    throw new Error("Listing manifest commitment hash mismatch");
-  }
-  const manifestPayload = listing.manifest.payload;
-  const unsignedInteger = /^(0|[1-9][0-9]*)$/;
-  const hashValue = /^0x[0-9a-fA-F]{64}$/;
-  const addressValue = /^0x[0-9a-fA-F]{40}$/;
-  if (
-    manifestPayload.chainId !== trust.chainId ||
-    !addressValue.test(manifestPayload.canonicalToken) ||
-    !addressValue.test(manifestPayload.providerPayee) ||
-    !addressValue.test(manifestPayload.daskiCommissionReceiver) ||
-    !Number.isSafeInteger(manifestPayload.commissionBps) ||
-    manifestPayload.commissionBps < 1 ||
-    manifestPayload.commissionBps >= 10_000 ||
-    !hashValue.test(manifestPayload.policyVersionHash) ||
-    !hashValue.test(manifestPayload.outcomeIdHash) ||
-    !unsignedInteger.test(manifestPayload.listingEpoch) ||
-    BigInt(manifestPayload.listingEpoch) < 1n ||
-    BigInt(manifestPayload.listingEpoch) >= 1n << 64n ||
-    !hashValue.test(manifestPayload.listingCommitmentHash) ||
-    !addressValue.test(manifestPayload.splitterAddress) ||
-    !addressValue.test(manifestPayload.splitterFactory) ||
-    !hashValue.test(manifestPayload.splitterFactoryRuntimeCodeHash) ||
-    !hashValue.test(manifestPayload.splitterDeploymentSalt) ||
-    !/^0x(?:[0-9a-fA-F]{2})+$/.test(manifestPayload.splitterCreationCode) ||
-    manifestPayload.splitterCreationCode.length > 200_002 ||
-    !hashValue.test(manifestPayload.splitterCreationCodeHash) ||
-    !hashValue.test(manifestPayload.splitterInitCodeHash) ||
-    !hashValue.test(manifestPayload.splitterDeploymentTransaction) ||
-    !unsignedInteger.test(manifestPayload.splitterDeploymentBlockNumber) ||
-    !hashValue.test(manifestPayload.splitterDeploymentBlockHash) ||
-    !Number.isSafeInteger(manifestPayload.splitterDeploymentTransactionIndex) ||
-    manifestPayload.splitterDeploymentTransactionIndex < 0 ||
-    !Number.isSafeInteger(manifestPayload.splitterDeploymentLogIndex) ||
-    manifestPayload.splitterDeploymentLogIndex < 0 ||
-    !hashValue.test(manifestPayload.splitterRuntimeCodeHash) ||
-    !hashValue.test(manifestPayload.splitterImmutableHash) ||
-    !unsignedInteger.test(manifestPayload.splitterActivationBlockNumber) ||
-    !hashValue.test(manifestPayload.splitterActivationBlockHash) ||
-    manifestPayload.splitterActivationPosition !== "END_OF_BLOCK" ||
-    !unsignedInteger.test(manifestPayload.splitterStartingTokenBalance) ||
-    BigInt(manifestPayload.splitterStartingTokenBalance) >= 1n << 256n ||
-    !unsignedInteger.test(manifestPayload.splitterStartingReleaseSequence) ||
-    BigInt(manifestPayload.splitterStartingReleaseSequence) >= 1n << 64n ||
-    BigInt(manifestPayload.splitterActivationBlockNumber) <
-      BigInt(manifestPayload.splitterDeploymentBlockNumber)
-  ) throw new Error("Listing manifest V2 chain provenance is invalid");
-  if (listing.offer.payload.listingManifestHash !== manifestHash) {
-    throw new Error("Provider offer listing hash mismatch");
-  }
-  if (listing.commitment.payload.providerControlProfileHash !== controlProfileHash) {
-    throw new Error("Listing commitment provider control profile hash mismatch");
-  }
-  const commitment = listing.commitment.payload;
-  const offer = listing.offer.payload;
-  const control = listing.providerControlProfile.payload;
-  if (
-    getAddress(manifestPayload.canonicalToken) !== getAddress(commitment.canonicalToken) ||
-    getAddress(manifestPayload.providerPayee) !== getAddress(commitment.providerPayee) ||
-    getAddress(manifestPayload.daskiCommissionReceiver) !==
-      getAddress(commitment.daskiCommissionReceiver) ||
-    manifestPayload.commissionBps !== commitment.commissionBps ||
-    manifestPayload.policyVersionHash !== commitment.chainEvidencePolicyHash ||
-    manifestPayload.outcomeIdHash !== keccak256(stringToHex(commitment.outcomeId)) ||
-    manifestPayload.listingEpoch !== commitment.listingEpoch ||
-    getAddress(manifestPayload.splitterFactory) !== getAddress(commitment.splitterFactory) ||
-    manifestPayload.splitterFactoryRuntimeCodeHash !==
-      commitment.splitterFactoryRuntimeCodeHash ||
-    manifestPayload.splitterCreationCodeHash !== commitment.splitterCreationCodeHash ||
-    manifestPayload.splitterDeploymentSalt !== commitment.splitterDeploymentSalt
-  ) throw new Error("Listing manifest differs from its V2 commitment");
-  deriveSplitterProvenance({
-    constructor: {
-      chainId: manifestPayload.chainId,
-      canonicalToken: getAddress(manifestPayload.canonicalToken),
-      providerPayee: getAddress(manifestPayload.providerPayee),
-      daskiCommissionReceiver: getAddress(manifestPayload.daskiCommissionReceiver),
-      commissionBps: manifestPayload.commissionBps,
-      policyVersionHash: manifestPayload.policyVersionHash,
-      outcomeIdHash: manifestPayload.outcomeIdHash,
-      listingCommitmentHash: manifestPayload.listingCommitmentHash,
-      listingEpoch: BigInt(manifestPayload.listingEpoch),
-    },
-    provenance: {
-      splitterAddress: getAddress(manifestPayload.splitterAddress),
-      splitterFactory: getAddress(manifestPayload.splitterFactory),
-      splitterFactoryRuntimeCodeHash: manifestPayload.splitterFactoryRuntimeCodeHash,
-      splitterDeploymentSalt: manifestPayload.splitterDeploymentSalt,
-      splitterCreationCode: manifestPayload.splitterCreationCode,
-      splitterCreationCodeHash: manifestPayload.splitterCreationCodeHash,
-      splitterInitCodeHash: manifestPayload.splitterInitCodeHash,
-      splitterImmutableHash: manifestPayload.splitterImmutableHash,
-    },
-    trustedSplitterCreationCodeHash: trust.splitterCreationCodeHash,
-    trustedSplitterFactoryRuntimeCodeHash: trust.splitterFactoryRuntimeCodeHash,
-  });
-  requireClosedKeys(control as unknown as Record<string, unknown>, [
-    "providerAgentId", "providerAudience", "origin", "quoteUrl", "dispatchUrl",
-    "dispatchStatusUrl", "lifecycleUrl", "assetQueryUrl", "assetActionUrl",
-    "assetResponseKeyId", "assetResponseKey", "servicingProfileEpoch",
-    "tlsPolicy", "workloadAuthentication",
-    "maxResponseBytes", "timeoutMs",
-  ], "provider control profile payload");
-  const origin = new URL(control.origin);
-  if (origin.href !== `${origin.origin}/` || origin.protocol !== "https:" || origin.username || origin.password) {
-    throw new Error("Provider control profile origin must be a credential-free HTTPS origin");
-  }
-  for (const [name, value] of Object.entries({
-    quoteUrl: control.quoteUrl,
-    dispatchUrl: control.dispatchUrl,
-    dispatchStatusUrl: control.dispatchStatusUrl,
-    lifecycleUrl: control.lifecycleUrl,
-    assetQueryUrl: control.assetQueryUrl,
-    assetActionUrl: control.assetActionUrl,
-    absoluteResourceUri: commitment.absoluteResourceUri,
-  })) {
-    const url = new URL(value);
-    if (url.protocol !== "https:" || url.username || url.password || url.hash) {
-      throw new Error(`${name} must be a credential-free HTTPS URL without a fragment`);
-    }
-    if (name !== "absoluteResourceUri" && (url.origin !== origin.origin || url.search)) {
-      throw new Error(`${name} must be a query-free URL on the pinned provider origin`);
-    }
-  }
-  if (
-    control.providerAgentId !== commitment.providerAgentId || !control.providerAudience ||
-    !/^0x[0-9a-fA-F]{64}$/.test(commitment.serviceId) ||
-    !/^0x[0-9a-fA-F]{64}$/.test(commitment.providerIdentitySnapshotHash) ||
-    control.assetResponseKeyId !== "provider-wallet" ||
-    !/^0x[0-9a-fA-F]{40}$/.test(control.assetResponseKey) ||
-    getAddress(control.assetResponseKey) !== getAddress(commitment.providerAuthorityKey) ||
-    !Number.isSafeInteger(control.servicingProfileEpoch) || control.servicingProfileEpoch < 1 ||
-    control.tlsPolicy !== "webpki-v1" || control.workloadAuthentication !== "signed-envelopes-v1" ||
-    !Number.isSafeInteger(control.maxResponseBytes) || control.maxResponseBytes <= 0 ||
-    control.maxResponseBytes > 1_000_000 || !Number.isSafeInteger(control.timeoutMs) ||
-    control.timeoutMs < 1_000 || control.timeoutMs > 120_000
-  ) throw new Error("Provider control profile policy is invalid");
-  if (
-    canonicalHash(listing.requestSchema) !== commitment.requestSchemaHash ||
-    canonicalHash(listing.responseSchema) !== commitment.responseSchemaHash
-  ) throw new Error("Listing schema content hash mismatch");
-  if (
-    !offer.skillId || !/^\d+$/.test(commitment.listingEpoch) || commitment.validFrom >= commitment.validUntil ||
-    !/^0x[0-9a-fA-F]{40}$/.test(commitment.splitterFactory) ||
-    commitment.splitterFactoryRuntimeCodeHash.toLowerCase() !==
-      trust.splitterFactoryRuntimeCodeHash.toLowerCase() ||
-    commitment.splitterCreationCodeHash.toLowerCase() !==
-      trust.splitterCreationCodeHash.toLowerCase() ||
-    !/^0x[0-9a-fA-F]{64}$/.test(commitment.splitterFactoryRuntimeCodeHash) ||
-    !/^0x[0-9a-fA-F]{64}$/.test(commitment.splitterCreationCodeHash) ||
-    !/^0x[0-9a-fA-F]{64}$/.test(commitment.splitterDeploymentSalt) ||
-    offer.issuedAt < commitment.validFrom || offer.validBefore > commitment.validUntil ||
-    !Number.isSafeInteger(commitment.commissionBps) || commitment.commissionBps <= 0 ||
-    commitment.commissionBps >= 10_000 ||
-    (offer.pricingMode === "fixed" && !/^[1-9][0-9]*$/.test(offer.fixedGrossAmount)) ||
-    (offer.pricingMode === "dynamic" && offer.fixedGrossAmount !== "0") ||
-    (offer.pricingMode === "fixed" && offer.quotePolicyHash.toLowerCase() !== `0x${"00".repeat(32)}`) ||
-    (offer.pricingMode === "dynamic" && !listing.quotePolicy) ||
-    (offer.pricingMode === "fixed" && listing.quotePolicy !== null)
-  ) throw new Error("Listing validity or pricing policy is invalid");
-  if (listing.quotePolicy && (
-    canonicalHash(listing.quotePolicy) !== offer.quotePolicyHash ||
-    !Number.isSafeInteger(listing.quotePolicy.maximumLifetimeSeconds) ||
-    listing.quotePolicy.maximumLifetimeSeconds < 30 ||
-    !Number.isSafeInteger(listing.quotePolicy.minimumPaymentWindowSeconds) ||
-    listing.quotePolicy.minimumPaymentWindowSeconds < 15 ||
-    listing.quotePolicy.minimumPaymentWindowSeconds >= listing.quotePolicy.maximumLifetimeSeconds ||
-    listing.quotePolicy.personalizedPricing !== false
-  )) throw new Error("Quote policy is invalid");
-  if (offer.pricingMode === "fixed") {
-    const bps = BigInt(commitment.commissionBps);
-    const minimumReleasableAmount = (10_000n + bps - 1n) / bps;
-    if (BigInt(offer.fixedGrossAmount) < minimumReleasableAmount) {
-      throw new Error("Fixed price cannot produce both splitter payment legs");
-    }
-  }
-  const providerControlKey = getAddress(commitment.providerAuthorityKey).toLowerCase();
-  if (providerControlKey !== getAddress(commitment.providerTerminalAttestationKey).toLowerCase()) {
-    throw new Error("Provider authority and terminal attestations must use the provider wallet");
-  }
-  const roleAddresses = [
-    providerControlKey,
-    commitment.providerPayee,
-    commitment.daskiCommissionReceiver,
-  ].map((value) => getAddress(value).toLowerCase());
-  assertListingRoleSeparation(
-    commitment.providerAuthorityKey,
-    commitment.providerPayee,
-    commitment.daskiCommissionReceiver,
-  );
-  if (
-    canonicalHash(listing.screeningPolicy) !== commitment.screeningPolicyHash ||
-    !listing.screeningPolicy.policyId || listing.screeningPolicy.screenPayer !== true ||
-    !/^0x[0-9a-fA-F]{40}$/.test(listing.screeningPolicy.sanctionsOracle) ||
-    !/^0x[0-9a-fA-F]{64}$/.test(listing.screeningPolicy.sanctionsOracleRuntimeCodeHash) ||
-    listing.screeningPolicy.screenedRoles.length === 0 ||
-    new Set(listing.screeningPolicy.screenedRoles).size !== listing.screeningPolicy.screenedRoles.length ||
-    listing.screeningPolicy.providerControlledWallets.some((value) => !/^0x[0-9a-fA-F]{40}$/.test(value)) ||
-    new Set(listing.screeningPolicy.providerControlledWallets.map((value) => getAddress(value).toLowerCase())).size !==
-      listing.screeningPolicy.providerControlledWallets.length
-  ) throw new Error("Screening policy content hash mismatch or policy is invalid");
-  const controlledWallets = listing.screeningPolicy.providerControlledWallets
-    .map((value) => getAddress(value).toLowerCase());
-  if (controlledWallets.some((value) => roleAddresses.includes(value))) {
-    throw new Error("Provider-controlled wallets must not duplicate listing role wallets");
-  }
-  if (
-    canonicalHash(listing.buyerIdentityPolicy) !== commitment.buyerIdentityPolicyHash ||
-    listing.buyerIdentityPolicy.policyId !== "none"
-  ) throw new Error("Buyer identity policy content hash mismatch or policy is unsupported");
-  const requiredExtensions = [
-    "bazaar", "daski-rail-profile", "daski-order-terms",
-    ...(commitment.bindingProfile === "recipe-bound-v1" ? ["daski-order-binding"] : []),
-  ].sort();
-  if (
-    canonicalHash(listing.extensionPolicy) !== commitment.extensionPolicyHash ||
-    canonicalHash([...listing.extensionPolicy.requiredExtensions].sort()) !== canonicalHash(requiredExtensions) ||
-    canonicalHash([...listing.extensionPolicy.optionalExtensions].sort()) !== canonicalHash(["payment-identifier"]) ||
-    new Set([
-      ...listing.extensionPolicy.requiredExtensions,
-      ...listing.extensionPolicy.optionalExtensions,
-    ]).size !== listing.extensionPolicy.requiredExtensions.length + listing.extensionPolicy.optionalExtensions.length
-  ) throw new Error("Extension policy content hash mismatch or policy is invalid");
-  if (
-    canonicalHash(listing.deliveryCommitment) !== offer.deliveryCommitment ||
-    listing.deliveryCommitment.deliveryMode !== "asynchronous-v1" ||
-    listing.deliveryCommitment.customerKyc !== "provider-post-payment-v1" ||
-    listing.deliveryCommitment.terminalAttestation !== "provider-signed-v1" ||
-    listing.deliveryCommitment.responseValidation !== "closed-schema-v1"
-  ) throw new Error("Delivery commitment content hash mismatch or policy is invalid");
-  if (canonicalHash(listing.terms) !== commitment.termsHash) {
-    throw new Error("Terms content hash mismatch");
-  }
-  for (const [name, value] of Object.entries(listing.terms).filter(([name]) => name.endsWith("Url"))) {
-    const url = new URL(value);
-    if (url.protocol !== "https:" || url.username || url.password || url.hash) {
-      throw new Error(`${name} must be a credential-free HTTPS URL without a fragment`);
-    }
-  }
-  if (
-    canonicalHash(listing.capacityPolicy) !== offer.capacityPolicyHash ||
-    !Number.isSafeInteger(listing.capacityPolicy.maxOpenOrders) ||
-    listing.capacityPolicy.maxOpenOrders <= 0
-  ) {
-    throw new Error("Capacity policy content hash mismatch");
-  }
-  const deadlines = listing.deadlinePolicy;
-  if (
-    canonicalHash(deadlines) !== offer.deadlinePolicyHash ||
-    Object.values(deadlines).some((value) => !Number.isSafeInteger(value) || value < 30) ||
-    deadlines.minimumPaymentWindowSeconds >= deadlines.draftSeconds ||
-    deadlines.dispatchSeconds * 1_000 < control.timeoutMs
-  ) throw new Error("Deadline policy content hash mismatch");
-  if (
-    offer.providerAgentId !== commitment.providerAgentId ||
-    getAddress(offer.providerPayee) !== getAddress(commitment.providerPayee) ||
-    offer.outcomeId !== commitment.outcomeId ||
-    offer.termsHash !== commitment.termsHash
-  ) {
-    throw new Error("Provider offer conflicts with listing commitment");
-  }
-  requireClosedKeys(listing.requestSchema, ["$schema", "type", "properties", "required", "additionalProperties", "maxProperties"], "request schema");
-  if (
-    commitment.bindingProfile === "stock-fixed-v1" &&
-    (
-      canonicalHash(listing.requestSchema.properties) !== canonicalHash({}) ||
-      canonicalHash(listing.requestSchema.required) !== canonicalHash([]) ||
-      listing.requestSchema.maxProperties !== 0
-    )
-  ) throw new Error("Stock-fixed listings cannot accept buyer-selected request fields");
-}

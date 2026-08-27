@@ -56,40 +56,23 @@ export function dynamicRegistrationPolicy(
   config: Pick<Config, "chainId" | "usdc">,
   railConfig: Pick<
     StandardRailConfig,
-    "manifest" | "splitterCreationCodeHash" | "splitterFactoryRuntimeCodeHash"
+    | "manifest"
+    | "splitterCreationCodeHash"
+    | "splitterFactoryRuntimeCodeHash"
+    | "dynamicListingPolicy"
   >,
 ): DynamicRegistrationPolicy {
-  const seed = railConfig.manifest.listings[0];
-  if (!seed) throw new Error("Dynamic registration requires an active rail policy seed");
-  const commitment = seed.commitment.payload;
-  const manifest = seed.manifest.payload;
-  for (const listing of railConfig.manifest.listings) {
-    if (
-      getAddress(listing.commitment.payload.canonicalToken) !==
-        getAddress(config.usdc.address) ||
-      getAddress(listing.commitment.payload.daskiCommissionReceiver) !==
-        getAddress(commitment.daskiCommissionReceiver) ||
-      listing.commitment.payload.commissionBps !== commitment.commissionBps ||
-      getAddress(listing.commitment.payload.splitterFactory) !==
-        getAddress(commitment.splitterFactory)
-    ) throw new Error("Active rail listings do not share one dynamic registration policy");
-  }
-  if (
-    manifest.splitterCreationCodeHash.toLowerCase() !==
-      railConfig.splitterCreationCodeHash.toLowerCase() ||
-    commitment.splitterFactoryRuntimeCodeHash.toLowerCase() !==
-      railConfig.splitterFactoryRuntimeCodeHash.toLowerCase()
-  ) throw new Error("Dynamic registration splitter policy is not trusted");
-  if (keccak256(manifest.splitterCreationCode) !== railConfig.splitterCreationCodeHash) {
+  const deployment = railConfig.dynamicListingPolicy;
+  if (keccak256(deployment.splitterCreationCode) !== railConfig.splitterCreationCodeHash) {
     throw new Error("Dynamic registration splitter creation code hash is invalid");
   }
   const policyVersionHash = canonicalHash({
     artifactType: "GatewayDynamicListingPolicyV1",
     chainId: config.chainId,
     canonicalToken: getAddress(config.usdc.address),
-    daskiCommissionReceiver: getAddress(commitment.daskiCommissionReceiver),
-    commissionBps: commitment.commissionBps,
-    splitterFactory: getAddress(commitment.splitterFactory),
+    daskiCommissionReceiver: getAddress(deployment.daskiCommissionReceiver),
+    commissionBps: deployment.commissionBps,
+    splitterFactory: getAddress(deployment.splitterFactory),
     splitterCreationCodeHash: railConfig.splitterCreationCodeHash,
     splitterFactoryRuntimeCodeHash: railConfig.splitterFactoryRuntimeCodeHash,
     chainEvidencePolicyHash: canonicalHash(railConfig.manifest.chainEvidencePolicy),
@@ -99,13 +82,13 @@ export function dynamicRegistrationPolicy(
   });
   return {
     canonicalToken: getAddress(config.usdc.address),
-    daskiCommissionReceiver: getAddress(commitment.daskiCommissionReceiver),
-    commissionBps: commitment.commissionBps,
-    splitterFactory: getAddress(commitment.splitterFactory),
-    splitterCreationCode: manifest.splitterCreationCode,
+    daskiCommissionReceiver: getAddress(deployment.daskiCommissionReceiver),
+    commissionBps: deployment.commissionBps,
+    splitterFactory: getAddress(deployment.splitterFactory),
+    splitterCreationCode: deployment.splitterCreationCode,
     splitterCreationCodeHash: railConfig.splitterCreationCodeHash,
     splitterFactoryRuntimeCodeHash: railConfig.splitterFactoryRuntimeCodeHash,
-    splitterRuntimeCodeHash: manifest.splitterRuntimeCodeHash,
+    splitterRuntimeCodeHash: deployment.splitterRuntimeCodeHash,
     policyVersionHash,
   };
 }

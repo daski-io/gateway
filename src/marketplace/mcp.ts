@@ -26,7 +26,7 @@ const readOnlyAnnotations = {
 export function registerMarketplaceTools(
   server: McpServer,
   reader: MarketplaceChainReader,
-  activeOutcomes: () => Array<Record<string, unknown>>,
+  activeOutcomes: () => Promise<Array<Record<string, unknown>>>,
 ): void {
   server.registerTool(
     "daski_list_providers",
@@ -39,7 +39,8 @@ export function registerMarketplaceTools(
       annotations: { title: "List Daski providers", ...readOnlyAnnotations },
     },
     async ({ offset, limit }) => chainRead(async () => {
-      const ids = [...new Set(activeOutcomes().map((item) => String(item.providerAgentId)))];
+      const all = await activeOutcomes();
+      const ids = [...new Set(all.map((item) => String(item.providerAgentId)))];
       const page = ids.slice(offset, offset + limit);
       return {
         offset,
@@ -48,7 +49,7 @@ export function registerMarketplaceTools(
         providers: await Promise.all(page.map(async (id) => ({
           ...await reader.getProvider(BigInt(id)) as object,
           marketplaceAdmitted: true,
-          activeOutcomeIds: activeOutcomes()
+          activeOutcomeIds: all
             .filter((item) => item.providerAgentId === id).map((item) => item.outcomeId),
         }))),
       };
@@ -63,7 +64,7 @@ export function registerMarketplaceTools(
       annotations: { title: "Get a Daski provider", ...readOnlyAnnotations },
     },
     async ({ agentId }) => chainRead(async () => {
-      const outcomes = activeOutcomes().filter((item) => item.providerAgentId === agentId);
+      const outcomes = (await activeOutcomes()).filter((item) => item.providerAgentId === agentId);
       return {
         ...await reader.getProvider(BigInt(agentId)) as object,
         marketplaceAdmitted: outcomes.length > 0,
@@ -79,7 +80,7 @@ export function registerMarketplaceTools(
       annotations: { title: "Get a Daski service", ...readOnlyAnnotations },
     },
     async ({ serviceId }) => chainRead(async () => {
-      const outcomes = activeOutcomes().filter(
+      const outcomes = (await activeOutcomes()).filter(
         (item) => String(item.serviceId).toLowerCase() === serviceId.toLowerCase(),
       );
       return {

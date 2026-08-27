@@ -59,6 +59,10 @@ function listing(): StandardListing {
       providerAgentId: "7",
     } },
     manifest: { payload: { splitterAddress: address("5") } },
+    runtimeCommitmentHash: hash("4"),
+    providerIntentHash: hash("5"),
+    providerOwner: address("2"),
+    providerAgentWallet: address("2"),
     screeningPolicy: { providerControlledWallets: [] },
     providerControlProfile: { payload: {
       providerAudience: "provider.example",

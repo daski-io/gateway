@@ -822,6 +822,12 @@ export class ServiceRegistrationService {
     }
   }
 
+  /** One synchronous card refresh, used by checkout to satisfy the §10
+   *  purchase-freshness fence when the periodic loop has not run recently. */
+  refreshRegistration(record: StoredRegistration): Promise<void> {
+    return this.refreshOne(record);
+  }
+
   private async refreshOne(record: StoredRegistration): Promise<void> {
     let service: MarketplaceServiceRecord;
     let authority: ProviderAuthority;

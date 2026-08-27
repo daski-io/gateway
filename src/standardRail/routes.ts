@@ -58,6 +58,13 @@ export function standardPaymentError(error: unknown): {
   if (internal === "OUTCOME_NOT_FOUND") {
     return { status: 404, code: "OUTCOME_NOT_FOUND", message: "Outcome not found" };
   }
+  if (internal === "LISTING_SUPERSEDED") {
+    return {
+      status: 409,
+      code: "LISTING_SUPERSEDED",
+      message: "The listing changed after this order was drafted; request a new challenge",
+    };
+  }
   if (/malformed|invalid|mismatch|Unsupported|Missing|required|forbidden|differ/i.test(internal)) {
     return {
       status: 400,
@@ -212,14 +219,16 @@ export function createStandardRailRouter(service: StandardRailService, publicUrl
     catch (error) { next(error); }
   });
 
-  router.get("/public/v2/artifacts/:hash", (req, res) => {
-    const artifact = service.publicArtifact(String(req.params.hash));
-    if (!artifact) {
-      res.status(404).json({ error: { code: "ARTIFACT_NOT_FOUND", message: "Artifact not found" } });
-      return;
-    }
-    res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
-    res.json(artifact);
+  router.get("/public/v2/artifacts/:hash", async (req, res, next) => {
+    try {
+      const artifact = await service.publicArtifact(String(req.params.hash));
+      if (!artifact) {
+        res.status(404).json({ error: { code: "ARTIFACT_NOT_FOUND", message: "Artifact not found" } });
+        return;
+      }
+      res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+      res.json(artifact);
+    } catch (error) { next(error); }
   });
 
   router.post("/outcomes/:providerAgentId/:outcomeId", async (req, res, next) => {

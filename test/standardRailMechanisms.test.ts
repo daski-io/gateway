@@ -12,7 +12,6 @@ import {
 import type { StandardRailConfig } from "../src/standardRail/config.js";
 import type { RegisterIntent } from "../src/standardRail/reputationOperation.js";
 import { StandardReputationWorker } from "../src/standardRail/reputationWorker.js";
-import type { ProviderIdentitySnapshotV1 } from "../src/standardRail/types.js";
 
 const privateKey = `0x${"01".repeat(32)}` as const;
 const hash = (digit: string) => `0x${digit.repeat(64)}` as const;
@@ -87,84 +86,6 @@ describe("standard rail hardened mechanisms", () => {
     } finally {
       vi.useRealTimers();
     }
-  });
-
-  it("revalidates provider identity at current finalized state and rejects rotation", async () => {
-    const owner = "0x1111111111111111111111111111111111111111";
-    const wallet = "0x2222222222222222222222222222222222222222";
-    const originalPayee = "0x3333333333333333333333333333333333333333";
-    let payee = originalPayee;
-    const getBlock = vi.fn(async () => ({ number: 123n }));
-    const client = {
-      getBlock,
-      readContract: vi.fn(async ({ functionName }: { functionName: string }) => {
-        if (functionName === "ownerOf") return owner;
-        if (functionName === "getAgentWallet") return wallet;
-        if (functionName === "getProvider") return { agentId: 1n, isActive: true };
-        return [1n, true, owner, wallet, payee];
-      }),
-    };
-    const config = {
-      evidenceRpcUrls: ["https://rpc-a.example", "https://rpc-b.example"],
-      releasePrivateKey: privateKey,
-    } as unknown as StandardRailConfig;
-    const evidence = new StandardChainEvidence(config, baseSepolia, unlockedFacilitatorNonceLock);
-    Object.assign(evidence as unknown as { clients: unknown[] }, {
-      clients: [{ host: "rpc-a.example", client }, { host: "rpc-b.example", client }],
-    });
-    const snapshot = {
-      providerAgentId: "1", serviceId: hash("8"),
-      identityRegistry: "0x4444444444444444444444444444444444444444",
-      providerRegistry: "0x5555555555555555555555555555555555555555",
-      serviceRegistry: "0x6666666666666666666666666666666666666666",
-      providerOwner: owner, providerAgentWallet: wallet, providerPayee: originalPayee,
-      blockNumber: "10", blockHash: hash("9"),
-    } as ProviderIdentitySnapshotV1;
-    await expect(evidence.revalidateProviderIdentitySnapshot(snapshot)).resolves.toBeUndefined();
-    expect(getBlock).toHaveBeenCalledWith({ blockTag: "finalized" });
-    payee = "0x7777777777777777777777777777777777777777";
-    await expect(evidence.revalidateProviderIdentitySnapshot(snapshot))
-      .rejects.toThrow("Provider identity changed after listing admission");
-  });
-
-  it("serializes finalized identity reads across evidence sources", async () => {
-    const owner = "0x1111111111111111111111111111111111111111";
-    const wallet = "0x2222222222222222222222222222222222222222";
-    const payee = "0x3333333333333333333333333333333333333333";
-    let active = 0;
-    let maximumActive = 0;
-    const tracked = async <T>(value: T): Promise<T> => {
-      active += 1;
-      maximumActive = Math.max(maximumActive, active);
-      await Promise.resolve();
-      active -= 1;
-      return value;
-    };
-    const client = {
-      getBlock: () => tracked({ hash: hash("9") }),
-      readContract: ({ functionName }: { functionName: string }) => {
-        if (functionName === "ownerOf") return tracked(owner);
-        if (functionName === "getAgentWallet") return tracked(wallet);
-        if (functionName === "getProvider") return tracked({ agentId: 1n, isActive: true });
-        return tracked([1n, true, owner, wallet, payee] as const);
-      },
-    };
-    const evidence = new StandardChainEvidence({
-      evidenceRpcUrls: ["https://rpc-a.example", "https://rpc-b.example"],
-      releasePrivateKey: privateKey,
-    } as unknown as StandardRailConfig, baseSepolia, unlockedFacilitatorNonceLock);
-    Object.assign(evidence as unknown as { clients: unknown[] }, {
-      clients: [{ host: "rpc-a.example", client }, { host: "rpc-b.example", client }],
-    });
-    await expect(evidence.verifyProviderIdentitySnapshot({
-      providerAgentId: "1", serviceId: hash("8"),
-      identityRegistry: "0x4444444444444444444444444444444444444444",
-      providerRegistry: "0x5555555555555555555555555555555555555555",
-      serviceRegistry: "0x6666666666666666666666666666666666666666",
-      providerOwner: owner, providerAgentWallet: wallet, providerPayee: payee,
-      blockNumber: "10", blockHash: hash("9"),
-    })).resolves.toBeUndefined();
-    expect(maximumActive).toBe(1);
   });
 
   it("aggregates sanctions screening into one pinned read through the selected RPC", async () => {

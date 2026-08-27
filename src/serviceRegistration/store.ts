@@ -551,30 +551,50 @@ export class ServiceRegistrationStore {
   // returned so callers can expose it for independent re-derivation.
   async listingCommitments(listingIds: readonly string[]): Promise<Array<{
     listingId: string;
+    state: string;
+    acceptingNewOrders: boolean;
     runtimeCommitmentHash: `0x${string}` | null;
     runtimeCommitment: unknown;
+    activationCheckpoint: unknown;
     splitterTransactionHash: `0x${string}` | null;
   }>> {
     if (listingIds.length === 0) return [];
     const result = await this.pool.query<{
       listing_id: string;
+      state: string;
+      accepting_new_orders: boolean;
       runtime_commitment_hash: Buffer | null;
       runtime_commitment_json: unknown;
+      activation_checkpoint: unknown;
       splitter_transaction_hash: string | null;
     }>(
-      `SELECT listing_id,runtime_commitment_hash,runtime_commitment_json,
+      `SELECT listing_id,state,accepting_new_orders,runtime_commitment_hash,
+              runtime_commitment_json,activation_checkpoint,
               splitter_transaction_hash
          FROM standard_service_listings WHERE listing_id=ANY($1::uuid[])`,
       [listingIds],
     );
     return result.rows.map((row) => ({
       listingId: row.listing_id,
+      state: row.state,
+      acceptingNewOrders: row.accepting_new_orders,
       runtimeCommitmentHash: row.runtime_commitment_hash
         ? hex(row.runtime_commitment_hash)
         : null,
       runtimeCommitment: row.runtime_commitment_json ?? null,
+      activationCheckpoint: row.activation_checkpoint ?? null,
       splitterTransactionHash: row.splitter_transaction_hash as `0x${string}` | null,
     }));
+  }
+
+  async listActiveByProvider(providerAgentId: string): Promise<StoredRegistration[]> {
+    const result = await this.pool.query<RegistrationRow>(
+      `SELECT * FROM standard_service_registrations
+        WHERE provider_agent_id=$1 AND state='ACTIVE'
+        ORDER BY activated_at,registration_id`,
+      [providerAgentId],
+    );
+    return result.rows.map(mapRow);
   }
 
   async listPublic(limit: number): Promise<StoredRegistration[]> {

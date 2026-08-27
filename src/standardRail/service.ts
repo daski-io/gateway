@@ -50,7 +50,10 @@ import { StandardConfirmations } from "./confirmations.js";
 import { base, baseSepolia } from "viem/chains";
 import { activeRequestKey } from "../mcp/requestContext.js";
 import { DirectReputationReader } from "./reputationReader.js";
-import type { MarketplaceChainReader } from "../marketplace/reader.js";
+import type {
+  ServiceRegistrationStore,
+  StoredRegistration,
+} from "../serviceRegistration/store.js";
 import { readBoundedJsonResponse as readBoundedJson } from "./boundedJson.js";
 import { StandardProviderTransport } from "./providerTransport.js";
 import { StandardRailCatalog } from "./catalog.js";
@@ -108,7 +111,8 @@ export class StandardRailService {
     pool: Pool,
     private readonly facilitator: StandardFacilitator,
     private readonly evidence: StandardChainEvidence,
-    marketplace: MarketplaceChainReader,
+    registrations: ServiceRegistrationStore,
+    refreshRegistration: (record: StoredRegistration) => Promise<void>,
     fetchFn: typeof fetch = fetch,
     federationPermitPool: Pool = pool,
   ) {
@@ -161,22 +165,10 @@ export class StandardRailService {
     );
     this.catalog = new StandardRailCatalog(
       railConfig,
-      appConfig.chainId,
-      evidence,
-      marketplace,
+      appConfig,
+      registrations,
+      refreshRegistration,
       this.reputationReader,
-      async (listing, endpoint) => {
-        const response = await this.providerFetch(listing, endpoint, {
-          method: "GET",
-          headers: { accept: "application/json" },
-          signal: AbortSignal.timeout(listing.providerControlProfile.payload.timeoutMs),
-        }, true);
-        if (!response.ok) throw new Error("PROVIDER_AGENT_CARD_UNAVAILABLE");
-        return readBoundedJson(
-          response,
-          Math.min(256_000, listing.providerControlProfile.payload.maxResponseBytes),
-        );
-      },
     );
     this.railProfileHash = canonicalHash(railConfig.manifest.activeRailProfile);
     this.dispatcher = new StandardProviderDispatch(
@@ -220,17 +212,6 @@ export class StandardRailService {
       this.railConfig.manifest.facilitatorProfile.payload.baseUrl !==
         this.railConfig.facilitatorBaseUrl
     ) throw new Error("Standard-rail manifest does not match this runtime");
-    for (const listing of this.railConfig.manifest.listings) {
-      await this.evidence.verifyListingDeployment(listing, this.appConfig.chainId);
-    }
-    for (const snapshot of this.railConfig.manifest.providerIdentitySnapshots) {
-      if (
-        getAddress(snapshot.payload.identityRegistry) !== getAddress(this.appConfig.marketplaceContracts.identityRegistry) ||
-        getAddress(snapshot.payload.providerRegistry) !== getAddress(this.appConfig.marketplaceContracts.providerRegistry) ||
-        getAddress(snapshot.payload.serviceRegistry) !== getAddress(this.appConfig.marketplaceContracts.serviceRegistry)
-      ) throw new Error("Provider identity snapshot registry domain mismatch");
-      await this.evidence.verifyProviderIdentitySnapshot(snapshot.payload);
-    }
     await this.store.admitManifest(this.railConfig.manifest);
     await this.assetFederation.activateAdmissions();
     await this.refreshDependencyReadiness();
@@ -240,7 +221,6 @@ export class StandardRailService {
       void this.refreshDependencyReadiness().catch(() => undefined);
     }, this.railConfig.readinessIntervalMs);
     this.readinessInterval.unref();
-    this.catalog.start();
   }
 
   async stop(): Promise<void> {
@@ -248,7 +228,6 @@ export class StandardRailService {
     this.readinessInterval = null;
     if (this.readinessRetry) clearTimeout(this.readinessRetry);
     this.readinessRetry = null;
-    await this.catalog.stop();
     await this.readinessRefresh?.catch(() => undefined);
     await Promise.all([
       this.recovery.stop(),
@@ -271,7 +250,7 @@ export class StandardRailService {
     return this.operationalHealthReporter.read();
   }
 
-  publicArtifact(hash: string): import("./types.js").SignedEnvelope<unknown, number> | null {
+  publicArtifact(hash: string): Promise<import("./types.js").SignedEnvelope<unknown, number> | null> {
     return this.catalog.publicArtifact(hash);
   }
 
@@ -282,12 +261,10 @@ export class StandardRailService {
         await this.assertRailFence();
         await this.facilitator.assertSupported(this.appConfig.x402Network);
         await this.evidence.verifyCanonicalToken(this.appConfig.chainId);
-        await Promise.all(this.railConfig.manifest.listings.map(
-          async (listing) => {
-            await this.evidence.verifyScreeningPolicy(listing);
-            await this.screenParticipants(listing);
-          },
-        ));
+        await this.evidence.verifyScreeningOracle(
+          this.railConfig.screeningPolicy.sanctionsOracle,
+          this.railConfig.screeningPolicy.sanctionsOracleRuntimeCodeHash,
+        );
         this.dependenciesReady = true;
         if (this.readinessRetry) clearTimeout(this.readinessRetry);
         this.readinessRetry = null;
@@ -317,7 +294,7 @@ export class StandardRailService {
   }
 
   private async providerFetch(
-    listing: StandardListing,
+    listing: Pick<StandardListing, "providerControlProfile">,
     endpoint: string,
     init: RequestInit,
     requestScoped = false,
@@ -645,6 +622,7 @@ export class StandardRailService {
             releaseEvidenceHash: release.evidenceHash,
             config: this.railConfig,
             chainId: this.appConfig.chainId,
+            marketplaceContracts: this.appConfig.marketplaceContracts,
             evidence: this.evidence,
           });
           order = await this.store.transition(order, "RELEASE_FINAL", "release_evidence_recovered", {
@@ -692,7 +670,7 @@ export class StandardRailService {
     });
   }
 
-  listing(providerAgentId: string, outcomeId: string): StandardListing {
+  listing(providerAgentId: string, outcomeId: string): Promise<StandardListing> {
     return this.catalog.listing(providerAgentId, outcomeId);
   }
 
@@ -700,7 +678,7 @@ export class StandardRailService {
     return this.catalog.verifyListingIdentity(listing);
   }
 
-  listOutcomes(): Array<Record<string, unknown>> {
+  listOutcomes(): Promise<Array<Record<string, unknown>>> {
     return this.catalog.listOutcomes();
   }
 
@@ -1159,8 +1137,7 @@ export class StandardRailService {
   }): Promise<{ handle: string; order: StandardOrderRecord; paymentRequired: unknown }> {
     this.assertAdmissionOpen();
     await this.assertRailFence();
-    const listing = this.listing(args.providerAgentId, args.outcomeId);
-    await this.verifyListingIdentity(listing);
+    const listing = await this.listing(args.providerAgentId, args.outcomeId);
     this.validateRequest(listing, args.body);
     const canonicalRequestHash = canonicalHash({
       method: "POST",
@@ -1169,8 +1146,10 @@ export class StandardRailService {
       outcomeId: args.outcomeId,
       body: args.body,
     });
-    const listingManifestHash = canonicalHash(listing.manifest);
-    const providerOfferHash = canonicalHash(listing.offer);
+    // Option A deal-document slots: the listingManifestHash slot carries the
+    // runtime commitment hash, the providerOfferHash slot the intent hash.
+    const listingManifestHash = listing.runtimeCommitmentHash;
+    const providerOfferHash = listing.providerIntentHash;
     const railEpoch = this.railConfig.manifest.activeRailProfile.payload.railEpoch;
     const existing = await this.store.findOpenDraft(
       args.providerAgentId,
@@ -1185,7 +1164,6 @@ export class StandardRailService {
     }
 
     const now = Math.floor(Date.now() / 1_000);
-    const offer = listing.offer.payload;
     const pricing = await this.resolveGrossAmount(listing, args.body);
     const quoteIssuedAt = Math.max(now, pricing.issuedAt);
     const minimumPaymentWindowSeconds = Math.max(
@@ -1194,10 +1172,7 @@ export class StandardRailService {
     );
     const expiresAt = Math.min(
       now + listing.deadlinePolicy.draftSeconds,
-      offer.validBefore,
       pricing.validBefore,
-      listing.commitment.payload.validUntil,
-      listing.commitment.validBefore,
     );
     if (
       expiresAt <= quoteIssuedAt + minimumPaymentWindowSeconds
@@ -1279,7 +1254,7 @@ export class StandardRailService {
     const challenge = await this.issueChallenge(args);
     let order = challenge.order;
     if (order.state !== "CHALLENGE_ISSUED") return { handle: challenge.handle, order, replay: false };
-    const listing = this.listing(args.providerAgentId, args.outcomeId);
+    const listing = await this.listing(args.providerAgentId, args.outcomeId);
     const requirements = paymentRequirements(
       this.appConfig,
       listing,
@@ -1470,6 +1445,7 @@ export class StandardRailService {
         releaseEvidenceHash: release.evidenceHash,
         config: this.railConfig,
         chainId: this.appConfig.chainId,
+        marketplaceContracts: this.appConfig.marketplaceContracts,
         evidence: this.evidence,
       });
       order = await this.store.transition(order, "RELEASE_FINAL", "release_evidence_final", {
@@ -1546,7 +1522,7 @@ export class StandardRailService {
         grossAmount: offer.fixedGrossAmount,
         providerQuoteHash: `0x${"00".repeat(32)}`,
         issuedAt: now,
-        validBefore: offer.validBefore,
+        validBefore: now + listing.deadlinePolicy.draftSeconds,
       };
     }
     const requestHash = canonicalHash(body);
@@ -1561,7 +1537,7 @@ export class StandardRailService {
       validBefore: now + 60,
       payload: {
         outcomeId: listing.commitment.payload.outcomeId,
-        listingManifestHash: canonicalHash(listing.manifest),
+        listingManifestHash: listing.runtimeCommitmentHash,
         requestHash,
         request: body,
       },
@@ -1596,7 +1572,7 @@ export class StandardRailService {
     );
     if (
       quote.outcomeId !== listing.commitment.payload.outcomeId ||
-      quote.listingManifestHash !== canonicalHash(listing.manifest) ||
+      quote.listingManifestHash !== listing.runtimeCommitmentHash ||
       quote.requestHash !== requestHash || typeof quote.grossAmount !== "string" ||
       !/^[1-9][0-9]*$/.test(quote.grossAmount) || typeof quote.issuedAt !== "number" ||
       !Number.isSafeInteger(quote.issuedAt) || typeof quote.validBefore !== "number" ||
@@ -1605,7 +1581,7 @@ export class StandardRailService {
         listing.deadlinePolicy.minimumPaymentWindowSeconds,
         listing.quotePolicy?.minimumPaymentWindowSeconds ?? 0,
       ) ||
-      quote.validBefore > offer.validBefore || !listing.quotePolicy ||
+      !listing.quotePolicy ||
       quote.validBefore > quote.issuedAt + listing.quotePolicy.maximumLifetimeSeconds ||
       typeof quote.signature !== "string"
     ) throw new Error("PROVIDER_QUOTE_INVALID");

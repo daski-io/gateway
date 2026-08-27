@@ -101,38 +101,42 @@ export async function createStandardGatewayHttp(
     options.standardRailConfig.evidenceRpcUrls,
     chain,
   ));
+  // The registration store IS the catalog now: it must exist before the
+  // standard rail so checkout can assemble listings from it, and its refresh
+  // loop runs unconditionally to keep the §10 purchase fence satisfiable.
+  const registrationStore = new ServiceRegistrationStore(options.pool);
+  const registrationService = new ServiceRegistrationService(
+    options.config,
+    options.standardRailConfig,
+    registrationStore,
+    marketplace,
+    new ViemRegistrationEvidenceVerifier(
+      options.config,
+      options.standardRailConfig,
+      chain,
+      marketplace,
+    ),
+    (url) => fetchProviderCardJson(url, options.a2aFetch ?? fetch),
+  );
   const standardRail = new StandardRailService(
     options.config,
     options.standardRailConfig,
     options.pool,
     facilitator,
     evidence,
-    marketplace,
+    registrationStore,
+    (record) => registrationService.refreshRegistration(record),
     options.a2aFetch,
     options.federationPermitPool,
   );
   await standardRail.initialize();
-  let registrationService: ServiceRegistrationService | null = null;
   if (options.config.dynamicServiceRegistrationEnabled) {
-    registrationService = new ServiceRegistrationService(
-      options.config,
-      options.standardRailConfig,
-      new ServiceRegistrationStore(options.pool),
-      marketplace,
-      new ViemRegistrationEvidenceVerifier(
-        options.config,
-        options.standardRailConfig,
-        chain,
-        marketplace,
-      ),
-      (url) => fetchProviderCardJson(url, options.a2aFetch ?? fetch),
-    );
     app.use(createServiceRegistrationRouter({
       config: options.config,
       service: registrationService,
     }));
-    registrationService.start();
   }
+  registrationService.start();
   app.use(createStandardMetaRouter({
     config: options.config,
     pool: options.pool,
@@ -157,7 +161,7 @@ export async function createStandardGatewayHttp(
     app,
     mcp,
     standardRailStop: async () => {
-      await registrationService?.stop();
+      await registrationService.stop();
       await standardRail.stop();
     },
   };

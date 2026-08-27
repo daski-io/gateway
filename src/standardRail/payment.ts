@@ -10,7 +10,7 @@ import {
 } from "viem";
 import type { Config } from "../config.js";
 import type { Hex } from "../types.js";
-import { assertNoDuplicateJsonKeys, canonicalHash, recipeNonce } from "./canonical.js";
+import { assertNoDuplicateJsonKeys, canonicalHash, recipeNonce, recipeNonceV2 } from "./canonical.js";
 import type { StandardListing, StandardOrderRecord } from "./types.js";
 
 const EIP3009_TYPES = {
@@ -55,18 +55,30 @@ export function paymentRequired(args: {
   order: StandardOrderRecord;
   railProfileHash: Hex;
 }): PaymentRequired {
-  const binding = args.listing.commitment.payload.bindingProfile === "recipe-bound-v1"
+  const bindingProfile = args.listing.commitment.payload.bindingProfile;
+  const binding = bindingProfile === "recipe-bound-v2"
     ? {
-        version: 1,
-        profile: "recipe-bound-v1",
-        listingManifestHash: args.order.listingManifestHash,
-        providerOfferHash: args.order.providerOfferHash,
+        version: 2,
+        profile: "recipe-bound-v2",
+        runtimeCommitmentHash: args.order.listingManifestHash,
+        providerIntentHash: args.order.providerOfferHash,
         quoteHash: args.order.quoteHash,
         canonicalRequestHash: args.order.canonicalRequestHash,
         orderNonce: args.order.orderNonce,
         expiresAt: Math.floor(args.order.expiresAt.getTime() / 1_000),
       }
-    : undefined;
+    : bindingProfile === "recipe-bound-v1"
+      ? {
+          version: 1,
+          profile: "recipe-bound-v1",
+          listingManifestHash: args.order.listingManifestHash,
+          providerOfferHash: args.order.providerOfferHash,
+          quoteHash: args.order.quoteHash,
+          canonicalRequestHash: args.order.canonicalRequestHash,
+          orderNonce: args.order.orderNonce,
+          expiresAt: Math.floor(args.order.expiresAt.getTime() / 1_000),
+        }
+      : undefined;
   return {
     x402Version: 2,
     resource: {
@@ -284,18 +296,33 @@ export async function validatePayment(args: {
     if (validAfter > now || validAfter + 300n < now) {
       throw new Error("Recipe authorization lower bound is outside the allowed clock window");
     }
-    const expected = recipeNonce({
-      chainId: config.chainId,
-      canonicalToken: getAddress(requirements.asset),
-      payer,
-      splitter: getAddress(requirements.payTo),
-      grossAmount: BigInt(requirements.amount),
-      listingManifestHash: order.listingManifestHash,
-      providerOfferHash: order.providerOfferHash,
-      quoteHash: order.quoteHash,
-      canonicalRequestHash: order.canonicalRequestHash,
-      orderNonce: order.orderNonce,
-    });
+    // Option A slot layout: on a v2 order, listingManifestHash carries the
+    // runtime commitment hash and providerOfferHash the provider intent hash.
+    const expected = listing.commitment.payload.bindingProfile === "recipe-bound-v2"
+      ? recipeNonceV2({
+          chainId: config.chainId,
+          canonicalToken: getAddress(requirements.asset),
+          payer,
+          splitter: getAddress(requirements.payTo),
+          grossAmount: BigInt(requirements.amount),
+          runtimeCommitmentHash: order.listingManifestHash,
+          providerIntentHash: order.providerOfferHash,
+          quoteHash: order.quoteHash,
+          canonicalRequestHash: order.canonicalRequestHash,
+          orderNonce: order.orderNonce,
+        })
+      : recipeNonce({
+          chainId: config.chainId,
+          canonicalToken: getAddress(requirements.asset),
+          payer,
+          splitter: getAddress(requirements.payTo),
+          grossAmount: BigInt(requirements.amount),
+          listingManifestHash: order.listingManifestHash,
+          providerOfferHash: order.providerOfferHash,
+          quoteHash: order.quoteHash,
+          canonicalRequestHash: order.canonicalRequestHash,
+          orderNonce: order.orderNonce,
+        });
     if (nonce.toLowerCase() !== expected.toLowerCase()) throw new Error("Recipe nonce mismatch");
   }
   const parsedSignature = parseSignature(signature as Hex);

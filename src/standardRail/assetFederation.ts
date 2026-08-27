@@ -20,7 +20,7 @@ import { withFederationPermit } from "./federationPermit.js";
 export interface ActiveServicing {
   admissionEnvelope: SignedEnvelope<ProviderServicingAdmissionV1>;
   admissionHash: Hex;
-  listing: StandardListing;
+  listing: Pick<StandardListing, "providerControlProfile">;
 }
 
 function exact(value: unknown, keys: readonly string[]): void {
@@ -41,7 +41,7 @@ export class StandardAssetFederation {
     private readonly chainId: number,
     private readonly wallet: StandardWalletStore,
     private readonly providerFetch: (
-      listing: StandardListing,
+      listing: Pick<StandardListing, "providerControlProfile">,
       endpoint: string,
       init: RequestInit,
     ) => Promise<Response>,
@@ -179,14 +179,14 @@ export class StandardAssetFederation {
     const admissionEnvelope = this.activeAdmissions.get(providerAgentId);
     if (!admissionEnvelope || !admissionEnvelope.payload.servicingEnabled ||
       admissionEnvelope.payload.validFrom > now || admissionEnvelope.payload.validBefore <= now) return null;
-    const listing = this.config.manifest.listings.find((item) =>
-      item.commitment.payload.providerAgentId === providerAgentId &&
-      canonicalHash(item.providerControlProfile) === admissionEnvelope.payload.providerControlProfileHash
+    const controlProfile = this.config.manifest.providerControlProfiles.find((item) =>
+      item.payload.providerAgentId === providerAgentId &&
+      canonicalHash(item) === admissionEnvelope.payload.providerControlProfileHash
     );
-    return listing ? {
+    return controlProfile ? {
       admissionEnvelope,
       admissionHash: canonicalHash(admissionEnvelope),
-      listing,
+      listing: { providerControlProfile: controlProfile },
     } : null;
   }
 

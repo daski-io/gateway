@@ -161,7 +161,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const dynamicServiceRegistrationEnabled = booleanValue(
     "DYNAMIC_SERVICE_REGISTRATION_ENABLED",
     env.DYNAMIC_SERVICE_REGISTRATION_ENABLED,
-    false,
+    true,
   );
   return {
     nodeEnv,
@@ -177,8 +177,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       env.CATALOG_OPERATOR_TOKEN,
       dynamicServiceRegistrationEnabled,
     ),
+    // Below the 300-second §10 purchase-freshness fence, so steady-state
+    // checkout does not depend on the synchronous fallback refresh.
     catalogRefreshIntervalMs: integer(
-      "CATALOG_REFRESH_INTERVAL_MS", env.CATALOG_REFRESH_INTERVAL_MS, 300_000,
+      "CATALOG_REFRESH_INTERVAL_MS", env.CATALOG_REFRESH_INTERVAL_MS, 240_000,
     ),
     databaseUrl: databaseUrl(env.DATABASE_URL),
     publicUrl: httpUrl("PUBLIC_URL", env.PUBLIC_URL, production),

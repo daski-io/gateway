@@ -8,9 +8,6 @@ export function isReputationEligiblePayer(
   listing: StandardListing,
   config: StandardRailConfig,
 ): boolean {
-  const snapshot = config.manifest.providerIdentitySnapshots.find((item) =>
-    item.payload.providerAgentId === listing.commitment.payload.providerAgentId &&
-    item.payload.serviceId === listing.commitment.payload.serviceId);
   const privateKeys = [
     config.quotePrivateKey,
     config.dispatchPrivateKey,
@@ -26,9 +23,9 @@ export function isReputationEligiblePayer(
     listing.commitment.payload.providerPayee,
     listing.commitment.payload.daskiCommissionReceiver,
     listing.manifest.payload.splitterAddress,
+    listing.providerOwner,
+    listing.providerAgentWallet,
     ...listing.screeningPolicy.providerControlledWallets,
-    ...(snapshot ? [snapshot.payload.providerOwner, snapshot.payload.providerAgentWallet,
-      snapshot.payload.providerPayee] : []),
     ...privateKeys.map((key) => privateKeyToAccount(key).address),
   ].map((address) => getAddress(address).toLowerCase()));
   return !controlled.has(getAddress(payer).toLowerCase());
