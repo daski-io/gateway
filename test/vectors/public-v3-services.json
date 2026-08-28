@@ -1,0 +1,94 @@
+{
+  "services": [
+    {
+      "gatewayRegistrationId": "4ce2f9c8-2980-49ad-a919-3e0acf1ea4e7",
+      "providerAgentId": "41",
+      "serviceId": "0xabababababababababababababababababababababababababababababababab",
+      "agentCardUrl": "https://provider.example/agent-cards/lab-analysis.json",
+      "providerPayee": "0x1212121212121212121212121212121212121212",
+      "legal": {
+        "marketplaceTermsUrl": "https://daski.example/terms",
+        "marketplacePrivacyUrl": "https://daski.example/privacy",
+        "providerLegalName": "Example Research LLC",
+        "providerTermsUrl": "https://provider.example/terms",
+        "providerPrivacyUrl": "https://provider.example/privacy"
+      },
+      "name": "Laboratory Analysis",
+      "description": "Independent laboratory analysis for submitted samples.\nResults are returned as structured data.",
+      "service": {
+        "serviceId": "0xabababababababababababababababababababababababababababababababab",
+        "slug": "lab-analysis",
+        "version": "1",
+        "categoryFamily": "scientific-services",
+        "serviceType": "laboratory-analysis",
+        "jurisdictions": [
+          "US"
+        ],
+        "lifecycle": "active",
+        "turnaroundEstimate": "3-5 business days",
+        "acceptingNewOrders": true
+      },
+      "standardRail": {
+        "origin": "https://provider.example/",
+        "providerAudience": "https://provider.example",
+        "quoteUrl": "https://provider.example/standard-rail/quote",
+        "dispatchUrl": "https://provider.example/standard-rail/dispatch",
+        "dispatchStatusUrl": "https://provider.example/standard-rail/status",
+        "lifecycleUrl": "https://provider.example/standard-rail/lifecycle",
+        "assetQueryUrl": "https://provider.example/standard-rail/assets",
+        "assetActionUrl": "https://provider.example/standard-rail/actions"
+      },
+      "skills": [
+        {
+          "skillId": "analyze-sample",
+          "skillContractHash": "0xcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+          "acceptingNewOrders": true,
+          "presentation": {
+            "name": "Analyze sample",
+            "description": "Analyze one submitted sample.\nReturns a signed result.",
+            "examples": [],
+            "tags": [
+              "laboratory"
+            ],
+            "documentationUrl": "https://provider.example/docs/analyze-sample"
+          },
+          "contract": {
+            "inputSchema": {
+              "type": "object"
+            },
+            "resultSchema": {
+              "type": "object"
+            },
+            "pricing": {
+              "USDC": {
+                "fixed_amount": "2500000"
+              }
+            },
+            "paymentRequired": true,
+            "requiresAssetOwnership": false,
+            "assetType": null,
+            "fulfillmentMode": "human",
+            "capacity": {
+              "maxOpenOrders": 4
+            },
+            "deadlines": {},
+            "assetAction": null
+          },
+          "listing": {
+            "listingId": "listing-lab-analysis",
+            "listingKey": "0xefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef",
+            "paymentRequired": true,
+            "splitterAddress": "0x3434343434343434343434343434343434343434",
+            "runtimeCommitmentHash": null,
+            "runtimeCommitment": null
+          }
+        }
+      ],
+      "freshness": {
+        "lastValidatedAt": "2026-08-26T12:00:00.000Z",
+        "presentationStaleAfterSeconds": 86400,
+        "commerceFreshnessSeconds": 300
+      }
+    }
+  ]
+}
