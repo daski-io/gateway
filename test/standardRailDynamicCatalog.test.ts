@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { Hex } from "viem";
+import { getAddress, type Hex } from "viem";
 import { StandardRailCatalog } from "../src/standardRail/catalog.js";
 import { canonicalHash } from "../src/standardRail/canonical.js";
 import type { StandardRailConfig } from "../src/standardRail/config.js";
@@ -429,6 +429,26 @@ describe("dynamic listing catalog", () => {
     expect(row.providerOfferHash).toBe(hash("6"));
     expect(row.runtimeCommitmentHash).toBe(runtimeCommitmentHash);
     expect(row.providerIntentHash).toBe(hash("6"));
+    expect(row.bindingProfile).toBe("recipe-bound-v2");
+    expect(row.splitter).toEqual({
+      splitterAddress,
+      splitterFactory: getAddress(address("b")),
+      splitterDeploymentTransaction: checkpoint.splitterDeploymentTransactionHash,
+      splitterDeploymentBlockNumber: checkpoint.splitterDeploymentBlockNumber,
+      splitterDeploymentBlockHash: checkpoint.splitterDeploymentBlockHash,
+      splitterRuntimeCodeHash: checkpoint.splitterRuntimeCodeHash,
+      splitterActivationBlockNumber: checkpoint.splitterActivationBlockNumber,
+      splitterActivationBlockHash: checkpoint.splitterActivationBlockHash,
+      splitterActivationPosition: checkpoint.splitterActivationPosition,
+      splitterStartingTokenBalance: checkpoint.splitterStartingTokenBalance,
+      splitterStartingReleaseSequence: checkpoint.splitterStartingReleaseSequence,
+      outcomeIdHash: listingKey,
+      listingCommitmentHash: canonicalHash(preparationEnvelope),
+      policyVersionHash: hash("d"),
+      listingEpoch: "1",
+    });
+    expect(row).not.toHaveProperty("fulfillmentObligationHash");
+    expect(row).not.toHaveProperty("jurisdictionObligationHashes");
     expect((row.service as { name: string }).name).toBe("Domain Registration");
     expect((row.skill as { name: string }).name).toBe("Register a domain");
     expect(row.pricingMode).toBe("fixed");

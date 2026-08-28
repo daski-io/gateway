@@ -205,6 +205,7 @@ export function createStandardRailRouter(service: StandardRailService, publicUrl
     try {
       res.json({
         version: 2,
+        outcomeSchemaVersion: 1,
         resources: (await service.publicOutcomes()).map((outcome) => ({
           resource: outcome,
           transport: "http",
@@ -215,7 +216,13 @@ export function createStandardRailRouter(service: StandardRailService, publicUrl
   });
 
   router.get("/public/v2/outcomes", async (_req, res, next) => {
-    try { res.json({ version: 2, outcomes: await service.publicOutcomes() }); }
+    try {
+      res.json({
+        version: 2,
+        outcomeSchemaVersion: 1,
+        outcomes: await service.publicOutcomes(),
+      });
+    }
     catch (error) { next(error); }
   });
 

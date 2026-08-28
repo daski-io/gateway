@@ -24,6 +24,9 @@ import {
 } from "./schema.js";
 import type {
   ProviderControlProfileV1,
+  PublicOutcomeDetailV1,
+  PublicOutcomeV1,
+  PublicReputationV1,
   SignedEnvelope,
   StandardListing,
 } from "./types.js";
@@ -50,7 +53,7 @@ const EMPTY_REPUTATION = {
   fulfillmentSampleSize: "0",
   recentPurchases: [],
   safeBlock: null,
-};
+} satisfies PublicReputationV1;
 
 const SEALED_DEADLINE_POLICY = {
   draftSeconds: 300,
@@ -274,8 +277,8 @@ export class StandardRailCatalog {
     assertPassiveProviderOutput(result);
   }
 
-  async listOutcomes(): Promise<Array<Record<string, unknown>>> {
-    const rows: Array<Record<string, unknown>> = [];
+  async listOutcomes(): Promise<PublicOutcomeV1[]> {
+    const rows: PublicOutcomeV1[] = [];
     for (const record of await this.registrations.listPublic(PUBLIC_CATALOG_LIMIT)) {
       for (const listing of await this.assembleServiceSafe(record)) {
         rows.push(this.publicRow(record, listing));
@@ -288,7 +291,7 @@ export class StandardRailCatalog {
     );
   }
 
-  async publicOutcomes(): Promise<Array<Record<string, unknown>>> {
+  async publicOutcomes(): Promise<PublicOutcomeV1[]> {
     const outcomes = await this.listOutcomes();
     let snapshot;
     try {
@@ -297,14 +300,14 @@ export class StandardRailCatalog {
       return outcomes;
     }
     const { providers, services, safeBlock } = snapshot;
-    return outcomes.map((outcome) => ({
+    return outcomes.map((outcome): PublicOutcomeV1 => ({
       ...outcome,
       providerReputation: providers.get(String(outcome.providerAgentId)) ??
-        { ...(outcome.providerReputation as object), safeBlock },
+        { ...outcome.providerReputation, safeBlock },
       serviceReputation: services.get(outcome.serviceId as Hex) ??
-        { ...(outcome.serviceReputation as object), safeBlock },
+        { ...outcome.serviceReputation, safeBlock },
       reputation: services.get(outcome.serviceId as Hex) ??
-        { ...(outcome.reputation as object), safeBlock },
+        { ...outcome.reputation, safeBlock },
     }));
   }
 
@@ -317,29 +320,28 @@ export class StandardRailCatalog {
     pricingMode?: "fixed" | "dynamic";
     persistentAsset?: boolean;
     limit: number;
-  }): Promise<Array<Record<string, unknown>>> {
+  }): Promise<PublicOutcomeV1[]> {
     const tokens = (filters.text ?? "").toLowerCase().match(/[a-z0-9]+/g)?.slice(0, 12) ?? [];
     return (await this.publicOutcomes()).filter((outcome) => {
-      const row = outcome as Record<string, unknown>;
-      const service = row.service as { name: string; description: string };
-      const skill = row.skill as { name: string; description: string };
+      const service = outcome.service;
+      const skill = outcome.skill;
       const haystack = [
         service.name,
         service.description,
         skill.name,
         skill.description,
-        ...(row.tags as string[]),
+        ...outcome.tags,
       ].join(" ").toLowerCase().match(/[a-z0-9]+/g) ?? [];
       return (
         tokens.every((token) => haystack.some((word) => word.includes(token))) &&
-        (!filters.providerAgentId || row.providerAgentId === filters.providerAgentId) &&
-        (!filters.categoryFamily || row.categoryFamily === filters.categoryFamily) &&
-        (!filters.serviceType || row.serviceType === filters.serviceType) &&
+        (!filters.providerAgentId || outcome.providerAgentId === filters.providerAgentId) &&
+        (!filters.categoryFamily || outcome.categoryFamily === filters.categoryFamily) &&
+        (!filters.serviceType || outcome.serviceType === filters.serviceType) &&
         (!filters.jurisdiction ||
-          (row.jurisdictions as string[]).includes(filters.jurisdiction)) &&
-        (!filters.pricingMode || row.pricingMode === filters.pricingMode) &&
+          outcome.jurisdictions.includes(filters.jurisdiction)) &&
+        (!filters.pricingMode || outcome.pricingMode === filters.pricingMode) &&
         (filters.persistentAsset === undefined ||
-          row.persistentAsset === filters.persistentAsset)
+          outcome.persistentAsset === filters.persistentAsset)
       );
     }).slice(0, filters.limit);
   }
@@ -347,7 +349,7 @@ export class StandardRailCatalog {
   async getOutcome(
     providerAgentId: string,
     outcomeId: string,
-  ): Promise<Record<string, unknown>> {
+  ): Promise<PublicOutcomeDetailV1> {
     const outcome = (await this.publicOutcomes()).find((item) =>
       item.providerAgentId === providerAgentId && item.outcomeId === outcomeId
     );
@@ -643,7 +645,7 @@ export class StandardRailCatalog {
   private publicRow(
     record: StoredRegistration,
     listing: StandardListing,
-  ): Record<string, unknown> {
+  ): PublicOutcomeV1 {
     const commitment = listing.commitment.payload;
     const skill = record.card.skills.find((item) =>
       item.skillId === listing.offer.payload.skillId)!;

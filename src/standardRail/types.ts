@@ -271,6 +271,127 @@ export interface StandardListing {
   };
 }
 
+export interface PublicMarketplacePurchaseV1 {
+  orderKey: Hex;
+  txHash: Hex | null;
+  payer: Hex;
+  buyerAgentId: string | null;
+  buyerName: string | null;
+  amount: string;
+  outcomeId: string;
+  timestamp: string;
+}
+
+export interface PublicReputationV1 {
+  transactionCount: string;
+  completedCount: string;
+  failedCount: string;
+  canceledCount: string;
+  completionSampleSize: string;
+  completionRate: number | null;
+  confirmedCount: string;
+  notConfirmedCount: string;
+  confirmationSampleSize: string;
+  buyerSatisfactionRate: number | null;
+  valueWeightedBuyerSatisfactionRate: number | null;
+  totalPaid: string;
+  totalRefunded: string;
+  averageFulfillmentSeconds: number | null;
+  fulfillmentSampleSize: string;
+  recentPurchases: PublicMarketplacePurchaseV1[];
+  safeBlock: string | null;
+}
+
+export interface PublicOutcomeV1 {
+  providerAgentId: string;
+  serviceId: Hex;
+  outcomeId: string;
+  skillId: string;
+  categoryFamily: string;
+  serviceType: string;
+  jurisdictions: string[];
+  tags: string[];
+  persistentAsset: boolean;
+  bindingProfile: BindingProfile;
+  pricingMode: "fixed" | "dynamic";
+  fixedGrossAmount: string;
+  token: Hex;
+  payTo: Hex;
+  splitterDeploymentBlockNumber: string;
+  providerPayee: Hex;
+  daskiCommissionReceiver: Hex;
+  commissionBps: number;
+  providerAudience: string;
+  absoluteResourceUri: string;
+  listingManifestHash: Hex;
+  providerOfferHash: Hex;
+  runtimeCommitmentHash: Hex;
+  providerIntentHash: Hex;
+  splitter: ListingSplitterView;
+  terms: StandardListing["terms"];
+  deadlinePolicy: StandardListing["deadlinePolicy"];
+  capacityPolicy: StandardListing["capacityPolicy"];
+  service: {
+    id: Hex;
+    slug: string;
+    version: string;
+    name: string;
+    description: string;
+    categoryFamily: string;
+    serviceType: string;
+    jurisdictions: string[];
+    turnaroundEstimate: string;
+    serviceLifecycle: string;
+    agentCardUrl: string;
+    providerA2AUrl: string;
+  };
+  skill: {
+    id: string;
+    name: string;
+    description: string;
+    tags: string[];
+  };
+  providerReputation: PublicReputationV1;
+  serviceReputation: PublicReputationV1;
+  reputation: PublicReputationV1;
+}
+
+export interface PublicOutcomeDetailV1 extends PublicOutcomeV1 {
+  requestSchema: Record<string, unknown>;
+  responseSchema: Record<string, unknown>;
+  artifacts: {
+    runtimeCommitment: Hex;
+    preparation: Hex;
+    providerIntent: Hex;
+  };
+}
+
+export interface PublicChainMetadataV3 {
+  version: 3;
+  outcomeSchemaVersion: 1;
+  chainId: number;
+  network: string;
+  paymentRail: {
+    scheme: "exact";
+    network: string;
+    asset: Hex;
+    transferMethod: "eip3009";
+    activeRailProfileHash: Hex;
+    activeRailProfileUrl: string;
+  };
+  contracts: {
+    identityRegistry: Hex;
+    agentIndex: Hex;
+    providerRegistry: Hex;
+    serviceRegistry: Hex;
+    validationRegistry: Hex;
+    reputationStorage: Hex;
+    eas: Hex;
+    usdc: Hex;
+  };
+  outcomes: PublicOutcomeV1[];
+}
+
 export interface ActiveRailProfileV1 {
   railEpoch: string;
   facilitatorProfileHash: Hex;
