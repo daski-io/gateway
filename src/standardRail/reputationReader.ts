@@ -68,12 +68,12 @@ function inlineAgentName(uri: string): string | null {
   }
 }
 
-function asOutcome(value: Record<string, unknown>): OutcomeDescriptor {
+function asOutcome(value: OutcomeDescriptor): OutcomeDescriptor {
   return {
-    providerAgentId: String(value.providerAgentId),
-    serviceId: value.serviceId as Hex,
-    outcomeId: String(value.outcomeId),
-    listingManifestHash: value.listingManifestHash as Hex,
+    providerAgentId: value.providerAgentId,
+    serviceId: value.serviceId,
+    outcomeId: value.outcomeId,
+    listingManifestHash: value.listingManifestHash,
   };
 }
 
@@ -116,7 +116,7 @@ export class DirectReputationReader {
     this.cached = null;
   }
 
-  async forOutcomes(outcomes: Array<Record<string, unknown>>): Promise<ReputationSnapshot> {
+  async forOutcomes(outcomes: readonly OutcomeDescriptor[]): Promise<ReputationSnapshot> {
     const descriptors = outcomes.map(asOutcome);
     const key = descriptors.map((item) =>
       `${item.providerAgentId}:${item.serviceId}:${item.listingManifestHash}`

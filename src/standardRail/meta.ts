@@ -5,6 +5,7 @@ import type { ApplicationLifecycle } from "../runtime/applicationLifecycle.js";
 import { GATEWAY_COMMIT, GATEWAY_VERSION } from "../version.js";
 import type { StandardRailConfig } from "./config.js";
 import type { StandardRailService } from "./service.js";
+import type { PublicChainMetadataV3 } from "./types.js";
 
 export function createStandardMetaRouter(args: {
   config: Config;
@@ -38,31 +39,35 @@ export function createStandardMetaRouter(args: {
     });
   });
   router.get("/.well-known/daski-chain.json", async (_req, res, next) => {
-    try { res.json({
-      version: 2,
-      chainId: args.config.chainId,
-      network: args.config.network,
-      paymentRail: {
-        scheme: "exact",
-        network: args.config.x402Network,
-        asset: args.config.usdc.address,
-        transferMethod: "eip3009",
-        activeRailProfileHash: args.service.railProfileHash,
-        activeRailProfileUrl:
-          `${args.config.publicUrl}/public/v2/artifacts/${args.service.railProfileHash}`,
-      },
-      contracts: {
-        identityRegistry: args.config.marketplaceContracts.identityRegistry,
-        agentIndex: args.config.marketplaceContracts.agentIndex,
-        providerRegistry: args.config.marketplaceContracts.providerRegistry,
-        serviceRegistry: args.config.marketplaceContracts.serviceRegistry,
-        validationRegistry: args.config.marketplaceContracts.validationRegistry,
-        reputationStorage: args.config.marketplaceContracts.reputationStorage,
-        eas: args.railConfig.easAddress,
-        usdc: args.config.usdc.address,
-      },
-      outcomes: await args.service.publicOutcomes(),
-    }); } catch (error) { next(error); }
+    try {
+      const metadata: PublicChainMetadataV3 = {
+        version: 3,
+        outcomeSchemaVersion: 1,
+        chainId: args.config.chainId,
+        network: args.config.network,
+        paymentRail: {
+          scheme: "exact",
+          network: args.config.x402Network,
+          asset: args.config.usdc.address,
+          transferMethod: "eip3009",
+          activeRailProfileHash: args.service.railProfileHash,
+          activeRailProfileUrl:
+            `${args.config.publicUrl}/public/v2/artifacts/${args.service.railProfileHash}`,
+        },
+        contracts: {
+          identityRegistry: args.config.marketplaceContracts.identityRegistry,
+          agentIndex: args.config.marketplaceContracts.agentIndex,
+          providerRegistry: args.config.marketplaceContracts.providerRegistry,
+          serviceRegistry: args.config.marketplaceContracts.serviceRegistry,
+          validationRegistry: args.config.marketplaceContracts.validationRegistry,
+          reputationStorage: args.config.marketplaceContracts.reputationStorage,
+          eas: args.railConfig.easAddress,
+          usdc: args.config.usdc.address,
+        },
+        outcomes: await args.service.publicOutcomes(),
+      };
+      res.json(metadata);
+    } catch (error) { next(error); }
   });
   router.get("/.well-known/mcp.json", (_req, res) => {
     res.json({

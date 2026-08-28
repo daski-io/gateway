@@ -20,6 +20,10 @@ the standard Exact-EVM wire format.
   actions.
 - `/.well-known/x402` and `/public/v2/*` publish the active signed legacy rail
   and listing artifacts.
+- `/.well-known/daski-chain.json` publishes metadata envelope v3 with
+  `outcomeSchemaVersion: 1`. Consumers must ignore additive fields; removals,
+  renamed fields, type changes, and semantic changes require a new schema
+  version.
 - `/public/v3/services` publishes the service-first dynamic catalog when the
   dark-launch registration feature is enabled.
 - `/public/v2/registry/*` exposes read-only ERC-8004 identity, Daski provider

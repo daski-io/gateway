@@ -23,6 +23,9 @@ export interface Config {
   mcpPath: string;
   chainId: ChainId;
   network: "base" | "base-sepolia";
+  /** Chain-read finality for registration evidence and marketplace reads:
+   * testnet observes the `safe` tag, mainnet the `finalized` tag. */
+  finalityTag: "safe" | "finalized";
   x402Network: Network;
   databaseUrl: string;
   publicUrl: string;
@@ -71,6 +74,17 @@ function chainId(raw: string | undefined): ChainId {
   const value = Number(raw ?? 84532);
   if (value !== 8453 && value !== 84532) throw new Error(`Unsupported chainId: ${value}`);
   return value;
+}
+
+// Testnet deploys do not wait on L1-derived finality; mainnet always does.
+// CHAIN_FINALITY_TAG exists as an explicit override for either direction.
+function finalityTag(
+  raw: string | undefined,
+  configuredChainId: ChainId,
+): "safe" | "finalized" {
+  if (raw === undefined) return configuredChainId === 8453 ? "finalized" : "safe";
+  if (raw === "safe" || raw === "finalized") return raw;
+  throw new Error("CHAIN_FINALITY_TAG must be 'safe' or 'finalized'");
 }
 
 function address(name: string, raw: string | undefined): Hex {
@@ -171,6 +185,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     mcpPath: mcpPath(env.MCP_PATH),
     chainId: configuredChainId,
     network: configuredChainId === 8453 ? "base" : "base-sepolia",
+    finalityTag: finalityTag(env.CHAIN_FINALITY_TAG, configuredChainId),
     x402Network: `eip155:${configuredChainId}`,
     dynamicServiceRegistrationEnabled,
     catalogOperatorToken: catalogOperatorToken(

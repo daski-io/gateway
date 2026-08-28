@@ -215,6 +215,7 @@ export class ServiceRegistrationService {
   private refreshTimer: NodeJS.Timeout | null = null;
   private refreshWork: Promise<void> | null = null;
   private activeRegistrationWork = 0;
+  private readonly evidenceWork = new Map<string, Promise<void>>();
 
   constructor(
     private readonly config: Config,
@@ -556,24 +557,47 @@ export class ServiceRegistrationService {
     const pending = persistedReplay
       ? record
       : await this.recordEvidencePending(registrationId, evidence);
-    let checkpoints: Map<string, unknown>;
-    try {
-      checkpoints = await this.evidenceVerifier.verify(pending, evidence);
-    } catch {
-      throw new RegistrationError(
-        409,
-        "EVIDENCE_NOT_FINAL",
-        "Splitter evidence is incomplete, non-final, or does not match the preparation.",
+    // Verification reads the chain for every paid listing, which can far
+    // outlive a client's request budget: accept the evidence now (202) and
+    // verify + activate asynchronously. The provider polls the registration
+    // and re-posts the same envelope to re-kick after a transient failure.
+    this.kickEvidenceVerification(registrationId, pending, evidence);
+    return registrationView(pending);
+  }
+
+  private kickEvidenceVerification(
+    registrationId: string,
+    pending: StoredRegistration,
+    evidence: ProviderServiceRegistrationEvidenceEnvelope,
+  ): void {
+    if (this.evidenceWork.has(registrationId)) return;
+    const work = (async () => {
+      const checkpoints = await this.evidenceVerifier.verify(pending, evidence);
+      await this.requirePreparedRegistrationCurrent(pending);
+      const commitments = await this.runtimeCommitmentsFor(pending);
+      await this.store.activate(
+        registrationId,
+        commitments,
+        [...checkpoints].map(([listingId, checkpoint]) => ({ listingId, checkpoint })),
       );
+    })().catch((error: unknown) => {
+      logger.warn("registration evidence verification failed; awaiting resubmission", {
+        registrationId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }).finally(() => {
+      this.evidenceWork.delete(registrationId);
+    });
+    this.evidenceWork.set(registrationId, work);
+  }
+
+  /** Await in-flight evidence verification (deterministic tests, shutdown). */
+  async settleEvidenceVerification(registrationId?: string): Promise<void> {
+    if (registrationId !== undefined) {
+      await this.evidenceWork.get(registrationId);
+      return;
     }
-    await this.requirePreparedRegistrationCurrent(pending);
-    const commitments = await this.runtimeCommitmentsFor(pending);
-    const active = await this.store.activate(
-      registrationId,
-      commitments,
-      [...checkpoints].map(([listingId, checkpoint]) => ({ listingId, checkpoint })),
-    );
-    return this.activeView(active);
+    await Promise.all([...this.evidenceWork.values()]);
   }
 
   // Every ACTIVE response carries the per-listing runtime commitments, so a

@@ -30,6 +30,8 @@ import { decryptPaymentPayload, encryptPaymentPayload } from "./secrets.js";
 import { signEnvelope } from "./signing.js";
 import { StandardRailStore } from "./store.js";
 import type {
+  PublicOutcomeDetailV1,
+  PublicOutcomeV1,
   QuoteV1,
   StandardListing,
   StandardOrderRecord,
@@ -678,11 +680,11 @@ export class StandardRailService {
     return this.catalog.verifyListingIdentity(listing);
   }
 
-  listOutcomes(): Promise<Array<Record<string, unknown>>> {
+  listOutcomes(): Promise<PublicOutcomeV1[]> {
     return this.catalog.listOutcomes();
   }
 
-  publicOutcomes(): Promise<Array<Record<string, unknown>>> {
+  publicOutcomes(): Promise<PublicOutcomeV1[]> {
     return this.catalog.publicOutcomes();
   }
 
@@ -695,11 +697,11 @@ export class StandardRailService {
     pricingMode?: "fixed" | "dynamic";
     persistentAsset?: boolean;
     limit: number;
-  }): Promise<Array<Record<string, unknown>>> {
+  }): Promise<PublicOutcomeV1[]> {
     return this.catalog.searchOutcomes(filters);
   }
 
-  getOutcome(providerAgentId: string, outcomeId: string): Promise<Record<string, unknown>> {
+  getOutcome(providerAgentId: string, outcomeId: string): Promise<PublicOutcomeDetailV1> {
     return this.catalog.getOutcome(providerAgentId, outcomeId);
   }
 

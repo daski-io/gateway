@@ -23,10 +23,16 @@ const readOnlyAnnotations = {
   openWorldHint: true,
 } as const;
 
+interface ActiveMarketplaceOutcome {
+  providerAgentId: string;
+  serviceId: Hex;
+  outcomeId: string;
+}
+
 export function registerMarketplaceTools(
   server: McpServer,
   reader: MarketplaceChainReader,
-  activeOutcomes: () => Promise<Array<Record<string, unknown>>>,
+  activeOutcomes: () => Promise<readonly ActiveMarketplaceOutcome[]>,
 ): void {
   server.registerTool(
     "daski_list_providers",

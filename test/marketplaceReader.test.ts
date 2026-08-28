@@ -7,8 +7,9 @@ import { ViemMarketplaceChainReader } from "../src/marketplace/reader.js";
 const ADDRESS = getAddress("0x1111111111111111111111111111111111111111");
 const SERVICE_ID = `0x${"22".repeat(32)}` as Hex;
 
-function reader() {
+function reader(finalityTag: "safe" | "finalized" = "finalized") {
   const instance = new ViemMarketplaceChainReader({
+    finalityTag,
     marketplaceContracts: {
       identityRegistry: ADDRESS,
       agentIndex: ADDRESS,
@@ -76,6 +77,21 @@ describe("marketplace reputation reads", () => {
     }));
     expect(fallback.getBlock).not.toHaveBeenCalled();
     expect(fallback.readContract).not.toHaveBeenCalled();
+  });
+
+  it("observes the safe tag for registry reads under the testnet finality policy", async () => {
+    const { instance, getBlock, readContract } = reader("safe");
+
+    await expect(instance.getProvider(7n)).resolves.toMatchObject({
+      agentId: "7",
+      standardReputation: { transactions: "6", safeBlock: "110" },
+    });
+
+    expect(getBlock).not.toHaveBeenCalledWith({ blockTag: "finalized" });
+    expect(readContract).toHaveBeenCalledWith(expect.objectContaining({
+      functionName: "getProvider",
+      blockNumber: 110n,
+    }));
   });
 
   it("reads service stats at safe while retaining finalized registry metadata", async () => {
