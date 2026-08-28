@@ -77,12 +77,16 @@ function serviceStats(value: readonly [bigint, bigint, bigint, bigint, bigint, b
 export class ViemMarketplaceChainReader implements MarketplaceChainReader {
   readonly addresses: MarketplaceAddresses;
   private readonly clients;
+  // Registry reads observe the configured finality tag (testnet `safe`,
+  // mainnet `finalized`); reputation reads stay on `safe` everywhere.
+  private readonly finalityTag: "safe" | "finalized";
 
   constructor(
-    config: Pick<Config, "marketplaceContracts">,
+    config: Pick<Config, "marketplaceContracts" | "finalityTag">,
     rpcUrls: readonly [string, ...string[]],
     chain: Chain,
   ) {
+    this.finalityTag = config.finalityTag;
     this.addresses = Object.fromEntries(
       Object.entries(config.marketplaceContracts).map(([key, value]) => [key, getAddress(value)]),
     ) as unknown as MarketplaceAddresses;
@@ -156,7 +160,7 @@ export class ViemMarketplaceChainReader implements MarketplaceChainReader {
 
   async listProviders(offset: number, limit: number): Promise<unknown> {
     return this.observe(async ({ client }) => {
-      const blockNumber = (await client.getBlock({ blockTag: "finalized" })).number;
+      const blockNumber = (await client.getBlock({ blockTag: this.finalityTag })).number;
       const [total, ids] = await Promise.all([
         client.readContract({
           address: this.addresses.providerRegistry,
@@ -204,7 +208,7 @@ export class ViemMarketplaceChainReader implements MarketplaceChainReader {
   async getProvider(agentId: bigint): Promise<unknown> {
     return this.observe(async ({ client }) => {
       const [finalizedBlock, safeBlock] = await Promise.all([
-        client.getBlock({ blockTag: "finalized" }),
+        client.getBlock({ blockTag: this.finalityTag }),
         client.getBlock({ blockTag: "safe" }),
       ]);
       const blockNumber = finalizedBlock.number;
@@ -244,7 +248,7 @@ export class ViemMarketplaceChainReader implements MarketplaceChainReader {
   async getService(serviceId: Hex): Promise<MarketplaceServiceRecord> {
     return this.observe(async ({ client }) => {
       const [finalizedBlock, safeBlock] = await Promise.all([
-        client.getBlock({ blockTag: "finalized" }),
+        client.getBlock({ blockTag: this.finalityTag }),
         client.getBlock({ blockTag: "safe" }),
       ]);
       const [service, reputation] = await Promise.all([

@@ -102,7 +102,10 @@ export function createServiceRegistrationRouter(args: {
     "/v1/service-registrations/:registrationId/evidence",
     handler(async (req, res) => {
       res.setHeader("Cache-Control", "no-store");
-      res.json(await args.service.submitEvidence(registrationId(req), req.body));
+      const view = await args.service.submitEvidence(registrationId(req), req.body);
+      // 202: evidence accepted, verification and activation run
+      // asynchronously — poll GET /v1/service-registrations/:id.
+      res.status((view as { state?: string }).state === "ACTIVE" ? 200 : 202).json(view);
     }),
   );
 

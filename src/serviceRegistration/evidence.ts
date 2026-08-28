@@ -180,7 +180,7 @@ implements RegistrationEvidenceVerifier {
   constructor(
     private readonly config: Pick<
       Config,
-      "chainId" | "usdc" | "marketplaceContracts"
+      "chainId" | "usdc" | "marketplaceContracts" | "finalityTag"
     >,
     railConfig: StandardRailConfig,
     chain: Chain,
@@ -218,10 +218,10 @@ implements RegistrationEvidenceVerifier {
     },
   ): Promise<{ blockNumber: bigint; blockHash: Hex }> {
     return this.observe(async ({ client }) => {
-      const [transaction, receipt, finalized] = await Promise.all([
+      const [transaction, receipt, final] = await Promise.all([
         client.getTransaction({ hash: args.transactionHash }),
         client.getTransactionReceipt({ hash: args.transactionHash }),
-        client.getBlock({ blockTag: "finalized" }),
+        client.getBlock({ blockTag: this.config.finalityTag }),
       ]);
       assertSplitterDeploymentTransaction({
         ...args,
@@ -229,8 +229,10 @@ implements RegistrationEvidenceVerifier {
         transaction,
         receipt,
       });
-      if (receipt.blockNumber > finalized.number) {
-        throw new Error("registration transaction is not finalized");
+      if (receipt.blockNumber > final.number) {
+        throw new Error(
+          `registration transaction is not final at the ${this.config.finalityTag} tag`,
+        );
       }
       const [canonicalBlock, factoryCode] = await Promise.all([
         client.getBlock({ blockNumber: receipt.blockNumber }),
