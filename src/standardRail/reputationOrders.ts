@@ -4,6 +4,7 @@ import { canonicalHash, providerIdentitySnapshotHash } from "./canonical.js";
 import type { StandardRailConfig } from "./config.js";
 import type { StandardChainEvidence } from "./evidence.js";
 import type {
+  ProviderIdentitySnapshotV1,
   StandardListing,
   StandardOrderRecord,
 } from "./types.js";
@@ -67,16 +68,30 @@ export async function buildReputationRegistration(args: {
   releaseEvidenceHash: Hex;
   config: StandardRailConfig;
   chainId: number;
+  marketplaceContracts: {
+    identityRegistry: string;
+    providerRegistry: string;
+    serviceRegistry: string;
+  };
   evidence: StandardChainEvidence;
 }) {
   if (!args.order.payer || !args.order.authorizationKey) {
     throw new Error("Reputation registration requires finalized payer authority");
   }
-  const snapshot = args.config.manifest.providerIdentitySnapshots.find((item) =>
-    providerIdentitySnapshotHash(item.payload, args.chainId) ===
-      args.listing.commitment.payload.providerIdentitySnapshotHash
-  );
-  if (!snapshot) throw new Error("Reputation identity snapshot is unavailable");
+  // Identity facts come from the registration record; the pinned block is the
+  // splitter activation checkpoint, where those facts were last chain-proven.
+  const snapshotPayload: ProviderIdentitySnapshotV1 = {
+    providerAgentId: args.listing.commitment.payload.providerAgentId,
+    serviceId: args.listing.commitment.payload.serviceId,
+    identityRegistry: getAddress(args.marketplaceContracts.identityRegistry),
+    providerRegistry: getAddress(args.marketplaceContracts.providerRegistry),
+    serviceRegistry: getAddress(args.marketplaceContracts.serviceRegistry),
+    providerOwner: getAddress(args.listing.providerOwner),
+    providerAgentWallet: getAddress(args.listing.providerAgentWallet),
+    providerPayee: getAddress(args.listing.commitment.payload.providerPayee),
+    blockNumber: args.listing.manifest.payload.splitterActivationBlockNumber,
+    blockHash: args.listing.manifest.payload.splitterActivationBlockHash,
+  };
   const paidAt = await args.evidence.finalizedBlockTimestamp(
     args.deposit.blockNumber,
     args.deposit.blockHash,
@@ -85,21 +100,21 @@ export async function buildReputationRegistration(args: {
   const permit: StandardReputationOrderV1 = {
     orderKey: args.order.orderKey,
     authorizationKey: args.order.authorizationKey,
-    providerAgentId: BigInt(snapshot.payload.providerAgentId),
-    serviceId: snapshot.payload.serviceId,
+    providerAgentId: BigInt(snapshotPayload.providerAgentId),
+    serviceId: snapshotPayload.serviceId,
     payer: getAddress(args.order.payer).toLowerCase() as Hex,
-    providerOwner: getAddress(snapshot.payload.providerOwner).toLowerCase() as Hex,
-    providerAgentWallet: getAddress(snapshot.payload.providerAgentWallet).toLowerCase() as Hex,
-    providerPayee: getAddress(snapshot.payload.providerPayee).toLowerCase() as Hex,
-    identityRegistry: getAddress(snapshot.payload.identityRegistry).toLowerCase() as Hex,
-    providerRegistry: getAddress(snapshot.payload.providerRegistry).toLowerCase() as Hex,
-    serviceRegistry: getAddress(snapshot.payload.serviceRegistry).toLowerCase() as Hex,
-    blockNumber: BigInt(snapshot.payload.blockNumber),
-    blockHash: snapshot.payload.blockHash,
+    providerOwner: snapshotPayload.providerOwner.toLowerCase() as Hex,
+    providerAgentWallet: snapshotPayload.providerAgentWallet.toLowerCase() as Hex,
+    providerPayee: snapshotPayload.providerPayee.toLowerCase() as Hex,
+    identityRegistry: snapshotPayload.identityRegistry.toLowerCase() as Hex,
+    providerRegistry: snapshotPayload.providerRegistry.toLowerCase() as Hex,
+    serviceRegistry: snapshotPayload.serviceRegistry.toLowerCase() as Hex,
+    blockNumber: BigInt(snapshotPayload.blockNumber),
+    blockHash: snapshotPayload.blockHash,
     canonicalToken: getAddress(args.listing.commitment.payload.canonicalToken).toLowerCase() as Hex,
     grossAmount: BigInt(args.order.grossAmount),
     paidAt: BigInt(paidAt),
-    providerIdentitySnapshotHash: args.listing.commitment.payload.providerIdentitySnapshotHash,
+    providerIdentitySnapshotHash: providerIdentitySnapshotHash(snapshotPayload, args.chainId),
     listingManifestHash: args.order.listingManifestHash,
     releaseEvidenceHash: args.releaseEvidenceHash,
     reputationEligible: isReputationEligiblePayer(args.order.payer, args.listing, args.config),

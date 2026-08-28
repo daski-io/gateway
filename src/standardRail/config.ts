@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { gunzipSync } from "node:zlib";
-import { getAddress, type Address, type Hex } from "viem";
+import { getAddress, keccak256, type Address, type Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { assertNoDuplicateJsonKeys } from "./canonical.js";
 import type { StandardRailManifest } from "./types.js";
@@ -23,6 +23,19 @@ export interface StandardRailConfig {
   manifest: StandardRailManifest;
   splitterFactoryRuntimeCodeHash: Hex;
   splitterCreationCodeHash: Hex;
+  /** First-class deployment policy for dynamically registered listings —
+   *  every splitter the registration flow prepares embeds these values. */
+  dynamicListingPolicy: {
+    splitterFactory: Address;
+    daskiCommissionReceiver: Address;
+    commissionBps: number;
+    splitterCreationCode: Hex;
+  };
+  /** Sanctions screening pins applied to every dynamic listing. */
+  screeningPolicy: {
+    sanctionsOracle: Address;
+    sanctionsOracleRuntimeCodeHash: Hex;
+  };
   finalityConfirmations: number;
   facilitatorTimeoutMs: number;
   dispatchTimeoutMs: number;
@@ -46,7 +59,6 @@ export interface StandardRailConfig {
   confirmationMaxPerOrder: number;
   confirmationMaxPerPayerPerDay: number;
   confirmationMaxGlobalPerDay: number;
-  launchOutcomeIds: readonly string[];
   abuse: {
     walletChallengesPerClientPerMinute: number;
     walletChallengesGlobalPerMinute: number;
@@ -140,20 +152,49 @@ function databaseUrl(raw: string): string {
   return raw;
 }
 
-function parseManifest(text: string): StandardRailManifest {
+function gunzipEnvelope(name: string, text: string, maxOutputLength: number): string {
   try {
     const prefix = "gzip-base64:";
     if (!text.startsWith(prefix)) throw new Error();
     const encoded = text.slice(prefix.length);
     if (!/^[A-Za-z0-9+/]+={0,2}$/.test(encoded)) throw new Error();
-    const decoded = gunzipSync(Buffer.from(encoded, "base64"), {
-      maxOutputLength: 1_000_000,
-    }).toString("utf8");
+    return gunzipSync(Buffer.from(encoded, "base64"), { maxOutputLength }).toString("utf8");
+  } catch {
+    throw new Error(`${name} is malformed`);
+  }
+}
+
+function parseManifest(text: string): StandardRailManifest {
+  try {
+    const decoded = gunzipEnvelope("STANDARD_RAIL_MANIFEST_JSON", text, 1_000_000);
     assertNoDuplicateJsonKeys(decoded);
     return JSON.parse(decoded) as StandardRailManifest;
   } catch {
     throw new Error("STANDARD_RAIL_MANIFEST_JSON is malformed");
   }
+}
+
+function address(env: NodeJS.ProcessEnv, name: string): Address {
+  const value = required(env, name);
+  if (!/^0x[0-9a-fA-F]{40}$/.test(value) || /^0x0{40}$/i.test(value)) {
+    throw new Error(`${name} must be a non-zero EVM address`);
+  }
+  return getAddress(value);
+}
+
+function parseSplitterCreationCode(env: NodeJS.ProcessEnv, expectedHash: Hex): Hex {
+  const decoded = gunzipEnvelope(
+    "STANDARD_RAIL_SPLITTER_CREATION_CODE",
+    required(env, "STANDARD_RAIL_SPLITTER_CREATION_CODE"),
+    300_000,
+  ).trim();
+  if (!/^0x(?:[0-9a-fA-F]{2})+$/.test(decoded) || decoded.length > 200_002) {
+    throw new Error("STANDARD_RAIL_SPLITTER_CREATION_CODE must be EVM creation bytecode");
+  }
+  if (keccak256(decoded as Hex) !== expectedHash) {
+    throw new Error("STANDARD_RAIL_SPLITTER_CREATION_CODE does not match its pinned hash");
+  }
+  return decoded as Hex;
 }
 
 function parseTrustedSigners(raw: string | undefined, protocolAddress: Address): ReadonlyMap<string, Address> {
@@ -190,9 +231,10 @@ export function loadStandardRailConfig(
     "CDP_FACILITATOR_BASE_URL",
     env.CDP_FACILITATOR_BASE_URL ?? "https://api.cdp.coinbase.com/platform/v2/x402",
   );
-  const launchOutcomeIds = manifest.listings.map((listing) => listing.commitment.payload.outcomeId);
-  if (launchOutcomeIds.length === 0 || new Set(launchOutcomeIds).size !== launchOutcomeIds.length) {
-    throw new Error("The marketplace manifest must contain uniquely named outcomes");
+  const splitterCreationCodeHash = hash(env, "STANDARD_RAIL_SPLITTER_CREATION_CODE_HASH");
+  const commissionBps = integer(env, "STANDARD_RAIL_COMMISSION_BPS", 0);
+  if (commissionBps >= 10_000) {
+    throw new Error("STANDARD_RAIL_COMMISSION_BPS must be below 10000");
   }
   const maxFee = positiveBigInt(env, "REPUTATION_MAX_FEE_PER_GAS_WEI", 100_000_000_000n);
   const priorityFee = positiveBigInt(env, "REPUTATION_MAX_PRIORITY_FEE_PER_GAS_WEI", 2_000_000_000n);
@@ -218,7 +260,17 @@ export function loadStandardRailConfig(
     trustedSigners: parseTrustedSigners(env.STANDARD_RAIL_TRUSTED_SIGNERS_JSON, protocolAddress),
     manifest,
     splitterFactoryRuntimeCodeHash: hash(env, "STANDARD_RAIL_SPLITTER_FACTORY_RUNTIME_CODE_HASH"),
-    splitterCreationCodeHash: hash(env, "STANDARD_RAIL_SPLITTER_CREATION_CODE_HASH"),
+    splitterCreationCodeHash,
+    dynamicListingPolicy: {
+      splitterFactory: address(env, "STANDARD_RAIL_SPLITTER_FACTORY"),
+      daskiCommissionReceiver: address(env, "STANDARD_RAIL_COMMISSION_RECEIVER"),
+      commissionBps,
+      splitterCreationCode: parseSplitterCreationCode(env, splitterCreationCodeHash),
+    },
+    screeningPolicy: {
+      sanctionsOracle: address(env, "STANDARD_RAIL_SANCTIONS_ORACLE"),
+      sanctionsOracleRuntimeCodeHash: hash(env, "STANDARD_RAIL_SANCTIONS_ORACLE_RUNTIME_CODE_HASH"),
+    },
     finalityConfirmations: integer(env, "STANDARD_RAIL_FINALITY_CONFIRMATIONS", DEFAULTS.finalityConfirmations),
     facilitatorTimeoutMs: integer(env, "STANDARD_RAIL_FACILITATOR_TIMEOUT_MS", DEFAULTS.facilitatorTimeoutMs),
     dispatchTimeoutMs: integer(env, "STANDARD_RAIL_DISPATCH_TIMEOUT_MS", DEFAULTS.dispatchTimeoutMs),
@@ -242,7 +294,6 @@ export function loadStandardRailConfig(
     confirmationMaxPerOrder: 3,
     confirmationMaxPerPayerPerDay: 20,
     confirmationMaxGlobalPerDay: 500,
-    launchOutcomeIds,
     abuse: { ...DEFAULTS.abuse },
   };
 }

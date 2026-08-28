@@ -102,7 +102,7 @@ export function parseStandardRailReceiptV2(
     payload.state !== "RELEASE_FINAL" || !isText(payload.orderId) ||
     !isText(payload.providerAgentId) || !isText(payload.outcomeId) ||
     !isAddress(payload.payer) || envelope.audience !== payload.payer ||
-    !["stock-fixed-v1", "recipe-bound-v1"].includes(String(payload.bindingProfile)) ||
+    !["stock-fixed-v1", "recipe-bound-v1", "recipe-bound-v2"].includes(String(payload.bindingProfile)) ||
     ![
       payload.activeRailProfileHash, payload.listingManifestHash, payload.providerOfferHash,
       payload.quoteHash, payload.canonicalRequestHash, payload.orderNonce,
@@ -147,7 +147,7 @@ export function parseStandardRailDispatchV2(
     ].every(isHash) ||
     !isAddress(payload.reputationContract) || !isAddress(payload.payer) ||
     typeof payload.reputationEligible !== "boolean" ||
-    !["stock-fixed-v1", "recipe-bound-v1"].includes(String(payload.bindingProfile)) ||
+    !["stock-fixed-v1", "recipe-bound-v1", "recipe-bound-v2"].includes(String(payload.bindingProfile)) ||
     !isHash(payload.settlementTxHash) || !isHash(payload.depositEvidenceHash) ||
     !isHash(payload.depositBlockHash) || !isIndex(payload.depositTransactionIndex) ||
     !isIndex(payload.depositLogIndex) || !isHash(payload.releaseTxHash) ||

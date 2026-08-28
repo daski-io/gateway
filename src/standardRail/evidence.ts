@@ -1,7 +1,6 @@
 import {
   createPublicClient,
   createWalletClient,
-  encodeFunctionData,
   erc20Abi,
   getAddress,
   http,
@@ -23,9 +22,8 @@ import { logger } from "../util/logger.js";
 import { canonicalHash } from "./canonical.js";
 import { chainLogsHash } from "./chainLogHash.js";
 import { hasRequiredConfirmations } from "./finality.js";
-import type { ProviderIdentitySnapshotV1, StandardListing, StandardOrderRecord } from "./types.js";
+import type { StandardListing, StandardOrderRecord } from "./types.js";
 import { loadLogsPaged } from "./chainLogPagination.js";
-import { deriveSplitterProvenance } from "./splitterProvenance.js";
 import {
   assertActivationCheckpoint,
   compareEvidencePosition,
@@ -60,25 +58,10 @@ const splitterAbi = parseAbi([
   "function releaseSequence() view returns (uint64)",
   "event Released(bytes32 indexed outcomeIdHash,uint64 indexed listingEpoch,uint64 indexed releaseSequence,bytes32 policyVersionHash,bytes32 listingCommitmentHash,uint256 grossAmount,uint256 providerNetAmount,uint256 daskiCommissionAmount)",
 ]);
-const splitterFactoryAbi = parseAbi([
-  "function deploy(bytes32 salt,uint256 canonicalChainId,address canonicalToken,address providerPayee,address daskiCommissionReceiver,uint16 commissionBps,bytes32 policyVersionHash,bytes32 outcomeIdHash,bytes32 listingCommitmentHash,uint64 listingEpoch) returns (address splitter)",
-  "event OutcomeSplitterDeployed(address indexed splitter,bytes32 indexed salt,bytes32 indexed outcomeIdHash,uint64 listingEpoch,bytes32 listingCommitmentHash)",
-]);
 const transferEvent = parseAbiItem("event Transfer(address indexed from,address indexed to,uint256 value)");
 const authorizationUsedEvent = parseAbiItem("event AuthorizationUsed(address indexed authorizer,bytes32 indexed nonce)");
 const releasedEvent = parseAbiItem("event Released(bytes32 indexed outcomeIdHash,uint64 indexed listingEpoch,uint64 indexed releaseSequence,bytes32 policyVersionHash,bytes32 listingCommitmentHash,uint256 grossAmount,uint256 providerNetAmount,uint256 daskiCommissionAmount)");
 const tokenPolicyAbi = parseAbi(["function DOMAIN_SEPARATOR() view returns (bytes32)"]);
-const identitySnapshotAbi = parseAbi([
-  "function ownerOf(uint256 agentId) view returns (address)",
-  "function getAgentWallet(uint256 agentId) view returns (address)",
-]);
-const providerSnapshotAbi = parseAbi([
-  "function getProvider(uint256 agentId) view returns ((uint256 agentId,uint256 registrationTime,bool isActive))",
-]);
-const serviceSnapshotAbi = parseAbi([
-  "function resolveSettlement(bytes32 serviceId) view returns (uint256 providerAgentId,bool active,address providerOwner,address providerWallet,address payee)",
-]);
-
 interface SourceObservation {
   source: string;
   blockNumber: string;
@@ -108,15 +91,6 @@ export interface ReleaseEvidenceResult extends EvidenceResult {
 
 interface ReleaseReference extends LogBinding {
   releaseSequence: bigint;
-}
-
-interface DeploymentEvidence extends PositionedEvidence {
-  factory: Address;
-  splitter: Address;
-  salt: Hex;
-  outcomeIdHash: Hex;
-  listingEpoch: bigint;
-  listingCommitmentHash: Hex;
 }
 
 function positioned(event: {
@@ -197,40 +171,6 @@ function normalizeReleases(logs: readonly unknown[]): ReleasedEvidence[] {
   });
 }
 
-function normalizeDeployments(logs: readonly unknown[]): DeploymentEvidence[] {
-  return parseEventLogs({
-    abi: splitterFactoryAbi,
-    logs: logs as never,
-    eventName: "OutcomeSplitterDeployed",
-  }).map((event) => {
-    const value = event.args;
-    if (
-      value.splitter === undefined ||
-      value.salt === undefined ||
-      value.outcomeIdHash === undefined ||
-      value.listingEpoch === undefined ||
-      value.listingCommitmentHash === undefined
-    ) throw new Error("OutcomeSplitterDeployed log is incomplete");
-    return {
-      ...positioned(event),
-      factory: getAddress(event.address),
-      splitter: getAddress(value.splitter),
-      salt: value.salt,
-      outcomeIdHash: value.outcomeIdHash,
-      listingEpoch: value.listingEpoch,
-      listingCommitmentHash: value.listingCommitmentHash,
-    };
-  });
-}
-
-function sameBoundPosition(value: PositionedEvidence, binding: LogBinding): boolean {
-  return (
-    compareEvidencePosition(value, binding) === 0 &&
-    value.blockHash === binding.blockHash &&
-    value.transactionHash === binding.transactionHash
-  );
-}
-
 export class StandardChainEvidence {
   private readonly clients;
   private readonly wallet;
@@ -283,69 +223,6 @@ export class StandardChainEvidence {
       );
       return submitted;
     });
-  }
-
-  async verifyProviderIdentitySnapshot(snapshot: ProviderIdentitySnapshotV1): Promise<void> {
-    const blockNumber = BigInt(snapshot.blockNumber);
-    const observation = await this.observe(async ({ client }) => {
-      const block = await client.getBlock({ blockNumber });
-      const owner = await client.readContract({
-        address: getAddress(snapshot.identityRegistry), abi: identitySnapshotAbi,
-        functionName: "ownerOf", args: [BigInt(snapshot.providerAgentId)], blockNumber,
-      });
-      const agentWallet = await client.readContract({
-        address: getAddress(snapshot.identityRegistry), abi: identitySnapshotAbi,
-        functionName: "getAgentWallet", args: [BigInt(snapshot.providerAgentId)], blockNumber,
-      });
-      const provider = await client.readContract({
-        address: getAddress(snapshot.providerRegistry), abi: providerSnapshotAbi,
-        functionName: "getProvider", args: [BigInt(snapshot.providerAgentId)], blockNumber,
-      });
-      const settlement = await client.readContract({
-        address: getAddress(snapshot.serviceRegistry), abi: serviceSnapshotAbi,
-        functionName: "resolveSettlement", args: [snapshot.serviceId], blockNumber,
-      });
-      return { block, owner, agentWallet, provider, settlement };
-    });
-    const [providerAgentId, active, providerOwner, providerWallet, payee] = observation.settlement;
-    if (
-      observation.block.hash !== snapshot.blockHash ||
-      getAddress(observation.owner) !== getAddress(snapshot.providerOwner) ||
-      getAddress(observation.agentWallet) !== getAddress(snapshot.providerAgentWallet) ||
-      observation.provider.agentId !== BigInt(snapshot.providerAgentId) || !observation.provider.isActive ||
-      providerAgentId !== BigInt(snapshot.providerAgentId) || !active ||
-      getAddress(providerOwner) !== getAddress(snapshot.providerOwner) ||
-      getAddress(providerWallet) !== getAddress(snapshot.providerAgentWallet) ||
-      getAddress(payee) !== getAddress(snapshot.providerPayee)
-    ) throw new Error("Provider identity snapshot does not match finalized chain state");
-  }
-
-  async revalidateProviderIdentitySnapshot(snapshot: ProviderIdentitySnapshotV1): Promise<void> {
-    const observation = await this.observe(async ({ client }) => {
-      const finalized = await client.getBlock({ blockTag: "finalized" });
-      const blockNumber = finalized.number;
-      const [owner, agentWallet, provider, settlement] = await Promise.all([
-        client.readContract({ address: getAddress(snapshot.identityRegistry), abi: identitySnapshotAbi,
-          functionName: "ownerOf", args: [BigInt(snapshot.providerAgentId)], blockNumber }),
-        client.readContract({ address: getAddress(snapshot.identityRegistry), abi: identitySnapshotAbi,
-          functionName: "getAgentWallet", args: [BigInt(snapshot.providerAgentId)], blockNumber }),
-        client.readContract({ address: getAddress(snapshot.providerRegistry), abi: providerSnapshotAbi,
-          functionName: "getProvider", args: [BigInt(snapshot.providerAgentId)], blockNumber }),
-        client.readContract({ address: getAddress(snapshot.serviceRegistry), abi: serviceSnapshotAbi,
-          functionName: "resolveSettlement", args: [snapshot.serviceId], blockNumber }),
-      ]);
-      return { owner, agentWallet, provider, settlement };
-    });
-    const [providerAgentId, active, providerOwner, providerWallet, payee] = observation.settlement;
-    if (
-      getAddress(observation.owner) !== getAddress(snapshot.providerOwner) ||
-      getAddress(observation.agentWallet) !== getAddress(snapshot.providerAgentWallet) ||
-      observation.provider.agentId !== BigInt(snapshot.providerAgentId) || !observation.provider.isActive ||
-      providerAgentId !== BigInt(snapshot.providerAgentId) || !active ||
-      getAddress(providerOwner) !== getAddress(snapshot.providerOwner) ||
-      getAddress(providerWallet) !== getAddress(snapshot.providerAgentWallet) ||
-      getAddress(payee) !== getAddress(snapshot.providerPayee)
-    ) throw new Error("Provider identity changed after listing admission");
   }
 
   async finalizedBlockTimestamp(blockNumber: bigint, expectedHash: Hex): Promise<number> {
@@ -402,180 +279,18 @@ export class StandardChainEvidence {
     };
   }
 
-  async verifyListingDeployment(listing: StandardListing, chainId: number): Promise<void> {
-    const manifest = listing.manifest.payload;
-    const splitter = getAddress(manifest.splitterAddress);
-    const factory = getAddress(manifest.splitterFactory);
-    const expectedCommitmentHash = canonicalHash(listing.commitment);
-    const provenance = deriveSplitterProvenance({
-      constructor: {
-        chainId,
-        canonicalToken: getAddress(manifest.canonicalToken),
-        providerPayee: getAddress(manifest.providerPayee),
-        daskiCommissionReceiver: getAddress(manifest.daskiCommissionReceiver),
-        commissionBps: manifest.commissionBps,
-        policyVersionHash: manifest.policyVersionHash,
-        outcomeIdHash: manifest.outcomeIdHash,
-        listingCommitmentHash: manifest.listingCommitmentHash,
-        listingEpoch: BigInt(manifest.listingEpoch),
-      },
-      provenance: {
-        splitterAddress: splitter,
-        splitterFactory: factory,
-        splitterFactoryRuntimeCodeHash: manifest.splitterFactoryRuntimeCodeHash,
-        splitterDeploymentSalt: manifest.splitterDeploymentSalt,
-        splitterCreationCode: manifest.splitterCreationCode,
-        splitterCreationCodeHash: manifest.splitterCreationCodeHash,
-        splitterInitCodeHash: manifest.splitterInitCodeHash,
-        splitterImmutableHash: manifest.splitterImmutableHash,
-      },
-      trustedSplitterCreationCodeHash: this.config.splitterCreationCodeHash,
-      trustedSplitterFactoryRuntimeCodeHash: this.config.splitterFactoryRuntimeCodeHash,
-    });
-    const deploymentBlockNumber = BigInt(manifest.splitterDeploymentBlockNumber);
-    const activationBlockNumber = BigInt(manifest.splitterActivationBlockNumber);
-    const deploymentBinding: LogBinding = {
-      blockNumber: deploymentBlockNumber,
-      blockHash: manifest.splitterDeploymentBlockHash,
-      transactionIndex: manifest.splitterDeploymentTransactionIndex,
-      logIndex: manifest.splitterDeploymentLogIndex,
-      transactionHash: manifest.splitterDeploymentTransaction,
-    };
-    await this.observe(async ({ client }) => {
-      const receipt = await client.getTransactionReceipt({
-        hash: manifest.splitterDeploymentTransaction,
-      });
-      const deploymentTransaction = await client.getTransaction({
-        hash: manifest.splitterDeploymentTransaction,
-      });
-      // Verify one historical fact at a time so the selected RPC remains usable under load.
-      const head = await client.getBlockNumber();
-      const deploymentBlock = await client.getBlock({ blockNumber: deploymentBlockNumber });
-      const activationBlock = await client.getBlock({ blockNumber: activationBlockNumber });
-      const codeAtDeployment = await client.getBytecode({
-        address: splitter, blockNumber: deploymentBlockNumber,
-      });
-      const codeAtActivation = await client.getBytecode({
-        address: splitter, blockNumber: activationBlockNumber,
-      });
-      const factoryCodeAtDeployment = await client.getBytecode({
-        address: factory, blockNumber: deploymentBlockNumber,
-      });
-      const factoryCodeAtActivation = await client.getBytecode({
-        address: factory, blockNumber: activationBlockNumber,
-      });
-      await this.tokenPolicyFacts(client, activationBlockNumber);
-      const startingTokenBalance = await client.readContract({
-        address: getAddress(manifest.canonicalToken),
-        abi: erc20Abi,
-        functionName: "balanceOf",
-        args: [splitter],
-        blockNumber: activationBlockNumber,
-      });
-      const startingReleaseSequence = await client.readContract({ address: splitter,
-        abi: splitterAbi, functionName: "releaseSequence", blockNumber: activationBlockNumber });
-      const canonicalChainId = await client.readContract({ address: splitter,
-        abi: splitterAbi, functionName: "canonicalChainId", blockNumber: activationBlockNumber });
-      const token = await client.readContract({ address: splitter,
-        abi: splitterAbi, functionName: "canonicalToken", blockNumber: activationBlockNumber });
-      const payee = await client.readContract({ address: splitter,
-        abi: splitterAbi, functionName: "providerPayee", blockNumber: activationBlockNumber });
-      const receiver = await client.readContract({ address: splitter,
-        abi: splitterAbi, functionName: "daskiCommissionReceiver", blockNumber: activationBlockNumber });
-      const bps = await client.readContract({ address: splitter,
-        abi: splitterAbi, functionName: "commissionBps", blockNumber: activationBlockNumber });
-      const policyHash = await client.readContract({ address: splitter,
-        abi: splitterAbi, functionName: "policyVersionHash", blockNumber: activationBlockNumber });
-      const outcomeHash = await client.readContract({ address: splitter,
-        abi: splitterAbi, functionName: "outcomeIdHash", blockNumber: activationBlockNumber });
-      const listingEpoch = await client.readContract({ address: splitter,
-        abi: splitterAbi, functionName: "listingEpoch", blockNumber: activationBlockNumber });
-      const commitmentHash = await client.readContract({ address: splitter,
-        abi: splitterAbi, functionName: "listingCommitmentHash", blockNumber: activationBlockNumber });
-      assertActivationCheckpoint({
-        activationBlockNumber,
-        expectedBlockHash: manifest.splitterActivationBlockHash,
-        observedBlockHash: activationBlock.hash,
-        expectedTokenBalance: BigInt(manifest.splitterStartingTokenBalance),
-        observedTokenBalance: startingTokenBalance,
-        expectedReleaseSequence: BigInt(manifest.splitterStartingReleaseSequence),
-        observedReleaseSequence: startingReleaseSequence,
-      });
-      if (
-        receipt.status !== "success" ||
-        receipt.transactionHash !== manifest.splitterDeploymentTransaction ||
-        receipt.blockNumber !== deploymentBlockNumber ||
-        receipt.blockHash !== manifest.splitterDeploymentBlockHash ||
-        receipt.transactionIndex !== manifest.splitterDeploymentTransactionIndex ||
-        deploymentBlock.hash !== manifest.splitterDeploymentBlockHash ||
-        !hasRequiredConfirmations(head, deploymentBlockNumber, this.config.finalityConfirmations) ||
-        !hasRequiredConfirmations(head, activationBlockNumber, this.config.finalityConfirmations)
-      ) throw new Error("Splitter deployment transaction is not final or manifest-bound");
-      const expectedDeploymentInput = encodeFunctionData({
-        abi: splitterFactoryAbi,
-        functionName: "deploy",
-        args: [
-          manifest.splitterDeploymentSalt,
-          BigInt(manifest.chainId),
-          getAddress(manifest.canonicalToken),
-          getAddress(manifest.providerPayee),
-          getAddress(manifest.daskiCommissionReceiver),
-          manifest.commissionBps,
-          manifest.policyVersionHash,
-          manifest.outcomeIdHash,
-          manifest.listingCommitmentHash,
-          BigInt(manifest.listingEpoch),
-        ],
-      });
-      if (
-        deploymentTransaction.hash !== manifest.splitterDeploymentTransaction ||
-        !deploymentTransaction.to || getAddress(deploymentTransaction.to) !== factory ||
-        deploymentTransaction.value !== 0n ||
-        deploymentTransaction.input.toLowerCase() !== expectedDeploymentInput.toLowerCase() ||
-        deploymentTransaction.blockNumber !== deploymentBlockNumber ||
-        deploymentTransaction.blockHash !== manifest.splitterDeploymentBlockHash ||
-        deploymentTransaction.transactionIndex !== manifest.splitterDeploymentTransactionIndex
-      ) throw new Error("Splitter deployment transaction calldata or position is invalid");
-      if (
-        !codeAtDeployment || !codeAtActivation ||
-        !factoryCodeAtDeployment || !factoryCodeAtActivation ||
-        keccak256(codeAtDeployment) !== manifest.splitterRuntimeCodeHash ||
-        keccak256(codeAtActivation) !== manifest.splitterRuntimeCodeHash ||
-        keccak256(factoryCodeAtDeployment) !== this.config.splitterFactoryRuntimeCodeHash ||
-        keccak256(factoryCodeAtActivation) !== this.config.splitterFactoryRuntimeCodeHash ||
-        canonicalChainId !== BigInt(chainId) ||
-        getAddress(token) !== getAddress(manifest.canonicalToken) ||
-        getAddress(payee) !== getAddress(manifest.providerPayee) ||
-        getAddress(receiver) !== getAddress(manifest.daskiCommissionReceiver) ||
-        bps !== manifest.commissionBps || policyHash !== manifest.policyVersionHash ||
-        outcomeHash !== manifest.outcomeIdHash || listingEpoch !== BigInt(manifest.listingEpoch) ||
-        commitmentHash !== expectedCommitmentHash ||
-        provenance.immutableHash !== manifest.splitterImmutableHash
-      ) throw new Error("Splitter immutable values do not match the listing");
-      const deployments = normalizeDeployments(receipt.logs)
-        .filter((event) => sameBoundPosition(event, deploymentBinding));
-      if (deployments.length !== 1) {
-        throw new Error("Receipt-bound splitter deployment event is missing or ambiguous");
-      }
-      const deployment = deployments[0]!;
-      if (
-        deployment.factory !== factory || deployment.splitter !== splitter ||
-        deployment.salt !== manifest.splitterDeploymentSalt ||
-        deployment.outcomeIdHash !== manifest.outcomeIdHash ||
-        deployment.listingEpoch !== BigInt(manifest.listingEpoch) ||
-        deployment.listingCommitmentHash !== expectedCommitmentHash
-      ) throw new Error("Receipt-bound splitter deployment event is invalid");
-    });
-  }
-
-  async verifyScreeningPolicy(listing: StandardListing): Promise<void> {
-    const policy = listing.screeningPolicy;
-    const oracle = getAddress(policy.sanctionsOracle);
+  async verifyScreeningOracle(
+    oracle: Address,
+    expectedRuntimeCodeHash: Hex,
+  ): Promise<void> {
     await this.observe(async ({ client }) => {
       const head = await client.getBlockNumber();
-      const code = await client.getBytecode({ address: oracle, blockNumber: head });
-      if (!code || keccak256(code) !== policy.sanctionsOracleRuntimeCodeHash) {
-        throw new Error("Screening oracle runtime code does not match the signed policy");
+      const code = await client.getBytecode({
+        address: getAddress(oracle),
+        blockNumber: head,
+      });
+      if (!code || keccak256(code) !== expectedRuntimeCodeHash) {
+        throw new Error("Screening oracle runtime code does not match the pinned policy");
       }
     });
   }
@@ -743,6 +458,7 @@ export class StandardChainEvidence {
         confirmations: this.config.finalityConfirmations,
       });
       const manifest = args.listing.manifest.payload;
+      const commitmentView = args.listing.commitment.payload;
       const activationBlockNumber = BigInt(manifest.splitterActivationBlockNumber);
       const maximumPageEvents =
         this.config.manifest.chainEvidencePolicy.payload.maximumLogPageEvents;
@@ -754,7 +470,7 @@ export class StandardChainEvidence {
         client.getBlock({ blockNumber: activationBlockNumber }),
         client.getBytecode({ address: splitter, blockNumber: receipt.blockNumber }),
         client.readContract({
-          address: getAddress(manifest.canonicalToken),
+          address: getAddress(commitmentView.canonicalToken),
           abi: erc20Abi,
           functionName: "balanceOf",
           args: [splitter],
@@ -821,7 +537,7 @@ export class StandardChainEvidence {
         toBlock: receipt.blockNumber,
         maxEvents: maximumPageEvents,
         load: (fromBlock, toBlock) => client.getLogs({
-          address: getAddress(manifest.canonicalToken),
+          address: getAddress(commitmentView.canonicalToken),
           event: transferEvent,
           args: { to: splitter },
           fromBlock,
@@ -829,10 +545,10 @@ export class StandardChainEvidence {
         }),
       });
       if (
-        getAddress(token) !== getAddress(manifest.canonicalToken) ||
-        getAddress(payee) !== getAddress(manifest.providerPayee) ||
-        getAddress(receiver) !== getAddress(manifest.daskiCommissionReceiver) ||
-        bps !== manifest.commissionBps || commitment !== canonicalHash(args.listing.commitment) ||
+        getAddress(token) !== getAddress(commitmentView.canonicalToken) ||
+        getAddress(payee) !== getAddress(commitmentView.providerPayee) ||
+        getAddress(receiver) !== getAddress(commitmentView.daskiCommissionReceiver) ||
+        bps !== commitmentView.commissionBps || commitment !== manifest.listingCommitmentHash ||
         policyHash !== manifest.policyVersionHash || outcomeIdHash !== manifest.outcomeIdHash ||
         listingEpoch !== BigInt(manifest.listingEpoch) || args.order.payer === null
       ) throw new Error("Splitter immutable evidence changed before release");
@@ -846,7 +562,7 @@ export class StandardChainEvidence {
           logIndex: args.deposit.logIndex,
           transactionHash: args.deposit.transactionHash,
         },
-        token: getAddress(manifest.canonicalToken),
+        token: getAddress(commitmentView.canonicalToken),
         payer: getAddress(args.order.payer),
         splitter,
         grossAmount: BigInt(args.order.grossAmount),
@@ -860,11 +576,11 @@ export class StandardChainEvidence {
         previousRelease: previous,
         credits: transfers,
         payoutTransfers: normalizeTransfers(receipt.logs),
-        token: getAddress(manifest.canonicalToken),
+        token: getAddress(commitmentView.canonicalToken),
         splitter,
-        providerPayee: getAddress(manifest.providerPayee),
-        daskiCommissionReceiver: getAddress(manifest.daskiCommissionReceiver),
-        commissionBps: manifest.commissionBps,
+        providerPayee: getAddress(commitmentView.providerPayee),
+        daskiCommissionReceiver: getAddress(commitmentView.daskiCommissionReceiver),
+        commissionBps: commitmentView.commissionBps,
         outcomeIdHash: manifest.outcomeIdHash,
         listingEpoch: BigInt(manifest.listingEpoch),
         policyVersionHash: manifest.policyVersionHash,

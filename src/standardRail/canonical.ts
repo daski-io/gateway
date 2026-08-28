@@ -2,6 +2,12 @@ import { encodeAbiParameters, keccak256, stringToHex, type Address } from "viem"
 import type { Hex } from "../types.js";
 import type { ProviderIdentitySnapshotV1 } from "./types.js";
 
+// Backstop for values that never pass request validation: canonicalization
+// is recursive, so depth is capped, and hashed objects must not carry keys
+// that alias Object.prototype members.
+const CANONICAL_MAX_DEPTH = 64;
+const UNSAFE_CANONICAL_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+
 function assertValidUnicode(value: string): void {
   for (let index = 0; index < value.length; index += 1) {
     const code = value.charCodeAt(index);
@@ -17,7 +23,8 @@ function assertValidUnicode(value: string): void {
   }
 }
 
-function canonicalValue(value: unknown): string {
+function canonicalValue(value: unknown, depth: number): string {
+  if (depth > CANONICAL_MAX_DEPTH) throw new Error("Canonical JSON is too deeply nested");
   if (value === null) return "null";
   if (typeof value === "boolean") return value ? "true" : "false";
   if (typeof value === "string") {
@@ -29,7 +36,7 @@ function canonicalValue(value: unknown): string {
     return JSON.stringify(value);
   }
   if (Array.isArray(value)) {
-    return `[${value.map(canonicalValue).join(",")}]`;
+    return `[${value.map((item) => canonicalValue(item, depth + 1)).join(",")}]`;
   }
   if (typeof value !== "object") {
     throw new Error("Canonical JSON contains an unsupported value");
@@ -40,18 +47,27 @@ function canonicalValue(value: unknown): string {
   );
   return `{${keys.map((key) => {
     assertValidUnicode(key);
+    if (UNSAFE_CANONICAL_KEYS.has(key)) throw new Error("Canonical JSON contains an unsafe key");
     const child = object[key];
     if (child === undefined) throw new Error("Canonical JSON contains undefined");
-    return `${JSON.stringify(key)}:${canonicalValue(child)}`;
+    return `${JSON.stringify(key)}:${canonicalValue(child, depth + 1)}`;
   }).join(",")}}`;
 }
 
 export function canonicalJson(value: unknown): string {
-  return canonicalValue(value);
+  return canonicalValue(value, 1);
 }
+
+// Belt limits for every JSON document this scanner admits, applied at the
+// parse boundary before any handler sees the value. Semantic budgets in
+// jsonBounds.ts are stricter; these only stop pathological documents.
+const SCANNER_MAX_DEPTH = 64;
+const SCANNER_MAX_NODES = 262_144;
+const SCANNER_MAX_KEY_LENGTH = 256;
 
 export function assertNoDuplicateJsonKeys(text: string): void {
   let offset = 0;
+  let nodes = 0;
   const whitespace = () => { while (/\s/.test(text[offset] ?? "")) offset += 1; };
   const stringToken = (): string => {
     const start = offset;
@@ -70,7 +86,10 @@ export function assertNoDuplicateJsonKeys(text: string): void {
     }
     throw new Error("Unterminated JSON string");
   };
-  const value = (): void => {
+  const value = (depth: number): void => {
+    nodes += 1;
+    if (depth > SCANNER_MAX_DEPTH) throw new Error("JSON is too deeply nested");
+    if (nodes > SCANNER_MAX_NODES) throw new Error("JSON contains too many values");
     whitespace();
     if (text[offset] === '"') { stringToken(); return; }
     if (text[offset] === "{") {
@@ -81,12 +100,14 @@ export function assertNoDuplicateJsonKeys(text: string): void {
       while (true) {
         whitespace();
         const key = stringToken();
+        if (key.length > SCANNER_MAX_KEY_LENGTH) throw new Error("JSON key is too long");
+        if (UNSAFE_CANONICAL_KEYS.has(key)) throw new Error("JSON contains an unsafe key");
         if (keys.has(key)) throw new Error(`Duplicate JSON key ${key}`);
         keys.add(key);
         whitespace();
         if (text[offset] !== ":") throw new Error("JSON colon expected");
         offset += 1;
-        value();
+        value(depth + 1);
         whitespace();
         if (text[offset] === "}") { offset += 1; return; }
         if (text[offset] !== ",") throw new Error("JSON comma expected");
@@ -98,7 +119,7 @@ export function assertNoDuplicateJsonKeys(text: string): void {
       whitespace();
       if (text[offset] === "]") { offset += 1; return; }
       while (true) {
-        value();
+        value(depth + 1);
         whitespace();
         if (text[offset] === "]") { offset += 1; return; }
         if (text[offset] !== ",") throw new Error("JSON comma expected");
@@ -109,7 +130,7 @@ export function assertNoDuplicateJsonKeys(text: string): void {
     if (!token) throw new Error("Invalid JSON token");
     offset += token.length;
   };
-  value();
+  value(1);
   whitespace();
   if (offset !== text.length) throw new Error("Trailing JSON content");
 }
@@ -129,6 +150,57 @@ export interface RecipeNonceInput {
   quoteHash: Hex;
   canonicalRequestHash: Hex;
   orderNonce: Hex;
+}
+
+/**
+ * V2 order binding for dynamic-catalog listings. Identical slot layout to
+ * V1 with the deal-document slots swapped: the listing manifest hash becomes
+ * the runtime listing commitment hash, and the provider offer hash becomes
+ * the provider intent hash. Verifiers must additionally check that the
+ * intent hash equals the one embedded in the runtime commitment.
+ */
+export interface RecipeNonceV2Input {
+  chainId: number;
+  canonicalToken: Address;
+  payer: Address;
+  splitter: Address;
+  grossAmount: bigint;
+  runtimeCommitmentHash: Hex;
+  providerIntentHash: Hex;
+  quoteHash: Hex;
+  canonicalRequestHash: Hex;
+  orderNonce: Hex;
+}
+
+export function recipeNonceV2(input: RecipeNonceV2Input): Hex {
+  return keccak256(encodeAbiParameters(
+    [
+      { type: "bytes32" },
+      { type: "uint256" },
+      { type: "address" },
+      { type: "address" },
+      { type: "address" },
+      { type: "uint256" },
+      { type: "bytes32" },
+      { type: "bytes32" },
+      { type: "bytes32" },
+      { type: "bytes32" },
+      { type: "bytes32" },
+    ],
+    [
+      keccak256(stringToHex("DaskiStandardExactOrderV2")),
+      BigInt(input.chainId),
+      input.canonicalToken,
+      input.payer,
+      input.splitter,
+      input.grossAmount,
+      input.runtimeCommitmentHash,
+      input.providerIntentHash,
+      input.quoteHash,
+      input.canonicalRequestHash,
+      input.orderNonce,
+    ],
+  ));
 }
 
 export function recipeNonce(input: RecipeNonceInput): Hex {

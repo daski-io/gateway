@@ -72,7 +72,7 @@ export class StandardProviderTransport {
   constructor(private readonly fetchFn: typeof fetch = fetch) {}
 
   async fetch(
-    listing: StandardListing,
+    listing: Pick<StandardListing, "providerControlProfile">,
     endpoint: string,
     init: RequestInit,
     options: ProviderFetchOptions = {},

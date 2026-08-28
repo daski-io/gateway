@@ -32,7 +32,7 @@ interface OrderRow {
   state: StandardOrderState;
   provider_agent_id: string;
   outcome_id: string;
-  binding_profile: "stock-fixed-v1" | "recipe-bound-v1";
+  binding_profile: "stock-fixed-v1" | "recipe-bound-v1" | "recipe-bound-v2";
   listing_manifest_hash: Buffer;
   provider_offer_hash: Buffer;
   canonical_listing: StandardListing;
@@ -238,15 +238,13 @@ export class StandardRailStore {
       { envelope: manifest.railCapabilityRequirements, epoch: null, recovery: null },
       { envelope: rail, epoch: rail.payload.railEpoch, recovery: rail.payload.recoveryValidBefore },
       { envelope: manifest.chainEvidencePolicy, epoch: null, recovery: null },
-      ...manifest.providerIdentitySnapshots.map((envelope) => ({ envelope, epoch: null, recovery: null })),
       ...manifest.servicingAdmissions.map((envelope) => ({ envelope, epoch: null, recovery: null })),
       ...manifest.actionCatalogs.map((envelope) => ({ envelope, epoch: null, recovery: null })),
-      ...manifest.listings.flatMap((listing) => [
-        { envelope: listing.commitment as SignedEnvelope<unknown, number>, epoch: listing.commitment.payload.listingEpoch, recovery: null },
-        { envelope: listing.manifest as SignedEnvelope<unknown, number>, epoch: listing.commitment.payload.listingEpoch, recovery: null },
-        { envelope: listing.offer as SignedEnvelope<unknown>, epoch: listing.commitment.payload.listingEpoch, recovery: null },
-        { envelope: listing.providerControlProfile as SignedEnvelope<unknown>, epoch: listing.commitment.payload.listingEpoch, recovery: null },
-      ]),
+      ...manifest.providerControlProfiles.map((envelope) => ({
+        envelope: envelope as SignedEnvelope<unknown, number>,
+        epoch: null,
+        recovery: null,
+      })),
     ];
     const client = await this.pool.connect();
     try {
@@ -293,25 +291,6 @@ export class StandardRailStore {
         BigInt(profile.payload.profileEpoch) === BigInt(previousProfile.rows[0].epoch) &&
         canonicalHash(profile).toLowerCase() !== `0x${previousProfile.rows[0].artifact_hash.toString("hex")}`
       ) throw new Error("FACILITATOR_PROFILE_EPOCH_EQUIVOCATION");
-      for (const listing of manifest.listings) {
-        const current = listing.commitment;
-        const previousListing = await client.query<{ artifact_hash: Buffer; epoch: string }>(
-          `SELECT artifact_hash,epoch FROM standard_rail_artifacts
-           WHERE artifact_type='ListingCommitmentV2' AND environment=$1 AND chain_id=$2
-             AND canonical_json->'payload'->>'providerAgentId'=$3
-             AND canonical_json->'payload'->>'outcomeId'=$4
-           ORDER BY epoch DESC LIMIT 1`,
-          [current.environment, current.chainId, current.payload.providerAgentId, current.payload.outcomeId],
-        );
-        const prior = previousListing.rows[0];
-        if (prior && BigInt(current.payload.listingEpoch) < BigInt(prior.epoch)) {
-          throw new Error("LISTING_EPOCH_ROLLBACK");
-        }
-        if (
-          prior && BigInt(current.payload.listingEpoch) === BigInt(prior.epoch) &&
-          canonicalHash(current).toLowerCase() !== `0x${prior.artifact_hash.toString("hex")}`
-        ) throw new Error("LISTING_EPOCH_EQUIVOCATION");
-      }
       for (const artifact of artifacts) {
         const artifactHash = canonicalHash(artifact.envelope);
         await client.query(

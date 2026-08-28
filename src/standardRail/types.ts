@@ -1,6 +1,6 @@
 import type { Hex } from "../types.js";
 
-export type BindingProfile = "stock-fixed-v1" | "recipe-bound-v1";
+export type BindingProfile = "stock-fixed-v1" | "recipe-bound-v1" | "recipe-bound-v2";
 
 export type StandardOrderState =
   | "DRAFT"
@@ -169,10 +169,72 @@ export interface DeliveryCommitmentV1 {
   responseValidation: "closed-schema-v1";
 }
 
+/**
+ * Plain-data views of one purchasable listing, preserving the historical
+ * field paths the purchase flow reads. Assembled at checkout time from the
+ * service-registration store — never parsed from a sealed env manifest —
+ * so these members are NOT signed envelopes; the cryptographic authorities
+ * are the registration-store artifacts (gateway-signed preparation, the
+ * provider-signed intent, the runtime commitment) referenced by the
+ * top-level hashes.
+ */
+export interface ListingCommitmentView {
+  canonicalToken: Hex;
+  providerAgentId: string;
+  serviceId: Hex;
+  providerAuthorityKey: Hex;
+  providerTerminalAttestationKey: Hex;
+  providerPayee: Hex;
+  providerControlProfileHash: Hex;
+  outcomeId: string;
+  absoluteResourceUri: string;
+  bindingProfile: BindingProfile;
+  daskiCommissionReceiver: Hex;
+  commissionBps: number;
+  listingEpoch: string;
+  splitterFactory: Hex;
+}
+
+export interface ListingSplitterView {
+  splitterAddress: Hex;
+  splitterFactory: Hex;
+  splitterDeploymentTransaction: Hex;
+  splitterDeploymentBlockNumber: string;
+  splitterDeploymentBlockHash: Hex;
+  splitterRuntimeCodeHash: Hex;
+  splitterActivationBlockNumber: string;
+  splitterActivationBlockHash: Hex;
+  splitterActivationPosition: "END_OF_BLOCK";
+  splitterStartingTokenBalance: string;
+  splitterStartingReleaseSequence: string;
+  outcomeIdHash: Hex;
+  listingCommitmentHash: Hex;
+  policyVersionHash: Hex;
+  listingEpoch: string;
+}
+
+export interface ListingOfferView {
+  outcomeId: string;
+  skillId: string;
+  providerAgentId: string;
+  providerPayee: Hex;
+  pricingMode: "fixed" | "dynamic";
+  fixedGrossAmount: string;
+}
+
 export interface StandardListing {
-  commitment: SignedEnvelope<ListingCommitmentV2, 2>;
-  manifest: SignedEnvelope<ListingEpochManifestV2, 2>;
-  offer: SignedEnvelope<ProviderOutcomeOfferV1>;
+  registrationId: string;
+  listingId: string;
+  listingKey: Hex;
+  /** recipe-bound-v2 deal-document slots (Option A). */
+  runtimeCommitmentHash: Hex;
+  providerIntentHash: Hex;
+  /** Finalized chain identities from the registration record. */
+  providerOwner: Hex;
+  providerAgentWallet: Hex;
+  commitment: { payload: ListingCommitmentView };
+  manifest: { payload: ListingSplitterView };
+  offer: { payload: ListingOfferView };
   providerControlProfile: SignedEnvelope<ProviderControlProfileV1>;
   discovery: {
     categoryFamily: string;
@@ -180,8 +242,6 @@ export interface StandardListing {
     jurisdictions: string[];
     tags: string[];
     persistentAsset: boolean;
-    fulfillmentObligationHash: Hex;
-    jurisdictionObligationHashes: Record<string, Hex>;
   };
   requestSchema: Record<string, unknown>;
   responseSchema: Record<string, unknown>;
@@ -394,15 +454,21 @@ export interface DispatchStatusQueryV1 {
   validBefore: number;
 }
 
+/**
+ * The deployment-owned GLOBAL rail-policy bundle: schema-independent signed
+ * envelopes shared by every listing. Listings themselves live in the
+ * service-registration database — the sealed manifest no longer carries a
+ * listing array. The retained provider control profiles supply the dispatch
+ * transport contract (endpoints, audience, bounds) per provider.
+ */
 export interface StandardRailManifest {
   facilitatorProfile: SignedEnvelope<FacilitatorProfileV1>;
   railCapabilityRequirements: SignedEnvelope<RailCapabilityRequirementsV1>;
   activeRailProfile: SignedEnvelope<ActiveRailProfileV1>;
   chainEvidencePolicy: SignedEnvelope<ChainEvidencePolicyV2, 2>;
-  providerIdentitySnapshots: SignedEnvelope<ProviderIdentitySnapshotV1>[];
   servicingAdmissions: SignedEnvelope<ProviderServicingAdmissionV1>[];
   actionCatalogs: SignedEnvelope<ProviderAssetActionCatalogV1>[];
-  listings: StandardListing[];
+  providerControlProfiles: SignedEnvelope<ProviderControlProfileV1>[];
 }
 
 

@@ -13,6 +13,9 @@ export const BASE_MAINNET_SANCTIONS_ORACLE =
 export type SanctionsOracleMode = "production" | "mock";
 
 export interface Config {
+  dynamicServiceRegistrationEnabled: boolean;
+  catalogOperatorToken: string | null;
+  catalogRefreshIntervalMs: number;
   nodeEnv: string;
   port: number;
   trustProxy: number;
@@ -109,6 +112,18 @@ function mcpPath(raw: string | undefined): string {
   return value;
 }
 
+function catalogOperatorToken(raw: string | undefined, enabled: boolean): string | null {
+  const value = raw?.trim();
+  if (!enabled && !value) return null;
+  if (
+    !value || value.length < 32 || value.length > 256 ||
+    /[^\x21-\x7e]/.test(value)
+  ) {
+    throw new Error("CATALOG_OPERATOR_TOKEN must be 32-256 visible ASCII characters");
+  }
+  return value;
+}
+
 function sanctionsMode(raw: string | undefined): SanctionsOracleMode {
   if (raw === undefined) return "production";
   if (raw === "production" || raw === "mock") return raw;
@@ -143,6 +158,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     "USDC_ADDRESS",
     env.USDC_ADDRESS ?? REVIEWED_USDC_DOMAINS[configuredChainId].address,
   );
+  const dynamicServiceRegistrationEnabled = booleanValue(
+    "DYNAMIC_SERVICE_REGISTRATION_ENABLED",
+    env.DYNAMIC_SERVICE_REGISTRATION_ENABLED,
+    true,
+  );
   return {
     nodeEnv,
     port: integer("PORT", env.PORT, 3000, { maximum: 65535 }),
@@ -152,6 +172,16 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     chainId: configuredChainId,
     network: configuredChainId === 8453 ? "base" : "base-sepolia",
     x402Network: `eip155:${configuredChainId}`,
+    dynamicServiceRegistrationEnabled,
+    catalogOperatorToken: catalogOperatorToken(
+      env.CATALOG_OPERATOR_TOKEN,
+      dynamicServiceRegistrationEnabled,
+    ),
+    // Below the 300-second §10 purchase-freshness fence, so steady-state
+    // checkout does not depend on the synchronous fallback refresh.
+    catalogRefreshIntervalMs: integer(
+      "CATALOG_REFRESH_INTERVAL_MS", env.CATALOG_REFRESH_INTERVAL_MS, 240_000,
+    ),
     databaseUrl: databaseUrl(env.DATABASE_URL),
     publicUrl: httpUrl("PUBLIC_URL", env.PUBLIC_URL, production),
     usdc: loadUsdcDomain({ chainId: configuredChainId, address: tokenAddress, env }),

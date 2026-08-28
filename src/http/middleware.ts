@@ -144,8 +144,12 @@ export function configureMiddleware(
       if (buffer.length === 0) return;
       try {
         assertNoDuplicateJsonKeys(buffer.toString("utf8"));
-      } catch {
-        const error = new SyntaxError("Request JSON contains a duplicate key") as SyntaxError & { type: string };
+      } catch (cause) {
+        // The scanner enforces the ingress belt (duplicate keys, depth, node
+        // count, key bounds, unsafe keys) for every JSON body on every route.
+        const error = new SyntaxError(
+          cause instanceof Error ? cause.message : "Request JSON is invalid",
+        ) as SyntaxError & { type: string };
         error.type = "entity.parse.failed";
         throw error;
       }
@@ -154,6 +158,9 @@ export function configureMiddleware(
   }));
   if (config.nodeEnv !== "test") {
     configureParsedMcpRateLimits(app, queries, config, railConfig);
+    if (config.dynamicServiceRegistrationEnabled) {
+      configureParsedRegistrationRateLimits(app, queries);
+    }
   }
 }
 
@@ -202,10 +209,25 @@ function configurePreParserRateLimits(
       }),
     ),
   );
+  if (config.dynamicServiceRegistrationEnabled) {
+    addRateLimits(app, ["/v1/service-registrations"], {
+      namespace: "service-registration",
+      perClient: 10,
+      global: Math.min(config.stateChangeGlobalMaxPerMinute, 100),
+      store: queries,
+    });
+    addRateLimits(app, ["/operator/v1"], {
+      namespace: "catalog-operator",
+      perClient: 30,
+      global: Math.min(config.stateChangeGlobalMaxPerMinute, 100),
+      store: queries,
+    });
+  }
   addRateLimits(
     app,
     [
       "/public/v2",
+      "/public/v3",
       "/skill.md",
       "/SKILL.md",
       "/.well-known",
@@ -226,6 +248,41 @@ function configurePreParserRateLimits(
     global: config.mcpGlobalMaxPerMinute,
     store: queries,
   });
+}
+
+function registrationResourceKey(req: express.Request): string {
+  const body = req.body as {
+    payload?: { providerAgentId?: unknown; registrationId?: unknown };
+  } | undefined;
+  const providerAgentId = body?.payload?.providerAgentId;
+  if (
+    typeof providerAgentId === "string" &&
+    /^(?:0|[1-9]\d{0,77})$/.test(providerAgentId)
+  ) return `provider:${providerAgentId}`;
+  const registrationId = req.params.registrationId ?? body?.payload?.registrationId;
+  if (
+    typeof registrationId === "string" &&
+    /^[0-9a-f-]{36}$/i.test(registrationId)
+  ) return `registration:${registrationId.toLowerCase()}`;
+  return "invalid";
+}
+
+function configureParsedRegistrationRateLimits(
+  app: Express,
+  queries: RateLimitStore,
+): void {
+  const limiter = rateLimit({
+    windowMs: 60_000,
+    max: 20,
+    namespace: "service-registration-resource",
+    key: registrationResourceKey,
+    store: queries,
+  });
+  app.post("/v1/service-registrations", limiter);
+  app.post(
+    "/v1/service-registrations/:registrationId/evidence",
+    limiter,
+  );
 }
 
 function configureParsedMcpRateLimits(
