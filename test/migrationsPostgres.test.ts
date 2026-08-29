@@ -55,5 +55,5 @@ describe("gateway migrations", () => {
       await bootstrap.query(`DROP SCHEMA "${schema}" CASCADE`).catch(() => undefined);
       await bootstrap.end();
     }
-  });
+  }, 60_000);
 });

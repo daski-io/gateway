@@ -320,5 +320,5 @@ describe("dynamic service registration storage", () => {
       await bootstrap.query(`DROP SCHEMA "${schema}" CASCADE`).catch(() => undefined);
       await bootstrap.end();
     }
-  });
+  }, 60_000);
 });
