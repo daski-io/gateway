@@ -7,6 +7,7 @@ import {
   PAYMENT_REQUIRED_HEADER_BUDGET,
 } from "../src/standardRail/payment.js";
 import { createStandardRailRouter, standardPaymentError } from "../src/standardRail/routes.js";
+import { purchaseToolFailure } from "../src/standardRail/mcp.js";
 import type { StandardRailService } from "../src/standardRail/service.js";
 
 const RAIL_PROFILE_HASH = `0x${"ab".repeat(32)}`;
@@ -221,5 +222,43 @@ describe("standard payment error mapping", () => {
 
   it("keeps unknown internals unmapped", () => {
     expect(standardPaymentError(new Error("SOMETHING_ELSE"))).toBeNull();
+  });
+});
+
+describe("MCP purchase tool failure mapping", () => {
+  it("passes the mapped rejection reason through with a recovery hint", () => {
+    expect(purchaseToolFailure(new Error("PROVIDER_QUOTE_REJECTED"))).toEqual({
+      code: "PROVIDER_QUOTE_REJECTED",
+      message: "The provider declined to quote this request",
+      retryable: false,
+      next_action:
+        "The provider declined to quote this exact request; revise the request contents before any further attempt.",
+    });
+  });
+
+  it("marks recoverable-with-a-new-challenge failures retryable", () => {
+    for (const internal of [
+      "LISTING_SUPERSEDED",
+      "OUTCOME_OFFER_EXPIRED",
+      "PROVIDER_QUOTE_UNAVAILABLE",
+    ]) {
+      expect(purchaseToolFailure(new Error(internal))).toMatchObject({
+        code: internal,
+        retryable: true,
+      });
+    }
+  });
+
+  it("keeps unknown internals as the generic non-retryable rejection", () => {
+    expect(purchaseToolFailure(new Error("secret upstream detail"))).toEqual({
+      code: "STANDARD_RAIL_PURCHASE_FAILED",
+      message: "The standard purchase was rejected",
+      retryable: false,
+    });
+    expect(purchaseToolFailure("not an error")).toEqual({
+      code: "STANDARD_RAIL_PURCHASE_FAILED",
+      message: "The standard purchase was rejected",
+      retryable: false,
+    });
   });
 });
