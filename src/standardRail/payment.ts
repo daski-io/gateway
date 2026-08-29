@@ -162,6 +162,27 @@ export function assertPaymentIdentifierExtension(value: unknown, issued: unknown
   }
 }
 
+// Node buyers (undici) refuse any response whose combined header block
+// exceeds 16 KiB, so the mirrored PAYMENT-REQUIRED header owns an 8 KiB
+// budget. The 402 JSON body always carries the complete challenge.
+export const PAYMENT_REQUIRED_HEADER_BUDGET = 8_192;
+
+export function encodedPaymentRequiredHeader(challenge: PaymentRequired): string | null {
+  const complete = encodeHeader(challenge);
+  if (complete.length <= PAYMENT_REQUIRED_HEADER_BUDGET) return complete;
+  // The bazaar declaration inlines both outcome schemas and is the one
+  // unbounded extension. The compact header drops it; every remaining
+  // extension stays byte-identical to the issued challenge, so a payment
+  // built from this header still verifies.
+  const { bazaar: _discovery, ...extensions } = challenge.extensions ?? {};
+  const compact = encodeHeader({ ...challenge, extensions });
+  return compact.length <= PAYMENT_REQUIRED_HEADER_BUDGET ? compact : null;
+}
+
+function encodeHeader(value: unknown): string {
+  return Buffer.from(JSON.stringify(value), "utf8").toString("base64url");
+}
+
 export function decodePaymentHeader(header: string): PaymentPayload {
   if (header.length > 24_000 || !/^[A-Za-z0-9_-]+={0,2}$/.test(header)) {
     throw new Error("PAYMENT-SIGNATURE is malformed");

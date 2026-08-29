@@ -1,6 +1,6 @@
 import { Router } from "express";
-import type { PaymentPayload } from "@x402/core/types";
-import { decodePaymentHeader } from "./payment.js";
+import type { PaymentPayload, PaymentRequired } from "@x402/core/types";
+import { decodePaymentHeader, encodedPaymentRequiredHeader } from "./payment.js";
 import type { StandardRailService } from "./service.js";
 
 const PAYMENT_HEADER = "payment-signature";
@@ -63,6 +63,32 @@ export function standardPaymentError(error: unknown): {
       status: 409,
       code: "LISTING_SUPERSEDED",
       message: "The listing changed after this order was drafted; request a new challenge",
+    };
+  }
+  if (internal === "PROVIDER_QUOTE_REJECTED") {
+    return {
+      status: 409,
+      code: "PROVIDER_QUOTE_REJECTED",
+      message: "The provider declined to quote this request",
+    };
+  }
+  if (internal === "OUTCOME_OFFER_EXPIRED") {
+    return {
+      status: 409,
+      code: "OUTCOME_OFFER_EXPIRED",
+      message: "The offer expired before payment could start; request a new challenge",
+    };
+  }
+  if ([
+    "PROVIDER_QUOTE_UNAVAILABLE",
+    "PROVIDER_QUOTE_INVALID",
+    "PROVIDER_QUOTE_SIGNATURE_INVALID",
+    "PROVIDER_QUOTE_NOT_RELEASABLE",
+  ].includes(internal)) {
+    return {
+      status: 502,
+      code: "PROVIDER_QUOTE_UNAVAILABLE",
+      message: "The provider did not return a usable quote",
     };
   }
   if (/malformed|invalid|mismatch|Unsupported|Missing|required|forbidden|differ/i.test(internal)) {
@@ -247,7 +273,10 @@ export function createStandardRailRouter(service: StandardRailService, publicUrl
         const challenge = await service.issueChallenge({
           providerAgentId, outcomeId, body: req.body,
         });
-        res.setHeader("PAYMENT-REQUIRED", encoded(challenge.paymentRequired));
+        const requiredHeader = encodedPaymentRequiredHeader(
+          challenge.paymentRequired as PaymentRequired,
+        );
+        if (requiredHeader !== null) res.setHeader("PAYMENT-REQUIRED", requiredHeader);
         res.setHeader("DASKI-ORDER-HANDLE", challenge.handle);
         res.setHeader("DASKI-RAIL-PROFILE-HASH", service.railProfileHash);
         if (publicUrl) {
@@ -256,6 +285,7 @@ export function createStandardRailRouter(service: StandardRailService, publicUrl
             `${publicUrl}/public/v2/artifacts/${service.railProfileHash}`,
           );
         }
+        res.setHeader("Cache-Control", "private, no-store");
         res.status(402).json(challenge.paymentRequired);
         return;
       }

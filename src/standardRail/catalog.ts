@@ -80,12 +80,15 @@ const SEALED_DELIVERY_COMMITMENT = {
 
 const SEALED_EXTENSION_POLICY = {
   requiredExtensions: [
-    "bazaar",
     "daski-rail-profile",
     "daski-order-terms",
     "daski-order-binding",
   ],
-  optionalExtensions: ["payment-identifier"],
+  // The bazaar declaration inlines both outcome schemas and can outgrow the
+  // PAYMENT-REQUIRED and PAYMENT-SIGNATURE header transports, so a client
+  // paying from the compact challenge header cannot echo it. When echoed it
+  // must still match the issued challenge byte for byte.
+  optionalExtensions: ["bazaar", "payment-identifier"],
 };
 
 const hex32 = /^0x[0-9a-fA-F]{64}$/;
