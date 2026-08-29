@@ -163,6 +163,41 @@ describe("standard rail orchestration", () => {
     expect(consumeActionChallenge).toHaveBeenCalledOnce();
   });
 
+  it("names a provider quote decline separately from quote infrastructure failure", async () => {
+    const listing = {
+      runtimeCommitmentHash: hash("1"),
+      offer: { payload: { pricingMode: "dynamic", fixedGrossAmount: "0" } },
+      commitment: { payload: { outcomeId: "register-domain", commissionBps: 500 } },
+      providerControlProfile: {
+        payload: {
+          providerAudience: "provider.example",
+          quoteUrl: "https://provider.example/quote",
+          timeoutMs: 3_000,
+          maxResponseBytes: 65_536,
+        },
+      },
+    } as unknown as StandardListing;
+    const quoteStatus = { value: 409 };
+    const service = harness({
+      appConfig: { chainId: 84532 },
+      railConfig: {
+        environment: "testnet",
+        dispatchPrivateKey: `0x${"11".repeat(32)}`,
+        dispatchTimeoutMs: 5_000,
+      },
+      providerFetch: vi.fn(async () => ({ ok: false, status: quoteStatus.value })),
+    });
+    const resolve = (service as unknown as {
+      resolveGrossAmount(value: StandardListing, body: unknown): Promise<unknown>;
+    }).resolveGrossAmount.bind(service);
+
+    await expect(resolve(listing, { domain: "already-consumed.example" }))
+      .rejects.toThrow("PROVIDER_QUOTE_REJECTED");
+    quoteStatus.value = 503;
+    await expect(resolve(listing, { domain: "already-consumed.example" }))
+      .rejects.toThrow("PROVIDER_QUOTE_UNAVAILABLE");
+  });
+
   it("resumes a paid dispatched order through the dispatcher seam", async () => {
     const order = {
       orderId: "order-1",

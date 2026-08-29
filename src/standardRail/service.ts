@@ -1554,7 +1554,15 @@ export class StandardRailService {
         listing.providerControlProfile.payload.timeoutMs,
       )),
     }, true);
-    if (!response.ok) throw new Error("PROVIDER_QUOTE_UNAVAILABLE");
+    if (!response.ok) {
+      // A provider 4xx is a decline of this request (for example a consumed
+      // identity); anything else is quote infrastructure failing.
+      throw new Error(
+        response.status >= 400 && response.status < 500
+          ? "PROVIDER_QUOTE_REJECTED"
+          : "PROVIDER_QUOTE_UNAVAILABLE",
+      );
+    }
     const quote = await readBoundedJson(
       response,
       listing.providerControlProfile.payload.maxResponseBytes,
