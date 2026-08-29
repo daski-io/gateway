@@ -167,7 +167,7 @@ function registrationView(record: StoredRegistration) {
   };
 }
 
-function publicServiceView(
+export function publicServiceView(
   record: StoredRegistration,
   runtimeCommitments: ReadonlyMap<string, {
     runtimeCommitmentHash: `0x${string}`;
