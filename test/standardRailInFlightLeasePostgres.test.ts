@@ -91,5 +91,5 @@ describe("in-flight purchase lease (postgres)", () => {
       await bootstrap.query(`DROP SCHEMA "${schema}" CASCADE`).catch(() => undefined);
       await bootstrap.end();
     }
-  });
+  }, 60_000);
 });
