@@ -8,7 +8,13 @@ import type { StandardWalletStore } from "../src/standardRail/walletStore.js";
 
 describe("wallet reputation queries", () => {
   it("returns the buyer's on-chain value totals with their feedback counts", async () => {
-    const consume = vi.fn(async () => undefined);
+    const payer = "0x2222222222222222222222222222222222222222";
+    // consume() is the authorization boundary: it returns the payer it proved,
+    // and the query must use that value rather than the caller's input.
+    const consume = vi.fn(async (args: { payer: string }) => ({
+      payer: args.payer.toLowerCase(),
+      authorizationHash: `0x${"ab".repeat(32)}`,
+    }));
     const getBlock = vi.fn(async () => ({ number: 123n }));
     const readContract = vi.fn(async ({ functionName }: { functionName: string }) => {
       if (functionName === "getBuyerStats") return [4n, 3n, 1n];
@@ -34,7 +40,7 @@ describe("wallet reputation queries", () => {
     });
 
     await expect(queries.getReputation({
-      payer: "0x2222222222222222222222222222222222222222",
+      payer,
       authorization: {} as WalletAuthorizationTransport,
     })).resolves.toEqual({
       eligibleTransactionCount: "4",
@@ -45,6 +51,7 @@ describe("wallet reputation queries", () => {
       safeBlock: "123",
     });
     expect(consume).toHaveBeenCalledOnce();
+    expect(consume.mock.calls[0]?.[0]).toMatchObject({ payer });
     expect(getBlock).toHaveBeenCalledWith({ blockTag: "safe" });
     expect(fallback.getBlock).not.toHaveBeenCalled();
     expect(fallback.readContract).not.toHaveBeenCalled();

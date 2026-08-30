@@ -77,9 +77,11 @@ export class StandardWalletQueries {
     cursor: string | null;
     authorization: WalletAuthorizationTransport;
   }) {
-    const payer = getAddress(args.payer).toLowerCase();
     const request = { limit: args.limit, cursor: args.cursor };
-    await this.wallet.consume({ authorization: args.authorization, action: "list-orders", request });
+    // Only the payer proven by the signed authorization may be queried.
+    const { payer } = await this.wallet.consume({
+      payer: args.payer, authorization: args.authorization, action: "list-orders", request,
+    });
     const binding = this.wallet.orderCursorBinding(payer, args.limit);
     const last = args.cursor ? this.wallet.decodeOrderCursor(args.cursor, binding) : null;
     const result = await this.pool.query<OrderHistoryRow>(
@@ -146,9 +148,10 @@ export class StandardWalletQueries {
     payer: string;
     authorization: WalletAuthorizationTransport;
   }) {
-    const payer = getAddress(args.payer).toLowerCase();
     const request = {};
-    await this.wallet.consume({
+    // Only the payer proven by the signed authorization may be queried.
+    const { payer } = await this.wallet.consume({
+      payer: args.payer,
       authorization: args.authorization,
       action: "get-buyer-reputation",
       request,

@@ -103,13 +103,23 @@ export class StandardWalletStore {
     };
   }
 
+  /**
+   * Verify a signed challenge and bind it to the payer the current operation
+   * targets. `payer` is the subject the caller intends to act for; it must
+   * match the payer inside the signed authorization, otherwise a wallet that
+   * legitimately signed for itself could be replayed against another wallet.
+   * Callers must use the returned `payer` — never their own input — for every
+   * subsequent query, claim, and provider grant.
+   */
   async consume(args: {
+    payer: string;
     authorization: WalletAuthorizationTransport;
     action: string;
     request: unknown;
     operationHash?: Hex;
     allowExactReplay?: boolean;
-  }): Promise<Hex> {
+  }): Promise<{ payer: Hex; authorizationHash: Hex }> {
+    const requestedPayer = this.normalizePayer(args.payer);
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
@@ -128,7 +138,8 @@ export class StandardWalletStore {
       const expected = row.canonical_authorization;
       if (
         expected.actionHash !== utf8Hash(args.action) ||
-        expected.requestHash !== canonicalHash(args.request)
+        expected.requestHash !== canonicalHash(args.request) ||
+        this.normalizePayer(expected.payer) !== requestedPayer
       ) throw new Error("wallet authorization denied");
       const authorizationHash = await verifyWalletAuthorization({
         authorization: args.authorization,
@@ -185,7 +196,10 @@ export class StandardWalletStore {
         [nonce],
       );
       await client.query("COMMIT");
-      return walletAuthorizationHash(expected, this.chainId);
+      return {
+        payer: this.normalizePayer(expected.payer),
+        authorizationHash: walletAuthorizationHash(expected, this.chainId),
+      };
     } catch (error) {
       await client.query("ROLLBACK");
       throw error;

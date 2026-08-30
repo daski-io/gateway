@@ -90,19 +90,10 @@ export class StandardAssetActions {
     input: Record<string, unknown>;
     authorization: WalletAuthorizationTransport;
   }): Promise<unknown> {
-    const payer = getAddress(args.payer).toLowerCase() as Hex;
-    const request = actionRequest({ ...args, payer });
+    const request = actionRequest(args);
     const resolved = this.resolve(args.providerAgentId, args.actionId);
     const action = actionName(args.providerAgentId, args.actionId, args.input);
     this.assertCurrentAuthorization(args.authorization, resolved, action, request);
-    const eligible = await this.pool.query(
-      `SELECT 1 FROM standard_orders WHERE lower(payer)=$1 AND provider_agent_id=$2
-        AND state NOT IN ('DRAFT','CHALLENGE_ISSUED','ATTEMPT_OPENED','VERIFIED','VERIFY_REJECTED',
-          'SETTLE_INVOKED','FACILITATOR_CONFIRMED','SETTLEMENT_AMBIGUOUS','SETTLEMENT_FAILED',
-          'EXTERNAL_OR_UNPROVEN_DEPOSIT','DEPOSIT_FINAL') LIMIT 1`,
-      [payer, args.providerAgentId],
-    );
-    if (eligible.rowCount !== 1) throw new Error("wallet authorization denied");
     const requestDigest = canonicalHash(request);
     const presentedWalletHash = walletAuthorizationHash(args.authorization.message, this.chainId);
     const followUp = destructiveFollowUp(args.input);
@@ -133,7 +124,10 @@ export class StandardAssetActions {
           actionDefinitionHash: resolved.definition.actionDefinitionHash,
           requestHash: requestDigest,
         });
-    const walletHash = await this.wallet.consume({
+    // Authorize first: the payer this operation acts for is whichever payer the
+    // signed authorization proves, never the caller-supplied field.
+    const { payer, authorizationHash: walletHash } = await this.wallet.consume({
+      payer: args.payer,
       authorization: args.authorization,
       action,
       request,
@@ -141,6 +135,14 @@ export class StandardAssetActions {
       allowExactReplay: true,
     });
     if (walletHash !== presentedWalletHash) throw new Error("wallet authorization denied");
+    const eligible = await this.pool.query(
+      `SELECT 1 FROM standard_orders WHERE lower(payer)=$1 AND provider_agent_id=$2
+        AND state NOT IN ('DRAFT','CHALLENGE_ISSUED','ATTEMPT_OPENED','VERIFIED','VERIFY_REJECTED',
+          'SETTLE_INVOKED','FACILITATOR_CONFIRMED','SETTLEMENT_AMBIGUOUS','SETTLEMENT_FAILED',
+          'EXTERNAL_OR_UNPROVEN_DEPOSIT','DEPOSIT_FINAL') LIMIT 1`,
+      [payer, args.providerAgentId],
+    );
+    if (eligible.rowCount !== 1) throw new Error("wallet authorization denied");
     if (followUp) {
       await assertDestructiveFollowUp(this.pool, {
         payer,
@@ -425,8 +427,7 @@ type ActiveServicingFetch = (
 ) => Promise<Response>;
 
 function actionRequest(args: {
-  payer: string; providerAgentId: string; actionId: string; providerAssetId: string;
-  input: Record<string, unknown>;
+  actionId: string; providerAssetId: string; input: Record<string, unknown>;
 }) {
   return {
     actionId: args.actionId, providerAssetId: args.providerAssetId, input: args.input,
