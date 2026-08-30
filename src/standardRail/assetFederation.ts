@@ -128,9 +128,10 @@ export class StandardAssetFederation {
     cursor: string | null;
     authorization: WalletAuthorizationTransport;
   }) {
-    const payer = getAddress(args.payer).toLowerCase() as Hex;
     const walletRequest = { providerAgentId: args.providerAgentId, limit: args.limit, cursor: args.cursor };
-    const walletHash = await this.wallet.consume({
+    // Only the payer proven by the signed authorization may be queried or federated for.
+    const { payer, authorizationHash: walletHash } = await this.wallet.consume({
+      payer: args.payer,
       authorization: args.authorization,
       action: "list-assets",
       request: walletRequest,
