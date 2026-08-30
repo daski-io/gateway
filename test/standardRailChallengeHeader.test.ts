@@ -9,6 +9,11 @@ import {
 import { createStandardRailRouter, standardPaymentError } from "../src/standardRail/routes.js";
 import { purchaseToolFailure } from "../src/standardRail/mcp.js";
 import type { StandardRailService } from "../src/standardRail/service.js";
+import {
+  assertSchema,
+  compileClosedRequestSchema,
+  RequestSchemaError,
+} from "../src/standardRail/schema.js";
 
 const RAIL_PROFILE_HASH = `0x${"ab".repeat(32)}`;
 
@@ -260,5 +265,82 @@ describe("MCP purchase tool failure mapping", () => {
       message: "The standard purchase was rejected",
       retryable: false,
     });
+  });
+});
+
+describe("request schema rejection transport", () => {
+  let server: Server | undefined;
+
+  afterEach(async () => {
+    if (!server) return;
+    await new Promise<void>((resolve, reject) =>
+      server!.close((error) => error ? reject(error) : resolve()));
+    server = undefined;
+  });
+
+  it("answers 400 with schema-derived guidance when the challenge body fails the outcome schema", async () => {
+    const service = {
+      railProfileHash: RAIL_PROFILE_HASH,
+      issueChallenge: vi.fn(async () => {
+        throw new RequestSchemaError("Request does not match the closed outcome schema", [{
+          path: "/entityType",
+          keyword: "enum",
+          message: "must be equal to one of the allowed values",
+          allowedValues: ["Limited Liability Company"],
+        }]);
+      }),
+    } as unknown as StandardRailService;
+    const app = express();
+    app.use(express.json());
+    app.use(createStandardRailRouter(service, "https://gateway.example"));
+    server = await new Promise<Server>((resolve, reject) => {
+      const listener = app.listen(0, "127.0.0.1", (error?: Error) =>
+        error ? reject(error) : resolve(listener));
+    });
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("test listener unavailable");
+    const response = await fetch(
+      `http://127.0.0.1:${address.port}/outcomes/8327/form-entity`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ entityType: "LLC" }),
+      },
+    );
+    expect(response.status).toBe(400);
+    const body = await response.json() as {
+      error: { code: string; details: Array<{ path: string; allowedValues?: string[] }> };
+    };
+    expect(body.error.code).toBe("REQUEST_SCHEMA_INVALID");
+    expect(body.error.details[0].path).toBe("/entityType");
+    expect(body.error.details[0].allowedValues).toEqual(["Limited Liability Company"]);
+  });
+});
+
+describe("assertSchema request rejection", () => {
+  it("collects schema-derived details and never a response-label class", async () => {
+    const validate = compileClosedRequestSchema({
+      type: "object",
+      additionalProperties: false,
+      required: ["entityType"],
+      properties: {
+        entityType: { type: "string", enum: ["Limited Liability Company", "Nonprofit Corporation"] },
+      },
+    });
+    try {
+      assertSchema(validate, { entityType: "LLC" }, "Request");
+      throw new Error("expected a schema rejection");
+    } catch (error) {
+      expect(error).toBeInstanceOf(RequestSchemaError);
+      const rejection = error as RequestSchemaError;
+      expect(rejection.details.some((detail) =>
+        detail.keyword === "enum" &&
+        detail.path === "/entityType" &&
+        detail.allowedValues?.includes("Limited Liability Company"))).toBe(true);
+      const serialized = JSON.stringify(rejection.details);
+      expect(serialized).not.toContain("LLC\"");
+    }
+    expect(() => assertSchema(validate, { entityType: "LLC" }, "Response"))
+      .toThrowError(/Response does not match/);
   });
 });

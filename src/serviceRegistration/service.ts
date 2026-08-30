@@ -884,6 +884,11 @@ export class ServiceRegistrationService {
         serviceVersion: record.serviceVersion,
       });
     } catch {
+      logger.error("dynamic catalog quarantine", {
+        registrationId: record.registrationId,
+        serviceSlug: record.serviceSlug,
+        code: "CHAIN_SERVICE_DRIFT",
+      });
       await this.store.stopNewCommerce(record.registrationId, "CHAIN_SERVICE_DRIFT", false);
       return;
     }
@@ -893,6 +898,11 @@ export class ServiceRegistrationService {
       getAddress(service.serviceWallet) !== getAddress(record.serviceWallet) ||
       expectedPayee !== getAddress(record.providerPayee)
     ) {
+      logger.error("dynamic catalog quarantine", {
+        registrationId: record.registrationId,
+        serviceSlug: record.serviceSlug,
+        code: "CHAIN_AUTHORITY_DRIFT",
+      });
       await this.store.stopNewCommerce(record.registrationId, "CHAIN_AUTHORITY_DRIFT", true);
       return;
     }
@@ -900,6 +910,11 @@ export class ServiceRegistrationService {
     try {
       rawCard = await this.cardLoader(service.serviceUri);
     } catch {
+      logger.warn("dynamic catalog refresh could not load the agent card", {
+        registrationId: record.registrationId,
+        serviceSlug: record.serviceSlug,
+        code: "AGENT_CARD_UNAVAILABLE",
+      });
       await this.store.refreshFailed(record.registrationId, "AGENT_CARD_UNAVAILABLE");
       return;
     }
@@ -913,12 +928,22 @@ export class ServiceRegistrationService {
         agentCardUrl: record.agentCardUrl,
       });
     } catch {
+      logger.error("dynamic catalog quarantine", {
+        registrationId: record.registrationId,
+        serviceSlug: record.serviceSlug,
+        code: "AGENT_CARD_INVALID",
+      });
       await this.store.stopNewCommerce(record.registrationId, "AGENT_CARD_INVALID", true);
       return;
     }
     if (
       card.serviceContractHash !== record.card.serviceContractHash
     ) {
+      logger.error("dynamic catalog quarantine", {
+        registrationId: record.registrationId,
+        serviceSlug: record.serviceSlug,
+        code: "CARD_CONTRACT_DRIFT",
+      });
       await this.store.stopNewCommerce(record.registrationId, "CARD_CONTRACT_DRIFT", true);
       return;
     }

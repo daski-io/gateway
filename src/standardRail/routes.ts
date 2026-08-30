@@ -1,7 +1,8 @@
-import { Router } from "express";
+import { Router, type NextFunction, type Request, type Response } from "express";
 import type { PaymentPayload, PaymentRequired } from "@x402/core/types";
 import { decodePaymentHeader, encodedPaymentRequiredHeader } from "./payment.js";
 import type { StandardRailService } from "./service.js";
+import { RequestSchemaError } from "./schema.js";
 
 const PAYMENT_HEADER = "payment-signature";
 const ORDER_ACTIONS = [
@@ -403,5 +404,23 @@ export function createStandardRailRouter(service: StandardRailService, publicUrl
     } catch (error) { next(error); }
   });
 
+  // Client-shaped input: a request that fails an outcome's closed schema
+  // answers 400 with schema-derived guidance (failing field, allowed values)
+  // instead of surfacing as a 500 — submitted values are never echoed back.
+  router.use((
+    error: unknown,
+    _req: Request,
+    res: Response,
+    next: NextFunction,
+  ) => {
+    if (res.headersSent || !(error instanceof RequestSchemaError)) return next(error);
+    res.status(400).json({
+      error: {
+        code: "REQUEST_SCHEMA_INVALID",
+        message: error.message,
+        details: error.details,
+      },
+    });
+  });
   return router;
 }

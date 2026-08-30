@@ -134,6 +134,26 @@ export function compileClosedResponseSchema(schema: Record<string, unknown>): Va
   return compileClosedObjectSchema(schema, "response");
 }
 
+// A client request that fails the closed outcome schema. Details are
+// schema-derived only (paths, keywords, allowed enum values) — submitted
+// values are never echoed back. The HTTP layer maps this to a 400; a
+// Response-label failure stays a plain Error (that is our bug, not the
+// client's) and keeps surfacing as a 500.
+export class RequestSchemaError extends Error {
+  readonly details: ReadonlyArray<{
+    path: string;
+    keyword: string;
+    message: string;
+    allowedValues?: readonly string[];
+  }>;
+
+  constructor(message: string, details: RequestSchemaError["details"]) {
+    super(message);
+    this.name = "RequestSchemaError";
+    this.details = details;
+  }
+}
+
 export function assertSchema(
   validate: ValidateFunction,
   value: unknown,
@@ -142,10 +162,37 @@ export function assertSchema(
   // One cumulative instance budget per value: dynamic-record contents are
   // invisible to the schema, so structural bounds must hold for the whole
   // document rather than per subtree.
-  assertBoundedJsonValue(
-    value,
-    label === "Request" ? REQUEST_JSON_BUDGET : RESPONSE_JSON_BUDGET,
-    label,
-  );
-  if (!validate(value)) throw new Error(`${label} does not match the closed outcome schema`);
+  try {
+    assertBoundedJsonValue(
+      value,
+      label === "Request" ? REQUEST_JSON_BUDGET : RESPONSE_JSON_BUDGET,
+      label,
+    );
+  } catch (error) {
+    if (label !== "Request") throw error;
+    // Bounds messages are structural ("too deeply nested", "unsafe key") and
+    // never echo submitted values — safe to hand back verbatim.
+    const message = error instanceof Error
+      ? error.message
+      : "Request exceeds the accepted document bounds";
+    throw new RequestSchemaError(message, []);
+  }
+  if (validate(value)) return;
+  if (label !== "Request") {
+    throw new Error(`${label} does not match the closed outcome schema`);
+  }
+  const details = (validate.errors ?? []).slice(0, 8).map((schemaError) => {
+    const allowedValues = (schemaError.params as { allowedValues?: unknown }).allowedValues;
+    return {
+      path: schemaError.instancePath || "$",
+      keyword: schemaError.keyword,
+      message: schemaError.message ?? "does not match the schema",
+      ...(schemaError.keyword === "enum" &&
+      Array.isArray(allowedValues) &&
+      allowedValues.every((allowed) => typeof allowed === "string")
+        ? { allowedValues: allowedValues as string[] }
+        : {}),
+    };
+  });
+  throw new RequestSchemaError("Request does not match the closed outcome schema", details);
 }
