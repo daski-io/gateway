@@ -353,7 +353,6 @@ export interface PublicOutcomeV1 {
   };
   providerReputation: PublicReputationV1;
   serviceReputation: PublicReputationV1;
-  reputation: PublicReputationV1;
 }
 
 export interface PublicOutcomeDetailV1 extends PublicOutcomeV1 {
@@ -364,6 +363,48 @@ export interface PublicOutcomeDetailV1 extends PublicOutcomeV1 {
     preparation: Hex;
     providerIntent: Hex;
   };
+}
+
+/** Reputation headline for search rows: the counters and rates without
+ *  the per-purchase history that dominates row size. */
+export type PublicReputationSummaryV1 = Omit<PublicReputationV1, "recentPurchases">;
+
+/**
+ * Compact discovery row served by outcome search: the identity, taxonomy,
+ * presentation, price mode, terms, and reputation headlines a buyer needs
+ * to shortlist. The commercial detail — splitter provenance, deadline and
+ * capacity policies, schemas, purchase history — stays on
+ * `PublicOutcomeDetailV1` behind `daski_get_outcome`.
+ */
+export interface PublicOutcomeSummaryV1 {
+  providerAgentId: string;
+  serviceId: Hex;
+  outcomeId: string;
+  skillId: string;
+  categoryFamily: string;
+  serviceType: string;
+  jurisdictions: string[];
+  tags: string[];
+  persistentAsset: boolean;
+  pricingMode: "fixed" | "dynamic";
+  fixedGrossAmount: string;
+  token: Hex;
+  providerAudience: string;
+  absoluteResourceUri: string;
+  terms: StandardListing["terms"];
+  service: PublicOutcomeV1["service"];
+  skill: PublicOutcomeV1["skill"];
+  providerReputation: PublicReputationSummaryV1;
+  serviceReputation: PublicReputationSummaryV1;
+}
+
+/** Live catalog vocabulary attached to zero-hit searches so the next
+ *  query can use terms that actually exist instead of guessing. */
+export interface CatalogSearchVocabularyV1 {
+  note: string;
+  categoryFamilies: string[];
+  serviceTypes: string[];
+  jurisdictions: string[];
 }
 
 export interface PublicChainMetadataV3 {

@@ -23,9 +23,12 @@ import {
   compileClosedResponseSchema,
 } from "./schema.js";
 import type {
+  CatalogSearchVocabularyV1,
   ProviderControlProfileV1,
   PublicOutcomeDetailV1,
+  PublicOutcomeSummaryV1,
   PublicOutcomeV1,
+  PublicReputationSummaryV1,
   PublicReputationV1,
   SignedEnvelope,
   StandardListing,
@@ -309,8 +312,6 @@ export class StandardRailCatalog {
         { ...outcome.providerReputation, safeBlock },
       serviceReputation: services.get(outcome.serviceId as Hex) ??
         { ...outcome.serviceReputation, safeBlock },
-      reputation: services.get(outcome.serviceId as Hex) ??
-        { ...outcome.reputation, safeBlock },
     }));
   }
 
@@ -323,7 +324,7 @@ export class StandardRailCatalog {
     pricingMode?: "fixed" | "dynamic";
     persistentAsset?: boolean;
     limit: number;
-  }): Promise<PublicOutcomeV1[]> {
+  }): Promise<PublicOutcomeSummaryV1[]> {
     const tokens = (filters.text ?? "").toLowerCase().match(/[a-z0-9]+/g)?.slice(0, 12) ?? [];
     return (await this.publicOutcomes()).filter((outcome) => {
       const service = outcome.service;
@@ -341,12 +342,29 @@ export class StandardRailCatalog {
         (!filters.categoryFamily || outcome.categoryFamily === filters.categoryFamily) &&
         (!filters.serviceType || outcome.serviceType === filters.serviceType) &&
         (!filters.jurisdiction ||
-          outcome.jurisdictions.includes(filters.jurisdiction)) &&
+          jurisdictionMatches(outcome.jurisdictions, filters.jurisdiction)) &&
         (!filters.pricingMode || outcome.pricingMode === filters.pricingMode) &&
         (filters.persistentAsset === undefined ||
           outcome.persistentAsset === filters.persistentAsset)
       );
-    }).slice(0, filters.limit);
+    }).slice(0, filters.limit).map(summarizeOutcome);
+  }
+
+  /** The taxonomy and jurisdiction values present in the live catalog,
+   *  served with zero-hit searches so a buyer's next query can use terms
+   *  that exist instead of guessing them. */
+  async searchVocabulary(): Promise<CatalogSearchVocabularyV1> {
+    const outcomes = await this.listOutcomes();
+    const distinct = (values: string[]): string[] => [...new Set(values)].sort();
+    return {
+      note: "text must match every token (substring, no stemming) against " +
+        "service/skill names, descriptions, and tags; jurisdiction accepts " +
+        "ISO 3166-1 alpha-2 ('US'), ISO 3166-2 ('US-WY'), or 'global', and " +
+        "country and subdivision filters match each other's listings.",
+      categoryFamilies: distinct(outcomes.map((outcome) => outcome.categoryFamily)),
+      serviceTypes: distinct(outcomes.map((outcome) => outcome.serviceType)),
+      jurisdictions: distinct(outcomes.flatMap((outcome) => outcome.jurisdictions)),
+    };
   }
 
   async getOutcome(
@@ -700,7 +718,56 @@ export class StandardRailCatalog {
       },
       providerReputation: EMPTY_REPUTATION,
       serviceReputation: EMPTY_REPUTATION,
-      reputation: EMPTY_REPUTATION,
     };
   }
+}
+
+/** ISO 3166-aware jurisdiction match: a `global` listing serves every
+ *  filter, a subdivision filter (`US-WY`) is served by its country's
+ *  listing (`US`), and a country filter is served by that country's
+ *  subdivision listings. */
+function jurisdictionMatches(listed: string[], filter: string): boolean {
+  const wanted = filter.toUpperCase();
+  return listed.some((value) => {
+    if (value === "global") return true;
+    const have = value.toUpperCase();
+    return have === wanted ||
+      wanted.startsWith(`${have}-`) ||
+      have.startsWith(`${wanted}-`);
+  });
+}
+
+function reputationHeadline(
+  reputation: PublicReputationV1,
+): PublicReputationSummaryV1 {
+  const { recentPurchases, ...headline } = reputation;
+  void recentPurchases;
+  return headline;
+}
+
+/** Search rows are shortlisting data. The splitter provenance, deadline
+ *  and capacity policies, schemas, and purchase history stay behind
+ *  `daski_get_outcome`, which serves the full detail row. */
+function summarizeOutcome(outcome: PublicOutcomeV1): PublicOutcomeSummaryV1 {
+  return {
+    providerAgentId: outcome.providerAgentId,
+    serviceId: outcome.serviceId,
+    outcomeId: outcome.outcomeId,
+    skillId: outcome.skillId,
+    categoryFamily: outcome.categoryFamily,
+    serviceType: outcome.serviceType,
+    jurisdictions: outcome.jurisdictions,
+    tags: outcome.tags,
+    persistentAsset: outcome.persistentAsset,
+    pricingMode: outcome.pricingMode,
+    fixedGrossAmount: outcome.fixedGrossAmount,
+    token: outcome.token,
+    providerAudience: outcome.providerAudience,
+    absoluteResourceUri: outcome.absoluteResourceUri,
+    terms: outcome.terms,
+    service: outcome.service,
+    skill: outcome.skill,
+    providerReputation: reputationHeadline(outcome.providerReputation),
+    serviceReputation: reputationHeadline(outcome.serviceReputation),
+  };
 }

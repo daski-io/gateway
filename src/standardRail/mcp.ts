@@ -222,7 +222,18 @@ export async function createStandardRailMcp(
     server.registerTool(
       "daski_list_outcomes",
       {
-        description: "Search the currently admitted, purchasable Daski outcomes.",
+        description: "Search the currently admitted, purchasable Daski outcomes. " +
+          "Filters AND together. `text` must match every token (substring, no " +
+          "stemming) against service/skill names, descriptions, and tags — use " +
+          "product words ('llc', 'domain', 'mailbox'), not sentences. " +
+          "`categoryFamily` and `serviceType` take controlled taxonomy ids " +
+          "(e.g. 'business-formation', 'entity-formation'). `jurisdiction` " +
+          "accepts ISO 3166-1 alpha-2 ('US'), ISO 3166-2 ('US-WY'), or " +
+          "'global'; country and subdivision filters match each other's " +
+          "listings. Returns compact rows; a zero-hit search includes a " +
+          "`searchHint` with the live catalog vocabulary. Full detail " +
+          "(schemas, splitter provenance, policies, recent purchases) via " +
+          "daski_get_outcome.",
         inputSchema: {
           text: z.string().max(200).optional(),
           providerAgentId: z.string().regex(/^[1-9]\d*$/).optional(),
@@ -236,12 +247,19 @@ export async function createStandardRailMcp(
         annotations: { title: "List Daski outcomes", readOnlyHint: true, destructiveHint: false,
           idempotentHint: true, openWorldHint: false },
       },
-      async (args) => mcpJson({ outcomes: await service.searchOutcomes(args) }),
+      async (args) => {
+        const outcomes = await service.searchOutcomes(args);
+        if (outcomes.length > 0) return mcpJson({ outcomes });
+        return mcpJson({ outcomes, searchHint: await service.searchVocabulary() });
+      },
     );
     server.registerTool(
       "daski_get_outcome",
       {
-        description: "Get the complete public presentation for one admitted Daski outcome.",
+        description: "Get the complete public presentation for one admitted Daski " +
+          "outcome: everything the search row carries plus request/response " +
+          "schemas, splitter provenance, deadline and capacity policies, and " +
+          "reputation with recent purchases.",
         inputSchema: {
           providerAgentId: z.string().regex(/^[1-9]\d*$/),
           outcomeId: z.string().min(1).max(128),
