@@ -467,3 +467,82 @@ describe("dynamic listing catalog", () => {
     expect(await catalog.publicOutcomes()).toEqual([]);
   });
 });
+
+describe("outcome search", () => {
+  function catalogWithJurisdictions(jurisdictions: string[]): StandardRailCatalog {
+    const row = record();
+    (row.card as { service: { jurisdictions: string[] } }).service.jurisdictions =
+      jurisdictions;
+    return catalogFor(fakeState([row]));
+  }
+
+  it("requires every text token to match names, descriptions, or tags", async () => {
+    const catalog = catalogFor(fakeState([record()]));
+    expect(await catalog.searchOutcomes({ text: "domain registers", limit: 10 }))
+      .toHaveLength(1);
+    expect(await catalog.searchOutcomes({ text: "domain llc", limit: 10 }))
+      .toHaveLength(0);
+  });
+
+  it("serves a country listing to its subdivision filter and back", async () => {
+    const country = catalogWithJurisdictions(["US"]);
+    expect(await country.searchOutcomes({ jurisdiction: "US-WY", limit: 10 }))
+      .toHaveLength(1);
+    expect(await country.searchOutcomes({ jurisdiction: "US", limit: 10 }))
+      .toHaveLength(1);
+    expect(await country.searchOutcomes({ jurisdiction: "DE", limit: 10 }))
+      .toHaveLength(0);
+
+    const subdivision = catalogWithJurisdictions(["US-WY"]);
+    expect(await subdivision.searchOutcomes({ jurisdiction: "US", limit: 10 }))
+      .toHaveLength(1);
+    expect(await subdivision.searchOutcomes({ jurisdiction: "US-DE", limit: 10 }))
+      .toHaveLength(0);
+  });
+
+  it("serves a global listing to every jurisdiction filter", async () => {
+    const catalog = catalogWithJurisdictions(["global"]);
+    expect(await catalog.searchOutcomes({ jurisdiction: "US-WY", limit: 10 }))
+      .toHaveLength(1);
+    expect(await catalog.searchOutcomes({ jurisdiction: "global", limit: 10 }))
+      .toHaveLength(1);
+  });
+
+  it("returns compact rows without splitter, policies, or purchase history", async () => {
+    const catalog = catalogFor(fakeState([record()]));
+    const rows = await catalog.searchOutcomes({ limit: 10 });
+
+    expect(rows).toHaveLength(1);
+    const row = rows[0]!;
+    expect(row).not.toHaveProperty("splitter");
+    expect(row).not.toHaveProperty("deadlinePolicy");
+    expect(row).not.toHaveProperty("capacityPolicy");
+    expect(row).not.toHaveProperty("reputation");
+    expect(row.providerReputation).not.toHaveProperty("recentPurchases");
+    expect(row.serviceReputation).not.toHaveProperty("recentPurchases");
+    expect(row.skill.description).toBe("Registers a domain name.");
+    expect(row.terms.providerLegalName).toBe("Blue T Group, LLC");
+    expect(row.absoluteResourceUri)
+      .toBe(`https://gateway.example.test/outcomes/${providerAgentId}/register-domain`);
+  });
+
+  it("drops the duplicated service reputation block from full public rows", async () => {
+    const catalog = catalogFor(fakeState([record()]));
+    const rows = await catalog.publicOutcomes();
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).not.toHaveProperty("reputation");
+    expect(rows[0]).toHaveProperty("serviceReputation");
+    expect(rows[0]).toHaveProperty("splitter");
+  });
+
+  it("serves the live catalog vocabulary for zero-hit steering", async () => {
+    const catalog = catalogFor(fakeState([record()]));
+    const vocabulary = await catalog.searchVocabulary();
+
+    expect(vocabulary.categoryFamilies).toEqual(["domains-web"]);
+    expect(vocabulary.serviceTypes).toEqual(["domain-management"]);
+    expect(vocabulary.jurisdictions).toEqual(["global"]);
+    expect(vocabulary.note).toContain("ISO 3166");
+  });
+});

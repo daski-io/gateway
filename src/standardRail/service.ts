@@ -30,7 +30,9 @@ import { decryptPaymentPayload, encryptPaymentPayload } from "./secrets.js";
 import { signEnvelope } from "./signing.js";
 import { StandardRailStore } from "./store.js";
 import type {
+  CatalogSearchVocabularyV1,
   PublicOutcomeDetailV1,
+  PublicOutcomeSummaryV1,
   PublicOutcomeV1,
   QuoteV1,
   StandardListing,
@@ -697,8 +699,12 @@ export class StandardRailService {
     pricingMode?: "fixed" | "dynamic";
     persistentAsset?: boolean;
     limit: number;
-  }): Promise<PublicOutcomeV1[]> {
+  }): Promise<PublicOutcomeSummaryV1[]> {
     return this.catalog.searchOutcomes(filters);
+  }
+
+  searchVocabulary(): Promise<CatalogSearchVocabularyV1> {
+    return this.catalog.searchVocabulary();
   }
 
   getOutcome(providerAgentId: string, outcomeId: string): Promise<PublicOutcomeDetailV1> {
