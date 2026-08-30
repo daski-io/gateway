@@ -3,7 +3,8 @@ import type { Express } from "express";
 import { z } from "zod";
 import type { Config } from "../config.js";
 import { mountMcpHttpTransport, type McpWiring } from "../mcp/httpTransport.js";
-import { mcpError, mcpJson } from "../mcp/util.js";
+import { mcpError, mcpJson, type McpErrorPayload } from "../mcp/util.js";
+import { standardPaymentError } from "./routes.js";
 import { registerMarketplaceTools } from "../marketplace/mcp.js";
 import type { MarketplaceChainReader } from "../marketplace/reader.js";
 import { GATEWAY_VERSION } from "../version.js";
@@ -16,6 +17,49 @@ const inputSchema = {
   request: z.record(z.string(), z.unknown()),
   paymentPayload: z.record(z.string(), z.unknown()).optional(),
 };
+
+// The purchase failures a buyer may act on, in the HTTP path's vocabulary
+// (standardPaymentError), with the recovery hint the MCP error contract
+// carries. Everything unrecognized stays the generic non-retryable
+// rejection so internals never leak.
+const RETRYABLE_PURCHASE_CODES = new Set([
+  "LISTING_SUPERSEDED",
+  "OUTCOME_OFFER_EXPIRED",
+  "PROVIDER_QUOTE_UNAVAILABLE",
+]);
+const PURCHASE_NEXT_ACTIONS: Record<string, string> = {
+  OUTCOME_NOT_FOUND:
+    "Verify providerAgentId and outcomeId via daski_list_outcomes before retrying.",
+  LISTING_SUPERSEDED:
+    "Fetch the outcome again with daski_get_outcome and retry against the current listing.",
+  PROVIDER_QUOTE_REJECTED:
+    "The provider declined to quote this exact request; revise the request contents before any further attempt.",
+  OUTCOME_OFFER_EXPIRED:
+    "Call again without paymentPayload to obtain a fresh payment requirement.",
+  PROVIDER_QUOTE_UNAVAILABLE:
+    "Provider quoting is temporarily unavailable; retry later.",
+  INVALID_STANDARD_PAYMENT:
+    "Rebuild the payment from a fresh payment requirement; do not reuse this payload.",
+};
+
+export function purchaseToolFailure(error: unknown): McpErrorPayload {
+  const publicError = standardPaymentError(error);
+  if (!publicError) {
+    return {
+      code: "STANDARD_RAIL_PURCHASE_FAILED",
+      message: "The standard purchase was rejected",
+      retryable: false,
+    };
+  }
+  const payload: McpErrorPayload = {
+    code: publicError.code,
+    message: publicError.message,
+    retryable: RETRYABLE_PURCHASE_CODES.has(publicError.code),
+  };
+  const nextAction = PURCHASE_NEXT_ACTIONS[publicError.code];
+  if (nextAction) payload.next_action = nextAction;
+  return payload;
+}
 
 const actionAuthorizationSchema = z.object({
   orderId: z.string().min(1),
@@ -170,12 +214,8 @@ export async function createStandardRailMcp(
             orderHandle: result.handle,
             receipt: await service.signedReceipt(result.order),
           });
-        } catch {
-          return mcpError({
-            code: "STANDARD_RAIL_PURCHASE_FAILED",
-            message: "The standard purchase was rejected",
-            retryable: false,
-          });
+        } catch (error) {
+          return mcpError(purchaseToolFailure(error));
         }
       },
     );
