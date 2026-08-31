@@ -35,9 +35,9 @@ describe("in-flight purchase lease (postgres)", () => {
         `INSERT INTO standard_orders (
            order_id, order_key, order_handle, handle_hash, state, provider_agent_id, outcome_id,
            binding_profile, listing_manifest_hash, provider_offer_hash, canonical_listing, quote_hash,
-           canonical_quote, canonical_request_hash, canonical_request, order_nonce, gross_amount,
+           canonical_quote, canonical_request_hash, canonical_request, order_nonce, intent_id, gross_amount,
            rail_epoch, listing_epoch, version, lease_fence, expires_at, updated_at)
-         VALUES ($1,$2,'handle-1',$3,'DEPOSIT_FINAL','7','outcome','recipe-bound-v1',$4,$5,'{}',$6,'{}',$7,'{}',$8,
+         VALUES ($1,$2,'handle-1',$3,'DEPOSIT_FINAL','7','outcome','recipe-bound-v1',$4,$5,'{}',$6,'{}',$7,'{}',$8,'int_12345678-1234-4123-8123-123456789abc',
            1000000, 1, 1, 7, 2, now() + interval '1 hour', now() - interval '60 seconds')`,
         [
           orderId, Buffer.alloc(32, 1), Buffer.alloc(32, 2), Buffer.alloc(32, 3), Buffer.alloc(32, 4),

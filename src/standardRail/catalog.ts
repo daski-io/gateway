@@ -204,6 +204,7 @@ function resolveDeadlinePolicy(
  */
 export class StandardRailCatalog {
   private readonly globalArtifacts = new Map<Hex, SignedEnvelope<unknown, number>>();
+  private readonly schemaArtifacts = new Map<Hex, Record<string, unknown>>();
   private readonly controlProfiles = new Map<
     string,
     SignedEnvelope<ProviderControlProfileV1>
@@ -239,14 +240,21 @@ export class StandardRailCatalog {
     }
   }
 
-  async publicArtifact(hash: string): Promise<SignedEnvelope<unknown, number> | null> {
+  async publicArtifact(hash: string): Promise<unknown | null> {
     if (!hex32.test(hash)) return null;
     const key = hash.toLowerCase() as Hex;
     const global = this.globalArtifacts.get(key);
     if (global) return global;
-    return (await this.registrations.getArtifact(key)) as
+    const schema = this.schemaArtifacts.get(key);
+    if (schema) return schema;
+    const registered = (await this.registrations.getArtifact(key)) as
       | SignedEnvelope<unknown, number>
       | null;
+    if (registered) return registered;
+    // Rehydrate schema references after a process restart from the current
+    // admitted listings before declaring the immutable hash unavailable.
+    await this.listOutcomes();
+    return this.schemaArtifacts.get(key) ?? null;
   }
 
   async listing(providerAgentId: string, outcomeId: string): Promise<StandardListing> {
@@ -646,6 +654,7 @@ export class StandardRailCatalog {
     }
     // Fail closed before publication: an uncompilable schema is not sellable.
     this.compiled(listing);
+    this.schemaArtifacts.set(canonicalHash(listing.requestSchema), listing.requestSchema);
     return listing;
   }
 

@@ -11,6 +11,7 @@ import type {
 } from "./types.js";
 import {
   verifyWalletAuthorization,
+  walletActionSignRequest,
   walletAuthorizationHash,
   ZERO_HASH,
   utf8Hash,
@@ -96,10 +97,14 @@ export class StandardWalletStore {
       await client.query("COMMIT");
     } catch (error) { await client.query("ROLLBACK").catch(() => undefined); throw error; }
     finally { client.release(); }
-    return {
+    const challenge = {
       domain: { name: "DaskiStandardWallet", version: "1", chainId: this.chainId },
-      primaryType: "WalletActionAuthorizationV1",
+      primaryType: "WalletActionAuthorizationV1" as const,
       message,
+    };
+    return {
+      ...challenge,
+      signRequest: walletActionSignRequest(message, this.chainId),
     };
   }
 
@@ -223,7 +228,7 @@ export class StandardWalletStore {
     );
   }
 
-  orderCursorBinding(payer: string, limit: number): CursorBinding {
+  orderCursorBinding(payer: string, limit: number, paymentIdentifier: string | null = null): CursorBinding {
     return {
       kind: "orders",
       environment: this.config.environment,
@@ -232,7 +237,12 @@ export class StandardWalletStore {
       audience: this.config.gatewayAudience,
       payer: this.normalizePayer(payer),
       providerAgentId: "0",
-      queryHash: canonicalHash({ kind: "orders", sort: "created_at_desc_order_id_desc", limit }),
+      queryHash: canonicalHash({
+        kind: "orders",
+        sort: "created_at_desc_order_id_desc",
+        limit,
+        ...(paymentIdentifier ? { paymentIdentifier } : {}),
+      }),
     };
   }
 

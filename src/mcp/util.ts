@@ -11,6 +11,15 @@ export interface McpErrorPayload {
   details?: Record<string, unknown>;
   recoverable?: boolean;
   next_action?: string;
+  phase?: string;
+  field?: string;
+  requiresNewSignature?: boolean;
+  paymentMayHaveSettled?: boolean;
+  serverTime?: number;
+  expected?: Record<string, unknown>;
+  fieldErrors?: readonly { path: string; rule: string; message: string; allowedValues?: readonly string[] }[];
+  docs?: string;
+  correlationId?: string;
 }
 
 // Index signature mirrors the SDK's CallToolResult shape (which extends
@@ -39,9 +48,13 @@ export interface McpToolResult {
 export function mcpJson(
   obj: unknown,
   meta?: Record<string, unknown>,
+  fullText = false,
 ): McpToolResult {
   const result: McpToolResult = {
-    content: [{ type: "text" as const, text: JSON.stringify(obj) }],
+    content: [{
+      type: "text" as const,
+      text: fullText ? JSON.stringify(obj) : "Daski tool call succeeded.",
+    }],
   };
   // MCP structured tool output (spec 2025-06-18): typed clients read
   // structuredContent; the text block stays the compatibility fallback.

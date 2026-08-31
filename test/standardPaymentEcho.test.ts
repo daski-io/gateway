@@ -20,6 +20,7 @@ const GROSS_AMOUNT = "46800000";
 const config = {
   chainId: 84532,
   x402Network: "eip155:84532",
+  publicUrl: "https://gateway.example",
   usdc: { name: "USDC", version: "2" },
 } as unknown as Config;
 
@@ -63,6 +64,7 @@ const order = {
   quoteHash: hash("3"),
   canonicalRequestHash: hash("4"),
   orderNonce: hash("5"),
+  intentId: "int_11111111-1111-4111-8111-111111111111",
   grossAmount: GROSS_AMOUNT,
   expiresAt: new Date(Date.now() + 120_000),
 } as unknown as StandardOrderRecord;
@@ -73,7 +75,7 @@ async function signedPayment(
   const account = privateKeyToAccount(`0x${"22".repeat(32)}` as Hex);
   const requirements = paymentRequirements(config, listing, GROSS_AMOUNT, 120);
   const issued = paymentRequired({
-    requirements, listing, order, railProfileHash: RAIL_PROFILE_HASH,
+    config, requirements, listing, order, railProfileHash: RAIL_PROFILE_HASH,
   });
   const now = Math.floor(Date.now() / 1_000);
   const authorization = {

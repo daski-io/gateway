@@ -1,16 +1,18 @@
 import { createHmac, randomBytes, randomUUID } from "node:crypto";
-import type { PaymentPayload, PaymentRequirements } from "@x402/core/types";
+import type { PaymentPayload, PaymentRequired, PaymentRequirements } from "@x402/core/types";
 import {
+  createPublicClient,
   getAddress,
-  keccak256,
+  http,
+  parseAbi,
   recoverMessageAddress,
-  stringToHex,
   verifyTypedData,
   type Hex,
 } from "viem";
 import type { Config } from "../config.js";
 import type { Pool } from "../db/pool.js";
 import { canonicalHash } from "./canonical.js";
+import { asStandardRailError, standardRailError } from "./errors.js";
 import type { StandardRailConfig } from "./config.js";
 import type {
   EvidenceResult,
@@ -22,7 +24,9 @@ import { StandardRailJournal } from "./journal.js";
 import {
   paymentRequired,
   paymentAuthorizationLookupKey,
+  paymentIntentId,
   paymentRequirements,
+  normalizePaymentPayload,
   validatePayment,
   type ValidatedAuthorization,
 } from "./payment.js";
@@ -63,6 +67,14 @@ import { StandardProviderTransport } from "./providerTransport.js";
 import { StandardRailCatalog } from "./catalog.js";
 import { StandardProviderDispatch } from "./providerDispatch.js";
 import { StandardOperationalHealth } from "./operationalHealth.js";
+import { withRpcFailover } from "../rpc/failover.js";
+import {
+  orderActionSignRequest,
+  type OrderAction,
+  type OrderActionChallenge,
+} from "./orderAuthorization.js";
+import { issueReadCapability, verifyReadCapability } from "./readCapability.js";
+import { createX402OfferReceipt, x402PaymentResponse } from "./x402Receipt.js";
 
 export function isAdmissionWindowOpen(
   railValidBefore: number,
@@ -74,12 +86,18 @@ export function isAdmissionWindowOpen(
 
 function assertExactKeys(value: unknown, expected: readonly string[], label: string): void {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error(`${label} must be an object`);
+    throw standardRailError("INTERNAL_ERROR", {
+      phase: "dispatch",
+      internalMessage: `${label} must be an object`,
+    });
   }
   const actual = Object.keys(value).sort();
   const required = [...expected].sort();
   if (actual.length !== required.length || actual.some((key, index) => key !== required[index])) {
-    throw new Error(`${label} fields are invalid`);
+    throw standardRailError("INTERNAL_ERROR", {
+      phase: "dispatch",
+      internalMessage: `${label} fields are invalid`,
+    });
   }
 }
 
@@ -254,7 +272,7 @@ export class StandardRailService {
     return this.operationalHealthReporter.read();
   }
 
-  publicArtifact(hash: string): Promise<import("./types.js").SignedEnvelope<unknown, number> | null> {
+  publicArtifact(hash: string): Promise<unknown | null> {
     return this.catalog.publicArtifact(hash);
   }
 
@@ -294,7 +312,11 @@ export class StandardRailService {
   }
 
   private assertAdmissionOpen(): void {
-    if (!this.isAdmissionOpen()) throw new Error("STANDARD_RAIL_ADMISSION_EXPIRED");
+    if (!this.isAdmissionOpen()) {
+      throw standardRailError("CHALLENGE_EXPIRED", {
+        message: "The active standard rail admission window has expired",
+      });
+    }
   }
 
   private async providerFetch(
@@ -728,6 +750,7 @@ export class StandardRailService {
     payer: string;
     limit: number;
     cursor: string | null;
+    paymentIdentifier?: string | null;
     authorization: WalletAuthorizationTransport;
   }) {
     return this.walletQueries.listOrders(args);
@@ -795,7 +818,10 @@ export class StandardRailService {
       release.evidenceHash !== order.releaseEvidenceHash ||
       release.providerNetAmount.toString() !== order.providerNetAmount ||
       release.daskiCommissionAmount.toString() !== order.daskiCommissionAmount
-    ) throw new Error("Persisted receipt evidence does not match the order");
+    ) throw standardRailError("INTERNAL_ERROR", {
+        phase: "dispatch",
+        internalMessage: "Persisted receipt evidence does not match the order",
+      });
     const payload: StandardRailReceiptV2 = {
       orderId: order.orderId,
       state: "RELEASE_FINAL",
@@ -836,7 +862,10 @@ export class StandardRailService {
         existing.chainId !== this.appConfig.chainId || existing.audience !== order.payer ||
         existing.signerKeyId !== "gateway-receipt" ||
         canonicalHash(existing.payload) !== canonicalHash(payload)
-      ) throw new Error("Persisted StandardRailReceiptV2 does not match the order");
+      ) throw standardRailError("INTERNAL_ERROR", {
+        phase: "dispatch",
+        internalMessage: "Persisted StandardRailReceiptV2 does not match the order",
+      });
       return existing;
     }
     const now = Math.floor(Date.now() / 1_000);
@@ -855,10 +884,34 @@ export class StandardRailService {
     return this.store.persistReceipt(order.orderId, receipt);
   }
 
+  async purchaseReceipts(order: StandardOrderRecord) {
+    const receipt = await this.signedReceipt(order);
+    if (!receipt || !order.payer || !order.settlementTxHash) {
+      return { receipt, x402OfferReceipt: null, x402PaymentResponse: null };
+    }
+    const x402OfferReceipt = await createX402OfferReceipt({
+      privateKey: this.railConfig.receiptPrivateKey,
+      network: this.appConfig.x402Network,
+      resourceUrl: order.listing.commitment.payload.absoluteResourceUri,
+      payer: order.payer,
+      issuedAt: receipt.issuedAt,
+      transaction: order.settlementTxHash,
+    });
+    return {
+      receipt,
+      x402OfferReceipt,
+      x402PaymentResponse: x402PaymentResponse({
+        receipt: x402OfferReceipt,
+        network: this.appConfig.x402Network,
+        payer: order.payer,
+        transaction: order.settlementTxHash,
+      }),
+    };
+  }
+
   async issueActionChallenge(args: {
     handle: string;
-    action: "status" | "input" | "cancel" | "artifact" | "support" |
-      "confirmation" | "revoke-confirmation";
+    action: OrderAction;
     request: Record<string, unknown>;
     clientKey?: string;
   }): Promise<Record<string, unknown>> {
@@ -867,7 +920,8 @@ export class StandardRailService {
     const now = Math.floor(Date.now() / 1_000);
     const validBefore = now + 300;
     const nonce = `0x${randomBytes(32).toString("hex")}` as Hex;
-    const absoluteResourceUri = `${this.appConfig.publicUrl.replace(/\/$/, "")}/orders/${encodeURIComponent(args.handle)}/actions/${args.action}`;
+    const absoluteResourceUri =
+      `${this.appConfig.publicUrl.replace(/\/$/, "")}/orders/${encodeURIComponent(args.handle)}/actions/${args.action}`;
     const requestHash = canonicalHash(args.request);
     const orderId = order?.payer ? order.orderId : this.syntheticOrderId(args.handle);
     await this.journal.issueActionChallenge({
@@ -885,7 +939,7 @@ export class StandardRailService {
       outstandingPerClient: this.railConfig.abuse.walletChallengesOutstandingPerClient,
       outstandingGlobal: this.railConfig.abuse.walletChallengesOutstandingGlobal,
     });
-    return {
+    const challenge: OrderActionChallenge = {
       orderId,
       action: args.action,
       method: "POST",
@@ -894,6 +948,14 @@ export class StandardRailService {
       nonce,
       issuedAt: now,
       validBefore,
+    };
+    return {
+      ...challenge,
+      signRequest: orderActionSignRequest({
+        challenge,
+        chainId: this.appConfig.chainId,
+        gatewayAudience: this.railConfig.gatewayAudience,
+      }),
     };
   }
 
@@ -909,10 +971,9 @@ export class StandardRailService {
 
   async performAction(args: {
     handle: string;
-    action: "status" | "input" | "cancel" | "artifact" | "support" |
-      "confirmation" | "revoke-confirmation";
+    action: OrderAction;
     request: Record<string, unknown>;
-    authorization: {
+    authorization?: {
       orderId: string;
       action: string;
       method: "POST";
@@ -923,88 +984,150 @@ export class StandardRailService {
       validBefore: number;
       signature: Hex;
     };
+    readCapability?: string;
   }): Promise<unknown> {
     await this.assertRailFence();
     const order = await this.store.findByHandle(args.handle);
-    if (!order || !order.payer) throw new Error("ORDER_NOT_FOUND");
-    const now = Math.floor(Date.now() / 1_000);
-    if (
-      args.authorization.issuedAt > now + 30 ||
-      args.authorization.validBefore <= now ||
-      args.authorization.validBefore > now + 300
-    ) throw new Error("ACTION_AUTHORIZATION_EXPIRED");
-    const requestHash = canonicalHash(args.request);
-    const expectedUri = `${this.appConfig.publicUrl.replace(/\/$/, "")}/orders/${encodeURIComponent(args.handle)}/actions/${args.action}`;
-    if (
-      args.authorization.orderId !== order.orderId || args.authorization.action !== args.action ||
-      args.authorization.method !== "POST" || args.authorization.absoluteResourceUri !== expectedUri ||
-      args.authorization.requestHash !== requestHash
-    ) throw new Error("ACTION_AUTHORIZATION_BINDING_INVALID");
-    const valid = await verifyTypedData({
-      address: getAddress(order.payer),
-      domain: { name: "DaskiStandardOrder", version: "1", chainId: this.appConfig.chainId },
-      types: {
-        OrderActionAuthorizationV1: [
-          { name: "orderIdHash", type: "bytes32" },
-          { name: "actionHash", type: "bytes32" },
-          { name: "methodHash", type: "bytes32" },
-          { name: "absoluteResourceUriHash", type: "bytes32" },
-          { name: "requestHash", type: "bytes32" },
-          { name: "audienceHash", type: "bytes32" },
-          { name: "nonce", type: "bytes32" },
-          { name: "issuedAt", type: "uint64" },
-          { name: "validBefore", type: "uint64" },
-        ],
-      },
-      primaryType: "OrderActionAuthorizationV1",
-      message: {
-        orderIdHash: keccak256(stringToHex(order.orderId)),
-        actionHash: keccak256(stringToHex(args.action)),
-        methodHash: keccak256(stringToHex(args.authorization.method)),
-        absoluteResourceUriHash: keccak256(stringToHex(args.authorization.absoluteResourceUri)),
-        requestHash,
-        audienceHash: keccak256(stringToHex(this.railConfig.gatewayAudience)),
-        nonce: args.authorization.nonce,
-        issuedAt: BigInt(args.authorization.issuedAt),
-        validBefore: BigInt(args.authorization.validBefore),
-      },
-      signature: args.authorization.signature,
-    });
-    if (!valid) throw new Error("ACTION_AUTHORIZATION_INVALID");
-    if (args.action === "confirmation" || args.action === "revoke-confirmation") {
-      await this.confirmations.assertReady(order);
+    if (!order || !order.payer) {
+      throw standardRailError("WALLET_AUTHORIZATION_INVALID");
     }
-    try {
-      await this.journal.consumeActionChallenge({
-        orderId: order.orderId,
-        action: args.action,
-        requestHash,
-        absoluteResourceUri: args.authorization.absoluteResourceUri,
-        nonce: args.authorization.nonce,
-        issuedAt: args.authorization.issuedAt,
-        validBefore: args.authorization.validBefore,
-        payerRate: ["confirmation", "revoke-confirmation"].includes(args.action)
-          ? { scope: "wallet-state-change", maximum: this.railConfig.abuse.assetStateChangesPerPayerPerMinute }
-          : undefined,
+    if (Boolean(args.authorization) === Boolean(args.readCapability)) {
+      throw standardRailError("WALLET_AUTHORIZATION_INVALID", {
+        message: "Provide exactly one of authorization or readCapability",
       });
-    } catch (error) {
-      if (error instanceof Error && error.message === "ACTION_CHALLENGE_INVALID_OR_REPLAYED") {
-        await this.incidents.record({
-          kind: "action_authorization_reuse_or_tamper",
-          orderId: order.orderId,
-          state: order.state,
-          details: { action: args.action, nonce: args.authorization.nonce },
+    }
+
+    const requestHash = canonicalHash(args.request);
+    const expectedUri =
+      `${this.appConfig.publicUrl.replace(/\/$/, "")}/orders/${encodeURIComponent(args.handle)}/actions/${args.action}`;
+    let authorizationHash: Hex;
+    let providerAuthorization: unknown;
+    if (args.readCapability) {
+      if (args.action !== "status" && args.action !== "artifact") {
+        throw standardRailError("WALLET_AUTHORIZATION_INVALID", {
+          message: "Read capabilities authorize only status and artifact actions",
         });
       }
-      throw error;
+      verifyReadCapability({
+        key: this.railConfig.encryptionKey,
+        token: args.readCapability,
+        orderId: order.orderId,
+        payer: order.payer,
+        audience: this.railConfig.gatewayAudience,
+        capabilityEpoch: order.capabilityEpoch,
+        requiredScope: args.action,
+      });
+      providerAuthorization = { type: "DaskiReadCap", scope: args.action };
+      authorizationHash = canonicalHash(providerAuthorization);
+    } else {
+      const authorization = args.authorization!;
+      const now = Math.floor(Date.now() / 1_000);
+      if (
+        authorization.issuedAt > now + 30 ||
+        authorization.validBefore <= now ||
+        authorization.validBefore > now + 300
+      ) {
+        throw standardRailError("WALLET_AUTHORIZATION_INVALID", {
+          message: "Order action authorization is expired",
+        });
+      }
+      if (
+        authorization.orderId !== order.orderId || authorization.action !== args.action ||
+        authorization.method !== "POST" || authorization.absoluteResourceUri !== expectedUri ||
+        authorization.requestHash !== requestHash
+      ) {
+        throw standardRailError("WALLET_AUTHORIZATION_INVALID", {
+          message: "Order action authorization binding is invalid",
+        });
+      }
+      const signRequest = orderActionSignRequest({
+        challenge: {
+          orderId: authorization.orderId,
+          action: args.action,
+          method: authorization.method,
+          absoluteResourceUri: authorization.absoluteResourceUri,
+          requestHash,
+          nonce: authorization.nonce,
+          issuedAt: authorization.issuedAt,
+          validBefore: authorization.validBefore,
+        },
+        chainId: this.appConfig.chainId,
+        gatewayAudience: this.railConfig.gatewayAudience,
+      });
+      const valid = await verifyTypedData({
+        address: getAddress(order.payer),
+        ...signRequest,
+        message: {
+          ...signRequest.message,
+          issuedAt: BigInt(signRequest.message.issuedAt),
+          validBefore: BigInt(signRequest.message.validBefore),
+        },
+        signature: authorization.signature,
+      });
+      if (!valid) throw standardRailError("WALLET_AUTHORIZATION_INVALID");
+      if (args.action === "confirmation" || args.action === "revoke-confirmation") {
+        await this.confirmations.assertReady(order);
+      }
+      try {
+        await this.journal.consumeActionChallenge({
+          orderId: order.orderId,
+          action: args.action,
+          requestHash,
+          absoluteResourceUri: authorization.absoluteResourceUri,
+          nonce: authorization.nonce,
+          issuedAt: authorization.issuedAt,
+          validBefore: authorization.validBefore,
+          payerRate: ["confirmation", "revoke-confirmation"].includes(args.action)
+            ? {
+                scope: "wallet-state-change",
+                maximum: this.railConfig.abuse.assetStateChangesPerPayerPerMinute,
+              }
+            : undefined,
+        });
+      } catch (error) {
+        if (error instanceof Error && error.message === "ACTION_CHALLENGE_INVALID_OR_REPLAYED") {
+          await this.incidents.record({
+            kind: "action_authorization_reuse_or_tamper",
+            orderId: order.orderId,
+            state: order.state,
+            details: { action: args.action, nonce: authorization.nonce },
+          });
+        }
+        throw standardRailError("WALLET_AUTHORIZATION_INVALID", { cause: error });
+      }
+      providerAuthorization = authorization;
+      authorizationHash = canonicalHash(authorization);
+    }
+
+    if (args.action === "grant-read") {
+      return {
+        ...issueReadCapability({
+          key: this.railConfig.encryptionKey,
+          orderId: order.orderId,
+          payer: order.payer,
+          audience: this.railConfig.gatewayAudience,
+          capabilityEpoch: order.capabilityEpoch,
+          ttlSeconds: this.railConfig.orderReadCapTtlSeconds,
+        }),
+        orderHandle: args.handle,
+      };
     }
     if (args.action === "confirmation" || args.action === "revoke-confirmation") {
-      return this.confirmations.handle(order, args.action, args.request);
+      const result = await this.confirmations.handle(order, args.action, args.request);
+      await this.store.bumpCapabilityEpoch(order.orderId);
+      return result;
     }
     if (args.action === "status" && !order.providerTaskId) {
-      return { orderHandle: args.handle, state: order.state, receipt: await this.signedReceipt(order) };
+      return {
+        orderHandle: args.handle,
+        state: order.state,
+        receipt: await this.signedReceipt(order),
+      };
     }
-    if (!order.providerTaskId) throw new Error("PROVIDER_TASK_NOT_AVAILABLE");
+    if (!order.providerTaskId) throw standardRailError("INTERNAL_ERROR", {
+        phase: "dispatch",
+        internalMessage: "PROVIDER_TASK_NOT_AVAILABLE",
+      });
     const listing = order.listing;
     const grantIssuedAt = Math.floor(Date.now() / 1_000);
     const lifecycleGrant = await signEnvelope({
@@ -1021,35 +1144,52 @@ export class StandardRailService {
         providerTaskId: order.providerTaskId,
         action: args.action,
         requestHash,
-        authorizationHash: canonicalHash(args.authorization),
+        authorizationHash,
         payer: order.payer,
       },
     });
-    const response = await this.providerFetch(listing, listing.providerControlProfile.payload.lifecycleUrl, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        orderId: order.orderId,
-        providerTaskId: order.providerTaskId,
-        action: args.action,
-        request: args.request,
-        authorization: args.authorization,
-        grant: lifecycleGrant,
-        payer: order.payer,
-        gatewayAudience: this.railConfig.gatewayAudience,
-      }),
-      redirect: "error",
-      signal: AbortSignal.timeout(Math.min(
-        this.railConfig.dispatchTimeoutMs,
-        listing.providerControlProfile.payload.timeoutMs,
-      )),
-    });
-    if (!response.ok) throw new Error("PROVIDER_LIFECYCLE_REJECTED");
+    const response = await this.providerFetch(
+      listing,
+      listing.providerControlProfile.payload.lifecycleUrl,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          orderId: order.orderId,
+          providerTaskId: order.providerTaskId,
+          action: args.action,
+          request: args.request,
+          authorization: providerAuthorization,
+          grant: lifecycleGrant,
+          payer: order.payer,
+          gatewayAudience: this.railConfig.gatewayAudience,
+        }),
+        redirect: "error",
+        signal: AbortSignal.timeout(Math.min(
+          this.railConfig.dispatchTimeoutMs,
+          listing.providerControlProfile.payload.timeoutMs,
+        )),
+      },
+    );
+    if (!response.ok) throw standardRailError("INTERNAL_ERROR", {
+        phase: "dispatch",
+        internalMessage: "PROVIDER_LIFECYCLE_REJECTED",
+      });
     const providerResult = await readBoundedJson(
       response,
       listing.providerControlProfile.payload.maxResponseBytes,
     );
-    return this.applyLifecycleResult(order, listing, providerResult, args.action, args.handle);
+    const result = await this.applyLifecycleResult(
+      order,
+      listing,
+      providerResult,
+      args.action as "status" | "input" | "cancel" | "artifact" | "support",
+      args.handle,
+    );
+    if (["input", "cancel", "support"].includes(args.action)) {
+      await this.store.bumpCapabilityEpoch(order.orderId);
+    }
+    return result;
   }
 
   private async applyLifecycleResult(
@@ -1059,7 +1199,10 @@ export class StandardRailService {
     action: "status" | "input" | "cancel" | "artifact" | "support",
     handle: string,
   ): Promise<unknown> {
-    if (!result || typeof result !== "object") throw new Error("PROVIDER_LIFECYCLE_RESPONSE_INVALID");
+    if (!result || typeof result !== "object") throw standardRailError("INTERNAL_ERROR", {
+        phase: "dispatch",
+        internalMessage: "PROVIDER_LIFECYCLE_RESPONSE_INVALID",
+      });
     const response = result as {
       orderId?: unknown; taskId?: unknown; state?: unknown; result?: unknown;
       signature?: unknown;
@@ -1075,7 +1218,10 @@ export class StandardRailService {
       !["submitted", "dispatching", "working", "input-required", "completed", "failed", "canceled"]
         .includes(String(response.state))
     ) {
-      throw new Error("PROVIDER_LIFECYCLE_BINDING_INVALID");
+      throw standardRailError("INTERNAL_ERROR", {
+        phase: "dispatch",
+        internalMessage: "PROVIDER_LIFECYCLE_BINDING_INVALID",
+      });
     }
     const { signature, ...signedResponse } = response;
     const authority = await recoverMessageAddress({
@@ -1083,13 +1229,22 @@ export class StandardRailService {
       signature: signature as Hex,
     });
     if (getAddress(authority) !== getAddress(listing.commitment.payload.providerAuthorityKey)) {
-      throw new Error("PROVIDER_LIFECYCLE_SIGNATURE_INVALID");
+      throw standardRailError("INTERNAL_ERROR", {
+        phase: "dispatch",
+        internalMessage: "PROVIDER_LIFECYCLE_SIGNATURE_INVALID",
+      });
     }
     if ((action === "status" || action === "support" || action === "cancel") && "result" in response) {
-      throw new Error("PROVIDER_LIFECYCLE_UNEXPECTED_CONTENT");
+      throw standardRailError("INTERNAL_ERROR", {
+        phase: "dispatch",
+        internalMessage: "PROVIDER_LIFECYCLE_UNEXPECTED_CONTENT",
+      });
     }
     if (action === "artifact" && !("result" in response)) {
-      throw new Error("PROVIDER_ARTIFACT_MISSING");
+      throw standardRailError("INTERNAL_ERROR", {
+        phase: "dispatch",
+        internalMessage: "PROVIDER_ARTIFACT_MISSING",
+      });
     }
     if ("result" in response) this.validateResponse(listing, response.result);
     let order = initial;
@@ -1100,7 +1255,10 @@ export class StandardRailService {
     } else if (["completed", "failed", "canceled"].includes(String(response.state))) {
       const attestation = response.terminalAttestation;
       if (!attestation?.payload || typeof attestation.signature !== "string") {
-        throw new Error("PROVIDER_TERMINAL_ATTESTATION_MISSING");
+        throw standardRailError("INTERNAL_ERROR", {
+        phase: "dispatch",
+        internalMessage: "PROVIDER_TERMINAL_ATTESTATION_MISSING",
+      });
       }
       assertExactKeys(attestation, ["payload", "signature"], "provider lifecycle attestation");
       assertExactKeys(
@@ -1113,7 +1271,10 @@ export class StandardRailService {
         !Number.isSafeInteger(attestation.payload.completedAt) ||
         attestation.payload.completedAt <= 0 ||
         attestation.payload.completedAt > Math.floor(Date.now() / 1_000) + 30
-      ) throw new Error("PROVIDER_TERMINAL_ATTESTATION_TIME_INVALID");
+      ) throw standardRailError("INTERNAL_ERROR", {
+        phase: "dispatch",
+        internalMessage: "PROVIDER_TERMINAL_ATTESTATION_TIME_INVALID",
+      });
       const signer = await recoverMessageAddress({
         message: { raw: canonicalHash(attestation.payload) },
         signature: attestation.signature as Hex,
@@ -1125,7 +1286,10 @@ export class StandardRailService {
         attestation.payload.state !== response.state ||
         (action !== "artifact" && "result" in response &&
           attestation.payload.resultHash !== canonicalHash(response.result))
-      ) throw new Error("PROVIDER_TERMINAL_ATTESTATION_INVALID");
+      ) throw standardRailError("INTERNAL_ERROR", {
+        phase: "dispatch",
+        internalMessage: "PROVIDER_TERMINAL_ATTESTATION_INVALID",
+      });
       if (response.state === "completed" && ["DISPATCHED", "INPUT_REQUIRED"].includes(order.state)) {
         order = await this.store.transition(order, "FULFILLED", "provider_terminal_completed");
       } else if (["failed", "canceled"].includes(String(response.state)) && ["DISPATCHED", "INPUT_REQUIRED"].includes(order.state)) {
@@ -1142,7 +1306,8 @@ export class StandardRailService {
     providerAgentId: string;
     outcomeId: string;
     body: unknown;
-  }): Promise<{ handle: string; order: StandardOrderRecord; paymentRequired: unknown }> {
+    payerAddress?: Hex;
+  }): Promise<{ handle: string; order: StandardOrderRecord; paymentRequired: PaymentRequired }> {
     this.assertAdmissionOpen();
     await this.assertRailFence();
     const listing = await this.listing(args.providerAgentId, args.outcomeId);
@@ -1154,8 +1319,6 @@ export class StandardRailService {
       outcomeId: args.outcomeId,
       body: args.body,
     });
-    // Option A deal-document slots: the listingManifestHash slot carries the
-    // runtime commitment hash, the providerOfferHash slot the intent hash.
     const listingManifestHash = listing.runtimeCommitmentHash;
     const providerOfferHash = listing.providerIntentHash;
     const railEpoch = this.railConfig.manifest.activeRailProfile.payload.railEpoch;
@@ -1168,7 +1331,7 @@ export class StandardRailService {
       railEpoch,
     );
     if (existing) {
-      return this.challengeResponse(listing, existing.order, existing.handle);
+      return this.challengeResponse(listing, existing.order, existing.handle, args.payerAddress);
     }
 
     const now = Math.floor(Date.now() / 1_000);
@@ -1179,38 +1342,44 @@ export class StandardRailService {
       listing.quotePolicy?.minimumPaymentWindowSeconds ?? 0,
     );
     const expiresAt = Math.min(
-      now + listing.deadlinePolicy.draftSeconds,
+      now + this.railConfig.challengeTtlSeconds,
       pricing.validBefore,
     );
-    if (
-      expiresAt <= quoteIssuedAt + minimumPaymentWindowSeconds
-    ) {
-      throw new Error("OUTCOME_OFFER_EXPIRED");
+    if (expiresAt <= quoteIssuedAt + minimumPaymentWindowSeconds) {
+      throw standardRailError("CHALLENGE_EXPIRED", {
+        serverTime: now,
+        logContext: {
+          providerAgentId: args.providerAgentId,
+          outcomeId: args.outcomeId,
+          canonicalRequestHash,
+        },
+      });
     }
     const grossAmount = pricing.grossAmount;
     const orderNonce = `0x${randomBytes(32).toString("hex")}` as Hex;
+    const intentId = `int_${randomUUID()}`;
     const quote = await signEnvelope<QuoteV1>({
-          artifactType: "QuoteV1",
-          environment: this.railConfig.environment,
-          chainId: this.appConfig.chainId,
-          audience: this.railConfig.gatewayAudience,
-          signerKeyId: "gateway-quote",
-          privateKey: this.railConfig.quotePrivateKey,
-          issuedAt: quoteIssuedAt,
-          validBefore: expiresAt,
-          payload: {
-            listingManifestHash,
-            providerOfferHash,
-            providerQuoteHash: pricing.providerQuoteHash,
-            canonicalRequestHash,
-            grossAmount,
-            token: listing.commitment.payload.canonicalToken,
-            splitter: listing.manifest.payload.splitterAddress,
-            orderNonce,
-            issuedAt: quoteIssuedAt,
-            validBefore: expiresAt,
-          },
-        });
+      artifactType: "QuoteV1",
+      environment: this.railConfig.environment,
+      chainId: this.appConfig.chainId,
+      audience: this.railConfig.gatewayAudience,
+      signerKeyId: "gateway-quote",
+      privateKey: this.railConfig.quotePrivateKey,
+      issuedAt: quoteIssuedAt,
+      validBefore: expiresAt,
+      payload: {
+        listingManifestHash,
+        providerOfferHash,
+        providerQuoteHash: pricing.providerQuoteHash,
+        canonicalRequestHash,
+        grossAmount,
+        token: listing.commitment.payload.canonicalToken,
+        splitter: listing.manifest.payload.splitterAddress,
+        orderNonce,
+        issuedAt: quoteIssuedAt,
+        validBefore: expiresAt,
+      },
+    });
     const created = await this.store.createDraft({
       providerAgentId: args.providerAgentId,
       outcomeId: args.outcomeId,
@@ -1221,6 +1390,7 @@ export class StandardRailService {
       quoteHash: canonicalHash(quote),
       quote,
       orderNonce,
+      intentId,
       canonicalRequestHash,
       canonicalRequest: args.body,
       grossAmount,
@@ -1228,7 +1398,79 @@ export class StandardRailService {
       listingEpoch: listing.commitment.payload.listingEpoch,
       expiresAt: new Date(expiresAt * 1_000),
     });
-    return this.challengeResponse(listing, created.order, created.handle);
+    return this.challengeResponse(listing, created.order, created.handle, args.payerAddress);
+  }
+
+  async preparePaymentChallenge(args: {
+    providerAgentId: string;
+    outcomeId: string;
+    body: unknown;
+    payerAddress?: Hex;
+  }) {
+    const challenge = await this.issueChallenge(args);
+    const listing = await this.listing(args.providerAgentId, args.outcomeId);
+    const required = challenge.paymentRequired.accepts[0]!;
+    const payer = args.payerAddress ? getAddress(args.payerAddress) : null;
+    const payerAllowed = payer
+      ? isReputationEligiblePayer(payer, listing, this.railConfig)
+      : null;
+    let usdcBalance: string | null = null;
+    let sufficient: boolean | null = null;
+    let note: string | undefined;
+    if (payer) {
+      try {
+        const chain = this.appConfig.chainId === 8453 ? base : baseSepolia;
+        const clients = this.railConfig.evidenceRpcUrls.map((url) => ({
+          host: new URL(url).hostname,
+          client: createPublicClient({
+            chain,
+            transport: http(url, { retryCount: 0, timeout: 10_000 }),
+          }),
+        }));
+        const balance = await withRpcFailover(
+          clients,
+          ({ client }) => client.readContract({
+            address: getAddress(required.asset),
+            abi: parseAbi(["function balanceOf(address holder) view returns (uint256)"]),
+            functionName: "balanceOf",
+            args: [payer],
+          }),
+          { attempts: 1, baseDelayMs: 0 },
+        );
+        usdcBalance = balance.toString();
+        sufficient = balance >= BigInt(required.amount);
+      } catch {
+        note = "USDC balance could not be checked; the challenge remains valid.";
+      }
+    } else {
+      note = "Provide payerAddress to receive a sign-ready challenge and balance preflight.";
+    }
+    const amount = BigInt(required.amount);
+    const whole = amount / 1_000_000n;
+    const fraction = (amount % 1_000_000n).toString().padStart(6, "0").replace(/0+$/, "");
+    const displayAmount = fraction ? `${whole}.${fraction}` : whole.toString();
+    const networkName = this.appConfig.chainId === 8453 ? "Base" : "Base Sepolia sandbox";
+    const ttl = Math.max(
+      0,
+      Math.floor(challenge.order.expiresAt.getTime() / 1_000) -
+        Math.floor(Date.now() / 1_000),
+    );
+    return {
+      orderHandle: challenge.handle,
+      paymentRequired: challenge.paymentRequired,
+      preflight: {
+        payer,
+        network: this.appConfig.x402Network,
+        usdcBalance,
+        sufficient,
+        payerAllowed,
+        intentId: challenge.order.intentId,
+        approvalSummary:
+          `Buy ${listing.offer.payload.skillId} from ${listing.terms.providerLegalName} ` +
+          `for ${displayAmount} USDC (${networkName}). Challenge expires in ${ttl}s.`,
+        ...(note ? { note } : {}),
+      },
+    };
   }
 
   async submitPayment(args: {
@@ -1239,29 +1481,61 @@ export class StandardRailService {
   }): Promise<{ handle: string; order: StandardOrderRecord; replay: boolean }> {
     this.assertAdmissionOpen();
     await this.assertRailFence();
-    const existing = await this.store.findByAuthorizationKey(
-      paymentAuthorizationLookupKey(this.appConfig, args.payment),
-    );
-    if (existing) {
-      if (
-        existing.order.providerAgentId !== args.providerAgentId ||
-        existing.order.outcomeId !== args.outcomeId ||
-        canonicalHash(existing.order.canonicalRequest) !== canonicalHash(args.body) ||
-        existing.order.paymentPayloadHash !== canonicalHash(args.payment)
-      ) {
+    const payment = normalizePaymentPayload(args.payment);
+    const intentId = paymentIntentId(payment);
+    const intended = await this.store.findByIntentId(intentId);
+    if (!intended ||
+        intended.order.providerAgentId !== args.providerAgentId ||
+        intended.order.outcomeId !== args.outcomeId ||
+        canonicalHash(intended.order.canonicalRequest) !== canonicalHash(args.body)) {
+      throw standardRailError("PAYMENT_IDENTIFIER_CONFLICT", {
+        field: "payment-identifier",
+        logContext: {
+          intentId,
+          providerAgentId: args.providerAgentId,
+          outcomeId: args.outcomeId,
+        },
+      });
+    }
+    const paymentHash = canonicalHash(payment);
+    if (intended.order.paymentPayloadHash) {
+      if (intended.order.paymentPayloadHash !== paymentHash) {
+        throw standardRailError("PAYMENT_IDENTIFIER_CONFLICT", {
+          field: "payment-identifier",
+          logContext: { intentId, orderId: intended.order.orderId },
+        });
+      }
+      return { ...intended, replay: true };
+    }
+    if (intended.order.expiresAt.getTime() <= Date.now()) {
+      throw standardRailError("CHALLENGE_EXPIRED", {
+        logContext: { intentId, orderId: intended.order.orderId },
+      });
+    }
+
+    const authorizationKey = paymentAuthorizationLookupKey(this.appConfig, payment);
+    const existingAuthorization = await this.store.findByAuthorizationKey(authorizationKey);
+    if (existingAuthorization) {
+      if (existingAuthorization.order.intentId !== intentId ||
+          existingAuthorization.order.paymentPayloadHash !== paymentHash) {
         await this.incidents.record({
           kind: "changed_payment_authorization_replay",
-          orderId: existing.order.orderId,
-          state: existing.order.state,
-          details: { presentedPaymentHash: canonicalHash(args.payment) },
+          orderId: existingAuthorization.order.orderId,
+          state: existingAuthorization.order.state,
+          details: { intentId, presentedPaymentHash: paymentHash },
         });
-        throw new Error("Changed authorization replay rejected");
+        throw standardRailError("PAYMENT_IDENTIFIER_CONFLICT", {
+          field: "payment-identifier",
+          logContext: { intentId, orderId: existingAuthorization.order.orderId },
+        });
       }
-      return { ...existing, replay: true };
+      return { ...existingAuthorization, replay: true };
     }
-    const challenge = await this.issueChallenge(args);
-    let order = challenge.order;
-    if (order.state !== "CHALLENGE_ISSUED") return { handle: challenge.handle, order, replay: false };
+
+    let order = intended.order;
+    if (order.state !== "CHALLENGE_ISSUED") {
+      return { handle: intended.handle, order, replay: false };
+    }
     const listing = await this.listing(args.providerAgentId, args.outcomeId);
     const requirements = paymentRequirements(
       this.appConfig,
@@ -1274,11 +1548,14 @@ export class StandardRailService {
       listing,
       order,
       requirements,
-      payment: args.payment,
+      payment,
       railProfileHash: this.railProfileHash,
+      validAfterBackstopSeconds: this.railConfig.validAfterBackstopSeconds,
     });
     if (!isReputationEligiblePayer(authorization.payer, listing, this.railConfig)) {
-      throw new Error("Known operational-wallet self-purchase is forbidden");
+      throw standardRailError("SELF_PURCHASE_FORBIDDEN", {
+        field: "payload.authorization.from",
+      });
     }
     try {
       order = await this.store.claimAuthorization({
@@ -1286,24 +1563,24 @@ export class StandardRailService {
         expectedVersion: order.version,
         authorizationKey: authorization.authorizationKey,
         payer: authorization.payer,
-        encryptedPayload: encryptPaymentPayload(this.railConfig.encryptionKey, args.payment),
-        paymentPayloadHash: canonicalHash(args.payment),
+        encryptedPayload: encryptPaymentPayload(this.railConfig.encryptionKey, payment),
+        paymentPayloadHash: paymentHash,
         facilitatorProfileHash: this.railConfig.manifest.activeRailProfile.payload.facilitatorProfileHash,
         capacityLimit: listing.capacityPolicy.maxOpenOrders,
       });
     } catch (error) {
-      const claimed = await this.store.findByAuthorizationKey(authorization.authorizationKey);
-      if (
-        claimed && claimed.order.providerAgentId === args.providerAgentId &&
-        claimed.order.outcomeId === args.outcomeId &&
-        canonicalHash(claimed.order.canonicalRequest) === canonicalHash(args.body) &&
-        claimed.order.paymentPayloadHash === canonicalHash(args.payment)
-      ) return { ...claimed, replay: true };
+      const claimed = await this.store.findByIntentId(intentId);
+      if (claimed?.order.paymentPayloadHash === paymentHash) return { ...claimed, replay: true };
       throw error;
     }
-    return this.driveClaimedOrder(challenge.handle, order, (claimed) =>
+    return this.driveClaimedOrder(intended.handle, order, (claimed) =>
       this.settleClaimedOrder({
-        order: claimed, listing, requirements, authorization, body: args.body, payment: args.payment,
+        order: claimed,
+        listing,
+        requirements,
+        authorization,
+        body: args.body,
+        payment,
       }));
   }
 
@@ -1382,7 +1659,16 @@ export class StandardRailService {
     let order = args.order;
     await this.screenParticipants(listing, authorization.payer);
     await this.journal.markVerifyInvoked(order.orderId);
-    const verify = await this.withRailFence(() => this.facilitator.verify(args.payment, requirements));
+    let verify;
+    try {
+      verify = await this.withRailFence(() => this.facilitator.verify(args.payment, requirements));
+    } catch (error) {
+      throw standardRailError("FACILITATOR_REJECTED", {
+        phase: "facilitator_verify",
+        cause: error,
+        logContext: { orderId: order.orderId, intentId: order.intentId, payer: authorization.payer },
+      });
+    }
     const facilitatorVerified = Boolean(
       verify.isValid && verify.payer && getAddress(verify.payer) === authorization.payer,
     );
@@ -1390,7 +1676,18 @@ export class StandardRailService {
     if (!facilitatorVerified) {
       order = await this.store.transition(order, "VERIFY_REJECTED", "facilitator_verify_rejected");
       await this.store.releaseCapacity(order.orderId);
-      return order;
+      throw standardRailError("FACILITATOR_REJECTED", {
+        phase: "facilitator_verify",
+        logContext: {
+          orderId: order.orderId,
+          intentId: order.intentId,
+          payer: authorization.payer,
+          facilitatorSummary: {
+            isValid: verify.isValid,
+            invalidReason: verify.invalidReason,
+          },
+        },
+      });
     }
     order = await this.store.transition(order, "VERIFIED", "facilitator_verified");
     return this.store.withListingSettlementLock(order.listingManifestHash, async () => {
@@ -1420,61 +1717,102 @@ export class StandardRailService {
       let settlement;
       try {
         settlement = await this.withRailFence(() => this.facilitator.settle(args.payment, requirements));
-      } catch {
-        order = await this.store.transition(order, "SETTLEMENT_AMBIGUOUS", "settle_response_unknown");
-        return order;
+      } catch (error) {
+        order = await this.store
+          .transition(order, "SETTLEMENT_AMBIGUOUS", "settle_response_unknown")
+          .catch(() => order);
+        throw standardRailError("PAYMENT_PENDING_RECONCILIATION", {
+          cause: error,
+          logContext: {
+            orderId: order.orderId,
+            intentId: order.intentId,
+            payer: authorization.payer,
+          },
+        });
       }
-      if (
-        !settlement.success || !/^0x[0-9a-fA-F]{64}$/.test(settlement.transaction) ||
-        !settlement.payer || getAddress(settlement.payer) !== authorization.payer ||
-        settlement.network !== this.appConfig.x402Network
-      ) {
-        order = await this.store.transition(order, "SETTLEMENT_FAILED", "facilitator_settlement_failed");
+      try {
+        if (
+          !settlement.success || !/^0x[0-9a-fA-F]{64}$/.test(settlement.transaction) ||
+          !settlement.payer || getAddress(settlement.payer) !== authorization.payer ||
+          settlement.network !== this.appConfig.x402Network
+        ) {
+          order = await this.store.transition(order, "SETTLEMENT_FAILED", "facilitator_settlement_failed");
+          throw standardRailError("FACILITATOR_REJECTED", {
+            phase: "facilitator_settle",
+            paymentMayHaveSettled: true,
+            requiresNewSignature: false,
+            logContext: {
+              orderId: order.orderId,
+              intentId: order.intentId,
+              payer: authorization.payer,
+              facilitatorSummary: {
+                success: settlement.success,
+                errorReason: settlement.errorReason,
+                network: settlement.network,
+                hasTransaction: /^0x[0-9a-fA-F]{64}$/.test(settlement.transaction),
+              },
+            },
+          });
+        }
+        const transactionHash = settlement.transaction as Hex;
+        await this.journal.recordSettlement(order.orderId, canonicalHash(settlement), transactionHash);
+        order = await this.store.transition(order, "FACILITATOR_CONFIRMED", "facilitator_settlement_confirmed", { settlementTxHash: transactionHash });
+        const deposit = await this.evidence.proveDeposit({
+          order,
+          listing,
+          transactionHash,
+          paymentNonce: authorization.nonce,
+        });
+        await this.journal.recordEvidence(order.orderId, "deposit", deposit, this.appConfig.chainId);
+        order = await this.store.transition(order, "DEPOSIT_FINAL", "deposit_evidence_final", { depositEvidenceHash: deposit.evidenceHash });
+        const release = await this.withRailFence(() =>
+          this.evidence.releaseAndProve({ order, listing, deposit }));
+        await this.journal.recordEvidence(order.orderId, "release", release, this.appConfig.chainId);
+        const reputation = await buildReputationRegistration({
+          order,
+          listing,
+          deposit,
+          releaseEvidenceHash: release.evidenceHash,
+          config: this.railConfig,
+          chainId: this.appConfig.chainId,
+          marketplaceContracts: this.appConfig.marketplaceContracts,
+          evidence: this.evidence,
+        });
+        order = await this.store.transition(order, "RELEASE_FINAL", "release_evidence_final", {
+          releaseTxHash: release.transactionHash,
+          releaseEvidenceHash: release.evidenceHash,
+          providerNetAmount: release.providerNetAmount.toString(),
+          daskiCommissionAmount: release.daskiCommissionAmount.toString(),
+          encryptedPaymentPayload: null,
+        }, {
+          kind: "register",
+          logicalKey: order.orderKey,
+          ...reputation,
+        });
+        order = await this.dispatch(
+          order,
+          listing,
+          args.body,
+          canonicalHash(settlement),
+          { deposit, release },
+        );
         return order;
+      } catch (error) {
+        const classified = asStandardRailError(error);
+        if (classified?.paymentMayHaveSettled) throw classified;
+        throw standardRailError("PAYMENT_PENDING_RECONCILIATION", {
+          internalMessage: error instanceof Error
+            ? `Post-settlement processing failed: ${error.message}`
+            : "Post-settlement processing failed",
+          cause: error,
+          logContext: {
+            orderId: order.orderId,
+            intentId: order.intentId,
+            payer: authorization.payer,
+            facilitatorSummary: { success: settlement.success },
+          },
+        });
       }
-      const transactionHash = settlement.transaction as Hex;
-      await this.journal.recordSettlement(order.orderId, canonicalHash(settlement), transactionHash);
-      order = await this.store.transition(order, "FACILITATOR_CONFIRMED", "facilitator_settlement_confirmed", { settlementTxHash: transactionHash });
-      const deposit = await this.evidence.proveDeposit({
-        order,
-        listing,
-        transactionHash,
-        paymentNonce: authorization.nonce,
-      });
-      await this.journal.recordEvidence(order.orderId, "deposit", deposit, this.appConfig.chainId);
-      order = await this.store.transition(order, "DEPOSIT_FINAL", "deposit_evidence_final", { depositEvidenceHash: deposit.evidenceHash });
-      const release = await this.withRailFence(() =>
-        this.evidence.releaseAndProve({ order, listing, deposit }));
-      await this.journal.recordEvidence(order.orderId, "release", release, this.appConfig.chainId);
-      const reputation = await buildReputationRegistration({
-        order,
-        listing,
-        deposit,
-        releaseEvidenceHash: release.evidenceHash,
-        config: this.railConfig,
-        chainId: this.appConfig.chainId,
-        marketplaceContracts: this.appConfig.marketplaceContracts,
-        evidence: this.evidence,
-      });
-      order = await this.store.transition(order, "RELEASE_FINAL", "release_evidence_final", {
-        releaseTxHash: release.transactionHash,
-        releaseEvidenceHash: release.evidenceHash,
-        providerNetAmount: release.providerNetAmount.toString(),
-        daskiCommissionAmount: release.daskiCommissionAmount.toString(),
-        encryptedPaymentPayload: null,
-      }, {
-        kind: "register",
-        logicalKey: order.orderKey,
-        ...reputation,
-      });
-      order = await this.dispatch(
-        order,
-        listing,
-        args.body,
-        canonicalHash(settlement),
-        { deposit, release },
-      );
-      return order;
     });
   }
 
@@ -1488,7 +1826,12 @@ export class StandardRailService {
     return this.dispatcher.dispatch(order, listing, request, confirmationHash, evidenceBundle);
   }
 
-  private challengeResponse(listing: StandardListing, order: StandardOrderRecord, handle: string) {
+  private challengeResponse(
+    listing: StandardListing,
+    order: StandardOrderRecord,
+    handle: string,
+    payerAddress?: Hex,
+  ) {
     const requirements = paymentRequirements(
       this.appConfig,
       listing,
@@ -1499,10 +1842,12 @@ export class StandardRailService {
       handle,
       order,
       paymentRequired: paymentRequired({
+        config: this.appConfig,
         requirements,
         listing,
         order,
         railProfileHash: this.railProfileHash,
+        ...(payerAddress ? { payerAddress: getAddress(payerAddress) } : {}),
       }),
     };
   }
@@ -1561,13 +1906,57 @@ export class StandardRailService {
       )),
     }, true);
     if (!response.ok) {
-      // A provider 4xx is a decline of this request (for example a consumed
-      // identity); anything else is quote infrastructure failing.
-      throw new Error(
-        response.status >= 400 && response.status < 500
-          ? "PROVIDER_QUOTE_REJECTED"
-          : "PROVIDER_QUOTE_UNAVAILABLE",
-      );
+      if (response.status >= 400 && response.status < 500) {
+        let fieldErrors: Array<{
+          path: string;
+          rule: string;
+          message: string;
+          allowedValues?: readonly string[];
+        }> | undefined;
+        try {
+          const rejection = await readBoundedJson(
+            response,
+            Math.min(32_768, listing.providerControlProfile.payload.maxResponseBytes),
+          ) as { fieldErrors?: unknown };
+          if (Array.isArray(rejection.fieldErrors)) {
+            fieldErrors = rejection.fieldErrors.slice(0, 32).flatMap((item) => {
+              if (!item || typeof item !== "object" || Array.isArray(item)) return [];
+              const value = item as Record<string, unknown>;
+              if (typeof value.path !== "string" || typeof value.rule !== "string" ||
+                  typeof value.message !== "string") return [];
+              const allowedValues = Array.isArray(value.allowedValues) &&
+                value.allowedValues.every((entry) => typeof entry === "string")
+                ? value.allowedValues as string[]
+                : undefined;
+              return [{
+                path: value.path,
+                rule: value.rule,
+                message: value.message,
+                ...(allowedValues ? { allowedValues } : {}),
+              }];
+            });
+          }
+        } catch {
+          // A structured rejection body is optional; status remains authoritative.
+        }
+        throw standardRailError("PROVIDER_QUOTE_REJECTED", {
+          fieldErrors,
+          logContext: {
+            providerAgentId: listing.commitment.payload.providerAgentId,
+            outcomeId: listing.commitment.payload.outcomeId,
+            canonicalRequestHash: requestHash,
+            providerStatus: response.status,
+          },
+        });
+      }
+      throw standardRailError("PROVIDER_QUOTE_UNAVAILABLE", {
+        logContext: {
+          providerAgentId: listing.commitment.payload.providerAgentId,
+          outcomeId: listing.commitment.payload.outcomeId,
+          canonicalRequestHash: requestHash,
+          providerStatus: response.status,
+        },
+      });
     }
     const quote = await readBoundedJson(
       response,
@@ -1600,11 +1989,11 @@ export class StandardRailService {
       !listing.quotePolicy ||
       quote.validBefore > quote.issuedAt + listing.quotePolicy.maximumLifetimeSeconds ||
       typeof quote.signature !== "string"
-    ) throw new Error("PROVIDER_QUOTE_INVALID");
+    ) throw standardRailError("PROVIDER_QUOTE_UNAVAILABLE");
     const bps = BigInt(listing.commitment.payload.commissionBps);
     const minimumReleasableAmount = (10_000n + bps - 1n) / bps;
     if (BigInt(quote.grossAmount) < minimumReleasableAmount) {
-      throw new Error("PROVIDER_QUOTE_NOT_RELEASABLE");
+      throw standardRailError("PROVIDER_QUOTE_UNAVAILABLE");
     }
     const signature = quote.signature as Hex;
     const quoteHash = canonicalHash({
@@ -1617,7 +2006,7 @@ export class StandardRailService {
     });
     const signer = await recoverMessageAddress({ message: { raw: quoteHash }, signature });
     if (getAddress(signer) !== getAddress(listing.commitment.payload.providerAuthorityKey)) {
-      throw new Error("PROVIDER_QUOTE_SIGNATURE_INVALID");
+      throw standardRailError("PROVIDER_QUOTE_UNAVAILABLE");
     }
     return {
       grossAmount: quote.grossAmount,

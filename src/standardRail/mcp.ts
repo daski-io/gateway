@@ -4,63 +4,48 @@ import { z } from "zod";
 import type { Config } from "../config.js";
 import { mountMcpHttpTransport, type McpWiring } from "../mcp/httpTransport.js";
 import { mcpError, mcpJson, type McpErrorPayload } from "../mcp/util.js";
-import { standardPaymentError } from "./routes.js";
+import {
+  asStandardRailError,
+  logStandardRailError,
+  standardRailError,
+  standardRailPublicError,
+} from "./errors.js";
 import { registerMarketplaceTools } from "../marketplace/mcp.js";
 import type { MarketplaceChainReader } from "../marketplace/reader.js";
 import { GATEWAY_VERSION } from "../version.js";
 import type { StandardRailService } from "./service.js";
 import type { PaymentPayload } from "@x402/core/types";
+import { readSkill, SKILL_TOPICS } from "./skills.js";
 
 const inputSchema = {
   providerAgentId: z.string().min(1),
   outcomeId: z.string().min(1),
   request: z.record(z.string(), z.unknown()),
+  payerAddress: z.string().regex(/^0x[0-9a-fA-F]{40}$/).optional(),
   paymentPayload: z.record(z.string(), z.unknown()).optional(),
 };
 
-// The purchase failures a buyer may act on, in the HTTP path's vocabulary
-// (standardPaymentError), with the recovery hint the MCP error contract
-// carries. Everything unrecognized stays the generic non-retryable
-// rejection so internals never leak.
-const RETRYABLE_PURCHASE_CODES = new Set([
-  "LISTING_SUPERSEDED",
-  "OUTCOME_OFFER_EXPIRED",
-  "PROVIDER_QUOTE_UNAVAILABLE",
-]);
-const PURCHASE_NEXT_ACTIONS: Record<string, string> = {
-  OUTCOME_NOT_FOUND:
-    "Verify providerAgentId and outcomeId via daski_list_outcomes before retrying.",
-  LISTING_SUPERSEDED:
-    "Fetch the outcome again with daski_get_outcome and retry against the current listing.",
-  PROVIDER_QUOTE_REJECTED:
-    "The provider declined to quote this exact request; revise the request contents before any further attempt.",
-  OUTCOME_OFFER_EXPIRED:
-    "Call again without paymentPayload to obtain a fresh payment requirement.",
-  PROVIDER_QUOTE_UNAVAILABLE:
-    "Provider quoting is temporarily unavailable; retry later.",
-  INVALID_STANDARD_PAYMENT:
-    "Rebuild the payment from a fresh payment requirement; do not reuse this payload.",
-};
-
-export function purchaseToolFailure(error: unknown): McpErrorPayload {
-  const publicError = standardPaymentError(error);
-  if (!publicError) {
-    return {
-      code: "STANDARD_RAIL_PURCHASE_FAILED",
-      message: "The standard purchase was rejected",
-      retryable: false,
-    };
-  }
-  const payload: McpErrorPayload = {
-    code: publicError.code,
-    message: publicError.message,
-    retryable: RETRYABLE_PURCHASE_CODES.has(publicError.code),
-  };
-  const nextAction = PURCHASE_NEXT_ACTIONS[publicError.code];
-  if (nextAction) payload.next_action = nextAction;
-  return payload;
+export function resolveMcpPaymentPayload(
+  argumentPayment: unknown,
+  metadataPayment: unknown,
+): PaymentPayload | undefined {
+  return (argumentPayment ?? metadataPayment) as PaymentPayload | undefined;
 }
 
+export function purchaseToolFailure(
+  error: unknown,
+  publicUrl = "https://invalid.local",
+): McpErrorPayload {
+  const classified = asStandardRailError(error) ?? standardRailError("INTERNAL_ERROR", {
+    internalMessage: error instanceof Error ? error.message : "Unknown standard rail failure",
+    cause: error,
+  });
+  logStandardRailError(classified);
+  return {
+    ...standardRailPublicError(classified, publicUrl),
+    next_action: classified.nextAction,
+  };
+}
 const actionAuthorizationSchema = z.object({
   orderId: z.string().min(1),
   action: z.string().min(1),
@@ -76,10 +61,15 @@ const actionAuthorizationSchema = z.object({
   signature: z.string().regex(/^0x[0-9a-fA-F]{130}$/),
 }).strict();
 
-const actionInputSchema = {
+const mutationActionInputSchema = {
   orderHandle: z.string().min(1),
   request: z.record(z.string(), z.unknown()).optional(),
   authorization: actionAuthorizationSchema.optional(),
+};
+
+const actionInputSchema = {
+  ...mutationActionInputSchema,
+  readCapability: z.string().min(80).max(2048).optional(),
 };
 
 const walletMessageSchema = z.object({
@@ -114,6 +104,15 @@ const lifecycleTools = [
   ["daski_get_order_artifact", "artifact", "Retrieve the protected result artifact for a completed order."],
   ["daski_contact_order_support", "support", "Send a support request for an order."],
 ] as const;
+
+const CONFIRMATION_ERROR_CODES = new Map<string, string>([
+  ["REPUTATION_NOT_READY", "REPUTATION_NOT_READY"],
+  ["REPUTATION_UNAVAILABLE", "REPUTATION_UNAVAILABLE"],
+  ["CONFIRMATION_SPONSORSHIP_LIMIT", "CONFIRMATION_SPONSORSHIP_LIMITED"],
+  ["CONFIRMATION_SPONSORSHIP_LIMITED", "CONFIRMATION_SPONSORSHIP_LIMITED"],
+  ["CONFIRMATION_SPONSORSHIP_UNAVAILABLE", "CONFIRMATION_SPONSORSHIP_UNAVAILABLE"],
+  ["CONFIRMATION_SUBMISSION_PENDING", "CONFIRMATION_SUBMISSION_PENDING"],
+]);
 
 function isolateProviderResult(value: unknown): unknown {
   if (!value || typeof value !== "object" || Array.isArray(value) || !("result" in value)) return value;
@@ -158,6 +157,7 @@ export async function createStandardRailMcp(
       {
         capabilities: { tools: { listChanged: false } },
         instructions: [
+          `First purchase requires wallet setup: fetch ${config.publicUrl}/skills/setup.md or call daski_get_setup_guide.`,
           "Daski purchases use one standard x402 V2 Exact-EVM rail.",
           "Use daski_buy_outcome for the initial challenge and its identical paid retry.",
           "A successful paid retry creates and dispatches exactly one order; no submit step follows.",
@@ -170,10 +170,12 @@ export async function createStandardRailMcp(
     server.registerTool(
       "daski_buy_outcome",
       {
+        outputSchema: z.object({}).catchall(z.unknown()),
         description:
           "Buy one committed Daski outcome. First call returns a standard x402 payment requirement; " +
-          "retry the identical request with the signed paymentPayload. Fixed outcomes support stock " +
-          "Exact-EVM clients; input-bearing outcomes require the published Daski nonce recipe.",
+          "retry the identical providerAgentId, outcomeId, and request with the signed payment in " +
+          "_meta[\"x402/payment\"] (preferred) or paymentPayload (expert path). Fixed outcomes support " +
+          "stock Exact-EVM clients; input-bearing outcomes require the published Daski nonce recipe.",
         inputSchema,
         annotations: {
           title: "Buy a Daski outcome",
@@ -186,17 +188,19 @@ export async function createStandardRailMcp(
       async (args, context) => {
         try {
           const metaPayment = context.mcpReq._meta?.["x402/payment"];
-          const payment = (args.paymentPayload ?? metaPayment) as PaymentPayload | undefined;
+          const payment = resolveMcpPaymentPayload(args.paymentPayload, metaPayment);
           if (!payment) {
             const challenge = await service.issueChallenge({
               providerAgentId: args.providerAgentId,
               outcomeId: args.outcomeId,
               body: args.request,
+              ...(args.payerAddress ? { payerAddress: args.payerAddress as `0x${string}` } : {}),
             });
             return {
               ...mcpJson(
                 challenge.paymentRequired,
                 { "x402/payment-required": challenge.paymentRequired },
+                true,
               ),
               isError: true,
             };
@@ -209,19 +213,92 @@ export async function createStandardRailMcp(
           });
           // One reply shape: a replayed identical authorization answers
           // exactly like the first submission.
+          const receipts = await service.purchaseReceipts(result.order);
+          return mcpJson(
+            {
+              status: result.order.state,
+              orderHandle: result.handle,
+              receipt: receipts.receipt,
+              x402OfferReceipt: receipts.x402OfferReceipt,
+            },
+            receipts.x402PaymentResponse
+              ? { "x402/payment-response": receipts.x402PaymentResponse }
+              : undefined,
+          );
+        } catch (error) {
+          return mcpError(purchaseToolFailure(error, config.publicUrl));
+        }
+      },
+    );
+    server.registerTool(
+      "daski_get_setup_guide",
+      {
+        outputSchema: z.object({}).catchall(z.unknown()),
+        description: "Return a canonical Daski setup, buying, order, wallet, or nonce guide for shell-less agents.",
+        inputSchema: {
+          topic: z.enum(SKILL_TOPICS).default("setup"),
+        },
+        annotations: {
+          title: "Get the Daski setup guide",
+          readOnlyHint: true,
+          destructiveHint: false,
+          idempotentHint: true,
+          openWorldHint: false,
+        },
+      },
+      async ({ topic }) => {
+        try {
+          const skill = await readSkill(topic);
           return mcpJson({
-            status: result.order.state,
-            orderHandle: result.handle,
-            receipt: await service.signedReceipt(result.order),
+            topic,
+            markdown: skill.content,
+            sha256: skill.sha256,
+            url: `${config.publicUrl.replace(/\/$/, "")}/skills/${skill.file}`,
           });
         } catch (error) {
-          return mcpError(purchaseToolFailure(error));
+          return mcpError(purchaseToolFailure(error, config.publicUrl));
+        }
+      },
+    );
+    server.registerTool(
+      "daski_get_payment_challenge",
+      {
+        outputSchema: z.object({}).catchall(z.unknown()),
+        description:
+          "Prepare a Daski purchase without submitting payment. Returns the same bound x402 challenge " +
+          "used by daski_buy_outcome plus a non-blocking payer balance/eligibility preflight. The paid " +
+          "retry must carry the same providerAgentId, outcomeId, and request shown for approval.",
+        inputSchema: {
+          providerAgentId: z.string().min(1),
+          outcomeId: z.string().min(1),
+          request: z.record(z.string(), z.unknown()),
+          payerAddress: z.string().regex(/^0x[0-9a-fA-F]{40}$/).optional(),
+        },
+        annotations: {
+          title: "Prepare a Daski payment challenge",
+          readOnlyHint: true,
+          destructiveHint: false,
+          idempotentHint: true,
+          openWorldHint: true,
+        },
+      },
+      async (args) => {
+        try {
+          return mcpJson(await service.preparePaymentChallenge({
+            providerAgentId: args.providerAgentId,
+            outcomeId: args.outcomeId,
+            body: args.request,
+            ...(args.payerAddress ? { payerAddress: args.payerAddress as `0x${string}` } : {}),
+          }));
+        } catch (error) {
+          return mcpError(purchaseToolFailure(error, config.publicUrl));
         }
       },
     );
     server.registerTool(
       "daski_list_outcomes",
       {
+        outputSchema: z.object({}).catchall(z.unknown()),
         description: "Search the currently admitted, purchasable Daski outcomes. " +
           "Filters AND together. `text` must match every token (substring, no " +
           "stemming) against service/skill names, descriptions, and tags — use " +
@@ -256,6 +333,7 @@ export async function createStandardRailMcp(
     server.registerTool(
       "daski_get_outcome",
       {
+        outputSchema: z.object({}).catchall(z.unknown()),
         description: "Get the complete public presentation for one admitted Daski " +
           "outcome: everything the search row carries plus request/response " +
           "schemas, splitter provenance, deadline and capacity policies, and " +
@@ -276,9 +354,12 @@ export async function createStandardRailMcp(
       server.registerTool(
         name,
         {
+          outputSchema: z.object({}).catchall(z.unknown()),
           description: `${description} Call once without authorization to receive a short-lived challenge, ` +
             "then retry with the payer's EIP-712 authorization.",
-          inputSchema: actionInputSchema,
+          inputSchema: action === "status" || action === "artifact"
+            ? actionInputSchema
+            : mutationActionInputSchema,
           annotations: {
             title: description,
             readOnlyHint: action === "status" || action === "artifact",
@@ -289,7 +370,31 @@ export async function createStandardRailMcp(
         },
         async (args) => {
           const request = args.request ?? {};
+          const readCapability = "readCapability" in args &&
+            typeof args.readCapability === "string" ? args.readCapability : undefined;
           try {
+            if (readCapability && args.authorization) {
+              return mcpError(purchaseToolFailure(
+                standardRailError("WALLET_AUTHORIZATION_INVALID", {
+                  message: "Provide exactly one of authorization or readCapability",
+                }),
+                config.publicUrl,
+              ));
+            }
+            if (readCapability) {
+              if (action !== "status" && action !== "artifact") {
+                return mcpError(purchaseToolFailure(
+                  standardRailError("WALLET_AUTHORIZATION_INVALID"),
+                  config.publicUrl,
+                ));
+              }
+              return mcpJson(isolateProviderResult(await service.performAction({
+                handle: args.orderHandle,
+                action,
+                request,
+                readCapability,
+              })));
+            }
             if (!args.authorization) {
               const challenge = await service.issueActionChallenge({
                 handle: args.orderHandle,
@@ -309,23 +414,64 @@ export async function createStandardRailMcp(
               authorization: args.authorization as never,
             });
             return mcpJson(isolateProviderResult(result));
-          } catch {
-            return mcpError({
-              code: "STANDARD_RAIL_ORDER_ACTION_FAILED",
-              message: "The standard order action was rejected",
-              retryable: false,
-            });
+          } catch (error) {
+            return mcpError(purchaseToolFailure(error, config.publicUrl));
           }
         },
       );
     }
+    server.registerTool(
+      "daski_get_order_access",
+      {
+        outputSchema: z.object({}).catchall(z.unknown()),
+        description:
+          "Mint a short-lived capability for repeated status and artifact reads. " +
+          "Call once for a sign-ready grant-read challenge, then retry with the payer signature.",
+        inputSchema: {
+          orderHandle: z.string().min(1),
+          authorization: actionAuthorizationSchema.optional(),
+        },
+        annotations: {
+          title: "Get Daski order read access",
+          readOnlyHint: true,
+          destructiveHint: false,
+          idempotentHint: false,
+          openWorldHint: false,
+        },
+      },
+      async ({ orderHandle, authorization }) => {
+        const request = {};
+        try {
+          if (!authorization) {
+            return mcpJson({
+              authorizationRequired: true,
+              authorizationType: "OrderActionAuthorizationV1",
+              challenge: await service.issueActionChallenge({
+                handle: orderHandle,
+                action: "grant-read",
+                request,
+              }),
+            });
+          }
+          return mcpJson(await service.performAction({
+            handle: orderHandle,
+            action: "grant-read",
+            request,
+            authorization: authorization as never,
+          }));
+        } catch (error) {
+          return mcpError(purchaseToolFailure(error, config.publicUrl));
+        }
+      },
+    );
     for (const [name, action, description] of [
       ["daski_confirm_delivery", "confirmation", "Prepare or submit a payer-signed delivery confirmation."],
       ["daski_revoke_delivery_confirmation", "revoke-confirmation", "Prepare or submit withdrawal of the payer's current delivery confirmation."],
     ] as const) {
       server.registerTool(name, {
+        outputSchema: z.object({}).catchall(z.unknown()),
         description: `${description} Call once without authorization for an order-action challenge, then retry with a fresh payer authorization.`,
-        inputSchema: actionInputSchema,
+        inputSchema: mutationActionInputSchema,
         annotations: { title: description, readOnlyHint: false, destructiveHint: true,
           idempotentHint: false, openWorldHint: true },
       }, async (args) => {
@@ -337,12 +483,12 @@ export async function createStandardRailMcp(
           return mcpJson(await service.performAction({ handle: args.orderHandle, action, request,
             authorization: args.authorization as never }));
         } catch (error) {
+          const classified = asStandardRailError(error);
+          if (classified) {
+            return mcpError(purchaseToolFailure(classified, config.publicUrl));
+          }
           const internal = error instanceof Error ? error.message : "CONFIRMATION_ACCESS_DENIED";
-          const code = ["REPUTATION_NOT_READY", "REPUTATION_UNAVAILABLE",
-            "CONFIRMATION_SPONSORSHIP_LIMITED", "CONFIRMATION_SPONSORSHIP_UNAVAILABLE",
-            "CONFIRMATION_SUBMISSION_PENDING"].includes(internal)
-            ? internal : internal.includes("SPONSORSHIP_LIMIT")
-              ? "CONFIRMATION_SPONSORSHIP_LIMITED" : "CONFIRMATION_ACCESS_DENIED";
+          const code = CONFIRMATION_ERROR_CODES.get(internal) ?? "CONFIRMATION_ACCESS_DENIED";
           return mcpError({ code,
             message: "The delivery confirmation request could not be completed",
             retryable: ["REPUTATION_NOT_READY", "CONFIRMATION_SPONSORSHIP_UNAVAILABLE",
@@ -353,18 +499,24 @@ export async function createStandardRailMcp(
     server.registerTool(
       "daski_list_my_orders",
       {
+        outputSchema: z.object({}).catchall(z.unknown()),
         description: "List the connected payer wallet's private Daski order history.",
         inputSchema: {
           payer: z.string().regex(/^0x[0-9a-fA-F]{40}$/),
           limit: z.number().int().min(1).max(100).default(25),
           cursor: z.string().min(1).nullable().default(null),
+          paymentIdentifier: z.string().regex(/^[A-Za-z0-9_-]{16,128}$/).nullable().default(null),
           authorization: walletAuthorizationSchema.nullable().default(null),
         },
         annotations: { title: "List my Daski orders", readOnlyHint: true, destructiveHint: false,
           idempotentHint: false, openWorldHint: false },
       },
-      async ({ payer, limit, cursor, authorization }) => {
-        const request = { limit, cursor };
+      async ({ payer, limit, cursor, paymentIdentifier, authorization }) => {
+        const request = {
+          limit,
+          cursor,
+          ...(paymentIdentifier ? { paymentIdentifier } : {}),
+        };
         try {
           if (!authorization) return mcpJson({
             authorizationRequired: true,
@@ -375,7 +527,7 @@ export async function createStandardRailMcp(
             }),
           });
           return mcpJson(await service.listWalletOrders({
-            payer, limit, cursor, authorization: authorization as never,
+            payer, limit, cursor, paymentIdentifier, authorization: authorization as never,
           }));
         } catch (error) { return walletMcpError(error); }
       },
@@ -383,6 +535,7 @@ export async function createStandardRailMcp(
     server.registerTool(
       "daski_get_my_reputation",
       {
+        outputSchema: z.object({}).catchall(z.unknown()),
         description: "Get private aggregate Daski reputation participation for a payer wallet.",
         inputSchema: {
           payer: z.string().regex(/^0x[0-9a-fA-F]{40}$/),
@@ -409,6 +562,7 @@ export async function createStandardRailMcp(
     server.registerTool(
       "daski_list_assets",
       {
+        outputSchema: z.object({}).catchall(z.unknown()),
         description: "List provider-owned assets controlled by the connected payer wallet.",
         inputSchema: {
           payer: z.string().regex(/^0x[0-9a-fA-F]{40}$/),
@@ -443,6 +597,7 @@ export async function createStandardRailMcp(
     server.registerTool(
       "daski_use_asset",
       {
+        outputSchema: z.object({}).catchall(z.unknown()),
         description: "Run an admitted provider action against an asset controlled by the payer wallet.",
         inputSchema: {
           payer: z.string().regex(/^0x[0-9a-fA-F]{40}$/),

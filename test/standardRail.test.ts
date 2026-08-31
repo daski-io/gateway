@@ -17,8 +17,8 @@ import { assertPassiveProviderOutput } from "../src/standardRail/providerOutput.
 import {
   assertPaymentIdentifierExtension,
 } from "../src/standardRail/payment.js";
-import { declarePaymentIdentifierExtension } from "@x402/extensions/payment-identifier";
 import { standardPaymentError } from "../src/standardRail/routes.js";
+import { standardRailError } from "../src/standardRail/errors.js";
 import { hasFinalizedNonceConflict } from "../src/standardRail/nonceConflict.js";
 import { providerOutcome } from "../src/standardRail/walletQueries.js";
 import { isAdmissionWindowOpen } from "../src/standardRail/service.js";
@@ -41,11 +41,13 @@ describe("standard rail primitives", () => {
     expect(isAdmissionWindowOpen(400, 300, 300)).toBe(false);
   });
 
-  it("sanitizes payment errors", () => {
-    expect(standardPaymentError(new Error("payer mismatch: secret upstream detail"))).toEqual({
+  it("maps only classified payment errors and never leaks internals", () => {
+    expect(standardPaymentError(new Error("payer mismatch: secret upstream detail"))).toBeNull();
+    expect(standardPaymentError(standardRailError("AUTHORIZATION_MISMATCH"))).toMatchObject({
       status: 400,
-      code: "INVALID_STANDARD_PAYMENT",
-      message: "The standard payment was rejected",
+      code: "AUTHORIZATION_MISMATCH",
+      phase: "payment_validation",
+      retryable: true,
     });
   });
   it("canonicalizes object keys and hashes equivalent objects identically", () => {
@@ -64,20 +66,20 @@ describe("standard rail primitives", () => {
     expect(() => assertNoDuplicateJsonKeys('{"a":{"x":1,"x":2}}')).toThrow(/Duplicate JSON key x/);
   });
 
-  it("accepts only a closed non-authoritative payment identifier mutation", () => {
-    const issued = declarePaymentIdentifierExtension(false);
+  it("requires the exact issued payment identifier", () => {
+    const issued = {
+      info: { required: true, id: "int_1234567890abcdef" },
+      schema: { type: "object" },
+    };
+    expect(() => assertPaymentIdentifierExtension(issued, issued)).not.toThrow();
     expect(() => assertPaymentIdentifierExtension({
       ...issued,
-      info: { required: false, id: "pay_1234567890abcd" },
-    }, issued)).not.toThrow();
+      info: { required: true, id: "int_fedcba0987654321" },
+    }, issued)).toThrow(/differs/);
     expect(() => assertPaymentIdentifierExtension({
       ...issued,
-      info: { required: false, id: "too-short" },
-    }, issued)).toThrow(/invalid/);
-    expect(() => assertPaymentIdentifierExtension({
-      ...issued,
-      info: { required: false, id: "pay_1234567890abcd", authority: true },
-    }, issued)).toThrow(/open shape/);
+      info: { ...issued.info, authority: true },
+    }, issued)).toThrow(/differs/);
   });
 
   it("derives a deterministic order-bound recipe nonce", () => {

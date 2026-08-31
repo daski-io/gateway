@@ -41,6 +41,7 @@ interface OrderRow {
   canonical_request_hash: Buffer;
   canonical_request: unknown;
   order_nonce: Buffer;
+  intent_id: string;
   authorization_key: Buffer | null;
   payment_payload_hash: Buffer | null;
   payer: Hex | null;
@@ -54,6 +55,7 @@ interface OrderRow {
   release_evidence_hash: Buffer | null;
   provider_task_id: string | null;
   rail_epoch: string;
+  capability_epoch: string;
   version: string;
   lease_fence: string;
   expires_at: Date;
@@ -78,6 +80,7 @@ function record(row: OrderRow): StandardOrderRecord {
     canonicalRequestHash: hex(row.canonical_request_hash)!,
     canonicalRequest: row.canonical_request,
     orderNonce: hex(row.order_nonce)!,
+    intentId: row.intent_id,
     authorizationKey: hex(row.authorization_key),
     paymentPayloadHash: hex(row.payment_payload_hash),
     payer: row.payer,
@@ -91,6 +94,7 @@ function record(row: OrderRow): StandardOrderRecord {
     releaseEvidenceHash: hex(row.release_evidence_hash),
     providerTaskId: row.provider_task_id,
     railEpoch: row.rail_epoch,
+    capabilityEpoch: Number(row.capability_epoch),
     version: Number(row.version),
     leaseFence: Number(row.lease_fence),
     expiresAt: row.expires_at,
@@ -109,6 +113,7 @@ export interface CreateDraftInput {
   quoteHash: Hex;
   quote: SignedEnvelope<import("./types.js").QuoteV1>;
   orderNonce: Hex;
+  intentId: string;
   canonicalRequestHash: Hex;
   canonicalRequest: unknown;
   grossAmount: string;
@@ -217,6 +222,19 @@ export class StandardRailStore {
     const result = await this.pool.query<OrderRow>(
       "SELECT * FROM standard_orders WHERE authorization_key=$1",
       [bytes(authorizationKey)],
+    );
+    return result.rows[0]
+      ? { order: record(result.rows[0]), handle: result.rows[0].order_handle }
+      : null;
+  }
+
+  async findByIntentId(intentId: string): Promise<{
+    order: StandardOrderRecord;
+    handle: string;
+  } | null> {
+    const result = await this.pool.query<OrderRow>(
+      "SELECT * FROM standard_orders WHERE intent_id=$1",
+      [intentId],
     );
     return result.rows[0]
       ? { order: record(result.rows[0]), handle: result.rows[0].order_handle }
@@ -344,16 +362,16 @@ export class StandardRailStore {
         `INSERT INTO standard_orders (
           order_id,order_key,order_handle,handle_hash,state,provider_agent_id,outcome_id,binding_profile,
           listing_manifest_hash,provider_offer_hash,canonical_listing,quote_hash,canonical_quote,canonical_request_hash,
-          canonical_request,order_nonce,gross_amount,rail_epoch,
+          canonical_request,order_nonce,intent_id,gross_amount,rail_epoch,
           listing_epoch,expires_at)
-         VALUES ($1,$2,$3,$4,'CHALLENGE_ISSUED',$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
+         VALUES ($1,$2,$3,$4,'CHALLENGE_ISSUED',$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
          RETURNING *`,
         [
           orderId, bytes(orderKey), handle, handleHash, input.providerAgentId, input.outcomeId,
           input.bindingProfile, bytes(input.listingManifestHash),
           bytes(input.providerOfferHash), input.listing, bytes(input.quoteHash), input.quote,
           bytes(input.canonicalRequestHash), input.canonicalRequest,
-          bytes(input.orderNonce), input.grossAmount, input.railEpoch,
+          bytes(input.orderNonce), input.intentId, input.grossAmount, input.railEpoch,
           input.listingEpoch, input.expiresAt,
         ],
       );
@@ -388,6 +406,17 @@ export class StandardRailStore {
       [orderId],
     );
     return result.rows[0] ? record(result.rows[0]) : null;
+  }
+
+  async bumpCapabilityEpoch(orderId: string): Promise<StandardOrderRecord> {
+    const result = await this.pool.query<OrderRow>(
+      `UPDATE standard_orders
+          SET capability_epoch=capability_epoch+1,updated_at=now()
+        WHERE order_id=$1 RETURNING *`,
+      [orderId],
+    );
+    if (!result.rows[0]) throw new Error("ORDER_NOT_FOUND");
+    return record(result.rows[0]);
   }
 
   async leaseRecoverable(

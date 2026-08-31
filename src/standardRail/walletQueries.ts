@@ -16,6 +16,7 @@ import type { WalletAuthorizationTransport } from "./types.js";
 interface OrderHistoryRow {
   order_id: string;
   order_handle: string;
+  intent_id: string;
   order_key: Buffer;
   provider_agent_id: string;
   outcome_id: string;
@@ -75,17 +76,22 @@ export class StandardWalletQueries {
     payer: string;
     limit: number;
     cursor: string | null;
+    paymentIdentifier?: string | null;
     authorization: WalletAuthorizationTransport;
   }) {
-    const request = { limit: args.limit, cursor: args.cursor };
+    const request = {
+      limit: args.limit,
+      cursor: args.cursor,
+      ...(args.paymentIdentifier ? { paymentIdentifier: args.paymentIdentifier } : {}),
+    };
     // Only the payer proven by the signed authorization may be queried.
     const { payer } = await this.wallet.consume({
       payer: args.payer, authorization: args.authorization, action: "list-orders", request,
     });
-    const binding = this.wallet.orderCursorBinding(payer, args.limit);
+    const binding = this.wallet.orderCursorBinding(payer, args.limit, args.paymentIdentifier ?? null);
     const last = args.cursor ? this.wallet.decodeOrderCursor(args.cursor, binding) : null;
     const result = await this.pool.query<OrderHistoryRow>(
-      `SELECT o.order_id,o.order_handle,o.order_key,o.provider_agent_id,o.outcome_id,
+      `SELECT o.order_id,o.order_handle,o.intent_id,o.order_key,o.provider_agent_id,o.outcome_id,
               o.state,o.gross_amount,o.canonical_listing,o.created_at,
               o.created_at::text AS created_at_cursor,o.updated_at,
               r.state AS registration_operation_state
@@ -94,9 +100,16 @@ export class StandardWalletQueries {
            ON r.order_id=o.order_id AND r.kind='register'
         WHERE lower(o.payer)=$1
           AND ($2::timestamptz IS NULL OR (o.created_at,o.order_id)<($2::timestamptz,$3))
+          AND ($4::text IS NULL OR o.intent_id=$4)
         ORDER BY o.created_at DESC,o.order_id DESC
-        LIMIT $4`,
-      [payer, last?.createdAt ?? null, last?.id ?? null, args.limit + 1],
+        LIMIT $5`,
+      [
+        payer,
+        last?.createdAt ?? null,
+        last?.id ?? null,
+        args.paymentIdentifier ?? null,
+        args.limit + 1,
+      ],
     );
     const rows = result.rows.slice(0, args.limit);
     const hasMore = result.rows.length > args.limit;
@@ -116,6 +129,7 @@ export class StandardWalletQueries {
         const registered = reputation.orderKey !== ZERO_HASH;
         return ({
         orderHandle: row.order_handle,
+        paymentIdentifier: row.intent_id,
         orderKey: `0x${row.order_key.toString("hex")}`,
         providerAgentId: row.provider_agent_id,
         serviceId: row.canonical_listing.commitment.payload.serviceId,

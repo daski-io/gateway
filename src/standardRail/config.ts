@@ -42,6 +42,9 @@ export interface StandardRailConfig {
   leaseSeconds: number;
   recoveryIntervalMs: number;
   readinessIntervalMs: number;
+  validAfterBackstopSeconds: number;
+  challengeTtlSeconds: number;
+  orderReadCapTtlSeconds: number;
   cursorKeyRing: { activeKeyId: string; keys: ReadonlyMap<string, Buffer> };
   reputationContract: Address;
   easAddress: Address;
@@ -82,6 +85,9 @@ const DEFAULTS = {
   leaseSeconds: 45,
   recoveryIntervalMs: 10_000,
   readinessIntervalMs: 300_000,
+  validAfterBackstopSeconds: 3_600,
+  challengeTtlSeconds: 600,
+  orderReadCapTtlSeconds: 1_800,
   reputationRetryDelaysSeconds: [5, 60, 3_000, 30_000] as const,
   abuse: {
     walletChallengesPerClientPerMinute: 30,
@@ -277,6 +283,21 @@ export function loadStandardRailConfig(
     leaseSeconds: integer(env, "STANDARD_RAIL_LEASE_SECONDS", DEFAULTS.leaseSeconds),
     recoveryIntervalMs: integer(env, "STANDARD_RAIL_RECOVERY_INTERVAL_MS", DEFAULTS.recoveryIntervalMs),
     readinessIntervalMs: integer(env, "STANDARD_RAIL_READINESS_INTERVAL_MS", DEFAULTS.readinessIntervalMs),
+    validAfterBackstopSeconds: integer(
+      env,
+      "DASKI_STANDARD_VALID_AFTER_BACKSTOP_SECONDS",
+      DEFAULTS.validAfterBackstopSeconds,
+    ),
+    challengeTtlSeconds: integer(
+      env,
+      "DASKI_STANDARD_CHALLENGE_TTL_SECONDS",
+      DEFAULTS.challengeTtlSeconds,
+    ),
+    orderReadCapTtlSeconds: integer(
+      env,
+      "DASKI_ORDER_READ_CAP_TTL_SECONDS",
+      DEFAULTS.orderReadCapTtlSeconds,
+    ),
     cursorKeyRing: { activeKeyId: "derived-v1", keys: new Map([["derived-v1", cursorKey]]) },
     reputationContract: getAddress(required(env, "REPUTATION_STORAGE_ADDRESS")),
     easAddress: getAddress(required(env, "EAS_ADDRESS")),

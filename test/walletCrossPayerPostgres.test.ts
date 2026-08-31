@@ -7,7 +7,6 @@ import { StandardAssetFederation } from "../src/standardRail/assetFederation.js"
 import type { StandardRailConfig } from "../src/standardRail/config.js";
 import { StandardWalletQueries } from "../src/standardRail/walletQueries.js";
 import { StandardWalletStore } from "../src/standardRail/walletStore.js";
-import type { WalletActionAuthorizationV1 } from "../src/standardRail/types.js";
 
 const databaseUrl = process.env.DATABASE_URL_TEST ??
   "postgresql://postgres:password@localhost:5433/daski_gateway_test";
@@ -16,28 +15,6 @@ const databaseUrl = process.env.DATABASE_URL_TEST ??
 const signer = privateKeyToAccount(`0x${"11".repeat(32)}`);
 /** A wallet the signer holds no key for. */
 const OTHER = "0xBBbBbBBbBBbbBBbBBBBbbBbbBbbBbbbBBbBBbBbB";
-
-const walletActionTypes = {
-  WalletActionAuthorizationV1: [
-    { name: "payer", type: "address" },
-    { name: "providerAgentId", type: "uint256" },
-    { name: "serviceId", type: "bytes32" },
-    { name: "providerControlProfileHash", type: "bytes32" },
-    { name: "servicingAdmissionHash", type: "bytes32" },
-    { name: "actionCatalogHash", type: "bytes32" },
-    { name: "actionCatalogSchemaHash", type: "bytes32" },
-    { name: "actionDefinitionHash", type: "bytes32" },
-    { name: "actionCatalogEpoch", type: "uint64" },
-    { name: "actionHash", type: "bytes32" },
-    { name: "methodHash", type: "bytes32" },
-    { name: "absoluteResourceUriHash", type: "bytes32" },
-    { name: "requestHash", type: "bytes32" },
-    { name: "audienceHash", type: "bytes32" },
-    { name: "nonce", type: "bytes32" },
-    { name: "issuedAt", type: "uint64" },
-    { name: "validBefore", type: "uint64" },
-  ],
-} as const;
 
 const config = {
   encryptionKey: Buffer.alloc(32, 7),
@@ -74,11 +51,9 @@ async function signedFor(action: string, request: unknown) {
     absoluteResourceUri: "https://gateway.example/wallet/resource",
     clientKey: "203.0.113.7",
   });
-  const message = challenge.message as WalletActionAuthorizationV1;
+  const message = challenge.message;
   const signature = await signer.signTypedData({
-    domain: { name: "DaskiStandardWallet", version: "1", chainId: baseSepolia.id },
-    primaryType: "WalletActionAuthorizationV1",
-    types: walletActionTypes,
+    ...challenge.signRequest,
     message: {
       ...message,
       providerAgentId: BigInt(message.providerAgentId),
@@ -192,6 +167,26 @@ describe("wallet authorization is bound to the operation payer", () => {
       authorization: await signedFor("list-orders", { limit: 25, cursor: null }),
     });
     expect(seen[0]?.[0]).toBe(signer.address.toLowerCase());
+  });
+
+  it("binds and applies the paymentIdentifier recovery filter", async () => {
+    const paymentIdentifier = "int_12345678-1234-4123-8123-123456789abc";
+    const request = { limit: 25, cursor: null, paymentIdentifier };
+    const seen: unknown[][] = [];
+    await queries((params) => seen.push(params)).listOrders({
+      payer: signer.address,
+      limit: 25,
+      cursor: null,
+      paymentIdentifier,
+      authorization: await signedFor("list-orders", request),
+    });
+    expect(seen[0]).toMatchObject([
+      signer.address.toLowerCase(),
+      null,
+      null,
+      paymentIdentifier,
+      26,
+    ]);
   });
 
   it("denies cross-payer reputation reads", async () => {
