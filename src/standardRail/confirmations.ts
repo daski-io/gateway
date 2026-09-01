@@ -249,7 +249,10 @@ export class StandardConfirmations {
   private async reserve(order: StandardOrderRecord, prep: PreparationRow, signature: Hex) {
     const client = await this.pool.connect();
     try {
-      await client.query("BEGIN ISOLATION LEVEL SERIALIZABLE");
+      // Read committed under the sponsorship lock: every reservation takes this
+      // lock before counting, so the counts are already serialized; SERIALIZABLE
+      // fixed the snapshot before the lock was granted (see walletStore.issue).
+      await client.query("BEGIN");
       await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))", ["confirmation-sponsorship"]);
       const counts = await client.query<{ order_count: string; payer_count: string; global_count: string }>(
         `SELECT count(*) FILTER (WHERE order_id=$1 AND state<>'released')::text AS order_count,

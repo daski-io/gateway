@@ -266,7 +266,11 @@ export class StandardRailStore {
     ];
     const client = await this.pool.connect();
     try {
-      await client.query("BEGIN ISOLATION LEVEL SERIALIZABLE");
+      // Read committed under the rail lock: every admission of these artifact
+      // types takes this lock before reading the epoch chain, so the checks are
+      // already serialized; SERIALIZABLE fixed the snapshot before the lock was
+      // granted (see walletStore.issue).
+      await client.query("BEGIN");
       await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))", [
         `standard-rail:${rail.environment}:${rail.chainId}`,
       ]);
