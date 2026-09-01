@@ -2,12 +2,21 @@ import type { McpServer } from "@modelcontextprotocol/server";
 import { getAddress, type Hex } from "viem";
 import { z } from "zod";
 import { mcpError, mcpJson } from "../mcp/util.js";
-import type { MarketplaceChainReader } from "./reader.js";
+import { MarketplaceNotFoundError, type MarketplaceChainReader } from "./reader.js";
 
 async function chainRead(read: () => Promise<unknown>) {
   try {
     return mcpJson(await read());
-  } catch {
+  } catch (error) {
+    if (error instanceof MarketplaceNotFoundError) {
+      return mcpError({
+        code: "MARKETPLACE_NOT_FOUND",
+        message: error.message,
+        retryable: false,
+        next_action:
+          "Check the id with daski_list_providers or daski_list_outcomes; unknown ids are not retried.",
+      });
+    }
     return mcpError({
       code: "MARKETPLACE_CHAIN_READ_FAILED",
       message: "Marketplace chain state is unavailable",

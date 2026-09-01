@@ -7,6 +7,10 @@ interface RpcFailoverOptions {
   attempts?: number;
   baseDelayMs?: number;
   onFallback?: (detail: { primaryHost: string; selectedHost: string }) => void;
+  // A terminal error is the chain's answer (for example a deterministic
+  // contract revert), not an endpoint fault: it is rethrown as-is, with no
+  // retry, no failover, and no aggregate wrapping.
+  terminal?: (error: unknown) => boolean;
 }
 
 function failureSummary(host: string, attempts: number, error: unknown): Error {
@@ -49,6 +53,7 @@ export async function withRpcFailover<Endpoint extends RpcEndpoint<unknown>, Res
         }
         return result;
       } catch (error) {
+        if (options.terminal?.(error)) throw error;
         lastError = error;
         if (attempt < attempts && baseDelayMs > 0) {
           await new Promise((resolve) => setTimeout(resolve, baseDelayMs * attempt));
