@@ -37,6 +37,7 @@ export function registerMarketplaceTools(
   server.registerTool(
     "daski_list_providers",
     {
+      outputSchema: z.object({}).catchall(z.unknown()),
       description: "List providers registered in the Daski on-chain marketplace catalog.",
       inputSchema: {
         offset: z.number().int().min(0).max(1_000_000).default(0),
@@ -64,6 +65,7 @@ export function registerMarketplaceTools(
   server.registerTool(
     "daski_get_provider",
     {
+      outputSchema: z.object({}).catchall(z.unknown()),
       description:
         "Read a provider's canonical identity, catalog services, and standard-order reputation.",
       inputSchema: { agentId: z.string().regex(/^(0|[1-9]\d{0,77})$/) },
@@ -81,6 +83,7 @@ export function registerMarketplaceTools(
   server.registerTool(
     "daski_get_service",
     {
+      outputSchema: z.object({}).catchall(z.unknown()),
       description: "Read an on-chain Daski service-catalog record.",
       inputSchema: { serviceId: z.string().regex(/^0x[0-9a-fA-F]{64}$/) },
       annotations: { title: "Get a Daski service", ...readOnlyAnnotations },
@@ -99,6 +102,7 @@ export function registerMarketplaceTools(
   server.registerTool(
     "daski_resolve_agent",
     {
+      outputSchema: z.object({}).catchall(z.unknown()),
       description: "Resolve a wallet through Daski's verified wallet-to-ERC-8004 agent index.",
       inputSchema: { wallet: z.string().regex(/^0x[0-9a-fA-F]{40}$/) },
       annotations: { title: "Resolve an ERC-8004 agent", ...readOnlyAnnotations },

@@ -6,6 +6,7 @@ import { GATEWAY_COMMIT, GATEWAY_VERSION } from "../version.js";
 import type { StandardRailConfig } from "./config.js";
 import type { StandardRailService } from "./service.js";
 import type { PublicChainMetadataV3 } from "./types.js";
+import { llmsFull, llmsIndex, readSkill, skillIndex } from "./skills.js";
 
 export function createStandardMetaRouter(args: {
   config: Config;
@@ -83,10 +84,13 @@ export function createStandardMetaRouter(args: {
         "daski_list_outcomes",
         "daski_get_outcome",
         "daski_buy_outcome",
+        "daski_get_payment_challenge",
+        "daski_get_setup_guide",
         "daski_list_my_orders",
         "daski_get_my_reputation",
         "daski_list_assets",
         "daski_use_asset",
+        "daski_get_order_access",
         "daski_get_order_status",
         "daski_submit_order_input",
         "daski_cancel_order",
@@ -95,21 +99,47 @@ export function createStandardMetaRouter(args: {
         "daski_confirm_delivery",
         "daski_revoke_delivery_confirmation",
       ],
+      skills: {
+        setup: `${args.config.publicUrl}/skills/setup.md`,
+        buy: `${args.config.publicUrl}/skills/buy.md`,
+        orders: `${args.config.publicUrl}/skills/orders.md`,
+        wallets: `${args.config.publicUrl}/skills/wallets.md`,
+        recipe: `${args.config.publicUrl}/skills/recipe.md`,
+        installable: `${args.config.publicUrl}/skills/SKILL.md`,
+      },
+      steadyStatePrompt: "Use Daski to [your task].",
     });
   });
-  router.get(["/llms.txt", "/llms-full.txt", "/skill.md", "/SKILL.md"], (_req, res) => {
-    res.type("text/markdown").send([
-      "# Daski standard outcome rail",
-      "",
-      "Use `daski_buy_outcome` for both the unpaid challenge and identical paid retry.",
-      "Use the separately named order tools for status, input, cancellation, artifacts, and support.",
-      "Each order action is a challenge/sign/retry exchange authorized by the payer wallet.",
-      "Payments are standard x402 V2 Exact-EVM transfers to immutable outcome splitters.",
-      "ERC-8004 identity and the Daski provider/service catalogs remain independent of the payment rail.",
-      "Standard-order reputation is recorded independently after finalized x402 evidence.",
-      "There is no separate paid task submission or payment-time registration.",
-      `Network: ${args.config.x402Network}`,
-    ].join("\n"));
+  router.get("/.well-known/agent-skills/index.json", async (_req, res, next) => {
+    try {
+      res.json(await skillIndex(args.config.publicUrl, GATEWAY_VERSION));
+    } catch (error) { next(error); }
+  });
+  router.get("/skills/:file", async (req, res, next) => {
+    try {
+      const file = String(req.params.file);
+      const topic = file === "SKILL.md" ? "daski"
+        : file.endsWith(".md") ? file.slice(0, -3) : "";
+      if (!["setup", "buy", "orders", "wallets", "recipe", "daski"].includes(topic)) {
+        res.status(404).send("Skill not found");
+        return;
+      }
+      const skill = await readSkill(topic as Parameters<typeof readSkill>[0]);
+      res.type("text/markdown").send(skill.content);
+    } catch (error) { next(error); }
+  });
+  router.get("/llms.txt", (_req, res) => {
+    res.type("text/markdown").send(llmsIndex(args.config.publicUrl, args.config.mcpPath));
+  });
+  router.get("/llms-full.txt", async (_req, res, next) => {
+    try {
+      res.type("text/markdown").send(await llmsFull());
+    } catch (error) { next(error); }
+  });
+  router.get(["/skill.md", "/SKILL.md"], async (_req, res, next) => {
+    try {
+      res.type("text/markdown").send((await readSkill("daski")).content);
+    } catch (error) { next(error); }
   });
   return router;
 }

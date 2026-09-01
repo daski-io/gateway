@@ -650,6 +650,7 @@ export interface StandardOrderRecord {
   canonicalRequestHash: Hex;
   canonicalRequest: unknown;
   orderNonce: Hex;
+  intentId: string;
   authorizationKey: Hex | null;
   paymentPayloadHash: Hex | null;
   payer: Hex | null;
@@ -663,6 +664,7 @@ export interface StandardOrderRecord {
   releaseEvidenceHash: Hex | null;
   providerTaskId: string | null;
   railEpoch: string;
+  capabilityEpoch: number;
   version: number;
   leaseFence: number;
   expiresAt: Date;

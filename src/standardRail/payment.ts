@@ -1,5 +1,5 @@
 import type { PaymentPayload, PaymentRequired, PaymentRequirements } from "@x402/core/types";
-import { declarePaymentIdentifierExtension } from "@x402/extensions/payment-identifier";
+import { paymentIdentifierSchema } from "@x402/extensions/payment-identifier";
 import {
   encodeAbiParameters,
   getAddress,
@@ -11,9 +11,10 @@ import {
 import type { Config } from "../config.js";
 import type { Hex } from "../types.js";
 import { assertNoDuplicateJsonKeys, canonicalHash, recipeNonce, recipeNonceV2 } from "./canonical.js";
+import { standardRailError } from "./errors.js";
 import type { StandardListing, StandardOrderRecord } from "./types.js";
 
-const EIP3009_TYPES = {
+export const EIP3009_TYPES = {
   TransferWithAuthorization: [
     { name: "from", type: "address" },
     { name: "to", type: "address" },
@@ -49,13 +50,75 @@ export function paymentRequirements(
   };
 }
 
+export function paymentAuthorizationRecipeInputs(args: {
+  config: Config;
+  listing: StandardListing;
+  order: StandardOrderRecord;
+  requirements: PaymentRequirements;
+  payer: Address;
+}) {
+  return {
+    chainId: args.config.chainId,
+    canonicalToken: getAddress(args.requirements.asset),
+    payer: getAddress(args.payer),
+    splitter: getAddress(args.requirements.payTo),
+    grossAmount: BigInt(args.requirements.amount),
+    listingManifestHash: args.order.listingManifestHash,
+    providerOfferHash: args.order.providerOfferHash,
+    runtimeCommitmentHash: args.order.listingManifestHash,
+    providerIntentHash: args.order.providerOfferHash,
+    quoteHash: args.order.quoteHash,
+    canonicalRequestHash: args.order.canonicalRequestHash,
+    orderNonce: args.order.orderNonce,
+  };
+}
+
+export function paymentAuthorizationNonce(args: {
+  config: Config;
+  listing: StandardListing;
+  order: StandardOrderRecord;
+  requirements: PaymentRequirements;
+  payer: Address;
+}): Hex {
+  const inputs = paymentAuthorizationRecipeInputs(args);
+  if (args.listing.commitment.payload.bindingProfile === "stock-fixed-v1") {
+    return args.order.orderNonce;
+  }
+  return args.listing.commitment.payload.bindingProfile === "recipe-bound-v2"
+    ? recipeNonceV2(inputs)
+    : recipeNonce(inputs);
+}
+
+export function paymentAuthorizationMessage(args: {
+  config: Config;
+  listing: StandardListing;
+  order: StandardOrderRecord;
+  requirements: PaymentRequirements;
+  payer: Address;
+  validAfter: bigint;
+  validBefore: bigint;
+}) {
+  return {
+    from: getAddress(args.payer),
+    to: getAddress(args.requirements.payTo),
+    value: args.requirements.amount,
+    validAfter: args.validAfter.toString(),
+    validBefore: args.validBefore.toString(),
+    nonce: paymentAuthorizationNonce(args),
+  };
+}
+
 export function paymentRequired(args: {
+  config: Config;
   requirements: PaymentRequirements;
   listing: StandardListing;
   order: StandardOrderRecord;
   railProfileHash: Hex;
+  payerAddress?: Address;
+  nowSeconds?: number;
 }): PaymentRequired {
   const bindingProfile = args.listing.commitment.payload.bindingProfile;
+  const expiresAt = Math.floor(args.order.expiresAt.getTime() / 1_000);
   const binding = bindingProfile === "recipe-bound-v2"
     ? {
         version: 2,
@@ -65,7 +128,7 @@ export function paymentRequired(args: {
         quoteHash: args.order.quoteHash,
         canonicalRequestHash: args.order.canonicalRequestHash,
         orderNonce: args.order.orderNonce,
-        expiresAt: Math.floor(args.order.expiresAt.getTime() / 1_000),
+        expiresAt,
       }
     : bindingProfile === "recipe-bound-v1"
       ? {
@@ -76,10 +139,32 @@ export function paymentRequired(args: {
           quoteHash: args.order.quoteHash,
           canonicalRequestHash: args.order.canonicalRequestHash,
           orderNonce: args.order.orderNonce,
-          expiresAt: Math.floor(args.order.expiresAt.getTime() / 1_000),
+          expiresAt,
         }
       : undefined;
-  return {
+  const schemaHash = canonicalHash(args.listing.requestSchema);
+  const extensions: Record<string, unknown> = {
+    "payment-identifier": {
+      info: { required: true, id: args.order.intentId },
+      schema: paymentIdentifierSchema,
+    },
+    bazaar: {
+      info: {
+        schemaRef: {
+          hash: schemaHash,
+          url: `${args.config.publicUrl}/public/v2/artifacts/${schemaHash}`,
+        },
+        detailTool: "daski_get_outcome",
+      },
+    },
+    ...(binding ? { "daski-order-binding": binding } : {}),
+    "daski-rail-profile": { hash: args.railProfileHash },
+    "daski-order-terms": {
+      termsHash: canonicalHash(args.listing.terms),
+      commissionBps: args.listing.commitment.payload.commissionBps,
+    },
+  };
+  const challenge: PaymentRequired = {
     x402Version: 2,
     resource: {
       url: args.listing.commitment.payload.absoluteResourceUri,
@@ -88,77 +173,67 @@ export function paymentRequired(args: {
       serviceName: args.listing.offer.payload.skillId,
     },
     accepts: [args.requirements],
-    extensions: {
-      "payment-identifier": declarePaymentIdentifierExtension(false),
-      bazaar: {
-        info: {
-          input: args.listing.requestSchema,
-          output: args.listing.responseSchema,
-          seller: args.listing.terms.providerLegalName,
-          marketplace: "Daski",
-          marketplaceRole: "marketplace-and-transaction-infrastructure",
-          payToRole: "immutable-outcome-splitter",
-          payTo: args.listing.manifest.payload.splitterAddress,
-          providerAgentId: args.listing.commitment.payload.providerAgentId,
-          outcomeId: args.listing.commitment.payload.outcomeId,
+    extensions,
+  };
+  if (!args.payerAddress) return challenge;
+  const now = args.nowSeconds ?? Math.floor(Date.now() / 1_000);
+  const message = paymentAuthorizationMessage({
+    config: args.config,
+    listing: args.listing,
+    order: args.order,
+    requirements: args.requirements,
+    payer: args.payerAddress,
+    validAfter: BigInt(now - 5),
+    validBefore: BigInt(Math.min(expiresAt, now + args.requirements.maxTimeoutSeconds)),
+  });
+  challenge.extensions = {
+    ...extensions,
+    "daski-sign-request": {
+      version: 1,
+      signaturePurpose: "daski-standard-purchase",
+      expiresAt,
+      eip712: {
+        domain: {
+          name: args.config.usdc.name,
+          version: args.config.usdc.version,
+          chainId: args.config.chainId,
+          verifyingContract: getAddress(args.requirements.asset),
         },
+        primaryType: "TransferWithAuthorization",
+        types: EIP3009_TYPES,
+        message,
       },
-      ...(binding ? { "daski-order-binding": binding } : {}),
-      "daski-rail-profile": { hash: args.railProfileHash },
-      "daski-order-terms": {
-        listingManifestHash: args.order.listingManifestHash,
-        providerOfferHash: args.order.providerOfferHash,
-        quoteHash: args.order.quoteHash,
-        canonicalRequestHash: args.order.canonicalRequestHash,
-        orderNonce: args.order.orderNonce,
-        providerLegalName: args.listing.terms.providerLegalName,
-        marketplaceTermsUrl: args.listing.terms.marketplaceTermsUrl,
-        marketplacePrivacyUrl: args.listing.terms.marketplacePrivacyUrl,
-        providerTermsUrl: args.listing.terms.providerTermsUrl,
-        providerPrivacyUrl: args.listing.terms.providerPrivacyUrl,
-        commissionBps: args.listing.commitment.payload.commissionBps,
-        purchaseRetryPolicy: args.listing.commitment.payload.bindingProfile === "stock-fixed-v1"
-          ? {
-              identicalSignedAuthorization: "transport-retry-same-purchase",
-              newlySignedAuthorization: "distinct-purchase",
-            }
-          : {
-              identicalSignedAuthorization: "transport-retry-same-purchase",
-              newlySignedAuthorization: "must-bind-a-distinct-recipe-order",
-            },
+      submitAs: {
+        how: "Sign eip712 with the payer key exactly as given. Retry the identical call with _meta[\"x402/payment\"] (preferred) or the paymentPayload argument set to the object below.",
+        paymentPayload: {
+          x402Version: 2,
+          resource: challenge.resource,
+          accepted: args.requirements,
+          payload: {
+            signature: "<0x…65-byte hex from signing>",
+            authorization: message,
+          },
+          extensions,
+        },
       },
     },
   };
+  return challenge;
 }
 
 export function assertPaymentIdentifierExtension(value: unknown, issued: unknown): void {
   if (!value || typeof value !== "object" || Array.isArray(value) ||
       !issued || typeof issued !== "object" || Array.isArray(issued)) {
-    throw new Error("Payment identifier extension is malformed");
+    throw standardRailError("EXTENSION_MISMATCH", {
+      field: "payment-identifier",
+      message: "The payment identifier extension is malformed",
+    });
   }
-  const extension = value as Record<string, unknown>;
-  const issuedExtension = issued as Record<string, unknown>;
-  const keys = Object.keys(extension).sort();
-  if (keys.join(",") !== "info,schema") {
-    throw new Error("Payment identifier extension has an open shape");
-  }
-  const info = extension.info;
-  if (!info || typeof info !== "object" || Array.isArray(info)) {
-    throw new Error("Payment identifier extension info is malformed");
-  }
-  const fields = Object.keys(info).sort();
-  if (fields.some((key) => key !== "id" && key !== "required") ||
-      !fields.includes("required") || (info as Record<string, unknown>).required !== false) {
-    throw new Error("Payment identifier extension info has an open shape");
-  }
-  const id = (info as Record<string, unknown>).id;
-  if (id !== undefined && (
-    typeof id !== "string" || id.length < 16 || id.length > 128 ||
-    !/^[A-Za-z0-9_-]+$/.test(id)
-  )) throw new Error("Payment identifier is invalid");
-  const normalized = { ...extension, info: { required: false } };
-  if (canonicalHash(normalized) !== canonicalHash(issuedExtension)) {
-    throw new Error("Payment identifier declaration differs from the issued challenge");
+  if (canonicalHash(value) !== canonicalHash(issued)) {
+    throw standardRailError("EXTENSION_MISMATCH", {
+      field: "payment-identifier",
+      message: "The payment identifier differs from the issued challenge",
+    });
   }
 }
 
@@ -170,10 +245,6 @@ export const PAYMENT_REQUIRED_HEADER_BUDGET = 8_192;
 export function encodedPaymentRequiredHeader(challenge: PaymentRequired): string | null {
   const complete = encodeHeader(challenge);
   if (complete.length <= PAYMENT_REQUIRED_HEADER_BUDGET) return complete;
-  // The bazaar declaration inlines both outcome schemas and is the one
-  // unbounded extension. The compact header drops it; every remaining
-  // extension stays byte-identical to the issued challenge, so a payment
-  // built from this header still verifies.
   const { bazaar: _discovery, ...extensions } = challenge.extensions ?? {};
   const compact = encodeHeader({ ...challenge, extensions });
   return compact.length <= PAYMENT_REQUIRED_HEADER_BUDGET ? compact : null;
@@ -185,18 +256,48 @@ function encodeHeader(value: unknown): string {
 
 export function decodePaymentHeader(header: string): PaymentPayload {
   if (header.length > 24_000 || !/^[A-Za-z0-9_-]+={0,2}$/.test(header)) {
-    throw new Error("PAYMENT-SIGNATURE is malformed");
+    throw standardRailError("PAYLOAD_SHAPE_INVALID", {
+      field: "PAYMENT-SIGNATURE",
+      message: "PAYMENT-SIGNATURE is malformed",
+    });
   }
-  let parsed: unknown;
   try {
     const text = Buffer.from(header, "base64url").toString("utf8");
     assertNoDuplicateJsonKeys(text);
-    parsed = JSON.parse(text);
-  } catch {
-    throw new Error("PAYMENT-SIGNATURE is not valid base64url JSON");
+    const parsed = JSON.parse(text) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error();
+    return parsed as PaymentPayload;
+  } catch (error) {
+    throw standardRailError("PAYLOAD_SHAPE_INVALID", {
+      field: "PAYMENT-SIGNATURE",
+      message: "PAYMENT-SIGNATURE is not valid base64url JSON",
+      cause: error,
+    });
   }
-  if (!parsed || typeof parsed !== "object") throw new Error("Invalid payment payload");
-  return parsed as PaymentPayload;
+}
+
+export function normalizePaymentPayload(payment: PaymentPayload): PaymentPayload {
+  const extensions = { ...(payment.extensions ?? {}) };
+  delete extensions["daski-sign-request"];
+  return { ...payment, extensions };
+}
+
+export function paymentIntentId(payment: PaymentPayload): string {
+  const extension = payment.extensions?.["payment-identifier"];
+  const info = extension && typeof extension === "object" && !Array.isArray(extension)
+    ? (extension as Record<string, unknown>).info
+    : undefined;
+  const id = info && typeof info === "object" && !Array.isArray(info)
+    ? (info as Record<string, unknown>).id
+    : undefined;
+  if (typeof id !== "string" || id.length < 16 || id.length > 128 ||
+      !/^[A-Za-z0-9_-]+$/.test(id)) {
+    throw standardRailError("EXTENSION_REQUIRED_MISSING", {
+      field: "payment-identifier",
+      message: "A valid payment identifier is required",
+    });
+  }
+  return id;
 }
 
 export interface ValidatedAuthorization {
@@ -215,7 +316,10 @@ export function paymentAuthorizationLookupKey(config: Config, payment: PaymentPa
     !/^0x[0-9a-fA-F]{40}$/.test(accepted.asset) ||
     !/^0x[0-9a-fA-F]{40}$/.test(authorization.from) ||
     !/^0x[0-9a-fA-F]{64}$/.test(authorization.nonce)
-  ) throw new Error("Payment authorization identity is malformed");
+  ) throw standardRailError("AUTHORIZATION_SHAPE_INVALID", {
+    field: "payload.authorization",
+    message: "Payment authorization identity is malformed",
+  });
   return keccak256(encodeAbiParameters(
     [{ type: "uint256" }, { type: "address" }, { type: "address" }, { type: "bytes32" }],
     [
@@ -234,74 +338,175 @@ export async function validatePayment(args: {
   requirements: PaymentRequirements;
   payment: PaymentPayload;
   railProfileHash: Hex;
+  validAfterBackstopSeconds?: number;
   nowSeconds?: number;
 }): Promise<ValidatedAuthorization> {
-  const { config, listing, order, requirements, payment } = args;
-  const paymentKeys = ["x402Version", "resource", "accepted", "payload", "extensions"];
-  if (Object.keys(payment as unknown as Record<string, unknown>).sort().join(",") !== paymentKeys.sort().join(",")) {
-    throw new Error("Payment payload has an open shape");
+  const { config, listing, order, requirements } = args;
+  const payment = normalizePaymentPayload(args.payment);
+  const paymentKeys = ["x402Version", "resource", "accepted", "payload", "extensions"].sort();
+  if (Object.keys(payment as unknown as Record<string, unknown>).sort().join(",") !==
+      paymentKeys.join(",")) {
+    throw standardRailError("PAYLOAD_SHAPE_INVALID", {
+      message: "Payment payload has an open shape",
+    });
   }
   const issued = paymentRequired({
+    config,
     requirements,
     listing,
     order,
     railProfileHash: args.railProfileHash,
   });
   if (canonicalHash(payment.resource) !== canonicalHash(issued.resource)) {
-    throw new Error("Payment resource differs from the issued challenge");
+    throw standardRailError("AUTHORIZATION_MISMATCH", {
+      field: "resource",
+      message: "Payment resource differs from the issued challenge",
+    });
   }
   if (canonicalHash(payment.accepted) !== canonicalHash(requirements)) {
-    throw new Error("Payment requirements differ from the issued challenge");
+    throw standardRailError("AUTHORIZATION_MISMATCH", {
+      field: "accepted",
+      message: "Payment requirements differ from the issued challenge",
+    });
+  }
+  if (payment.x402Version !== 2) {
+    throw standardRailError("PAYMENT_VERSION_UNSUPPORTED", {
+      field: "x402Version",
+    });
   }
   const allowedExtensions = new Set([
     ...listing.extensionPolicy.requiredExtensions,
     ...listing.extensionPolicy.optionalExtensions,
+    "payment-identifier",
+    "daski-sign-request",
   ]);
-  if (payment.x402Version !== 2 || Object.keys(payment.extensions ?? {}).some(
-    (key) => !allowedExtensions.has(key),
-  )) {
-    throw new Error("Unsupported payment version or extension");
+  for (const key of Object.keys(args.payment.extensions ?? {})) {
+    if (!allowedExtensions.has(key)) {
+      throw standardRailError("EXTENSION_MISMATCH", {
+        field: key,
+        message: `Unsupported payment extension: ${key}`,
+      });
+    }
   }
   const issuedExtensions = issued.extensions ?? {};
+  const requiredExtensions = new Set([
+    ...listing.extensionPolicy.requiredExtensions,
+    "payment-identifier",
+  ]);
+  for (const key of requiredExtensions) {
+    if (payment.extensions?.[key] === undefined) {
+      throw standardRailError("EXTENSION_REQUIRED_MISSING", {
+        field: key,
+        message: `Payment extension ${key} is required`,
+      });
+    }
+  }
   for (const [key, value] of Object.entries(payment.extensions ?? {})) {
     if (key === "payment-identifier") {
       assertPaymentIdentifierExtension(value, issuedExtensions[key]);
       continue;
     }
-    if (
-      issuedExtensions[key] === undefined ||
-      canonicalHash(value) !== canonicalHash(issuedExtensions[key])
-    ) throw new Error(`Payment extension ${key} differs from the issued challenge`);
-  }
-  for (const key of listing.extensionPolicy.requiredExtensions) {
-    if (payment.extensions?.[key] === undefined) {
-      throw new Error(`Payment extension ${key} is required`);
+    if (issuedExtensions[key] === undefined ||
+        canonicalHash(value) !== canonicalHash(issuedExtensions[key])) {
+      throw standardRailError("EXTENSION_MISMATCH", {
+        field: key,
+        message: `Payment extension ${key} differs from the issued challenge`,
+      });
     }
   }
+  paymentIntentId(payment);
+
   const payload = payment.payload as Record<string, unknown>;
-  if (Object.keys(payload).some((key) => !["signature", "authorization"].includes(key))) {
-    throw new Error("Unsupported Exact-EVM payload field");
+  if (!payload || typeof payload !== "object" || Array.isArray(payload) ||
+      Object.keys(payload).some((key) => !["signature", "authorization"].includes(key))) {
+    throw standardRailError("PAYLOAD_SHAPE_INVALID");
   }
   const signature = payload.signature;
   const authorization = payload.authorization as Record<string, unknown> | undefined;
-  if (typeof signature !== "string" || !authorization) throw new Error("Missing EIP-3009 authorization");
-  const expectedKeys = ["from", "to", "value", "validAfter", "validBefore", "nonce"];
-  if (Object.keys(authorization).sort().join(",") !== expectedKeys.sort().join(",")) {
-    throw new Error("EIP-3009 authorization has an open shape");
+  if (typeof signature !== "string" || !authorization ||
+      typeof authorization !== "object" || Array.isArray(authorization)) {
+    throw standardRailError("PAYLOAD_SHAPE_INVALID", {
+      field: "payload.authorization",
+      message: "Missing EIP-3009 authorization",
+    });
   }
-  const payer = getAddress(String(authorization.from));
-  const nonce = String(authorization.nonce) as Hex;
-  const validAfter = BigInt(String(authorization.validAfter));
-  const validBefore = BigInt(String(authorization.validBefore));
-  const now = BigInt(args.nowSeconds ?? Math.floor(Date.now() / 1_000));
+  const expectedKeys = ["from", "to", "value", "validAfter", "validBefore", "nonce"].sort();
+  if (Object.keys(authorization).sort().join(",") !== expectedKeys.join(",")) {
+    throw standardRailError("AUTHORIZATION_SHAPE_INVALID", {
+      field: "payload.authorization",
+    });
+  }
+
+  let payer: Address;
+  let nonce: Hex;
+  let validAfter: bigint;
+  let validBefore: bigint;
+  try {
+    payer = getAddress(String(authorization.from));
+    nonce = String(authorization.nonce) as Hex;
+    if (!/^0x[0-9a-fA-F]{64}$/.test(nonce)) throw new Error("invalid nonce");
+    validAfter = BigInt(String(authorization.validAfter));
+    validBefore = BigInt(String(authorization.validBefore));
+  } catch (error) {
+    throw standardRailError("AUTHORIZATION_SHAPE_INVALID", {
+      field: "payload.authorization",
+      cause: error,
+    });
+  }
+  const nowNumber = args.nowSeconds ?? Math.floor(Date.now() / 1_000);
+  const now = BigInt(nowNumber);
   const expires = BigInt(Math.floor(order.expiresAt.getTime() / 1_000));
-  if (
-    getAddress(String(authorization.to)) !== getAddress(requirements.payTo) ||
-    String(authorization.value) !== requirements.amount ||
-    validBefore <= now + 10n || validBefore > expires
-  ) {
-    throw new Error("EIP-3009 authorization does not match the challenge");
+  let to: Address;
+  try {
+    to = getAddress(String(authorization.to));
+  } catch (error) {
+    throw standardRailError("AUTHORIZATION_SHAPE_INVALID", {
+      field: "payload.authorization.to",
+      cause: error,
+    });
   }
+  if (to !== getAddress(requirements.payTo)) {
+    throw standardRailError("AUTHORIZATION_MISMATCH", {
+      field: "payload.authorization.to",
+      expected: { to: getAddress(requirements.payTo) },
+    });
+  }
+  if (String(authorization.value) !== requirements.amount) {
+    throw standardRailError("AUTHORIZATION_MISMATCH", {
+      field: "payload.authorization.value",
+      expected: { value: requirements.amount },
+    });
+  }
+  if (validBefore <= now + 10n || validBefore > expires) {
+    throw standardRailError("AUTHORIZATION_MISMATCH", {
+      field: "payload.authorization.validBefore",
+      serverTime: nowNumber,
+      expected: {
+        validBefore: {
+          minExclusive: (now + 10n).toString(),
+          max: expires.toString(),
+        },
+      },
+    });
+  }
+  const backstopSeconds = args.validAfterBackstopSeconds ?? 3_600;
+  const backstop = BigInt(backstopSeconds);
+  if (validAfter !== 0n && (validAfter < now - backstop || validAfter > now)) {
+    throw standardRailError("AUTHORIZATION_WINDOW", {
+      field: "payload.authorization.validAfter",
+      message: `validAfter must be 0 or within ${backstopSeconds} seconds before server time`,
+      serverTime: nowNumber,
+      expected: {
+        validAfter: {
+          oneOf: [
+            "0",
+            { min: nowNumber - backstopSeconds, max: nowNumber },
+          ],
+        },
+      },
+    });
+  }
+
   const forbidden = [
     listing.manifest.payload.splitterAddress,
     listing.commitment.payload.providerPayee,
@@ -310,65 +515,95 @@ export async function validatePayment(args: {
     listing.commitment.payload.providerTerminalAttestationKey,
     ...listing.screeningPolicy.providerControlledWallets,
   ].map(getAddress);
-  if (forbidden.includes(payer)) throw new Error("Known self-purchase is forbidden");
-  if (listing.commitment.payload.bindingProfile === "stock-fixed-v1") {
-    if (validAfter !== 0n) throw new Error("Stock profile requires validAfter=0");
-  } else {
-    if (validAfter > now || validAfter + 300n < now) {
-      throw new Error("Recipe authorization lower bound is outside the allowed clock window");
-    }
-    // Option A slot layout: on a v2 order, listingManifestHash carries the
-    // runtime commitment hash and providerOfferHash the provider intent hash.
-    const expected = listing.commitment.payload.bindingProfile === "recipe-bound-v2"
-      ? recipeNonceV2({
-          chainId: config.chainId,
-          canonicalToken: getAddress(requirements.asset),
-          payer,
-          splitter: getAddress(requirements.payTo),
-          grossAmount: BigInt(requirements.amount),
-          runtimeCommitmentHash: order.listingManifestHash,
-          providerIntentHash: order.providerOfferHash,
-          quoteHash: order.quoteHash,
-          canonicalRequestHash: order.canonicalRequestHash,
-          orderNonce: order.orderNonce,
-        })
-      : recipeNonce({
-          chainId: config.chainId,
-          canonicalToken: getAddress(requirements.asset),
-          payer,
-          splitter: getAddress(requirements.payTo),
-          grossAmount: BigInt(requirements.amount),
-          listingManifestHash: order.listingManifestHash,
-          providerOfferHash: order.providerOfferHash,
-          quoteHash: order.quoteHash,
-          canonicalRequestHash: order.canonicalRequestHash,
-          orderNonce: order.orderNonce,
-        });
-    if (nonce.toLowerCase() !== expected.toLowerCase()) throw new Error("Recipe nonce mismatch");
+  if (forbidden.includes(payer)) {
+    throw standardRailError("SELF_PURCHASE_FORBIDDEN", { field: "payload.authorization.from" });
   }
-  const parsedSignature = parseSignature(signature as Hex);
-  if (BigInt(parsedSignature.s) > HALF_CURVE_ORDER) throw new Error("High-s signatures are forbidden");
-  const valid = await verifyTypedData({
-    address: payer,
-    domain: {
-      name: config.usdc.name,
-      version: config.usdc.version,
-      chainId: config.chainId,
-      verifyingContract: getAddress(requirements.asset),
-    },
-    types: EIP3009_TYPES,
-    primaryType: "TransferWithAuthorization",
-    message: {
-      from: payer,
-      to: getAddress(requirements.payTo),
-      value: BigInt(requirements.amount),
-      validAfter,
-      validBefore,
-      nonce,
-    },
-    signature: signature as Hex,
+
+  const expectedNonce = paymentAuthorizationNonce({
+    config,
+    listing,
+    order,
+    requirements,
+    payer,
   });
-  if (!valid) throw new Error("EIP-3009 signature is invalid");
-  const authorizationKey = paymentAuthorizationLookupKey(config, payment);
-  return { payer, nonce, authorizationKey };
+  if (nonce.toLowerCase() !== expectedNonce.toLowerCase()) {
+    const inputs = paymentAuthorizationRecipeInputs({
+      config,
+      listing,
+      order,
+      requirements,
+      payer,
+    });
+    throw standardRailError("NONCE_RECIPE_MISMATCH", {
+      field: "payload.authorization.nonce",
+      expected: {
+        recipeInputs: {
+          chainId: inputs.chainId,
+          canonicalToken: inputs.canonicalToken,
+          payer: inputs.payer,
+          splitter: inputs.splitter,
+          grossAmount: inputs.grossAmount.toString(),
+          listingManifestHash: inputs.listingManifestHash,
+          providerOfferHash: inputs.providerOfferHash,
+          runtimeCommitmentHash: inputs.runtimeCommitmentHash,
+          providerIntentHash: inputs.providerIntentHash,
+          quoteHash: inputs.quoteHash,
+          canonicalRequestHash: inputs.canonicalRequestHash,
+          orderNonce: inputs.orderNonce,
+        },
+      },
+    });
+  }
+
+  let parsedSignature;
+  try {
+    parsedSignature = parseSignature(signature as Hex);
+  } catch (error) {
+    throw standardRailError("SIGNATURE_INVALID", {
+      field: "payload.signature",
+      cause: error,
+    });
+  }
+  if (BigInt(parsedSignature.s) > HALF_CURVE_ORDER) {
+    throw standardRailError("SIGNATURE_INVALID", {
+      field: "payload.signature",
+      message: "High-s signatures are forbidden",
+    });
+  }
+  let valid = false;
+  try {
+    valid = await verifyTypedData({
+      address: payer,
+      domain: {
+        name: config.usdc.name,
+        version: config.usdc.version,
+        chainId: config.chainId,
+        verifyingContract: getAddress(requirements.asset),
+      },
+      types: EIP3009_TYPES,
+      primaryType: "TransferWithAuthorization",
+      message: {
+        from: payer,
+        to: getAddress(requirements.payTo),
+        value: BigInt(requirements.amount),
+        validAfter,
+        validBefore,
+        nonce,
+      },
+      signature: signature as Hex,
+    });
+  } catch (error) {
+    throw standardRailError("SIGNATURE_INVALID", {
+      field: "payload.signature",
+      cause: error,
+    });
+  }
+  if (!valid) {
+    throw standardRailError("SIGNATURE_INVALID", { field: "payload.signature" });
+  }
+  return {
+    payer,
+    nonce,
+    authorizationKey: paymentAuthorizationLookupKey(config, payment),
+  };
 }

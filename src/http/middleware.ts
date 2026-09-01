@@ -228,6 +228,7 @@ function configurePreParserRateLimits(
     [
       "/public/v2",
       "/public/v3",
+      "/skills",
       "/skill.md",
       "/SKILL.md",
       "/.well-known",

@@ -1,9 +1,11 @@
 import express from "express";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import type { Server } from "node:http";
 import { afterEach, describe, expect, it } from "vitest";
 import type { Config } from "../src/config.js";
 import { createStandardMetaRouter } from "../src/standardRail/meta.js";
+import { llmsFull, readSkill } from "../src/standardRail/skills.js";
 import type { PublicChainMetadataV3 } from "../src/standardRail/types.js";
 
 const CHAIN_FIXTURE = JSON.parse(readFileSync(
@@ -38,6 +40,7 @@ describe("standard rail metadata", () => {
         network: "base-sepolia",
         x402Network: "eip155:84532",
         publicUrl: "https://gateway.example",
+        mcpPath: "/mcp",
         marketplaceContracts: ADDRESSES,
         usdc: { address: USDC },
       } as unknown as Config,
@@ -68,5 +71,41 @@ describe("standard rail metadata", () => {
     });
     expect(JSON.stringify(body)).not.toContain("fulfillmentObligationHash");
     expect(JSON.stringify(body)).not.toContain("jurisdictionObligationHashes");
+
+    const root = `http://127.0.0.1:${address.port}`;
+    const setup = await (await fetch(`${root}/skills/setup.md`)).text();
+    expect(setup).toBe((await readSkill("setup")).content);
+    expect(setup).toContain("daski_get_payment_challenge");
+
+    const index = await (await fetch(`${root}/.well-known/agent-skills/index.json`))
+      .json() as {
+        skills: Array<{ name: string; sha256: string; bytes: number; url: string }>;
+      };
+    const setupEntry = index.skills.find((skill) => skill.name === "setup");
+    expect(setupEntry).toMatchObject({
+      url: "https://gateway.example/skills/setup.md",
+      bytes: Buffer.byteLength(setup),
+      sha256: createHash("sha256").update(setup).digest("hex"),
+    });
+
+    const full = await (await fetch(`${root}/llms-full.txt`)).text();
+    expect(full).toBe(await llmsFull());
+    const installable = await (await fetch(`${root}/skills/SKILL.md`)).text();
+    expect(await (await fetch(`${root}/skill.md`)).text()).toBe(installable);
+    expect(await (await fetch(`${root}/SKILL.md`)).text()).toBe(installable);
+
+    const mcp = await (await fetch(`${root}/.well-known/mcp.json`)).json() as {
+      tools: string[];
+      skills: Record<string, string>;
+      steadyStatePrompt: string;
+    };
+    expect(mcp.tools).toContain("daski_get_setup_guide");
+    expect(mcp.tools).toContain("daski_get_order_access");
+    expect(mcp.skills.setup).toBe("https://gateway.example/skills/setup.md");
+    expect(mcp.steadyStatePrompt).toBe("Use Daski to [your task].");
+
+    const llms = await (await fetch(`${root}/llms.txt`)).text();
+    expect(llms).toContain("MCP: https://gateway.example/mcp");
+    expect(llms).toContain("https://gateway.example/skills/SKILL.md");
   });
 });

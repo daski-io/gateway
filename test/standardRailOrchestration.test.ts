@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { keccak256, stringToHex, type Hex } from "viem";
+import { type Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import type { PaymentPayload } from "@x402/core/types";
 import { canonicalHash } from "../src/standardRail/canonical.js";
@@ -61,12 +61,19 @@ describe("standard rail orchestration", () => {
           nonce: hash("3"),
         },
       },
+      extensions: {
+        "payment-identifier": {
+          info: { required: true, id: "int_12345678-1234-4123-8123-123456789abc" },
+          schema: { type: "object" },
+        },
+      },
     } as unknown as PaymentPayload;
     const order = {
       orderId: "order-1",
       providerAgentId: "7",
       outcomeId: "outcome",
       canonicalRequest: body,
+      intentId: "int_12345678-1234-4123-8123-123456789abc",
       paymentPayloadHash: canonicalHash(payment),
     } as StandardOrderRecord;
     const existing = { handle: "handle-1", order };
@@ -74,7 +81,7 @@ describe("standard rail orchestration", () => {
       appConfig: { chainId: 84532 },
       assertAdmissionOpen: vi.fn(),
       assertRailFence: vi.fn(async () => undefined),
-      store: { findByAuthorizationKey: vi.fn(async () => existing) },
+      store: { findByIntentId: vi.fn(async () => existing) },
       incidents: { record: vi.fn() },
     });
 
@@ -84,83 +91,112 @@ describe("standard rail orchestration", () => {
       body,
       payment,
     })).resolves.toEqual({ ...existing, replay: true });
+
+    const changedPayment = {
+      ...payment,
+      payload: {
+        ...(payment.payload as Record<string, unknown>),
+        transportAttempt: "different-authorization",
+      },
+    } as unknown as PaymentPayload;
+    await expect(service.submitPayment({
+      providerAgentId: "7",
+      outcomeId: "outcome",
+      body,
+      payment: changedPayment,
+    })).rejects.toMatchObject({ code: "PAYMENT_IDENTIFIER_CONFLICT" });
   });
 
-  it("accepts a wallet-signed status action and returns its receipt", async () => {
+  it("round-trips sign-ready order actions and grant-read capability access", async () => {
     const account = privateKeyToAccount(
       `0x${"11".repeat(32)}` as Hex,
     );
-    const now = Math.floor(Date.now() / 1_000);
     const request = {};
     const action = "status" as const;
     const order = {
       orderId: "order-1",
       payer: account.address,
       state: "FULFILLED",
+      capabilityEpoch: 0,
     } as StandardOrderRecord;
-    const absoluteResourceUri =
-      "https://gateway.example/orders/handle-1/actions/status";
-    const authorization = {
-      orderId: order.orderId,
-      action,
-      method: "POST" as const,
-      absoluteResourceUri,
-      requestHash: canonicalHash(request),
-      nonce: hash("4"),
-      issuedAt: now,
-      validBefore: now + 120,
-    };
-    const signature = await account.signTypedData({
-      domain: {
-        name: "DaskiStandardOrder",
-        version: "1",
-        chainId: 84532,
-      },
-      types: {
-        OrderActionAuthorizationV1: [
-          { name: "orderIdHash", type: "bytes32" },
-          { name: "actionHash", type: "bytes32" },
-          { name: "methodHash", type: "bytes32" },
-          { name: "absoluteResourceUriHash", type: "bytes32" },
-          { name: "requestHash", type: "bytes32" },
-          { name: "audienceHash", type: "bytes32" },
-          { name: "nonce", type: "bytes32" },
-          { name: "issuedAt", type: "uint64" },
-          { name: "validBefore", type: "uint64" },
-        ],
-      },
-      primaryType: "OrderActionAuthorizationV1",
-      message: {
-        orderIdHash: keccak256(stringToHex(order.orderId)),
-        actionHash: keccak256(stringToHex(action)),
-        methodHash: keccak256(stringToHex("POST")),
-        absoluteResourceUriHash: keccak256(stringToHex(absoluteResourceUri)),
-        requestHash: authorization.requestHash,
-        audienceHash: keccak256(stringToHex("gateway.example")),
-        nonce: authorization.nonce,
-        issuedAt: BigInt(authorization.issuedAt),
-        validBefore: BigInt(authorization.validBefore),
-      },
-    });
     const receipt = { artifactType: "StandardRailReceiptV2" };
+    const issueActionChallenge = vi.fn(async () => undefined);
     const consumeActionChallenge = vi.fn(async () => undefined);
     const service = harness({
       appConfig: { chainId: 84532, publicUrl: "https://gateway.example" },
-      railConfig: { gatewayAudience: "gateway.example" },
+      railConfig: {
+        gatewayAudience: "gateway.example",
+        encryptionKey: Buffer.alloc(32, 7),
+        orderReadCapTtlSeconds: 1_800,
+        abuse: {
+          walletChallengesOutstandingPerClient: 100,
+          walletChallengesOutstandingGlobal: 1_000,
+        },
+      },
       assertRailFence: vi.fn(async () => undefined),
       store: { findByHandle: vi.fn(async () => order) },
-      journal: { consumeActionChallenge },
+      journal: { issueActionChallenge, consumeActionChallenge },
       incidents: { record: vi.fn() },
       signedReceipt: vi.fn(async () => receipt),
     });
+    const challenge = await service.issueActionChallenge({
+      handle: "handle-1",
+      action,
+      request,
+      clientKey: "test-client",
+    }) as Record<string, unknown> & {
+      signRequest: Parameters<typeof account.signTypedData>[0];
+    };
+    const { signRequest, ...authorization } = challenge;
+    const signature = await account.signTypedData(signRequest);
+    expect(issueActionChallenge).toHaveBeenCalledOnce();
 
     await expect(service.performAction({
       handle: "handle-1",
       action,
       request,
-      authorization: { ...authorization, signature },
+      authorization: { ...authorization, signature } as never,
     })).resolves.toEqual({ orderHandle: "handle-1", state: "FULFILLED", receipt });
-    expect(consumeActionChallenge).toHaveBeenCalledOnce();
+
+    const grantChallenge = await service.issueActionChallenge({
+      handle: "handle-1",
+      action: "grant-read",
+      request,
+      clientKey: "test-client",
+    }) as Record<string, unknown> & {
+      signRequest: Parameters<typeof account.signTypedData>[0];
+    };
+    const {
+      signRequest: grantSignRequest,
+      ...grantAuthorization
+    } = grantChallenge;
+    const grantSignature = await account.signTypedData(grantSignRequest);
+    const access = await service.performAction({
+      handle: "handle-1",
+      action: "grant-read",
+      request,
+      authorization: {
+        ...grantAuthorization,
+        signature: grantSignature,
+      } as never,
+    }) as {
+      readCapability: string;
+      expiresAt: number;
+      scope: string[];
+      orderHandle: string;
+    };
+    expect(access).toMatchObject({
+      orderHandle: "handle-1",
+      scope: ["status", "artifact"],
+    });
+    await expect(service.performAction({
+      handle: "handle-1",
+      action: "status",
+      request,
+      readCapability: access.readCapability,
+    })).resolves.toEqual({ orderHandle: "handle-1", state: "FULFILLED", receipt });
+    expect(issueActionChallenge).toHaveBeenCalledTimes(2);
+    expect(consumeActionChallenge).toHaveBeenCalledTimes(2);
   });
 
   it("names a provider quote decline separately from quote infrastructure failure", async () => {
@@ -192,10 +228,10 @@ describe("standard rail orchestration", () => {
     }).resolveGrossAmount.bind(service);
 
     await expect(resolve(listing, { domain: "already-consumed.example" }))
-      .rejects.toThrow("PROVIDER_QUOTE_REJECTED");
+      .rejects.toMatchObject({ code: "PROVIDER_QUOTE_REJECTED" });
     quoteStatus.value = 503;
     await expect(resolve(listing, { domain: "already-consumed.example" }))
-      .rejects.toThrow("PROVIDER_QUOTE_UNAVAILABLE");
+      .rejects.toMatchObject({ code: "PROVIDER_QUOTE_UNAVAILABLE" });
   });
 
   it("resumes a paid dispatched order through the dispatcher seam", async () => {

@@ -8,6 +8,7 @@ import {
 } from "../src/standardRail/payment.js";
 import { createStandardRailRouter, standardPaymentError } from "../src/standardRail/routes.js";
 import { purchaseToolFailure } from "../src/standardRail/mcp.js";
+import { standardRailError } from "../src/standardRail/errors.js";
 import type { StandardRailService } from "../src/standardRail/service.js";
 import {
   assertSchema,
@@ -197,7 +198,7 @@ describe("standard rail challenge transport", () => {
 
 describe("standard payment error mapping", () => {
   it("answers a provider quote decline as a conflict", () => {
-    expect(standardPaymentError(new Error("PROVIDER_QUOTE_REJECTED"))).toEqual({
+    expect(standardPaymentError(new Error("PROVIDER_QUOTE_REJECTED"))).toMatchObject({
       status: 409,
       code: "PROVIDER_QUOTE_REJECTED",
       message: "The provider declined to quote this request",
@@ -207,7 +208,7 @@ describe("standard payment error mapping", () => {
   it("answers an expired offer as a retryable conflict", () => {
     expect(standardPaymentError(new Error("OUTCOME_OFFER_EXPIRED"))).toMatchObject({
       status: 409,
-      code: "OUTCOME_OFFER_EXPIRED",
+      code: "CHALLENGE_EXPIRED",
     });
   });
 
@@ -225,19 +226,111 @@ describe("standard payment error mapping", () => {
     }
   });
 
+  it("keeps MCP and HTTP public error fields in parity", () => {
+    const error = standardRailError("AUTHORIZATION_WINDOW", {
+      field: "payload.authorization.validAfter",
+      message: "validAfter must be 0 or within 3600 seconds before server time",
+      serverTime: 1_788_195_400,
+      expected: {
+        validAfter: {
+          oneOf: ["0", { min: 1_788_191_800, max: 1_788_195_400 }],
+        },
+      },
+    });
+    const http = standardPaymentError(error, "https://gateway.example");
+    expect(http).not.toBeNull();
+    const { status, ...httpEnvelope } = http!;
+    const mcp = purchaseToolFailure(error, "https://gateway.example");
+    expect(status).toBe(400);
+    expect(mcp).toMatchObject(httpEnvelope);
+    expect(mcp.next_action).toContain("fresh sign request");
+  });
+
   it("keeps unknown internals unmapped", () => {
     expect(standardPaymentError(new Error("SOMETHING_ELSE"))).toBeNull();
   });
 });
 
+describe("standard rail typed HTTP failures", () => {
+  it("returns 4xx envelopes for payment-window and lifecycle shape failures", async () => {
+    const service = {
+      railProfileHash: RAIL_PROFILE_HASH,
+      submitPayment: vi.fn(async () => {
+        throw standardRailError("AUTHORIZATION_WINDOW", {
+          field: "payload.authorization.validAfter",
+          message: "validAfter must be 0 or within 3600 seconds before server time",
+          serverTime: 1_788_195_400,
+          expected: {
+            validAfter: {
+              oneOf: ["0", { min: 1_788_191_800, max: 1_788_195_400 }],
+            },
+          },
+        });
+      }),
+    } as unknown as StandardRailService;
+    const app = express();
+    app.use(express.json());
+    app.use(createStandardRailRouter(service, "https://gateway.example"));
+    const server = await new Promise<Server>((resolve, reject) => {
+      const listener = app.listen(0, "127.0.0.1", (error?: Error) =>
+        error ? reject(error) : resolve(listener));
+    });
+    try {
+      const address = server.address();
+      if (!address || typeof address === "string") throw new Error("test listener unavailable");
+      const root = `http://127.0.0.1:${address.port}`;
+      const paymentHeader = Buffer.from(JSON.stringify({ x402Version: 2 }), "utf8")
+        .toString("base64url");
+      const paymentResponse = await fetch(
+        `${root}/outcomes/8327/form-entity`,
+        {
+          method: "POST",
+          headers: { "payment-signature": paymentHeader },
+        },
+      );
+      expect(paymentResponse.status).toBe(400);
+      await expect(paymentResponse.json()).resolves.toMatchObject({
+        error: {
+          code: "AUTHORIZATION_WINDOW",
+          phase: "payment_validation",
+          field: "payload.authorization.validAfter",
+          retryable: true,
+          requiresNewSignature: true,
+          paymentMayHaveSettled: false,
+        },
+      });
+
+      const lifecycleResponse = await fetch(
+        `${root}/orders/handle-1/actions/status/challenge`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ unexpected: true }),
+        },
+      );
+      expect(lifecycleResponse.status).toBe(400);
+      await expect(lifecycleResponse.json()).resolves.toMatchObject({
+        error: {
+          code: "REQUEST_SCHEMA_INVALID",
+          phase: "request_validation",
+          field: "body",
+        },
+      });
+    } finally {
+      await new Promise<void>((resolve, reject) =>
+        server.close((error) => error ? reject(error) : resolve()));
+    }
+  });
+});
+
 describe("MCP purchase tool failure mapping", () => {
   it("passes the mapped rejection reason through with a recovery hint", () => {
-    expect(purchaseToolFailure(new Error("PROVIDER_QUOTE_REJECTED"))).toEqual({
+    expect(purchaseToolFailure(new Error("PROVIDER_QUOTE_REJECTED"))).toMatchObject({
       code: "PROVIDER_QUOTE_REJECTED",
       message: "The provider declined to quote this request",
-      retryable: false,
-      next_action:
-        "The provider declined to quote this exact request; revise the request contents before any further attempt.",
+      phase: "quoting",
+      retryable: true,
+      next_action: "Revise the request using fieldErrors when present, then request a new quote.",
     });
   });
 
@@ -248,21 +341,22 @@ describe("MCP purchase tool failure mapping", () => {
       "PROVIDER_QUOTE_UNAVAILABLE",
     ]) {
       expect(purchaseToolFailure(new Error(internal))).toMatchObject({
-        code: internal,
+        code: internal === "OUTCOME_OFFER_EXPIRED" ? "CHALLENGE_EXPIRED" : internal,
         retryable: true,
       });
     }
   });
 
-  it("keeps unknown internals as the generic non-retryable rejection", () => {
-    expect(purchaseToolFailure(new Error("secret upstream detail"))).toEqual({
-      code: "STANDARD_RAIL_PURCHASE_FAILED",
-      message: "The standard purchase was rejected",
+  it("returns a structured internal envelope without leaking detail", () => {
+    expect(purchaseToolFailure(new Error("secret upstream detail"))).toMatchObject({
+      code: "INTERNAL_ERROR",
+      message: "Internal server error",
+      phase: "internal",
       retryable: false,
     });
-    expect(purchaseToolFailure("not an error")).toEqual({
-      code: "STANDARD_RAIL_PURCHASE_FAILED",
-      message: "The standard purchase was rejected",
+    expect(purchaseToolFailure("not an error")).toMatchObject({
+      code: "INTERNAL_ERROR",
+      message: "Internal server error",
       retryable: false,
     });
   });
@@ -309,11 +403,11 @@ describe("request schema rejection transport", () => {
     );
     expect(response.status).toBe(400);
     const body = await response.json() as {
-      error: { code: string; details: Array<{ path: string; allowedValues?: string[] }> };
+      error: { code: string; fieldErrors: Array<{ path: string; allowedValues?: string[] }> };
     };
     expect(body.error.code).toBe("REQUEST_SCHEMA_INVALID");
-    expect(body.error.details[0].path).toBe("/entityType");
-    expect(body.error.details[0].allowedValues).toEqual(["Limited Liability Company"]);
+    expect(body.error.fieldErrors[0].path).toBe("/entityType");
+    expect(body.error.fieldErrors[0].allowedValues).toEqual(["Limited Liability Company"]);
   });
 });
 

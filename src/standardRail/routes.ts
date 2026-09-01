@@ -2,7 +2,12 @@ import { Router, type NextFunction, type Request, type Response } from "express"
 import type { PaymentPayload, PaymentRequired } from "@x402/core/types";
 import { decodePaymentHeader, encodedPaymentRequiredHeader } from "./payment.js";
 import type { StandardRailService } from "./service.js";
-import { RequestSchemaError } from "./schema.js";
+import {
+  asStandardRailError,
+  logStandardRailError,
+  standardRailError,
+  standardRailPublicError,
+} from "./errors.js";
 
 const PAYMENT_HEADER = "payment-signature";
 const ORDER_ACTIONS = [
@@ -13,9 +18,19 @@ const ORDER_ACTIONS = [
   "support",
   "confirmation",
   "revoke-confirmation",
+  "grant-read",
 ] as const;
 
 type OrderAction = typeof ORDER_ACTIONS[number];
+
+const CONFIRMATION_HTTP_ERRORS = new Map<string, { code: string; status: number }>([
+  ["REPUTATION_NOT_READY", { code: "REPUTATION_NOT_READY", status: 409 }],
+  ["REPUTATION_UNAVAILABLE", { code: "REPUTATION_UNAVAILABLE", status: 503 }],
+  ["CONFIRMATION_SPONSORSHIP_LIMIT", { code: "CONFIRMATION_SPONSORSHIP_LIMITED", status: 503 }],
+  ["CONFIRMATION_SPONSORSHIP_LIMITED", { code: "CONFIRMATION_SPONSORSHIP_LIMITED", status: 503 }],
+  ["CONFIRMATION_SPONSORSHIP_UNAVAILABLE", { code: "CONFIRMATION_SPONSORSHIP_UNAVAILABLE", status: 503 }],
+  ["CONFIRMATION_SUBMISSION_PENDING", { code: "CONFIRMATION_SUBMISSION_PENDING", status: 409 }],
+]);
 
 function encoded(value: unknown): string {
   return Buffer.from(JSON.stringify(value), "utf8").toString("base64url");
@@ -27,6 +42,28 @@ function assertExactKeys(value: unknown, expected: readonly string[]): void {
   const required = [...expected].sort();
   if (actual.length !== required.length || actual.some((key, index) => key !== required[index])) {
     throw new Error("REQUEST_BODY_FIELDS_INVALID");
+  }
+}
+
+function assertStandardExactKeys(
+  value: unknown,
+  expected: readonly string[],
+  field: string,
+): void {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw standardRailError("REQUEST_SCHEMA_INVALID", {
+      field,
+      expected: { fields: [...expected] },
+    });
+  }
+  const actual = Object.keys(value).sort();
+  const required = [...expected].sort();
+  if (actual.length !== required.length ||
+      actual.some((key, index) => key !== required[index])) {
+    throw standardRailError("REQUEST_SCHEMA_INVALID", {
+      field,
+      expected: { fields: required },
+    });
   }
 }
 
@@ -50,58 +87,17 @@ function sendWalletError(
     ? "Wallet authorization rejected" : "The wallet request could not be completed" } });
 }
 
-export function standardPaymentError(error: unknown): {
-  status: number;
-  code: string;
-  message: string;
-} | null {
-  const internal = error instanceof Error ? error.message : "STANDARD_RAIL_ERROR";
-  if (internal === "OUTCOME_NOT_FOUND") {
-    return { status: 404, code: "OUTCOME_NOT_FOUND", message: "Outcome not found" };
-  }
-  if (internal === "LISTING_SUPERSEDED") {
-    return {
-      status: 409,
-      code: "LISTING_SUPERSEDED",
-      message: "The listing changed after this order was drafted; request a new challenge",
-    };
-  }
-  if (internal === "PROVIDER_QUOTE_REJECTED") {
-    return {
-      status: 409,
-      code: "PROVIDER_QUOTE_REJECTED",
-      message: "The provider declined to quote this request",
-    };
-  }
-  if (internal === "OUTCOME_OFFER_EXPIRED") {
-    return {
-      status: 409,
-      code: "OUTCOME_OFFER_EXPIRED",
-      message: "The offer expired before payment could start; request a new challenge",
-    };
-  }
-  if ([
-    "PROVIDER_QUOTE_UNAVAILABLE",
-    "PROVIDER_QUOTE_INVALID",
-    "PROVIDER_QUOTE_SIGNATURE_INVALID",
-    "PROVIDER_QUOTE_NOT_RELEASABLE",
-  ].includes(internal)) {
-    return {
-      status: 502,
-      code: "PROVIDER_QUOTE_UNAVAILABLE",
-      message: "The provider did not return a usable quote",
-    };
-  }
-  if (/malformed|invalid|mismatch|Unsupported|Missing|required|forbidden|differ/i.test(internal)) {
-    return {
-      status: 400,
-      code: "INVALID_STANDARD_PAYMENT",
-      message: "The standard payment was rejected",
-    };
-  }
-  return null;
+export function standardPaymentError(
+  error: unknown,
+  publicUrl = "https://invalid.local",
+): ({ status: number } & ReturnType<typeof standardRailPublicError>) | null {
+  const classified = asStandardRailError(error);
+  if (!classified) return null;
+  return {
+    status: classified.status,
+    ...standardRailPublicError(classified, publicUrl),
+  };
 }
-
 export function createStandardRailRouter(service: StandardRailService, publicUrl?: string): Router {
   const router = Router();
   const origin = (publicUrl ?? "https://invalid.local").replace(/\/$/, "");
@@ -269,10 +265,34 @@ export function createStandardRailRouter(service: StandardRailService, publicUrl
     try {
       const providerAgentId = String(req.params.providerAgentId);
       const outcomeId = String(req.params.outcomeId);
+      const rawBody = req.body;
+      const payerAddress = rawBody && typeof rawBody === "object" && !Array.isArray(rawBody) &&
+        "payerAddress" in rawBody
+        ? (rawBody as Record<string, unknown>).payerAddress
+        : undefined;
+      if (payerAddress !== undefined &&
+          (typeof payerAddress !== "string" || !/^0x[0-9a-fA-F]{40}$/.test(payerAddress))) {
+        throw standardRailError("REQUEST_SCHEMA_INVALID", {
+          field: "payerAddress",
+          fieldErrors: [{
+            path: "payerAddress",
+            rule: "pattern",
+            message: "payerAddress must be a 20-byte EVM address",
+          }],
+        });
+      }
+      const body = rawBody && typeof rawBody === "object" && !Array.isArray(rawBody) &&
+        "payerAddress" in rawBody
+        ? Object.fromEntries(Object.entries(rawBody as Record<string, unknown>)
+            .filter(([key]) => key !== "payerAddress"))
+        : rawBody;
       const paymentHeader = req.header(PAYMENT_HEADER);
       if (!paymentHeader) {
         const challenge = await service.issueChallenge({
-          providerAgentId, outcomeId, body: req.body,
+          providerAgentId,
+          outcomeId,
+          body,
+          ...(typeof payerAddress === "string" ? { payerAddress: payerAddress as `0x${string}` } : {}),
         });
         const requiredHeader = encodedPaymentRequiredHeader(
           challenge.paymentRequired as PaymentRequired,
@@ -292,29 +312,30 @@ export function createStandardRailRouter(service: StandardRailService, publicUrl
       }
       const payment: PaymentPayload = decodePaymentHeader(paymentHeader);
       const result = await service.submitPayment({
-        providerAgentId, outcomeId, body: req.body, payment,
+        providerAgentId, outcomeId, body, payment,
       });
       // A replayed identical authorization answers exactly like the first
       // submission: the same handle, the order's current state, and its
       // receipt when one exists. One reply shape, whichever attempt arrives.
-      const receipt = await service.signedReceipt(result.order);
-      if (receipt) res.setHeader("PAYMENT-RESPONSE", encoded(receipt));
+      const receipts = await service.purchaseReceipts(result.order);
+      if (receipts.x402PaymentResponse) {
+        res.setHeader("PAYMENT-RESPONSE", encoded(receipts.x402PaymentResponse));
+      }
       res.setHeader("Cache-Control", "private, no-store");
-      const accepted = receipt !== null && ["DISPATCHED", "FULFILLED", "INPUT_REQUIRED"].includes(result.order.state);
+      const accepted = receipts.receipt !== null && ["DISPATCHED", "FULFILLED", "INPUT_REQUIRED"].includes(result.order.state);
       res.status(accepted ? 200 : 202).json({
         orderHandle: result.handle,
         state: result.order.state,
-        receipt,
+        receipt: receipts.receipt,
+        x402OfferReceipt: receipts.x402OfferReceipt,
       });
     } catch (error) {
-      const publicError = standardPaymentError(error);
-      if (publicError) {
-        res.status(publicError.status).json({
-          error: { code: publicError.code, message: publicError.message },
-        });
-        return;
-      }
-      next(error);
+      const publicError = standardPaymentError(error, origin);
+      if (!publicError) return next(error);
+      const { status, ...envelope } = publicError;
+      const classified = asStandardRailError(error);
+      if (classified) logStandardRailError(classified);
+      res.status(status).json({ error: envelope });
     }
   });
 
@@ -325,8 +346,31 @@ export function createStandardRailRouter(service: StandardRailService, publicUrl
         res.status(404).json({ error: { code: "ACTION_NOT_FOUND", message: "Unknown action" } });
         return;
       }
-      const body = req.body as { request?: Record<string, unknown>; authorization?: Record<string, unknown> };
-      assertExactKeys(body, ["request", "authorization"]);
+      const capabilityHeader = req.header("authorization");
+      const capabilityMatch = capabilityHeader?.match(/^DaskiReadCap ([A-Za-z0-9_.-]+)$/);
+      const body = req.body as {
+        request?: Record<string, unknown>;
+        authorization?: Record<string, unknown>;
+      };
+      if (capabilityMatch) {
+        if (action !== "status" && action !== "artifact") {
+          throw standardRailError("WALLET_AUTHORIZATION_INVALID");
+        }
+        assertStandardExactKeys(body, ["request"], "body");
+        if (!body.request || typeof body.request !== "object" || Array.isArray(body.request)) {
+          throw standardRailError("REQUEST_SCHEMA_INVALID", { field: "request" });
+        }
+        const result = await service.performAction({
+          handle: String(req.params.handle),
+          action: action as OrderAction,
+          request: body.request,
+          readCapability: capabilityMatch[1],
+        });
+        res.setHeader("Cache-Control", "private, no-store");
+        res.json(result);
+        return;
+      }
+      assertStandardExactKeys(body, ["request", "authorization"], "body");
       const authorization = body.authorization;
       if (
         !body.request || typeof body.request !== "object" || Array.isArray(body.request) ||
@@ -343,13 +387,12 @@ export function createStandardRailRouter(service: StandardRailService, publicUrl
         !Number.isSafeInteger(authorization.issuedAt) ||
         !Number.isSafeInteger(authorization.validBefore)
       ) {
-        res.status(401).json({ error: { code: "ACTION_AUTHORIZATION_REQUIRED", message: "Payer authorization required" } });
-        return;
+        throw standardRailError("WALLET_AUTHORIZATION_INVALID");
       }
-      assertExactKeys(authorization, [
+      assertStandardExactKeys(authorization, [
         "orderId", "action", "method", "absoluteResourceUri", "requestHash",
         "nonce", "issuedAt", "validBefore", "signature",
-      ]);
+      ], "authorization");
       const result = await service.performAction({
         handle: String(req.params.handle),
         action: action as OrderAction,
@@ -359,21 +402,14 @@ export function createStandardRailRouter(service: StandardRailService, publicUrl
       res.setHeader("Cache-Control", "private, no-store");
       res.json(result);
     } catch (error) {
-      const code = error instanceof Error ? error.message : "ACTION_FAILED";
-      if (["REPUTATION_NOT_READY", "REPUTATION_UNAVAILABLE",
-        "CONFIRMATION_SPONSORSHIP_LIMITED", "CONFIRMATION_SPONSORSHIP_UNAVAILABLE",
-        "CONFIRMATION_SUBMISSION_PENDING"].includes(code) || code.includes("SPONSORSHIP_LIMIT")) {
-        const publicCode = code.includes("SPONSORSHIP_LIMIT")
-          ? "CONFIRMATION_SPONSORSHIP_LIMITED" : code;
-        res.status(publicCode === "REPUTATION_NOT_READY" ||
-          publicCode === "CONFIRMATION_SUBMISSION_PENDING" ? 409 : 503).json({
-          error: { code: publicCode, message: "The confirmation request could not be completed" },
-        });
-        return;
-      }
-      if (/NOT_FOUND|AUTHORIZATION/.test(code)) {
-        res.status(401).json({
-          error: { code: "ORDER_ACCESS_DENIED", message: "Order authorization rejected" },
+      const internal = error instanceof Error ? error.message : "ACTION_FAILED";
+      const confirmation = CONFIRMATION_HTTP_ERRORS.get(internal);
+      if (confirmation) {
+        res.status(confirmation.status).json({
+          error: {
+            code: confirmation.code,
+            message: "The confirmation request could not be completed",
+          },
         });
         return;
       }
@@ -388,11 +424,10 @@ export function createStandardRailRouter(service: StandardRailService, publicUrl
         res.status(404).json({ error: { code: "ACTION_NOT_FOUND", message: "Unknown action" } });
         return;
       }
-      assertExactKeys(req.body, ["request"]);
+      assertStandardExactKeys(req.body, ["request"], "body");
       const request = (req.body as { request?: unknown }).request;
       if (!request || typeof request !== "object" || Array.isArray(request)) {
-        res.status(400).json({ error: { code: "ACTION_REQUEST_INVALID", message: "Action request must be an object" } });
-        return;
+        throw standardRailError("REQUEST_SCHEMA_INVALID", { field: "request" });
       }
       res.setHeader("Cache-Control", "private, no-store");
       res.json(await service.issueActionChallenge({
@@ -404,22 +439,20 @@ export function createStandardRailRouter(service: StandardRailService, publicUrl
     } catch (error) { next(error); }
   });
 
-  // Client-shaped input: a request that fails an outcome's closed schema
-  // answers 400 with schema-derived guidance (failing field, allowed values)
-  // instead of surfacing as a 500 — submitted values are never echoed back.
   router.use((
     error: unknown,
     _req: Request,
     res: Response,
-    next: NextFunction,
+    _next: NextFunction,
   ) => {
-    if (res.headersSent || !(error instanceof RequestSchemaError)) return next(error);
-    res.status(400).json({
-      error: {
-        code: "REQUEST_SCHEMA_INVALID",
-        message: error.message,
-        details: error.details,
-      },
+    if (res.headersSent) return;
+    const classified = asStandardRailError(error) ?? standardRailError("INTERNAL_ERROR", {
+      internalMessage: error instanceof Error ? error.message : "Unknown standard rail failure",
+      cause: error,
+    });
+    logStandardRailError(classified);
+    res.status(classified.status).json({
+      error: standardRailPublicError(classified, origin),
     });
   });
   return router;
