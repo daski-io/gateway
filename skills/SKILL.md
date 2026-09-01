@@ -5,7 +5,7 @@ description: Use when an agent needs to discover or buy a real-world service out
 
 # Daski
 
-Before the first purchase, detect signing infrastructure in this order: run `daski doctor --json` when `@daski/pay` exists; use an explicitly configured signer; check an existing hosted-wallet CLI or MCP; in sandbox create a keychain-backed wallet only when none exists; on mainnet ask the human to choose once from conformant candidates.
+Before the first purchase, detect signing infrastructure in this order: run `daski doctor --json` when the human has installed the Daski buyer CLI; use an explicitly configured signer; check an existing hosted-wallet CLI or MCP; in a sandbox with no signer, stop and tell the human (never run `npx` against an unpublished package name); on mainnet ask the human to choose once from conformant candidates.
 
 Fetch the canonical guides before acting:
 
