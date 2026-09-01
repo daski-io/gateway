@@ -62,7 +62,7 @@ import type {
   ServiceRegistrationStore,
   StoredRegistration,
 } from "../serviceRegistration/store.js";
-import { readBoundedJsonResponse as readBoundedJson } from "./boundedJson.js";
+import { discardResponseBody, readBoundedJsonResponse as readBoundedJson } from "./boundedJson.js";
 import { StandardProviderTransport } from "./providerTransport.js";
 import { StandardRailCatalog } from "./catalog.js";
 import { StandardProviderDispatch } from "./providerDispatch.js";
@@ -105,6 +105,8 @@ function isTransitionConflict(error: unknown): boolean {
   return error instanceof Error && error.message === "ORDER_TRANSITION_CONFLICT";
 }
 
+const OPERATIONAL_HEALTH_MEMO_MS = 15_000;
+
 export class StandardRailService {
   private readonly store: StandardRailStore;
   private readonly journal: StandardRailJournal;
@@ -122,6 +124,10 @@ export class StandardRailService {
   private readonly confirmations: StandardConfirmations;
   private readonly reputationReader: DirectReputationReader;
   private dependenciesReady = false;
+  private operationalHealthMemo: {
+    expiresAt: number;
+    value: Promise<Awaited<ReturnType<StandardOperationalHealth["read"]>>>;
+  } | null = null;
   private readinessInterval: NodeJS.Timeout | null = null;
   private readinessRetry: NodeJS.Timeout | null = null;
   private readinessRefresh: Promise<void> | null = null;
@@ -209,6 +215,7 @@ export class StandardRailService {
       cleanup: async () => {
         await this.journal.cleanupExpiredActionAuthorizations();
         await this.walletStore.cleanupExpiredAuthorizations();
+        await this.store.pruneUnpaidDrafts();
       },
     });
   }
@@ -269,8 +276,19 @@ export class StandardRailService {
     return this.dependenciesReady;
   }
 
-  operationalHealth() {
-    return this.operationalHealthReporter.read();
+  // /health/ready is unauthenticated and rate limited only at the public
+  // read budget; each fresh read costs four aggregate scans and three RPC
+  // calls, so one observation is shared for a short window.
+  operationalHealth(): Promise<Awaited<ReturnType<StandardOperationalHealth["read"]>>> {
+    const now = Date.now();
+    const memo = this.operationalHealthMemo;
+    if (memo && memo.expiresAt > now) return memo.value;
+    const value = this.operationalHealthReporter.read();
+    this.operationalHealthMemo = { expiresAt: now + OPERATIONAL_HEALTH_MEMO_MS, value };
+    value.catch(() => {
+      if (this.operationalHealthMemo?.value === value) this.operationalHealthMemo = null;
+    });
+    return value;
   }
 
   publicArtifact(hash: string): Promise<unknown | null> {
@@ -1196,10 +1214,13 @@ export class StandardRailService {
         )),
       },
     );
-    if (!response.ok) throw standardRailError("INTERNAL_ERROR", {
+    if (!response.ok) {
+      await discardResponseBody(response);
+      throw standardRailError("INTERNAL_ERROR", {
         phase: "dispatch",
         internalMessage: "PROVIDER_LIFECYCLE_REJECTED",
       });
+    }
     const providerResult = await readBoundedJson(
       response,
       listing.providerControlProfile.payload.maxResponseBytes,
@@ -1977,6 +1998,9 @@ export class StandardRailService {
       )),
     }, true);
     if (!response.ok) {
+      // Only a 4xx carries a structured rejection worth reading; every other
+      // failure body is released so the pinned socket closes.
+      if (response.status < 400 || response.status >= 500) await discardResponseBody(response);
       if (response.status >= 400 && response.status < 500) {
         let fieldErrors: Array<{
           path: string;

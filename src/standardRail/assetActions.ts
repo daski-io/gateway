@@ -18,7 +18,7 @@ import {
   walletAuthorizationHash,
 } from "./walletAuthorization.js";
 import type { StandardWalletStore } from "./walletStore.js";
-import { readBoundedJsonResponse } from "./boundedJson.js";
+import { discardResponseBody, readBoundedJsonResponse } from "./boundedJson.js";
 import {
   assertDestructiveFollowUp,
   claimAssetAction,
@@ -192,6 +192,7 @@ export class StandardAssetActions {
       },
     );
     if (!response.ok) {
+      await discardResponseBody(response);
       throw new Error(response.status === 429 ? "WALLET_RATE_LIMITED" : "ASSET_ACTION_REJECTED");
     }
     const body = await readBoundedJsonResponse(response, resolved.active.listing.providerControlProfile.payload.maxResponseBytes);

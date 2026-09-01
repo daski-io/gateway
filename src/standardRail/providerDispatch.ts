@@ -5,7 +5,7 @@ import {
   type Hex,
 } from "viem";
 import type { Config } from "../config.js";
-import { readBoundedJsonResponse } from "./boundedJson.js";
+import { discardResponseBody, readBoundedJsonResponse } from "./boundedJson.js";
 import { canonicalHash } from "./canonical.js";
 import type { StandardRailConfig } from "./config.js";
 import type { EvidenceResult, ReleaseEvidenceResult } from "./evidence.js";
@@ -246,7 +246,10 @@ export class StandardProviderDispatch {
           redirect: "error",
         },
       );
-      if (!response.ok) throw new Error("provider_dispatch_rejected");
+      if (!response.ok) {
+        await discardResponseBody(response);
+        throw new Error("provider_dispatch_rejected");
+      }
       const body = await readBoundedJsonResponse(
         response,
         listing.providerControlProfile.payload.maxResponseBytes,
@@ -306,6 +309,7 @@ export class StandardProviderDispatch {
       },
     );
     if (!response.ok) {
+      await discardResponseBody(response);
       throw new Error("PROVIDER_DISPATCH_STATUS_UNAVAILABLE");
     }
     return readBoundedJsonResponse(

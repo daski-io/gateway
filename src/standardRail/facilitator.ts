@@ -12,6 +12,7 @@ import type {
 } from "@x402/core/types";
 import type { StandardRailConfig } from "./config.js";
 import { isNonPublicAddress } from "./network.js";
+import { discardResponseBody } from "./boundedJson.js";
 import { assertNoDuplicateJsonKeys } from "./canonical.js";
 import { activeRequestSignal } from "../mcp/requestContext.js";
 
@@ -100,10 +101,12 @@ export class CdpStandardFacilitator implements StandardFacilitator {
     const mediaType = response.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase();
     const encoding = response.headers.get("content-encoding")?.trim().toLowerCase();
     if (mediaType !== "application/json" || (encoding && encoding !== "identity")) {
+      await discardResponseBody(response);
       throw new Error("Facilitator response media type is invalid");
     }
     const declared = response.headers.get("content-length");
     if (declared && (!/^\d+$/.test(declared) || Number(declared) > maximumBytes)) {
+      await discardResponseBody(response);
       throw new Error("Facilitator response is too large");
     }
     if (!response.body) throw new Error("Facilitator response is empty");

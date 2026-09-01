@@ -14,7 +14,7 @@ import type {
 } from "./types.js";
 import { utf8Hash, ZERO_HASH } from "./walletAuthorization.js";
 import type { StandardWalletStore } from "./walletStore.js";
-import { readBoundedJsonResponse } from "./boundedJson.js";
+import { discardResponseBody, readBoundedJsonResponse } from "./boundedJson.js";
 import { withFederationPermit } from "./federationPermit.js";
 
 export interface ActiveServicing {
@@ -214,7 +214,10 @@ export class StandardAssetFederation {
           redirect: "error",
         },
       );
-      if (!response.ok) throw new Error("provider unavailable");
+      if (!response.ok) {
+        await discardResponseBody(response);
+        throw new Error("provider unavailable");
+      }
       const envelope = await readBoundedJsonResponse(
         response,
         active.listing.providerControlProfile.payload.maxResponseBytes,

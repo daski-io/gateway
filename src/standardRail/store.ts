@@ -727,4 +727,55 @@ export class StandardRailStore {
       [orderId],
     );
   }
+
+  /**
+   * Deletes expired drafts that never carried a payment authorization. The
+   * unauthenticated 402 path persists one order row (request body and
+   * listing included) per distinct body, so without retention an anonymous
+   * client grows the table at the global challenge budget forever. Rows
+   * that any evidence, incident, or reputation table references are never
+   * touched; a never-claimed draft has only its transition journal.
+   */
+  async pruneUnpaidDrafts(limit = 500): Promise<number> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const expired = await client.query<{ order_id: string }>(
+        `SELECT order_id FROM standard_orders o
+          WHERE state='NOT_SETTLED' AND authorization_key IS NULL
+            AND updated_at < now() - $1::interval
+            AND NOT EXISTS (SELECT 1 FROM standard_chain_evidence e WHERE e.order_id=o.order_id)
+            AND NOT EXISTS (SELECT 1 FROM standard_security_incidents i WHERE i.order_id=o.order_id)
+            AND NOT EXISTS (SELECT 1 FROM standard_reputation_operations r WHERE r.order_id=o.order_id)
+            AND NOT EXISTS (SELECT 1 FROM standard_confirmation_preparations c WHERE c.order_id=o.order_id)
+            AND NOT EXISTS (SELECT 1 FROM standard_confirmation_sponsorships s WHERE s.order_id=o.order_id)
+            AND NOT EXISTS (SELECT 1 FROM standard_reputation_confirmations rc WHERE rc.order_id=o.order_id)
+          ORDER BY updated_at ASC
+          LIMIT $2 FOR UPDATE SKIP LOCKED`,
+        [UNPAID_DRAFT_RETENTION, limit],
+      );
+      const ids = expired.rows.map((row) => row.order_id);
+      if (ids.length > 0) {
+        for (const table of [
+          "standard_order_transitions",
+          "standard_action_challenges",
+          "standard_action_nonces",
+          "standard_capacity_reservations",
+          "standard_settlement_attempts",
+          "standard_dispatch_claims",
+          "standard_rail_receipts",
+        ]) {
+          await client.query(`DELETE FROM ${table} WHERE order_id = ANY($1::text[])`, [ids]);
+        }
+        await client.query("DELETE FROM standard_orders WHERE order_id = ANY($1::text[])", [ids]);
+      }
+      await client.query("COMMIT");
+      return ids.length;
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
 }

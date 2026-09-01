@@ -1,5 +1,6 @@
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
+import { discardResponseBody } from "../standardRail/boundedJson.js";
 import { assertNoDuplicateJsonKeys } from "../standardRail/canonical.js";
 import { isNonPublicAddress } from "../standardRail/network.js";
 import { pinnedProviderFetch } from "../standardRail/providerTransport.js";
@@ -77,13 +78,19 @@ export async function fetchProviderCardJson(
         headers: { accept: "application/json" },
       }, addresses);
     }
-    if (response.status !== 200) throw new Error("AgentCard endpoint did not return 200");
+    if (response.status !== 200) {
+      await discardResponseBody(response);
+      throw new Error("AgentCard endpoint did not return 200");
+    }
     const mediaType = response.headers.get("content-type")
       ?.split(";", 1)[0]?.trim().toLowerCase();
     if (
       mediaType !== "application/json" &&
       !mediaType?.endsWith("+json")
-    ) throw new Error("AgentCard endpoint must return JSON");
+    ) {
+      await discardResponseBody(response);
+      throw new Error("AgentCard endpoint must return JSON");
+    }
     const bytes = await boundedBody(response);
     const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
     assertNoDuplicateJsonKeys(text);
