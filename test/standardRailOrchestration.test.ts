@@ -248,10 +248,10 @@ describe("standard rail orchestration", () => {
       assertRailFence: vi.fn(async () => undefined),
       resumePreSettlement: vi.fn(async () => order),
       store: {
-        withListingSettlementLock: async (
+        tryWithListingSettlementLock: async (
           _listingHash: Hex,
           action: () => Promise<void>,
-        ) => action(),
+        ) => ({ acquired: true, result: await action() }),
         findById: vi.fn(async () => order),
         transition: vi.fn(),
       },

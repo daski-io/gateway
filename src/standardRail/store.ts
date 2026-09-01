@@ -1,5 +1,10 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { keccak256, toBytes } from "viem";
+import {
+  tryWithAdvisoryLock,
+  withAdvisoryLock,
+  type AdvisoryLockOutcome,
+} from "../db/advisoryLock.js";
 import type { Pool } from "../db/pool.js";
 import type { Hex } from "../types.js";
 import { assertTransition, isTerminalState } from "./stateMachine.js";
@@ -15,6 +20,10 @@ import { parseStandardRailReceiptV2 } from "./wireContracts.js";
 const bytes = (value: Hex): Buffer => Buffer.from(value.slice(2), "hex");
 const hex = (value: Buffer | null): Hex | null =>
   value ? (`0x${value.toString("hex")}` as Hex) : null;
+/** A manifest cutover holds the exclusive rail lock only briefly. */
+const RAIL_FENCE_WAIT_MS = 10_000;
+/** Never-paid drafts are audit noise; paid orders are kept indefinitely. */
+const UNPAID_DRAFT_RETENTION = "1 day";
 
 export const RECOVERABLE_ORDER_STATES = [
   "CHALLENGE_ISSUED", "ATTEMPT_OPENED", "VERIFIED", "VERIFY_REJECTED",
@@ -123,7 +132,15 @@ export interface CreateDraftInput {
 }
 
 export class StandardRailStore {
-  constructor(private readonly pool: Pool) {}
+  /**
+   * `lockPool` carries the connections that hold session advisory locks
+   * across settlement work, so a lock holder never competes with its own
+   * transitions and journal writes for a client from `pool`.
+   */
+  constructor(
+    private readonly pool: Pool,
+    private readonly lockPool: Pool = pool,
+  ) {}
 
   async loadReceipt(orderId: string): Promise<SignedEnvelope<StandardRailReceiptV2, 2> | null> {
     const result = await this.pool.query<{ canonical_receipt: unknown }>(
@@ -150,16 +167,24 @@ export class StandardRailStore {
     return stored;
   }
 
-  async withListingSettlementLock<T>(listingManifestHash: Hex, work: () => Promise<T>): Promise<T> {
-    const client = await this.pool.connect();
-    const lockName = `standard:settlement:${listingManifestHash.toLowerCase()}`;
-    try {
-      await client.query("SELECT pg_advisory_lock(hashtextextended($1,0))", [lockName]);
-      return await work();
-    } finally {
-      await client.query("SELECT pg_advisory_unlock(hashtextextended($1,0))", [lockName]).catch(() => undefined);
-      client.release();
-    }
+  /**
+   * Per-listing settlement serialization. The holder runs the whole
+   * settlement pipeline (facilitator settle, deposit and release finality,
+   * dispatch) under the lock, so a busy lock is answered immediately: the
+   * caller leaves the order in its current durable state and the recovery
+   * worker drives it once the listing is free. Waiting here would pin a
+   * pooled connection for minutes per caller.
+   */
+  async tryWithListingSettlementLock<T>(
+    listingManifestHash: Hex,
+    work: () => Promise<T>,
+  ): Promise<AdvisoryLockOutcome<T>> {
+    return tryWithAdvisoryLock(
+      this.lockPool,
+      `standard:settlement:${listingManifestHash.toLowerCase()}`,
+      work,
+      { waitMs: 0 },
+    );
   }
 
   async assertActiveRail(railProfileHash: Hex): Promise<void> {
@@ -171,17 +196,18 @@ export class StandardRailStore {
     chainId: number;
     railProfileHash: Hex;
   }, work: () => Promise<T>): Promise<T> {
-    const client = await this.pool.connect();
-    const lockName = `standard-rail:${args.environment}:${args.chainId}`;
-    try {
-      await client.query("SELECT pg_advisory_lock_shared(hashtextextended($1,0))", [lockName]);
-      await this.assertActiveRailWithQuery(client, args.railProfileHash);
-      return await work();
-    } finally {
-      await client.query("SELECT pg_advisory_unlock_shared(hashtextextended($1,0))", [lockName])
-        .catch(() => undefined);
-      client.release();
-    }
+    // Shared: many settlement holders coexist; only a manifest cutover takes
+    // the exclusive side, so a bounded wait covers the rare contention.
+    return withAdvisoryLock(
+      this.lockPool,
+      `standard-rail:${args.environment}:${args.chainId}`,
+      work,
+      {
+        mode: "shared",
+        waitMs: RAIL_FENCE_WAIT_MS,
+        prepare: (client) => this.assertActiveRailWithQuery(client, args.railProfileHash),
+      },
+    );
   }
 
   private async assertActiveRailWithQuery(

@@ -9,7 +9,16 @@ import { createRateLimitQueries } from "../db/rateLimitQueries.js";
 import { createStandardGatewayHttp } from "../http/gatewayApp.js";
 import type { McpWiring } from "../mcp/httpTransport.js";
 import { ApplicationLifecycle } from "../runtime/applicationLifecycle.js";
+import { logger } from "../util/logger.js";
 import type { StandardRailConfig } from "./config.js";
+
+/**
+ * Concurrent settlement pipelines each hold up to three advisory-lock
+ * connections (listing, rail fence, relayer nonce); beyond this many the
+ * next holder waits on checkout and hands its order to recovery.
+ */
+const LOCK_POOL_SIZE = 12;
+const RATE_LIMIT_PRUNE_INTERVAL_MS = 60_000;
 
 function quotedIdentifier(value: string): string {
   return `"${value.replaceAll('"', '""')}"`;
@@ -136,6 +145,9 @@ export async function createStandardApp(options: {
     const migrationPool = createPool({
       connectionString: options.standardRailConfig.migrationDatabaseUrl,
       max: 1,
+      connectionTimeoutMs: 0,
+      statementTimeoutMs: 0,
+      lockTimeoutMs: 0,
     });
     try {
       await runMigrations(migrationPool);
@@ -185,6 +197,7 @@ export async function createStandardApp(options: {
       const poolClose = await Promise.allSettled([
         ...(ownsPool ? [pool.end()] : []),
         ...(ownsFederationPermitPool ? [federationPermitPool.end()] : []),
+        ...(ownsLockPool ? [lockPool.end()] : []),
       ]);
       const failure = [...drains, ...poolClose].find((result) => result.status === "rejected");
       if (failure?.status === "rejected") throw failure.reason;
