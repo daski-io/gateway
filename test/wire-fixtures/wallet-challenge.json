@@ -1,0 +1,130 @@
+{
+  "authorizationRequired": true,
+  "code": "WALLET_AUTHORIZATION_REQUIRED",
+  "challenge": {
+    "domain": {
+      "name": "DaskiStandardWallet",
+      "version": "1",
+      "chainId": 84532
+    },
+    "primaryType": "WalletActionAuthorizationV1",
+    "message": {
+      "payer": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "providerAgentId": "0",
+      "serviceId": "0x0000000000000000000000000000000000000000000000000000000000000000",
+      "providerControlProfileHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+      "servicingAdmissionHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+      "actionCatalogHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+      "actionCatalogSchemaHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+      "actionDefinitionHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+      "actionCatalogEpoch": 0,
+      "actionHash": "0x22af99bcae94780b5edce7e4c63ac0be958f14db0cd2f276d60f8936792eee27",
+      "methodHash": "0x2fca5a5e7ccde9ff7491efb205181f9945d95feee2f835f237ff423414a824e3",
+      "absoluteResourceUriHash": "0x1c76dd92ce551ac14719184c04f2d5184d04f597720d1aac90c278b209f6f0dc",
+      "requestHash": "0x6566ca0ca42789f4ee007921cdeb7147c9632027f858b49f3d9d7a77456d8b58",
+      "audienceHash": "0xb6018aa17cdacda070ba498a41a94301580953e6bd09607ba3a1eb150c81e64c",
+      "nonce": "0x6666666666666666666666666666666666666666666666666666666666666666",
+      "issuedAt": 1756769000,
+      "validBefore": 1756769300
+    },
+    "signRequest": {
+      "domain": {
+        "name": "DaskiStandardWallet",
+        "version": "1",
+        "chainId": 84532
+      },
+      "types": {
+        "WalletActionAuthorizationV1": [
+          {
+            "name": "payer",
+            "type": "address"
+          },
+          {
+            "name": "providerAgentId",
+            "type": "uint256"
+          },
+          {
+            "name": "serviceId",
+            "type": "bytes32"
+          },
+          {
+            "name": "providerControlProfileHash",
+            "type": "bytes32"
+          },
+          {
+            "name": "servicingAdmissionHash",
+            "type": "bytes32"
+          },
+          {
+            "name": "actionCatalogHash",
+            "type": "bytes32"
+          },
+          {
+            "name": "actionCatalogSchemaHash",
+            "type": "bytes32"
+          },
+          {
+            "name": "actionDefinitionHash",
+            "type": "bytes32"
+          },
+          {
+            "name": "actionCatalogEpoch",
+            "type": "uint64"
+          },
+          {
+            "name": "actionHash",
+            "type": "bytes32"
+          },
+          {
+            "name": "methodHash",
+            "type": "bytes32"
+          },
+          {
+            "name": "absoluteResourceUriHash",
+            "type": "bytes32"
+          },
+          {
+            "name": "requestHash",
+            "type": "bytes32"
+          },
+          {
+            "name": "audienceHash",
+            "type": "bytes32"
+          },
+          {
+            "name": "nonce",
+            "type": "bytes32"
+          },
+          {
+            "name": "issuedAt",
+            "type": "uint64"
+          },
+          {
+            "name": "validBefore",
+            "type": "uint64"
+          }
+        ]
+      },
+      "primaryType": "WalletActionAuthorizationV1",
+      "message": {
+        "payer": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "providerAgentId": "0",
+        "serviceId": "0x0000000000000000000000000000000000000000000000000000000000000000",
+        "providerControlProfileHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+        "servicingAdmissionHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+        "actionCatalogHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+        "actionCatalogSchemaHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+        "actionDefinitionHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+        "actionCatalogEpoch": 0,
+        "actionHash": "0x22af99bcae94780b5edce7e4c63ac0be958f14db0cd2f276d60f8936792eee27",
+        "methodHash": "0x2fca5a5e7ccde9ff7491efb205181f9945d95feee2f835f237ff423414a824e3",
+        "absoluteResourceUriHash": "0x1c76dd92ce551ac14719184c04f2d5184d04f597720d1aac90c278b209f6f0dc",
+        "requestHash": "0x6566ca0ca42789f4ee007921cdeb7147c9632027f858b49f3d9d7a77456d8b58",
+        "audienceHash": "0xb6018aa17cdacda070ba498a41a94301580953e6bd09607ba3a1eb150c81e64c",
+        "nonce": "0x6666666666666666666666666666666666666666666666666666666666666666",
+        "issuedAt": 1756769000,
+        "validBefore": 1756769300
+      }
+    }
+  }
+}

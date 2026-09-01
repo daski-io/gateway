@@ -105,6 +105,20 @@ export function walletActionSignRequest(
   };
 }
 
+/**
+ * A wallet challenge exactly as issued (walletStore.issue): the typed-data
+ * domain, primary type and message, plus the ready-to-sign request. This is
+ * the object buyers receive under `challenge` on every wallet surface.
+ */
+export function walletChallenge(message: WalletActionAuthorizationV1, chainId: number) {
+  return {
+    domain: { name: "DaskiStandardWallet", version: "1", chainId },
+    primaryType: "WalletActionAuthorizationV1" as const,
+    message,
+    signRequest: walletActionSignRequest(message, chainId),
+  };
+}
+
 export function walletAuthorizationHash(
   message: WalletActionAuthorizationV1,
   chainId: number,

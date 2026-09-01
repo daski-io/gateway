@@ -1,0 +1,107 @@
+{
+  "success": {
+    "content": [
+      {
+        "type": "text",
+        "text": "Daski tool call succeeded."
+      }
+    ],
+    "structuredContent": {
+      "orderHandle": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "state": "FULFILLED"
+    }
+  },
+  "error": {
+    "isError": true,
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"code\":\"WALLET_ACCESS_DENIED\",\"message\":\"Wallet authorization rejected\",\"retryable\":false}"
+      }
+    ],
+    "structuredContent": {
+      "code": "WALLET_ACCESS_DENIED",
+      "message": "Wallet authorization rejected",
+      "retryable": false
+    }
+  },
+  "paymentRequired": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"x402Version\":2,\"resource\":{\"url\":\"https://sandbox-gateway.daski.io/outcomes/8327/register-domain\",\"mimeType\":\"application/json\"},\"accepts\":[],\"extensions\":{\"payment-identifier\":{\"info\":{\"required\":true,\"id\":\"int_00000000-0000-4000-8000-000000000002\"},\"schema\":{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",\"type\":\"object\",\"properties\":{\"required\":{\"type\":\"boolean\"},\"id\":{\"type\":\"string\",\"minLength\":16,\"maxLength\":128,\"pattern\":\"^[a-zA-Z0-9_-]+$\"}},\"required\":[\"required\"]}}}}"
+      }
+    ],
+    "structuredContent": {
+      "x402Version": 2,
+      "resource": {
+        "url": "https://sandbox-gateway.daski.io/outcomes/8327/register-domain",
+        "mimeType": "application/json"
+      },
+      "accepts": [],
+      "extensions": {
+        "payment-identifier": {
+          "info": {
+            "required": true,
+            "id": "int_00000000-0000-4000-8000-000000000002"
+          },
+          "schema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object",
+            "properties": {
+              "required": {
+                "type": "boolean"
+              },
+              "id": {
+                "type": "string",
+                "minLength": 16,
+                "maxLength": 128,
+                "pattern": "^[a-zA-Z0-9_-]+$"
+              }
+            },
+            "required": [
+              "required"
+            ]
+          }
+        }
+      }
+    },
+    "_meta": {
+      "x402/payment-required": {
+        "x402Version": 2,
+        "resource": {
+          "url": "https://sandbox-gateway.daski.io/outcomes/8327/register-domain",
+          "mimeType": "application/json"
+        },
+        "accepts": [],
+        "extensions": {
+          "payment-identifier": {
+            "info": {
+              "required": true,
+              "id": "int_00000000-0000-4000-8000-000000000002"
+            },
+            "schema": {
+              "$schema": "https://json-schema.org/draft/2020-12/schema",
+              "type": "object",
+              "properties": {
+                "required": {
+                  "type": "boolean"
+                },
+                "id": {
+                  "type": "string",
+                  "minLength": 16,
+                  "maxLength": 128,
+                  "pattern": "^[a-zA-Z0-9_-]+$"
+                }
+              },
+              "required": [
+                "required"
+              ]
+            }
+          }
+        }
+      }
+    },
+    "isError": true
+  }
+}

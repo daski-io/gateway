@@ -11,7 +11,7 @@ import type {
 } from "./types.js";
 import {
   verifyWalletAuthorization,
-  walletActionSignRequest,
+  walletChallenge,
   walletAuthorizationHash,
   ZERO_HASH,
   utf8Hash,
@@ -102,15 +102,7 @@ export class StandardWalletStore {
       await client.query("COMMIT");
     } catch (error) { await client.query("ROLLBACK").catch(() => undefined); throw error; }
     finally { client.release(); }
-    const challenge = {
-      domain: { name: "DaskiStandardWallet", version: "1", chainId: this.chainId },
-      primaryType: "WalletActionAuthorizationV1" as const,
-      message,
-    };
-    return {
-      ...challenge,
-      signRequest: walletActionSignRequest(message, this.chainId),
-    };
+    return walletChallenge(message, this.chainId);
   }
 
   /**

@@ -1,3 +1,4 @@
+import { orderActionChallengeEnvelope, walletChallengeEnvelope } from "./wireEnvelopes.js";
 import { McpServer, type McpRequestContext } from "@modelcontextprotocol/server";
 import type { Express } from "express";
 import { z } from "zod";
@@ -424,11 +425,7 @@ export async function createStandardRailMcp(
                 action,
                 request,
               });
-              return mcpJson({
-                authorizationRequired: true,
-                authorizationType: "OrderActionAuthorizationV1",
-                challenge,
-              });
+              return mcpJson(orderActionChallengeEnvelope(challenge));
             }
             const result = await service.performAction({
               handle: args.orderHandle,
@@ -466,15 +463,11 @@ export async function createStandardRailMcp(
         const request = {};
         try {
           if (!authorization) {
-            return mcpJson({
-              authorizationRequired: true,
-              authorizationType: "OrderActionAuthorizationV1",
-              challenge: await service.issueActionChallenge({
+            return mcpJson(orderActionChallengeEnvelope(await service.issueActionChallenge({
                 handle: orderHandle,
                 action: "grant-read",
                 request,
-              }),
-            });
+              })));
           }
           return mcpJson(await service.performAction({
             handle: orderHandle,
@@ -500,9 +493,7 @@ export async function createStandardRailMcp(
       }, async (args) => {
         const request = args.request ?? {};
         try {
-          if (!args.authorization) return mcpJson({ authorizationRequired: true,
-            authorizationType: "OrderActionAuthorizationV1",
-            challenge: await service.issueActionChallenge({ handle: args.orderHandle, action, request }) });
+          if (!args.authorization) return mcpJson(orderActionChallengeEnvelope(await service.issueActionChallenge({ handle: args.orderHandle, action, request })));
           return mcpJson(await service.performAction({ handle: args.orderHandle, action, request,
             authorization: args.authorization as never }));
         } catch (error) {
@@ -541,14 +532,10 @@ export async function createStandardRailMcp(
           ...(paymentIdentifier ? { paymentIdentifier } : {}),
         };
         try {
-          if (!authorization) return mcpJson({
-            authorizationRequired: true,
-            code: "WALLET_AUTHORIZATION_REQUIRED",
-            challenge: await service.issueWalletChallenge({
+          if (!authorization) return mcpJson(walletChallengeEnvelope(await service.issueWalletChallenge({
               action: "list-orders", payer, request,
               absoluteResourceUri: `${config.publicUrl.replace(/\/$/, "")}/wallet/orders`,
-            }),
-          });
+            })));
           return mcpJson(await service.listWalletOrders({
             payer, limit, cursor, paymentIdentifier, authorization: authorization as never,
           }));
@@ -570,14 +557,10 @@ export async function createStandardRailMcp(
       async ({ payer, authorization }) => {
         const request = {};
         try {
-          if (!authorization) return mcpJson({
-            authorizationRequired: true,
-            code: "WALLET_AUTHORIZATION_REQUIRED",
-            challenge: await service.issueWalletChallenge({
+          if (!authorization) return mcpJson(walletChallengeEnvelope(await service.issueWalletChallenge({
               action: "get-buyer-reputation", payer, request,
               absoluteResourceUri: `${config.publicUrl.replace(/\/$/, "")}/wallet/reputation`,
-            }),
-          });
+            })));
           return mcpJson(await service.getWalletReputation({ payer, authorization: authorization as never }));
         } catch (error) { return walletMcpError(error); }
       },
@@ -603,14 +586,10 @@ export async function createStandardRailMcp(
         }
         const request = { providerAgentId, limit, cursor };
         try {
-          if (!authorization) return mcpJson({
-            authorizationRequired: true,
-            code: "WALLET_AUTHORIZATION_REQUIRED",
-            challenge: await service.issueWalletChallenge({
+          if (!authorization) return mcpJson(walletChallengeEnvelope(await service.issueWalletChallenge({
               action: "list-assets", payer, request,
               absoluteResourceUri: `${config.publicUrl.replace(/\/$/, "")}/wallet/assets`,
-            }),
-          });
+            })));
           return mcpJson(await service.listWalletAssets({
             payer, providerAgentId, limit, cursor, authorization: authorization as never,
           }));
@@ -635,14 +614,10 @@ export async function createStandardRailMcp(
       },
       async ({ authorization, ...args }) => {
         try {
-          if (!authorization) return mcpJson({
-            authorizationRequired: true,
-            code: "WALLET_AUTHORIZATION_REQUIRED",
-            challenge: await service.issueAssetActionChallenge({
+          if (!authorization) return mcpJson(walletChallengeEnvelope(await service.issueAssetActionChallenge({
               ...args,
               absoluteResourceUri: `${config.publicUrl.replace(/\/$/, "")}/wallet/assets/action`,
-            }),
-          });
+            })));
           return mcpJson(isolateProviderResult(await service.performAssetAction({
             ...args, authorization: authorization as never,
           })));

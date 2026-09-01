@@ -108,6 +108,61 @@ export function paymentAuthorizationMessage(args: {
   };
 }
 
+/**
+ * The payment-identifier extension exactly as issued. x402 declares every
+ * extension as an { info, schema } envelope, so the identifier lives in `info`
+ * — a consumer that matched the envelope itself could sign nothing
+ * (2026-09-01, completion 1). Vendored by buyers as a wire fixture.
+ */
+export function paymentIdentifierExtension(intentId: string) {
+  return {
+    info: { required: true as const, id: intentId },
+    schema: paymentIdentifierSchema,
+  };
+}
+
+/**
+ * The deal binding a recipe-bound challenge carries. Buyers read the receipt's
+ * slots back against it: on a v2 binding the receipt's listingManifestHash slot
+ * carries the runtime commitment hash and providerOfferHash the provider
+ * intent hash (Option A slot layout).
+ */
+export function orderBindingExtension(args: {
+  bindingProfile: string;
+  listingManifestHash: Hex;
+  providerOfferHash: Hex;
+  quoteHash: Hex;
+  canonicalRequestHash: Hex;
+  orderNonce: Hex;
+  expiresAt: number;
+}) {
+  if (args.bindingProfile === "recipe-bound-v2") {
+    return {
+      version: 2,
+      profile: "recipe-bound-v2",
+      runtimeCommitmentHash: args.listingManifestHash,
+      providerIntentHash: args.providerOfferHash,
+      quoteHash: args.quoteHash,
+      canonicalRequestHash: args.canonicalRequestHash,
+      orderNonce: args.orderNonce,
+      expiresAt: args.expiresAt,
+    };
+  }
+  if (args.bindingProfile === "recipe-bound-v1") {
+    return {
+      version: 1,
+      profile: "recipe-bound-v1",
+      listingManifestHash: args.listingManifestHash,
+      providerOfferHash: args.providerOfferHash,
+      quoteHash: args.quoteHash,
+      canonicalRequestHash: args.canonicalRequestHash,
+      orderNonce: args.orderNonce,
+      expiresAt: args.expiresAt,
+    };
+  }
+  return undefined;
+}
+
 export function paymentRequired(args: {
   config: Config;
   requirements: PaymentRequirements;
@@ -119,35 +174,18 @@ export function paymentRequired(args: {
 }): PaymentRequired {
   const bindingProfile = args.listing.commitment.payload.bindingProfile;
   const expiresAt = Math.floor(args.order.expiresAt.getTime() / 1_000);
-  const binding = bindingProfile === "recipe-bound-v2"
-    ? {
-        version: 2,
-        profile: "recipe-bound-v2",
-        runtimeCommitmentHash: args.order.listingManifestHash,
-        providerIntentHash: args.order.providerOfferHash,
-        quoteHash: args.order.quoteHash,
-        canonicalRequestHash: args.order.canonicalRequestHash,
-        orderNonce: args.order.orderNonce,
-        expiresAt,
-      }
-    : bindingProfile === "recipe-bound-v1"
-      ? {
-          version: 1,
-          profile: "recipe-bound-v1",
-          listingManifestHash: args.order.listingManifestHash,
-          providerOfferHash: args.order.providerOfferHash,
-          quoteHash: args.order.quoteHash,
-          canonicalRequestHash: args.order.canonicalRequestHash,
-          orderNonce: args.order.orderNonce,
-          expiresAt,
-        }
-      : undefined;
+  const binding = orderBindingExtension({
+    bindingProfile,
+    listingManifestHash: args.order.listingManifestHash,
+    providerOfferHash: args.order.providerOfferHash,
+    quoteHash: args.order.quoteHash,
+    canonicalRequestHash: args.order.canonicalRequestHash,
+    orderNonce: args.order.orderNonce,
+    expiresAt,
+  });
   const schemaHash = canonicalHash(args.listing.requestSchema);
   const extensions: Record<string, unknown> = {
-    "payment-identifier": {
-      info: { required: true, id: args.order.intentId },
-      schema: paymentIdentifierSchema,
-    },
+    "payment-identifier": paymentIdentifierExtension(args.order.intentId),
     bazaar: {
       info: {
         schemaRef: {

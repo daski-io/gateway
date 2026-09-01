@@ -69,7 +69,7 @@ import { StandardProviderDispatch } from "./providerDispatch.js";
 import { StandardOperationalHealth } from "./operationalHealth.js";
 import { withRpcFailover } from "../rpc/failover.js";
 import {
-  orderActionSignRequest,
+  orderActionChallengeIssued, orderActionSignRequest,
   type OrderAction,
   type OrderActionChallenge,
 } from "./orderAuthorization.js";
@@ -949,14 +949,11 @@ export class StandardRailService {
       issuedAt: now,
       validBefore,
     };
-    return {
-      ...challenge,
-      signRequest: orderActionSignRequest({
-        challenge,
-        chainId: this.appConfig.chainId,
-        gatewayAudience: this.railConfig.gatewayAudience,
-      }),
-    };
+    return orderActionChallengeIssued({
+      challenge,
+      chainId: this.appConfig.chainId,
+      gatewayAudience: this.railConfig.gatewayAudience,
+    });
   }
 
   private syntheticOrderId(handle: string): string {

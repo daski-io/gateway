@@ -4,7 +4,7 @@ Use detection first and let the human choose once. A wallet is signing infrastru
 
 ## Sandbox golden path
 
-Prefer an existing conformant signer. If none exists, `npx @daski/pay wallet create` creates a Base Sepolia wallet backed by the operating-system keychain. The human must fund it from Circle's test USDC faucet; the faucet currently provides 20 USDC per wallet every two hours and uses a CAPTCHA.
+Prefer an existing conformant signer. If none exists, `npx @daski/pay wallet create` creates a Base Sepolia wallet backed by the operating-system keychain (`@daski/pay` is published from github.com/daski-io/buyer; until it resolves on npm, tell the human no signer is available rather than substituting one). The human must fund it from Circle's test USDC faucet; the faucet currently provides 20 USDC per wallet every two hours and uses a CAPTCHA.
 
 ## Mainnet candidates
 

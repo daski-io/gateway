@@ -1,0 +1,48 @@
+{
+  "payment-identifier": {
+    "info": {
+      "required": true,
+      "id": "int_00000000-0000-4000-8000-000000000002"
+    },
+    "schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "required": {
+          "type": "boolean"
+        },
+        "id": {
+          "type": "string",
+          "minLength": 16,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_-]+$"
+        }
+      },
+      "required": [
+        "required"
+      ]
+    }
+  },
+  "daski-order-binding": {
+    "recipe-bound-v2": {
+      "version": 2,
+      "profile": "recipe-bound-v2",
+      "runtimeCommitmentHash": "0x1111111111111111111111111111111111111111111111111111111111111111",
+      "providerIntentHash": "0x2222222222222222222222222222222222222222222222222222222222222222",
+      "quoteHash": "0x3333333333333333333333333333333333333333333333333333333333333333",
+      "canonicalRequestHash": "0x4444444444444444444444444444444444444444444444444444444444444444",
+      "orderNonce": "0x5555555555555555555555555555555555555555555555555555555555555555",
+      "expiresAt": 1756769300
+    },
+    "recipe-bound-v1": {
+      "version": 1,
+      "profile": "recipe-bound-v1",
+      "listingManifestHash": "0x1111111111111111111111111111111111111111111111111111111111111111",
+      "providerOfferHash": "0x2222222222222222222222222222222222222222222222222222222222222222",
+      "quoteHash": "0x3333333333333333333333333333333333333333333333333333333333333333",
+      "canonicalRequestHash": "0x4444444444444444444444444444444444444444444444444444444444444444",
+      "orderNonce": "0x5555555555555555555555555555555555555555555555555555555555555555",
+      "expiresAt": 1756769300
+    }
+  }
+}

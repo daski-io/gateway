@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "purpose": "Wire shapes the gateway emits, generated from the real builders by test/wireFixtures.test.ts (regenerate with UPDATE_WIRE_FIXTURES=1 npx vitest run test/wireFixtures.test.ts). Each consumer vendors its files verbatim under test/fixtures/gateway-wire/ and parses them in its own offline tests; the coordination repo's scripts/pair-fixtures.mjs fails PREP when a vendored copy differs from this directory.",
+  "fixtures": {
+    "mcp-result.json": {
+      "consumers": ["daski-test"],
+      "emittedBy": ["src/mcp/util.ts mcpJson", "src/mcp/util.ts mcpError"],
+      "parsedBy": ["daski-test scripts/agentic/mcpContent.ts jsonFromMcpResult"]
+    },
+    "payment-required-extensions.json": {
+      "consumers": ["daski-test"],
+      "emittedBy": ["src/standardRail/payment.ts paymentIdentifierExtension", "src/standardRail/payment.ts orderBindingExtension"],
+      "parsedBy": ["daski-test scripts/standardPaymentChallenge.ts paymentIntentIdentifier", "daski-test scripts/agentic/purchaseRecovery.ts assertPaymentBinding"]
+    },
+    "wallet-challenge.json": {
+      "consumers": ["daski-test"],
+      "emittedBy": ["src/standardRail/walletAuthorization.ts walletChallenge", "src/standardRail/wireEnvelopes.ts walletChallengeEnvelope"],
+      "parsedBy": ["daski-test scripts/standardWalletAuthorization.ts walletChallengeSigningInput", "daski-test scripts/agentic/daskiMcpAuthorization.ts callAuthorizedTool"]
+    },
+    "order-action-challenge.json": {
+      "consumers": ["daski-test"],
+      "emittedBy": ["src/standardRail/orderAuthorization.ts orderActionChallengeIssued", "src/standardRail/wireEnvelopes.ts orderActionChallengeEnvelope"],
+      "parsedBy": ["daski-test scripts/agentic/daskiMcpAuthorization.ts callAuthorizedTool", "daski-test scripts/standardAction.ts signOrderActionAuthorization"]
+    },
+    "standard-rail-error.json": {
+      "consumers": ["daski-test"],
+      "emittedBy": ["src/standardRail/errors.ts standardRailPublicError", "src/mcp/util.ts mcpError"],
+      "parsedBy": ["daski-test scripts/standardGatewayError.ts parseStandardRailError"]
+    },
+    "provider-lifecycle-request.json": {
+      "consumers": ["daski-provider"],
+      "emittedBy": ["src/standardRail/service.ts performAction (provider lifecycle POST body)", "src/standardRail/signing.ts signEnvelope"],
+      "parsedBy": ["daski-provider src/core/standardRail/lifecycle.ts performAction (read-capability stub + ProviderLifecycleGrantV1)"]
+    }
+  }
+}

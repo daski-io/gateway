@@ -39,6 +39,19 @@ export const ORDER_ACTION_TYPES = {
   ],
 } as const;
 
+/**
+ * An order-action challenge exactly as issued (service.issueActionChallenge):
+ * the challenge fields plus the ready-to-sign typed-data request. Buyers
+ * receive this object under `challenge` (orderActionChallengeEnvelope).
+ */
+export function orderActionChallengeIssued(args: {
+  challenge: OrderActionChallenge;
+  chainId: number;
+  gatewayAudience: string;
+}) {
+  return { ...args.challenge, signRequest: orderActionSignRequest(args) };
+}
+
 export function orderActionSignRequest(args: {
   challenge: OrderActionChallenge;
   chainId: number;

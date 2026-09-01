@@ -1,3 +1,4 @@
+import { walletChallengeEnvelope } from "./wireEnvelopes.js";
 import { Router, type NextFunction, type Request, type Response } from "express";
 import type { PaymentPayload, PaymentRequired } from "@x402/core/types";
 import { decodePaymentHeader, encodedPaymentRequiredHeader } from "./payment.js";
@@ -137,12 +138,11 @@ export function createStandardRailRouter(service: StandardRailService, publicUrl
       const request = { limit: body.limit, cursor: body.cursor };
       res.setHeader("Cache-Control", "private, no-store");
       if (body.authorization === null) {
-        res.json({ authorizationRequired: true, code: "WALLET_AUTHORIZATION_REQUIRED",
-          challenge: await service.issueWalletChallenge({
+        res.json(walletChallengeEnvelope(await service.issueWalletChallenge({
           action: "list-orders", payer: body.payer, request,
           absoluteResourceUri: `${origin}/wallet/orders`,
           clientKey: req.ip ?? req.socket.remoteAddress ?? "unknown",
-        }) });
+        })));
         return;
       }
       res.json(await service.listWalletOrders({
@@ -164,12 +164,11 @@ export function createStandardRailRouter(service: StandardRailService, publicUrl
       const request = {};
       res.setHeader("Cache-Control", "private, no-store");
       if (body.authorization === null) {
-        res.json({ authorizationRequired: true, code: "WALLET_AUTHORIZATION_REQUIRED",
-          challenge: await service.issueWalletChallenge({
+        res.json(walletChallengeEnvelope(await service.issueWalletChallenge({
           action: "get-buyer-reputation", payer: body.payer, request,
           absoluteResourceUri: `${origin}/wallet/reputation`,
           clientKey: req.ip ?? req.socket.remoteAddress ?? "unknown",
-        }) });
+        })));
         return;
       }
       res.json(await service.getWalletReputation({
@@ -196,12 +195,11 @@ export function createStandardRailRouter(service: StandardRailService, publicUrl
       };
       res.setHeader("Cache-Control", "private, no-store");
       if (body.authorization === null) {
-        res.json({ authorizationRequired: true, code: "WALLET_AUTHORIZATION_REQUIRED",
-          challenge: await service.issueWalletChallenge({
+        res.json(walletChallengeEnvelope(await service.issueWalletChallenge({
           action: "list-assets", payer: body.payer, request,
           absoluteResourceUri: `${origin}/wallet/assets`,
           clientKey: req.ip ?? req.socket.remoteAddress ?? "unknown",
-        }) });
+        })));
         return;
       }
       res.json(await service.listWalletAssets({
@@ -236,11 +234,10 @@ export function createStandardRailRouter(service: StandardRailService, publicUrl
       };
       res.setHeader("Cache-Control", "private, no-store");
       if (body.authorization === null) {
-        res.json({ authorizationRequired: true, code: "WALLET_AUTHORIZATION_REQUIRED",
-          challenge: await service.issueAssetActionChallenge({
+        res.json(walletChallengeEnvelope(await service.issueAssetActionChallenge({
           ...args, absoluteResourceUri: `${origin}/wallet/assets/action`,
           clientKey: req.ip ?? req.socket.remoteAddress ?? "unknown",
-        }) });
+        })));
         return;
       }
       res.json(await service.performAssetAction({ ...args, authorization: body.authorization as never }));
