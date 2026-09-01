@@ -6,6 +6,7 @@ import { mountMcpHttpTransport, type McpWiring } from "../mcp/httpTransport.js";
 import { mcpError, mcpJson, type McpErrorPayload } from "../mcp/util.js";
 import {
   asStandardRailError,
+  isTransientDatabaseError,
   logStandardRailError,
   standardRailError,
   standardRailPublicError,
@@ -129,8 +130,30 @@ function isolateProviderResult(value: unknown): unknown {
   };
 }
 
+const KNOWN_WALLET_REFUSALS = new Set([
+  "wallet authorization denied", "WALLET_QUERY_INVALID", "WALLET_RATE_LIMITED",
+  "ASSET_ACTION_NOT_ADMITTED", "ASSET_ACTION_REJECTED",
+  "ASSET_DESTRUCTIVE_CONFIRMATION_REQUIRED", "ASSET_DESTRUCTIVE_DELAY_ACTIVE",
+]);
+
 function walletMcpError(error: unknown) {
+  if (isTransientDatabaseError(error)) {
+    return mcpError({
+      code: "WALLET_TEMPORARILY_UNAVAILABLE",
+      message: "The wallet request could not be completed right now; retry it unchanged",
+      retryable: true,
+    });
+  }
   const internal = error instanceof Error ? error.message : "WALLET_ACCESS_DENIED";
+  if (!KNOWN_WALLET_REFUSALS.has(internal)) {
+    // An unexpected failure must not vanish behind a generic denial: on
+    // 2026-09-01 a serialization failure hid this way through a whole paid run.
+    logStandardRailError(standardRailError("INTERNAL_ERROR", {
+      phase: "lifecycle_auth",
+      internalMessage: `wallet request failed unexpectedly: ${internal}`,
+      cause: error,
+    }));
+  }
   const code = internal === "WALLET_RATE_LIMITED" ? "WALLET_RATE_LIMITED"
     : internal === "ASSET_ACTION_NOT_ADMITTED" ? "ASSET_ACTION_NOT_ADMITTED"
       : internal === "ASSET_ACTION_REJECTED" ? "ASSET_ACTION_REJECTED"

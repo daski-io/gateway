@@ -282,7 +282,10 @@ export class StandardRailJournal {
   }): Promise<void> {
     const client = await this.pool.connect();
     try {
-      await client.query("BEGIN ISOLATION LEVEL SERIALIZABLE");
+      // Read committed under the shared challenge-cap lock, for the same reason
+      // as StandardWalletStore.issue: the lock serializes the count and insert,
+      // and SERIALIZABLE only added a false conflict between concurrent issuers.
+      await client.query("BEGIN");
       await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))", [
         "standard:wallet-challenge-cap",
       ]);

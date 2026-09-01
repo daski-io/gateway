@@ -4,6 +4,7 @@ import { decodePaymentHeader, encodedPaymentRequiredHeader } from "./payment.js"
 import type { StandardRailService } from "./service.js";
 import {
   asStandardRailError,
+  isTransientDatabaseError,
   logStandardRailError,
   standardRailError,
   standardRailPublicError,
@@ -67,12 +68,34 @@ function assertStandardExactKeys(
   }
 }
 
+const KNOWN_WALLET_REFUSALS = new Set([
+  "wallet authorization denied", "WALLET_QUERY_INVALID", "WALLET_RATE_LIMITED",
+  "ASSET_ACTION_NOT_ADMITTED", "ASSET_ACTION_REJECTED",
+  "ASSET_DESTRUCTIVE_CONFIRMATION_REQUIRED", "ASSET_DESTRUCTIVE_DELAY_ACTIVE",
+]);
+
 function sendWalletError(
   res: import("express").Response,
   error: unknown,
   fallback = "WALLET_ACCESS_DENIED",
 ): void {
+  if (isTransientDatabaseError(error)) {
+    // Not a client fault: the same request retried unchanged will succeed.
+    res.setHeader("Retry-After", "1");
+    res.status(503).json({ error: {
+      code: "WALLET_TEMPORARILY_UNAVAILABLE",
+      message: "The wallet request could not be completed right now; retry it unchanged",
+    } });
+    return;
+  }
   const internal = error instanceof Error ? error.message : fallback;
+  if (!KNOWN_WALLET_REFUSALS.has(internal)) {
+    logStandardRailError(standardRailError("INTERNAL_ERROR", {
+      phase: "lifecycle_auth",
+      internalMessage: `wallet request failed unexpectedly: ${internal}`,
+      cause: error,
+    }));
+  }
   const code = internal === "WALLET_QUERY_INVALID" ? "WALLET_QUERY_INVALID"
     : internal === "WALLET_RATE_LIMITED" ? "WALLET_RATE_LIMITED"
       : internal === "ASSET_ACTION_NOT_ADMITTED" ? "ASSET_ACTION_NOT_ADMITTED"

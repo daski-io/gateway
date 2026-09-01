@@ -411,3 +411,15 @@ export function logStandardRailError(error: StandardRailError): void {
     ...error.logContext,
   });
 }
+
+/**
+ * Postgres could not complete the statement this time and the same request
+ * retried unchanged will succeed: serialization_failure and deadlock_detected.
+ * Never a client fault, so never a denial.
+ */
+const TRANSIENT_DATABASE_CODES = new Set(["40001", "40P01"]);
+
+export function isTransientDatabaseError(error: unknown): boolean {
+  return typeof error === "object" && error !== null &&
+    TRANSIENT_DATABASE_CODES.has(String((error as { code?: unknown }).code));
+}

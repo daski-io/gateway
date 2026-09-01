@@ -68,7 +68,12 @@ export class StandardWalletStore {
     };
     const client = await this.pool.connect();
     try {
-      await client.query("BEGIN ISOLATION LEVEL SERIALIZABLE");
+      // Read committed under the advisory lock: the lock alone serializes the
+      // cap check and the insert. SERIALIZABLE fixed the snapshot at the lock
+      // statement — before the lock was granted — so concurrent issuers counted
+      // from a stale snapshot and the loser could not commit (2026-09-01: an
+      // intermittent, non-retryable WALLET_ACCESS_DENIED for parallel clients).
+      await client.query("BEGIN");
       await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))", [
         "standard:wallet-challenge-cap",
       ]);
