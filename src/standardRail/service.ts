@@ -1243,7 +1243,7 @@ export class StandardRailService {
         internalMessage: "PROVIDER_ARTIFACT_MISSING",
       });
     }
-    if ("result" in response) this.validateResponse(listing, response.result);
+    if ("result" in response) await this.validateResponse(listing, response.result);
     let order = initial;
     if (response.state === "input-required" && order.state === "DISPATCHED") {
       order = await this.store.transition(order, "INPUT_REQUIRED", "provider_input_required");
@@ -1308,7 +1308,7 @@ export class StandardRailService {
     this.assertAdmissionOpen();
     await this.assertRailFence();
     const listing = await this.listing(args.providerAgentId, args.outcomeId);
-    this.validateRequest(listing, args.body);
+    await this.validateRequest(listing, args.body);
     const canonicalRequestHash = canonicalHash({
       method: "POST",
       resource: listing.commitment.payload.absoluteResourceUri,
@@ -2017,12 +2017,12 @@ export class StandardRailService {
     return this.store.assertActiveRail(this.railProfileHash);
   }
 
-  private validateRequest(listing: StandardListing, body: unknown): void {
-    this.catalog.validateRequest(listing, body);
+  private validateRequest(listing: StandardListing, body: unknown): Promise<void> {
+    return this.catalog.validateRequest(listing, body);
   }
 
-  private validateResponse(listing: StandardListing, result: unknown): void {
-    this.catalog.validateResponse(listing, result);
+  private validateResponse(listing: StandardListing, result: unknown): Promise<void> {
+    return this.catalog.validateResponse(listing, result);
   }
 
   private screenParticipants(listing: StandardListing, payer?: Hex): Promise<void> {
