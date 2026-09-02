@@ -9,7 +9,16 @@ import { createRateLimitQueries } from "../db/rateLimitQueries.js";
 import { createStandardGatewayHttp } from "../http/gatewayApp.js";
 import type { McpWiring } from "../mcp/httpTransport.js";
 import { ApplicationLifecycle } from "../runtime/applicationLifecycle.js";
+import { logger } from "../util/logger.js";
 import type { StandardRailConfig } from "./config.js";
+
+/**
+ * Concurrent settlement pipelines each hold up to three advisory-lock
+ * connections (listing, rail fence, relayer nonce); beyond this many the
+ * next holder waits on checkout and hands its order to recovery.
+ */
+const LOCK_POOL_SIZE = 12;
+const RATE_LIMIT_PRUNE_INTERVAL_MS = 60_000;
 
 function quotedIdentifier(value: string): string {
   return `"${value.replaceAll('"', '""')}"`;
@@ -136,6 +145,9 @@ export async function createStandardApp(options: {
     const migrationPool = createPool({
       connectionString: options.standardRailConfig.migrationDatabaseUrl,
       max: 1,
+      connectionTimeoutMs: 0,
+      statementTimeoutMs: 0,
+      lockTimeoutMs: 0,
     });
     try {
       await runMigrations(migrationPool);
@@ -160,22 +172,41 @@ export async function createStandardApp(options: {
       max: options.standardRailConfig.abuse.federationGlobalConcurrency,
     }));
   const ownsFederationPermitPool = options.federationPermitPool === undefined && options.pool === undefined;
+  // Settlement holders keep their advisory-lock connections here, apart from
+  // the query pool, so a lock holder can never be starved of a client by the
+  // work it is itself serializing.
+  const lockPool = options.pool ? pool : createPool({
+    connectionString: options.config.databaseUrl,
+    max: LOCK_POOL_SIZE,
+  });
+  const ownsLockPool = options.pool === undefined;
   const lifecycle = new ApplicationLifecycle();
   const rateLimitStore = createRateLimitQueries(pool);
   const { app, mcp, standardRailStop } = await createStandardGatewayHttp({
     config: options.config,
     pool,
     federationPermitPool,
+    lockPool,
     lifecycle,
     standardRailConfig: options.standardRailConfig,
     rateLimitStore,
     a2aFetch: options.a2aFetch,
   });
+  // Rate-limit buckets are keyed by client address; under source-address
+  // rotation the table otherwise grows at request throughput with nothing
+  // reclaiming it.
+  const pruneRateLimits = setInterval(() => {
+    void rateLimitStore.pruneRateLimitBuckets().catch((error) => {
+      logger.warn("rate-limit bucket pruning failed", { error });
+    });
+  }, RATE_LIMIT_PRUNE_INTERVAL_MS);
+  pruneRateLimits.unref();
 
   let shutdownPromise: Promise<void> | null = null;
   const shutdown = (httpClosed: Promise<void> = Promise.resolve()): Promise<void> => {
     if (shutdownPromise) return shutdownPromise;
     lifecycle.beginShutdown();
+    clearInterval(pruneRateLimits);
     shutdownPromise = (async () => {
       const drains = await Promise.allSettled([
         httpClosed,
@@ -185,6 +216,7 @@ export async function createStandardApp(options: {
       const poolClose = await Promise.allSettled([
         ...(ownsPool ? [pool.end()] : []),
         ...(ownsFederationPermitPool ? [federationPermitPool.end()] : []),
+        ...(ownsLockPool ? [lockPool.end()] : []),
       ]);
       const failure = [...drains, ...poolClose].find((result) => result.status === "rejected");
       if (failure?.status === "rejected") throw failure.reason;

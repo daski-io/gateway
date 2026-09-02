@@ -1,4 +1,5 @@
-import { Router } from "express";
+import { timingSafeEqual } from "node:crypto";
+import { Router, type Request } from "express";
 import type { Config } from "../config.js";
 import type { Pool } from "../db/pool.js";
 import type { ApplicationLifecycle } from "../runtime/applicationLifecycle.js";
@@ -7,6 +8,30 @@ import type { StandardRailConfig } from "./config.js";
 import type { StandardRailService } from "./service.js";
 import type { PublicChainMetadataV3 } from "./types.js";
 import { llmsFull, llmsIndex, readSkill, skillIndex } from "./skills.js";
+
+function operatorAuthorized(req: Request, token: string | null): boolean {
+  if (!token) return false;
+  const header = req.header("authorization") ?? "";
+  if (!header.startsWith("Bearer ")) return false;
+  const presented = Buffer.from(header.slice("Bearer ".length).trim(), "utf8");
+  const wanted = Buffer.from(token, "utf8");
+  return presented.length === wanted.length && timingSafeEqual(presented, wanted);
+}
+
+const PUBLIC_RELAYER_FIELDS = new Set(["chainId", "address"]);
+
+function publicOperations(
+  observed: Record<string, unknown>,
+): Record<string, unknown> {
+  const reputation = observed.reputation;
+  if (!reputation || typeof reputation !== "object") return observed;
+  const { relayer, ...counters } = reputation as Record<string, unknown>;
+  const publicRelayer = relayer && typeof relayer === "object"
+    ? Object.fromEntries(Object.entries(relayer as Record<string, unknown>)
+      .filter(([key]) => PUBLIC_RELAYER_FIELDS.has(key)))
+    : null;
+  return { ...observed, reputation: { ...counters, relayer: publicRelayer } };
+}
 
 export function createStandardMetaRouter(args: {
   config: Config;
@@ -19,11 +44,18 @@ export function createStandardMetaRouter(args: {
   router.get("/health/live", (_req, res) => {
     res.json({ status: "alive", version: GATEWAY_VERSION, commit: GATEWAY_COMMIT });
   });
-  router.get("/health/ready", async (_req, res) => {
+  router.get("/health/ready", async (req, res) => {
     const databaseReady = await args.pool.query("SELECT 1").then(() => true, () => false);
     const admissionOpen = args.service.isAdmissionOpen();
     const dependenciesReady = args.service.areDependenciesReady();
-    const operations = databaseReady ? await args.service.operationalHealth().catch(() => null) : null;
+    const observed = databaseReady ? await args.service.operationalHealth().catch(() => null) : null;
+    // Relayer balance and nonces stay with the operator: on the public
+    // surface they let anyone time a sponsorship drain or spot under-funding.
+    const operations = observed === null
+      ? null
+      : operatorAuthorized(req, args.config.catalogOperatorToken)
+        ? observed
+        : publicOperations(observed);
     const ready = databaseReady && admissionOpen && dependenciesReady && !args.lifecycle.isStopping();
     res.status(ready ? 200 : 503).json({
       status: ready ? "ready" : "unready",

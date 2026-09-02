@@ -36,6 +36,8 @@ export interface StandardGatewayHttpOptions {
   config: Config;
   pool: Pool;
   federationPermitPool?: Pool;
+  /** Holds session advisory locks across settlement work; defaults to `pool`. */
+  lockPool?: Pool;
   lifecycle: ApplicationLifecycle;
   standardRailConfig: StandardRailConfig;
   rateLimitStore: RateLimitStore;
@@ -86,8 +88,9 @@ export async function createStandardGatewayHttp(
   });
   const facilitator = new CdpStandardFacilitator(options.standardRailConfig);
   const chain = options.config.chainId === 8453 ? base : baseSepolia;
+  const lockPool = options.lockPool ?? options.pool;
   const nonceLock = new PostgresFacilitatorNonceLock(
-    options.pool,
+    lockPool,
     chain.id,
     privateKeyToAccount(options.standardRailConfig.releasePrivateKey).address,
   );
@@ -128,6 +131,7 @@ export async function createStandardGatewayHttp(
     (record) => registrationService.refreshRegistration(record),
     options.a2aFetch,
     options.federationPermitPool,
+    lockPool,
   );
   await standardRail.initialize();
   if (options.config.dynamicServiceRegistrationEnabled) {

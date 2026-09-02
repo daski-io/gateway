@@ -16,10 +16,33 @@ export interface CreatePoolOptions {
    */
   searchPath?: string;
   max?: number;
+  /**
+   * How long a caller waits for a free client before the checkout fails.
+   * Without it a saturated pool queues callers forever, which turned a
+   * settlement-time lock pile-up into a whole-process stall. Defaults to
+   * 10 s; `0` keeps pg's unbounded wait (migration runners).
+   */
+  connectionTimeoutMs?: number;
+  /** Session `statement_timeout` applied in the startup packet; `0` disables. */
+  statementTimeoutMs?: number;
+  /** Session `lock_timeout` applied in the startup packet; `0` disables. */
+  lockTimeoutMs?: number;
+}
+
+const DEFAULT_CONNECTION_TIMEOUT_MS = 10_000;
+const DEFAULT_STATEMENT_TIMEOUT_MS = 30_000;
+const DEFAULT_LOCK_TIMEOUT_MS = 15_000;
+
+function positiveMilliseconds(name: string, value: number | undefined, fallback: number): number {
+  const resolved = value ?? fallback;
+  if (!Number.isSafeInteger(resolved) || resolved < 0) {
+    throw new Error(`${name} must be a non-negative integer number of milliseconds`);
+  }
+  return resolved;
 }
 
 export function createPool(opts: CreatePoolOptions): Pool {
-  let options: string | undefined;
+  const startup: string[] = [];
   if (opts.searchPath !== undefined) {
     const names = opts.searchPath.split(",").map((name) => name.trim());
     if (
@@ -31,12 +54,22 @@ export function createPool(opts: CreatePoolOptions): Pool {
     // Apply the path in PostgreSQL's startup packet. An asynchronous
     // `pool.on("connect")` query races the caller's first query and pg 9
     // no longer permits that overlapping use of a newly connected client.
-    options = `-c search_path=${names.join(",")}`;
+    startup.push(`-c search_path=${names.join(",")}`);
   }
+  const statementTimeout = positiveMilliseconds(
+    "statementTimeoutMs", opts.statementTimeoutMs, DEFAULT_STATEMENT_TIMEOUT_MS,
+  );
+  const lockTimeout = positiveMilliseconds("lockTimeoutMs", opts.lockTimeoutMs, DEFAULT_LOCK_TIMEOUT_MS);
+  if (statementTimeout > 0) startup.push(`-c statement_timeout=${statementTimeout}`);
+  if (lockTimeout > 0) startup.push(`-c lock_timeout=${lockTimeout}`);
+  const connectionTimeout = positiveMilliseconds(
+    "connectionTimeoutMs", opts.connectionTimeoutMs, DEFAULT_CONNECTION_TIMEOUT_MS,
+  );
   return new pg.Pool({
     connectionString: opts.connectionString,
     ...(opts.max === undefined ? {} : { max: opts.max }),
-    ...(options ? { options } : {}),
+    ...(startup.length > 0 ? { options: startup.join(" ") } : {}),
+    ...(connectionTimeout > 0 ? { connectionTimeoutMillis: connectionTimeout } : {}),
   });
 }
 

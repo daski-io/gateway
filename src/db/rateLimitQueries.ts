@@ -38,10 +38,11 @@ export function createRateLimitQueries(pool: Pool) {
       return { count: row.request_count, resetAt: row.reset_at };
     },
 
+    // Every window is at most one minute; a bucket idle for ten is dead.
     async pruneRateLimitBuckets(): Promise<number> {
       const result = await pool.query(
         `DELETE FROM rate_limit_buckets
-          WHERE window_started_at < now() - interval '1 day'`,
+          WHERE window_started_at < now() - interval '10 minutes'`,
       );
       return result.rowCount ?? 0;
     },

@@ -1,0 +1,60 @@
+{
+  "walletAuthorizationInvalid": {
+    "error": {
+      "code": "WALLET_AUTHORIZATION_INVALID",
+      "message": "Wallet authorization rejected",
+      "phase": "lifecycle_auth",
+      "retryable": true,
+      "requiresNewSignature": true,
+      "paymentMayHaveSettled": false,
+      "docs": "https://sandbox-gateway.daski.io/skills/buy.md#errors",
+      "correlationId": "00000000-0000-4000-8000-00000000c0de"
+    }
+  },
+  "authorizationWindow": {
+    "error": {
+      "code": "AUTHORIZATION_WINDOW",
+      "message": "The EIP-3009 authorization timing window is outside the accepted bounds",
+      "phase": "payment_validation",
+      "retryable": true,
+      "requiresNewSignature": true,
+      "paymentMayHaveSettled": false,
+      "serverTime": 1756769000,
+      "docs": "https://sandbox-gateway.daski.io/skills/buy.md#errors",
+      "correlationId": "00000000-0000-4000-8000-00000000c0de"
+    }
+  },
+  "requestSchemaInvalid": {
+    "error": {
+      "code": "REQUEST_SCHEMA_INVALID",
+      "message": "Request body does not match the outcome schema",
+      "phase": "request_validation",
+      "retryable": true,
+      "requiresNewSignature": false,
+      "paymentMayHaveSettled": false,
+      "fieldErrors": [
+        {
+          "path": "/registrantState",
+          "rule": "pattern",
+          "message": "must match pattern"
+        }
+      ],
+      "docs": "https://sandbox-gateway.daski.io/skills/buy.md#errors",
+      "correlationId": "00000000-0000-4000-8000-00000000c0de"
+    }
+  },
+  "mcpWalletAccessDenied": {
+    "isError": true,
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"code\":\"WALLET_ACCESS_DENIED\",\"message\":\"Wallet authorization rejected\",\"retryable\":false}"
+      }
+    ],
+    "structuredContent": {
+      "code": "WALLET_ACCESS_DENIED",
+      "message": "Wallet authorization rejected",
+      "retryable": false
+    }
+  }
+}

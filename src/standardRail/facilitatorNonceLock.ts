@@ -1,5 +1,13 @@
 import type { Address } from "viem";
+import { withAdvisoryLock } from "../db/advisoryLock.js";
 import type { Pool } from "../db/pool.js";
+
+/**
+ * A relayer transaction plus its finality wait runs well under a minute on
+ * Base; a waiter that cannot take the nonce within this window hands the
+ * order back to recovery instead of sitting on the lock queue.
+ */
+export const FACILITATOR_NONCE_LOCK_WAIT_MS = 90_000;
 
 export interface FacilitatorNonceLock {
   run<T>(work: () => Promise<T>): Promise<T>;
@@ -16,29 +24,13 @@ export class PostgresFacilitatorNonceLock implements FacilitatorNonceLock {
     private readonly pool: Pool,
     chainId: number,
     address: Address,
+    private readonly waitMs: number = FACILITATOR_NONCE_LOCK_WAIT_MS,
   ) {
     this.lockKey =
       `standard:facilitator-nonce:${chainId}:${address.toLowerCase()}`;
   }
 
-  async run<T>(work: () => Promise<T>): Promise<T> {
-    const client = await this.pool.connect();
-    let locked = false;
-    try {
-      await client.query(
-        "SELECT pg_advisory_lock(hashtextextended($1,0))",
-        [this.lockKey],
-      );
-      locked = true;
-      return await work();
-    } finally {
-      if (locked) {
-        await client.query(
-          "SELECT pg_advisory_unlock(hashtextextended($1,0))",
-          [this.lockKey],
-        ).catch(() => undefined);
-      }
-      client.release();
-    }
+  run<T>(work: () => Promise<T>): Promise<T> {
+    return withAdvisoryLock(this.pool, this.lockKey, work, { waitMs: this.waitMs });
   }
 }

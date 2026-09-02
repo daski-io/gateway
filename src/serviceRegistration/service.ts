@@ -13,6 +13,7 @@ import {
   verifyRegistrationIntent,
 } from "./auth.js";
 import { parseProviderServiceCard } from "./card.js";
+import { SCHEMA_BUDGET_QUARANTINE_CODE } from "./store.js";
 import { fetchProviderCardJson } from "./cardFetch.js";
 import type { RegistrationEvidenceVerifier } from "./evidence.js";
 import {
@@ -858,6 +859,15 @@ export class ServiceRegistrationService {
   }
 
   private async refreshOne(record: StoredRegistration): Promise<void> {
+    // A schema that overran the validation budget is immutable for this
+    // registration (a changed skill contract set is CARD_CONTRACT_DRIFT), so
+    // the quarantine holds until the provider registers a corrected version.
+    if (record.lastRefreshErrorCode === SCHEMA_BUDGET_QUARANTINE_CODE) {
+      // Recorded as an attempt so the record rotates to the back of the
+      // refresh queue instead of occupying a slot in every batch.
+      await this.store.refreshFailed(record.registrationId, SCHEMA_BUDGET_QUARANTINE_CODE);
+      return;
+    }
     let service: MarketplaceServiceRecord;
     let authority: ProviderAuthority;
     try {

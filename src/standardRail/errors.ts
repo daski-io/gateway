@@ -263,6 +263,8 @@ export interface StandardRailErrorOptions {
   internalMessage?: string;
   logContext?: Record<string, unknown>;
   cause?: unknown;
+  /** Fixed correlation id — wire fixtures only; production ids are random. */
+  correlationId?: string;
 }
 
 export class StandardRailError extends Error {
@@ -297,7 +299,7 @@ export class StandardRailError extends Error {
     this.expected = options.expected;
     this.fieldErrors = options.fieldErrors;
     this.nextAction = options.nextAction ?? defaults.nextAction;
-    this.correlationId = randomUUID();
+    this.correlationId = options.correlationId ?? randomUUID();
     this.logContext = options.logContext ?? {};
   }
 }

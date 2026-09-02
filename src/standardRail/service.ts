@@ -62,14 +62,14 @@ import type {
   ServiceRegistrationStore,
   StoredRegistration,
 } from "../serviceRegistration/store.js";
-import { readBoundedJsonResponse as readBoundedJson } from "./boundedJson.js";
+import { discardResponseBody, readBoundedJsonResponse as readBoundedJson } from "./boundedJson.js";
 import { StandardProviderTransport } from "./providerTransport.js";
 import { StandardRailCatalog } from "./catalog.js";
 import { StandardProviderDispatch } from "./providerDispatch.js";
 import { StandardOperationalHealth } from "./operationalHealth.js";
 import { withRpcFailover } from "../rpc/failover.js";
 import {
-  orderActionSignRequest,
+  orderActionChallengeIssued, orderActionSignRequest,
   type OrderAction,
   type OrderActionChallenge,
 } from "./orderAuthorization.js";
@@ -105,6 +105,8 @@ function isTransitionConflict(error: unknown): boolean {
   return error instanceof Error && error.message === "ORDER_TRANSITION_CONFLICT";
 }
 
+const OPERATIONAL_HEALTH_MEMO_MS = 15_000;
+
 export class StandardRailService {
   private readonly store: StandardRailStore;
   private readonly journal: StandardRailJournal;
@@ -122,6 +124,10 @@ export class StandardRailService {
   private readonly confirmations: StandardConfirmations;
   private readonly reputationReader: DirectReputationReader;
   private dependenciesReady = false;
+  private operationalHealthMemo: {
+    expiresAt: number;
+    value: Promise<Awaited<ReturnType<StandardOperationalHealth["read"]>>>;
+  } | null = null;
   private readinessInterval: NodeJS.Timeout | null = null;
   private readinessRetry: NodeJS.Timeout | null = null;
   private readinessRefresh: Promise<void> | null = null;
@@ -137,8 +143,9 @@ export class StandardRailService {
     refreshRegistration: (record: StoredRegistration) => Promise<void>,
     fetchFn: typeof fetch = fetch,
     federationPermitPool: Pool = pool,
+    lockPool: Pool = pool,
   ) {
-    this.store = new StandardRailStore(pool);
+    this.store = new StandardRailStore(pool, lockPool);
     this.incidents = new StandardRailIncidentStore(pool);
     this.journal = new StandardRailJournal(pool);
     this.providerTransport = new StandardProviderTransport(fetchFn);
@@ -208,6 +215,7 @@ export class StandardRailService {
       cleanup: async () => {
         await this.journal.cleanupExpiredActionAuthorizations();
         await this.walletStore.cleanupExpiredAuthorizations();
+        await this.store.pruneUnpaidDrafts();
       },
     });
   }
@@ -268,8 +276,19 @@ export class StandardRailService {
     return this.dependenciesReady;
   }
 
-  operationalHealth() {
-    return this.operationalHealthReporter.read();
+  // /health/ready is unauthenticated and rate limited only at the public
+  // read budget; each fresh read costs four aggregate scans and three RPC
+  // calls, so one observation is shared for a short window.
+  operationalHealth(): Promise<Awaited<ReturnType<StandardOperationalHealth["read"]>>> {
+    const now = Date.now();
+    const memo = this.operationalHealthMemo;
+    if (memo && memo.expiresAt > now) return memo.value;
+    const value = this.operationalHealthReporter.read();
+    this.operationalHealthMemo = { expiresAt: now + OPERATIONAL_HEALTH_MEMO_MS, value };
+    value.catch(() => {
+      if (this.operationalHealthMemo?.value === value) this.operationalHealthMemo = null;
+    });
+    return value;
   }
 
   publicArtifact(hash: string): Promise<unknown | null> {
@@ -484,7 +503,10 @@ export class StandardRailService {
 
   private async resumePaidOrder(initial: StandardOrderRecord): Promise<void> {
     await this.assertRailFence();
-    await this.store.withListingSettlementLock(initial.listingManifestHash, async () => {
+    // A busy listing lock means another driver is settling on this listing;
+    // the order stays leased-free in its durable state and is due again on
+    // the next recovery tick.
+    await this.store.tryWithListingSettlementLock(initial.listingManifestHash, async () => {
       let order = await this.store.findById(initial.orderId);
       if (!order || ![
         "ATTEMPT_OPENED", "VERIFIED", "VERIFY_REJECTED", "SETTLE_INVOKED",
@@ -536,7 +558,7 @@ export class StandardRailService {
       ];
       if (unconfirmedStates.includes(order.state)) {
         const nonce = this.paymentNonce(order);
-        if (order.state !== "EXTERNAL_OR_UNPROVEN_DEPOSIT") {
+        if (!order.depositEvidenceHash) {
           const transactionHash = await this.evidence.findSettlementTransaction({
             listing,
             payer: getAddress(order.payer!),
@@ -556,15 +578,23 @@ export class StandardRailService {
                 externalDeposit,
                 this.appConfig.chainId,
               );
-              order = await this.store.transition(
-                order,
-                "EXTERNAL_OR_UNPROVEN_DEPOSIT",
-                "exact_deposit_without_authenticated_facilitator_success",
-                {
-                  settlementTxHash: transactionHash,
-                  depositEvidenceHash: externalDeposit.evidenceHash,
-                },
-              );
+              const proven = {
+                settlementTxHash: transactionHash,
+                depositEvidenceHash: externalDeposit.evidenceHash,
+              };
+              order = order.state === "EXTERNAL_OR_UNPROVEN_DEPOSIT"
+                ? await this.store.transition(
+                  order,
+                  "DEPOSIT_FINAL",
+                  "proven_deposit_accepted_as_settlement",
+                  proven,
+                )
+                : await this.store.transition(
+                  order,
+                  "EXTERNAL_OR_UNPROVEN_DEPOSIT",
+                  "exact_deposit_without_authenticated_facilitator_success",
+                  proven,
+                );
             } catch (error) {
               if (Date.now() < order.updatedAt.getTime() +
                 listing.deadlinePolicy.settlementEvidenceSeconds * 1_000) throw error;
@@ -573,6 +603,18 @@ export class StandardRailService {
               });
               return;
             }
+          } else if (order.state === "EXTERNAL_OR_UNPROVEN_DEPOSIT") {
+            // The authorization was seen consumed before facilitator egress
+            // but its transfer is not discoverable yet; hold the evidence
+            // window before parking the order.
+            if (Date.now() < order.updatedAt.getTime() +
+              listing.deadlinePolicy.settlementEvidenceSeconds * 1_000) {
+              throw new Error("External deposit transaction is not yet discoverable");
+            }
+            await this.store.transition(order, "LEGAL_HOLD", "captured_settlement_evidence_unavailable", {
+              encryptedPaymentPayload: null,
+            });
+            return;
           } else {
             const policy = this.railConfig.manifest.chainEvidencePolicy.payload;
             const finalNoCaptureAt = (
@@ -598,14 +640,18 @@ export class StandardRailService {
           }
         }
         if (order.state === "EXTERNAL_OR_UNPROVEN_DEPOSIT") {
-          if (Date.now() < order.updatedAt.getTime() +
-            listing.deadlinePolicy.settlementEvidenceSeconds * 1_000) {
-            throw new Error("External deposit awaits authenticated facilitator evidence");
-          }
-          await this.store.transition(order, "LEGAL_HOLD", "facilitator_attestation_deadline_elapsed", {
-            encryptedPaymentPayload: null,
-          });
-          return;
+          // The deposit is proven on chain and bound to this order's payer,
+          // nonce, splitter and amount: the same evidence the facilitator
+          // path relies on. Whether the facilitator's settle response was
+          // lost or the payer relayed the authorization themselves, the funds
+          // are in the splitter for this order, so it proceeds to release and
+          // dispatch instead of parking in LEGAL_HOLD, where it blocked every
+          // later purchase of the listing (audit M1, 2026-09-01).
+          order = await this.store.transition(
+            order,
+            "DEPOSIT_FINAL",
+            "proven_deposit_accepted_as_settlement",
+          );
         }
       }
       let deposit: import("./evidence.js").EvidenceResult;
@@ -949,14 +995,11 @@ export class StandardRailService {
       issuedAt: now,
       validBefore,
     };
-    return {
-      ...challenge,
-      signRequest: orderActionSignRequest({
-        challenge,
-        chainId: this.appConfig.chainId,
-        gatewayAudience: this.railConfig.gatewayAudience,
-      }),
-    };
+    return orderActionChallengeIssued({
+      challenge,
+      chainId: this.appConfig.chainId,
+      gatewayAudience: this.railConfig.gatewayAudience,
+    });
   }
 
   private syntheticOrderId(handle: string): string {
@@ -1171,10 +1214,13 @@ export class StandardRailService {
         )),
       },
     );
-    if (!response.ok) throw standardRailError("INTERNAL_ERROR", {
+    if (!response.ok) {
+      await discardResponseBody(response);
+      throw standardRailError("INTERNAL_ERROR", {
         phase: "dispatch",
         internalMessage: "PROVIDER_LIFECYCLE_REJECTED",
       });
+    }
     const providerResult = await readBoundedJson(
       response,
       listing.providerControlProfile.payload.maxResponseBytes,
@@ -1246,7 +1292,7 @@ export class StandardRailService {
         internalMessage: "PROVIDER_ARTIFACT_MISSING",
       });
     }
-    if ("result" in response) this.validateResponse(listing, response.result);
+    if ("result" in response) await this.validateResponse(listing, response.result);
     let order = initial;
     if (response.state === "input-required" && order.state === "DISPATCHED") {
       order = await this.store.transition(order, "INPUT_REQUIRED", "provider_input_required");
@@ -1311,7 +1357,7 @@ export class StandardRailService {
     this.assertAdmissionOpen();
     await this.assertRailFence();
     const listing = await this.listing(args.providerAgentId, args.outcomeId);
-    this.validateRequest(listing, args.body);
+    await this.validateRequest(listing, args.body);
     const canonicalRequestHash = canonicalHash({
       method: "POST",
       resource: listing.commitment.payload.absoluteResourceUri,
@@ -1663,8 +1709,18 @@ export class StandardRailService {
     try {
       verify = await this.withRailFence(() => this.facilitator.verify(args.payment, requirements));
     } catch (error) {
+      // The facilitator was never reached, so nothing was verified and
+      // nothing can settle. The claimed authorization is voided before the
+      // client is told to sign again: left in ATTEMPT_OPENED, recovery would
+      // re-verify and settle it while the client's fresh signature settles a
+      // second time (audit H1, 2026-09-01).
+      order = await this.store.transition(order, "VERIFY_REJECTED", "facilitator_verify_unavailable");
+      await this.store.releaseCapacity(order.orderId);
       throw standardRailError("FACILITATOR_REJECTED", {
         phase: "facilitator_verify",
+        status: 503,
+        message: "The external facilitator could not be reached; this authorization was voided",
+        nextAction: "This authorization will not settle. Request a fresh challenge and sign again.",
         cause: error,
         logContext: { orderId: order.orderId, intentId: order.intentId, payer: authorization.payer },
       });
@@ -1690,17 +1746,27 @@ export class StandardRailService {
       });
     }
     order = await this.store.transition(order, "VERIFIED", "facilitator_verified");
-    return this.store.withListingSettlementLock(order.listingManifestHash, async () => {
+    // The verified order is durable. When another purchase already holds
+    // this listing's settlement lock the request answers with the VERIFIED
+    // order at once; the recovery worker settles it when the listing frees.
+    const settled = await this.store.tryWithListingSettlementLock(order.listingManifestHash, async () => {
       if (!await this.store.listingSettlementAvailable(order.listingManifestHash, order.orderId)) {
         return order;
       }
-      await this.screenParticipants(listing, authorization.payer);
-      await this.verifyListingIdentity(listing);
-      if (await this.evidence.authorizationUsed(
-        getAddress(listing.commitment.payload.canonicalToken),
-        authorization.payer,
-        authorization.nonce,
-      )) {
+      // From here the verified authorization is recovery's to settle. A
+      // failure in these pre-settlement checks must never tell the client to
+      // sign again (a LISTING_SUPERSEDED 409 or a plain 500 did), because the
+      // fresh signature would settle beside the original one.
+      const consumedBeforeEgress = await this.reconcileInsteadOfResigning(order, authorization.payer, async () => {
+        await this.screenParticipants(listing, authorization.payer);
+        await this.verifyListingIdentity(listing);
+        return this.evidence.authorizationUsed(
+          getAddress(listing.commitment.payload.canonicalToken),
+          authorization.payer,
+          authorization.nonce,
+        );
+      });
+      if (consumedBeforeEgress) {
         order = await this.store.transition(
           order,
           "EXTERNAL_OR_UNPROVEN_DEPOSIT",
@@ -1814,6 +1880,32 @@ export class StandardRailService {
         });
       }
     });
+    return settled.acquired ? settled.result : order;
+  }
+
+  // Runs a pre-settlement check for an order whose signed authorization is
+  // durably claimed and verified. Any failure is answered as
+  // PAYMENT_PENDING_RECONCILIATION: the recovery worker will settle that
+  // authorization, so the only safe client advice is to reconcile by payment
+  // identifier and never to sign a second one.
+  private async reconcileInsteadOfResigning<T>(
+    order: StandardOrderRecord,
+    payer: Hex,
+    check: () => Promise<T>,
+  ): Promise<T> {
+    try {
+      return await check();
+    } catch (error) {
+      const classified = asStandardRailError(error);
+      if (classified?.paymentMayHaveSettled) throw classified;
+      throw standardRailError("PAYMENT_PENDING_RECONCILIATION", {
+        internalMessage: error instanceof Error
+          ? `Pre-settlement check failed after verification: ${error.message}`
+          : "Pre-settlement check failed after verification",
+        cause: error,
+        logContext: { orderId: order.orderId, intentId: order.intentId, payer },
+      });
+    }
   }
 
   private dispatch(
@@ -1906,6 +1998,9 @@ export class StandardRailService {
       )),
     }, true);
     if (!response.ok) {
+      // Only a 4xx carries a structured rejection worth reading; every other
+      // failure body is released so the pinned socket closes.
+      if (response.status < 400 || response.status >= 500) await discardResponseBody(response);
       if (response.status >= 400 && response.status < 500) {
         let fieldErrors: Array<{
           path: string;
@@ -2020,12 +2115,12 @@ export class StandardRailService {
     return this.store.assertActiveRail(this.railProfileHash);
   }
 
-  private validateRequest(listing: StandardListing, body: unknown): void {
-    this.catalog.validateRequest(listing, body);
+  private validateRequest(listing: StandardListing, body: unknown): Promise<void> {
+    return this.catalog.validateRequest(listing, body);
   }
 
-  private validateResponse(listing: StandardListing, result: unknown): void {
-    this.catalog.validateResponse(listing, result);
+  private validateResponse(listing: StandardListing, result: unknown): Promise<void> {
+    return this.catalog.validateResponse(listing, result);
   }
 
   private screenParticipants(listing: StandardListing, payer?: Hex): Promise<void> {

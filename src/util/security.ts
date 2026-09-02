@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { Request, Response, NextFunction } from "express";
 
 // Inline equivalents of the bits of `helmet` + `express-rate-limit` we
@@ -30,6 +31,16 @@ export function securityHeaders(
 interface Bucket {
   count: number;
   resetAt: number;
+}
+
+const MAX_BUCKET_KEY_LENGTH = 128;
+
+// `req.ip` is whatever the trusted proxy forwarded; a misconfigured hop
+// count lets a client choose it. Keys stay bounded and index-safe: anything
+// long or outside the address/token alphabet is replaced by its digest.
+export function boundedBucketKey(value: string): string {
+  if (value.length <= MAX_BUCKET_KEY_LENGTH && /^[A-Za-z0-9.:_-]+$/.test(value)) return value;
+  return `h:${createHash("sha256").update(value).digest("hex")}`;
 }
 
 export interface RateLimitOptions {
@@ -116,11 +127,13 @@ export function rateLimit(opts: RateLimitOptions) {
     res: Response,
     next: NextFunction,
   ): void {
-    const clientKey = opts.key
-      ? opts.key(req)
-      : opts.keyScope === "global"
-        ? "global"
-        : (req.ip ?? req.socket.remoteAddress ?? "unknown");
+    const clientKey = boundedBucketKey(
+      opts.key
+        ? opts.key(req)
+        : opts.keyScope === "global"
+          ? "global"
+          : (req.ip ?? req.socket.remoteAddress ?? "unknown"),
+    );
     const key = `${opts.namespace ?? "default"}:${clientKey}`;
     if (opts.store) {
       void opts.store

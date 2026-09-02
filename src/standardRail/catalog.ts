@@ -3,9 +3,10 @@ import { getAddress, type Hex } from "viem";
 import type { Config } from "../config.js";
 import type { SplitterActivationCheckpoint } from "../serviceRegistration/evidence.js";
 import type { RuntimeListingCommitmentV1 } from "../serviceRegistration/runtimeCommitment.js";
-import type {
-  ServiceRegistrationStore,
-  StoredRegistration,
+import {
+  SCHEMA_BUDGET_QUARANTINE_CODE,
+  type ServiceRegistrationStore,
+  type StoredRegistration,
 } from "../serviceRegistration/store.js";
 import type {
   PreparedListing,
@@ -21,6 +22,7 @@ import {
   assertSchema,
   compileClosedRequestSchema,
   compileClosedResponseSchema,
+  SchemaValidationBudgetError,
 } from "./schema.js";
 import type {
   CatalogSearchVocabularyV1,
@@ -37,6 +39,17 @@ import type {
 /** §10 commerce fence: a purchase requires provider facts newer than this. */
 const PURCHASE_FRESHNESS_SECONDS = 300;
 const PUBLIC_CATALOG_LIMIT = 500;
+/**
+ * The assembled public catalog is memoized briefly: every public read and
+ * MCP search otherwise re-queries one commitment row per registration and
+ * re-hashes every listing, so an anonymous reader could drive the shared
+ * pool at the public-read budget. The memo is keyed on the registration
+ * store's mutation counter, so a write on this replica is visible at once;
+ * other replicas' writes surface within the TTL.
+ */
+const PUBLIC_CATALOG_MEMO_MS = 15_000;
+/** Search rows are shortlisting data; long provider copy stays behind daski_get_outcome. */
+const SEARCH_ROW_TEXT_LIMIT = 2_048;
 
 const EMPTY_REPUTATION = {
   transactionCount: "0",
@@ -213,6 +226,13 @@ export class StandardRailCatalog {
     Hex,
     { request: ValidateFunction; response: ValidateFunction }
   >();
+  /** Listings whose schema validation overran the CPU budget on this replica. */
+  private readonly quarantined = new Set<Hex>();
+  private catalogMemo: {
+    version: number;
+    expiresAt: number;
+    rows: Promise<PublicOutcomeV1[]>;
+  } | null = null;
 
   constructor(
     private readonly railConfig: StandardRailConfig,
@@ -282,16 +302,58 @@ export class StandardRailCatalog {
     }
   }
 
-  validateRequest(listing: StandardListing, body: unknown): void {
-    assertSchema(this.compiled(listing).request, body);
+  async validateRequest(listing: StandardListing, body: unknown): Promise<void> {
+    await this.withinSchemaBudget(listing, () =>
+      assertSchema(this.compiled(listing).request, body));
   }
 
-  validateResponse(listing: StandardListing, result: unknown): void {
-    assertSchema(this.compiled(listing).response, result, "Response");
+  async validateResponse(listing: StandardListing, result: unknown): Promise<void> {
+    await this.withinSchemaBudget(listing, () =>
+      assertSchema(this.compiled(listing).response, result, "Response"));
     assertPassiveProviderOutput(result);
   }
 
+  // A validation that overruns its CPU budget is a hostile or broken
+  // provider schema, never a client fault: the listing leaves commerce on
+  // this replica at once and the registration is quarantined so the other
+  // replicas stop selling it on their next catalog read.
+  private async withinSchemaBudget(listing: StandardListing, validate: () => void): Promise<void> {
+    try {
+      validate();
+    } catch (error) {
+      if (!(error instanceof SchemaValidationBudgetError)) throw error;
+      this.quarantined.add(listing.runtimeCommitmentHash);
+      this.validators.delete(listing.runtimeCommitmentHash);
+      this.catalogMemo = null;
+      logger.error("dynamic catalog quarantine", {
+        registrationId: listing.registrationId,
+        outcomeId: listing.commitment.payload.outcomeId,
+        code: SCHEMA_BUDGET_QUARANTINE_CODE,
+      });
+      await this.registrations
+        .stopNewCommerce(listing.registrationId, SCHEMA_BUDGET_QUARANTINE_CODE, true)
+        .catch((cause) => logger.error("dynamic catalog quarantine could not be persisted", {
+          registrationId: listing.registrationId,
+          error: cause,
+        }));
+      throw new Error("OUTCOME_NOT_FOUND");
+    }
+  }
+
   async listOutcomes(): Promise<PublicOutcomeV1[]> {
+    const version = (this.registrations as Partial<ServiceRegistrationStore>).mutationVersion;
+    // A store without a mutation counter (test doubles) is never memoized.
+    if (typeof version !== "number") return this.assembleOutcomes();
+    const now = Date.now();
+    const memo = this.catalogMemo;
+    if (memo && memo.version === version && memo.expiresAt > now) return memo.rows;
+    const rows = this.assembleOutcomes();
+    this.catalogMemo = { version, expiresAt: now + PUBLIC_CATALOG_MEMO_MS, rows };
+    rows.catch(() => { if (this.catalogMemo?.rows === rows) this.catalogMemo = null; });
+    return rows;
+  }
+
+  private async assembleOutcomes(): Promise<PublicOutcomeV1[]> {
     const rows: PublicOutcomeV1[] = [];
     for (const record of await this.registrations.listPublic(PUBLIC_CATALOG_LIMIT)) {
       for (const listing of await this.assembleServiceSafe(record)) {
@@ -662,6 +724,9 @@ export class StandardRailCatalog {
     listing: StandardListing,
   ): { request: ValidateFunction; response: ValidateFunction } {
     const key = listing.runtimeCommitmentHash;
+    if (this.quarantined.has(key)) {
+      throw new Error("Listing schema is quarantined after exceeding its validation budget");
+    }
     const cached = this.validators.get(key);
     if (cached) return cached;
     const compiledPair = {
@@ -774,9 +839,24 @@ function summarizeOutcome(outcome: PublicOutcomeV1): PublicOutcomeSummaryV1 {
     providerAudience: outcome.providerAudience,
     absoluteResourceUri: outcome.absoluteResourceUri,
     terms: outcome.terms,
-    service: outcome.service,
-    skill: outcome.skill,
+    service: {
+      ...outcome.service,
+      description: shortlistText(outcome.service.description),
+    },
+    skill: {
+      ...outcome.skill,
+      description: shortlistText(outcome.skill.description),
+    },
     providerReputation: reputationHeadline(outcome.providerReputation),
     serviceReputation: reputationHeadline(outcome.serviceReputation),
   };
+}
+
+/** Provider-authored copy is bounded on the search surface so a hundred
+ *  rows cannot flood a buyer agent's context; the full text stays on the
+ *  single-outcome detail. */
+function shortlistText(value: string): string {
+  return value.length > SEARCH_ROW_TEXT_LIMIT
+    ? `${value.slice(0, SEARCH_ROW_TEXT_LIMIT)}…`
+    : value;
 }

@@ -1,0 +1,31 @@
+{
+  "orderId": "ord_00000000-0000-4000-8000-000000000001",
+  "providerTaskId": "task-00000000-0000-4000-8000-000000000003",
+  "action": "status",
+  "request": {},
+  "authorization": {
+    "type": "DaskiReadCap",
+    "scope": "status"
+  },
+  "grant": {
+    "artifactType": "ProviderLifecycleGrantV1",
+    "schemaVersion": 1,
+    "environment": "testnet",
+    "chainId": 84532,
+    "audience": "https://sandbox-provider.example",
+    "signerKeyId": "gateway-lifecycle",
+    "issuedAt": 1756769000,
+    "validBefore": 1756769120,
+    "payload": {
+      "orderId": "ord_00000000-0000-4000-8000-000000000001",
+      "providerTaskId": "task-00000000-0000-4000-8000-000000000003",
+      "action": "status",
+      "requestHash": "0xb48d38f93eaa084033fc5970bf96e559c33c4cdc07d889ab00b4d63f9590739d",
+      "authorizationHash": "0x76a73d8f587e039d82fa39a50b1a060f83849a7a0a1019033b6510646b4ecbf5",
+      "payer": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "signature": "0xc85b95cad0e2b39210efeb98e9cddc0586c380aee68132ad1539e4de9859637312c11bf574b2824890600f175c76c0232af2abe377c50e250bcd4a4550d81d031b"
+  },
+  "payer": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "gatewayAudience": "https://sandbox-gateway.daski.io"
+}

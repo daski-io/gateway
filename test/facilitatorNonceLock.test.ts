@@ -20,7 +20,7 @@ describe("facilitator nonce coordination", () => {
     const client = {
       query: vi.fn(async (sql: string, values: unknown[]) => {
         queries.push({ sql, values });
-        return { rows: [] };
+        return { rows: sql.includes("pg_try_advisory_lock") ? [{ acquired: true }] : [] };
       }),
       release: vi.fn(),
     };
@@ -35,7 +35,8 @@ describe("facilitator nonce coordination", () => {
       "standard:facilitator-nonce:84532:0x1111111111111111111111111111111111111111",
       "standard:facilitator-nonce:84532:0x1111111111111111111111111111111111111111",
     ]);
-    expect(queries[0]!.sql).toContain("pg_advisory_lock");
+    // Non-blocking acquisition: a busy lock never parks this connection.
+    expect(queries[0]!.sql).toContain("pg_try_advisory_lock");
     expect(queries[1]!.sql).toContain("pg_advisory_unlock");
     expect(client.release).toHaveBeenCalledOnce();
   });

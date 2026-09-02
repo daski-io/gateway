@@ -1,3 +1,4 @@
+import vm from "node:vm";
 import Ajv, { type ValidateFunction } from "ajv";
 import Ajv2020 from "ajv/dist/2020.js";
 import {
@@ -15,6 +16,79 @@ const RECORD_REQUIRED_KEYS = [
 const RECORD_ALLOWED_KEYS = new Set<string>([
   ...RECORD_REQUIRED_KEYS, "minProperties", "description",
 ]);
+
+/** A `pattern` may only guard a string whose length the schema itself bounds. */
+const PATTERN_MAX_LENGTH = 4_096;
+const PATTERN_SOURCE_MAX_LENGTH = 512;
+/**
+ * One schema validation may hold the event loop this long. Provider schemas
+ * reach V8's backtracking regex engine through `pattern`, so a hostile
+ * pattern could otherwise pin the process from the unauthenticated purchase
+ * path; a validation that overruns is aborted and the listing is withdrawn.
+ */
+export const SCHEMA_VALIDATION_BUDGET_MS = 100;
+
+export class SchemaValidationBudgetError extends Error {
+  constructor(label: string) {
+    super(`${label} schema validation exceeded its CPU budget`);
+    this.name = "SchemaValidationBudgetError";
+  }
+}
+
+// Static shape check for a provider-supplied `pattern`. Anything the `u`-mode
+// engine rejects is rejected here, the source is bounded, and back-references
+// (the one construct with no linear-time evaluation at all) are refused. The
+// runtime budget in `assertSchema` is the control for everything else: a
+// syntactic ReDoS detector would reject legitimate delimiter patterns such as
+// `^(?:[a-z0-9]+-)*[a-z0-9]+$` while still missing polynomial blow-ups.
+export function assertSafePattern(pattern: unknown, label: string, path: string): void {
+  const invalid: () => never = () => {
+    throw new Error(`Outcome ${label} schema has an unsupported pattern at ${path}`);
+  };
+  if (
+    typeof pattern !== "string" || pattern.length === 0 ||
+    pattern.length > PATTERN_SOURCE_MAX_LENGTH
+  ) invalid();
+  const source: string = pattern;
+  try {
+    new RegExp(source, "u");
+  } catch {
+    invalid();
+  }
+  let inClass = false;
+  for (let index = 0; index < source.length; index += 1) {
+    const char = source[index]!;
+    if (char === "\\") {
+      const next = source[index + 1] ?? "";
+      if ((!inClass && /[1-9]/.test(next)) || next === "k") invalid();
+      index += 1;
+      continue;
+    }
+    if (inClass) {
+      if (char === "]") inClass = false;
+    } else if (char === "[") {
+      inClass = true;
+    }
+  }
+}
+
+function assertBoundedPatternedString(
+  current: Record<string, unknown>,
+  label: string,
+  path: string,
+): void {
+  if (!("pattern" in current)) return;
+  assertSafePattern(current.pattern, label, path);
+  const maxLength = current.maxLength;
+  if (
+    !Number.isSafeInteger(maxLength) ||
+    (maxLength as number) < 1 || (maxLength as number) > PATTERN_MAX_LENGTH
+  ) {
+    throw new Error(
+      `Outcome ${label} schema pattern at ${path} requires maxLength between 1 and ${PATTERN_MAX_LENGTH}`,
+    );
+  }
+}
 
 // A bounded dynamic record declares supplier-defined keys whose values are
 // bounded at runtime by the shared JSON budget, not by schema shape. The
@@ -79,6 +153,11 @@ function assertRecursivelyClosed(schema: Record<string, unknown>, label: string)
     if (!["object", "array", "string", "number", "integer", "boolean", "null"].includes(
       current.type as string,
     )) throw new Error(`Outcome ${label} schema must declare an explicit type at ${path}`);
+    if (current.type === "string") {
+      assertBoundedPatternedString(current, label, path);
+    } else if ("pattern" in current) {
+      throw new Error(`Outcome ${label} schema uses pattern on a non-string at ${path}`);
+    }
     if (current.type === "object") {
       const properties = current.properties;
       if (current.additionalProperties === true) {
@@ -134,6 +213,35 @@ export function compileClosedResponseSchema(schema: Record<string, unknown>): Va
   return compileClosedObjectSchema(schema, "response");
 }
 
+// The validator runs inside a vm context solely for its watchdog: V8 checks
+// for termination while a regex backtracks, so a pattern that would otherwise
+// pin the event loop is cut off at the budget. The function and the value
+// stay main-realm objects; only the call originates from the context.
+const budgetContext = vm.createContext(Object.create(null) as Record<string, unknown>);
+const budgetScript = new vm.Script("validate(value)", { filename: "daski-schema-budget.vm" });
+
+export function validateWithinBudget(
+  validate: ValidateFunction,
+  value: unknown,
+  label: string,
+  budgetMs: number = SCHEMA_VALIDATION_BUDGET_MS,
+): boolean {
+  const scope = budgetContext as Record<string, unknown>;
+  scope.validate = validate;
+  scope.value = value;
+  try {
+    return Boolean(budgetScript.runInContext(budgetContext, { timeout: budgetMs }));
+  } catch (error) {
+    if ((error as { code?: unknown } | null)?.code === "ERR_SCRIPT_EXECUTION_TIMEOUT") {
+      throw new SchemaValidationBudgetError(label);
+    }
+    throw error;
+  } finally {
+    scope.validate = undefined;
+    scope.value = undefined;
+  }
+}
+
 // A client request that fails the closed outcome schema. Details are
 // schema-derived only (paths, keywords, allowed enum values) — submitted
 // values are never echoed back. The HTTP layer maps this to a 400; a
@@ -177,7 +285,7 @@ export function assertSchema(
       : "Request exceeds the accepted document bounds";
     throw new RequestSchemaError(message, []);
   }
-  if (validate(value)) return;
+  if (validateWithinBudget(validate, value, label)) return;
   if (label !== "Request") {
     throw new Error(`${label} does not match the closed outcome schema`);
   }

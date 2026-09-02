@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { getAddress, type Address, type Hex } from "viem";
-import type { MarketplaceChainReader } from "./reader.js";
+import { MarketplaceNotFoundError, type MarketplaceChainReader } from "./reader.js";
 
 function positiveDecimal(raw: string): bigint | null {
   if (!/^(0|[1-9]\d{0,77})$/.test(raw)) return null;
@@ -18,7 +18,11 @@ function pageValue(raw: unknown, fallback: number, maximum: number): number | nu
 async function sendChainRead(res: import("express").Response, read: () => Promise<unknown>) {
   try {
     res.json(await read());
-  } catch {
+  } catch (error) {
+    if (error instanceof MarketplaceNotFoundError) {
+      res.status(404).json({ error: { code: "MARKETPLACE_NOT_FOUND", message: error.message } });
+      return;
+    }
     res.status(502).json({
       error: { code: "MARKETPLACE_CHAIN_READ_FAILED", message: "Marketplace chain state is unavailable." },
     });

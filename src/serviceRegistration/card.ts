@@ -65,10 +65,14 @@ function hash(value: unknown, label: string): Hex {
   return value.toLowerCase() as Hex;
 }
 
+// Tags, examples and jurisdictions are relayed verbatim to buyer agents, so
+// they carry the same control-character ban as every other short text field.
 function stringArray(value: unknown, label: string, maximum = 64): string[] {
   if (
     !Array.isArray(value) || value.length > maximum ||
-    value.some((item) => typeof item !== "string" || item.length < 1 || item.length > 256)
+    value.some((item) =>
+      typeof item !== "string" || item.length < 1 || item.length > 256 ||
+      /[\u0000-\u001f\u007f]/.test(item))
   ) throw new Error(`${label} is invalid`);
   return value as string[];
 }

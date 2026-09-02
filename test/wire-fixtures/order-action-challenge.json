@@ -1,0 +1,73 @@
+{
+  "authorizationRequired": true,
+  "authorizationType": "OrderActionAuthorizationV1",
+  "challenge": {
+    "orderId": "ord_00000000-0000-4000-8000-000000000001",
+    "action": "status",
+    "method": "POST",
+    "absoluteResourceUri": "https://sandbox-gateway.daski.io/orders/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA/actions/status",
+    "requestHash": "0xb48d38f93eaa084033fc5970bf96e559c33c4cdc07d889ab00b4d63f9590739d",
+    "nonce": "0x7777777777777777777777777777777777777777777777777777777777777777",
+    "issuedAt": 1756769000,
+    "validBefore": 1756769300,
+    "signRequest": {
+      "domain": {
+        "name": "DaskiStandardOrder",
+        "version": "1",
+        "chainId": 84532
+      },
+      "types": {
+        "OrderActionAuthorizationV1": [
+          {
+            "name": "orderIdHash",
+            "type": "bytes32"
+          },
+          {
+            "name": "actionHash",
+            "type": "bytes32"
+          },
+          {
+            "name": "methodHash",
+            "type": "bytes32"
+          },
+          {
+            "name": "absoluteResourceUriHash",
+            "type": "bytes32"
+          },
+          {
+            "name": "requestHash",
+            "type": "bytes32"
+          },
+          {
+            "name": "audienceHash",
+            "type": "bytes32"
+          },
+          {
+            "name": "nonce",
+            "type": "bytes32"
+          },
+          {
+            "name": "issuedAt",
+            "type": "uint64"
+          },
+          {
+            "name": "validBefore",
+            "type": "uint64"
+          }
+        ]
+      },
+      "primaryType": "OrderActionAuthorizationV1",
+      "message": {
+        "orderIdHash": "0x6ca8ece73f2c70035c9d42d864493af5223ba77205724148ce886556a5de4651",
+        "actionHash": "0xcd423760c9650eb549b1615f6cf96d420e32aadcea2ff5fe11c26457244adcc1",
+        "methodHash": "0x2fca5a5e7ccde9ff7491efb205181f9945d95feee2f835f237ff423414a824e3",
+        "absoluteResourceUriHash": "0x9ffd039f731ec30d74d8f836998237ce34a044f4fcb4ce98e53e99ccb9fb711b",
+        "requestHash": "0xb48d38f93eaa084033fc5970bf96e559c33c4cdc07d889ab00b4d63f9590739d",
+        "audienceHash": "0xb6018aa17cdacda070ba498a41a94301580953e6bd09607ba3a1eb150c81e64c",
+        "nonce": "0x7777777777777777777777777777777777777777777777777777777777777777",
+        "issuedAt": 1756769000,
+        "validBefore": 1756769300
+      }
+    }
+  }
+}

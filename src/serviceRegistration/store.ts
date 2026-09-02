@@ -162,8 +162,18 @@ async function persistArtifact(
   );
 }
 
+/** Registration quarantine code for a skill schema whose validation overran its CPU budget. */
+export const SCHEMA_BUDGET_QUARANTINE_CODE = "SCHEMA_VALIDATION_BUDGET_EXCEEDED";
+
 export class ServiceRegistrationStore {
+  private mutations = 0;
+
   constructor(private readonly pool: Pool) {}
+
+  /** Bumped after every write on this replica; catalog memos key on it. */
+  get mutationVersion(): number {
+    return this.mutations;
+  }
 
   getByIdempotency(
     providerAgentId: string,
@@ -332,6 +342,7 @@ export class ServiceRegistrationStore {
       throw error;
     } finally {
       client.release();
+      this.mutations += 1;
     }
   }
 
@@ -384,6 +395,7 @@ export class ServiceRegistrationStore {
       throw error;
     } finally {
       client.release();
+      this.mutations += 1;
     }
   }
 
@@ -417,6 +429,7 @@ export class ServiceRegistrationStore {
       throw error;
     } finally {
       client.release();
+      this.mutations += 1;
     }
   }
 
@@ -509,6 +522,7 @@ export class ServiceRegistrationStore {
       throw error;
     } finally {
       client.release();
+      this.mutations += 1;
     }
   }
 
@@ -524,6 +538,7 @@ export class ServiceRegistrationStore {
         WHERE registration_id=$1 AND state='ACTIVE'`,
       [registrationId, visible, actor.slice(0, 128)],
     );
+    this.mutations += 1;
     return (result.rowCount ?? 0) === 1;
   }
 
@@ -656,6 +671,7 @@ export class ServiceRegistrationStore {
         args.chainActive,
       ],
     );
+    this.mutations += 1;
   }
 
   async stopNewCommerce(
@@ -670,6 +686,7 @@ export class ServiceRegistrationStore {
         WHERE registration_id=$1 AND state='ACTIVE'`,
       [registrationId, code.slice(0, 128), chainActive],
     );
+    this.mutations += 1;
   }
 
   async refreshFailed(registrationId: string, code: string): Promise<void> {
@@ -680,5 +697,6 @@ export class ServiceRegistrationStore {
         WHERE registration_id=$1 AND state='ACTIVE'`,
       [registrationId, code.slice(0, 128)],
     );
+    this.mutations += 1;
   }
 }
