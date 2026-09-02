@@ -58,7 +58,7 @@ function card(overrides: {
     name: "Orbital Logistics",
     description: "A deliberately novel provider category.",
     extensions: {
-      "https://daski.xyz/a2a/v1": {
+      "https://daski.io/a2a/v1": {
         legal: {
           marketplaceTermsUrl: "https://daski.example/terms",
           marketplacePrivacyUrl: "https://daski.example/privacy",
@@ -67,7 +67,7 @@ function card(overrides: {
           providerPrivacyUrl: "https://provider.example/privacy",
         },
       },
-      "https://daski.xyz/a2a/v2": {
+      "https://daski.io/a2a/v2": {
         schemaVersion: 1,
         providerAgentId: "42",
         service: {
@@ -127,7 +127,7 @@ describe("provider service-card admission", () => {
 
   it("rejects a duplicate payment flag that contradicts pricing", () => {
     const raw = card({ paymentRequired: false });
-    const extension = raw.extensions["https://daski.xyz/a2a/v2"];
+    const extension = raw.extensions["https://daski.io/a2a/v2"];
     extension.skills[0]!.contract.pricing.USDC.fixed_amount = "100";
     expect(() => parseProviderServiceCard(raw, expected))
       .toThrow("paymentRequired does not match");
@@ -135,7 +135,7 @@ describe("provider service-card admission", () => {
 
   it("rejects a fixed amount combined with another amount mechanism", () => {
     const raw = card({ paymentRequired: false });
-    const pricing = raw.extensions["https://daski.xyz/a2a/v2"]
+    const pricing = raw.extensions["https://daski.io/a2a/v2"]
       .skills[0]!.contract.pricing.USDC as Record<string, unknown>;
     pricing.min_amount = "1";
     expect(() => parseProviderServiceCard(raw, expected))
@@ -164,7 +164,7 @@ describe("provider service-card admission", () => {
     const refreshed = card();
     refreshed.name = "Orbital Logistics — Updated";
     refreshed.description = "New presentation copy.";
-    refreshed.extensions["https://daski.xyz/a2a/v2"].service.turnaroundEstimate =
+    refreshed.extensions["https://daski.io/a2a/v2"].service.turnaroundEstimate =
       "two orbits";
 
     expect(parseProviderServiceCard(refreshed, expected).serviceContractHash)
@@ -174,7 +174,7 @@ describe("provider service-card admission", () => {
   it("changes the signed service contract when legal terms change", () => {
     const first = parseProviderServiceCard(card(), expected);
     const changed = card();
-    changed.extensions["https://daski.xyz/a2a/v1"].legal.providerTermsUrl =
+    changed.extensions["https://daski.io/a2a/v1"].legal.providerTermsUrl =
       "https://provider.example/revised-terms";
     expect(parseProviderServiceCard(changed, expected).serviceContractHash)
       .not.toBe(first.serviceContractHash);

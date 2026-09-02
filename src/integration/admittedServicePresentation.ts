@@ -2,7 +2,7 @@ import type { Hex } from "viem";
 import type { StandardListing } from "../standardRail/types.js";
 import type { MarketplaceChainReader, MarketplaceServiceRecord } from "../marketplace/reader.js";
 
-const DASKI_EXTENSION_URI = "https://daski.xyz/a2a/v1";
+const DASKI_EXTENSION_URI = "https://daski.io/a2a/v1";
 // Presentations are re-verified on a short TTL, but a failed refresh must not
 // take the public catalog down: the last verified value stays servable for the
 // stale window while refreshes keep retrying. Only an authoritative rejection
