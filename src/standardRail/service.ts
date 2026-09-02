@@ -1495,7 +1495,7 @@ export class StandardRailService {
     const whole = amount / 1_000_000n;
     const fraction = (amount % 1_000_000n).toString().padStart(6, "0").replace(/0+$/, "");
     const displayAmount = fraction ? `${whole}.${fraction}` : whole.toString();
-    const networkName = this.appConfig.chainId === 8453 ? "Base" : "Base Sepolia sandbox";
+    const networkName = this.appConfig.chainId === 8453 ? "Base" : "Base Sepolia";
     const ttl = Math.max(
       0,
       Math.floor(challenge.order.expiresAt.getTime() / 1_000) -

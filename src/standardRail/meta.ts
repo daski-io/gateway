@@ -7,7 +7,7 @@ import { GATEWAY_COMMIT, GATEWAY_VERSION } from "../version.js";
 import type { StandardRailConfig } from "./config.js";
 import type { StandardRailService } from "./service.js";
 import type { PublicChainMetadataV3 } from "./types.js";
-import { llmsFull, llmsIndex, readSkill, skillIndex } from "./skills.js";
+import { llmsFull, llmsIndex, readSkill, skillIndex, legacySkillIndex } from "./skills.js";
 
 function operatorAuthorized(req: Request, token: string | null): boolean {
   if (!token) return false;
@@ -145,6 +145,16 @@ export function createStandardMetaRouter(args: {
   router.get("/.well-known/agent-skills/index.json", async (_req, res, next) => {
     try {
       res.json(await skillIndex(args.config.publicUrl, GATEWAY_VERSION));
+    } catch (error) { next(error); }
+  });
+  router.get("/.well-known/skills/index.json", async (_req, res, next) => {
+    try {
+      res.json(await legacySkillIndex());
+    } catch (error) { next(error); }
+  });
+  router.get("/.well-known/skills/daski/SKILL.md", async (_req, res, next) => {
+    try {
+      res.type("text/markdown").send((await readSkill("daski")).content);
     } catch (error) { next(error); }
   });
   router.get("/skills/:file", async (req, res, next) => {

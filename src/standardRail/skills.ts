@@ -81,3 +81,34 @@ export function llmsIndex(publicUrl: string, mcpPath = "/mcp"): string {
     "",
   ].join("\n");
 }
+
+/** The installable skill's frontmatter `description`, for the legacy well-known index. */
+export function skillFrontmatterDescription(content: string): string {
+  const lines = content.split("\n");
+  if (lines[0]?.trim() !== "---") return "Daski buyer skill";
+  for (const line of lines.slice(1)) {
+    if (line.trim() === "---") break;
+    const match = /^description:\s*(.+?)\s*$/.exec(line);
+    if (match?.[1]) return match[1];
+  }
+  return "Daski buyer skill";
+}
+
+/**
+ * Legacy `/.well-known/skills/index.json` (pre-0.2.0 discovery, consumed by the
+ * `skills` CLI as its fallback): one installable skill, `daski`, whose only
+ * file is `SKILL.md`. The topic guides are references that skill fetches by
+ * URL, not skills of their own, so they are deliberately not listed here.
+ */
+export async function legacySkillIndex(): Promise<{
+  skills: Array<{ name: string; description: string; files: string[] }>;
+}> {
+  const skill = await readSkill("daski");
+  return {
+    skills: [{
+      name: "daski",
+      description: skillFrontmatterDescription(skill.content),
+      files: ["SKILL.md"],
+    }],
+  };
+}
