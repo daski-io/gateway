@@ -187,3 +187,50 @@ describe("runtime listing commitment", () => {
     })).toBe("0x6e421e6825b79637e4f46a3d0c64ae4146ae1ad218380973eadc871f5f6d1dd3");
   });
 });
+
+// Shared with the provider's activationIdentity test. On a re-registration
+// the gateway returns a reused listing's persisted commitment verbatim; for
+// a free skill without an asset action that commitment is bound to the
+// intent of its ORIGINAL admission, and the provider must expect exactly
+// that value — rebuilding it with the new registration's intent rotates the
+// hash (the 2026-09-02 first live revision refused on this). Both
+// repositories pin the same vector so the rule cannot drift again.
+describe("re-registration revision vector", () => {
+  const revisionInputs = (intent: `0x${string}`): RuntimeCommitmentInputs => ({
+    environment: "testnet",
+    chainId: 84532,
+    gatewayAudience: "https://gateway.example",
+    providerAgentId: "42",
+    serviceId: hash("55"),
+    currentProviderIntentHash: intent,
+    currentProviderPayee: address("0b"),
+    policy: {
+      canonicalToken: address("0a"),
+      daskiCommissionReceiver: address("0c"),
+      commissionBps: 500,
+      policyVersionHash: hash("99"),
+      splitterFactory: address("0d"),
+    },
+    listing: {
+      listingId: "11111111-1111-4111-8111-111111111111",
+      listingKey: hash("44"),
+      skillId: "check-availability",
+      skillContractHash: hash("33"),
+      paymentRequired: false,
+      splitterAddress: null,
+      preparation: null,
+      controlProfile: null,
+    },
+  });
+  const GOLDEN_REUSED_FREE_COMMITMENT =
+    "0xcafef43cfe1be003cbc49cfd1d96791dfeaf7c5d9b1000331a10118a36517be3";
+
+  it("keeps a reused free listing without a control profile on its admitted commitment", () => {
+    const admitted = runtimeCommitmentHash(buildRuntimeListingCommitment(revisionInputs(hash("a1"))));
+    expect(admitted).toBe(GOLDEN_REUSED_FREE_COMMITMENT);
+    // The value the persisted-verbatim rule protects: the same listing
+    // rebuilt under the next registration's intent is a different identity.
+    const rebuilt = runtimeCommitmentHash(buildRuntimeListingCommitment(revisionInputs(hash("b2"))));
+    expect(rebuilt).not.toBe(GOLDEN_REUSED_FREE_COMMITMENT);
+  });
+});
