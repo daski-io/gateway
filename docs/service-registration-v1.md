@@ -100,7 +100,7 @@ immutables before activation.
 
 ## Card contract
 
-The Daski extension key is `https://daski.xyz/a2a/v2`. It is a closed,
+The Daski extension key is `https://daski.io/a2a/v2`. It is a closed,
 versioned object. Unknown extension fields fail closed. Category and service
 type are bounded open identifiers; they are not admission allowlists.
 

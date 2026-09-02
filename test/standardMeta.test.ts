@@ -94,6 +94,14 @@ describe("standard rail metadata", () => {
     expect(await (await fetch(`${root}/skill.md`)).text()).toBe(installable);
     expect(await (await fetch(`${root}/SKILL.md`)).text()).toBe(installable);
 
+    const legacy = await (await fetch(`${root}/.well-known/skills/index.json`)).json() as {
+      skills: Array<{ name: string; description: string; files: string[] }>;
+    };
+    expect(legacy).toEqual({
+      skills: [{ name: "daski", description: expect.stringContaining("Daski"), files: ["SKILL.md"] }],
+    });
+    expect(await (await fetch(`${root}/.well-known/skills/daski/SKILL.md`)).text()).toBe(installable);
+
     const mcp = await (await fetch(`${root}/.well-known/mcp.json`)).json() as {
       tools: string[];
       skills: Record<string, string>;

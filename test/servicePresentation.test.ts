@@ -69,7 +69,7 @@ function agentCard() {
       tags: ["tax"],
     }],
     extensions: {
-      "https://daski.xyz/a2a/v1": {
+      "https://daski.io/a2a/v1": {
         providerAgentId: "8327",
         onChainServiceId: SERVICE_ID,
         serviceVersion: "1",

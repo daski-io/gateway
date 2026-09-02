@@ -13,8 +13,8 @@ import {
   parseUsdcPricing,
 } from "./contractValidation.js";
 
-export const DASKI_CONTRACT_EXTENSION_URI = "https://daski.xyz/a2a/v2";
-const DASKI_SERVICE_EXTENSION_URI = "https://daski.xyz/a2a/v1";
+export const DASKI_CONTRACT_EXTENSION_URI = "https://daski.io/a2a/v2";
+const DASKI_SERVICE_EXTENSION_URI = "https://daski.io/a2a/v1";
 
 function record(value: unknown, label: string): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
