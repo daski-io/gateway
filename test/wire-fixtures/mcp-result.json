@@ -3,7 +3,7 @@
     "content": [
       {
         "type": "text",
-        "text": "Daski tool call succeeded."
+        "text": "{\"orderHandle\":\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\",\"state\":\"FULFILLED\"}"
       }
     ],
     "structuredContent": {

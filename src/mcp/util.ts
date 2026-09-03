@@ -48,16 +48,16 @@ export interface McpToolResult {
 export function mcpJson(
   obj: unknown,
   meta?: Record<string, unknown>,
-  fullText = false,
 ): McpToolResult {
-  const result: McpToolResult = {
-    content: [{
-      type: "text" as const,
-      text: fullText ? JSON.stringify(obj) : "Daski tool call succeeded.",
-    }],
-  };
   // MCP structured tool output (spec 2025-06-18): typed clients read
-  // structuredContent; the text block stays the compatibility fallback.
+  // structuredContent, and the text block carries the same serialized JSON,
+  // as the spec's backwards-compatibility SHOULD requires. From v0.28.0 to
+  // v0.30.0 the text block was a one-line summary; every text-only consumer
+  // went blind, @daski/pay 0.1.0 and the @x402/mcp wrapper path included.
+  // Payload size is managed by trimming payloads, never by emptying this block.
+  const result: McpToolResult = {
+    content: [{ type: "text" as const, text: JSON.stringify(obj) }],
+  };
   if (isPlainRecord(obj)) {
     result.structuredContent = obj as Record<string, unknown>;
   }

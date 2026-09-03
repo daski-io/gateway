@@ -819,6 +819,30 @@ function reputationHeadline(
   return headline;
 }
 
+/** Recent purchases kept in an MCP detail row. The public catalog keeps the full list. */
+export const MCP_RECENT_PURCHASES_LIMIT = 10;
+
+/**
+ * The detail row for tool output: both reputation blocks keep their headline
+ * numbers and only the most recent purchases. Fifty rows of hashes per block
+ * doubled once the text block carried the serialized JSON again (2026-09-03),
+ * and an agent reading the row needs the shape, not the ledger.
+ */
+export function withRecentPurchasesCapped(
+  outcome: PublicOutcomeV1,
+  limit = MCP_RECENT_PURCHASES_LIMIT,
+): PublicOutcomeV1 {
+  const cap = (reputation: PublicReputationV1): PublicReputationV1 => ({
+    ...reputation,
+    recentPurchases: reputation.recentPurchases.slice(0, limit),
+  });
+  return {
+    ...outcome,
+    providerReputation: cap(outcome.providerReputation),
+    serviceReputation: cap(outcome.serviceReputation),
+  };
+}
+
 /** Search rows are shortlisting data. The splitter provenance, deadline
  *  and capacity policies, schemas, and purchase history stay behind
  *  `daski_get_outcome`, which serves the full detail row. */

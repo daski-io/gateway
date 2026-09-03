@@ -466,20 +466,21 @@ describe("agentic purchase DX contracts", () => {
     });
   });
 
-  it("de-duplicates ordinary MCP text but preserves payment-required dual format", () => {
+  it("carries every MCP payload in structuredContent and as serialized JSON text", () => {
     const payment = { x402Version: 2 };
     expect(resolveMcpPaymentPayload(payment, undefined)).toBe(payment);
     expect(resolveMcpPaymentPayload(undefined, payment)).toBe(payment);
     expect(resolveMcpPaymentPayload(payment, { x402Version: 1 })).toBe(payment);
 
-    expect(mcpJson({ ok: true }).content[0]).toEqual({
-      type: "text",
-      text: "Daski tool call succeeded.",
-    });
-    expect(mcpJson({ x402Version: 2 }, undefined, true).content[0]).toEqual({
-      type: "text",
-      text: JSON.stringify({ x402Version: 2 }),
-    });
+    // MCP 2025-06-18: a tool returning structured content SHOULD also return
+    // the serialized JSON in a text block. A one-line summary here (v0.28.0 to
+    // v0.30.0) left text-only clients blind, @daski/pay 0.1.0 among them.
+    const ordinary = mcpJson({ ok: true });
+    expect(ordinary.content[0]).toEqual({ type: "text", text: JSON.stringify({ ok: true }) });
+    expect(ordinary.structuredContent).toEqual({ ok: true });
+    const required = mcpJson(payment, { "x402/payment-required": payment });
+    expect(required.content[0]).toEqual({ type: "text", text: JSON.stringify(payment) });
+    expect(required._meta).toEqual({ "x402/payment-required": payment });
   });
 });
 

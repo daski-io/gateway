@@ -12,6 +12,7 @@ import { signEnvelope } from "../src/standardRail/signing.js";
 import { utf8Hash, walletChallenge, ZERO_HASH } from "../src/standardRail/walletAuthorization.js";
 import {
   orderActionChallengeEnvelope,
+  preparedPaymentChallengeResult,
   walletChallengeEnvelope,
 } from "../src/standardRail/wireEnvelopes.js";
 
@@ -20,12 +21,14 @@ import {
 // a buyer or provider must parse. Consumers vendor the files verbatim and run
 // their parsers over them offline; the coordination repo fails PREP when a
 // vendored copy differs. Nine of nine 2026-09-01 completions were two
-// components disagreeing about one of these shapes.
+// components disagreeing about one of these shapes, and on 2026-09-03 the
+// published buyer CLI, which vendored nothing, could not read one result.
 //
 // Regenerate after an intentional shape change:
 //   UPDATE_WIRE_FIXTURES=1 npx vitest run test/wireFixtures.test.ts
-// then re-vendor into daski-test/test/fixtures/gateway-wire/ and
-// daski-provider/test/fixtures/gateway-wire/.
+// then re-vendor into daski-test/test/fixtures/gateway-wire/,
+// daski-provider/test/fixtures/gateway-wire/, and
+// daski-buyer/test/fixtures/gateway-wire/ (the consumers index.json lists).
 
 const fixturesDir = path.join(path.dirname(fileURLToPath(import.meta.url)), "wire-fixtures");
 const update = process.env.UPDATE_WIRE_FIXTURES === "1";
@@ -54,22 +57,59 @@ function mcpResultFixture() {
     extensions: { "payment-identifier": paymentIdentifierExtension(INTENT_ID) },
   };
   return {
-    // Ordinary results: the payload lives in structuredContent alone; the text
-    // block is a one-line summary (2026-09-01 completions 5–7).
+    // Ordinary results carry the payload in structuredContent AND as the same
+    // serialized JSON in the text block (MCP 2025-06-18 SHOULD). The one-line
+    // text summary of 2026-09-01 blinded every text-only reader; restored
+    // 2026-09-03.
     success: mcpJson({ orderHandle: ORDER_HANDLE, state: "FULFILLED" }),
-    // Errors carry the payload in BOTH places.
+    // Errors carry the payload in both places too.
     error: mcpError({
       code: "WALLET_ACCESS_DENIED",
       message: "Wallet authorization rejected",
       retryable: false,
     }),
-    // The purchase challenge keeps the full JSON in the text block and mirrors
-    // it in _meta so stock x402 clients can read it.
+    // The purchase challenge additionally mirrors the JSON in _meta so stock
+    // x402 clients can read it.
     paymentRequired: {
-      ...mcpJson(paymentRequired, { "x402/payment-required": paymentRequired }, true),
+      ...mcpJson(paymentRequired, { "x402/payment-required": paymentRequired }),
       isError: true,
     },
   };
+}
+
+function preparedPaymentChallengeFixture() {
+  // accepts[0] carries exactly the fields paymentRequirementsFor emits.
+  const paymentRequired = {
+    x402Version: 2,
+    resource: { url: `${PUBLIC_URL}/outcomes/8327/register-domain`, mimeType: "application/json" },
+    accepts: [{
+      scheme: "exact",
+      network: "eip155:84532",
+      asset: "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+      amount: "5990000",
+      payTo: address("2"),
+      maxTimeoutSeconds: 300,
+      extra: { assetTransferMethod: "eip3009", name: "USDC", version: "2" },
+    }],
+    extensions: paymentRequiredExtensionsFixture(),
+  };
+  // The prepare tool's body nests the challenge beside its preflight, and the
+  // challenge is mirrored into _meta where the unpaid buy call also puts it.
+  return preparedPaymentChallengeResult({
+    orderHandle: ORDER_HANDLE,
+    paymentRequired,
+    preflight: {
+      payer: address("a"),
+      network: "eip155:84532",
+      usdcBalance: "20000000",
+      sufficient: true,
+      payerAllowed: true,
+      intentId: INTENT_ID,
+      approvalSummary:
+        "Buy register-domain from Example Provider LLC for 5.99 USDC (Base Sepolia). " +
+        "Challenge expires in 300s.",
+    },
+  });
 }
 
 function paymentRequiredExtensionsFixture() {
@@ -197,6 +237,7 @@ async function providerLifecycleRequestFixture() {
 
 const fixtures: Record<string, () => unknown | Promise<unknown>> = {
   "mcp-result.json": mcpResultFixture,
+  "payment-challenge-prepared.json": preparedPaymentChallengeFixture,
   "payment-required-extensions.json": paymentRequiredExtensionsFixture,
   "wallet-challenge.json": walletChallengeFixture,
   "order-action-challenge.json": orderActionChallengeFixture,
@@ -228,6 +269,23 @@ describe("wire fixtures", () => {
     for (const entry of Object.values(index.fixtures)) {
       expect(entry.consumers.length).toBeGreaterThan(0);
     }
+  });
+
+  it("ordinary results carry the serialized JSON in the text block and in structuredContent", () => {
+    const { success } = mcpResultFixture();
+    expect(success.content[0]).toEqual({
+      type: "text",
+      text: JSON.stringify({ orderHandle: ORDER_HANDLE, state: "FULFILLED" }),
+    });
+    expect(success.structuredContent).toEqual({ orderHandle: ORDER_HANDLE, state: "FULFILLED" });
+  });
+
+  it("the prepared challenge nests paymentRequired beside preflight and mirrors it in _meta", () => {
+    const prepared = preparedPaymentChallengeFixture();
+    const body = prepared.structuredContent as { paymentRequired: unknown; preflight: { intentId: string } };
+    expect(prepared._meta?.["x402/payment-required"]).toEqual(body.paymentRequired);
+    expect(body.preflight.intentId).toBe(INTENT_ID);
+    expect(prepared.isError).toBeUndefined();
   });
 
   it("wallet and order-action challenges nest the sign request under `challenge`", () => {
