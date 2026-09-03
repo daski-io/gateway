@@ -3,6 +3,7 @@ import { getAddress, type Hex } from "viem";
 import { baseSepolia } from "viem/chains";
 import type { StandardRailConfig } from "../src/standardRail/config.js";
 import { DirectReputationReader, presentReputation } from "../src/standardRail/reputationReader.js";
+import { logger } from "../src/util/logger.js";
 import type { ProjectedReputationRecord } from "../src/standardRail/reputationProjection.js";
 
 const ORDER_KEY = `0x${"11".repeat(32)}` as Hex;
@@ -184,10 +185,78 @@ describe("direct reputation presentation", () => {
     expect(query).toHaveBeenCalledOnce();
 
     reader.invalidate();
-    await reader.forOutcomes(outcomes);
+    const during = await reader.forOutcomes(outcomes);
+    expect(during).toBe(first);
+    await reader.settled();
     expect(getBlock).toHaveBeenCalledTimes(2);
+    expect(reader.refreshedAt()).toBeInstanceOf(Date);
     expect(fallback.getBlock).not.toHaveBeenCalled();
     expect(fallback.readContract).not.toHaveBeenCalled();
     expect(fallback.multicall).not.toHaveBeenCalled();
+  });
+
+  it("serves the last snapshot while refreshing in the background and keeps it through a failed refresh", async () => {
+    vi.useFakeTimers();
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => undefined);
+    const info = vi.spyOn(logger, "info").mockImplementation(() => undefined);
+    try {
+      const reader = new DirectReputationReader({
+        evidenceRpcUrls: ["https://rpc.example"],
+        reputationContract: ADDRESS,
+        chainProjectionRefreshMs: 1_000,
+      } as unknown as StandardRailConfig, baseSepolia, { query: vi.fn() } as never, {
+        agentIndex: ADDRESS,
+        identityRegistry: ADDRESS,
+      });
+      const snapshot = (safeBlock: string) => ({ providers: new Map(), services: new Map(), safeBlock });
+      const snapshots = [snapshot("1"), snapshot("2"), snapshot("3")];
+      const readOutcomes = vi.fn()
+        .mockResolvedValueOnce(snapshots[0])
+        .mockRejectedValueOnce(new Error("rpc offline"))
+        .mockResolvedValueOnce(snapshots[1])
+        .mockResolvedValueOnce(snapshots[2]);
+      Object.assign(reader as unknown as { readOutcomes: unknown }, { readOutcomes });
+      const outcomes = [{
+        providerAgentId: "1",
+        serviceId: SERVICE_ID,
+        outcomeId: "register-domain",
+        listingManifestHash: MANIFEST_HASH,
+      }];
+
+      // Only the first read waits; a fresh snapshot is served without a refresh.
+      expect(reader.refreshedAt()).toBeNull();
+      expect(await reader.forOutcomes(outcomes)).toBe(snapshots[0]);
+      expect(await reader.forOutcomes(outcomes)).toBe(snapshots[0]);
+      expect(readOutcomes).toHaveBeenCalledTimes(1);
+
+      // A finalized write invalidates: the snapshot stays served while the refresh fails.
+      reader.invalidate();
+      expect(await reader.forOutcomes(outcomes)).toBe(snapshots[0]);
+      await reader.settled();
+      expect(readOutcomes).toHaveBeenCalledTimes(2);
+      expect(warn).toHaveBeenCalledTimes(1);
+
+      // Still stale, so the next read refreshes again and recovers.
+      expect(await reader.forOutcomes(outcomes)).toBe(snapshots[0]);
+      await reader.settled();
+      expect(readOutcomes).toHaveBeenCalledTimes(3);
+      expect(await reader.forOutcomes(outcomes)).toBe(snapshots[1]);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(info).toHaveBeenCalledWith("public reputation projection refresh recovered");
+
+      // The schedule refreshes without any request until stopped.
+      reader.start();
+      await vi.advanceTimersByTimeAsync(1_000);
+      await reader.settled();
+      expect(readOutcomes).toHaveBeenCalledTimes(4);
+      expect(await reader.forOutcomes(outcomes)).toBe(snapshots[2]);
+      reader.stop();
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(readOutcomes).toHaveBeenCalledTimes(4);
+    } finally {
+      vi.useRealTimers();
+      warn.mockRestore();
+      info.mockRestore();
+    }
   });
 });

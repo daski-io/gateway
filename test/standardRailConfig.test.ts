@@ -130,3 +130,15 @@ describe("standard rail environment contract", () => {
     expect(() => loadStandardRailConfig(env)).toThrow(/non-zero EVM address/);
   });
 });
+
+describe("public projection refresh cadence", () => {
+  it("defaults to one minute and accepts a positive override", () => {
+    expect(loadStandardRailConfig(standardEnv()).chainProjectionRefreshMs).toBe(60_000);
+    expect(
+      loadStandardRailConfig({ ...standardEnv(), CHAIN_PROJECTION_REFRESH_MS: "15000" })
+        .chainProjectionRefreshMs,
+    ).toBe(15_000);
+    expect(() => loadStandardRailConfig({ ...standardEnv(), CHAIN_PROJECTION_REFRESH_MS: "0" }))
+      .toThrow(/CHAIN_PROJECTION_REFRESH_MS/);
+  });
+});

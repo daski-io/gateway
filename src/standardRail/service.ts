@@ -57,6 +57,7 @@ import { StandardReputationWorker } from "./reputationWorker.js";
 import { StandardConfirmations } from "./confirmations.js";
 import { base, baseSepolia } from "viem/chains";
 import { activeRequestKey } from "../mcp/requestContext.js";
+import { logger } from "../util/logger.js";
 import { DirectReputationReader } from "./reputationReader.js";
 import type {
   ServiceRegistrationStore,
@@ -106,6 +107,10 @@ function isTransitionConflict(error: unknown): boolean {
 }
 
 const OPERATIONAL_HEALTH_MEMO_MS = 15_000;
+
+// Startup waits this long for the first public reputation projection so the
+// first visitor does not pay for it; a slower chain finishes in the background.
+const PROJECTION_WARMUP_TIMEOUT_MS = 15_000;
 
 export class StandardRailService {
   private readonly store: StandardRailStore;
@@ -245,6 +250,8 @@ export class StandardRailService {
     await this.store.admitManifest(this.railConfig.manifest);
     await this.assetFederation.activateAdmissions();
     await this.refreshDependencyReadiness();
+    await this.warmPublicProjection();
+    this.reputationReader.start();
     this.recovery.start();
     this.reputationWorker.start();
     this.readinessInterval = setInterval(() => {
@@ -259,6 +266,7 @@ export class StandardRailService {
     if (this.readinessRetry) clearTimeout(this.readinessRetry);
     this.readinessRetry = null;
     await this.readinessRefresh?.catch(() => undefined);
+    this.reputationReader.stop();
     await Promise.all([
       this.recovery.stop(),
       this.reputationWorker.stop(),
@@ -756,6 +764,34 @@ export class StandardRailService {
 
   publicOutcomes(): Promise<PublicOutcomeV1[]> {
     return this.catalog.publicOutcomes();
+  }
+
+  /** Time of the last successful public reputation projection refresh. */
+  publicProjectionRefreshedAt(): Date | null {
+    return this.reputationReader.refreshedAt();
+  }
+
+  private async warmPublicProjection(): Promise<void> {
+    let timer: NodeJS.Timeout | undefined;
+    const timeout = new Promise<"timeout">((resolve) => {
+      timer = setTimeout(() => resolve("timeout"), PROJECTION_WARMUP_TIMEOUT_MS);
+      timer.unref();
+    });
+    try {
+      const outcome = await Promise.race([
+        this.catalog.publicOutcomes().then(() => "warm" as const),
+        timeout,
+      ]);
+      if (outcome === "timeout") {
+        logger.warn("public reputation projection warm-up is still running; early requests wait on it");
+      }
+    } catch (error) {
+      logger.warn("public reputation projection warm-up failed; the first request computes it", {
+        error,
+      });
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
   }
 
   searchOutcomes(filters: {
