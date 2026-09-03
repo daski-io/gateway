@@ -460,6 +460,23 @@ describe("agentic purchase DX contracts", () => {
     expect(wallets).toContain("Only a signer deliberately selected by the human");
   });
 
+  it("documents payer-directed provider reviews and the complete confirmation flow", async () => {
+    const orders = (await readSkill("orders")).content;
+    const installable = (await readSkill("daski")).content;
+
+    expect(orders).toContain("the payer's binary, payer-signed delivery confirmation");
+    expect(orders).toContain("Never infer this choice");
+    expect(orders).toContain("daski_confirm_delivery");
+    expect(orders).toContain('"phase":"prepare"');
+    expect(orders).toContain("FINAL_CONFIRMATION_TRANSITION");
+    expect(orders).toContain('"phase":"submit"');
+    expect(orders).toContain("CONFIRMATION_SUBMISSION_PENDING");
+    expect(orders).toContain("daski_revoke_delivery_confirmation");
+    expect(orders).toContain("maximum three confirmation transitions");
+    expect(installable).toContain("Never infer the buyer's label");
+    expect(installable).toContain("prepare/sign/submit and reconciliation");
+  });
+
   it("places a Foundation-shaped receipt in the x402 settlement extension", async () => {
     const receipt = await createX402OfferReceipt({
       privateKey: `0x${"33".repeat(32)}` as Hex,
