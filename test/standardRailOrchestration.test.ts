@@ -234,6 +234,96 @@ describe("standard rail orchestration", () => {
       .rejects.toMatchObject({ code: "PROVIDER_QUOTE_UNAVAILABLE" });
   });
 
+  it("asks the provider before quoting a fixed-price listing and keeps the fixed artifacts", async () => {
+    // 2026-09-03: a mailbox on an unverified custom domain was quoted from the
+    // offer alone, paid, and refused at fulfilment. The provider's quote for
+    // the request carries the adapter's availability verdict; the challenge
+    // still prices from the offer with the zero provider-quote hash.
+    const providerAuthority = privateKeyToAccount(`0x${"22".repeat(32)}`);
+    const listing = {
+      runtimeCommitmentHash: hash("1"),
+      offer: { payload: { pricingMode: "fixed", fixedGrossAmount: "9990000" } },
+      commitment: {
+        payload: {
+          outcomeId: "create-mailbox",
+          providerAgentId: "8327",
+          commissionBps: 500,
+          providerAuthorityKey: providerAuthority.address,
+        },
+      },
+      deadlinePolicy: { draftSeconds: 300, minimumPaymentWindowSeconds: 60 },
+      quotePolicy: null,
+      providerControlProfile: {
+        payload: {
+          providerAudience: "provider.example",
+          quoteUrl: "https://provider.example/quote",
+          timeoutMs: 3_000,
+          maxResponseBytes: 65_536,
+        },
+      },
+    } as unknown as StandardListing;
+    const body = { address: "conformance-probe@sandbox.daski.io" };
+    const requestHash = canonicalHash(body);
+    const answer = { status: 200, grossAmount: "9990000" };
+    const providerFetch = vi.fn(async () => {
+      if (answer.status === 422) {
+        return new Response(JSON.stringify({
+          fieldErrors: [{ path: "address", rule: "dns_unverified", message: "The domain is not configured for mail." }],
+        }), { status: 422, headers: { "content-type": "application/json" } });
+      }
+      if (answer.status !== 200) return new Response("", { status: answer.status });
+      const now = Math.floor(Date.now() / 1_000);
+      const payload = {
+        outcomeId: "create-mailbox",
+        listingManifestHash: hash("1"),
+        requestHash,
+        grossAmount: answer.grossAmount,
+        issuedAt: now,
+        validBefore: now + 60,
+      };
+      const signature = await providerAuthority.signMessage({ message: { raw: canonicalHash(payload) } });
+      return new Response(JSON.stringify({ ...payload, signature }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    });
+    const service = harness({
+      appConfig: { chainId: 84532 },
+      railConfig: {
+        environment: "testnet",
+        dispatchPrivateKey: `0x${"11".repeat(32)}`,
+        dispatchTimeoutMs: 5_000,
+      },
+      providerFetch,
+    });
+    const resolve = (service as unknown as {
+      resolveGrossAmount(value: StandardListing, body: unknown): Promise<{
+        grossAmount: string; providerQuoteHash: Hex; issuedAt: number; validBefore: number;
+      }>;
+    }).resolveGrossAmount.bind(service);
+
+    const before = Math.floor(Date.now() / 1_000);
+    const pricing = await resolve(listing, body);
+    expect(providerFetch).toHaveBeenCalledOnce();
+    expect(pricing.grossAmount).toBe("9990000");
+    expect(pricing.providerQuoteHash).toBe(`0x${"00".repeat(32)}`);
+    expect(pricing.validBefore).toBeGreaterThanOrEqual(before + 300);
+
+    // the provider's availability refusal reaches the buyer before any payment
+    answer.status = 422;
+    await expect(resolve(listing, body)).rejects.toMatchObject({
+      code: "PROVIDER_QUOTE_REJECTED",
+      fieldErrors: [{ path: "address", rule: "dns_unverified" }],
+    });
+    answer.status = 503;
+    await expect(resolve(listing, body)).rejects.toMatchObject({ code: "PROVIDER_QUOTE_UNAVAILABLE" });
+
+    // a provider that quotes a fixed listing at another amount is not trusted over the offer
+    answer.status = 200;
+    answer.grossAmount = "5000000";
+    await expect(resolve(listing, body)).rejects.toMatchObject({ code: "PROVIDER_QUOTE_UNAVAILABLE" });
+  });
+
   it("resumes a paid dispatched order through the dispatcher seam", async () => {
     const order = {
       orderId: "order-1",

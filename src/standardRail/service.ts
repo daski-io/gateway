@@ -1962,14 +1962,14 @@ export class StandardRailService {
   }> {
     const offer = listing.offer.payload;
     const now = Math.floor(Date.now() / 1_000);
-    if (offer.pricingMode === "fixed" && /^[1-9][0-9]*$/.test(offer.fixedGrossAmount)) {
-      return {
-        grossAmount: offer.fixedGrossAmount,
-        providerQuoteHash: `0x${"00".repeat(32)}`,
-        issuedAt: now,
-        validBefore: now + listing.deadlinePolicy.draftSeconds,
-      };
-    }
+    // A fixed-price listing is priced by its offer, but the provider is still
+    // asked before a challenge is issued: its quote for THIS request carries
+    // the adapter's availability verdict (a mailbox on an unverified domain,
+    // a taken name), which otherwise surfaces only at fulfilment, after the
+    // buyer has paid (2026-09-03). The signed artifacts keep the offer's
+    // amount and the zero provider-quote hash the provider's dispatch
+    // verification requires for fixed pricing.
+    const fixed = offer.pricingMode === "fixed" && /^[1-9][0-9]*$/.test(offer.fixedGrossAmount);
     const requestHash = canonicalHash(body);
     const quoteRequest = await signEnvelope({
       artifactType: "ProviderQuoteRequestV1",
@@ -2076,15 +2076,20 @@ export class StandardRailService {
       quote.requestHash !== requestHash || typeof quote.grossAmount !== "string" ||
       !/^[1-9][0-9]*$/.test(quote.grossAmount) || typeof quote.issuedAt !== "number" ||
       !Number.isSafeInteger(quote.issuedAt) || typeof quote.validBefore !== "number" ||
-      !Number.isSafeInteger(quote.validBefore) || quote.issuedAt > now + 30 || quote.issuedAt < now - 30 ||
+      !Number.isSafeInteger(quote.validBefore) || typeof quote.signature !== "string"
+    ) throw standardRailError("PROVIDER_QUOTE_UNAVAILABLE");
+    // A dynamic quote's lifetime becomes the challenge's; a fixed listing's
+    // challenge keeps the offer's draft window, so only identity and the
+    // signature are checked for it below.
+    if (!fixed && (
+      quote.issuedAt > now + 30 || quote.issuedAt < now - 30 ||
       quote.validBefore <= now + Math.max(
         listing.deadlinePolicy.minimumPaymentWindowSeconds,
         listing.quotePolicy?.minimumPaymentWindowSeconds ?? 0,
       ) ||
       !listing.quotePolicy ||
-      quote.validBefore > quote.issuedAt + listing.quotePolicy.maximumLifetimeSeconds ||
-      typeof quote.signature !== "string"
-    ) throw standardRailError("PROVIDER_QUOTE_UNAVAILABLE");
+      quote.validBefore > quote.issuedAt + listing.quotePolicy.maximumLifetimeSeconds
+    )) throw standardRailError("PROVIDER_QUOTE_UNAVAILABLE");
     const bps = BigInt(listing.commitment.payload.commissionBps);
     const minimumReleasableAmount = (10_000n + bps - 1n) / bps;
     if (BigInt(quote.grossAmount) < minimumReleasableAmount) {
@@ -2102,6 +2107,24 @@ export class StandardRailService {
     const signer = await recoverMessageAddress({ message: { raw: quoteHash }, signature });
     if (getAddress(signer) !== getAddress(listing.commitment.payload.providerAuthorityKey)) {
       throw standardRailError("PROVIDER_QUOTE_UNAVAILABLE");
+    }
+    if (fixed) {
+      if (quote.grossAmount !== offer.fixedGrossAmount) {
+        throw standardRailError("PROVIDER_QUOTE_UNAVAILABLE", {
+          logContext: {
+            providerAgentId: listing.commitment.payload.providerAgentId,
+            outcomeId: listing.commitment.payload.outcomeId,
+            canonicalRequestHash: requestHash,
+            reason: "provider quoted a fixed-price listing at a different amount",
+          },
+        });
+      }
+      return {
+        grossAmount: offer.fixedGrossAmount,
+        providerQuoteHash: `0x${"00".repeat(32)}`,
+        issuedAt: now,
+        validBefore: now + listing.deadlinePolicy.draftSeconds,
+      };
     }
     return {
       grossAmount: quote.grossAmount,
