@@ -11,6 +11,15 @@ buyer private key. Fixed outcomes use stock Exact-EVM authorizations. Outcomes
 with buyer input use the published deterministic nonce recipe while retaining
 the standard Exact-EVM wire format.
 
+## Buying through Daski
+
+Agents start from one of three doors, and every door leads to the same setup
+guide: the MCP server at `/mcp`, whose instructions point at the guide; the
+guide itself at `/skills/setup.md`; or the installable skill at
+`/skills/SKILL.md`. Read the guide verbatim, through the `daski_get_setup_guide`
+tool or `curl -fsSL`, because a summarizing fetch drops instructions. Once a
+signer is configured, the steady-state prompt is `Use Daski to [your task]`.
+
 ## Public surfaces
 
 - `POST /outcomes/:providerAgentId/:outcomeId` issues a payment requirement and
