@@ -32,7 +32,15 @@ signer is configured, the steady-state prompt is `Use Daski to [your task]`.
 - `/.well-known/daski-chain.json` publishes metadata envelope v3 with
   `outcomeSchemaVersion: 1`. Consumers must ignore additive fields; removals,
   renamed fields, type changes, and semantic changes require a new schema
-  version.
+  version. The reputation projection behind it is refreshed in the
+  background (`CHAIN_PROJECTION_REFRESH_MS`, 60 seconds by default) and after
+  every finalized reputation write, so requests never wait on the chain.
+  Responses carry `Cache-Control: public, max-age=30,
+  stale-while-revalidate=300`, an `ETag`, and `DASKI-PROJECTION-REFRESHED-AT`.
+- `/public/v3/activity?limit=50` publishes the compact marketplace activity
+  projection from the same warm data: the newest purchases across services
+  with service and skill names, marketplace totals, the safe block, and the
+  contract addresses. `limit` accepts 1 to 200.
 - `/public/v3/services` publishes the service-first dynamic catalog when the
   dark-launch registration feature is enabled.
 - `/public/v2/registry/*` exposes read-only ERC-8004 identity, Daski provider
@@ -91,6 +99,15 @@ core groups are:
 - Dynamic catalog: `DYNAMIC_SERVICE_REGISTRATION_ENABLED`,
   `CATALOG_OPERATOR_TOKEN`, and `CATALOG_REFRESH_INTERVAL_MS`. It is disabled
   by default until the separately authorized R3 cutover.
+- Public projection: `CHAIN_PROJECTION_REFRESH_MS` sets how often the public
+  reputation projection behind the chain document and the activity endpoint
+  is refreshed in the background.
+
+The HTTP listener binds every interface, including the unspecified IPv6
+address in dual-stack mode, so Railway private networking
+(`http://gateway.railway.internal:PORT`) reaches the gateway without the
+public edge. `TRUST_PROXY` only affects requests that carry forwarding
+headers; private-network callers are rate limited by their own address.
 
 The runtime rejects mock chain mode, unknown USDC domains, missing standard
 artifacts and configuration that does not match the

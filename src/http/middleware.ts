@@ -126,6 +126,7 @@ export function configureMiddleware(
         "DASKI-ORDER-HANDLE",
         "DASKI-RAIL-PROFILE",
         "DASKI-RAIL-PROFILE-HASH",
+        "DASKI-PROJECTION-REFRESHED-AT",
         "MCP-Protocol-Version",
       ],
       // Reflect the browser's requested header list. Modern MCP adds

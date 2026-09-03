@@ -110,7 +110,7 @@ export function createServiceRegistrationRouter(args: {
   );
 
   router.get("/public/v3/services", handler(async (req, res) => {
-    res.setHeader("Cache-Control", "public, max-age=30");
+    res.setHeader("Cache-Control", "public, max-age=30, stale-while-revalidate=300");
     res.json(await args.service.listPublic(pageLimit(req.query.limit)));
   }));
 
@@ -123,7 +123,7 @@ export function createServiceRegistrationRouter(args: {
         "serviceId must be bytes32.",
       );
     }
-    res.setHeader("Cache-Control", "public, max-age=30");
+    res.setHeader("Cache-Control", "public, max-age=30, stale-while-revalidate=300");
     res.json(await args.service.getPublic(serviceId.toLowerCase() as Hex));
   }));
 
