@@ -42,6 +42,8 @@ export interface StandardRailConfig {
   leaseSeconds: number;
   recoveryIntervalMs: number;
   readinessIntervalMs: number;
+  /** Background refresh cadence of the public reputation projection. */
+  chainProjectionRefreshMs: number;
   validAfterBackstopSeconds: number;
   challengeTtlSeconds: number;
   orderReadCapTtlSeconds: number;
@@ -85,6 +87,7 @@ const DEFAULTS = {
   leaseSeconds: 45,
   recoveryIntervalMs: 10_000,
   readinessIntervalMs: 300_000,
+  chainProjectionRefreshMs: 60_000,
   validAfterBackstopSeconds: 3_600,
   challengeTtlSeconds: 600,
   orderReadCapTtlSeconds: 1_800,
@@ -283,6 +286,11 @@ export function loadStandardRailConfig(
     leaseSeconds: integer(env, "STANDARD_RAIL_LEASE_SECONDS", DEFAULTS.leaseSeconds),
     recoveryIntervalMs: integer(env, "STANDARD_RAIL_RECOVERY_INTERVAL_MS", DEFAULTS.recoveryIntervalMs),
     readinessIntervalMs: integer(env, "STANDARD_RAIL_READINESS_INTERVAL_MS", DEFAULTS.readinessIntervalMs),
+    chainProjectionRefreshMs: integer(
+      env,
+      "CHAIN_PROJECTION_REFRESH_MS",
+      DEFAULTS.chainProjectionRefreshMs,
+    ),
     validAfterBackstopSeconds: integer(
       env,
       "DASKI_STANDARD_VALID_AFTER_BACKSTOP_SECONDS",

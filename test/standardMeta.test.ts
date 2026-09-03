@@ -1,7 +1,7 @@
 import express from "express";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
-import type { Server } from "node:http";
+import http, { type Server } from "node:http";
 import { afterEach, describe, expect, it } from "vitest";
 import type { Config } from "../src/config.js";
 import { createStandardMetaRouter } from "../src/standardRail/meta.js";
@@ -23,6 +23,18 @@ const ADDRESSES = {
 } as const;
 const EAS = "0x7777777777777777777777777777777777777777";
 const USDC = "0x036CbD53842c5426634e7929541eC2318f3dCF7e";
+const REFRESHED_AT = new Date("2026-09-03T16:00:00.000Z");
+const PUBLIC_CACHE_CONTROL = "public, max-age=30, stale-while-revalidate=300";
+const PURCHASE = {
+  orderKey: `0x${"89".repeat(32)}`,
+  txHash: `0x${"90".repeat(32)}`,
+  payer: "0x8888888888888888888888888888888888888888",
+  buyerAgentId: "42",
+  buyerName: "Test Buyer",
+  amount: "5000000",
+  outcomeId: "domain-registration",
+  timestamp: "2026-08-13T12:00:00.000Z",
+} as const;
 let server: Server | undefined;
 
 afterEach(async () => {
@@ -31,36 +43,56 @@ afterEach(async () => {
   server = undefined;
 });
 
+// Node's fetch adds Cache-Control: no-cache to a request that carries its own
+// validator, which rightly disables the 304, so revalidation is exercised over
+// a plain HTTP request.
+function conditionalGet(url: string, etag: string): Promise<{ status: number; body: string }> {
+  return new Promise((resolve, reject) => {
+    http.get(url, { headers: { "if-none-match": etag } }, (response) => {
+      let body = "";
+      response.setEncoding("utf8");
+      response.on("data", (chunk: string) => { body += chunk; });
+      response.on("end", () => resolve({ status: response.statusCode ?? 0, body }));
+    }).on("error", reject);
+  });
+}
+
+async function startMeta(outcomes: PublicChainMetadataV3["outcomes"]): Promise<string> {
+  const app = express();
+  app.use(createStandardMetaRouter({
+    config: {
+      chainId: 84532,
+      network: "base-sepolia",
+      x402Network: "eip155:84532",
+      publicUrl: "https://gateway.example",
+      mcpPath: "/mcp",
+      marketplaceContracts: ADDRESSES,
+      usdc: { address: USDC },
+    } as unknown as Config,
+    railConfig: { easAddress: EAS } as never,
+    pool: { query: async () => ({ rows: [] }) } as never,
+    lifecycle: { isStopping: () => false } as never,
+    service: {
+      railProfileHash: CHAIN_FIXTURE.paymentRail.activeRailProfileHash,
+      publicOutcomes: async () => outcomes,
+      publicProjectionRefreshedAt: () => REFRESHED_AT,
+    } as never,
+  }));
+  server = await new Promise<Server>((resolve, reject) => {
+    const listener = app.listen(0, "127.0.0.1", (error?: Error) =>
+      error ? reject(error) : resolve(listener)
+    );
+  });
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("test listener unavailable");
+  return `http://127.0.0.1:${address.port}`;
+}
+
 describe("standard rail metadata", () => {
   it("publishes the gateway-owned non-empty daski-chain v3 contract", async () => {
-    const app = express();
-    app.use(createStandardMetaRouter({
-      config: {
-        chainId: 84532,
-        network: "base-sepolia",
-        x402Network: "eip155:84532",
-        publicUrl: "https://gateway.example",
-        mcpPath: "/mcp",
-        marketplaceContracts: ADDRESSES,
-        usdc: { address: USDC },
-      } as unknown as Config,
-      railConfig: { easAddress: EAS } as never,
-      pool: { query: async () => ({ rows: [] }) } as never,
-      lifecycle: { isStopping: () => false } as never,
-      service: {
-        railProfileHash: CHAIN_FIXTURE.paymentRail.activeRailProfileHash,
-        publicOutcomes: async () => CHAIN_FIXTURE.outcomes,
-      } as never,
-    }));
-    server = await new Promise<Server>((resolve, reject) => {
-      const listener = app.listen(0, "127.0.0.1", (error?: Error) =>
-        error ? reject(error) : resolve(listener)
-      );
-    });
-    const address = server.address();
-    if (!address || typeof address === "string") throw new Error("test listener unavailable");
+    const root = await startMeta(CHAIN_FIXTURE.outcomes);
 
-    const response = await fetch(`http://127.0.0.1:${address.port}/.well-known/daski-chain.json`);
+    const response = await fetch(`${root}/.well-known/daski-chain.json`);
     const body = await response.json() as Record<string, unknown>;
 
     expect(body).toEqual(CHAIN_FIXTURE);
@@ -72,7 +104,15 @@ describe("standard rail metadata", () => {
     expect(JSON.stringify(body)).not.toContain("fulfillmentObligationHash");
     expect(JSON.stringify(body)).not.toContain("jurisdictionObligationHashes");
 
-    const root = `http://127.0.0.1:${address.port}`;
+    // Served from the warm projection: cacheable, revalidatable, and dated.
+    expect(response.headers.get("cache-control")).toBe(PUBLIC_CACHE_CONTROL);
+    expect(response.headers.get("vary")).toContain("Accept-Encoding");
+    expect(response.headers.get("daski-projection-refreshed-at")).toBe(REFRESHED_AT.toISOString());
+    const etag = response.headers.get("etag");
+    expect(etag).toBeTruthy();
+    expect(await conditionalGet(`${root}/.well-known/daski-chain.json`, etag!))
+      .toEqual({ status: 304, body: "" });
+
     const setup = await (await fetch(`${root}/skills/setup.md`)).text();
     expect(setup).toBe((await readSkill("setup")).content);
     expect(setup).toContain("daski_get_payment_challenge");
@@ -115,5 +155,49 @@ describe("standard rail metadata", () => {
     const llms = await (await fetch(`${root}/llms.txt`)).text();
     expect(llms).toContain("MCP: https://gateway.example/mcp");
     expect(llms).toContain("https://gateway.example/skills/SKILL.md");
+  });
+
+  it("publishes the compact activity projection with the same caching policy", async () => {
+    const outcome = structuredClone(CHAIN_FIXTURE.outcomes[0]!);
+    outcome.serviceReputation.recentPurchases = [PURCHASE];
+    const root = await startMeta([outcome]);
+
+    const response = await fetch(`${root}/public/v3/activity`);
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe(PUBLIC_CACHE_CONTROL);
+    expect(response.headers.get("daski-projection-refreshed-at")).toBe(REFRESHED_AT.toISOString());
+    const etag = response.headers.get("etag");
+    expect(etag).toBeTruthy();
+    expect(await response.json()).toEqual({
+      generatedAt: REFRESHED_AT.toISOString(),
+      network: "base-sepolia",
+      chainId: 84532,
+      contracts: { ...ADDRESSES, eas: EAS, usdc: USDC },
+      safeBlock: "12345690",
+      serviceCount: 1,
+      totalPaid: "5000000",
+      transactionCount: "2",
+      purchases: [{
+        ...PURCHASE,
+        serviceId: outcome.serviceId,
+        serviceName: "Domain Management",
+        skillName: "Register Domain",
+      }],
+    });
+
+    expect(await conditionalGet(`${root}/public/v3/activity`, etag!))
+      .toEqual({ status: 304, body: "" });
+
+    const limited = await (await fetch(`${root}/public/v3/activity?limit=1`)).json() as {
+      purchases: unknown[];
+    };
+    expect(limited.purchases).toHaveLength(1);
+    for (const limit of ["0", "201", "abc", "1e2"]) {
+      const rejected = await fetch(`${root}/public/v3/activity?limit=${limit}`);
+      expect(rejected.status).toBe(400);
+      expect(await rejected.json()).toEqual({
+        error: { code: "INVALID_LIMIT", message: "limit must be an integer from 1 to 200." },
+      });
+    }
   });
 });

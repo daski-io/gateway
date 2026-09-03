@@ -8,9 +8,16 @@ async function main(): Promise<void> {
   const config = loadConfig();
   const standardRailConfig = loadStandardRailConfig();
   const bundle = await createStandardApp({ config, standardRailConfig });
+  // No host: Node binds the unspecified IPv6 address in dual-stack mode when
+  // the container has IPv6, which is what Railway private networking needs.
+  // The bound address goes to the deploy log so that is verifiable.
   const server = bundle.app.listen(config.port, () => {
+    const address = server.address();
+    const bound = address && typeof address === "object"
+      ? `${address.address}:${address.port} (${address.family})`
+      : `:${config.port}`;
     logger.info(
-      `daski-gateway listening on :${config.port} (chain ${config.chainId}, rail standard, mcp ${
+      `daski-gateway listening on ${bound} (chain ${config.chainId}, rail standard, mcp ${
         config.mcpEnabled ? config.mcpPath : "off"
       })`,
     );

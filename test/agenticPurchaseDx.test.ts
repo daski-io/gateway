@@ -440,6 +440,26 @@ describe("agentic purchase DX contracts", () => {
     expect(await llmsFull()).toBe(expected);
   });
 
+  it("recommends human-run signer setup without prohibiting explicitly authorized setup", async () => {
+    const setup = (await readSkill("setup")).content;
+    const installable = (await readSkill("daski")).content;
+    const wallets = (await readSkill("wallets")).content;
+
+    expect(setup).toContain("Prefer that the human configure it in their own terminal");
+    expect(setup).toContain("If the human explicitly asks the agent to perform setup");
+    expect(setup).toContain("the agent may run these documented commands instead");
+    expect(setup).toContain("pause and hand that step to the human");
+    expect(setup).not.toContain("The agent runs none of the commands");
+    expect(setup).not.toContain("none of these commands is for the agent to run");
+
+    expect(installable).toContain("Prefer that the human configure it and wait by default");
+    expect(installable).toContain("the agent may run the documented pinned installation");
+    expect(installable).not.toContain("never create or improvise a signer");
+
+    expect(wallets).toContain("an agent explicitly authorized by the human may run");
+    expect(wallets).toContain("Only a signer deliberately selected by the human");
+  });
+
   it("places a Foundation-shaped receipt in the x402 settlement extension", async () => {
     const receipt = await createX402OfferReceipt({
       privateKey: `0x${"33".repeat(32)}` as Hex,

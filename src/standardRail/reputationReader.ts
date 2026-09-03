@@ -42,10 +42,19 @@ interface BuyerIdentity {
   name: string | null;
 }
 
-// Refreshes stay O(records) even with aggregated reads, so the snapshot is held until
-// the reputation worker reports a new on-chain write or the safety TTL lapses.
-const CACHE_MILLISECONDS = 300_000;
+// A refresh walks every reputation record over RPC, so it never runs on a
+// request: the last good snapshot is served immediately and refreshed in the
+// background on a fixed cadence, after the reputation worker reports a new
+// on-chain write, and when the admitted outcome set changes. Only the very
+// first read, before any snapshot exists, waits on the chain.
+const DEFAULT_REFRESH_MILLISECONDS = 60_000;
 const MULTICALL_BATCH_BYTES = 8_192;
+
+function snapshotKey(outcomes: readonly OutcomeDescriptor[]): string {
+  return outcomes.map((item) =>
+    `${item.providerAgentId}:${item.serviceId}:${item.listingManifestHash}`
+  ).sort().join("|");
+}
 
 function inlineAgentName(uri: string): string | null {
   if (!uri.startsWith("data:") || uri.length > 90_000) return null;
@@ -81,8 +90,17 @@ export { presentReputation } from "./reputationProjection.js";
 
 export class DirectReputationReader {
   private readonly clients;
-  private cached: { key: string; expiresAt: number; value: ReputationSnapshot } | null = null;
+  private readonly refreshIntervalMs: number;
+  private snapshot: {
+    key: string;
+    value: ReputationSnapshot;
+    refreshedAt: number;
+    stale: boolean;
+  } | null = null;
   private loading: { key: string; promise: Promise<ReputationSnapshot> } | null = null;
+  private lastOutcomes: OutcomeDescriptor[] | null = null;
+  private timer: NodeJS.Timeout | null = null;
+  private failing = false;
 
   constructor(
     private readonly config: StandardRailConfig,
@@ -90,6 +108,7 @@ export class DirectReputationReader {
     private readonly pool: Pick<Pool, "query">,
     private readonly addresses: { agentIndex: Address; identityRegistry: Address },
   ) {
+    this.refreshIntervalMs = config.chainProjectionRefreshMs ?? DEFAULT_REFRESH_MILLISECONDS;
     this.clients = config.evidenceRpcUrls.map((url) => ({
       host: new URL(url).hostname,
       client: createPublicClient({
@@ -112,29 +131,85 @@ export class DirectReputationReader {
     });
   }
 
+  /** Time of the last successful projection refresh, or null before the first. */
+  refreshedAt(): Date | null {
+    return this.snapshot ? new Date(this.snapshot.refreshedAt) : null;
+  }
+
+  /** Resolves once no refresh is in flight; refresh failures are logged, not thrown. */
+  settled(): Promise<void> {
+    return this.loading
+      ? this.loading.promise.then(() => undefined, () => undefined)
+      : Promise.resolve();
+  }
+
+  /** Refreshes the snapshot on the configured cadence until stopped. */
+  start(): void {
+    if (this.timer) return;
+    this.timer = setInterval(() => {
+      if (this.lastOutcomes) this.refreshInBackground(this.lastOutcomes);
+    }, this.refreshIntervalMs);
+    this.timer.unref();
+  }
+
+  stop(): void {
+    if (this.timer) clearInterval(this.timer);
+    this.timer = null;
+  }
+
+  /** A new on-chain write landed: keep serving the snapshot and refresh it now. */
   invalidate(): void {
-    this.cached = null;
+    if (this.snapshot) this.snapshot.stale = true;
+    if (this.lastOutcomes) this.refreshInBackground(this.lastOutcomes);
   }
 
   async forOutcomes(outcomes: readonly OutcomeDescriptor[]): Promise<ReputationSnapshot> {
     const descriptors = outcomes.map(asOutcome);
-    const key = descriptors.map((item) =>
-      `${item.providerAgentId}:${item.serviceId}:${item.listingManifestHash}`
-    ).sort().join("|");
-    if (this.cached?.key === key && this.cached.expiresAt > Date.now()) return this.cached.value;
-    if (this.loading?.key === key) return this.loading.promise;
-    const promise = this.readOutcomes(descriptors);
-    this.loading = { key, promise };
-    try {
-      const value = await promise;
-      this.cached = { key, expiresAt: Date.now() + CACHE_MILLISECONDS, value };
-      return value;
-    } catch (error) {
-      if (this.cached?.key === key) return this.cached.value;
-      throw error;
-    } finally {
-      if (this.loading?.promise === promise) this.loading = null;
+    this.lastOutcomes = descriptors;
+    const snapshot = this.snapshot;
+    if (!snapshot) return this.load(descriptors);
+    if (
+      snapshot.stale || snapshot.key !== snapshotKey(descriptors) ||
+      Date.now() - snapshot.refreshedAt >= this.refreshIntervalMs
+    ) {
+      this.refreshInBackground(descriptors);
     }
+    return snapshot.value;
+  }
+
+  private refreshInBackground(descriptors: OutcomeDescriptor[]): void {
+    this.load(descriptors).catch(() => undefined);
+  }
+
+  // One refresh per outcome set at a time. A failed refresh keeps the last
+  // snapshot and is logged once per failure streak; only a first read with
+  // nothing to fall back on surfaces the error.
+  private load(descriptors: OutcomeDescriptor[]): Promise<ReputationSnapshot> {
+    const key = snapshotKey(descriptors);
+    if (this.loading?.key === key) return this.loading.promise;
+    const promise = this.readOutcomes(descriptors)
+      .then((value) => {
+        this.snapshot = { key, value, refreshedAt: Date.now(), stale: false };
+        if (this.failing) {
+          this.failing = false;
+          logger.info("public reputation projection refresh recovered");
+        }
+        return value;
+      }, (error: unknown) => {
+        if (!this.failing) {
+          this.failing = true;
+          logger.warn("public reputation projection refresh failed; serving the last snapshot", {
+            error,
+          });
+        }
+        if (this.snapshot) return this.snapshot.value;
+        throw error;
+      })
+      .finally(() => {
+        if (this.loading?.promise === promise) this.loading = null;
+      });
+    this.loading = { key, promise };
+    return promise;
   }
 
   private async readOutcomes(outcomes: OutcomeDescriptor[]): Promise<ReputationSnapshot> {

@@ -1,5 +1,5 @@
 import { timingSafeEqual } from "node:crypto";
-import { Router, type Request } from "express";
+import { Router, type Request, type Response } from "express";
 import type { Config } from "../config.js";
 import type { Pool } from "../db/pool.js";
 import type { ApplicationLifecycle } from "../runtime/applicationLifecycle.js";
@@ -8,6 +8,24 @@ import type { StandardRailConfig } from "./config.js";
 import type { StandardRailService } from "./service.js";
 import type { PublicChainMetadataV3 } from "./types.js";
 import { llmsFull, llmsIndex, readSkill, skillIndex, legacySkillIndex } from "./skills.js";
+import {
+  ACTIVITY_MAX_LIMIT,
+  activityLimit,
+  activityProjection,
+} from "./activityProjection.js";
+
+// Public projections are refreshed in the background, so a short shared
+// cache costs consumers nothing in freshness and lets browsers, the website,
+// and any CDN revalidate cheaply against the ETag express derives.
+const PUBLIC_PROJECTION_CACHE_CONTROL = "public, max-age=30, stale-while-revalidate=300";
+/** When the reputation projection behind the response was last refreshed. */
+export const PROJECTION_REFRESHED_AT_HEADER = "DASKI-PROJECTION-REFRESHED-AT";
+
+function publicProjectionHeaders(res: Response, refreshedAt: Date | null): void {
+  res.setHeader("Cache-Control", PUBLIC_PROJECTION_CACHE_CONTROL);
+  res.vary("Accept-Encoding");
+  if (refreshedAt) res.setHeader(PROJECTION_REFRESHED_AT_HEADER, refreshedAt.toISOString());
+}
 
 function operatorAuthorized(req: Request, token: string | null): boolean {
   if (!token) return false;
@@ -31,6 +49,22 @@ function publicOperations(
       .filter(([key]) => PUBLIC_RELAYER_FIELDS.has(key)))
     : null;
   return { ...observed, reputation: { ...counters, relayer: publicRelayer } };
+}
+
+function chainContracts(args: {
+  config: Config;
+  railConfig: StandardRailConfig;
+}): PublicChainMetadataV3["contracts"] {
+  return {
+    identityRegistry: args.config.marketplaceContracts.identityRegistry,
+    agentIndex: args.config.marketplaceContracts.agentIndex,
+    providerRegistry: args.config.marketplaceContracts.providerRegistry,
+    serviceRegistry: args.config.marketplaceContracts.serviceRegistry,
+    validationRegistry: args.config.marketplaceContracts.validationRegistry,
+    reputationStorage: args.config.marketplaceContracts.reputationStorage,
+    eas: args.railConfig.easAddress,
+    usdc: args.config.usdc.address,
+  };
 }
 
 export function createStandardMetaRouter(args: {
@@ -87,19 +121,39 @@ export function createStandardMetaRouter(args: {
           activeRailProfileUrl:
             `${args.config.publicUrl}/public/v2/artifacts/${args.service.railProfileHash}`,
         },
-        contracts: {
-          identityRegistry: args.config.marketplaceContracts.identityRegistry,
-          agentIndex: args.config.marketplaceContracts.agentIndex,
-          providerRegistry: args.config.marketplaceContracts.providerRegistry,
-          serviceRegistry: args.config.marketplaceContracts.serviceRegistry,
-          validationRegistry: args.config.marketplaceContracts.validationRegistry,
-          reputationStorage: args.config.marketplaceContracts.reputationStorage,
-          eas: args.railConfig.easAddress,
-          usdc: args.config.usdc.address,
-        },
+        contracts: chainContracts(args),
         outcomes: await args.service.publicOutcomes(),
       };
+      publicProjectionHeaders(res, args.service.publicProjectionRefreshedAt());
       res.json(metadata);
+    } catch (error) { next(error); }
+  });
+  // The rows the marketplace activity page renders, without the per-outcome
+  // reputation blocks the chain document repeats: same projection, same
+  // caching, a fraction of the bytes.
+  router.get("/public/v3/activity", async (req, res, next) => {
+    try {
+      const limit = activityLimit(req.query.limit);
+      if (limit === null) {
+        res.status(400).json({
+          error: {
+            code: "INVALID_LIMIT",
+            message: `limit must be an integer from 1 to ${ACTIVITY_MAX_LIMIT}.`,
+          },
+        });
+        return;
+      }
+      const refreshedAt = args.service.publicProjectionRefreshedAt();
+      const projection = activityProjection({
+        outcomes: await args.service.publicOutcomes(),
+        network: args.config.network,
+        chainId: args.config.chainId,
+        contracts: chainContracts(args),
+        generatedAt: refreshedAt ?? new Date(),
+        limit,
+      });
+      publicProjectionHeaders(res, refreshedAt);
+      res.json(projection);
     } catch (error) { next(error); }
   });
   router.get("/.well-known/mcp.json", (_req, res) => {
