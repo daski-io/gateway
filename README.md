@@ -16,12 +16,20 @@ the standard Exact-EVM wire format.
 Agents start from one of three doors, and every door leads to the same setup
 guide: the MCP server at `/mcp`, whose instructions point at the guide; the
 guide itself at `/skills/setup.md`; or the installable skill at
-`/skills/SKILL.md`. Read the guide verbatim, through the `daski_get_setup_guide`
-tool or `curl -fsSL`, because a summarizing fetch drops instructions. Once a
+`/skills/SKILL.md`. Load the full guide through `daski_get_setup_guide`
+or a raw fetch. Diagnose the existing signer, discover contextual intake,
+obtain the actual quote, and approve it through the pinned `daski buy` flow. Once a
 signer is configured, the steady-state prompt is `Use Daski to [your task]`.
 
 ## Public surfaces
 
+- `POST /outcomes/:providerAgentId/:outcomeId/requirements` and MCP
+  `daski_get_outcome_requirements` return the published schema, conditional
+  intake requirements, normalized selectors, and missing fields for a partial
+  request. This catalog read creates no quote or order.
+- `/.well-known/mcp.json` publishes the buyer CLI pin and EAS confirmation
+  signing metadata. Authorized order responses include the onchain order key
+  used by the CLI's delivery-review flow.
 - `POST /outcomes/:providerAgentId/:outcomeId` issues a payment requirement and
   accepts the identical paid retry.
 - `/orders/:handle/actions/*` exposes payer-authorized lifecycle actions.

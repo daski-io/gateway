@@ -170,6 +170,7 @@ export function createStandardMetaRouter(args: {
         "daski_resolve_agent",
         "daski_list_outcomes",
         "daski_get_outcome",
+        "daski_get_outcome_requirements",
         "daski_buy_outcome",
         "daski_get_payment_challenge",
         "daski_get_setup_guide",
@@ -197,6 +198,12 @@ export function createStandardMetaRouter(args: {
       // The pinned buyer CLI, so a client can compare an installed version
       // against it instead of reading the pin out of setup.md by eye.
       buyerCli: PINNED_BUYER_CLI,
+      confirmationSigning: {
+        chainId: args.config.chainId,
+        eas: args.railConfig.easAddress,
+        schemaUid: args.railConfig.reputationConfirmationSchemaUid,
+        reputationStorage: args.config.marketplaceContracts.reputationStorage,
+      },
       steadyStatePrompt: "Use Daski to [your task].",
     });
   });
