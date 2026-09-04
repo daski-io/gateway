@@ -3,7 +3,7 @@ import { Router, type Request, type Response } from "express";
 import type { Config } from "../config.js";
 import type { Pool } from "../db/pool.js";
 import type { ApplicationLifecycle } from "../runtime/applicationLifecycle.js";
-import { GATEWAY_COMMIT, GATEWAY_VERSION } from "../version.js";
+import { GATEWAY_COMMIT, GATEWAY_SOURCE_SHA, GATEWAY_VERSION } from "../version.js";
 import { PINNED_BUYER_CLI } from "./buyerCli.js";
 import type { StandardRailConfig } from "./config.js";
 import type { StandardRailService } from "./service.js";
@@ -96,6 +96,7 @@ export function createStandardMetaRouter(args: {
       status: ready ? "ready" : "unready",
       version: GATEWAY_VERSION,
       commit: GATEWAY_COMMIT,
+      ...(GATEWAY_SOURCE_SHA ? { sourceSha: GATEWAY_SOURCE_SHA } : {}),
       rail: "standard-exact-evm",
       railProfileHash: args.service.railProfileHash,
       dependencies: {
