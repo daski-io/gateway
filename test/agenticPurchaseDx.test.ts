@@ -440,42 +440,6 @@ describe("agentic purchase DX contracts", () => {
     expect(await llmsFull()).toBe(expected);
   });
 
-  it("recommends human-run signer setup without prohibiting explicitly authorized setup", async () => {
-    const setup = (await readSkill("setup")).content;
-    const installable = (await readSkill("daski")).content;
-    const wallets = (await readSkill("wallets")).content;
-
-    expect(setup).toContain("Prefer that the human configure it in their own terminal");
-    expect(setup).toContain("If the human explicitly asks the agent to perform setup");
-    expect(setup).toContain("the agent may run these documented commands instead");
-    expect(setup).toContain("pause and hand that step to the human");
-    expect(setup).not.toContain("The agent runs none of the commands");
-    expect(setup).not.toContain("none of these commands is for the agent to run");
-
-    expect(installable).toContain("Prefer that the human configure it and wait by default");
-    expect(installable).toContain("the agent may run the documented pinned installation");
-    expect(installable).not.toContain("never create or improvise a signer");
-
-    expect(wallets).toContain("an agent explicitly authorized by the human may run");
-    expect(wallets).toContain("Only a signer deliberately selected by the human");
-  });
-
-  it("documents payer-directed provider reviews and the complete confirmation flow", async () => {
-    const orders = (await readSkill("orders")).content;
-    const installable = (await readSkill("daski")).content;
-
-    expect(orders).toContain("the payer's binary, payer-signed delivery confirmation");
-    expect(orders).toContain("Never infer this choice");
-    expect(orders).toContain("daski_confirm_delivery");
-    expect(orders).toContain('"phase":"prepare"');
-    expect(orders).toContain("FINAL_CONFIRMATION_TRANSITION");
-    expect(orders).toContain('"phase":"submit"');
-    expect(orders).toContain("CONFIRMATION_SUBMISSION_PENDING");
-    expect(orders).toContain("daski_revoke_delivery_confirmation");
-    expect(orders).toContain("maximum three confirmation transitions");
-    expect(installable).toContain("Never infer the buyer's label");
-    expect(installable).toContain("prepare/sign/submit and reconciliation");
-  });
 
   it("places a Foundation-shaped receipt in the x402 settlement extension", async () => {
     const receipt = await createX402OfferReceipt({

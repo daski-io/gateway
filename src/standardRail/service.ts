@@ -76,6 +76,7 @@ import {
 } from "./orderAuthorization.js";
 import { issueReadCapability, verifyReadCapability } from "./readCapability.js";
 import { createX402OfferReceipt, x402PaymentResponse } from "./x402Receipt.js";
+import { getIntakeRequirements } from "./intake.js";
 
 export function isAdmissionWindowOpen(
   railValidBefore: number,
@@ -1200,6 +1201,7 @@ export class StandardRailService {
       return {
         orderHandle: args.handle,
         state: order.state,
+        orderKey: order.orderKey,
         receipt: await this.signedReceipt(order),
       };
     }
@@ -1381,7 +1383,7 @@ export class StandardRailService {
     // Every order action answers with the order handle and the gateway's own
     // order state beside the provider's lifecycle state, so a client can
     // always recover from the handle alone.
-    return { ...response, orderHandle: handle, orderState: order.state, receipt: await this.signedReceipt(order) };
+    return { ...response, orderHandle: handle, orderKey: order.orderKey, orderState: order.state, receipt: await this.signedReceipt(order) };
   }
 
   async issueChallenge(args: {
@@ -1481,6 +1483,14 @@ export class StandardRailService {
       expiresAt: new Date(expiresAt * 1_000),
     });
     return this.challengeResponse(listing, created.order, created.handle, args.payerAddress);
+  }
+
+  async getOutcomeRequirements(args: { providerAgentId: string; outcomeId: string; request: Record<string, unknown> }) {
+    const listing = await this.listing(args.providerAgentId, args.outcomeId);
+    return getIntakeRequirements({ listing, request: args.request, environment: this.railConfig.environment,
+      chainId: this.appConfig.chainId, privateKey: this.railConfig.dispatchPrivateKey,
+      timeoutMs: this.railConfig.dispatchTimeoutMs,
+      fetchProvider: (endpoint, init) => this.providerFetch(listing, endpoint, init, true) });
   }
 
   async preparePaymentChallenge(args: {

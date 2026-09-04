@@ -20,6 +20,8 @@ COPY package.json ./
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/dist ./dist
 
+ARG SOURCE_SHA
+ENV RELEASE_SOURCE_SHA=$SOURCE_SHA
 ENV NODE_ENV=production
 EXPOSE 3000
 USER node

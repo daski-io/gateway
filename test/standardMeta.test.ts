@@ -151,6 +151,7 @@ describe("standard rail metadata", () => {
     };
     expect(mcp.tools).toContain("daski_get_setup_guide");
     expect(mcp.tools).toContain("daski_get_order_access");
+    expect(mcp.tools).toContain("daski_get_outcome_requirements");
     expect(mcp.skills.setup).toBe("https://gateway.example/skills/setup.md");
     expect(mcp.steadyStatePrompt).toBe("Use Daski to [your task].");
     // The pinned buyer CLI is machine-readable so `daski doctor` can compare
@@ -180,8 +181,7 @@ describe("standard rail metadata", () => {
     expect(setup).toContain("`cliVersion`");
     expect(setup).toContain("`buyerCli.version` in `/.well-known/mcp.json`");
     // The documented signing path is the one the pinned release completes.
-    expect(setup).toContain("daski sign-payment --challenge");
-    expect(setup).toContain("`daski buy` shortcut is not part of this procedure");
+    expect(setup).toContain("daski buy --provider");
     const buy = (await readSkill("buy")).content;
     expect(buy).toContain("| PAYMENT_IDENTIFIER_UNKNOWN |");
     expect(buy).toContain("| PAYMENT_IDENTIFIER_CONFLICT |");

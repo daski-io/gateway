@@ -26,6 +26,8 @@ const ORDER_ACTIONS = [
 type OrderAction = typeof ORDER_ACTIONS[number];
 
 const CONFIRMATION_HTTP_ERRORS = new Map<string, { code: string; status: number }>([
+  ["CONFIRMATION_PREPARATION_STALE", { code: "CONFIRMATION_PREPARATION_STALE", status: 409 }],
+  ["CONFIRMATION_TRANSITION_LIMIT", { code: "CONFIRMATION_TRANSITION_LIMIT", status: 409 }],
   ["REPUTATION_NOT_READY", { code: "REPUTATION_NOT_READY", status: 409 }],
   ["REPUTATION_UNAVAILABLE", { code: "REPUTATION_UNAVAILABLE", status: 503 }],
   ["CONFIRMATION_SPONSORSHIP_LIMIT", { code: "CONFIRMATION_SPONSORSHIP_LIMITED", status: 503 }],
@@ -125,6 +127,19 @@ export function standardPaymentError(
 export function createStandardRailRouter(service: StandardRailService, publicUrl?: string): Router {
   const router = Router();
   const origin = (publicUrl ?? "https://invalid.local").replace(/\/$/, "");
+
+  router.post("/outcomes/:providerAgentId/:outcomeId/requirements", async (req, res, next) => {
+    try {
+      assertStandardExactKeys(req.body, ["request"], "body");
+      res.setHeader("Cache-Control", "private, no-store");
+      res.json(await service.getOutcomeRequirements({ providerAgentId: String(req.params.providerAgentId),
+        outcomeId: String(req.params.outcomeId), request: req.body.request }));
+    } catch (error) {
+      const failure = standardPaymentError(error, origin);
+      if (failure) { res.status(failure.status).json(failure); return; }
+      next(error);
+    }
+  });
 
   router.post("/wallet/orders", async (req, res) => {
     try {

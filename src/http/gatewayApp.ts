@@ -99,11 +99,14 @@ export async function createStandardGatewayHttp(
     chain,
     nonceLock,
   );
-  const marketplace = new CachedMarketplaceChainReader(new ViemMarketplaceChainReader(
+  const liveMarketplace = new ViemMarketplaceChainReader(
     options.config,
     options.standardRailConfig.evidenceRpcUrls,
     chain,
-  ));
+  );
+  // Stale registry data is suitable for discovery, never for provider
+  // authority, activation, or renewing the purchase-freshness fence.
+  const publicMarketplace = new CachedMarketplaceChainReader(liveMarketplace);
   // The registration store IS the catalog now: it must exist before the
   // standard rail so checkout can assemble listings from it, and its refresh
   // loop runs unconditionally to keep the §10 purchase fence satisfiable.
@@ -112,12 +115,12 @@ export async function createStandardGatewayHttp(
     options.config,
     options.standardRailConfig,
     registrationStore,
-    marketplace,
+    liveMarketplace,
     new ViemRegistrationEvidenceVerifier(
       options.config,
       options.standardRailConfig,
       chain,
-      marketplace,
+      liveMarketplace,
     ),
     (url) => fetchProviderCardJson(url, options.a2aFetch ?? fetch),
   );
@@ -148,10 +151,10 @@ export async function createStandardGatewayHttp(
     service: standardRail,
     railConfig: options.standardRailConfig,
   }));
-  app.use(createMarketplaceRouter(marketplace));
+  app.use(createMarketplaceRouter(publicMarketplace));
   app.use(createStandardRailRouter(standardRail, options.config.publicUrl));
   const mcp = options.config.mcpEnabled
-    ? await createStandardRailMcp(app, options.config, standardRail, marketplace)
+    ? await createStandardRailMcp(app, options.config, standardRail, publicMarketplace)
     : null;
   app.use((error: unknown, _req: express.Request, res: express.Response, next: express.NextFunction) => {
     if (res.headersSent) return next(error);

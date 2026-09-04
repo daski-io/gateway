@@ -22,6 +22,7 @@ export type StandardRailErrorCode =
   | "LISTING_SUPERSEDED"
   | "PROVIDER_QUOTE_REJECTED"
   | "PROVIDER_QUOTE_UNAVAILABLE"
+  | "PROVIDER_INTAKE_UNAVAILABLE"
   | "CHALLENGE_EXPIRED"
   | "PAYMENT_VERSION_UNSUPPORTED"
   | "EXTENSION_MISMATCH"
@@ -58,6 +59,12 @@ interface ErrorDefaults {
 }
 
 const DEFAULTS: Record<StandardRailErrorCode, ErrorDefaults> = {
+  PROVIDER_INTAKE_UNAVAILABLE: {
+    status: 502, message: "The provider did not return usable intake requirements",
+    phase: "request_validation", retryable: true, requiresNewSignature: false,
+    paymentMayHaveSettled: false,
+    nextAction: "Retry intake discovery later. No draft, payment, or filing was created.",
+  },
   REQUEST_SCHEMA_INVALID: {
     status: 400,
     message: "The request does not match the required schema",

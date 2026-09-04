@@ -3,7 +3,7 @@ import { Router, type Request, type Response } from "express";
 import type { Config } from "../config.js";
 import type { Pool } from "../db/pool.js";
 import type { ApplicationLifecycle } from "../runtime/applicationLifecycle.js";
-import { GATEWAY_COMMIT, GATEWAY_VERSION } from "../version.js";
+import { GATEWAY_COMMIT, GATEWAY_SOURCE_SHA, GATEWAY_VERSION } from "../version.js";
 import { PINNED_BUYER_CLI } from "./buyerCli.js";
 import type { StandardRailConfig } from "./config.js";
 import type { StandardRailService } from "./service.js";
@@ -96,6 +96,7 @@ export function createStandardMetaRouter(args: {
       status: ready ? "ready" : "unready",
       version: GATEWAY_VERSION,
       commit: GATEWAY_COMMIT,
+      ...(GATEWAY_SOURCE_SHA ? { sourceSha: GATEWAY_SOURCE_SHA } : {}),
       rail: "standard-exact-evm",
       railProfileHash: args.service.railProfileHash,
       dependencies: {
@@ -170,6 +171,7 @@ export function createStandardMetaRouter(args: {
         "daski_resolve_agent",
         "daski_list_outcomes",
         "daski_get_outcome",
+        "daski_get_outcome_requirements",
         "daski_buy_outcome",
         "daski_get_payment_challenge",
         "daski_get_setup_guide",
@@ -197,6 +199,12 @@ export function createStandardMetaRouter(args: {
       // The pinned buyer CLI, so a client can compare an installed version
       // against it instead of reading the pin out of setup.md by eye.
       buyerCli: PINNED_BUYER_CLI,
+      confirmationSigning: {
+        chainId: args.config.chainId,
+        eas: args.railConfig.easAddress,
+        schemaUid: args.railConfig.reputationConfirmationSchemaUid,
+        reputationStorage: args.config.marketplaceContracts.reputationStorage,
+      },
       steadyStatePrompt: "Use Daski to [your task].",
     });
   });
