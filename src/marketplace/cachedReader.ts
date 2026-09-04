@@ -4,10 +4,9 @@ import type {
   MarketplaceServiceRecord,
 } from "./reader.js";
 
-// Registry state only changes on releases; a short shared cache keeps the public
-// registry endpoints from re-reading finalized chain state on every request, and
-// the last good value stays servable through transient RPC failures instead of
-// surfacing them to buyers.
+// Public discovery only: a short shared cache avoids re-reading chain state
+// on every request and keeps the last good value available during RPC failures.
+// Authorization, activation, and commerce refresh must use live chain reads.
 const CACHE_MILLISECONDS = 60_000;
 const STALE_LIMIT_MILLISECONDS = 24 * 60 * 60_000;
 const MAXIMUM_ENTRIES = 256;

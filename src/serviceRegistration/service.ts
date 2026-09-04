@@ -869,15 +869,28 @@ export class ServiceRegistrationService {
       return;
     }
     let service: MarketplaceServiceRecord;
-    let authority: ProviderAuthority;
+    let rawProvider: unknown;
     try {
-      [service, authority] = await Promise.all([
+      [service, rawProvider] = await Promise.all([
         this.marketplace.getService(record.serviceId),
-        this.marketplace.getProvider(BigInt(record.providerAgentId))
-          .then((value) => providerAuthority(value, record.providerAgentId)),
+        this.marketplace.getProvider(BigInt(record.providerAgentId)),
       ]);
     } catch {
       await this.store.refreshFailed(record.registrationId, "CHAIN_AUTHORITY_UNAVAILABLE");
+      return;
+    }
+    let authority: ProviderAuthority;
+    try {
+      authority = providerAuthority(rawProvider, record.providerAgentId);
+    } catch {
+      // A successful read reporting revoked authority closes commerce now;
+      // an RPC outage above only lets the last successful validation expire.
+      logger.error("dynamic catalog quarantine", {
+        registrationId: record.registrationId,
+        serviceSlug: record.serviceSlug,
+        code: "CHAIN_AUTHORITY_DRIFT",
+      });
+      await this.store.stopNewCommerce(record.registrationId, "CHAIN_AUTHORITY_DRIFT", false);
       return;
     }
     const expectedPayee = service.serviceWallet.toLowerCase() === ZERO_ADDRESS

@@ -42,7 +42,7 @@ signer is configured, the steady-state prompt is `Use Daski to [your task]`.
   with service and skill names, marketplace totals, the safe block, and the
   contract addresses. `limit` accepts 1 to 200.
 - `/public/v3/services` publishes the service-first dynamic catalog when the
-  dark-launch registration feature is enabled.
+  registration route group is enabled.
 - `/public/v2/registry/*` exposes read-only ERC-8004 identity, Daski provider
   and service catalog state.
 - `/mcp` exposes `daski_buy_outcome` and the standard order lifecycle tools.
@@ -97,8 +97,11 @@ core groups are:
 - Signing role: `FACILITATOR_PRIVATE_KEY` for protocol artifacts and
   gas-funded Testnet reputation writes.
 - Dynamic catalog: `DYNAMIC_SERVICE_REGISTRATION_ENABLED`,
-  `CATALOG_OPERATOR_TOKEN`, and `CATALOG_REFRESH_INTERVAL_MS`. It is disabled
-  by default until the separately authorized R3 cutover.
+  `CATALOG_OPERATOR_TOKEN`, and `CATALOG_REFRESH_INTERVAL_MS`. Registration
+  routes are enabled by default and require an operator token. Disabling the
+  route group does not stop checkout or refresh of existing registrations.
+  Refresh runs every 240 seconds by default; use per-service operator visibility
+  to stop discovery and new commerce for a service.
 - Public projection: `CHAIN_PROJECTION_REFRESH_MS` sets how often the public
   reputation projection behind the chain document and the activity endpoint
   is refreshed in the background.
@@ -141,10 +144,10 @@ lives in [daski-io/deploy-testnet](https://github.com/daski-io/deploy-testnet).
   boundary.
 
 The provider workflow and signed wire contract are documented in
-[docs/service-registration-v1.md](docs/service-registration-v1.md). Dynamic
-registrations are intentionally shadow-only until a sealed R3 release switches
-new commerce from the historical static listings to database-backed skill
-heads.
+[docs/service-registration-v1.md](docs/service-registration-v1.md). Checkout uses
+active database-backed skill listings. Registration and activation require live
+chain authority; new commerce requires successful authority and card validation
+within five minutes. Existing orders retain their immutable listing snapshots.
 
 ## License
 

@@ -5,10 +5,12 @@ by Daski Gateway. It does not change whether a provider or service is valid on
 chain. Canonical provider identity and service state remain in ERC-8004,
 ProviderRegistry, and ServiceRegistry.
 
-The implementation is dark by default. Setting
-`DYNAMIC_SERVICE_REGISTRATION_ENABLED=true` exposes the registration and
-service-first catalog resources. Activating those resources does not switch the
-historical purchase path; that requires a separately reviewed R3 release.
+`DYNAMIC_SERVICE_REGISTRATION_ENABLED` defaults to `true` and exposes the
+registration, service-first catalog, and operator visibility resources.
+`CATALOG_OPERATOR_TOKEN` is required while this route group is enabled.
+Checkout uses active database-backed registrations. Disabling the route group
+does not stop existing listings, their refresh, or order recovery. Use
+per-service operator visibility to stop discovery and new commerce.
 
 ## Provider workflow
 
@@ -121,10 +123,12 @@ identity, listing keys, and splitters.
 A successfully activated Base Sepolia registration defaults visible. A Base
 Mainnet registration defaults hidden. This is a gateway database decision only.
 
-The gateway refreshes the finalized service/provider authority and card.
-Presentation may use a last-known-good card for up to 24 hours. New commerce
-will require a card validated within five minutes when the dynamic catalog is
-cut over to purchases. Contract, authority, payee, URI, or rail-policy drift
+The gateway refreshes the service/provider authority at the configured chain
+finality and reloads the card every 240 seconds by default. Presentation may use
+a last-known-good card for up to 24 hours. New commerce requires successful
+authority and card validation within five minutes. Registration, activation,
+and refresh use live registry reads; RPC failures do not renew freshness.
+Contract, authority, payee, URI, or rail-policy drift
 fails closed and requires a new signed revision. Existing orders remain bound
 to their immutable historical listing snapshots.
 
