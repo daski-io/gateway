@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { Config } from "../src/config.js";
 import { createStandardMetaRouter } from "../src/standardRail/meta.js";
 import { llmsFull, readSkill } from "../src/standardRail/skills.js";
+import { PINNED_BUYER_CLI } from "../src/standardRail/buyerCli.js";
 import type { PublicChainMetadataV3 } from "../src/standardRail/types.js";
 
 const CHAIN_FIXTURE = JSON.parse(readFileSync(
@@ -145,16 +146,45 @@ describe("standard rail metadata", () => {
     const mcp = await (await fetch(`${root}/.well-known/mcp.json`)).json() as {
       tools: string[];
       skills: Record<string, string>;
+      buyerCli: typeof PINNED_BUYER_CLI;
       steadyStatePrompt: string;
     };
     expect(mcp.tools).toContain("daski_get_setup_guide");
     expect(mcp.tools).toContain("daski_get_order_access");
     expect(mcp.skills.setup).toBe("https://gateway.example/skills/setup.md");
     expect(mcp.steadyStatePrompt).toBe("Use Daski to [your task].");
+    // The pinned buyer CLI is machine-readable so `daski doctor` can compare
+    // its own version against it instead of an agent reading the pin by eye.
+    expect(mcp.buyerCli).toEqual(PINNED_BUYER_CLI);
+    expect(mcp.buyerCli.version).toMatch(/^\d+\.\d+\.\d+$/);
 
     const llms = await (await fetch(`${root}/llms.txt`)).text();
     expect(llms).toContain("MCP: https://gateway.example/mcp");
     expect(llms).toContain("https://gateway.example/skills/SKILL.md");
+  });
+
+  it("pins one buyer CLI release in setup.md, SKILL.md guidance, and the well-known document", async () => {
+    const { package: pkg, version, repository, verify, install } = PINNED_BUYER_CLI;
+    const setup = (await readSkill("setup")).content;
+    // Every mention of the package in the guide names the pinned version;
+    // a stale prose pin is how an old install went unnoticed on 2026-09-04.
+    const mentions = setup.match(/@daski\/pay@[0-9][^\s`]*/g) ?? [];
+    expect(mentions.length).toBeGreaterThan(0);
+    for (const mention of mentions) expect(mention).toBe(`${pkg}@${version}`);
+    expect(setup).toContain(`The pinned release is \`${pkg}@${version}\`.`);
+    expect(setup).toContain(verify);
+    expect(setup).toContain(install);
+    expect(setup).toContain(repository);
+    // Detection compares the doctor's cliVersion with the pin, and names where
+    // the pin is published for machines.
+    expect(setup).toContain("`cliVersion`");
+    expect(setup).toContain("`buyerCli.version` in `/.well-known/mcp.json`");
+    // The documented signing path is the one the pinned release completes.
+    expect(setup).toContain("daski sign-payment --challenge");
+    expect(setup).toContain("`daski buy` shortcut is not part of this procedure");
+    const buy = (await readSkill("buy")).content;
+    expect(buy).toContain("| PAYMENT_IDENTIFIER_UNKNOWN |");
+    expect(buy).toContain("| PAYMENT_IDENTIFIER_CONFLICT |");
   });
 
   it("publishes the compact activity projection with the same caching policy", async () => {

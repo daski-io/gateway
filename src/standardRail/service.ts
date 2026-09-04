@@ -1566,14 +1566,29 @@ export class StandardRailService {
     const payment = normalizePaymentPayload(args.payment);
     const intentId = paymentIntentId(payment);
     const intended = await this.store.findByIntentId(intentId);
-    if (!intended ||
-        intended.order.providerAgentId !== args.providerAgentId ||
+    if (!intended) {
+      // Distinct from a conflict: no order exists under this identifier, so
+      // no payment can have settled under it and the caller must not
+      // reconcile. The identifier is charset-checked above, so echoing it
+      // back is safe and lets the client see which value it presented.
+      throw standardRailError("PAYMENT_IDENTIFIER_UNKNOWN", {
+        field: "payment-identifier",
+        message: `Payment identifier ${intentId} was not issued by this gateway`,
+        logContext: {
+          intentId,
+          providerAgentId: args.providerAgentId,
+          outcomeId: args.outcomeId,
+        },
+      });
+    }
+    if (intended.order.providerAgentId !== args.providerAgentId ||
         intended.order.outcomeId !== args.outcomeId ||
         canonicalHash(intended.order.canonicalRequest) !== canonicalHash(args.body)) {
       throw standardRailError("PAYMENT_IDENTIFIER_CONFLICT", {
         field: "payment-identifier",
         logContext: {
           intentId,
+          orderId: intended.order.orderId,
           providerAgentId: args.providerAgentId,
           outcomeId: args.outcomeId,
         },

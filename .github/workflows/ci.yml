@@ -81,5 +81,22 @@ jobs:
       - name: Test
         run: npm test
 
+      # A high-severity advisory fails the build; the registry being
+      # unreachable does not. npm exits 1 for both, so the transport failure
+      # is told apart by its message and retried with backoff (2026-09-03: a
+      # 503 from the audit endpoint held a release pull request red for 17
+      # hours over 0 vulnerabilities).
       - name: Audit dependencies
-        run: npm audit --audit-level=high
+        shell: bash
+        run: |
+          for attempt in 1 2 3 4; do
+            if npm audit --audit-level=high 2>&1 | tee audit.log; then exit 0; fi
+            if ! grep -qiE "audit endpoint returned an error|npm (warn|error) audit [0-9]{3} |ECONNRESET|ETIMEDOUT|ENOTFOUND|EAI_AGAIN" audit.log; then
+              echo "npm audit reported findings"
+              exit 1
+            fi
+            echo "npm audit endpoint unavailable (attempt $attempt of 4); retrying in $((attempt * 30))s"
+            sleep $((attempt * 30))
+          done
+          echo "npm audit endpoint unavailable after 4 attempts"
+          exit 1

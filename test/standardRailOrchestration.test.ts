@@ -107,6 +107,89 @@ describe("standard rail orchestration", () => {
     })).rejects.toMatchObject({ code: "PAYMENT_IDENTIFIER_CONFLICT" });
   });
 
+  it("refuses an identifier the gateway never issued as unknown, not as a conflict", async () => {
+    // @daski/pay 0.1.0 minted `daski-<hex>` identifiers instead of carrying
+    // the challenge's `int_<uuid>`; the old conflict answer, with
+    // paymentMayHaveSettled: true, sent the agent reconciling a payment that
+    // never existed (2026-09-04).
+    const body = { sku: "one" };
+    const payment = {
+      accepted: { asset: address("1") },
+      payload: { authorization: { from: address("2"), nonce: hash("3") } },
+      extensions: {
+        "payment-identifier": {
+          info: { required: true, id: "daski-e1f3f326f4e5ea9a5546bbb34538daaf" },
+          schema: { type: "object" },
+        },
+      },
+    } as unknown as PaymentPayload;
+    const findByIntentId = vi.fn(async () => null);
+    const findByAuthorizationKey = vi.fn();
+    const service = harness({
+      appConfig: { chainId: 84532 },
+      assertAdmissionOpen: vi.fn(),
+      assertRailFence: vi.fn(async () => undefined),
+      store: { findByIntentId, findByAuthorizationKey },
+      incidents: { record: vi.fn() },
+    });
+
+    await expect(service.submitPayment({
+      providerAgentId: "7",
+      outcomeId: "outcome",
+      body,
+      payment,
+    })).rejects.toMatchObject({
+      code: "PAYMENT_IDENTIFIER_UNKNOWN",
+      status: 400,
+      field: "payment-identifier",
+      publicMessage: "Payment identifier daski-e1f3f326f4e5ea9a5546bbb34538daaf was not issued by this gateway",
+      retryable: true,
+      requiresNewSignature: false,
+      paymentMayHaveSettled: false,
+    });
+    expect(findByIntentId).toHaveBeenCalledWith("daski-e1f3f326f4e5ea9a5546bbb34538daaf");
+    // Nothing was looked up by authorization: the submission never got that far.
+    expect(findByAuthorizationKey).not.toHaveBeenCalled();
+  });
+
+  it("keeps a known identifier bound to a different request as a conflict", async () => {
+    const payment = {
+      accepted: { asset: address("1") },
+      payload: { authorization: { from: address("2"), nonce: hash("3") } },
+      extensions: {
+        "payment-identifier": {
+          info: { required: true, id: "int_12345678-1234-4123-8123-123456789abc" },
+          schema: { type: "object" },
+        },
+      },
+    } as unknown as PaymentPayload;
+    const order = {
+      orderId: "order-1",
+      providerAgentId: "7",
+      outcomeId: "outcome",
+      canonicalRequest: { sku: "one" },
+      intentId: "int_12345678-1234-4123-8123-123456789abc",
+    } as StandardOrderRecord;
+    const service = harness({
+      appConfig: { chainId: 84532 },
+      assertAdmissionOpen: vi.fn(),
+      assertRailFence: vi.fn(async () => undefined),
+      store: { findByIntentId: vi.fn(async () => ({ handle: "handle-1", order })) },
+      incidents: { record: vi.fn() },
+    });
+
+    await expect(service.submitPayment({
+      providerAgentId: "7",
+      outcomeId: "outcome",
+      body: { sku: "two" },
+      payment,
+    })).rejects.toMatchObject({
+      code: "PAYMENT_IDENTIFIER_CONFLICT",
+      status: 409,
+      paymentMayHaveSettled: true,
+    });
+  });
+
   it("round-trips sign-ready order actions and grant-read capability access", async () => {
     const account = privateKeyToAccount(
       `0x${"11".repeat(32)}` as Hex,
