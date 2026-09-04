@@ -35,6 +35,7 @@ export type StandardRailErrorCode =
   | "SIGNATURE_INVALID"
   | "FACILITATOR_REJECTED"
   | "PAYMENT_PENDING_RECONCILIATION"
+  | "PAYMENT_IDENTIFIER_UNKNOWN"
   | "PAYMENT_IDENTIFIER_CONFLICT"
   | "WALLET_AUTHORIZATION_INVALID"
   | "INTERNAL_ERROR";
@@ -218,6 +219,23 @@ const DEFAULTS: Record<StandardRailErrorCode, ErrorDefaults> = {
     requiresNewSignature: false,
     paymentMayHaveSettled: true,
     nextAction: "Reconcile by paymentIdentifier before any retry; never create a new signature yet.",
+  },
+  // No challenge was ever issued under the presented identifier, so nothing
+  // can have settled under it. A client that mints its own identifier instead
+  // of carrying payment-identifier.info.id from the challenge lands here
+  // (@daski/pay 0.1.0 and 0.1.1 did, 2026-09-03/04); before this code existed
+  // it was reported as a conflict with paymentMayHaveSettled: true, which sent
+  // agents into a reconciliation loop over a payment that never existed.
+  PAYMENT_IDENTIFIER_UNKNOWN: {
+    status: 400,
+    message: "The payment identifier was not issued by this gateway",
+    phase: "payment_validation",
+    retryable: true,
+    requiresNewSignature: false,
+    paymentMayHaveSettled: false,
+    nextAction:
+      "Carry payment-identifier.info.id exactly as the challenge issued it; " +
+      "if that challenge is gone, request a fresh one and sign its message.",
   },
   PAYMENT_IDENTIFIER_CONFLICT: {
     status: 409,

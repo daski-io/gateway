@@ -4,6 +4,7 @@ import type { Config } from "../config.js";
 import type { Pool } from "../db/pool.js";
 import type { ApplicationLifecycle } from "../runtime/applicationLifecycle.js";
 import { GATEWAY_COMMIT, GATEWAY_VERSION } from "../version.js";
+import { PINNED_BUYER_CLI } from "./buyerCli.js";
 import type { StandardRailConfig } from "./config.js";
 import type { StandardRailService } from "./service.js";
 import type { PublicChainMetadataV3 } from "./types.js";
@@ -193,6 +194,9 @@ export function createStandardMetaRouter(args: {
         recipe: `${args.config.publicUrl}/skills/recipe.md`,
         installable: `${args.config.publicUrl}/skills/SKILL.md`,
       },
+      // The pinned buyer CLI, so a client can compare an installed version
+      // against it instead of reading the pin out of setup.md by eye.
+      buyerCli: PINNED_BUYER_CLI,
       steadyStatePrompt: "Use Daski to [your task].",
     });
   });
