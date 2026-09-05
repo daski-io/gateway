@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import type { Hex } from "viem";
 import { mcpError, mcpJson } from "../src/mcp/util.js";
+import { mcpSurfaceFixture } from "./helpers/mcpSurfaceFixture.js";
 import { canonicalHash } from "../src/standardRail/canonical.js";
 import { StandardRailError, standardRailPublicError } from "../src/standardRail/errors.js";
 import { orderActionChallengeIssued } from "../src/standardRail/orderAuthorization.js";
@@ -236,6 +237,7 @@ async function providerLifecycleRequestFixture() {
 }
 
 const fixtures: Record<string, () => unknown | Promise<unknown>> = {
+  "mcp-tool-surface.json": mcpSurfaceFixture,
   "mcp-result.json": mcpResultFixture,
   "payment-challenge-prepared.json": preparedPaymentChallengeFixture,
   "payment-required-extensions.json": paymentRequiredExtensionsFixture,

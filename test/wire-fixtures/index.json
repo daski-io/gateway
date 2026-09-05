@@ -2,6 +2,11 @@
   "schemaVersion": 1,
   "purpose": "Wire shapes the gateway emits, generated from the real builders by test/wireFixtures.test.ts (regenerate with UPDATE_WIRE_FIXTURES=1 npx vitest run test/wireFixtures.test.ts). Each consumer vendors its files verbatim under test/fixtures/gateway-wire/ and parses them in its own offline tests; the coordination repo's scripts/pair-fixtures.mjs fails PREP when a vendored copy differs from this directory.",
   "fixtures": {
+    "mcp-tool-surface.json": {
+      "consumers": ["daski-test"],
+      "emittedBy": ["src/standardRail/mcp.ts createStandardRailMcp (HTTP tools/list)", "src/standardRail/meta.ts discovery tools"],
+      "parsedBy": ["daski-test scripts/standardMcpSurface.ts assertStandardMcpTools"]
+    },
     "mcp-result.json": {
       "consumers": ["daski-test", "daski-buyer"],
       "emittedBy": ["src/mcp/util.ts mcpJson", "src/mcp/util.ts mcpError"],
