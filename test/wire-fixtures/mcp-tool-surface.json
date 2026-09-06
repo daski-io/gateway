@@ -1,0 +1,1796 @@
+{
+  "schemaVersion": 1,
+  "tools": [
+    {
+      "name": "daski_buy_outcome",
+      "inputSchema": {
+        "type": "object",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "providerAgentId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "outcomeId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "request": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {}
+          },
+          "payerAddress": {
+            "type": "string",
+            "pattern": "^0x[0-9a-fA-F]{40}$"
+          },
+          "paymentPayload": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {}
+          }
+        },
+        "required": [
+          "providerAgentId",
+          "outcomeId",
+          "request"
+        ]
+      },
+      "outputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {},
+        "additionalProperties": {}
+      },
+      "annotations": {
+        "title": "Buy a Daski outcome",
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": true
+      }
+    },
+    {
+      "name": "daski_cancel_order",
+      "inputSchema": {
+        "type": "object",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "orderHandle": {
+            "type": "string",
+            "minLength": 1
+          },
+          "request": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {}
+          },
+          "authorization": {
+            "type": "object",
+            "properties": {
+              "orderId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "action": {
+                "type": "string",
+                "minLength": 1
+              },
+              "method": {
+                "type": "string",
+                "const": "POST"
+              },
+              "absoluteResourceUri": {
+                "type": "string",
+                "format": "uri"
+              },
+              "requestHash": {
+                "type": "string",
+                "pattern": "^0x[0-9a-fA-F]{64}$"
+              },
+              "nonce": {
+                "type": "string",
+                "pattern": "^0x[0-9a-fA-F]{64}$"
+              },
+              "issuedAt": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "validBefore": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
+              },
+              "signature": {
+                "type": "string",
+                "pattern": "^0x[0-9a-fA-F]{130}$"
+              }
+            },
+            "required": [
+              "orderId",
+              "action",
+              "method",
+              "absoluteResourceUri",
+              "requestHash",
+              "nonce",
+              "issuedAt",
+              "validBefore",
+              "signature"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "orderHandle"
+        ]
+      },
+      "outputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {},
+        "additionalProperties": {}
+      },
+      "annotations": {
+        "title": "Request cancellation of an order.",
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": true
+      }
+    },
+    {
+      "name": "daski_confirm_delivery",
+      "inputSchema": {
+        "type": "object",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "orderHandle": {
+            "type": "string",
+            "minLength": 1
+          },
+          "request": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {}
+          },
+          "authorization": {
+            "type": "object",
+            "properties": {
+              "orderId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "action": {
+                "type": "string",
+                "minLength": 1
+              },
+              "method": {
+                "type": "string",
+                "const": "POST"
+              },
+              "absoluteResourceUri": {
+                "type": "string",
+                "format": "uri"
+              },
+              "requestHash": {
+                "type": "string",
+                "pattern": "^0x[0-9a-fA-F]{64}$"
+              },
+              "nonce": {
+                "type": "string",
+                "pattern": "^0x[0-9a-fA-F]{64}$"
+              },
+              "issuedAt": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "validBefore": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
+              },
+              "signature": {
+                "type": "string",
+                "pattern": "^0x[0-9a-fA-F]{130}$"
+              }
+            },
+            "required": [
+              "orderId",
+              "action",
+              "method",
+              "absoluteResourceUri",
+              "requestHash",
+              "nonce",
+              "issuedAt",
+              "validBefore",
+              "signature"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "orderHandle"
+        ]
+      },
+      "outputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {},
+        "additionalProperties": {}
+      },
+      "annotations": {
+        "title": "Prepare or submit a payer-signed delivery confirmation.",
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": true
+      }
+    },
+    {
+      "name": "daski_contact_order_support",
+      "inputSchema": {
+        "type": "object",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "orderHandle": {
+            "type": "string",
+            "minLength": 1
+          },
+          "request": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {}
+          },
+          "authorization": {
+            "type": "object",
+            "properties": {
+              "orderId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "action": {
+                "type": "string",
+                "minLength": 1
+              },
+              "method": {
+                "type": "string",
+                "const": "POST"
+              },
+              "absoluteResourceUri": {
+                "type": "string",
+                "format": "uri"
+              },
+              "requestHash": {
+                "type": "string",
+                "pattern": "^0x[0-9a-fA-F]{64}$"
+              },
+              "nonce": {
+                "type": "string",
+                "pattern": "^0x[0-9a-fA-F]{64}$"
+              },
+              "issuedAt": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "validBefore": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
+              },
+              "signature": {
+                "type": "string",
+                "pattern": "^0x[0-9a-fA-F]{130}$"
+              }
+            },
+            "required": [
+              "orderId",
+              "action",
+              "method",
+              "absoluteResourceUri",
+              "requestHash",
+              "nonce",
+              "issuedAt",
+              "validBefore",
+              "signature"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "orderHandle"
+        ]
+      },
+      "outputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {},
+        "additionalProperties": {}
+      },
+      "annotations": {
+        "title": "Send a support request for an order.",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": true
+      }
+    },
+    {
+      "name": "daski_get_my_reputation",
+      "inputSchema": {
+        "type": "object",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "payer": {
+            "type": "string",
+            "pattern": "^0x[0-9a-fA-F]{40}$"
+          },
+          "authorization": {
+            "default": null,
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "message": {
+                    "type": "object",
+                    "properties": {
+                      "payer": {
+                        "type": "string",
+                        "pattern": "^0x[0-9a-f]{40}$"
+                      },
+                      "providerAgentId": {
+                        "type": "string",
+                        "pattern": "^(0|[1-9]\\d*)$"
+                      },
+                      "serviceId": {
+                        "type": "string",
+                        "pattern": "^0x[0-9a-f]{64}$"
+                      },
+                      "providerControlProfileHash": {
+                        "type": "string",
+                        "pattern": "^0x[0-9a-f]{64}$"
+                      },
+                      "servicingAdmissionHash": {
+                        "type": "string",
+                        "pattern": "^0x[0-9a-f]{64}$"
+                      },
+                      "actionCatalogHash": {
+                        "type": "string",
+                        "pattern": "^0x[0-9a-f]{64}$"
+                      },
+                      "actionCatalogSchemaHash": {
+                        "type": "string",
+                        "pattern": "^0x[0-9a-f]{64}$"
+                      },
+                      "actionDefinitionHash": {
+                        "type": "string",
+                        "pattern": "^0x[0-9a-f]{64}$"
+                      },
+                      "actionCatalogEpoch": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      "actionHash": {
+                        "type": "string",
+                        "pattern": "^0x[0-9a-f]{64}$"
+                      },
+                      "methodHash": {
+                        "type": "string",
+                        "pattern": "^0x[0-9a-f]{64}$"
+                      },
+                      "absoluteResourceUriHash": {
+                        "type": "string",
+                        "pattern": "^0x[0-9a-f]{64}$"
+                      },
+                      "requestHash": {
+                        "type": "string",
+                        "pattern": "^0x[0-9a-f]{64}$"
+                      },
+                      "audienceHash": {
+                        "type": "string",
+                        "pattern": "^0x[0-9a-f]{64}$"
+                      },
+                      "nonce": {
+                        "type": "string",
+                        "pattern": "^0x[0-9a-f]{64}$"
+                      },
+                      "issuedAt": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      "validBefore": {
+                        "type": "integer",
+                        "exclusiveMinimum": 0,
+                        "maximum": 9007199254740991
+                      }
+                    },
+                    "required": [
+                      "payer",
+                      "providerAgentId",
+                      "serviceId",
+                      "providerControlProfileHash",
+                      "servicingAdmissionHash",
+                      "actionCatalogHash",
+                      "actionCatalogSchemaHash",
+                      "actionDefinitionHash",
+                      "actionCatalogEpoch",
+                      "actionHash",
+                      "methodHash",
+                      "absoluteResourceUriHash",
+                      "requestHash",
+                      "audienceHash",
+                      "nonce",
+                      "issuedAt",
+                      "validBefore"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "signature": {
+                    "type": "string",
+                    "pattern": "^0x[0-9a-f]{130}$"
+                  }
+                },
+                "required": [
+                  "message",
+                  "signature"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "payer"
+        ]
+      },
+      "outputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {},
+        "additionalProperties": {}
+      },
+      "annotations": {
+        "title": "Get my Daski reputation",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "daski_get_order_access",
+      "inputSchema": {
+        "type": "object",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "orderHandle": {
+            "type": "string",
+            "minLength": 1
+          },
+          "authorization": {
+            "type": "object",
+            "properties": {
+              "orderId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "action": {
+                "type": "string",
+                "minLength": 1
+              },
+              "method": {
+                "type": "string",
+                "const": "POST"
+              },
+              "absoluteResourceUri": {
+                "type": "string",
+                "format": "uri"
+              },
+              "requestHash": {
+                "type": "string",
+                "pattern": "^0x[0-9a-fA-F]{64}$"
+              },
+              "nonce": {
+                "type": "string",
+                "pattern": "^0x[0-9a-fA-F]{64}$"
+              },
+              "issuedAt": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "validBefore": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
+              },
+              "signature": {
+                "type": "string",
+                "pattern": "^0x[0-9a-fA-F]{130}$"
+              }
+            },
+            "required": [
+              "orderId",
+              "action",
+              "method",
+              "absoluteResourceUri",
+              "requestHash",
+              "nonce",
+              "issuedAt",
+              "validBefore",
+              "signature"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "orderHandle"
+        ]
+      },
+      "outputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {},
+        "additionalProperties": {}
+      },
+      "annotations": {
+        "title": "Get Daski order read access",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "daski_get_order_artifact",
+      "inputSchema": {
+        "type": "object",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "orderHandle": {
+            "type": "string",
+            "minLength": 1
+          },
+          "request": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {}
+          },
+          "authorization": {
+            "type": "object",
+            "properties": {
+              "orderId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "action": {
+                "type": "string",
+                "minLength": 1
+              },
+              "method": {
+                "type": "string",
+                "const": "POST"
+              },
+              "absoluteResourceUri": {
+                "type": "string",
+                "format": "uri"
+              },
+              "requestHash": {
+                "type": "string",
+                "pattern": "^0x[0-9a-fA-F]{64}$"
+              },
+              "nonce": {
+                "type": "string",
+                "pattern": "^0x[0-9a-fA-F]{64}$"
+              },
+              "issuedAt": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "validBefore": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
+              },
+              "signature": {
+                "type": "string",
+                "pattern": "^0x[0-9a-fA-F]{130}$"
+              }
+            },
+            "required": [
+              "orderId",
+              "action",
+              "method",
+              "absoluteResourceUri",
+              "requestHash",
+              "nonce",
+              "issuedAt",
+              "validBefore",
+              "signature"
+            ],
+            "additionalProperties": false
+          },
+          "readCapability": {
+            "type": "string",
+            "minLength": 80,
+            "maxLength": 2048
+          }
+        },
+        "required": [
+          "orderHandle"
+        ]
+      },
+      "outputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {},
+        "additionalProperties": {}
+      },
+      "annotations": {
+        "title": "Retrieve the protected result artifact for a completed order.",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true
+      }
+    },
+    {
+      "name": "daski_get_order_status",
+      "inputSchema": {
+        "type": "object",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "orderHandle": {
+            "type": "string",
+            "minLength": 1
+          },
+          "request": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {}
+          },
+          "authorization": {
+            "type": "object",
+            "properties": {
+              "orderId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "action": {
+                "type": "string",
+                "minLength": 1
+              },
+              "method": {
+                "type": "string",
+                "const": "POST"
+              },
+              "absoluteResourceUri": {
+                "type": "string",
+                "format": "uri"
+              },
+              "requestHash": {
+                "type": "string",
+                "pattern": "^0x[0-9a-fA-F]{64}$"
+              },
+              "nonce": {
+                "type": "string",
+                "pattern": "^0x[0-9a-fA-F]{64}$"
+              },
+              "issuedAt": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "validBefore": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
+              },
+              "signature": {
+                "type": "string",
+                "pattern": "^0x[0-9a-fA-F]{130}$"
+              }
+            },
+            "required": [
+              "orderId",
+              "action",
+              "method",
+              "absoluteResourceUri",
+              "requestHash",
+              "nonce",
+              "issuedAt",
+              "validBefore",
+              "signature"
+            ],
+            "additionalProperties": false
+          },
+          "readCapability": {
+            "type": "string",
+            "minLength": 80,
+            "maxLength": 2048
+          }
+        },
+        "required": [
+          "orderHandle"
+        ]
+      },
+      "outputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {},
+        "additionalProperties": {}
+      },
+      "annotations": {
+        "title": "Get the current state of a purchased outcome.",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true
+      }
+    },
+    {
+      "name": "daski_get_outcome",
+      "inputSchema": {
+        "type": "object",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "providerAgentId": {
+            "type": "string",
+            "pattern": "^[1-9]\\d*$"
+          },
+          "outcomeId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        },
+        "required": [
+          "providerAgentId",
+          "outcomeId"
+        ]
+      },
+      "outputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {},
+        "additionalProperties": {}
+      },
+      "annotations": {
+        "title": "Get a Daski outcome",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "daski_get_outcome_requirements",
+      "inputSchema": {
+        "type": "object",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "providerAgentId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "outcomeId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "request": {
+            "default": {},
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {}
+          }
+        },
+        "required": [
+          "providerAgentId",
+          "outcomeId"
+        ]
+      },
+      "outputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {},
+        "additionalProperties": {}
+      },
+      "annotations": {
+        "title": "Get outcome requirements",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true
+      }
+    },
+    {
+      "name": "daski_get_payment_challenge",
+      "inputSchema": {
+        "type": "object",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "providerAgentId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "outcomeId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "request": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {}
+          },
+          "payerAddress": {
+            "type": "string",
+            "pattern": "^0x[0-9a-fA-F]{40}$"
+          }
+        },
+        "required": [
+          "providerAgentId",
+          "outcomeId",
+          "request"
+        ]
+      },
+      "outputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {},
+        "additionalProperties": {}
+      },
+      "annotations": {
+        "title": "Prepare a Daski payment challenge",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true
+      }
+    },
+    {
+      "name": "daski_get_provider",
+      "inputSchema": {
+        "type": "object",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "agentId": {
+            "type": "string",
+            "pattern": "^(0|[1-9]\\d{0,77})$"
+          }
+        },
+        "required": [
+          "agentId"
+        ]
+      },
+      "outputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {},
+        "additionalProperties": {}
+      },
+      "annotations": {
+        "title": "Get a Daski provider",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true
+      }
+    },
+    {
+      "name": "daski_get_service",
+      "inputSchema": {
+        "type": "object",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "serviceId": {
+            "type": "string",
+            "pattern": "^0x[0-9a-fA-F]{64}$"
+          }
+        },
+        "required": [
+          "serviceId"
+        ]
+      },
+      "outputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {},
+        "additionalProperties": {}
+      },
+      "annotations": {
+        "title": "Get a Daski service",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true
+      }
+    },
+    {
+      "name": "daski_get_setup_guide",
+      "inputSchema": {
+        "type": "object",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "topic": {
+            "default": "setup",
+            "type": "string",
+            "enum": [
+              "setup",
+              "buy",
+              "orders",
+              "wallets",
+              "recipe"
+            ]
+          }
+        }
+      },
+      "outputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {},
+        "additionalProperties": {}
+      },
+      "annotations": {
+        "title": "Get the Daski setup guide",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "daski_list_assets",
+      "inputSchema": {
+        "type": "object",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "payer": {
+            "type": "string",
+            "pattern": "^0x[0-9a-fA-F]{40}$"
+          },
+          "providerAgentId": {
+            "default": null,
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[1-9]\\d*$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "limit": {
+            "default": 25,
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          },
+          "cursor": {
+            "default": null,
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "authorization": {
+            "default": null,
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "message": {
+                    "type": "object",
+                    "properties": {
+                      "payer": {
+                        "type": "string",
+                        "pattern": "^0x[0-9a-f]{40}$"
+                      },
+                      "providerAgentId": {
+                        "type": "string",
+                        "pattern": "^(0|[1-9]\\d*)$"
+                      },
+                      "serviceId": {
+                        "type": "string",
+                        "pattern": "^0x[0-9a-f]{64}$"
+                      },
+                      "providerControlProfileHash": {
+                        "type": "string",
+                        "pattern": "^0x[0-9a-f]{64}$"
+                      },
+                      "servicingAdmissionHash": {
+                        "type": "string",
+                        "pattern": "^0x[0-9a-f]{64}$"
+                      },
+                      "actionCatalogHash": {
+                        "type": "string",
+                        "pattern": "^0x[0-9a-f]{64}$"
+                      },
+                      "actionCatalogSchemaHash": {
+                        "type": "string",
+                        "pattern": "^0x[0-9a-f]{64}$"
+                      },
+                      "actionDefinitionHash": {
+                        "type": "string",
+                        "pattern": "^0x[0-9a-f]{64}$"
+                      },
+                      "actionCatalogEpoch": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      "actionHash": {
+                        "type": "string",
+                        "pattern": "^0x[0-9a-f]{64}$"
+                      },
+                      "methodHash": {
+                        "type": "string",
+                        "pattern": "^0x[0-9a-f]{64}$"
+                      },
+                      "absoluteResourceUriHash": {
+                        "type": "string",
+                        "pattern": "^0x[0-9a-f]{64}$"
+                      },
+                      "requestHash": {
+                        "type": "string",
+                        "pattern": "^0x[0-9a-f]{64}$"
+                      },
+                      "audienceHash": {
+                        "type": "string",
+                        "pattern": "^0x[0-9a-f]{64}$"
+                      },
+                      "nonce": {
+                        "type": "string",
+                        "pattern": "^0x[0-9a-f]{64}$"
+                      },
+                      "issuedAt": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      "validBefore": {
+                        "type": "integer",
+                        "exclusiveMinimum": 0,
+                        "maximum": 9007199254740991
+                      }
+                    },
+                    "required": [
+                      "payer",
+                      "providerAgentId",
+                      "serviceId",
+                      "providerControlProfileHash",
+                      "servicingAdmissionHash",
+                      "actionCatalogHash",
+                      "actionCatalogSchemaHash",
+                      "actionDefinitionHash",
+                      "actionCatalogEpoch",
+                      "actionHash",
+                      "methodHash",
+                      "absoluteResourceUriHash",
+                      "requestHash",
+                      "audienceHash",
+                      "nonce",
+                      "issuedAt",
+                      "validBefore"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "signature": {
+                    "type": "string",
+                    "pattern": "^0x[0-9a-f]{130}$"
+                  }
+                },
+                "required": [
+                  "message",
+                  "signature"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "payer"
+        ]
+      },
+      "outputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {},
+        "additionalProperties": {}
+      },
+      "annotations": {
+        "title": "List my provider assets",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": true
+      }
+    },
+    {
+      "name": "daski_list_my_orders",
+      "inputSchema": {
+        "type": "object",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "payer": {
+            "type": "string",
+            "pattern": "^0x[0-9a-fA-F]{40}$"
+          },
+          "limit": {
+            "default": 25,
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          },
+          "cursor": {
+            "default": null,
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "paymentIdentifier": {
+            "default": null,
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9_-]{16,128}$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "authorization": {
+            "default": null,
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "message": {
+                    "type": "object",
+                    "properties": {
+                      "payer": {
+                        "type": "string",
+                        "pattern": "^0x[0-9a-f]{40}$"
+                      },
+                      "providerAgentId": {
+                        "type": "string",
+                        "pattern": "^(0|[1-9]\\d*)$"
+                      },
+                      "serviceId": {
+                        "type": "string",
+                        "pattern": "^0x[0-9a-f]{64}$"
+                      },
+                      "providerControlProfileHash": {
+                        "type": "string",
+                        "pattern": "^0x[0-9a-f]{64}$"
+                      },
+                      "servicingAdmissionHash": {
+                        "type": "string",
+                        "pattern": "^0x[0-9a-f]{64}$"
+                      },
+                      "actionCatalogHash": {
+                        "type": "string",
+                        "pattern": "^0x[0-9a-f]{64}$"
+                      },
+                      "actionCatalogSchemaHash": {
+                        "type": "string",
+                        "pattern": "^0x[0-9a-f]{64}$"
+                      },
+                      "actionDefinitionHash": {
+                        "type": "string",
+                        "pattern": "^0x[0-9a-f]{64}$"
+                      },
+                      "actionCatalogEpoch": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      "actionHash": {
+                        "type": "string",
+                        "pattern": "^0x[0-9a-f]{64}$"
+                      },
+                      "methodHash": {
+                        "type": "string",
+                        "pattern": "^0x[0-9a-f]{64}$"
+                      },
+                      "absoluteResourceUriHash": {
+                        "type": "string",
+                        "pattern": "^0x[0-9a-f]{64}$"
+                      },
+                      "requestHash": {
+                        "type": "string",
+                        "pattern": "^0x[0-9a-f]{64}$"
+                      },
+                      "audienceHash": {
+                        "type": "string",
+                        "pattern": "^0x[0-9a-f]{64}$"
+                      },
+                      "nonce": {
+                        "type": "string",
+                        "pattern": "^0x[0-9a-f]{64}$"
+                      },
+                      "issuedAt": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      "validBefore": {
+                        "type": "integer",
+                        "exclusiveMinimum": 0,
+                        "maximum": 9007199254740991
+                      }
+                    },
+                    "required": [
+                      "payer",
+                      "providerAgentId",
+                      "serviceId",
+                      "providerControlProfileHash",
+                      "servicingAdmissionHash",
+                      "actionCatalogHash",
+                      "actionCatalogSchemaHash",
+                      "actionDefinitionHash",
+                      "actionCatalogEpoch",
+                      "actionHash",
+                      "methodHash",
+                      "absoluteResourceUriHash",
+                      "requestHash",
+                      "audienceHash",
+                      "nonce",
+                      "issuedAt",
+                      "validBefore"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "signature": {
+                    "type": "string",
+                    "pattern": "^0x[0-9a-f]{130}$"
+                  }
+                },
+                "required": [
+                  "message",
+                  "signature"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "payer"
+        ]
+      },
+      "outputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {},
+        "additionalProperties": {}
+      },
+      "annotations": {
+        "title": "List my Daski orders",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "daski_list_outcomes",
+      "inputSchema": {
+        "type": "object",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "text": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "providerAgentId": {
+            "type": "string",
+            "pattern": "^[1-9]\\d*$"
+          },
+          "categoryFamily": {
+            "type": "string",
+            "maxLength": 64
+          },
+          "serviceType": {
+            "type": "string",
+            "maxLength": 64
+          },
+          "jurisdiction": {
+            "type": "string",
+            "maxLength": 64
+          },
+          "pricingMode": {
+            "type": "string",
+            "enum": [
+              "fixed",
+              "dynamic"
+            ]
+          },
+          "persistentAsset": {
+            "type": "boolean"
+          },
+          "limit": {
+            "default": 25,
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          }
+        }
+      },
+      "outputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {},
+        "additionalProperties": {}
+      },
+      "annotations": {
+        "title": "List Daski outcomes",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "daski_list_providers",
+      "inputSchema": {
+        "type": "object",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "offset": {
+            "default": 0,
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1000000
+          },
+          "limit": {
+            "default": 25,
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          }
+        }
+      },
+      "outputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {},
+        "additionalProperties": {}
+      },
+      "annotations": {
+        "title": "List Daski providers",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true
+      }
+    },
+    {
+      "name": "daski_resolve_agent",
+      "inputSchema": {
+        "type": "object",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "wallet": {
+            "type": "string",
+            "pattern": "^0x[0-9a-fA-F]{40}$"
+          }
+        },
+        "required": [
+          "wallet"
+        ]
+      },
+      "outputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {},
+        "additionalProperties": {}
+      },
+      "annotations": {
+        "title": "Resolve an ERC-8004 agent",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true
+      }
+    },
+    {
+      "name": "daski_revoke_delivery_confirmation",
+      "inputSchema": {
+        "type": "object",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "orderHandle": {
+            "type": "string",
+            "minLength": 1
+          },
+          "request": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {}
+          },
+          "authorization": {
+            "type": "object",
+            "properties": {
+              "orderId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "action": {
+                "type": "string",
+                "minLength": 1
+              },
+              "method": {
+                "type": "string",
+                "const": "POST"
+              },
+              "absoluteResourceUri": {
+                "type": "string",
+                "format": "uri"
+              },
+              "requestHash": {
+                "type": "string",
+                "pattern": "^0x[0-9a-fA-F]{64}$"
+              },
+              "nonce": {
+                "type": "string",
+                "pattern": "^0x[0-9a-fA-F]{64}$"
+              },
+              "issuedAt": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "validBefore": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
+              },
+              "signature": {
+                "type": "string",
+                "pattern": "^0x[0-9a-fA-F]{130}$"
+              }
+            },
+            "required": [
+              "orderId",
+              "action",
+              "method",
+              "absoluteResourceUri",
+              "requestHash",
+              "nonce",
+              "issuedAt",
+              "validBefore",
+              "signature"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "orderHandle"
+        ]
+      },
+      "outputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {},
+        "additionalProperties": {}
+      },
+      "annotations": {
+        "title": "Prepare or submit withdrawal of the payer's current delivery confirmation.",
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": true
+      }
+    },
+    {
+      "name": "daski_submit_order_input",
+      "inputSchema": {
+        "type": "object",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "orderHandle": {
+            "type": "string",
+            "minLength": 1
+          },
+          "request": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {}
+          },
+          "authorization": {
+            "type": "object",
+            "properties": {
+              "orderId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "action": {
+                "type": "string",
+                "minLength": 1
+              },
+              "method": {
+                "type": "string",
+                "const": "POST"
+              },
+              "absoluteResourceUri": {
+                "type": "string",
+                "format": "uri"
+              },
+              "requestHash": {
+                "type": "string",
+                "pattern": "^0x[0-9a-fA-F]{64}$"
+              },
+              "nonce": {
+                "type": "string",
+                "pattern": "^0x[0-9a-fA-F]{64}$"
+              },
+              "issuedAt": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "validBefore": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
+              },
+              "signature": {
+                "type": "string",
+                "pattern": "^0x[0-9a-fA-F]{130}$"
+              }
+            },
+            "required": [
+              "orderId",
+              "action",
+              "method",
+              "absoluteResourceUri",
+              "requestHash",
+              "nonce",
+              "issuedAt",
+              "validBefore",
+              "signature"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "orderHandle"
+        ]
+      },
+      "outputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {},
+        "additionalProperties": {}
+      },
+      "annotations": {
+        "title": "Submit requested customer input for an order.",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": true
+      }
+    },
+    {
+      "name": "daski_use_asset",
+      "inputSchema": {
+        "type": "object",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "payer": {
+            "type": "string",
+            "pattern": "^0x[0-9a-fA-F]{40}$"
+          },
+          "providerAgentId": {
+            "type": "string",
+            "pattern": "^[1-9]\\d*$"
+          },
+          "actionId": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9-]{0,95}$"
+          },
+          "providerAssetId": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          },
+          "input": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {}
+          },
+          "authorization": {
+            "default": null,
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "message": {
+                    "type": "object",
+                    "properties": {
+                      "payer": {
+                        "type": "string",
+                        "pattern": "^0x[0-9a-f]{40}$"
+                      },
+                      "providerAgentId": {
+                        "type": "string",
+                        "pattern": "^(0|[1-9]\\d*)$"
+                      },
+                      "serviceId": {
+                        "type": "string",
+                        "pattern": "^0x[0-9a-f]{64}$"
+                      },
+                      "providerControlProfileHash": {
+                        "type": "string",
+                        "pattern": "^0x[0-9a-f]{64}$"
+                      },
+                      "servicingAdmissionHash": {
+                        "type": "string",
+                        "pattern": "^0x[0-9a-f]{64}$"
+                      },
+                      "actionCatalogHash": {
+                        "type": "string",
+                        "pattern": "^0x[0-9a-f]{64}$"
+                      },
+                      "actionCatalogSchemaHash": {
+                        "type": "string",
+                        "pattern": "^0x[0-9a-f]{64}$"
+                      },
+                      "actionDefinitionHash": {
+                        "type": "string",
+                        "pattern": "^0x[0-9a-f]{64}$"
+                      },
+                      "actionCatalogEpoch": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      "actionHash": {
+                        "type": "string",
+                        "pattern": "^0x[0-9a-f]{64}$"
+                      },
+                      "methodHash": {
+                        "type": "string",
+                        "pattern": "^0x[0-9a-f]{64}$"
+                      },
+                      "absoluteResourceUriHash": {
+                        "type": "string",
+                        "pattern": "^0x[0-9a-f]{64}$"
+                      },
+                      "requestHash": {
+                        "type": "string",
+                        "pattern": "^0x[0-9a-f]{64}$"
+                      },
+                      "audienceHash": {
+                        "type": "string",
+                        "pattern": "^0x[0-9a-f]{64}$"
+                      },
+                      "nonce": {
+                        "type": "string",
+                        "pattern": "^0x[0-9a-f]{64}$"
+                      },
+                      "issuedAt": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      "validBefore": {
+                        "type": "integer",
+                        "exclusiveMinimum": 0,
+                        "maximum": 9007199254740991
+                      }
+                    },
+                    "required": [
+                      "payer",
+                      "providerAgentId",
+                      "serviceId",
+                      "providerControlProfileHash",
+                      "servicingAdmissionHash",
+                      "actionCatalogHash",
+                      "actionCatalogSchemaHash",
+                      "actionDefinitionHash",
+                      "actionCatalogEpoch",
+                      "actionHash",
+                      "methodHash",
+                      "absoluteResourceUriHash",
+                      "requestHash",
+                      "audienceHash",
+                      "nonce",
+                      "issuedAt",
+                      "validBefore"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "signature": {
+                    "type": "string",
+                    "pattern": "^0x[0-9a-f]{130}$"
+                  }
+                },
+                "required": [
+                  "message",
+                  "signature"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "payer",
+          "providerAgentId",
+          "actionId",
+          "providerAssetId",
+          "input"
+        ]
+      },
+      "outputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {},
+        "additionalProperties": {}
+      },
+      "annotations": {
+        "title": "Use a Daski asset",
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": true
+      }
+    }
+  ]
+}
