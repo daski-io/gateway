@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync, statSync } from 'node:fs';
 import dns from 'node:dns/promises';
 import https from 'node:https';
 import http from 'node:http';
@@ -6,7 +7,11 @@ import { syncBuiltinESMExports } from 'node:module';
 import { Readable, Writable } from 'node:stream';
 
 assert.equal(process.env.DASKI_ISOLATED_STARTUP_PROOF, '1', 'test transport requires explicit isolated proof');
-const facts = JSON.parse(Buffer.from(process.env.DASKI_PROOF_RPC_FACTS, 'base64').toString('utf8'));
+const factsPath=process.env.DASKI_PROOF_RPC_FACTS_PATH;
+assert.ok(factsPath,'isolated RPC facts file is required');
+const factsInfo=statSync(factsPath);
+assert.ok(factsInfo.isFile() && factsInfo.size<=16*1024*1024,'isolated RPC facts must be a bounded regular file');
+const facts = JSON.parse(readFileSync(factsPath,'utf8'));
 assert.equal(facts.schemaVersion, 1);
 const routes = JSON.parse(process.env.DASKI_PROOF_PROVIDER_ROUTES ?? '[]');
 for (const route of routes) {

@@ -72,7 +72,11 @@ HTTP candidate provider through a loopback `target`. This preserves real provide
 request/response behavior while replacing only network transport. Unconfigured
 RPC methods, facts, DNS and HTTPS requests fail closed; payment endpoints have no
 fixture implementation. The only facilitator operation supported is capability
-inspection.
+inspection. Captured RPC bytecode travels through a bounded temporary JSON file
+with private file permissions, mounted read-only for image proofs. This replaces
+the inline environment payload, whose process-spawn size limit can reject a real
+contract snapshot before the application starts. The driver deletes the file when
+the proof completes.
 
 Each run creates a unique database and an unprivileged runtime role, boots
 `dist/index.js` with distinct migration/runtime roles, requires both health

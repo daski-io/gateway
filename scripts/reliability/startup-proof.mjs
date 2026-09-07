@@ -73,6 +73,9 @@ export async function proveStartup(input, databaseUrl, options={}) {
     for(const [key,value] of Object.entries(input.runtimeConfig ?? {})) {
       assert.ok(publicSettings.includes(key),`unsupported public runtime setting ${key}`); assert.equal(typeof value,'string');
     }
+    temporary=mkdtempSync(join(tmpdir(),'gateway-boot-'));
+    const rpcFile=join(temporary,'rpc-facts.json');
+    writeFileSync(rpcFile,JSON.stringify(input.rpcFacts),{mode:0o600});
     const env={NODE_ENV:'production',PORT:String(port),TRUST_PROXY:'0',CHAIN_ID:'84532',CHAIN_MODE:'live',
       DATABASE_URL:database.href,MIGRATION_DATABASE_URL:migrationUrl,
       PUBLIC_URL:input.manifest.activeRailProfile.audience,STANDARD_RAIL_GATEWAY_AUDIENCE:input.manifest.activeRailProfile.audience,
@@ -90,7 +93,7 @@ export async function proveStartup(input, databaseUrl, options={}) {
       SERVICE_REGISTRY_ADDRESS:address('6'),VALIDATION_REGISTRY_ADDRESS:address('a'),REPUTATION_STORAGE_ADDRESS:address('9'),
       EAS_ADDRESS:address('b'),EAS_OUTCOME_SCHEMA_UID:hash('4'),EAS_CONFIRMATION_SCHEMA_UID:hash('5'),
       CATALOG_OPERATOR_TOKEN:'isolated-reliability-token-000000000000000000000',
-      DASKI_ISOLATED_STARTUP_PROOF:'1',DASKI_PROOF_FACILITATOR_URL:input.manifest.facilitatorProfile.payload.baseUrl,DASKI_PROOF_PROVIDER_ROUTES:JSON.stringify(input.providerRoutes ?? []),DASKI_PROOF_RPC_FACTS:Buffer.from(JSON.stringify(input.rpcFacts)).toString('base64'),
+      DASKI_ISOLATED_STARTUP_PROOF:'1',DASKI_PROOF_FACILITATOR_URL:input.manifest.facilitatorProfile.payload.baseUrl,DASKI_PROOF_PROVIDER_ROUTES:JSON.stringify(input.providerRoutes ?? []),DASKI_PROOF_RPC_FACTS_PATH:rpcFile,
       SHUTDOWN_GRACE_MS:'5000',...input.runtimeConfig};
     const loader=join(root,'scripts/reliability/controlled-network.mjs');
     let command=process.execPath; let args=['--import',loader,join(root,'dist/index.js')];
@@ -118,10 +121,12 @@ export async function proveStartup(input, databaseUrl, options={}) {
         }
         network=['--network','bridge','--publish',`127.0.0.1:${port}:${port}`];
       }
-      temporary=mkdtempSync(join(tmpdir(),'gateway-boot-')); const envFile=join(temporary,'environment');
+      env.DASKI_PROOF_RPC_FACTS_PATH='/proof/rpc-facts.json';
+      const envFile=join(temporary,'environment');
       writeFileSync(envFile,Object.entries(env).map(([key,value]) => `${key}=${value}`).join('\n'),{mode:0o600});
       command='docker'; args=['run','--rm','--name',`gateway-proof-${nonce}`,...network,'--read-only','--tmpfs','/tmp',
         '--env-file',envFile,'--mount',`type=bind,source=${loader},target=/proof/controlled-network.mjs,readonly`,
+        '--mount',`type=bind,source=${rpcFile},target=/proof/rpc-facts.json,readonly`,
         options.image,'node','--import','/proof/controlled-network.mjs','dist/index.js'];
     }
     child=spawn(command,args,{cwd:root,env:options.image ? process.env : {...env,PATH:process.env.PATH},stdio:['ignore','pipe','pipe']});
