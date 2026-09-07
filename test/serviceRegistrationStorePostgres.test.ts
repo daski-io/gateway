@@ -269,6 +269,22 @@ describe("dynamic service registration storage", () => {
         runtimeCommitmentHash: hash("e"),
         runtimeCommitment: { artifactType: "RuntimeListingCommitmentV1" },
       }])).rejects.toThrow(/RUNTIME_COMMITMENT_LISTING_MISMATCH/);
+      // Rejection occurs after the old registration would have been marked
+      // superseded; the transaction must leave its serving state intact.
+      expect(await store.getActiveByServiceId(serviceId)).toMatchObject({
+        registrationId: firstPrepared.registrationId, state: "ACTIVE", marketplaceEnabled: true,
+      });
+      expect(await store.get(secondPrepared.registrationId)).toMatchObject({ state: "EVIDENCE_PENDING" });
+      const priorCheckpoint = { safeBlock: "100", runtimeHash: hash("d") };
+      await expect(store.activate(secondPrepared.registrationId, [{
+        listingId: firstPrepared.listings[0]!.listingId,
+        runtimeCommitmentHash: hash("d"),
+        runtimeCommitment: { artifactType: "RuntimeListingCommitmentV1" },
+      }], [{ listingId: randomUUID(), checkpoint: priorCheckpoint }]))
+        .rejects.toThrow("ACTIVATION_CHECKPOINT_MISMATCH");
+      expect(await store.getActiveByServiceId(serviceId)).toMatchObject({
+        registrationId: firstPrepared.registrationId, state: "ACTIVE",
+      });
       await store.activate(secondPrepared.registrationId, [{
         listingId: secondPrepared.listings[0]!.listingId,
         runtimeCommitmentHash: hash("d"),

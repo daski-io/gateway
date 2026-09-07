@@ -12,16 +12,16 @@ If diagnosis confirms no signer exists, use the local signer unless the user sel
 
 ## Install or upgrade
 
-The pinned release is `@daski/pay@0.3.0`. Verify its registry provenance:
+The pinned release is `@daski/pay@0.3.1`. Verify its registry provenance:
 
 ```bash
-npm view @daski/pay@0.3.0 repository.url
+npm view @daski/pay@0.3.1 repository.url
 ```
 
 The expected repository is `git+https://github.com/daski-io/buyer.git`. When the package version and repository match, use the user's setup authorization:
 
 ```bash
-npm install -g @daski/pay@0.3.0
+npm install -g @daski/pay@0.3.1
 daski doctor --json
 ```
 
