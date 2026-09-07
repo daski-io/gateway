@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { randomBytes, randomUUID, generateKeyPairSync } from 'node:crypto';
 import { spawn, execFileSync } from 'node:child_process';
-import { readFileSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { readFileSync, mkdtempSync, writeFileSync, rmSync, chmodSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -121,6 +121,9 @@ export async function proveStartup(input, databaseUrl, options={}) {
         }
         network=['--network','bridge','--publish',`127.0.0.1:${port}:${port}`];
       }
+      // The host directory remains private. The read-only file mount must be
+      // readable by the image's node UID, which can differ from the CI host UID.
+      chmodSync(rpcFile,0o644);
       env.DASKI_PROOF_RPC_FACTS_PATH='/proof/rpc-facts.json';
       const envFile=join(temporary,'environment');
       writeFileSync(envFile,Object.entries(env).map(([key,value]) => `${key}=${value}`).join('\n'),{mode:0o600});
