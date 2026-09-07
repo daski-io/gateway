@@ -33,10 +33,10 @@ export function buildIdentity() {
 export function verifyBuildIdentity() {
   const recorded = JSON.parse(readFileSync(join(root, 'dist', 'build-identity.json'), 'utf8'));
   const current = buildIdentity();
-  for (const key of ['schemaVersion', 'repo', 'sourceHash', 'lockHash', 'buildHash', 'nodeVersion', 'platform', 'architecture', 'buildDefinitionHash']) {
+  for (const key of ['schemaVersion', 'repo', 'sourceSha', 'sourceHash', 'lockHash', 'buildHash', 'nodeVersion', 'platform', 'architecture', 'buildDefinitionHash']) {
     if (recorded[key] !== current[key]) throw new Error(`Build identity mismatch: ${key}; rebuild the candidate`);
   }
-  return { ...recorded, sourceSha: current.sourceSha };
+  return recorded;
 }
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const result = process.argv.includes('--verify') ? verifyBuildIdentity() : buildIdentity();

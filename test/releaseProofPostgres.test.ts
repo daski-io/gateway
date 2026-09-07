@@ -43,6 +43,15 @@ describe("candidate release execution proof", () => {
     expect(corrected).toMatchObject({ status: "PASS", checks: expect.arrayContaining(["health-ready"]) });
   }, 120_000);
 
+  it("refuses a build recorded for a different source revision", () => {
+    const path = new URL("../dist/build-identity.json", import.meta.url);
+    const original = readFileSync(path);
+    try {
+      writeFileSync(path, JSON.stringify({ ...JSON.parse(original.toString()), sourceSha: "0".repeat(40) }));
+      expect(() => verifyBuildIdentity()).toThrow("Build identity mismatch: sourceSha");
+    } finally { writeFileSync(path, original); }
+  });
+
   it("refuses output that changed after the candidate build", () => {
     const path = new URL("../dist/index.js", import.meta.url);
     const original = readFileSync(path);
