@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { createPool } from "../src/db/pool.js";
+import { createPool, runMigrations } from "../src/db/pool.js";
 import { StandardAssetFederation } from "../src/standardRail/assetFederation.js";
 import { canonicalHash } from "../src/standardRail/canonical.js";
 import type { StandardRailConfig } from "../src/standardRail/config.js";
@@ -18,6 +18,8 @@ function admission(args: {
   epoch: number;
   previousAdmissionHash: `0x${string}`;
   enabled: boolean;
+  catalogEpoch?: number;
+  catalogHash?: `0x${string}`;
 }): SignedEnvelope<ProviderServicingAdmissionV1> {
   const now = Math.floor(Date.now() / 1_000);
   return {
@@ -32,10 +34,10 @@ function admission(args: {
     payload: {
       providerAgentId: args.providerAgentId,
       providerControlProfileHash: hash("1"),
-      actionCatalogHash: hash("2"),
+      actionCatalogHash: args.catalogHash ?? hash("2"),
       actionCatalogSchemaHash: hash("3"),
       servicingProfileEpoch: args.epoch,
-      actionCatalogEpoch: 1,
+      actionCatalogEpoch: args.catalogEpoch ?? 1,
       servicingEnabled: args.enabled,
       validFrom: now - 10,
       validBefore: now + 3_600,
@@ -66,19 +68,9 @@ describe("servicing-admission activation against PostgreSQL", () => {
     const schema = `servicing_admission_${randomUUID().replaceAll("-", "")}`;
     const bootstrap = createPool({ connectionString: databaseUrl, max: 1 });
     await bootstrap.query(`CREATE SCHEMA "${schema}"`);
-    const pool = createPool({ connectionString: databaseUrl, searchPath: schema, max: 2 });
+    const pool = createPool({ connectionString: databaseUrl, searchPath: `${schema},public`, max: 2 });
     try {
-      await pool.query(`CREATE TABLE standard_provider_servicing_admissions (
-        provider_agent_id TEXT NOT NULL,
-        admission_hash BYTEA PRIMARY KEY,
-        profile_hash BYTEA NOT NULL,
-        canonical_admission JSONB NOT NULL,
-        current BOOLEAN NOT NULL DEFAULT false,
-        valid_before TIMESTAMPTZ NOT NULL,
-        admitted_at TIMESTAMPTZ NOT NULL DEFAULT now()
-      )`);
-      await pool.query(`CREATE UNIQUE INDEX standard_provider_servicing_current_idx
-        ON standard_provider_servicing_admissions(provider_agent_id) WHERE current`);
+      await runMigrations(pool);
 
       const active = admission({
         providerAgentId: "1", epoch: 1, previousAdmissionHash: hash("0"), enabled: true,
@@ -95,6 +87,8 @@ describe("servicing-admission activation against PostgreSQL", () => {
       const current = await pool.query<{
         epoch: number;
         enabled: boolean;
+  catalogEpoch?: number;
+  catalogHash?: `0x${string}`;
         current_count: number;
       }>(`SELECT
           (canonical_admission->'payload'->>'servicingProfileEpoch')::int AS epoch,
@@ -113,5 +107,51 @@ describe("servicing-admission activation against PostgreSQL", () => {
       await bootstrap.query(`DROP SCHEMA "${schema}" CASCADE`).catch(() => undefined);
       await bootstrap.end();
     }
-  });
+  }, 60_000);
+
+  it("rejects changed catalog in the active profile epoch and rolls back partial activation", async () => {
+    const schema = `servicing_transition_${randomUUID().replaceAll("-", "")}`;
+    const bootstrap = createPool({ connectionString: databaseUrl, max: 1 });
+    await bootstrap.query(`CREATE SCHEMA "${schema}"`);
+    const pool = createPool({ connectionString: databaseUrl, searchPath: `${schema},public`, max: 2 });
+    try {
+      await runMigrations(pool);
+      const active = admission({ providerAgentId: "1", epoch: 1,
+        previousAdmissionHash: hash("0"), enabled: true });
+      await federation(pool, [active]).activateAdmissions();
+      const snapshot = async () => (await pool.query(`SELECT encode(admission_hash,'hex') AS hash,
+        current,canonical_admission FROM standard_provider_servicing_admissions ORDER BY admission_hash`)).rows;
+      const before = await snapshot();
+      // The catalog epoch can change while the serving profile stays the same.
+      // A clean-schema boot missed this because it had no activated admission.
+      const conflict = admission({ providerAgentId: "1", epoch: 1, catalogEpoch: 2,
+        catalogHash: hash("4"), previousAdmissionHash: hash("0"), enabled: true });
+      await expect(federation(pool, [conflict]).activateAdmissions())
+        .rejects.toThrow("Servicing admission epoch conflicts with the activated admission");
+      expect(await snapshot()).toEqual(before);
+
+      const next = admission({ providerAgentId: "1", epoch: 2, catalogEpoch: 2,
+        catalogHash: hash("4"), previousAdmissionHash: canonicalHash(active), enabled: true });
+      const brokenTail = admission({ providerAgentId: "1", epoch: 3, catalogEpoch: 3,
+        previousAdmissionHash: hash("f"), enabled: true });
+      await expect(federation(pool, [next, brokenTail]).activateAdmissions())
+        .rejects.toThrow("Servicing admission chain is invalid");
+      // The valid first transition and deactivation of the prior row must both
+      // roll back when the later transition fails inside the real transaction.
+      expect(await snapshot()).toEqual(before);
+      await federation(pool, [next]).activateAdmissions();
+      await federation(pool, [next]).activateAdmissions();
+      const after = await snapshot();
+      expect(after).toHaveLength(2);
+      expect(after.filter(row => row.current).map(row => row.hash))
+        .toEqual([canonicalHash(next).slice(2)]);
+      await expect(federation(pool, [active]).activateAdmissions())
+        .rejects.toThrow("Current servicing admission is absent from the marketplace manifest");
+      expect(await snapshot()).toEqual(after);
+    } finally {
+      await pool.end();
+      await bootstrap.query(`DROP SCHEMA "${schema}" CASCADE`);
+      await bootstrap.end();
+    }
+  }, 60_000);
 });

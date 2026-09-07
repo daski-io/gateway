@@ -81,6 +81,21 @@ jobs:
       - name: Test
         run: npm test
 
+      - name: Boot actual Dockerfile image on representative existing state
+        run: |
+          docker build --build-arg SOURCE_SHA="$GITHUB_SHA" -t gateway-startup:$GITHUB_SHA .
+          npm run test:startup -- --image gateway-startup:$GITHUB_SHA --output .tmp/gateway-startup-proof.json
+
+      - name: Preserve candidate build and startup identity
+        uses: actions/upload-artifact@v4
+        with:
+          name: gateway-runtime-proof-${{ github.sha }}
+          path: |
+            dist/build-identity.json
+            .tmp/gateway-startup-proof.json
+          if-no-files-found: error
+          retention-days: 30
+
       # A high-severity advisory fails the build; the registry being
       # unreachable does not. npm exits 1 for both, so the transport failure
       # is told apart by its message and retried with backoff (2026-09-03: a
