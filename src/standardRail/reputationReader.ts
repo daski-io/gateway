@@ -35,6 +35,12 @@ interface ReputationSnapshot {
 interface SettlementRow {
   order_key: string;
   settlement_tx_hash: string | null;
+  provider_agent_id: string;
+  service_id: string;
+  listing_manifest_hash: string;
+  outcome_id: string;
+  service_name: string | null;
+  skill_name: string | null;
 }
 
 interface BuyerIdentity {
@@ -272,15 +278,26 @@ export class DirectReputationReader {
         ? row.settlement_tx_hash as Hex
         : null,
     ]));
+    const ordersByKey = new Map(settlementRows.map((row) => [row.order_key.toLowerCase(), row]));
     const eligiblePayers = [...new Set(chainRows
       .filter(({ record }) => record.reputationEligible)
       .map(({ record }) => record.payer.toLowerCase()))] as Address[];
     const buyers = await this.resolveBuyers(eligiblePayers, block.number);
     const byManifest = new Map(outcomes.map((outcome) => [outcome.listingManifestHash.toLowerCase(), outcome]));
-    const byService = new Map(outcomes.map((outcome) => [outcome.serviceId.toLowerCase(), outcome]));
     const records: ProjectedReputationRecord[] = chainRows.map(({ record, refundedAmount }) => {
-      const outcome = byManifest.get(record.listingManifestHash.toLowerCase()) ??
-        byService.get(record.serviceId.toLowerCase());
+      // A service contains multiple skills. Never infer a historical skill from
+      // serviceId: a catalog refresh may retire or replace its original manifest.
+      const candidate = ordersByKey.get(record.orderKey.toLowerCase());
+      const order = candidate &&
+        candidate.provider_agent_id === record.providerAgentId.toString() &&
+        candidate.service_id?.toLowerCase() === record.serviceId.toLowerCase() &&
+        candidate.listing_manifest_hash?.toLowerCase() === record.listingManifestHash.toLowerCase()
+        ? candidate : undefined;
+      const manifest = byManifest.get(record.listingManifestHash.toLowerCase());
+      const outcome = manifest &&
+        manifest.providerAgentId === record.providerAgentId.toString() &&
+        manifest.serviceId.toLowerCase() === record.serviceId.toLowerCase()
+        ? manifest : undefined;
       const buyer = buyers.get(record.payer.toLowerCase() as Address) ?? { agentId: null, name: null };
       return {
         orderKey: record.orderKey,
@@ -298,7 +315,9 @@ export class DirectReputationReader {
         settlementTransactionHash: settlementByOrder.get(record.orderKey.toLowerCase()) ?? null,
         buyerAgentId: buyer.agentId,
         buyerName: buyer.name,
-        outcomeId: outcome?.outcomeId ?? "unknown",
+        outcomeId: order?.outcome_id || outcome?.outcomeId || "unknown",
+        ...(order?.service_name ? { serviceName: order.service_name } : {}),
+        ...(order?.skill_name ? { skillName: order.skill_name } : {}),
       };
     });
     const providerIds = [...new Set(outcomes.map((item) => item.providerAgentId))];
@@ -322,7 +341,12 @@ export class DirectReputationReader {
   private settlementRows(orderKeys: Hex[]): Promise<SettlementRow[]> {
     if (orderKeys.length === 0) return Promise.resolve([]);
     return this.pool.query<SettlementRow>(
-      `SELECT '0x'||encode(order_key,'hex') AS order_key,settlement_tx_hash
+      `SELECT '0x'||encode(order_key,'hex') AS order_key,settlement_tx_hash,
+              provider_agent_id,outcome_id,
+              '0x'||encode(listing_manifest_hash,'hex') AS listing_manifest_hash,
+              canonical_listing #>> '{commitment,payload,serviceId}' AS service_id,
+              canonical_listing #>> '{presentation,serviceName}' AS service_name,
+              canonical_listing #>> '{presentation,skillName}' AS skill_name
          FROM standard_orders
         WHERE encode(order_key,'hex')=ANY($1::text[])`,
       [orderKeys.map((key) => key.slice(2))],

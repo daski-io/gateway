@@ -49,7 +49,7 @@ export function activityProjection(args: {
     outcome,
   ])).values()];
   const outcomesById = new Map(args.outcomes.map((outcome) => [
-    `${outcome.providerAgentId}:${outcome.outcomeId}`,
+    `${outcome.providerAgentId}:${outcome.serviceId.toLowerCase()}:${outcome.outcomeId}`,
     outcome,
   ]));
   const safeBlock = services
@@ -62,13 +62,15 @@ export function activityProjection(args: {
     );
   const purchases = services
     .flatMap((service) => service.serviceReputation.recentPurchases.map((purchase) => {
-      const outcome = outcomesById.get(`${service.providerAgentId}:${purchase.outcomeId}`) ??
-        service;
+      const outcome = outcomesById.get(
+        `${service.providerAgentId}:${service.serviceId.toLowerCase()}:${purchase.outcomeId}`,
+      );
       return {
         ...purchase,
-        serviceId: outcome.serviceId,
-        serviceName: outcome.service.name,
-        skillName: outcome.skill.name,
+        serviceId: service.serviceId,
+        serviceName: purchase.serviceName ?? service.service.name,
+        skillName: purchase.skillName ?? outcome?.skill.name ??
+          (purchase.outcomeId === "unknown" ? "Unknown skill" : purchase.outcomeId),
       };
     }))
     .sort((left, right) => Date.parse(right.timestamp) - Date.parse(left.timestamp))

@@ -195,6 +195,62 @@ describe("direct reputation presentation", () => {
     expect(fallback.multicall).not.toHaveBeenCalled();
   });
 
+  it.each([
+    { label: "saved checkout names", saved: true, names: true, expected: "form-entity" },
+    { label: "legacy order without names", saved: true, names: false, expected: "form-entity" },
+    { label: "missing order", saved: false, names: false, expected: "unknown" },
+    { label: "mismatched order manifest", saved: true, names: true, mismatch: "listing_manifest_hash", expected: "unknown" },
+    { label: "mismatched order service", saved: true, names: true, mismatch: "service_id", expected: "unknown" },
+    { label: "mismatched order provider", saved: true, names: true, mismatch: "provider_agent_id", expected: "unknown" },
+    { label: "database unavailable", saved: false, names: false, offline: true, expected: "unknown" },
+  ])("resolves retired manifests using $label", async ({ saved, names, mismatch, offline, expected }) => {
+    const savedOrder = {
+      order_key: ORDER_KEY, settlement_tx_hash: TX_HASH, provider_agent_id: "1",
+      service_id: SERVICE_ID, listing_manifest_hash: MANIFEST_HASH, outcome_id: "form-entity",
+      service_name: names ? "Entity Formation" : null,
+      skill_name: names ? "Form Entity" : null,
+      ...(mismatch ? { [mismatch]: "different" } : {}),
+    };
+    const query = vi.fn(async () => {
+      if (offline) throw new Error("database unavailable");
+      return { rows: saved ? [savedOrder] : [] };
+    });
+    const reader = new DirectReputationReader({
+      evidenceRpcUrls: ["https://rpc.example"], reputationContract: ADDRESS,
+    } as unknown as StandardRailConfig, baseSepolia, { query } as never, {
+      agentIndex: ADDRESS, identityRegistry: ADDRESS,
+    });
+    const client = {
+      getBlock: async () => ({ number: 123n }),
+      readContract: async ({ functionName }: { functionName: string }) => {
+        if (functionName === "getRecordCount") return 1n;
+        if (functionName === "resolve") return [0n, false];
+        throw new Error(`unexpected read ${functionName}`);
+      },
+      multicall: async ({ contracts }: { contracts: Array<{ functionName: string }> }) =>
+        contracts.map(({ functionName }) => {
+          if (functionName === "recordKeys") return ORDER_KEY;
+          if (functionName === "getRecord") return {
+            ...record(), providerAgentId: 1n, listingManifestHash: MANIFEST_HASH,
+          };
+          if (functionName === "refundedAmount") return 0n;
+          if (functionName === "resolve") return { status: "success", result: [0n, false] };
+          throw new Error(`unexpected multicall ${functionName}`);
+        }),
+    };
+    Object.assign(reader, { clients: [{ host: "rpc.example", client }] });
+    const current = ["form-entity", "renew-registered-agent"].map((outcomeId, index) => ({
+      providerAgentId: "1", serviceId: SERVICE_ID, outcomeId,
+      listingManifestHash: `0x${String(index + 7).repeat(64)}` as Hex,
+    }));
+    const snapshot = await reader.forOutcomes(current);
+    const purchase = snapshot.services.get(SERVICE_ID)?.recentPurchases[0];
+    expect(purchase?.outcomeId).toBe(expected);
+    expect(purchase?.skillName).toBe(names && !mismatch ? "Form Entity" : undefined);
+    expect(purchase?.serviceName).toBe(names && !mismatch ? "Entity Formation" : undefined);
+    expect(snapshot.services.get(SERVICE_ID)?.transactionCount).toBe("1");
+  });
+
   it("serves the last snapshot while refreshing in the background and keeps it through a failed refresh", async () => {
     vi.useFakeTimers();
     const warn = vi.spyOn(logger, "warn").mockImplementation(() => undefined);

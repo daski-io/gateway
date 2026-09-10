@@ -109,7 +109,7 @@ describe("activity projection", () => {
     expect(activityProjection({ ...CONTEXT, outcomes, limit: 1 }).purchases).toHaveLength(1);
   });
 
-  it("falls back to the service outcome when a purchase names a retired outcome", () => {
+  it("keeps a retired skill ID instead of substituting another skill", () => {
     const outcomes = [outcome({
       outcomeId: "register",
       skillName: "Register Domain",
@@ -122,8 +122,39 @@ describe("activity projection", () => {
       outcomeId: "retired",
       serviceId: SERVICE_A,
       serviceName: "Domain Management",
-      skillName: "Register Domain",
+      skillName: "retired",
     });
+  });
+
+  it("preserves checkout names after catalog renames or skill removal", () => {
+    const historical = {
+      ...purchase("form-entity", "2026-09-01T00:00:00.000Z"),
+      serviceName: "Entity Formation",
+      skillName: "Form Entity",
+    };
+    const original = outcome({
+      outcomeId: "form-entity", skillName: "Start a Company", serviceName: "Renamed Service",
+      reputation: { recentPurchases: [historical] },
+    });
+    const renewal = outcome({
+      outcomeId: "renew-registered-agent", skillName: "Renew Registered Agent",
+      reputation: { recentPurchases: [historical] },
+    });
+    for (const outcomes of [[original, renewal], [renewal]]) {
+      expect(activityProjection({ ...CONTEXT, outcomes, limit: 50 }).purchases[0]).toMatchObject({
+        outcomeId: "form-entity", serviceName: "Entity Formation", skillName: "Form Entity",
+      });
+    }
+  });
+
+  it("never resolves a skill from a different service of the same provider", () => {
+    const own = outcome({
+      outcomeId: "renew", skillName: "Renew Registered Agent",
+      reputation: { recentPurchases: [purchase("unknown", "2026-09-01T00:00:00.000Z")] },
+    });
+    const other = outcome({ outcomeId: "unknown", skillName: "Wrong Service Skill", serviceId: SERVICE_B });
+    const view = activityProjection({ ...CONTEXT, outcomes: [own, other], limit: 50 });
+    expect(view.purchases[0]).toMatchObject({ serviceId: SERVICE_A, skillName: "Unknown skill" });
   });
 
   it("reports an empty marketplace without inventing a safe block", () => {
