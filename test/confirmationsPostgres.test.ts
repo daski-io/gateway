@@ -46,6 +46,9 @@ const chain = {
   latest: { block: 105n, confirmation: 0, submissionsUsed: 0, currentUid: ZERO_UID } as ChainRecordState,
   easNonce: 7n,
   registered: true,
+  /** Held once by the next EAS nonce read, so a submission can be paused at its chain read. */
+  easNonceGate: null as Promise<void> | null,
+  easNonceReads: 0,
 };
 
 function blockHash(tag: "finalized" | "latest", block: bigint): Hex {
@@ -106,7 +109,15 @@ function config(overrides: Partial<StandardRailConfig> = {}): StandardRailConfig
 
 function confirmations(overrides: Partial<StandardRailConfig> = {}): StandardConfirmations {
   return new StandardConfirmations(pool, config(overrides), baseSepolia, state, {
-    readContract: async () => chain.easNonce,
+    readContract: async () => {
+      chain.easNonceReads += 1;
+      const gate = chain.easNonceGate;
+      if (gate) {
+        chain.easNonceGate = null;
+        await gate;
+      }
+      return chain.easNonce;
+    },
   });
 }
 
@@ -139,6 +150,8 @@ beforeEach(() => {
   chain.latest = { block: 105n, confirmation: 0, submissionsUsed: 0, currentUid: ZERO_UID };
   chain.easNonce = 7n;
   chain.registered = true;
+  chain.easNonceGate = null;
+  chain.easNonceReads = 0;
 });
 
 afterAll(async () => {
@@ -386,6 +399,62 @@ describe("delivery confirmation modes", () => {
       [payerKey.address.toLowerCase()]);
     expect(active.rows[0]?.count).toBe("1");
     expect(await sponsorshipRows()).toEqual([]);
+  });
+
+  it("does not reserve a preparation that another prepare retired while its submission was being validated", async () => {
+    await resetSponsorships();
+    const subject = confirmations();
+    chain.easNonce = 60n;
+    const prepareArgs = { phase: "prepare", submission: "sponsored", confirmation: "Confirmed", acknowledgeFinalTransition: false };
+    const first = await subject.handle(order, "confirmation", prepareArgs, eoa);
+    const firstId = first.result.preparationId as string;
+    const signature = await signPreparation(first.result.signableTypedData as Record<string, unknown>);
+    // The submission passes its signature check and is held at its chain
+    // read; meanwhile the payer prepares the other label, which retires it.
+    let release!: () => void;
+    const readsBefore = chain.easNonceReads;
+    chain.easNonceGate = new Promise<void>((resolve) => { release = resolve; });
+    const submission = subject.handle(order, "confirmation", {
+      phase: "submit", submission: "sponsored", preparationId: firstId, signature,
+    }, eoa).catch((error: unknown) => error as { code?: string });
+    while (chain.easNonceReads === readsBefore) await new Promise((resolve) => setTimeout(resolve, 5));
+    const replaced = await subject.handle(order, "confirmation", { ...prepareArgs, confirmation: "NotConfirmed" }, eoa);
+    expect(replaced.result.preparationId).not.toBe(firstId);
+    release();
+    expect(await submission).toMatchObject({ code: "CONFIRMATION_PREPARATION_STALE" });
+    expect(await sponsorshipRows()).toEqual([]);
+    const operations = await pool.query<{ count: string }>(
+      "SELECT count(*)::text AS count FROM standard_reputation_operations WHERE kind='confirmation'");
+    expect(operations.rows[0]?.count).toBe("0");
+    const rows = await pool.query<{ preparation_id: string; consumed_at: Date | null }>(
+      "SELECT preparation_id,consumed_at FROM standard_confirmation_preparations WHERE payer=$1 AND eas_nonce=60 ORDER BY created_at",
+      [payerKey.address.toLowerCase()]);
+    expect(rows.rows.map((row) => ({ first: row.preparation_id === firstId, live: row.consumed_at === null })))
+      .toEqual([{ first: true, live: false }, { first: false, live: true }]);
+  });
+
+  it("prepares the same label again after switching away within one second (A, B, A)", async () => {
+    await resetSponsorships();
+    const subject = confirmations();
+    chain.easNonce = 70n;
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const prepareArgs = { phase: "prepare", submission: "sponsored", confirmation: "Confirmed", acknowledgeFinalTransition: false };
+      const a = await subject.handle(order, "confirmation", prepareArgs, eoa);
+      const b = await subject.handle(order, "confirmation", { ...prepareArgs, confirmation: "NotConfirmed" }, eoa);
+      // Same payer nonce, chain facts and application second: the request
+      // hash equals the retired first preparation's, and that is not a conflict.
+      const again = await subject.handle(order, "confirmation", prepareArgs, eoa);
+      expect(b.result.preparationId).not.toBe(a.result.preparationId);
+      expect(again.result.preparationId).not.toBe(a.result.preparationId);
+      expect(again.result.signableTypedData).toEqual(a.result.signableTypedData);
+      const live = await pool.query<{ preparation_id: string }>(
+        "SELECT preparation_id FROM standard_confirmation_preparations WHERE payer=$1 AND eas_nonce=70 AND consumed_at IS NULL",
+        [payerKey.address.toLowerCase()]);
+      expect(live.rows.map((row) => row.preparation_id)).toEqual([again.result.preparationId]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("refuses a stale preparation once the chain moved on", async () => {

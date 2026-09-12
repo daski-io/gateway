@@ -567,7 +567,31 @@ export class StandardConfirmations {
       // lock before counting, so the counts are already serialized; SERIALIZABLE
       // fixed the snapshot before the lock was granted (see walletStore.issue).
       await client.query("BEGIN");
+      // Lock order: the payer's preparation lock first (the lock prepare takes
+      // to retire and replace preparations), then the global sponsorship
+      // lock. A replacement cannot slip between this submission's validation
+      // and its reservation, and the two locks are never taken in the
+      // opposite order anywhere.
+      await client.query(
+        "SELECT pg_advisory_xact_lock(hashtextextended('confirmation-prepare:' || $1::text, 0))",
+        [order.payer!.toLowerCase()],
+      );
       await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))", ["confirmation-sponsorship"]);
+      // The preparation is re-read under the locks: a prepare that retired it
+      // while the signature and chain checks ran wins, and a duplicate submit
+      // of the same preparation is answered as pending rather than reserved
+      // twice.
+      const held = await client.query<{ consumed_at: Date | null; expires_at: Date }>(
+        "SELECT consumed_at,expires_at FROM standard_confirmation_preparations WHERE preparation_id=$1 FOR UPDATE",
+        [prep.preparation_id],
+      );
+      const live = held.rows[0];
+      if (!live || live.expires_at.getTime() <= Date.now()) throw standardRailError("CONFIRMATION_PREPARATION_STALE");
+      if (live.consumed_at) {
+        const sponsored = await client.query(
+          "SELECT 1 FROM standard_confirmation_sponsorships WHERE preparation_id=$1", [prep.preparation_id]);
+        throw standardRailError(sponsored.rowCount ? "CONFIRMATION_SUBMISSION_PENDING" : "CONFIRMATION_PREPARATION_STALE");
+      }
       // Attestations and revocations are counted separately per order; the
       // per-payer and global daily budgets count every sponsorship.
       const counts = await client.query<{
@@ -630,7 +654,8 @@ export class StandardConfirmations {
          VALUES ($1,$2,$3,$4,(now() AT TIME ZONE 'UTC')::date,'reserved')`,
         [prep.preparation_id, operationId, order.orderId, order.payer!.toLowerCase()],
       );
-      await client.query("UPDATE standard_confirmation_preparations SET consumed_at=now() WHERE preparation_id=$1",
+      await client.query(
+        "UPDATE standard_confirmation_preparations SET consumed_at=now() WHERE preparation_id=$1 AND consumed_at IS NULL",
         [prep.preparation_id]);
       await client.query("COMMIT");
       return { operationId, state: "pending" };

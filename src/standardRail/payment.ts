@@ -8,7 +8,7 @@ import {
 } from "viem";
 import type { Config } from "../config.js";
 import type { Hex } from "../types.js";
-import { assertNoDuplicateJsonKeys, canonicalHash, recipeNonce, recipeNonceV2 } from "./canonical.js";
+import { assertNoDuplicateJsonKeys, canonicalHash, recipeNonceV2 } from "./canonical.js";
 import { standardRailError } from "./errors.js";
 import {
   createPayerSignatureVerifier,
@@ -70,8 +70,6 @@ export function paymentAuthorizationRecipeInputs(args: {
     payer: getAddress(args.payer),
     splitter: getAddress(args.requirements.payTo),
     grossAmount: BigInt(args.requirements.amount),
-    listingManifestHash: args.order.listingManifestHash,
-    providerOfferHash: args.order.providerOfferHash,
     runtimeCommitmentHash: args.order.listingManifestHash,
     providerIntentHash: args.order.providerOfferHash,
     quoteHash: args.order.quoteHash,
@@ -87,13 +85,10 @@ export function paymentAuthorizationNonce(args: {
   requirements: PaymentRequirements;
   payer: Address;
 }): Hex {
-  const inputs = paymentAuthorizationRecipeInputs(args);
   if (args.listing.commitment.payload.bindingProfile === "stock-fixed-v1") {
     return args.order.orderNonce;
   }
-  return args.listing.commitment.payload.bindingProfile === "recipe-bound-v2"
-    ? recipeNonceV2(inputs)
-    : recipeNonce(inputs);
+  return recipeNonceV2(paymentAuthorizationRecipeInputs(args));
 }
 
 export function paymentAuthorizationMessage(args: {
@@ -580,8 +575,6 @@ export async function validatePayment(args: {
           payer: inputs.payer,
           splitter: inputs.splitter,
           grossAmount: inputs.grossAmount.toString(),
-          listingManifestHash: inputs.listingManifestHash,
-          providerOfferHash: inputs.providerOfferHash,
           runtimeCommitmentHash: inputs.runtimeCommitmentHash,
           providerIntentHash: inputs.providerIntentHash,
           quoteHash: inputs.quoteHash,
