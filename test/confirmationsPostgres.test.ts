@@ -129,7 +129,7 @@ beforeAll(async () => {
 beforeEach(() => {
   bumpEpoch = vi.fn(async () => undefined);
   state = new StandardConfirmationState(
-    pool, config(), baseSepolia, bumpEpoch as unknown as (orderId: string) => Promise<void>,
+    pool, config(), baseSepolia, bumpEpoch as never,
     [{ host: "rpc.example", client: readClient }],
   );
   chain.finalized = { block: 100n, confirmation: 0, submissionsUsed: 0, currentUid: ZERO_UID };
@@ -336,6 +336,55 @@ describe("delivery confirmation modes", () => {
     expect(revoke.submitted).toMatchObject({ code: "CONFIRMATION_SUBMISSION_PENDING" });
   });
 
+  it("keeps one valid preparation per payer and nonce: expired ones retire, an equivalent one is reused, another label supersedes, another order waits", async () => {
+    await resetSponsorships();
+    await pool.query("DELETE FROM standard_confirmation_preparations");
+    const subject = confirmations();
+    chain.easNonce = 50n;
+    const prepareArgs = { phase: "prepare", submission: "sponsored", confirmation: "Confirmed", acknowledgeFinalTransition: false };
+    const first = await subject.handle(order, "confirmation", prepareArgs, eoa);
+    const firstId = first.result.preparationId as string;
+    // The same order, label and chain facts: the same preparation comes back.
+    const again = await subject.handle(order, "confirmation", prepareArgs, eoa);
+    expect(again.result.preparationId).toBe(firstId);
+    // Another label for the same order supersedes it: nothing was admitted, so its submission is stale.
+    const changed = await subject.handle(order, "confirmation", { ...prepareArgs, confirmation: "NotConfirmed" }, eoa);
+    expect(changed.result.preparationId).not.toBe(firstId);
+    const superseded = await pool.query<{ consumed_at: Date | null }>(
+      "SELECT consumed_at FROM standard_confirmation_preparations WHERE preparation_id=$1", [firstId]);
+    expect(superseded.rows[0]?.consumed_at).not.toBeNull();
+    const staleSignature = await signPreparation(first.result.signableTypedData as Record<string, unknown>);
+    await expect(subject.handle(order, "confirmation", {
+      phase: "submit", submission: "sponsored", preparationId: firstId, signature: staleSignature,
+    }, eoa)).rejects.toMatchObject({ code: "CONFIRMATION_PREPARATION_STALE" });
+    // Another order of the same payer at the same nonce waits for the live preparation.
+    const otherId = "ord_22222222-2222-4222-8222-222222222222";
+    await pool.query(
+      `INSERT INTO standard_orders (
+         order_id,order_key,order_handle,handle_hash,state,provider_agent_id,outcome_id,binding_profile,
+         listing_manifest_hash,provider_offer_hash,canonical_listing,quote_hash,canonical_quote,
+         canonical_request_hash,canonical_request,order_nonce,intent_id,gross_amount,rail_epoch,
+         listing_epoch,expires_at,payer)
+       VALUES ($1,$2,'handle-2',$3,'FULFILLED','42','register-domain','recipe-bound-v2',$4,$5,'{}',$6,'{}',
+         $7,'{}',$8,'int_22222222-2222-4222-8222-222222222222',5000000,1,1,now()+interval '1 day',$9)
+       ON CONFLICT (order_id) DO NOTHING`,
+      [otherId, Buffer.from(hash("9").slice(2), "hex"), Buffer.alloc(32, 19), Buffer.alloc(32, 12),
+        Buffer.alloc(32, 13), Buffer.alloc(32, 14), Buffer.alloc(32, 16), Buffer.alloc(32, 18),
+        payerKey.address.toLowerCase()],
+    );
+    const otherOrder = { ...order, orderId: otherId, orderKey: hash("9") } as StandardOrderRecord;
+    await expect(subject.handle(otherOrder, "confirmation", prepareArgs, eoa)).rejects.toMatchObject({ code: "CONFIRMATION_NONCE_BUSY" });
+    // Once the live preparation has expired it is retired and the other order proceeds.
+    await pool.query("UPDATE standard_confirmation_preparations SET expires_at=now()-interval '1 second' WHERE consumed_at IS NULL");
+    const proceeded = await subject.handle(otherOrder, "confirmation", prepareArgs, eoa);
+    expect(typeof proceeded.result.preparationId).toBe("string");
+    const active = await pool.query<{ count: string }>(
+      "SELECT count(*)::text AS count FROM standard_confirmation_preparations WHERE payer=$1 AND eas_nonce=50 AND consumed_at IS NULL",
+      [payerKey.address.toLowerCase()]);
+    expect(active.rows[0]?.count).toBe("1");
+    expect(await sponsorshipRows()).toEqual([]);
+  });
+
   it("refuses a stale preparation once the chain moved on", async () => {
     await resetSponsorships();
     const subject = confirmations();
@@ -445,6 +494,25 @@ describe("confirmation state (finalized-only storage)", () => {
     expect((await state.stored(orderId))?.blockNumber).toBe("200");
   });
 
+  it("moves the capability epoch in the same transaction as the state: a failed epoch write stores nothing and the next check repairs both", async () => {
+    await pool.query("DELETE FROM standard_reputation_confirmations");
+    const subject = confirmations();
+    chain.finalized = { block: 100n, confirmation: 1, submissionsUsed: 1, currentUid: hash("1") };
+    bumpEpoch.mockRejectedValueOnce(new Error("epoch write failed"));
+    await expect(subject.handle(order, "confirmation", { phase: "check", submission: "direct" }, contract))
+      .rejects.toThrow("epoch write failed");
+    expect(await state.stored(orderId)).toBeNull();
+    expect(bumpEpoch).toHaveBeenCalledTimes(1);
+    const repaired = await subject.handle(order, "confirmation", { phase: "check", submission: "direct" }, contract);
+    expect(repaired.finalChanged).toBe(true);
+    expect(bumpEpoch).toHaveBeenCalledTimes(2);
+    expect((await state.stored(orderId))?.currentUid).toBe(hash("1"));
+    // The writer received the transaction's client, not the pool.
+    const [, client] = bumpEpoch.mock.calls[1] as [string, { query: unknown }];
+    expect(client).not.toBe(pool);
+    expect(typeof client.query).toBe("function");
+  });
+
   it("reconciles from a finalized read the way the sponsored worker does", async () => {
     await pool.query("DELETE FROM standard_reputation_confirmations");
     chain.finalized = { block: 200n, confirmation: 1, submissionsUsed: 1, currentUid: hash("7") };
@@ -454,7 +522,7 @@ describe("confirmation state (finalized-only storage)", () => {
       final: { state: "Confirmed", currentUid: hash("7"), submissionsUsed: 1, blockNumber: "200", blockHash: blockHash("finalized", 200n) },
       changed: true,
     });
-    expect(bumpEpoch).toHaveBeenCalledWith(orderId);
+    expect(bumpEpoch).toHaveBeenCalledWith(orderId, expect.anything());
     // The latest read is not what got stored.
     expect((await state.stored(orderId))?.submissionsUsed).toBe(1);
     await expect(state.reconcile({ orderId, orderKey: hash("1") })).resolves.toMatchObject({ changed: false });

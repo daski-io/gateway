@@ -240,7 +240,7 @@ export class StandardRailService {
       pool,
       railConfig,
       chain,
-      async (orderId) => { await this.store.bumpCapabilityEpoch(orderId); },
+      async (orderId, client) => { await this.store.bumpCapabilityEpoch(orderId, client); },
     );
     this.reputationWorker = new StandardReputationWorker(
       pool,

@@ -21,7 +21,8 @@ daski order confirm <handle> --choice Confirmed|NotConfirmed
 daski order confirm <handle> --revoke
 
 The CLI picks the mode. Local and other EOA signers: Daski submits the
-signed attestation; on CONFIRMATION_SUBMISSION_PENDING run --resume.
+signed attestation; on CONFIRMATION_SUBMISSION_PENDING run --resume, and
+--check reports the gateway's finalized state of the review afterwards.
 Contract signers: the CLI prints a validated call; submit it with the
 wallet's own tool, then record and check it:
 

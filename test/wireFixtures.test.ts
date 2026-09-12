@@ -6,7 +6,10 @@ import type { Hex } from "viem";
 import { mcpError, mcpJson } from "../src/mcp/util.js";
 import { mcpSurfaceFixture } from "./helpers/mcpSurfaceFixture.js";
 import { canonicalHash } from "../src/standardRail/canonical.js";
-import { CONFIRMATION_REQUEST_SHAPES, CONFIRMATION_SUBMISSION_MODES } from "../src/standardRail/confirmations.js";
+import {
+  CONFIRMATION_REQUEST_SHAPES, CONFIRMATION_SUBMISSION_MODES, directConfirmationCall,
+} from "../src/standardRail/confirmations.js";
+import { encodeAbiParameters, parseAbiParameters } from "viem";
 import { StandardRailError, standardRailPublicError } from "../src/standardRail/errors.js";
 import { orderActionChallengeIssued } from "../src/standardRail/orderAuthorization.js";
 import { orderBindingExtension, paymentIdentifierExtension } from "../src/standardRail/payment.js";
@@ -252,9 +255,43 @@ function confirmationRequestShapesFixture() {
   };
 }
 
+/**
+ * The direct-mode calls prepare returns for a contract-account payer, built
+ * by the same function the handler uses, with the chain facts they derive
+ * from: the buyer's validator is proved against this exact shape.
+ */
+function confirmationDirectCallFixture() {
+  const facts = {
+    chainId: CHAIN_ID,
+    eas: address("e"),
+    schemaUid: hash("5"),
+    orderKey: hash("1"),
+    recipient: address("b"),
+    currentUid: hash("2"),
+  };
+  const data = encodeAbiParameters(parseAbiParameters("bytes32 orderKey,uint8 confirmation"), [facts.orderKey, 1]);
+  return {
+    schemaVersion: 1,
+    facts,
+    attest: {
+      confirmation: "Confirmed",
+      call: directConfirmationCall({
+        chainId: facts.chainId, easAddress: facts.eas, schema: facts.schemaUid, currentUid: facts.currentUid,
+        action: "attest", recipient: facts.recipient, data,
+      }),
+    },
+    revoke: {
+      call: directConfirmationCall({
+        chainId: facts.chainId, easAddress: facts.eas, schema: facts.schemaUid, currentUid: facts.currentUid, action: "revoke",
+      }),
+    },
+  };
+}
+
 const fixtures: Record<string, () => unknown | Promise<unknown>> = {
   "mcp-tool-surface.json": mcpSurfaceFixture,
   "confirmation-request-shapes.json": confirmationRequestShapesFixture,
+  "confirmation-direct-call.json": confirmationDirectCallFixture,
   "mcp-result.json": mcpResultFixture,
   "payment-challenge-prepared.json": preparedPaymentChallengeFixture,
   "payment-required-extensions.json": paymentRequiredExtensionsFixture,

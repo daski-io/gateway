@@ -30,7 +30,7 @@ import { hasFinalizedNonceConflict } from "./nonceConflict.js";
 
 /** Writes the order's confirmation state through the finalized-read rule. */
 export interface ConfirmationStateReconciler {
-  reconcile(order: { orderId: string; orderKey: Hex }): Promise<unknown>;
+  reconcile(order: { orderId: string; orderKey: Hex }): Promise<{ final: { blockNumber: string }; changed: boolean }>;
 }
 
 interface OperationRow {
@@ -166,6 +166,7 @@ export class StandardReputationWorker {
   }
 
   private async runBatch(): Promise<void> {
+    await this.reconcileFinalizedConfirmations();
     const kinds = ["register", "confirmation"] as const;
     for (let count = 0; count < 12; count += 1) {
       const kind = kinds[this.nextKind % kinds.length]!;
@@ -326,21 +327,12 @@ export class StandardReputationWorker {
         // Cache invalidation must never disturb reconciliation.
       }
       const intent = operation.canonical_intent;
-      if (this.confirmationState && intent.operation !== "register-order") {
+      if (intent.operation !== "register-order") {
         // The receipt marked the sponsored submission final; the order's
-        // stored confirmation state follows only from a finalized read
-        // (spec B7). A failed read is retried by the next `check`.
-        try {
-          await this.confirmationState.reconcile({
-            orderId: operation.order_id,
-            orderKey: intent.orderKey,
-          });
-        } catch (error) {
-          logger.warn("confirmation state reconciliation deferred", {
-            operationId: operation.operation_id,
-            error: error instanceof Error ? error.message : String(error),
-          });
-        }
+        // stored confirmation state follows only from a finalized read (spec
+        // B7), and the worker keeps reconciling until that read covers the
+        // receipt's block, since nothing else refreshes the stored state.
+        await this.reconcileConfirmation(operation.operation_id, operation.order_id, intent.orderKey, receipt.blockNumber);
       }
       return;
     }
@@ -541,6 +533,50 @@ export class StandardReputationWorker {
         WHERE operation_id=$1 AND state IN ('pending','broadcast')`,
       [operationId, transactionId],
     );
+  }
+
+  /**
+   * Finalized confirmation operations whose stored order state does not yet
+   * cover their receipt: each batch retries them until the finalized anchor
+   * has caught up, then marks them reconciled.
+   */
+  private async reconcileFinalizedConfirmations(): Promise<void> {
+    if (!this.confirmationState) return;
+    const due = await this.pool.query<OperationRow & { final_block_number: string }>(
+      `SELECT * FROM standard_reputation_operations
+        WHERE kind='confirmation' AND state='final' AND confirmation_reconciled_at IS NULL
+          AND (next_attempt_at IS NULL OR next_attempt_at<=now())
+        ORDER BY updated_at LIMIT 3`,
+    );
+    for (const operation of due.rows) {
+      const intent = operation.canonical_intent;
+      if (intent.operation === "register-order" || operation.final_block_number === null) continue;
+      await this.reconcileConfirmation(
+        operation.operation_id, operation.order_id, intent.orderKey, BigInt(operation.final_block_number),
+      );
+    }
+  }
+
+  private async reconcileConfirmation(operationId: string, orderId: string, orderKey: Hex, receiptBlock: bigint): Promise<void> {
+    if (!this.confirmationState) return;
+    let covered = false;
+    try {
+      const outcome = await this.confirmationState.reconcile({ orderId, orderKey });
+      covered = BigInt(outcome.final.blockNumber) >= receiptBlock;
+    } catch (error) {
+      logger.warn("confirmation state reconciliation deferred", {
+        operationId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+    await this.pool.query(covered
+      ? `UPDATE standard_reputation_operations
+            SET confirmation_reconciled_at=now(),next_attempt_at=NULL,updated_at=now()
+          WHERE operation_id=$1`
+      : `UPDATE standard_reputation_operations
+            SET next_attempt_at=now()+interval '2 minutes',updated_at=now()
+          WHERE operation_id=$1 AND state='final'`,
+      [operationId]);
   }
 
   private async defer(operationId: string): Promise<void> {

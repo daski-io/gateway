@@ -124,6 +124,17 @@
         "daski-test scripts/standardConfirmation.ts performConfirmationTransition (test/standardConfirmation.test.ts)",
         "daski-buyer packages/pay/src/commands/confirmation.ts confirmOrder (packages/pay/test/confirmationWire.test.ts)"
       ]
+    },
+    "confirmation-direct-call.json": {
+      "consumers": [
+        "daski-buyer"
+      ],
+      "emittedBy": [
+        "src/standardRail/confirmations.ts directConfirmationCall (the direct-mode prepare result's call)"
+      ],
+      "parsedBy": [
+        "daski-buyer packages/pay/src/commands/confirmation.ts validateDirectCall (packages/pay/test/confirmationWire.test.ts)"
+      ]
     }
   }
 }

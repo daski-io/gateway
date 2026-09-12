@@ -71,12 +71,18 @@ function rowToFinal(row: StoredRow): ConfirmationFinal {
   };
 }
 
+/** Moves an order's capability epoch on the client whose transaction stores the confirmation state. */
+export type CapabilityEpochWriter = (orderId: string, client: { query: Pool["query"] }) => Promise<void>;
+
 /**
  * The durable confirmation state of an order (spec B7): written only from a
  * `getRecord` read pinned by block hash to the block the `finalized` tag
  * returned, and only when that block is higher than the stored one. A
  * `latest` read is returned to callers but never stored. The capability
- * epoch moves only when the stored state or current UID changes.
+ * epoch moves only when the stored state or current UID changes, and it
+ * moves in the same transaction as the state: a stored transition whose
+ * invalidation was lost would never be repaired, since a repeat of the
+ * same observation carries no change.
  */
 export class StandardConfirmationState {
   private readonly clients: Array<{ host: string; client: ConfirmationReadClient }>;
@@ -86,7 +92,7 @@ export class StandardConfirmationState {
     private readonly pool: Pool,
     config: Pick<StandardRailConfig, "evidenceRpcUrls" | "reputationContract">,
     chain: Chain,
-    private readonly bumpEpoch: (orderId: string) => Promise<void>,
+    private readonly bumpEpoch: CapabilityEpochWriter,
     clients?: Array<{ host: string; client: ConfirmationReadClient }>,
   ) {
     this.reputationContract = config.reputationContract;
@@ -108,11 +114,6 @@ export class StandardConfirmationState {
         logger.warn("confirmation state RPC fallback selected", { primaryHost, selectedHost });
       },
     });
-  }
-
-  /** Moves the order's capability epoch; called only when the stored state changed. */
-  bumpEpochFor(orderId: string): Promise<void> {
-    return this.bumpEpoch(orderId);
   }
 
   /** One read of the order's record at the given tag, pinned to that block's hash. */
@@ -223,11 +224,13 @@ export class StandardConfirmationState {
         if (!row) throw new Error("confirmation state vanished under the lock");
         return { stored: false, changed: false, final: rowToFinal(row) };
       }
-      await client.query("COMMIT");
       const stored = rowToFinal(written.rows[0]);
       const changed = !current ||
         current.state !== stored.state ||
         current.currentUid.toLowerCase() !== stored.currentUid.toLowerCase();
+      // The invalidation commits with the state or not at all.
+      if (changed) await this.bumpEpoch(order.orderId, client);
+      await client.query("COMMIT");
       return { stored: true, changed, final: stored };
     } catch (error) {
       await client.query("ROLLBACK").catch(() => undefined);
@@ -237,14 +240,13 @@ export class StandardConfirmationState {
     }
   }
 
-  /** One finalized read written through the storage rule; bumps the epoch on change. */
+  /** One finalized read written through the storage rule; the epoch moves with the state. */
   async reconcile(order: { orderId: string; orderKey: Hex }): Promise<{
     final: ConfirmationFinal;
     changed: boolean;
   }> {
     const observation = await this.observe(order.orderKey, "finalized");
     const outcome = await this.record(order, observation);
-    if (outcome.changed) await this.bumpEpoch(order.orderId);
     return { final: outcome.final, changed: outcome.changed };
   }
 }

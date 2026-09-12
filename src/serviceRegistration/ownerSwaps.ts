@@ -199,27 +199,45 @@ export class OwnerSwapService {
       });
       throw new RegistrationError(503, "SCREENING_UNAVAILABLE", "Sanctions screening is unavailable; retry later.");
     }
-    const daily = await pool.query<{ count: string }>(
-      `SELECT count(*)::text AS count FROM standard_provider_owner_swaps
-        WHERE provider_agent_id=$1 AND received_at>now()-interval '1 day'`,
-      [payload.providerAgentId],
-    );
-    if (Number(daily.rows[0]?.count ?? "0") >= railConfig.ownerSwaps.perProviderPerDay) {
-      throw new RegistrationError(429, "OWNER_SWAP_RATE_LIMITED", "The provider's daily owner swap budget is exhausted.");
+    // The daily budget is counted and the row inserted under one per-provider
+    // lock, so concurrent notices cannot all count below the quota and all be
+    // admitted above it.
+    const client = await pool.connect();
+    let inserted;
+    try {
+      await client.query("BEGIN");
+      await client.query(
+        "SELECT pg_advisory_xact_lock(hashtextextended('owner-swap-quota:' || $1::text, 0))",
+        [payload.providerAgentId],
+      );
+      const daily = await client.query<{ count: string }>(
+        `SELECT count(*)::text AS count FROM standard_provider_owner_swaps
+          WHERE provider_agent_id=$1 AND received_at>now()-interval '1 day'`,
+        [payload.providerAgentId],
+      );
+      if (Number(daily.rows[0]?.count ?? "0") >= railConfig.ownerSwaps.perProviderPerDay) {
+        throw new RegistrationError(429, "OWNER_SWAP_RATE_LIMITED", "The provider's daily owner swap budget is exhausted.");
+      }
+      inserted = await client.query<SwapRow>(
+        `INSERT INTO standard_provider_owner_swaps
+          (provider_agent_id,provider_asset_id,owner_version,order_id,previous_payer,new_payer,
+           content_hash,canonical_envelope,signer)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+         ON CONFLICT (provider_agent_id,provider_asset_id,owner_version) DO NOTHING
+         RETURNING provider_asset_id,owner_version,new_payer,content_hash,received_at`,
+        [
+          payload.providerAgentId, payload.providerAssetId, payload.ownerVersion, payload.orderId,
+          payload.previousPayer, payload.newPayer, Buffer.from(contentHash.slice(2), "hex"),
+          verified.envelope, verified.signer.toLowerCase(),
+        ],
+      );
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK").catch(() => undefined);
+      throw error;
+    } finally {
+      client.release();
     }
-    const inserted = await pool.query<SwapRow>(
-      `INSERT INTO standard_provider_owner_swaps
-        (provider_agent_id,provider_asset_id,owner_version,order_id,previous_payer,new_payer,
-         content_hash,canonical_envelope,signer)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
-       ON CONFLICT (provider_agent_id,provider_asset_id,owner_version) DO NOTHING
-       RETURNING provider_asset_id,owner_version,new_payer,content_hash,received_at`,
-      [
-        payload.providerAgentId, payload.providerAssetId, payload.ownerVersion, payload.orderId,
-        payload.previousPayer, payload.newPayer, Buffer.from(contentHash.slice(2), "hex"),
-        verified.envelope, verified.signer.toLowerCase(),
-      ],
-    );
     if (inserted.rows[0]) return { created: true, record: recordOf(inserted.rows[0]) };
     const raced = await this.find(payload);
     if (!raced) throw new Error("owner swap insert lost its row");

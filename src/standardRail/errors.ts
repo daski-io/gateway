@@ -49,6 +49,7 @@ export type StandardRailErrorCode =
   | "CONFIRMATION_SPONSORSHIP_UNAVAILABLE"
   | "CONFIRMATION_SUBMISSION_PENDING"
   | "CONFIRMATION_PREPARATION_STALE"
+  | "CONFIRMATION_NONCE_BUSY"
   | "CONFIRMATION_SIGNATURE_INVALID"
   | "CONFIRMATION_NOT_ACTIVE"
   | "CONFIRMATION_SUBMISSION_LIMIT"
@@ -369,6 +370,15 @@ const DEFAULTS: Record<StandardRailErrorCode, ErrorDefaults> = {
     requiresNewSignature: false,
     paymentMayHaveSettled: false,
     nextAction: "Run phase prepare again and sign the new typed data.",
+  },
+  CONFIRMATION_NONCE_BUSY: {
+    status: 409,
+    message: "A sponsored preparation for another of this payer's orders is still valid at the same EAS nonce",
+    phase: "confirmation",
+    retryable: true,
+    requiresNewSignature: false,
+    paymentMayHaveSettled: false,
+    nextAction: "Submit that preparation or wait for it to expire (at most five minutes), then prepare again.",
   },
   CONFIRMATION_SIGNATURE_INVALID: {
     status: 400,

@@ -154,6 +154,80 @@ function blockView(observation: ConfirmationFinal) {
   return { number: observation.blockNumber, hash: observation.blockHash };
 }
 
+/** The closed direct-mode call as the buyer validates it: exactly these six fields, `value` "0". */
+export interface DirectConfirmationCall {
+  chainId: number;
+  to: Address;
+  function: "attest" | "revoke";
+  request: Record<string, unknown>;
+  calldata: Hex;
+  value: "0";
+}
+
+/**
+ * The EAS call a contract-account payer submits itself (spec B6): built from
+ * the chain record and the label only, and published as the
+ * `confirmation-direct-call.json` wire fixture so the buyer's validator is
+ * proved against the exact shape this gateway emits.
+ */
+export function directConfirmationCall(args: {
+  chainId: number;
+  easAddress: Address;
+  schema: Hex;
+  currentUid: Hex;
+  action: "attest" | "revoke";
+  recipient?: Address;
+  data?: Hex;
+}): DirectConfirmationCall {
+  if (args.action === "attest") {
+    if (!args.recipient || !args.data) throw new Error("attest call needs a recipient and data");
+    return {
+      chainId: args.chainId,
+      to: args.easAddress,
+      function: "attest",
+      request: {
+        schema: args.schema,
+        data: {
+          recipient: args.recipient,
+          expirationTime: "0",
+          revocable: true,
+          refUID: args.currentUid,
+          data: args.data,
+          value: "0",
+        },
+      },
+      calldata: encodeFunctionData({
+        abi: easDirectAbi,
+        functionName: "attest",
+        args: [{
+          schema: args.schema,
+          data: {
+            recipient: args.recipient,
+            expirationTime: 0n,
+            revocable: true,
+            refUID: args.currentUid,
+            data: args.data,
+            value: 0n,
+          },
+        }],
+      }),
+      value: "0",
+    };
+  }
+  return {
+    chainId: args.chainId,
+    to: args.easAddress,
+    function: "revoke",
+    request: { schema: args.schema, data: { uid: args.currentUid, value: "0" } },
+    calldata: encodeFunctionData({
+      abi: easDirectAbi,
+      functionName: "revoke",
+      args: [{ schema: args.schema, data: { uid: args.currentUid, value: 0n } }],
+    }),
+    value: "0",
+  };
+}
+
 export class StandardConfirmations {
   private readonly chainId: number;
 
@@ -222,10 +296,12 @@ export class StandardConfirmations {
     }
   }
 
+  /** The attestation recipient is the record's provider agent wallet; the contract registers no zero wallet. */
   private recipientOf(observation: ConfirmationObservation): Address {
-    return observation.providerAgentWallet.toLowerCase() === ZERO_ADDRESS
-      ? getAddress(observation.providerOwner)
-      : getAddress(observation.providerAgentWallet);
+    if (observation.providerAgentWallet.toLowerCase() === ZERO_ADDRESS) {
+      throw standardRailError("CONFIRMATION_ORDER_UNAVAILABLE");
+    }
+    return getAddress(observation.providerAgentWallet);
   }
 
   private attestData(order: StandardOrderRecord, confirmation: "Confirmed" | "NotConfirmed"): Hex {
@@ -276,93 +352,129 @@ export class StandardConfirmations {
     const payer = getAddress(order.payer!);
     const schema = this.config.reputationConfirmationSchemaUid;
     if (mode === "direct") {
-      const call = action === "confirmation"
-        ? {
-            function: "attest" as const,
-            request: {
-              schema,
-              data: {
-                recipient: this.recipientOf(current),
-                expirationTime: "0",
-                revocable: true,
-                refUID: current.currentUid,
-                data: this.attestData(order, request.confirmation as "Confirmed" | "NotConfirmed"),
-                value: "0",
-              },
-            },
-          }
-        : {
-            function: "revoke" as const,
-            request: { schema, data: { uid: current.currentUid, value: "0" } },
-          };
-      const calldata = call.function === "attest"
-        ? encodeFunctionData({
-            abi: easDirectAbi,
-            functionName: "attest",
-            args: [{
-              schema,
-              data: {
-                recipient: call.request.data.recipient as Address,
-                expirationTime: 0n,
-                revocable: true,
-                refUID: current.currentUid,
-                data: (call.request.data as { data: Hex }).data,
-                value: 0n,
-              },
-            }],
-          })
-        : encodeFunctionData({
-            abi: easDirectAbi,
-            functionName: "revoke",
-            args: [{ schema, data: { uid: current.currentUid, value: 0n } }],
-          });
+      const call = directConfirmationCall({
+        chainId: this.chainId,
+        easAddress: this.config.easAddress,
+        schema,
+        currentUid: current.currentUid,
+        action: action === "confirmation" ? "attest" : "revoke",
+        ...(action === "confirmation" ? {
+          recipient: this.recipientOf(current),
+          data: this.attestData(order, request.confirmation as "Confirmed" | "NotConfirmed"),
+        } : {}),
+      });
       return {
-        result: {
-          ...summary,
-          call: {
-            chainId: this.chainId,
-            to: this.config.easAddress,
-            function: call.function,
-            request: call.request,
-            calldata,
-            value: "0",
-          },
-          observedBlock: blockView(current),
-        },
+        result: { ...summary, call, observedBlock: blockView(current) },
         finalChanged: false,
       };
     }
     const nonce = await this.easNonce(payer);
-    const deadline = BigInt(Math.floor(Date.now() / 1_000) + this.config.confirmationDeadlineSeconds);
-    const domain = { name: "EAS", version: "1.2.0", chainId: this.chainId,
-      verifyingContract: this.config.easAddress };
-    const typedData = action === "confirmation" ? {
-      domain, types: attestTypes, primaryType: "Attest" as const,
-      message: { schema, recipient: this.recipientOf(current),
-        expirationTime: "0", revocable: true, refUID: current.currentUid,
-        data: this.attestData(order, request.confirmation as "Confirmed" | "NotConfirmed"),
-        value: "0", nonce: nonce.toString(), deadline: deadline.toString() },
-    } : {
-      domain, types: revokeTypes, primaryType: "Revoke" as const,
-      message: { schema, uid: current.currentUid, value: "0", nonce: nonce.toString(),
-        deadline: deadline.toString() },
-    };
-    const preparationId = randomUUID();
-    const requestHash = canonicalHash({ orderKey: order.orderKey, operation: action,
-      currentUid: current.currentUid, submissionsUsed, nonce: nonce.toString(),
-      deadline: deadline.toString(), typedData });
-    await this.pool.query(CONFIRMATION_PREPARATION_INSERT_SQL,
-      [preparationId, order.orderId, Buffer.from(order.orderKey.slice(2), "hex"), payer.toLowerCase(),
-        action === "confirmation" ? "attest-confirmation" : "revoke-confirmation",
-        action === "confirmation" ? request.confirmation : null,
-        current.currentUid === ZERO_UID ? null : Buffer.from(current.currentUid.slice(2), "hex"),
-        submissionsUsed, nonce.toString(), deadline.toString(), Buffer.from(requestHash.slice(2), "hex"),
-        typedData, finalAttestation],
-    );
+    const prepared = await this.preparationFor({
+      order, action, payer, nonce, schema, current, submissionsUsed, finalAttestation,
+      confirmation: action === "confirmation" ? request.confirmation as "Confirmed" | "NotConfirmed" : null,
+    });
     return {
-      result: { ...summary, preparationId, currentRefUid: current.currentUid, signableTypedData: typedData },
+      result: { ...summary, preparationId: prepared.preparationId, currentRefUid: current.currentUid,
+        signableTypedData: prepared.typedData },
       finalChanged: false,
     };
+  }
+
+  /**
+   * One valid unconsumed preparation per payer and EAS nonce: the partial
+   * unique index enforces it, and this method keeps it from becoming a
+   * permanent block. Under a per-payer lock: expired unconsumed preparations
+   * at the nonce are retired; a still-valid one for the same order and
+   * operation with the same chain facts and label is returned again; a
+   * still-valid one for the same order with another label or operation is
+   * superseded (nothing was admitted, so its submission is stale); a
+   * still-valid one for another order refuses with CONFIRMATION_NONCE_BUSY
+   * until it is submitted or expires. A submitted preparation is never
+   * touched by a deadline.
+   */
+  private async preparationFor(args: {
+    order: StandardOrderRecord;
+    action: Action;
+    payer: Address;
+    nonce: bigint;
+    schema: Hex;
+    current: ConfirmationObservation;
+    submissionsUsed: number;
+    finalAttestation: boolean;
+    confirmation: "Confirmed" | "NotConfirmed" | null;
+  }): Promise<{ preparationId: string; typedData: PreparationRow["canonical_typed_data"] }> {
+    const { order, action, payer, nonce, schema, current, submissionsUsed, finalAttestation } = args;
+    const operation = action === "confirmation" ? "attest-confirmation" : "revoke-confirmation";
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query(
+        "SELECT pg_advisory_xact_lock(hashtextextended('confirmation-prepare:' || $1::text, 0))",
+        [payer.toLowerCase()],
+      );
+      await client.query(
+        `UPDATE standard_confirmation_preparations SET consumed_at=now()
+          WHERE payer=$1 AND eas_nonce=$2::numeric AND consumed_at IS NULL AND expires_at<=now()`,
+        [payer.toLowerCase(), nonce.toString()],
+      );
+      const live = await client.query<PreparationRow>(
+        `SELECT * FROM standard_confirmation_preparations
+          WHERE payer=$1 AND eas_nonce=$2::numeric AND consumed_at IS NULL AND expires_at>now()
+          FOR UPDATE`,
+        [payer.toLowerCase(), nonce.toString()],
+      );
+      const existing = live.rows[0];
+      if (existing) {
+        const existingUid = existing.current_uid ? `0x${existing.current_uid.toString("hex")}` : ZERO_UID;
+        const equivalent = existing.order_id === order.orderId && existing.operation === operation &&
+          existing.confirmation === args.confirmation && existingUid === current.currentUid.toLowerCase() &&
+          Number(existing.submissions_used) === submissionsUsed &&
+          existing.final_transition_acknowledged === finalAttestation;
+        if (equivalent) {
+          await client.query("COMMIT");
+          return { preparationId: existing.preparation_id, typedData: existing.canonical_typed_data };
+        }
+        if (existing.order_id !== order.orderId) {
+          throw standardRailError("CONFIRMATION_NONCE_BUSY", { expected: { busyUntil: existing.expires_at.toISOString() } });
+        }
+        await client.query(
+          "UPDATE standard_confirmation_preparations SET consumed_at=now() WHERE preparation_id=$1",
+          [existing.preparation_id],
+        );
+      }
+      const deadline = BigInt(Math.floor(Date.now() / 1_000) + this.config.confirmationDeadlineSeconds);
+      const domain = { name: "EAS", version: "1.2.0", chainId: this.chainId,
+        verifyingContract: this.config.easAddress };
+      const typedData = action === "confirmation" ? {
+        domain, types: attestTypes, primaryType: "Attest" as const,
+        message: { schema, recipient: this.recipientOf(current),
+          expirationTime: "0", revocable: true, refUID: current.currentUid,
+          data: this.attestData(order, args.confirmation!),
+          value: "0", nonce: nonce.toString(), deadline: deadline.toString() },
+      } : {
+        domain, types: revokeTypes, primaryType: "Revoke" as const,
+        message: { schema, uid: current.currentUid, value: "0", nonce: nonce.toString(),
+          deadline: deadline.toString() },
+      };
+      const preparationId = randomUUID();
+      const requestHash = canonicalHash({ orderKey: order.orderKey, operation: action,
+        currentUid: current.currentUid, submissionsUsed, nonce: nonce.toString(),
+        deadline: deadline.toString(), typedData });
+      await client.query(CONFIRMATION_PREPARATION_INSERT_SQL,
+        [preparationId, order.orderId, Buffer.from(order.orderKey.slice(2), "hex"), payer.toLowerCase(),
+          operation, args.confirmation,
+          current.currentUid === ZERO_UID ? null : Buffer.from(current.currentUid.slice(2), "hex"),
+          submissionsUsed, nonce.toString(), deadline.toString(), Buffer.from(requestHash.slice(2), "hex"),
+          typedData, finalAttestation],
+      );
+      await client.query("COMMIT");
+      return { preparationId, typedData: typedData as PreparationRow["canonical_typed_data"] };
+    } catch (error) {
+      await client.query("ROLLBACK").catch(() => undefined);
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 
   /**
@@ -550,7 +662,6 @@ export class StandardConfirmations {
       throw standardRailError("CONFIRMATION_ORDER_UNAVAILABLE");
     }
     const recorded = await this.state.record(order, finalized);
-    if (recorded.changed) await this.state.bumpEpochFor(order.orderId);
     return {
       result: {
         orderKey: order.orderKey,

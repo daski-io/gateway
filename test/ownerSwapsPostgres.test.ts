@@ -340,6 +340,23 @@ describe("POST /v1/owner-swaps", () => {
     expect(other.status).toBe(201);
   });
 
+  it("enforces the daily budget atomically: concurrent notices above the cap are not all admitted", async () => {
+    // The other provider has one acceptance and a cap of three: of three
+    // concurrent notices exactly two may be admitted.
+    const versions = [2, 3, 4];
+    const envelopes = await Promise.all(versions.map((ownerVersion) => envelope(payload({
+      providerAgentId: OTHER_PROVIDER, ownerVersion, orderId: otherProviderOrderId,
+      orderKey: keccak256(toBytes(otherProviderOrderId)),
+    }))));
+    const responses = await Promise.all(envelopes.map((body, index) =>
+      post(body, { "idempotency-key": `idem-own-other-${versions[index]}-0001` })));
+    const statuses = responses.map((response) => response.status).sort();
+    expect(statuses).toEqual([201, 201, 429]);
+    const count = await pool.query<{ count: string }>(
+      "SELECT count(*)::text AS count FROM standard_provider_owner_swaps WHERE provider_agent_id=$1", [OTHER_PROVIDER]);
+    expect(count.rows[0]?.count).toBe("3");
+  });
+
   it("is refused entirely while OWNER_SWAPS_ENABLED is off", async () => {
     const disabled = new OwnerSwapService({
       config, railConfig: { ...railConfig, ownerSwaps: { enabled: false, perProviderPerDay: 50 } } as never,

@@ -438,8 +438,8 @@ export class StandardRailStore {
     return result.rows[0] ? record(result.rows[0]) : null;
   }
 
-  async bumpCapabilityEpoch(orderId: string): Promise<StandardOrderRecord> {
-    const result = await this.pool.query<OrderRow>(
+  async bumpCapabilityEpoch(orderId: string, db: { query: Pool["query"] } = this.pool): Promise<StandardOrderRecord> {
+    const result = await db.query<OrderRow>(
       `UPDATE standard_orders
           SET capability_epoch=capability_epoch+1,updated_at=now()
         WHERE order_id=$1 RETURNING *`,
