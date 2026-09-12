@@ -130,7 +130,6 @@ function paymentRequiredExtensionsFixture() {
     "payment-identifier": paymentIdentifierExtension(INTENT_ID),
     "daski-order-binding": {
       "recipe-bound-v2": orderBindingExtension({ bindingProfile: "recipe-bound-v2", ...deal }),
-      "recipe-bound-v1": orderBindingExtension({ bindingProfile: "recipe-bound-v1", ...deal }),
     },
   };
 }

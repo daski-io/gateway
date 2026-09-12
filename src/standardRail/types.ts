@@ -1,6 +1,6 @@
 import type { Hex } from "../types.js";
 
-export type BindingProfile = "stock-fixed-v1" | "recipe-bound-v1" | "recipe-bound-v2";
+export type BindingProfile = "stock-fixed-v1" | "recipe-bound-v2";
 
 export type StandardOrderState =
   | "DRAFT"
@@ -223,8 +223,8 @@ export interface ListingOfferView {
 }
 
 export interface StandardListing {
-  /** Checkout display names, retained in canonical_listing; absent on legacy orders. */
-  presentation?: { serviceName: string; skillName: string };
+  /** Checkout display names, retained in canonical_listing for the order's lifetime. */
+  presentation: { serviceName: string; skillName: string };
   registrationId: string;
   listingId: string;
   listingKey: Hex;
@@ -274,9 +274,9 @@ export interface StandardListing {
 }
 
 export interface PublicMarketplacePurchaseV1 {
-  /** Immutable checkout names when an order snapshot is available. */
-  serviceName?: string;
-  skillName?: string;
+  /** The immutable checkout names from the order snapshot. */
+  serviceName: string;
+  skillName: string;
   orderKey: Hex;
   txHash: Hex | null;
   payer: Hex;

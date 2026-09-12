@@ -30,6 +30,8 @@ function purchase(outcomeId: string, timestamp: string, amount = "1000000"): Pub
     buyerName: null,
     amount,
     outcomeId,
+    serviceName: `Service for ${outcomeId}`,
+    skillName: `Skill ${outcomeId}`,
     timestamp,
   };
 }
@@ -61,7 +63,7 @@ const CONTEXT = {
 };
 
 describe("activity projection", () => {
-  it("merges purchases across services newest first and names them by outcome", () => {
+  it("merges purchases across services newest first and names them from their order snapshots", () => {
     // Two outcomes of service A share one reputation block, as the catalog builds them.
     const serviceA = {
       transactionCount: "3",
@@ -102,14 +104,14 @@ describe("activity projection", () => {
       transactionCount: "4",
     });
     expect(view.purchases.map((row) => [row.skillName, row.serviceName, row.serviceId, row.amount])).toEqual([
-      ["Renew Domain", "Domain Management", SERVICE_A, "7000000"],
-      ["Create Mailbox", "Agent Mailboxes", SERVICE_B, "1250000"],
-      ["Register Domain", "Domain Management", SERVICE_A, "1000000"],
+      ["Skill renew", "Service for renew", SERVICE_A, "7000000"],
+      ["Skill mailbox", "Service for mailbox", SERVICE_B, "1250000"],
+      ["Skill register", "Service for register", SERVICE_A, "1000000"],
     ]);
     expect(activityProjection({ ...CONTEXT, outcomes, limit: 1 }).purchases).toHaveLength(1);
   });
 
-  it("keeps a retired skill ID instead of substituting another skill", () => {
+  it("keeps a retired skill's snapshot names instead of substituting another skill", () => {
     const outcomes = [outcome({
       outcomeId: "register",
       skillName: "Register Domain",
@@ -121,8 +123,8 @@ describe("activity projection", () => {
     expect(row).toMatchObject({
       outcomeId: "retired",
       serviceId: SERVICE_A,
-      serviceName: "Domain Management",
-      skillName: "retired",
+      serviceName: "Service for retired",
+      skillName: "Skill retired",
     });
   });
 
@@ -154,7 +156,7 @@ describe("activity projection", () => {
     });
     const other = outcome({ outcomeId: "unknown", skillName: "Wrong Service Skill", serviceId: SERVICE_B });
     const view = activityProjection({ ...CONTEXT, outcomes: [own, other], limit: 50 });
-    expect(view.purchases[0]).toMatchObject({ serviceId: SERVICE_A, skillName: "Unknown skill" });
+    expect(view.purchases[0]).toMatchObject({ serviceId: SERVICE_A, skillName: "Skill unknown", serviceName: "Service for unknown" });
   });
 
   it("reports an empty marketplace without inventing a safe block", () => {

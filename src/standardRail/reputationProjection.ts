@@ -17,8 +17,8 @@ export interface ProjectedReputationRecord {
   buyerAgentId: string | null;
   buyerName: string | null;
   outcomeId: string;
-  serviceName?: string;
-  skillName?: string;
+  serviceName: string;
+  skillName: string;
 }
 
 function rate(numerator: bigint, denominator: bigint): number | null {
@@ -80,8 +80,8 @@ export function presentReputation(
       buyerName: record.buyerName,
       amount: record.grossAmount.toString(),
       outcomeId: record.outcomeId,
-      ...(record.serviceName ? { serviceName: record.serviceName } : {}),
-      ...(record.skillName ? { skillName: record.skillName } : {}),
+      serviceName: record.serviceName,
+      skillName: record.skillName,
       timestamp: timestamp(record.paidAt),
     }));
 

@@ -14,7 +14,7 @@ const databaseUrl = process.env.DATABASE_URL_TEST ??
   "postgresql://postgres:password@localhost:5433/daski_gateway_test";
 
 describe("persisted Activity history", () => {
-  it("reads checkout names and legacy skill IDs from real order snapshots after manifest replacement", async () => {
+  it("reads each order's own checkout names from real order snapshots after a catalog rename", async () => {
     const schema = `gateway_activity_${randomUUID().replaceAll("-", "")}`;
     const bootstrap = createPool({ connectionString: databaseUrl, max: 1 });
     await bootstrap.query(`CREATE SCHEMA "${schema}"`);
@@ -39,9 +39,9 @@ describe("persisted Activity history", () => {
       const retry = await store.createDraft(input);
       expect(retry.order.orderId).toBe(first.order.orderId);
       expect(retry.order.listing.presentation).toEqual({ serviceName: "Entity Formation", skillName: "Form Entity" });
-      delete input.listing.presentation;
-      const legacy = await store.createDraft({ ...input, intentId: `int_${randomUUID()}`, orderNonce: hash("7"), canonicalRequestHash: hash("8") });
-      const keys = [first.order.orderKey, legacy.order.orderKey];
+      // A second order of the same listing: every snapshot carries its checkout names.
+      const second = await store.createDraft({ ...input, intentId: `int_${randomUUID()}`, orderNonce: hash("7"), canonicalRequestHash: hash("8") });
+      const keys = [first.order.orderKey, second.order.orderKey];
       const reader = new DirectReputationReader({
         evidenceRpcUrls: ["https://rpc.example"], reputationContract: address,
       } as unknown as StandardRailConfig, baseSepolia, pool, { agentIndex: address, identityRegistry: address });
@@ -69,8 +69,10 @@ describe("persisted Activity history", () => {
       }]);
       const purchases = snapshot.services.get(hash("3"))!.recentPurchases;
       expect(purchases.map((purchase) => purchase.outcomeId)).toEqual(["form-entity", "form-entity"]);
+      // Newest first: the second order was placed after the listing was renamed
+      // and snapshots the renamed names; the first keeps what its buyer saw.
+      expect(purchases[0]).toMatchObject({ serviceName: "Renamed Service", skillName: "Renamed Skill" });
       expect(purchases[1]).toMatchObject({ serviceName: "Entity Formation", skillName: "Form Entity" });
-      expect(purchases[0]!.skillName).toBeUndefined();
     } finally {
       await pool.end();
       await bootstrap.query(`DROP SCHEMA "${schema}" CASCADE`);

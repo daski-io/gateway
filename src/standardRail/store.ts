@@ -41,7 +41,7 @@ interface OrderRow {
   state: StandardOrderState;
   provider_agent_id: string;
   outcome_id: string;
-  binding_profile: "stock-fixed-v1" | "recipe-bound-v1" | "recipe-bound-v2";
+  binding_profile: "stock-fixed-v1" | "recipe-bound-v2";
   listing_manifest_hash: Buffer;
   provider_offer_hash: Buffer;
   canonical_listing: StandardListing;

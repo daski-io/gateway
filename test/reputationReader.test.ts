@@ -21,6 +21,8 @@ function record(overrides: Partial<ProjectedReputationRecord> = {}): ProjectedRe
     payer: PAYER,
     grossAmount: 1_000_000n,
     paidAt: 1_700_000_000n,
+    serviceName: "Domain Management",
+    skillName: "Register Domain",
     outcome: 0,
     confirmation: 0,
     outcomeAttestationDelay: 0n,
@@ -246,8 +248,8 @@ describe("direct reputation presentation", () => {
     const snapshot = await reader.forOutcomes(current);
     const purchase = snapshot.services.get(SERVICE_ID)?.recentPurchases[0];
     expect(purchase?.outcomeId).toBe(expected);
-    expect(purchase?.skillName).toBe(names && !mismatch ? "Form Entity" : undefined);
-    expect(purchase?.serviceName).toBe(names && !mismatch ? "Entity Formation" : undefined);
+    expect(purchase?.skillName).toBe(names && !mismatch ? "Form Entity" : "Unknown skill");
+    expect(purchase?.serviceName).toBe(names && !mismatch ? "Entity Formation" : "Unknown service");
     expect(snapshot.services.get(SERVICE_ID)?.transactionCount).toBe("1");
   });
 

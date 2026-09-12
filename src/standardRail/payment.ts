@@ -155,18 +155,6 @@ export function orderBindingExtension(args: {
       expiresAt: args.expiresAt,
     };
   }
-  if (args.bindingProfile === "recipe-bound-v1") {
-    return {
-      version: 1,
-      profile: "recipe-bound-v1",
-      listingManifestHash: args.listingManifestHash,
-      providerOfferHash: args.providerOfferHash,
-      quoteHash: args.quoteHash,
-      canonicalRequestHash: args.canonicalRequestHash,
-      orderNonce: args.orderNonce,
-      expiresAt: args.expiresAt,
-    };
-  }
   return undefined;
 }
 

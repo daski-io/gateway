@@ -316,8 +316,8 @@ export class DirectReputationReader {
         buyerAgentId: buyer.agentId,
         buyerName: buyer.name,
         outcomeId: order?.outcome_id || outcome?.outcomeId || "unknown",
-        ...(order?.service_name ? { serviceName: order.service_name } : {}),
-        ...(order?.skill_name ? { skillName: order.skill_name } : {}),
+        serviceName: order?.service_name ?? "Unknown service",
+        skillName: order?.skill_name ?? "Unknown skill",
       };
     });
     const providerIds = [...new Set(outcomes.map((item) => item.providerAgentId))];
