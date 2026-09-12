@@ -29,6 +29,7 @@ describe("wallet reputation queries", () => {
       {
         evidenceRpcUrls: ["https://rpc.example", "https://fallback.example"],
         reputationContract: "0x1111111111111111111111111111111111111111",
+        finalityTag: "finalized",
       } as unknown as StandardRailConfig,
       baseSepolia,
     );

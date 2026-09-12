@@ -17,6 +17,7 @@ const signer = privateKeyToAccount(`0x${"11".repeat(32)}`);
 const OTHER = "0xBBbBbBBbBBbbBBbBBBBbbBbbBbbBbbbBBbBBbBbB";
 
 const config = {
+  finalityTag: "finalized",
   encryptionKey: Buffer.alloc(32, 7),
   gatewayAudience: "https://gateway.example",
   environment: "testnet",

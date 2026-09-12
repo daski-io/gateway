@@ -600,8 +600,10 @@ export class StandardReputationWorker {
           throw error;
         }
       });
+      // The nonce floor is read at the configured finality tag: a transaction
+      // whose nonce is already consumed there was replaced, not delayed.
       finalizedNonce = receipt ? null : await this.observe(({ client }) =>
-        client.getTransactionCount({ address: this.account.address, blockTag: "finalized" }));
+        client.getTransactionCount({ address: this.account.address, blockTag: this.config.finalityTag }));
     } catch {
       throw new ReputationRpcUnavailable();
     }

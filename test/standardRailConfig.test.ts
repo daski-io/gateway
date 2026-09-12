@@ -139,6 +139,15 @@ describe("payer account types and owner swaps", () => {
     expect(config.ownerSwaps).toEqual({ enabled: false, perProviderPerDay: 50 });
   });
 
+  it("reads the safe tag on testnet, finalized on Base mainnet, and honors CHAIN_FINALITY_TAG", () => {
+    expect(loadStandardRailConfig(standardEnv()).finalityTag).toBe("safe");
+    expect(loadStandardRailConfig({ ...standardEnv(), CHAIN_ID: "8453" }).finalityTag).toBe("finalized");
+    expect(loadStandardRailConfig({ ...standardEnv(), CHAIN_FINALITY_TAG: "finalized" }).finalityTag).toBe("finalized");
+    expect(loadStandardRailConfig({ ...standardEnv(), CHAIN_ID: "8453", CHAIN_FINALITY_TAG: "safe" }).finalityTag).toBe("safe");
+    expect(() => loadStandardRailConfig({ ...standardEnv(), CHAIN_FINALITY_TAG: "latest" }))
+      .toThrow(/CHAIN_FINALITY_TAG/);
+  });
+
   it("admits deployed contract accounts on testnet when configured", () => {
     const config = loadStandardRailConfig({
       ...standardEnv(),

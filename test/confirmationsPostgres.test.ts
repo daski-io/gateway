@@ -53,10 +53,12 @@ function blockHash(tag: "finalized" | "latest", block: bigint): Hex {
 }
 
 const readClient: ConfirmationReadClient = {
-  getBlock: async ({ blockTag }) => ({
-    number: chain[blockTag].block,
-    hash: blockHash(blockTag, chain[blockTag].block),
-  }),
+  // The fixture keeps one "final" view; the state under test reads it at
+  // whichever finality tag its configuration names.
+  getBlock: async ({ blockTag }) => {
+    const view = blockTag === "latest" ? "latest" : "finalized";
+    return { number: chain[view].block, hash: blockHash(view, chain[view].block) };
+  },
   readContract: async ({ blockHash: pinned }) => {
     const tag = pinned === blockHash("finalized", chain.finalized.block) ? "finalized" : "latest";
     if (pinned !== blockHash(tag, chain[tag].block)) throw new Error("block hash is not canonical");
@@ -91,6 +93,7 @@ function config(overrides: Partial<StandardRailConfig> = {}): StandardRailConfig
   return {
     evidenceRpcUrls: ["https://rpc.example"],
     reputationContract: REPUTATION,
+    finalityTag: "finalized",
     easAddress: EAS,
     reputationConfirmationSchemaUid: SCHEMA,
     confirmationDeadlineSeconds: 300,

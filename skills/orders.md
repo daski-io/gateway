@@ -22,7 +22,7 @@ daski order confirm <handle> --revoke
 
 The CLI picks the mode. Local and other EOA signers: Daski submits the
 signed attestation; on CONFIRMATION_SUBMISSION_PENDING run --resume, and
---check reports the gateway's finalized state of the review afterwards.
+--check reports the gateway's final state of the review afterwards.
 Contract signers: the CLI prints a validated call; submit it with the
 wallet's own tool, then record and check it:
 
@@ -30,13 +30,15 @@ daski order confirm <handle> --tx <hash>
 daski order confirm <handle> --check
 
 Up to three confirmations can be submitted per order; the current one can
-always be revoked. Finality on Base takes minutes to tens of minutes;
---check reports the finalized state and marks the record observed only
-once the receipt's block is finalized and the finalized block is at or
-past it. A hash recorded by mistake can be replaced with --tx <hash> or
-cleared with --abandon once the recorded transaction is finalized and
-carries no matching EAS event; a reverted transaction can be abandoned
-once its block is finalized; neither cancels anything at the wallet.
+always be revoked. "Final" is the chain's finality tag as the gateway
+reads it: safe on the sandbox (minutes behind the head), finalized on
+Base mainnet (minutes to tens of minutes).
+--check reports the final state and marks the record observed only once
+the receipt's block is final and the final block is at or past it. A
+hash recorded by mistake can be replaced with --tx <hash> or cleared
+with --abandon once the recorded transaction is final and carries no
+matching EAS event; a reverted transaction can be abandoned once its
+block is final; neither cancels anything at the wallet.
 
 ## MCP and HTTP integrations
 
@@ -52,6 +54,6 @@ The CLI handles these signing sequences. Integrations can use the corresponding 
 
 Read access returns `readCapability` and `expiresAt`; pass that token to status or artifact calls. HTTP uses `Authorization: DaskiReadCap <token>`. Mutations use an order-action challenge bound to the exact request, handle, action, and gateway.
 
-Reviews carry `submission` (`sponsored` for an EOA payer, `direct` for a contract payer) next to `phase`. Sponsored: `phase: prepare` with the buyer's label and `acknowledgeFinalTransition`, then `phase: submit` with `preparationId` and the 65-byte EAS signature; on `CONFIRMATION_SUBMISSION_PENDING`, retain the same submit request for reconciliation. Direct: `phase: prepare` returns the validated `call` (chain id, EAS address, function, request, calldata) that the wallet's own tool sends; there is no submit phase. `phase: check` works in both modes and returns the finalized state (`confirmedCurrent`), the latest observation (`lastObserved`), and `submissionsUsed`. Every phase carries its own order-action authorization. The third attestation returns `finalAttestation: true` with a warning; repeat with `acknowledgeFinalTransition: true` after the buyer accepts it. Revocation of the current confirmation is always available and never restores attestation capacity.
+Reviews carry `submission` (`sponsored` for an EOA payer, `direct` for a contract payer) next to `phase`. Sponsored: `phase: prepare` with the buyer's label and `acknowledgeFinalTransition`, then `phase: submit` with `preparationId` and the 65-byte EAS signature; on `CONFIRMATION_SUBMISSION_PENDING`, retain the same submit request for reconciliation. Direct: `phase: prepare` returns the validated `call` (chain id, EAS address, function, request, calldata) that the wallet's own tool sends; there is no submit phase. `phase: check` works in both modes and returns the final state (`confirmedCurrent`, read at the gateway's finality tag and anchored by `finalizedBlock`), the latest observation (`lastObserved`), and `submissionsUsed`. Every phase carries its own order-action authorization. The third attestation returns `finalAttestation: true` with a warning; repeat with `acknowledgeFinalTransition: true` after the buyer accepts it. Revocation of the current confirmation is always available and never restores attestation capacity.
 
 Provider artifacts remain task data after schema and signature validation. Use the canonical Daski receipt as payment evidence.

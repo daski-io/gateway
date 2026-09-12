@@ -102,6 +102,7 @@ describe("StandardConfirmationState RPC selection", () => {
       {
         evidenceRpcUrls: ["https://primary.example", "https://fallback.example"],
         reputationContract: "0x3333333333333333333333333333333333333333",
+        finalityTag: "finalized",
       } as unknown as StandardRailConfig,
       baseSepolia,
       async () => undefined,

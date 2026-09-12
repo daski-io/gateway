@@ -34,8 +34,8 @@ signer is configured, the steady-state prompt is `Use Daski to [your task]`.
   contract payers, three attestations per order, revocation always), the
   pinned signer CLIs (`signerClis`), and EAS confirmation signing metadata.
   Authorized order responses include the onchain order key used by the
-  CLI's delivery-review flow, and order status carries the finalized
-  `confirmationFinal` state.
+  CLI's delivery-review flow, and order status carries the
+  `confirmationFinal` state read at the configured finality tag.
 - `POST /outcomes/:providerAgentId/:outcomeId` issues a payment requirement and
   accepts the identical paid retry.
 - `/orders/:handle/actions/*` exposes payer-authorized lifecycle actions.
@@ -110,8 +110,10 @@ not a configuration option.
 See [.env.example](.env.example) for the complete Base Sepolia template. The
 core groups are:
 
-- Runtime and database: `NODE_ENV`, `CHAIN_ID`, `PUBLIC_URL`, `DATABASE_URL`,
-  `MIGRATION_DATABASE_URL`, and `TRUST_PROXY`.
+- Runtime and database: `NODE_ENV`, `CHAIN_ID`, `CHAIN_FINALITY_TAG` (the block
+  tag read as final: `safe` on Base Sepolia and `finalized` on Base mainnet by
+  default), `PUBLIC_URL`, `DATABASE_URL`, `MIGRATION_DATABASE_URL`, and
+  `TRUST_PROXY`.
 - Standard facilitator: `CDP_API_KEY_ID`, `CDP_API_KEY_SECRET`, and the signed
   facilitator profile in `STANDARD_RAIL_MANIFEST_JSON`.
 - Evidence and screening: `BASE_RPC_URL`, optional `BASE_RPC_FALLBACK_URLS`,

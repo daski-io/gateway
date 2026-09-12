@@ -223,7 +223,7 @@ describe("standard rail metadata", () => {
     expect(wallets).toContain("| Circle agent wallet | contract |");
     const orders = (await readSkill("orders")).content;
     expect(orders).toContain("daski order confirm <handle> --tx <hash>");
-    expect(orders).toContain("--check reports the finalized state");
+    expect(orders).toContain("--check reports the final state");
   });
 
   it("publishes the compact activity projection with the same caching policy", async () => {

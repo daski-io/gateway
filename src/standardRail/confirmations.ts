@@ -111,7 +111,7 @@ export interface ConfirmationContext {
 
 export interface ConfirmationOutcome {
   result: Record<string, unknown>;
-  /** True when the stored finalized state changed, which moves the capability epoch. */
+  /** True when the stored final state changed, which moves the capability epoch. */
   finalChanged: boolean;
 }
 
@@ -641,7 +641,7 @@ export class StandardConfirmations {
   }
 
   /**
-   * One finalized read, stored through the B7 rule, and one latest read
+   * One read at the configured finality tag, stored through the B7 rule, and one latest read
    * pinned to its own block hash, returned but never stored.
    */
   private async check(
@@ -653,7 +653,7 @@ export class StandardConfirmations {
     let finalized: ConfirmationObservation;
     let latest: ConfirmationObservation;
     try {
-      finalized = await this.state.observe(order.orderKey, "finalized");
+      finalized = await this.state.observeFinal(order.orderKey);
       latest = await this.state.observe(order.orderKey, "latest");
     } catch {
       throw standardRailError("CONFIRMATION_SPONSORSHIP_UNAVAILABLE");

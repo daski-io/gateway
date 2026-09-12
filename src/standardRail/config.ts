@@ -4,6 +4,7 @@ import { getAddress, keccak256, type Address, type Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { assertNoDuplicateJsonKeys } from "./canonical.js";
 import { PAYER_ACCOUNT_TYPES, type PayerAccountType } from "./payerSignature.js";
+import { resolveFinalityTag, type FinalityTag } from "../util/finalityTag.js";
 import type { StandardRailManifest } from "./types.js";
 
 export interface StandardRailConfig {
@@ -68,6 +69,12 @@ export interface StandardRailConfig {
   confirmationMaxGlobalPerDay: number;
   /** Payer account types whose signatures are accepted (PAYER_ACCOUNT_TYPES). */
   payerAccountTypes: readonly PayerAccountType[];
+  /**
+   * The block tag read as final by confirmation state, order-history
+   * reputation reads, and relayer nonce recovery (CHAIN_FINALITY_TAG: `safe`
+   * on testnet, `finalized` on Base mainnet).
+   */
+  finalityTag: FinalityTag;
   /** One deadline for a contract-account verification: code lookup, call, one failover. */
   payerSignatureVerifyTimeoutMs: number;
   ownerSwaps: {
@@ -298,6 +305,7 @@ export function loadStandardRailConfig(
   }
   return {
     environment: env.STANDARD_RAIL_ENVIRONMENT?.trim() || "testnet",
+    finalityTag: resolveFinalityTag(env.CHAIN_FINALITY_TAG, Number(env.CHAIN_ID ?? 84532)),
     migrationDatabaseUrl: databaseUrl(required(env, "MIGRATION_DATABASE_URL")),
     gatewayAudience: env.STANDARD_RAIL_GATEWAY_AUDIENCE?.trim() || required(env, "PUBLIC_URL"),
     facilitatorBaseUrl,

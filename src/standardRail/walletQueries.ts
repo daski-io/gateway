@@ -10,6 +10,7 @@ import type { Pool } from "../db/pool.js";
 import { withRpcFailover } from "../rpc/failover.js";
 import { logger } from "../util/logger.js";
 import type { StandardRailConfig } from "./config.js";
+import type { FinalityTag } from "../util/finalityTag.js";
 import type { StandardWalletStore } from "./walletStore.js";
 import type { WalletAuthorizationTransport } from "./types.js";
 
@@ -55,9 +56,12 @@ export class StandardWalletQueries {
       }),
     }));
     this.reputationContract = config.reputationContract;
+    this.finalityTag = config.finalityTag;
   }
 
   private readonly reputationContract: Address;
+  /** Order-history reputation reads are pinned to this tag (safe on testnet, finalized on mainnet). */
+  private readonly finalityTag: FinalityTag;
 
   private observe<Result>(
     work: (endpoint: (typeof this.clients)[number]) => Promise<Result>,
@@ -114,7 +118,7 @@ export class StandardWalletQueries {
     const rows = result.rows.slice(0, args.limit);
     const hasMore = result.rows.length > args.limit;
     const records = await this.observe(async ({ client }) => {
-      const block = await client.getBlock({ blockTag: "finalized" });
+      const block = await client.getBlock({ blockTag: this.finalityTag });
       return Promise.all(rows.map((row) => client.readContract({
         address: this.reputationContract,
         abi: reputationAbi,

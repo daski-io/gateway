@@ -10,6 +10,7 @@ import type { Pool } from "../db/pool.js";
 import { withRpcFailover } from "../rpc/failover.js";
 import { logger } from "../util/logger.js";
 import type { StandardRailConfig } from "./config.js";
+import type { FinalityTag } from "../util/finalityTag.js";
 
 export const ZERO_UID = `0x${"00".repeat(32)}` as Hex;
 
@@ -19,7 +20,7 @@ export const reputationReadsAbi = parseAbi([
 
 export type ConfirmationLabel = "Pending" | "Confirmed" | "NotConfirmed";
 
-/** The order's confirmation state as stored: finalized reads only. */
+/** The order's confirmation state as stored: reads at the configured finality tag only. */
 export interface ConfirmationFinal {
   state: ConfirmationLabel;
   currentUid: Hex;
@@ -38,7 +39,7 @@ export interface ConfirmationObservation extends ConfirmationFinal {
 
 /** The viem client surface one observation needs; mocked in tests. */
 export interface ConfirmationReadClient {
-  getBlock(args: { blockTag: "finalized" | "latest" }): Promise<{ number: bigint; hash: Hex }>;
+  getBlock(args: { blockTag: FinalityTag | "latest" }): Promise<{ number: bigint; hash: Hex }>;
   readContract(args: {
     address: Address;
     abi: typeof reputationReadsAbi;
@@ -76,9 +77,10 @@ export type CapabilityEpochWriter = (orderId: string, client: { query: Pool["que
 
 /**
  * The durable confirmation state of an order (spec B7): written only from a
- * `getRecord` read pinned by block hash to the block the `finalized` tag
- * returned, and only when that block is higher than the stored one. A
- * `latest` read is returned to callers but never stored. The capability
+ * `getRecord` read pinned by block hash to the block the configured finality
+ * tag returned (`safe` on testnet, `finalized` on Base mainnet), and only
+ * when that block is higher than the stored one. A `latest` read is returned
+ * to callers but never stored. The capability
  * epoch moves only when the stored state or current UID changes, and it
  * moves in the same transaction as the state: a stored transition whose
  * invalidation was lost would never be repaired, since a repeat of the
@@ -87,15 +89,18 @@ export type CapabilityEpochWriter = (orderId: string, client: { query: Pool["que
 export class StandardConfirmationState {
   private readonly clients: Array<{ host: string; client: ConfirmationReadClient }>;
   private readonly reputationContract: Address;
+  /** The tag whose reads are stored; `latest` reads are only ever returned. */
+  readonly finalityTag: FinalityTag;
 
   constructor(
     private readonly pool: Pool,
-    config: Pick<StandardRailConfig, "evidenceRpcUrls" | "reputationContract">,
+    config: Pick<StandardRailConfig, "evidenceRpcUrls" | "reputationContract" | "finalityTag">,
     chain: Chain,
     private readonly bumpEpoch: CapabilityEpochWriter,
     clients?: Array<{ host: string; client: ConfirmationReadClient }>,
   ) {
     this.reputationContract = config.reputationContract;
+    this.finalityTag = config.finalityTag;
     this.clients = clients ?? config.evidenceRpcUrls.map((url) => ({
       host: new URL(url).hostname,
       client: createPublicClient({
@@ -116,8 +121,13 @@ export class StandardConfirmationState {
     });
   }
 
+  /** The order's record at the configured finality tag, pinned to that block's hash. */
+  observeFinal(orderKey: Hex): Promise<ConfirmationObservation> {
+    return this.observe(orderKey, this.finalityTag);
+  }
+
   /** One read of the order's record at the given tag, pinned to that block's hash. */
-  async observe(orderKey: Hex, tag: "finalized" | "latest"): Promise<ConfirmationObservation> {
+  async observe(orderKey: Hex, tag: FinalityTag | "latest"): Promise<ConfirmationObservation> {
     return withRpcFailover(this.clients, async ({ client }) => {
       const block = await client.getBlock({ blockTag: tag });
       const record = await client.readContract({
@@ -240,12 +250,12 @@ export class StandardConfirmationState {
     }
   }
 
-  /** One finalized read written through the storage rule; the epoch moves with the state. */
+  /** One final read written through the storage rule; the epoch moves with the state. */
   async reconcile(order: { orderId: string; orderKey: Hex }): Promise<{
     final: ConfirmationFinal;
     changed: boolean;
   }> {
-    const observation = await this.observe(order.orderKey, "finalized");
+    const observation = await this.observeFinal(order.orderKey);
     const outcome = await this.record(order, observation);
     return { final: outcome.final, changed: outcome.changed };
   }
