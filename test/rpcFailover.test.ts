@@ -2,8 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { baseSepolia } from "viem/chains";
 import type { Pool } from "../src/db/pool.js";
 import type { StandardRailConfig } from "../src/standardRail/config.js";
-import { StandardConfirmations } from "../src/standardRail/confirmations.js";
-import type { StandardOrderRecord } from "../src/standardRail/types.js";
+import { StandardConfirmationState } from "../src/standardRail/confirmationState.js";
 import { withRpcFailover } from "../src/rpc/failover.js";
 
 const endpoints = [
@@ -82,36 +81,46 @@ describe("withRpcFailover", () => {
   });
 });
 
-describe("StandardConfirmations RPC selection", () => {
-  it("keeps confirmation reads on a healthy primary", async () => {
+describe("StandardConfirmationState RPC selection", () => {
+  it("keeps confirmation reads on a healthy primary, pinned to the block hash it returned", async () => {
     const orderKey = `0x${"11".repeat(32)}` as const;
     const payer = "0x2222222222222222222222222222222222222222" as const;
-    const primary = { readContract: vi.fn(async () => ({ orderKey, payer })) };
-    const fallback = { readContract: vi.fn() };
-    const confirmations = new StandardConfirmations(
+    const blockHash = `0x${"ab".repeat(32)}` as const;
+    const primary = {
+      getBlock: vi.fn(async () => ({ number: 5n, hash: blockHash })),
+      readContract: vi.fn(async () => ({
+        orderKey, payer,
+        providerOwner: "0x4444444444444444444444444444444444444444",
+        providerAgentWallet: "0x0000000000000000000000000000000000000000",
+        confirmation: 1, confirmationSubmissions: 1,
+        currentConfirmationUid: `0x${"cd".repeat(32)}`,
+      })),
+    };
+    const fallback = { getBlock: vi.fn(), readContract: vi.fn() };
+    const state = new StandardConfirmationState(
       {} as Pool,
       {
         evidenceRpcUrls: ["https://primary.example", "https://fallback.example"],
         reputationContract: "0x3333333333333333333333333333333333333333",
       } as unknown as StandardRailConfig,
       baseSepolia,
-    );
-    Object.assign(confirmations as unknown as { clients: unknown[] }, {
-      clients: [
-        { host: "primary.example", client: primary },
-        { host: "fallback.example", client: fallback },
+      async () => undefined,
+      [
+        { host: "primary.example", client: primary as never },
+        { host: "fallback.example", client: fallback as never },
       ],
+    );
+
+    const observation = await state.observe(orderKey, "finalized");
+
+    expect(observation).toMatchObject({
+      registered: true, payer, state: "Confirmed", submissionsUsed: 1,
+      blockNumber: "5", blockHash,
     });
-
-    const record = await (confirmations as unknown as {
-      current(order: StandardOrderRecord): Promise<{ orderKey: string; payer: string }>;
-    }).current({
-      orderKey,
-      payer,
-    } as unknown as StandardOrderRecord);
-
-    expect(record).toMatchObject({ orderKey, payer });
-    expect(primary.readContract).toHaveBeenCalledOnce();
+    expect(primary.readContract).toHaveBeenCalledWith(expect.objectContaining({
+      functionName: "getRecord", blockHash,
+    }));
+    expect(fallback.getBlock).not.toHaveBeenCalled();
     expect(fallback.readContract).not.toHaveBeenCalled();
   });
 });

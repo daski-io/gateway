@@ -40,7 +40,8 @@ export interface ConfirmationIntent {
   orderId: string;
   outcomeId: string;
   confirmation: "Confirmed" | "NotConfirmed";
-  transitionsUsed: number;
+  /** The chain's confirmationSubmissions when the attestation was prepared. */
+  submissionsUsed: number;
   request: {
     schema: Hex;
     data: {
@@ -62,7 +63,7 @@ export interface RevokeConfirmationIntent {
   orderKey: Hex;
   orderId: string;
   outcomeId: string;
-  transitionsUsed: number;
+  submissionsUsed: number;
   request: {
     schema: Hex;
     data: { uid: Hex; value: "0" };

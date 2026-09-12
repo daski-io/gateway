@@ -16,7 +16,7 @@ export async function mcpSurfaceFixture() {
   const wiring = await createStandardRailMcp(app, config, {} as never, {} as never);
   app.use(createStandardMetaRouter({
     config, service: {} as never, pool: {} as never, lifecycle: {} as never,
-    railConfig: {} as never,
+    railConfig: { payerAccountTypes: ["eoa"] } as never,
   }));
   const listener = app.listen(0, "127.0.0.1");
   await new Promise<void>((resolve, reject) => {

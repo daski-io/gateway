@@ -131,6 +131,45 @@ describe("standard rail environment contract", () => {
   });
 });
 
+describe("payer account types and owner swaps", () => {
+  it("defaults to plain wallets, no owner swaps, and the five-second verification deadline", () => {
+    const config = loadStandardRailConfig(standardEnv());
+    expect(config.payerAccountTypes).toEqual(["eoa"]);
+    expect(config.payerSignatureVerifyTimeoutMs).toBe(5_000);
+    expect(config.ownerSwaps).toEqual({ enabled: false, perProviderPerDay: 50 });
+  });
+
+  it("admits deployed contract accounts on testnet when configured", () => {
+    const config = loadStandardRailConfig({
+      ...standardEnv(),
+      PAYER_ACCOUNT_TYPES: "eoa,contract",
+      PAYER_SIGNATURE_VERIFY_TIMEOUT_MS: "2500",
+      OWNER_SWAPS_ENABLED: "true",
+      OWNER_SWAPS_PER_PROVIDER_PER_DAY: "5",
+    });
+    expect(config.payerAccountTypes).toEqual(["eoa", "contract"]);
+    expect(config.payerSignatureVerifyTimeoutMs).toBe(2_500);
+    expect(config.ownerSwaps).toEqual({ enabled: true, perProviderPerDay: 5 });
+  });
+
+  it("refuses unknown account types, a set without eoa, and malformed flags", () => {
+    expect(() => loadStandardRailConfig({ ...standardEnv(), PAYER_ACCOUNT_TYPES: "eoa,safe" }))
+      .toThrow(/PAYER_ACCOUNT_TYPES accepts only/);
+    expect(() => loadStandardRailConfig({ ...standardEnv(), PAYER_ACCOUNT_TYPES: "contract" }))
+      .toThrow(/must include eoa/);
+    expect(() => loadStandardRailConfig({ ...standardEnv(), OWNER_SWAPS_ENABLED: "yes" }))
+      .toThrow(/OWNER_SWAPS_ENABLED/);
+  });
+
+  it("gates contract accounts on Base mainnet behind recorded conformance evidence", () => {
+    const mainnet = { ...standardEnv(), CHAIN_ID: "8453", PAYER_ACCOUNT_TYPES: "eoa,contract" };
+    expect(() => loadStandardRailConfig(mainnet)).toThrow(/CONFORMANCE_EVIDENCE_RECORDED=1/);
+    expect(loadStandardRailConfig({ ...mainnet, CONFORMANCE_EVIDENCE_RECORDED: "1" }).payerAccountTypes)
+      .toEqual(["eoa", "contract"]);
+    expect(loadStandardRailConfig({ ...standardEnv(), CHAIN_ID: "8453" }).payerAccountTypes).toEqual(["eoa"]);
+  });
+});
+
 describe("public projection refresh cadence", () => {
   it("defaults to one minute and accepts a positive override", () => {
     expect(loadStandardRailConfig(standardEnv()).chainProjectionRefreshMs).toBe(60_000);

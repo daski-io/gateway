@@ -3,6 +3,7 @@ import { type Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import type { PaymentPayload } from "@x402/core/types";
 import { canonicalHash } from "../src/standardRail/canonical.js";
+import { createPayerSignatureVerifier } from "../src/standardRail/payerSignature.js";
 import { StandardRailService } from "../src/standardRail/service.js";
 import type {
   StandardListing,
@@ -221,6 +222,8 @@ describe("standard rail orchestration", () => {
       journal: { issueActionChallenge, consumeActionChallenge },
       incidents: { record: vi.fn() },
       signedReceipt: vi.fn(async () => receipt),
+      payerSignature: createPayerSignatureVerifier({ accountTypes: ["eoa"], timeoutMs: 0, endpoints: [] }),
+      confirmationState: { stored: vi.fn(async () => null) },
     });
     const challenge = await service.issueActionChallenge({
       handle: "handle-1",
@@ -239,7 +242,7 @@ describe("standard rail orchestration", () => {
       action,
       request,
       authorization: { ...authorization, signature } as never,
-    })).resolves.toEqual({ orderHandle: "handle-1", state: "FULFILLED", receipt });
+    })).resolves.toEqual({ orderHandle: "handle-1", state: "FULFILLED", receipt, confirmationFinal: null });
 
     const grantChallenge = await service.issueActionChallenge({
       handle: "handle-1",
@@ -277,7 +280,7 @@ describe("standard rail orchestration", () => {
       action: "status",
       request,
       readCapability: access.readCapability,
-    })).resolves.toEqual({ orderHandle: "handle-1", state: "FULFILLED", receipt });
+    })).resolves.toEqual({ orderHandle: "handle-1", state: "FULFILLED", receipt, confirmationFinal: null });
     expect(issueActionChallenge).toHaveBeenCalledTimes(2);
     expect(consumeActionChallenge).toHaveBeenCalledTimes(2);
   });

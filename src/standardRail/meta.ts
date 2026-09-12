@@ -4,8 +4,9 @@ import type { Config } from "../config.js";
 import type { Pool } from "../db/pool.js";
 import type { ApplicationLifecycle } from "../runtime/applicationLifecycle.js";
 import { GATEWAY_COMMIT, GATEWAY_SOURCE_SHA, GATEWAY_VERSION } from "../version.js";
-import { PINNED_BUYER_CLI } from "./buyerCli.js";
+import { PINNED_BUYER_CLI, PINNED_SIGNER_CLIS } from "./buyerCli.js";
 import type { StandardRailConfig } from "./config.js";
+import { CONFIRMATION_ATTESTATION_CAP, CONFIRMATION_SUBMISSION_MODES } from "./confirmations.js";
 import type { StandardRailService } from "./service.js";
 import type { PublicChainMetadataV3 } from "./types.js";
 import { llmsFull, llmsIndex, readSkill, skillIndex, legacySkillIndex } from "./skills.js";
@@ -199,6 +200,19 @@ export function createStandardMetaRouter(args: {
       // The pinned buyer CLI, so a client can compare an installed version
       // against it instead of reading the pin out of setup.md by eye.
       buyerCli: PINNED_BUYER_CLI,
+      // Which payer wallets can buy here: plain wallets always, deployed
+      // contract accounts when enabled; never a counterfactual (ERC-6492) one.
+      payerAccounts: {
+        types: [...args.railConfig.payerAccountTypes],
+        counterfactual: false,
+      },
+      confirmation: {
+        modes: [...CONFIRMATION_SUBMISSION_MODES],
+        sponsoredRequires: "eoa",
+        attestationCap: CONFIRMATION_ATTESTATION_CAP,
+        revocationAfterCap: true,
+      },
+      signerClis: PINNED_SIGNER_CLIS,
       confirmationSigning: {
         chainId: args.config.chainId,
         eas: args.railConfig.easAddress,

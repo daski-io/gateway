@@ -1,6 +1,6 @@
 # Daski payment recipe
 
-Daski uses x402 V2 Exact-EVM and USDC `TransferWithAuthorization`. The authorization object is closed and contains exactly `from`, `to`, `value`, `validAfter`, `validBefore`, and `nonce`. Signatures must be 65-byte low-s ECDSA signatures that recover to `from`.
+Daski uses x402 V2 Exact-EVM and USDC `TransferWithAuthorization`. The authorization object is closed and contains exactly `from`, `to`, `value`, `validAfter`, `validBefore`, and `nonce`. A plain wallet signs with a 65-byte low-s ECDSA signature that recovers to `from`. When `payerAccounts.types` in `/.well-known/mcp.json` includes `contract`, a deployed contract account signs with its own ERC-1271 signature bytes (`0x` plus an even number of hex characters, at most 4,096 bytes), verified by the account's `isValidSignature`; ERC-6492 counterfactual wrappers are refused, so the wallet must be deployed first.
 
 ## recipeNonceV2
 

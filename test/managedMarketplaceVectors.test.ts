@@ -1,8 +1,13 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { encodeAbiParameters, keccak256, stringToHex, type Hex } from "viem";
+import { recoverMessageAddress } from "viem";
 import { decryptCursor } from "../src/standardRail/cursor.js";
-import { providerIdentitySnapshotHash } from "../src/standardRail/canonical.js";
+import { artifactPayloadHash, providerIdentitySnapshotHash } from "../src/standardRail/canonical.js";
+import {
+  ownerSwapContentHash,
+  parseOwnerSwapPayload,
+} from "../src/serviceRegistration/ownerSwaps.js";
 import {
   deriveActionExecutionId,
   utf8Hash,
@@ -48,6 +53,22 @@ describe("managed marketplace golden vectors", () => {
       [BigInt(vector.domains.wallet.chainId), vector.orderKeys.canonicalToken,
         message.payer, vector.orderKeys.paymentNonce],
     ))).toBe(vector.orderKeys.authorizationKey);
+  });
+
+  it("pins the ProviderOwnerSwapV1 sample envelope, its payload hash, and its content hash", async () => {
+    const sample = vector.ownerSwap;
+    const payload = parseOwnerSwapPayload(sample.envelope.payload);
+    expect(payload.orderKey).toBe(vector.orderKeys.orderKey);
+    expect(artifactPayloadHash(sample.envelope)).toBe(sample.artifactPayloadHash);
+    expect(ownerSwapContentHash(payload)).toBe(sample.contentHash);
+    // The content hash ignores the envelope's issuedAt and validBefore.
+    expect(ownerSwapContentHash(parseOwnerSwapPayload({
+      ...sample.envelope, issuedAt: 0, validBefore: 1,
+    }.payload))).toBe(sample.contentHash);
+    await expect(recoverMessageAddress({
+      message: { raw: sample.artifactPayloadHash },
+      signature: sample.envelope.signature,
+    })).resolves.toBe(sample.signer);
   });
 
   it("decrypts the opaque cursor and rejects associated-data drift", () => {

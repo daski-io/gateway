@@ -6,7 +6,6 @@ import {
   http,
   parseAbi,
   recoverMessageAddress,
-  verifyTypedData,
   type Hex,
 } from "viem";
 import type { Config } from "../config.js";
@@ -55,6 +54,14 @@ import { buildReputationRegistration } from "./reputationOrders.js";
 import { isReputationEligiblePayer } from "./reputationEligibility.js";
 import { StandardReputationWorker } from "./reputationWorker.js";
 import { StandardConfirmations } from "./confirmations.js";
+import { StandardConfirmationState } from "./confirmationState.js";
+import {
+  boundedRpcFetch,
+  CONTRACT_VERIFICATION_RESPONSE_MAX_BYTES,
+  createPayerSignatureVerifier,
+  type PayerSignatureVerifier,
+} from "./payerSignature.js";
+import { chargeSignatureVerifyAdmission } from "./signatureAdmission.js";
 import { base, baseSepolia } from "viem/chains";
 import { activeRequestKey } from "../mcp/requestContext.js";
 import { logger } from "../util/logger.js";
@@ -107,6 +114,31 @@ function isTransitionConflict(error: unknown): boolean {
   return error instanceof Error && error.message === "ORDER_TRANSITION_CONFLICT";
 }
 
+/** The facilitator's refusal reason, bounded to a safe charset for the client. */
+function facilitatorReason(verify: { invalidReason?: string | undefined; invalidMessage?: string | undefined }): string | undefined {
+  const reason = verify.invalidReason ?? verify.invalidMessage;
+  if (typeof reason !== "string" || reason.length === 0) return undefined;
+  return reason.replace(/[^\x20-\x7e]/g, "?").slice(0, 128);
+}
+
+/**
+ * Facilitator signature refusals map to the gateway's own signature codes
+ * (spec B4): an undeployed smart wallet is the counterfactual refusal, any
+ * other signature refusal is SIGNATURE_INVALID, and the rest stay
+ * FACILITATOR_REJECTED.
+ */
+export function facilitatorRefusalCode(verify: {
+  invalidReason?: string | undefined;
+  invalidMessage?: string | undefined;
+}): "SIGNATURE_COUNTERFACTUAL_REJECTED" | "SIGNATURE_INVALID" | "FACILITATOR_REJECTED" {
+  const text = `${verify.invalidReason ?? ""} ${verify.invalidMessage ?? ""}`;
+  if (/undeployed|ErrUndeployedSmartWallet|counterfactual/i.test(text)) {
+    return "SIGNATURE_COUNTERFACTUAL_REJECTED";
+  }
+  if (/signature/i.test(text)) return "SIGNATURE_INVALID";
+  return "FACILITATOR_REJECTED";
+}
+
 const OPERATIONAL_HEALTH_MEMO_MS = 15_000;
 
 // Startup waits this long for the first public reputation projection so the
@@ -128,6 +160,8 @@ export class StandardRailService {
   private readonly assetActions: StandardAssetActions;
   private readonly reputationWorker: StandardReputationWorker;
   private readonly confirmations: StandardConfirmations;
+  private readonly confirmationState: StandardConfirmationState;
+  private readonly payerSignature: PayerSignatureVerifier;
   private readonly reputationReader: DirectReputationReader;
   private dependenciesReady = false;
   private operationalHealthMemo: {
@@ -155,7 +189,30 @@ export class StandardRailService {
     this.incidents = new StandardRailIncidentStore(pool);
     this.journal = new StandardRailJournal(pool);
     this.providerTransport = new StandardProviderTransport(fetchFn);
-    this.walletStore = new StandardWalletStore(pool, railConfig, appConfig.chainId);
+    const chain = appConfig.chainId === 8453 ? base : baseSepolia;
+    // One payer-signature verifier for every site. The contract path charges
+    // the per-payer admission bucket before its bounded RPC call.
+    this.payerSignature = createPayerSignatureVerifier({
+      accountTypes: railConfig.payerAccountTypes,
+      timeoutMs: railConfig.payerSignatureVerifyTimeoutMs,
+      endpoints: railConfig.evidenceRpcUrls.map((url) => ({
+        host: new URL(url).hostname,
+        client: createPublicClient({
+          chain,
+          transport: http(url, {
+            retryCount: 0,
+            timeout: railConfig.payerSignatureVerifyTimeoutMs,
+            fetchFn: boundedRpcFetch(CONTRACT_VERIFICATION_RESPONSE_MAX_BYTES, fetchFn),
+          }),
+        }),
+      })),
+      admit: (payer) => chargeSignatureVerifyAdmission(
+        pool,
+        payer,
+        railConfig.abuse.assetStateChangesPerPayerPerMinute,
+      ),
+    });
+    this.walletStore = new StandardWalletStore(pool, railConfig, appConfig.chainId, this.payerSignature);
     this.walletQueries = new StandardWalletQueries(
       pool,
       this.walletStore,
@@ -179,18 +236,26 @@ export class StandardRailService {
       this.assetFederation,
       (active, endpoint, init) => this.providerFetch(active.listing, endpoint, init),
     );
+    this.confirmationState = new StandardConfirmationState(
+      pool,
+      railConfig,
+      chain,
+      async (orderId) => { await this.store.bumpCapabilityEpoch(orderId); },
+    );
     this.reputationWorker = new StandardReputationWorker(
       pool,
       railConfig,
-      appConfig.chainId === 8453 ? base : baseSepolia,
+      chain,
       undefined,
       () => this.reputationReader.invalidate(),
+      this.confirmationState,
     );
     this.operationalHealthReporter = new StandardOperationalHealth(pool, this.reputationWorker);
     this.confirmations = new StandardConfirmations(
       pool,
       railConfig,
-      appConfig.chainId === 8453 ? base : baseSepolia,
+      chain,
+      this.confirmationState,
     );
     this.reputationReader = new DirectReputationReader(
       railConfig,
@@ -1082,6 +1147,7 @@ export class StandardRailService {
       `${this.appConfig.publicUrl.replace(/\/$/, "")}/orders/${encodeURIComponent(args.handle)}/actions/${args.action}`;
     let authorizationHash: Hex;
     let providerAuthorization: unknown;
+    let verifiedVia: "recovery" | "erc1271" | null = null;
     if (args.readCapability) {
       if (args.action !== "status" && args.action !== "artifact") {
         throw standardRailError("WALLET_AUTHORIZATION_INVALID", {
@@ -1134,17 +1200,22 @@ export class StandardRailService {
         chainId: this.appConfig.chainId,
         gatewayAudience: this.railConfig.gatewayAudience,
       });
-      const valid = await verifyTypedData({
-        address: getAddress(order.payer),
-        ...signRequest,
-        message: {
-          ...signRequest.message,
-          issuedAt: BigInt(signRequest.message.issuedAt),
-          validBefore: BigInt(signRequest.message.validBefore),
+      // Verified with no lock or connection held; the nonce is consumed only
+      // afterwards, in its own short transaction.
+      const verification = await this.payerSignature.verifyPayerTypedData({
+        payer: getAddress(order.payer),
+        typedData: {
+          ...signRequest,
+          message: {
+            ...signRequest.message,
+            issuedAt: BigInt(signRequest.message.issuedAt),
+            validBefore: BigInt(signRequest.message.validBefore),
+          },
         },
         signature: authorization.signature,
+        context: { field: "authorization.signature", phase: "lifecycle_auth" },
       });
-      if (!valid) throw standardRailError("WALLET_AUTHORIZATION_INVALID");
+      verifiedVia = verification.verifiedVia;
       if (args.action === "confirmation" || args.action === "revoke-confirmation") {
         await this.confirmations.assertReady(order);
       }
@@ -1193,9 +1264,12 @@ export class StandardRailService {
       };
     }
     if (args.action === "confirmation" || args.action === "revoke-confirmation") {
-      const result = await this.confirmations.handle(order, args.action, args.request);
-      await this.store.bumpCapabilityEpoch(order.orderId);
-      return result;
+      if (!verifiedVia) throw standardRailError("WALLET_AUTHORIZATION_INVALID");
+      // The capability epoch moves only when the finalized confirmation state
+      // changes (spec B7), which the confirmation flow reports itself; a
+      // prepared or queued submission changes nothing yet.
+      const outcome = await this.confirmations.handle(order, args.action, args.request, { verifiedVia });
+      return outcome.result;
     }
     if (args.action === "status" && !order.providerTaskId) {
       return {
@@ -1203,6 +1277,7 @@ export class StandardRailService {
         state: order.state,
         orderKey: order.orderKey,
         receipt: await this.signedReceipt(order),
+        confirmationFinal: await this.confirmationState.stored(order.orderId),
       };
     }
     if (!order.providerTaskId) throw standardRailError("INTERNAL_ERROR", {
@@ -1383,7 +1458,16 @@ export class StandardRailService {
     // Every order action answers with the order handle and the gateway's own
     // order state beside the provider's lifecycle state, so a client can
     // always recover from the handle alone.
-    return { ...response, orderHandle: handle, orderKey: order.orderKey, orderState: order.state, receipt: await this.signedReceipt(order) };
+    return {
+      ...response,
+      orderHandle: handle,
+      orderKey: order.orderKey,
+      orderState: order.state,
+      receipt: await this.signedReceipt(order),
+      ...(action === "status"
+        ? { confirmationFinal: await this.confirmationState.stored(order.orderId) }
+        : {}),
+    };
   }
 
   async issueChallenge(args: {
@@ -1658,6 +1742,7 @@ export class StandardRailService {
       payment,
       railProfileHash: this.railProfileHash,
       validAfterBackstopSeconds: this.railConfig.validAfterBackstopSeconds,
+      payerSignature: this.payerSignature,
     });
     if (!isReputationEligiblePayer(authorization.payer, listing, this.railConfig)) {
       throw standardRailError("SELF_PURCHASE_FORBIDDEN", {
@@ -1793,8 +1878,10 @@ export class StandardRailService {
     if (!facilitatorVerified) {
       order = await this.store.transition(order, "VERIFY_REJECTED", "facilitator_verify_rejected");
       await this.store.releaseCapacity(order.orderId);
-      throw standardRailError("FACILITATOR_REJECTED", {
+      throw standardRailError(facilitatorRefusalCode(verify), {
         phase: "facilitator_verify",
+        field: "payload.signature",
+        facilitatorReason: facilitatorReason(verify),
         logContext: {
           orderId: order.orderId,
           intentId: order.intentId,

@@ -11,6 +11,7 @@ export const STANDARD_RAIL_PHASES = [
   "facilitator_settle",
   "dispatch",
   "lifecycle_auth",
+  "confirmation",
   "internal",
 ] as const;
 
@@ -34,11 +35,26 @@ export type StandardRailErrorCode =
   | "SELF_PURCHASE_FORBIDDEN"
   | "NONCE_RECIPE_MISMATCH"
   | "SIGNATURE_INVALID"
+  | "SIGNATURE_COUNTERFACTUAL_REJECTED"
+  | "SIGNATURE_VERIFICATION_UNAVAILABLE"
+  | "SIGNATURE_VERIFICATION_BUSY"
   | "FACILITATOR_REJECTED"
   | "PAYMENT_PENDING_RECONCILIATION"
   | "PAYMENT_IDENTIFIER_UNKNOWN"
   | "PAYMENT_IDENTIFIER_CONFLICT"
   | "WALLET_AUTHORIZATION_INVALID"
+  | "CONFIRMATION_REQUEST_INVALID"
+  | "CONFIRMATION_SPONSORED_REQUIRES_EOA"
+  | "CONFIRMATION_SPONSORSHIP_LIMIT"
+  | "CONFIRMATION_SPONSORSHIP_UNAVAILABLE"
+  | "CONFIRMATION_SUBMISSION_PENDING"
+  | "CONFIRMATION_PREPARATION_STALE"
+  | "CONFIRMATION_SIGNATURE_INVALID"
+  | "CONFIRMATION_NOT_ACTIVE"
+  | "CONFIRMATION_SUBMISSION_LIMIT"
+  | "CONFIRMATION_ORDER_UNAVAILABLE"
+  | "REPUTATION_NOT_READY"
+  | "REPUTATION_UNAVAILABLE"
   | "INTERNAL_ERROR";
 
 export interface StandardRailFieldError {
@@ -209,6 +225,40 @@ const DEFAULTS: Record<StandardRailErrorCode, ErrorDefaults> = {
     paymentMayHaveSettled: false,
     nextAction: "Use the configured payer signer to sign a fresh challenge without altering it.",
   },
+  // An ERC-6492 wrapper: the wallet is counterfactual. The gateway never
+  // deploys wallets and never accepts a signature it cannot verify against
+  // deployed code, so the only way forward is to deploy first.
+  SIGNATURE_COUNTERFACTUAL_REJECTED: {
+    status: 400,
+    message: "The payer wallet is not deployed; counterfactual (ERC-6492) signatures are refused",
+    phase: "payment_validation",
+    retryable: true,
+    requiresNewSignature: true,
+    paymentMayHaveSettled: false,
+    nextAction:
+      "Deploy the wallet first (for a Circle agent wallet, send a zero-value transfer to itself), " +
+      "run daski doctor, then request a fresh challenge and sign again.",
+  },
+  // Every configured RPC endpoint failed before the contract answered, so the
+  // signature was neither accepted nor refused: retry the identical request.
+  SIGNATURE_VERIFICATION_UNAVAILABLE: {
+    status: 503,
+    message: "The payer signature could not be verified against the chain right now",
+    phase: "payment_validation",
+    retryable: true,
+    requiresNewSignature: false,
+    paymentMayHaveSettled: false,
+    nextAction: "Retry the identical request shortly; the signature was not evaluated.",
+  },
+  SIGNATURE_VERIFICATION_BUSY: {
+    status: 429,
+    message: "Contract signature verification capacity is exhausted for now",
+    phase: "payment_validation",
+    retryable: true,
+    requiresNewSignature: false,
+    paymentMayHaveSettled: false,
+    nextAction: "Retry the identical request after a short pause; the signature was not evaluated.",
+  },
   FACILITATOR_REJECTED: {
     status: 422,
     message: "The external facilitator rejected the payment",
@@ -262,6 +312,118 @@ const DEFAULTS: Record<StandardRailErrorCode, ErrorDefaults> = {
     paymentMayHaveSettled: false,
     nextAction: "Request a fresh challenge; for read access, re-run daski_get_order_access.",
   },
+  CONFIRMATION_REQUEST_INVALID: {
+    status: 400,
+    message: "The delivery confirmation request is malformed",
+    phase: "confirmation",
+    retryable: true,
+    requiresNewSignature: false,
+    paymentMayHaveSettled: false,
+    nextAction:
+      "Send phase (prepare, submit, or check) with submission (sponsored or direct) and the fields " +
+      "orders.md lists for that phase.",
+  },
+  CONFIRMATION_SPONSORED_REQUIRES_EOA: {
+    status: 409,
+    message: "Sponsored confirmation submission is available only to plain (EOA) payer wallets",
+    phase: "confirmation",
+    retryable: true,
+    requiresNewSignature: false,
+    paymentMayHaveSettled: false,
+    nextAction: "Repeat the request with submission: direct and submit the returned call with the wallet's own tool.",
+  },
+  CONFIRMATION_SPONSORSHIP_LIMIT: {
+    status: 429,
+    message: "The sponsored confirmation budget is exhausted",
+    phase: "confirmation",
+    retryable: false,
+    requiresNewSignature: false,
+    paymentMayHaveSettled: false,
+    nextAction:
+      "When chainEligible is true, repeat prepare with submission: direct and submit the returned call " +
+      "with the wallet's own tool; otherwise no further submission is possible.",
+  },
+  CONFIRMATION_SPONSORSHIP_UNAVAILABLE: {
+    status: 503,
+    message: "The chain state needed to prepare the confirmation could not be read",
+    phase: "confirmation",
+    retryable: true,
+    requiresNewSignature: false,
+    paymentMayHaveSettled: false,
+    nextAction: "Retry the same request shortly.",
+  },
+  CONFIRMATION_SUBMISSION_PENDING: {
+    status: 409,
+    message: "The sponsored submission is queued; its chain outcome is not final yet",
+    phase: "confirmation",
+    retryable: true,
+    requiresNewSignature: false,
+    paymentMayHaveSettled: false,
+    nextAction: "Retain the same submit request and check it later (daski order confirm --resume).",
+  },
+  CONFIRMATION_PREPARATION_STALE: {
+    status: 409,
+    message: "The confirmation preparation no longer matches the chain state",
+    phase: "confirmation",
+    retryable: true,
+    requiresNewSignature: false,
+    paymentMayHaveSettled: false,
+    nextAction: "Run phase prepare again and sign the new typed data.",
+  },
+  CONFIRMATION_SIGNATURE_INVALID: {
+    status: 400,
+    message: "The delegated EAS signature does not verify for the payer",
+    phase: "confirmation",
+    retryable: true,
+    requiresNewSignature: true,
+    paymentMayHaveSettled: false,
+    nextAction: "Sign the prepared typed data exactly with the payer key (65-byte low-s) and submit again.",
+  },
+  CONFIRMATION_NOT_ACTIVE: {
+    status: 409,
+    message: "There is no active confirmation to revoke",
+    phase: "confirmation",
+    retryable: false,
+    requiresNewSignature: false,
+    paymentMayHaveSettled: false,
+    nextAction: "Submit a confirmation before revoking one.",
+  },
+  CONFIRMATION_SUBMISSION_LIMIT: {
+    status: 409,
+    message: "Three confirmations were already submitted for this order",
+    phase: "confirmation",
+    retryable: false,
+    requiresNewSignature: false,
+    paymentMayHaveSettled: false,
+    nextAction: "No further confirmation can be submitted; the current one can still be revoked.",
+  },
+  CONFIRMATION_ORDER_UNAVAILABLE: {
+    status: 409,
+    message: "The order's reputation record is not available for confirmation",
+    phase: "confirmation",
+    retryable: true,
+    requiresNewSignature: false,
+    paymentMayHaveSettled: false,
+    nextAction: "Check the order status; confirm once its reputation registration is final.",
+  },
+  REPUTATION_NOT_READY: {
+    status: 409,
+    message: "The order's reputation registration is not final yet",
+    phase: "confirmation",
+    retryable: true,
+    requiresNewSignature: false,
+    paymentMayHaveSettled: false,
+    nextAction: "Retry after the reputation registration is final (minutes on Base).",
+  },
+  REPUTATION_UNAVAILABLE: {
+    status: 503,
+    message: "The order's reputation registration did not complete; confirmation is unavailable",
+    phase: "confirmation",
+    retryable: false,
+    requiresNewSignature: false,
+    paymentMayHaveSettled: false,
+    nextAction: "Contact order support; no confirmation can be recorded for this order.",
+  },
   INTERNAL_ERROR: {
     status: 500,
     message: "Internal server error",
@@ -288,6 +450,10 @@ export interface StandardRailErrorOptions {
   internalMessage?: string;
   logContext?: Record<string, unknown>;
   cause?: unknown;
+  /** The facilitator's own refusal reason when its verify answered the payment. */
+  facilitatorReason?: string;
+  /** Whether the chain would still accept the operation outside sponsorship. */
+  chainEligible?: boolean;
   /** Fixed correlation id — wire fixtures only; production ids are random. */
   correlationId?: string;
 }
@@ -305,6 +471,8 @@ export class StandardRailError extends Error {
   readonly expected?: Record<string, unknown>;
   readonly fieldErrors?: readonly StandardRailFieldError[];
   readonly nextAction: string;
+  readonly facilitatorReason?: string;
+  readonly chainEligible?: boolean;
   readonly correlationId: string;
   readonly logContext: Record<string, unknown>;
 
@@ -324,6 +492,8 @@ export class StandardRailError extends Error {
     this.expected = options.expected;
     this.fieldErrors = options.fieldErrors;
     this.nextAction = options.nextAction ?? defaults.nextAction;
+    this.facilitatorReason = options.facilitatorReason;
+    this.chainEligible = options.chainEligible;
     this.correlationId = options.correlationId ?? randomUUID();
     this.logContext = options.logContext ?? {};
   }
@@ -401,6 +571,8 @@ export interface StandardRailPublicError {
   serverTime?: number;
   expected?: Record<string, unknown>;
   fieldErrors?: readonly StandardRailFieldError[];
+  facilitatorReason?: string;
+  chainEligible?: boolean;
   docs: string;
   correlationId: string;
 }
@@ -420,6 +592,8 @@ export function standardRailPublicError(
     ...(error.serverTime === undefined ? {} : { serverTime: error.serverTime }),
     ...(error.expected ? { expected: error.expected } : {}),
     ...(error.fieldErrors ? { fieldErrors: error.fieldErrors } : {}),
+    ...(error.facilitatorReason === undefined ? {} : { facilitatorReason: error.facilitatorReason }),
+    ...(error.chainEligible === undefined ? {} : { chainEligible: error.chainEligible }),
     docs: `${publicUrl.replace(/\/$/, "")}/skills/buy.md#errors`,
     correlationId: error.correlationId,
   };

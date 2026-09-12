@@ -18,6 +18,8 @@ export interface McpErrorPayload {
   serverTime?: number;
   expected?: Record<string, unknown>;
   fieldErrors?: readonly { path: string; rule: string; message: string; allowedValues?: readonly string[] }[];
+  facilitatorReason?: string;
+  chainEligible?: boolean;
   docs?: string;
   correlationId?: string;
 }

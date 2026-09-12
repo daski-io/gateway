@@ -7,9 +7,11 @@ import {
   asStandardRailError,
   isTransientDatabaseError,
   logStandardRailError,
+  StandardRailError,
   standardRailError,
   standardRailPublicError,
 } from "./errors.js";
+import { isPayerSignatureShape } from "./payerSignature.js";
 
 const PAYMENT_HEADER = "payment-signature";
 const ORDER_ACTIONS = [
@@ -24,17 +26,6 @@ const ORDER_ACTIONS = [
 ] as const;
 
 type OrderAction = typeof ORDER_ACTIONS[number];
-
-const CONFIRMATION_HTTP_ERRORS = new Map<string, { code: string; status: number }>([
-  ["CONFIRMATION_PREPARATION_STALE", { code: "CONFIRMATION_PREPARATION_STALE", status: 409 }],
-  ["CONFIRMATION_TRANSITION_LIMIT", { code: "CONFIRMATION_TRANSITION_LIMIT", status: 409 }],
-  ["REPUTATION_NOT_READY", { code: "REPUTATION_NOT_READY", status: 409 }],
-  ["REPUTATION_UNAVAILABLE", { code: "REPUTATION_UNAVAILABLE", status: 503 }],
-  ["CONFIRMATION_SPONSORSHIP_LIMIT", { code: "CONFIRMATION_SPONSORSHIP_LIMITED", status: 503 }],
-  ["CONFIRMATION_SPONSORSHIP_LIMITED", { code: "CONFIRMATION_SPONSORSHIP_LIMITED", status: 503 }],
-  ["CONFIRMATION_SPONSORSHIP_UNAVAILABLE", { code: "CONFIRMATION_SPONSORSHIP_UNAVAILABLE", status: 503 }],
-  ["CONFIRMATION_SUBMISSION_PENDING", { code: "CONFIRMATION_SUBMISSION_PENDING", status: 409 }],
-]);
 
 function encoded(value: unknown): string {
   return Buffer.from(JSON.stringify(value), "utf8").toString("base64url");
@@ -80,8 +71,19 @@ const KNOWN_WALLET_REFUSALS = new Set([
 function sendWalletError(
   res: import("express").Response,
   error: unknown,
+  origin: string,
   fallback = "WALLET_ACCESS_DENIED",
 ): void {
+  // Typed refusals from signature verification (SIGNATURE_INVALID,
+  // SIGNATURE_COUNTERFACTUAL_REJECTED, SIGNATURE_VERIFICATION_UNAVAILABLE,
+  // SIGNATURE_VERIFICATION_BUSY, WALLET_AUTHORIZATION_INVALID) keep their
+  // status, retryability, and next action.
+  if (error instanceof StandardRailError) {
+    logStandardRailError(error);
+    if (error.status === 429 || error.status === 503) res.setHeader("Retry-After", "10");
+    res.status(error.status).json({ error: standardRailPublicError(error, origin) });
+    return;
+  }
   if (isTransientDatabaseError(error)) {
     // Not a client fault: the same request retried unchanged will succeed.
     res.setHeader("Retry-After", "1");
@@ -166,7 +168,7 @@ export function createStandardRailRouter(service: StandardRailService, publicUrl
         cursor: body.cursor as string | null,
         authorization: body.authorization as never,
       }));
-    } catch (error) { sendWalletError(res, error); }
+    } catch (error) { sendWalletError(res, error, origin); }
   });
 
   router.post("/wallet/reputation", async (req, res) => {
@@ -190,7 +192,7 @@ export function createStandardRailRouter(service: StandardRailService, publicUrl
         payer: body.payer,
         authorization: body.authorization as never,
       }));
-    } catch (error) { sendWalletError(res, error); }
+    } catch (error) { sendWalletError(res, error, origin); }
   });
 
   router.post("/wallet/assets", async (req, res) => {
@@ -224,7 +226,7 @@ export function createStandardRailRouter(service: StandardRailService, publicUrl
         cursor: body.cursor as string | null,
         authorization: body.authorization as never,
       }));
-    } catch (error) { sendWalletError(res, error); }
+    } catch (error) { sendWalletError(res, error, origin); }
   });
 
   router.post("/wallet/assets/action", async (req, res) => {
@@ -256,7 +258,7 @@ export function createStandardRailRouter(service: StandardRailService, publicUrl
         return;
       }
       res.json(await service.performAssetAction({ ...args, authorization: body.authorization as never }));
-    } catch (error) { sendWalletError(res, error); }
+    } catch (error) { sendWalletError(res, error, origin); }
   });
 
   router.get("/.well-known/x402", async (_req, res, next) => {
@@ -418,7 +420,7 @@ export function createStandardRailRouter(service: StandardRailService, publicUrl
         typeof authorization.signature !== "string" ||
         !/^0x[0-9a-fA-F]{64}$/.test(authorization.requestHash) ||
         !/^0x[0-9a-fA-F]{64}$/.test(authorization.nonce) ||
-        !/^0x[0-9a-fA-F]{130}$/.test(authorization.signature) ||
+        !isPayerSignatureShape(authorization.signature) ||
         !Number.isSafeInteger(authorization.issuedAt) ||
         !Number.isSafeInteger(authorization.validBefore)
       ) {
@@ -437,17 +439,6 @@ export function createStandardRailRouter(service: StandardRailService, publicUrl
       res.setHeader("Cache-Control", "private, no-store");
       res.json(result);
     } catch (error) {
-      const internal = error instanceof Error ? error.message : "ACTION_FAILED";
-      const confirmation = CONFIRMATION_HTTP_ERRORS.get(internal);
-      if (confirmation) {
-        res.status(confirmation.status).json({
-          error: {
-            code: confirmation.code,
-            message: "The confirmation request could not be completed",
-          },
-        });
-        return;
-      }
       next(error);
     }
   });

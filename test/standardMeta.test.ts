@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { Config } from "../src/config.js";
 import { createStandardMetaRouter } from "../src/standardRail/meta.js";
 import { llmsFull, readSkill } from "../src/standardRail/skills.js";
-import { PINNED_BUYER_CLI } from "../src/standardRail/buyerCli.js";
+import { PINNED_BUYER_CLI, PINNED_SIGNER_CLIS } from "../src/standardRail/buyerCli.js";
 import type { PublicChainMetadataV3 } from "../src/standardRail/types.js";
 
 const CHAIN_FIXTURE = JSON.parse(readFileSync(
@@ -70,7 +70,7 @@ async function startMeta(outcomes: PublicChainMetadataV3["outcomes"]): Promise<s
       marketplaceContracts: ADDRESSES,
       usdc: { address: USDC },
     } as unknown as Config,
-    railConfig: { easAddress: EAS } as never,
+    railConfig: { easAddress: EAS, payerAccountTypes: ["eoa"] } as never,
     pool: { query: async () => ({ rows: [] }) } as never,
     lifecycle: { isStopping: () => false } as never,
     service: {
@@ -147,6 +147,9 @@ describe("standard rail metadata", () => {
       tools: string[];
       skills: Record<string, string>;
       buyerCli: typeof PINNED_BUYER_CLI;
+      payerAccounts: { types: string[]; counterfactual: boolean };
+      confirmation: Record<string, unknown>;
+      signerClis: typeof PINNED_SIGNER_CLIS;
       steadyStatePrompt: string;
     };
     expect(mcp.tools).toContain("daski_get_setup_guide");
@@ -158,6 +161,19 @@ describe("standard rail metadata", () => {
     // its own version against it instead of an agent reading the pin by eye.
     expect(mcp.buyerCli).toEqual(PINNED_BUYER_CLI);
     expect(mcp.buyerCli.version).toMatch(/^\d+\.\d+\.\d+$/);
+    // Wallet account support and confirmation modes (spec B5): which payers
+    // can buy, never a counterfactual one, and how confirmations are sent.
+    expect(mcp.payerAccounts).toEqual({ types: ["eoa"], counterfactual: false });
+    expect(mcp.confirmation).toEqual({
+      modes: ["sponsored", "direct"],
+      sponsoredRequires: "eoa",
+      attestationCap: 3,
+      revocationAfterCap: true,
+    });
+    expect(mcp.signerClis).toEqual(PINNED_SIGNER_CLIS);
+    expect(mcp.signerClis["circle-agent"]).toEqual({
+      package: "@circle-fin/cli", version: "1.0.0", repository: "https://github.com/circlefin/cli",
+    });
 
     const llms = await (await fetch(`${root}/llms.txt`)).text();
     expect(llms).toContain("MCP: https://gateway.example/mcp");
@@ -185,6 +201,27 @@ describe("standard rail metadata", () => {
     const buy = (await readSkill("buy")).content;
     expect(buy).toContain("| PAYMENT_IDENTIFIER_UNKNOWN |");
     expect(buy).toContain("| PAYMENT_IDENTIFIER_CONFLICT |");
+    expect(buy).toContain("| SIGNATURE_COUNTERFACTUAL_REJECTED |");
+    expect(buy).toContain("| CONFIRMATION_SPONSORED_REQUIRES_EOA |");
+    expect(buy).toContain("| CONFIRMATION_SPONSORSHIP_LIMIT |");
+  });
+
+  it("pins the signer CLIs in setup.md exactly as the well-known document publishes them", async () => {
+    const setup = (await readSkill("setup")).content;
+    const circle = PINNED_SIGNER_CLIS["circle-agent"];
+    // The guide installs the pinned version it names and points at the
+    // machine-readable pin; the two are asserted equal here the way the
+    // buyer CLI pin is.
+    expect(setup).toContain(`\`${circle.package}@${circle.version}\``);
+    expect(setup).toContain(circle.repository);
+    expect(setup).toContain("signerClis.circle-agent");
+    expect(setup).toContain("payerAccounts.types");
+    expect(setup).toContain("DASKI_HOST_CLASS");
+    const wallets = (await readSkill("wallets")).content;
+    expect(wallets).toContain("| Circle agent wallet | contract |");
+    const orders = (await readSkill("orders")).content;
+    expect(orders).toContain("daski order confirm <handle> --tx <hash>");
+    expect(orders).toContain("--check reports the finalized state");
   });
 
   it("publishes the compact activity projection with the same caching policy", async () => {

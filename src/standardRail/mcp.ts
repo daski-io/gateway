@@ -14,9 +14,11 @@ import {
   asStandardRailError,
   isTransientDatabaseError,
   logStandardRailError,
+  StandardRailError,
   standardRailError,
   standardRailPublicError,
 } from "./errors.js";
+import { PAYER_SIGNATURE_PATTERN } from "./payerSignature.js";
 import { registerMarketplaceTools } from "../marketplace/mcp.js";
 import type { MarketplaceChainReader } from "../marketplace/reader.js";
 import { GATEWAY_VERSION } from "../version.js";
@@ -65,7 +67,9 @@ const actionAuthorizationSchema = z.object({
   nonce: z.string().regex(/^0x[0-9a-fA-F]{64}$/),
   issuedAt: z.number().int().nonnegative(),
   validBefore: z.number().int().positive(),
-  signature: z.string().regex(/^0x[0-9a-fA-F]{130}$/),
+  // The B1 size rule: 0x plus an even number of hex characters, at most 4,096
+  // bytes. A plain wallet sends 65 bytes; a contract account sends its own.
+  signature: z.string().regex(PAYER_SIGNATURE_PATTERN),
 }).strict();
 
 const mutationActionInputSchema = {
@@ -101,7 +105,7 @@ const walletMessageSchema = z.object({
 
 const walletAuthorizationSchema = z.object({
   message: walletMessageSchema,
-  signature: z.string().regex(/^0x[0-9a-f]{130}$/),
+  signature: z.string().regex(PAYER_SIGNATURE_PATTERN),
 }).strict();
 
 const lifecycleTools = [
@@ -111,17 +115,6 @@ const lifecycleTools = [
   ["daski_get_order_artifact", "artifact", "Retrieve the protected result artifact for a completed order."],
   ["daski_contact_order_support", "support", "Send a support request for an order."],
 ] as const;
-
-const CONFIRMATION_ERROR_CODES = new Map<string, string>([
-  ["CONFIRMATION_PREPARATION_STALE", "CONFIRMATION_PREPARATION_STALE"],
-  ["CONFIRMATION_TRANSITION_LIMIT", "CONFIRMATION_TRANSITION_LIMIT"],
-  ["REPUTATION_NOT_READY", "REPUTATION_NOT_READY"],
-  ["REPUTATION_UNAVAILABLE", "REPUTATION_UNAVAILABLE"],
-  ["CONFIRMATION_SPONSORSHIP_LIMIT", "CONFIRMATION_SPONSORSHIP_LIMITED"],
-  ["CONFIRMATION_SPONSORSHIP_LIMITED", "CONFIRMATION_SPONSORSHIP_LIMITED"],
-  ["CONFIRMATION_SPONSORSHIP_UNAVAILABLE", "CONFIRMATION_SPONSORSHIP_UNAVAILABLE"],
-  ["CONFIRMATION_SUBMISSION_PENDING", "CONFIRMATION_SUBMISSION_PENDING"],
-]);
 
 function isolateProviderResult(value: unknown): unknown {
   if (!value || typeof value !== "object" || Array.isArray(value) || !("result" in value)) return value;
@@ -144,7 +137,12 @@ const KNOWN_WALLET_REFUSALS = new Set([
   "ASSET_DESTRUCTIVE_CONFIRMATION_REQUIRED", "ASSET_DESTRUCTIVE_DELAY_ACTIVE",
 ]);
 
-function walletMcpError(error: unknown) {
+function walletMcpError(error: unknown, publicUrl?: string) {
+  // Signature verification answers with typed codes (SIGNATURE_INVALID,
+  // SIGNATURE_COUNTERFACTUAL_REJECTED, SIGNATURE_VERIFICATION_UNAVAILABLE,
+  // SIGNATURE_VERIFICATION_BUSY, WALLET_AUTHORIZATION_INVALID) that carry
+  // retryability and the next action; they are answered as such.
+  if (error instanceof StandardRailError) return mcpError(purchaseToolFailure(error, publicUrl));
   if (isTransientDatabaseError(error)) {
     return mcpError({
       code: "WALLET_TEMPORARILY_UNAVAILABLE",
@@ -515,12 +513,15 @@ export async function createStandardRailMcp(
       },
     );
     for (const [name, action, description] of [
-      ["daski_confirm_delivery", "confirmation", "Prepare or submit a payer-signed delivery confirmation."],
-      ["daski_revoke_delivery_confirmation", "revoke-confirmation", "Prepare or submit withdrawal of the payer's current delivery confirmation."],
+      ["daski_confirm_delivery", "confirmation", "Prepare, submit, or check a payer-signed delivery confirmation."],
+      ["daski_revoke_delivery_confirmation", "revoke-confirmation", "Prepare, submit, or check withdrawal of the payer's current delivery confirmation."],
     ] as const) {
       server.registerTool(name, {
         outputSchema: z.object({}).catchall(z.unknown()),
-        description: `${description} Call once without authorization for an order-action challenge, then retry with a fresh payer authorization.`,
+        description: `${description} The request carries phase (prepare, submit, or check) and submission ` +
+          "(sponsored for a plain wallet: Daski relays the signed EAS attestation; direct for a contract " +
+          "wallet: prepare returns the validated call the wallet's own tool sends). Call once without " +
+          "authorization for an order-action challenge, then retry with a fresh payer authorization.",
         inputSchema: mutationActionInputSchema,
         annotations: { title: description, readOnlyHint: false, destructiveHint: true,
           idempotentHint: false, openWorldHint: true },
@@ -531,16 +532,7 @@ export async function createStandardRailMcp(
           return mcpJson(await service.performAction({ handle: args.orderHandle, action, request,
             authorization: args.authorization as never }));
         } catch (error) {
-          const classified = asStandardRailError(error);
-          if (classified) {
-            return mcpError(purchaseToolFailure(classified, config.publicUrl));
-          }
-          const internal = error instanceof Error ? error.message : "CONFIRMATION_ACCESS_DENIED";
-          const code = CONFIRMATION_ERROR_CODES.get(internal) ?? "CONFIRMATION_ACCESS_DENIED";
-          return mcpError({ code,
-            message: "The delivery confirmation request could not be completed",
-            retryable: ["REPUTATION_NOT_READY", "CONFIRMATION_SPONSORSHIP_UNAVAILABLE",
-              "CONFIRMATION_SUBMISSION_PENDING"].includes(code) });
+          return mcpError(purchaseToolFailure(error, config.publicUrl));
         }
       });
     }
@@ -573,7 +565,7 @@ export async function createStandardRailMcp(
           return mcpJson(await service.listWalletOrders({
             payer, limit, cursor, paymentIdentifier, authorization: authorization as never,
           }));
-        } catch (error) { return walletMcpError(error); }
+        } catch (error) { return walletMcpError(error, config.publicUrl); }
       },
     );
     server.registerTool(
@@ -596,7 +588,7 @@ export async function createStandardRailMcp(
               absoluteResourceUri: `${config.publicUrl.replace(/\/$/, "")}/wallet/reputation`,
             })));
           return mcpJson(await service.getWalletReputation({ payer, authorization: authorization as never }));
-        } catch (error) { return walletMcpError(error); }
+        } catch (error) { return walletMcpError(error, config.publicUrl); }
       },
     );
     server.registerTool(
@@ -627,7 +619,7 @@ export async function createStandardRailMcp(
           return mcpJson(await service.listWalletAssets({
             payer, providerAgentId, limit, cursor, authorization: authorization as never,
           }));
-        } catch (error) { return walletMcpError(error); }
+        } catch (error) { return walletMcpError(error, config.publicUrl); }
       },
     );
     server.registerTool(
@@ -655,7 +647,7 @@ export async function createStandardRailMcp(
           return mcpJson(isolateProviderResult(await service.performAssetAction({
             ...args, authorization: authorization as never,
           })));
-        } catch (error) { return walletMcpError(error); }
+        } catch (error) { return walletMcpError(error, config.publicUrl); }
       },
     );
     registerMarketplaceTools(server, marketplace, () => service.listOutcomes());

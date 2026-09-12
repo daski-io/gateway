@@ -211,7 +211,7 @@ function configurePreParserRateLimits(
     ),
   );
   if (config.dynamicServiceRegistrationEnabled) {
-    addRateLimits(app, ["/v1/service-registrations"], {
+    addRateLimits(app, ["/v1/service-registrations", "/v1/owner-swaps"], {
       namespace: "service-registration",
       perClient: 10,
       global: Math.min(config.stateChangeGlobalMaxPerMinute, 100),
@@ -285,6 +285,7 @@ function configureParsedRegistrationRateLimits(
     "/v1/service-registrations/:registrationId/evidence",
     limiter,
   );
+  app.post("/v1/owner-swaps", limiter);
 }
 
 function configureParsedMcpRateLimits(

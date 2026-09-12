@@ -3,7 +3,6 @@ import {
   getAddress,
   hashTypedData,
   keccak256,
-  recoverTypedDataAddress,
   stringToHex,
   type Address,
   type Hex,
@@ -14,6 +13,12 @@ import type {
 } from "./types.js";
 import { canonicalHash } from "./canonical.js";
 import { standardRailError } from "./errors.js";
+import {
+  createPayerSignatureVerifier,
+  isPayerSignatureShape,
+  type PayerSignatureVerifier,
+  type PayerVerification,
+} from "./payerSignature.js";
 
 export const ZERO_HASH = `0x${"00".repeat(32)}` as Hex;
 export const utf8Hash = (value: string): Hex => keccak256(stringToHex(value));
@@ -131,12 +136,16 @@ export function walletAuthorizationHash(
   });
 }
 
-export async function verifyWalletAuthorization(args: {
+/**
+ * Everything about a presented authorization that can be checked without a
+ * signature: exact keys, the message equal to the issued challenge, the
+ * payer, the signature's size, and the validity window.
+ */
+export function assertWalletAuthorizationShape(args: {
   authorization: WalletAuthorizationTransport;
   expected: WalletActionAuthorizationV1;
-  chainId: number;
   now?: number;
-}): Promise<Hex> {
+}): void {
   exact(args.authorization, ["message", "signature"]);
   exact(args.authorization.message, WALLET_ACTION_FIELDS);
   const message = args.authorization.message;
@@ -144,19 +153,37 @@ export async function verifyWalletAuthorization(args: {
   if (
     canonicalHash(message) !== canonicalHash(args.expected) ||
     getAddress(message.payer) !== getAddress(args.expected.payer as Address) ||
-    !/^0x[0-9a-f]{130}$/.test(args.authorization.signature) ||
+    !isPayerSignatureShape(args.authorization.signature) ||
     message.issuedAt > now + 30 || message.validBefore <= now ||
     message.validBefore - message.issuedAt > 300 || message.issuedAt >= message.validBefore
   ) throw standardRailError("WALLET_AUTHORIZATION_INVALID");
-  const recovered = await recoverTypedDataAddress({
-    domain: { name: "DaskiStandardWallet", version: "1", chainId: args.chainId },
-    primaryType: "WalletActionAuthorizationV1",
-    types: WALLET_ACTION_TYPES,
-    message: typedMessage(message),
+}
+
+const offlineVerifier = createPayerSignatureVerifier({
+  accountTypes: ["eoa"],
+  timeoutMs: 0,
+  endpoints: [],
+});
+
+export async function verifyWalletAuthorization(args: {
+  authorization: WalletAuthorizationTransport;
+  expected: WalletActionAuthorizationV1;
+  chainId: number;
+  now?: number;
+  verifier?: PayerSignatureVerifier;
+}): Promise<{ authorizationHash: Hex; verification: PayerVerification }> {
+  assertWalletAuthorizationShape(args);
+  const message = args.authorization.message;
+  const verification = await (args.verifier ?? offlineVerifier).verifyPayerTypedData({
+    payer: getAddress(message.payer),
+    typedData: {
+      domain: { name: "DaskiStandardWallet", version: "1", chainId: args.chainId },
+      primaryType: "WalletActionAuthorizationV1",
+      types: WALLET_ACTION_TYPES,
+      message: typedMessage(message),
+    },
     signature: args.authorization.signature,
+    context: { field: "authorization.signature", phase: "lifecycle_auth" },
   });
-  if (getAddress(recovered) !== getAddress(message.payer)) {
-    throw standardRailError("WALLET_AUTHORIZATION_INVALID");
-  }
-  return walletAuthorizationHash(message, args.chainId);
+  return { authorizationHash: walletAuthorizationHash(message, args.chainId), verification };
 }

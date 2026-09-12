@@ -4,14 +4,17 @@ import {
   encodeAbiParameters,
   getAddress,
   keccak256,
-  parseSignature,
-  verifyTypedData,
   type Address,
 } from "viem";
 import type { Config } from "../config.js";
 import type { Hex } from "../types.js";
 import { assertNoDuplicateJsonKeys, canonicalHash, recipeNonce, recipeNonceV2 } from "./canonical.js";
 import { standardRailError } from "./errors.js";
+import {
+  createPayerSignatureVerifier,
+  type PayerSignatureVerifier,
+  type PayerVerification,
+} from "./payerSignature.js";
 import type { StandardListing, StandardOrderRecord } from "./types.js";
 
 export const EIP3009_TYPES = {
@@ -25,9 +28,13 @@ export const EIP3009_TYPES = {
   ],
 } as const;
 
-const HALF_CURVE_ORDER = BigInt(
-  "0x7fffffffffffffffffffffffffffffff5d576e7357a4501ddfe92f46681b20a0",
-);
+// Without a site-supplied verifier the pre-check accepts plain wallets only,
+// offline: the behaviour every payment had before contract accounts existed.
+const offlineVerifier = createPayerSignatureVerifier({
+  accountTypes: ["eoa"],
+  timeoutMs: 0,
+  endpoints: [],
+});
 
 export function paymentRequirements(
   config: Config,
@@ -342,6 +349,8 @@ export interface ValidatedAuthorization {
   payer: Address;
   nonce: Hex;
   authorizationKey: Hex;
+  /** How the payer signature verified: recovery for a plain wallet, ERC-1271 for a contract. */
+  verification: PayerVerification;
 }
 
 export function paymentAuthorizationLookupKey(config: Config, payment: PaymentPayload): Hex {
@@ -378,6 +387,8 @@ export async function validatePayment(args: {
   railProfileHash: Hex;
   validAfterBackstopSeconds?: number;
   nowSeconds?: number;
+  /** The gateway's payer-signature verifier; offline EOA-only when absent. */
+  payerSignature?: PayerSignatureVerifier;
 }): Promise<ValidatedAuthorization> {
   const { config, listing, order, requirements } = args;
   const payment = normalizePaymentPayload(args.payment);
@@ -593,25 +604,12 @@ export async function validatePayment(args: {
     });
   }
 
-  let parsedSignature;
-  try {
-    parsedSignature = parseSignature(signature as Hex);
-  } catch (error) {
-    throw standardRailError("SIGNATURE_INVALID", {
-      field: "payload.signature",
-      cause: error,
-    });
-  }
-  if (BigInt(parsedSignature.s) > HALF_CURVE_ORDER) {
-    throw standardRailError("SIGNATURE_INVALID", {
-      field: "payload.signature",
-      message: "High-s signatures are forbidden",
-    });
-  }
-  let valid = false;
-  try {
-    valid = await verifyTypedData({
-      address: payer,
+  // The pre-check: a plain wallet's 65-byte low-s signature recovers offline;
+  // a contract account's opaque bytes are verified by its deployed code. The
+  // facilitator's /verify remains authoritative for settlement either way.
+  const verification = await (args.payerSignature ?? offlineVerifier).verifyPayerTypedData({
+    payer,
+    typedData: {
       domain: {
         name: config.usdc.name,
         version: config.usdc.version,
@@ -628,20 +626,14 @@ export async function validatePayment(args: {
         validBefore,
         nonce,
       },
-      signature: signature as Hex,
-    });
-  } catch (error) {
-    throw standardRailError("SIGNATURE_INVALID", {
-      field: "payload.signature",
-      cause: error,
-    });
-  }
-  if (!valid) {
-    throw standardRailError("SIGNATURE_INVALID", { field: "payload.signature" });
-  }
+    },
+    signature: signature as Hex,
+    context: { field: "payload.signature", phase: "payment_validation" },
+  });
   return {
     payer,
     nonce,
     authorizationKey: paymentAuthorizationLookupKey(config, payment),
+    verification,
   };
 }

@@ -171,7 +171,13 @@ function parseEvidence(value: unknown): ProviderServiceRegistrationEvidenceV1 {
   };
 }
 
-async function verifyProviderEnvelope<T>(args: {
+/**
+ * Verifies one provider-signed envelope: exact keys, the gateway's domain,
+ * a validity window of at most ten minutes, and a signer equal to the
+ * provider's current finalized owner or agent wallet read live from the
+ * registry. Shared by registration intents, evidence, and owner swaps.
+ */
+export async function verifyProviderEnvelope<T>(args: {
   raw: unknown;
   artifactType: string;
   parsePayload: (value: unknown) => T;

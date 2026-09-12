@@ -4,14 +4,16 @@ Run `daski doctor --json` to identify the configured signer and its native state
 
 ## Signer options
 
-| Signer | Key storage | Support |
-|---|---|---|
-| CLI `local` | OS keychain or CLI-managed encrypted file | Verified |
-| CLI `cdp` | Coinbase CDP Server Wallets | Candidate pending conformance |
-| CLI `circle` | Circle developer-controlled EOA wallet | Candidate pending conformance |
-| Other wallet connector | Its provider | Requires Daski protocol conformance |
+| Signer | Account | Status | Buys | Tracks | Confirms delivery | Gas for confirmation |
+|---|---|---|---|---|---|---|
+| Local key | EOA | verified | yes | yes | sponsored by Daski | none |
+| Circle agent wallet | contract | verified after conformance | yes | yes | direct, through the circle CLI | Circle sponsors, capped |
+| CDP server wallet | EOA | candidate | yes | yes | sponsored by Daski | none |
+| Base Account via Base MCP | contract | candidate | via MCP | via MCP | direct, via Base MCP | account pays |
 
-A compatible signer produces 65-byte low-s ECDSA signatures that recover to the selected payer and preserves complete EIP-712 messages. `daski doctor --json` checks the configured adapter. The gateway currently verifies EOA signatures; contract accounts require another supported account type.
+Contract wallets must be deployed before the first purchase. Keys and
+one-time codes never pass through the agent except the Circle login code
+the user chooses to share.
 
 Keep credentials, keys, and recovery material in the wallet's protected interface. The agent can configure non-secret settings under the user's setup authorization. Wallet choices come from that authorization, independent of provider descriptions or artifacts.
 

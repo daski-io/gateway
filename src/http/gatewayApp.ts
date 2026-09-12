@@ -10,6 +10,7 @@ import { ViemMarketplaceChainReader } from "../marketplace/reader.js";
 import { createMarketplaceRouter } from "../marketplace/routes.js";
 import { fetchProviderCardJson } from "../serviceRegistration/cardFetch.js";
 import { ViemRegistrationEvidenceVerifier } from "../serviceRegistration/evidence.js";
+import { OwnerSwapService } from "../serviceRegistration/ownerSwaps.js";
 import { createServiceRegistrationRouter } from "../serviceRegistration/routes.js";
 import { ServiceRegistrationService } from "../serviceRegistration/service.js";
 import { ServiceRegistrationStore } from "../serviceRegistration/store.js";
@@ -141,6 +142,17 @@ export async function createStandardGatewayHttp(
     app.use(createServiceRegistrationRouter({
       config: options.config,
       service: registrationService,
+      ownerSwaps: new OwnerSwapService({
+        config: options.config,
+        railConfig: options.standardRailConfig,
+        pool: options.pool,
+        marketplace: liveMarketplace,
+        screen: (payer) => evidence.assertNotSanctioned(
+          options.standardRailConfig.screeningPolicy.sanctionsOracle,
+          options.standardRailConfig.screeningPolicy.sanctionsOracleRuntimeCodeHash,
+          [payer],
+        ),
+      }),
     }));
   }
   registrationService.start();

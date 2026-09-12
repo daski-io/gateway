@@ -16,6 +16,7 @@ import { utf8Hash, ZERO_HASH } from "./walletAuthorization.js";
 import type { StandardWalletStore } from "./walletStore.js";
 import { discardResponseBody, readBoundedJsonResponse } from "./boundedJson.js";
 import { withFederationPermit } from "./federationPermit.js";
+import { eligibleProvidersForPayer } from "./assetEligibility.js";
 
 export interface ActiveServicing {
   admissionEnvelope: SignedEnvelope<ProviderServicingAdmissionV1>;
@@ -136,16 +137,11 @@ export class StandardAssetFederation {
       action: "list-assets",
       request: walletRequest,
     });
-    const eligible = await this.pool.query<{ provider_agent_id: string }>(
-      `SELECT DISTINCT provider_agent_id FROM standard_orders
-        WHERE lower(payer)=$1 AND state IN (
-          'RELEASE_FINAL','DISPATCH_STARTED','DISPATCHED','DISPATCH_AMBIGUOUS',
-          'FULFILLED','PROVIDER_FAILED','INPUT_REQUIRED','LEGAL_HOLD','NOT_SETTLED'
-        ) AND ($2::text IS NULL OR provider_agent_id=$2)
-        ORDER BY provider_agent_id LIMIT $3`,
-      [payer, args.providerAgentId, this.config.abuse.federationMaxProviders],
+    // Providers to federate to: those with a qualifying order by this payer
+    // and those whose signed owner swap names this payer (spec C1).
+    const ids = await eligibleProvidersForPayer(
+      this.pool, payer, args.providerAgentId, this.config.abuse.federationMaxProviders,
     );
-    const ids = eligible.rows.map((row) => row.provider_agent_id);
     const responses: Array<Record<string, unknown>> = [];
     responses.push(...await Promise.all(ids.map(async (providerAgentId) => {
       try {

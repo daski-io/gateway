@@ -28,6 +28,11 @@ import {
 import { refreshReputationPermit, reputationPermitDeadline } from "./reputationOrders.js";
 import { hasFinalizedNonceConflict } from "./nonceConflict.js";
 
+/** Writes the order's confirmation state through the finalized-read rule. */
+export interface ConfirmationStateReconciler {
+  reconcile(order: { orderId: string; orderKey: Hex }): Promise<unknown>;
+}
+
 interface OperationRow {
   operation_id: string;
   order_id: string;
@@ -87,6 +92,7 @@ export class StandardReputationWorker {
         privateKeyToAccount(config.reputationRelayerPrivateKey).address,
       ),
     private readonly onRecordFinalized: () => void = () => undefined,
+    private readonly confirmationState: ConfirmationStateReconciler | null = null,
   ) {
     this.account = privateKeyToAccount(config.reputationRelayerPrivateKey);
     this.broadcastClient = createPublicClient({
@@ -318,6 +324,23 @@ export class StandardReputationWorker {
         this.onRecordFinalized();
       } catch {
         // Cache invalidation must never disturb reconciliation.
+      }
+      const intent = operation.canonical_intent;
+      if (this.confirmationState && intent.operation !== "register-order") {
+        // The receipt marked the sponsored submission final; the order's
+        // stored confirmation state follows only from a finalized read
+        // (spec B7). A failed read is retried by the next `check`.
+        try {
+          await this.confirmationState.reconcile({
+            orderId: operation.order_id,
+            orderKey: intent.orderKey,
+          });
+        } catch (error) {
+          logger.warn("confirmation state reconciliation deferred", {
+            operationId: operation.operation_id,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
       }
       return;
     }

@@ -750,6 +750,7 @@ export class StandardRailStore {
             AND NOT EXISTS (SELECT 1 FROM standard_confirmation_preparations c WHERE c.order_id=o.order_id)
             AND NOT EXISTS (SELECT 1 FROM standard_confirmation_sponsorships s WHERE s.order_id=o.order_id)
             AND NOT EXISTS (SELECT 1 FROM standard_reputation_confirmations rc WHERE rc.order_id=o.order_id)
+            AND NOT EXISTS (SELECT 1 FROM standard_provider_owner_swaps w WHERE w.order_id=o.order_id)
           ORDER BY updated_at ASC
           LIMIT $2 FOR UPDATE SKIP LOCKED`,
         [UNPAID_DRAFT_RETENTION, limit],
