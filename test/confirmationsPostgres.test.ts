@@ -400,6 +400,45 @@ describe("confirmation state (finalized-only storage)", () => {
     expect(await state.stored(orderId)).toMatchObject({ currentUid: hash("2"), submissionsUsed: 2, blockNumber: "120" });
   });
 
+  it("serializes concurrent first observations so a lower block never overwrites a higher one", async () => {
+    await pool.query("DELETE FROM standard_reputation_confirmations");
+    // The higher observation holds its transaction open past the INSERT until
+    // the lower one has been issued; FOR UPDATE alone cannot lock the absent
+    // row, so the per-order advisory lock is what makes the lower writer wait.
+    let releaseHigh!: () => void;
+    const highMayCommit = new Promise<void>((resolve) => { releaseHigh = resolve; });
+    let highInserted!: () => void;
+    const highHasInserted = new Promise<void>((resolve) => { highInserted = resolve; });
+    const gated = {
+      query: pool.query.bind(pool),
+      connect: async () => {
+        const client = await pool.connect();
+        return {
+          release: () => client.release(),
+          query: async (text: string, values?: unknown[]) => {
+            const result = await client.query(text, values);
+            if (text.includes("INSERT INTO standard_reputation_confirmations")) highInserted();
+            if (text === "COMMIT") await highMayCommit;
+            return result;
+          },
+        };
+      },
+    } as unknown as Pool;
+    const high = new StandardConfirmationState(gated, config(), baseSepolia, bumpEpoch as never, [{ host: "rpc.example", client: readClient }]);
+    const observation = (block: string) => ({
+      state: "Confirmed" as const, currentUid: hash("4"), submissionsUsed: 1, blockNumber: block, blockHash: blockHash("finalized", BigInt(block)),
+    });
+    const highRun = high.record({ orderId, orderKey: hash("1") }, observation("200"));
+    await highHasInserted;
+    const lowRun = state.record({ orderId, orderKey: hash("1") }, observation("100"));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    releaseHigh();
+    const [highResult, lowResult] = await Promise.all([highRun, lowRun]);
+    expect(highResult).toMatchObject({ stored: true, changed: true, final: { blockNumber: "200" } });
+    expect(lowResult).toEqual({ stored: false, changed: false, final: highResult.final });
+    expect((await state.stored(orderId))?.blockNumber).toBe("200");
+  });
+
   it("reconciles from a finalized read the way the sponsored worker does", async () => {
     await pool.query("DELETE FROM standard_reputation_confirmations");
     chain.finalized = { block: 200n, confirmation: 1, submissionsUsed: 1, currentUid: hash("7") };

@@ -31,6 +31,24 @@ export const CONFIRMATION_ATTESTATION_CAP = 3;
 export const SPONSORED_REVOCATIONS_PER_ORDER = 3;
 export const CONFIRMATION_SUBMISSION_MODES = ["sponsored", "direct"] as const;
 export type ConfirmationSubmissionMode = typeof CONFIRMATION_SUBMISSION_MODES[number];
+/**
+ * The closed request shape each phase accepts, per action: exactly these keys,
+ * nothing else. Published as the `confirmation-request-shapes.json` wire
+ * fixture so every consumer's offline tests build requests against the same
+ * key sets this parser enforces.
+ */
+export const CONFIRMATION_REQUEST_SHAPES = {
+  confirmation: {
+    prepare: ["phase", "submission", "confirmation", "acknowledgeFinalTransition"],
+    submit: ["phase", "submission", "preparationId", "signature"],
+    check: ["phase", "submission"],
+  },
+  "revoke-confirmation": {
+    prepare: ["phase", "submission"],
+    submit: ["phase", "submission", "preparationId", "signature"],
+    check: ["phase", "submission"],
+  },
+} as const;
 export const FINAL_ATTESTATION_WARNING = {
   code: "FINAL_CONFIRMATION_SUBMISSION",
   message: "this is the last confirmation you can submit; it can still be revoked",
@@ -220,9 +238,7 @@ export class StandardConfirmations {
     request: Record<string, unknown>,
     context: ConfirmationContext,
   ): Promise<ConfirmationOutcome> {
-    exact(request, action === "confirmation"
-      ? ["phase", "submission", "confirmation", "acknowledgeFinalTransition"]
-      : ["phase", "submission"]);
+    exact(request, [...CONFIRMATION_REQUEST_SHAPES[action].prepare]);
     const mode = submissionMode(request.submission);
     if (action === "confirmation" && request.confirmation !== "Confirmed" &&
       request.confirmation !== "NotConfirmed") throw invalidRequest("confirmation must be Confirmed or NotConfirmed");
@@ -383,7 +399,7 @@ export class StandardConfirmations {
     request: Record<string, unknown>,
     context: ConfirmationContext,
   ): Promise<ConfirmationOutcome> {
-    exact(request, ["phase", "submission", "preparationId", "signature"]);
+    exact(request, [...CONFIRMATION_REQUEST_SHAPES[action].submit]);
     if (submissionMode(request.submission) !== "sponsored") {
       throw invalidRequest("submit exists only for sponsored submissions; direct calls are sent by the wallet");
     }
@@ -520,7 +536,7 @@ export class StandardConfirmations {
     order: StandardOrderRecord,
     request: Record<string, unknown>,
   ): Promise<ConfirmationOutcome> {
-    exact(request, ["phase", "submission"]);
+    exact(request, [...CONFIRMATION_REQUEST_SHAPES.confirmation.check]);
     submissionMode(request.submission);
     let finalized: ConfirmationObservation;
     let latest: ConfirmationObservation;

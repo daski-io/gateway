@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 1,
+  "submissionModes": [
+    "sponsored",
+    "direct"
+  ],
+  "sponsoredRequires": "eoa",
+  "shapes": {
+    "confirmation": {
+      "prepare": [
+        "phase",
+        "submission",
+        "confirmation",
+        "acknowledgeFinalTransition"
+      ],
+      "submit": [
+        "phase",
+        "submission",
+        "preparationId",
+        "signature"
+      ],
+      "check": [
+        "phase",
+        "submission"
+      ]
+    },
+    "revoke-confirmation": {
+      "prepare": [
+        "phase",
+        "submission"
+      ],
+      "submit": [
+        "phase",
+        "submission",
+        "preparationId",
+        "signature"
+      ],
+      "check": [
+        "phase",
+        "submission"
+      ]
+    }
+  }
+}

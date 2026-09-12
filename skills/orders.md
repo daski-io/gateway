@@ -30,7 +30,11 @@ daski order confirm <handle> --check
 
 Up to three confirmations can be submitted per order; the current one can
 always be revoked. Finality on Base takes minutes to tens of minutes;
---check reports the finalized state.
+--check reports the finalized state and marks the record observed only
+once the finalized block is at or past the receipt's block. A hash
+recorded by mistake can be replaced with --tx <hash> or cleared with
+--abandon once the recorded transaction is finalized and carries no
+matching EAS event; neither cancels anything at the wallet.
 
 ## MCP and HTTP integrations
 

@@ -165,6 +165,13 @@ export class StandardConfirmationState {
    * Stores a finalized observation when its block is higher than the stored
    * one. Reports whether anything was written and whether the state or the
    * current UID changed, which is what moves the capability epoch.
+   *
+   * Concurrent first observations serialize on a per-order advisory lock:
+   * `FOR UPDATE` cannot lock a row that does not exist yet, so without it two
+   * first writers both read absence and the later insert would overwrite the
+   * higher block. The upsert itself is also conditional on a higher block, so
+   * storage is monotonic whatever the interleaving, and every result is
+   * derived from the row the database actually holds.
    */
   async record(
     order: { orderId: string; orderKey: Hex },
@@ -173,6 +180,10 @@ export class StandardConfirmationState {
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
+      await client.query(
+        "SELECT pg_advisory_xact_lock(hashtextextended('confirmation-state:' || $1::text, 0))",
+        [order.orderId],
+      );
       const existing = await client.query<StoredRow>(
         `SELECT current_uid,confirmation,submissions_used,finalized_block::text,finalized_block_hash
            FROM standard_reputation_confirmations WHERE order_id=$1 FOR UPDATE`,
@@ -186,28 +197,37 @@ export class StandardConfirmationState {
       const uid = observation.currentUid.toLowerCase() === ZERO_UID
         ? null
         : Buffer.from(observation.currentUid.slice(2), "hex");
-      await client.query(
+      const written = await client.query<StoredRow>(
         `INSERT INTO standard_reputation_confirmations
           (order_id,order_key,current_uid,confirmation,submissions_used,finalized_block,finalized_block_hash)
          VALUES ($1,$2,$3,$4,$5,$6,$7)
          ON CONFLICT (order_id) DO UPDATE SET current_uid=EXCLUDED.current_uid,
            confirmation=EXCLUDED.confirmation,submissions_used=EXCLUDED.submissions_used,
            finalized_block=EXCLUDED.finalized_block,finalized_block_hash=EXCLUDED.finalized_block_hash,
-           updated_at=now()`,
+           updated_at=now()
+         WHERE standard_reputation_confirmations.finalized_block < EXCLUDED.finalized_block
+         RETURNING current_uid,confirmation,submissions_used,finalized_block::text,finalized_block_hash`,
         [order.orderId, Buffer.from(order.orderKey.slice(2), "hex"), uid, observation.state,
           observation.submissionsUsed, observation.blockNumber, observation.blockHash],
       );
+      if (!written.rows[0]) {
+        // Unreachable under the lock; kept so storage stays monotonic even if
+        // a writer bypassed it. Report the row as the database holds it.
+        const held = await client.query<StoredRow>(
+          `SELECT current_uid,confirmation,submissions_used,finalized_block::text,finalized_block_hash
+             FROM standard_reputation_confirmations WHERE order_id=$1`,
+          [order.orderId],
+        );
+        await client.query("COMMIT");
+        const row = held.rows[0];
+        if (!row) throw new Error("confirmation state vanished under the lock");
+        return { stored: false, changed: false, final: rowToFinal(row) };
+      }
       await client.query("COMMIT");
-      const stored: ConfirmationFinal = {
-        state: observation.state,
-        currentUid: observation.currentUid.toLowerCase() as Hex,
-        submissionsUsed: observation.submissionsUsed,
-        blockNumber: observation.blockNumber,
-        blockHash: observation.blockHash,
-      };
+      const stored = rowToFinal(written.rows[0]);
       const changed = !current ||
         current.state !== stored.state ||
-        current.currentUid.toLowerCase() !== stored.currentUid;
+        current.currentUid.toLowerCase() !== stored.currentUid.toLowerCase();
       return { stored: true, changed, final: stored };
     } catch (error) {
       await client.query("ROLLBACK").catch(() => undefined);

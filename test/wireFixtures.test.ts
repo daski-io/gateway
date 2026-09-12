@@ -6,6 +6,7 @@ import type { Hex } from "viem";
 import { mcpError, mcpJson } from "../src/mcp/util.js";
 import { mcpSurfaceFixture } from "./helpers/mcpSurfaceFixture.js";
 import { canonicalHash } from "../src/standardRail/canonical.js";
+import { CONFIRMATION_REQUEST_SHAPES, CONFIRMATION_SUBMISSION_MODES } from "../src/standardRail/confirmations.js";
 import { StandardRailError, standardRailPublicError } from "../src/standardRail/errors.js";
 import { orderActionChallengeIssued } from "../src/standardRail/orderAuthorization.js";
 import { orderBindingExtension, paymentIdentifierExtension } from "../src/standardRail/payment.js";
@@ -236,8 +237,24 @@ async function providerLifecycleRequestFixture() {
   };
 }
 
+/**
+ * The closed request shapes the confirmation handler accepts per action and
+ * phase (its `exact` key sets), plus the submission modes. A consumer that
+ * builds a prepare, submit, or check request proves it against these key sets
+ * offline; the gateway rejects any other shape with CONFIRMATION_REQUEST_INVALID.
+ */
+function confirmationRequestShapesFixture() {
+  return {
+    schemaVersion: 1,
+    submissionModes: [...CONFIRMATION_SUBMISSION_MODES],
+    sponsoredRequires: "eoa",
+    shapes: CONFIRMATION_REQUEST_SHAPES,
+  };
+}
+
 const fixtures: Record<string, () => unknown | Promise<unknown>> = {
   "mcp-tool-surface.json": mcpSurfaceFixture,
+  "confirmation-request-shapes.json": confirmationRequestShapesFixture,
   "mcp-result.json": mcpResultFixture,
   "payment-challenge-prepared.json": preparedPaymentChallengeFixture,
   "payment-required-extensions.json": paymentRequiredExtensionsFixture,

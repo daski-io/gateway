@@ -26,7 +26,7 @@ Responses:
 | 201 | First acceptance; body is the persisted record. |
 | 200 | Replay: the same `(providerAgentId, providerAssetId, ownerVersion)` with an equal content hash, whatever the envelope's age or signing key. |
 | 400 | `OWNER_SWAP_INVALID` (payload format), `INVALID_IDEMPOTENCY_KEY`. |
-| 401 | `OWNER_SWAP_AUTH_INVALID`: window, audience, environment, chain, keys, or a signer that is not the provider's current finalized owner or agent wallet. |
+| 401 | `OWNER_SWAP_AUTH_INVALID`: window, audience, environment, chain, keys, or a signer that is not the provider's current owner or agent wallet as read at the configured finality tag. |
 | 403 | `OWNER_SWAPS_DISABLED`, `NEW_PAYER_SANCTIONED`. |
 | 404 | `ORDER_NOT_FOUND`. |
 | 409 | `ORDER_PROVIDER_MISMATCH`, `ORDER_KEY_MISMATCH`, `OWNER_SWAP_CONFLICT` (same key, different content hash). |
@@ -53,8 +53,11 @@ The closed `SignedEnvelope` used by service registration
 `chainId`, `audience` equal to the gateway's public URL, `signerKeyId`
 `provider-authority`, `issuedAt`, `validBefore` at most ten minutes after
 `issuedAt`, the payload, and a 65-byte personal signature over the
-canonical artifact-payload hash by the provider's current finalized owner
-or agent wallet, read live from `ProviderRegistry` and ERC-8004.
+canonical artifact-payload hash by the provider's current owner or agent
+wallet, read live from `ProviderRegistry` and ERC-8004 at the gateway's
+configured finality tag (`CHAIN_FINALITY_TAG`: `safe` by default on Base
+Sepolia, `finalized` on Base mainnet), the same read service registration
+uses.
 
 Payload fields, all required, none other:
 

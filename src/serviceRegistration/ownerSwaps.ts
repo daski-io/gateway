@@ -172,7 +172,7 @@ export class OwnerSwapService {
       throw new RegistrationError(
         401,
         "OWNER_SWAP_AUTH_INVALID",
-        "The signed owner swap or the finalized provider authority is invalid.",
+        "The signed owner swap or the provider authority read at the configured finality tag is invalid.",
       );
     }
     const order = await pool.query<{ provider_agent_id: string; order_key: Buffer }>(
