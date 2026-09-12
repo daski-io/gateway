@@ -59,11 +59,10 @@ signer is configured, the steady-state prompt is `Use Daski to [your task]`.
   projection from the same warm data: the newest purchases across services
   with service and skill names, marketplace totals, the safe block, and the
   contract addresses. `limit` accepts 1 to 200. New orders preserve
-  checkout service and skill names in their immutable listing snapshot. Activity
-  resolves historical skill IDs from saved orders, including superseded listings;
-  legacy orders without saved names use the matching current skill name or the
-  original skill ID. Unresolved purchases display an unknown skill, never another
-  skill from the same service.
+  checkout service and skill names in their immutable listing snapshot, and
+  activity shows exactly those names, including for superseded listings. A
+  purchase whose local order is missing displays an unknown skill, never
+  another skill from the same service.
 - `/public/v3/services` publishes the service-first dynamic catalog when the
   registration route group is enabled.
 - `/public/v2/registry/*` exposes read-only ERC-8004 identity, Daski provider

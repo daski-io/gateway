@@ -40,8 +40,8 @@ with --abandon once the recorded transaction is final and carries no
 matching EAS event; a reverted transaction can be abandoned once its
 block is final; neither cancels anything at the wallet. Once a direct
 record is observed, --check reports the gateway's current state and keeps
-the record as history; --submission direct re-verifies the recorded
-transaction, --submission sponsored asks the gateway.
+the record as history; --submission direct returns the recorded evidence
+of that record, --submission sponsored asks the gateway.
 
 ## MCP and HTTP integrations
 

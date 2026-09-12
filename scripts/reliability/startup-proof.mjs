@@ -69,7 +69,10 @@ export async function proveStartup(input, databaseUrl, options={}) {
       'STANDARD_RAIL_SPLITTER_FACTORY_RUNTIME_CODE_HASH','STANDARD_RAIL_SPLITTER_CREATION_CODE_HASH','STANDARD_RAIL_SPLITTER_CREATION_CODE',
       'STANDARD_RAIL_SPLITTER_FACTORY','STANDARD_RAIL_COMMISSION_RECEIVER','STANDARD_RAIL_COMMISSION_BPS',
       'IDENTITY_REGISTRY_ADDRESS','AGENT_INDEX_ADDRESS','PROVIDER_REGISTRY_ADDRESS','SERVICE_REGISTRY_ADDRESS',
-      'VALIDATION_REGISTRY_ADDRESS','REPUTATION_STORAGE_ADDRESS','EAS_ADDRESS','EAS_OUTCOME_SCHEMA_UID','EAS_CONFIRMATION_SCHEMA_UID'];
+      'VALIDATION_REGISTRY_ADDRESS','REPUTATION_STORAGE_ADDRESS','EAS_ADDRESS','EAS_OUTCOME_SCHEMA_UID','EAS_CONFIRMATION_SCHEMA_UID',
+      'PAYER_ACCOUNT_TYPES','OWNER_SWAPS_ENABLED','OWNER_SWAPS_PER_PROVIDER_PER_DAY',
+      // The finality settings the candidate projection carries: the rehearsal must run the requested tag and depth, not the defaults.
+      'CHAIN_FINALITY_TAG','STANDARD_RAIL_FINALITY_CONFIRMATIONS'];
     for(const [key,value] of Object.entries(input.runtimeConfig ?? {})) {
       assert.ok(publicSettings.includes(key),`unsupported public runtime setting ${key}`); assert.equal(typeof value,'string');
     }
