@@ -402,9 +402,10 @@ describe("confirmation state (finalized-only storage)", () => {
 
   it("serializes concurrent first observations so a lower block never overwrites a higher one", async () => {
     await pool.query("DELETE FROM standard_reputation_confirmations");
-    // The higher observation holds its transaction open past the INSERT until
-    // the lower one has been issued; FOR UPDATE alone cannot lock the absent
-    // row, so the per-order advisory lock is what makes the lower writer wait.
+    // The higher observation's transaction is held open past its INSERT: the
+    // gate sits before the real COMMIT is sent, so PostgreSQL still holds the
+    // per-order advisory lock while the lower writer is issued. FOR UPDATE
+    // alone cannot lock the absent row; the lock is what makes it wait.
     let releaseHigh!: () => void;
     const highMayCommit = new Promise<void>((resolve) => { releaseHigh = resolve; });
     let highInserted!: () => void;
@@ -416,9 +417,9 @@ describe("confirmation state (finalized-only storage)", () => {
         return {
           release: () => client.release(),
           query: async (text: string, values?: unknown[]) => {
+            if (text === "COMMIT") await highMayCommit;
             const result = await client.query(text, values);
             if (text.includes("INSERT INTO standard_reputation_confirmations")) highInserted();
-            if (text === "COMMIT") await highMayCommit;
             return result;
           },
         };
@@ -431,7 +432,12 @@ describe("confirmation state (finalized-only storage)", () => {
     const highRun = high.record({ orderId, orderKey: hash("1") }, observation("200"));
     await highHasInserted;
     const lowRun = state.record({ orderId, orderKey: hash("1") }, observation("100"));
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    // The lower writer must be waiting in the database, not finishing on its own.
+    const settledEarly = await Promise.race([
+      lowRun.then(() => true, () => true),
+      new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 300)),
+    ]);
+    expect(settledEarly).toBe(false);
     releaseHigh();
     const [highResult, lowResult] = await Promise.all([highRun, lowRun]);
     expect(highResult).toMatchObject({ stored: true, changed: true, final: { blockNumber: "200" } });
