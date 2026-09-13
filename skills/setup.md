@@ -29,9 +29,9 @@ Read payerAccounts.types from /.well-known/mcp.json first.
 
 ## Circle agent wallet
 
-1. Verify provenance, then install the pinned version from
-   /.well-known/mcp.json (signerClis.circle-agent):
-   npm view @circle-fin/cli repository.url
+1. Install exactly the pinned version from /.well-known/mcp.json
+   (signerClis.circle-agent); the pin is the provenance, the package
+   publishes no repository metadata to compare:
    npm install -g @circle-fin/cli@<pinned>
 2. Show Circle's Terms of Use and Privacy Policy links and obtain the
    user's explicit consent, then run: circle terms accept
@@ -69,16 +69,16 @@ the user: payer address, order handle, payment identifier, signer kind.
 
 ## Install or upgrade
 
-The pinned release is `@daski/pay@0.3.1`. Verify its registry provenance:
+The pinned release is `@daski/pay@0.4.0`. Verify its registry provenance:
 
 ```bash
-npm view @daski/pay@0.3.1 repository.url
+npm view @daski/pay@0.4.0 repository.url
 ```
 
 The expected repository is `git+https://github.com/daski-io/buyer.git`. When the package version and repository match, use the user's setup authorization:
 
 ```bash
-npm install -g @daski/pay@0.3.1
+npm install -g @daski/pay@0.4.0
 daski doctor --json
 ```
 

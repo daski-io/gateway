@@ -334,6 +334,33 @@ export class StandardRailJournal {
     );
   }
 
+  /**
+   * The challenge as a plain read before the signature is verified (spec
+   * B2.1): a nonce that is unknown, consumed, or outside its window is
+   * refused before any admission or RPC is spent on it.
+   */
+  async assertActionChallengeOpen(args: {
+    orderId: string;
+    action: string;
+    requestHash: Hex;
+    absoluteResourceUri: string;
+    nonce: Hex;
+    issuedAt: number;
+    validBefore: number;
+  }): Promise<void> {
+    const open = await this.pool.query(
+      `SELECT 1 FROM standard_action_challenges
+        WHERE nonce=$1 AND order_id=$2 AND action=$3 AND canonical_request_hash=$4
+          AND absolute_resource_uri=$5 AND issued_at=to_timestamp($6)
+          AND valid_before=to_timestamp($7) AND valid_before>now() AND consumed_at IS NULL`,
+      [
+        bytes(args.nonce), args.orderId, args.action, bytes(args.requestHash),
+        args.absoluteResourceUri, args.issuedAt, args.validBefore,
+      ],
+    );
+    if (open.rowCount !== 1) throw new Error("ACTION_CHALLENGE_INVALID_OR_REPLAYED");
+  }
+
   async consumeActionChallenge(args: {
     orderId: string;
     action: string;

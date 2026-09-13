@@ -104,7 +104,7 @@ export function verifyReadCapability(args: {
       !Number.isSafeInteger(payload.epoch) ||
       payload.epoch !== args.capabilityEpoch ||
       typeof payload.jti !== "string" ||
-      !/^[0-9a-f-]{36}$/i.test(payload.jti)
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(payload.jti)
     ) invalid();
     return payload as ReadCapabilityPayload;
   } catch (error) {

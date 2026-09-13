@@ -19,6 +19,3 @@ export function isHexBytes(value: unknown): value is Hex {
   );
 }
 
-export function isHexSignature(value: unknown): value is Hex {
-  return typeof value === "string" && /^0x[0-9a-fA-F]{130}$/.test(value);
-}

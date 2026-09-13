@@ -531,8 +531,10 @@ function requestError(error: RequestSchemaError): StandardRailError {
 
 type LegacyFactory = () => StandardRailError;
 
-// Regression bridge for older persisted/recovery paths. Purchase and lifecycle
-// code throws StandardRailError directly; this is exact mapping, never regex.
+// Exact (never regex) bridge from plain-Error messages to public codes. The
+// catalog, journal, and wallet store still throw the first entries; the rest
+// are pinned by the payment-mapping tests as the codes an older persisted or
+// recovery path may still surface.
 const LEGACY_ERRORS = new Map<string, LegacyFactory>([
   ["OUTCOME_NOT_FOUND", () => standardRailError("OUTCOME_NOT_FOUND")],
   ["LISTING_SUPERSEDED", () => standardRailError("LISTING_SUPERSEDED")],

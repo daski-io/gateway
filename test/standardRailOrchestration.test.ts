@@ -219,7 +219,7 @@ describe("standard rail orchestration", () => {
       },
       assertRailFence: vi.fn(async () => undefined),
       store: { findByHandle: vi.fn(async () => order) },
-      journal: { issueActionChallenge, consumeActionChallenge },
+      journal: { issueActionChallenge, consumeActionChallenge, assertActionChallengeOpen: vi.fn(async () => undefined) },
       incidents: { record: vi.fn() },
       signedReceipt: vi.fn(async () => receipt),
       payerSignature: createPayerSignatureVerifier({ accountTypes: ["eoa"], timeoutMs: 0, endpoints: [] }),

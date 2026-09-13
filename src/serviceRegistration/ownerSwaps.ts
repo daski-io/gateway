@@ -2,11 +2,16 @@ import { getAddress, keccak256, toBytes, type Address, type Hex } from "viem";
 import type { Config } from "../config.js";
 import type { Pool } from "../db/pool.js";
 import type { MarketplaceChainReader } from "../marketplace/reader.js";
+import { POST_DEPOSIT_STATES } from "../standardRail/assetEligibility.js";
 import { canonicalHash } from "../standardRail/canonical.js";
 import type { StandardRailConfig } from "../standardRail/config.js";
 import type { SignedEnvelope } from "../standardRail/types.js";
 import { logger } from "../util/logger.js";
-import { verifyProviderEnvelope } from "./auth.js";
+import {
+  ProviderAuthorityUnavailableError,
+  recoverProviderEnvelopeSigner,
+  verifyProviderEnvelope,
+} from "./auth.js";
 import { RegistrationError } from "./service.js";
 
 export const OWNER_SWAP_ARTIFACT_TYPE = "ProviderOwnerSwapV1";
@@ -103,6 +108,7 @@ interface SwapRow {
   new_payer: string;
   content_hash: Buffer;
   received_at: Date;
+  signer: string;
 }
 
 function recordOf(row: SwapRow): OwnerSwapRecord {
@@ -134,13 +140,12 @@ export class OwnerSwapService {
   constructor(private readonly options: OwnerSwapServiceOptions) {}
 
   async submit(raw: unknown): Promise<{ created: boolean; record: OwnerSwapRecord }> {
-    const { config, railConfig, pool, marketplace } = this.options;
+    const { config, railConfig, pool } = this.options;
     if (!railConfig.ownerSwaps.enabled) {
       throw new RegistrationError(403, "OWNER_SWAPS_DISABLED", "Owner swaps are not enabled on this gateway.");
     }
     // Format first, fail closed: the idempotency key and content hash come
-    // from the payload alone, so a replay is answered before any signature or
-    // chain work, whatever the envelope's age or signing key.
+    // from the payload alone.
     const envelopeKeys = raw && typeof raw === "object" && !Array.isArray(raw)
       ? (raw as Record<string, unknown>) : null;
     let payload: ProviderOwnerSwapV1;
@@ -154,29 +159,37 @@ export class OwnerSwapService {
       );
     }
     const contentHash = ownerSwapContentHash(payload);
-    const existing = await this.find(payload);
-    if (existing) return { created: false, record: this.replay(existing, contentHash) };
-
-    let verified;
+    // A replay is answered from the record only to a signed envelope: signed
+    // by the authority the record was accepted from (its age is then
+    // irrelevant, one local recovery, no chain read) or by the provider's
+    // current authority (a rotated key). An unsigned probe learns nothing
+    // about which asset versions exist.
+    let presented: Address;
     try {
-      verified = await verifyProviderEnvelope<ProviderOwnerSwapV1>({
+      presented = (await recoverProviderEnvelopeSigner<ProviderOwnerSwapV1>({
         raw,
         artifactType: OWNER_SWAP_ARTIFACT_TYPE,
         parsePayload: parseOwnerSwapPayload,
-        providerAgentId: (value) => value.providerAgentId,
         config,
         railConfig,
-        marketplace,
-      });
+      })).signer;
     } catch {
-      throw new RegistrationError(
-        401,
-        "OWNER_SWAP_AUTH_INVALID",
-        "The signed owner swap or the provider authority read at the configured finality tag is invalid.",
-      );
+      throw this.authInvalid();
     }
-    const order = await pool.query<{ provider_agent_id: string; order_key: Buffer }>(
-      "SELECT provider_agent_id,order_key FROM standard_orders WHERE order_id=$1",
+    const existing = await this.find(payload);
+    if (existing) {
+      if (existing.signer !== presented.toLowerCase()) await this.verify(raw);
+      return { created: false, record: this.replay(existing, contentHash) };
+    }
+
+    const verified = await this.verify(raw);
+    const order = await pool.query<{
+      provider_agent_id: string;
+      order_key: Buffer;
+      state: string;
+      authorization_key: Buffer | null;
+    }>(
+      "SELECT provider_agent_id,order_key,state,authorization_key FROM standard_orders WHERE order_id=$1",
       [payload.orderId],
     );
     const row = order.rows[0];
@@ -187,6 +200,16 @@ export class OwnerSwapService {
     if (`0x${row.order_key.toString("hex")}` !== payload.orderKey) {
       throw new RegistrationError(409, "ORDER_KEY_MISMATCH", "The order key does not match the stored order.");
     }
+    // Only an order whose deposit was claimed and reached a post-deposit
+    // state can have created an asset: an unpaid draft anchors nothing, and
+    // an anchored draft would otherwise outlive the draft purge.
+    if (!row.authorization_key || !(POST_DEPOSIT_STATES as readonly string[]).includes(row.state)) {
+      throw new RegistrationError(
+        409,
+        "ORDER_NOT_ANCHORABLE",
+        "The referenced order has no settled deposit to anchor an owner swap.",
+      );
+    }
     try {
       await this.options.screen(getAddress(payload.newPayer));
     } catch (error) {
@@ -195,7 +218,7 @@ export class OwnerSwapService {
       }
       logger.warn("owner swap screening unavailable", {
         providerAgentId: payload.providerAgentId,
-        error: error instanceof Error ? error.message : String(error),
+        error: error instanceof Error ? error : new Error(String(error)),
       });
       throw new RegistrationError(503, "SCREENING_UNAVAILABLE", "Sanctions screening is unavailable; retry later.");
     }
@@ -224,7 +247,7 @@ export class OwnerSwapService {
            content_hash,canonical_envelope,signer)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
          ON CONFLICT (provider_agent_id,provider_asset_id,owner_version) DO NOTHING
-         RETURNING provider_asset_id,owner_version,new_payer,content_hash,received_at`,
+         RETURNING provider_asset_id,owner_version,new_payer,content_hash,received_at,signer`,
         [
           payload.providerAgentId, payload.providerAssetId, payload.ownerVersion, payload.orderId,
           payload.previousPayer, payload.newPayer, Buffer.from(contentHash.slice(2), "hex"),
@@ -244,6 +267,40 @@ export class OwnerSwapService {
     return { created: false, record: this.replay(raced, contentHash) };
   }
 
+  private authInvalid(): RegistrationError {
+    return new RegistrationError(
+      401,
+      "OWNER_SWAP_AUTH_INVALID",
+      "The signed owner swap or the provider authority read at the configured finality tag is invalid.",
+    );
+  }
+
+  /** A fresh envelope against the live provider authority; an unreadable authority is an outage. */
+  private async verify(raw: unknown) {
+    const { config, railConfig, marketplace } = this.options;
+    try {
+      return await verifyProviderEnvelope<ProviderOwnerSwapV1>({
+        raw,
+        artifactType: OWNER_SWAP_ARTIFACT_TYPE,
+        parsePayload: parseOwnerSwapPayload,
+        providerAgentId: (value) => value.providerAgentId,
+        config,
+        railConfig,
+        marketplace,
+      });
+    } catch (error) {
+      if (error instanceof ProviderAuthorityUnavailableError) {
+        logger.warn("owner swap provider authority unavailable", { error });
+        throw new RegistrationError(
+          503,
+          "AUTHORITY_UNAVAILABLE",
+          "The provider authority could not be read from chain; retry later.",
+        );
+      }
+      throw this.authInvalid();
+    }
+  }
+
   private replay(existing: SwapRow, contentHash: Hex): OwnerSwapRecord {
     const record = recordOf(existing);
     if (record.contentHash !== contentHash) {
@@ -258,7 +315,7 @@ export class OwnerSwapService {
 
   private async find(payload: ProviderOwnerSwapV1): Promise<SwapRow | null> {
     const result = await this.options.pool.query<SwapRow>(
-      `SELECT provider_asset_id,owner_version,new_payer,content_hash,received_at
+      `SELECT provider_asset_id,owner_version,new_payer,content_hash,received_at,signer
          FROM standard_provider_owner_swaps
         WHERE provider_agent_id=$1 AND provider_asset_id=$2 AND owner_version=$3`,
       [payload.providerAgentId, payload.providerAssetId, payload.ownerVersion],

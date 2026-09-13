@@ -417,6 +417,7 @@ export class StandardConfirmations {
           WHERE payer=$1 AND eas_nonce=$2::numeric AND consumed_at IS NULL AND expires_at<=now()`,
         [payer.toLowerCase(), nonce.toString()],
       );
+      await this.assertNonceUnoccupied(client, payer, nonce, order.orderId);
       const live = await client.query<PreparationRow>(
         `SELECT * FROM standard_confirmation_preparations
           WHERE payer=$1 AND eas_nonce=$2::numeric AND consumed_at IS NULL AND expires_at>now()
@@ -516,7 +517,10 @@ export class StandardConfirmations {
       throw invalidRequest("submit exists only for sponsored submissions; direct calls are sent by the wallet");
     }
     if (context.verifiedVia !== "recovery") throw standardRailError("CONFIRMATION_SPONSORED_REQUIRES_EOA");
-    if (typeof request.preparationId !== "string" || !/^[0-9a-f-]{36}$/i.test(request.preparationId)) {
+    if (
+      typeof request.preparationId !== "string" ||
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(request.preparationId)
+    ) {
       throw invalidRequest("preparationId must be the identifier prepare returned");
     }
     const result = await this.pool.query<PreparationRow>(
@@ -524,8 +528,13 @@ export class StandardConfirmations {
       [request.preparationId, order.orderId],
     );
     const prep = result.rows[0];
-    if (!prep || prep.operation !== (action === "confirmation" ? "attest-confirmation" : "revoke-confirmation") ||
-      prep.expires_at.getTime() <= Date.now()) throw standardRailError("CONFIRMATION_PREPARATION_STALE");
+    if (!prep || prep.operation !== (action === "confirmation" ? "attest-confirmation" : "revoke-confirmation")) {
+      throw standardRailError("CONFIRMATION_PREPARATION_STALE");
+    }
+    // A consumed preparation answers for its admitted operation whatever its
+    // deadline says: the deadline bounds the EAS delegation, not the queued
+    // submission, and a buyer resuming after it must learn the operation's
+    // state rather than clear its journal and prepare a competing review.
     if (prep.consumed_at) {
       const existing = await this.pool.query<{ operation_id: string; state: string }>(
         `SELECT o.operation_id,o.state FROM standard_confirmation_sponsorships s
@@ -542,6 +551,7 @@ export class StandardConfirmations {
       }
       throw standardRailError("CONFIRMATION_PREPARATION_STALE");
     }
+    if (prep.expires_at.getTime() <= Date.now()) throw standardRailError("CONFIRMATION_PREPARATION_STALE");
     const signature = await this.assertDelegatedSignature(order, prep, request.signature);
     const current = await this.current(order);
     const expectedUid = prep.current_uid ? `0x${prep.current_uid.toString("hex")}` : ZERO_UID;
@@ -552,6 +562,38 @@ export class StandardConfirmations {
     }
     await this.reserve(order, prep, signature, current);
     throw standardRailError("CONFIRMATION_SUBMISSION_PENDING");
+  }
+
+  /**
+   * An admitted sponsored submission holds the payer's EAS nonce until it is
+   * mined, whatever the preparation row says: EAS increments the nonce inside
+   * `_verifyAttest`, so a second preparation at the same nonce would be
+   * admitted, revert on chain, and burn its sponsorship. Under the payer lock,
+   * an operation still pending, broadcast, or awaiting an operator at
+   * (payer, nonce) refuses a new preparation and a new reservation: the same
+   * order waits for its queued submission, another order is busy.
+   */
+  private async assertNonceUnoccupied(
+    client: { query: Pool["query"] },
+    payer: Address,
+    nonce: bigint,
+    orderId: string,
+  ): Promise<void> {
+    const inFlight = await client.query<{ order_id: string }>(
+      `SELECT p.order_id FROM standard_confirmation_sponsorships s
+         JOIN standard_confirmation_preparations p ON p.preparation_id=s.preparation_id
+         JOIN standard_reputation_operations o ON o.operation_id=s.operation_id
+        WHERE p.payer=$1 AND p.eas_nonce=$2::numeric
+          AND o.state IN ('pending','broadcast','operator_attention')
+        LIMIT 1`,
+      [payer.toLowerCase(), nonce.toString()],
+    );
+    const held = inFlight.rows[0];
+    if (!held) return;
+    if (held.order_id === orderId) throw standardRailError("CONFIRMATION_SUBMISSION_PENDING");
+    throw standardRailError("CONFIRMATION_NONCE_BUSY", {
+      message: "A sponsored submission for another of this payer's orders is queued at the same EAS nonce",
+    });
   }
 
   private async reserve(
@@ -592,6 +634,7 @@ export class StandardConfirmations {
           "SELECT 1 FROM standard_confirmation_sponsorships WHERE preparation_id=$1", [prep.preparation_id]);
         throw standardRailError(sponsored.rowCount ? "CONFIRMATION_SUBMISSION_PENDING" : "CONFIRMATION_PREPARATION_STALE");
       }
+      await this.assertNonceUnoccupied(client, getAddress(order.payer!), BigInt(prep.eas_nonce), order.orderId);
       // Attestations and revocations are counted separately per order; the
       // per-payer and global daily budgets count every sponsorship.
       const counts = await client.query<{
@@ -606,7 +649,8 @@ export class StandardConfirmations {
                 count(*) FILTER (WHERE s.utc_day=(now() AT TIME ZONE 'UTC')::date
                   AND s.state<>'released')::text AS global_count
            FROM standard_confirmation_sponsorships s
-           JOIN standard_confirmation_preparations p ON p.preparation_id=s.preparation_id`,
+           JOIN standard_confirmation_preparations p ON p.preparation_id=s.preparation_id
+          WHERE s.order_id=$1 OR s.utc_day=(now() AT TIME ZONE 'UTC')::date`,
         [order.orderId, order.payer!.toLowerCase()]);
       const count = counts.rows[0]!;
       const orderExhausted = attestation

@@ -56,8 +56,7 @@ import { StandardReputationWorker } from "./reputationWorker.js";
 import { StandardConfirmations } from "./confirmations.js";
 import { StandardConfirmationState } from "./confirmationState.js";
 import {
-  boundedRpcFetch,
-  CONTRACT_VERIFICATION_RESPONSE_MAX_BYTES,
+  createContractVerificationEndpoint,
   createPayerSignatureVerifier,
   type PayerSignatureVerifier,
 } from "./payerSignature.js";
@@ -191,25 +190,20 @@ export class StandardRailService {
     this.providerTransport = new StandardProviderTransport(fetchFn);
     const chain = appConfig.chainId === 8453 ? base : baseSepolia;
     // One payer-signature verifier for every site. The contract path charges
-    // the per-payer admission bucket before its bounded RPC call.
+    // an admission before its bounded RPC call, keyed by the requesting
+    // client (never by the claimed payer, which is what the verification has
+    // yet to establish), and talks to the node through raw eth_call only.
     this.payerSignature = createPayerSignatureVerifier({
       accountTypes: railConfig.payerAccountTypes,
       timeoutMs: railConfig.payerSignatureVerifyTimeoutMs,
-      endpoints: railConfig.evidenceRpcUrls.map((url) => ({
-        host: new URL(url).hostname,
-        client: createPublicClient({
-          chain,
-          transport: http(url, {
-            retryCount: 0,
-            timeout: railConfig.payerSignatureVerifyTimeoutMs,
-            fetchFn: boundedRpcFetch(CONTRACT_VERIFICATION_RESPONSE_MAX_BYTES, fetchFn),
-          }),
-        }),
+      endpoints: railConfig.evidenceRpcUrls.map((url) => createContractVerificationEndpoint({
+        url, chain, timeoutMs: railConfig.payerSignatureVerifyTimeoutMs, fetchFn,
       })),
-      admit: (payer) => chargeSignatureVerifyAdmission(
+      admit: ({ context }) => chargeSignatureVerifyAdmission(
         pool,
-        payer,
+        { clientKey: activeRequestKey("unknown"), encryptionKey: railConfig.encryptionKey },
         railConfig.abuse.assetStateChangesPerPayerPerMinute,
+        context,
       ),
     });
     this.walletStore = new StandardWalletStore(pool, railConfig, appConfig.chainId, this.payerSignature);
@@ -410,6 +404,24 @@ export class StandardRailService {
         message: "The active standard rail admission window has expired",
       });
     }
+  }
+
+  /** An unknown, consumed, expired, or tampered action challenge: one incident, one public code. */
+  private async refuseActionChallenge(
+    order: { orderId: string; state: StandardOrderRecord["state"] },
+    action: string,
+    nonce: string,
+    error: unknown,
+  ): Promise<ReturnType<typeof standardRailError>> {
+    if (error instanceof Error && error.message === "ACTION_CHALLENGE_INVALID_OR_REPLAYED") {
+      await this.incidents.record({
+        kind: "action_authorization_reuse_or_tamper",
+        orderId: order.orderId,
+        state: order.state,
+        details: { action, nonce },
+      });
+    }
+    return standardRailError("WALLET_AUTHORIZATION_INVALID", { cause: error });
   }
 
   private async providerFetch(
@@ -1200,6 +1212,22 @@ export class StandardRailService {
         chainId: this.appConfig.chainId,
         gatewayAudience: this.railConfig.gatewayAudience,
       });
+      // The challenge is read before anything is spent on the signature
+      // (spec B2.1): an unknown, consumed, or expired nonce is refused before
+      // the admission and the RPC a contract-account verification costs.
+      try {
+        await this.journal.assertActionChallengeOpen({
+          orderId: order.orderId,
+          action: args.action,
+          requestHash,
+          absoluteResourceUri: authorization.absoluteResourceUri,
+          nonce: authorization.nonce,
+          issuedAt: authorization.issuedAt,
+          validBefore: authorization.validBefore,
+        });
+      } catch (error) {
+        throw await this.refuseActionChallenge(order, args.action, authorization.nonce, error);
+      }
       // Verified with no lock or connection held; the nonce is consumed only
       // afterwards, in its own short transaction.
       const verification = await this.payerSignature.verifyPayerTypedData({
@@ -1236,15 +1264,7 @@ export class StandardRailService {
             : undefined,
         });
       } catch (error) {
-        if (error instanceof Error && error.message === "ACTION_CHALLENGE_INVALID_OR_REPLAYED") {
-          await this.incidents.record({
-            kind: "action_authorization_reuse_or_tamper",
-            orderId: order.orderId,
-            state: order.state,
-            details: { action: args.action, nonce: authorization.nonce },
-          });
-        }
-        throw standardRailError("WALLET_AUTHORIZATION_INVALID", { cause: error });
+        throw await this.refuseActionChallenge(order, args.action, authorization.nonce, error);
       }
       providerAuthorization = authorization;
       authorizationHash = canonicalHash(authorization);

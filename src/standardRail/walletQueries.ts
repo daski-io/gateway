@@ -176,7 +176,7 @@ export class StandardWalletQueries {
     });
     const address = getAddress(payer);
     return this.observe(async ({ client }) => {
-      const block = await client.getBlock({ blockTag: "safe" });
+      const block = await client.getBlock({ blockTag: this.finalityTag });
       const [[eligible, confirmed, notConfirmed], totalPaid, totalRefunded] = await Promise.all([
         client.readContract({
           address: this.reputationContract,

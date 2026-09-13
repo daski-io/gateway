@@ -17,21 +17,24 @@ only). Requests join the `service-registration` rate-limit groups.
 ## Resource
 
 `POST /v1/owner-swaps` with an `Idempotency-Key` header of 8 to 128
-URL-safe characters and a `ProviderOwnerSwapV1` envelope as the body.
+URL-safe characters and a `ProviderOwnerSwapV1` envelope as the body. The
+header is required for uniformity with service registration and is
+validated, but idempotency is decided by the payload's
+`(providerAgentId, providerAssetId, ownerVersion)` alone.
 
 Responses:
 
 | Status | Meaning |
 |---|---|
 | 201 | First acceptance; body is the persisted record. |
-| 200 | Replay: the same `(providerAgentId, providerAssetId, ownerVersion)` with an equal content hash, whatever the envelope's age or signing key. |
+| 200 | Replay: the same `(providerAgentId, providerAssetId, ownerVersion)` with an equal content hash, signed by the authority the record was accepted from (its age is then irrelevant) or by the provider's current authority. |
 | 400 | `OWNER_SWAP_INVALID` (payload format), `INVALID_IDEMPOTENCY_KEY`. |
-| 401 | `OWNER_SWAP_AUTH_INVALID`: window, audience, environment, chain, keys, or a signer that is not the provider's current owner or agent wallet as read at the configured finality tag. |
+| 401 | `OWNER_SWAP_AUTH_INVALID`: envelope shape, audience, environment, chain, keys, a first acceptance outside the validity window, or a signer that is neither the recorded one (replay) nor the provider's current owner or agent wallet as read at the configured finality tag. An unsigned probe is refused before the record is consulted. |
 | 403 | `OWNER_SWAPS_DISABLED`, `NEW_PAYER_SANCTIONED`. |
 | 404 | `ORDER_NOT_FOUND`. |
-| 409 | `ORDER_PROVIDER_MISMATCH`, `ORDER_KEY_MISMATCH`, `OWNER_SWAP_CONFLICT` (same key, different content hash). |
+| 409 | `ORDER_PROVIDER_MISMATCH`, `ORDER_KEY_MISMATCH`, `ORDER_NOT_ANCHORABLE` (the order never settled a deposit), `OWNER_SWAP_CONFLICT` (same key, different content hash). |
 | 429 | `OWNER_SWAP_RATE_LIMITED` (the provider's daily budget). |
-| 503 | `SCREENING_UNAVAILABLE` (the sanctions oracle could not be read; retry). |
+| 503 | `AUTHORITY_UNAVAILABLE` (the provider authority could not be read from chain; retry), `SCREENING_UNAVAILABLE` (the sanctions oracle could not be read; retry). |
 
 The record:
 
@@ -75,12 +78,14 @@ Content hash: `keccak256` of the canonical (RFC 8785 style, sorted keys)
 JSON of the payload. `issuedAt` and `validBefore` are envelope fields, so
 re-signing the same payload later produces the same content hash: a retry
 after an outage longer than the envelope's validity, or after the provider
-rotated its authority key, is answered with the persisted record.
+rotated its authority key, is answered with the persisted record as long as
+the retry is signed by the recorded authority or the current one.
 
 Checks, all fail closed: exact keys and formats; validity window, audience,
 environment, and chain; the order exists; `order.providerAgentId` equals
-`providerAgentId`; `order.orderKey` equals `orderKey`; `newPayer` passes the
-sanctions oracle (an unreadable oracle is 503, retryable).
+`providerAgentId`; `order.orderKey` equals `orderKey`; the order settled a
+deposit and is in a post-deposit state; `newPayer` passes the sanctions
+oracle (an unreadable oracle is 503, retryable).
 
 ## Effect
 

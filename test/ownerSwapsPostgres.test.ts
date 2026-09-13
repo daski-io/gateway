@@ -113,18 +113,26 @@ async function post(body: unknown, headers: Record<string, string> = { "idempote
   return { status: response.status, body: await response.json() as Record<string, unknown> };
 }
 
-async function insertOrder(id: string, provider: string, key: Hex, payer: string | null) {
+async function insertOrder(
+  id: string,
+  provider: string,
+  key: Hex,
+  payer: string | null,
+  options: { state?: string; paid?: boolean } = {},
+) {
+  const { state = "FULFILLED", paid = true } = options;
   await pool.query(
     `INSERT INTO standard_orders (
        order_id,order_key,order_handle,handle_hash,state,provider_agent_id,outcome_id,binding_profile,
        listing_manifest_hash,provider_offer_hash,canonical_listing,quote_hash,canonical_quote,
        canonical_request_hash,canonical_request,order_nonce,intent_id,gross_amount,rail_epoch,
-       listing_epoch,expires_at,payer)
-     VALUES ($1,$2,$3,$4,'FULFILLED',$5,'register-domain','recipe-bound-v2',$6,$6,'{}',$6,'{}',
-       $6,'{}',$7,$8,5000000,1,1,now()+interval '1 day',$9)`,
+       listing_epoch,expires_at,payer,authorization_key)
+     VALUES ($1,$2,$3,$4,$10,$5,'register-domain','recipe-bound-v2',$6,$6,'{}',$6,'{}',
+       $6,'{}',$7,$8,5000000,1,1,now()+interval '1 day',$9,$11)`,
     [id, Buffer.from(key.slice(2), "hex"), `handle-${id}`, Buffer.from(keccak256(toBytes(`h-${id}`)).slice(2), "hex"),
       provider, Buffer.alloc(32, 2), Buffer.from(keccak256(toBytes(`n-${id}`)).slice(2), "hex"),
-      `int_${id.slice(4)}`, payer],
+      `int_${id.slice(4)}`, payer, state,
+      paid ? Buffer.from(keccak256(toBytes(`a-${id}`)).slice(2), "hex") : null],
   );
 }
 
@@ -185,13 +193,18 @@ describe("POST /v1/owner-swaps", () => {
       contentHash: ownerSwapContentHash(swap),
       receivedAt: expect.any(String),
     });
-    // Equal content hash: the persisted record, regardless of envelope age or key.
+    // Equal content hash, signed by the recorded authority: the persisted
+    // record, whatever the envelope's age.
     const replayed = await post(await envelope(swap));
     expect(replayed).toEqual({ status: 200, body: first.body });
     const expired = await post(await envelope(swap, { issuedAt: Math.floor(Date.now() / 1_000) - 7_200 }));
     expect(expired).toEqual({ status: 200, body: first.body });
+    // A key that is neither the recorded signer nor the live authority learns nothing.
     const rotatedReplay = await post(await envelope(swap, { privateKey: rotatedKey }));
-    expect(rotatedReplay).toEqual({ status: 200, body: first.body });
+    expect(rotatedReplay.status).toBe(401);
+    const unsigned = await post({ payload: swap });
+    expect(unsigned.status).toBe(401);
+    expect(unsigned.body).toMatchObject({ error: { code: "OWNER_SWAP_AUTH_INVALID" } });
     // A different payload under the same key is a conflict.
     const conflict = await post(await envelope(payload({ newPayer: `0x${"66".repeat(20)}` })));
     expect(conflict.status).toBe(409);
@@ -371,5 +384,65 @@ describe("POST /v1/owner-swaps", () => {
     expect(artifactPayloadHash(signed as unknown as Record<string, unknown>)).toMatch(/^0x[0-9a-f]{64}$/);
     expect(ownerSwapContentHash(payload())).toBe(ownerSwapContentHash({ ...payload() }));
     expect(ownerSwapContentHash(payload())).not.toBe(ownerSwapContentHash(payload({ ownerVersion: 2 })));
+  });
+});
+
+describe("owner swap authentication and anchoring", () => {
+  it("never reveals a recorded version to an unsigned or stranger-signed probe", async () => {
+    // Version 1 exists. A bare payload, a wrong-content payload, and a stranger's
+    // signature all answer the same 401, before the record is consulted.
+    const probes = [
+      post({ payload: payload() }, { "idempotency-key": "idem-probe-0001" }),
+      post({ payload: payload({ newPayer: `0x${"66".repeat(20)}` }) }, { "idempotency-key": "idem-probe-0002" }),
+      post(await envelope(payload({ newPayer: `0x${"66".repeat(20)}` }), { privateKey: strangerKey }), { "idempotency-key": "idem-probe-0003" }),
+      post(await envelope(payload(), { privateKey: strangerKey }), { "idempotency-key": "idem-probe-0004" }),
+    ];
+    for (const probe of await Promise.all(probes)) {
+      expect(probe.status).toBe(401);
+      expect(probe.body).toMatchObject({ error: { code: "OWNER_SWAP_AUTH_INVALID" } });
+    }
+  });
+
+  it("reports an unreadable provider authority as 503, never as an authentication failure", async () => {
+    const reader = marketplace as unknown as { getProvider: unknown };
+    const original = reader.getProvider;
+    reader.getProvider = async () => { throw new Error("rpc unavailable"); };
+    try {
+      const outage = await post(await envelope(payload({ ownerVersion: 9 })), { "idempotency-key": "idem-own-v9-0001" });
+      expect(outage.status).toBe(503);
+      expect(outage.body).toMatchObject({ error: { code: "AUTHORITY_UNAVAILABLE" } });
+      // A replay of a recorded version by its recorded signer needs no authority read at all.
+      const replay = await post(await envelope(payload()), { "idempotency-key": "idem-own-v1-0002" });
+      expect(replay.status).toBe(200);
+    } finally {
+      reader.getProvider = original;
+    }
+  });
+
+  it("refuses an inactive provider and an order without a settled deposit as anchors", async () => {
+    providerActive.value = false;
+    try {
+      const inactive = await post(await envelope(payload({ ownerVersion: 9 })), { "idempotency-key": "idem-own-v9-0002" });
+      expect(inactive.status).toBe(401);
+    } finally {
+      providerActive.value = true;
+    }
+    const draftId = "ord_dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+    await insertOrder(draftId, PROVIDER, keccak256(toBytes(draftId)), previousPayer, { state: "DRAFT", paid: false });
+    const draft = await post(await envelope(payload({
+      ownerVersion: 9, orderId: draftId, orderKey: keccak256(toBytes(draftId)),
+    })), { "idempotency-key": "idem-own-v9-0003" });
+    expect(draft.status).toBe(409);
+    expect(draft.body).toMatchObject({ error: { code: "ORDER_NOT_ANCHORABLE" } });
+    const unpaidId = "ord_ffffffff-ffff-4fff-8fff-ffffffffffff";
+    await insertOrder(unpaidId, PROVIDER, keccak256(toBytes(unpaidId)), previousPayer, { state: "NOT_SETTLED", paid: false });
+    const unpaid = await post(await envelope(payload({
+      ownerVersion: 9, orderId: unpaidId, orderKey: keccak256(toBytes(unpaidId)),
+    })), { "idempotency-key": "idem-own-v9-0004" });
+    expect(unpaid.status).toBe(409);
+    const rows = await pool.query<{ n: number }>(
+      "SELECT count(*)::int AS n FROM standard_provider_owner_swaps WHERE owner_version=9",
+    );
+    expect(rows.rows[0]!.n).toBe(0);
   });
 });

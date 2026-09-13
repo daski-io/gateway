@@ -235,9 +235,11 @@ export class StandardConfirmationState {
         return { stored: false, changed: false, final: rowToFinal(row) };
       }
       const stored = rowToFinal(written.rows[0]);
-      const changed = !current ||
-        current.state !== stored.state ||
-        current.currentUid.toLowerCase() !== stored.currentUid.toLowerCase();
+      // An order with no row is implicitly Pending with no uid: a first store
+      // of that state changes nothing and moves no epoch.
+      const baseline = current ?? { state: "Pending" as ConfirmationLabel, currentUid: ZERO_UID };
+      const changed = baseline.state !== stored.state ||
+        baseline.currentUid.toLowerCase() !== stored.currentUid.toLowerCase();
       // The invalidation commits with the state or not at all.
       if (changed) await this.bumpEpoch(order.orderId, client);
       await client.query("COMMIT");

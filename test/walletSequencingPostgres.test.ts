@@ -17,8 +17,8 @@ import {
 import { StandardWalletStore } from "../src/standardRail/walletStore.js";
 
 /// Spec B2 sequencing for wallet actions: snapshot with a plain SELECT, verify
-/// with no lock or connection held, admission charged before any RPC and for
-/// failures too, then one short atomic claim; an exact replay of a consumed
+/// with no lock or connection held, a per-client admission charged before any
+/// RPC and for failures too, then one short atomic claim; an exact replay of a consumed
 /// challenge reuses the admitted identity without re-verification and
 /// continues through the execution journal.
 const databaseUrl = process.env.DATABASE_URL_TEST ??
@@ -121,27 +121,31 @@ describe("wallet action sequencing", () => {
     expect(active.count).toBe(0);
   });
 
-  it("charges the signature-verify admission before any RPC, counts failures, and refuses beyond the limit", async () => {
+  it("charges a per-client signature-verify admission before any RPC, counts failures, and never locks a payer out", async () => {
     const calls: string[] = [];
     const client = {
       getCode: async () => { calls.push("getCode"); return "0x" as Hex; },
       call: async () => { calls.push("call"); return { data: "0x" as Hex }; },
     };
+    const clientKey = { current: "198.51.100.10" };
     const verifier = createPayerSignatureVerifier({
       accountTypes: ["eoa", "contract"],
       timeoutMs: 1_000,
       endpoints: [{ host: "rpc.example", client }],
       semaphore: new ContractVerificationSemaphore(8),
-      admit: async (payer) => {
+      admit: async ({ context }) => {
         calls.push("admit");
-        await chargeSignatureVerifyAdmission(pool, payer, 2);
+        await chargeSignatureVerifyAdmission(
+          pool, { clientKey: clientKey.current, encryptionKey: config.encryptionKey }, 2, context,
+        );
       },
     });
     const store = new StandardWalletStore(pool, config, CHAIN_ID, verifier);
     const request = { limit: 25, cursor: null };
     const nonces: Buffer[] = [];
     // Signed by a key that is not the payer: not an EOA recovery, so the
-    // contract path runs and the payer's admission is charged first.
+    // contract path runs and the requesting client's admission is charged
+    // first, whoever the claimed payer is.
     for (let attempt = 0; attempt < 2; attempt += 1) {
       calls.length = 0;
       const authorization = await signedFor(store, "list-orders", request, stranger);
@@ -153,7 +157,7 @@ describe("wallet action sequencing", () => {
     }
     const bucket = await pool.query<{ request_count: number }>(
       "SELECT request_count FROM rate_limit_buckets WHERE bucket_key=$1",
-      [signatureVerifyBucketKey(signer.address)],
+      [signatureVerifyBucketKey({ clientKey: clientKey.current, encryptionKey: config.encryptionKey })],
     );
     expect(bucket.rows[0]?.request_count).toBe(2);
     calls.length = 0;
@@ -161,8 +165,19 @@ describe("wallet action sequencing", () => {
     nonces.push(Buffer.from(authorization.message.nonce.slice(2), "hex"));
     await expect(store.consume({
       payer: signer.address, authorization: authorization as never, action: "list-orders", request,
-    })).rejects.toMatchObject({ code: "SIGNATURE_VERIFICATION_BUSY", retryable: true });
+    })).rejects.toMatchObject({ code: "SIGNATURE_VERIFICATION_BUSY", retryable: true, phase: "lifecycle_auth" });
     expect(calls).toEqual(["admit"]);
+    // The exhausted bucket belongs to the requesting client, not to the
+    // payer it named: another client naming the same payer still reaches
+    // verification, so no one can lock a wallet out by naming it.
+    clientKey.current = "198.51.100.11";
+    calls.length = 0;
+    const other = await signedFor(store, "list-orders", request, stranger);
+    nonces.push(Buffer.from(other.message.nonce.slice(2), "hex"));
+    await expect(store.consume({
+      payer: signer.address, authorization: other as never, action: "list-orders", request,
+    })).rejects.toMatchObject({ code: "SIGNATURE_INVALID" });
+    expect(calls).toEqual(["admit", "getCode"]);
     // None of the refused attempts consumed its challenge.
     const consumed = await pool.query<{ n: number }>(
       "SELECT count(*)::int AS n FROM standard_wallet_action_challenges WHERE consumed_at IS NOT NULL AND nonce = ANY($1::bytea[])",

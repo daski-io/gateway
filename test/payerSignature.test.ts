@@ -73,7 +73,7 @@ function verifier(options: {
   accountTypes?: readonly ("eoa" | "contract")[];
   endpoints: Array<{ host: string; client: ContractVerificationClient }>;
   timeoutMs?: number;
-  admit?: (payer: Address) => Promise<void>;
+  admit?: (args: { payer: Address; context?: { field?: string; phase?: string } }) => Promise<void>;
   semaphore?: ContractVerificationSemaphore;
 }) {
   return createPayerSignatureVerifier({
@@ -189,7 +189,7 @@ describe("payer signature verification: the contract path", () => {
     const result = await verifier({ endpoints: [{ host: "a", client: primary.client }], admit })
       .verifyPayerTypedData({ payer: CONTRACT, typedData, signature: opaque });
     expect(result).toEqual({ accountType: "contract", verifiedVia: "erc1271" });
-    expect(admit).toHaveBeenCalledWith(CONTRACT);
+    expect(admit).toHaveBeenCalledWith(expect.objectContaining({ payer: CONTRACT }));
     expect([...order, ...primary.calls]).toEqual(["admit", "getCode", "call"]);
     expect(seen?.to).toBe(CONTRACT);
     expect(seen?.gas).toBe(CONTRACT_VERIFICATION_GAS);

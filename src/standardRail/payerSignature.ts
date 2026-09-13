@@ -3,14 +3,17 @@ import {
   ContractFunctionRevertedError,
   ExecutionRevertedError,
   RpcRequestError,
+  createPublicClient,
   encodeFunctionData,
   getAddress,
   hashTypedData,
+  http,
   isErc6492Signature,
   parseAbi,
   parseSignature,
   recoverTypedDataAddress,
   type Address,
+  type Chain,
   type Hex,
   type TypedData,
   type TypedDataDomain,
@@ -83,9 +86,10 @@ export interface PayerSignatureVerifierOptions {
   /**
    * Site-owned admission, charged before any RPC on the contract path and
    * counted whether or not the verification then succeeds. The EOA path never
-   * calls it.
+   * calls it. The site context travels with it so a refusal names the field
+   * and phase of the request it answers.
    */
-  admit?: (payer: Address) => Promise<void>;
+  admit?: (args: { payer: Address; context?: VerifyPayerTypedDataArgs["context"] }) => Promise<void>;
 }
 
 export interface VerifyPayerTypedDataArgs {
@@ -242,7 +246,7 @@ export function createPayerSignatureVerifier(
       message: args.typedData.message,
     } as never);
     const payer = getAddress(args.payer);
-    if (options.admit) await options.admit(payer);
+    if (options.admit) await options.admit({ payer, context });
     const release = semaphore.tryAcquire();
     if (!release) {
       outcome("busy");
@@ -374,5 +378,48 @@ export function boundedRpcFetch(maxBytes: number, fetchFn: typeof fetch = fetch)
       statusText: response.statusText,
       headers: response.headers,
     });
+  };
+}
+
+/**
+ * One verification endpoint over one JSON-RPC URL. The contract path talks
+ * to the node through viem's raw `request`, never through its `call` action:
+ * the action layer follows an EIP-3668 `OffchainLookup` revert by fetching
+ * the URLs the contract names with the process-global fetch (no byte bound,
+ * no deadline) and calling the contract again with the answer, which lets a
+ * payer contract make the gateway reach arbitrary hosts and pass
+ * verification through that round-trip. `ccipRead: false` closes the action
+ * layer as well, so neither path exists on this client.
+ */
+export function createContractVerificationEndpoint(args: {
+  url: string;
+  chain: Chain;
+  timeoutMs: number;
+  fetchFn?: typeof fetch;
+}): ContractVerificationEndpoint {
+  const client = createPublicClient({
+    chain: args.chain,
+    ccipRead: false,
+    transport: http(args.url, {
+      retryCount: 0,
+      timeout: args.timeoutMs,
+      fetchFn: boundedRpcFetch(CONTRACT_VERIFICATION_RESPONSE_MAX_BYTES, args.fetchFn),
+    }),
+  });
+  return {
+    host: new URL(args.url).hostname,
+    client: {
+      async getCode({ address }) {
+        const code = await client.request({ method: "eth_getCode", params: [address, "latest"] });
+        return typeof code === "string" ? code : undefined;
+      },
+      async call({ to, data, gas }) {
+        const returned = await client.request({
+          method: "eth_call",
+          params: [{ to, data, gas: `0x${gas.toString(16)}` }, "latest"],
+        });
+        return { data: typeof returned === "string" ? returned : undefined };
+      },
+    },
   };
 }

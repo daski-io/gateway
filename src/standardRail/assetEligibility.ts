@@ -7,7 +7,7 @@ import type { Pool } from "../db/pool.js";
  * OR a provider-signed owner swap naming the payer. The union is additive and
  * anchored to the original order; nothing about that order changes.
  */
-const POST_DEPOSIT_STATES = [
+export const POST_DEPOSIT_STATES = [
   "RELEASE_FINAL", "DISPATCH_STARTED", "DISPATCHED", "DISPATCH_AMBIGUOUS",
   "FULFILLED", "PROVIDER_FAILED", "INPUT_REQUIRED", "LEGAL_HOLD", "NOT_SETTLED",
 ] as const;
