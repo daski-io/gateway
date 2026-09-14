@@ -367,6 +367,22 @@ describe("dynamic listing catalog", () => {
     expect(listing.terms.providerLegalName).toBe("Blue T Group, LLC");
   });
 
+  it("snapshots display names without changing the paid listing identity", async () => {
+    const registration = record();
+    const catalog = catalogFor(fakeState([registration]));
+    const original = await catalog.listing(providerAgentId, "register-domain");
+    const stored = JSON.parse(JSON.stringify(original));
+    const oldNames = { ...original.presentation };
+    registration.card = structuredClone(registration.card);
+    registration.card.name = "Renamed Service";
+    registration.card.skills[0]!.presentation.name = "Renamed Skill";
+    const renamed = await catalog.listing(providerAgentId, "register-domain");
+    expect(stored.presentation).toEqual(oldNames);
+    expect(renamed.presentation).toEqual({ serviceName: "Renamed Service", skillName: "Renamed Skill" });
+    expect(renamed.runtimeCommitmentHash).toBe(original.runtimeCommitmentHash);
+    expect(renamed.presentation).not.toEqual(stored.presentation);
+  });
+
   it("refreshes once and re-reads when the §10 purchase fence is stale", async () => {
     const stale = record({ lastRefreshedAt: new Date(Date.now() - 10 * 60_000) });
     const state = fakeState([stale]);

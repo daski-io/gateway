@@ -49,14 +49,14 @@ function attestedLog(uid: Hex, address: Address = eas): Log {
     data: encodeAbiParameters(parseAbiParameters("bytes32"), [uid]),
   } as Log;
 }
-function confirmation(uid: Hex, transitionsUsed: number): ConfirmationIntent {
+function confirmation(uid: Hex, submissionsUsed: number): ConfirmationIntent {
   return {
     operation: "attest-confirmation",
     orderKey,
     orderId: "order-1",
     outcomeId: "register-domain",
     confirmation: "Confirmed",
-    transitionsUsed,
+    submissionsUsed,
     request: {
       schema,
       data: { recipient, expirationTime: "0", revocable: true, refUID: uid, data: "0x", value: "0" },
@@ -73,7 +73,7 @@ function revocation(uid: Hex): RevokeConfirmationIntent {
     orderKey,
     orderId: "order-1",
     outcomeId: "register-domain",
-    transitionsUsed: 2,
+    submissionsUsed: 2,
     request: {
       schema,
       data: { uid, value: "0" },
@@ -85,7 +85,7 @@ function revocation(uid: Hex): RevokeConfirmationIntent {
 }
 
 describe("reputation finalization against PostgreSQL", () => {
-  it("converges repeated attest, revise, and revoke finalization", async () => {
+  it("marks operations final from receipts, idempotently, without deriving confirmation state from them", async () => {
     const namespace = `reputation_finalize_${randomUUID().replaceAll("-", "")}`;
     const bootstrap = createPool({ connectionString: databaseUrl, max: 1 });
     await bootstrap.query(`CREATE SCHEMA "${namespace}"`);
@@ -96,35 +96,49 @@ describe("reputation finalization against PostgreSQL", () => {
       const uid2 = hash("6");
       await seedOperation(pool, "op-1", "tx-1");
       const first = confirmation(hash("0"), 0);
-      await finalizeReputationOperation({
-        pool, operation: { operation_id: "op-1", order_id: "order-1", canonical_intent: first },
-        transactionId: "tx-1", easAddress: eas, receipt: receipt([attestedLog(uid1)], 10n),
-      });
-      await finalizeReputationOperation({
-        pool, operation: { operation_id: "op-1", order_id: "order-1", canonical_intent: first },
-        transactionId: "tx-1", easAddress: eas, receipt: receipt([attestedLog(uid1)], 10n),
-      });
-
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        await finalizeReputationOperation({
+          pool, operation: { operation_id: "op-1", order_id: "order-1", canonical_intent: first },
+          transactionId: "tx-1", easAddress: eas, receipt: receipt([attestedLog(uid1)], 10n),
+        });
+      }
       await seedOperation(pool, "op-2", "tx-2");
-      const revised = confirmation(uid1, 1);
       await finalizeReputationOperation({
-        pool, operation: { operation_id: "op-2", order_id: "order-1", canonical_intent: revised },
+        pool, operation: { operation_id: "op-2", order_id: "order-1", canonical_intent: confirmation(uid1, 1) },
         transactionId: "tx-2", easAddress: eas, receipt: receipt([attestedLog(uid2)], 11n),
       });
       await seedOperation(pool, "op-3", "tx-3");
-      const revoked = revocation(uid2);
       for (let attempt = 0; attempt < 2; attempt += 1) {
         await finalizeReputationOperation({
-          pool, operation: { operation_id: "op-3", order_id: "order-1", canonical_intent: revoked },
+          pool, operation: { operation_id: "op-3", order_id: "order-1", canonical_intent: revocation(uid2) },
           transactionId: "tx-3", easAddress: eas, receipt: receipt([], 12n),
         });
       }
-      const confirmationRow = await pool.query(
-        "SELECT confirmation,current_uid,transitions_used FROM standard_reputation_confirmations",
+      const operations = await pool.query<{ operation_id: string; state: string; result: Record<string, unknown> }>(
+        "SELECT operation_id,state,result FROM standard_reputation_operations ORDER BY operation_id",
       );
-      expect(confirmationRow.rows).toEqual([{
-        confirmation: "Pending", current_uid: null, transitions_used: 3,
-      }]);
+      expect(operations.rows).toEqual([
+        { operation_id: "op-1", state: "final", result: { attestationUid: uid1, confirmation: "Confirmed" } },
+        { operation_id: "op-2", state: "final", result: { attestationUid: uid2, confirmation: "Confirmed" } },
+        { operation_id: "op-3", state: "final", result: { revokedUid: uid2, confirmation: "Pending" } },
+      ]);
+      const transactions = await pool.query<{ transaction_id: string; state: string; block_number: string }>(
+        "SELECT transaction_id,state,block_number::text FROM standard_reputation_transactions ORDER BY transaction_id",
+      );
+      expect(transactions.rows).toEqual([
+        { transaction_id: "tx-1", state: "final", block_number: "10" },
+        { transaction_id: "tx-2", state: "final", block_number: "11" },
+        { transaction_id: "tx-3", state: "final", block_number: "12" },
+      ]);
+      const sponsorships = await pool.query<{ state: string }>(
+        "SELECT state FROM standard_confirmation_sponsorships ORDER BY operation_id",
+      );
+      expect(sponsorships.rows).toEqual([{ state: "charged" }, { state: "charged" }, { state: "charged" }]);
+      // Spec B7: the stored confirmation state comes only from finalized
+      // reads, never from a receipt.
+      const confirmations = await pool.query("SELECT * FROM standard_reputation_confirmations");
+      expect(confirmations.rows).toEqual([]);
+
       await expect(finalizeReputationOperation({
         pool, operation: { operation_id: "op-1", order_id: "order-1", canonical_intent: first },
         transactionId: "tx-1", easAddress: eas,
@@ -135,13 +149,6 @@ describe("reputation finalization against PostgreSQL", () => {
         transactionId: "tx-1", easAddress: eas,
         receipt: receipt([attestedLog(uid1), attestedLog(uid1)], 10n),
       })).rejects.toThrow("CONFIRMATION_UID_MISSING_OR_AMBIGUOUS");
-      const afterStaleReplay = await pool.query(
-        "SELECT confirmation,current_uid,transitions_used FROM standard_reputation_confirmations",
-      );
-      expect(afterStaleReplay.rows).toEqual([{
-        confirmation: "Pending", current_uid: null, transitions_used: 3,
-      }]);
-
     } finally {
       await pool.end();
       await bootstrap.query(`DROP SCHEMA "${namespace}" CASCADE`).catch(() => undefined);
@@ -160,7 +167,7 @@ async function createTables(pool: ReturnType<typeof createPool>): Promise<void> 
       final_at TIMESTAMPTZ,updated_at TIMESTAMPTZ DEFAULT now());
     CREATE TABLE standard_reputation_confirmations (
       order_id TEXT PRIMARY KEY,order_key BYTEA,current_uid BYTEA,confirmation TEXT,
-      transitions_used INTEGER,finalized_block BIGINT,finalized_block_hash TEXT,
+      submissions_used INTEGER,finalized_block BIGINT,finalized_block_hash TEXT,
       updated_at TIMESTAMPTZ DEFAULT now());
     CREATE TABLE standard_confirmation_sponsorships (
       operation_id TEXT PRIMARY KEY,state TEXT,updated_at TIMESTAMPTZ DEFAULT now());

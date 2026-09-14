@@ -8,9 +8,22 @@
  */
 export const PINNED_BUYER_CLI = {
   package: "@daski/pay",
-  version: "0.3.1",
+  version: "0.4.0",
   repository: "git+https://github.com/daski-io/buyer.git",
   /** Verifies the registry entry is Daski's before anything is installed. */
-  verify: "npm view @daski/pay@0.3.1 repository.url",
-  install: "npm install -g @daski/pay@0.3.1",
+  verify: "npm view @daski/pay@0.4.0 repository.url",
+  install: "npm install -g @daski/pay@0.4.0",
+} as const;
+
+/**
+ * The external signer CLIs the setup guide pins, keyed by the buyer's signer
+ * kind. Published in /.well-known/mcp.json as `signerClis` and mirrored in
+ * skills/setup.md under the same test discipline as the buyer CLI pin.
+ */
+export const PINNED_SIGNER_CLIS = {
+  "circle-agent": {
+    package: "@circle-fin/cli",
+    version: "1.0.0",
+    repository: "https://github.com/circlefin/cli",
+  },
 } as const;

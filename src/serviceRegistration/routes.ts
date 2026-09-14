@@ -2,6 +2,7 @@ import { timingSafeEqual } from "node:crypto";
 import { Router, type NextFunction, type Request, type Response } from "express";
 import type { Hex } from "viem";
 import type { Config } from "../config.js";
+import type { OwnerSwapService } from "./ownerSwaps.js";
 import {
   RegistrationError,
   type ServiceRegistrationService,
@@ -61,9 +62,22 @@ function pageLimit(raw: unknown): number {
   return value;
 }
 
+function idempotencyKey(req: Request): string {
+  const value = req.header("idempotency-key");
+  if (!value || !IDEMPOTENCY_KEY.test(value)) {
+    throw new RegistrationError(
+      400,
+      "INVALID_IDEMPOTENCY_KEY",
+      "Idempotency-Key must be 8-128 URL-safe characters.",
+    );
+  }
+  return value;
+}
+
 export function createServiceRegistrationRouter(args: {
   config: Config;
   service: ServiceRegistrationService;
+  ownerSwaps?: OwnerSwapService;
 }): Router {
   if (!args.config.dynamicServiceRegistrationEnabled) {
     throw new Error("Dynamic service registration router cannot be mounted while disabled");
@@ -78,20 +92,25 @@ export function createServiceRegistrationRouter(args: {
   });
 
   router.post("/v1/service-registrations", handler(async (req, res) => {
-    const idempotencyKey = req.header("idempotency-key");
-    if (!idempotencyKey || !IDEMPOTENCY_KEY.test(idempotencyKey)) {
-      throw new RegistrationError(
-        400,
-        "INVALID_IDEMPOTENCY_KEY",
-        "Idempotency-Key must be 8-128 URL-safe characters.",
-      );
-    }
-    const result = await args.service.register(req.body, idempotencyKey);
+    const result = await args.service.register(req.body, idempotencyKey(req));
     res
       .status(result.created ? 201 : 200)
       .location(`/v1/service-registrations/${result.registration.registrationId}`)
       .json(result.registration);
   }));
+
+  // Provider-signed owner swaps (docs/owner-swaps-v1.md). Idempotent by the
+  // payload's (provider, asset, version); the header follows the registration
+  // rules so every provider client sends one.
+  if (args.ownerSwaps) {
+    const ownerSwaps = args.ownerSwaps;
+    router.post("/v1/owner-swaps", handler(async (req, res) => {
+      idempotencyKey(req);
+      res.setHeader("Cache-Control", "no-store");
+      const result = await ownerSwaps.submit(req.body);
+      res.status(result.created ? 201 : 200).json(result.record);
+    }));
+  }
 
   router.get("/v1/service-registrations/:registrationId", handler(async (req, res) => {
     res.setHeader("Cache-Control", "no-store");

@@ -22,6 +22,12 @@ function attestationUid(receipt: TransactionReceipt, easAddress: Address): Hex {
   return events[0]!.args.uid as Hex;
 }
 
+/**
+ * Marks a sponsored operation final from its receipt. The order's stored
+ * confirmation state is NOT derived from the receipt: it is written only from
+ * a finalized, hash-pinned `getRecord` read (StandardConfirmationState), which
+ * the worker performs right after this step.
+ */
 export async function finalizeReputationOperation(args: {
   pool: Pool;
   operation: FinalizableOperation;
@@ -36,34 +42,8 @@ export async function finalizeReputationOperation(args: {
     const intent = args.operation.canonical_intent;
     if (intent.operation === "attest-confirmation") {
       const uid = attestationUid(args.receipt, args.easAddress);
-      const uidBytes = Buffer.from(uid.slice(2), "hex");
-      await client.query(
-        `INSERT INTO standard_reputation_confirmations
-          (order_id,order_key,current_uid,confirmation,transitions_used,finalized_block,finalized_block_hash)
-         VALUES ($1,$2,$3,$4,$5,$6,$7)
-         ON CONFLICT (order_id) DO UPDATE SET current_uid=EXCLUDED.current_uid,
-           confirmation=EXCLUDED.confirmation,transitions_used=EXCLUDED.transitions_used,
-           finalized_block=EXCLUDED.finalized_block,finalized_block_hash=EXCLUDED.finalized_block_hash,
-           updated_at=now()
-         WHERE standard_reputation_confirmations.transitions_used < EXCLUDED.transitions_used
-            OR (standard_reputation_confirmations.transitions_used = EXCLUDED.transitions_used
-              AND standard_reputation_confirmations.current_uid = EXCLUDED.current_uid
-              AND standard_reputation_confirmations.confirmation = EXCLUDED.confirmation)
-         RETURNING order_id`,
-        [args.operation.order_id, Buffer.from(intent.orderKey.slice(2), "hex"), uidBytes,
-          intent.confirmation, intent.transitionsUsed + 1, args.receipt.blockNumber.toString(),
-          args.receipt.blockHash],
-      );
       result = { attestationUid: uid, confirmation: intent.confirmation };
     } else if (intent.operation === "revoke-confirmation") {
-      await client.query(
-        `UPDATE standard_reputation_confirmations SET current_uid=NULL,confirmation='Pending',
-           transitions_used=$2,finalized_block=$3,finalized_block_hash=$4,updated_at=now()
-         WHERE order_id=$1 AND current_uid=$5 AND transitions_used=$2-1
-         RETURNING order_id`,
-        [args.operation.order_id, intent.transitionsUsed + 1, args.receipt.blockNumber.toString(),
-          args.receipt.blockHash, Buffer.from(intent.request.data.uid.slice(2), "hex")],
-      );
       result = { revokedUid: intent.request.data.uid, confirmation: "Pending" };
     }
     await client.query(

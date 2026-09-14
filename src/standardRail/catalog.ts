@@ -614,6 +614,7 @@ export class StandardRailCatalog {
       }
     }
     const listing: StandardListing = {
+      presentation: { serviceName: record.card.name, skillName: skill.presentation.name },
       registrationId: record.registrationId,
       listingId: prepared.listingId,
       listingKey: prepared.listingKey,

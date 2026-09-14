@@ -139,25 +139,11 @@ export function canonicalHash(value: unknown): Hex {
   return keccak256(stringToHex(canonicalJson(value)));
 }
 
-export interface RecipeNonceInput {
-  chainId: number;
-  canonicalToken: Address;
-  payer: Address;
-  splitter: Address;
-  grossAmount: bigint;
-  listingManifestHash: Hex;
-  providerOfferHash: Hex;
-  quoteHash: Hex;
-  canonicalRequestHash: Hex;
-  orderNonce: Hex;
-}
-
 /**
- * V2 order binding for dynamic-catalog listings. Identical slot layout to
- * V1 with the deal-document slots swapped: the listing manifest hash becomes
- * the runtime listing commitment hash, and the provider offer hash becomes
- * the provider intent hash. Verifiers must additionally check that the
- * intent hash equals the one embedded in the runtime commitment.
+ * The order binding for dynamic-catalog listings (recipe-bound-v2): the two
+ * deal-document slots carry the runtime listing commitment hash and the
+ * provider intent hash. Verifiers must additionally check that the intent
+ * hash equals the one embedded in the runtime commitment.
  */
 export interface RecipeNonceV2Input {
   chainId: number;
@@ -203,36 +189,6 @@ export function recipeNonceV2(input: RecipeNonceV2Input): Hex {
   ));
 }
 
-export function recipeNonce(input: RecipeNonceInput): Hex {
-  return keccak256(encodeAbiParameters(
-    [
-      { type: "bytes32" },
-      { type: "uint256" },
-      { type: "address" },
-      { type: "address" },
-      { type: "address" },
-      { type: "uint256" },
-      { type: "bytes32" },
-      { type: "bytes32" },
-      { type: "bytes32" },
-      { type: "bytes32" },
-      { type: "bytes32" },
-    ],
-    [
-      keccak256(stringToHex("DaskiStandardExactOrderV1")),
-      BigInt(input.chainId),
-      input.canonicalToken,
-      input.payer,
-      input.splitter,
-      input.grossAmount,
-      input.listingManifestHash,
-      input.providerOfferHash,
-      input.quoteHash,
-      input.canonicalRequestHash,
-      input.orderNonce,
-    ],
-  ));
-}
 
 export function artifactPayloadHash(envelope: {
   signature?: Hex;

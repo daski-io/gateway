@@ -10,6 +10,7 @@ import type { Pool } from "../db/pool.js";
 import { withRpcFailover } from "../rpc/failover.js";
 import { logger } from "../util/logger.js";
 import type { StandardRailConfig } from "./config.js";
+import type { FinalityTag } from "../util/finalityTag.js";
 import type { StandardWalletStore } from "./walletStore.js";
 import type { WalletAuthorizationTransport } from "./types.js";
 
@@ -30,7 +31,7 @@ interface OrderHistoryRow {
 }
 
 const reputationAbi = parseAbi([
-  "function getRecord(bytes32 orderKey) view returns ((bytes32 orderKey,bytes32 authorizationKey,uint256 providerAgentId,bytes32 serviceId,address payer,address providerOwner,address providerAgentWallet,address providerPayee,address canonicalToken,uint256 grossAmount,uint64 paidAt,bytes32 providerIdentitySnapshotHash,bytes32 listingManifestHash,bytes32 releaseEvidenceHash,uint8 outcome,uint8 confirmation,uint64 outcomeAttestationDelay,uint64 outcomeTimestamp,uint64 confirmationTimestamp,uint8 confirmationTransitions,bool outcomeRecorded,bool reputationEligible,bytes32 currentConfirmationUid))",
+  "function getRecord(bytes32 orderKey) view returns ((bytes32 orderKey,bytes32 authorizationKey,uint256 providerAgentId,bytes32 serviceId,address payer,address providerOwner,address providerAgentWallet,address providerPayee,address canonicalToken,uint256 grossAmount,uint64 paidAt,bytes32 providerIdentitySnapshotHash,bytes32 listingManifestHash,bytes32 releaseEvidenceHash,uint8 outcome,uint8 confirmation,uint64 outcomeAttestationDelay,uint64 outcomeTimestamp,uint64 confirmationTimestamp,uint8 confirmationSubmissions,bool outcomeRecorded,bool reputationEligible,bytes32 currentConfirmationUid))",
   "function getBuyerStats(address payer) view returns (uint256,uint256,uint256)",
   "function totalPaidByPayer(address payer) view returns (uint256)",
   "function refundedAmountByPayer(address payer) view returns (uint256)",
@@ -55,9 +56,12 @@ export class StandardWalletQueries {
       }),
     }));
     this.reputationContract = config.reputationContract;
+    this.finalityTag = config.finalityTag;
   }
 
   private readonly reputationContract: Address;
+  /** Order-history reputation reads are pinned to this tag (safe on testnet, finalized on mainnet). */
+  private readonly finalityTag: FinalityTag;
 
   private observe<Result>(
     work: (endpoint: (typeof this.clients)[number]) => Promise<Result>,
@@ -114,7 +118,7 @@ export class StandardWalletQueries {
     const rows = result.rows.slice(0, args.limit);
     const hasMore = result.rows.length > args.limit;
     const records = await this.observe(async ({ client }) => {
-      const block = await client.getBlock({ blockTag: "finalized" });
+      const block = await client.getBlock({ blockTag: this.finalityTag });
       return Promise.all(rows.map((row) => client.readContract({
         address: this.reputationContract,
         abi: reputationAbi,
@@ -144,7 +148,7 @@ export class StandardWalletQueries {
             ? providerOutcome(reputation.outcome, reputation.outcomeRecorded)
             : "Pending",
           buyerConfirmation: registered ? confirmation(reputation.confirmation) : "Pending",
-          confirmationTransitionsUsed: registered ? reputation.confirmationTransitions : 0,
+          confirmationSubmissionsUsed: registered ? reputation.confirmationSubmissions : 0,
         },
         createdAt: row.created_at.toISOString(),
         updatedAt: row.updated_at.toISOString(),
@@ -172,7 +176,7 @@ export class StandardWalletQueries {
     });
     const address = getAddress(payer);
     return this.observe(async ({ client }) => {
-      const block = await client.getBlock({ blockTag: "safe" });
+      const block = await client.getBlock({ blockTag: this.finalityTag });
       const [[eligible, confirmed, notConfirmed], totalPaid, totalRefunded] = await Promise.all([
         client.readContract({
           address: this.reputationContract,

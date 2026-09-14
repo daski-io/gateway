@@ -136,6 +136,38 @@ describe("standard rail hardened mechanisms", () => {
     )).rejects.toThrow("SANCTIONS_ADDRESS_REJECTED");
   });
 
+  it("keeps reconciling a finalized sponsored confirmation until the finalized anchor covers its receipt", async () => {
+    const statements: { sql: string; values: unknown[] | undefined }[] = [];
+    let anchor = "100";
+    const pool = {
+      query: vi.fn(async (sql: string, values?: unknown[]) => {
+        statements.push({ sql, values });
+        if (sql.includes("confirmation_reconciled_at IS NULL")) {
+          return { rows: [{
+            operation_id: "operation-c", order_id: "order-1", kind: "confirmation", state: "final",
+            canonical_intent: { operation: "attest-confirmation", orderKey: hash("1") }, final_block_number: "120",
+          }] };
+        }
+        return { rows: [], rowCount: 1 };
+      }),
+    } as unknown as Pool;
+    const reconciler = { reconcile: vi.fn(async () => ({ final: { blockNumber: anchor }, changed: false })) };
+    const worker = new StandardReputationWorker(pool, {
+      reputationRelayerPrivateKey: privateKey,
+      evidenceRpcUrls: ["https://rpc-a.example"],
+    } as unknown as StandardRailConfig, baseSepolia, undefined, undefined, reconciler);
+    await (worker as unknown as { runBatch(): Promise<void> }).runBatch();
+    expect(reconciler.reconcile).toHaveBeenCalledWith({ orderId: "order-1", orderKey: hash("1") });
+    // The anchor (100) is behind the receipt (120): the operation stays due, two minutes later.
+    expect(statements.some(({ sql, values }) => sql.includes("next_attempt_at=now()+interval '2 minutes'") && values?.[0] === "operation-c")).toBe(true);
+    expect(statements.some(({ sql }) => sql.includes("confirmation_reconciled_at=now()"))).toBe(false);
+    // Once the anchor covers the receipt the operation is marked reconciled.
+    anchor = "120";
+    statements.length = 0;
+    await (worker as unknown as { runBatch(): Promise<void> }).runBatch();
+    expect(statements.some(({ sql, values }) => sql.includes("confirmation_reconciled_at=now()") && values?.[0] === "operation-c")).toBe(true);
+  });
+
   it("resumes a persisted reputation transaction after restart without preparing another", async () => {
     const transactionHash = hash("a");
     let operationSelected = false;

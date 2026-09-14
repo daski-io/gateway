@@ -41,7 +41,7 @@ interface OrderRow {
   state: StandardOrderState;
   provider_agent_id: string;
   outcome_id: string;
-  binding_profile: "stock-fixed-v1" | "recipe-bound-v1" | "recipe-bound-v2";
+  binding_profile: "stock-fixed-v1" | "recipe-bound-v2";
   listing_manifest_hash: Buffer;
   provider_offer_hash: Buffer;
   canonical_listing: StandardListing;
@@ -438,8 +438,8 @@ export class StandardRailStore {
     return result.rows[0] ? record(result.rows[0]) : null;
   }
 
-  async bumpCapabilityEpoch(orderId: string): Promise<StandardOrderRecord> {
-    const result = await this.pool.query<OrderRow>(
+  async bumpCapabilityEpoch(orderId: string, db: { query: Pool["query"] } = this.pool): Promise<StandardOrderRecord> {
+    const result = await db.query<OrderRow>(
       `UPDATE standard_orders
           SET capability_epoch=capability_epoch+1,updated_at=now()
         WHERE order_id=$1 RETURNING *`,

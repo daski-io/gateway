@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { getAddress, type Hex } from "viem";
 import type { PaymentPayload, PaymentRequirements } from "@x402/core/types";
-import { StandardRailService } from "../src/standardRail/service.js";
+import { facilitatorRefusalCode, StandardRailService } from "../src/standardRail/service.js";
 import type { StandardListing, StandardOrderRecord } from "../src/standardRail/types.js";
 
 const hash = (byte: string): Hex => `0x${byte.repeat(64)}` as Hex;
@@ -130,6 +130,50 @@ describe("settlement failure semantics after the authorization is claimed", () =
     store.tryWithListingSettlementLock.mockImplementationOnce(async () => ({ acquired: false }));
     await expect(service.settleClaimedOrder(settleArgs())).resolves.toMatchObject({ state: "VERIFIED" });
     expect(journal.markSettleInvoked).not.toHaveBeenCalled();
+  });
+});
+
+describe("facilitator verify refusals (spec B4)", () => {
+  it("maps signature refusals and undeployed smart wallets to the gateway's own codes", () => {
+    expect(facilitatorRefusalCode({ invalidReason: "invalid_exact_evm_payload_signature" }))
+      .toBe("SIGNATURE_INVALID");
+    expect(facilitatorRefusalCode({
+      invalidReason: "invalid_exact_evm_payload_signature",
+      invalidMessage: "ErrUndeployedSmartWallet: smart wallet is not deployed",
+    })).toBe("SIGNATURE_COUNTERFACTUAL_REJECTED");
+    expect(facilitatorRefusalCode({ invalidReason: "insufficient_funds" })).toBe("FACILITATOR_REJECTED");
+    expect(facilitatorRefusalCode({})).toBe("FACILITATOR_REJECTED");
+  });
+
+  it("answers a facilitator signature refusal as SIGNATURE_INVALID with the facilitator's reason", async () => {
+    const { service, transitions, store } = settlementHarness({
+      facilitator: {
+        verify: vi.fn(async () => ({ isValid: false, invalidReason: "invalid_exact_evm_payload_signature" })),
+      },
+    });
+    await expect(service.settleClaimedOrder(settleArgs())).rejects.toMatchObject({
+      code: "SIGNATURE_INVALID",
+      phase: "facilitator_verify",
+      facilitatorReason: "invalid_exact_evm_payload_signature",
+      requiresNewSignature: true,
+    });
+    expect(transitions).toEqual([{ to: "VERIFY_REJECTED", reason: "facilitator_verify_rejected" }]);
+    expect(store.releaseCapacity).toHaveBeenCalledWith("ord_1");
+  });
+
+  it("answers an undeployed smart wallet as the counterfactual refusal", async () => {
+    const { service } = settlementHarness({
+      facilitator: {
+        verify: vi.fn(async () => ({
+          isValid: false, invalidReason: "invalid_exact_evm_payload_signature",
+          invalidMessage: "ErrUndeployedSmartWallet",
+        })),
+      },
+    });
+    await expect(service.settleClaimedOrder(settleArgs())).rejects.toMatchObject({
+      code: "SIGNATURE_COUNTERFACTUAL_REJECTED",
+      facilitatorReason: "invalid_exact_evm_payload_signature",
+    });
   });
 });
 

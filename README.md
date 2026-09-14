@@ -27,14 +27,24 @@ signer is configured, the steady-state prompt is `Use Daski to [your task]`.
   `daski_get_outcome_requirements` return the published schema, conditional
   intake requirements, normalized selectors, and missing fields for a partial
   request. This catalog read creates no quote or order.
-- `/.well-known/mcp.json` publishes the buyer CLI pin and EAS confirmation
-  signing metadata. Authorized order responses include the onchain order key
-  used by the CLI's delivery-review flow.
+- `/.well-known/mcp.json` publishes the buyer CLI pin, the accepted payer
+  account types (`payerAccounts`: plain wallets always, deployed contract
+  accounts when enabled, never counterfactual ones), the delivery
+  confirmation modes (`confirmation`: sponsored for EOA payers, direct for
+  contract payers, three attestations per order, revocation always), the
+  pinned signer CLIs (`signerClis`), and EAS confirmation signing metadata.
+  Authorized order responses include the onchain order key used by the
+  CLI's delivery-review flow, and order status carries the
+  `confirmationFinal` state read at the configured finality tag.
 - `POST /outcomes/:providerAgentId/:outcomeId` issues a payment requirement and
   accepts the identical paid retry.
 - `/orders/:handle/actions/*` exposes payer-authorized lifecycle actions.
 - `/wallet/*` exposes wallet-authorized orders, reputation, assets, and asset
   actions.
+- `POST /v1/owner-swaps` accepts a provider-signed `ProviderOwnerSwapV1`
+  notice that an asset's owner changed and grants the new payer eligibility
+  for that provider's owner-only reads and actions; see
+  [docs/owner-swaps-v1.md](docs/owner-swaps-v1.md). Off by default.
 - `/.well-known/x402` and `/public/v2/*` publish the active signed legacy rail
   and listing artifacts.
 - `/.well-known/daski-chain.json` publishes metadata envelope v3 with
@@ -48,7 +58,11 @@ signer is configured, the steady-state prompt is `Use Daski to [your task]`.
 - `/public/v3/activity?limit=50` publishes the compact marketplace activity
   projection from the same warm data: the newest purchases across services
   with service and skill names, marketplace totals, the safe block, and the
-  contract addresses. `limit` accepts 1 to 200.
+  contract addresses. `limit` accepts 1 to 200. New orders preserve
+  checkout service and skill names in their immutable listing snapshot, and
+  activity shows exactly those names, including for superseded listings. A
+  purchase whose local order is missing displays an unknown skill, never
+  another skill from the same service.
 - `/public/v3/services` publishes the service-first dynamic catalog when the
   registration route group is enabled.
 - `/public/v2/registry/*` exposes read-only ERC-8004 identity, Daski provider
@@ -68,7 +82,7 @@ gateway enrollment controls only discovery and orchestration in this gateway.
 
 ## Requirements
 
-- Node.js 20 or newer
+- Node.js 22 or newer (`nvm use` selects the development version)
 - PostgreSQL 16
 - Reviewed standard-rail manifests and signer bindings
 - Coinbase CDP facilitator credentials
@@ -95,8 +109,10 @@ not a configuration option.
 See [.env.example](.env.example) for the complete Base Sepolia template. The
 core groups are:
 
-- Runtime and database: `NODE_ENV`, `CHAIN_ID`, `PUBLIC_URL`, `DATABASE_URL`,
-  `MIGRATION_DATABASE_URL`, and `TRUST_PROXY`.
+- Runtime and database: `NODE_ENV`, `CHAIN_ID`, `CHAIN_FINALITY_TAG` (the block
+  tag read as final: `safe` on Base Sepolia and `finalized` on Base mainnet by
+  default), `PUBLIC_URL`, `DATABASE_URL`, `MIGRATION_DATABASE_URL`, and
+  `TRUST_PROXY`.
 - Standard facilitator: `CDP_API_KEY_ID`, `CDP_API_KEY_SECRET`, and the signed
   facilitator profile in `STANDARD_RAIL_MANIFEST_JSON`.
 - Evidence and screening: `BASE_RPC_URL`, optional `BASE_RPC_FALLBACK_URLS`,
@@ -113,6 +129,16 @@ core groups are:
 - Public projection: `CHAIN_PROJECTION_REFRESH_MS` sets how often the public
   reputation projection behind the chain document and the activity endpoint
   is refreshed in the background.
+- Payer accounts: `PAYER_ACCOUNT_TYPES` (`eoa` by default; `eoa,contract`
+  admits deployed contract accounts whose `isValidSignature` verifies the
+  EIP-712 hash through one bounded `eth_call`) and
+  `PAYER_SIGNATURE_VERIFY_TIMEOUT_MS` (5000), the single deadline covering
+  the code lookup, the call, and one RPC failover. Signatures are at most
+  4,096 bytes; the call runs with 1,000,000 gas, a 16 KB response bound, and
+  at most 8 concurrent verifications per process. On Base mainnet,
+  `contract` requires `CONFORMANCE_EVIDENCE_RECORDED=1`.
+- Owner swaps: `OWNER_SWAPS_ENABLED` (`false`) and
+  `OWNER_SWAPS_PER_PROVIDER_PER_DAY` (50).
 
 The HTTP listener binds every interface, including the unspecified IPv6
 address in dual-stack mode, so Railway private networking
@@ -152,7 +178,8 @@ lives in [daski-io/deploy-testnet](https://github.com/daski-io/deploy-testnet).
   boundary.
 
 The provider workflow and signed wire contract are documented in
-[docs/service-registration-v1.md](docs/service-registration-v1.md). Checkout uses
+[docs/service-registration-v1.md](docs/service-registration-v1.md); the
+provider owner-swap notice in [docs/owner-swaps-v1.md](docs/owner-swaps-v1.md). Checkout uses
 active database-backed skill listings. Registration and activation require live
 chain authority; new commerce requires successful authority and card validation
 within five minutes. Existing orders retain their immutable listing snapshots.

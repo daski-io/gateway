@@ -424,7 +424,10 @@ describe("agentic purchase DX contracts", () => {
       expected: message,
       chainId: config.chainId,
       now,
-    })).resolves.toMatch(/^0x[0-9a-f]{64}$/);
+    })).resolves.toEqual({
+      authorizationHash: expect.stringMatching(/^0x[0-9a-f]{64}$/),
+      verification: { accountType: "eoa", verifiedVia: "recovery" },
+    });
   });
 
   it("serves checksum-stable skills and an exact full concatenation", async () => {

@@ -39,6 +39,10 @@ Use the response's `retryable`, `requiresNewSignature`, `paymentMayHaveSettled`,
 | Configured budget exceeded | Report the quote and the existing budget. Use daski budget if the user requests a settings change. |
 | CHALLENGE_EXPIRED | Obtain a fresh quote. Existing approval remains usable when material terms match. |
 | Payment shape, extension, nonce, or signature error | Use the pinned bridge and the challenge-bound payload. If paymentMayHaveSettled is true, reconcile first. |
+| SIGNATURE_COUNTERFACTUAL_REJECTED | The contract wallet is not deployed. Deploy it (Circle: a zero-value transfer to itself), run daski doctor, then obtain a fresh quote and sign again. |
+| SIGNATURE_VERIFICATION_UNAVAILABLE / SIGNATURE_VERIFICATION_BUSY | The signature was not evaluated. Retry the identical request shortly; do not sign again. |
+| CONFIRMATION_SPONSORED_REQUIRES_EOA | Sponsored confirmation needs a plain wallet. Repeat with submission direct; the CLI selects it for contract signers. |
+| CONFIRMATION_SPONSORSHIP_LIMIT | The sponsored budget is exhausted. When chainEligible is true, submit directly through the wallet's own tool; otherwise no further submission is possible. |
 | PAYMENT_IDENTIFIER_UNKNOWN | Compare the submitted identifier with the one the challenge issued. Follow the gateway's no-settlement response to correct the submission. |
 | PAYMENT_IDENTIFIER_CONFLICT | Reconcile the original payment identifier and recover its order. |
 | Timeout / PAYMENT_PENDING_RECONCILIATION / paymentMayHaveSettled: true | Run daski order reconcile with the recorded identifier. |

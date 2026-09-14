@@ -34,6 +34,23 @@ export async function withRequestDisconnectSignal<T>(
   }
 }
 
+/**
+ * Puts the request's client key in scope for a plain HTTP route, without the
+ * disconnect signal: the sites that charge signature-verification admission
+ * read it through `activeRequestKey` whichever surface the request came in
+ * on. A context already in scope (the MCP transport's) is kept.
+ */
+export function withRequestClientKey<T>(req: Request, action: () => T): T {
+  if (requestContexts.getStore()) return action();
+  return requestContexts.run(
+    {
+      signal: new AbortController().signal,
+      clientKey: req.ip ?? req.socket?.remoteAddress ?? "unknown",
+    },
+    action,
+  );
+}
+
 export function activeRequestSignal(fallback: AbortSignal): AbortSignal {
   const requestSignal = requestContexts.getStore()?.signal;
   return requestSignal

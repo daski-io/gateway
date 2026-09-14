@@ -98,5 +98,30 @@
       "validBefore": 1800000900
     },
     "token": "v1.k1.AAECAwQFBgcICQoLPCCzdbOMsHTjLPLlxctCT-G39FHdCDoMVwuM5D9FIttyY9uZy4Bmuk6VR924txgI3mlQoXi9yrRbtRA7a5eUgJRdtB7-vlQFeSbZTMOtYolL_utYDUEwGpic6qkcsc2v8dpr1pZ35SqmMQ-GaEQTRYlTWJ7V6xSofsti-6nWXiyXcGmilu3pPHqFF5AP6Xj3AMPbGAQjoH6ha9lFyf_R36GksyTbzPhLkVTlw77i5Zng4uhS6tIWzkfl4vcJ9IbCIn27yzzs5_gGZ-LXi3DotdBPyUcMMYvAQKCr9nB5vstyEuWe1wIvByI1137cdRkj6fTcG-l57YctSVdRp74z9HGji9j8qSAcTf1Cf9JIX2-_0a-o5e7kyhRKCDRvkd8uZGa7Ld-gq3L3WV8_b_DFtv2vPjss8apy_VR4c_JYIIys8BpP7gUdjMaFHkV__z8U8na-4N5x42c7xlpcvIl4z2kfyeC1ZA8mFS8w4eNJe4lfnyLnoPE4"
+  },
+  "ownerSwap": {
+    "signer": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+    "envelope": {
+      "artifactType": "ProviderOwnerSwapV1",
+      "schemaVersion": 1,
+      "environment": "testnet",
+      "chainId": 84532,
+      "audience": "https://sandbox-gateway.daski.io",
+      "signerKeyId": "provider-authority",
+      "issuedAt": 1756769000,
+      "validBefore": 1756769600,
+      "payload": {
+        "providerAgentId": "42",
+        "providerAssetId": "5e0f95a6-3f9f-4bb0-9a68-59f2e26bde33",
+        "ownerVersion": 1,
+        "orderId": "ord_12345678-1234-4123-8123-123456789abc",
+        "orderKey": "0xe664d7ca5d2ad0ca8774a3e5f0f77174f4926b3c534344d8792ac298cc4ca0d6",
+        "previousPayer": "0x1111111111111111111111111111111111111111",
+        "newPayer": "0x2222222222222222222222222222222222222222"
+      },
+      "signature": "0xc8333bcc5da212da22c2520db35c6090510cc12a722a6e4ec7529a9195484a5e2e072cac3a4e5e9ac0e6dc9c42e3ae1a0c2eb824dc8563324862ad9e1befb5011b"
+    },
+    "artifactPayloadHash": "0xf72a6cc690701e424a1c8f89ceb6ce290cbe923fcc8dfcdc18cee2b781c570ad",
+    "contentHash": "0x364b0b9881c7ab6da1ed0f0991dc3bf903d5bbe9614103b4c79e745ffdb89af6"
   }
 }

@@ -3,6 +3,8 @@ import { gunzipSync } from "node:zlib";
 import { getAddress, keccak256, type Address, type Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { assertNoDuplicateJsonKeys } from "./canonical.js";
+import { PAYER_ACCOUNT_TYPES, type PayerAccountType } from "./payerSignature.js";
+import { resolveFinalityTag, type FinalityTag } from "../util/finalityTag.js";
 import type { StandardRailManifest } from "./types.js";
 
 export interface StandardRailConfig {
@@ -61,9 +63,24 @@ export interface StandardRailConfig {
   reputationRegisterGasLimit: bigint;
   reputationConfirmationGasLimit: bigint;
   confirmationDeadlineSeconds: number;
+  /** Sponsored attestations per order; sponsored revocations have their own constant. */
   confirmationMaxPerOrder: number;
   confirmationMaxPerPayerPerDay: number;
   confirmationMaxGlobalPerDay: number;
+  /** Payer account types whose signatures are accepted (PAYER_ACCOUNT_TYPES). */
+  payerAccountTypes: readonly PayerAccountType[];
+  /**
+   * The block tag read as final by confirmation state, order-history
+   * reputation reads, and relayer nonce recovery (CHAIN_FINALITY_TAG: `safe`
+   * on testnet, `finalized` on Base mainnet).
+   */
+  finalityTag: FinalityTag;
+  /** One deadline for a contract-account verification: code lookup, call, one failover. */
+  payerSignatureVerifyTimeoutMs: number;
+  ownerSwaps: {
+    enabled: boolean;
+    perProviderPerDay: number;
+  };
   abuse: {
     walletChallengesPerClientPerMinute: number;
     walletChallengesGlobalPerMinute: number;
@@ -81,6 +98,8 @@ export interface StandardRailConfig {
 }
 
 const DEFAULTS = {
+  payerSignatureVerifyTimeoutMs: 5_000,
+  ownerSwapsPerProviderPerDay: 50,
   finalityConfirmations: 12,
   facilitatorTimeoutMs: 30_000,
   dispatchTimeoutMs: 90_000,
@@ -206,6 +225,27 @@ function parseSplitterCreationCode(env: NodeJS.ProcessEnv, expectedHash: Hex): H
   return decoded as Hex;
 }
 
+function payerAccountTypes(raw: string | undefined): readonly PayerAccountType[] {
+  const values = (raw ?? "eoa").split(",").map((value) => value.trim().toLowerCase()).filter(Boolean);
+  if (values.length === 0) throw new Error("PAYER_ACCOUNT_TYPES must name at least one account type");
+  for (const value of values) {
+    if (!(PAYER_ACCOUNT_TYPES as readonly string[]).includes(value)) {
+      throw new Error(`PAYER_ACCOUNT_TYPES accepts only ${PAYER_ACCOUNT_TYPES.join(" and ")}`);
+    }
+  }
+  const unique = [...new Set(values)] as PayerAccountType[];
+  if (!unique.includes("eoa")) throw new Error("PAYER_ACCOUNT_TYPES must include eoa");
+  return unique;
+}
+
+function booleanFlag(env: NodeJS.ProcessEnv, name: string, fallback: boolean): boolean {
+  const raw = env[name]?.trim();
+  if (raw === undefined || raw === "") return fallback;
+  if (raw === "true") return true;
+  if (raw === "false") return false;
+  throw new Error(`${name} must be either 'true' or 'false'`);
+}
+
 function parseTrustedSigners(raw: string | undefined, protocolAddress: Address): ReadonlyMap<string, Address> {
   if (!raw?.trim()) return new Map([["gateway-protocol", protocolAddress]]);
   try {
@@ -252,8 +292,20 @@ export function loadStandardRailConfig(
   if (
     maxFee > 500_000_000_000n || priorityFee > 5_000_000_000n || priorityFee > maxFee
   ) throw new Error("Reputation relayer fee ceiling is invalid");
+  const accountTypes = payerAccountTypes(env.PAYER_ACCOUNT_TYPES);
+  // Mainnet gate: contract-account payers ship only with recorded conformance
+  // evidence for the supported signers (spec §10, §B10).
+  if (
+    accountTypes.includes("contract") && Number(env.CHAIN_ID ?? 84532) === 8453 &&
+    env.CONFORMANCE_EVIDENCE_RECORDED?.trim() !== "1"
+  ) {
+    throw new Error(
+      "PAYER_ACCOUNT_TYPES including contract on Base mainnet requires CONFORMANCE_EVIDENCE_RECORDED=1",
+    );
+  }
   return {
     environment: env.STANDARD_RAIL_ENVIRONMENT?.trim() || "testnet",
+    finalityTag: resolveFinalityTag(env.CHAIN_FINALITY_TAG, Number(env.CHAIN_ID ?? 84532)),
     migrationDatabaseUrl: databaseUrl(required(env, "MIGRATION_DATABASE_URL")),
     gatewayAudience: env.STANDARD_RAIL_GATEWAY_AUDIENCE?.trim() || required(env, "PUBLIC_URL"),
     facilitatorBaseUrl,
@@ -323,6 +375,20 @@ export function loadStandardRailConfig(
     confirmationMaxPerOrder: 3,
     confirmationMaxPerPayerPerDay: 20,
     confirmationMaxGlobalPerDay: 500,
+    payerAccountTypes: accountTypes,
+    payerSignatureVerifyTimeoutMs: integer(
+      env,
+      "PAYER_SIGNATURE_VERIFY_TIMEOUT_MS",
+      DEFAULTS.payerSignatureVerifyTimeoutMs,
+    ),
+    ownerSwaps: {
+      enabled: booleanFlag(env, "OWNER_SWAPS_ENABLED", false),
+      perProviderPerDay: integer(
+        env,
+        "OWNER_SWAPS_PER_PROVIDER_PER_DAY",
+        DEFAULTS.ownerSwapsPerProviderPerDay,
+      ),
+    },
     abuse: { ...DEFAULTS.abuse },
   };
 }

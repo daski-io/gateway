@@ -6,6 +6,7 @@ import {
 } from "./payment/usdcDomain.js";
 import type { ChainId, Hex } from "./types.js";
 import { isHexAddress } from "./util/evmValidation.js";
+import { resolveFinalityTag, type FinalityTag } from "./util/finalityTag.js";
 
 export const BASE_MAINNET_SANCTIONS_ORACLE =
   "0x3a91a31cb3dc49b4db9ce721f50a9d076c8d739b" as Hex;
@@ -25,7 +26,7 @@ export interface Config {
   network: "base" | "base-sepolia";
   /** Chain-read finality for registration evidence and marketplace reads:
    * testnet observes the `safe` tag, mainnet the `finalized` tag. */
-  finalityTag: "safe" | "finalized";
+  finalityTag: FinalityTag;
   x402Network: Network;
   databaseUrl: string;
   publicUrl: string;
@@ -81,10 +82,8 @@ function chainId(raw: string | undefined): ChainId {
 function finalityTag(
   raw: string | undefined,
   configuredChainId: ChainId,
-): "safe" | "finalized" {
-  if (raw === undefined) return configuredChainId === 8453 ? "finalized" : "safe";
-  if (raw === "safe" || raw === "finalized") return raw;
-  throw new Error("CHAIN_FINALITY_TAG must be 'safe' or 'finalized'");
+): FinalityTag {
+  return resolveFinalityTag(raw, configuredChainId);
 }
 
 function address(name: string, raw: string | undefined): Hex {

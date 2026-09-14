@@ -48,10 +48,6 @@ export function activityProjection(args: {
     outcome.serviceId.toLowerCase(),
     outcome,
   ])).values()];
-  const outcomesById = new Map(args.outcomes.map((outcome) => [
-    `${outcome.providerAgentId}:${outcome.outcomeId}`,
-    outcome,
-  ]));
   const safeBlock = services
     .map((outcome) => outcome.serviceReputation.safeBlock)
     .filter((value): value is string => value !== null)
@@ -60,17 +56,13 @@ export function activityProjection(args: {
       (latest, block) => latest === null || block > latest ? block : latest,
       null,
     );
+  // Every order snapshot carries its checkout names; a later catalog change
+  // never rewrites what the buyer saw at checkout.
   const purchases = services
-    .flatMap((service) => service.serviceReputation.recentPurchases.map((purchase) => {
-      const outcome = outcomesById.get(`${service.providerAgentId}:${purchase.outcomeId}`) ??
-        service;
-      return {
-        ...purchase,
-        serviceId: outcome.serviceId,
-        serviceName: outcome.service.name,
-        skillName: outcome.skill.name,
-      };
-    }))
+    .flatMap((service) => service.serviceReputation.recentPurchases.map((purchase) => ({
+      ...purchase,
+      serviceId: service.serviceId,
+    })))
     .sort((left, right) => Date.parse(right.timestamp) - Date.parse(left.timestamp))
     .slice(0, args.limit);
   return {

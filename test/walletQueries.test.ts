@@ -29,6 +29,7 @@ describe("wallet reputation queries", () => {
       {
         evidenceRpcUrls: ["https://rpc.example", "https://fallback.example"],
         reputationContract: "0x1111111111111111111111111111111111111111",
+        finalityTag: "finalized",
       } as unknown as StandardRailConfig,
       baseSepolia,
     );
@@ -52,7 +53,8 @@ describe("wallet reputation queries", () => {
     });
     expect(consume).toHaveBeenCalledOnce();
     expect(consume.mock.calls[0]?.[0]).toMatchObject({ payer });
-    expect(getBlock).toHaveBeenCalledWith({ blockTag: "safe" });
+    // The aggregate is read at the configured finality tag, like the order history.
+    expect(getBlock).toHaveBeenCalledWith({ blockTag: "finalized" });
     expect(fallback.getBlock).not.toHaveBeenCalled();
     expect(fallback.readContract).not.toHaveBeenCalled();
     expect(readContract).toHaveBeenCalledTimes(3);

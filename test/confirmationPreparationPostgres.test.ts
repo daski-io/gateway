@@ -21,7 +21,7 @@ describe("confirmation preparation against PostgreSQL", () => {
         operation TEXT NOT NULL,
         confirmation TEXT,
         current_uid BYTEA,
-        transitions_used SMALLINT NOT NULL,
+        submissions_used SMALLINT NOT NULL,
         eas_nonce NUMERIC(78,0) NOT NULL,
         deadline BIGINT NOT NULL,
         request_hash BYTEA NOT NULL,

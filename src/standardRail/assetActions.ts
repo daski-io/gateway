@@ -26,6 +26,7 @@ import {
   recordAssetActionState,
 } from "./assetActionClaims.js";
 import { assertSchema, compileClosedResponseSchema } from "./schema.js";
+import { isPayerEligibleForProvider } from "./assetEligibility.js";
 
 interface ResolvedAction {
   active: ActiveServicing;
@@ -135,14 +136,12 @@ export class StandardAssetActions {
       allowExactReplay: true,
     });
     if (walletHash !== presentedWalletHash) throw new Error("wallet authorization denied");
-    const eligible = await this.pool.query(
-      `SELECT 1 FROM standard_orders WHERE lower(payer)=$1 AND provider_agent_id=$2
-        AND state NOT IN ('DRAFT','CHALLENGE_ISSUED','ATTEMPT_OPENED','VERIFIED','VERIFY_REJECTED',
-          'SETTLE_INVOKED','FACILITATOR_CONFIRMED','SETTLEMENT_AMBIGUOUS','SETTLEMENT_FAILED',
-          'EXTERNAL_OR_UNPROVEN_DEPOSIT','DEPOSIT_FINAL') LIMIT 1`,
-      [payer, args.providerAgentId],
-    );
-    if (eligible.rowCount !== 1) throw new Error("wallet authorization denied");
+    // Eligibility: a post-deposit order by this payer with the provider, or a
+    // provider-signed owner swap naming this payer (spec C1; nothing else
+    // about the order changes on a swap).
+    if (!await isPayerEligibleForProvider(this.pool, payer, args.providerAgentId)) {
+      throw new Error("wallet authorization denied");
+    }
     if (followUp) {
       await assertDestructiveFollowUp(this.pool, {
         payer,

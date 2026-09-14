@@ -110,7 +110,7 @@
               },
               "signature": {
                 "type": "string",
-                "pattern": "^0x[0-9a-fA-F]{130}$"
+                "pattern": "^0x(?:[0-9a-fA-F]{2}){1,4096}$"
               }
             },
             "required": [
@@ -201,7 +201,7 @@
               },
               "signature": {
                 "type": "string",
-                "pattern": "^0x[0-9a-fA-F]{130}$"
+                "pattern": "^0x(?:[0-9a-fA-F]{2}){1,4096}$"
               }
             },
             "required": [
@@ -229,7 +229,7 @@
         "additionalProperties": {}
       },
       "annotations": {
-        "title": "Prepare or submit a payer-signed delivery confirmation.",
+        "title": "Prepare, submit, or check a payer-signed delivery confirmation.",
         "readOnlyHint": false,
         "destructiveHint": true,
         "idempotentHint": false,
@@ -292,7 +292,7 @@
               },
               "signature": {
                 "type": "string",
-                "pattern": "^0x[0-9a-fA-F]{130}$"
+                "pattern": "^0x(?:[0-9a-fA-F]{2}){1,4096}$"
               }
             },
             "required": [
@@ -441,7 +441,7 @@
                   },
                   "signature": {
                     "type": "string",
-                    "pattern": "^0x[0-9a-f]{130}$"
+                    "pattern": "^0x(?:[0-9a-fA-F]{2}){1,4096}$"
                   }
                 },
                 "required": [
@@ -523,7 +523,7 @@
               },
               "signature": {
                 "type": "string",
-                "pattern": "^0x[0-9a-fA-F]{130}$"
+                "pattern": "^0x(?:[0-9a-fA-F]{2}){1,4096}$"
               }
             },
             "required": [
@@ -614,7 +614,7 @@
               },
               "signature": {
                 "type": "string",
-                "pattern": "^0x[0-9a-fA-F]{130}$"
+                "pattern": "^0x(?:[0-9a-fA-F]{2}){1,4096}$"
               }
             },
             "required": [
@@ -710,7 +710,7 @@
               },
               "signature": {
                 "type": "string",
-                "pattern": "^0x[0-9a-fA-F]{130}$"
+                "pattern": "^0x(?:[0-9a-fA-F]{2}){1,4096}$"
               }
             },
             "required": [
@@ -1108,7 +1108,7 @@
                   },
                   "signature": {
                     "type": "string",
-                    "pattern": "^0x[0-9a-f]{130}$"
+                    "pattern": "^0x(?:[0-9a-fA-F]{2}){1,4096}$"
                   }
                 },
                 "required": [
@@ -1285,7 +1285,7 @@
                   },
                   "signature": {
                     "type": "string",
-                    "pattern": "^0x[0-9a-f]{130}$"
+                    "pattern": "^0x(?:[0-9a-fA-F]{2}){1,4096}$"
                   }
                 },
                 "required": [
@@ -1495,7 +1495,7 @@
               },
               "signature": {
                 "type": "string",
-                "pattern": "^0x[0-9a-fA-F]{130}$"
+                "pattern": "^0x(?:[0-9a-fA-F]{2}){1,4096}$"
               }
             },
             "required": [
@@ -1523,7 +1523,7 @@
         "additionalProperties": {}
       },
       "annotations": {
-        "title": "Prepare or submit withdrawal of the payer's current delivery confirmation.",
+        "title": "Prepare, submit, or check withdrawal of the payer's current delivery confirmation.",
         "readOnlyHint": false,
         "destructiveHint": true,
         "idempotentHint": false,
@@ -1586,7 +1586,7 @@
               },
               "signature": {
                 "type": "string",
-                "pattern": "^0x[0-9a-fA-F]{130}$"
+                "pattern": "^0x(?:[0-9a-fA-F]{2}){1,4096}$"
               }
             },
             "required": [
@@ -1755,7 +1755,7 @@
                   },
                   "signature": {
                     "type": "string",
-                    "pattern": "^0x[0-9a-f]{130}$"
+                    "pattern": "^0x(?:[0-9a-fA-F]{2}){1,4096}$"
                   }
                 },
                 "required": [

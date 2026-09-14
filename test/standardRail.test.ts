@@ -4,7 +4,7 @@ import {
   assertNoDuplicateJsonKeys,
   canonicalHash,
   canonicalJson,
-  recipeNonce,
+  recipeNonceV2,
 } from "../src/standardRail/canonical.js";
 import {
   assertSchema,
@@ -89,15 +89,15 @@ describe("standard rail primitives", () => {
       payer: getAddress("0x1111111111111111111111111111111111111111"),
       splitter: getAddress("0x2222222222222222222222222222222222222222"),
       grossAmount: 1_000_000n,
-      listingManifestHash: `0x${"01".repeat(32)}` as Hex,
-      providerOfferHash: `0x${"02".repeat(32)}` as Hex,
+      runtimeCommitmentHash: `0x${"01".repeat(32)}` as Hex,
+      providerIntentHash: `0x${"02".repeat(32)}` as Hex,
       quoteHash: `0x${"03".repeat(32)}` as Hex,
       canonicalRequestHash: `0x${"04".repeat(32)}` as Hex,
       orderNonce: `0x${"05".repeat(32)}` as Hex,
     };
-    const nonce = recipeNonce(base);
+    const nonce = recipeNonceV2(base);
     expect(nonce).toMatch(/^0x[0-9a-f]{64}$/);
-    expect(recipeNonce({ ...base, grossAmount: 1_000_001n })).not.toBe(nonce);
+    expect(recipeNonceV2({ ...base, grossAmount: 1_000_001n })).not.toBe(nonce);
   });
 
   it("enforces closed request schemas with full type validation", () => {

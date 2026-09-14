@@ -5,7 +5,7 @@ import {
   type Hex,
 } from "viem";
 import type { Config } from "../config.js";
-import type { MarketplaceChainReader } from "../marketplace/reader.js";
+import { MarketplaceNotFoundError, type MarketplaceChainReader } from "../marketplace/reader.js";
 import { artifactPayloadHash } from "../standardRail/canonical.js";
 import type { StandardRailConfig } from "../standardRail/config.js";
 import type { SignedEnvelope } from "../standardRail/types.js";
@@ -57,6 +57,14 @@ function uuid(value: unknown, label: string): string {
     !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)
   ) throw new Error(`${label} must be a UUIDv4`);
   return value.toLowerCase();
+}
+
+/** The provider authority could not be read from chain: an outage, never a refusal. */
+export class ProviderAuthorityUnavailableError extends Error {
+  constructor(cause: unknown) {
+    super("provider authority is unavailable", { cause });
+    this.name = "ProviderAuthorityUnavailableError";
+  }
 }
 
 function providerIdentity(value: unknown, expectedAgentId: string): {
@@ -171,7 +179,72 @@ function parseEvidence(value: unknown): ProviderServiceRegistrationEvidenceV1 {
   };
 }
 
-async function verifyProviderEnvelope<T>(args: {
+/**
+ * Verifies one provider-signed envelope: exact keys, the gateway's domain,
+ * a validity window of at most ten minutes, and a signer equal to the
+ * provider's current finalized owner or agent wallet read live from the
+ * registry. Shared by registration intents, evidence, and owner swaps.
+ */
+interface EnvelopeDomain {
+  artifactType: string;
+  config: Pick<Config, "chainId" | "publicUrl">;
+  railConfig: Pick<StandardRailConfig, "environment">;
+}
+
+/**
+ * The closed envelope shape and domain. The validity window is checked only
+ * for a first acceptance: a replay of a recorded artifact proves its signer,
+ * not its age.
+ */
+function providerEnvelopeShape(raw: unknown, domain: EnvelopeDomain, window: boolean): SignedEnvelope<unknown> {
+  const rawEnvelope = exact(raw, ENVELOPE_KEYS, "signed registration envelope");
+  const envelope = rawEnvelope as unknown as SignedEnvelope<unknown>;
+  const now = Math.floor(Date.now() / 1_000);
+  if (
+    envelope.artifactType !== domain.artifactType ||
+    envelope.schemaVersion !== 1 ||
+    envelope.environment !== domain.railConfig.environment ||
+    envelope.chainId !== domain.config.chainId ||
+    envelope.audience !== domain.config.publicUrl ||
+    envelope.signerKeyId !== "provider-authority" ||
+    !Number.isSafeInteger(envelope.issuedAt) ||
+    !Number.isSafeInteger(envelope.validBefore) ||
+    envelope.issuedAt >= envelope.validBefore ||
+    envelope.validBefore > envelope.issuedAt + 600 ||
+    (window && (envelope.issuedAt > now + 30 || envelope.issuedAt < now - 600 || envelope.validBefore <= now)) ||
+    typeof envelope.signature !== "string" ||
+    !/^0x[0-9a-fA-F]{130}$/.test(envelope.signature)
+  ) throw new Error("registration envelope domain or validity is invalid");
+  return envelope;
+}
+
+async function providerEnvelopeSigner(envelope: SignedEnvelope<unknown>): Promise<Address> {
+  try {
+    return getAddress(await recoverMessageAddress({
+      message: { raw: artifactPayloadHash(envelope as unknown as Record<string, unknown>) },
+      signature: envelope.signature,
+    }));
+  } catch {
+    throw new Error("registration envelope signature is invalid");
+  }
+}
+
+/**
+ * The envelope's shape, domain, payload, and recovered signer without the
+ * authority read and without the validity window: what a replay of a
+ * recorded artifact must still prove before the record is answered.
+ */
+export async function recoverProviderEnvelopeSigner<T>(args: {
+  raw: unknown;
+  parsePayload: (value: unknown) => T;
+} & EnvelopeDomain): Promise<{ envelope: SignedEnvelope<T>; signer: Address }> {
+  const envelope = providerEnvelopeShape(args.raw, args, false);
+  const payload = args.parsePayload(envelope.payload);
+  const signer = await providerEnvelopeSigner(envelope);
+  return { envelope: { ...envelope, payload } as SignedEnvelope<T>, signer };
+}
+
+export async function verifyProviderEnvelope<T>(args: {
   raw: unknown;
   artifactType: string;
   parsePayload: (value: unknown) => T;
@@ -185,47 +258,28 @@ async function verifyProviderEnvelope<T>(args: {
   agentWallet: Address;
   signer: Address;
 }> {
-  const rawEnvelope = exact(args.raw, ENVELOPE_KEYS, "signed registration envelope");
-  const envelope = rawEnvelope as unknown as SignedEnvelope<unknown>;
-  const now = Math.floor(Date.now() / 1_000);
-  if (
-    envelope.artifactType !== args.artifactType ||
-    envelope.schemaVersion !== 1 ||
-    envelope.environment !== args.railConfig.environment ||
-    envelope.chainId !== args.config.chainId ||
-    envelope.audience !== args.config.publicUrl ||
-    envelope.signerKeyId !== "provider-authority" ||
-    !Number.isSafeInteger(envelope.issuedAt) ||
-    !Number.isSafeInteger(envelope.validBefore) ||
-    envelope.issuedAt > now + 30 || envelope.issuedAt < now - 600 ||
-    envelope.validBefore <= now ||
-    envelope.validBefore > envelope.issuedAt + 600 ||
-    typeof envelope.signature !== "string" ||
-    !/^0x[0-9a-fA-F]{130}$/.test(envelope.signature)
-  ) throw new Error("registration envelope domain or validity is invalid");
+  const envelope = providerEnvelopeShape(args.raw, args, true);
   const payload = args.parsePayload(envelope.payload);
   const providerAgentId = args.providerAgentId(payload);
-  const authority = providerIdentity(
-    await args.marketplace.getProvider(BigInt(providerAgentId)),
-    providerAgentId,
-  );
-  let signer: Address;
+  let provider: unknown;
   try {
-    signer = await recoverMessageAddress({
-      message: { raw: artifactPayloadHash(envelope as unknown as Record<string, unknown>) },
-      signature: envelope.signature,
-    });
-  } catch {
-    throw new Error("registration envelope signature is invalid");
+    provider = await args.marketplace.getProvider(BigInt(providerAgentId));
+  } catch (error) {
+    // A provider the registry does not know is a refusal; an endpoint that
+    // could not answer is an outage the caller reports as such (T3).
+    if (error instanceof MarketplaceNotFoundError) throw new Error("provider is not registered on chain");
+    throw new ProviderAuthorityUnavailableError(error);
   }
+  const authority = providerIdentity(provider, providerAgentId);
+  const signer = await providerEnvelopeSigner(envelope);
   if (
-    getAddress(signer) !== authority.owner &&
-    getAddress(signer) !== authority.agentWallet
+    signer !== authority.owner &&
+    signer !== authority.agentWallet
   ) throw new Error("registration envelope is not signed by current provider authority");
   return {
     envelope: { ...envelope, payload } as SignedEnvelope<T>,
     ...authority,
-    signer: getAddress(signer),
+    signer,
   };
 }
 
