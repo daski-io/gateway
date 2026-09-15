@@ -86,6 +86,22 @@ jobs:
       - name: Test
         run: npm test
 
+      # test/wire-fixtures/ is generated from the real builders by
+      # test/wireFixtures.test.ts and vendored verbatim by daski-test,
+      # daski-buyer and daski-provider (test/fixtures/gateway-wire/); the
+      # coordinator compares those copies byte for byte. The test itself
+      # compares parsed JSON, so regenerate here and require the committed
+      # directory to be identical and complete.
+      - name: Wire fixtures are freshly generated and committed
+        run: |
+          UPDATE_WIRE_FIXTURES=1 NODE_ENV=test npx vitest run test/wireFixtures.test.ts
+          git diff --exit-code -- test/wire-fixtures
+          untracked="$(git ls-files --others --exclude-standard -- test/wire-fixtures)"
+          if [ -n "$untracked" ]; then
+            echo "uncommitted wire fixtures: $untracked"
+            exit 1
+          fi
+
       - name: Boot actual Dockerfile image on representative existing state
         run: |
           docker build --build-arg SOURCE_SHA="$CANDIDATE_SHA" -t gateway-startup:$CANDIDATE_SHA .

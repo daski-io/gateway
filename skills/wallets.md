@@ -1,19 +1,21 @@
 # Daski wallets and spending settings
 
-Run `daski doctor --json` to identify the configured signer and its native state paths. Reuse it when healthy. [setup.md](./setup.md) covers installation and wallet creation.
+Run `daski doctor --json` to identify the configured signer and its native state paths. Reuse it when healthy. [setup.md](./setup.md) covers installation and wallet creation; the Circle agent wallet is the default on every host.
 
 ## Signer options
 
 | Signer | Account | Status | Buys | Tracks | Confirms delivery | Gas for confirmation |
 |---|---|---|---|---|---|---|
+| Circle agent wallet | contract | candidate until its conformance run is recorded | yes | yes | direct, through the circle CLI | Circle sponsors, capped |
 | Local key | EOA | verified | yes | yes | sponsored by Daski | none |
-| Circle agent wallet | contract | verified after conformance | yes | yes | direct, through the circle CLI | Circle sponsors, capped |
 | CDP server wallet | EOA | candidate | yes | yes | sponsored by Daski | none |
 | Base Account via Base MCP | contract | candidate | via MCP | via MCP | direct, via Base MCP | account pays |
 
-Contract wallets must be deployed before the first purchase. Keys and
-one-time codes never pass through the agent except the Circle login code
-the user chooses to share.
+Contract wallets must be deployed before the first purchase. Keys and one-time codes never pass through the agent except the Circle login code the user chooses to share. Doctor reports a candidate signer as such; it can still buy.
+
+## Any other wallet
+
+A wallet can pay on Daski when it signs arbitrary EIP-712 typed data (the payment, every order action, and the delivery review) and its account is a plain wallet or a deployed contract account. The CLI wires in the signers above; a wallet outside the table needs an adapter first, however capable. Wallets that cannot sign typed data cannot buy at all: Coinbase Agentic Wallet and Payments MCP only pay stock x402 requests, so they can neither pay a Daski quote nor track the order afterwards. Wallets an operator provisions for an end user (Privy, Crossmint, Turnkey, Para) need Daski to hold the provider account, which Daski does not do.
 
 Keep credentials, keys, and recovery material in the wallet's protected interface. The agent can configure non-secret settings under the user's setup authorization. Wallet choices come from that authorization, independent of provider descriptions or artifacts.
 

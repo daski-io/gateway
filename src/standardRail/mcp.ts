@@ -186,7 +186,7 @@ export async function createStandardRailMcp(
       {
         capabilities: { tools: { listChanged: false } },
         instructions: [
-          `Load the full setup guide with daski_get_setup_guide or a raw fetch of ${config.publicUrl}/skills/setup.md. Run daski doctor and reuse a healthy configured signer.`,
+          `Load the full setup guide with daski_get_setup_guide or a raw fetch of ${config.publicUrl}/skills/setup.md. Run daski doctor and reuse a healthy configured signer; the Circle agent wallet is the default signer, a local key only on the user's own durable machine.`,
           "Daski purchases use one standard x402 V2 Exact-EVM rail.",
           "Discover conditional intake with daski_get_outcome_requirements. Reuse supplied facts and collect the missing information together.",
           "Use the pinned CLI's daski buy flow for quotation, approval, payment, and recording. Expert MCP clients use daski_get_payment_challenge followed by the identical paid daski_buy_outcome request.",
