@@ -17,7 +17,7 @@ Agents start from one of three doors, and every door leads to the same setup
 guide: the MCP server at `/mcp`, whose instructions point at the guide; the
 guide itself at `/skills/setup.md`; or the installable skill at
 `/skills/SKILL.md`. Load the full guide through `daski_get_setup_guide`
-or a raw fetch. Diagnose the existing signer, discover contextual intake,
+or a raw fetch. Diagnose the existing signer or set up the default Circle agent wallet, discover contextual intake,
 obtain the actual quote, and approve it through the pinned `daski buy` flow. Once a
 signer is configured, the steady-state prompt is `Use Daski to [your task]`.
 

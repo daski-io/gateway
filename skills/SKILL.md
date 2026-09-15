@@ -5,7 +5,7 @@ description: Discover and buy real-world service outcomes through Daski, and tra
 
 # Daski
 
-Load [setup.md](./setup.md) and [buy.md](./buy.md) in full through `daski_get_setup_guide` or a raw fetch before the first purchase. Setup covers the pinned CLI, signer detection, and the purchase sequence.
+Load [setup.md](./setup.md) and [buy.md](./buy.md) in full through `daski_get_setup_guide` or a raw fetch before the first purchase. Setup covers the pinned CLI, the default Circle agent wallet and the other signers, and the purchase sequence.
 
 Reuse the user's supplied facts and task authorization. Discover contextual intake with `daski_get_outcome_requirements`, collect the remaining information together, and obtain the actual quote. Use `daski buy` with the configured signer to approve, pay, and persist the order.
 
