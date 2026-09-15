@@ -192,3 +192,4 @@ within five minutes. Existing orders retain their immutable listing snapshots.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md). Report security issues through GitHub's
 private vulnerability reporting.
+Before pushing to `develop`, satisfy [docs/release-readiness.md](docs/release-readiness.md); `develop` must always be releasable.

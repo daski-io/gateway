@@ -20,3 +20,5 @@ test with any reproducer.
 `main` is the release branch: Railway auto-deploys the running service from
 it, so a `develop` → `main` merge IS the deploy action and happens only as a
 deliberate, explicitly authorized release step.
+
+Before pushing to `develop`, satisfy [docs/release-readiness.md](docs/release-readiness.md): the coordinator promotes what CI built on the exact `develop` commit, so `develop` must always be releasable.
