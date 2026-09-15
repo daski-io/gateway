@@ -34,6 +34,7 @@
   "overrides": {
     "@hono/node-server": "2.1.0",
     "axios": "^1.18.1",
+    "hono": "4.13.5",
     "nanoid": "3.3.18",
     "protobufjs": "^7.6.3",
     "sharp": "^0.35.0"

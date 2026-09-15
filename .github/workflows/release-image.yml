@@ -37,6 +37,21 @@ jobs:
           sbom: true
           cache-from: type=gha
           cache-to: type=gha,mode=max
+      # Fail the develop image on fixable MEDIUM+ advisories before it is
+      # attested and recorded as a release candidate: the coordinator promotes
+      # only images whose exact-SHA run succeeded. buildx pushes without
+      # loading the image into the runner's daemon, so the exact pushed digest
+      # is pulled back through the runner's ghcr login and scanned over the
+      # Docker socket. Scanner pinned like the provider's.
+      - name: Pull the pushed image by digest
+        run: docker pull "ghcr.io/${{ github.repository }}@${{ steps.build.outputs.digest }}"
+      - name: Scan the pushed image
+        continue-on-error: false
+        run: >-
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock
+          aquasec/trivy:0.67.2@sha256:e2b22eac59c02003d8749f5b8d9bd073b62e30fefaef5b7c8371204e0a4b0c08
+          image --exit-code 1 --severity MEDIUM,HIGH,CRITICAL --ignore-unfixed
+          "ghcr.io/${{ github.repository }}@${{ steps.build.outputs.digest }}"
       - uses: actions/attest-build-provenance@v3
         if: ${{ !github.event.repository.private }}
         with:
