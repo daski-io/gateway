@@ -37,16 +37,16 @@ Set `DASKI_HOST_CLASS=durable` on the user's own machine (`ephemeral` anywhere e
 
 ## Install or upgrade
 
-The pinned release is `@daski/pay@0.4.2`. Verify its registry provenance:
+The pinned release is `@daski/pay@0.4.3`. Verify its registry provenance:
 
 ```bash
-npm view @daski/pay@0.4.2 repository.url
+npm view @daski/pay@0.4.3 repository.url
 ```
 
 The expected repository is `git+https://github.com/daski-io/buyer.git`. When the package version and repository match, use the user's setup authorization:
 
 ```bash
-npm install -g @daski/pay@0.4.2
+npm install -g @daski/pay@0.4.3
 daski doctor --json
 ```
 
