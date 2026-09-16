@@ -171,7 +171,7 @@ export async function createStandardGatewayHttp(
   app.use(createMarketplaceRouter(publicMarketplace));
   app.use(createStandardRailRouter(standardRail, options.config.publicUrl));
   const mcp = options.config.mcpEnabled
-    ? await createStandardRailMcp(app, options.config, standardRail, publicMarketplace)
+    ? await createStandardRailMcp(app, options.config)
     : null;
   app.use((error: unknown, _req: express.Request, res: express.Response, next: express.NextFunction) => {
     if (res.headersSent) return next(error);

@@ -19,7 +19,6 @@ RUN npm ci --no-audit --no-fund
 
 COPY tsconfig.json tsconfig.build.json ./
 COPY src ./src
-COPY skills ./skills
 COPY scripts ./scripts
 COPY Dockerfile railway.json ./
 RUN npm run build

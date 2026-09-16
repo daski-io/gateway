@@ -13,13 +13,23 @@ the standard Exact-EVM wire format.
 
 ## Buying through Daski
 
-Agents start from one of three doors, and every door leads to the same setup
-guide: the MCP server at `/mcp`, whose instructions point at the guide; the
-guide itself at `/skills/setup.md`; or the installable skill at
-`/skills/SKILL.md`. Load the full guide through `daski_get_setup_guide`
-or a raw fetch. Diagnose the existing signer or set up the default Circle agent wallet, discover contextual intake,
-obtain the actual quote, and approve it through the pinned `daski buy` flow. Once a
-signer is configured, the steady-state prompt is `Use Daski to [your task]`.
+Agent documentation and the MCP server live on the website, at
+`https://sandbox.daski.io/skills/setup.md` and `https://sandbox.daski.io/mcp`
+for Testnet (`https://daski.io` on mainnet). The website owns the guides and
+MCP tool definitions. Its tools call this gateway's REST API; payment validation,
+quotation, settlement, order state, authorization, and dispatch stay here.
+
+The gateway's old guide URLs redirect to the website. Its configured MCP path
+returns a method-preserving HTTP 307 to the website's `/mcp`, so existing clients
+can follow the redirect without rewriting a signed request. The gateway's
+`/.well-known/mcp.json` remains the runtime authority for CLI versions, wallet
+capabilities, and signing metadata, and advertises the website MCP address.
+
+Load the full setup guide through `daski_get_setup_guide` or a raw fetch.
+Diagnose the existing signer or set up the default Circle agent wallet,
+discover contextual intake, obtain the actual quote, and approve it through
+the gateway-pinned `daski buy` flow. Once a signer is configured, the
+steady-state prompt is `Use Daski to [your task]`.
 
 ## Public surfaces
 
@@ -67,10 +77,20 @@ signer is configured, the steady-state prompt is `Use Daski to [your task]`.
   registration route group is enabled.
 - `/public/v2/registry/*` exposes read-only ERC-8004 identity, Daski provider
   and service catalog state.
-- `/mcp` exposes `daski_buy_outcome` and the standard order lifecycle tools.
+- `POST /outcomes/:providerAgentId/:outcomeId/quote` returns the prepared
+  challenge and payer preflight. `POST .../purchase` accepts `{ request,
+  payerAddress?, paymentPayload? }`, retaining the complete payment in JSON
+  rather than requiring a large HTTP header. Both use the existing checkout
+  service and gateway-bound authorizations.
+- `POST /public/v2/outcomes/search` provides bounded catalog search and
+  vocabulary hints; `GET /public/v2/outcomes/:providerAgentId/:outcomeId`
+  provides the complete detail with capped recent-purchase history.
+- `POST /wallet/orders` accepts an optional `paymentIdentifier` for
+  payer-authorized reconciliation.
+- `/mcp` redirects to the website's MCP server.
 - `/health/live` and `/health/ready` report process and dependency readiness.
 
-The MCP surface also exposes read-only provider discovery, identity resolution,
+The website MCP surface also exposes read-only provider discovery, identity resolution,
 and service lookup tools. Identity and catalog registration remain independent
 of payment. Standard purchases register transaction-linked reputation against
 the configured `ReputationStorage`; provider outcomes and payer confirmations
@@ -112,7 +132,10 @@ core groups are:
 - Runtime and database: `NODE_ENV`, `CHAIN_ID`, `CHAIN_FINALITY_TAG` (the block
   tag read as final: `safe` on Base Sepolia and `finalized` on Base mainnet by
   default), `PUBLIC_URL`, `DATABASE_URL`, `MIGRATION_DATABASE_URL`, and
-  `TRUST_PROXY`.
+  `TRUST_PROXY`. `DOCS_URL` is the public website origin used for guide and
+  MCP links, defaulting to `https://sandbox.daski.io` on Base Sepolia and
+  `https://daski.io` on Base mainnet. Override it for local or preview sites;
+  it never changes payment audiences or signed resource URLs.
 - Standard facilitator: `CDP_API_KEY_ID`, `CDP_API_KEY_SECRET`, and the signed
   facilitator profile in `STANDARD_RAIL_MANIFEST_JSON`.
 - Evidence and screening: `BASE_RPC_URL`, optional `BASE_RPC_FALLBACK_URLS`,
@@ -173,7 +196,8 @@ lives in [daski-io/deploy-testnet](https://github.com/daski-io/deploy-testnet).
   safe card loading, immutable preparation, evidence verification, refresh,
   visibility, and the service-first public catalog.
 - `src/http/` mounts only the standard HTTP surface.
-- `src/mcp/` contains the shared stateless MCP transport.
+- `src/mcp/` retains request context and compatibility result helpers; the
+  MCP server and tool definitions belong to the website repository.
 - `src/db/` contains migration history and the standard runtime database
   boundary.
 

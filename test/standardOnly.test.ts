@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { loadConfig } from "../src/config.js";
+import { BASE_MAINNET_SANCTIONS_ORACLE, loadConfig } from "../src/config.js";
 
 function environment(): NodeJS.ProcessEnv {
   return {
@@ -29,6 +29,20 @@ function environment(): NodeJS.ProcessEnv {
 describe("standard-only gateway configuration", () => {
   it("loads the standard Base Sepolia runtime without a rail selector", () => {
     expect(loadConfig(environment()).x402Network).toBe("eip155:84532");
+  });
+
+  it("selects the network website and accepts explicit documentation origins", () => {
+    expect(loadConfig(environment()).docsUrl).toBe("https://sandbox.daski.io");
+    expect(loadConfig({ ...environment(), DOCS_URL: "https://preview.example/" }).docsUrl).toBe("https://preview.example");
+    expect(loadConfig({ ...environment(), DOCS_URL: "http://localhost:4321" }).docsUrl).toBe("http://localhost:4321");
+    const { USDC_ADDRESS, USDC_DOMAIN_SEPARATOR, USDC_NAME, ...mainnet } = environment();
+    expect(loadConfig({ ...mainnet, CHAIN_ID: "8453", NODE_ENV: "production", TRUST_PROXY: "1",
+      PUBLIC_URL: "https://gateway.daski.io", SANCTIONS_ORACLE_MODE: "production",
+      SANCTIONS_ORACLE_ADDRESS: BASE_MAINNET_SANCTIONS_ORACLE }).docsUrl).toBe("https://daski.io");
+  });
+
+  it.each(["https://docs.example/path", "https://docs.example?x=1", "https://docs.example#fragment", "https://user:password@docs.example", "ftp://docs.example"])("rejects malformed documentation origin %s", DOCS_URL => {
+    expect(() => loadConfig({ ...environment(), DOCS_URL })).toThrow(/DOCS_URL/);
   });
 
   it("rejects the retired payment-rail selector", () => {

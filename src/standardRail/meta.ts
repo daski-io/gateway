@@ -9,7 +9,7 @@ import type { StandardRailConfig } from "./config.js";
 import { CONFIRMATION_ATTESTATION_CAP, CONFIRMATION_SUBMISSION_MODES } from "./confirmations.js";
 import type { StandardRailService } from "./service.js";
 import type { PublicChainMetadataV3 } from "./types.js";
-import { llmsFull, llmsIndex, readSkill, skillIndex, legacySkillIndex } from "./skills.js";
+import { SKILL_FILES } from "./skills.js";
 import {
   ACTIVITY_MAX_LIMIT,
   activityLimit,
@@ -164,7 +164,7 @@ export function createStandardMetaRouter(args: {
       name: "daski-gateway",
       version: GATEWAY_VERSION,
       description: "Daski outcome marketplace over standard x402 Exact-EVM.",
-      transport: { type: "streamable-http", url: `${args.config.publicUrl}${args.config.mcpPath}` },
+      transport: { type: "streamable-http", url: `${args.config.docsUrl}/mcp` },
       tools: [
         "daski_list_providers",
         "daski_get_provider",
@@ -190,12 +190,12 @@ export function createStandardMetaRouter(args: {
         "daski_revoke_delivery_confirmation",
       ],
       skills: {
-        setup: `${args.config.publicUrl}/skills/setup.md`,
-        buy: `${args.config.publicUrl}/skills/buy.md`,
-        orders: `${args.config.publicUrl}/skills/orders.md`,
-        wallets: `${args.config.publicUrl}/skills/wallets.md`,
-        recipe: `${args.config.publicUrl}/skills/recipe.md`,
-        installable: `${args.config.publicUrl}/skills/SKILL.md`,
+        setup: `${args.config.docsUrl}/skills/setup.md`,
+        buy: `${args.config.docsUrl}/skills/buy.md`,
+        orders: `${args.config.docsUrl}/skills/orders.md`,
+        wallets: `${args.config.docsUrl}/skills/wallets.md`,
+        recipe: `${args.config.docsUrl}/skills/recipe.md`,
+        installable: `${args.config.docsUrl}/skills/SKILL.md`,
       },
       // The pinned buyer CLI, so a client can compare an installed version
       // against it instead of reading the pin out of setup.md by eye.
@@ -222,46 +222,26 @@ export function createStandardMetaRouter(args: {
       steadyStatePrompt: "Use Daski to [your task].",
     });
   });
-  router.get("/.well-known/agent-skills/index.json", async (_req, res, next) => {
-    try {
-      res.json(await skillIndex(args.config.publicUrl, GATEWAY_VERSION));
-    } catch (error) { next(error); }
+  // Keep existing documentation URLs working without retaining a second copy.
+  for (const path of [
+    "/.well-known/agent-skills/index.json",
+    "/.well-known/skills/index.json",
+    "/.well-known/skills/daski/SKILL.md",
+    "/llms.txt",
+    "/llms-full.txt",
+  ]) {
+    router.get(path, (_req, res) => res.redirect(308, `${args.config.docsUrl}${path}`));
+  }
+  router.get("/skills/:file", (req, res) => {
+    const file = String(req.params.file);
+    if (!SKILL_FILES.includes(file)) {
+      res.status(404).send("Skill not found");
+      return;
+    }
+    res.redirect(308, `${args.config.docsUrl}/skills/${file}`);
   });
-  router.get("/.well-known/skills/index.json", async (_req, res, next) => {
-    try {
-      res.json(await legacySkillIndex());
-    } catch (error) { next(error); }
-  });
-  router.get("/.well-known/skills/daski/SKILL.md", async (_req, res, next) => {
-    try {
-      res.type("text/markdown").send((await readSkill("daski")).content);
-    } catch (error) { next(error); }
-  });
-  router.get("/skills/:file", async (req, res, next) => {
-    try {
-      const file = String(req.params.file);
-      const topic = file === "SKILL.md" ? "daski"
-        : file.endsWith(".md") ? file.slice(0, -3) : "";
-      if (!["setup", "buy", "orders", "wallets", "recipe", "daski"].includes(topic)) {
-        res.status(404).send("Skill not found");
-        return;
-      }
-      const skill = await readSkill(topic as Parameters<typeof readSkill>[0]);
-      res.type("text/markdown").send(skill.content);
-    } catch (error) { next(error); }
-  });
-  router.get("/llms.txt", (_req, res) => {
-    res.type("text/markdown").send(llmsIndex(args.config.publicUrl, args.config.mcpPath));
-  });
-  router.get("/llms-full.txt", async (_req, res, next) => {
-    try {
-      res.type("text/markdown").send(await llmsFull());
-    } catch (error) { next(error); }
-  });
-  router.get(["/skill.md", "/SKILL.md"], async (_req, res, next) => {
-    try {
-      res.type("text/markdown").send((await readSkill("daski")).content);
-    } catch (error) { next(error); }
+  router.get(["/skill.md", "/SKILL.md"], (_req, res) => {
+    res.redirect(308, `${args.config.docsUrl}/skills/SKILL.md`);
   });
   return router;
 }

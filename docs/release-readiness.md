@@ -38,7 +38,7 @@ CI, and `develop` must always be releasable.
   `release: vX.Y.Z` merge commit are the version of record (`src/version.ts`
   derives the runtime version from the deployed commit; nothing is edited for
   a release), and there is no changelog file. Document user-visible behaviour
-  in `README.md`, `docs/` and `skills/` in the same change set as the code.
+  in `README.md` and `docs/` (agent guides are website-owned) in the same change set as the code.
 - Never leave `develop` red. A red push is fixed forward or reverted at once;
   it is never left for the release to sort out.
 - Never merge to `main` or tag by hand. `main` is deployed by Railway and is
@@ -48,7 +48,7 @@ CI, and `develop` must always be releasable.
 
 | Workflow / job / step | What it proves |
 | --- | --- |
-| CI `validate` / Build | `npm run build` compiles `src/` with `tsconfig.build.json`, copies migrations and skills into `dist/`, and records `dist/build-identity.json` binding source inputs, lockfile, Dockerfile, outputs and toolchain. |
+| CI `validate` / Build | `npm run build` compiles `src/` with `tsconfig.build.json`, copies migrations into `dist/`, and records `dist/build-identity.json` binding source inputs, lockfile, Dockerfile, outputs and toolchain. |
 | CI `validate` / Typecheck (src + test) | `npm run typecheck` type-checks the whole repository including `test/`, so the mock layer cannot drift from the real interfaces. |
 | CI `validate` / Test | `npm test` runs the vitest suite against PostgreSQL 16 (pgvector) on port 5433: complete clean-schema migrations, PostgreSQL-backed state and admission behaviour, signed artifacts, and `test/wireFixtures.test.ts` asserting that the committed fixtures equal what the real builders emit. |
 | CI `validate` / Wire fixtures are freshly generated and committed | Regenerates `test/wire-fixtures/` with `UPDATE_WIRE_FIXTURES=1` and fails on any byte difference (`git diff --exit-code -- test/wire-fixtures`) or untracked fixture, so the committed files are exactly what the builders emit and the consumers' vendored copies compare byte for byte. |

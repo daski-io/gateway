@@ -1,4 +1,3 @@
-import type { McpServer } from "@modelcontextprotocol/server";
 import express from "express";
 import type { Server } from "node:http";
 import {
@@ -22,7 +21,6 @@ import {
   serviceRegistryAbi,
 } from "../src/marketplace/abis.js";
 import { CachedMarketplaceChainReader } from "../src/marketplace/cachedReader.js";
-import { registerMarketplaceTools } from "../src/marketplace/mcp.js";
 import {
   isContractRevert,
   MarketplaceNotFoundError,
@@ -30,7 +28,6 @@ import {
   type MarketplaceChainReader,
 } from "../src/marketplace/reader.js";
 import { createMarketplaceRouter } from "../src/marketplace/routes.js";
-import type { McpToolResult } from "../src/mcp/util.js";
 
 const ADDRESS = getAddress("0x1111111111111111111111111111111111111111");
 const SERVICE_ID = `0x${"22".repeat(32)}` as Hex;
@@ -347,74 +344,6 @@ function stubReader(overrides: Partial<MarketplaceChainReader>): MarketplaceChai
     ...overrides,
   };
 }
-
-type ToolHandler = (args: Record<string, unknown>) => Promise<McpToolResult>;
-
-function marketplaceTools(reader: MarketplaceChainReader): Map<string, ToolHandler> {
-  const tools = new Map<string, ToolHandler>();
-  const server = {
-    registerTool: (name: string, _config: unknown, handler: ToolHandler) => {
-      tools.set(name, handler);
-    },
-  } as unknown as McpServer;
-  registerMarketplaceTools(server, reader, async () => []);
-  return tools;
-}
-
-function errorPayload(result: McpToolResult): Record<string, unknown> {
-  expect(result.isError).toBe(true);
-  const [block] = result.content;
-  if (!block || block.type !== "text") throw new Error("expected a text content block");
-  const payload = JSON.parse(block.text) as Record<string, unknown>;
-  expect(result.structuredContent).toEqual(payload);
-  return payload;
-}
-
-describe("MCP marketplace tools", () => {
-  it("answers an unknown provider id with a non-retryable MARKETPLACE_NOT_FOUND", async () => {
-    const tools = marketplaceTools(stubReader({
-      getProvider: vi.fn(async () => { throw new MarketplaceNotFoundError("provider", "42"); }),
-    }));
-
-    const result = await tools.get("daski_get_provider")!({ agentId: "42" });
-
-    expect(errorPayload(result)).toEqual({
-      code: "MARKETPLACE_NOT_FOUND",
-      message: "No provider is registered under id 42",
-      retryable: false,
-      next_action:
-        "Check the id with daski_list_providers or daski_list_outcomes; unknown ids are not retried.",
-    });
-  });
-
-  it("answers an unknown service id with a non-retryable MARKETPLACE_NOT_FOUND", async () => {
-    const tools = marketplaceTools(stubReader({
-      getService: vi.fn(async () => { throw new MarketplaceNotFoundError("service", SERVICE_ID); }),
-    }));
-
-    const result = await tools.get("daski_get_service")!({ serviceId: SERVICE_ID });
-
-    expect(errorPayload(result)).toMatchObject({
-      code: "MARKETPLACE_NOT_FOUND",
-      message: `No service is registered under id ${SERVICE_ID}`,
-      retryable: false,
-    });
-  });
-
-  it("keeps every other failure as a retryable chain-read failure", async () => {
-    const tools = marketplaceTools(stubReader({
-      getProvider: vi.fn(async () => { throw new Error("socket hang up"); }),
-    }));
-
-    const result = await tools.get("daski_get_provider")!({ agentId: "42" });
-
-    expect(errorPayload(result)).toEqual({
-      code: "MARKETPLACE_CHAIN_READ_FAILED",
-      message: "Marketplace chain state is unavailable",
-      retryable: true,
-    });
-  });
-});
 
 let server: Server | undefined;
 

@@ -7,7 +7,7 @@
         "daski-test"
       ],
       "emittedBy": [
-        "src/standardRail/mcp.ts createStandardRailMcp (HTTP tools/list)",
+        "daski-website src/mcp/tools.ts (HTTP tools/list; tested against the retained compatibility fixture)",
         "src/standardRail/meta.ts discovery tools"
       ],
       "parsedBy": [

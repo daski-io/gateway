@@ -636,3 +636,12 @@ export function isTransientDatabaseError(error: unknown): boolean {
   return typeof error === "object" && error !== null &&
     TRANSIENT_DATABASE_CODES.has(String((error as { code?: unknown }).code));
 }
+
+/** Public failure details for API clients, including recovery guidance. */
+export function standardRailClientError(error: unknown, publicUrl = "https://invalid.local") {
+  const classified = asStandardRailError(error) ?? standardRailError("INTERNAL_ERROR", {
+    internalMessage: error instanceof Error ? error.message : "Unknown standard rail failure", cause: error,
+  });
+  logStandardRailError(classified);
+  return { ...standardRailPublicError(classified, publicUrl), next_action: classified.nextAction };
+}

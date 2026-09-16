@@ -1,10 +1,6 @@
 /**
- * The buyer CLI release this gateway's setup guide pins. One value, published
- * machine-readably in /.well-known/mcp.json so `daski doctor` can compare its
- * own version against it, and asserted equal to the prose in skills/setup.md
- * by test so the two cannot drift. A 0.1.0 install went unnoticed on
- * 2026-09-04 because the pin lived only in prose the agent had to compare by
- * eye.
+ * Runtime authority for the supported buyer CLI. The website setup guide reads
+ * this metadata instead of maintaining a second release pin in prose.
  */
 export const PINNED_BUYER_CLI = {
   package: "@daski/pay",
@@ -18,8 +14,8 @@ export const PINNED_BUYER_CLI = {
 /**
  * The external signer CLI versions Daski's adapters were tested with, keyed
  * by the buyer's signer kind. Published in /.well-known/mcp.json as
- * `signerClis` and named in skills/setup.md under the same test discipline as
- * the buyer CLI pin; the vendor's own skill installs and updates the CLI.
+ * `signerClis`; the website guide directs agents here for the tested version.
+ * The vendor's own skill installs and updates the CLI.
  */
 export const PINNED_SIGNER_CLIS = {
   "circle-agent": {
