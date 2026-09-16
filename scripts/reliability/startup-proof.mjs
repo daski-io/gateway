@@ -13,7 +13,7 @@ import { ServiceRegistrationStore } from '../../dist/serviceRegistration/store.j
 import { canonicalHash } from '../../dist/standardRail/canonical.js';
 import { root, verifyBuildIdentity, sha256 } from '../build-identity.mjs';
 import { writeProof } from '../release-proof.mjs';
-import { startupFixture, testKey } from './fixture.mjs';
+import { startupFixture, postEpochFixture, testKey } from './fixture.mjs';
 
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 const zip = value => `gzip-base64:${gzipSync(value).toString('base64')}`;
@@ -23,7 +23,7 @@ async function unusedPort() {
 }
 export async function proveStartup(input, databaseUrl, options={}) {
   const required=['schemaVersion','fixtureVersion','manifest','priorState','expectedCurrent','trustedSigners','rpcFacts'];
-  const optional=['migrationThrough','registrations','providerRoutes','runtimeConfig'];
+  const optional=['migrationThrough','registrations','providerRoutes','runtimeConfig','priorArtifacts'];
   assert.ok(input && typeof input==='object' && !Array.isArray(input));
   for(const key of required) assert.ok(Object.hasOwn(input,key),`startup input missing ${key}`);
   assert.ok(Object.keys(input).every(key=>[...required,...optional].includes(key)),'unknown startup input field');
@@ -50,6 +50,13 @@ export async function proveStartup(input, databaseUrl, options={}) {
         VALUES ($1,$2,$3,$4,$5,to_timestamp($6))`,[admission.payload.providerAgentId,
         Buffer.from(canonicalHash(admission).slice(2),'hex'), Buffer.from(admission.payload.providerControlProfileHash.slice(2),'hex'),
         admission,current,admission.payload.validBefore]);
+    }
+    // Restored epoch lineage: rail artifacts an earlier manifest admitted, which the candidate manifest must chain onto.
+    for (const {envelope,epoch=null} of input.priorArtifacts ?? []) {
+      await pool.query(`INSERT INTO standard_rail_artifacts
+        (artifact_hash,artifact_type,schema_version,environment,chain_id,epoch,canonical_json,valid_before)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,to_timestamp($8)) ON CONFLICT (artifact_hash) DO NOTHING`,[Buffer.from(canonicalHash(envelope).slice(2),'hex'),
+        envelope.artifactType,envelope.schemaVersion,envelope.environment,envelope.chainId,epoch,envelope,envelope.validBefore]);
     }
     if (input.registrations?.length) {
       const store=new ServiceRegistrationStore(pool);
@@ -166,7 +173,8 @@ export async function proveStartup(input, databaseUrl, options={}) {
       execution:{entrypoint:'dist/index.js',mode:options.image?'dockerfile-image':'compiled-runtime',image,
         durationMs:Math.round(performance.now()-started)},
       checks:['actual-entrypoint','signed-manifest-validation','migrations-and-distinct-database-roles',
-        'existing-admission-state','health-live','health-ready','expected-current-admissions',...(probe?['candidate-probe']:[])],probe};
+        'existing-admission-state',...(input.priorArtifacts?.length?['existing-rail-lineage']:[]),
+        'health-live','health-ready','expected-current-admissions',...(probe?['candidate-probe']:[])],probe};
   } finally {
     if(options.image && child) {
       try { execFileSync('docker',['stop','--time','5',`gateway-proof-${nonce}`],{stdio:'ignore'}); } catch {}
@@ -181,8 +189,10 @@ export async function proveStartup(input, databaseUrl, options={}) {
 }
 async function main() {
   const args=process.argv.slice(2); const values={};
-  for(let i=0;i<args.length;i+=2) {assert.ok(['--input','--output','--evidence','--image','--image-db-container','--probe-command'].includes(args[i])); values[args[i]]=args[i+1];}
-  const input=values['--input'] ? JSON.parse(readFileSync(values['--input'],'utf8')) : await startupFixture();
+  for(let i=0;i<args.length;i+=2) {assert.ok(['--input','--output','--evidence','--image','--image-db-container','--probe-command','--fixture'].includes(args[i])); values[args[i]]=args[i+1];}
+  const fixture=values['--fixture']; assert.ok(fixture===undefined || fixture==='post-epoch','--fixture accepts post-epoch');
+  assert.ok(!(values['--input'] && fixture),'--fixture selects a repository fixture and cannot combine with --input');
+  const input=values['--input'] ? JSON.parse(readFileSync(values['--input'],'utf8')) : fixture ? await postEpochFixture(await startupFixture()) : await startupFixture();
   const output=values['--output'] ?? values['--evidence']; assert.ok(output,'--output is required');
   try {
     const proof=await proveStartup(input,process.env.DATABASE_URL_TEST,{image:values['--image'],imageDbContainer:values['--image-db-container'],

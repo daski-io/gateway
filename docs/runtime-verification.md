@@ -63,6 +63,13 @@ existing state; it does not by itself certify a different prior binary.
 `evidence`, `commitments`, and optional `checkpoints`. These run the product store's
 create/evidence/activate path before boot. They do not replace independent chain
 verification of protected registration evidence.
+`priorArtifacts` optionally seeds `standard_rail_artifacts` with `{ envelope, epoch }`
+rows an earlier manifest admitted, so the candidate manifest must chain onto them
+exactly as it must onto the lineage an epoch reset restores. `--fixture post-epoch`
+selects the repository fixture for that state: every migration applied, only the
+four lineage tables populated (prior rail artifacts, the prior servicing admission
+and one active free registration), every other table empty, and a manifest at rail
+epoch 2 and servicing-profile epoch 2. CI boots the image on both fixtures.
 
 The driver exports `proveStartup(input, databaseUrl, { probe })`. Its asynchronous
 probe receives `{ url, databaseUrl }` while the candidate runs. CLI callers can
