@@ -32,7 +32,7 @@ signer is configured, the steady-state prompt is `Use Daski to [your task]`.
   accounts when enabled, never counterfactual ones), the delivery
   confirmation modes (`confirmation`: sponsored for EOA payers, direct for
   contract payers, three attestations per order, revocation always), the
-  pinned signer CLIs (`signerClis`), and EAS confirmation signing metadata.
+  signer CLI versions Daski's adapters are tested with (`signerClis`), and EAS confirmation signing metadata.
   Authorized order responses include the onchain order key used by the
   CLI's delivery-review flow, and order status carries the
   `confirmationFinal` state read at the configured finality tag.
