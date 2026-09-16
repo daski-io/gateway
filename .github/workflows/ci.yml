@@ -106,6 +106,7 @@ jobs:
         run: |
           docker build --build-arg SOURCE_SHA="$CANDIDATE_SHA" -t gateway-startup:$CANDIDATE_SHA .
           npm run test:startup -- --image gateway-startup:$CANDIDATE_SHA --output .tmp/gateway-startup-proof.json
+          npm run test:startup -- --fixture post-epoch --image gateway-startup:$CANDIDATE_SHA --output .tmp/gateway-startup-proof-post-epoch.json
 
       - name: Archive qualified compiled runtime
         run: tar -czf gateway-runtime-dist.tar.gz dist
@@ -118,6 +119,7 @@ jobs:
             gateway-runtime-dist.tar.gz
             dist/build-identity.json
             .tmp/gateway-startup-proof.json
+            .tmp/gateway-startup-proof-post-epoch.json
           if-no-files-found: error
           retention-days: 30
 
@@ -140,3 +142,31 @@ jobs:
           done
           echo "npm audit endpoint unavailable after 4 attempts"
           exit 1
+
+  handoff:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+      - name: Release hand-off trailers
+        shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" = "pull_request" ]; then
+            range="$BASE..HEAD"
+          elif [ -n "$BEFORE" ] && [ "$BEFORE" != "0000000000000000000000000000000000000000" ] && git cat-file -e "$BEFORE" 2>/dev/null; then
+            range="$BEFORE..HEAD"
+          else
+            range="HEAD~1..HEAD"
+          fi
+          node scripts/check-release-trailers.mjs --range "$range"

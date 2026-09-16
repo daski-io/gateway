@@ -31,8 +31,7 @@ daski order confirm <handle> --check
 
 Up to three confirmations can be submitted per order; the current one can
 always be revoked. "Final" is the chain's finality tag as the gateway
-reads it: safe on the sandbox (minutes behind the head), finalized on
-Base mainnet (minutes to tens of minutes).
+reads it, minutes to tens of minutes behind the head.
 --check reports the final state and marks the record observed only once
 the receipt's block is final and the final block is at or past it. A
 hash recorded by mistake can be replaced with --tx <hash> or cleared

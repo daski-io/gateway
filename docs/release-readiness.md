@@ -52,12 +52,45 @@ CI, and `develop` must always be releasable.
 | CI `validate` / Typecheck (src + test) | `npm run typecheck` type-checks the whole repository including `test/`, so the mock layer cannot drift from the real interfaces. |
 | CI `validate` / Test | `npm test` runs the vitest suite against PostgreSQL 16 (pgvector) on port 5433: complete clean-schema migrations, PostgreSQL-backed state and admission behaviour, signed artifacts, and `test/wireFixtures.test.ts` asserting that the committed fixtures equal what the real builders emit. |
 | CI `validate` / Wire fixtures are freshly generated and committed | Regenerates `test/wire-fixtures/` with `UPDATE_WIRE_FIXTURES=1` and fails on any byte difference (`git diff --exit-code -- test/wire-fixtures`) or untracked fixture, so the committed files are exactly what the builders emit and the consumers' vendored copies compare byte for byte. |
-| CI `validate` / Boot actual Dockerfile image on representative existing state | Builds the Dockerfile for the candidate SHA and runs `npm run test:startup -- --image ...`: the image's build identity matches the local build, and `dist/index.js` boots read-only on migrated representative state with split migration/runtime roles until both health endpoints answer. |
+| CI `validate` / Boot actual Dockerfile image on representative existing state | Builds the Dockerfile for the candidate SHA and runs `npm run test:startup -- --image ...`: the image's build identity matches the local build, and `dist/index.js` boots read-only on migrated representative state with split migration/runtime roles until both health endpoints answer; then again with `--fixture post-epoch`, the state an epoch reset leaves (every migration applied, only the four lineage tables `standard_rail_artifacts`, `standard_provider_servicing_admissions`, `standard_service_registrations` and `standard_service_listings` populated, every other table empty) with a manifest that chains onto those rows, the class of the 2026-09-15 boot failure. |
 | CI `validate` / Archive qualified compiled runtime, Preserve candidate build and startup identity | Uploads the qualified `dist`, `build-identity.json` and the startup proof as `gateway-runtime-proof-<sha>` for 30 days. |
 | CI `validate` / Audit dependencies | `npm audit --audit-level=high` fails on a high-severity advisory; registry transport failures are retried, not treated as findings. |
 | Release image `image` / `docker/build-push-action` | Builds and pushes `ghcr.io/daski-io/gateway:<sha>` with `SOURCE_SHA` bound, provenance (`mode=max`) and an SBOM, and outputs the immutable digest. |
 | Release image `image` / Pull the pushed image by digest, Scan the pushed image | Pulls the exact pushed digest back and runs Trivy 0.67.2 (pinned by digest) with `--severity MEDIUM,HIGH,CRITICAL --ignore-unfixed --exit-code 1`: the shipped image carries no fixable MEDIUM-or-higher OS or Node package advisory. The Dockerfile keeps this green by installing Debian's patched PCRE2 and removing npm/npx from the runtime stage. |
 | Release image `image` / `actions/attest-build-provenance`, Record immutable image | Attests build provenance (public repositories) and uploads `release-image-<sha>` with the digest the coordinator promotes. A failed scan stops before this step, so no candidate artifact exists for a vulnerable image. |
+
+## Hand-off to the release agent
+
+The release agent reads nothing but your commits. If a change needs anything at
+deploy time beyond merging, put it in git trailers on the commit that needs it,
+one per line at the end of the commit message:
+
+```
+Release-Variable: gateway PAYER_ACCOUNT_TYPES=eoa,contract before-deploy
+Release-Requires: new-epoch
+Release-Scenarios: entity-recipe
+Release-Owner-Task: Send a signed owner-swap notice from the sandbox provider wallet, see docs/owner-swaps-v1.md
+Release-Rollback: leave the flag on once a contract wallet has paid
+```
+
+- `Release-Variable`: service is `gateway`, `provider` or `daski-website`; the
+  value is a literal or `staged`, meaning the owner sets the real value on
+  Railway and the commit never carries a secret; the timing is `before-deploy`
+  or `after-deploy`. A later commit overrides an earlier one for the same
+  service and variable. A key you add to `.env.example` must appear in a
+  `Release-Variable` trailer; write `Release-Variable: none NAME` when it needs
+  no deployment change.
+- `Release-Requires`: an environment operation the owner must authorize:
+  `new-epoch`, `reregister:<service>` or `contract-upgrade`.
+- `Release-Scenarios`: the acceptance scenarios the change touches, so the
+  release runs them.
+- `Release-Owner-Task`: work only the owner can do after the release. It is
+  listed once in the release summary and never asked during the release.
+- `Release-Rollback`: one line on how to undo the change if the release is
+  rolled back.
+
+Do not write runbooks or instructions for the release agent anywhere else. CI
+runs `scripts/check-release-trailers.mjs` over every pushed commit.
 
 ## Follow-ups
 

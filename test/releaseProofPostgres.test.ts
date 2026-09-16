@@ -8,7 +8,7 @@ const databaseUrl = process.env.DATABASE_URL_TEST ??
 // build precedes tests; proof refuses an absent or stale compiled artifact.
 const { proveAdmissions } = await import(new URL("../scripts/release-proof.mjs", import.meta.url).href);
 const { proveStartup } = await import(new URL("../scripts/reliability/startup-proof.mjs", import.meta.url).href);
-const { startupFixture, conflictingCatalogFixture, advancedCatalogFixture } =
+const { startupFixture, conflictingCatalogFixture, advancedCatalogFixture, postEpochFixture } =
   await import(new URL("../scripts/reliability/fixture.mjs", import.meta.url).href);
 const { verifyBuildIdentity } = await import(new URL("../scripts/build-identity.mjs", import.meta.url).href);
 const admissionInput = (fixture: any) => ({ schemaVersion: 1, priorState: fixture.priorState,
@@ -41,6 +41,20 @@ describe("candidate release execution proof", () => {
     await expect(proveStartup(await conflictingCatalogFixture(initial), databaseUrl)).rejects.toThrow(/startup failure/);
     const corrected = await proveStartup(await advancedCatalogFixture(initial), databaseUrl);
     expect(corrected).toMatchObject({ status: "PASS", checks: expect.arrayContaining(["health-ready"]) });
+  }, 120_000);
+
+  // The 2026-09-15 epoch reset erased the servicing-admission chain: the manifest's
+  // epoch-2 admission could not activate on an empty table and the image did not boot.
+  it("boots on the lineage an epoch reset restores and fails without it", async () => {
+    const restored = await postEpochFixture(await startupFixture());
+    const proof = await proveStartup(restored, databaseUrl);
+    expect(proof).toMatchObject({ status: "PASS", checks: expect.arrayContaining(["existing-rail-lineage", "health-ready"]) });
+    // The production logger redacts error messages, so the proof reports the generic
+    // failure; the debug output pins it to the servicing-admission activation.
+    let output = "";
+    await expect(proveStartup({ ...restored, priorState: [], expectedCurrent: [] }, databaseUrl,
+      { debug: (text: string) => { output = text; } })).rejects.toThrow("fatal startup failure");
+    expect(output).toMatch(/activateAdmissions/);
   }, 120_000);
 
   it("refuses a build recorded for a different source revision", () => {

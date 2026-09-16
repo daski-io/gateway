@@ -21,14 +21,11 @@ If `payerAccounts.types` lacks `contract`, that gateway accepts plain wallets on
 
 ## Circle agent wallet
 
-1. Install exactly the pinned version from `/.well-known/mcp.json` (`signerClis.circle-agent`); the pin is the provenance, the package publishes no repository metadata to compare: `npm install -g @circle-fin/cli@<pinned>`
-2. Show Circle's Terms of Use and Privacy Policy links and obtain the user's explicit consent, then run `circle terms accept`. Never set `CIRCLE_ACCEPT_TERMS` yourself.
-3. Log in with the user's email: `circle wallet login <email> --type agent --init`. Ask the user for the 6-digit code from their inbox, then run `circle wallet login --type agent --request <id> --otp <code>`.
-4. List wallets and create one only if none exists: `circle wallet list --chain <BASE|BASE-SEPOLIA> --type agent --output json`, then `circle wallet create --output json`.
-5. The wallet must be deployed before its first purchase. If doctor reports `DASKI_SIGNER_NOT_DEPLOYED`, send a zero-value transfer from the wallet to itself with the circle CLI and run doctor again.
-6. Fund it. Sandbox: `circle wallet fund --address <addr> --chain BASE-SEPOLIA --token usdc`. Mainnet: `circle wallet fund ... --method fiat --open`, or `--method crypto --open`.
-7. Spending limits are set by the user in their own terminal (`circle wallet limit set ...`). Do not relay the code for that step.
-8. Configure Daski: set `DASKI_KEY_BACKEND=circle-agent`, run `daski doctor --json --signer circle-agent`, and set the profile's `signer` to `circle-agent` in `configFile`.
+1. Set the wallet up with Circle's own skill: run `curl -sL https://agents.circle.com/skills/setup.md` and follow it. It covers installing the CLI, the terms consent the user must give, login with the user's email and one-time code, and the wallet itself. Circle's skill governs the Circle wallet only; Daski purchases follow this guide.
+2. Configure Daski: set `DASKI_KEY_BACKEND=circle-agent`, run `daski doctor --json --signer circle-agent`, and set the profile's `signer` to `circle-agent` in `configFile`. Doctor names anything else this gateway's network needs: a separate Circle session, deploying the wallet with a zero-value transfer to itself, funding.
+3. Never edit or patch the Daski or Circle CLI. A failing command is reported to the user with its message, not worked around.
+
+Daski's adapter is tested with `@circle-fin/cli@1.0.0` from `https://github.com/circlefin/cli`, published as `signerClis.circle-agent` in `/.well-known/mcp.json`; Circle's skill installs and updates the CLI.
 
 ## Local key (durable machine only)
 
@@ -40,22 +37,20 @@ Set `DASKI_HOST_CLASS=durable` on the user's own machine (`ephemeral` anywhere e
 
 ## Install or upgrade
 
-The pinned release is `@daski/pay@0.4.1`. Verify its registry provenance:
+The pinned release is `@daski/pay@0.4.2`. Verify its registry provenance:
 
 ```bash
-npm view @daski/pay@0.4.1 repository.url
+npm view @daski/pay@0.4.2 repository.url
 ```
 
 The expected repository is `git+https://github.com/daski-io/buyer.git`. When the package version and repository match, use the user's setup authorization:
 
 ```bash
-npm install -g @daski/pay@0.4.1
+npm install -g @daski/pay@0.4.2
 daski doctor --json
 ```
 
 If the pinned package is unavailable, report that release dependency. Upgrades retain existing wallet keys and spending settings. New profiles approve each paid quote and have no additional default budget. See [wallets.md](./wallets.md) for optional budgets and hosted signers.
-
-The pinned Circle agent wallet CLI is `@circle-fin/cli@1.0.0` from `https://github.com/circlefin/cli`; the same pin is published as `signerClis.circle-agent` in `/.well-known/mcp.json`.
 
 ## Connect the marketplace
 
