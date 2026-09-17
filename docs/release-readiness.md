@@ -9,6 +9,14 @@ on the exact `develop` commit and promotes the artifact that CI built: the
 workflow records. Every code-quality check therefore lives in this repository's
 CI, and `develop` must always be releasable.
 
+Three branches carry a release. `develop` integrates. `sandbox` is what runs on
+the testnet sandbox: `go` merges the `develop` → `sandbox` release pull request
+at the exact commit CI proved and tags the merge commit `vX.Y.Z`, and Railway
+deploys `sandbox` to the sandbox. `main` is production: it moves only by
+fast-forward, performed by the production coordinator, to a release commit that
+already ran on the sandbox. An emergency fix branches from `main` as
+`hotfix/<id>`.
+
 ## Definition of done for develop
 
 - CI is green on the pushed commit: the `validate` job in
@@ -41,10 +49,17 @@ CI, and `develop` must always be releasable.
   in `README.md` and `docs/` (agent guides are website-owned) in the same change set as the code.
 - Never leave `develop` red. A red push is fixed forward or reverted at once;
   it is never left for the release to sort out.
-- Never merge to `main` or tag by hand. `main` is deployed by Railway and is
-  written only by the coordinator's authorized `go`.
+- Never merge to `sandbox` or `main` or tag by hand. `sandbox` is deployed by
+  Railway to the sandbox and is written only by the coordinator's authorized
+  `go`; `main` is production and is moved only by the production coordinator's
+  fast-forward.
 
 ## What CI proves
+
+CI runs on every push to `develop`, `sandbox`, `main` and `hotfix/**`, and on
+pull requests into `develop`. The release merge commit on `sandbox` therefore
+gets its own push run, which production promotion reads as the proof for that
+exact commit. The Release image workflow runs on `develop` pushes.
 
 | Workflow / job / step | What it proves |
 | --- | --- |

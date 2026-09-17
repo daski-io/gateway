@@ -17,8 +17,13 @@ test with any reproducer.
 ## Branching
 
 `develop` is the integration branch — all work and PRs target `develop`.
-`main` is the release branch: Railway auto-deploys the running service from
-it, so a `develop` → `main` merge IS the deploy action and happens only as a
-deliberate, explicitly authorized release step.
+`sandbox` is what runs on the testnet sandbox: Railway auto-deploys the sandbox
+service from it, so the `develop` → `sandbox` release merge IS the sandbox
+deploy action. Only the release coordinator performs it, as a deliberate,
+explicitly authorized release step: it merges the release pull request at the
+exact commit CI proved and tags the merge commit `vX.Y.Z`. `main` is
+production: only the production release coordinator moves it, by fast-forward
+to a release commit that already ran on the sandbox. An emergency fix branches
+from `main` as `hotfix/<id>`. Nobody merges into `sandbox` or `main` by hand.
 
 Before pushing to `develop`, satisfy [docs/release-readiness.md](docs/release-readiness.md): the coordinator promotes what CI built on the exact `develop` commit, so `develop` must always be releasable.
