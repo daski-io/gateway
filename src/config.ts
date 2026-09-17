@@ -30,6 +30,8 @@ export interface Config {
   x402Network: Network;
   databaseUrl: string;
   publicUrl: string;
+  /** Public website origin for agent documentation; never the payment audience. */
+  docsUrl: string;
   usdc: UsdcDomainConfig;
   sanctionsOracleAddress: Hex;
   sanctionsOracleMode: SanctionsOracleMode;
@@ -116,6 +118,16 @@ function httpUrl(name: string, raw: string | undefined, requireHttps: boolean): 
   return raw.replace(/\/$/, "");
 }
 
+function docsUrl(raw: string | undefined, configuredChainId: ChainId, production: boolean): string {
+  const value = httpUrl("DOCS_URL", raw?.trim() ||
+    (configuredChainId === 8453 ? "https://daski.io" : "https://sandbox.daski.io"), production);
+  const parsed = new URL(value);
+  if (parsed.pathname !== "/" || parsed.search || parsed.hash) {
+    throw new Error("DOCS_URL must be a bare website origin");
+  }
+  return parsed.origin;
+}
+
 function mcpPath(raw: string | undefined): string {
   const value = raw ?? "/mcp";
   if (
@@ -198,6 +210,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     ),
     databaseUrl: databaseUrl(env.DATABASE_URL),
     publicUrl: httpUrl("PUBLIC_URL", env.PUBLIC_URL, production),
+    docsUrl: docsUrl(env.DOCS_URL, configuredChainId, production),
     usdc: loadUsdcDomain({ chainId: configuredChainId, address: tokenAddress, env }),
     sanctionsOracleAddress: oracleAddress,
     sanctionsOracleMode: oracleMode,

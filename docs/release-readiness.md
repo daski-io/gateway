@@ -9,6 +9,14 @@ on the exact `develop` commit and promotes the artifact that CI built: the
 workflow records. Every code-quality check therefore lives in this repository's
 CI, and `develop` must always be releasable.
 
+Three branches carry a release. `develop` integrates. `sandbox` is what runs on
+the testnet sandbox: `go` merges the `develop` → `sandbox` release pull request
+at the exact commit CI proved and tags the merge commit `vX.Y.Z`, and Railway
+deploys `sandbox` to the sandbox. `main` is production: it moves only by
+fast-forward, performed by the production coordinator, to a release commit that
+already ran on the sandbox. An emergency fix branches from `main` as
+`hotfix/<id>`.
+
 ## Definition of done for develop
 
 - CI is green on the pushed commit: the `validate` job in
@@ -30,7 +38,12 @@ CI, and `develop` must always be releasable.
   that seeds the prior state and asserts the post-migration read (the
   `*Postgres.test.ts` files are the pattern), and expansion on existing state
   can be exercised through the startup proof's `migrationThrough` input
-  ([docs/runtime-verification.md](runtime-verification.md)).
+  ([docs/runtime-verification.md](runtime-verification.md)). The previous
+  runtime must still boot on the migrated schema, because a rollback and the
+  old instance during a deploy run on it: expand in one release and contract
+  in a later one. CI proves it whenever `src/db/migrations/` changes;
+  `bash scripts/reliability/prior-runtime.sh <base sha>` runs the same proof
+  locally.
 - A new environment variable is parsed in `src/config.ts` (rail settings in
   `src/standardRail/config.ts`), listed in `.env.example`, and documented in
   the README's Configuration section.
@@ -38,22 +51,30 @@ CI, and `develop` must always be releasable.
   `release: vX.Y.Z` merge commit are the version of record (`src/version.ts`
   derives the runtime version from the deployed commit; nothing is edited for
   a release), and there is no changelog file. Document user-visible behaviour
-  in `README.md`, `docs/` and `skills/` in the same change set as the code.
+  in `README.md` and `docs/` (agent guides are website-owned) in the same change set as the code.
 - Never leave `develop` red. A red push is fixed forward or reverted at once;
   it is never left for the release to sort out.
-- Never merge to `main` or tag by hand. `main` is deployed by Railway and is
-  written only by the coordinator's authorized `go`.
+- Never merge to `sandbox` or `main` or tag by hand. `sandbox` is deployed by
+  Railway to the sandbox and is written only by the coordinator's authorized
+  `go`; `main` is production and is moved only by the production coordinator's
+  fast-forward.
 
 ## What CI proves
 
+CI runs on every push to `develop`, `sandbox`, `main` and `hotfix/**`, and on
+pull requests into `develop`. The release merge commit on `sandbox` therefore
+gets its own push run, which production promotion reads as the proof for that
+exact commit. The Release image workflow runs on `develop` pushes.
+
 | Workflow / job / step | What it proves |
 | --- | --- |
-| CI `validate` / Build | `npm run build` compiles `src/` with `tsconfig.build.json`, copies migrations and skills into `dist/`, and records `dist/build-identity.json` binding source inputs, lockfile, Dockerfile, outputs and toolchain. |
+| CI `validate` / Build | `npm run build` compiles `src/` with `tsconfig.build.json`, copies migrations into `dist/`, and records `dist/build-identity.json` binding source inputs, lockfile, Dockerfile, outputs and toolchain. |
 | CI `validate` / Typecheck (src + test) | `npm run typecheck` type-checks the whole repository including `test/`, so the mock layer cannot drift from the real interfaces. |
 | CI `validate` / Test | `npm test` runs the vitest suite against PostgreSQL 16 (pgvector) on port 5433: complete clean-schema migrations, PostgreSQL-backed state and admission behaviour, signed artifacts, and `test/wireFixtures.test.ts` asserting that the committed fixtures equal what the real builders emit. |
 | CI `validate` / Wire fixtures are freshly generated and committed | Regenerates `test/wire-fixtures/` with `UPDATE_WIRE_FIXTURES=1` and fails on any byte difference (`git diff --exit-code -- test/wire-fixtures`) or untracked fixture, so the committed files are exactly what the builders emit and the consumers' vendored copies compare byte for byte. |
 | CI `validate` / Boot actual Dockerfile image on representative existing state | Builds the Dockerfile for the candidate SHA and runs `npm run test:startup -- --image ...`: the image's build identity matches the local build, and `dist/index.js` boots read-only on migrated representative state with split migration/runtime roles until both health endpoints answer; then again with `--fixture post-epoch`, the state an epoch reset leaves (every migration applied, only the four lineage tables `standard_rail_artifacts`, `standard_provider_servicing_admissions`, `standard_service_registrations` and `standard_service_listings` populated, every other table empty) with a manifest that chains onto those rows, the class of the 2026-09-15 boot failure. |
-| CI `validate` / Archive qualified compiled runtime, Preserve candidate build and startup identity | Uploads the qualified `dist`, `build-identity.json` and the startup proof as `gateway-runtime-proof-<sha>` for 30 days. |
+| CI `validate` / Prior runtime on expanded schema (migration changes) | Runs only when `git diff --name-only <base> HEAD` lists a file under `src/db/migrations/`; the base is the pull request base, else the head the push replaced, else the parent commit. `scripts/reliability/prior-runtime.sh <base>` builds the base commit in a temporary worktree and runs the startup proof with `--prior-root`: the candidate's complete migrations prepare a disposable database, and the base commit's compiled `dist/index.js` boots on it, with state its own fixture signs, until both health endpoints answer. `gateway-prior-runtime-evidence.json` records both build identities and the migrations only the candidate carries. |
+| CI `validate` / Archive qualified compiled runtime, Preserve candidate build and startup identity | Uploads the qualified `dist`, `build-identity.json`, the startup proofs and, when it ran, the prior-runtime evidence as `gateway-runtime-proof-<sha>` for 30 days. |
 | CI `validate` / Audit dependencies | `npm audit --audit-level=high` fails on a high-severity advisory; registry transport failures are retried, not treated as findings. |
 | Release image `image` / `docker/build-push-action` | Builds and pushes `ghcr.io/daski-io/gateway:<sha>` with `SOURCE_SHA` bound, provenance (`mode=max`) and an SBOM, and outputs the immutable digest. |
 | Release image `image` / Pull the pushed image by digest, Scan the pushed image | Pulls the exact pushed digest back and runs Trivy 0.67.2 (pinned by digest) with `--severity MEDIUM,HIGH,CRITICAL --ignore-unfixed --exit-code 1`: the shipped image carries no fixable MEDIUM-or-higher OS or Node package advisory. The Dockerfile keeps this green by installing Debian's patched PCRE2 and removing npm/npx from the runtime stage. |
@@ -94,14 +115,6 @@ runs `scripts/check-release-trailers.mjs` over every pushed commit.
 
 ## Follow-ups
 
-- Prior-runtime compatibility on migration changes. The provider CI runs
-  `bash scripts/reliability/prior-runtime.sh <base> <evidence>` when migration
-  files change, booting the previous release on the expanded schema. The
-  gateway has no equivalent: `scripts/reliability/startup-proof.mjs` accepts a
-  `migrationThrough` boundary but always boots the candidate binary. Add a
-  gateway `scripts/reliability/prior-runtime.sh` and wire it into `ci.yml`
-  guarded by `git diff --name-only <base> HEAD | grep -E '^src/db/migrations/'`,
-  as the provider's step is.
 - The Dockerfile pins `libpcre2-8-0=10.42-1+deb12u1` (the provider's fix). When
   Debian supersedes that package the build fails loudly; bump the pin or move
   to a base image that already carries the fix.

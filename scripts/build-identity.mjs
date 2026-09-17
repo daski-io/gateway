@@ -17,7 +17,7 @@ function digest(paths) {
 export function buildIdentity() {
   const inputs = ['package.json', 'package-lock.json', 'tsconfig.json', 'tsconfig.build.json', 'Dockerfile', 'railway.json']
     .map(path => join(root, path));
-  inputs.push(...['src', 'skills', 'scripts'].flatMap(path => files(join(root, path))));
+  inputs.push(...['src', 'scripts'].flatMap(path => files(join(root, path))));
   const outputs = files(join(root, 'dist')).filter(path => path !== join(root, 'dist', 'build-identity.json'));
   let sourceSha = process.env.SOURCE_SHA ?? null;
   if (!sourceSha) {

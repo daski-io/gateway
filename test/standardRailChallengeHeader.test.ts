@@ -1,3 +1,4 @@
+import { standardRailClientError as purchaseToolFailure } from "../src/standardRail/errors.js";
 import express from "express";
 import type { Server } from "node:http";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -7,7 +8,6 @@ import {
   PAYMENT_REQUIRED_HEADER_BUDGET,
 } from "../src/standardRail/payment.js";
 import { createStandardRailRouter, standardPaymentError } from "../src/standardRail/routes.js";
-import { purchaseToolFailure } from "../src/standardRail/mcp.js";
 import { standardRailError } from "../src/standardRail/errors.js";
 import type { StandardRailService } from "../src/standardRail/service.js";
 import {
@@ -323,7 +323,7 @@ describe("standard rail typed HTTP failures", () => {
   });
 });
 
-describe("MCP purchase tool failure mapping", () => {
+describe("API client failure mapping", () => {
   it("passes the mapped rejection reason through with a recovery hint", () => {
     expect(purchaseToolFailure(new Error("PROVIDER_QUOTE_REJECTED"))).toMatchObject({
       code: "PROVIDER_QUOTE_REJECTED",

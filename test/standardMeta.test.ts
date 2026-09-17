@@ -1,11 +1,9 @@
 import express from "express";
-import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import http, { type Server } from "node:http";
 import { afterEach, describe, expect, it } from "vitest";
 import type { Config } from "../src/config.js";
 import { createStandardMetaRouter } from "../src/standardRail/meta.js";
-import { llmsFull, readSkill } from "../src/standardRail/skills.js";
 import { PINNED_BUYER_CLI, PINNED_SIGNER_CLIS } from "../src/standardRail/buyerCli.js";
 import type { PublicChainMetadataV3 } from "../src/standardRail/types.js";
 
@@ -68,6 +66,7 @@ async function startMeta(outcomes: PublicChainMetadataV3["outcomes"]): Promise<s
       network: "base-sepolia",
       x402Network: "eip155:84532",
       publicUrl: "https://gateway.example",
+      docsUrl: "https://website.example",
       mcpPath: "/mcp",
       marketplaceContracts: ADDRESSES,
       usdc: { address: USDC },
@@ -116,35 +115,6 @@ describe("standard rail metadata", () => {
     expect(await conditionalGet(`${root}/.well-known/daski-chain.json`, etag!))
       .toEqual({ status: 304, body: "" });
 
-    const setup = await (await fetch(`${root}/skills/setup.md`)).text();
-    expect(setup).toBe((await readSkill("setup")).content);
-    expect(setup).toContain("daski_get_payment_challenge");
-
-    const index = await (await fetch(`${root}/.well-known/agent-skills/index.json`))
-      .json() as {
-        skills: Array<{ name: string; sha256: string; bytes: number; url: string }>;
-      };
-    const setupEntry = index.skills.find((skill) => skill.name === "setup");
-    expect(setupEntry).toMatchObject({
-      url: "https://gateway.example/skills/setup.md",
-      bytes: Buffer.byteLength(setup),
-      sha256: createHash("sha256").update(setup).digest("hex"),
-    });
-
-    const full = await (await fetch(`${root}/llms-full.txt`)).text();
-    expect(full).toBe(await llmsFull());
-    const installable = await (await fetch(`${root}/skills/SKILL.md`)).text();
-    expect(await (await fetch(`${root}/skill.md`)).text()).toBe(installable);
-    expect(await (await fetch(`${root}/SKILL.md`)).text()).toBe(installable);
-
-    const legacy = await (await fetch(`${root}/.well-known/skills/index.json`)).json() as {
-      skills: Array<{ name: string; description: string; files: string[] }>;
-    };
-    expect(legacy).toEqual({
-      skills: [{ name: "daski", description: expect.stringContaining("Daski"), files: ["SKILL.md"] }],
-    });
-    expect(await (await fetch(`${root}/.well-known/skills/daski/SKILL.md`)).text()).toBe(installable);
-
     const mcp = await (await fetch(`${root}/.well-known/mcp.json`)).json() as {
       tools: string[];
       skills: Record<string, string>;
@@ -157,7 +127,7 @@ describe("standard rail metadata", () => {
     expect(mcp.tools).toContain("daski_get_setup_guide");
     expect(mcp.tools).toContain("daski_get_order_access");
     expect(mcp.tools).toContain("daski_get_outcome_requirements");
-    expect(mcp.skills.setup).toBe("https://gateway.example/skills/setup.md");
+    expect(mcp.skills.setup).toBe("https://website.example/skills/setup.md");
     expect(mcp.steadyStatePrompt).toBe("Use Daski to [your task].");
     // The pinned buyer CLI is machine-readable so `daski doctor` can compare
     // its own version against it instead of an agent reading the pin by eye.
@@ -177,53 +147,22 @@ describe("standard rail metadata", () => {
       package: "@circle-fin/cli", version: "1.0.0", repository: "https://github.com/circlefin/cli",
     });
 
-    const llms = await (await fetch(`${root}/llms.txt`)).text();
-    expect(llms).toContain("MCP: https://gateway.example/mcp");
-    expect(llms).toContain("https://gateway.example/skills/SKILL.md");
   });
 
-  it("pins one buyer CLI release in setup.md, SKILL.md guidance, and the well-known document", async () => {
-    const { package: pkg, version, repository, verify, install } = PINNED_BUYER_CLI;
-    const setup = (await readSkill("setup")).content;
-    // Every mention of the package in the guide names the pinned version;
-    // a stale prose pin is how an old install went unnoticed on 2026-09-04.
-    const mentions = setup.match(/@daski\/pay@[0-9][^\s`]*/g) ?? [];
-    expect(mentions.length).toBeGreaterThan(0);
-    for (const mention of mentions) expect(mention).toBe(`${pkg}@${version}`);
-    expect(setup).toContain(`The pinned release is \`${pkg}@${version}\`.`);
-    expect(setup).toContain(verify);
-    expect(setup).toContain(install);
-    expect(setup).toContain(repository);
-    // Detection compares the doctor's cliVersion with the pin, and names where
-    // the pin is published for machines.
-    expect(setup).toContain("`cliVersion`");
-    expect(setup).toContain("`buyerCli.version` in `/.well-known/mcp.json`");
-    // The documented signing path is the one the pinned release completes.
-    expect(setup).toContain("daski buy --provider");
-    const buy = (await readSkill("buy")).content;
-    expect(buy).toContain("| PAYMENT_IDENTIFIER_UNKNOWN |");
-    expect(buy).toContain("| PAYMENT_IDENTIFIER_CONFLICT |");
-    expect(buy).toContain("| SIGNATURE_COUNTERFACTUAL_REJECTED |");
-    expect(buy).toContain("| CONFIRMATION_SPONSORED_REQUIRES_EOA |");
-    expect(buy).toContain("| CONFIRMATION_SPONSORSHIP_LIMIT |");
-  });
-
-  it("pins the signer CLIs in setup.md exactly as the well-known document publishes them", async () => {
-    const setup = (await readSkill("setup")).content;
-    const circle = PINNED_SIGNER_CLIS["circle-agent"];
-    // The guide installs the pinned version it names and points at the
-    // machine-readable pin; the two are asserted equal here the way the
-    // buyer CLI pin is.
-    expect(setup).toContain(`\`${circle.package}@${circle.version}\``);
-    expect(setup).toContain(circle.repository);
-    expect(setup).toContain("signerClis.circle-agent");
-    expect(setup).toContain("payerAccounts.types");
-    expect(setup).toContain("DASKI_HOST_CLASS");
-    const wallets = (await readSkill("wallets")).content;
-    expect(wallets).toContain("| Circle agent wallet | contract |");
-    const orders = (await readSkill("orders")).content;
-    expect(orders).toContain("daski order confirm <handle> --tx <hash>");
-    expect(orders).toContain("--check reports the final state");
+  it("redirects every legacy documentation surface and rejects unknown guides", async () => {
+    const root = await startMeta([]);
+    const paths = [
+      ...["setup", "buy", "orders", "wallets", "recipe", "SKILL"].map(topic => `/skills/${topic}.md`),
+      "/.well-known/agent-skills/index.json", "/.well-known/skills/index.json",
+      "/.well-known/skills/daski/SKILL.md", "/llms.txt", "/llms-full.txt", "/skill.md", "/SKILL.md",
+    ];
+    for (const path of paths) {
+      const response = await fetch(`${root}${path}`, { redirect: "manual" });
+      expect(response.status).toBe(308);
+      const destination = ["/skill.md", "/SKILL.md"].includes(path) ? "/skills/SKILL.md" : path;
+      expect(response.headers.get("location")).toBe(`https://website.example${destination}`);
+    }
+    expect((await fetch(`${root}/skills/missing.md`)).status).toBe(404);
   });
 
   it("publishes the compact activity projection with the same caching policy", async () => {

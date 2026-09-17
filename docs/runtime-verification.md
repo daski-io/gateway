@@ -59,6 +59,17 @@ production secrets must never appear in fixture inputs or output evidence.
 `migrationThrough` optionally selects a prior migration boundary before the actual
 entrypoint applies remaining migrations. This exercises schema expansion with
 existing state; it does not by itself certify a different prior binary.
+`--prior-root <directory>` does: the candidate's complete migrations prepare the
+database, and the compiled runtime built in that directory, a checkout of an
+earlier commit, boots on it. Without `--input`, the state comes from that commit's
+own fixture, and its own modules hash the seeded rows and run the registration
+store, so the proof turns on the schema and not on a manifest the earlier runtime
+never accepted. The evidence has boundary `gateway-prior-runtime`, the earlier
+build's `priorIdentity`, and the migrations only one side carries. It excludes
+`--image` and `migrationThrough`.
+`bash scripts/reliability/prior-runtime.sh <base sha> [evidence path]` builds the
+commit in a temporary worktree, runs this proof and removes the worktree; CI runs it
+when a change touches `src/db/migrations/`.
 `registrations` optionally supplies actual store operations: `create` arguments,
 `evidence`, `commitments`, and optional `checkpoints`. These run the product store's
 create/evidence/activate path before boot. They do not replace independent chain
@@ -93,8 +104,10 @@ the named PostgreSQL container publishes the supplied loopback port, then routes
 only the newly created database to its private bridge address.
 The Docker mode verifies source and
 content identity inside the exact image before startup. A startup proof covers
-the given artifact/state combination; retained-runtime rollback combinations must
-be supplied and qualified separately by release coordination.
+the given artifact/state combination. CI's prior-runtime proof covers the base
+commit of the change; the rollback combination for a release, the previously
+released runtime on the release's schema, must still be qualified by release
+coordination, which can run the same script with that release's commit as the base.
 
 Proof fields include `schemaVersion`, `repo`, `boundary`, `status`, `execution`,
 `identity`, `inputHash`, `startingStateHash`, and `checks`. Hashes are lowercase

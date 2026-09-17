@@ -6,8 +6,8 @@ import type { Request, Response, NextFunction } from "express";
 // an npm install. Trade-offs:
 //   * Headers list is a strict subset of helmet defaults — covers nosniff,
 //     frameguard, referrer-policy, and HSTS. We skip CSP because the
-//     gateway serves /skill.md and /llms-full.txt as markdown intended for
-//     LLM crawlers; a CSP would bring no win.
+//     gateway serves machine-readable API responses and compatibility
+//     redirects; a document CSP would bring no win.
 //   * The rate limiter uses PostgreSQL when a shared store is supplied and
 //     falls back to process memory for small standalone consumers.
 

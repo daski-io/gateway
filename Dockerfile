@@ -1,7 +1,12 @@
 # syntax=docker/dockerfile:1
 # node:22-slim resolves to this bookworm image today; the explicit tag keeps
 # the Debian package pin below valid if the alias moves to a newer Debian.
-FROM node:22-bookworm-slim AS base
+# The digest pins the base itself: the sandbox and production build the same
+# commit days apart, so the base must not drift between them. To refresh it
+# when the image scan flags the base, re-resolve the digest
+# (`docker buildx imagetools inspect node:22-bookworm-slim`, the top-level
+# Digest) and update this line.
+FROM node:22-bookworm-slim@sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5 AS base
 # Debian security update for the PCRE2 library in the Node image. The develop
 # image scan (release-image.yml) fails on fixable MEDIUM+ findings.
 RUN apt-get update \
@@ -19,7 +24,6 @@ RUN npm ci --no-audit --no-fund
 
 COPY tsconfig.json tsconfig.build.json ./
 COPY src ./src
-COPY skills ./skills
 COPY scripts ./scripts
 COPY Dockerfile railway.json ./
 RUN npm run build

@@ -5,7 +5,6 @@ import { verifyReceiptSignatureEIP712 } from "@x402/extensions/offer-receipt";
 import type { PaymentPayload, PaymentRequirements } from "@x402/core/types";
 import type { Config } from "../src/config.js";
 import { mcpJson } from "../src/mcp/util.js";
-import { resolveMcpPaymentPayload } from "../src/standardRail/mcp.js";
 import {
   paymentRequired,
   paymentRequirements,
@@ -16,11 +15,6 @@ import {
   issueReadCapability,
   verifyReadCapability,
 } from "../src/standardRail/readCapability.js";
-import {
-  readSkill,
-  skillIndex,
-  llmsFull,
-} from "../src/standardRail/skills.js";
 import { StandardRailService } from "../src/standardRail/service.js";
 import {
   walletActionSignRequest,
@@ -430,20 +424,6 @@ describe("agentic purchase DX contracts", () => {
     });
   });
 
-  it("serves checksum-stable skills and an exact full concatenation", async () => {
-    const index = await skillIndex("https://gateway.example", "test");
-    const setup = await readSkill("setup");
-    expect(index.skills.find((item) => item.name === "setup")).toMatchObject({
-      sha256: setup.sha256,
-      bytes: Buffer.byteLength(setup.content),
-    });
-    const names = ["setup", "buy", "orders", "wallets", "recipe", "daski"] as const;
-    const expected = (await Promise.all(names.map((name) => readSkill(name))))
-      .map((skill) => skill.content.trimEnd()).join("\n\n") + "\n";
-    expect(await llmsFull()).toBe(expected);
-  });
-
-
   it("places a Foundation-shaped receipt in the x402 settlement extension", async () => {
     const receipt = await createX402OfferReceipt({
       privateKey: `0x${"33".repeat(32)}` as Hex,
@@ -472,9 +452,6 @@ describe("agentic purchase DX contracts", () => {
 
   it("carries every MCP payload in structuredContent and as serialized JSON text", () => {
     const payment = { x402Version: 2 };
-    expect(resolveMcpPaymentPayload(payment, undefined)).toBe(payment);
-    expect(resolveMcpPaymentPayload(undefined, payment)).toBe(payment);
-    expect(resolveMcpPaymentPayload(payment, { x402Version: 1 })).toBe(payment);
 
     // MCP 2025-06-18: a tool returning structured content SHOULD also return
     // the serialized JSON in a text block. A one-line summary here (v0.28.0 to

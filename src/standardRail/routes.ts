@@ -1,3 +1,5 @@
+import { z } from "zod";
+import { withRecentPurchasesCapped } from "./catalog.js";
 import { walletChallengeEnvelope } from "./wireEnvelopes.js";
 import { Router, type NextFunction, type Request, type Response } from "express";
 import type { PaymentPayload, PaymentRequired } from "@x402/core/types";
@@ -10,6 +12,7 @@ import {
   StandardRailError,
   standardRailError,
   standardRailPublicError,
+  standardRailClientError,
 } from "./errors.js";
 import { isPayerSignatureShape } from "./payerSignature.js";
 
@@ -81,6 +84,7 @@ function sendWalletError(
   if (error instanceof StandardRailError) {
     logStandardRailError(error);
     if (error.status === 429 || error.status === 503) res.setHeader("Retry-After", "10");
+    res.setHeader("DASKI-NEXT-ACTION", error.nextAction);
     res.status(error.status).json({ error: standardRailPublicError(error, origin) });
     return;
   }
@@ -130,6 +134,66 @@ export function createStandardRailRouter(service: StandardRailService, publicUrl
   const router = Router();
   const origin = (publicUrl ?? "https://invalid.local").replace(/\/$/, "");
 
+  const outcomeInput = z.object({
+    request: z.record(z.string(), z.unknown()),
+    payerAddress: z.string().regex(/^0x[0-9a-fA-F]{40}$/).optional(),
+    paymentPayload: z.record(z.string(), z.unknown()).optional(),
+  }).strict();
+  const searchInput = z.object({
+    text: z.string().max(200).optional(), providerAgentId: z.string().regex(/^[1-9]\d*$/).optional(),
+    categoryFamily: z.string().max(64).optional(), serviceType: z.string().max(64).optional(),
+    jurisdiction: z.string().max(64).optional(), pricingMode: z.enum(["fixed", "dynamic"]).optional(),
+    persistentAsset: z.boolean().optional(), limit: z.number().int().min(1).max(100).default(25),
+  }).strict();
+  function validated<S extends z.ZodType>(schema: S, value: unknown): z.output<S> {
+    const result = schema.safeParse(value);
+    if (!result.success) throw standardRailError("REQUEST_SCHEMA_INVALID", { field: "body" });
+    return result.data;
+  }
+
+  // Website MCP uses the same transaction service through bounded REST bodies.
+  // Keeping paymentPayload in JSON avoids HTTP header limits for large quotes.
+  router.post("/outcomes/:providerAgentId/:outcomeId/purchase", async (req, res, next) => {
+    try {
+      const input = validated(outcomeInput, req.body);
+      const args = { providerAgentId: String(req.params.providerAgentId), outcomeId: String(req.params.outcomeId),
+        body: input.request, ...(input.payerAddress ? { payerAddress: input.payerAddress as `0x${string}` } : {}) };
+      res.setHeader("Cache-Control", "private, no-store");
+      if (!input.paymentPayload) {
+        const challenge = await service.issueChallenge(args);
+        res.status(402).json(challenge.paymentRequired);
+        return;
+      }
+      const result = await service.submitPayment({ ...args, payment: input.paymentPayload as unknown as PaymentPayload });
+      const receipts = await service.purchaseReceipts(result.order);
+      if (receipts.x402PaymentResponse) res.setHeader("PAYMENT-RESPONSE", encoded(receipts.x402PaymentResponse));
+      const accepted = receipts.receipt !== null && ["DISPATCHED", "FULFILLED", "INPUT_REQUIRED"].includes(result.order.state);
+      res.status(accepted ? 200 : 202).json({ orderHandle: result.handle, state: result.order.state,
+        receipt: receipts.receipt, x402OfferReceipt: receipts.x402OfferReceipt });
+    } catch (error) { next(error); }
+  });
+  router.post("/outcomes/:providerAgentId/:outcomeId/quote", async (req, res, next) => {
+    try {
+      const input = validated(outcomeInput.omit({ paymentPayload: true }), req.body);
+      res.setHeader("Cache-Control", "private, no-store");
+      res.json(await service.preparePaymentChallenge({
+        providerAgentId: String(req.params.providerAgentId), outcomeId: String(req.params.outcomeId),
+        body: input.request, ...(input.payerAddress ? { payerAddress: input.payerAddress as `0x${string}` } : {}),
+      }));
+    } catch (error) { next(error); }
+  });
+  router.post("/public/v2/outcomes/search", async (req, res, next) => {
+    try {
+      const outcomes = await service.searchOutcomes(validated(searchInput, req.body));
+      res.json(outcomes.length ? { outcomes } : { outcomes, searchHint: await service.searchVocabulary() });
+    } catch (error) { next(error); }
+  });
+  router.get("/public/v2/outcomes/:providerAgentId/:outcomeId", async (req, res, next) => {
+    try {
+      res.json(withRecentPurchasesCapped(await service.getOutcome(String(req.params.providerAgentId), String(req.params.outcomeId))));
+    } catch (error) { next(error); }
+  });
+
   router.post("/outcomes/:providerAgentId/:outcomeId/requirements", async (req, res, next) => {
     try {
       assertStandardExactKeys(req.body, ["request"], "body");
@@ -145,14 +209,20 @@ export function createStandardRailRouter(service: StandardRailService, publicUrl
 
   router.post("/wallet/orders", async (req, res) => {
     try {
-      assertExactKeys(req.body, ["payer", "limit", "cursor", "authorization"]);
+      assertExactKeys(req.body, ["payer", "limit", "cursor", "authorization",
+        ...(req.body && Object.hasOwn(req.body, "paymentIdentifier") ? ["paymentIdentifier"] : [])]);
       const body = req.body as Record<string, unknown>;
       if (
         typeof body.payer !== "string" || !/^0x[0-9a-fA-F]{40}$/.test(body.payer) ||
         !Number.isSafeInteger(body.limit) || Number(body.limit) < 1 || Number(body.limit) > 100 ||
         !(body.cursor === null || typeof body.cursor === "string")
       ) throw new Error("WALLET_QUERY_INVALID");
-      const request = { limit: body.limit, cursor: body.cursor };
+      if (body.paymentIdentifier !== undefined && body.paymentIdentifier !== null &&
+        (typeof body.paymentIdentifier !== "string" || !/^[A-Za-z0-9_-]{16,128}$/.test(body.paymentIdentifier))) {
+        throw new Error("WALLET_QUERY_INVALID");
+      }
+      const paymentIdentifier = body.paymentIdentifier as string | null | undefined;
+      const request = { limit: body.limit, cursor: body.cursor, ...(paymentIdentifier ? { paymentIdentifier } : {}) };
       res.setHeader("Cache-Control", "private, no-store");
       if (body.authorization === null) {
         res.json(walletChallengeEnvelope(await service.issueWalletChallenge({
@@ -166,6 +236,7 @@ export function createStandardRailRouter(service: StandardRailService, publicUrl
         payer: body.payer,
         limit: Number(body.limit),
         cursor: body.cursor as string | null,
+        paymentIdentifier,
         authorization: body.authorization as never,
       }));
     } catch (error) { sendWalletError(res, error, origin); }
@@ -476,7 +547,8 @@ export function createStandardRailRouter(service: StandardRailService, publicUrl
       internalMessage: error instanceof Error ? error.message : "Unknown standard rail failure",
       cause: error,
     });
-    logStandardRailError(classified);
+    const failure = standardRailClientError(classified, origin);
+    res.setHeader("DASKI-NEXT-ACTION", failure.next_action);
     res.status(classified.status).json({
       error: standardRailPublicError(classified, origin),
     });
