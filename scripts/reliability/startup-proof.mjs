@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { randomBytes, randomUUID, generateKeyPairSync } from 'node:crypto';
 import { spawn, execFileSync } from 'node:child_process';
-import { readFileSync, mkdtempSync, writeFileSync, rmSync, chmodSync } from 'node:fs';
+import { readFileSync, readdirSync, mkdtempSync, writeFileSync, rmSync, chmodSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -33,6 +33,23 @@ export async function proveStartup(input, databaseUrl, options={}) {
   const database=new URL(databaseUrl);
   assert.ok(['localhost','127.0.0.1','[::1]'].includes(database.hostname),'startup proof requires loopback PostgreSQL');
   const identity=verifyBuildIdentity();
+  // Prior-runtime proof: this candidate migrates the database, then the compiled runtime of the previous commit
+  // (built in options.priorRoot) boots on that expanded schema. The rows are hashed and written by the prior's own modules.
+  const priorRoot=options.priorRoot ? resolve(options.priorRoot) : null; const runtimeRoot=priorRoot ?? root;
+  let prior=null; let hashOf=canonicalHash; let Store=ServiceRegistrationStore;
+  if(priorRoot) {
+    assert.ok(!options.image,'the prior-runtime proof boots the compiled prior runtime, not an image');
+    assert.equal(input.migrationThrough,undefined,'the prior runtime boots on the complete candidate schema');
+    // The prior build identifies itself by its own checkout, never by a SOURCE_SHA meant for the candidate.
+    const environment={...process.env}; delete environment.SOURCE_SHA;
+    const priorIdentity=JSON.parse(execFileSync(process.execPath,[join(priorRoot,'scripts/build-identity.mjs'),'--verify'],{cwd:priorRoot,env:environment,encoding:'utf8'}));
+    assert.notEqual(priorIdentity.sourceSha,identity.sourceSha,'the prior runtime must be a different commit from the candidate');
+    const migrations=directory=>readdirSync(join(directory,'dist/db/migrations')).filter(file=>file.endsWith('.sql')).sort();
+    const candidate=migrations(root); const previous=migrations(priorRoot);
+    prior={identity:priorIdentity,migrations:{candidateOnly:candidate.filter(file=>!previous.includes(file)),priorOnly:previous.filter(file=>!candidate.includes(file))}};
+    const load=path=>import(pathToFileURL(join(priorRoot,path)).href);
+    hashOf=(await load('dist/standardRail/canonical.js')).canonicalHash; Store=(await load('dist/serviceRegistration/store.js')).ServiceRegistrationStore;
+  }
   const nonce=randomUUID().replaceAll('-',''); const name=`gateway_boot_${nonce}`; const runtime=`gateway_runtime_${nonce}`;
   const bootstrap=createPool({connectionString:databaseUrl,max:1});
   let pool; let child; let temporary; let status=null; let output=''; let databaseCreated=false; let roleCreated=false;
@@ -48,18 +65,18 @@ export async function proveStartup(input, databaseUrl, options={}) {
       await pool.query(`INSERT INTO standard_provider_servicing_admissions
         (provider_agent_id,admission_hash,profile_hash,canonical_admission,current,valid_before)
         VALUES ($1,$2,$3,$4,$5,to_timestamp($6))`,[admission.payload.providerAgentId,
-        Buffer.from(canonicalHash(admission).slice(2),'hex'), Buffer.from(admission.payload.providerControlProfileHash.slice(2),'hex'),
+        Buffer.from(hashOf(admission).slice(2),'hex'), Buffer.from(admission.payload.providerControlProfileHash.slice(2),'hex'),
         admission,current,admission.payload.validBefore]);
     }
     // Restored epoch lineage: rail artifacts an earlier manifest admitted, which the candidate manifest must chain onto.
     for (const {envelope,epoch=null} of input.priorArtifacts ?? []) {
       await pool.query(`INSERT INTO standard_rail_artifacts
         (artifact_hash,artifact_type,schema_version,environment,chain_id,epoch,canonical_json,valid_before)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,to_timestamp($8)) ON CONFLICT (artifact_hash) DO NOTHING`,[Buffer.from(canonicalHash(envelope).slice(2),'hex'),
+        VALUES ($1,$2,$3,$4,$5,$6,$7,to_timestamp($8)) ON CONFLICT (artifact_hash) DO NOTHING`,[Buffer.from(hashOf(envelope).slice(2),'hex'),
         envelope.artifactType,envelope.schemaVersion,envelope.environment,envelope.chainId,epoch,envelope,envelope.validBefore]);
     }
     if (input.registrations?.length) {
-      const store=new ServiceRegistrationStore(pool);
+      const store=new Store(pool);
       for (const operation of input.registrations) {
         await store.create(operation.create);
         await store.recordEvidencePending({registrationId:operation.create.prepared.registrationId,evidence:operation.evidence});
@@ -107,7 +124,7 @@ export async function proveStartup(input, databaseUrl, options={}) {
       DASKI_ISOLATED_STARTUP_PROOF:'1',DASKI_PROOF_FACILITATOR_URL:input.manifest.facilitatorProfile.payload.baseUrl,DASKI_PROOF_PROVIDER_ROUTES:JSON.stringify(input.providerRoutes ?? []),DASKI_PROOF_RPC_FACTS_PATH:rpcFile,
       SHUTDOWN_GRACE_MS:'5000',...input.runtimeConfig};
     const loader=join(root,'scripts/reliability/controlled-network.mjs');
-    let command=process.execPath; let args=['--import',loader,join(root,'dist/index.js')];
+    let command=process.execPath; let args=['--import',loader,join(runtimeRoot,'dist/index.js')];
     let image=null;
     if(options.image) {
       const details=JSON.parse(execFileSync('docker',['image','inspect',options.image],{encoding:'utf8'}))[0];
@@ -143,7 +160,7 @@ export async function proveStartup(input, databaseUrl, options={}) {
         '--mount',`type=bind,source=${rpcFile},target=/proof/rpc-facts.json,readonly`,
         options.image,'node','--import','/proof/controlled-network.mjs','dist/index.js'];
     }
-    child=spawn(command,args,{cwd:root,env:options.image ? process.env : {...env,PATH:process.env.PATH},stdio:['ignore','pipe','pipe']});
+    child=spawn(command,args,{cwd:runtimeRoot,env:options.image ? process.env : {...env,PATH:process.env.PATH},stdio:['ignore','pipe','pipe']});
     child.on('exit',(code,signal)=>{status={code,signal};});
     const capture=data=>{output=(output+String(data)).slice(-64000);}; child.stdout.on('data',capture); child.stderr.on('data',capture);
     child.on('error',error=>{status={code:1,error:error.message};});
@@ -168,11 +185,12 @@ export async function proveStartup(input, databaseUrl, options={}) {
       FROM standard_provider_servicing_admissions WHERE current ORDER BY provider_agent_id`)).rows;
     assert.deepEqual(current,[...input.expectedCurrent].sort((a,b)=>a.providerAgentId.localeCompare(b.providerAgentId)));
     const probe=options.probe ? await options.probe({url,databaseUrl:migrationUrl}) : null;
-    return {schemaVersion:1,repo:'gateway',boundary:'gateway-startup',status:'PASS',identity,
+    return {schemaVersion:1,repo:'gateway',boundary:prior?'gateway-prior-runtime':'gateway-startup',status:'PASS',identity,
+      ...(prior?{priorIdentity:prior.identity,migrations:prior.migrations}:{}),
       inputHash:sha256(JSON.stringify(input)),startingStateHash:sha256(JSON.stringify(input.priorState)),
-      execution:{entrypoint:'dist/index.js',mode:options.image?'dockerfile-image':'compiled-runtime',image,
+      execution:{entrypoint:'dist/index.js',mode:options.image?'dockerfile-image':prior?'prior-compiled-runtime':'compiled-runtime',image,
         durationMs:Math.round(performance.now()-started)},
-      checks:['actual-entrypoint','signed-manifest-validation','migrations-and-distinct-database-roles',
+      checks:[...(prior?['prior-runtime-expanded-schema']:[]),'actual-entrypoint','signed-manifest-validation','migrations-and-distinct-database-roles',
         'existing-admission-state',...(input.priorArtifacts?.length?['existing-rail-lineage']:[]),
         'health-live','health-ready','expected-current-admissions',...(probe?['candidate-probe']:[])],probe};
   } finally {
@@ -189,20 +207,24 @@ export async function proveStartup(input, databaseUrl, options={}) {
 }
 async function main() {
   const args=process.argv.slice(2); const values={};
-  for(let i=0;i<args.length;i+=2) {assert.ok(['--input','--output','--evidence','--image','--image-db-container','--probe-command','--fixture'].includes(args[i])); values[args[i]]=args[i+1];}
+  for(let i=0;i<args.length;i+=2) {assert.ok(['--input','--output','--evidence','--image','--image-db-container','--probe-command','--fixture','--prior-root'].includes(args[i])); values[args[i]]=args[i+1];}
   const fixture=values['--fixture']; assert.ok(fixture===undefined || fixture==='post-epoch','--fixture accepts post-epoch');
   assert.ok(!(values['--input'] && fixture),'--fixture selects a repository fixture and cannot combine with --input');
-  const input=values['--input'] ? JSON.parse(readFileSync(values['--input'],'utf8')) : fixture ? await postEpochFixture(await startupFixture()) : await startupFixture();
+  // A prior runtime is proved on artifacts its own commit signs; the candidate fixture may describe a manifest it never accepted.
+  const priorRoot=values['--prior-root'];
+  const fixtures=priorRoot && !values['--input'] ? await import(pathToFileURL(resolve(priorRoot,'scripts/reliability/fixture.mjs')).href) : {startupFixture,postEpochFixture};
+  assert.ok(!fixture || typeof fixtures.postEpochFixture==='function','the prior commit has no post-epoch fixture');
+  const input=values['--input'] ? JSON.parse(readFileSync(values['--input'],'utf8')) : fixture ? await fixtures.postEpochFixture(await fixtures.startupFixture()) : await fixtures.startupFixture();
   const output=values['--output'] ?? values['--evidence']; assert.ok(output,'--output is required');
   try {
-    const proof=await proveStartup(input,process.env.DATABASE_URL_TEST,{image:values['--image'],imageDbContainer:values['--image-db-container'],
+    const proof=await proveStartup(input,process.env.DATABASE_URL_TEST,{image:values['--image'],imageDbContainer:values['--image-db-container'],priorRoot,
       ...(values['--probe-command'] ? {probe:async({url})=>{
         const argv=JSON.parse(values['--probe-command']).map(value=>value.replaceAll('{gatewayUrl}',url));
         execFileSync(argv[0],argv.slice(1),{stdio:['ignore','pipe','pipe'],timeout:120000});
         return {entrypoint:argv[0],commandHash:sha256(JSON.stringify(argv)),status:'PASS'};
       }} : {})});
     writeProof(output,proof);
-  } catch(error) {writeProof(output,{schemaVersion:1,repo:'gateway',boundary:'gateway-startup',status:'FAIL',
+  } catch(error) {writeProof(output,{schemaVersion:1,repo:'gateway',boundary:priorRoot?'gateway-prior-runtime':'gateway-startup',status:'FAIL',
     inputHash:sha256(JSON.stringify(input)),error:error.message.replace(/postgres(?:ql)?:\/\/[^\s]+/g,'[database]')}); process.exitCode=1;}
 }
 if(process.argv[1] && import.meta.url===pathToFileURL(resolve(process.argv[1])).href) await main();

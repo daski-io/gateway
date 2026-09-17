@@ -62,9 +62,12 @@ jobs:
       DATABASE_URL_TEST: postgresql://postgres:password@127.0.0.1:5433/daski_gateway_test
 
     steps:
+      # Full history: the prior-runtime step below checks out and builds the
+      # base commit.
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 0
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Bind candidate source
@@ -116,6 +119,28 @@ jobs:
           npm run test:startup -- --image gateway-startup:$CANDIDATE_SHA --output .tmp/gateway-startup-proof.json
           npm run test:startup -- --fixture post-epoch --image gateway-startup:$CANDIDATE_SHA --output .tmp/gateway-startup-proof-post-epoch.json
 
+      # A rollback, and the old instance during a deploy, run the previous
+      # runtime on the schema this candidate migrated. When the change touches
+      # a migration, build the base commit (the pull request base, else the
+      # head this push replaced, else the parent) and prove its runtime still
+      # boots there.
+      - name: Prior runtime on expanded schema (migration changes)
+        shell: bash
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          base="$PR_BASE_SHA"
+          if [ -z "$base" ] && [ -n "$BEFORE" ] && [ "$BEFORE" != "0000000000000000000000000000000000000000" ] && git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
+            base="$BEFORE"
+          fi
+          base="${base:-$(git rev-parse HEAD^)}"
+          changed="$(git diff --name-only "$base" HEAD)"
+          if grep -qE '^src/db/migrations/' <<< "$changed"; then
+            bash scripts/reliability/prior-runtime.sh "$base" .tmp/gateway-prior-runtime-evidence.json
+          fi
+
       - name: Archive qualified compiled runtime
         run: tar -czf gateway-runtime-dist.tar.gz dist
 
@@ -128,6 +153,7 @@ jobs:
             dist/build-identity.json
             .tmp/gateway-startup-proof.json
             .tmp/gateway-startup-proof-post-epoch.json
+            .tmp/gateway-prior-runtime-evidence.json
           if-no-files-found: error
           retention-days: 30
 
