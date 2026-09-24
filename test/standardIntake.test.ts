@@ -37,6 +37,16 @@ describe("signed provider intake discovery", () => {
     expect(await discover()).toMatchObject({ providerAgentId: "1", outcomeId: "form", requestSchema: schema,
       selectorsRequired: ["entityType"], requiredFields: { contactEmail: { required: true } } });
   });
+  it("preserves corporation selectors and corporate officer requirements from signed provider intake", async () => {
+    const requiredFields = Object.fromEntries(["directors", "presidents", "secretaries", "treasurers"]
+      .map((role) => [role, { required: true }]));
+    const result = await discover({ supported: true, selectorsRequired: [], fieldErrors: [], requiredFields,
+      normalizedSelectors: { country: "US", state: "WY", entityType: "Corporation" } });
+    expect(result).toMatchObject({ supported: true, requiredFields,
+      normalizedSelectors: { entityType: "Corporation", state: "WY" } });
+    expect(result.requiredFields).not.toHaveProperty("managementType");
+    expect(result.requiredFields).not.toHaveProperty("members");
+  });
   it("rejects substitutions, altered schemas, expiry, malformed fields and the wrong authority", async () => {
     for (const patch of [{ outcomeId: "other" }, { requestHash: canonicalHash({}) }, { requestSchema: {} },
       { validBefore: 1 }, { supported: "yes" }, { fieldErrors: [{}] }]) {
