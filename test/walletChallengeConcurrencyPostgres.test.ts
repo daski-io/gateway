@@ -18,14 +18,13 @@ const CHAIN_ID = 84532;
 const PAYER = "0x1111111111111111111111111111111111111111";
 const CLIENT_KEY = Buffer.alloc(32, 5);
 
-function config(outstandingPerClient: number): StandardRailConfig {
+function config(outstandingGlobal = 10_000): StandardRailConfig {
   return {
     encryptionKey: Buffer.alloc(32, 7),
     gatewayAudience: "https://gateway.example",
     environment: "testnet",
     abuse: {
-      walletChallengesOutstandingPerClient: outstandingPerClient,
-      walletChallengesOutstandingGlobal: 10_000,
+      walletChallengesOutstandingGlobal: outstandingGlobal,
       walletChallengesPerClientPerMinute: 1_000,
       walletChallengesGlobalPerMinute: 10_000,
       assetListsPerPayerPerMinute: 1_000,
@@ -62,7 +61,7 @@ function issueWallet(store: StandardWalletStore, index: number) {
   });
 }
 
-function issueAction(journal: StandardRailJournal, index: number, caps: { perClient: number }) {
+function issueAction(journal: StandardRailJournal, index: number) {
   const now = Math.floor(Date.now() / 1_000);
   return journal.issueActionChallenge({
     orderId: null,
@@ -73,7 +72,6 @@ function issueAction(journal: StandardRailJournal, index: number, caps: { perCli
     issuedAt: now,
     validBefore: now + 300,
     clientKeyHash: CLIENT_KEY,
-    outstandingPerClient: caps.perClient,
     outstandingGlobal: 10_000,
   });
 }
@@ -86,7 +84,7 @@ async function clearChallenges() {
 describe("challenge issuance under concurrency", () => {
   it("issues 20 wallet challenges concurrently for one client without a single refusal", async () => {
     await clearChallenges();
-    const store = new StandardWalletStore(pool, config(100), CHAIN_ID);
+    const store = new StandardWalletStore(pool, config(), CHAIN_ID);
     const results = await Promise.allSettled(Array.from({ length: 20 }, (_, i) => issueWallet(store, i)));
     const failures = results.filter((r) => r.status === "rejected") as PromiseRejectedResult[];
     expect(failures.map((f) => String(f.reason))).toEqual([]);
@@ -98,7 +96,7 @@ describe("challenge issuance under concurrency", () => {
     await clearChallenges();
     const journal = new StandardRailJournal(pool);
     const results = await Promise.allSettled(
-      Array.from({ length: 20 }, (_, i) => issueAction(journal, i, { perClient: 100 })),
+      Array.from({ length: 20 }, (_, i) => issueAction(journal, i)),
     );
     expect(results.filter((r) => r.status === "rejected")).toEqual([]);
     const rows = await pool.query("SELECT count(*)::int AS n FROM standard_action_challenges");
@@ -107,18 +105,18 @@ describe("challenge issuance under concurrency", () => {
 
   it("issues wallet and order-action challenges concurrently across the shared lock", async () => {
     await clearChallenges();
-    const store = new StandardWalletStore(pool, config(100), CHAIN_ID);
+    const store = new StandardWalletStore(pool, config(), CHAIN_ID);
     const journal = new StandardRailJournal(pool);
     const results = await Promise.allSettled([
       ...Array.from({ length: 10 }, (_, i) => issueWallet(store, i)),
-      ...Array.from({ length: 10 }, (_, i) => issueAction(journal, i, { perClient: 100 })),
+      ...Array.from({ length: 10 }, (_, i) => issueAction(journal, i)),
     ]);
     expect(results.filter((r) => r.status === "rejected")).toEqual([]);
   }, 60_000);
 
   it("still enforces the outstanding cap exactly under the same concurrency", async () => {
     // The lock, not the isolation level, is what makes the count correct: with
-    // a cap of 5, exactly 5 of 20 simultaneous issuers may succeed.
+    // a global cap of 5, exactly 5 of 20 simultaneous issuers may succeed.
     await clearChallenges();
     const store = new StandardWalletStore(pool, config(5), CHAIN_ID);
     const results = await Promise.allSettled(Array.from({ length: 20 }, (_, i) => issueWallet(store, i)));

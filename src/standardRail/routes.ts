@@ -1,3 +1,4 @@
+import { clientAddress } from "../http/edgeBoundary.js";
 import { z } from "zod";
 import { withRecentPurchasesCapped } from "./catalog.js";
 import { walletChallengeEnvelope } from "./wireEnvelopes.js";
@@ -228,7 +229,7 @@ export function createStandardRailRouter(service: StandardRailService, publicUrl
         res.json(walletChallengeEnvelope(await service.issueWalletChallenge({
           action: "list-orders", payer: body.payer, request,
           absoluteResourceUri: `${origin}/wallet/orders`,
-          clientKey: req.ip ?? req.socket.remoteAddress ?? "unknown",
+          clientKey: clientAddress(req),
         })));
         return;
       }
@@ -255,7 +256,7 @@ export function createStandardRailRouter(service: StandardRailService, publicUrl
         res.json(walletChallengeEnvelope(await service.issueWalletChallenge({
           action: "get-buyer-reputation", payer: body.payer, request,
           absoluteResourceUri: `${origin}/wallet/reputation`,
-          clientKey: req.ip ?? req.socket.remoteAddress ?? "unknown",
+          clientKey: clientAddress(req),
         })));
         return;
       }
@@ -286,7 +287,7 @@ export function createStandardRailRouter(service: StandardRailService, publicUrl
         res.json(walletChallengeEnvelope(await service.issueWalletChallenge({
           action: "list-assets", payer: body.payer, request,
           absoluteResourceUri: `${origin}/wallet/assets`,
-          clientKey: req.ip ?? req.socket.remoteAddress ?? "unknown",
+          clientKey: clientAddress(req),
         })));
         return;
       }
@@ -324,7 +325,7 @@ export function createStandardRailRouter(service: StandardRailService, publicUrl
       if (body.authorization === null) {
         res.json(walletChallengeEnvelope(await service.issueAssetActionChallenge({
           ...args, absoluteResourceUri: `${origin}/wallet/assets/action`,
-          clientKey: req.ip ?? req.socket.remoteAddress ?? "unknown",
+          clientKey: clientAddress(req),
         })));
         return;
       }
@@ -531,7 +532,7 @@ export function createStandardRailRouter(service: StandardRailService, publicUrl
         handle: String(req.params.handle),
         action: action as OrderAction,
         request: request as Record<string, unknown>,
-        clientKey: req.ip ?? req.socket.remoteAddress ?? "unknown",
+        clientKey: clientAddress(req),
       }));
     } catch (error) { next(error); }
   });

@@ -41,7 +41,7 @@ const agentCardUrl = "https://provider.example/agent-card.json";
 const registrationId = "584e61eb-ed97-4daa-bfe4-7939b5e8b6c9";
 const creationCode = "0x6001600101";
 const config = {
-  nodeEnv: "test", trustProxy: 0, chainId: 84532, finalityTag: "safe",
+  nodeEnv: "test", edgeSecret: null, chainId: 84532, finalityTag: "safe",
   publicUrl: "https://gateway.example", mcpEnabled: false,
   dynamicServiceRegistrationEnabled: true,
   catalogOperatorToken: "catalog-operator-token-for-tests-0123456789",

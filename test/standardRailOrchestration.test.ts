@@ -213,7 +213,6 @@ describe("standard rail orchestration", () => {
         encryptionKey: Buffer.alloc(32, 7),
         orderReadCapTtlSeconds: 1_800,
         abuse: {
-          walletChallengesOutstandingPerClient: 100,
           walletChallengesOutstandingGlobal: 1_000,
         },
       },

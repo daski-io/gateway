@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { Request, Response, NextFunction } from "express";
+import { clientAddress } from "../http/edgeBoundary.js";
 
 // Inline equivalents of the bits of `helmet` + `express-rate-limit` we
 // actually need. Kept dependency-free so a security audit doesn't require
@@ -35,9 +36,9 @@ interface Bucket {
 
 const MAX_BUCKET_KEY_LENGTH = 128;
 
-// `req.ip` is whatever the trusted proxy forwarded; a misconfigured hop
-// count lets a client choose it. Keys stay bounded and index-safe: anything
-// long or outside the address/token alphabet is replaced by its digest.
+// The client address is what the edge boundary established (edgeBoundary.ts).
+// Keys stay bounded and index-safe: anything long or outside the
+// address/token alphabet is replaced by its digest.
 export function boundedBucketKey(value: string): string {
   if (value.length <= MAX_BUCKET_KEY_LENGTH && /^[A-Za-z0-9.:_-]+$/.test(value)) return value;
   return `h:${createHash("sha256").update(value).digest("hex")}`;
@@ -132,7 +133,7 @@ export function rateLimit(opts: RateLimitOptions) {
         ? opts.key(req)
         : opts.keyScope === "global"
           ? "global"
-          : (req.ip ?? req.socket.remoteAddress ?? "unknown"),
+          : clientAddress(req),
     );
     const key = `${opts.namespace ?? "default"}:${clientKey}`;
     if (opts.store) {

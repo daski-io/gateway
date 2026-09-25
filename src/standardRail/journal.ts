@@ -277,7 +277,6 @@ export class StandardRailJournal {
     issuedAt: number;
     validBefore: number;
     clientKeyHash: Buffer;
-    outstandingPerClient: number;
     outstandingGlobal: number;
   }): Promise<void> {
     const client = await this.pool.connect();
@@ -289,20 +288,17 @@ export class StandardRailJournal {
       await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))", [
         "standard:wallet-challenge-cap",
       ]);
-      const outstanding = await client.query<{ client_count: string; global_count: string }>(
-        `SELECT count(*) FILTER (WHERE client_key_hash=$1)::text AS client_count,
-                count(*)::text AS global_count
+      const outstanding = await client.query<{ global_count: string }>(
+        `SELECT count(*)::text AS global_count
            FROM (
-             SELECT client_key_hash FROM standard_wallet_action_challenges
+             SELECT 1 FROM standard_wallet_action_challenges
               WHERE consumed_at IS NULL AND valid_before>now()
              UNION ALL
-             SELECT client_key_hash FROM standard_action_challenges
+             SELECT 1 FROM standard_action_challenges
               WHERE consumed_at IS NULL AND valid_before>now()
            ) active`,
-        [args.clientKeyHash],
       );
       if (
-        Number(outstanding.rows[0]?.client_count ?? "0") >= args.outstandingPerClient ||
         Number(outstanding.rows[0]?.global_count ?? "0") >= args.outstandingGlobal
       ) throw new Error("ACTION_CHALLENGE_CAPACITY_EXCEEDED");
       await client.query(

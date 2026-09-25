@@ -104,7 +104,7 @@ export async function proveStartup(input, databaseUrl, options={}) {
     temporary=mkdtempSync(join(tmpdir(),'gateway-boot-'));
     const rpcFile=join(temporary,'rpc-facts.json');
     writeFileSync(rpcFile,JSON.stringify(input.rpcFacts),{mode:0o600});
-    const env={NODE_ENV:'production',PORT:String(port),TRUST_PROXY:'0',CHAIN_ID:'84532',CHAIN_MODE:'live',
+    const env={NODE_ENV:'production',PORT:String(port),EDGE_SECRET:'startup-proof-edge-secret-'+'0'.repeat(40),CHAIN_ID:'84532',CHAIN_MODE:'live',
       DATABASE_URL:database.href,MIGRATION_DATABASE_URL:migrationUrl,
       PUBLIC_URL:input.manifest.activeRailProfile.audience,STANDARD_RAIL_GATEWAY_AUDIENCE:input.manifest.activeRailProfile.audience,
       STANDARD_RAIL_ENVIRONMENT:input.manifest.activeRailProfile.environment,

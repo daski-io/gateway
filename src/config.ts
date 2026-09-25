@@ -19,7 +19,7 @@ export interface Config {
   catalogRefreshIntervalMs: number;
   nodeEnv: string;
   port: number;
-  trustProxy: number;
+  edgeSecret: string | null;
   mcpEnabled: boolean;
   mcpPath: string;
   chainId: ChainId;
@@ -45,7 +45,6 @@ export interface Config {
   };
   rpcReadMaxPerMinute: number;
   stateChangeGlobalMaxPerMinute: number;
-  mcpGlobalMaxPerMinute: number;
   publicReadMaxPerMinute: number;
   publicReadGlobalMaxPerMinute: number;
   shutdownGraceMs: number;
@@ -155,6 +154,16 @@ function sanctionsMode(raw: string | undefined): SanctionsOracleMode {
   throw new Error("SANCTIONS_ORACLE_MODE must be explicitly set to production or mock");
 }
 
+// The value Cloudflare adds to every request it forwards (X-Daski-Edge-Secret).
+// Set, it is the proof that a public request came through the edge, and the
+// client address is the one Cloudflare forwards (src/http/edgeBoundary.ts).
+function edgeSecret(raw: string | undefined): string | null {
+  const value = raw?.trim() ?? "";
+  if (value === "") return null;
+  if (value.length < 32) throw new Error("EDGE_SECRET must be at least 32 characters");
+  return value;
+}
+
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   if (env.PAYMENT_RAIL !== undefined) {
     throw new Error("PAYMENT_RAIL is retired; the gateway always uses standard Exact-EVM");
@@ -164,8 +173,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   }
   const nodeEnv = (env.NODE_ENV ?? "development").trim().toLowerCase();
   const production = nodeEnv === "production";
-  if (production && env.TRUST_PROXY === undefined) {
-    throw new Error("TRUST_PROXY must be set explicitly in production");
+  if (production && !env.EDGE_SECRET) {
+    throw new Error("EDGE_SECRET must be set in production: requests reach the gateway only through its edge");
   }
   const configuredChainId = chainId(env.CHAIN_ID);
   const oracleAddress = address("SANCTIONS_ORACLE_ADDRESS", env.SANCTIONS_ORACLE_ADDRESS);
@@ -191,7 +200,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   return {
     nodeEnv,
     port: integer("PORT", env.PORT, 3000, { maximum: 65535 }),
-    trustProxy: integer("TRUST_PROXY", env.TRUST_PROXY, 0, { allowZero: true }),
+    edgeSecret: edgeSecret(env.EDGE_SECRET),
     mcpEnabled: booleanValue("MCP_ENABLED", env.MCP_ENABLED, true),
     mcpPath: mcpPath(env.MCP_PATH),
     chainId: configuredChainId,
@@ -234,7 +243,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       env.STATE_CHANGE_GLOBAL_MAX_PER_MINUTE,
       300,
     ),
-    mcpGlobalMaxPerMinute: integer("MCP_GLOBAL_MAX_PER_MINUTE", env.MCP_GLOBAL_MAX_PER_MINUTE, 300),
     publicReadMaxPerMinute: integer("PUBLIC_READ_MAX_PER_MINUTE", env.PUBLIC_READ_MAX_PER_MINUTE, 120),
     publicReadGlobalMaxPerMinute: integer(
       "PUBLIC_READ_GLOBAL_MAX_PER_MINUTE",
