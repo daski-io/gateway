@@ -101,19 +101,16 @@ export class StandardWalletStore {
         "standard:wallet-challenge-cap",
       ]);
       await this.cleanupExpired(client);
-      const outstanding = await client.query<{ client_count: string; global_count: string }>(
-        `SELECT count(*) FILTER (WHERE client_key_hash=$1)::text AS client_count,
-                count(*)::text AS global_count
+      const outstanding = await client.query<{ global_count: string }>(
+        `SELECT count(*)::text AS global_count
            FROM (
-             SELECT client_key_hash FROM standard_wallet_action_challenges
+             SELECT 1 FROM standard_wallet_action_challenges
               WHERE consumed_at IS NULL AND valid_before>now()
              UNION ALL
-             SELECT client_key_hash FROM standard_action_challenges
+             SELECT 1 FROM standard_action_challenges
               WHERE consumed_at IS NULL AND valid_before>now()
-           ) active`, [clientKeyHash]);
-      if (Number(outstanding.rows[0]?.client_count ?? "0") >=
-          this.config.abuse.walletChallengesOutstandingPerClient ||
-        Number(outstanding.rows[0]?.global_count ?? "0") >=
+           ) active`);
+      if (Number(outstanding.rows[0]?.global_count ?? "0") >=
           this.config.abuse.walletChallengesOutstandingGlobal) throw new Error(DENIED);
       await client.query(
         `INSERT INTO standard_wallet_action_challenges

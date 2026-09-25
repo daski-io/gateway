@@ -15,58 +15,6 @@ interface RateLimitStore {
   ): Promise<{ count: number; resetAt: Date }>;
 }
 
-const MCP_STATE_CHANGE_TOOLS = new Set([
-  "daski_buy_outcome",
-  "daski_get_order_status",
-  "daski_submit_order_input",
-  "daski_cancel_order",
-  "daski_get_order_artifact",
-  "daski_contact_order_support",
-  "daski_use_asset",
-  "daski_confirm_delivery",
-  "daski_revoke_delivery_confirmation",
-]);
-
-const MCP_PROTECTED_READ_TOOLS = new Set([
-  "daski_list_my_orders",
-  "daski_get_my_reputation",
-  "daski_list_assets",
-]);
-
-const MCP_WALLET_CHALLENGE_TOOLS = new Set([
-  ...MCP_PROTECTED_READ_TOOLS,
-  "daski_use_asset",
-  "daski_confirm_delivery",
-  "daski_revoke_delivery_confirmation",
-]);
-
-function forMcpStateChange(middleware: RequestHandler): RequestHandler {
-  return forMcpTools(MCP_STATE_CHANGE_TOOLS, middleware);
-}
-
-function forMcpTools(names: ReadonlySet<string>, middleware: RequestHandler): RequestHandler {
-  return (req, res, next) => {
-    const requests = Array.isArray(req.body) ? req.body : [req.body];
-    const hasStateChange = requests.some((value: unknown) => {
-      if (!value || typeof value !== "object") return false;
-      const body = value as {
-        method?: unknown;
-        params?: { name?: unknown };
-      };
-      return (
-        body.method === "tools/call" &&
-        typeof body.params?.name === "string" &&
-        names.has(body.params.name)
-      );
-    });
-    if (hasStateChange) {
-      middleware(req, res, next);
-      return;
-    }
-    next();
-  };
-}
-
 function forPaidPurchaseRetry(middleware: RequestHandler): RequestHandler {
   return (req, res, next) => {
     if (req.get("PAYMENT-SIGNATURE")) {
@@ -114,7 +62,6 @@ export function configureMiddleware(
   config: Config,
   railConfig: StandardRailConfig,
 ): void {
-  app.set("trust proxy", config.trustProxy);
   app.use(securityHeaders);
   app.use(
     cors({
@@ -157,11 +104,8 @@ export function configureMiddleware(
       (req as express.Request & { rawBody?: Buffer }).rawBody = buffer;
     },
   }));
-  if (config.nodeEnv !== "test") {
-    configureParsedMcpRateLimits(app, queries, config, railConfig);
-    if (config.dynamicServiceRegistrationEnabled) {
-      configureParsedRegistrationRateLimits(app, queries);
-    }
+  if (config.nodeEnv !== "test" && config.dynamicServiceRegistrationEnabled) {
+    configureParsedRegistrationRateLimits(app, queries);
   }
 }
 
@@ -244,12 +188,6 @@ function configurePreParserRateLimits(
       store: queries,
     },
   );
-  addRateLimits(app, [config.mcpPath], {
-    namespace: "mcp",
-    perClient: 60,
-    global: config.mcpGlobalMaxPerMinute,
-    store: queries,
-  });
 }
 
 function registrationResourceKey(req: express.Request): string {
@@ -286,68 +224,4 @@ function configureParsedRegistrationRateLimits(
     limiter,
   );
   app.post("/v1/owner-swaps", limiter);
-}
-
-function configureParsedMcpRateLimits(
-  app: Express,
-  queries: RateLimitStore,
-  config: Config,
-  railConfig: StandardRailConfig,
-): void {
-  app.post(
-    config.mcpPath,
-    forMcpTools(
-      MCP_WALLET_CHALLENGE_TOOLS,
-      rateLimit({
-        windowMs: 60_000,
-        max: railConfig.abuse.walletChallengesPerClientPerMinute,
-        namespace: "wallet-challenge",
-        store: queries,
-      }),
-    ),
-  );
-  app.post(
-    config.mcpPath,
-    forMcpTools(
-      MCP_WALLET_CHALLENGE_TOOLS,
-      rateLimit({
-        windowMs: 60_000,
-        max: railConfig.abuse.walletChallengesGlobalPerMinute,
-        namespace: "wallet-challenge-global",
-        keyScope: "global",
-        store: queries,
-      }),
-    ),
-  );
-  app.post(
-    config.mcpPath,
-    forMcpStateChange(
-      rateLimit({
-        windowMs: 60_000,
-        max: 30,
-        namespace: "state-change",
-        store: queries,
-      }),
-    ),
-  );
-  app.post(
-    config.mcpPath,
-    forMcpStateChange(
-      rateLimit({
-        windowMs: 60_000,
-        max: config.stateChangeGlobalMaxPerMinute,
-        namespace: "state-change-global",
-        keyScope: "global",
-        store: queries,
-      }),
-    ),
-  );
-  app.post(
-    config.mcpPath,
-    forMcpTools(
-      MCP_PROTECTED_READ_TOOLS,
-      rateLimit({ windowMs: 60_000, max: railConfig.abuse.protectedReadsPerPayerPerMinute,
-        namespace: "protected-read", store: queries }),
-    ),
-  );
 }

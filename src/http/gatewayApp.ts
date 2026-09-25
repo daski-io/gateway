@@ -25,6 +25,7 @@ import { createStandardRailRouter } from "../standardRail/routes.js";
 import { StandardRailService } from "../standardRail/service.js";
 import { logErrorWithId } from "../util/errorWrap.js";
 import { sendBodyParserError } from "./bodyErrors.js";
+import { installEdgeBoundary } from "./edgeBoundary.js";
 import { configureMiddleware } from "./middleware.js";
 
 interface RateLimitStore {
@@ -73,9 +74,9 @@ export async function createStandardGatewayHttp(
   options: StandardGatewayHttpOptions,
 ): Promise<{ app: Express; mcp: McpWiring | null; standardRailStop: () => Promise<void> }> {
   const app = express();
-  // Every route sees its client key through the request context, so the
-  // admission a contract-account verification charges is keyed by the
-  // client on REST and MCP alike.
+  // The edge boundary decides who the client is before anything reads it:
+  // every route then sees that client key through the request context.
+  installEdgeBoundary(app, options.config);
   app.use((req, _res, next) => withRequestClientKey(req, () => next()));
   app.use(requireStandardJson);
   configureMiddleware(app, options.rateLimitStore, options.config, options.standardRailConfig);

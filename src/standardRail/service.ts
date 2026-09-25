@@ -201,8 +201,7 @@ export class StandardRailService {
       })),
       admit: ({ context }) => chargeSignatureVerifyAdmission(
         pool,
-        { clientKey: activeRequestKey("unknown"), encryptionKey: railConfig.encryptionKey },
-        railConfig.abuse.assetStateChangesPerPayerPerMinute,
+        railConfig.abuse.signatureVerificationsGlobalPerMinute,
         context,
       ),
     });
@@ -1096,7 +1095,6 @@ export class StandardRailService {
         .update("wallet-challenge-client\0")
         .update(args.clientKey ?? activeRequestKey("unknown"))
         .digest(),
-      outstandingPerClient: this.railConfig.abuse.walletChallengesOutstandingPerClient,
       outstandingGlobal: this.railConfig.abuse.walletChallengesOutstandingGlobal,
     });
     const challenge: OrderActionChallenge = {

@@ -12,7 +12,7 @@ import {
 } from "../src/standardRail/payerSignature.js";
 import {
   chargeSignatureVerifyAdmission,
-  signatureVerifyBucketKey,
+  SIGNATURE_VERIFY_BUCKET_KEY,
 } from "../src/standardRail/signatureAdmission.js";
 import { StandardWalletStore } from "../src/standardRail/walletStore.js";
 
@@ -121,13 +121,12 @@ describe("wallet action sequencing", () => {
     expect(active.count).toBe(0);
   });
 
-  it("charges a per-client signature-verify admission before any RPC, counts failures, and never locks a payer out", async () => {
+  it("charges one signature-verify admission before any RPC, counts failures, and never locks a payer out", async () => {
     const calls: string[] = [];
     const client = {
       getCode: async () => { calls.push("getCode"); return "0x" as Hex; },
       call: async () => { calls.push("call"); return { data: "0x" as Hex }; },
     };
-    const clientKey = { current: "198.51.100.10" };
     const verifier = createPayerSignatureVerifier({
       accountTypes: ["eoa", "contract"],
       timeoutMs: 1_000,
@@ -135,9 +134,7 @@ describe("wallet action sequencing", () => {
       semaphore: new ContractVerificationSemaphore(8),
       admit: async ({ context }) => {
         calls.push("admit");
-        await chargeSignatureVerifyAdmission(
-          pool, { clientKey: clientKey.current, encryptionKey: config.encryptionKey }, 2, context,
-        );
+        await chargeSignatureVerifyAdmission(pool, 2, context);
       },
     });
     const store = new StandardWalletStore(pool, config, CHAIN_ID, verifier);
@@ -157,7 +154,7 @@ describe("wallet action sequencing", () => {
     }
     const bucket = await pool.query<{ request_count: number }>(
       "SELECT request_count FROM rate_limit_buckets WHERE bucket_key=$1",
-      [signatureVerifyBucketKey({ clientKey: clientKey.current, encryptionKey: config.encryptionKey })],
+      [SIGNATURE_VERIFY_BUCKET_KEY],
     );
     expect(bucket.rows[0]?.request_count).toBe(2);
     calls.length = 0;
@@ -167,17 +164,16 @@ describe("wallet action sequencing", () => {
       payer: signer.address, authorization: authorization as never, action: "list-orders", request,
     })).rejects.toMatchObject({ code: "SIGNATURE_VERIFICATION_BUSY", retryable: true, phase: "lifecycle_auth" });
     expect(calls).toEqual(["admit"]);
-    // The exhausted bucket belongs to the requesting client, not to the
-    // payer it named: another client naming the same payer still reaches
-    // verification, so no one can lock a wallet out by naming it.
-    clientKey.current = "198.51.100.11";
+    // The budget is one for every client, because each verification is one
+    // RPC call: another client is refused the same way and nobody reaches the
+    // chain until the minute turns.
     calls.length = 0;
     const other = await signedFor(store, "list-orders", request, stranger);
     nonces.push(Buffer.from(other.message.nonce.slice(2), "hex"));
     await expect(store.consume({
       payer: signer.address, authorization: other as never, action: "list-orders", request,
-    })).rejects.toMatchObject({ code: "SIGNATURE_INVALID" });
-    expect(calls).toEqual(["admit", "getCode"]);
+    })).rejects.toMatchObject({ code: "SIGNATURE_VERIFICATION_BUSY", retryable: true });
+    expect(calls).toEqual(["admit"]);
     // None of the refused attempts consumed its challenge.
     const consumed = await pool.query<{ n: number }>(
       "SELECT count(*)::int AS n FROM standard_wallet_action_challenges WHERE consumed_at IS NOT NULL AND nonce = ANY($1::bytea[])",

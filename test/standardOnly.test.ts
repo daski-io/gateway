@@ -36,7 +36,7 @@ describe("standard-only gateway configuration", () => {
     expect(loadConfig({ ...environment(), DOCS_URL: "https://preview.example/" }).docsUrl).toBe("https://preview.example");
     expect(loadConfig({ ...environment(), DOCS_URL: "http://localhost:4321" }).docsUrl).toBe("http://localhost:4321");
     const { USDC_ADDRESS, USDC_DOMAIN_SEPARATOR, USDC_NAME, ...mainnet } = environment();
-    expect(loadConfig({ ...mainnet, CHAIN_ID: "8453", NODE_ENV: "production", TRUST_PROXY: "1",
+    expect(loadConfig({ ...mainnet, CHAIN_ID: "8453", NODE_ENV: "production", EDGE_SECRET: "e".repeat(64),
       PUBLIC_URL: "https://gateway.daski.io", SANCTIONS_ORACLE_MODE: "production",
       SANCTIONS_ORACLE_ADDRESS: BASE_MAINNET_SANCTIONS_ORACLE }).docsUrl).toBe("https://daski.io");
   });

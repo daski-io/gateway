@@ -132,7 +132,7 @@ core groups are:
 - Runtime and database: `NODE_ENV`, `CHAIN_ID`, `CHAIN_FINALITY_TAG` (the block
   tag read as final: `safe` on Base Sepolia and `finalized` on Base mainnet by
   default), `PUBLIC_URL`, `DATABASE_URL`, `MIGRATION_DATABASE_URL`, and
-  `TRUST_PROXY`. `DOCS_URL` is the public website origin used for guide and
+  `EDGE_SECRET`. `DOCS_URL` is the public website origin used for guide and
   MCP links, defaulting to `https://sandbox.daski.io` on Base Sepolia and
   `https://daski.io` on Base mainnet. Override it for local or preview sites;
   it never changes payment audiences or signed resource URLs.
@@ -166,8 +166,13 @@ core groups are:
 The HTTP listener binds every interface, including the unspecified IPv6
 address in dual-stack mode, so Railway private networking
 (`http://gateway.railway.internal:PORT`) reaches the gateway without the
-public edge. `TRUST_PROXY` only affects requests that carry forwarding
-headers; private-network callers are rate limited by their own address.
+public edge. Public requests reach the gateway only through Cloudflare:
+`EDGE_SECRET` is the value the edge adds as `X-Daski-Edge-Secret` to every
+request it forwards, a request without it is refused with 403
+`EDGE_REQUIRED`, and the client address is the one Cloudflare names in
+`CF-Connecting-IP`; forwarding chains are never counted. Private-network
+callers are trusted for one forwarded hop (the website names the MCP client
+it serves), and `/health/*` needs no header.
 
 The runtime rejects mock chain mode, unknown USDC domains, missing standard
 artifacts and configuration that does not match the

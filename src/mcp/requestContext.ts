@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { Request, Response } from "express";
+import { clientAddress } from "../http/edgeBoundary.js";
 
 interface McpRequestContext {
   signal: AbortSignal;
@@ -24,7 +25,7 @@ export async function withRequestDisconnectSignal<T>(
     return await requestContexts.run(
       {
         signal: controller.signal,
-        clientKey: req.ip ?? req.socket?.remoteAddress ?? "unknown",
+        clientKey: clientAddress(req),
       },
       action,
     );
@@ -45,7 +46,7 @@ export function withRequestClientKey<T>(req: Request, action: () => T): T {
   return requestContexts.run(
     {
       signal: new AbortController().signal,
-      clientKey: req.ip ?? req.socket?.remoteAddress ?? "unknown",
+      clientKey: clientAddress(req),
     },
     action,
   );

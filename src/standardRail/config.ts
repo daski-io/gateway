@@ -84,8 +84,9 @@ export interface StandardRailConfig {
   abuse: {
     walletChallengesPerClientPerMinute: number;
     walletChallengesGlobalPerMinute: number;
-    walletChallengesOutstandingPerClient: number;
     walletChallengesOutstandingGlobal: number;
+    /** On-chain (contract-wallet) signature verifications per minute, all clients together: each is one RPC call. */
+    signatureVerificationsGlobalPerMinute: number;
     protectedReadsPerPayerPerMinute: number;
     assetListsPerPayerPerMinute: number;
     assetStateChangesPerPayerPerMinute: number;
@@ -114,8 +115,8 @@ const DEFAULTS = {
   abuse: {
     walletChallengesPerClientPerMinute: 30,
     walletChallengesGlobalPerMinute: 300,
-    walletChallengesOutstandingPerClient: 20,
     walletChallengesOutstandingGlobal: 10_000,
+    signatureVerificationsGlobalPerMinute: 300,
     protectedReadsPerPayerPerMinute: 30,
     assetListsPerPayerPerMinute: 6,
     assetStateChangesPerPayerPerMinute: 10,
@@ -389,6 +390,13 @@ export function loadStandardRailConfig(
         DEFAULTS.ownerSwapsPerProviderPerDay,
       ),
     },
-    abuse: { ...DEFAULTS.abuse },
+    abuse: {
+      ...DEFAULTS.abuse,
+      signatureVerificationsGlobalPerMinute: integer(
+        env,
+        "PAYER_SIGNATURE_VERIFICATIONS_GLOBAL_PER_MINUTE",
+        DEFAULTS.abuse.signatureVerificationsGlobalPerMinute,
+      ),
+    },
   };
 }
