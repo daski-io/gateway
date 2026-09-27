@@ -21,7 +21,11 @@ function handler(
       if (error instanceof RegistrationError) {
         if (error.status === 429) res.setHeader("Retry-After", "10");
         res.status(error.status).json({
-          error: { code: error.code, message: error.message },
+          error: {
+            code: error.code,
+            message: error.message,
+            ...(error.reason === undefined ? {} : { reason: error.reason }),
+          },
         });
         return;
       }

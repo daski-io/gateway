@@ -21,6 +21,31 @@ const ENVELOPE_KEYS = [
   "signerKeyId", "issuedAt", "validBefore", "payload", "signature",
 ] as const;
 
+export type RegistrationAuthReason =
+  | "envelope_invalid"
+  | "domain_mismatch"
+  | "envelope_expired"
+  | "validity_invalid"
+  | "signature_invalid"
+  | "signer_mismatch"
+  | "payload_invalid"
+  | "authority_invalid"
+  | "authority_unavailable"
+  | "verification_failed";
+
+export class RegistrationAuthError extends Error {
+  constructor(readonly reason: RegistrationAuthReason, message: string) {
+    super(message);
+    this.name = "RegistrationAuthError";
+  }
+}
+
+export function registrationAuthReason(error: unknown): RegistrationAuthReason {
+  if (error instanceof RegistrationAuthError) return error.reason;
+  if (error instanceof ProviderAuthorityUnavailableError) return "authority_unavailable";
+  return "verification_failed";
+}
+
 function record(value: unknown, label: string): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error(`${label} must be an object`);
@@ -197,7 +222,12 @@ interface EnvelopeDomain {
  * not its age.
  */
 function providerEnvelopeShape(raw: unknown, domain: EnvelopeDomain, window: boolean): SignedEnvelope<unknown> {
-  const rawEnvelope = exact(raw, ENVELOPE_KEYS, "signed registration envelope");
+  let rawEnvelope: Record<string, unknown>;
+  try {
+    rawEnvelope = exact(raw, ENVELOPE_KEYS, "signed registration envelope");
+  } catch {
+    throw new RegistrationAuthError("envelope_invalid", "signed registration envelope fields are invalid");
+  }
   const envelope = rawEnvelope as unknown as SignedEnvelope<unknown>;
   const now = Math.floor(Date.now() / 1_000);
   if (
@@ -206,15 +236,22 @@ function providerEnvelopeShape(raw: unknown, domain: EnvelopeDomain, window: boo
     envelope.environment !== domain.railConfig.environment ||
     envelope.chainId !== domain.config.chainId ||
     envelope.audience !== domain.config.publicUrl ||
-    envelope.signerKeyId !== "provider-authority" ||
+    envelope.signerKeyId !== "provider-authority"
+  ) throw new RegistrationAuthError("domain_mismatch", "registration envelope domain is invalid");
+  if (
     !Number.isSafeInteger(envelope.issuedAt) ||
     !Number.isSafeInteger(envelope.validBefore) ||
     envelope.issuedAt >= envelope.validBefore ||
     envelope.validBefore > envelope.issuedAt + 600 ||
-    (window && (envelope.issuedAt > now + 30 || envelope.issuedAt < now - 600 || envelope.validBefore <= now)) ||
+    (window && envelope.issuedAt > now + 30)
+  ) throw new RegistrationAuthError("validity_invalid", "registration envelope validity window is invalid");
+  if (window && (envelope.issuedAt < now - 600 || envelope.validBefore <= now)) {
+    throw new RegistrationAuthError("envelope_expired", "registration envelope has expired");
+  }
+  if (
     typeof envelope.signature !== "string" ||
     !/^0x[0-9a-fA-F]{130}$/.test(envelope.signature)
-  ) throw new Error("registration envelope domain or validity is invalid");
+  ) throw new RegistrationAuthError("signature_invalid", "registration envelope signature is invalid");
   return envelope;
 }
 
@@ -225,7 +262,7 @@ async function providerEnvelopeSigner(envelope: SignedEnvelope<unknown>): Promis
       signature: envelope.signature,
     }));
   } catch {
-    throw new Error("registration envelope signature is invalid");
+    throw new RegistrationAuthError("signature_invalid", "registration envelope signature is invalid");
   }
 }
 
@@ -239,7 +276,15 @@ export async function recoverProviderEnvelopeSigner<T>(args: {
   parsePayload: (value: unknown) => T;
 } & EnvelopeDomain): Promise<{ envelope: SignedEnvelope<T>; signer: Address }> {
   const envelope = providerEnvelopeShape(args.raw, args, false);
-  const payload = args.parsePayload(envelope.payload);
+  let payload: T;
+  try {
+    payload = args.parsePayload(envelope.payload);
+  } catch (error) {
+    throw new RegistrationAuthError(
+      "payload_invalid",
+      error instanceof Error ? error.message : "registration payload is invalid",
+    );
+  }
   const signer = await providerEnvelopeSigner(envelope);
   return { envelope: { ...envelope, payload } as SignedEnvelope<T>, signer };
 }
@@ -259,7 +304,15 @@ export async function verifyProviderEnvelope<T>(args: {
   signer: Address;
 }> {
   const envelope = providerEnvelopeShape(args.raw, args, true);
-  const payload = args.parsePayload(envelope.payload);
+  let payload: T;
+  try {
+    payload = args.parsePayload(envelope.payload);
+  } catch (error) {
+    throw new RegistrationAuthError(
+      "payload_invalid",
+      error instanceof Error ? error.message : "registration payload is invalid",
+    );
+  }
   const providerAgentId = args.providerAgentId(payload);
   let provider: unknown;
   try {
@@ -267,15 +320,23 @@ export async function verifyProviderEnvelope<T>(args: {
   } catch (error) {
     // A provider the registry does not know is a refusal; an endpoint that
     // could not answer is an outage the caller reports as such (T3).
-    if (error instanceof MarketplaceNotFoundError) throw new Error("provider is not registered on chain");
+    if (error instanceof MarketplaceNotFoundError) throw new RegistrationAuthError("authority_invalid", "provider is not registered on chain");
     throw new ProviderAuthorityUnavailableError(error);
   }
-  const authority = providerIdentity(provider, providerAgentId);
+  let authority: ReturnType<typeof providerIdentity>;
+  try {
+    authority = providerIdentity(provider, providerAgentId);
+  } catch (error) {
+    throw new RegistrationAuthError(
+      "authority_invalid",
+      error instanceof Error ? error.message : "provider authority is invalid",
+    );
+  }
   const signer = await providerEnvelopeSigner(envelope);
   if (
     signer !== authority.owner &&
     signer !== authority.agentWallet
-  ) throw new Error("registration envelope is not signed by current provider authority");
+  ) throw new RegistrationAuthError("signer_mismatch", "registration envelope is not signed by current provider authority");
   return {
     envelope: { ...envelope, payload } as SignedEnvelope<T>,
     ...authority,

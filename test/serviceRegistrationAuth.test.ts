@@ -104,7 +104,7 @@ describe("provider registration authentication", () => {
       raw: await intent(authorityKey, "https://other-gateway.example"),
       ...domain,
       marketplace: marketplace(),
-    })).rejects.toThrow("domain or validity");
+    })).rejects.toThrow("domain");
   });
 
   it("rejects a signer that is not the current owner or agent wallet", async () => {
