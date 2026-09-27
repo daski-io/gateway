@@ -75,6 +75,10 @@ export function configureMiddleware(
         "DASKI-RAIL-PROFILE-HASH",
         "DASKI-PROJECTION-REFRESHED-AT",
         "MCP-Protocol-Version",
+        "Retry-After",
+        "X-RateLimit-Limit",
+        "X-RateLimit-Remaining",
+        "X-RateLimit-Reset",
       ],
       // Reflect the browser's requested header list. Modern MCP adds
       // Mcp-Method, Mcp-Name, and schema-derived Mcp-Param-* headers, whose

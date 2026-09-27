@@ -9,6 +9,8 @@ import { canonicalHash } from "../standardRail/canonical.js";
 import type { StandardRailConfig } from "../standardRail/config.js";
 import { logger } from "../util/logger.js";
 import {
+  registrationAuthReason,
+  type RegistrationAuthReason,
   verifyRegistrationEvidence,
   verifyRegistrationIntent,
 } from "./auth.js";
@@ -42,6 +44,7 @@ export class RegistrationError extends Error {
     readonly status: number,
     readonly code: string,
     message: string,
+    readonly reason?: RegistrationAuthReason,
   ) {
     super(message);
   }
@@ -524,11 +527,18 @@ export class ServiceRegistrationService {
           railConfig: this.railConfig,
           marketplace: this.marketplace,
         })).envelope;
-      } catch {
+      } catch (error) {
+        const reason = registrationAuthReason(error);
+        logger.warn("registration evidence authentication failed", {
+          registrationId,
+          reason,
+          errorMessage: error instanceof Error ? error.message : String(error),
+        });
         throw new RegistrationError(
           401,
           "EVIDENCE_AUTH_INVALID",
-          "Registration evidence signature is invalid.",
+          "Registration evidence authentication failed.",
+          reason,
         );
       }
     }
@@ -584,7 +594,7 @@ export class ServiceRegistrationService {
     })().catch((error: unknown) => {
       logger.warn("registration evidence verification failed; awaiting resubmission", {
         registrationId,
-        error: error instanceof Error ? error.message : String(error),
+        errorMessage: error instanceof Error ? error.message : String(error),
       });
     }).finally(() => {
       this.evidenceWork.delete(registrationId);

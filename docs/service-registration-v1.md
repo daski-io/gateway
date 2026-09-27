@@ -43,6 +43,31 @@ The initial POST requires an `Idempotency-Key` of 8–128 URL-safe characters.
 The same provider/key/body returns the persisted resource; using the same key
 for another body is a conflict. One service may have only one pending revision.
 
+## Request limits and retry pacing
+
+Registration GET polls and POSTs share **10 requests per client IP per
+60-second window**, across all services and `/v1/owner-swaps`. Signed provider
+requests use the same budget. A shared global budget is the smaller of 100 and
+`STATE_CHANGE_GLOBAL_MAX_PER_MINUTE` requests per minute. POSTs also have a
+20-per-minute resource budget, keyed by provider ID when present, otherwise by
+registration ID. These buckets are shared across gateway replicas.
+
+An exhausted bucket returns HTTP 429 with `error.code: "RATE_LIMITED"` and
+`Retry-After` as a positive integer number of seconds until that bucket resets
+(rounded up). `X-RateLimit-Limit`, `X-RateLimit-Remaining`, and
+`X-RateLimit-Reset` (Unix seconds) describe the last checked bucket. These
+headers, including `Retry-After`, are exposed to browser clients through CORS.
+
+Provider registration clients must coordinate polls and posts across services:
+space requests at least six seconds apart per client IP, leave room for other
+callers sharing that IP, and pause all registration work for at least
+`Retry-After` seconds on 429. Add jitter when retrying; another bucket may still
+be exhausted. Preserve the intent body and idempotency key, or the accepted
+evidence envelope, on retries. A 202 means evidence verification is pending:
+poll at the same paced rate and re-post accepted evidence after a transient
+verification failure. For three services, polling each once every 30 seconds
+leaves four requests per minute for posts or other registration work.
+
 ## Signed envelope
 
 Both provider messages use the closed JSON envelope below. Signatures are
@@ -99,6 +124,31 @@ The payload contains `registrationId`, the canonical
 Evidence is rechecked against finalized canonical receipts, factory bytecode,
 CREATE2 address derivation, emitted deployment data, and live splitter
 immutables before activation.
+
+### Evidence authentication failures
+
+A rejected evidence envelope returns HTTP 401 with
+`error.code: "EVIDENCE_AUTH_INVALID"`, a generic `error.message`, and a stable
+`error.reason`. Raw verifier messages, signatures, payloads, and RPC details
+are never returned in this body.
+
+| Reason | Meaning |
+| --- | --- |
+| `envelope_invalid` | Envelope is not an object with exactly the required fields. |
+| `domain_mismatch` | Artifact type, schema, environment, chain, audience, or signer key ID differs. |
+| `validity_invalid` | Invalid timestamps, a window longer than ten minutes, or issuance more than 30 seconds in the future. |
+| `envelope_expired` | Validity has ended or issuance is more than ten minutes old. |
+| `signature_invalid` | Signature is malformed or cannot be recovered. |
+| `signer_mismatch` | Recovered signer is neither the current owner nor agent wallet. |
+| `payload_invalid` | Payload shape, state, identifiers, hashes, or uniqueness rules fail. |
+| `authority_invalid` | Provider is absent, inactive, or has invalid chain authority. |
+| `authority_unavailable` | Live provider authority could not be read; retry after the outage. |
+| `verification_failed` | An unexpected verifier failure occurred; inspect operator logs. |
+
+Operators receive warn-level diagnostics with the registration ID and a
+sanitized `errorMessage` on both initial authentication rejection and
+background evidence verification failure. Authentication warnings also include
+`reason`. Background failures leave evidence pending for resubmission.
 
 ## Card contract
 

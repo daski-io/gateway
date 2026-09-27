@@ -6,6 +6,7 @@ import type { Config } from "../src/config.js";
 import type { Pool } from "../src/db/pool.js";
 import { createStandardGatewayHttp } from "../src/http/gatewayApp.js";
 import { ViemMarketplaceChainReader, type MarketplaceServiceRecord } from "../src/marketplace/reader.js";
+import * as registrationAuth from "../src/serviceRegistration/auth.js";
 import { parseProviderServiceCard } from "../src/serviceRegistration/card.js";
 import * as cardFetch from "../src/serviceRegistration/cardFetch.js";
 import { ViemRegistrationEvidenceVerifier } from "../src/serviceRegistration/evidence.js";
@@ -351,5 +352,72 @@ describe("gateway authority freshness", () => {
     await test.registrationService.settleEvidenceVerification(registrationId);
     expect(test.activate).not.toHaveBeenCalled();
     expect(test.record.state).toBe("EVIDENCE_PENDING");
+  });
+});
+
+
+describe("registration evidence rejection diagnostics", () => {
+  it.each([
+    ["envelope_invalid", "signed registration envelope fields are invalid"],
+    ["domain_mismatch", "registration envelope domain is invalid"],
+    ["validity_invalid", "registration envelope validity window is invalid"],
+    ["envelope_expired", "registration envelope has expired"],
+    ["signature_invalid", "registration envelope signature is invalid"],
+    ["signer_mismatch", "registration envelope is not signed by current provider authority"],
+    ["payload_invalid", "registration evidence state is invalid"],
+    ["authority_invalid", "provider is not active on chain"],
+    ["authority_unavailable", "provider authority is unavailable"],
+    ["verification_failed", "unexpected verifier failure"],
+  ])("returns and logs %s without exposing the envelope", async (reason, message) => {
+    const test = await setup(false);
+    test.record.state = "PREPARED";
+    let raw: unknown = test.evidence;
+    switch (reason) {
+      case "envelope_invalid": raw = { ...test.evidence, extra: true }; break;
+      case "domain_mismatch": raw = { ...test.evidence, audience: "https://other.example" }; break;
+      case "validity_invalid": raw = { ...test.evidence, validBefore: test.evidence.issuedAt + 601 }; break;
+      case "envelope_expired": vi.setSystemTime(test.now.getTime() + 600_000); break;
+      case "signature_invalid": raw = { ...test.evidence, signature: "0x" }; break;
+      case "signer_mismatch": raw = await signEnvelope({ ...test.evidence, privateKey: hash("3") }); break;
+      case "payload_invalid": raw = { ...test.evidence, payload: { ...test.evidence.payload, expectedState: "ACTIVE" } }; break;
+      case "authority_invalid": test.getProvider.mockResolvedValue({ ...test.provider, active: false }); break;
+      case "authority_unavailable": test.getProvider.mockRejectedValue(new Error("private RPC details")); break;
+      case "verification_failed": vi.spyOn(registrationAuth, "verifyRegistrationEvidence").mockRejectedValue("unexpected verifier failure"); break;
+    }
+    const output = vi.spyOn(process.stdout, "write").mockReturnValue(true);
+    const response = await fetch(`${test.root}/v1/service-registrations/${registrationId}/evidence`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(raw),
+    });
+    expect(response.status).toBe(401);
+    expect(await response.json()).toEqual({ error: {
+      code: "EVIDENCE_AUTH_INVALID", reason, message: "Registration evidence authentication failed.",
+    } });
+    const logs = output.mock.calls.map(([line]) => JSON.parse(String(line)));
+    expect(logs).toContainEqual(expect.objectContaining({
+      level: "warn", message: "registration evidence authentication failed",
+      details: { registrationId, reason, errorMessage: message },
+    }));
+    expect(JSON.stringify(logs)).not.toContain(test.evidence.signature);
+    expect(JSON.stringify(logs)).not.toContain("private RPC details");
+    expect(test.verify).not.toHaveBeenCalled();
+    expect(test.activate).not.toHaveBeenCalled();
+  });
+
+  it.each(["Error", "string"])("logs a sanitized background %s message and leaves evidence pending", async (kind) => {
+    const test = await setup(false);
+    test.record.state = "EVIDENCE_PENDING";
+    test.record.evidence = test.evidence;
+    const message = `splitter evidence rejected https://user:password@rpc.example/path?key=private#fragment ${test.evidence.signature}`;
+    test.verify.mockRejectedValue(kind === "Error" ? new Error(message) : message);
+    const output = vi.spyOn(process.stdout, "write").mockReturnValue(true);
+    await test.registrationService.submitEvidence(registrationId, test.evidence);
+    await test.registrationService.settleEvidenceVerification(registrationId);
+    const logs = output.mock.calls.map(([line]) => JSON.parse(String(line)));
+    expect(logs).toContainEqual(expect.objectContaining({
+      level: "warn", message: "registration evidence verification failed; awaiting resubmission",
+      details: { registrationId, errorMessage: "splitter evidence rejected https://rpc.example/path [REDACTED]" },
+    }));
+    expect(test.record.state).toBe("EVIDENCE_PENDING");
+    expect(test.activate).not.toHaveBeenCalled();
   });
 });
