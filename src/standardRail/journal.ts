@@ -200,6 +200,49 @@ export class StandardRailJournal {
     };
   }
 
+  async dispatchRecovery(orderId: string): Promise<{
+    claim_id: string; started_at: Date; retry_pending: boolean; next_attempt_at: Date;
+  }> {
+    const result = await this.pool.query<{
+      claim_id: string; started_at: Date; retry_pending: boolean; next_attempt_at: Date;
+    }>(
+      `INSERT INTO standard_dispatch_recovery (order_id,started_at)
+       SELECT $1,min(observed_at) FROM standard_chain_evidence
+        WHERE order_id=$1 AND evidence_kind='release' HAVING count(*)>0
+       ON CONFLICT (order_id) DO UPDATE SET order_id=EXCLUDED.order_id
+       RETURNING *`, [orderId],
+    );
+    if (!result.rows[0]) throw new Error("DISPATCH_RELEASE_EVIDENCE_MISSING");
+    return result.rows[0];
+  }
+
+  async recordDispatchRefusal(orderId: string, dispatchHash: Hex, status: number, reason: unknown): Promise<void> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query("SELECT order_id FROM standard_dispatch_recovery WHERE order_id=$1 FOR UPDATE", [orderId]);
+      const recorded = await client.query(
+        `INSERT INTO standard_dispatch_refusals
+          (order_id,claim_id,dispatch_hash,canonical_dispatch,http_status,reason)
+         SELECT c.order_id,r.claim_id,c.dispatch_hash,c.canonical_dispatch,$3,$4
+           FROM standard_dispatch_claims c JOIN standard_dispatch_recovery r USING (order_id)
+          WHERE c.order_id=$1 AND c.dispatch_hash=$2 AND c.invocation_state='invoked'
+            AND c.resolved_at IS NULL AND NOT r.retry_pending`,
+        [orderId, bytes(dispatchHash), status, JSON.stringify(reason)],
+      );
+      if (recorded.rowCount !== 1) throw new Error("DISPATCH_REFUSAL_CONFLICT");
+      await client.query(
+        `UPDATE standard_dispatch_recovery SET retry_pending=true,refusals=refusals+1,
+           next_attempt_at=now()+make_interval(secs => LEAST(60,10*power(2,LEAST(refusals,3)))::int)
+         WHERE order_id=$1`, [orderId],
+      );
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally { client.release(); }
+  }
+
   async claimDispatch(args: {
     orderId: string;
     nonce: Hex;
@@ -209,15 +252,35 @@ export class StandardRailJournal {
     request: unknown;
   }): Promise<boolean> {
     parseStandardRailDispatchV2(args.dispatch);
-    const result = await this.pool.query(
-      `INSERT INTO standard_dispatch_claims
-        (order_id,dispatch_nonce,dispatch_hash,request_hash,canonical_dispatch,canonical_request,
-         invocation_state,invoked_at)
-       VALUES ($1,$2,$3,$4,$5,$6,'invoked',now())
-       ON CONFLICT (order_id) DO NOTHING`,
-      [args.orderId, bytes(args.nonce), bytes(args.dispatchHash), bytes(args.requestHash), args.dispatch, args.request],
-    );
-    return result.rowCount === 1;
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const recovery = await client.query<{ retry_pending: boolean; due: boolean }>(
+        `SELECT retry_pending,next_attempt_at<=now() AS due FROM standard_dispatch_recovery
+          WHERE order_id=$1 FOR UPDATE`, [args.orderId],
+      );
+      if (recovery.rows[0]?.retry_pending) {
+        if (!recovery.rows[0].due) { await client.query("ROLLBACK"); return false; }
+        await client.query(
+          `DELETE FROM standard_dispatch_claims WHERE order_id=$1
+            AND invocation_state='invoked' AND resolved_at IS NULL AND provider_task_id IS NULL`, [args.orderId],
+        );
+      }
+      const result = await client.query(
+        `INSERT INTO standard_dispatch_claims
+          (order_id,dispatch_nonce,dispatch_hash,request_hash,canonical_dispatch,canonical_request,
+           invocation_state,invoked_at)
+         VALUES ($1,$2,$3,$4,$5,$6,'invoked',now()) ON CONFLICT (order_id) DO NOTHING`,
+        [args.orderId, bytes(args.nonce), bytes(args.dispatchHash), bytes(args.requestHash), args.dispatch, args.request],
+      );
+      if (result.rowCount !== 1) { await client.query("ROLLBACK"); return false; }
+      await client.query("UPDATE standard_dispatch_recovery SET retry_pending=false WHERE order_id=$1", [args.orderId]);
+      await client.query("COMMIT");
+      return true;
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally { client.release(); }
   }
 
   async dispatchClaim(orderId: string): Promise<{
@@ -237,13 +300,16 @@ export class StandardRailJournal {
       : null;
   }
 
-  async resolveDispatch(orderId: string, taskId: string, responseHash: Hex): Promise<void> {
-    await this.pool.query(
+  async resolveDispatch(orderId: string, taskId: string, responseHash: Hex, dispatchHash: Hex): Promise<void> {
+    const result = await this.pool.query(
       `UPDATE standard_dispatch_claims
-          SET invocation_state='accepted',provider_task_id=$2,response_hash=$3,resolved_at=now()
-        WHERE order_id=$1 AND invocation_state='invoked'`,
-      [orderId, taskId, bytes(responseHash)],
+          SET invocation_state='accepted',provider_task_id=$2,
+              response_hash=COALESCE(response_hash,$3),resolved_at=COALESCE(resolved_at,now())
+        WHERE order_id=$1 AND dispatch_hash=$4
+          AND (invocation_state='invoked' OR (invocation_state='accepted' AND provider_task_id=$2))`,
+      [orderId, taskId, bytes(responseHash), bytes(dispatchHash)],
     );
+    if (result.rowCount !== 1) throw new Error("DISPATCH_RESOLUTION_CONFLICT");
   }
 
   async dispatchResolvedAt(orderId: string): Promise<Date | null> {

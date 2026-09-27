@@ -48,9 +48,9 @@ export class StandardRailRecoveryWorker {
         skipped,
       );
       if (!order) return;
-      let recovered = false;
+      skipped.push(order.orderId);
       try {
-        if (this.isDue(order)) recovered = await this.recover(order);
+        if (this.isDue(order)) await this.recover(order);
       } catch (error) {
         logger.error("standard-rail order recovery failed", {
           orderId: order.orderId,
@@ -58,7 +58,6 @@ export class StandardRailRecoveryWorker {
           error,
         });
       }
-      if (!recovered) skipped.push(order.orderId);
       // Transitions keep a live lease with its driver, so the worker hands
       // the order back explicitly once it is done with it; the next due
       // check then runs on the usual cadence.
@@ -81,9 +80,10 @@ export class StandardRailRecoveryWorker {
         case "SETTLEMENT_FAILED":
         case "EXTERNAL_OR_UNPROVEN_DEPOSIT":
         case "DEPOSIT_FINAL":
+          return 30;
         case "RELEASE_FINAL":
         case "DISPATCH_STARTED":
-        case "DISPATCH_AMBIGUOUS": return 30;
+        case "DISPATCH_AMBIGUOUS": return 10;
         case "DISPATCHED":
         case "INPUT_REQUIRED": return 30;
         default: return policy.fulfillmentSeconds;
@@ -93,13 +93,11 @@ export class StandardRailRecoveryWorker {
     return Date.now() >= dueAt;
   }
 
-  // True when the worker acted on the order; false leaves it skipped for
-  // the rest of the batch instead of re-leasing it in a tight loop.
-  private async recover(order: StandardOrderRecord): Promise<boolean> {
+  private async recover(order: StandardOrderRecord): Promise<void> {
     switch (order.state) {
       case "CHALLENGE_ISSUED":
         await this.options.store.transition(order, "NOT_SETTLED", "signed_deadline_no_captured_payment");
-        return true;
+        return;
       case "SETTLEMENT_FAILED":
       case "ATTEMPT_OPENED":
       case "VERIFIED":
@@ -115,9 +113,9 @@ export class StandardRailRecoveryWorker {
       case "DISPATCHED":
       case "INPUT_REQUIRED":
         await this.options.resumePaid(order);
-        return true;
+        return;
       default:
-        return false;
+        return;
     }
   }
 }

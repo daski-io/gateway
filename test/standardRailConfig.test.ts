@@ -190,3 +190,16 @@ describe("public projection refresh cadence", () => {
       .toThrow(/CHAIN_PROJECTION_REFRESH_MS/);
   });
 });
+
+
+describe("reputation fee reserve defaults", () => {
+  it.each([8453, 84532])("uses a 3 gwei ceiling on Base chain %s", (chainId) => {
+    const config = loadStandardRailConfig({ ...standardEnv(), CHAIN_ID: String(chainId) });
+    expect(config.reputationMaxFeePerGasWei).toBe(3_000_000_000n);
+    expect(config.reputationRegisterGasLimit * config.reputationMaxFeePerGasWei).toBe(4_500_000_000_000_000n);
+  });
+  it("retains the non-Base ceiling and explicit overrides", () => {
+    expect(loadStandardRailConfig({ ...standardEnv(), CHAIN_ID: "1" }).reputationMaxFeePerGasWei).toBe(100_000_000_000n);
+    expect(loadStandardRailConfig({ ...standardEnv(), CHAIN_ID: "8453", REPUTATION_MAX_FEE_PER_GAS_WEI: "7000000000" }).reputationMaxFeePerGasWei).toBe(7_000_000_000n);
+  });
+});

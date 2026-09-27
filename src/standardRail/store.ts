@@ -461,7 +461,8 @@ export class StandardRailStore {
         `SELECT * FROM standard_orders
          WHERE state = ANY($1::text[])
            AND (lease_until IS NULL OR lease_until < now())
-           AND updated_at < now() - interval '30 seconds'
+           AND updated_at < now() - CASE WHEN state IN ('RELEASE_FINAL','DISPATCH_STARTED','DISPATCH_AMBIGUOUS')
+             THEN interval '10 seconds' ELSE interval '30 seconds' END
            AND NOT (order_id = ANY($2::text[]))
          ORDER BY updated_at ASC
          LIMIT 1 FOR UPDATE SKIP LOCKED`,
@@ -645,6 +646,7 @@ export class StandardRailStore {
     },
   ): Promise<StandardOrderRecord> {
     assertTransition(order.state, to);
+    if (order.state === "PROVIDER_FAILED") throw new Error("OPERATOR_REDISPATCH_REQUIRED");
     const allowed = new Map<string, string>([
       ["settlementTxHash", "settlement_tx_hash"],
       ["depositEvidenceHash", "deposit_evidence_hash"],

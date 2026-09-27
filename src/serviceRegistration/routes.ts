@@ -46,7 +46,8 @@ function registrationId(req: Request): string {
   return value.toLowerCase();
 }
 
-function authorizedOperator(req: Request, expected: string): boolean {
+export function authorizedOperator(req: Request, expected: string): boolean {
+  if (!expected) return false;
   const authorization = req.header("authorization");
   if (!authorization?.startsWith("Bearer ")) return false;
   const actual = Buffer.from(authorization.slice(7), "utf8");

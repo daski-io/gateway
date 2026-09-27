@@ -804,25 +804,13 @@ export class StandardRailService {
       if (["RELEASE_FINAL", "DISPATCH_STARTED", "DISPATCH_AMBIGUOUS"].includes(order.state)) {
         const release = await this.journal.loadEvidence(order.orderId, "release");
         const confirmationHash = await this.journal.settlementResponseHash(order.orderId);
-        const dispatched = await this.dispatch(
+        await this.dispatch(
           order,
           listing,
           order.canonicalRequest,
           confirmationHash,
           { deposit, release },
         );
-        const dispatchClaim = await this.journal.dispatchClaim(order.orderId);
-        if (!dispatchClaim) throw new Error("Dispatch recovery lost its persisted claim");
-        if (
-          dispatched.state === "DISPATCH_AMBIGUOUS" &&
-          Date.now() >= dispatchClaim.dispatch.validBefore * 1_000
-        ) {
-          await this.store.transition(
-            dispatched,
-            "PROVIDER_FAILED",
-            "signed_dispatch_resolution_deadline_elapsed",
-          );
-        }
       }
     });
   }
