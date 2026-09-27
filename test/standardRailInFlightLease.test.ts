@@ -135,7 +135,7 @@ describe("in-flight purchase lease", () => {
 describe("recovery worker lease hand-back", () => {
   function worker(order: StandardOrderRecord, resumePaid = vi.fn(async () => undefined)) {
     const store = {
-      leaseRecoverable: vi.fn<() => Promise<StandardOrderRecord | null>>()
+      leaseRecoverable: vi.fn<(worker: string, lease: number, skipped?: readonly string[]) => Promise<StandardOrderRecord | null>>()
         .mockResolvedValueOnce(order).mockResolvedValue(null),
       releaseLease: vi.fn(async () => undefined),
       transition: vi.fn(),
@@ -165,7 +165,17 @@ describe("recovery worker lease hand-back", () => {
     await runBatch();
     expect(resumePaid).toHaveBeenCalledOnce();
     expect(store.releaseLease).toHaveBeenCalledWith("order-1", workerId, 9);
-    expect(store.leaseRecoverable).toHaveBeenLastCalledWith(expect.any(String), 45, []);
+    expect(store.leaseRecoverable).toHaveBeenLastCalledWith(expect.any(String), 45, ["order-1"]);
+  });
+
+  it("visits unchanged ambiguous orders only once per batch", async () => {
+    const current = { ...paidOrder(new Date(Date.now() - 60_000)), state: "DISPATCH_AMBIGUOUS" } as StandardOrderRecord;
+    const { store, resumePaid, runBatch } = worker(current);
+    store.leaseRecoverable.mockImplementation(async (_worker, _lease, skipped) =>
+      skipped?.includes(current.orderId) ? null : current);
+    await runBatch();
+    expect(resumePaid).toHaveBeenCalledOnce();
+    expect(store.leaseRecoverable).toHaveBeenCalledTimes(2);
   });
 
   it("skips and releases an order that is not due yet", async () => {

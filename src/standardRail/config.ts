@@ -286,7 +286,8 @@ export function loadStandardRailConfig(
   if (commissionBps >= 10_000) {
     throw new Error("STANDARD_RAIL_COMMISSION_BPS must be below 10000");
   }
-  const maxFee = positiveBigInt(env, "REPUTATION_MAX_FEE_PER_GAS_WEI", 100_000_000_000n);
+  const baseChain = [8453, 84532].includes(Number(env.CHAIN_ID ?? 84532));
+  const maxFee = positiveBigInt(env, "REPUTATION_MAX_FEE_PER_GAS_WEI", baseChain ? 3_000_000_000n : 100_000_000_000n);
   const priorityFee = positiveBigInt(env, "REPUTATION_MAX_PRIORITY_FEE_PER_GAS_WEI", 2_000_000_000n);
   const registerGas = positiveBigInt(env, "REPUTATION_REGISTER_GAS_LIMIT", 1_500_000n);
   const confirmationGas = positiveBigInt(env, "REPUTATION_CONFIRMATION_GAS_LIMIT", 750_000n);

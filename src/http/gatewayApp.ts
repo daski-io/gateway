@@ -1,3 +1,4 @@
+import { createStandardOperatorRouter, StandardRailOperator } from "../standardRail/operator.js";
 import express, { type Express } from "express";
 import { base, baseSepolia } from "viem/chains";
 import { privateKeyToAccount } from "viem/accounts";
@@ -171,6 +172,9 @@ export async function createStandardGatewayHttp(
   }));
   app.use(createMarketplaceRouter(publicMarketplace));
   app.use(createStandardRailRouter(standardRail, options.config.publicUrl));
+  if (options.config.catalogOperatorToken) {
+    app.use(createStandardOperatorRouter(new StandardRailOperator(options.pool), options.config.catalogOperatorToken));
+  }
   const mcp = options.config.mcpEnabled
     ? await createStandardRailMcp(app, options.config)
     : null;

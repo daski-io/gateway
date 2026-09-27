@@ -13,11 +13,11 @@ const TRANSITIONS: Readonly<Record<StandardOrderState, readonly StandardOrderSta
   EXTERNAL_OR_UNPROVEN_DEPOSIT: ["FACILITATOR_CONFIRMED", "DEPOSIT_FINAL", "LEGAL_HOLD"],
   DEPOSIT_FINAL: ["RELEASE_FINAL", "LEGAL_HOLD"],
   RELEASE_FINAL: ["DISPATCH_STARTED", "PROVIDER_FAILED", "LEGAL_HOLD"],
-  DISPATCH_STARTED: ["DISPATCHED", "DISPATCH_AMBIGUOUS"],
+  DISPATCH_STARTED: ["DISPATCHED", "DISPATCH_AMBIGUOUS", "PROVIDER_FAILED"],
   DISPATCHED: ["FULFILLED", "PROVIDER_FAILED", "INPUT_REQUIRED", "LEGAL_HOLD"],
   DISPATCH_AMBIGUOUS: ["DISPATCHED", "PROVIDER_FAILED", "LEGAL_HOLD"],
   FULFILLED: [],
-  PROVIDER_FAILED: [],
+  PROVIDER_FAILED: ["RELEASE_FINAL"],
   INPUT_REQUIRED: ["DISPATCHED", "PROVIDER_FAILED", "LEGAL_HOLD"],
   LEGAL_HOLD: [],
   NOT_SETTLED: [],
@@ -30,5 +30,6 @@ export function assertTransition(from: StandardOrderState, to: StandardOrderStat
 }
 
 export function isTerminalState(state: StandardOrderState): boolean {
-  return TRANSITIONS[state].length === 0;
+  // Operator-only revival does not make failed orders automatic work.
+  return state === "PROVIDER_FAILED" || TRANSITIONS[state].length === 0;
 }

@@ -4,6 +4,7 @@ import {
   getAddress,
   http,
   keccak256,
+  parseTransaction,
   TransactionNotFoundError,
   TransactionReceiptNotFoundError,
   type Chain,
@@ -153,6 +154,8 @@ export class StandardReputationWorker {
       finalizedNonce: observation?.finalizedNonce ?? null,
       pendingNonce: observation?.pendingNonce ?? null,
       balanceWei: observation?.balanceWei ?? null,
+      registerRequiredReserveWei: (this.config.reputationRegisterGasLimit * this.config.reputationMaxFeePerGasWei).toString(),
+      confirmationRequiredReserveWei: (this.config.reputationConfirmationGasLimit * this.config.reputationMaxFeePerGasWei).toString(),
       maxFeePerGasWei: this.config.reputationMaxFeePerGasWei.toString(),
       maxPriorityFeePerGasWei: this.config.reputationMaxPriorityFeePerGasWei.toString(),
     };
@@ -511,6 +514,16 @@ export class StandardReputationWorker {
       } else if (/nonce too low|replacement transaction underpriced/i.test(message)) {
         await this.resolveNonceConflict(operation, transaction);
       } else if (/insufficient funds|intrinsic gas|invalid sender|fee|max fee|base fee/i.test(message)) {
+        const signed = parseTransaction(raw);
+        logger.warn("standard reputation fee reserve required", {
+          operationId: operation.operation_id,
+          reason: "balance_fee",
+          chainId: this.chain.id,
+          relayerAddress: this.account.address,
+          gasLimit: signed.gas?.toString(),
+          maxFeePerGasWei: signed.maxFeePerGas?.toString(),
+          requiredReserveWei: ((signed.gas ?? 0n) * (signed.maxFeePerGas ?? 0n) + (signed.value ?? 0n)).toString(),
+        });
         if (transaction.state === "prepared") {
           await this.fail(operation, "balance_fee", transaction.transaction_id);
         } else {

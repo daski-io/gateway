@@ -143,6 +143,15 @@ core groups are:
   `STANDARD_RAIL_SPLITTER_CREATION_CODE_HASH`, and `SANCTIONS_ORACLE_ADDRESS`.
 - Signing role: `FACILITATOR_PRIVATE_KEY` for protocol artifacts and
   gas-funded Testnet reputation writes.
+- Reputation fees: `REPUTATION_MAX_FEE_PER_GAS_WEI` defaults to 3 gwei on
+  Base mainnet (8453) and Base Sepolia (84532), and 100 gwei elsewhere; an
+  explicit value overrides this. With the default 1,500,000 registration
+  gas limit, the Base execution fee reserve is 0.0045 ETH. `balance_fee`
+  failures log the reserve from the actual signed transaction (which may
+  predate a configuration change). Account health also exposes registration
+  and confirmation reserves for newly prepared transactions.
+- Operator recovery: the bearer `CATALOG_OPERATOR_TOKEN` authorizes the
+  audited [order redispatch and reputation retry endpoints](docs/operator-recovery.md).
 - Dynamic catalog: `DYNAMIC_SERVICE_REGISTRATION_ENABLED`,
   `CATALOG_OPERATOR_TOKEN`, and `CATALOG_REFRESH_INTERVAL_MS`. Registration
   routes are enabled by default and require an operator token. Disabling the

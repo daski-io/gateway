@@ -1,4 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { randomUUID } from "node:crypto";
+import { createPool, runMigrations } from "../src/db/pool.js";
+import { StandardRailJournal } from "../src/standardRail/journal.js";
+import { canonicalHash } from "../src/standardRail/canonical.js";
+import { privateKeyToAccount } from "viem/accounts";
+import { describe, expect, it, vi } from "vitest";
 import type { Hex } from "viem";
 import { StandardProviderDispatch } from "../src/standardRail/providerDispatch.js";
 import type { EvidenceResult, ReleaseEvidenceResult } from "../src/standardRail/evidence.js";
@@ -68,8 +73,10 @@ function listing(): StandardListing {
       providerAudience: "provider.example",
       dispatchUrl: "https://provider.example/dispatch",
       timeoutMs: 1_000,
+      maxResponseBytes: 16384,
+      dispatchStatusUrl: "https://provider.example/dispatch/status",
     } },
-    deadlinePolicy: { dispatchSeconds: 60 },
+    deadlinePolicy: { dispatchSeconds: 300, fulfillmentSeconds: 3600 },
   } as unknown as StandardListing;
 }
 
@@ -129,6 +136,7 @@ function service(args: {
     { chainId: 84532 } as never,
     config as never,
     {
+      dispatchRecovery: async () => ({ started_at: new Date(), retry_pending: false, next_attempt_at: new Date() }),
       dispatchClaim: async () => args.persisted ?? null,
       claimDispatch: async (
         claim: { dispatch: SignedEnvelope<StandardRailDispatchV2, 2> },
@@ -186,6 +194,52 @@ describe("StandardRailDispatchV2 service handoff", () => {
     expect("providerNetAmount" in wire.evidenceBundle.release).toBe(false);
   });
 
+  it("atomically replaces only a due refused claim and preserves accepted claims", async () => {
+    let captured: SignedEnvelope<StandardRailDispatchV2, 2> | null = null;
+    await service({ capture: (dispatch) => { captured = dispatch; } })
+      .dispatch(order(), listing(), {}, hash("1"), evidence());
+    const dispatch = parseStandardRailDispatchV2(captured);
+    const schema = `dispatch_retry_${randomUUID().replaceAll("-", "")}`;
+    const connectionString = process.env.DATABASE_URL_TEST ?? "postgresql://postgres:password@localhost:5433/daski_gateway_test";
+    const bootstrap = createPool({ connectionString, max: 1 });
+    await bootstrap.query(`CREATE SCHEMA "${schema}"`);
+    const pool = createPool({ connectionString, searchPath: `${schema},public`, max: 3 });
+    try {
+      await runMigrations(pool);
+      await pool.query(`INSERT INTO standard_orders (
+        order_id,order_key,order_handle,handle_hash,state,provider_agent_id,outcome_id,
+        binding_profile,listing_manifest_hash,provider_offer_hash,canonical_listing,quote_hash,
+        canonical_quote,canonical_request_hash,canonical_request,order_nonce,intent_id,gross_amount,
+        rail_epoch,listing_epoch,expires_at)
+        VALUES ('order-1',$1,'handle',$1,'DISPATCH_STARTED','7','outcome','recipe-bound-v2',$1,$1,'{}',$1,
+          '{}',$1,'{}',$1,'int_12345678-1234-4123-8123-123456789abc',100,1,1,now())`, [Buffer.alloc(32, 1)]);
+      await pool.query("INSERT INTO standard_dispatch_recovery (order_id,started_at) VALUES ('order-1',now())");
+      const journal = new StandardRailJournal(pool);
+      const claim = { orderId: "order-1", nonce: dispatch.payload.dispatchNonce,
+        dispatchHash: canonicalHash(dispatch), requestHash: canonicalHash({}), dispatch, request: {} };
+      expect(await journal.claimDispatch(claim)).toBe(true);
+      await journal.recordDispatchRefusal("order-1", claim.dispatchHash, 409, "not_ready");
+      const replacement = structuredClone(dispatch);
+      replacement.payload.dispatchNonce = hash("9");
+      const fresh = { ...claim, nonce: replacement.payload.dispatchNonce, dispatchHash: canonicalHash(replacement), dispatch: replacement };
+      expect(await journal.claimDispatch(fresh)).toBe(false);
+      expect((await journal.dispatchClaim("order-1"))!.dispatch).toEqual(dispatch);
+      await pool.query("UPDATE standard_dispatch_recovery SET next_attempt_at=now()-interval '1 second'");
+      expect((await Promise.all([journal.claimDispatch(fresh), journal.claimDispatch(fresh)])).sort()).toEqual([false, true]);
+      expect((await journal.dispatchClaim("order-1"))!.dispatch).toEqual(replacement);
+      expect((await pool.query("SELECT canonical_dispatch FROM standard_dispatch_refusals")).rows[0].canonical_dispatch).toEqual(dispatch);
+      await expect(journal.resolveDispatch("order-1", "stale-task", hash("5"), claim.dispatchHash))
+        .rejects.toThrow("DISPATCH_RESOLUTION_CONFLICT");
+      await journal.resolveDispatch("order-1", "task", hash("5"), fresh.dispatchHash);
+      await journal.resolveDispatch("order-1", "task", hash("6"), fresh.dispatchHash);
+      await pool.query("UPDATE standard_dispatch_recovery SET retry_pending=true");
+      expect(await journal.claimDispatch(claim)).toBe(false);
+      expect((await pool.query("SELECT provider_task_id FROM standard_dispatch_claims")).rows[0].provider_task_id).toBe("task");
+    } finally {
+      await pool.end(); await bootstrap.query(`DROP SCHEMA "${schema}" CASCADE`); await bootstrap.end();
+    }
+  }, 60_000);
+
   it("rejects a recovered dispatch when an evidence position changes", async () => {
     let persisted: SignedEnvelope<StandardRailDispatchV2, 2> | null = null;
     await service({ capture: (dispatch) => { persisted = dispatch; } })
@@ -197,5 +251,99 @@ describe("StandardRailDispatchV2 service handoff", () => {
     await expect(service({ persisted: { dispatch: persisted, request: { sku: "one" } } })
       .dispatch(order(), listing(), { sku: "one" }, hash("1"), changed))
       .rejects.toThrow(/Persisted dispatch does not match/);
+  });
+});
+
+
+describe("dispatch refusal recovery", () => {
+  function retrying(fetcher: (url: string, init: RequestInit) => Promise<Response>) {
+    let persisted: { dispatch: SignedEnvelope<StandardRailDispatchV2, 2>; request: unknown } | null = null;
+    const recovery = { started_at: new Date(), retry_pending: false, next_attempt_at: new Date() };
+    const refusals: Array<{ status: number; reason: unknown }> = [];
+    const claims: Array<SignedEnvelope<StandardRailDispatchV2, 2>> = [];
+    const transition = vi.fn(async (value: StandardOrderRecord, state: StandardOrderRecord["state"]) => ({ ...value, state }));
+    const resolveDispatch = vi.fn(async () => undefined);
+    const dispatchListing = listing();
+    dispatchListing.commitment.payload.providerAuthorityKey = privateKeyToAccount(privateKey).address;
+    const dispatcher = new StandardProviderDispatch(
+      { chainId: 84532 },
+      { environment: "testnet", gatewayAudience: "gateway.example", dispatchPrivateKey: privateKey,
+        reputationContract: address("6"), reputationOutcomeSchemaUid: hash("9"),
+        quotePrivateKey: privateKey, receiptPrivateKey: privateKey, lifecyclePrivateKey: privateKey,
+        releasePrivateKey: privateKey, reputationOrderPrivateKey: privateKey, reputationRelayerPrivateKey: privateKey,
+        dispatchTimeoutMs: 1000, manifest: { providerIdentitySnapshots: [] } } as never,
+      {
+        resolveDispatch,
+        dispatchRecovery: async () => recovery,
+        dispatchClaim: async () => persisted,
+        claimDispatch: async (claim: { dispatch: SignedEnvelope<StandardRailDispatchV2, 2>; request: unknown }) => {
+          persisted = claim; claims.push(claim.dispatch); recovery.retry_pending = false; return true;
+        },
+        recordDispatchRefusal: async (_id: string, _hash: Hex, status: number, reason: unknown) => {
+          refusals.push({ status, reason }); recovery.retry_pending = true;
+          recovery.next_attempt_at = new Date(Date.now() + Math.min(60, 10 * 2 ** (refusals.length - 1)) * 1000);
+        },
+      } as never,
+      { transition } as never,
+      (_listing, url, init) => fetcher(url, init), hash("0"),
+    );
+    return { dispatch: (value: StandardOrderRecord) => dispatcher.dispatch(value, dispatchListing, {}, hash("1"), evidence()),
+      recovery, refusals, claims, transition, resolveDispatch };
+  }
+
+  it("records a 409 refusal, waits for backoff and signs a fresh envelope beyond five minutes", async () => {
+    vi.useFakeTimers();
+    try {
+      const fetcher = vi.fn(async () => Response.json({ error: { code: "NOT_READY", reason: "registration_pending" } }, { status: 409 }));
+      const driver = retrying(fetcher);
+      let current = await driver.dispatch(order());
+      expect(current.state).toBe("DISPATCH_STARTED");
+      expect(driver.refusals).toEqual([{ status: 409, reason: { code: "NOT_READY", reason: "registration_pending" } }]);
+      await driver.dispatch(current);
+      expect(fetcher).toHaveBeenCalledTimes(1);
+      vi.advanceTimersByTime(10_000);
+      current = await driver.dispatch(current);
+      expect(driver.claims[1]!.payload.dispatchNonce).not.toBe(driver.claims[0]!.payload.dispatchNonce);
+      expect(driver.claims[1]!.issuedAt).toBe(driver.claims[0]!.issuedAt + 10);
+      vi.advanceTimersByTime(301_000);
+      current = await driver.dispatch(current);
+      expect(current.state).toBe("DISPATCH_STARTED");
+      expect(fetcher).toHaveBeenCalledTimes(3);
+      vi.setSystemTime(driver.recovery.started_at.getTime() + 3600_000);
+      expect((await driver.dispatch(current)).state).toBe("PROVIDER_FAILED");
+      expect(fetcher).toHaveBeenCalledTimes(3);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("accepts a valid signed response after a refusal without status polling", async () => {
+    let calls = 0;
+    const driver = retrying(async (_url, init) => {
+      if (++calls === 1) return Response.json({ error: "not_ready" }, { status: 409 });
+      const sent = JSON.parse(String(init.body)) as { dispatch: unknown };
+      const response = { taskId: "accepted-task", dispatchHash: canonicalHash(sent.dispatch), state: "working" };
+      const signature = await privateKeyToAccount(privateKey).signMessage({ message: { raw: canonicalHash(response) } });
+      return Response.json({ ...response, signature });
+    });
+    const current = await driver.dispatch(order());
+    driver.recovery.next_attempt_at = new Date(0);
+    expect((await driver.dispatch(current)).state).toBe("DISPATCHED");
+    expect(driver.resolveDispatch).toHaveBeenCalledOnce();
+    expect(calls).toBe(2);
+  });
+
+  it.each(["timeout", "non-json-503", "malformed-409", "malformed-200"])("keeps %s ambiguous and only polls its existing hash", async (kind) => {
+    const fetcher = vi.fn(async (_url: string, _init: RequestInit) => {
+      if (kind === "timeout") throw new Error("timed out");
+      return kind === "non-json-503" ? new Response("Unavailable", { status: 503 })
+        : Response.json({}, { status: kind === "malformed-200" ? 200 : 409 });
+    });
+    const driver = retrying(fetcher);
+    const current = await driver.dispatch(order());
+    expect(current.state).toBe("DISPATCH_AMBIGUOUS");
+    await driver.dispatch(current);
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(fetcher.mock.calls[1]?.[0]).toBe("https://provider.example/dispatch/status");
+    expect(driver.refusals).toHaveLength(0);
+    expect(driver.claims).toHaveLength(1);
   });
 });

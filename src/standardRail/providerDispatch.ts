@@ -138,12 +138,17 @@ export class StandardProviderDispatch {
       issuedAt,
       validBefore,
     });
+    const recovery = await this.journal.dispatchRecovery(order.orderId);
+    if (Date.now() >= recovery.started_at.getTime() + listing.deadlinePolicy.fulfillmentSeconds * 1_000) {
+      return this.store.transition(order, "PROVIDER_FAILED", "provider_dispatch_fulfillment_deadline_elapsed");
+    }
+    if (recovery.retry_pending && Date.now() < recovery.next_attempt_at.getTime()) return order;
     const persisted = await this.journal.dispatchClaim(order.orderId);
-    const mayInvokeProvider = persisted === null;
+    const mayInvokeProvider = persisted === null || recovery.retry_pending;
     let dispatch: SignedEnvelope<StandardRailDispatchV2, 2>;
     let dispatchHash: Hex;
     let effectiveRequest = request;
-    if (persisted) {
+    if (persisted && !recovery.retry_pending) {
       dispatch = persisted.dispatch;
       dispatchHash = canonicalHash(dispatch);
       effectiveRequest = persisted.request;
@@ -203,14 +208,14 @@ export class StandardProviderDispatch {
         `Order ${order.orderId} is not dispatchable from ${order.state}`,
       );
     }
-    if (!mayInvokeProvider || order.state === "DISPATCH_AMBIGUOUS") {
+    if (!mayInvokeProvider) {
       try {
         const response = await this.queryProviderDispatchStatus(
           listing,
           order.orderId,
           dispatchHash,
         );
-        return this.applyDispatchResponse(order, listing, dispatchHash, response);
+        return await this.applyDispatchResponse(order, listing, dispatchHash, response);
       } catch {
         return order.state === "DISPATCH_STARTED"
           ? this.store.transition(
@@ -246,15 +251,22 @@ export class StandardProviderDispatch {
           redirect: "error",
         },
       );
-      if (!response.ok) {
-        await discardResponseBody(response);
-        throw new Error("provider_dispatch_rejected");
-      }
+      // A structured refusal is a definite response. Retain its status and
+      // reason and retry with a new signed envelope; never status-poll it.
       const body = await readBoundedJsonResponse(
         response,
         listing.providerControlProfile.payload.maxResponseBytes,
       );
-      return this.applyDispatchResponse(order, listing, dispatchHash, body);
+      if (!response.ok) {
+        if (response.status >= 400 && response.status < 600 && body &&
+            typeof body === "object" && !Array.isArray(body) &&
+            "error" in body && body.error !== null && body.error !== undefined) {
+          await this.journal.recordDispatchRefusal(order.orderId, dispatchHash, response.status, body.error);
+          return order;
+        }
+        throw new Error("provider_dispatch_response_unknown");
+      }
+      return await this.applyDispatchResponse(order, listing, dispatchHash, body);
     } catch {
       return order.state === "DISPATCH_STARTED"
         ? this.store.transition(
@@ -374,7 +386,7 @@ export class StandardProviderDispatch {
       getAddress(signer) !==
         getAddress(listing.commitment.payload.providerAuthorityKey)
     ) throw new Error("provider_dispatch_response_signature_invalid");
-    await this.journal.resolveDispatch(initial.orderId, body.taskId, responseHash);
+    await this.journal.resolveDispatch(initial.orderId, body.taskId, responseHash, dispatchHash);
     let order = initial;
     if (["DISPATCH_STARTED", "DISPATCH_AMBIGUOUS"].includes(order.state)) {
       order = await this.store.transition(
