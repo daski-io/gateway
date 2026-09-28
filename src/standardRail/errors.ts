@@ -57,6 +57,7 @@ export type StandardRailErrorCode =
   | "CONFIRMATION_ORDER_UNAVAILABLE"
   | "REPUTATION_NOT_READY"
   | "REPUTATION_UNAVAILABLE"
+  | "ARTIFACT_NOT_AVAILABLE"
   | "INTERNAL_ERROR";
 
 export interface StandardRailFieldError {
@@ -434,6 +435,15 @@ const DEFAULTS: Record<StandardRailErrorCode, ErrorDefaults> = {
     requiresNewSignature: false,
     paymentMayHaveSettled: false,
     nextAction: "Contact order support; no confirmation can be recorded for this order.",
+  },
+  ARTIFACT_NOT_AVAILABLE: {
+    status: 409,
+    message: "The order has no artifact: it is neither completed nor recovered",
+    phase: "dispatch",
+    retryable: true,
+    requiresNewSignature: false,
+    paymentMayHaveSettled: false,
+    nextAction: "Read the order status. Artifacts are available once it is completed or completed after recovery.",
   },
   INTERNAL_ERROR: {
     status: 500,

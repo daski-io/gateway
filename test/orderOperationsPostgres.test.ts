@@ -76,19 +76,31 @@ describe("payer-bound drafts and durable provider observations", () => {
       await expect(store.persistOperations(fresh.order.orderId,{ ...view,support:{ reviewId:"r",status:"open",
         lastAcceptedRequest:{ requestId:"r1",messageId:"m1",acceptedAt:now() } } },null)).rejects.toThrow("revision_conflict");
       await expect(store.persistOperations(fresh.order.orderId,{ ...view,revision:2,observedAt:now()-301 },null)).rejects.toThrow("observation_stale");
+      // An operator reply reaches the buyer in the live response; the gateway retains none of it.
+      const replied: OrderOperations = { ...view, revision:2, support:{ reviewId:"r",status:"open",
+        lastAcceptedRequest:{ requestId:"r1",messageId:"m1",acceptedAt:now() },
+        lastReply:{ messageId:"m2",repliedAt:now(),message:"Private operator reply" } } };
+      await store.persistOperations(fresh.order.orderId,replied,null);
+      const withReply = await pool.query("SELECT safe_projection::text FROM standard_order_operations WHERE order_id=$1",[fresh.order.orderId]);
+      expect(withReply.rows[0].safe_projection).not.toContain("Private operator reply");
+      expect(withReply.rows[0].safe_projection).not.toContain("lastReply");
+      expect((await store.loadOperations(fresh.order.orderId))?.operations.support).toEqual({ reviewId:"r",status:"open",
+        lastAcceptedRequest:replied.support!.lastAcceptedRequest });
+      await expect(store.persistOperations(fresh.order.orderId,{ ...replied,support:{ ...replied.support!,
+        lastReply:{ ...replied.support!.lastReply!,message:"Changed reply" } } },null)).rejects.toThrow("revision_conflict");
 
       const terminal = { payload: { taskId:"task", state:"failed",completedAt:now()-5,resultHash:hash("e") },signature:"0x01" };
-      const completed: OrderOperations = { ...view, revision:2, fulfillment:null,
+      const completed: OrderOperations = { ...view, revision:3, fulfillment:null,
         recovery:{ recoveryId:"recovery",reviewId:"review",state:"completed",startedAt:now()-3,completedAt:now(),resultHash:hash("f"),
           originalTerminal:{state:"failed",completedAt:now()-5,resultHash:hash("e")} } };
       await store.persistOperations(fresh.order.orderId,completed,terminal);
       expect((await store.loadOperations(fresh.order.orderId))?.originalTerminal).toEqual(terminal);
       expect((await store.loadOperations(fresh.order.orderId))?.accumulatedWaitSeconds).toBe(10);
-      await expect(store.persistOperations(fresh.order.orderId,{ ...view,revision:3,
+      await expect(store.persistOperations(fresh.order.orderId,{ ...view,revision:4,
         fulfillment:{...view.fulfillment!,accumulatedWaitSeconds:0} },terminal)).rejects.toThrow("wait_clock_regressed");
-      await expect(store.persistOperations(fresh.order.orderId,{ ...completed,revision:3 },
+      await expect(store.persistOperations(fresh.order.orderId,{ ...completed,revision:4 },
         {...terminal,payload:{...terminal.payload,resultHash:hash("d")}})).rejects.toThrow("original_terminal_changed");
-      await expect(store.persistOperations(fresh.order.orderId,{ ...completed,revision:3,recovery:{...completed.recovery!,
+      await expect(store.persistOperations(fresh.order.orderId,{ ...completed,revision:4,recovery:{...completed.recovery!,
         originalTerminal:{...completed.recovery!.originalTerminal,resultHash:hash("d")}} },terminal)).rejects.toThrow("terminal_binding_invalid");
 
       // Ten admitted DNS waits consume no active-execution capacity in new payment admission.

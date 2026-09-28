@@ -74,6 +74,7 @@ import type {
   StoredRegistration,
 } from "../serviceRegistration/store.js";
 import { discardResponseBody, readBoundedJsonResponse as readBoundedJson } from "./boundedJson.js";
+import { providerLifecycleRefusal } from "./lifecycleRefusal.js";
 import { StandardProviderTransport } from "./providerTransport.js";
 import { StandardRailCatalog } from "./catalog.js";
 import { StandardProviderDispatch } from "./providerDispatch.js";
@@ -1380,13 +1381,7 @@ export class StandardRailService {
         )),
       },
     );
-    if (!response.ok) {
-      await discardResponseBody(response);
-      throw standardRailError("INTERNAL_ERROR", {
-        phase: "dispatch",
-        internalMessage: "PROVIDER_LIFECYCLE_REJECTED",
-      });
-    }
+    if (!response.ok) throw await providerLifecycleRefusal(args.action, response);
     const providerResult = await readBoundedJson(
       response,
       listing.providerControlProfile.payload.maxResponseBytes,

@@ -24,6 +24,9 @@ export const operationsSchema = z.object({
   fulfillment: fulfillmentViewSchema.nullable(),
   support: z.object({ reviewId: id, status: z.enum(["open", "closed"]),
     lastAcceptedRequest: z.object({ requestId: id, messageId: id, acceptedAt: time }).strict(),
+    // The provider's latest operator reply, present once one exists. It is
+    // returned to the buyer and never retained by the gateway.
+    lastReply: z.object({ messageId: id, repliedAt: time, message: z.string().min(1).max(4_000) }).strict().optional(),
   }).strict().nullable(),
   recovery: recoveryViewSchema.nullable(),
 }).strict();

@@ -12,6 +12,11 @@ export interface StoredOperations {
   originalTerminal: TerminalEvidence | null;
 }
 
+function withoutReply(support: NonNullable<OrderOperations["support"]>) {
+  const { lastReply: _reply, ...kept } = support;
+  return kept;
+}
+
 function terminalIdentity(value: TerminalEvidence) {
   const { taskId, state, completedAt, resultHash } = value.payload;
   return { taskId, state, completedAt, resultHash };
@@ -37,9 +42,12 @@ export async function persistOperations(
   }
   const { observedAt: _observedAt, ...semantic } = operations;
   const projectionHash = Buffer.from(canonicalHash(semantic).slice(2), "hex");
-  // DNS names/values are transient buyer content, never retained in this table.
+  // DNS names/values and operator replies are transient buyer content, never
+  // retained in this table; the stored projection stays readable by the
+  // previous runtime, which knows no reply.
   const safe = { ...operations, fulfillment: operations.fulfillment
-    ? { ...operations.fulfillment, missingRecords: [] } : null };
+    ? { ...operations.fulfillment, missingRecords: [] } : null,
+  support: operations.support ? withoutReply(operations.support) : null };
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
