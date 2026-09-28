@@ -50,7 +50,10 @@ steady-state prompt is `Use Daski to [your task]`.
   accepts the identical paid retry.
 - `/orders/:handle/actions/*` exposes payer-authorized lifecycle actions.
 - `/wallet/*` exposes wallet-authorized orders, reputation, assets, and asset
-  actions.
+  actions. An admitted entity document download returns a transient `download`
+  object with its one-time provider URL and expiry. Clients GET that URL;
+  `refreshAction` names the asset action for obtaining another link. Responses
+  remain validated against the current signed action catalog.
 - `POST /v1/owner-swaps` accepts a provider-signed `ProviderOwnerSwapV1`
   notice that an asset's owner changed and grants the new payer eligibility
   for that provider's owner-only reads and actions; see
