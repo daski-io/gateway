@@ -239,8 +239,9 @@ Admitted DNS and capacity waits appear in signed order `operations.fulfillment`.
 They pause the fulfillment clock; stale progress creates an incident, without
 turning a propagation delay into a paid failure. Support requests require
 `{ requestId, message }`; retain the request ID but obtain a fresh wallet
-authorization when retrying. `operations.support` contains the accepted Review
-receipt. A completed provider recovery appears as `fulfillmentState: "recovered"`
+authorization when retrying. `result.supportReceipt` returns the original receipt
+for that request ID, including after newer messages; `operations.support` shows
+the latest accepted request and Review state. A completed provider recovery appears as `fulfillmentState: "recovered"`
 and `operations.recovery`, while the original failed order and reputation outcome
 remain unchanged. Status and artifact reads always obtain fresh provider evidence.
 

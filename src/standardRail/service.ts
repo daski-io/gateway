@@ -1,6 +1,6 @@
 import { createHmac, randomBytes, randomUUID } from "node:crypto";
 import { fulfillmentClock } from "./operationsStore.js";
-import { validateSupportRequest } from "./supportRequest.js";
+import { supportResultSchema, validateSupportRequest } from "./supportRequest.js";
 import { readinessSchema, type PurchaseReadiness } from "./readinessSchema.js";
 import type { PaymentPayload, PaymentRequired, PaymentRequirements } from "@x402/core/types";
 import {
@@ -1392,6 +1392,7 @@ export class StandardRailService {
       providerResult,
       args.action as "status" | "input" | "cancel" | "artifact" | "support",
       args.handle,
+      args.request,
     );
     if (["input", "cancel", "support"].includes(args.action)) {
       await this.store.bumpCapabilityEpoch(order.orderId);
@@ -1405,6 +1406,7 @@ export class StandardRailService {
     result: unknown,
     action: "status" | "input" | "cancel" | "artifact" | "support",
     handle: string,
+    request?: Record<string, unknown>,
   ): Promise<unknown> {
     if (!result || typeof result !== "object") throw standardRailError("INTERNAL_ERROR", {
         phase: "dispatch",
@@ -1443,7 +1445,7 @@ export class StandardRailService {
         internalMessage: "PROVIDER_LIFECYCLE_SIGNATURE_INVALID",
       });
     }
-    if ((action === "status" || action === "support" || action === "cancel") && "result" in response) {
+    if ((action === "status" || action === "cancel") && "result" in response) {
       throw standardRailError("INTERNAL_ERROR", {
         phase: "dispatch",
         internalMessage: "PROVIDER_LIFECYCLE_UNEXPECTED_CONTENT",
@@ -1459,7 +1461,13 @@ export class StandardRailService {
         operationsSchema.parse(response.operations).recovery?.state !== "completed") {
       throw standardRailError("INTERNAL_ERROR", { internalMessage: "PROVIDER_ARTIFACT_NOT_FULFILLED" });
     }
-    if ("result" in response) await this.validateResponse(listing, response.result);
+    if (action === "support") {
+      const support = supportResultSchema.parse(response.result);
+      if (support.supportReceipt.requestId !== request?.requestId) {
+        throw standardRailError("INTERNAL_ERROR", { internalMessage: "PROVIDER_SUPPORT_RECEIPT_BINDING_INVALID" });
+      }
+    }
+    else if ("result" in response) await this.validateResponse(listing, response.result);
     let order = initial;
     if (!["completed", "failed", "canceled"].includes(String(response.state))) {
       await this.store.persistOperations(order.orderId, response.operations, null);
@@ -1500,7 +1508,7 @@ export class StandardRailService {
         attestation.payload.orderId !== initial.orderId ||
         attestation.payload.taskId !== initial.providerTaskId ||
         attestation.payload.state !== response.state ||
-        (action !== "artifact" && "result" in response &&
+        (action !== "artifact" && action !== "support" && "result" in response &&
           attestation.payload.resultHash !== canonicalHash(response.result))
       ) throw standardRailError("INTERNAL_ERROR", {
         phase: "dispatch",
