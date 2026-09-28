@@ -702,6 +702,7 @@ export class StandardRailCatalog {
         optionalExtensions: [...SEALED_EXTENSION_POLICY.optionalExtensions],
       },
       quotePolicy: pricing.mode === "dynamic" ? { ...SEALED_QUOTE_POLICY } : null,
+      purchaseReadiness: skill.contract.purchaseReadiness,
       deliveryCommitment: { ...SEALED_DELIVERY_COMMITMENT },
       capacityPolicy: {
         maxOpenOrders: skill.contract.capacity?.maxOpenOrders ?? 10,
@@ -771,6 +772,7 @@ export class StandardRailCatalog {
       terms: listing.terms,
       deadlinePolicy: listing.deadlinePolicy,
       capacityPolicy: listing.capacityPolicy,
+      purchaseReadiness: listing.purchaseReadiness,
       service: {
         id: record.serviceId,
         slug: record.card.service.slug,

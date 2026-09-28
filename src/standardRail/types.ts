@@ -258,6 +258,7 @@ export interface StandardListing {
   buyerIdentityPolicy: BuyerIdentityPolicyV1;
   extensionPolicy: ExtensionPolicyV1;
   quotePolicy: QuotePolicyV1 | null;
+  purchaseReadiness: "payer_dns" | null;
   deliveryCommitment: DeliveryCommitmentV1;
   capacityPolicy: {
     maxOpenOrders: number;
@@ -336,6 +337,7 @@ export interface PublicOutcomeV1 {
   terms: StandardListing["terms"];
   deadlinePolicy: StandardListing["deadlinePolicy"];
   capacityPolicy: StandardListing["capacityPolicy"];
+  purchaseReadiness: StandardListing["purchaseReadiness"];
   service: {
     id: Hex;
     slug: string;
@@ -659,6 +661,7 @@ export interface StandardOrderRecord {
   authorizationKey: Hex | null;
   paymentPayloadHash: Hex | null;
   payer: Hex | null;
+  expectedPayer?: Hex | null;
   grossAmount: string;
   providerNetAmount: string | null;
   daskiCommissionAmount: string | null;

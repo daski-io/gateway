@@ -85,6 +85,11 @@ steady-state prompt is `Use Daski to [your task]`.
   payerAddress?, paymentPayload? }`, retaining the complete payment in JSON
   rather than requiring a large HTTP header. Both use the existing checkout
   service and gateway-bound authorizations.
+  Outcomes declaring `purchaseReadiness: "payer_dns"` require `payerAddress`
+  before quoting. A readiness rejection includes structured DNS records in
+  `error.readiness`; install them and obtain a fresh quote before signing.
+  Fixed and dynamic challenges retain the signed provider quote commitment
+  and cannot outlive it. Drafts and captured payments are bound to the quoted payer.
 - `POST /public/v2/outcomes/search` provides bounded catalog search and
   vocabulary hints; `GET /public/v2/outcomes/:providerAgentId/:outcomeId`
   provides the complete detail with capped recent-purchase history.
@@ -229,6 +234,15 @@ with a default of 30 days, including orders placed under the former one-hour
 default. Provider-reported failure still takes effect immediately. Operators can
 [revive a deadline-failed order](docs/operator-recovery.md) when its existing
 provider task is still active.
+
+Admitted DNS and capacity waits appear in signed order `operations.fulfillment`.
+They pause the fulfillment clock; stale progress creates an incident, without
+turning a propagation delay into a paid failure. Support requests require
+`{ requestId, message }`; retain the request ID but obtain a fresh wallet
+authorization when retrying. `operations.support` contains the accepted Review
+receipt. A completed provider recovery appears as `fulfillmentState: "recovered"`
+and `operations.recovery`, while the original failed order and reputation outcome
+remain unchanged. Status and artifact reads always obtain fresh provider evidence.
 
 ## License
 

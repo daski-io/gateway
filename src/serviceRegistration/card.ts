@@ -109,7 +109,7 @@ function parseContract(
 ): PublishedSkillContract["contract"] {
   const value = closed(raw, [
     "inputSchema", "resultSchema", "pricing", "paymentRequired",
-    "requiresAssetOwnership", "assetType", "fulfillmentMode",
+    "requiresAssetOwnership", "assetType", "fulfillmentMode", "purchaseReadiness",
     "capacity", "deadlines", "assetAction",
   ], "skill contract");
   const inputSchema = record(value.inputSchema, "skill input schema");
@@ -123,6 +123,9 @@ function parseContract(
     "requiresAssetOwnership",
   );
   const fulfillmentMode = text(value.fulfillmentMode, "fulfillment mode", 16);
+  if (value.purchaseReadiness !== null && value.purchaseReadiness !== "payer_dns") {
+    throw new Error("purchase readiness policy is invalid");
+  }
   if (!["automated", "human", "hybrid"].includes(fulfillmentMode)) {
     throw new Error("fulfillment mode is invalid");
   }
@@ -159,6 +162,7 @@ function parseContract(
     requiresAssetOwnership,
     assetType,
     fulfillmentMode: fulfillmentMode as "automated" | "human" | "hybrid",
+    purchaseReadiness: value.purchaseReadiness as "payer_dns" | null,
     capacity: { maxOpenOrders: capacity.maxOpenOrders as number },
     deadlines,
     assetAction,

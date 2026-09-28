@@ -84,6 +84,7 @@ export class StandardRailRecoveryWorker {
         case "DISPATCH_STARTED":
         case "DISPATCH_AMBIGUOUS": return 10;
         case "DISPATCHED":
+        case "PROVIDER_FAILED":
         case "INPUT_REQUIRED": return 30;
         default: return (await this.options.listing(order.providerAgentId, order.outcomeId))
           .deadlinePolicy.fulfillmentSeconds;
@@ -112,6 +113,7 @@ export class StandardRailRecoveryWorker {
       case "DISPATCH_AMBIGUOUS":
       case "DISPATCHED":
       case "INPUT_REQUIRED":
+      case "PROVIDER_FAILED":
         await this.options.resumePaid(order);
         return;
       default:

@@ -156,7 +156,7 @@ function skill(overrides: Record<string, unknown> = {}) {
       paymentRequired: true,
       requiresAssetOwnership: false,
       assetType: "domain",
-      fulfillmentMode: "automated",
+      fulfillmentMode: "automated", purchaseReadiness: null,
       capacity: { maxOpenOrders: 10 },
       deadlines: { dispatchSeconds: 300 },
       assetAction: null,

@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { logger } from "../util/logger.js";
 import { RequestSchemaError } from "./schema.js";
+import type { PurchaseReadiness } from "./readinessSchema.js";
 
 export const STANDARD_RAIL_PHASES = [
   "request_validation",
@@ -446,6 +447,7 @@ const DEFAULTS: Record<StandardRailErrorCode, ErrorDefaults> = {
 };
 
 export interface StandardRailErrorOptions {
+  readiness?: PurchaseReadiness;
   status?: number;
   message?: string;
   phase?: StandardRailPhase;
@@ -480,6 +482,7 @@ export class StandardRailError extends Error {
   readonly serverTime?: number;
   readonly expected?: Record<string, unknown>;
   readonly fieldErrors?: readonly StandardRailFieldError[];
+  readonly readiness?: PurchaseReadiness;
   readonly nextAction: string;
   readonly facilitatorReason?: string;
   readonly chainEligible?: boolean;
@@ -501,6 +504,7 @@ export class StandardRailError extends Error {
     this.serverTime = options.serverTime;
     this.expected = options.expected;
     this.fieldErrors = options.fieldErrors;
+    this.readiness = options.readiness;
     this.nextAction = options.nextAction ?? defaults.nextAction;
     this.facilitatorReason = options.facilitatorReason;
     this.chainEligible = options.chainEligible;
@@ -573,6 +577,7 @@ export function asStandardRailError(error: unknown): StandardRailError | null {
 }
 
 export interface StandardRailPublicError {
+  readiness?: PurchaseReadiness;
   code: StandardRailErrorCode;
   message: string;
   phase: StandardRailPhase;
@@ -604,6 +609,7 @@ export function standardRailPublicError(
     ...(error.serverTime === undefined ? {} : { serverTime: error.serverTime }),
     ...(error.expected ? { expected: error.expected } : {}),
     ...(error.fieldErrors ? { fieldErrors: error.fieldErrors } : {}),
+    ...(error.readiness ? { readiness: error.readiness } : {}),
     ...(error.facilitatorReason === undefined ? {} : { facilitatorReason: error.facilitatorReason }),
     ...(error.chainEligible === undefined ? {} : { chainEligible: error.chainEligible }),
     docs: `${publicUrl.replace(/\/$/, "")}/skills/buy.md#errors`,

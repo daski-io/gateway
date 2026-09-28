@@ -38,7 +38,7 @@ function card(overrides: {
     paymentRequired: overrides.paymentRequired ?? true,
     requiresAssetOwnership: overrides.requiresAssetOwnership ?? false,
     assetType: overrides.requiresAssetOwnership ? "orbital-slot" : null,
-    fulfillmentMode: "hybrid",
+    fulfillmentMode: "hybrid", purchaseReadiness: null,
     capacity: { maxOpenOrders: overrides.maxOpenOrders ?? 17 },
     deadlines: { dispatchSeconds: 300 },
     assetAction: overrides.assetAction ?? null,

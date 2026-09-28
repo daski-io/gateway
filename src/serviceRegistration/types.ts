@@ -78,6 +78,7 @@ export interface PublishedSkillContract {
     requiresAssetOwnership: boolean;
     assetType: string | null;
     fulfillmentMode: "automated" | "human" | "hybrid";
+    purchaseReadiness: "payer_dns" | null;
     capacity: { maxOpenOrders: number };
     deadlines: Record<string, unknown>;
     assetAction: PublishedAssetActionContract | null;

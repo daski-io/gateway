@@ -145,6 +145,13 @@ function validated(payment: PaymentPayload) {
 }
 
 describe("standard payment extension echo", () => {
+  it("refuses payment from a different wallet than the readiness quote", async () => {
+    const payment = await signedPayment((issued) => ({ ...issued }));
+    await expect(validatePayment({ config, listing: { ...listing, purchaseReadiness: "payer_dns" },
+      order: { ...order, expectedPayer: address("b") },
+      requirements: paymentRequirements(config,listing,GROSS_AMOUNT,120),payment,railProfileHash:RAIL_PROFILE_HASH,
+    })).rejects.toMatchObject({ code:"AUTHORIZATION_MISMATCH", field:"payload.authorization.from" });
+  });
   it("accepts a payment built from the compact header, without the bazaar declaration", async () => {
     const payment = await signedPayment((issued) =>
       Object.fromEntries(Object.entries(issued).filter(([key]) => key !== "bazaar")));
