@@ -14,8 +14,9 @@ The action records exactly one `PROVIDER_FAILED` → `RELEASE_FINAL` transition 
 reason `operator_redispatch`, archives the previous claim in the audit record and
 reserves a new claim ID. It returns `{ orderId, state: "RELEASE_FINAL", claimId }`.
 Recovery creates the signed dispatch with a fresh nonce on its next due tick.
-Repeated calls after revival return 409. Failed orders remain terminal for
-automatic recovery.
+Repeated calls after revival return 409. Failed orders retain their terminal
+payment and reputation state. Signed reads can report a separate provider
+recovery without redispatching the order.
 
 The same endpoint can revive an existing task when the order is
 `PROVIDER_FAILED`, its last transition reason is
@@ -82,3 +83,21 @@ even when the checkout snapshot contains the previous 3,600-second default.
 Other order terms continue to use the immutable checkout snapshot. A provider
 reporting failure still fails through reconciliation immediately; an active
 status does not restart the clock.
+
+For listings admitting payer DNS readiness, signed `dns_pending` and
+`waiting_capacity` observations suspend that clock. The provider's cumulative
+wait duration is monotonic and persisted; repeated reads do not add it again.
+Concurrent reads may arrive out of order: an older signed observation is
+ignored rather than failing the request, while two different views under one
+revision are rejected as equivocation.
+Missing or stale rechecks create `provider_wait_progress_stale` incidents and
+leave the obligation pending. Waits do not consume new-payment execution capacity.
+
+Provider recovery is authorized through the provider Review controls. The gateway
+does not acknowledge or authorize supplier work. It validates `operations.recovery`
+against the original signed failed terminal result, preserving that attestation
+and the order's original `PROVIDER_FAILED` state. Authorized status/artifact reads
+refresh this projection; the background worker refreshes failures with observed
+open support or unfinished recovery at most every five minutes. A new recovery
+that the gateway has never observed is discovered on the next authorized read.
+`fulfillmentState: "recovered"` is operational fulfillment, not a reputation rewrite.

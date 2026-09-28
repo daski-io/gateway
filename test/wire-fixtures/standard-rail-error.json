@@ -24,6 +24,18 @@
       "correlationId": "00000000-0000-4000-8000-00000000c0de"
     }
   },
+  "artifactNotAvailable": {
+    "error": {
+      "code": "ARTIFACT_NOT_AVAILABLE",
+      "message": "The order has no artifact: it is neither completed nor recovered",
+      "phase": "dispatch",
+      "retryable": true,
+      "requiresNewSignature": false,
+      "paymentMayHaveSettled": false,
+      "docs": "https://sandbox-gateway.daski.io/skills/buy.md#errors",
+      "correlationId": "00000000-0000-4000-8000-00000000c0de"
+    }
+  },
   "requestSchemaInvalid": {
     "error": {
       "code": "REQUEST_SCHEMA_INVALID",

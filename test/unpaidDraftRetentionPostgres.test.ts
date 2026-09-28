@@ -17,7 +17,7 @@ function draft(nonceByte: string): CreateDraftInput {
     bindingProfile: "stock-fixed-v1",
     listingManifestHash: hash("1"),
     providerOfferHash: hash("2"),
-    listing: { placeholder: true } as unknown as StandardListing,
+    listing: { deadlinePolicy: { minimumPaymentWindowSeconds: 30 } } as unknown as StandardListing,
     quoteHash: hash("3"),
     quote: { placeholder: true } as unknown as CreateDraftInput["quote"],
     orderNonce: hash(nonceByte),

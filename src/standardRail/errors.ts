@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { logger } from "../util/logger.js";
 import { RequestSchemaError } from "./schema.js";
+import type { PurchaseReadiness } from "./readinessSchema.js";
 
 export const STANDARD_RAIL_PHASES = [
   "request_validation",
@@ -56,6 +57,7 @@ export type StandardRailErrorCode =
   | "CONFIRMATION_ORDER_UNAVAILABLE"
   | "REPUTATION_NOT_READY"
   | "REPUTATION_UNAVAILABLE"
+  | "ARTIFACT_NOT_AVAILABLE"
   | "INTERNAL_ERROR";
 
 export interface StandardRailFieldError {
@@ -434,6 +436,15 @@ const DEFAULTS: Record<StandardRailErrorCode, ErrorDefaults> = {
     paymentMayHaveSettled: false,
     nextAction: "Contact order support; no confirmation can be recorded for this order.",
   },
+  ARTIFACT_NOT_AVAILABLE: {
+    status: 409,
+    message: "The order has no artifact: it is neither completed nor recovered",
+    phase: "dispatch",
+    retryable: true,
+    requiresNewSignature: false,
+    paymentMayHaveSettled: false,
+    nextAction: "Read the order status. Artifacts are available once it is completed or completed after recovery.",
+  },
   INTERNAL_ERROR: {
     status: 500,
     message: "Internal server error",
@@ -446,6 +457,7 @@ const DEFAULTS: Record<StandardRailErrorCode, ErrorDefaults> = {
 };
 
 export interface StandardRailErrorOptions {
+  readiness?: PurchaseReadiness;
   status?: number;
   message?: string;
   phase?: StandardRailPhase;
@@ -480,6 +492,7 @@ export class StandardRailError extends Error {
   readonly serverTime?: number;
   readonly expected?: Record<string, unknown>;
   readonly fieldErrors?: readonly StandardRailFieldError[];
+  readonly readiness?: PurchaseReadiness;
   readonly nextAction: string;
   readonly facilitatorReason?: string;
   readonly chainEligible?: boolean;
@@ -501,6 +514,7 @@ export class StandardRailError extends Error {
     this.serverTime = options.serverTime;
     this.expected = options.expected;
     this.fieldErrors = options.fieldErrors;
+    this.readiness = options.readiness;
     this.nextAction = options.nextAction ?? defaults.nextAction;
     this.facilitatorReason = options.facilitatorReason;
     this.chainEligible = options.chainEligible;
@@ -573,6 +587,7 @@ export function asStandardRailError(error: unknown): StandardRailError | null {
 }
 
 export interface StandardRailPublicError {
+  readiness?: PurchaseReadiness;
   code: StandardRailErrorCode;
   message: string;
   phase: StandardRailPhase;
@@ -604,6 +619,7 @@ export function standardRailPublicError(
     ...(error.serverTime === undefined ? {} : { serverTime: error.serverTime }),
     ...(error.expected ? { expected: error.expected } : {}),
     ...(error.fieldErrors ? { fieldErrors: error.fieldErrors } : {}),
+    ...(error.readiness ? { readiness: error.readiness } : {}),
     ...(error.facilitatorReason === undefined ? {} : { facilitatorReason: error.facilitatorReason }),
     ...(error.chainEligible === undefined ? {} : { chainEligible: error.chainEligible }),
     docs: `${publicUrl.replace(/\/$/, "")}/skills/buy.md#errors`,

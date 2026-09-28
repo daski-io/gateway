@@ -112,7 +112,7 @@ function card(name: string): ProviderServiceCard {
         paymentRequired: false,
         requiresAssetOwnership: false,
         assetType: null,
-        fulfillmentMode: "automated",
+        fulfillmentMode: "automated", purchaseReadiness: null,
         capacity: { maxOpenOrders: 100 },
         deadlines: { dispatchSeconds: 30 },
         assetAction: null,

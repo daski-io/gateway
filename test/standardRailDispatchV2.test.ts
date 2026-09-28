@@ -284,7 +284,7 @@ describe("dispatch refusal recovery", () => {
           recovery.next_attempt_at = new Date(Date.now() + Math.min(60, 10 * 2 ** (refusals.length - 1)) * 1000);
         },
       } as never,
-      { transition } as never,
+      { transition, persistOperations: vi.fn(async () => undefined) } as never,
       (_listing, url, init) => fetcher(url, init), hash("0"),
     );
     return { dispatch: (value: StandardOrderRecord) => dispatcher.dispatch(value, dispatchListing, {}, hash("1"), evidence()),
@@ -294,7 +294,8 @@ describe("dispatch refusal recovery", () => {
   it.each(["working", "submitted", "dispatching", "completed", "failed"])(
     "authenticates %s status for revival without mutating the claim or order", async (state) => {
       const fetcher = vi.fn(async () => {
-        const body = { taskId: "existing-task", dispatchHash: hash("1"), state };
+        const body = { taskId: "existing-task", dispatchHash: hash("1"), state,
+          operations: { schemaVersion: 1, revision: 0, observedAt: Math.floor(Date.now()/1000), fulfillment: null, support: null, recovery: null } };
         const signature = await privateKeyToAccount(privateKey).signMessage({ message: { raw: canonicalHash(body) } });
         return Response.json({ ...body, signature,
           ...(["completed", "failed"].includes(state) ? { terminalAttestation: {} } : {}),
@@ -375,7 +376,8 @@ describe("dispatch refusal recovery", () => {
     const driver = retrying(async (_url, init) => {
       if (++calls === 1) return Response.json({ error: "not_ready" }, { status: 409 });
       const sent = JSON.parse(String(init.body)) as { dispatch: unknown };
-      const response = { taskId: "accepted-task", dispatchHash: canonicalHash(sent.dispatch), state: "working" };
+      const response = { taskId: "accepted-task", dispatchHash: canonicalHash(sent.dispatch), state: "working",
+        operations: { schemaVersion: 1, revision: 0, observedAt: Math.floor(Date.now()/1000), fulfillment: null, support: null, recovery: null } };
       const signature = await privateKeyToAccount(privateKey).signMessage({ message: { raw: canonicalHash(response) } });
       return Response.json({ ...response, signature });
     });

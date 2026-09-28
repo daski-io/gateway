@@ -78,7 +78,7 @@ function rawCard(paymentRequired: boolean) {
     inputSchema: schema, resultSchema: schema,
     pricing: { USDC: { type: "one-time", fixed_amount: paymentRequired ? "1000000" : "0" } },
     paymentRequired, requiresAssetOwnership: false, assetType: null,
-    fulfillmentMode: "automated", capacity: { maxOpenOrders: 10 },
+    fulfillmentMode: "automated", purchaseReadiness: null, capacity: { maxOpenOrders: 10 },
     deadlines: { dispatchSeconds: 300 }, assetAction: null,
   };
   const skillContractHash = canonicalHash({

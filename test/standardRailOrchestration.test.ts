@@ -27,6 +27,7 @@ describe("standard rail orchestration", () => {
       commitment: { payload: { absoluteResourceUri: "https://gateway.example/buy" } },
       manifest: {},
       offer: {},
+      deadlinePolicy: { minimumPaymentWindowSeconds: 30 },
     } as unknown as StandardListing;
     const order = { orderId: "order-1" } as StandardOrderRecord;
     const challenge = { handle: "handle-1", order, paymentRequired: { status: 402 } };
@@ -39,7 +40,7 @@ describe("standard rail orchestration", () => {
       listing: vi.fn(() => listing),
       verifyListingIdentity: vi.fn(async () => undefined),
       validateRequest: vi.fn(),
-      store: { findOpenDraft, createDraft },
+      store: { loadOperations: vi.fn(async () => null), persistOperations: vi.fn(async () => undefined), findOpenDraft, createDraft },
       challengeResponse: vi.fn(() => challenge),
     });
 
@@ -82,7 +83,7 @@ describe("standard rail orchestration", () => {
       appConfig: { chainId: 84532 },
       assertAdmissionOpen: vi.fn(),
       assertRailFence: vi.fn(async () => undefined),
-      store: { findByIntentId: vi.fn(async () => existing) },
+      store: { loadOperations: vi.fn(async () => null), persistOperations: vi.fn(async () => undefined), findByIntentId: vi.fn(async () => existing) },
       incidents: { record: vi.fn() },
     });
 
@@ -130,7 +131,7 @@ describe("standard rail orchestration", () => {
       appConfig: { chainId: 84532 },
       assertAdmissionOpen: vi.fn(),
       assertRailFence: vi.fn(async () => undefined),
-      store: { findByIntentId, findByAuthorizationKey },
+      store: { loadOperations: vi.fn(async () => null), persistOperations: vi.fn(async () => undefined), findByIntentId, findByAuthorizationKey },
       incidents: { record: vi.fn() },
     });
 
@@ -175,7 +176,7 @@ describe("standard rail orchestration", () => {
       appConfig: { chainId: 84532 },
       assertAdmissionOpen: vi.fn(),
       assertRailFence: vi.fn(async () => undefined),
-      store: { findByIntentId: vi.fn(async () => ({ handle: "handle-1", order })) },
+      store: { loadOperations: vi.fn(async () => null), persistOperations: vi.fn(async () => undefined), findByIntentId: vi.fn(async () => ({ handle: "handle-1", order })) },
       incidents: { record: vi.fn() },
     });
 
@@ -217,7 +218,7 @@ describe("standard rail orchestration", () => {
         },
       },
       assertRailFence: vi.fn(async () => undefined),
-      store: { findByHandle: vi.fn(async () => order) },
+      store: { loadOperations: vi.fn(async () => null), persistOperations: vi.fn(async () => undefined), findByHandle: vi.fn(async () => order) },
       journal: { issueActionChallenge, consumeActionChallenge, assertActionChallengeOpen: vi.fn(async () => undefined) },
       incidents: { record: vi.fn() },
       signedReceipt: vi.fn(async () => receipt),
@@ -319,11 +320,11 @@ describe("standard rail orchestration", () => {
       .rejects.toMatchObject({ code: "PROVIDER_QUOTE_UNAVAILABLE" });
   });
 
-  it("asks the provider before quoting a fixed-price listing and keeps the fixed artifacts", async () => {
+  it("asks the provider before quoting a fixed-price listing and binds its readiness commitment and lifetime", async () => {
     // 2026-09-03: a mailbox on an unverified custom domain was quoted from the
     // offer alone, paid, and refused at fulfilment. The provider's quote for
     // the request carries the adapter's availability verdict; the challenge
-    // still prices from the offer with the zero provider-quote hash.
+    // keeps the offer price while binding the provider readiness quote.
     const providerAuthority = privateKeyToAccount(`0x${"22".repeat(32)}`);
     const listing = {
       runtimeCommitmentHash: hash("1"),
@@ -336,7 +337,7 @@ describe("standard rail orchestration", () => {
           providerAuthorityKey: providerAuthority.address,
         },
       },
-      deadlinePolicy: { draftSeconds: 300, minimumPaymentWindowSeconds: 60 },
+      deadlinePolicy: { draftSeconds: 300, minimumPaymentWindowSeconds: 30 },
       quotePolicy: null,
       providerControlProfile: {
         payload: {
@@ -349,7 +350,7 @@ describe("standard rail orchestration", () => {
     } as unknown as StandardListing;
     const body = { address: "conformance-probe@sandbox.daski.io" };
     const requestHash = canonicalHash(body);
-    const answer = { status: 200, grossAmount: "9990000" };
+    const answer = { status: 200, grossAmount: "9990000", delaySeconds: 0, payer: null as string | null, lifetime: 60 };
     const providerFetch = vi.fn(async () => {
       if (answer.status === 422) {
         return new Response(JSON.stringify({
@@ -363,10 +364,12 @@ describe("standard rail orchestration", () => {
         listingManifestHash: hash("1"),
         requestHash,
         grossAmount: answer.grossAmount,
+        payer: answer.payer,
         issuedAt: now,
-        validBefore: now + 60,
+        validBefore: now + answer.lifetime,
       };
       const signature = await providerAuthority.signMessage({ message: { raw: canonicalHash(payload) } });
+      if (answer.delaySeconds) vi.setSystemTime(Date.now()+answer.delaySeconds*1000);
       return new Response(JSON.stringify({ ...payload, signature }), {
         status: 200,
         headers: { "content-type": "application/json" },
@@ -391,8 +394,24 @@ describe("standard rail orchestration", () => {
     const pricing = await resolve(listing, body);
     expect(providerFetch).toHaveBeenCalledOnce();
     expect(pricing.grossAmount).toBe("9990000");
-    expect(pricing.providerQuoteHash).toBe(`0x${"00".repeat(32)}`);
-    expect(pricing.validBefore).toBeGreaterThanOrEqual(before + 300);
+    expect(pricing.providerQuoteHash).not.toBe(`0x${"00".repeat(32)}`);
+    expect(pricing.validBefore).toBeGreaterThanOrEqual(before + 60);
+    expect(pricing.validBefore).toBeLessThanOrEqual(before + 61);
+    // A fixed readiness quote may span the sealed five-minute draft window, never longer.
+    answer.lifetime = 300;
+    const drafted = await resolve(listing, body);
+    expect(drafted.validBefore).toBeGreaterThanOrEqual(before + 300);
+    answer.lifetime = 301;
+    await expect(resolve(listing, body)).rejects.toMatchObject({code:"PROVIDER_QUOTE_UNAVAILABLE"});
+    answer.lifetime = 60;
+    answer.payer = address("b");
+    await expect(resolve(listing, body)).rejects.toMatchObject({code:"PROVIDER_QUOTE_UNAVAILABLE"});
+    answer.payer = null;
+    vi.useFakeTimers({toFake:["Date"]});
+    try {
+      answer.delaySeconds=31;
+      await expect(resolve(listing, body)).rejects.toMatchObject({code:"PROVIDER_QUOTE_UNAVAILABLE"});
+    } finally { answer.delaySeconds=0; vi.useRealTimers(); }
 
     // the provider's availability refusal reaches the buyer before any payment
     answer.status = 422;
@@ -422,7 +441,7 @@ describe("standard rail orchestration", () => {
     const service = harness({
       assertRailFence: vi.fn(async () => undefined),
       resumePreSettlement: vi.fn(async () => order),
-      store: {
+      store: { loadOperations: vi.fn(async () => null), persistOperations: vi.fn(async () => undefined),
         tryWithListingSettlementLock: async (
           _listingHash: Hex,
           action: () => Promise<void>,
@@ -447,6 +466,24 @@ describe("standard rail orchestration", () => {
 
 
 describe("live fulfillment deadline", () => {
+  it("keeps an admitted DNS wait pending after 31 days and alerts when its progress is stale", async () => {
+    const now = Math.floor(Date.now()/1000);
+    const order = { orderId:"waiting", state:"DISPATCHED", providerAgentId:"7", outcomeId:"mailbox",
+      listingManifestHash:hash("1"), listing:{purchaseReadiness:"payer_dns"},
+      updatedAt:new Date((now-31*86400)*1000) } as unknown as StandardOrderRecord;
+    const transition=vi.fn(); const record=vi.fn();
+    const service=harness({ assertRailFence:async()=>undefined,resumePreSettlement:async()=>order,
+      listing:async()=>({deadlinePolicy:{fulfillmentSeconds:30*86400}}),
+      store:{tryWithListingSettlementLock:async(_hash:Hex,work:()=>Promise<void>)=>work(),findById:async()=>order,
+        transition,loadOperations:async()=>({accumulatedWaitSeconds:31*86400,operations:{observedAt:now-700,
+          fulfillment:{phase:"dns_pending",accumulatedWaitSeconds:31*86400,nextCheckAt:now-400}}})},
+      journal:{dispatchClaim:async()=>({dispatch:{}}),dispatchResolvedAt:async()=>order.updatedAt},
+      dispatcher:{reconcile:async()=>{throw new Error("offline");}},incidents:{record},
+    });
+    await (service as unknown as {resumePaidOrder(o:StandardOrderRecord):Promise<void>}).resumePaidOrder(order);
+    expect(transition).not.toHaveBeenCalled();
+    expect(record).toHaveBeenCalledExactlyOnceWith({kind:"provider_wait_progress_stale",orderId:"waiting",state:"DISPATCHED"});
+  });
   it.each(["DISPATCHED", "INPUT_REQUIRED"] as const)("keeps an old snapshot alive at 61 minutes in %s and fails at 30 days", async (state) => {
     const resolvedAt = new Date("2026-09-28T00:00:36Z");
     const order = {
@@ -460,7 +497,7 @@ describe("live fulfillment deadline", () => {
     const service = harness({
       assertRailFence: vi.fn(), resumePreSettlement: async () => order,
       listing: currentListing,
-      store: {
+      store: { loadOperations: vi.fn(async () => null), persistOperations: vi.fn(async () => undefined),
         tryWithListingSettlementLock: async (_hash: Hex, work: () => Promise<void>) => work(),
         findById: async () => order, transition,
       },

@@ -21,6 +21,7 @@ import type {
   StandardRailDispatchV2,
 } from "./types.js";
 import { buildStandardEvidenceBundleV2 } from "./wireContracts.js";
+import { operationsSchema } from "./operationsSchema.js";
 
 const ZERO_HASH = `0x${"00".repeat(32)}` as Hex;
 
@@ -357,6 +358,7 @@ export class StandardProviderDispatch {
       dispatchHash?: unknown;
       signature?: unknown;
       state?: unknown;
+      operations?: unknown;
       terminalAttestation?: {
         payload?: Record<string, unknown>;
         signature?: unknown;
@@ -368,8 +370,8 @@ export class StandardProviderDispatch {
     assertExactKeys(
       body,
       terminal
-        ? ["taskId", "dispatchHash", "signature", "state", "terminalAttestation"]
-        : ["taskId", "dispatchHash", "signature", "state"],
+        ? ["taskId", "dispatchHash", "signature", "state", "operations", "terminalAttestation"]
+        : ["taskId", "dispatchHash", "signature", "state", "operations"],
       "provider dispatch response",
     );
     if (
@@ -390,6 +392,7 @@ export class StandardProviderDispatch {
       taskId: body.taskId,
       dispatchHash,
       state: body.state,
+      operations: operationsSchema.parse(body.operations),
     });
     const signer = await recoverMessageAddress({
       message: { raw: responseHash },
@@ -402,6 +405,47 @@ export class StandardProviderDispatch {
     return { body: { ...body, taskId: body.taskId }, responseHash, terminal };
   }
 
+  private async terminalEvidence(
+    listing: StandardListing, dispatchHash: Hex,
+    body: { taskId: string; state?: unknown; terminalAttestation?: { payload?: Record<string, unknown>; signature?: unknown } },
+  ) {
+    const attestation = body.terminalAttestation;
+    if (!attestation?.payload || typeof attestation.signature !== "string") {
+      throw new Error("provider_terminal_attestation_missing");
+    }
+    assertExactKeys(
+      attestation,
+      ["payload", "signature"],
+      "provider terminal attestation",
+    );
+    assertExactKeys(
+      attestation.payload,
+      ["taskId", "dispatchHash", "state", "resultHash", "completedAt"],
+      "provider terminal attestation payload",
+    );
+    const completedAt = attestation.payload.completedAt;
+    if (
+      typeof completedAt !== "number" || !Number.isSafeInteger(completedAt) ||
+      completedAt <= 0 || completedAt > Math.floor(Date.now() / 1_000) + 30 ||
+      typeof attestation.payload.resultHash !== "string" ||
+      !/^0x[0-9a-fA-F]{64}$/.test(attestation.payload.resultHash)
+    ) throw new Error("provider_terminal_attestation_time_invalid");
+    const terminalSigner = await recoverMessageAddress({
+      message: { raw: canonicalHash(attestation.payload) },
+      signature: attestation.signature as Hex,
+    });
+    if (
+      getAddress(terminalSigner) !==
+        getAddress(
+          listing.commitment.payload.providerTerminalAttestationKey,
+        ) ||
+      attestation.payload.taskId !== body.taskId ||
+      attestation.payload.dispatchHash !== dispatchHash ||
+      attestation.payload.state !== body.state
+    ) throw new Error("provider_terminal_attestation_invalid");
+    return { payload: attestation.payload, signature: attestation.signature };
+  }
+
   private async applyDispatchResponse(
     initial: StandardOrderRecord,
     listing: StandardListing,
@@ -409,6 +453,11 @@ export class StandardProviderDispatch {
     value: unknown,
   ): Promise<StandardOrderRecord> {
     const { body, responseHash, terminal } = await this.validateDispatchResponse(listing, dispatchHash, value);
+    if (initial.providerTaskId && initial.providerTaskId !== body.taskId) {
+      throw new Error("provider_dispatch_task_binding_invalid");
+    }
+    const evidence = terminal ? await this.terminalEvidence(listing, dispatchHash, body) : null;
+    await this.store.persistOperations(initial.orderId, body.operations, evidence);
     await this.journal.resolveDispatch(initial.orderId, body.taskId, responseHash, dispatchHash);
     let order = initial;
     if (["DISPATCH_STARTED", "DISPATCH_AMBIGUOUS"].includes(order.state)) {
@@ -437,40 +486,6 @@ export class StandardProviderDispatch {
         "provider_input_accepted",
       );
     } else if (terminal) {
-      const attestation = body.terminalAttestation;
-      if (!attestation?.payload || typeof attestation.signature !== "string") {
-        throw new Error("provider_terminal_attestation_missing");
-      }
-      assertExactKeys(
-        attestation,
-        ["payload", "signature"],
-        "provider terminal attestation",
-      );
-      assertExactKeys(
-        attestation.payload,
-        ["taskId", "dispatchHash", "state", "resultHash", "completedAt"],
-        "provider terminal attestation payload",
-      );
-      const completedAt = attestation.payload.completedAt;
-      if (
-        typeof completedAt !== "number" || !Number.isSafeInteger(completedAt) ||
-        completedAt <= 0 || completedAt > Math.floor(Date.now() / 1_000) + 30 ||
-        typeof attestation.payload.resultHash !== "string" ||
-        !/^0x[0-9a-fA-F]{64}$/.test(attestation.payload.resultHash)
-      ) throw new Error("provider_terminal_attestation_time_invalid");
-      const terminalSigner = await recoverMessageAddress({
-        message: { raw: canonicalHash(attestation.payload) },
-        signature: attestation.signature as Hex,
-      });
-      if (
-        getAddress(terminalSigner) !==
-          getAddress(
-            listing.commitment.payload.providerTerminalAttestationKey,
-          ) ||
-        attestation.payload.taskId !== body.taskId ||
-        attestation.payload.dispatchHash !== dispatchHash ||
-        attestation.payload.state !== body.state
-      ) throw new Error("provider_terminal_attestation_invalid");
       if (["DISPATCHED", "INPUT_REQUIRED"].includes(order.state)) {
         order = await this.store.transition(
           order,

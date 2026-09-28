@@ -26,6 +26,7 @@ describe("persisted Activity history", () => {
         providerAgentId: "8327", outcomeId: "form-entity", bindingProfile: "recipe-bound-v2",
         listingManifestHash: hash("1"), providerOfferHash: hash("2"),
         listing: {
+          deadlinePolicy: { minimumPaymentWindowSeconds: 30 },
           commitment: { payload: { serviceId: hash("3") } },
           presentation: { serviceName: "Entity Formation", skillName: "Form Entity" },
         } as StandardListing,

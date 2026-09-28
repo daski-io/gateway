@@ -16,6 +16,7 @@ import type {
 import type { SignedEnvelope, StandardListing, StandardRailManifest } from "./types.js";
 import { canonicalHash } from "./canonical.js";
 import { parseStandardRailReceiptV2 } from "./wireContracts.js";
+import { loadOperations, persistOperations, type TerminalEvidence } from "./operationsStore.js";
 
 const bytes = (value: Hex): Buffer => Buffer.from(value.slice(2), "hex");
 const hex = (value: Buffer | null): Hex | null =>
@@ -54,6 +55,7 @@ interface OrderRow {
   authorization_key: Buffer | null;
   payment_payload_hash: Buffer | null;
   payer: Hex | null;
+  expected_payer: Hex | null;
   gross_amount: string;
   provider_net_amount: string | null;
   daski_commission_amount: string | null;
@@ -93,6 +95,7 @@ function record(row: OrderRow): StandardOrderRecord {
     authorizationKey: hex(row.authorization_key),
     paymentPayloadHash: hex(row.payment_payload_hash),
     payer: row.payer,
+    expectedPayer: row.expected_payer ?? null,
     grossAmount: row.gross_amount,
     providerNetAmount: row.provider_net_amount,
     daskiCommissionAmount: row.daski_commission_amount,
@@ -113,6 +116,7 @@ function record(row: OrderRow): StandardOrderRecord {
 }
 
 export interface CreateDraftInput {
+  expectedPayer?: Hex | null;
   providerAgentId: string;
   outcomeId: string;
   bindingProfile: string;
@@ -141,6 +145,16 @@ export class StandardRailStore {
     private readonly pool: Pool,
     private readonly lockPool: Pool = pool,
   ) {}
+
+  loadOperations(orderId: string) { return loadOperations(this.pool, orderId); }
+
+  async markOperationsPoll(orderId: string) {
+    await this.pool.query("UPDATE standard_order_operations SET last_poll_at=now() WHERE order_id=$1", [orderId]);
+  }
+
+  persistOperations(orderId: string, operations: unknown, terminal: TerminalEvidence | null) {
+    return persistOperations(this.pool, orderId, operations, terminal);
+  }
 
   async loadReceipt(orderId: string): Promise<SignedEnvelope<StandardRailReceiptV2, 2> | null> {
     const result = await this.pool.query<{ canonical_receipt: unknown }>(
@@ -365,19 +379,27 @@ export class StandardRailStore {
   async createDraft(input: CreateDraftInput): Promise<{ order: StandardOrderRecord; handle: string }> {
     const client = await this.pool.connect();
     try {
-      await client.query("BEGIN ISOLATION LEVEL SERIALIZABLE");
+      // The shared draft key serializes admission; READ COMMITTED sees the
+      // predecessor's newly committed draft after waiting on the lock.
+      await client.query("BEGIN");
+      await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))", [
+        `draft:${input.providerAgentId}:${input.outcomeId}:${input.canonicalRequestHash}:${input.listingManifestHash}:${input.providerOfferHash}:${input.railEpoch}:${input.expectedPayer ?? ""}`,
+      ]);
       const existing = await client.query<OrderRow>(
         `SELECT * FROM standard_orders
           WHERE provider_agent_id=$1 AND outcome_id=$2
             AND canonical_request_hash=$3 AND state IN ('DRAFT','CHALLENGE_ISSUED')
             AND listing_manifest_hash=$4 AND provider_offer_hash=$5
             AND rail_epoch=$6
-            AND expires_at > now()
+            AND expected_payer IS NOT DISTINCT FROM $7::text
+            AND expires_at > now() + ($8::text || ' seconds')::interval
           ORDER BY created_at DESC LIMIT 1 FOR UPDATE`,
         [
           input.providerAgentId, input.outcomeId, bytes(input.canonicalRequestHash),
           bytes(input.listingManifestHash), bytes(input.providerOfferHash),
           input.railEpoch,
+          input.expectedPayer ?? null, Math.max(input.listing.deadlinePolicy.minimumPaymentWindowSeconds,
+            input.listing.quotePolicy?.minimumPaymentWindowSeconds ?? 0),
         ],
       );
       if (existing.rows[0]) {
@@ -393,8 +415,8 @@ export class StandardRailStore {
           order_id,order_key,order_handle,handle_hash,state,provider_agent_id,outcome_id,binding_profile,
           listing_manifest_hash,provider_offer_hash,canonical_listing,quote_hash,canonical_quote,canonical_request_hash,
           canonical_request,order_nonce,intent_id,gross_amount,rail_epoch,
-          listing_epoch,expires_at)
-         VALUES ($1,$2,$3,$4,'CHALLENGE_ISSUED',$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
+          listing_epoch,expires_at,expected_payer)
+         VALUES ($1,$2,$3,$4,'CHALLENGE_ISSUED',$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
          RETURNING *`,
         [
           orderId, bytes(orderKey), handle, handleHash, input.providerAgentId, input.outcomeId,
@@ -403,6 +425,7 @@ export class StandardRailStore {
           bytes(input.canonicalRequestHash), input.canonicalRequest,
           bytes(input.orderNonce), input.intentId, input.grossAmount, input.railEpoch,
           input.listingEpoch, input.expiresAt,
+          input.expectedPayer ?? null,
         ],
       );
       await client.query(
@@ -459,12 +482,16 @@ export class StandardRailStore {
       await client.query("BEGIN");
       const candidate = await client.query<OrderRow>(
         `SELECT * FROM standard_orders
-         WHERE state = ANY($1::text[])
+         WHERE (state = ANY($1::text[]) OR (state='PROVIDER_FAILED' AND EXISTS (
+           SELECT 1 FROM standard_order_operations op WHERE op.order_id=standard_orders.order_id
+           AND greatest(op.refreshed_at,op.last_poll_at) < now() - interval '5 minutes'
+           AND (op.safe_projection->'support'->>'status'='open' OR
+             op.safe_projection->'recovery'->>'state' IN ('queued','pending','running','attention')))))
            AND (lease_until IS NULL OR lease_until < now())
            AND updated_at < now() - CASE WHEN state IN ('RELEASE_FINAL','DISPATCH_STARTED','DISPATCH_AMBIGUOUS')
              THEN interval '10 seconds' ELSE interval '30 seconds' END
            AND NOT (order_id = ANY($2::text[]))
-         ORDER BY updated_at ASC
+         ORDER BY recovery_checked_at ASC NULLS FIRST, updated_at ASC
          LIMIT 1 FOR UPDATE SKIP LOCKED`,
         [RECOVERABLE_ORDER_STATES, excludedOrderIds],
       );
@@ -472,10 +499,12 @@ export class StandardRailStore {
         await client.query("COMMIT");
         return null;
       }
+      // Visiting an order moves it to the back of the rotation, so orders
+      // whose polls change nothing cannot hold every batch.
       const leased = await client.query<OrderRow>(
         `UPDATE standard_orders SET lease_owner=$2,
            lease_until=now()+($3::text || ' seconds')::interval,
-           lease_fence=lease_fence+1
+           lease_fence=lease_fence+1,recovery_checked_at=now()
          WHERE order_id=$1 RETURNING *`,
         [candidate.rows[0].order_id, workerId, leaseSeconds],
       );
@@ -541,17 +570,21 @@ export class StandardRailStore {
     listingManifestHash: Hex,
     providerOfferHash: Hex,
     railEpoch: string,
+    expectedPayer: Hex | null = null,
+    minimumWindowSeconds = 0,
   ): Promise<{ order: StandardOrderRecord; handle: string } | null> {
     const result = await this.pool.query<OrderRow>(
       `SELECT * FROM standard_orders
         WHERE provider_agent_id=$1 AND outcome_id=$2 AND canonical_request_hash=$3
           AND listing_manifest_hash=$4 AND provider_offer_hash=$5
           AND rail_epoch=$6
-          AND state='CHALLENGE_ISSUED' AND expires_at>now()
+          AND expected_payer IS NOT DISTINCT FROM $7::text
+          AND state='CHALLENGE_ISSUED' AND expires_at>now()+($8::text || ' seconds')::interval
         ORDER BY created_at DESC LIMIT 1`,
       [
         providerAgentId, outcomeId, bytes(requestHash), bytes(listingManifestHash),
         bytes(providerOfferHash), railEpoch,
+        expectedPayer, minimumWindowSeconds,
       ],
     );
     return result.rows[0]
@@ -579,17 +612,25 @@ export class StandardRailStore {
       if (conflict.rows[0] && conflict.rows[0].order_id !== args.orderId) {
         throw new Error("PAYMENT_AUTHORIZATION_ALREADY_CLAIMED");
       }
-      const target = await client.query<{ listing_manifest_hash: Buffer }>(
-        "SELECT listing_manifest_hash FROM standard_orders WHERE order_id=$1 FOR UPDATE",
+      const target = await client.query<{ listing_manifest_hash: Buffer; expected_payer: string | null }>(
+        "SELECT listing_manifest_hash,expected_payer FROM standard_orders WHERE order_id=$1 FOR UPDATE",
         [args.orderId],
       );
       if (!target.rows[0]) throw new Error("ORDER_NOT_FOUND");
+      if (target.rows[0].expected_payer && target.rows[0].expected_payer !== args.payer.toLowerCase()) {
+        throw new Error("READINESS_PAYER_MISMATCH");
+      }
       const listingHash = target.rows[0].listing_manifest_hash;
       await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))", [
         `capacity:${listingHash.toString("hex")}`,
       ]);
       const capacity = await client.query<{ count: string }>(
-        "SELECT count(*)::text AS count FROM standard_capacity_reservations WHERE listing_manifest_hash=$1 AND state='open'",
+        `SELECT count(*)::text AS count FROM standard_capacity_reservations cr
+         JOIN standard_orders o ON o.order_id=cr.order_id
+         LEFT JOIN standard_order_operations op ON op.order_id=o.order_id
+         WHERE cr.listing_manifest_hash=$1 AND cr.state='open' AND NOT (
+           coalesce(o.canonical_listing->>'purchaseReadiness'='payer_dns',false) AND
+           coalesce(op.safe_projection->'fulfillment'->>'phase' IN ('dns_pending','waiting_capacity'),false))`,
         [listingHash],
       );
       if (BigInt(capacity.rows[0]?.count ?? "0") >= BigInt(args.capacityLimit)) {

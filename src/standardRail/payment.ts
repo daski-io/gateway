@@ -486,6 +486,12 @@ export async function validatePayment(args: {
     });
   }
   const nowNumber = args.nowSeconds ?? Math.floor(Date.now() / 1_000);
+  if ((order.expectedPayer && order.expectedPayer.toLowerCase() !== payer.toLowerCase()) ||
+      (listing.purchaseReadiness === "payer_dns" && !order.expectedPayer)) {
+    throw standardRailError("AUTHORIZATION_MISMATCH", {
+      field: "payload.authorization.from", message: "Payment payer differs from the readiness quote",
+    });
+  }
   const now = BigInt(nowNumber);
   const expires = BigInt(Math.floor(order.expiresAt.getTime() / 1_000));
   let to: Address;

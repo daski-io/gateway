@@ -189,6 +189,10 @@ function standardRailErrorFixture() {
       serverTime: ISSUED_AT,
       correlationId: CORRELATION_ID,
     })),
+    // A read the provider refuses because the order has no artifact yet.
+    artifactNotAvailable: http(new StandardRailError("ARTIFACT_NOT_AVAILABLE", {
+      correlationId: CORRELATION_ID,
+    })),
     requestSchemaInvalid: http(new StandardRailError("REQUEST_SCHEMA_INVALID", {
       message: "Request body does not match the outcome schema",
       fieldErrors: [{ path: "/registrantState", rule: "pattern", message: "must match pattern" }],

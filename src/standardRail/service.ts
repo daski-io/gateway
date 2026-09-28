@@ -1,4 +1,8 @@
 import { createHmac, randomBytes, randomUUID } from "node:crypto";
+import { fulfillmentClock } from "./operationsStore.js";
+import { operationsSchema } from "./operationsSchema.js";
+import { supportResultSchema, validateSupportRequest } from "./supportRequest.js";
+import { readinessSchema, type PurchaseReadiness } from "./readinessSchema.js";
 import type { PaymentPayload, PaymentRequired, PaymentRequirements } from "@x402/core/types";
 import {
   createPublicClient,
@@ -70,6 +74,7 @@ import type {
   StoredRegistration,
 } from "../serviceRegistration/store.js";
 import { discardResponseBody, readBoundedJsonResponse as readBoundedJson } from "./boundedJson.js";
+import { providerLifecycleRefusal } from "./lifecycleRefusal.js";
 import { StandardProviderTransport } from "./providerTransport.js";
 import { StandardRailCatalog } from "./catalog.js";
 import { StandardProviderDispatch } from "./providerDispatch.js";
@@ -83,6 +88,10 @@ import {
 import { issueReadCapability, verifyReadCapability } from "./readCapability.js";
 import { createX402OfferReceipt, x402PaymentResponse } from "./x402Receipt.js";
 import { getIntakeRequirements } from "./intake.js";
+
+/** A fixed-price readiness quote may last at most the sealed draft window; the
+ *  challenge is still clamped to the listing's own draft window. */
+export const FIXED_READINESS_QUOTE_MAX_SECONDS = 300;
 
 export function isAdmissionWindowOpen(
   railValidBefore: number,
@@ -611,8 +620,15 @@ export class StandardRailService {
         "FACILITATOR_CONFIRMED", "SETTLEMENT_AMBIGUOUS", "SETTLEMENT_FAILED",
         "EXTERNAL_OR_UNPROVEN_DEPOSIT", "DEPOSIT_FINAL", "RELEASE_FINAL",
         "DISPATCH_STARTED", "DISPATCH_AMBIGUOUS", "DISPATCHED", "INPUT_REQUIRED",
+        "PROVIDER_FAILED",
       ].includes(order.state)) return;
       const listing = order.listing;
+      if (order.state === "PROVIDER_FAILED") {
+        await this.store.markOperationsPoll(order.orderId);
+        const claim = await this.journal.dispatchClaim(order.orderId);
+        if (claim) await this.dispatcher.reconcile(order, listing, canonicalHash(claim.dispatch));
+        return;
+      }
       order = await this.resumePreSettlement(order, listing);
       if (["NOT_SETTLED", "LEGAL_HOLD"].includes(order.state)) return;
       if (["DISPATCHED", "INPUT_REQUIRED"].includes(order.state)) {
@@ -635,7 +651,17 @@ export class StandardRailService {
         // Only this operational deadline is live; provider identity and all
         // other order terms continue to come from the checkout snapshot.
         const currentListing = await this.listing(order.providerAgentId, order.outcomeId);
-        const deadline = resolvedAt.getTime() + currentListing.deadlinePolicy.fulfillmentSeconds * 1_000;
+        const cached = await this.store.loadOperations(order.orderId);
+        const clock = fulfillmentClock(cached?.operations ?? null, listing.purchaseReadiness === "payer_dns",
+          Math.floor(Date.now()/1000), cached?.accumulatedWaitSeconds ?? 0);
+        if (clock.waiting) {
+          if (clock.stale) await this.incidents.record({
+            kind: "provider_wait_progress_stale", orderId: order.orderId, state: order.state,
+          });
+          return;
+        }
+        const deadline = resolvedAt.getTime() +
+          (currentListing.deadlinePolicy.fulfillmentSeconds + clock.excludedSeconds) * 1_000;
         if (Date.now() >= deadline) {
           await this.store.transition(order, "PROVIDER_FAILED", "signed_provider_deadline_elapsed");
         } else if (reconciliationFailed) {
@@ -1082,6 +1108,7 @@ export class StandardRailService {
     request: Record<string, unknown>;
     clientKey?: string;
   }): Promise<Record<string, unknown>> {
+    validateSupportRequest(args.action, args.request);
     await this.assertRailFence();
     const order = await this.store.findByHandle(args.handle);
     const now = Math.floor(Date.now() / 1_000);
@@ -1149,6 +1176,7 @@ export class StandardRailService {
     };
     readCapability?: string;
   }): Promise<unknown> {
+    validateSupportRequest(args.action, args.request);
     await this.assertRailFence();
     const order = await this.store.findByHandle(args.handle);
     if (!order || !order.payer) {
@@ -1353,13 +1381,7 @@ export class StandardRailService {
         )),
       },
     );
-    if (!response.ok) {
-      await discardResponseBody(response);
-      throw standardRailError("INTERNAL_ERROR", {
-        phase: "dispatch",
-        internalMessage: "PROVIDER_LIFECYCLE_REJECTED",
-      });
-    }
+    if (!response.ok) throw await providerLifecycleRefusal(args.action, response);
     const providerResult = await readBoundedJson(
       response,
       listing.providerControlProfile.payload.maxResponseBytes,
@@ -1370,6 +1392,7 @@ export class StandardRailService {
       providerResult,
       args.action as "status" | "input" | "cancel" | "artifact" | "support",
       args.handle,
+      args.request,
     );
     if (["input", "cancel", "support"].includes(args.action)) {
       await this.store.bumpCapabilityEpoch(order.orderId);
@@ -1383,6 +1406,7 @@ export class StandardRailService {
     result: unknown,
     action: "status" | "input" | "cancel" | "artifact" | "support",
     handle: string,
+    request?: Record<string, unknown>,
   ): Promise<unknown> {
     if (!result || typeof result !== "object") throw standardRailError("INTERNAL_ERROR", {
         phase: "dispatch",
@@ -1390,13 +1414,15 @@ export class StandardRailService {
       });
     const response = result as {
       orderId?: unknown; taskId?: unknown; state?: unknown; result?: unknown;
+      operations?: unknown;
       signature?: unknown;
       terminalAttestation?: { payload?: Record<string, unknown>; signature?: unknown };
     };
-    const lifecycleKeys = ["orderId", "taskId", "state", "signature"];
+    const lifecycleKeys = ["orderId", "taskId", "state", "signature", "operations"];
     if ("result" in response) lifecycleKeys.push("result");
     if ("terminalAttestation" in response) lifecycleKeys.push("terminalAttestation");
     assertExactKeys(response, lifecycleKeys, "provider lifecycle response");
+    operationsSchema.parse(response.operations);
     if (
       response.orderId !== initial.orderId || response.taskId !== initial.providerTaskId ||
       typeof response.signature !== "string" ||
@@ -1419,7 +1445,7 @@ export class StandardRailService {
         internalMessage: "PROVIDER_LIFECYCLE_SIGNATURE_INVALID",
       });
     }
-    if ((action === "status" || action === "support" || action === "cancel") && "result" in response) {
+    if ((action === "status" || action === "cancel") && "result" in response) {
       throw standardRailError("INTERNAL_ERROR", {
         phase: "dispatch",
         internalMessage: "PROVIDER_LIFECYCLE_UNEXPECTED_CONTENT",
@@ -1431,8 +1457,21 @@ export class StandardRailService {
         internalMessage: "PROVIDER_ARTIFACT_MISSING",
       });
     }
-    if ("result" in response) await this.validateResponse(listing, response.result);
+    if (action === "artifact" && response.state !== "completed" &&
+        operationsSchema.parse(response.operations).recovery?.state !== "completed") {
+      throw standardRailError("INTERNAL_ERROR", { internalMessage: "PROVIDER_ARTIFACT_NOT_FULFILLED" });
+    }
+    if (action === "support") {
+      const support = supportResultSchema.parse(response.result);
+      if (support.supportReceipt.requestId !== request?.requestId) {
+        throw standardRailError("INTERNAL_ERROR", { internalMessage: "PROVIDER_SUPPORT_RECEIPT_BINDING_INVALID" });
+      }
+    }
+    else if ("result" in response) await this.validateResponse(listing, response.result);
     let order = initial;
+    if (!["completed", "failed", "canceled"].includes(String(response.state))) {
+      await this.store.persistOperations(order.orderId, response.operations, null);
+    }
     if (response.state === "input-required" && order.state === "DISPATCHED") {
       order = await this.store.transition(order, "INPUT_REQUIRED", "provider_input_required");
     } else if (response.state === "working" && order.state === "INPUT_REQUIRED") {
@@ -1469,11 +1508,14 @@ export class StandardRailService {
         attestation.payload.orderId !== initial.orderId ||
         attestation.payload.taskId !== initial.providerTaskId ||
         attestation.payload.state !== response.state ||
-        (action !== "artifact" && "result" in response &&
+        (action !== "artifact" && action !== "support" && "result" in response &&
           attestation.payload.resultHash !== canonicalHash(response.result))
       ) throw standardRailError("INTERNAL_ERROR", {
         phase: "dispatch",
         internalMessage: "PROVIDER_TERMINAL_ATTESTATION_INVALID",
+      });
+      await this.store.persistOperations(order.orderId, response.operations, {
+        payload: attestation.payload, signature: attestation.signature,
       });
       if (response.state === "completed" && ["DISPATCHED", "INPUT_REQUIRED"].includes(order.state)) {
         order = await this.store.transition(order, "FULFILLED", "provider_terminal_completed");
@@ -1489,6 +1531,8 @@ export class StandardRailService {
       orderHandle: handle,
       orderKey: order.orderKey,
       orderState: order.state,
+      fulfillmentState: operationsSchema.parse(response.operations).recovery?.state === "completed"
+        ? "recovered" : response.state,
       receipt: await this.signedReceipt(order),
       ...(action === "status"
         ? { confirmationFinal: await this.confirmationState.stored(order.orderId) }
@@ -1506,6 +1550,10 @@ export class StandardRailService {
     await this.assertRailFence();
     const listing = await this.listing(args.providerAgentId, args.outcomeId);
     await this.validateRequest(listing, args.body);
+    const expectedPayer = args.payerAddress ? getAddress(args.payerAddress).toLowerCase() as Hex : null;
+    if (listing.purchaseReadiness === "payer_dns" && !expectedPayer) {
+      throw standardRailError("REQUEST_SCHEMA_INVALID", { message: "payerAddress is required for this outcome" });
+    }
     const canonicalRequestHash = canonicalHash({
       method: "POST",
       resource: listing.commitment.payload.absoluteResourceUri,
@@ -1523,23 +1571,26 @@ export class StandardRailService {
       listingManifestHash,
       providerOfferHash,
       railEpoch,
+      expectedPayer,
+      Math.max(listing.deadlinePolicy.minimumPaymentWindowSeconds, listing.quotePolicy?.minimumPaymentWindowSeconds ?? 0),
     );
     if (existing) {
       return this.challengeResponse(listing, existing.order, existing.handle, args.payerAddress);
     }
 
+    const pricing = await this.resolveGrossAmount(listing, args.body, expectedPayer);
     const now = Math.floor(Date.now() / 1_000);
-    const pricing = await this.resolveGrossAmount(listing, args.body);
-    const quoteIssuedAt = Math.max(now, pricing.issuedAt);
+    const quoteIssuedAt = pricing.issuedAt;
     const minimumPaymentWindowSeconds = Math.max(
       listing.deadlinePolicy.minimumPaymentWindowSeconds,
       listing.quotePolicy?.minimumPaymentWindowSeconds ?? 0,
     );
     const expiresAt = Math.min(
       now + this.railConfig.challengeTtlSeconds,
+      now + listing.deadlinePolicy.draftSeconds,
       pricing.validBefore,
     );
-    if (expiresAt <= quoteIssuedAt + minimumPaymentWindowSeconds) {
+    if (expiresAt <= Math.max(now, quoteIssuedAt) + minimumPaymentWindowSeconds) {
       throw standardRailError("CHALLENGE_EXPIRED", {
         serverTime: now,
         logContext: {
@@ -1590,6 +1641,7 @@ export class StandardRailService {
       grossAmount,
       railEpoch,
       listingEpoch: listing.commitment.payload.listingEpoch,
+      expectedPayer,
       expiresAt: new Date(expiresAt * 1_000),
     });
     return this.challengeResponse(listing, created.order, created.handle, args.payerAddress);
@@ -2128,6 +2180,7 @@ export class StandardRailService {
   private async resolveGrossAmount(
     listing: StandardListing,
     body: unknown,
+    payer: Hex | null = null,
   ): Promise<{
     grossAmount: string;
     providerQuoteHash: Hex;
@@ -2136,13 +2189,8 @@ export class StandardRailService {
   }> {
     const offer = listing.offer.payload;
     const now = Math.floor(Date.now() / 1_000);
-    // A fixed-price listing is priced by its offer, but the provider is still
-    // asked before a challenge is issued: its quote for THIS request carries
-    // the adapter's availability verdict (a mailbox on an unverified domain,
-    // a taken name), which otherwise surfaces only at fulfilment, after the
-    // buyer has paid (2026-09-03). The signed artifacts keep the offer's
-    // amount and the zero provider-quote hash the provider's dispatch
-    // verification requires for fixed pricing.
+    // Fixed and dynamic readiness both bind the payer and expire with the
+    // provider quote. A price fixed by the listing is not perpetual readiness.
     const fixed = offer.pricingMode === "fixed" && /^[1-9][0-9]*$/.test(offer.fixedGrossAmount);
     const requestHash = canonicalHash(body);
     const quoteRequest = await signEnvelope({
@@ -2159,6 +2207,7 @@ export class StandardRailService {
         listingManifestHash: listing.runtimeCommitmentHash,
         requestHash,
         request: body,
+        payer,
       },
     });
     const response = await this.providerFetch(listing, listing.providerControlProfile.payload.quoteUrl, {
@@ -2176,6 +2225,7 @@ export class StandardRailService {
       // failure body is released so the pinned socket closes.
       if (response.status < 400 || response.status >= 500) await discardResponseBody(response);
       if (response.status >= 400 && response.status < 500) {
+        let readiness: PurchaseReadiness | undefined;
         let fieldErrors: Array<{
           path: string;
           rule: string;
@@ -2186,7 +2236,9 @@ export class StandardRailService {
           const rejection = await readBoundedJson(
             response,
             Math.min(32_768, listing.providerControlProfile.payload.maxResponseBytes),
-          ) as { fieldErrors?: unknown };
+          ) as { fieldErrors?: unknown; readiness?: unknown };
+          const parsedReadiness = readinessSchema.safeParse(rejection.readiness);
+          if (parsedReadiness.success) readiness = parsedReadiness.data;
           if (Array.isArray(rejection.fieldErrors)) {
             fieldErrors = rejection.fieldErrors.slice(0, 32).flatMap((item) => {
               if (!item || typeof item !== "object" || Array.isArray(item)) return [];
@@ -2209,6 +2261,7 @@ export class StandardRailService {
           // A structured rejection body is optional; status remains authoritative.
         }
         throw standardRailError("PROVIDER_QUOTE_REJECTED", {
+          readiness,
           fieldErrors,
           logContext: {
             providerAgentId: listing.commitment.payload.providerAgentId,
@@ -2235,35 +2288,35 @@ export class StandardRailService {
       listingManifestHash?: unknown;
       requestHash?: unknown;
       grossAmount?: unknown;
+      payer?: unknown;
       issuedAt?: unknown;
       validBefore?: unknown;
       signature?: unknown;
     };
     assertExactKeys(
       quote,
-      ["outcomeId", "listingManifestHash", "requestHash", "grossAmount", "issuedAt", "validBefore", "signature"],
+      ["outcomeId", "listingManifestHash", "requestHash", "grossAmount", "payer", "issuedAt", "validBefore", "signature"],
       "provider quote response",
     );
     if (
       quote.outcomeId !== listing.commitment.payload.outcomeId ||
+      quote.payer !== payer ||
       quote.listingManifestHash !== listing.runtimeCommitmentHash ||
       quote.requestHash !== requestHash || typeof quote.grossAmount !== "string" ||
       !/^[1-9][0-9]*$/.test(quote.grossAmount) || typeof quote.issuedAt !== "number" ||
       !Number.isSafeInteger(quote.issuedAt) || typeof quote.validBefore !== "number" ||
       !Number.isSafeInteger(quote.validBefore) || typeof quote.signature !== "string"
     ) throw standardRailError("PROVIDER_QUOTE_UNAVAILABLE");
-    // A dynamic quote's lifetime becomes the challenge's; a fixed listing's
-    // challenge keeps the offer's draft window, so only identity and the
-    // signature are checked for it below.
-    if (!fixed && (
-      quote.issuedAt > now + 30 || quote.issuedAt < now - 30 ||
-      quote.validBefore <= now + Math.max(
+    const receivedAt = Math.floor(Date.now() / 1_000);
+    if (
+      quote.issuedAt > receivedAt + 30 || quote.issuedAt < receivedAt - 30 ||
+      quote.validBefore <= receivedAt + Math.max(
         listing.deadlinePolicy.minimumPaymentWindowSeconds,
         listing.quotePolicy?.minimumPaymentWindowSeconds ?? 0,
       ) ||
-      !listing.quotePolicy ||
-      quote.validBefore > quote.issuedAt + listing.quotePolicy.maximumLifetimeSeconds
-    )) throw standardRailError("PROVIDER_QUOTE_UNAVAILABLE");
+      (!fixed && !listing.quotePolicy) ||
+      quote.validBefore > quote.issuedAt + (fixed ? FIXED_READINESS_QUOTE_MAX_SECONDS : listing.quotePolicy!.maximumLifetimeSeconds)
+    ) throw standardRailError("PROVIDER_QUOTE_UNAVAILABLE");
     const bps = BigInt(listing.commitment.payload.commissionBps);
     const minimumReleasableAmount = (10_000n + bps - 1n) / bps;
     if (BigInt(quote.grossAmount) < minimumReleasableAmount) {
@@ -2275,6 +2328,7 @@ export class StandardRailService {
       listingManifestHash: quote.listingManifestHash,
       requestHash: quote.requestHash,
       grossAmount: quote.grossAmount,
+      payer: quote.payer,
       issuedAt: quote.issuedAt,
       validBefore: quote.validBefore,
     });
@@ -2293,12 +2347,6 @@ export class StandardRailService {
           },
         });
       }
-      return {
-        grossAmount: offer.fixedGrossAmount,
-        providerQuoteHash: `0x${"00".repeat(32)}`,
-        issuedAt: now,
-        validBefore: now + listing.deadlinePolicy.draftSeconds,
-      };
     }
     return {
       grossAmount: quote.grossAmount,

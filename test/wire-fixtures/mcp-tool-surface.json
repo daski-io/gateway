@@ -248,10 +248,22 @@
           },
           "request": {
             "type": "object",
-            "propertyNames": {
-              "type": "string"
+            "properties": {
+              "requestId": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9_-]{1,128}$"
+              },
+              "message": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4000
+              }
             },
-            "additionalProperties": {}
+            "required": [
+              "requestId",
+              "message"
+            ],
+            "additionalProperties": false
           },
           "authorization": {
             "type": "object",
@@ -310,7 +322,8 @@
           }
         },
         "required": [
-          "orderHandle"
+          "orderHandle",
+          "request"
         ]
       },
       "outputSchema": {
