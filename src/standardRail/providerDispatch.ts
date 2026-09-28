@@ -330,12 +330,25 @@ export class StandardProviderDispatch {
     );
   }
 
-  private async applyDispatchResponse(
-    initial: StandardOrderRecord,
+  /** Read and authenticate status without resolving a claim or changing an order. */
+  async statusForRevival(
+    order: Pick<StandardOrderRecord, "orderId" | "providerTaskId">,
+    listing: StandardListing,
+    dispatchHash: Hex,
+  ): Promise<string> {
+    const value = await this.queryProviderDispatchStatus(listing, order.orderId, dispatchHash);
+    const { body } = await this.validateDispatchResponse(listing, dispatchHash, value);
+    if (!order.providerTaskId || body.taskId !== order.providerTaskId) {
+      throw new Error("provider_dispatch_task_binding_invalid");
+    }
+    return String(body.state);
+  }
+
+  private async validateDispatchResponse(
     listing: StandardListing,
     dispatchHash: Hex,
     value: unknown,
-  ): Promise<StandardOrderRecord> {
+  ) {
     if (!value || typeof value !== "object" || Array.isArray(value)) {
       throw new Error("provider_dispatch_response_malformed");
     }
@@ -386,6 +399,16 @@ export class StandardProviderDispatch {
       getAddress(signer) !==
         getAddress(listing.commitment.payload.providerAuthorityKey)
     ) throw new Error("provider_dispatch_response_signature_invalid");
+    return { body: { ...body, taskId: body.taskId }, responseHash, terminal };
+  }
+
+  private async applyDispatchResponse(
+    initial: StandardOrderRecord,
+    listing: StandardListing,
+    dispatchHash: Hex,
+    value: unknown,
+  ): Promise<StandardOrderRecord> {
+    const { body, responseHash, terminal } = await this.validateDispatchResponse(listing, dispatchHash, value);
     await this.journal.resolveDispatch(initial.orderId, body.taskId, responseHash, dispatchHash);
     let order = initial;
     if (["DISPATCH_STARTED", "DISPATCH_AMBIGUOUS"].includes(order.state)) {

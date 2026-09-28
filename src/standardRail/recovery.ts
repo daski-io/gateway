@@ -2,11 +2,12 @@ import { randomUUID } from "node:crypto";
 import { logger } from "../util/logger.js";
 import type { StandardRailConfig } from "./config.js";
 import type { StandardRailStore } from "./store.js";
-import type { StandardOrderRecord } from "./types.js";
+import type { StandardListing, StandardOrderRecord } from "./types.js";
 
 interface RecoveryOptions {
   config: StandardRailConfig;
   store: StandardRailStore;
+  listing(providerAgentId: string, outcomeId: string): Promise<StandardListing>;
   resumePaid(order: StandardOrderRecord): Promise<void>;
   cleanup(): Promise<void>;
 }
@@ -50,7 +51,7 @@ export class StandardRailRecoveryWorker {
       if (!order) return;
       skipped.push(order.orderId);
       try {
-        if (this.isDue(order)) await this.recover(order);
+        if (await this.isDue(order)) await this.recover(order);
       } catch (error) {
         logger.error("standard-rail order recovery failed", {
           orderId: order.orderId,
@@ -65,10 +66,8 @@ export class StandardRailRecoveryWorker {
     }
   }
 
-  private isDue(order: StandardOrderRecord): boolean {
-    const listing = order.listing;
-    const policy = listing.deadlinePolicy;
-    const seconds = (() => {
+  private async isDue(order: StandardOrderRecord): Promise<boolean> {
+    const seconds = await (async () => {
       switch (order.state) {
         case "CHALLENGE_ISSUED": return Math.max(30, Math.floor((order.expiresAt.getTime() - order.updatedAt.getTime()) / 1_000));
         case "ATTEMPT_OPENED":
@@ -86,7 +85,8 @@ export class StandardRailRecoveryWorker {
         case "DISPATCH_AMBIGUOUS": return 10;
         case "DISPATCHED":
         case "INPUT_REQUIRED": return 30;
-        default: return policy.fulfillmentSeconds;
+        default: return (await this.options.listing(order.providerAgentId, order.outcomeId))
+          .deadlinePolicy.fulfillmentSeconds;
       }
     })();
     const dueAt = order.updatedAt.getTime() + seconds * 1_000;

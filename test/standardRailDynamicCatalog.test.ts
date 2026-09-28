@@ -361,7 +361,15 @@ describe("dynamic listing catalog", () => {
     expect(listing.offer.payload.pricingMode).toBe("fixed");
     expect(listing.offer.payload.fixedGrossAmount).toBe("5000000");
     expect(listing.quotePolicy).toBeNull();
-    expect(listing.deadlinePolicy.dispatchSeconds).toBe(300);
+    expect(listing.deadlinePolicy).toEqual({
+      draftSeconds: 300,
+      minimumPaymentWindowSeconds: 30,
+      verificationSeconds: 120,
+      settlementEvidenceSeconds: 900,
+      releaseEvidenceSeconds: 900,
+      dispatchSeconds: 300,
+      fulfillmentSeconds: 2_592_000,
+    });
     expect(listing.capacityPolicy.maxOpenOrders).toBe(10);
     expect(listing.screeningPolicy.policyId).toBe("daski-testnet-screening-v1");
     expect(listing.terms.providerLegalName).toBe("Blue T Group, LLC");

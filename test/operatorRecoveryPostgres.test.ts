@@ -81,7 +81,7 @@ describe("operator and dispatch recovery (postgres)", () => {
     expect(recovery.claim_id).toBe(audit[0].details.claimId);
     expect(Date.now() - recovery.started_at.getTime()).toBeLessThan(5000);
     expect(isTerminalState("PROVIDER_FAILED")).toBe(true);
-    expect(() => assertTransition("PROVIDER_FAILED", "DISPATCHED")).toThrow();
+    expect(() => assertTransition("PROVIDER_FAILED", "DISPATCHED")).not.toThrow();
   }), 60_000);
 
   it("refuses missing evidence, a provider task, a resolved claim, a live driver and other states without mutation", async () => fixture(async (pool) => {
@@ -89,7 +89,7 @@ describe("operator and dispatch recovery (postgres)", () => {
     await expect(operator.redispatch(orderId)).rejects.toThrow("release_evidence_missing");
     await release(pool);
     await pool.query("UPDATE standard_orders SET provider_task_id='task'");
-    await expect(operator.redispatch(orderId)).rejects.toThrow("provider_task_already_assigned");
+    await expect(operator.redispatch(orderId)).rejects.toThrow("order_not_failed_by_deadline");
     await pool.query("UPDATE standard_orders SET provider_task_id=NULL");
     await pool.query("UPDATE standard_dispatch_claims SET resolved_at=now()");
     await expect(operator.redispatch(orderId)).rejects.toThrow("dispatch_claim_resolved");
@@ -263,4 +263,91 @@ describe("reputation retry chain reconciliation (postgres)", () => {
     expect((await pool.query("SELECT * FROM standard_operator_actions")).rows).toHaveLength(1);
     expect(send).not.toHaveBeenCalled();
   }), 60_000);
+});
+
+
+async function deadlineFailure(pool: Pool) {
+  await pool.query("UPDATE standard_orders SET provider_task_id='existing-task'");
+  await pool.query("UPDATE standard_dispatch_claims SET provider_task_id='existing-task',resolved_at=now()-interval '61 minutes'");
+  await pool.query(`INSERT INTO standard_order_transitions (order_id,from_state,to_state,reason_code,fence)
+    VALUES ($1,'DISPATCHED','PROVIDER_FAILED','signed_provider_deadline_elapsed',2)`, [orderId]);
+}
+
+describe("operator deadline revival (postgres)", () => {
+  it.each(["working", "submitted", "dispatching"])("revives %s once, preserving the task and claim", async (state) => fixture(async (pool) => {
+    await deadlineFailure(pool);
+    const claim = (await pool.query("SELECT * FROM standard_dispatch_claims")).rows;
+    const providerStatus = vi.fn(async () => state);
+    const operator = new StandardRailOperator(pool, undefined, providerStatus);
+    const results = await Promise.allSettled([operator.redispatch(orderId), operator.redispatch(orderId)]);
+    expect(results.filter((r) => r.status === "fulfilled")).toEqual([
+      { status: "fulfilled", value: { orderId, state: "DISPATCHED" } },
+    ]);
+    expect(results.filter((r) => r.status === "rejected")).toHaveLength(1);
+    expect(providerStatus).toHaveBeenCalledExactlyOnceWith(
+      { orderId, providerTaskId: "existing-task" }, {}, canonicalHash({ old: true }),
+    );
+    expect((await pool.query("SELECT state,version,lease_fence,provider_task_id FROM standard_orders")).rows[0])
+      .toEqual({ state: "DISPATCHED", version: "8", lease_fence: "3", provider_task_id: "existing-task" });
+    expect((await pool.query("SELECT * FROM standard_dispatch_claims")).rows).toEqual(claim);
+    expect((await pool.query("SELECT * FROM standard_dispatch_recovery")).rows).toEqual([]);
+    expect((await pool.query("SELECT from_state,to_state,reason_code FROM standard_order_transitions ORDER BY transition_id")).rows).toEqual([
+      { from_state: "DISPATCHED", to_state: "PROVIDER_FAILED", reason_code: "signed_provider_deadline_elapsed" },
+      { from_state: "PROVIDER_FAILED", to_state: "DISPATCHED", reason_code: "operator_revived" },
+    ]);
+    expect((await pool.query("SELECT actor,action,target_id,details FROM standard_operator_actions")).rows).toEqual([
+      { actor: "catalog-operator", action: "operator_revived", target_id: orderId,
+        details: { providerTaskId: "existing-task", providerState: state } },
+    ]);
+  }), 60_000);
+
+  it.each(["completed", "failed", "canceled", "input-required", "unknown", "unavailable", "no-task", "no-claim", "wrong-reason", "busy"])(
+    "refuses %s without mutation", async (condition) => fixture(async (pool) => {
+      await deadlineFailure(pool);
+      let reason = `provider_task_not_active:${condition}`;
+      if (condition === "no-task") {
+        await pool.query("UPDATE standard_orders SET provider_task_id=NULL");
+        reason = "provider_task_missing";
+      } else if (condition === "no-claim") {
+        await pool.query("DELETE FROM standard_dispatch_claims");
+        reason = "dispatch_claim_missing";
+      } else if (condition === "wrong-reason") {
+        // A matching older reason is insufficient: only the latest transition counts.
+        await pool.query(`INSERT INTO standard_order_transitions (order_id,from_state,to_state,reason_code,fence)
+          VALUES ($1,'DISPATCHED','PROVIDER_FAILED','provider_reported_failure',2)`, [orderId]);
+        reason = "order_not_failed_by_deadline";
+      } else if (condition === "busy") {
+        await pool.query("UPDATE standard_orders SET lease_until=now()+interval '1 minute'");
+        reason = "order_driver_active";
+      } else if (condition === "unavailable") reason = "provider_status_unavailable_or_invalid";
+      const providerStatus = vi.fn(async () => {
+        if (condition === "unavailable") throw new Error("provider unavailable");
+        return condition;
+      });
+      const before = (await pool.query("SELECT * FROM standard_orders")).rows;
+      const transitions = (await pool.query("SELECT * FROM standard_order_transitions ORDER BY transition_id")).rows;
+      const operator = new StandardRailOperator(pool, undefined, providerStatus);
+      await expect(operator.redispatch(orderId)).rejects.toThrow(reason);
+      if (["no-task", "no-claim", "wrong-reason", "busy"].includes(condition)) expect(providerStatus).not.toHaveBeenCalled();
+      expect((await pool.query("SELECT * FROM standard_orders")).rows).toEqual(before);
+      expect((await pool.query("SELECT * FROM standard_order_transitions ORDER BY transition_id")).rows).toEqual(transitions);
+      expect((await pool.query("SELECT * FROM standard_operator_actions")).rows).toEqual([]);
+      const store = new StandardRailStore(pool);
+      await expect(store.transition((await store.findById(orderId))!, "DISPATCHED", "operator_revived"))
+        .rejects.toThrow("OPERATOR_REDISPATCH_REQUIRED");
+    }), 60_000,
+  );
+
+  it("opens only DISPATCHED in addition to the existing operator redispatch edge", () => {
+    const states = ["DRAFT", "CHALLENGE_ISSUED", "ATTEMPT_OPENED", "VERIFIED", "VERIFY_REJECTED",
+      "SETTLE_INVOKED", "FACILITATOR_CONFIRMED", "SETTLEMENT_AMBIGUOUS", "SETTLEMENT_FAILED",
+      "EXTERNAL_OR_UNPROVEN_DEPOSIT", "DEPOSIT_FINAL", "RELEASE_FINAL", "DISPATCH_STARTED",
+      "DISPATCHED", "DISPATCH_AMBIGUOUS", "FULFILLED", "PROVIDER_FAILED", "INPUT_REQUIRED", "LEGAL_HOLD", "NOT_SETTLED"] as const;
+    for (const state of states) {
+      const check = () => assertTransition("PROVIDER_FAILED", state);
+      if (["RELEASE_FINAL", "DISPATCHED"].includes(state)) expect(check).not.toThrow();
+      else expect(check).toThrow();
+    }
+    expect(isTerminalState("PROVIDER_FAILED")).toBe(true);
+  });
 });

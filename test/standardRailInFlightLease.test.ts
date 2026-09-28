@@ -143,6 +143,7 @@ describe("recovery worker lease hand-back", () => {
     const instance = new StandardRailRecoveryWorker({
       config: { leaseSeconds: 45, recoveryIntervalMs: 10_000 } as StandardRailConfig,
       store: store as unknown as StandardRailStore,
+      listing: vi.fn(),
       resumePaid,
       cleanup: vi.fn(async () => undefined),
     });
@@ -244,5 +245,29 @@ describe("store lease statements", () => {
     await expect(store.renewLease("order-1", "standard-request-a", 4, 45)).resolves.toBe(false);
     expect(calls[0]?.sql).toContain("WHERE order_id=$1 AND lease_owner=$2 AND lease_fence=$3 AND lease_until>now()");
     expect(calls[0]?.values).toEqual(["order-1", "standard-request-a", 4, 45]);
+  });
+});
+
+
+describe("recovery fallback schedule", () => {
+  it("reads the current fulfillment policy while retaining the active-task polling cadence", async () => {
+    const listing = vi.fn(async () => ({ deadlinePolicy: { fulfillmentSeconds: 2_592_000 } }));
+    const instance = new StandardRailRecoveryWorker({ listing } as unknown as ConstructorParameters<typeof StandardRailRecoveryWorker>[0]);
+    const isDue = (order: StandardOrderRecord) => (instance as unknown as {
+      isDue(order: StandardOrderRecord): Promise<boolean>;
+    }).isDue(order);
+    const order = {
+      providerAgentId: "7", outcomeId: "formation", state: "DRAFT",
+      listing: { deadlinePolicy: { fulfillmentSeconds: 3600 } },
+      updatedAt: new Date(Date.now() - 61 * 60_000),
+    } as StandardOrderRecord;
+    expect(await isDue(order)).toBe(false);
+    expect(listing).toHaveBeenCalledWith("7", "formation");
+    expect(await isDue({ ...order, updatedAt: new Date(Date.now() - 2_592_000_000) })).toBe(true);
+    listing.mockClear();
+    for (const state of ["DISPATCHED", "INPUT_REQUIRED"] as const) {
+      expect(await isDue({ ...order, state })).toBe(true);
+    }
+    expect(listing).not.toHaveBeenCalled();
   });
 });

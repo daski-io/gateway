@@ -14,11 +14,23 @@ The action records exactly one `PROVIDER_FAILED` → `RELEASE_FINAL` transition 
 reason `operator_redispatch`, archives the previous claim in the audit record and
 reserves a new claim ID. It returns `{ orderId, state: "RELEASE_FINAL", claimId }`.
 Recovery creates the signed dispatch with a fresh nonce on its next due tick.
-Repeated calls after revival return 409. Other exits from `PROVIDER_FAILED`
-remain closed, and failed orders remain terminal for automatic recovery.
+Repeated calls after revival return 409. Failed orders remain terminal for
+automatic recovery.
 
-An explicit revival starts a fresh fulfillment window at the operator action;
-the original release evidence is preserved. This lets an already expired order
+The same endpoint can revive an existing task when the order is
+`PROVIDER_FAILED`, its last transition reason is
+`signed_provider_deadline_elapsed`, and the provider's authenticated status for
+the recorded task is `working`, `submitted` or `dispatching`. It records exactly
+one audited `PROVIDER_FAILED` → `DISPATCHED` transition with reason
+`operator_revived` and returns `{ orderId, state: "DISPATCHED" }`. It preserves
+the task, dispatch claim and original dispatch resolution time. It sends no new
+dispatch and creates no claim. Missing tasks, other failure reasons, other
+provider states and unavailable or invalid status responses return 409 with
+`error.reason`. These two operator paths are the only exits from
+`PROVIDER_FAILED`.
+
+A redispatch without an existing task starts a fresh fulfillment window at the
+operator action; the original release evidence is preserved. This lets an already expired order
 be retried without immediately failing against its original release deadline.
 
 `POST /operator/v1/reputation/:operationId/retry` first reconciles stored
@@ -62,3 +74,11 @@ A five-minute envelope expiry does not end the fulfillment window. Transport
 failures, timeouts and responses without a usable JSON error remain ambiguous;
 recovery only polls their existing dispatch hash. Each recovery batch visits an
 order at most once, including when a status query leaves its state unchanged.
+
+The default fulfillment deadline is 2,592,000 seconds (30 days). For accepted
+orders in `DISPATCHED` or `INPUT_REQUIRED`, deadline evaluation uses the current
+listing's `fulfillmentSeconds`, measured from the original dispatch resolution,
+even when the checkout snapshot contains the previous 3,600-second default.
+Other order terms continue to use the immutable checkout snapshot. A provider
+reporting failure still fails through reconciliation immediately; an active
+status does not restart the clock.
