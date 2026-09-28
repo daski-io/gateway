@@ -78,7 +78,7 @@ const SEALED_DEADLINE_POLICY = {
   settlementEvidenceSeconds: 900,
   releaseEvidenceSeconds: 900,
   dispatchSeconds: 300,
-  fulfillmentSeconds: 3_600,
+  fulfillmentSeconds: 2_592_000,
 } as const;
 
 const SEALED_QUOTE_POLICY = {

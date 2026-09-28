@@ -7,7 +7,7 @@ const orderId = "ord_12345678-1234-4123-8123-123456789abc";
 const operationId = "12345678-1234-4123-8123-123456789abc";
 describe("operator recovery HTTP authentication", () => {
   it("requires the shared bearer guard, validates IDs and returns audited action results/conflicts", async () => {
-    const redispatch = vi.fn(async () => ({ orderId, state: "RELEASE_FINAL", claimId: operationId }));
+    const redispatch = vi.fn<StandardRailOperator["redispatch"]>(async () => ({ orderId, state: "RELEASE_FINAL", claimId: operationId }));
     const retryReputation = vi.fn(async () => { throw new OperatorConflict("operation_not_retryable:broadcast"); });
     const app = express();
     app.use(createStandardOperatorRouter({ redispatch, retryReputation } as unknown as StandardRailOperator, "operator-test-token"));
@@ -27,6 +27,16 @@ describe("operator recovery HTTP authentication", () => {
       expect(accepted.status).toBe(200); expect(accepted.headers.get("cache-control")).toBe("no-store");
       expect(await accepted.json()).toEqual({ orderId, state: "RELEASE_FINAL", claimId: operationId });
       expect(redispatch).toHaveBeenCalledExactlyOnceWith(orderId);
+      redispatch.mockResolvedValueOnce({ orderId, state: "DISPATCHED" });
+      const revived = await fetch(base + `/operator/v1/orders/${orderId}/redispatch`, { method: "POST", headers });
+      expect(revived.status).toBe(200);
+      expect(await revived.json()).toEqual({ orderId, state: "DISPATCHED" });
+      for (const reason of ["provider_task_not_active:completed", "provider_task_not_active:failed", "provider_task_missing", "order_not_failed_by_deadline"]) {
+        redispatch.mockRejectedValueOnce(new OperatorConflict(reason));
+        const conflict = await fetch(base + `/operator/v1/orders/${orderId}/redispatch`, { method: "POST", headers });
+        expect(conflict.status).toBe(409);
+        expect(await conflict.json()).toEqual({ error: { code: "OPERATOR_ACTION_CONFLICT", reason } });
+      }
       const refused = await fetch(base + `/operator/v1/reputation/${operationId}/retry`, { method: "POST", headers });
       expect(refused.status).toBe(409);
       expect(await refused.json()).toEqual({ error: { code: "OPERATOR_ACTION_CONFLICT", reason: "operation_not_retryable:broadcast" } });

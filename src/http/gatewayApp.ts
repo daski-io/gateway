@@ -173,7 +173,11 @@ export async function createStandardGatewayHttp(
   app.use(createMarketplaceRouter(publicMarketplace));
   app.use(createStandardRailRouter(standardRail, options.config.publicUrl));
   if (options.config.catalogOperatorToken) {
-    app.use(createStandardOperatorRouter(new StandardRailOperator(options.pool, (id) => standardRail.reconcileReputationForRetry(id)), options.config.catalogOperatorToken));
+    app.use(createStandardOperatorRouter(new StandardRailOperator(
+      options.pool,
+      (id) => standardRail.reconcileReputationForRetry(id),
+      (order, listing, dispatchHash) => standardRail.providerStatusForRevival(order, listing, dispatchHash),
+    ), options.config.catalogOperatorToken));
   }
   const mcp = options.config.mcpEnabled
     ? await createStandardRailMcp(app, options.config)

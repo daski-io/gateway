@@ -275,6 +275,7 @@ export class StandardRailService {
     this.recovery = new StandardRailRecoveryWorker({
       config: railConfig,
       store: this.store,
+      listing: (providerAgentId, outcomeId) => this.listing(providerAgentId, outcomeId),
       resumePaid: async (order) => { await this.resumePaidOrder(order); },
       cleanup: async () => {
         await this.journal.cleanupExpiredActionAuthorizations();
@@ -321,6 +322,14 @@ export class StandardRailService {
 
   reconcileReputationForRetry(operationId: string): Promise<void> {
     return this.reputationWorker.reconcileForRetry(operationId);
+  }
+
+  providerStatusForRevival(
+    order: Pick<StandardOrderRecord, "orderId" | "providerTaskId">,
+    listing: StandardListing,
+    dispatchHash: Hex,
+  ): Promise<string> {
+    return this.dispatcher.statusForRevival(order, listing, dispatchHash);
   }
 
   async stop(): Promise<void> {
@@ -610,6 +619,8 @@ export class StandardRailService {
         const claim = await this.journal.dispatchClaim(order.orderId);
         if (!claim) throw new Error("Dispatch recovery is missing its persisted claim");
         const resolvedAt = await this.journal.dispatchResolvedAt(order.orderId) ?? order.updatedAt;
+        let reconciliationError: unknown;
+        let reconciliationFailed = false;
         try {
           order = await this.dispatcher.reconcile(
             order,
@@ -618,12 +629,17 @@ export class StandardRailService {
           );
           if (["FULFILLED", "PROVIDER_FAILED"].includes(order.state)) return;
         } catch (error) {
-          if (Date.now() < resolvedAt.getTime() + listing.deadlinePolicy.fulfillmentSeconds * 1_000) {
-            throw error;
-          }
+          reconciliationFailed = true;
+          reconciliationError = error;
         }
-        if (Date.now() >= resolvedAt.getTime() + listing.deadlinePolicy.fulfillmentSeconds * 1_000) {
+        // Only this operational deadline is live; provider identity and all
+        // other order terms continue to come from the checkout snapshot.
+        const currentListing = await this.listing(order.providerAgentId, order.outcomeId);
+        const deadline = resolvedAt.getTime() + currentListing.deadlinePolicy.fulfillmentSeconds * 1_000;
+        if (Date.now() >= deadline) {
           await this.store.transition(order, "PROVIDER_FAILED", "signed_provider_deadline_elapsed");
+        } else if (reconciliationFailed) {
+          throw reconciliationError;
         }
         return;
       }

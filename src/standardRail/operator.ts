@@ -2,6 +2,9 @@ import { randomUUID } from "node:crypto";
 import { Router } from "express";
 import type { Pool } from "../db/pool.js";
 import { authorizedOperator } from "../serviceRegistration/routes.js";
+import { canonicalHash } from "./canonical.js";
+import type { StandardProviderDispatch } from "./providerDispatch.js";
+import type { StandardListing } from "./types.js";
 import { assertTransition } from "./stateMachine.js";
 
 export class OperatorConflict extends Error {}
@@ -11,21 +14,73 @@ export class StandardRailOperator {
   constructor(
     private readonly pool: Pool,
     private readonly reconcileReputation: (operationId: string) => Promise<void> = async () => undefined,
+    private readonly providerStatus: StandardProviderDispatch["statusForRevival"] = async () => {
+      throw new Error("provider_status_unavailable");
+    },
   ) {}
 
-  async redispatch(orderId: string): Promise<{ orderId: string; state: "RELEASE_FINAL"; claimId: string }> {
+  async redispatch(orderId: string): Promise<
+    { orderId: string; state: "RELEASE_FINAL"; claimId: string } |
+    { orderId: string; state: "DISPATCHED" }
+  > {
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
       const result = await client.query<{
-        state: string; provider_task_id: string | null; busy: boolean;
-      }>(`SELECT state,provider_task_id,lease_until>now() AS busy
+        state: string; provider_task_id: string | null; canonical_listing: StandardListing; busy: boolean;
+      }>(`SELECT state,provider_task_id,canonical_listing,lease_until>now() AS busy
             FROM standard_orders WHERE order_id=$1 FOR UPDATE`, [orderId]);
       const order = result.rows[0];
       if (!order) throw new OperatorConflict("order_not_found");
       if (order.state !== "PROVIDER_FAILED") throw new OperatorConflict("order_not_provider_failed");
-      if (order.provider_task_id !== null) throw new OperatorConflict("provider_task_already_assigned");
       if (order.busy) throw new OperatorConflict("order_driver_active");
+      const last = await client.query<{ reason_code: string }>(
+        `SELECT reason_code FROM standard_order_transitions
+          WHERE order_id=$1 ORDER BY transition_id DESC LIMIT 1`, [orderId],
+      );
+      if (last.rows[0]?.reason_code === "signed_provider_deadline_elapsed" && order.provider_task_id === null) {
+        throw new OperatorConflict("provider_task_missing");
+      }
+      if (order.provider_task_id !== null) {
+        if (last.rows[0]?.reason_code !== "signed_provider_deadline_elapsed") {
+          throw new OperatorConflict("order_not_failed_by_deadline");
+        }
+        const claim = await client.query<{ canonical_dispatch: unknown }>(
+          "SELECT canonical_dispatch FROM standard_dispatch_claims WHERE order_id=$1", [orderId],
+        );
+        if (!claim.rows[0]) throw new OperatorConflict("dispatch_claim_missing");
+        let providerState: string;
+        try {
+          providerState = await this.providerStatus(
+            { orderId, providerTaskId: order.provider_task_id },
+            order.canonical_listing,
+            canonicalHash(claim.rows[0].canonical_dispatch),
+          );
+        } catch {
+          throw new OperatorConflict("provider_status_unavailable_or_invalid");
+        }
+        if (!["working", "submitted", "dispatching"].includes(providerState)) {
+          throw new OperatorConflict(`provider_task_not_active:${providerState}`);
+        }
+        assertTransition("PROVIDER_FAILED", "DISPATCHED");
+        await client.query(
+          `INSERT INTO standard_operator_actions (actor,action,target_id,details)
+           VALUES ('catalog-operator','operator_revived',$1,$2)`,
+          [orderId, JSON.stringify({ providerTaskId: order.provider_task_id, providerState })],
+        );
+        const changed = await client.query<{ lease_fence: string }>(
+          `UPDATE standard_orders SET state='DISPATCHED',version=version+1,
+             lease_fence=lease_fence+1,lease_owner=NULL,lease_until=NULL,updated_at=now()
+           WHERE order_id=$1 RETURNING lease_fence`, [orderId],
+        );
+        await client.query(
+          `INSERT INTO standard_order_transitions (order_id,from_state,to_state,reason_code,fence)
+           VALUES ($1,'PROVIDER_FAILED','DISPATCHED','operator_revived',$2)`,
+          [orderId, changed.rows[0]!.lease_fence],
+        );
+        await client.query("COMMIT");
+        return { orderId, state: "DISPATCHED" };
+      }
       const evidence = await client.query(
         "SELECT 1 FROM standard_chain_evidence WHERE order_id=$1 AND evidence_kind='release'", [orderId],
       );

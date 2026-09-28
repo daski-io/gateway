@@ -444,3 +444,60 @@ describe("standard rail orchestration", () => {
     expect(reconcile).toHaveBeenCalledOnce();
   });
 });
+
+
+describe("live fulfillment deadline", () => {
+  it.each(["DISPATCHED", "INPUT_REQUIRED"] as const)("keeps an old snapshot alive at 61 minutes in %s and fails at 30 days", async (state) => {
+    const resolvedAt = new Date("2026-09-28T00:00:36Z");
+    const order = {
+      orderId: "order-1", providerAgentId: "7", outcomeId: "formation", state,
+      listingManifestHash: hash("1"),
+      listing: { deadlinePolicy: { fulfillmentSeconds: 3600 } }, updatedAt: resolvedAt,
+    } as unknown as StandardOrderRecord;
+    const currentListing = vi.fn(async () => ({ deadlinePolicy: { fulfillmentSeconds: 2_592_000 } }));
+    const reconcile = vi.fn(async () => order);
+    const transition = vi.fn();
+    const service = harness({
+      assertRailFence: vi.fn(), resumePreSettlement: async () => order,
+      listing: currentListing,
+      store: {
+        tryWithListingSettlementLock: async (_hash: Hex, work: () => Promise<void>) => work(),
+        findById: async () => order, transition,
+      },
+      journal: { dispatchClaim: async () => ({ dispatch: {} }), dispatchResolvedAt: async () => resolvedAt },
+      dispatcher: { reconcile },
+    });
+    const resume = () => (service as unknown as {
+      resumePaidOrder(order: StandardOrderRecord): Promise<void>;
+    }).resumePaidOrder(order);
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(resolvedAt.getTime() + 61 * 60_000);
+      await resume();
+      expect(transition).not.toHaveBeenCalled();
+      expect(currentListing).toHaveBeenCalledWith("7", "formation");
+      expect(reconcile).toHaveBeenCalledWith(order, order.listing, canonicalHash({}));
+      reconcile.mockRejectedValueOnce(new Error("provider unavailable"));
+      await expect(resume()).rejects.toThrow("provider unavailable");
+      expect(transition).not.toHaveBeenCalled();
+      vi.setSystemTime(resolvedAt.getTime() + 2_592_000_000 - 1);
+      await resume();
+      expect(transition).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(1);
+      await resume();
+      expect(transition).toHaveBeenCalledExactlyOnceWith(order, "PROVIDER_FAILED", "signed_provider_deadline_elapsed");
+      transition.mockClear();
+      reconcile.mockRejectedValueOnce(new Error("provider unavailable"));
+      await resume();
+      expect(transition).toHaveBeenCalledExactlyOnceWith(order, "PROVIDER_FAILED", "signed_provider_deadline_elapsed");
+      expect(order.listing.deadlinePolicy.fulfillmentSeconds).toBe(3600);
+      for (const terminal of ["PROVIDER_FAILED", "FULFILLED"] as const) {
+        currentListing.mockClear(); transition.mockClear();
+        reconcile.mockResolvedValueOnce({ ...order, state: terminal });
+        await resume();
+        expect(currentListing).not.toHaveBeenCalled();
+        expect(transition).not.toHaveBeenCalled();
+      }
+    } finally { vi.useRealTimers(); }
+  });
+});

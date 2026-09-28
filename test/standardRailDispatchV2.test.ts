@@ -76,7 +76,7 @@ function listing(): StandardListing {
       maxResponseBytes: 16384,
       dispatchStatusUrl: "https://provider.example/dispatch/status",
     } },
-    deadlinePolicy: { dispatchSeconds: 300, fulfillmentSeconds: 3600 },
+    deadlinePolicy: { dispatchSeconds: 300, fulfillmentSeconds: 2_592_000 },
   } as unknown as StandardListing;
 }
 
@@ -288,8 +288,43 @@ describe("dispatch refusal recovery", () => {
       (_listing, url, init) => fetcher(url, init), hash("0"),
     );
     return { dispatch: (value: StandardOrderRecord) => dispatcher.dispatch(value, dispatchListing, {}, hash("1"), evidence()),
-      dispatchListing, recovery, refusals, claims, transition, resolveDispatch };
+      dispatcher, dispatchListing, recovery, refusals, claims, transition, resolveDispatch };
   }
+
+  it.each(["working", "submitted", "dispatching", "completed", "failed"])(
+    "authenticates %s status for revival without mutating the claim or order", async (state) => {
+      const fetcher = vi.fn(async () => {
+        const body = { taskId: "existing-task", dispatchHash: hash("1"), state };
+        const signature = await privateKeyToAccount(privateKey).signMessage({ message: { raw: canonicalHash(body) } });
+        return Response.json({ ...body, signature,
+          ...(["completed", "failed"].includes(state) ? { terminalAttestation: {} } : {}),
+        });
+      });
+      const driver = retrying(fetcher);
+      const failed = { ...order(), state: "PROVIDER_FAILED", providerTaskId: "existing-task" } as StandardOrderRecord;
+      await expect(driver.dispatcher.statusForRevival(failed, driver.dispatchListing, hash("1"))).resolves.toBe(state);
+      expect(fetcher).toHaveBeenCalledExactlyOnceWith("https://provider.example/dispatch/status", expect.objectContaining({ method: "POST" }));
+      expect(driver.transition).not.toHaveBeenCalled();
+      expect(driver.resolveDispatch).not.toHaveBeenCalled();
+      expect(driver.claims).toHaveLength(0);
+    },
+  );
+
+  it.each(["wrong-task", "wrong-hash", "wrong-signer", "unavailable"])("rejects %s status for revival", async (condition) => {
+    const driver = retrying(async () => {
+      if (condition === "unavailable") return new Response(null, { status: 503 });
+      const body = { taskId: condition === "wrong-task" ? "another-task" : "existing-task",
+        dispatchHash: condition === "wrong-hash" ? hash("2") : hash("1"), state: "working" };
+      const signer = privateKeyToAccount(condition === "wrong-signer" ? hash("2") : privateKey);
+      return Response.json({ ...body, signature: await signer.signMessage({ message: { raw: canonicalHash(body) } }) });
+    });
+    await expect(driver.dispatcher.statusForRevival(
+      { orderId: order().orderId, providerTaskId: "existing-task" }, driver.dispatchListing, hash("1"),
+    )).rejects.toThrow();
+    expect(driver.transition).not.toHaveBeenCalled();
+    expect(driver.resolveDispatch).not.toHaveBeenCalled();
+    expect(driver.claims).toHaveLength(0);
+  });
 
   it("records a 409 refusal, waits for backoff and signs a fresh envelope beyond five minutes", async () => {
     vi.useFakeTimers();
@@ -309,7 +344,7 @@ describe("dispatch refusal recovery", () => {
       current = await driver.dispatch(current);
       expect(current.state).toBe("DISPATCH_STARTED");
       expect(fetcher).toHaveBeenCalledTimes(3);
-      vi.setSystemTime(driver.recovery.started_at.getTime() + 3600_000);
+      vi.setSystemTime(driver.recovery.started_at.getTime() + driver.dispatchListing.deadlinePolicy.fulfillmentSeconds * 1000);
       expect((await driver.dispatch(current)).state).toBe("PROVIDER_FAILED");
       expect(fetcher).toHaveBeenCalledTimes(3);
     } finally { vi.useRealTimers(); }

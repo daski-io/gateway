@@ -221,6 +221,11 @@ provider owner-swap notice in [docs/owner-swaps-v1.md](docs/owner-swaps-v1.md). 
 active database-backed skill listings. Registration and activation require live
 chain authority; new commerce requires successful authority and card validation
 within five minutes. Existing orders retain their immutable listing snapshots.
+The operational fulfillment deadline for accepted orders uses the listing's current policy,
+with a default of 30 days, including orders placed under the former one-hour
+default. Provider-reported failure still takes effect immediately. Operators can
+[revive a deadline-failed order](docs/operator-recovery.md) when its existing
+provider task is still active.
 
 ## License
 
