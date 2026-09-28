@@ -49,13 +49,20 @@ export async function persistOperations(
       safe_projection: OrderOperations; wait_seconds: string; original_terminal: TerminalEvidence | null;
     }>("SELECT * FROM standard_order_operations WHERE order_id=$1 FOR UPDATE", [orderId]);
     const old = previous.rows[0];
-    if (old && (operations.revision < Number(old.revision) || operations.observedAt < Number(old.observed_at) ||
-        (operations.revision === Number(old.revision) && !projectionHash.equals(old.projection_hash)))) {
+    // One revision names exactly one projection; a different body under a
+    // stored revision is provider equivocation, never a benign race.
+    if (old && operations.revision === Number(old.revision) && !projectionHash.equals(old.projection_hash)) {
       throw new Error("provider_operations_revision_conflict");
     }
     if (old?.original_terminal && terminal &&
         canonicalHash(terminalIdentity(old.original_terminal)) !== canonicalHash(terminalIdentity(terminal))) {
       throw new Error("provider_original_terminal_changed");
+    }
+    // Concurrent reads of the same order can arrive out of order. An older
+    // observation is valid signed evidence, but it never replaces a newer one.
+    if (old && (operations.revision < Number(old.revision) || operations.observedAt < Number(old.observed_at))) {
+      await client.query("COMMIT");
+      return;
     }
     const original = old?.original_terminal ?? terminal;
     const recovery = operations.recovery;

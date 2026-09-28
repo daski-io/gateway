@@ -87,6 +87,9 @@ status does not restart the clock.
 For listings admitting payer DNS readiness, signed `dns_pending` and
 `waiting_capacity` observations suspend that clock. The provider's cumulative
 wait duration is monotonic and persisted; repeated reads do not add it again.
+Concurrent reads may arrive out of order: an older signed observation is
+ignored rather than failing the request, while two different views under one
+revision are rejected as equivocation.
 Missing or stale rechecks create `provider_wait_progress_stale` incidents and
 leave the obligation pending. Waits do not consume new-payment execution capacity.
 

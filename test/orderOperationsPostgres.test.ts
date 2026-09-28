@@ -69,7 +69,10 @@ describe("payer-bound drafts and durable provider observations", () => {
       expect(cached?.operations.fulfillment?.missingRecords).toEqual([]);
       const stored = await pool.query("SELECT safe_projection::text FROM standard_order_operations WHERE order_id=$1",[fresh.order.orderId]);
       expect(stored.rows[0].safe_projection).not.toContain("private.example");
-      await expect(store.persistOperations(fresh.order.orderId,{ ...view,revision:0 },null)).rejects.toThrow("revision_conflict");
+      // Concurrent reads can arrive out of order: an older signed observation is ignored, never an error.
+      await expect(store.persistOperations(fresh.order.orderId,{ ...view,revision:0 },null)).resolves.toBeUndefined();
+      await expect(store.persistOperations(fresh.order.orderId,{ ...view,observedAt:view.observedAt-1 },null)).resolves.toBeUndefined();
+      expect((await store.loadOperations(fresh.order.orderId))?.operations).toMatchObject({ revision:1,observedAt:view.observedAt });
       await expect(store.persistOperations(fresh.order.orderId,{ ...view,support:{ reviewId:"r",status:"open",
         lastAcceptedRequest:{ requestId:"r1",messageId:"m1",acceptedAt:now() } } },null)).rejects.toThrow("revision_conflict");
       await expect(store.persistOperations(fresh.order.orderId,{ ...view,revision:2,observedAt:now()-301 },null)).rejects.toThrow("observation_stale");

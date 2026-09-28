@@ -350,7 +350,7 @@ describe("standard rail orchestration", () => {
     } as unknown as StandardListing;
     const body = { address: "conformance-probe@sandbox.daski.io" };
     const requestHash = canonicalHash(body);
-    const answer = { status: 200, grossAmount: "9990000", delaySeconds: 0, payer: null as string | null };
+    const answer = { status: 200, grossAmount: "9990000", delaySeconds: 0, payer: null as string | null, lifetime: 60 };
     const providerFetch = vi.fn(async () => {
       if (answer.status === 422) {
         return new Response(JSON.stringify({
@@ -366,7 +366,7 @@ describe("standard rail orchestration", () => {
         grossAmount: answer.grossAmount,
         payer: answer.payer,
         issuedAt: now,
-        validBefore: now + 60,
+        validBefore: now + answer.lifetime,
       };
       const signature = await providerAuthority.signMessage({ message: { raw: canonicalHash(payload) } });
       if (answer.delaySeconds) vi.setSystemTime(Date.now()+answer.delaySeconds*1000);
@@ -397,6 +397,13 @@ describe("standard rail orchestration", () => {
     expect(pricing.providerQuoteHash).not.toBe(`0x${"00".repeat(32)}`);
     expect(pricing.validBefore).toBeGreaterThanOrEqual(before + 60);
     expect(pricing.validBefore).toBeLessThanOrEqual(before + 61);
+    // A fixed readiness quote may span the sealed five-minute draft window, never longer.
+    answer.lifetime = 300;
+    const drafted = await resolve(listing, body);
+    expect(drafted.validBefore).toBeGreaterThanOrEqual(before + 300);
+    answer.lifetime = 301;
+    await expect(resolve(listing, body)).rejects.toMatchObject({code:"PROVIDER_QUOTE_UNAVAILABLE"});
+    answer.lifetime = 60;
     answer.payer = address("b");
     await expect(resolve(listing, body)).rejects.toMatchObject({code:"PROVIDER_QUOTE_UNAVAILABLE"});
     answer.payer = null;

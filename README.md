@@ -89,7 +89,8 @@ steady-state prompt is `Use Daski to [your task]`.
   before quoting. A readiness rejection includes structured DNS records in
   `error.readiness`; install them and obtain a fresh quote before signing.
   Fixed and dynamic challenges retain the signed provider quote commitment
-  and cannot outlive it. Drafts and captured payments are bound to the quoted payer.
+  and cannot outlive it; a fixed-price readiness quote lasts at most the
+  five-minute draft window. Drafts and captured payments are bound to the quoted payer.
 - `POST /public/v2/outcomes/search` provides bounded catalog search and
   vocabulary hints; `GET /public/v2/outcomes/:providerAgentId/:outcomeId`
   provides the complete detail with capped recent-purchase history.
@@ -241,7 +242,9 @@ turning a propagation delay into a paid failure. Support requests require
 `{ requestId, message }`; retain the request ID but obtain a fresh wallet
 authorization when retrying. `result.supportReceipt` returns the original receipt
 for that request ID, including after newer messages; `operations.support` shows
-the latest accepted request and Review state. A completed provider recovery appears as `fulfillmentState: "recovered"`
+the latest accepted request and Review state. Each operations view carries a
+revision; a view older than the stored one is still returned to its caller but
+never replaces the newer stored view. A completed provider recovery appears as `fulfillmentState: "recovered"`
 and `operations.recovery`, while the original failed order and reputation outcome
 remain unchanged. Status and artifact reads always obtain fresh provider evidence.
 

@@ -1,5 +1,6 @@
 import { createHmac, randomBytes, randomUUID } from "node:crypto";
 import { fulfillmentClock } from "./operationsStore.js";
+import { operationsSchema } from "./operationsSchema.js";
 import { supportResultSchema, validateSupportRequest } from "./supportRequest.js";
 import { readinessSchema, type PurchaseReadiness } from "./readinessSchema.js";
 import type { PaymentPayload, PaymentRequired, PaymentRequirements } from "@x402/core/types";
@@ -86,6 +87,10 @@ import {
 import { issueReadCapability, verifyReadCapability } from "./readCapability.js";
 import { createX402OfferReceipt, x402PaymentResponse } from "./x402Receipt.js";
 import { getIntakeRequirements } from "./intake.js";
+
+/** A fixed-price readiness quote may last at most the sealed draft window; the
+ *  challenge is still clamped to the listing's own draft window. */
+export const FIXED_READINESS_QUOTE_MAX_SECONDS = 300;
 
 export function isAdmissionWindowOpen(
   railValidBefore: number,
@@ -2315,7 +2320,7 @@ export class StandardRailService {
         listing.quotePolicy?.minimumPaymentWindowSeconds ?? 0,
       ) ||
       (!fixed && !listing.quotePolicy) ||
-      quote.validBefore > quote.issuedAt + (fixed ? 60 : listing.quotePolicy!.maximumLifetimeSeconds)
+      quote.validBefore > quote.issuedAt + (fixed ? FIXED_READINESS_QUOTE_MAX_SECONDS : listing.quotePolicy!.maximumLifetimeSeconds)
     ) throw standardRailError("PROVIDER_QUOTE_UNAVAILABLE");
     const bps = BigInt(listing.commitment.payload.commissionBps);
     const minimumReleasableAmount = (10_000n + bps - 1n) / bps;
@@ -2394,4 +2399,3 @@ export class StandardRailService {
   }
 
 }
-import { operationsSchema } from "./operationsSchema.js";
