@@ -151,7 +151,7 @@ core groups are:
   predate a configuration change). Account health also exposes registration
   and confirmation reserves for newly prepared transactions.
 - Operator recovery: the bearer `CATALOG_OPERATOR_TOKEN` authorizes the
-  audited [order redispatch and reputation retry endpoints](docs/operator-recovery.md).
+  audited [order redispatch, reputation retry and hidden-service inventory endpoints](docs/operator-recovery.md).
 - Dynamic catalog: `DYNAMIC_SERVICE_REGISTRATION_ENABLED`,
   `CATALOG_OPERATOR_TOKEN`, and `CATALOG_REFRESH_INTERVAL_MS`. Registration
   routes are enabled by default and require an operator token. Disabling the

@@ -41,6 +41,8 @@ interface OperationRow {
   intent_hash: Buffer;
   canonical_intent: ReputationOperationIntent;
   attempts: number;
+  state: string;
+  last_error_class?: string | null;
 }
 
 interface TransactionRow {
@@ -48,7 +50,8 @@ interface TransactionRow {
   nonce: string;
   encrypted_raw_transaction: Buffer;
   transaction_hash: Hex;
-  state: "prepared" | "broadcast" | "operator_attention";
+  state: "prepared" | "broadcast" | "operator_attention" | "failed" | "final";
+  updated_at: Date;
 }
 
 class AmbiguousReputationWrite extends Error {}
@@ -193,6 +196,33 @@ export class StandardReputationWorker {
     }
   }
 
+  /** Read chain evidence before an operator retries, including old expired reverts. */
+  async reconcileForRetry(operationId: string): Promise<void> {
+    await this.nonceLock.run(async () => {
+      const operations = await this.pool.query<OperationRow>(
+        "SELECT * FROM standard_reputation_operations WHERE operation_id=$1", [operationId],
+      );
+      const operation = operations.rows[0];
+      if (!operation || !["pending", "broadcast", "operator_attention"].includes(operation.state)) return;
+      const transactions = await this.pool.query<TransactionRow>(
+        `SELECT * FROM standard_reputation_transactions WHERE operation_id=$1
+          ORDER BY created_at DESC LIMIT 1`, [operationId],
+      );
+      const transaction = transactions.rows[0];
+      if (!transaction || transaction.state === "final" ||
+          (transaction.state === "failed" && operation.last_error_class !== "contract_rejection")) return;
+      if (operation.last_error_class === "contract_rejection") {
+        // Revalidate prior expiry evidence; a disappeared/reorged receipt must
+        // not leave an old retry authorization behind.
+        await this.pool.query(
+          "UPDATE standard_reputation_operations SET result=NULL WHERE operation_id=$1 AND last_error_class='contract_rejection'",
+          [operationId],
+        );
+      }
+      await this.reconcile(operation, transaction, true, false);
+    });
+  }
+
   private async process(operation: OperationRow): Promise<void> {
     if (operation.kind !== "register") {
       const parent = await this.pool.query<{ state: string }>(
@@ -228,7 +258,7 @@ export class StandardReputationWorker {
       await this.reconcile(operation, existing.rows[0]);
       return;
     }
-    await this.prepareAndBroadcast(await this.refreshPermitIfNeeded(operation));
+    await this.prepareAndBroadcast(operation);
   }
 
   private async refreshPermitIfNeeded(operation: OperationRow): Promise<OperationRow> {
@@ -266,6 +296,7 @@ export class StandardReputationWorker {
     operation: OperationRow,
     transaction: TransactionRow,
     nonceLocked = false,
+    allowBroadcast = true,
   ): Promise<void> {
     let observation;
     try {
@@ -303,7 +334,9 @@ export class StandardReputationWorker {
         await this.markBroadcastAndDefer(operation.operation_id, transaction.transaction_id);
         return;
       }
-      await this.broadcastPersisted(operation, transaction, nonceLocked);
+      if (transaction.state !== "failed") {
+        await this.broadcastPersisted(operation, transaction, nonceLocked, allowBroadcast);
+      }
       return;
     }
     const head = observation.head!;
@@ -339,6 +372,16 @@ export class StandardReputationWorker {
       }
       return;
     }
+    const deadline = reputationPermitDeadline(operation.canonical_intent);
+    // The mined block, not today's clock, proves this permit was already expired.
+    await this.pool.query(
+      "UPDATE standard_reputation_operations SET result=$2 WHERE operation_id=$1",
+      [operation.operation_id, deadline !== null && canonicalBlock.timestamp > deadline ? {
+        rejectionReason: "permit_expired", transactionHash: transaction.transaction_hash,
+        blockTimestamp: canonicalBlock.timestamp.toString(), validBefore: deadline.toString(),
+      } : null],
+    );
+    if (transaction.state === "failed") return;
     await this.pool.query(
       "UPDATE standard_reputation_transactions SET state='failed',block_number=$2,final_at=now(),updated_at=now() WHERE transaction_id=$1",
       [transaction.transaction_id, receipt.blockNumber.toString()],
@@ -347,8 +390,13 @@ export class StandardReputationWorker {
   }
 
   private async prepareAndBroadcast(operation: OperationRow): Promise<void> {
-    const encoded = encodeReputationOperation(operation.canonical_intent, this.config);
     await this.nonceLock.run(async () => {
+      const latest = await this.pool.query<OperationRow>(
+        "SELECT * FROM standard_reputation_operations WHERE operation_id=$1", [operation.operation_id],
+      );
+      if (!latest.rows[0] || !["pending", "broadcast"].includes(latest.rows[0].state)) return;
+      operation = await this.refreshPermitIfNeeded(latest.rows[0]);
+      const encoded = encodeReputationOperation(operation.canonical_intent, this.config);
       const client = await this.pool.connect();
       let prepared: TransactionRow | null = null;
       try {
@@ -446,6 +494,7 @@ export class StandardReputationWorker {
       encrypted_raw_transaction: encrypted,
       transaction_hash: hash,
       state: "prepared",
+      updated_at: new Date(),
     };
   }
 
@@ -469,8 +518,15 @@ export class StandardReputationWorker {
     operation: OperationRow,
     transaction: TransactionRow,
     nonceLocked = false,
+    allowBroadcast = true,
   ): Promise<void> {
     const submit = async () => {
+      // A retry may have retired this row while we waited for the relayer lock.
+      const current = await this.pool.query<TransactionRow>(
+        "SELECT * FROM standard_reputation_transactions WHERE transaction_id=$1", [transaction.transaction_id],
+      );
+      if (!current.rows[0] || !["prepared", "broadcast", "operator_attention"].includes(current.rows[0].state)) return;
+      transaction = current.rows[0];
       if (await this.transactionVisible(transaction.transaction_hash)) {
         await this.markBroadcastAndDefer(operation.operation_id, transaction.transaction_id);
         return;
@@ -481,7 +537,28 @@ export class StandardReputationWorker {
         await this.resolveNonceConflict(operation, transaction);
         return;
       }
-      await this.sendPersisted(operation, transaction);
+      const deadline = reputationPermitDeadline(operation.canonical_intent);
+      const expired = deadline !== null && deadline <= BigInt(Math.floor(Date.now() / 1_000));
+      const missingBroadcast = transaction.state === "broadcast" &&
+        Date.now() - transaction.updated_at.getTime() >= this.config.recoveryIntervalMs;
+      if (expired || missingBroadcast) {
+        await this.pool.query(
+          `WITH marked AS (
+             UPDATE standard_reputation_transactions SET state='failed',updated_at=now()
+              WHERE transaction_id=$2 AND state IN ('prepared','broadcast','operator_attention')
+              RETURNING transaction_id
+           )
+           UPDATE standard_reputation_operations SET
+             state=CASE WHEN state='operator_attention' THEN state ELSE 'pending' END,
+             last_error_class=$3,next_attempt_at=now(),updated_at=now()
+            WHERE operation_id=$1 AND state IN ('pending','broadcast','operator_attention')
+              AND EXISTS (SELECT 1 FROM marked)`,
+          [operation.operation_id, transaction.transaction_id, expired ? "permit_expired" : "broadcast_not_found"],
+        );
+        return;
+      }
+      if (allowBroadcast && transaction.state !== "broadcast") await this.sendPersisted(operation, transaction);
+      else await this.defer(operation.operation_id);
     };
     if (nonceLocked) await submit();
     else await this.nonceLock.run(submit);
@@ -647,7 +724,7 @@ export class StandardReputationWorker {
   }
 
   private async fail(operation: OperationRow, reason: string, transactionId?: string): Promise<void> {
-    const attempts = operation.attempts + 1;
+    const attempts = Math.min(5, operation.attempts + 1);
     const terminal = attempts >= 5;
     const delay = terminal ? null : this.config.reputationRetryDelaysSeconds[attempts - 1]!;
     if (terminal && transactionId) {

@@ -319,6 +319,10 @@ export class StandardRailService {
     this.readinessInterval.unref();
   }
 
+  reconcileReputationForRetry(operationId: string): Promise<void> {
+    return this.reputationWorker.reconcileForRetry(operationId);
+  }
+
   async stop(): Promise<void> {
     if (this.readinessInterval) clearInterval(this.readinessInterval);
     this.readinessInterval = null;

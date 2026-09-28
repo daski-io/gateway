@@ -288,7 +288,7 @@ describe("dispatch refusal recovery", () => {
       (_listing, url, init) => fetcher(url, init), hash("0"),
     );
     return { dispatch: (value: StandardOrderRecord) => dispatcher.dispatch(value, dispatchListing, {}, hash("1"), evidence()),
-      recovery, refusals, claims, transition, resolveDispatch };
+      dispatchListing, recovery, refusals, claims, transition, resolveDispatch };
   }
 
   it("records a 409 refusal, waits for backoff and signs a fresh envelope beyond five minutes", async () => {
@@ -312,6 +312,26 @@ describe("dispatch refusal recovery", () => {
       vi.setSystemTime(driver.recovery.started_at.getTime() + 3600_000);
       expect((await driver.dispatch(current)).state).toBe("PROVIDER_FAILED");
       expect(fetcher).toHaveBeenCalledTimes(3);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("does not turn the incident's fast refusal into a five-minute envelope timeout", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-27T21:52:34Z"));
+    try {
+      const driver = retrying(async () => {
+        vi.setSystemTime(Date.now() + 130);
+        return Response.json({ error: "provider_not_ready" }, { status: 409 });
+      });
+      let current = await driver.dispatch(order());
+      vi.setSystemTime(new Date("2026-09-27T21:57:34Z"));
+      current = await driver.dispatch(current);
+      expect(current.state).toBe("DISPATCH_STARTED");
+      expect(driver.claims).toHaveLength(2);
+      expect(driver.claims[1]!.signature).not.toBe(driver.claims[0]!.signature);
+      vi.setSystemTime(driver.recovery.started_at.getTime() + driver.dispatchListing.deadlinePolicy.fulfillmentSeconds * 1000);
+      await driver.dispatch(current);
+      expect(driver.transition).toHaveBeenLastCalledWith(current, "PROVIDER_FAILED", "provider_dispatch_fulfillment_deadline_elapsed");
     } finally { vi.useRealTimers(); }
   });
 

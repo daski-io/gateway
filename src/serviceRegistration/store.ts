@@ -612,6 +612,17 @@ export class ServiceRegistrationStore {
     return result.rows.map(mapRow);
   }
 
+  async listOperator(hidden: boolean, limit: number, after: string | null): Promise<StoredRegistration[]> {
+    const result = await this.pool.query<RegistrationRow>(
+      `SELECT * FROM standard_service_registrations
+        WHERE state='ACTIVE' AND marketplace_enabled=$1
+          AND ($2::uuid IS NULL OR registration_id>$2::uuid)
+        ORDER BY registration_id LIMIT $3`,
+      [!hidden, after, limit],
+    );
+    return result.rows.map(mapRow);
+  }
+
   async listPublic(limit: number): Promise<StoredRegistration[]> {
     const result = await this.pool.query<RegistrationRow>(
       `SELECT * FROM standard_service_registrations
