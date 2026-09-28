@@ -491,7 +491,7 @@ export class StandardRailStore {
            AND updated_at < now() - CASE WHEN state IN ('RELEASE_FINAL','DISPATCH_STARTED','DISPATCH_AMBIGUOUS')
              THEN interval '10 seconds' ELSE interval '30 seconds' END
            AND NOT (order_id = ANY($2::text[]))
-         ORDER BY updated_at ASC
+         ORDER BY recovery_checked_at ASC NULLS FIRST, updated_at ASC
          LIMIT 1 FOR UPDATE SKIP LOCKED`,
         [RECOVERABLE_ORDER_STATES, excludedOrderIds],
       );
@@ -499,10 +499,12 @@ export class StandardRailStore {
         await client.query("COMMIT");
         return null;
       }
+      // Visiting an order moves it to the back of the rotation, so orders
+      // whose polls change nothing cannot hold every batch.
       const leased = await client.query<OrderRow>(
         `UPDATE standard_orders SET lease_owner=$2,
            lease_until=now()+($3::text || ' seconds')::interval,
-           lease_fence=lease_fence+1
+           lease_fence=lease_fence+1,recovery_checked_at=now()
          WHERE order_id=$1 RETURNING *`,
         [candidate.rows[0].order_id, workerId, leaseSeconds],
       );
