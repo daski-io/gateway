@@ -813,6 +813,25 @@ export class ServiceRegistrationService {
     return artifact;
   }
 
+  async listOperator(hidden: boolean, limit: number, after: string | null) {
+    const records = await this.store.listOperator(hidden, limit + 1, after);
+    const page = records.slice(0, limit);
+    return {
+      services: page.map((record) => ({
+        registrationId: record.registrationId,
+        providerAgentId: record.providerAgentId,
+        serviceId: record.serviceId,
+        serviceSlug: record.serviceSlug,
+        serviceVersion: record.serviceVersion,
+        state: record.state,
+        marketplaceEnabled: record.marketplaceEnabled,
+        marketplaceEnabledBy: record.marketplaceEnabledBy,
+        marketplaceEnabledAt: record.marketplaceEnabledAt.toISOString(),
+      })),
+      nextCursor: records.length > limit ? page[page.length - 1]!.registrationId : null,
+    };
+  }
+
   async listPublic(limit: number) {
     return {
       services: (await this.store.listPublic(limit))

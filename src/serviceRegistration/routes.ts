@@ -162,6 +162,21 @@ export function createServiceRegistrationRouter(args: {
     res.json(await args.service.publicArtifact(hash.toLowerCase() as Hex));
   }));
 
+  router.get("/operator/v1/services", handler(async (req, res) => {
+    res.setHeader("Cache-Control", "no-store");
+    if (!authorizedOperator(req, operatorToken)) {
+      throw new RegistrationError(401, "OPERATOR_AUTH_REQUIRED", "Operator authentication is required.");
+    }
+    if (req.query.hidden !== "true" && req.query.hidden !== "false") {
+      throw new RegistrationError(400, "INVALID_HIDDEN_FILTER", "hidden must be true or false.");
+    }
+    const after = req.query.cursor;
+    if (after !== undefined && (typeof after !== "string" || !UUID_V4.test(after))) {
+      throw new RegistrationError(400, "INVALID_CURSOR", "cursor must be a registration UUIDv4.");
+    }
+    res.json(await args.service.listOperator(req.query.hidden === "true", pageLimit(req.query.limit), after ?? null));
+  }));
+
   router.put(
     "/operator/v1/services/:registrationId/visibility",
     handler(async (req, res) => {

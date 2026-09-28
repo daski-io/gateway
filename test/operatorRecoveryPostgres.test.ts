@@ -1,6 +1,11 @@
 import { randomUUID } from "node:crypto";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createPool, runMigrations, type Pool } from "../src/db/pool.js";
+import { TransactionNotFoundError, TransactionReceiptNotFoundError, keccak256, parseTransaction, type Hex } from "viem";
+import { base } from "viem/chains";
+import { StandardReputationWorker } from "../src/standardRail/reputationWorker.js";
+import type { RegisterIntent } from "../src/standardRail/reputationOperation.js";
+import { canonicalHash } from "../src/standardRail/canonical.js";
 import { StandardRailOperator } from "../src/standardRail/operator.js";
 import { StandardRailJournal } from "../src/standardRail/journal.js";
 import { StandardRailStore } from "../src/standardRail/store.js";
@@ -137,5 +142,125 @@ describe("operator and dispatch recovery (postgres)", () => {
     await transaction(pool, unsafe, "broadcast");
     await expect(operator.retryReputation(unsafe)).rejects.toThrow("transaction_broadcast_or_final");
     expect((await pool.query("SELECT * FROM standard_operator_actions")).rows).toHaveLength(3);
+  }), 60_000);
+});
+
+function registrationIntent(validBefore: number): RegisterIntent {
+  const hash = `0x${"11".repeat(32)}` as Hex;
+  const address = `0x${"22".repeat(20)}` as Hex;
+  return { operation: "register-order", signature: `0x${"00".repeat(65)}`, permit: {
+    orderKey: hash, authorizationKey: hash, providerAgentId: "7", serviceId: hash,
+    payer: address, providerOwner: address, providerAgentWallet: address, providerPayee: address,
+    identityRegistry: address, providerRegistry: address, serviceRegistry: address,
+    blockNumber: "1", blockHash: hash, canonicalToken: address, grossAmount: "100",
+    paidAt: "1", providerIdentitySnapshotHash: hash, listingManifestHash: hash,
+    releaseEvidenceHash: hash, reputationEligible: true, validBefore: String(validBefore),
+  } };
+}
+async function setIntent(pool: Pool, id: string, deadline: number) {
+  const intent = registrationIntent(deadline);
+  await pool.query("UPDATE standard_reputation_operations SET canonical_intent=$2,intent_hash=$3 WHERE operation_id=$1",
+    [id, intent, Buffer.from(canonicalHash(intent).slice(2), "hex")]);
+}
+function reputationWorker(pool: Pool) {
+  const worker = new StandardReputationWorker(pool, {
+    reputationRelayerPrivateKey: `0x${"11".repeat(32)}`,
+    reputationOrderPrivateKey: `0x${"11".repeat(32)}`,
+    reputationContract: `0x${"22".repeat(20)}`,
+    evidenceRpcUrls: ["https://rpc.example.test"], encryptionKey: Buffer.alloc(32, 1),
+    recoveryIntervalMs: 10_000, finalityConfirmations: 1, finalityTag: "finalized",
+    reputationPermitTtlSeconds: 900, reputationRegisterGasLimit: 1_500_000n,
+    reputationMaxFeePerGasWei: 3_000_000_000n, reputationMaxPriorityFeePerGasWei: 1_000_000_000n,
+    reputationRetryDelaysSeconds: [10, 20, 40, 60],
+  } as never, base);
+  const rpc = {
+    getTransactionReceipt: vi.fn(async (_args: unknown): Promise<unknown> => {
+      throw new TransactionReceiptNotFoundError({ hash: `0x${"55".repeat(32)}` });
+    }),
+    getTransaction: vi.fn(async (_args: unknown): Promise<unknown> => {
+      throw new TransactionNotFoundError({ hash: `0x${"55".repeat(32)}` });
+    }),
+    getTransactionCount: vi.fn(async () => 1),
+    getBlockNumber: vi.fn(async () => 100n),
+    getBlock: vi.fn(async () => ({ hash: "block", timestamp: BigInt(Math.floor(Date.now() / 1000) - 10) })),
+  };
+  const send = vi.fn(async ({ serializedTransaction }: { serializedTransaction: Hex }) => keccak256(serializedTransaction));
+  Object.assign(worker, { evidenceClients: [{ host: "rpc.example.test", client: rpc }], broadcastClient: { sendRawTransaction: send } });
+  return { worker, rpc, send, operator: new StandardRailOperator(pool, (id) => worker.reconcileForRetry(id)) };
+}
+
+describe("reputation retry chain reconciliation (postgres)", () => {
+  it("retires an unknown broadcast after one interval and re-prepares with a fresh permit and current fees", async () => fixture(async (pool) => {
+    const id = await operation(pool, "pending", "balance_fee");
+    await setIntent(pool, id, Math.floor(Date.now() / 1000) + 600);
+    const tx = await transaction(pool, id, "broadcast");
+    const { operator, worker, send } = reputationWorker(pool);
+    await pool.query("UPDATE standard_reputation_transactions SET updated_at=now()-interval '11 seconds'");
+    await operator.retryReputation(id);
+    expect((await pool.query("SELECT state FROM standard_reputation_transactions WHERE transaction_id=$1", [tx])).rows[0].state).toBe("failed");
+    expect(send).not.toHaveBeenCalled();
+    // Expire the permit before the next worker tick: preparation must refresh it.
+    await setIntent(pool, id, Math.floor(Date.now() / 1000) - 3600);
+    await (worker as unknown as { runBatch(): Promise<void> }).runBatch();
+    expect(send).toHaveBeenCalledOnce();
+    const signed = parseTransaction(send.mock.calls[0]![0].serializedTransaction);
+    expect(signed).toMatchObject({ nonce: 1, gas: 1_500_000n, maxFeePerGas: 3_000_000_000n });
+    const op = (await pool.query("SELECT * FROM standard_reputation_operations WHERE operation_id=$1", [id])).rows[0];
+    expect(Number(op.canonical_intent.permit.validBefore)).toBeGreaterThan(Date.now() / 1000 + 800);
+    expect(op.intent_predecessors).toHaveLength(1);
+    expect((await pool.query("SELECT state FROM standard_reputation_transactions WHERE operation_id=$1 ORDER BY created_at", [id])).rows).toEqual([{ state: "failed" }, { state: "broadcast" }]);
+  }), 60_000);
+
+  it("keeps recent, chain-visible and RPC-uncertain broadcasts protected from retry", async () => fixture(async (pool) => {
+    const id = await operation(pool, "pending", "balance_fee");
+    await setIntent(pool, id, Math.floor(Date.now() / 1000) + 600);
+    await transaction(pool, id, "broadcast");
+    const { operator, rpc, send } = reputationWorker(pool);
+    await expect(operator.retryReputation(id)).rejects.toThrow("transaction_broadcast_or_final");
+    await pool.query("UPDATE standard_reputation_transactions SET updated_at=now()-interval '11 seconds'");
+    rpc.getTransaction.mockResolvedValue({ hash: `0x${"55".repeat(32)}` });
+    await expect(operator.retryReputation(id)).rejects.toThrow("operation_not_retryable:broadcast");
+    rpc.getTransaction.mockRejectedValue(new Error("RPC unavailable"));
+    await expect(operator.retryReputation(id)).rejects.toThrow();
+    expect((await pool.query("SELECT state FROM standard_reputation_transactions")).rows).toEqual([{ state: "broadcast" }]);
+    expect(send).not.toHaveBeenCalled();
+    expect((await pool.query("SELECT * FROM standard_operator_actions")).rows).toHaveLength(0);
+  }), 60_000);
+
+  it("never resends an expired prepared permit and refreshes it on the following tick", async () => fixture(async (pool) => {
+    const id = await operation(pool, "pending", "balance_fee");
+    await setIntent(pool, id, Math.floor(Date.now() / 1000) - 3600);
+    await transaction(pool, id, "prepared");
+    await pool.query("UPDATE standard_reputation_operations SET next_attempt_at=now()");
+    const { worker, send } = reputationWorker(pool);
+    // process one due operation, then allow the next tick to re-prepare it.
+    const op = (await pool.query("SELECT * FROM standard_reputation_operations WHERE operation_id=$1", [id])).rows[0];
+    await (worker as unknown as { process(op: unknown): Promise<void> }).process(op);
+    expect(send).not.toHaveBeenCalled();
+    expect((await pool.query("SELECT state FROM standard_reputation_transactions")).rows).toEqual([{ state: "failed" }]);
+    await (worker as unknown as { runBatch(): Promise<void> }).runBatch();
+    expect(send).toHaveBeenCalledOnce();
+  }), 60_000);
+
+  it("admits legacy contract rejections only when the receipt block proves permit expiry", async () => fixture(async (pool) => {
+    const id = await operation(pool, "operator_attention", "contract_rejection");
+    await setIntent(pool, id, Math.floor(Date.now() / 1000) - 3600);
+    await transaction(pool, id, "failed");
+    const { operator, rpc, send } = reputationWorker(pool);
+    rpc.getTransactionReceipt.mockResolvedValue({ blockNumber: 100n, blockHash: "block", status: "reverted" });
+    // An old proof cannot authorize retry after its receipt disappears.
+    await pool.query("UPDATE standard_reputation_operations SET result=$2 WHERE operation_id=$1",
+      [id, { rejectionReason: "permit_expired" }]);
+    rpc.getTransactionReceipt.mockRejectedValueOnce(new TransactionReceiptNotFoundError({ hash: `0x${"55".repeat(32)}` }));
+    await expect(operator.retryReputation(id)).rejects.toThrow("operation_not_retryable:operator_attention");
+    // Expired today, but still valid when mined: must not be called an expiry.
+    rpc.getBlock.mockResolvedValueOnce({ hash: "block", timestamp: BigInt(Math.floor(Date.now() / 1000) - 7200) });
+    await expect(operator.retryReputation(id)).rejects.toThrow("operation_not_retryable:operator_attention");
+    await expect(operator.retryReputation(id)).resolves.toEqual({ operationId: id, state: "pending" });
+    const op = (await pool.query("SELECT * FROM standard_reputation_operations WHERE operation_id=$1", [id])).rows[0];
+    expect(op.attempts).toBe(0);
+    expect(op.result.rejectionReason).toBe("permit_expired");
+    expect((await pool.query("SELECT * FROM standard_operator_actions")).rows).toHaveLength(1);
+    expect(send).not.toHaveBeenCalled();
   }), 60_000);
 });

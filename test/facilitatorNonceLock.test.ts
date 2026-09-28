@@ -126,7 +126,9 @@ describe("facilitator nonce coordination", () => {
         }
       },
     };
-    const worker = new StandardReputationWorker({} as Pool, {
+    const worker = new StandardReputationWorker({ query: async () => ({ rows: [{
+      transaction_id: "tx-1", nonce: "12", transaction_hash: hash("b"), state: "prepared",
+    }] }) } as unknown as Pool, {
       reputationRelayerPrivateKey: privateKey,
       evidenceRpcUrls: ["https://rpc-a.example", "https://rpc-b.example"],
     } as unknown as StandardRailConfig, baseSepolia, nonceLock);

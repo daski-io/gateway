@@ -8,7 +8,10 @@ export class OperatorConflict extends Error {}
 
 /** Operator changes and their audit records commit together. */
 export class StandardRailOperator {
-  constructor(private readonly pool: Pool) {}
+  constructor(
+    private readonly pool: Pool,
+    private readonly reconcileReputation: (operationId: string) => Promise<void> = async () => undefined,
+  ) {}
 
   async redispatch(orderId: string): Promise<{ orderId: string; state: "RELEASE_FINAL"; claimId: string }> {
     const client = await this.pool.connect();
@@ -69,16 +72,20 @@ export class StandardRailOperator {
   }
 
   async retryReputation(operationId: string): Promise<{ operationId: string; state: "pending" }> {
+    await this.reconcileReputation(operationId);
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
-      const result = await client.query<{ state: string; last_error_class: string | null }>(
-        "SELECT state,last_error_class FROM standard_reputation_operations WHERE operation_id=$1 FOR UPDATE", [operationId],
+      const result = await client.query<{ state: string; last_error_class: string | null; result: { rejectionReason?: string } | null }>(
+        "SELECT state,last_error_class,result FROM standard_reputation_operations WHERE operation_id=$1 FOR UPDATE", [operationId],
       );
       const operation = result.rows[0];
       if (!operation) throw new OperatorConflict("operation_not_found");
       if (operation.state !== "pending" &&
-          !(operation.state === "operator_attention" && operation.last_error_class === "nonce_conflict")) {
+          !(operation.state === "operator_attention" && (
+            ["nonce_conflict", "broadcast_not_found", "permit_expired"].includes(operation.last_error_class ?? "") ||
+            (operation.last_error_class === "contract_rejection" && operation.result?.rejectionReason === "permit_expired")
+          ))) {
         throw new OperatorConflict(`operation_not_retryable:${operation.state}`);
       }
       const transactions = await client.query<{ transaction_id: string; state: string }>(
@@ -90,8 +97,7 @@ export class StandardRailOperator {
         throw new OperatorConflict("transaction_broadcast_or_final");
       }
       if (operation.state === "operator_attention") {
-        // nonce_conflict is recorded only after the worker observes the nonce
-        // consumed at finality and finds no receipt for this transaction.
+        // The worker established that the previous transaction cannot complete.
         await client.query(
           `UPDATE standard_reputation_transactions SET state='failed',updated_at=now()
             WHERE operation_id=$1 AND state IN ('prepared','operator_attention')`, [operationId],

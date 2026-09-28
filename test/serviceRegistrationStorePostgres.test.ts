@@ -331,6 +331,20 @@ describe("dynamic service registration storage", () => {
       expect(await store.getPendingByServiceId(serviceId)).toBeNull();
       expect((await store.listPublic(10)).map((item) => item.registrationId))
         .toEqual([secondPrepared.registrationId]);
+      // Hidden means operator visibility, including unhealthy registrations;
+      // superseded and rejected history must never be offered for restoration.
+      expect(await store.listOperator(true, 100, null)).toEqual([]);
+      await store.setVisibility(secondPrepared.registrationId, false, "catalog-operator");
+      await store.stopNewCommerce(secondPrepared.registrationId, "temporarily_unavailable", false);
+      const hidden = await store.listOperator(true, 100, null);
+      expect(hidden.map((item) => item.registrationId)).toEqual([secondPrepared.registrationId]);
+      expect(hidden[0]).toMatchObject({ marketplaceEnabled: false, marketplaceEnabledBy: "catalog-operator" });
+      expect(await store.listOperator(true, 100, secondPrepared.registrationId)).toEqual([]);
+      expect(await store.listOperator(false, 100, null)).toEqual([]);
+      await store.setVisibility(secondPrepared.registrationId, true, "catalog-operator");
+      expect(await store.listOperator(true, 100, null)).toEqual([]);
+      expect((await store.listOperator(false, 100, null)).map((item) => item.registrationId))
+        .toEqual([secondPrepared.registrationId]);
     } finally {
       await pool.end();
       await bootstrap.query(`DROP SCHEMA "${schema}" CASCADE`).catch(() => undefined);
