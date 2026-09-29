@@ -47,6 +47,24 @@ describe("signed provider intake discovery", () => {
     expect(result.requiredFields).not.toHaveProperty("managementType");
     expect(result.requiredFields).not.toHaveProperty("members");
   });
+  it("verifies and preserves signed form metadata with long validation-pattern keys", async () => {
+    const pattern = "^" + "[0-9]".repeat(60) + "$";
+    const requiredFields = { formData: { requiredFields: [
+      { name: "start_date", required: true, validations: { [pattern]: "Enter a valid date." } },
+    ] } };
+    expect(await discover({ requiredFields })).toMatchObject({ requiredFields });
+    await expect(discover({ requiredFields }, gateway)).rejects.toMatchObject({ code: "PROVIDER_INTAKE_UNAVAILABLE" });
+  });
+  it("retains bounded keys in signed intake metadata and buyer requests", async () => {
+    await expect(discover({ requiredFields: { ["x".repeat(4097)]: {} } }))
+      .rejects.toMatchObject({ code: "PROVIDER_INTAKE_UNAVAILABLE" });
+    let fetched = false;
+    await expect(getIntakeRequirements({ listing, request: { ["x".repeat(129)]: "invalid buyer key" },
+      environment: "testnet", chainId: 84532, privateKey: key, timeoutMs: 5000,
+      fetchProvider: async () => { fetched = true; return Response.json({}); },
+    })).rejects.toMatchObject({ code: "REQUEST_SCHEMA_INVALID" });
+    expect(fetched).toBe(false);
+  });
   it("rejects substitutions, altered schemas, expiry, malformed fields and the wrong authority", async () => {
     for (const patch of [{ outcomeId: "other" }, { requestHash: canonicalHash({}) }, { requestSchema: {} },
       { validBefore: 1 }, { supported: "yes" }, { fieldErrors: [{}] }]) {

@@ -1,7 +1,7 @@
 import { getAddress, recoverMessageAddress, type Hex } from "viem";
 import { canonicalHash } from "./canonical.js";
 import { discardResponseBody, readBoundedJsonResponse } from "./boundedJson.js";
-import { assertBoundedJsonValue, REQUEST_JSON_BUDGET, RESPONSE_JSON_BUDGET } from "./jsonBounds.js";
+import { assertBoundedJsonValue, REQUEST_JSON_BUDGET, INTAKE_RESPONSE_JSON_BUDGET } from "./jsonBounds.js";
 import { signEnvelope } from "./signing.js";
 import { standardRailError } from "./errors.js";
 import type { StandardListing } from "./types.js";
@@ -34,8 +34,9 @@ export async function getIntakeRequirements(args: {
       redirect: "error", signal: AbortSignal.timeout(Math.min(args.timeoutMs, listing.providerControlProfile.payload.timeoutMs)),
     });
     if (!response.ok) { await discardResponseBody(response); throw new Error("Intake unavailable"); }
-    const value = await readBoundedJsonResponse(response, Math.min(262_144, listing.providerControlProfile.payload.maxResponseBytes));
-    assertBoundedJsonValue(value, RESPONSE_JSON_BUDGET, "Intake response");
+    const value = await readBoundedJsonResponse(response, Math.min(262_144, listing.providerControlProfile.payload.maxResponseBytes),
+      INTAKE_RESPONSE_JSON_BUDGET.maxKeyLength);
+    assertBoundedJsonValue(value, INTAKE_RESPONSE_JSON_BUDGET, "Intake response");
     if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid intake response");
     const result = value as Record<string, unknown>;
     const keys = ["outcomeId", "listingManifestHash", "requestHash", "requestSchema", "requiredFields",

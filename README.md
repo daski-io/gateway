@@ -36,7 +36,9 @@ steady-state prompt is `Use Daski to [your task]`.
 - `POST /outcomes/:providerAgentId/:outcomeId/requirements` and MCP
   `daski_get_outcome_requirements` return the published schema, conditional
   intake requirements, normalized selectors, and missing fields for a partial
-  request. This catalog read creates no quote or order.
+  request. This catalog read creates no quote or order. Signed intake metadata
+  permits validation-pattern keys up to 4,096 characters; buyer request keys
+  remain limited to 128 characters.
 - `/.well-known/mcp.json` publishes the buyer CLI pin, the accepted payer
   account types (`payerAccounts`: plain wallets always, deployed contract
   accounts when enabled, never counterfactual ones), the delivery

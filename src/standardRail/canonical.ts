@@ -65,7 +65,7 @@ const SCANNER_MAX_DEPTH = 64;
 const SCANNER_MAX_NODES = 262_144;
 const SCANNER_MAX_KEY_LENGTH = 256;
 
-export function assertNoDuplicateJsonKeys(text: string): void {
+export function assertNoDuplicateJsonKeys(text: string, maxKeyLength = SCANNER_MAX_KEY_LENGTH): void {
   let offset = 0;
   let nodes = 0;
   const whitespace = () => { while (/\s/.test(text[offset] ?? "")) offset += 1; };
@@ -100,7 +100,7 @@ export function assertNoDuplicateJsonKeys(text: string): void {
       while (true) {
         whitespace();
         const key = stringToken();
-        if (key.length > SCANNER_MAX_KEY_LENGTH) throw new Error("JSON key is too long");
+        if (key.length > maxKeyLength) throw new Error("JSON key is too long");
         if (UNSAFE_CANONICAL_KEYS.has(key)) throw new Error("JSON contains an unsafe key");
         if (keys.has(key)) throw new Error(`Duplicate JSON key ${key}`);
         keys.add(key);
