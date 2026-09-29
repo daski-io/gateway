@@ -115,6 +115,58 @@ export const CONFIRMATION_PREPARATION_INSERT_SQL = `INSERT INTO standard_confirm
 
 type Action = "confirmation" | "revoke-confirmation";
 
+/** Profile-specific EAS input used by live preparation and consumer wire fixtures. */
+export function sponsoredConfirmationTypedData(args: {
+  profileId: EasProfileObservation["profileId"];
+  chainId: number;
+  easAddress: Address;
+  action: Action;
+  schema: Hex;
+  currentUid: Hex;
+  recipient?: Address;
+  data?: Hex;
+  nonce: bigint;
+  deadline: bigint;
+}): PreparationRow["canonical_typed_data"] {
+  const profile = easProfile(args.profileId);
+  const domain = { name: "EAS", version: profile.domainVersion, chainId: args.chainId,
+    verifyingContract: args.easAddress };
+  const typedData = args.action === "confirmation" ? {
+    domain, types: profile.attestTypes, primaryType: "Attest" as const,
+    message: { schema: args.schema, recipient: args.recipient!,
+      expirationTime: "0", revocable: true, refUID: args.currentUid,
+      data: args.data!, value: "0", nonce: args.nonce.toString(), deadline: args.deadline.toString() },
+  } : {
+    domain, types: profile.revokeTypes, primaryType: "Revoke" as const,
+    message: { schema: args.schema, uid: args.currentUid, value: "0", nonce: args.nonce.toString(),
+      deadline: args.deadline.toString() },
+  };
+  if (!profile.signedDeadline) {
+    delete (typedData.message as Record<string, unknown>).value;
+    delete (typedData.message as Record<string, unknown>).deadline;
+  }
+  return typedData;
+}
+
+/** The exact sponsored prepare result, including ISO admission expiry and nullable signed expiry. */
+export function sponsoredConfirmationPreparationResult(args: {
+  summary: {
+    orderKey: Hex; submissionsUsed: number; revocationAvailable: boolean; finalAttestation: boolean;
+    warning?: typeof FINAL_ATTESTATION_WARNING;
+  };
+  preparationId: string;
+  currentRefUid: Hex;
+  typedData: PreparationRow["canonical_typed_data"];
+  profile: EasProfileObservation;
+  admissionExpiresAt: string;
+}) {
+  return { ...args.summary, preparationId: args.preparationId, currentRefUid: args.currentRefUid,
+    signableTypedData: args.typedData, profileId: args.profile.profileId, profileObservation: args.profile,
+    contractVersion: args.profile.contractVersion, domainVersion: args.profile.domainVersion,
+    signedDeadline: args.typedData.message.deadline ?? null,
+    admissionExpiresAt: args.admissionExpiresAt };
+}
+
 export interface ConfirmationContext {
   /** How the order-action authorization verified; sponsored mode needs recovery. */
   verifiedVia: "recovery" | "erc1271";
@@ -460,11 +512,8 @@ export class StandardConfirmations {
       confirmation: action === "confirmation" ? request.confirmation as "Confirmed" | "NotConfirmed" : null,
     });
     return {
-      result: { ...summary, preparationId: prepared.preparationId, currentRefUid: current.currentUid,
-        signableTypedData: prepared.typedData, profileId: profile.profileId, profileObservation: profile,
-        contractVersion: profile.contractVersion, domainVersion: profile.domainVersion,
-        signedDeadline: prepared.typedData.message.deadline ?? null,
-        admissionExpiresAt: prepared.admissionExpiresAt },
+      result: sponsoredConfirmationPreparationResult({ summary, ...prepared,
+        currentRefUid: current.currentUid, profile }),
       finalChanged: false,
     };
   }
@@ -546,23 +595,12 @@ export class StandardConfirmations {
       }
       const deadline = BigInt(Math.floor(Date.now() / 1_000) + this.config.confirmationDeadlineSeconds);
       const profile = easProfile(args.profile.profileId);
-      const domain = { name: "EAS", version: profile.domainVersion, chainId: this.chainId,
-        verifyingContract: this.config.easAddress };
-      const typedData = action === "confirmation" ? {
-        domain, types: profile.attestTypes, primaryType: "Attest" as const,
-        message: { schema, recipient: this.recipientOf(current),
-          expirationTime: "0", revocable: true, refUID: current.currentUid,
-          data: this.attestData(order, args.confirmation!),
-          value: "0", nonce: nonce.toString(), deadline: deadline.toString() },
-      } : {
-        domain, types: profile.revokeTypes, primaryType: "Revoke" as const,
-        message: { schema, uid: current.currentUid, value: "0", nonce: nonce.toString(),
-          deadline: deadline.toString() },
-      };
-      if (!profile.signedDeadline) {
-        delete (typedData.message as Record<string, unknown>).value;
-        delete (typedData.message as Record<string, unknown>).deadline;
-      }
+      const typedData = sponsoredConfirmationTypedData({
+        profileId: profile.id, chainId: this.chainId, easAddress: this.config.easAddress,
+        action, schema, currentUid: current.currentUid, nonce, deadline,
+        ...(action === "confirmation" ? { recipient: this.recipientOf(current),
+          data: this.attestData(order, args.confirmation!) } : {}),
+      });
       const preparationId = randomUUID();
       const requestHash = canonicalHash({ orderKey: order.orderKey, operation: action,
         currentUid: current.currentUid, submissionsUsed, nonce: nonce.toString(),

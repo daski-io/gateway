@@ -135,6 +135,20 @@
       "parsedBy": [
         "daski-buyer packages/pay/src/commands/confirmation.ts validateDirectCall (packages/pay/test/confirmationWire.test.ts)"
       ]
+    },
+    "confirmation-sponsored-preparation.json": {
+      "consumers": [
+        "daski-test",
+        "daski-buyer"
+      ],
+      "emittedBy": [
+        "src/standardRail/confirmations.ts sponsoredConfirmationTypedData",
+        "src/standardRail/confirmations.ts sponsoredConfirmationPreparationResult (the sponsored-mode prepare result)"
+      ],
+      "parsedBy": [
+        "daski-test scripts/standardConfirmation.ts performConfirmationTransition",
+        "daski-buyer packages/pay/src/commands/confirmation.ts validateConfirmationPreparation"
+      ]
     }
   }
 }
