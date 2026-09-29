@@ -7,7 +7,7 @@ import { mcpError, mcpJson } from "../src/mcp/util.js";
 import { mcpSurfaceFixture } from "./helpers/mcpSurfaceFixture.js";
 import { canonicalHash } from "../src/standardRail/canonical.js";
 import {
-  CONFIRMATION_REQUEST_SHAPES, CONFIRMATION_SUBMISSION_MODES, directConfirmationCall,
+  CONFIRMATION_DIRECT_REQUEST_SHAPES, CONFIRMATION_REQUEST_SHAPES, CONFIRMATION_SUBMISSION_MODES, directConfirmationCall,
 } from "../src/standardRail/confirmations.js";
 import { encodeAbiParameters, parseAbiParameters } from "viem";
 import { StandardRailError, standardRailPublicError } from "../src/standardRail/errors.js";
@@ -255,6 +255,10 @@ function confirmationRequestShapesFixture() {
     submissionModes: [...CONFIRMATION_SUBMISSION_MODES],
     sponsoredRequires: "eoa",
     shapes: CONFIRMATION_REQUEST_SHAPES,
+    directShapes: CONFIRMATION_DIRECT_REQUEST_SHAPES,
+    reviewProtocol: 2,
+    reaffirm: ["phase","submission","reviewProtocol","operationId"],
+    supersession: { identifiers: ["supersedesOperationId","supersedesPreparationId"], acknowledgement:"acknowledgeSameNonce" },
   };
 }
 

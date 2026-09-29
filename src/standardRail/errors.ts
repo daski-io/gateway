@@ -50,6 +50,11 @@ export type StandardRailErrorCode =
   | "CONFIRMATION_SPONSORSHIP_UNAVAILABLE"
   | "CONFIRMATION_SUBMISSION_PENDING"
   | "CONFIRMATION_PREPARATION_STALE"
+  | "CONFIRMATION_CLIENT_UPGRADE_REQUIRED"
+  | "CONFIRMATION_EAS_INCOMPATIBLE"
+  | "CONFIRMATION_AUTHORIZATION_STILL_LIVE"
+  | "CONFIRMATION_SUBMISSION_FAILED"
+  | "CONFIRMATION_REVIEWS_PAUSED"
   | "CONFIRMATION_NONCE_BUSY"
   | "CONFIRMATION_SIGNATURE_INVALID"
   | "CONFIRMATION_NOT_ACTIVE"
@@ -315,6 +320,26 @@ const DEFAULTS: Record<StandardRailErrorCode, ErrorDefaults> = {
     paymentMayHaveSettled: false,
     nextAction: "Request a fresh challenge; for read access, re-run daski_get_order_access.",
   },
+  CONFIRMATION_CLIENT_UPGRADE_REQUIRED: {
+    status: 409, message: "This sponsored review requires review protocol 2", phase: "confirmation", retryable: false,
+    requiresNewSignature: false, paymentMayHaveSettled: false, nextAction: "Update the buyer CLI to the gateway-pinned version before preparing a review.",
+  },
+  CONFIRMATION_EAS_INCOMPATIBLE: {
+    status: 409, message: "The deployed EAS implementation does not match a supported signing profile", phase: "confirmation", retryable: false,
+    requiresNewSignature: false, paymentMayHaveSettled: false, nextAction: "Wait for compatibility recovery, or prepare a direct call after reconciling existing authorizations.",
+  },
+  CONFIRMATION_AUTHORIZATION_STILL_LIVE: {
+    status: 409, message: "The previous delegated review authorization can still execute", phase: "confirmation", retryable: false,
+    requiresNewSignature: false, paymentMayHaveSettled: false, nextAction: "Reaffirm the saved intent or explicitly acknowledge a same-nonce replacement.",
+  },
+  CONFIRMATION_SUBMISSION_FAILED: {
+    status: 409, message: "The sponsored review did not complete", phase: "confirmation", retryable: false,
+    requiresNewSignature: false, paymentMayHaveSettled: false, nextAction: "Read the operation disposition before preparing another review.",
+  },
+  CONFIRMATION_REVIEWS_PAUSED: {
+    status: 409, message: "New review submissions are paused for maintenance", phase: "confirmation", retryable: false,
+    requiresNewSignature: false, paymentMayHaveSettled: false, nextAction: "Resume the saved submission after maintenance; do not create another signature.",
+  },
   CONFIRMATION_REQUEST_INVALID: {
     status: 400,
     message: "The delivery confirmation request is malformed",
@@ -380,7 +405,7 @@ const DEFAULTS: Record<StandardRailErrorCode, ErrorDefaults> = {
     retryable: true,
     requiresNewSignature: false,
     paymentMayHaveSettled: false,
-    nextAction: "Submit that preparation or wait for it to expire (at most five minutes), then prepare again.",
+    nextAction: "Reconcile the existing review. Only an explicitly reported unsigned preparation expiry permits a fresh preparation; a submitted or nonexpiring authorization needs recovery.",
   },
   CONFIRMATION_SIGNATURE_INVALID: {
     status: 400,

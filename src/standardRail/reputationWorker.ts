@@ -5,10 +5,13 @@ import {
   http,
   keccak256,
   parseTransaction,
+  parseAbi,
   TransactionNotFoundError,
   TransactionReceiptNotFoundError,
   type Chain,
   type Hex,
+  type TransactionReceipt,
+  type PublicClient,
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import type { PoolClient } from "pg";
@@ -21,12 +24,13 @@ import {
 } from "./facilitatorNonceLock.js";
 import type { StandardRailConfig } from "./config.js";
 import { withRpcFailover } from "../rpc/failover.js";
-import { finalizeReputationOperation } from "./reputationFinalization.js";
+import { finalizeReputationOperation, reviewReceiptUid, type ReviewAttestationEvidence } from "./reputationFinalization.js";
 import {
   encodeReputationOperation,
   type ReputationOperationIntent,
 } from "./reputationOperation.js";
 import { refreshReputationPermit, reputationPermitDeadline } from "./reputationOrders.js";
+import { EasIncompatible, observeEasProfile, signedDeadlineExpired } from "./easProfiles.js";
 import { hasFinalizedNonceConflict } from "./nonceConflict.js";
 
 /** Writes the order's confirmation state through the finalized-read rule. */
@@ -37,7 +41,8 @@ export interface ConfirmationStateReconciler {
 interface OperationRow {
   operation_id: string;
   order_id: string;
-  kind: "register" | "confirmation";
+  kind: "register" | "confirmation" | "confirmation-v2";
+  review_relay_until?: Date | null;
   intent_hash: Buffer;
   canonical_intent: ReputationOperationIntent;
   attempts: number;
@@ -56,6 +61,20 @@ interface TransactionRow {
 
 class AmbiguousReputationWrite extends Error {}
 class ReputationRpcUnavailable extends Error {}
+
+const reviewAttestationAbi = parseAbi([
+  "function getAttestation(bytes32 uid) view returns ((bytes32 uid,bytes32 schema,uint64 time,uint64 expirationTime,uint64 revocationTime,bytes32 refUID,address recipient,address attester,bool revocable,bytes data))",
+]);
+function isReviewExecutionRejection(error: unknown): boolean {
+  let current = error;
+  for (let depth=0;depth<8 && current && typeof current === "object";depth++) {
+    const value = current as {name?:string;code?:number;shortMessage?:string;message?:string;cause?:unknown};
+    if (["ExecutionRevertedError","ContractFunctionRevertedError"].includes(value.name ?? "") || value.code === 3 ||
+        /execution reverted|reverted with/.test(value.shortMessage ?? value.message ?? "")) return true;
+    current = value.cause;
+  }
+  return false;
+}
 
 const bytes = (value: Hex): Buffer => Buffer.from(value.slice(2), "hex");
 
@@ -113,8 +132,10 @@ export class StandardReputationWorker {
   }
   private observe<Result>(
     work: (endpoint: (typeof this.evidenceClients)[number]) => Promise<Result>,
+    terminal?: (error: unknown) => boolean,
   ): Promise<Result> {
     return withRpcFailover(this.evidenceClients, work, {
+      terminal,
       onFallback: ({ primaryHost, selectedHost }) => {
         logger.warn("standard reputation RPC fallback selected", {
           primaryHost,
@@ -173,7 +194,8 @@ export class StandardReputationWorker {
 
   private async runBatch(): Promise<void> {
     await this.reconcileFinalizedConfirmations();
-    const kinds = ["register", "confirmation"] as const;
+    await this.reconcileParkedReviews();
+    const kinds = ["register", "confirmation", "confirmation-v2"] as const;
     for (let count = 0; count < 12; count += 1) {
       const kind = kinds[this.nextKind % kinds.length]!;
       this.nextKind += 1;
@@ -203,7 +225,18 @@ export class StandardReputationWorker {
         "SELECT * FROM standard_reputation_operations WHERE operation_id=$1", [operationId],
       );
       const operation = operations.rows[0];
-      if (!operation || !["pending", "broadcast", "operator_attention"].includes(operation.state)) return;
+      if (!operation || !["pending", "broadcast", "operator_attention", "authorization_live", "superseded"].includes(operation.state)) return;
+      if (operation.kind !== "register") {
+        const attempts = await this.pool.query<TransactionRow>(
+          "SELECT * FROM standard_reputation_transactions WHERE operation_id=$1 ORDER BY created_at DESC", [operationId]);
+        for (const transaction of attempts.rows) {
+          if (transaction.state === "final") continue;
+          await this.reconcile(operation,transaction,true,false);
+          const current = await this.pool.query<{state:string}>("SELECT state FROM standard_reputation_operations WHERE operation_id=$1",[operationId]);
+          if (current.rows[0]?.state === "final") break;
+        }
+        return;
+      }
       const transactions = await this.pool.query<TransactionRow>(
         `SELECT * FROM standard_reputation_transactions WHERE operation_id=$1
           ORDER BY created_at DESC LIMIT 1`, [operationId],
@@ -255,13 +288,15 @@ export class StandardReputationWorker {
       [operation.operation_id],
     );
     if (existing.rows[0]) {
-      await this.reconcile(operation, existing.rows[0]);
+      if (operation.kind === "register") await this.reconcile(operation,existing.rows[0]);
+      else await this.nonceLock.run(() => this.reconcile(operation,existing.rows[0]!,true));
       return;
     }
     await this.prepareAndBroadcast(operation);
   }
 
   private async refreshPermitIfNeeded(operation: OperationRow): Promise<OperationRow> {
+    if (operation.canonical_intent.operation !== "register-order") return operation;
     const deadline = reputationPermitDeadline(operation.canonical_intent);
     if (deadline === null || deadline > BigInt(Math.floor(Date.now() / 1_000) + 60)) return operation;
     const refreshed = await refreshReputationPermit(operation.canonical_intent, this.config, this.chain.id);
@@ -321,7 +356,8 @@ export class StandardReputationWorker {
             canonicalBlock: null,
           };
         }
-        const head = await client.getBlockNumber();
+        const finalHead = operation.kind === "register" ? null : await client.getBlock({ blockTag: this.config.finalityTag });
+        const head = finalHead?.number ?? await client.getBlockNumber();
         const canonicalBlock = await client.getBlock({ blockNumber: receipt.blockNumber });
         return { receipt, pending: false, head, canonicalBlock };
       });
@@ -340,7 +376,7 @@ export class StandardReputationWorker {
       return;
     }
     const head = observation.head!;
-    if (head < receipt.blockNumber + BigInt(this.config.finalityConfirmations - 1)) {
+    if (head < receipt.blockNumber + (operation.kind === "register" ? BigInt(this.config.finalityConfirmations - 1) : 0n)) {
       await this.defer(operation.operation_id);
       return;
     }
@@ -356,6 +392,7 @@ export class StandardReputationWorker {
         transactionId: transaction.transaction_id,
         easAddress: this.config.easAddress,
         receipt,
+        attestation: operation.kind === "register" ? undefined : await this.readReceiptAttestation(operation, receipt),
       });
       try {
         this.onRecordFinalized();
@@ -383,10 +420,94 @@ export class StandardReputationWorker {
     );
     if (transaction.state === "failed") return;
     await this.pool.query(
-      "UPDATE standard_reputation_transactions SET state='failed',block_number=$2,final_at=now(),updated_at=now() WHERE transaction_id=$1",
-      [transaction.transaction_id, receipt.blockNumber.toString()],
+      "UPDATE standard_reputation_transactions SET state='failed',block_number=$2,block_hash=$3,final_at=now(),updated_at=now() WHERE transaction_id=$1",
+      [transaction.transaction_id, receipt.blockNumber.toString(), receipt.blockHash],
     );
-    await this.fail(operation, "contract_rejection");
+    if (operation.kind !== "register") await this.parkReview(operation, "contract_rejection");
+    else await this.fail(operation, "contract_rejection");
+  }
+
+  private async parkReview(operation: OperationRow, reason: string, state = "operator_attention"): Promise<void> {
+    await this.pool.query(
+      `UPDATE standard_reputation_operations SET state=$2,last_error_class=$3,
+         next_attempt_at=now()+interval '2 minutes',updated_at=now()
+       WHERE operation_id=$1 AND state IN ('pending','broadcast','operator_attention','authorization_live')`,
+      [operation.operation_id,state,reason],
+    );
+  }
+
+  /** Called under the shared relayer lock before signing and every send. */
+  private async reviewCanSend(
+    operation: OperationRow,
+    encoded: { data: Hex; destination: Hex; gas: bigint },
+    preparing: boolean,
+  ): Promise<boolean> {
+    if (operation.kind !== "confirmation" && operation.kind !== "confirmation-v2") return true;
+    const intent = operation.canonical_intent;
+    if (intent.operation === "register-order") throw new Error("REVIEW_INTENT_INVALID");
+    const gate = await this.pool.query<{paused:boolean}>("SELECT paused FROM standard_review_control WHERE chain_id=$1",[this.chain.id]);
+    if (gate.rows[0]?.paused) { await this.defer(operation.operation_id); return false; }
+    const preparation = await this.pool.query<{relay_candidate:boolean;authorization_group:string}>(
+      `SELECT p.relay_candidate,p.authorization_group FROM standard_review_preparations p
+         JOIN standard_review_sponsorships s ON s.preparation_id=p.preparation_id WHERE s.operation_id=$1`, [operation.operation_id]);
+    if (!preparation.rows[0]) { await this.parkReview(operation,"preparation_missing"); return false; }
+    if (!preparation.rows[0].relay_candidate) { await this.parkReview(operation,"superseded","superseded"); return false; }
+    if (operation.review_relay_until && new Date(operation.review_relay_until).getTime() <= Date.now()) {
+      await this.parkReview(operation,"relay_window_expired","authorization_live"); return false;
+    }
+    if (preparing && operation.kind === "confirmation-v2") {
+      const budget = await this.pool.query<{count:string}>(
+        `SELECT count(*)::text AS count FROM standard_reputation_transactions t
+           JOIN standard_confirmation_sponsorships_v2 s ON s.operation_id=t.operation_id
+           JOIN standard_confirmation_preparations_v2 p ON p.preparation_id=s.preparation_id
+          WHERE p.authorization_group=$1`, [preparation.rows[0].authorization_group]);
+      if (Number(budget.rows[0]?.count ?? 0) >= 5) { await this.parkReview(operation,"authorization_group_budget_exhausted","authorization_live"); return false; }
+    }
+    try {
+      const observed = await this.observe(({client}) => observeEasProfile(client as unknown as PublicClient,this.chain.id,this.config.easAddress), error => error instanceof EasIncompatible);
+      const profileId = intent.profileId ?? "eas-native-1.2.0";
+      if (observed.profileId !== profileId) { await this.parkReview(operation,"eas_incompatible"); return false; }
+      if (signedDeadlineExpired(profileId,intent.request.deadline,BigInt(observed.timestamp))) {
+        await this.parkReview(operation,"signed_deadline_expired"); return false;
+      }
+      await this.observe(({client}) => client.call({account:this.account.address,to:encoded.destination,data:encoded.data,value:0n,gas:encoded.gas}),isReviewExecutionRejection);
+      return true;
+    } catch (error) {
+      if (error instanceof EasIncompatible) { await this.parkReview(operation,"eas_incompatible"); return false; }
+      if (isReviewExecutionRejection(error)) { await this.parkReview(operation,"simulation_rejected"); return false; }
+      throw new ReputationRpcUnavailable();
+    }
+  }
+
+  private async readReceiptAttestation(operation: OperationRow, receipt: TransactionReceipt): Promise<ReviewAttestationEvidence> {
+    const uid = reviewReceiptUid(receipt,this.config.easAddress,operation.canonical_intent);
+    return this.observe(async ({client}) => {
+      const evidence = await client.readContract({address:this.config.easAddress,abi:reviewAttestationAbi,
+        functionName:"getAttestation",args:[uid],blockNumber:receipt.blockNumber});
+      const block = await client.getBlock({blockNumber:receipt.blockNumber});
+      if (block.hash !== receipt.blockHash) throw new ReputationRpcUnavailable();
+      return evidence;
+    });
+  }
+
+  /** Parked signatures can still be mined by a previously started send. Read only. */
+  private async reconcileParkedReviews(): Promise<void> {
+    const operations = await this.pool.query<OperationRow>(
+      `SELECT * FROM standard_reputation_operations WHERE kind IN ('confirmation','confirmation-v2')
+         AND state IN ('operator_attention','authorization_live','superseded')
+         AND (next_attempt_at IS NULL OR next_attempt_at<=now()) ORDER BY updated_at LIMIT 4`);
+    for (const operation of operations.rows) {
+      try {
+        await this.nonceLock.run(async () => {
+          const transactions = await this.pool.query<TransactionRow>(
+            `SELECT * FROM standard_reputation_transactions WHERE operation_id=$1
+              AND state IN ('prepared','broadcast','operator_attention') ORDER BY created_at`,[operation.operation_id]);
+          for (const transaction of transactions.rows) await this.reconcile(operation,transaction,true,false);
+        });
+      } catch { /* Retain the hold and retry only evidence reads. */ }
+      await this.pool.query(`UPDATE standard_reputation_operations SET next_attempt_at=now()+interval '2 minutes'
+        WHERE operation_id=$1 AND state IN ('operator_attention','authorization_live','superseded')`,[operation.operation_id]);
+    }
   }
 
   private async prepareAndBroadcast(operation: OperationRow): Promise<void> {
@@ -397,6 +518,7 @@ export class StandardReputationWorker {
       if (!latest.rows[0] || !["pending", "broadcast"].includes(latest.rows[0].state)) return;
       operation = await this.refreshPermitIfNeeded(latest.rows[0]);
       const encoded = encodeReputationOperation(operation.canonical_intent, this.config);
+      if (!(await this.reviewCanSend(operation, encoded, true))) return;
       const client = await this.pool.connect();
       let prepared: TransactionRow | null = null;
       try {
@@ -537,6 +659,19 @@ export class StandardReputationWorker {
         await this.resolveNonceConflict(operation, transaction);
         return;
       }
+      const currentOperation = await this.pool.query<OperationRow>(
+        "SELECT * FROM standard_reputation_operations WHERE operation_id=$1", [operation.operation_id],
+      );
+      if (!currentOperation.rows[0] || !["pending", "broadcast"].includes(currentOperation.rows[0].state)) return;
+      operation = currentOperation.rows[0];
+      if (operation.kind === "confirmation" || operation.kind === "confirmation-v2") {
+        // An absent receipt never establishes that a signed transaction was dropped.
+        // Preserve the journal and replay only its identical bytes after every gate.
+        if (!allowBroadcast) return;
+        const encoded = encodeReputationOperation(operation.canonical_intent, this.config);
+        if (await this.reviewCanSend(operation, encoded, false)) await this.sendPersisted(operation, transaction);
+        return;
+      }
       const deadline = reputationPermitDeadline(operation.canonical_intent);
       const expired = deadline !== null && deadline <= BigInt(Math.floor(Date.now() / 1_000));
       const missingBroadcast = transaction.state === "broadcast" &&
@@ -570,6 +705,14 @@ export class StandardReputationWorker {
       this.config.encryptionKey,
       operation.operation_id,
     );
+    if (operation.kind === "confirmation" || operation.kind === "confirmation-v2") {
+      const encoded = encodeReputationOperation(operation.canonical_intent,this.config);
+      const decoded = parseTransaction(raw);
+      if (keccak256(raw) !== transaction.transaction_hash || decoded.chainId !== this.chain.id || decoded.value !== 0n ||
+          decoded.to?.toLowerCase() !== encoded.destination.toLowerCase() || decoded.data?.toLowerCase() !== encoded.data.toLowerCase()) {
+        await this.parkReview(operation,"transaction_intent_mismatch"); return;
+      }
+    }
     try {
       const submitted = await this.broadcastClient.sendRawTransaction({
         serializedTransaction: raw,
@@ -634,7 +777,7 @@ export class StandardReputationWorker {
     if (!this.confirmationState) return;
     const due = await this.pool.query<OperationRow & { final_block_number: string }>(
       `SELECT * FROM standard_reputation_operations
-        WHERE kind='confirmation' AND state='final' AND confirmation_reconciled_at IS NULL
+        WHERE kind IN ('confirmation','confirmation-v2') AND state='final' AND confirmation_reconciled_at IS NULL
           AND (next_attempt_at IS NULL OR next_attempt_at<=now())
         ORDER BY updated_at LIMIT 3`,
     );
@@ -727,7 +870,7 @@ export class StandardReputationWorker {
     const attempts = Math.min(5, operation.attempts + 1);
     const terminal = attempts >= 5;
     const delay = terminal ? null : this.config.reputationRetryDelaysSeconds[attempts - 1]!;
-    if (terminal && transactionId) {
+    if (terminal && transactionId && operation.kind !== "confirmation" && operation.kind !== "confirmation-v2") {
       await this.pool.query(
         `UPDATE standard_reputation_transactions SET state='failed',updated_at=now()
           WHERE transaction_id=$1 AND state='prepared'`,

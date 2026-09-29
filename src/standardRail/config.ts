@@ -63,6 +63,7 @@ export interface StandardRailConfig {
   reputationRegisterGasLimit: bigint;
   reputationConfirmationGasLimit: bigint;
   confirmationDeadlineSeconds: number;
+  confirmationCircleExecutionQualified: boolean;
   /** Sponsored attestations per order; sponsored revocations have their own constant. */
   confirmationMaxPerOrder: number;
   confirmationMaxPerPayerPerDay: number;
@@ -373,6 +374,7 @@ export function loadStandardRailConfig(
     reputationMaxPriorityFeePerGasWei: priorityFee,
     reputationRegisterGasLimit: registerGas,
     reputationConfirmationGasLimit: confirmationGas,
+    confirmationCircleExecutionQualified: env.CONFIRMATION_CIRCLE_EXECUTION_QUALIFIED === "true",
     confirmationDeadlineSeconds: 300,
     confirmationMaxPerOrder: 3,
     confirmationMaxPerPayerPerDay: 20,

@@ -11,6 +11,46 @@
         "phase",
         "submission",
         "confirmation",
+        "acknowledgeFinalTransition",
+        "reviewProtocol"
+      ],
+      "submit": [
+        "phase",
+        "submission",
+        "preparationId",
+        "signature",
+        "reviewProtocol"
+      ],
+      "check": [
+        "phase",
+        "submission"
+      ]
+    },
+    "revoke-confirmation": {
+      "prepare": [
+        "phase",
+        "submission",
+        "reviewProtocol"
+      ],
+      "submit": [
+        "phase",
+        "submission",
+        "preparationId",
+        "signature",
+        "reviewProtocol"
+      ],
+      "check": [
+        "phase",
+        "submission"
+      ]
+    }
+  },
+  "directShapes": {
+    "confirmation": {
+      "prepare": [
+        "phase",
+        "submission",
+        "confirmation",
         "acknowledgeFinalTransition"
       ],
       "submit": [
@@ -40,5 +80,19 @@
         "submission"
       ]
     }
+  },
+  "reviewProtocol": 2,
+  "reaffirm": [
+    "phase",
+    "submission",
+    "reviewProtocol",
+    "operationId"
+  ],
+  "supersession": {
+    "identifiers": [
+      "supersedesOperationId",
+      "supersedesPreparationId"
+    ],
+    "acknowledgement": "acknowledgeSameNonce"
   }
 }

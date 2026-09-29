@@ -1,3 +1,4 @@
+import { StandardReviewRecovery, ReviewRecoveryConflict } from "./reviewRecovery.js";
 import { randomUUID } from "node:crypto";
 import { Router } from "express";
 import type { Pool } from "../db/pool.js";
@@ -131,11 +132,12 @@ export class StandardRailOperator {
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
-      const result = await client.query<{ state: string; last_error_class: string | null; result: { rejectionReason?: string } | null }>(
-        "SELECT state,last_error_class,result FROM standard_reputation_operations WHERE operation_id=$1 FOR UPDATE", [operationId],
+      const result = await client.query<{ kind: string; state: string; last_error_class: string | null; result: { rejectionReason?: string } | null }>(
+        "SELECT kind,state,last_error_class,result FROM standard_reputation_operations WHERE operation_id=$1 FOR UPDATE", [operationId],
       );
       const operation = result.rows[0];
       if (!operation) throw new OperatorConflict("operation_not_found");
+      if (operation.kind !== "register") throw new OperatorConflict("review_requires_recovery_workflow");
       if (operation.state !== "pending" &&
           !(operation.state === "operator_attention" && (
             ["nonce_conflict", "broadcast_not_found", "permit_expired"].includes(operation.last_error_class ?? "") ||
@@ -177,7 +179,7 @@ export class StandardRailOperator {
   }
 }
 
-export function createStandardOperatorRouter(operator: StandardRailOperator, token: string): Router {
+export function createStandardOperatorRouter(operator: StandardRailOperator, token: string, reviews?: StandardReviewRecovery): Router {
   const router = Router();
   const paths = [
     ["/operator/v1/orders/:id/redispatch", (id: string) => operator.redispatch(id)],
@@ -200,6 +202,43 @@ export function createStandardOperatorRouter(operator: StandardRailOperator, tok
           res.status(409).json({ error: { code: "OPERATOR_ACTION_CONFLICT", reason: error.message } });
         } else next(error);
       });
+    });
+  }
+  if (reviews) {
+    const prefix = "/operator/v1/reviews/recovery";
+    router.use(prefix, (req,res,next) => {
+      res.setHeader("Cache-Control","no-store");
+      if (!authorizedOperator(req,token)) { res.status(401).json({error:{code:"OPERATOR_AUTH_REQUIRED"}}); return; }
+      next();
+    });
+    const uuid = (value: unknown): value is string => typeof value === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+    const errorResult = (res: import("express").Response, next: import("express").NextFunction) => (error: unknown) => {
+      if (error instanceof ReviewRecoveryConflict) res.status(409).json({error:{code:"REVIEW_RECOVERY_CONFLICT",reason:error.message}});
+      else next(error);
+    };
+    router.get(prefix,(req,res,next) => {
+      const limit = req.query.limit === undefined ? 100 : Number(req.query.limit);
+      if (!Number.isInteger(limit) || limit < 1 || limit > 100 || (req.query.cursor !== undefined && !uuid(req.query.cursor))) {
+        res.status(400).json({error:{code:"INVALID_RECOVERY_REQUEST"}}); return;
+      }
+      void reviews.inventory(limit,req.query.cursor as string|undefined).then(v=>res.json(v)).catch(errorResult(res,next));
+    });
+    router.post(prefix+"/preview",(req,res,next) => {
+      const ids = req.body?.operationIds;
+      if (!Array.isArray(ids) || ids.length<1 || ids.length>100 || !ids.every(uuid) || Object.keys(req.body).length !== 1) {
+        res.status(400).json({error:{code:"INVALID_RECOVERY_REQUEST"}}); return;
+      }
+      void reviews.preview([...new Set<string>(ids)]).then(v=>res.json(v)).catch(errorResult(res,next));
+    });
+    router.post(prefix+"/apply",(req,res,next) => {
+      const b=req.body;
+      if (!b || Object.keys(b).sort().join() !== "idempotencyKey,operationId,proofHash,releaseId" || !uuid(b.operationId) ||
+          typeof b.proofHash !== "string" || !/^0x[0-9a-f]{64}$/.test(b.proofHash) ||
+          typeof b.idempotencyKey !== "string" || !/^[a-zA-Z0-9:_-]{1,128}$/.test(b.idempotencyKey) ||
+          typeof b.releaseId !== "string" || !/^[a-zA-Z0-9._:-]{1,128}$/.test(b.releaseId)) {
+        res.status(400).json({error:{code:"INVALID_RECOVERY_REQUEST"}}); return;
+      }
+      void reviews.apply(b).then(v=>res.json(v)).catch(errorResult(res,next));
     });
   }
   return router;

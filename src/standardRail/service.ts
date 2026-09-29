@@ -1,3 +1,4 @@
+import { StandardReviewRecovery } from "./reviewRecovery.js";
 import { createHmac, randomBytes, randomUUID } from "node:crypto";
 import { fulfillmentClock } from "./operationsStore.js";
 import { operationsSchema } from "./operationsSchema.js";
@@ -168,6 +169,7 @@ export class StandardRailService {
   private readonly assetFederation: StandardAssetFederation;
   private readonly assetActions: StandardAssetActions;
   private readonly reputationWorker: StandardReputationWorker;
+  readonly reviewRecovery: StandardReviewRecovery;
   private readonly confirmations: StandardConfirmations;
   private readonly confirmationState: StandardConfirmationState;
   private readonly payerSignature: PayerSignatureVerifier;
@@ -254,6 +256,8 @@ export class StandardRailService {
       () => this.reputationReader.invalidate(),
       this.confirmationState,
     );
+    this.reviewRecovery = new StandardReviewRecovery(pool,railConfig,chain.id,this.confirmationState,undefined,
+      id => this.reputationWorker.reconcileForRetry(id));
     this.operationalHealthReporter = new StandardOperationalHealth(pool, this.reputationWorker);
     this.confirmations = new StandardConfirmations(
       pool,
