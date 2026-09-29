@@ -5,6 +5,7 @@ import type { PaymentPayload } from "@x402/core/types";
 import { canonicalHash } from "../src/standardRail/canonical.js";
 import { createPayerSignatureVerifier } from "../src/standardRail/payerSignature.js";
 import { StandardRailService } from "../src/standardRail/service.js";
+import { StandardPurchaseResponses } from "../src/standardRail/purchaseResponse.js";
 import type {
   StandardListing,
   StandardOrderRecord,
@@ -17,7 +18,7 @@ type ServiceHarness = StandardRailService & Record<string, unknown>;
 
 function harness(fields: Record<string, unknown>): ServiceHarness {
   const service = Object.create(StandardRailService.prototype) as ServiceHarness;
-  Object.assign(service, fields);
+  Object.assign(service, { purchaseResponses: new StandardPurchaseResponses(), ...fields });
   return service;
 }
 

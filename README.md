@@ -85,6 +85,15 @@ steady-state prompt is `Use Daski to [your task]`.
   payerAddress?, paymentPayload? }`, retaining the complete payment in JSON
   rather than requiring a large HTTP header. Both use the existing checkout
   service and gateway-bound authorizations.
+  After validated payment authorization is durably captured, checkout waits at
+  most five seconds for processing before returning HTTP 202 with the same
+  order handle, the admission-state snapshot, and null receipts. Admission
+  validation happens before this five-second processing budget. Settlement,
+  chain evidence, and dispatch continue under the existing renewable order
+  lease; a disconnect does not cancel them. Reconcile that payment identifier
+  or use authorized order status after a timeout or pending response; never
+  create another payment authorization to recover the purchase. A pending
+  response confirms admission, not settlement or fulfillment.
   Outcomes declaring `purchaseReadiness: "payer_dns"` require `payerAddress`
   before quoting. A readiness rejection includes structured DNS records in
   `error.readiness`; install them and obtain a fresh quote before signing.
