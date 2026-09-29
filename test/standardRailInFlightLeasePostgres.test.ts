@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { createPool, runMigrations } from "../src/db/pool.js";
+import { StandardPurchaseResponses } from "../src/standardRail/purchaseResponse.js";
 import { StandardRailStore } from "../src/standardRail/store.js";
 
 const databaseUrl = process.env.DATABASE_URL_TEST ??
@@ -64,6 +65,19 @@ describe("in-flight purchase lease (postgres)", () => {
       await expect(store.leaseRecoverable("standard-recovery-worker", 45)).resolves.toBeNull();
       await expect(store.leaseOrder(orderId, "standard-request-other", 45)).resolves.toBeNull();
 
+      // A pending HTTP response must not surrender the real database lease.
+      // Simulate a driver blocked on evidence after its authorization was
+      // durably admitted, independently of the request's response lifetime.
+      let finish!: () => void;
+      const work = new Promise<void>((resolve) => { finish = resolve; });
+      const responses = new StandardPurchaseResponses();
+      const admitted = { handle: "handle-1", order: leased!, replay: false };
+      expect(await responses.run(admitted, async () => { await work; return admitted; })).toBe(admitted);
+      expect(await leaseState()).toMatchObject({ lease_owner: driver, live: true, lease_fence: "4" });
+      await expect(store.leaseRecoverable("standard-recovery-worker", 45)).resolves.toBeNull();
+      finish();
+      await responses.drain();
+
       // The driver's transitions succeed and keep its lease alive.
       const released = await store.transition(leased!, "RELEASE_FINAL", "release_evidence_final", {
         releaseTxHash: `0x${"ab".repeat(32)}`,
@@ -74,12 +88,13 @@ describe("in-flight purchase lease (postgres)", () => {
       await expect(store.leaseRecoverable("standard-recovery-worker", 45)).resolves.toBeNull();
       await expect(store.renewLease(orderId, driver, 4, 45)).resolves.toBe(true);
 
-      // Once the driver hands the order back, recovery resumes on its usual
-      // terms and the driver's stale fence can no longer move the order.
-      await store.releaseLease(orderId, driver, 4);
-      expect(await leaseState()).toMatchObject({ lease_owner: null, live: false });
+      // Simulate process loss after 202: no in-memory continuation survives,
+      // and a new store/worker takes over the persisted order after lease expiry.
+      await pool.query("UPDATE standard_orders SET lease_until=now() - interval '1 second' WHERE order_id=$1", [orderId]);
+      expect(await leaseState()).toMatchObject({ live: false });
       await ageLastTransition();
-      const recovered = await store.leaseRecoverable("standard-recovery-worker", 45);
+      const restartedStore = new StandardRailStore(pool);
+      const recovered = await restartedStore.leaseRecoverable("standard-recovery-worker", 45);
       expect(recovered).toMatchObject({ orderId, state: "RELEASE_FINAL", leaseFence: 5 });
       await expect(store.renewLease(orderId, driver, 4, 45)).resolves.toBe(false);
       await expect(store.transition(released, "DISPATCH_STARTED", "dispatch_started"))

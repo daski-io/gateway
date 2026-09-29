@@ -27,6 +27,14 @@ export const RESPONSE_JSON_BUDGET: JsonBudget = {
   maxStringLength: 262_144,
 };
 
+// Signed intake includes supplier form metadata whose validation maps use
+// regex patterns as keys (live EIN patterns exceed 300 characters). Keep this
+// allowance separate from buyer requests and other provider responses.
+export const INTAKE_RESPONSE_JSON_BUDGET: JsonBudget = {
+  ...RESPONSE_JSON_BUDGET,
+  maxKeyLength: 4096,
+};
+
 export const UNSAFE_JSON_KEYS: ReadonlySet<string> = new Set([
   "__proto__",
   "constructor",

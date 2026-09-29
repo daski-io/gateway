@@ -211,7 +211,8 @@ export async function createStandardApp(options: {
       const drains = await Promise.allSettled([
         httpClosed,
         mcp?.close() ?? Promise.resolve(),
-        standardRailStop(),
+        // HTTP admission must finish before snapshotting detached purchase drivers.
+        httpClosed.finally(() => standardRailStop()),
       ]);
       const poolClose = await Promise.allSettled([
         ...(ownsPool ? [pool.end()] : []),

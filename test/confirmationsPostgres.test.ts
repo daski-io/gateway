@@ -1,8 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { decodeFunctionData, getAddress, parseAbi, type Address, type Hex } from "viem";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { decodeFunctionData, getAddress, parseAbi, type Address, type Chain, type Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
-import { baseSepolia } from "viem/chains";
+import { base, baseSepolia } from "viem/chains";
 import { createPool, runMigrations, type Pool } from "../src/db/pool.js";
 import type { StandardRailConfig } from "../src/standardRail/config.js";
 import {
@@ -11,9 +11,12 @@ import {
   type ConfirmationReadClient,
 } from "../src/standardRail/confirmationState.js";
 import {
+  CONFIRMATION_PREPARATION_INSERT_SQL,
+  sponsoredConfirmationTypedData,
   FINAL_ATTESTATION_WARNING,
   StandardConfirmations,
 } from "../src/standardRail/confirmations.js";
+import { canonicalHash } from "../src/standardRail/canonical.js";
 import type { StandardOrderRecord } from "../src/standardRail/types.js";
 
 /// Spec B6 and B7: submission counting in both modes, sponsored refused for a
@@ -44,7 +47,11 @@ interface ChainRecordState {
 const chain = {
   finalized: { block: 100n, confirmation: 0, submissionsUsed: 0, currentUid: ZERO_UID } as ChainRecordState,
   latest: { block: 105n, confirmation: 0, submissionsUsed: 0, currentUid: ZERO_UID } as ChainRecordState,
+  profileId: "eas-native-1.2.0" as "eas-native-1.0.1" | "eas-native-1.2.0",
   easNonce: 7n,
+  finalProfileTimestamp: null as bigint | null,
+  finalProfileUnavailable: false,
+  profileReadTags: [] as string[],
   registered: true,
   /** Held once by the next EAS nonce read, so a submission can be paused at its chain read. */
   easNonceGate: null as Promise<void> | null,
@@ -94,6 +101,7 @@ const order = {
 
 function config(overrides: Partial<StandardRailConfig> = {}): StandardRailConfig {
   return {
+    reputationRelayerPrivateKey: `0x${"33".repeat(32)}`,
     evidenceRpcUrls: ["https://rpc.example"],
     reputationContract: REPUTATION,
     finalityTag: "finalized",
@@ -107,8 +115,17 @@ function config(overrides: Partial<StandardRailConfig> = {}): StandardRailConfig
   } as unknown as StandardRailConfig;
 }
 
-function confirmations(overrides: Partial<StandardRailConfig> = {}): StandardConfirmations {
-  return new StandardConfirmations(pool, config(overrides), baseSepolia, state, {
+function confirmations(overrides: Partial<StandardRailConfig> = {}, network: Chain = baseSepolia): StandardConfirmations {
+  return new StandardConfirmations(pool, config(overrides), network, state, {
+    readProfile: async (tag = "latest") => {
+      chain.profileReadTags.push(tag);
+      if (tag !== "latest" && chain.finalProfileUnavailable) throw new Error("finality RPC unavailable");
+      const view = tag === "latest" ? "latest" : "finalized";
+      return { profileId: chain.profileId, contractVersion:chain.profileId.slice(11),domainVersion:chain.profileId.slice(11),
+        implementation:EAS, implementationCodeHash:hash("a"),domainSeparator:hash("b"),
+        chainId:network.id,easAddress:EAS,blockNumber:chain[view].block.toString(),blockHash:blockHash(view,chain[view].block),
+        timestamp:String(tag === "latest" ? Math.floor(Date.now()/1000) : chain.finalProfileTimestamp ?? BigInt(Math.floor(Date.now()/1000))) };
+    },
     readContract: async () => {
       chain.easNonceReads += 1;
       const gate = chain.easNonceGate;
@@ -149,6 +166,10 @@ beforeEach(() => {
   chain.finalized = { block: 100n, confirmation: 0, submissionsUsed: 0, currentUid: ZERO_UID };
   chain.latest = { block: 105n, confirmation: 0, submissionsUsed: 0, currentUid: ZERO_UID };
   chain.easNonce = 7n;
+  chain.finalProfileTimestamp = null;
+  chain.finalProfileUnavailable = false;
+  chain.profileReadTags = [];
+  chain.profileId = "eas-native-1.2.0";
   chain.registered = true;
   chain.easNonceGate = null;
   chain.easNonceReads = 0;
@@ -169,16 +190,16 @@ async function signPreparation(typedData: Record<string, unknown>, account = pay
 
 async function sponsorshipRows() {
   const result = await pool.query<{ state: string; operation: string }>(
-    `SELECT s.state,p.operation FROM standard_confirmation_sponsorships s
-       JOIN standard_confirmation_preparations p ON p.preparation_id=s.preparation_id ORDER BY s.created_at`,
+    `SELECT s.state,p.operation FROM standard_confirmation_sponsorships_v2 s
+       JOIN standard_confirmation_preparations_v2 p ON p.preparation_id=s.preparation_id ORDER BY s.created_at`,
   );
   return result.rows;
 }
 
 async function resetSponsorships() {
-  await pool.query("DELETE FROM standard_confirmation_sponsorships");
-  await pool.query("DELETE FROM standard_reputation_operations WHERE kind='confirmation'");
-  await pool.query("DELETE FROM standard_confirmation_preparations");
+  await pool.query("DELETE FROM standard_confirmation_sponsorships_v2");
+  await pool.query("DELETE FROM standard_reputation_operations WHERE kind='confirmation-v2'");
+  await pool.query("DELETE FROM standard_confirmation_preparations_v2");
 }
 
 /** Prepare, sign, and submit one sponsored operation; returns the pending refusal. */
@@ -189,13 +210,13 @@ async function sponsoredSubmit(
   acknowledge = false,
 ) {
   const prepared = await subject.handle(order, action, action === "confirmation"
-    ? { phase: "prepare", submission: "sponsored", confirmation: label, acknowledgeFinalTransition: acknowledge }
-    : { phase: "prepare", submission: "sponsored" }, eoa);
+    ? { phase: "prepare", submission: "sponsored", reviewProtocol: 2, confirmation: label, acknowledgeFinalTransition: acknowledge }
+    : { phase: "prepare", submission: "sponsored", reviewProtocol: 2 }, eoa);
   const typedData = prepared.result.signableTypedData as Record<string, unknown>;
   if (!typedData) return { prepared, submitted: null };
   const signature = await signPreparation(typedData);
   const submitted = await subject.handle(order, action, {
-    phase: "submit", submission: "sponsored", preparationId: prepared.result.preparationId, signature,
+    phase: "submit", submission: "sponsored", reviewProtocol: 2, preparationId: prepared.result.preparationId, signature,
   }, eoa).catch((error: unknown) => error as { code?: string; chainEligible?: boolean });
   return { prepared, submitted };
 }
@@ -240,10 +261,10 @@ describe("delivery confirmation modes", () => {
     const subject = confirmations();
     chain.registered = false;
     await expect(subject.handle(order, "confirmation", {
-      phase: "prepare", submission: "sponsored", confirmation: "Confirmed", acknowledgeFinalTransition: false,
+      phase: "prepare", submission: "sponsored", reviewProtocol: 2, confirmation: "Confirmed", acknowledgeFinalTransition: false,
     }, contract)).rejects.toMatchObject({ code: "CONFIRMATION_SPONSORED_REQUIRES_EOA" });
     await expect(subject.handle(order, "confirmation", {
-      phase: "submit", submission: "sponsored", preparationId: randomUUID(), signature: `0x${"11".repeat(65)}`,
+      phase: "submit", submission: "sponsored", reviewProtocol: 2, preparationId: randomUUID(), signature: `0x${"11".repeat(65)}`,
     }, contract)).rejects.toMatchObject({ code: "CONFIRMATION_SPONSORED_REQUIRES_EOA" });
   });
 
@@ -264,7 +285,7 @@ describe("delivery confirmation modes", () => {
     expect((decoded.args[0] as { data: { refUID: Hex } }).data.refUID).toBe(hash("c"));
     expect(prepared.result.observedBlock).toEqual({ number: "105", hash: blockHash("latest", 105n) });
     expect(prepared.result).not.toHaveProperty("preparationId");
-    const rows = await pool.query<{ n: number }>("SELECT count(*)::int AS n FROM standard_confirmation_preparations");
+    const rows = await pool.query<{ n: number }>("SELECT count(*)::int AS n FROM standard_confirmation_preparations_v2");
     expect(rows.rows[0]!.n).toBe(0);
     const revoke = await subject.handle(order, "revoke-confirmation", { phase: "prepare", submission: "direct" }, contract);
     const revokeCall = revoke.result.call as { calldata: Hex; function: string };
@@ -287,29 +308,29 @@ describe("delivery confirmation modes", () => {
     await resetSponsorships();
     const subject = confirmations();
     const prepared = await subject.handle(order, "confirmation", {
-      phase: "prepare", submission: "sponsored", confirmation: "Confirmed", acknowledgeFinalTransition: false,
+      phase: "prepare", submission: "sponsored", reviewProtocol: 2, confirmation: "Confirmed", acknowledgeFinalTransition: false,
     }, eoa);
     const typedData = prepared.result.signableTypedData as Record<string, unknown>;
     const wrongSigner = await signPreparation(typedData, strangerKey);
     for (const signature of [wrongSigner, `0x${"ab".repeat(64)}`, `0x${"ab".repeat(66)}`]) {
       await expect(subject.handle(order, "confirmation", {
-        phase: "submit", submission: "sponsored", preparationId: prepared.result.preparationId, signature,
+        phase: "submit", submission: "sponsored", reviewProtocol: 2, preparationId: prepared.result.preparationId, signature,
       }, eoa)).rejects.toMatchObject({ code: "CONFIRMATION_SIGNATURE_INVALID" });
     }
     expect(await sponsorshipRows()).toEqual([]);
     const preparation = await pool.query<{ consumed_at: Date | null }>(
-      "SELECT consumed_at FROM standard_confirmation_preparations WHERE preparation_id=$1",
+      "SELECT consumed_at FROM standard_confirmation_preparations_v2 WHERE preparation_id=$1",
       [prepared.result.preparationId],
     );
     expect(preparation.rows[0]?.consumed_at).toBeNull();
     // The valid signature then reserves the sponsorship and reports the queued submission.
     const signature = await signPreparation(typedData);
     await expect(subject.handle(order, "confirmation", {
-      phase: "submit", submission: "sponsored", preparationId: prepared.result.preparationId, signature,
+      phase: "submit", submission: "sponsored", reviewProtocol: 2, preparationId: prepared.result.preparationId, signature,
     }, eoa)).rejects.toMatchObject({ code: "CONFIRMATION_SUBMISSION_PENDING", retryable: true });
     expect(await sponsorshipRows()).toEqual([{ state: "reserved", operation: "attest-confirmation" }]);
     const intent = await pool.query<{ canonical_intent: { submissionsUsed: number; operation: string } }>(
-      "SELECT canonical_intent FROM standard_reputation_operations WHERE kind='confirmation'",
+      "SELECT canonical_intent FROM standard_reputation_operations WHERE kind='confirmation-v2'",
     );
     expect(intent.rows[0]?.canonical_intent).toMatchObject({ operation: "attest-confirmation", submissionsUsed: 0 });
   });
@@ -322,7 +343,7 @@ describe("delivery confirmation modes", () => {
       chain.easNonce = BigInt(10 + used);
       const { submitted } = await sponsoredSubmit(subject, "confirmation", "Confirmed", used === 2);
       expect(submitted).toMatchObject({ code: "CONFIRMATION_SUBMISSION_PENDING" });
-      await pool.query("UPDATE standard_confirmation_sponsorships SET state='charged'");
+      await pool.query("UPDATE standard_confirmation_sponsorships_v2 SET state='charged'");
     }
     expect((await sponsorshipRows()).map((row) => row.operation))
       .toEqual(["attest-confirmation", "attest-confirmation", "attest-confirmation"]);
@@ -340,7 +361,7 @@ describe("delivery confirmation modes", () => {
     chain.easNonce = 30n;
     const first = await sponsoredSubmit(subject, "confirmation");
     expect(first.submitted).toMatchObject({ code: "CONFIRMATION_SUBMISSION_PENDING" });
-    await pool.query("UPDATE standard_confirmation_sponsorships SET state='charged'");
+    await pool.query("UPDATE standard_confirmation_sponsorships_v2 SET state='charged'");
     chain.latest = { ...chain.latest, submissionsUsed: 1, currentUid: hash("1") };
     chain.easNonce = 31n;
     const second = await sponsoredSubmit(subject, "confirmation");
@@ -352,26 +373,26 @@ describe("delivery confirmation modes", () => {
     expect(revoke.submitted).toMatchObject({ code: "CONFIRMATION_SUBMISSION_PENDING" });
   });
 
-  it("keeps one valid preparation per payer and nonce: expired ones retire, an equivalent one is reused, another label supersedes, another order waits", async () => {
+  it("keeps one valid preparation per payer and nonce: an equivalent one is reused, replacements require acknowledgement, another order waits", async () => {
     await resetSponsorships();
-    await pool.query("DELETE FROM standard_confirmation_preparations");
+    await pool.query("DELETE FROM standard_confirmation_preparations_v2");
     const subject = confirmations();
     chain.easNonce = 50n;
-    const prepareArgs = { phase: "prepare", submission: "sponsored", confirmation: "Confirmed", acknowledgeFinalTransition: false };
+    const prepareArgs = { phase: "prepare", submission: "sponsored", reviewProtocol: 2, confirmation: "Confirmed", acknowledgeFinalTransition: false };
     const first = await subject.handle(order, "confirmation", prepareArgs, eoa);
     const firstId = first.result.preparationId as string;
     // The same order, label and chain facts: the same preparation comes back.
     const again = await subject.handle(order, "confirmation", prepareArgs, eoa);
     expect(again.result.preparationId).toBe(firstId);
     // Another label for the same order supersedes it: nothing was admitted, so its submission is stale.
-    const changed = await subject.handle(order, "confirmation", { ...prepareArgs, confirmation: "NotConfirmed" }, eoa);
+    const changed = await subject.handle(order, "confirmation", { ...prepareArgs, confirmation: "NotConfirmed", supersedesPreparationId: firstId, acknowledgeSameNonce: true }, eoa);
     expect(changed.result.preparationId).not.toBe(firstId);
     const superseded = await pool.query<{ consumed_at: Date | null }>(
-      "SELECT consumed_at FROM standard_confirmation_preparations WHERE preparation_id=$1", [firstId]);
+      "SELECT consumed_at FROM standard_confirmation_preparations_v2 WHERE preparation_id=$1", [firstId]);
     expect(superseded.rows[0]?.consumed_at).not.toBeNull();
     const staleSignature = await signPreparation(first.result.signableTypedData as Record<string, unknown>);
     await expect(subject.handle(order, "confirmation", {
-      phase: "submit", submission: "sponsored", preparationId: firstId, signature: staleSignature,
+      phase: "submit", submission: "sponsored", reviewProtocol: 2, preparationId: firstId, signature: staleSignature,
     }, eoa)).rejects.toMatchObject({ code: "CONFIRMATION_PREPARATION_STALE" });
     // Another order of the same payer at the same nonce waits for the live preparation.
     const otherId = "ord_22222222-2222-4222-8222-222222222222";
@@ -389,13 +410,13 @@ describe("delivery confirmation modes", () => {
         payerKey.address.toLowerCase()],
     );
     const otherOrder = { ...order, orderId: otherId, orderKey: hash("9") } as StandardOrderRecord;
-    await expect(subject.handle(otherOrder, "confirmation", prepareArgs, eoa)).rejects.toMatchObject({ code: "CONFIRMATION_NONCE_BUSY" });
-    // Once the live preparation has expired it is retired and the other order proceeds.
-    await pool.query("UPDATE standard_confirmation_preparations SET expires_at=now()-interval '1 second' WHERE consumed_at IS NULL");
-    const proceeded = await subject.handle(otherOrder, "confirmation", prepareArgs, eoa);
+    await expect(subject.handle(otherOrder, "confirmation", prepareArgs, eoa)).rejects.toMatchObject({ code: "CONFIRMATION_AUTHORIZATION_STILL_LIVE" });
+    // Local expiry does not cancel a signature: an explicit acknowledged alternative proceeds.
+    await pool.query("UPDATE standard_confirmation_preparations_v2 SET expires_at=now()-interval '1 second' WHERE consumed_at IS NULL");
+    const proceeded = await subject.handle(otherOrder, "confirmation", { ...prepareArgs, supersedesPreparationId: changed.result.preparationId, acknowledgeSameNonce: true }, eoa);
     expect(typeof proceeded.result.preparationId).toBe("string");
     const active = await pool.query<{ count: string }>(
-      "SELECT count(*)::text AS count FROM standard_confirmation_preparations WHERE payer=$1 AND eas_nonce=50 AND consumed_at IS NULL",
+      "SELECT count(*)::text AS count FROM standard_confirmation_preparations_v2 WHERE payer=$1 AND eas_nonce=50 AND consumed_at IS NULL",
       [payerKey.address.toLowerCase()]);
     expect(active.rows[0]?.count).toBe("1");
     expect(await sponsorshipRows()).toEqual([]);
@@ -405,7 +426,7 @@ describe("delivery confirmation modes", () => {
     await resetSponsorships();
     const subject = confirmations();
     chain.easNonce = 60n;
-    const prepareArgs = { phase: "prepare", submission: "sponsored", confirmation: "Confirmed", acknowledgeFinalTransition: false };
+    const prepareArgs = { phase: "prepare", submission: "sponsored", reviewProtocol: 2, confirmation: "Confirmed", acknowledgeFinalTransition: false };
     const first = await subject.handle(order, "confirmation", prepareArgs, eoa);
     const firstId = first.result.preparationId as string;
     const signature = await signPreparation(first.result.signableTypedData as Record<string, unknown>);
@@ -415,19 +436,19 @@ describe("delivery confirmation modes", () => {
     const readsBefore = chain.easNonceReads;
     chain.easNonceGate = new Promise<void>((resolve) => { release = resolve; });
     const submission = subject.handle(order, "confirmation", {
-      phase: "submit", submission: "sponsored", preparationId: firstId, signature,
+      phase: "submit", submission: "sponsored", reviewProtocol: 2, preparationId: firstId, signature,
     }, eoa).catch((error: unknown) => error as { code?: string });
     while (chain.easNonceReads === readsBefore) await new Promise((resolve) => setTimeout(resolve, 5));
-    const replaced = await subject.handle(order, "confirmation", { ...prepareArgs, confirmation: "NotConfirmed" }, eoa);
+    const replaced = await subject.handle(order, "confirmation", { ...prepareArgs, confirmation: "NotConfirmed", supersedesPreparationId: firstId, acknowledgeSameNonce: true }, eoa);
     expect(replaced.result.preparationId).not.toBe(firstId);
     release();
     expect(await submission).toMatchObject({ code: "CONFIRMATION_PREPARATION_STALE" });
     expect(await sponsorshipRows()).toEqual([]);
     const operations = await pool.query<{ count: string }>(
-      "SELECT count(*)::text AS count FROM standard_reputation_operations WHERE kind='confirmation'");
+      "SELECT count(*)::text AS count FROM standard_reputation_operations WHERE kind='confirmation-v2'");
     expect(operations.rows[0]?.count).toBe("0");
     const rows = await pool.query<{ preparation_id: string; consumed_at: Date | null }>(
-      "SELECT preparation_id,consumed_at FROM standard_confirmation_preparations WHERE payer=$1 AND eas_nonce=60 ORDER BY created_at",
+      "SELECT preparation_id,consumed_at FROM standard_confirmation_preparations_v2 WHERE payer=$1 AND eas_nonce=60 ORDER BY created_at",
       [payerKey.address.toLowerCase()]);
     expect(rows.rows.map((row) => ({ first: row.preparation_id === firstId, live: row.consumed_at === null })))
       .toEqual([{ first: true, live: false }, { first: false, live: true }]);
@@ -439,17 +460,17 @@ describe("delivery confirmation modes", () => {
     chain.easNonce = 70n;
     vi.useFakeTimers({ toFake: ["Date"] });
     try {
-      const prepareArgs = { phase: "prepare", submission: "sponsored", confirmation: "Confirmed", acknowledgeFinalTransition: false };
+      const prepareArgs = { phase: "prepare", submission: "sponsored", reviewProtocol: 2, confirmation: "Confirmed", acknowledgeFinalTransition: false };
       const a = await subject.handle(order, "confirmation", prepareArgs, eoa);
-      const b = await subject.handle(order, "confirmation", { ...prepareArgs, confirmation: "NotConfirmed" }, eoa);
+      const b = await subject.handle(order, "confirmation", { ...prepareArgs, confirmation: "NotConfirmed", supersedesPreparationId: a.result.preparationId, acknowledgeSameNonce: true }, eoa);
       // Same payer nonce, chain facts and application second: the request
       // hash equals the retired first preparation's, and that is not a conflict.
-      const again = await subject.handle(order, "confirmation", prepareArgs, eoa);
+      const again = await subject.handle(order, "confirmation", { ...prepareArgs, supersedesPreparationId: b.result.preparationId, acknowledgeSameNonce: true }, eoa);
       expect(b.result.preparationId).not.toBe(a.result.preparationId);
       expect(again.result.preparationId).not.toBe(a.result.preparationId);
       expect(again.result.signableTypedData).toEqual(a.result.signableTypedData);
       const live = await pool.query<{ preparation_id: string }>(
-        "SELECT preparation_id FROM standard_confirmation_preparations WHERE payer=$1 AND eas_nonce=70 AND consumed_at IS NULL",
+        "SELECT preparation_id FROM standard_confirmation_preparations_v2 WHERE payer=$1 AND eas_nonce=70 AND consumed_at IS NULL",
         [payerKey.address.toLowerCase()]);
       expect(live.rows.map((row) => row.preparation_id)).toEqual([again.result.preparationId]);
     } finally {
@@ -462,12 +483,12 @@ describe("delivery confirmation modes", () => {
     const subject = confirmations();
     chain.easNonce = 40n;
     const prepared = await subject.handle(order, "confirmation", {
-      phase: "prepare", submission: "sponsored", confirmation: "Confirmed", acknowledgeFinalTransition: false,
+      phase: "prepare", submission: "sponsored", reviewProtocol: 2, confirmation: "Confirmed", acknowledgeFinalTransition: false,
     }, eoa);
     chain.latest = { ...chain.latest, submissionsUsed: 1, currentUid: hash("1") };
     const signature = await signPreparation(prepared.result.signableTypedData as Record<string, unknown>);
     await expect(subject.handle(order, "confirmation", {
-      phase: "submit", submission: "sponsored", preparationId: prepared.result.preparationId, signature,
+      phase: "submit", submission: "sponsored", reviewProtocol: 2, preparationId: prepared.result.preparationId, signature,
     }, eoa)).rejects.toMatchObject({ code: "CONFIRMATION_PREPARATION_STALE" });
     expect(await sponsorshipRows()).toEqual([]);
   });
@@ -602,7 +623,7 @@ describe("confirmation state (finalized-only storage)", () => {
 });
 
 describe("sponsored submissions in flight", () => {
-  const prepareArgs = { phase: "prepare", submission: "sponsored", confirmation: "Confirmed", acknowledgeFinalTransition: false };
+  const prepareArgs = { phase: "prepare", submission: "sponsored", reviewProtocol: 2, confirmation: "Confirmed", acknowledgeFinalTransition: false };
 
   it("answers a consumed preparation past its deadline with the admitted operation, never STALE", async () => {
     await resetSponsorships();
@@ -612,16 +633,16 @@ describe("sponsored submissions in flight", () => {
     expect(submitted).toMatchObject({ code: "CONFIRMATION_SUBMISSION_PENDING" });
     const preparationId = prepared.result.preparationId as string;
     await pool.query(
-      "UPDATE standard_confirmation_preparations SET expires_at=now()-interval '1 minute' WHERE preparation_id=$1",
+      "UPDATE standard_confirmation_preparations_v2 SET expires_at=now()-interval '1 minute' WHERE preparation_id=$1",
       [preparationId],
     );
     const signature = await signPreparation(prepared.result.signableTypedData as Record<string, unknown>);
-    const resume = { phase: "submit", submission: "sponsored", preparationId, signature };
+    const resume = { phase: "submit", submission: "sponsored", reviewProtocol: 2, preparationId, signature };
     // The deadline bounds the EAS delegation, not the queued submission: a
     // buyer resuming after it learns the operation's state.
     await expect(subject.handle(order, "confirmation", resume, eoa))
       .rejects.toMatchObject({ code: "CONFIRMATION_SUBMISSION_PENDING" });
-    await pool.query("UPDATE standard_reputation_operations SET state='final' WHERE kind='confirmation'");
+    await pool.query("UPDATE standard_reputation_operations SET state='final' WHERE kind='confirmation-v2'");
     const done = await subject.handle(order, "confirmation", resume, eoa);
     expect(done.result).toMatchObject({ state: "final" });
     expect(typeof done.result.operationId).toBe("string");
@@ -657,7 +678,7 @@ describe("sponsored submissions in flight", () => {
     expect(await sponsorshipRows()).toHaveLength(1);
     // Once the submission is final the chain has moved the nonce on, and the
     // other order prepares at the next one.
-    await pool.query("UPDATE standard_reputation_operations SET state='final' WHERE kind='confirmation'");
+    await pool.query("UPDATE standard_reputation_operations SET state='final' WHERE kind='confirmation-v2'");
     chain.easNonce = 91n;
     const next = await subject.handle(otherOrder, "confirmation", prepareArgs, eoa);
     expect(typeof next.result.preparationId).toBe("string");
@@ -680,7 +701,181 @@ describe("sponsored submissions in flight", () => {
   it("refuses a malformed preparation id as a request error, never as an internal failure", async () => {
     const subject = confirmations();
     await expect(subject.handle(order, "confirmation", {
-      phase: "submit", submission: "sponsored", preparationId: "-".repeat(36), signature: `0x${"11".repeat(65)}`,
+      phase: "submit", submission: "sponsored", reviewProtocol: 2, preparationId: "-".repeat(36), signature: `0x${"11".repeat(65)}`,
     }, eoa)).rejects.toMatchObject({ code: "CONFIRMATION_REQUEST_INVALID" });
+  });
+});
+
+
+describe("profile-aware review admission", () => {
+  const prepare = {phase:"prepare",submission:"sponsored",reviewProtocol:2,confirmation:"Confirmed",acknowledgeFinalTransition:false};
+  it("rejects older clients before issuing any new delegated signature",async () => {
+    await resetSponsorships();
+    const {reviewProtocol: _version,...old} = prepare;
+    await expect(confirmations().handle(order,"confirmation",old,eoa)).rejects.toMatchObject({code:"CONFIRMATION_CLIENT_UPGRADE_REQUIRED"});
+    expect((await pool.query("SELECT * FROM standard_confirmation_preparations_v2")).rowCount).toBe(0);
+  });
+  it("keeps legacy authorization live past local admission expiry and supports explicit reaffirmation without new intent",async () => {
+    await resetSponsorships(); chain.profileId="eas-native-1.0.1";
+    const subject=confirmations(); const {prepared,submitted}=await sponsoredSubmit(subject,"confirmation");
+    expect(prepared.result).toMatchObject({profileId:"eas-native-1.0.1",signedDeadline:null});
+    const td=prepared.result.signableTypedData as {message:Record<string,unknown>};
+    expect(td.message).not.toHaveProperty("deadline"); expect(td.message).not.toHaveProperty("value");
+    const operationId=(submitted as {expected:{operationId:string}}).expected.operationId;
+    const oldIntent=(await pool.query("SELECT canonical_intent FROM standard_reputation_operations WHERE operation_id=$1",[operationId])).rows[0].canonical_intent;
+    await pool.query("UPDATE standard_reputation_operations SET state='authorization_live',attempts=2,review_relay_until=now()-interval '1 day' WHERE operation_id=$1",[operationId]);
+    await expect(subject.handle(order,"confirmation",prepare,eoa)).rejects.toMatchObject({code:"CONFIRMATION_AUTHORIZATION_STILL_LIVE"});
+    await expect(subject.handle(order,"confirmation",{phase:"reaffirm",submission:"sponsored",reviewProtocol:2,operationId},eoa))
+      .rejects.toMatchObject({code:"CONFIRMATION_SUBMISSION_PENDING",expected:{operationId}});
+    expect((await pool.query("SELECT canonical_intent,attempts,state FROM standard_reputation_operations WHERE operation_id=$1",[operationId])).rows[0])
+      .toMatchObject({canonical_intent:oldIntent,attempts:2,state:"pending"});
+  });
+  it("shares the allowance among explicit alternatives, preserves superseded intent, and never reports failed as success",async () => {
+    await resetSponsorships(); chain.profileId="eas-native-1.0.1";
+    const subject=confirmations({confirmationMaxPerOrder:1});
+    const first=await sponsoredSubmit(subject,"confirmation");
+    const operationId=(first.submitted as {expected:{operationId:string}}).expected.operationId;
+    const replacement=await subject.handle(order,"confirmation",{...prepare,confirmation:"NotConfirmed",supersedesOperationId:operationId,acknowledgeSameNonce:true},eoa);
+    const signature=await signPreparation(replacement.result.signableTypedData as Record<string,unknown>);
+    await expect(subject.handle(order,"confirmation",{phase:"submit",submission:"sponsored",reviewProtocol:2,preparationId:replacement.result.preparationId,signature},eoa))
+      .rejects.toMatchObject({code:"CONFIRMATION_SUBMISSION_PENDING"});
+    expect((await pool.query("SELECT DISTINCT authorization_group FROM standard_confirmation_preparations_v2")).rowCount).toBe(1);
+    expect((await pool.query("SELECT state FROM standard_reputation_operations WHERE operation_id=$1",[operationId])).rows[0].state).toBe("superseded");
+    await pool.query("UPDATE standard_reputation_operations SET state='confirmation_failed',result='{\"safeRetired\":true}' WHERE state='pending'");
+    await expect(subject.handle(order,"confirmation",{phase:"submit",submission:"sponsored",reviewProtocol:2,preparationId:replacement.result.preparationId,signature},eoa))
+      .rejects.toMatchObject({code:"CONFIRMATION_SUBMISSION_FAILED",expected:{safeRetired:true}});
+  });
+});
+
+describe("historical unadmitted review preparation recovery", () => {
+  const prepare = { phase: "prepare", submission: "sponsored", reviewProtocol: 2,
+    confirmation: "Confirmed", acknowledgeFinalTransition: false };
+  async function clearHistorical() {
+    await resetSponsorships();
+    await pool.query("DELETE FROM standard_confirmation_sponsorships");
+    await pool.query("DELETE FROM standard_reputation_operations WHERE kind='confirmation'");
+    await pool.query("DELETE FROM standard_confirmation_preparations");
+  }
+  beforeEach(clearHistorical);
+  afterEach(clearHistorical);
+
+  async function issued(args: { chainId?: number; deadline?: bigint; action?: "confirmation" | "revoke-confirmation";
+    mutate?: (typed: ReturnType<typeof sponsoredConfirmationTypedData>) => void } = {}) {
+    const deadline = args.deadline ?? BigInt(Math.floor(Date.now()/1000) - 30);
+    const action = args.action ?? "confirmation";
+    const typed = structuredClone(sponsoredConfirmationTypedData({ profileId: "eas-native-1.2.0",
+      chainId: args.chainId ?? 84532, easAddress: EAS, action, schema: SCHEMA,
+      currentUid: chain.latest.currentUid, nonce: chain.easNonce, deadline,
+      recipient: address("b"), data: `0x${order.orderKey.slice(2)}${"0".repeat(63)}1` as Hex }));
+    args.mutate?.(typed);
+    const preparationId = randomUUID();
+    await pool.query(CONFIRMATION_PREPARATION_INSERT_SQL, [preparationId, orderId,
+      Buffer.from(order.orderKey.slice(2), "hex"), payerKey.address.toLowerCase(),
+      action === "confirmation" ? "attest-confirmation" : "revoke-confirmation",
+      action === "confirmation" ? "Confirmed" : null,
+      chain.latest.currentUid === ZERO_UID ? null : Buffer.from(chain.latest.currentUid.slice(2), "hex"),
+      chain.latest.submissionsUsed, chain.easNonce.toString(), deadline.toString(),
+      createHash("sha256").update(preparationId).digest(), typed, false]);
+    return { preparationId, typed, deadline };
+  }
+  const replacement = (preparationId: string) => ({ ...prepare, supersedesPreparationId: preparationId, acknowledgeSameNonce: true });
+
+  for (const network of [base, baseSepolia]) for (const action of ["confirmation", "revoke-confirmation"] as const) {
+    it(`replaces expired historical 1.2 ${action} on ${network.id} with immutable lineage and configured-finality proof`, async () => {
+      chain.profileId = network.id === 8453 ? "eas-native-1.0.1" : "eas-native-1.2.0";
+      if (action === "revoke-confirmation") {
+        chain.latest.currentUid = hash("c");
+        chain.latest.submissionsUsed = 1;
+      }
+      const old = await issued({ chainId: network.id, action });
+      chain.finalProfileTimestamp = old.deadline + 1n;
+      const before = (await pool.query("SELECT * FROM standard_confirmation_preparations WHERE preparation_id=$1", [old.preparationId])).rows[0];
+      const finalityTag = network.id === 8453 ? "finalized" : "safe";
+      const subject = confirmations({ finalityTag }, network);
+      const request = action === "confirmation" ? replacement(old.preparationId) : {
+        phase: "prepare", submission: "sponsored", reviewProtocol: 2,
+        supersedesPreparationId: old.preparationId, acknowledgeSameNonce: true };
+      const next = await subject.handle(order, action, request, eoa);
+      expect(next.result.profileId).toBe(chain.profileId);
+      expect(chain.profileReadTags).toEqual(["latest", finalityTag]);
+      const stored = (await pool.query("SELECT * FROM standard_confirmation_preparations_v2 WHERE preparation_id=$1", [next.result.preparationId])).rows[0];
+      expect(stored).toMatchObject({ supersedes_preparation_id: old.preparationId, authorization_group: old.preparationId });
+      expect((await pool.query("SELECT * FROM standard_confirmation_preparations WHERE preparation_id=$1", [old.preparationId])).rows[0]).toEqual(before);
+      const audits = await pool.query("SELECT * FROM standard_operator_actions WHERE target_id=$1", [next.result.preparationId]);
+      expect(audits.rowCount).toBe(1);
+      expect(audits.rows[0]).toMatchObject({ actor: "payer", action: "review_historical_preparation_replacement",
+        details: { supersedesPreparationId: old.preparationId, authorizationGroup: old.preparationId,
+          proofs: [{ preparationId: old.preparationId, signedDeadline: old.deadline.toString(),
+            canonicalTypedDataHash: canonicalHash(old.typed), finalityTag, finalizedTimestamp: (old.deadline+1n).toString(),
+            finalizedBlock: { number: "100", hash: blockHash("finalized",100n) }, deployedProfileId: chain.profileId }] } });
+      expect(JSON.stringify(audits.rows[0].details)).not.toContain("signature");
+      const again = await subject.handle(order, action, request, eoa);
+      expect(again.result.preparationId).toBe(next.result.preparationId);
+      expect((await pool.query("SELECT * FROM standard_operator_actions WHERE target_id=$1", [next.result.preparationId])).rowCount).toBe(1);
+      const signature = await signPreparation(next.result.signableTypedData as Record<string, unknown>);
+      await expect(subject.handle(order, action, { phase: "submit", submission: "sponsored", reviewProtocol: 2,
+        preparationId: next.result.preparationId, signature }, eoa)).rejects.toMatchObject({ code: "CONFIRMATION_SUBMISSION_PENDING" });
+    });
+  }
+
+  for (const boundary of ["equal", "future", "zero", "RPC unavailable"] as const) {
+    it(`holds historical authorization at ${boundary} for both fresh and explicit preparation`, async () => {
+      const old = await issued({ ...(boundary === "zero" ? { deadline: 0n } : {}) });
+      chain.finalProfileTimestamp = boundary === "future" ? old.deadline-1n : old.deadline;
+      if (boundary === "zero") chain.finalProfileTimestamp = 1_000n;
+      chain.finalProfileUnavailable = boundary === "RPC unavailable";
+      const subject = confirmations();
+      for (const request of [prepare, replacement(old.preparationId)]) {
+        await expect(subject.handle(order,"confirmation",request,eoa)).rejects.toMatchObject({
+          code: boundary === "RPC unavailable" ? "CONFIRMATION_SPONSORSHIP_UNAVAILABLE" : "CONFIRMATION_NONCE_BUSY" });
+      }
+      expect((await pool.query("SELECT * FROM standard_confirmation_preparations_v2")).rowCount).toBe(0);
+      expect((await pool.query("SELECT consumed_at FROM standard_confirmation_preparations WHERE preparation_id=$1",[old.preparationId])).rows[0].consumed_at).toBeNull();
+    });
+  }
+
+  const unknown = [
+    ["domain version", (typed: any) => { typed.domain.version = "1.0.1"; }],
+    ["domain chain", (typed: any) => { typed.domain.chainId = 8453; }],
+    ["domain verifier", (typed: any) => { typed.domain.verifyingContract = address("1"); }],
+    ["unsigned deadline", (typed: any) => { typed.types.Attest.pop(); }],
+    ["type order", (typed: any) => { typed.types.Attest.reverse(); }],
+    ["primary type", (typed: any) => { typed.primaryType = "Revoke"; }],
+    ["malformed signed deadline", (typed: any) => { typed.message.deadline = "not-a-deadline"; }],
+    ["deadline column mismatch", (typed: any) => { typed.message.deadline = String(BigInt(typed.message.deadline)+1n); }],
+    ["nonce mismatch", (typed: any) => { typed.message.nonce = "8"; }],
+    ["extra message field", (typed: any) => { typed.message.unsigned = "1"; }],
+    ["nonexpiring legacy signed type", (typed: any) => { typed.domain.version = "1.0.1";
+      typed.types.Attest = typed.types.Attest.filter((field: any) => !["value","deadline"].includes(field.name));
+      delete typed.message.deadline; delete typed.message.value; }],
+  ] as const;
+  for (const [label, mutate] of unknown) {
+    it(`holds unrecognized historical ${label} despite expired database deadline`, async () => {
+      const old = await issued({ mutate });
+      chain.finalProfileTimestamp = old.deadline+1n;
+      const subject = confirmations();
+      for (const request of [prepare,replacement(old.preparationId)]) {
+        await expect(subject.handle(order,"confirmation",request,eoa)).rejects.toMatchObject({ code: "CONFIRMATION_NONCE_BUSY" });
+      }
+      expect((await pool.query("SELECT * FROM standard_confirmation_preparations_v2")).rowCount).toBe(0);
+    });
+  }
+
+  it("requires operator recovery for an admitted historical preparation even after signed expiry", async () => {
+    const old = await issued();
+    chain.finalProfileTimestamp = old.deadline+1n;
+    const operationId = randomUUID();
+    await pool.query(`INSERT INTO standard_reputation_operations
+      (operation_id,order_id,kind,logical_key,intent_hash,canonical_intent,state)
+      VALUES ($1,$2,'confirmation',$3,$4,'{}','pending')`,
+      [operationId,orderId,createHash("sha256").update(operationId).digest(),Buffer.alloc(32,1)]);
+    await pool.query(`INSERT INTO standard_confirmation_sponsorships
+      (preparation_id,operation_id,order_id,payer,utc_day,state)
+      VALUES ($1,$2,$3,$4,current_date,'reserved')`, [old.preparationId,operationId,orderId,payerKey.address.toLowerCase()]);
+    await pool.query("UPDATE standard_confirmation_preparations SET consumed_at=now() WHERE preparation_id=$1",[old.preparationId]);
+    await expect(confirmations().handle(order,"confirmation",replacement(old.preparationId),eoa))
+      .rejects.toMatchObject({code:"CONFIRMATION_PREPARATION_STALE"});
+    expect((await pool.query("SELECT * FROM standard_confirmation_preparations_v2")).rowCount).toBe(0);
+    expect((await pool.query("SELECT state FROM standard_reputation_operations WHERE operation_id=$1",[operationId])).rows[0].state).toBe("pending");
   });
 });

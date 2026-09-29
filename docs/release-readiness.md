@@ -120,3 +120,12 @@ runs `scripts/check-release-trailers.mjs` over every pushed commit.
   to a base image that already carries the fix.
 - The `hono` override (`4.13.5`, three MEDIUM advisories in 4.13.0) can be
   dropped once `@modelcontextprotocol/node` requires that version or later.
+
+## Mailbox DNS preparation contract
+
+The provider owns eligibility for optional `dnsSetup: "automatic"` purchases.
+The gateway forwards this choice unchanged and binds it into the request hash
+and payer-bound provider quote. It must not reuse a manual-mode quote for an
+automatic-mode request. External domains retain the provider's ownership and
+DNS gate before payment. An admitted automatic order can wait in `dns_pending`;
+the existing durable-wait clock and lifecycle projection apply unchanged.

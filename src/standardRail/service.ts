@@ -1,3 +1,4 @@
+import { StandardReviewRecovery } from "./reviewRecovery.js";
 import { createHmac, randomBytes, randomUUID } from "node:crypto";
 import { fulfillmentClock } from "./operationsStore.js";
 import { operationsSchema } from "./operationsSchema.js";
@@ -88,6 +89,7 @@ import {
 import { issueReadCapability, verifyReadCapability } from "./readCapability.js";
 import { createX402OfferReceipt, x402PaymentResponse } from "./x402Receipt.js";
 import { getIntakeRequirements } from "./intake.js";
+import { StandardPurchaseResponses } from "./purchaseResponse.js";
 
 /** A fixed-price readiness quote may last at most the sealed draft window; the
  *  challenge is still clamped to the listing's own draft window. */
@@ -167,10 +169,12 @@ export class StandardRailService {
   private readonly assetFederation: StandardAssetFederation;
   private readonly assetActions: StandardAssetActions;
   private readonly reputationWorker: StandardReputationWorker;
+  readonly reviewRecovery: StandardReviewRecovery;
   private readonly confirmations: StandardConfirmations;
   private readonly confirmationState: StandardConfirmationState;
   private readonly payerSignature: PayerSignatureVerifier;
   private readonly reputationReader: DirectReputationReader;
+  private readonly purchaseResponses = new StandardPurchaseResponses();
   private dependenciesReady = false;
   private operationalHealthMemo: {
     expiresAt: number;
@@ -252,6 +256,8 @@ export class StandardRailService {
       () => this.reputationReader.invalidate(),
       this.confirmationState,
     );
+    this.reviewRecovery = new StandardReviewRecovery(pool,railConfig,chain.id,this.confirmationState,undefined,
+      id => this.reputationWorker.reconcileForRetry(id));
     this.operationalHealthReporter = new StandardOperationalHealth(pool, this.reputationWorker);
     this.confirmations = new StandardConfirmations(
       pool,
@@ -351,6 +357,7 @@ export class StandardRailService {
     await Promise.all([
       this.recovery.stop(),
       this.reputationWorker.stop(),
+      this.purchaseResponses.drain(),
     ]);
   }
 
@@ -1733,6 +1740,17 @@ export class StandardRailService {
     body: unknown;
     payment: PaymentPayload;
   }): Promise<{ handle: string; order: StandardOrderRecord; replay: boolean }> {
+    // A disconnected HTTP request can still be admitting its payment when
+    // the listener closes. Track admission as well as the eventual driver.
+    return this.purchaseResponses.track(this.admitPayment(args));
+  }
+
+  private async admitPayment(args: {
+    providerAgentId: string;
+    outcomeId: string;
+    body: unknown;
+    payment: PaymentPayload;
+  }): Promise<{ handle: string; order: StandardOrderRecord; replay: boolean }> {
     this.assertAdmissionOpen();
     await this.assertRailFence();
     const payment = normalizePaymentPayload(args.payment);
@@ -1843,15 +1861,15 @@ export class StandardRailService {
       if (claimed?.order.paymentPayloadHash === paymentHash) return { ...claimed, replay: true };
       throw error;
     }
-    return this.driveClaimedOrder(intended.handle, order, (claimed) =>
-      this.settleClaimedOrder({
+    return this.purchaseResponses.run({ handle: intended.handle, order, replay: false }, () =>
+      this.driveClaimedOrder(intended.handle, order, (claimed) => this.settleClaimedOrder({
         order: claimed,
         listing,
         requirements,
         authorization,
         body: args.body,
         payment,
-      }));
+      })));
   }
 
   // Runs `work` as the claimed order's driver. The request leases the order

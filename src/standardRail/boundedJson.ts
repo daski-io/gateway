@@ -14,7 +14,7 @@ export async function discardResponseBody(response: Response): Promise<void> {
   }
 }
 
-export async function readBoundedJsonResponse(response: Response, maxBytes: number): Promise<unknown> {
+export async function readBoundedJsonResponse(response: Response, maxBytes: number, maxKeyLength?: number): Promise<unknown> {
   const mediaType = response.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase();
   const encoding = response.headers.get("content-encoding")?.trim().toLowerCase();
   if (mediaType !== "application/json" || (encoding && encoding !== "identity")) {
@@ -44,6 +44,6 @@ export async function readBoundedJsonResponse(response: Response, maxBytes: numb
   let offset = 0;
   for (const chunk of chunks) { joined.set(chunk, offset); offset += chunk.byteLength; }
   const text = new TextDecoder("utf-8", { fatal: true }).decode(joined);
-  assertNoDuplicateJsonKeys(text);
+  assertNoDuplicateJsonKeys(text, maxKeyLength);
   return JSON.parse(text);
 }

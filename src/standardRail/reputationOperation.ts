@@ -5,11 +5,17 @@ import {
   type Address,
   type Hex,
 } from "viem";
+import { easProfile, type EasProfileId } from "./easProfiles.js";
 import type { StandardRailConfig } from "./config.js";
 import type { StandardReputationOrderV1 } from "./reputationOrders.js";
 
 const reputationAbi = parseAbi([
   "function registerOrder((bytes32 orderKey,bytes32 authorizationKey,uint256 providerAgentId,bytes32 serviceId,address payer,address providerOwner,address providerAgentWallet,address providerPayee,address identityRegistry,address providerRegistry,address serviceRegistry,uint256 blockNumber,bytes32 blockHash,address canonicalToken,uint256 grossAmount,uint64 paidAt,bytes32 providerIdentitySnapshotHash,bytes32 listingManifestHash,bytes32 releaseEvidenceHash,bool reputationEligible,uint64 validBefore) permit,bytes signature)",
+]);
+
+const legacyEasAbi = parseAbi([
+  "function attestByDelegation((bytes32 schema,(address recipient,uint64 expirationTime,bool revocable,bytes32 refUID,bytes data,uint256 value) data,(uint8 v,bytes32 r,bytes32 s) signature,address attester) delegatedRequest) payable returns (bytes32)",
+  "function revokeByDelegation((bytes32 schema,(bytes32 uid,uint256 value) data,(uint8 v,bytes32 r,bytes32 s) signature,address revoker) delegatedRequest) payable",
 ]);
 
 const easAbi = parseAbi([
@@ -35,6 +41,8 @@ export interface RegisterIntent {
 interface DelegatedSignature { v: number; r: Hex; s: Hex }
 
 export interface ConfirmationIntent {
+  profileId?: EasProfileId;
+  easNonce?: string;
   operation: "attest-confirmation";
   orderKey: Hex;
   orderId: string;
@@ -54,11 +62,13 @@ export interface ConfirmationIntent {
     };
     signature: DelegatedSignature;
     attester: Address;
-    deadline: string;
+    deadline: string | null;
   };
 }
 
 export interface RevokeConfirmationIntent {
+  profileId?: EasProfileId;
+  easNonce?: string;
   operation: "revoke-confirmation";
   orderKey: Hex;
   orderId: string;
@@ -69,7 +79,7 @@ export interface RevokeConfirmationIntent {
     data: { uid: Hex; value: "0" };
     signature: DelegatedSignature;
     revoker: Address;
-    deadline: string;
+    deadline: string | null;
   };
 }
 
@@ -100,6 +110,19 @@ export function encodeReputationOperation(
       }),
     };
   }
+  const profile = easProfile(intent.profileId ?? "eas-native-1.2.0");
+  if (!profile.signedDeadline) {
+    const { deadline: _deadline, ...request } = intent.request;
+    return {
+      destination: config.easAddress, gas: config.reputationConfirmationGasLimit,
+      data: intent.operation === "attest-confirmation"
+        ? encodeFunctionData({ abi: legacyEasAbi, functionName: "attestByDelegation",
+          args: [{ ...intent.request, data: { ...intent.request.data, expirationTime: 0n, value: 0n } } as never] })
+        : encodeFunctionData({ abi: legacyEasAbi, functionName: "revokeByDelegation",
+          args: [{ ...request, data: { ...request.data, value: 0n } } as never] }),
+    };
+  }
+  if (intent.request.deadline === null) throw new Error("EAS_SIGNED_DEADLINE_REQUIRED");
   if (intent.operation === "attest-confirmation") {
     return {
       destination: config.easAddress,

@@ -1,3 +1,4 @@
+import { ReviewRecoveryConflict, type StandardReviewRecovery } from "../src/standardRail/reviewRecovery.js";
 import express from "express";
 import type { AddressInfo } from "node:net";
 import { describe, expect, it, vi } from "vitest";
@@ -42,4 +43,33 @@ describe("operator recovery HTTP authentication", () => {
       expect(await refused.json()).toEqual({ error: { code: "OPERATOR_ACTION_CONFLICT", reason: "operation_not_retryable:broadcast" } });
     } finally { await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve())); }
   });
+});
+
+
+it("requires authentication and exact proof-bound review recovery bodies",async () => {
+  const inventory=vi.fn(async()=>({items:[]})); const preview=vi.fn(async()=>({items:[]}));
+  const apply=vi.fn(async()=>({operationId,disposition:"retired",safeRetired:true}));
+  const app=express(); app.use(express.json());
+  app.use(createStandardOperatorRouter({} as StandardRailOperator,"review-operator",{inventory,preview,apply} as unknown as StandardReviewRecovery));
+  const server=app.listen(0,"127.0.0.1"); await new Promise<void>(resolve=>server.once("listening",resolve));
+  const base=`http://127.0.0.1:${(server.address() as AddressInfo).port}/operator/v1/reviews/recovery`;
+  const headers={authorization:"Bearer review-operator","content-type":"application/json"};
+  try {
+    for (const suffix of ["","/preview","/apply"]) {
+      expect((await fetch(base+suffix,{method:suffix ? "POST":"GET"})).status).toBe(401);
+    }
+    expect(apply).not.toHaveBeenCalled();expect(preview).not.toHaveBeenCalled();expect(inventory).not.toHaveBeenCalled();
+    expect((await fetch(base+"?limit=101",{headers})).status).toBe(400);
+    const listed=await fetch(base+"?limit=25",{headers});expect(listed.status).toBe(200);expect(listed.headers.get("cache-control")).toBe("no-store");
+    expect(inventory).toHaveBeenCalledWith(25,undefined);
+    expect((await fetch(base+"/preview",{method:"POST",headers,body:JSON.stringify({operationIds:[operationId],force:true})})).status).toBe(400);
+    expect((await fetch(base+"/preview",{method:"POST",headers,body:JSON.stringify({operationIds:[operationId]})})).status).toBe(200);
+    const body={operationId,proofHash:`0x${"a".repeat(64)}`,idempotencyKey:"release-5-review-1",releaseId:"release-5"};
+    expect((await fetch(base+"/apply",{method:"POST",headers,body:JSON.stringify({...body,force:true})})).status).toBe(400);
+    expect((await fetch(base+"/apply",{method:"POST",headers,body:JSON.stringify(body)})).status).toBe(200);
+    expect(apply).toHaveBeenCalledExactlyOnceWith(body);
+    apply.mockRejectedValueOnce(new ReviewRecoveryConflict("preview_changed"));
+    const rejected=await fetch(base+"/apply",{method:"POST",headers,body:JSON.stringify(body)});
+    expect(rejected.status).toBe(409);expect(await rejected.json()).toMatchObject({error:{code:"REVIEW_RECOVERY_CONFLICT",reason:"preview_changed"}});
+  } finally { await new Promise<void>((resolve,reject)=>server.close(error=>error ? reject(error):resolve())); }
 });

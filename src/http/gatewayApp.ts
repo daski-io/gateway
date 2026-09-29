@@ -177,7 +177,7 @@ export async function createStandardGatewayHttp(
       options.pool,
       (id) => standardRail.reconcileReputationForRetry(id),
       (order, listing, dispatchHash) => standardRail.providerStatusForRevival(order, listing, dispatchHash),
-    ), options.config.catalogOperatorToken));
+    ), options.config.catalogOperatorToken, standardRail.reviewRecovery));
   }
   const mcp = options.config.mcpEnabled
     ? await createStandardRailMcp(app, options.config)

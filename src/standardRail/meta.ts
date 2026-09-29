@@ -1,3 +1,4 @@
+import { EAS_PROFILE_IDS } from "./easProfiles.js";
 import { timingSafeEqual } from "node:crypto";
 import { Router, type Request, type Response } from "express";
 import type { Config } from "../config.js";
@@ -208,6 +209,9 @@ export function createStandardMetaRouter(args: {
       },
       confirmation: {
         modes: [...CONFIRMATION_SUBMISSION_MODES],
+        reviewProtocol: 2,
+        supportedProfiles: [...EAS_PROFILE_IDS],
+        directReview: { circleEstimate: true, circleExecute: args.railConfig.confirmationCircleExecutionQualified === true },
         sponsoredRequires: "eoa",
         attestationCap: CONFIRMATION_ATTESTATION_CAP,
         revocationAfterCap: true,

@@ -36,7 +36,9 @@ steady-state prompt is `Use Daski to [your task]`.
 - `POST /outcomes/:providerAgentId/:outcomeId/requirements` and MCP
   `daski_get_outcome_requirements` return the published schema, conditional
   intake requirements, normalized selectors, and missing fields for a partial
-  request. This catalog read creates no quote or order.
+  request. This catalog read creates no quote or order. Signed intake metadata
+  permits validation-pattern keys up to 4,096 characters; buyer request keys
+  remain limited to 128 characters.
 - `/.well-known/mcp.json` publishes the buyer CLI pin, the accepted payer
   account types (`payerAccounts`: plain wallets always, deployed contract
   accounts when enabled, never counterfactual ones), the delivery
@@ -85,6 +87,15 @@ steady-state prompt is `Use Daski to [your task]`.
   payerAddress?, paymentPayload? }`, retaining the complete payment in JSON
   rather than requiring a large HTTP header. Both use the existing checkout
   service and gateway-bound authorizations.
+  After validated payment authorization is durably captured, checkout waits at
+  most five seconds for processing before returning HTTP 202 with the same
+  order handle, the admission-state snapshot, and null receipts. Admission
+  validation happens before this five-second processing budget. Settlement,
+  chain evidence, and dispatch continue under the existing renewable order
+  lease; a disconnect does not cancel them. Reconcile that payment identifier
+  or use authorized order status after a timeout or pending response; never
+  create another payment authorization to recover the purchase. A pending
+  response confirms admission, not settlement or fulfillment.
   Outcomes declaring `purchaseReadiness: "payer_dns"` require `payerAddress`
   before quoting. A readiness rejection includes structured DNS records in
   `error.readiness`; install them and obtain a fresh quote before signing.
@@ -133,7 +144,46 @@ npm test
 The runtime always starts the standard rail. `PAYMENT_RAIL` is intentionally
 not a configuration option.
 
+## Delivery review reliability
+
+Sponsored reviews require `reviewProtocol: 2` on new prepare/submit requests.
+Use the buyer version advertised in `/.well-known/mcp.json`. The gateway and
+buyer independently verify pinned EAS implementation, domain and signed types:
+Base native 1.0.1 and Base Sepolia native 1.2.0 use different delegation formats.
+An unknown implementation disables new sponsored sends while receipt reconciliation continues.
+
+A pending response includes its operation ID. A failed or unresolved submission
+returns an error; only a finalized successful receipt reports success. Keep the
+saved preparation and signature when resuming. A legacy 1.0.1 signature has no
+expiry: the local five-minute admission/relay window does not cancel it. Buyers
+can reaffirm an admitted intent or explicitly acknowledge a same-nonce alternative.
+Only one alternative is relayed, all authorizations remain recorded, and the
+group shares one sponsorship allowance and a maximum of five transaction attempts.
+Any valid alternative may execute first. Direct calls do not consume the delegated nonce.
+
+An unsubmitted preparation saved by an older buyer can be explicitly replaced
+using its preparation ID after finalized chain evidence proves its recognized
+signed deadline has expired. The original record remains available; live,
+nonexpiring and unrecognized historical authorizations stay blocked.
+
+Operator recovery exposes authenticated inventory, preview and apply endpoints
+under `/operator/v1/reviews/recovery`. Apply requires the preview proof, a release
+ID and an idempotency key. It verifies canonical finality evidence under the same
+relayer/payer locks as submissions. It releases eligible failed sponsorship holds
+without deleting attempts or pretending that missing receipts prove success.
+Nonce advancement without an attributed receipt retires the authorization while
+preserving its allowance charge. Review recovery is separate from generic
+registration retries. The deployment coordinators consume the
+`delivery-review-recovery` release scenario to stop old gateway workers before
+new protocol writes and enforce fix-forward after cutover.
+
+Circle estimate and execute capabilities are advertised separately. The execution
+capability defaults off pending target qualification; the CLI transport adapter
+is restricted to the reviewed Circle versions and EAS calls.
+
 ## Configuration
+
+- `CONFIRMATION_CIRCLE_EXECUTION_QUALIFIED` defaults to `false`; set `true` only after the Circle direct-review execution and read-only resume qualification has passed for the target.
 
 See [.env.example](.env.example) for the complete Base Sepolia template. The
 core groups are:

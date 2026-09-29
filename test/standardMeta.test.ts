@@ -138,6 +138,9 @@ describe("standard rail metadata", () => {
     expect(mcp.payerAccounts).toEqual({ types: ["eoa"], counterfactual: false });
     expect(mcp.confirmation).toEqual({
       modes: ["sponsored", "direct"],
+      reviewProtocol: 2,
+      supportedProfiles: ["eas-native-1.0.1", "eas-native-1.2.0"],
+      directReview: { circleEstimate:true, circleExecute:false },
       sponsoredRequires: "eoa",
       attestationCap: 3,
       revocationAfterCap: true,

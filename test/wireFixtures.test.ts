@@ -7,9 +7,11 @@ import { mcpError, mcpJson } from "../src/mcp/util.js";
 import { mcpSurfaceFixture } from "./helpers/mcpSurfaceFixture.js";
 import { canonicalHash } from "../src/standardRail/canonical.js";
 import {
-  CONFIRMATION_REQUEST_SHAPES, CONFIRMATION_SUBMISSION_MODES, directConfirmationCall,
+  CONFIRMATION_DIRECT_REQUEST_SHAPES, CONFIRMATION_REQUEST_SHAPES, CONFIRMATION_SUBMISSION_MODES, directConfirmationCall,
+  sponsoredConfirmationPreparationResult, sponsoredConfirmationTypedData,
 } from "../src/standardRail/confirmations.js";
 import { encodeAbiParameters, parseAbiParameters } from "viem";
+import { EAS_PROFILES, easDomainSeparator, type EasProfileObservation } from "../src/standardRail/easProfiles.js";
 import { StandardRailError, standardRailPublicError } from "../src/standardRail/errors.js";
 import { orderActionChallengeIssued } from "../src/standardRail/orderAuthorization.js";
 import { orderBindingExtension, paymentIdentifierExtension } from "../src/standardRail/payment.js";
@@ -255,6 +257,10 @@ function confirmationRequestShapesFixture() {
     submissionModes: [...CONFIRMATION_SUBMISSION_MODES],
     sponsoredRequires: "eoa",
     shapes: CONFIRMATION_REQUEST_SHAPES,
+    directShapes: CONFIRMATION_DIRECT_REQUEST_SHAPES,
+    reviewProtocol: 2,
+    reaffirm: ["phase","submission","reviewProtocol","operationId"],
+    supersession: { identifiers: ["supersedesOperationId","supersedesPreparationId"], acknowledgement:"acknowledgeSameNonce" },
   };
 }
 
@@ -291,10 +297,55 @@ function confirmationDirectCallFixture() {
   };
 }
 
+/**
+ * Both deployed sponsored profiles, produced by the same typed-data and result
+ * builders as live prepare. Facts are inputs for independent consumer validation.
+ */
+function confirmationSponsoredPreparationFixture() {
+  const eas = "0x4200000000000000000000000000000000000021" as const;
+  return {
+    schemaVersion: 1,
+    profiles: Object.values(EAS_PROFILES).map((profile, index) => {
+      const facts = {
+        chainId: profile.chainId, eas, schemaUid: hash("5"), reputationStorage: address("c"),
+        orderKey: hash("1"), payer: address("a"), recipient: address("b"), currentUid: hash("2"),
+        nonce: "7", submissionsUsed: 1, timestamp: ISSUED_AT, admissionDeadline: String(ISSUED_AT + 300),
+      };
+      const observation: EasProfileObservation = {
+        profileId: profile.id, contractVersion: profile.contractVersion, domainVersion: profile.domainVersion,
+        implementation: profile.implementation, implementationCodeHash: profile.implementationCodeHash,
+        domainSeparator: easDomainSeparator(facts.chainId, eas, profile.domainVersion),
+        chainId: facts.chainId, easAddress: eas, blockNumber: "12345", blockHash: hash("d"),
+        timestamp: String(facts.timestamp),
+      };
+      const summary = { orderKey: facts.orderKey, submissionsUsed: facts.submissionsUsed,
+        revocationAvailable: true, finalAttestation: false };
+      const result = (action: "confirmation" | "revoke-confirmation") => sponsoredConfirmationPreparationResult({
+        summary,
+        preparationId: index === 0
+          ? (action === "confirmation" ? "00000000-0000-4000-8000-000000000101" : "00000000-0000-4000-8000-000000000102")
+          : (action === "confirmation" ? "00000000-0000-4000-8000-000000000201" : "00000000-0000-4000-8000-000000000202"),
+        currentRefUid: facts.currentUid,
+        typedData: sponsoredConfirmationTypedData({
+          profileId: profile.id, chainId: facts.chainId, easAddress: eas, action, schema: facts.schemaUid,
+          currentUid: facts.currentUid, nonce: BigInt(facts.nonce), deadline: BigInt(facts.admissionDeadline),
+          ...(action === "confirmation" ? { recipient: facts.recipient,
+            data: encodeAbiParameters(parseAbiParameters("bytes32 orderKey,uint8 confirmation"), [facts.orderKey, 1]) } : {}),
+        }),
+        profile: observation,
+        admissionExpiresAt: new Date(Number(facts.admissionDeadline) * 1000).toISOString(),
+      });
+      return { facts, attest: { confirmation: "Confirmed", result: result("confirmation") },
+        revoke: { result: result("revoke-confirmation") } };
+    }),
+  };
+}
+
 const fixtures: Record<string, () => unknown | Promise<unknown>> = {
   "mcp-tool-surface.json": mcpSurfaceFixture,
   "confirmation-request-shapes.json": confirmationRequestShapesFixture,
   "confirmation-direct-call.json": confirmationDirectCallFixture,
+  "confirmation-sponsored-preparation.json": confirmationSponsoredPreparationFixture,
   "mcp-result.json": mcpResultFixture,
   "payment-challenge-prepared.json": preparedPaymentChallengeFixture,
   "payment-required-extensions.json": paymentRequiredExtensionsFixture,

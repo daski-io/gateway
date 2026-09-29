@@ -60,3 +60,22 @@ describe("rate-limit bucket keys", () => {
     expect(boundedBucketKey("x".repeat(128))).toBe("x".repeat(128));
   });
 });
+
+describe("intake metadata parser limits", () => {
+  it("opts into longer keys without changing the default limit", async () => {
+    const payload = { validations: { ["x".repeat(4096)]: "message" } };
+    await expect(readBoundedJsonResponse(Response.json(payload), 10_000, 4096)).resolves.toEqual(payload);
+    await expect(readBoundedJsonResponse(Response.json(payload), 10_000)).rejects.toThrow("key is too long");
+    await expect(readBoundedJsonResponse(Response.json({ ["x".repeat(4097)]: 1 }), 10_000, 4096))
+      .rejects.toThrow("key is too long");
+  });
+  it("keeps duplicate, unsafe, nesting and byte protections with the intake allowance", async () => {
+    const response = (text: string) => new Response(text, { headers: { "content-type": "application/json" } });
+    const key = "x".repeat(304);
+    await expect(readBoundedJsonResponse(response(`{"${key}":1,"${key}":2}`), 10_000, 4096)).rejects.toThrow("Duplicate");
+    await expect(readBoundedJsonResponse(response('{"constructor":1}'), 10_000, 4096)).rejects.toThrow("unsafe key");
+    await expect(readBoundedJsonResponse(response("[".repeat(80) + "1" + "]".repeat(80)), 10_000, 4096))
+      .rejects.toThrow("too deeply nested");
+    await expect(readBoundedJsonResponse(Response.json({ [key]: 1 }), 100, 4096)).rejects.toThrow("BOUNDED_JSON_TOO_LARGE");
+  });
+});

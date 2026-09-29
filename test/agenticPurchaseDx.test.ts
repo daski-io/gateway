@@ -16,6 +16,7 @@ import {
   verifyReadCapability,
 } from "../src/standardRail/readCapability.js";
 import { StandardRailService } from "../src/standardRail/service.js";
+import { StandardPurchaseResponses } from "../src/standardRail/purchaseResponse.js";
 import {
   walletActionSignRequest,
   verifyWalletAuthorization,
@@ -46,7 +47,7 @@ type ServiceHarness = StandardRailService & Record<string, unknown>;
 
 function serviceHarness(fields: Record<string, unknown>): ServiceHarness {
   const service = Object.create(StandardRailService.prototype) as ServiceHarness;
-  Object.assign(service, fields);
+  Object.assign(service, { purchaseResponses: new StandardPurchaseResponses(), ...fields });
   return service;
 }
 

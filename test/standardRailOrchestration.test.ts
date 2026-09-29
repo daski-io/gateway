@@ -5,6 +5,7 @@ import type { PaymentPayload } from "@x402/core/types";
 import { canonicalHash } from "../src/standardRail/canonical.js";
 import { createPayerSignatureVerifier } from "../src/standardRail/payerSignature.js";
 import { StandardRailService } from "../src/standardRail/service.js";
+import { StandardPurchaseResponses } from "../src/standardRail/purchaseResponse.js";
 import type {
   StandardListing,
   StandardOrderRecord,
@@ -17,7 +18,7 @@ type ServiceHarness = StandardRailService & Record<string, unknown>;
 
 function harness(fields: Record<string, unknown>): ServiceHarness {
   const service = Object.create(StandardRailService.prototype) as ServiceHarness;
-  Object.assign(service, fields);
+  Object.assign(service, { purchaseResponses: new StandardPurchaseResponses(), ...fields });
   return service;
 }
 
@@ -320,7 +321,7 @@ describe("standard rail orchestration", () => {
       .rejects.toMatchObject({ code: "PROVIDER_QUOTE_UNAVAILABLE" });
   });
 
-  it("asks the provider before quoting a fixed-price listing and binds its readiness commitment and lifetime", async () => {
+  it.each(["manual", "automatic"])("binds %s mailbox DNS setup into the provider readiness quote", async dnsSetup => {
     // 2026-09-03: a mailbox on an unverified custom domain was quoted from the
     // offer alone, paid, and refused at fulfilment. The provider's quote for
     // the request carries the adapter's availability verdict; the challenge
@@ -348,10 +349,13 @@ describe("standard rail orchestration", () => {
         },
       },
     } as unknown as StandardListing;
-    const body = { address: "conformance-probe@sandbox.daski.io" };
+    const body = { address: "conformance-probe@sandbox.daski.io", dnsSetup };
     const requestHash = canonicalHash(body);
     const answer = { status: 200, grossAmount: "9990000", delaySeconds: 0, payer: null as string | null, lifetime: 60 };
-    const providerFetch = vi.fn(async () => {
+    const providerFetch = vi.fn(async (_listing: unknown, _url: string, init: RequestInit) => {
+      const envelope = JSON.parse(String(init.body)).request;
+      expect(envelope.payload.request).toHaveProperty("dnsSetup");
+      expect(envelope.payload.requestHash).toBe(canonicalHash(envelope.payload.request));
       if (answer.status === 422) {
         return new Response(JSON.stringify({
           fieldErrors: [{ path: "address", rule: "dns_unverified", message: "The domain is not configured for mail." }],
@@ -393,6 +397,10 @@ describe("standard rail orchestration", () => {
     const before = Math.floor(Date.now() / 1_000);
     const pricing = await resolve(listing, body);
     expect(providerFetch).toHaveBeenCalledOnce();
+    expect(JSON.parse(String(providerFetch.mock.calls[0]![2].body)).request.payload.request).toEqual(body);
+    // A quote for one setup mode cannot authorize the other.
+    await expect(resolve(listing, { ...body, dnsSetup: dnsSetup === "manual" ? "automatic" : "manual" }))
+      .rejects.toMatchObject({ code: "PROVIDER_QUOTE_UNAVAILABLE" });
     expect(pricing.grossAmount).toBe("9990000");
     expect(pricing.providerQuoteHash).not.toBe(`0x${"00".repeat(32)}`);
     expect(pricing.validBefore).toBeGreaterThanOrEqual(before + 60);
