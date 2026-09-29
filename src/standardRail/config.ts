@@ -374,7 +374,7 @@ export function loadStandardRailConfig(
     reputationMaxPriorityFeePerGasWei: priorityFee,
     reputationRegisterGasLimit: registerGas,
     reputationConfirmationGasLimit: confirmationGas,
-    confirmationCircleExecutionQualified: env.CONFIRMATION_CIRCLE_EXECUTION_QUALIFIED === "true",
+    confirmationCircleExecutionQualified: booleanFlag(env, "CONFIRMATION_CIRCLE_EXECUTION_QUALIFIED", false),
     confirmationDeadlineSeconds: 300,
     confirmationMaxPerOrder: 3,
     confirmationMaxPerPayerPerDay: 20,

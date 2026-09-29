@@ -203,3 +203,11 @@ describe("reputation fee reserve defaults", () => {
     expect(loadStandardRailConfig({ ...standardEnv(), CHAIN_ID: "8453", REPUTATION_MAX_FEE_PER_GAS_WEI: "7000000000" }).reputationMaxFeePerGasWei).toBe(7_000_000_000n);
   });
 });
+
+it("keeps Circle execution qualification explicit and independent of wallet conformance",()=>{
+  expect(loadStandardRailConfig(standardEnv()).confirmationCircleExecutionQualified).toBe(false);
+  expect(loadStandardRailConfig({...standardEnv(),CONFORMANCE_EVIDENCE_RECORDED:"1"}).confirmationCircleExecutionQualified).toBe(false);
+  expect(loadStandardRailConfig({...standardEnv(),CONFIRMATION_CIRCLE_EXECUTION_QUALIFIED:"false"}).confirmationCircleExecutionQualified).toBe(false);
+  expect(loadStandardRailConfig({...standardEnv(),CONFIRMATION_CIRCLE_EXECUTION_QUALIFIED:"true"}).confirmationCircleExecutionQualified).toBe(true);
+  expect(()=>loadStandardRailConfig({...standardEnv(),CONFIRMATION_CIRCLE_EXECUTION_QUALIFIED:"yes"})).toThrow(/CONFIRMATION_CIRCLE_EXECUTION_QUALIFIED/);
+});
