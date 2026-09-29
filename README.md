@@ -161,6 +161,11 @@ Only one alternative is relayed, all authorizations remain recorded, and the
 group shares one sponsorship allowance and a maximum of five transaction attempts.
 Any valid alternative may execute first. Direct calls do not consume the delegated nonce.
 
+An unsubmitted preparation saved by an older buyer can be explicitly replaced
+using its preparation ID after finalized chain evidence proves its recognized
+signed deadline has expired. The original record remains available; live,
+nonexpiring and unrecognized historical authorizations stay blocked.
+
 Operator recovery exposes authenticated inventory, preview and apply endpoints
 under `/operator/v1/reviews/recovery`. Apply requires the preview proof, a release
 ID and an idempotency key. It verifies canonical finality evidence under the same

@@ -3,6 +3,7 @@ import {
   encodeAbiParameters,
   encodeFunctionData,
   getAddress,
+  hashTypedData,
   parseAbi,
   parseAbiParameters,
   parseSignature,
@@ -180,7 +181,7 @@ export interface ConfirmationOutcome {
 
 /** The chain client surface the EAS nonce read needs; mocked in tests. */
 export interface EasReadClient {
-  readProfile?(): Promise<EasProfileObservation>;
+  readProfile?(blockTag?: "latest" | "safe" | "finalized"): Promise<EasProfileObservation>;
   readContract(args: {
     address: Address;
     abi: typeof easNonceAbi;
@@ -364,7 +365,7 @@ export class StandardConfirmations {
 
   private async profile(blockTag: "latest" | "safe" | "finalized" = "latest"): Promise<EasProfileObservation> {
     try {
-      if (this.easClient?.readProfile) return await this.easClient.readProfile();
+      if (this.easClient?.readProfile) return await this.easClient.readProfile(blockTag);
       return await this.state.observeWith(({ client }) =>
         observeEasProfile(client as unknown as PublicClient, this.chainId, this.config.easAddress, blockTag));
     } catch (error) {
@@ -498,13 +499,6 @@ export class StandardConfirmations {
     }
     const profile = await this.profile();
     const nonce = await this.easNonce(payer);
-    const oldIssued = await this.pool.query<{deadline:string}>(`SELECT deadline FROM standard_confirmation_preparations
-      WHERE payer=$1 AND eas_nonce=$2::numeric AND consumed_at IS NULL`,[payer.toLowerCase(),nonce.toString()]);
-    if (oldIssued.rowCount) {
-      const final = await this.profile(this.config.finalityTag);
-      if (oldIssued.rows.some(p => BigInt(p.deadline) >= BigInt(final.timestamp)))
-        throw standardRailError("CONFIRMATION_NONCE_BUSY", { expected: { disposition:"historical-issued-authorization" } });
-    }
     const prepared = await this.preparationFor({
       order, action, payer, nonce, schema, current, submissionsUsed, finalAttestation, profile,
       supersedesOperationId: request.supersedesOperationId as string | undefined,
@@ -516,6 +510,39 @@ export class StandardConfirmations {
         currentRefUid: current.currentUid, profile }),
       finalChanged: false,
     };
+  }
+
+  /**
+   * Historical rows predate profile metadata. Their union-view profile and
+   * deadline columns do not prove what the buyer could have signed. Recognize
+   * the exact old native 1.2 authorization before using its signed expiry.
+   */
+  private historicalExpiryProof(prep: PreparationRow, final: EasProfileObservation) {
+    try {
+      const typed = prep.canonical_typed_data;
+      const profile = easProfile("eas-native-1.2.0");
+      const primaryType = prep.operation === "attest-confirmation" ? "Attest" :
+        prep.operation === "revoke-confirmation" ? "Revoke" : null;
+      if (!primaryType || typed.primaryType !== primaryType) return null;
+      const types = primaryType === "Attest" ? profile.attestTypes : profile.revokeTypes;
+      const expectedDomain = { name: "EAS", version: profile.domainVersion, chainId: this.chainId,
+        verifyingContract: this.config.easAddress };
+      if (canonicalHash(typed.domain) !== canonicalHash(expectedDomain) ||
+          canonicalHash(typed.types) !== canonicalHash(types)) return null;
+      const message = typed.message;
+      const fields = primaryType === "Attest" ? profile.attestTypes.Attest : profile.revokeTypes.Revoke;
+      if (canonicalHash(Object.keys(message).sort()) !== canonicalHash(fields.map(field => field.name).sort()) ||
+          typeof message.deadline !== "string" || !/^[1-9][0-9]*$/.test(message.deadline) ||
+          message.deadline !== prep.deadline || typeof message.nonce !== "string" ||
+          !/^(0|[1-9][0-9]*)$/.test(message.nonce) || message.nonce !== prep.eas_nonce) return null;
+      // EIP-712 encoding also checks every address, bytes value and integer width.
+      const typedDataHash = hashTypedData(typed as never);
+      if (BigInt(message.deadline) >= BigInt(final.timestamp)) return null;
+      return { preparationId: prep.preparation_id, profileId: profile.id, typedDataHash,
+        canonicalTypedDataHash: canonicalHash(typed), nonce: message.nonce, signedDeadline: message.deadline,
+        finalityTag: this.config.finalityTag, finalizedBlock: { number: final.blockNumber, hash: final.blockHash },
+        finalizedTimestamp: final.timestamp, deployedProfileId: final.profileId };
+    } catch { return null; }
   }
 
   /** Explicit same-nonce replacements retain every authorization and its shared allowance. */
@@ -543,16 +570,37 @@ export class StandardConfirmations {
         [payer.toLowerCase()],
       );
       await this.assertUnpaused(client);
-      let predecessor: PreparationRow | undefined;
+      const oldIssued = await client.query<PreparationRow>(`SELECT * FROM standard_review_preparations
+        WHERE NOT protocol_v2 AND payer=$1 AND eas_nonce=$2::numeric AND consumed_at IS NULL`,
+        [payer.toLowerCase(), nonce.toString()]);
+      const historicalProofs = new Map<string, NonNullable<ReturnType<StandardConfirmations["historicalExpiryProof"]>>>();
+      if (oldIssued.rowCount) {
+        const final = await this.profile(this.config.finalityTag);
+        for (const issued of oldIssued.rows) {
+          const proof = this.historicalExpiryProof(issued, final);
+          if (!proof) throw standardRailError("CONFIRMATION_NONCE_BUSY", {
+            expected: { preparationId: issued.preparation_id, disposition: "historical-issued-authorization", safeRetired: false },
+          });
+          historicalProofs.set(issued.preparation_id, proof);
+        }
+      }
+      let predecessor: (PreparationRow & { admitted_operation_id: string | null }) | undefined;
       if (args.supersedesOperationId || args.supersedesPreparationId) {
-        const prior = await client.query<PreparationRow>(`SELECT p.* FROM standard_review_preparations p
+        const prior = await client.query<PreparationRow & { admitted_operation_id: string | null }>(`SELECT p.*,s.operation_id AS admitted_operation_id FROM standard_review_preparations p
           LEFT JOIN standard_review_sponsorships s ON s.preparation_id=p.preparation_id
           WHERE p.payer=$1 AND p.eas_nonce=$2::numeric AND
             (($3::uuid IS NOT NULL AND s.operation_id=$3) OR ($4::uuid IS NOT NULL AND p.preparation_id=$4))
 `, [payer.toLowerCase(), nonce.toString(), args.supersedesOperationId ?? null, args.supersedesPreparationId ?? null]);
         predecessor = prior.rows[0];
-        if (!predecessor || !predecessor.protocol_v2 || predecessor.profile_id !== args.profile.profileId)
+        if (!predecessor) throw standardRailError("CONFIRMATION_PREPARATION_STALE");
+        if (predecessor.protocol_v2) {
+          if (predecessor.profile_id !== args.profile.profileId) throw standardRailError("CONFIRMATION_PREPARATION_STALE");
+        } else if (!args.supersedesPreparationId || predecessor.consumed_at || predecessor.admitted_operation_id ||
+            !historicalProofs.has(predecessor.preparation_id)) {
+          // An admitted historical operation belongs to operator recovery;
+          // only an unadmitted, provably expired signature can use this path.
           throw standardRailError("CONFIRMATION_PREPARATION_STALE");
+        }
         // A repeated explicit replacement resumes the existing candidate.
         const replacement = await client.query<PreparationRow>(`SELECT * FROM standard_confirmation_preparations_v2
           WHERE supersedes_preparation_id=$1 AND relay_candidate=true ORDER BY created_at DESC LIMIT 1`,
@@ -618,6 +666,13 @@ export class StandardConfirmations {
           typedData, finalAttestation, profile.id, profile.signedDeadline ? deadline.toString() : null,
           args.profile, predecessor?.preparation_id ?? null, predecessor?.authorization_group ?? preparationId],
       );
+      if (historicalProofs.size) {
+        await client.query(`INSERT INTO standard_operator_actions(actor,action,target_id,details)
+          VALUES ('payer','review_historical_preparation_replacement',$1,$2)`,
+          [preparationId, { orderId: order.orderId, supersedesPreparationId: predecessor?.preparation_id ?? null,
+            authorizationGroup: predecessor?.authorization_group ?? preparationId,
+            proofs: [...historicalProofs.values()] }]);
+      }
       await client.query("COMMIT");
       return { preparationId, typedData: typedData as PreparationRow["canonical_typed_data"],
         admissionExpiresAt: new Date(Number(deadline) * 1000).toISOString() };
