@@ -60,8 +60,30 @@ steady-state prompt is `Use Daski to [your task]`.
   notice that an asset's owner changed and grants the new payer eligibility
   for that provider's owner-only reads and actions; see
   [docs/owner-swaps-v1.md](docs/owner-swaps-v1.md). Off by default.
-- `/.well-known/x402` and `/public/v2/*` publish the active signed legacy rail
-  and listing artifacts.
+- `/openapi.json` publishes OpenAPI 3.1 for the currently admitted outcome
+  catalog: concrete POST paths, input schemas, synthetic examples, fixed or
+  dynamic USDC prices, and asynchronous purchase responses. `/.well-known/x402`
+  links to it alongside the active signed rail and listing artifacts.
+  Submit the **gateway origin** or its `/openapi.json` to x402 directories;
+  scanners such as x402scan identify resources by the submitted origin, even
+  when an OpenAPI document names a different server. The website's MCP
+  manifest and agent guide link to the canonical gateway document.
+- Payment challenges carry a compact, standard Bazaar HTTP declaration and
+  hash-bound schema reference, preserving the existing 5 KiB buyer budget.
+  After payment validation, the gateway supplies the full public input and
+  asynchronous response schemas to the CDP facilitator on verify and settle,
+  including when the buyer omitted optional discovery metadata. Examples
+  derive only from published schemas, never a customer's request. Complex
+  schemas that cannot produce a bounded example retain their exact OpenAPI
+  contract and use a minimal Bazaar declaration with an `exampleUnavailable`
+  indicator. Optional `EXTENSION-RESPONSES` indexing status is logged without
+  changing payment success or replay semantics.
+  Coinbase Bazaar indexing follows an accepted settled payment; directory
+  submission, validation and editorial acceptance depend on each directory.
+  Discovery examples do not satisfy provider eligibility or payer-bound DNS
+  readiness by themselves, and a 202 purchase receipt means asynchronous work
+  is pending. See [Coinbase discovery](https://docs.cdp.coinbase.com/x402/seller/get-discovered)
+  and [x402scan's OpenAPI profile](https://www.x402scan.com/discovery/spec.md).
 - `/.well-known/daski-chain.json` publishes metadata envelope v3 with
   `outcomeSchemaVersion: 1`. Consumers must ignore additive fields; removals,
   renamed fields, type changes, and semantic changes require a new schema

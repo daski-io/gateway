@@ -24,6 +24,8 @@ type LockOutcome = { acquired: boolean; result?: unknown };
 
 const listing = {
   registrationId: "reg-1",
+  requestSchema: { type: "object", properties: {}, additionalProperties: false },
+  purchaseReadiness: null,
   commitment: { payload: { canonicalToken: `0x${"33".repeat(20)}`, outcomeId: "outcome" } },
   deadlinePolicy: { settlementEvidenceSeconds: 900, releaseEvidenceSeconds: 900 },
 } as unknown as StandardListing;
@@ -61,7 +63,7 @@ function settlementHarness(overrides: Record<string, unknown>) {
     markSettleInvoked: vi.fn(async () => true),
   };
   const service = harness({
-    appConfig: { chainId: 84532, x402Network: "eip155:84532" },
+    appConfig: { publicUrl: "https://gateway.example", chainId: 84532, x402Network: "eip155:84532" },
     railConfig: { manifest: { activeRailProfile: { payload: {} } } },
     store,
     journal,

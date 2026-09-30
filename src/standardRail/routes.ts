@@ -333,11 +333,24 @@ export function createStandardRailRouter(service: StandardRailService, publicUrl
     } catch (error) { sendWalletError(res, error, origin); }
   });
 
+  router.get("/openapi.json", async (_req, res, next) => {
+    try {
+      const document = await service.publicOpenApi();
+      res.setHeader("Cache-Control", "public, max-age=30");
+      res.json(document);
+    } catch (error) {
+      res.setHeader("Cache-Control", "no-store");
+      res.setHeader("Retry-After", "60");
+      next(error);
+    }
+  });
+
   router.get("/.well-known/x402", async (_req, res, next) => {
     try {
       res.json({
         version: 2,
         outcomeSchemaVersion: 1,
+        openapi: `${origin}/openapi.json`,
         resources: (await service.publicOutcomes()).map((outcome) => ({
           resource: outcome,
           transport: "http",

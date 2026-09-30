@@ -1,3 +1,5 @@
+import { compactBazaarExtension, discoveryOpenApi, facilitatorDiscoveryPayment } from "./discovery.js";
+import { GATEWAY_VERSION } from "../version.js";
 import { StandardReviewRecovery } from "./reviewRecovery.js";
 import { createHmac, randomBytes, randomUUID } from "node:crypto";
 import { fulfillmentClock } from "./operationsStore.js";
@@ -558,7 +560,7 @@ export class StandardRailService {
       let verified = recorded?.valid;
       if (verified === undefined) {
         await this.journal.markVerifyInvoked(order.orderId);
-        const verify = await this.withRailFence(() => this.facilitator.verify(payment, requirements));
+        const verify = await this.withRailFence(() => this.facilitator.verify(facilitatorDiscoveryPayment(this.appConfig, listing, payment), requirements));
         verified = Boolean(
           verify.isValid && verify.payer && getAddress(verify.payer) === getAddress(order.payer),
         );
@@ -592,7 +594,7 @@ export class StandardRailService {
     }
     let settlement;
     try {
-      settlement = await this.withRailFence(() => this.facilitator.settle(payment, requirements));
+      settlement = await this.withRailFence(() => this.facilitator.settle(facilitatorDiscoveryPayment(this.appConfig, listing, payment), requirements));
     } catch {
       return this.store.transition(order, "SETTLEMENT_AMBIGUOUS", "recovered_settle_response_unknown");
     }
@@ -878,6 +880,11 @@ export class StandardRailService {
 
   listOutcomes(): Promise<PublicOutcomeV1[]> {
     return this.catalog.listOutcomes();
+  }
+
+  async publicOpenApi() {
+    return discoveryOpenApi({ publicUrl: this.appConfig.publicUrl, docsUrl: this.appConfig.docsUrl,
+      version: GATEWAY_VERSION, outcomes: await this.catalog.discoveryOutcomes() });
   }
 
   publicOutcomes(): Promise<PublicOutcomeV1[]> {
@@ -1638,7 +1645,9 @@ export class StandardRailService {
       bindingProfile: listing.commitment.payload.bindingProfile,
       listingManifestHash,
       providerOfferHash,
-      listing,
+      // Persist the exact issued metadata so another replica or a later version
+      // validates the same optional extension, without regenerating the envelope.
+      listing: { ...listing, bazaarDeclaration: compactBazaarExtension(this.appConfig, listing) },
       quoteHash: canonicalHash(quote),
       quote,
       orderNonce,
@@ -1949,7 +1958,7 @@ export class StandardRailService {
     await this.journal.markVerifyInvoked(order.orderId);
     let verify;
     try {
-      verify = await this.withRailFence(() => this.facilitator.verify(args.payment, requirements));
+      verify = await this.withRailFence(() => this.facilitator.verify(facilitatorDiscoveryPayment(this.appConfig, order.listing, args.payment), requirements));
     } catch (error) {
       // The facilitator was never reached, so nothing was verified and
       // nothing can settle. The claimed authorization is voided before the
@@ -2026,7 +2035,7 @@ export class StandardRailService {
       }
       let settlement;
       try {
-        settlement = await this.withRailFence(() => this.facilitator.settle(args.payment, requirements));
+        settlement = await this.withRailFence(() => this.facilitator.settle(facilitatorDiscoveryPayment(this.appConfig, order.listing, args.payment), requirements));
       } catch (error) {
         order = await this.store
           .transition(order, "SETTLEMENT_AMBIGUOUS", "settle_response_unknown")

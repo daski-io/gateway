@@ -23,6 +23,54 @@
       ]
     }
   },
+  "bazaar": {
+    "info": {
+      "input": {
+        "type": "http",
+        "method": "POST",
+        "bodyType": "json",
+        "body": {}
+      },
+      "schemaRef": {
+        "hash": "0xbba71c45da3ea2b9c161560e414e5b95974e5e4a1be072169d7e7fce1ce1b09c",
+        "url": "https://sandbox-gateway.daski.io/public/v2/artifacts/0xbba71c45da3ea2b9c161560e414e5b95974e5e4a1be072169d7e7fce1ce1b09c"
+      },
+      "detailTool": "daski_get_outcome",
+      "openapi": "https://sandbox-gateway.daski.io/openapi.json"
+    },
+    "schema": {
+      "type": "object",
+      "properties": {
+        "input": {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "http"
+            },
+            "method": {
+              "const": "POST"
+            },
+            "bodyType": {
+              "const": "json"
+            },
+            "body": {
+              "type": "object"
+            }
+          },
+          "required": [
+            "type",
+            "method",
+            "bodyType",
+            "body"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "input"
+      ]
+    }
+  },
   "daski-order-binding": {
     "recipe-bound-v2": {
       "version": 2,

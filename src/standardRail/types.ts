@@ -223,6 +223,8 @@ export interface ListingOfferView {
 }
 
 export interface StandardListing {
+  /** Exact optional discovery declaration issued with this order; absent on older snapshots. */
+  bazaarDeclaration?: Record<string, unknown>;
   /** Checkout display names, retained in canonical_listing for the order's lifetime. */
   presentation: { serviceName: string; skillName: string };
   registrationId: string;

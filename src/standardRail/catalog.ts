@@ -1,3 +1,4 @@
+import type { DiscoveryOutcome } from "./discovery.js";
 import type { ValidateFunction } from "ajv";
 import { getAddress, type Hex } from "viem";
 import type { Config } from "../config.js";
@@ -228,6 +229,7 @@ export class StandardRailCatalog {
   >();
   /** Listings whose schema validation overran the CPU budget on this replica. */
   private readonly quarantined = new Set<Hex>();
+  private discoveryMemo: { version: number; expiresAt: number; rows: Promise<DiscoveryOutcome[]> } | null = null;
   private catalogMemo: {
     version: number;
     expiresAt: number;
@@ -325,6 +327,7 @@ export class StandardRailCatalog {
       this.quarantined.add(listing.runtimeCommitmentHash);
       this.validators.delete(listing.runtimeCommitmentHash);
       this.catalogMemo = null;
+      this.discoveryMemo = null;
       logger.error("dynamic catalog quarantine", {
         registrationId: listing.registrationId,
         outcomeId: listing.commitment.payload.outcomeId,
@@ -365,6 +368,29 @@ export class StandardRailCatalog {
         `${right.providerAgentId}:${right.outcomeId}`,
       )
     );
+  }
+
+  async discoveryOutcomes(): Promise<DiscoveryOutcome[]> {
+    const version = (this.registrations as Partial<ServiceRegistrationStore>).mutationVersion;
+    if (typeof version !== "number") return this.assembleDiscoveryOutcomes();
+    const now = Date.now();
+    const memo = this.discoveryMemo;
+    if (memo && memo.version === version && memo.expiresAt > now) return memo.rows;
+    const rows = this.assembleDiscoveryOutcomes();
+    this.discoveryMemo = { version, expiresAt: now + PUBLIC_CATALOG_MEMO_MS, rows };
+    rows.catch(() => { if (this.discoveryMemo?.rows === rows) this.discoveryMemo = null; });
+    return rows;
+  }
+
+  private async assembleDiscoveryOutcomes(): Promise<DiscoveryOutcome[]> {
+    const outcomes: DiscoveryOutcome[] = [];
+    for (const record of await this.registrations.listPublic(PUBLIC_CATALOG_LIMIT)) {
+      for (const listing of await this.assembleServiceSafe(record)) {
+        const skill = record.card.skills.find(item => item.skillId === listing.offer.payload.skillId)!;
+        outcomes.push({ listing, description: skill.presentation.description, pricing: skill.contract.pricing });
+      }
+    }
+    return outcomes.sort((a, b) => a.listing.commitment.payload.absoluteResourceUri.localeCompare(b.listing.commitment.payload.absoluteResourceUri));
   }
 
   async publicOutcomes(): Promise<PublicOutcomeV1[]> {

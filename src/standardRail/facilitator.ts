@@ -14,6 +14,7 @@ import type { StandardRailConfig } from "./config.js";
 import { isNonPublicAddress } from "./network.js";
 import { discardResponseBody } from "./boundedJson.js";
 import { assertNoDuplicateJsonKeys } from "./canonical.js";
+import { logger } from "../util/logger.js";
 import { activeRequestSignal } from "../mcp/requestContext.js";
 
 export interface StandardFacilitator {
@@ -94,6 +95,12 @@ export class CdpStandardFacilitator implements StandardFacilitator {
     const value = await this.readBoundedJson(response, 256_000);
     if (!response.ok) throw new Error(`Facilitator ${operation} rejected the request`);
     this.validateResponse(operation, value);
+    const discovery = facilitatorDiscoveryStatus(response.headers.get("extension-responses"));
+    if (discovery) {
+      const details = { operation, ...discovery };
+      if (discovery.status === "rejected") logger.warn("Facilitator Bazaar discovery rejected", details);
+      else logger.info("Facilitator Bazaar discovery status", details);
+    }
     return value as T;
   }
 
@@ -175,6 +182,23 @@ export class CdpStandardFacilitator implements StandardFacilitator {
       (response.payer !== undefined && typeof response.payer !== "string")
     ) throw new Error("Facilitator settle response is malformed");
   }
+}
+
+/** Optional indexing diagnostics must never alter payment settlement semantics. */
+export function facilitatorDiscoveryStatus(header: string | null): { status: "success" | "processing" | "rejected"; rejectedReason?: string } | null {
+  if (!header || header.length > 16_384 || !/^[A-Za-z0-9+/_=-]+$/.test(header)) return null;
+  try {
+    const text = Buffer.from(header, "base64").toString("utf8");
+    assertNoDuplicateJsonKeys(text);
+    const value: unknown = JSON.parse(text);
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    const bazaar = (value as Record<string, unknown>).bazaar;
+    if (!bazaar || typeof bazaar !== "object" || Array.isArray(bazaar)) return null;
+    const { status, rejectedReason } = bazaar as Record<string, unknown>;
+    if (status !== "success" && status !== "processing" && status !== "rejected") return null;
+    return { status, ...(status === "rejected" && typeof rejectedReason === "string"
+      ? { rejectedReason: rejectedReason.slice(0, 512) } : {}) };
+  } catch { return null; }
 }
 
 export function advertisesExactEip3009(supported: SupportedResponse, network: string): boolean {
