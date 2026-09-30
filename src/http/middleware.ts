@@ -181,6 +181,7 @@ function configurePreParserRateLimits(
       "/skill.md",
       "/SKILL.md",
       "/.well-known",
+      "/openapi.json",
       "/llms.txt",
       "/llms-full.txt",
       "/health/ready",

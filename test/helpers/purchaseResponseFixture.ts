@@ -21,6 +21,8 @@ export function purchaseHarness(stage: Stage = "settlement") {
   const delayed = async () => { entered.resolve(); await gate.promise; };
   const pause = async (at: Stage) => { if (stage === at) await delayed(); };
   const listing = {
+    requestSchema: { type: "object", properties: {}, additionalProperties: false },
+    purchaseReadiness: null,
     commitment: { payload: { canonicalToken: payer, outcomeId: "outcome" } },
     manifest: { payload: { splitterAddress: payer } },
     capacityPolicy: { maxOpenOrders: 25 },
@@ -99,7 +101,7 @@ export function purchaseHarness(stage: Stage = "settlement") {
   const service = Object.create(StandardRailService.prototype) as StandardRailService;
   Object.assign(service, {
     store, journal, facilitator, evidence, dispatch, purchaseResponses,
-    appConfig: { chainId: 84532, x402Network: "eip155:84532", usdc: { name: "USDC", version: "2" } },
+    appConfig: { publicUrl: "https://gateway.example", chainId: 84532, x402Network: "eip155:84532", usdc: { name: "USDC", version: "2" } },
     railConfig: { leaseSeconds: 45, encryptionKey: Buffer.alloc(32, 7),
       manifest: { activeRailProfile: { payload: { facilitatorProfileHash: hash("8") } } } },
     assertAdmissionOpen: vi.fn(), assertRailFence: vi.fn(async () => undefined),

@@ -1,4 +1,5 @@
 import type { PaymentPayload, PaymentRequired, PaymentRequirements } from "@x402/core/types";
+import { legacyBazaarExtension } from "./discovery.js";
 import { paymentIdentifierSchema } from "@x402/extensions/payment-identifier";
 import {
   encodeAbiParameters,
@@ -173,18 +174,9 @@ export function paymentRequired(args: {
     orderNonce: args.order.orderNonce,
     expiresAt,
   });
-  const schemaHash = canonicalHash(args.listing.requestSchema);
   const extensions: Record<string, unknown> = {
     "payment-identifier": paymentIdentifierExtension(args.order.intentId),
-    bazaar: {
-      info: {
-        schemaRef: {
-          hash: schemaHash,
-          url: `${args.config.publicUrl}/public/v2/artifacts/${schemaHash}`,
-        },
-        detailTool: "daski_get_outcome",
-      },
-    },
+    bazaar: args.order.listing?.bazaarDeclaration ?? legacyBazaarExtension(args.config, args.listing),
     ...(binding ? { "daski-order-binding": binding } : {}),
     "daski-rail-profile": { hash: args.railProfileHash },
     "daski-order-terms": {
@@ -214,6 +206,7 @@ export function paymentRequired(args: {
     validAfter: BigInt(now - 5),
     validBefore: BigInt(Math.min(expiresAt, now + args.requirements.maxTimeoutSeconds)),
   });
+  const { bazaar: _discovery, ...paymentExtensions } = extensions;
   challenge.extensions = {
     ...extensions,
     "daski-sign-request": {
@@ -232,7 +225,7 @@ export function paymentRequired(args: {
         message,
       },
       submitAs: {
-        how: "Sign eip712 with the payer key exactly as given. Retry the identical call with _meta[\"x402/payment\"] (preferred) or the paymentPayload argument set to the object below.",
+        how: "Sign eip712 exactly. Retry the identical call with _meta[\"x402/payment\"] or paymentPayload using the object below.",
         paymentPayload: {
           x402Version: 2,
           resource: challenge.resource,
@@ -241,7 +234,7 @@ export function paymentRequired(args: {
             signature: "<0x…65-byte hex from signing>",
             authorization: message,
           },
-          extensions,
+          extensions: paymentExtensions,
         },
       },
     },

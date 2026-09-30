@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import type { Hex } from "viem";
 import { mcpError, mcpJson } from "../src/mcp/util.js";
 import { mcpSurfaceFixture } from "./helpers/mcpSurfaceFixture.js";
+import { compactBazaarExtension } from "../src/standardRail/discovery.js";
 import { canonicalHash } from "../src/standardRail/canonical.js";
 import {
   CONFIRMATION_DIRECT_REQUEST_SHAPES, CONFIRMATION_REQUEST_SHAPES, CONFIRMATION_SUBMISSION_MODES, directConfirmationCall,
@@ -130,6 +131,9 @@ function paymentRequiredExtensionsFixture() {
   };
   return {
     "payment-identifier": paymentIdentifierExtension(INTENT_ID),
+    bazaar: compactBazaarExtension({ publicUrl: PUBLIC_URL }, {
+      requestSchema: { type: "object", properties: { domainName: { type: "string", const: "example.test" } }, required: ["domainName"], additionalProperties: false },
+    }),
     "daski-order-binding": {
       "recipe-bound-v2": orderBindingExtension({ bindingProfile: "recipe-bound-v2", ...deal }),
     },

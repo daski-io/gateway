@@ -3,6 +3,7 @@ import { getAddress, type Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import type { PaymentPayload } from "@x402/core/types";
 import type { Config } from "../src/config.js";
+import { compactBazaarExtension, legacyBazaarExtension } from "../src/standardRail/discovery.js";
 import { recipeNonceV2 } from "../src/standardRail/canonical.js";
 import {
   paymentRequired,
@@ -59,6 +60,7 @@ const listing = {
 } as unknown as StandardListing;
 
 const order = {
+  listing: { ...listing, bazaarDeclaration: compactBazaarExtension(config, listing) },
   listingManifestHash: hash("1"),
   providerOfferHash: hash("2"),
   quoteHash: hash("3"),
@@ -133,11 +135,11 @@ async function signedPayment(
   } as unknown as PaymentPayload;
 }
 
-function validated(payment: PaymentPayload) {
+function validated(payment: PaymentPayload, snapshot = order) {
   return validatePayment({
     config,
     listing,
-    order,
+    order: snapshot,
     requirements: paymentRequirements(config, listing, GROSS_AMOUNT, 120),
     payment,
     railProfileHash: RAIL_PROFILE_HASH,
@@ -164,6 +166,28 @@ describe("standard payment extension echo", () => {
     await expect(validated(payment)).resolves.toMatchObject({
       payer: privateKeyToAccount(`0x${"22".repeat(32)}` as Hex).address,
     });
+  });
+
+  it("accepts the exact discovery declaration from a challenge issued before this release", async () => {
+    const payment = await signedPayment(issued => ({ ...issued, bazaar: legacyBazaarExtension(config, listing) }));
+    await expect(validated(payment, { ...order, listing })).resolves.toMatchObject({ payer: privateKeyToAccount(`0x${"22".repeat(32)}` as Hex).address });
+  });
+
+  it("uses the order's exact declaration even when the current listing has different discovery data", async () => {
+    const payment = await signedPayment(issued => ({ ...issued }));
+    const current = { ...listing, requestSchema: { type: "object", properties: { changed: { type: "string" } }, additionalProperties: false } };
+    await expect(validatePayment({ config, listing: current, order,
+      requirements: paymentRequirements(config, listing, GROSS_AMOUNT, 120), payment,
+      railProfileHash: RAIL_PROFILE_HASH,
+    })).resolves.toMatchObject({ payer: privateKeyToAccount(`0x${"22".repeat(32)}` as Hex).address });
+  });
+
+  it("keeps a sign-ready challenge with Bazaar below the existing 5 KiB buyer budget", () => {
+    const challenge = paymentRequired({ config, listing, order, railProfileHash: RAIL_PROFILE_HASH,
+      requirements: paymentRequirements(config, listing, GROSS_AMOUNT, 120), payerAddress: address("b"),
+    });
+    expect(Buffer.byteLength(JSON.stringify(challenge), "utf8")).toBeLessThan(5 * 1024);
+    expect((challenge.extensions!["daski-sign-request"] as { submitAs: { paymentPayload: { extensions: Record<string, unknown> } } }).submitAs.paymentPayload.extensions).not.toHaveProperty("bazaar");
   });
 
   it("rejects a tampered bazaar declaration", async () => {

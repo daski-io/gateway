@@ -49,7 +49,8 @@
       ],
       "emittedBy": [
         "src/standardRail/payment.ts paymentIdentifierExtension",
-        "src/standardRail/payment.ts orderBindingExtension"
+        "src/standardRail/payment.ts orderBindingExtension",
+        "src/standardRail/discovery.ts compactBazaarExtension"
       ],
       "parsedBy": [
         "daski-test scripts/standardPaymentChallenge.ts paymentIntentIdentifier",
