@@ -109,6 +109,12 @@ async function configureRuntimePrivileges(
     await client.query(
       `GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE ${admittedTables.join(", ")} TO ${role}`,
     );
+    const admittedViews = relations.rows
+      .filter((relation) => ["v", "m"].includes(relation.relation_kind) && relation.relation_name.startsWith("standard_"))
+      .map((relation) => `${schema}.${quotedIdentifier(relation.relation_name)}`);
+    if (admittedViews.length > 0) {
+      await client.query(`GRANT SELECT ON TABLE ${admittedViews.join(", ")} TO ${role}`);
+    }
     if (sequences.rows.length > 0) {
       const admittedSequences = sequences.rows
         .map((row) => `${schema}.${quotedIdentifier(row.sequencename)}`)

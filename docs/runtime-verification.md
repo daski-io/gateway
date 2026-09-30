@@ -122,3 +122,9 @@ The candidate proof is the replacement consumer boundary for deploy-side copied
 admission decisions; orchestration should invoke it instead of maintaining a
 second decision implementation. Build identity and real boot close previously
 missing coverage and therefore have no safe older runtime check to delete.
+
+The startup proof also reads every `standard_*` view through the restricted
+runtime database role, including both delivery-review union views. It verifies
+that those views have no runtime write grants and that migration records remain
+unreadable. This catches view-permission failures before post-purchase review
+requests reach a deployment.

@@ -184,6 +184,23 @@ export async function proveStartup(input, databaseUrl, options={}) {
     const current=(await pool.query(`SELECT provider_agent_id AS "providerAgentId",'0x'||encode(admission_hash,'hex') AS "admissionHash"
       FROM standard_provider_servicing_admissions WHERE current ORDER BY provider_agent_id`)).rows;
     assert.deepEqual(current,[...input.expectedCurrent].sort((a,b)=>a.providerAgentId.localeCompare(b.providerAgentId)));
+    // Exercise views as the actual restricted runtime user: readiness alone
+    // did not catch missing grants on the review protocol's union views.
+    if (!prior) {
+      const runtimePool=createPool({connectionString:database.href,max:1});
+      try {
+        const views=(await pool.query(`SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+          WHERE n.nspname=current_schema() AND c.relkind IN ('v','m')`)).rows
+          .map(row=>row.relname).filter(name=>name.startsWith('standard_'));
+        assert.ok(views.includes('standard_review_preparations') && views.includes('standard_review_sponsorships'));
+        for (const view of views) {
+          await runtimePool.query(`SELECT * FROM "${view.replaceAll('"','""')}" LIMIT 1`);
+          const writable=(await runtimePool.query("SELECT has_table_privilege(current_user,$1,'INSERT,UPDATE,DELETE') AS allowed",[view])).rows[0].allowed;
+          assert.equal(writable,false,`${view} must remain read-only for the runtime role`);
+        }
+        assert.equal((await runtimePool.query("SELECT has_table_privilege(current_user,'_migrations','SELECT') AS allowed")).rows[0].allowed,false);
+      } finally { await runtimePool.end(); }
+    }
     const probe=options.probe ? await options.probe({url,databaseUrl:migrationUrl}) : null;
     return {schemaVersion:1,repo:'gateway',boundary:prior?'gateway-prior-runtime':'gateway-startup',status:'PASS',identity,
       ...(prior?{priorIdentity:prior.identity,migrations:prior.migrations}:{}),
@@ -192,7 +209,7 @@ export async function proveStartup(input, databaseUrl, options={}) {
         durationMs:Math.round(performance.now()-started)},
       checks:[...(prior?['prior-runtime-expanded-schema']:[]),'actual-entrypoint','signed-manifest-validation','migrations-and-distinct-database-roles',
         'existing-admission-state',...(input.priorArtifacts?.length?['existing-rail-lineage']:[]),
-        'health-live','health-ready','expected-current-admissions',...(probe?['candidate-probe']:[])],probe};
+        'health-live','health-ready','expected-current-admissions',...(!prior?['runtime-view-read-only-access']:[]),...(probe?['candidate-probe']:[])],probe};
   } finally {
     if(options.image && child) {
       try { execFileSync('docker',['stop','--time','5',`gateway-proof-${nonce}`],{stdio:'ignore'}); } catch {}
