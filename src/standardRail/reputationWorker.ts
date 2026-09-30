@@ -708,7 +708,7 @@ export class StandardReputationWorker {
     if (operation.kind === "confirmation" || operation.kind === "confirmation-v2") {
       const encoded = encodeReputationOperation(operation.canonical_intent,this.config);
       const decoded = parseTransaction(raw);
-      if (keccak256(raw) !== transaction.transaction_hash || decoded.chainId !== this.chain.id || decoded.value !== 0n ||
+      if (keccak256(raw) !== transaction.transaction_hash || decoded.chainId !== this.chain.id || (decoded.value ?? 0n) !== 0n ||
           decoded.to?.toLowerCase() !== encoded.destination.toLowerCase() || decoded.data?.toLowerCase() !== encoded.data.toLowerCase()) {
         await this.parkReview(operation,"transaction_intent_mismatch"); return;
       }
