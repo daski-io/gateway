@@ -89,8 +89,9 @@ function sendWalletError(
     res.status(error.status).json({ error: standardRailPublicError(error, origin) });
     return;
   }
-  if (isTransientDatabaseError(error)) {
-    // Not a client fault: the same request retried unchanged will succeed.
+  if (isTransientDatabaseError(error) ||
+      (error instanceof Error && error.message === "WALLET_TEMPORARILY_UNAVAILABLE")) {
+    // Keep temporary failures retryable with the original authorization.
     res.setHeader("Retry-After", "1");
     res.status(503).json({ error: {
       code: "WALLET_TEMPORARILY_UNAVAILABLE",

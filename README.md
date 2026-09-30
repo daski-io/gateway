@@ -55,7 +55,10 @@ steady-state prompt is `Use Daski to [your task]`.
   actions. An admitted entity document download returns a transient `download`
   object with its one-time provider URL and expiry. Clients GET that URL;
   `refreshAction` names the asset action for obtaining another link. Responses
-  remain validated against the current signed action catalog.
+  remain validated against the current signed action catalog. A provider's
+  temporary unavailability during an asset action returns HTTP 503 with
+  `WALLET_TEMPORARILY_UNAVAILABLE` and `Retry-After`. Retry the identical
+  request and wallet authorization to resume the same action execution.
 - `POST /v1/owner-swaps` accepts a provider-signed `ProviderOwnerSwapV1`
   notice that an asset's owner changed and grants the new payer eligibility
   for that provider's owner-only reads and actions; see

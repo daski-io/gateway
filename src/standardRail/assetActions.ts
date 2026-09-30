@@ -192,6 +192,8 @@ export class StandardAssetActions {
     );
     if (!response.ok) {
       await discardResponseBody(response);
+      // An unchanged signed retry retains the same execution ID on both sides.
+      if (response.status === 503) throw new Error("WALLET_TEMPORARILY_UNAVAILABLE");
       throw new Error(response.status === 429 ? "WALLET_RATE_LIMITED" : "ASSET_ACTION_REJECTED");
     }
     const body = await readBoundedJsonResponse(response, resolved.active.listing.providerControlProfile.payload.maxResponseBytes);
