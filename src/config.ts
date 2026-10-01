@@ -1,3 +1,4 @@
+import {parseSandboxFacilitatorTransport} from "./standardRail/sandboxFacilitatorTransport.js";
 import type { Network } from "@x402/core/types";
 import {
   loadUsdcDomain,
@@ -165,6 +166,8 @@ function edgeSecret(raw: string | undefined): string | null {
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
+  // Reject fixture transport configuration before any runtime mode or startup work.
+  parseSandboxFacilitatorTransport(env);
   if (env.PAYMENT_RAIL !== undefined) {
     throw new Error("PAYMENT_RAIL is retired; the gateway always uses standard Exact-EVM");
   }

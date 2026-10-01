@@ -1,3 +1,4 @@
+import {facilitatorTransportRequest} from "./sandboxFacilitatorTransport.js";
 import { generateJwt } from "@coinbase/cdp-sdk/auth";
 import { lookup } from "node:dns/promises";
 import { request as httpsRequest } from "node:https";
@@ -26,13 +27,11 @@ export interface StandardFacilitator {
 export class CdpStandardFacilitator implements StandardFacilitator {
   private readonly baseUrl: string;
   private readonly host: string;
-  private readonly hostname: string;
 
   constructor(private readonly config: StandardRailConfig) {
     const parsed = new URL(config.facilitatorBaseUrl);
     this.baseUrl = parsed.href.replace(/\/$/, "");
     this.host = parsed.host;
-    this.hostname = parsed.hostname;
   }
 
   async assertSupported(network: string): Promise<void> {
@@ -72,10 +71,11 @@ export class CdpStandardFacilitator implements StandardFacilitator {
       requestHost: this.host,
       requestPath: path,
     });
-    const target = `${this.baseUrl}/${operation}`;
-    const addresses = isIP(this.hostname)
-      ? [{ address: this.hostname, family: isIP(this.hostname) }]
-      : await lookup(this.hostname, { all: true, verbatim: true });
+    const transport=facilitatorTransportRequest(this.config.sandboxFacilitatorTransport,`${this.baseUrl}/${operation}`,operation,body);
+    const target=transport.url,hostname=new URL(target).hostname;
+    const addresses = isIP(hostname)
+      ? [{ address: hostname, family: isIP(hostname) }]
+      : await lookup(hostname, { all: true, verbatim: true });
     if (addresses.length === 0 || addresses.some(({ address }) => isNonPublicAddress(address))) {
       throw new Error("Facilitator DNS resolved outside the public network");
     }
@@ -84,6 +84,7 @@ export class CdpStandardFacilitator implements StandardFacilitator {
       headers: {
         authorization: `Bearer ${jwt}`,
         "content-type": "application/json",
+        ...transport.headers,
       },
       body: body === undefined ? undefined : JSON.stringify(body, (_, value) =>
         typeof value === "bigint" ? value.toString() : value,

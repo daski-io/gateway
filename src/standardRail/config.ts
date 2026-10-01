@@ -1,3 +1,4 @@
+import {parseSandboxFacilitatorTransport,type SandboxFacilitatorTransport} from "./sandboxFacilitatorTransport.js";
 import { parseCommerceBaseline, parseTargetEpochs, type CommerceBaseline } from "./releaseBaseline.js";
 import { createHash } from "node:crypto";
 import { gunzipSync } from "node:zlib";
@@ -9,6 +10,7 @@ import { resolveFinalityTag, type FinalityTag } from "../util/finalityTag.js";
 import type { StandardRailManifest } from "./types.js";
 
 export interface StandardRailConfig {
+  sandboxFacilitatorTransport?: SandboxFacilitatorTransport;
   commerceBaseline?: CommerceBaseline;
   assetActionTargetEpochs?: Record<string, number>;
   localPrerequisites?: ReadonlySet<string>;
@@ -266,6 +268,7 @@ function parseTrustedSigners(raw: string | undefined, protocolAddress: Address):
 export function loadStandardRailConfig(
   env: NodeJS.ProcessEnv = process.env,
 ): StandardRailConfig {
+  const sandboxFacilitatorTransport=parseSandboxFacilitatorTransport(env);
   const manifest = parseManifest(required(env, "STANDARD_RAIL_MANIFEST_JSON"));
   const protocolPrivateKey = privateKey(env, "FACILITATOR_PRIVATE_KEY");
   const protocolAddress = privateKeyToAccount(protocolPrivateKey).address;
@@ -311,6 +314,7 @@ export function loadStandardRailConfig(
     );
   }
   return {
+    sandboxFacilitatorTransport,
     commerceBaseline: parseCommerceBaseline(env.DASKI_COMMERCE_BASELINE_JSON),
     assetActionTargetEpochs: parseTargetEpochs(env.STANDARD_RAIL_ASSET_ACTION_TARGET_EPOCHS_JSON),
     localPrerequisites: new Set(Object.keys(env).filter(key => Boolean(env[key]?.trim()))),

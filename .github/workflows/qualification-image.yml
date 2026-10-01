@@ -1,0 +1,98 @@
+name: Qualification fixture image
+run-name: Qualification fixture ${{ inputs.request_hash }}
+on:
+  workflow_dispatch:
+    inputs:
+      request_json:
+        description: Fixed qualification image request
+        required: true
+      request_hash:
+        description: Canonical SHA256 of the request
+        required: true
+permissions:
+  contents: read
+  actions: read
+  packages: write
+concurrency:
+  group: qualification-image-${{ inputs.request_hash }}
+  cancel-in-progress: false
+jobs:
+  fixture:
+    if: github.ref == 'refs/heads/develop'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: harness
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Validate fixed recipe and require successful normal CI
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUEST_JSON: ${{ inputs.request_json }}
+          REQUEST_HASH: ${{ inputs.request_hash }}
+        run: |
+          set -euo pipefail
+          node --test harness/scripts/qualification-image.test.mjs
+          node --input-type=module <<'NODE'
+          import {writeFileSync,readFileSync} from 'node:fs';
+          import {execFileSync} from 'node:child_process';
+          import {validateRequest,hash} from './harness/scripts/qualification-image.mjs';
+          const request=validateRequest(JSON.parse(process.env.REQUEST_JSON));
+          if(hash(request)!==process.env.REQUEST_HASH)throw Error('Request hash differs');
+          for(const workflow of ['ci.yml','release-image.yml']) {
+            const result=JSON.parse(execFileSync('gh',['api','repos/daski-io/gateway/actions/workflows/'+workflow+'/runs?head_sha='+request.baseCommit+'&per_page=100'],{encoding:'utf8'}));
+            const run=result.workflow_runs.filter(r=>r.head_sha===request.baseCommit&&r.event==='push'&&r.head_branch==='develop').sort((a,b)=>b.id-a.id)[0];
+            if(!run||run.status!=='completed'||run.conclusion!=='success')throw Error('Normal exact source CI must finish first');
+            if(workflow==='release-image.yml')execFileSync('gh',['run','download',String(run.id),'--repo','daski-io/gateway','--name','release-image-'+request.baseCommit,'--dir','normal-image']);
+          }
+          const normal=JSON.parse(readFileSync('normal-image/release-image.json'));
+          if(normal.commit!==request.baseCommit||normal.digest!==request.baseDigest)throw Error('Normal image digest differs');
+          writeFileSync(process.env.GITHUB_OUTPUT,'base_commit='+request.baseCommit+'\n',{flag:'a'});
+          NODE
+        id: scope
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.scope.outputs.base_commit }}
+          path: source
+      - name: Apply fixed compile-only fault
+        env:
+          REQUEST_JSON: ${{ inputs.request_json }}
+          REQUEST_HASH: ${{ inputs.request_hash }}
+        run: node harness/scripts/qualification-image.mjs prepare source
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        id: build
+        with:
+          context: source
+          platforms: linux/amd64
+          push: true
+          tags: ghcr.io/daski-io/gateway-qualification:${{ github.run_id }}-${{ github.run_attempt }}
+          build-args: SOURCE_SHA=${{ steps.scope.outputs.base_commit }}
+          provenance: mode=max
+          sbom: true
+      - name: Extract actual fixture capabilities and record recipe
+        env:
+          FIXTURE_DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          image="ghcr.io/daski-io/gateway-qualification@$FIXTURE_DIGEST"
+          docker pull "$image"
+          container="$(docker create "$image")"
+          trap 'docker rm "$container" >/dev/null' EXIT
+          docker cp "$container:/app/dist/release-capabilities.json" source/release-capabilities.json
+          node harness/scripts/qualification-image.mjs finish source
+      - uses: actions/upload-artifact@v4
+        with:
+          name: qualification-image-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            source/qualification-image.json
+            source/release-capabilities.json
+          retention-days: 90

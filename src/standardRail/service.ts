@@ -1,4 +1,5 @@
 import { embeddedReleaseCapabilities } from "./releaseCapabilities.js";
+import { assertWorkerCompatibility } from "./workerCompatibility.js";
 import { ReleaseSales } from "./releaseSales.js";
 import { compactBazaarExtension, discoveryOpenApi, facilitatorDiscoveryPayment } from "./discovery.js";
 import { GATEWAY_VERSION } from "../version.js";
@@ -309,7 +310,7 @@ export class StandardRailService {
   }
 
   async initialize(): Promise<void> {
-    embeddedReleaseCapabilities();
+    assertWorkerCompatibility(embeddedReleaseCapabilities().artifact);
     await verifyStandardRailManifest(this.railConfig.manifest, {
       environment: this.railConfig.environment,
       chainId: this.appConfig.chainId,
