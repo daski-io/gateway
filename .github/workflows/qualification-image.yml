@@ -78,9 +78,15 @@ jobs:
           build-args: SOURCE_SHA=${{ steps.scope.outputs.base_commit }}
           provenance: mode=max
           sbom: true
+      - name: Record exact fixture OCI index and runtime descriptor
+        env:
+          IMAGE: ghcr.io/daski-io/gateway-qualification
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: node harness/scripts/release-oci.mjs
       - name: Extract actual fixture capabilities and record recipe
         env:
           FIXTURE_DIGEST: ${{ steps.build.outputs.digest }}
+          DASKI_OCI_METADATA_FILE: release-oci.json
         run: |
           set -euo pipefail
           image="ghcr.io/daski-io/gateway-qualification@$FIXTURE_DIGEST"
@@ -93,6 +99,7 @@ jobs:
         with:
           name: qualification-image-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
+            release-oci.json
             source/qualification-image.json
             source/release-capabilities.json
           retention-days: 90

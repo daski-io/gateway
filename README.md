@@ -341,3 +341,6 @@ remain unchanged. Status and artifact reads always obtain fresh provider evidenc
 See [CONTRIBUTING.md](CONTRIBUTING.md). Report security issues through GitHub's
 private vulnerability reporting.
 Before pushing to `develop`, satisfy [docs/release-readiness.md](docs/release-readiness.md); `develop` must always be releasable.
+
+RPC_READ_MAX_PER_MINUTE defaults to 300 in the gateway. This release does not
+require a deployment variable change for that default.

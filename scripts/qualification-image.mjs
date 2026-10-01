@@ -45,11 +45,13 @@ export function prepareFixture(root,request,{recipeBytes=readFileSync(fileURLToP
 export function finishFixture(root,env=process.env) {
  const descriptor=JSON.parse(readFileSync(join(root,".qualification/recipe.json"),"utf8")),bytes=readFileSync(join(root,"release-capabilities.json"));
  if(!/^[a-f0-9]{40}$/.test(env.GITHUB_SHA??"")||!/^sha256:[a-f0-9]{64}$/.test(env.FIXTURE_DIGEST??""))throw new Error("Immutable producer identity missing");
+ const oci=JSON.parse(readFileSync(env.DASKI_OCI_METADATA_FILE,"utf8"));
+ if(bytesHash(Buffer.from(oci.index,"base64"))!==env.FIXTURE_DIGEST)throw new Error("Fixture OCI index differs");
  const manifest=JSON.parse(bytes);if(manifest.commit!==descriptor.request.baseCommit||manifest.role!=="gateway")throw new Error("Extracted capability identity differs");
  const configurationHash=hash(Object.fromEntries(["Dockerfile","railway.json","package-lock.json"].map(p=>[p,bytesHash(readFileSync(join(root,p)))])));
  const document={schemaVersion:1,kind:"qualification-image",...descriptor,workflowCommit:env.GITHUB_SHA,
   image:"ghcr.io/daski-io/gateway-qualification@"+env.FIXTURE_DIGEST,digest:env.FIXTURE_DIGEST,
-  capabilitiesHash:bytesHash(bytes),configurationHash,fixturesHash:descriptor.overlayHash};
+  oci,capabilitiesHash:bytesHash(bytes),configurationHash,fixturesHash:descriptor.overlayHash};
  writeFileSync(join(root,"qualification-image.json"),JSON.stringify(document,null,2)+"\n");return document;
 }
 if(process.argv[1]&&resolve(process.argv[1])===fileURLToPath(import.meta.url)) {
