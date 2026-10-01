@@ -3,7 +3,7 @@ import type { ReleaseCapabilityManifest } from "./releaseCapabilities.js";
 // runtime. A new journal format must be deliberately added with its decoder;
 // a manifest cannot silently opt out of an incumbent queue.
 export const REQUIRED_WORKER_FORMATS = Object.freeze([
-  "standard-orders-v1", "dispatch-journal-v2", "review-journal-v1",
+  "standard-orders-v1", "dispatch-journal-v2", "review-journal-v1", "standard-settlement-parked-v1",
 ]);
 export const SUPPORTED_INTENT_FORMATS = Object.freeze([
   "ProviderServiceRegistrationIntentV1", "ProviderServiceRegistrationIntentV1:targetRevision",

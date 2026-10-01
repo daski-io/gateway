@@ -73,7 +73,7 @@ function requireStandardJson(
 
 export async function createStandardGatewayHttp(
   options: StandardGatewayHttpOptions,
-): Promise<{ app: Express; mcp: McpWiring | null; standardRailStop: () => Promise<void> }> {
+): Promise<{ app: Express; mcp: McpWiring | null; standardRailStart: () => void; standardRailStop: () => Promise<void> }> {
   const app = express();
   // The edge boundary decides who the client is before anything reads it:
   // every route then sees that client key through the request context.
@@ -168,7 +168,6 @@ export async function createStandardGatewayHttp(
     lifecycle: options.lifecycle,
     service: standardRail,
     railConfig: options.standardRailConfig,
-    onReady: () => registrationService.start(),
   }));
   app.use(createMarketplaceRouter(publicMarketplace));
   app.use(createStandardRailRouter(standardRail, options.config.publicUrl));
@@ -193,6 +192,11 @@ export async function createStandardGatewayHttp(
   return {
     app,
     mcp,
+    standardRailStart: () => {
+      if (options.lifecycle.isStopping()) return;
+      standardRail.startBackground();
+      registrationService.start();
+    },
     standardRailStop: async () => {
       await registrationService.stop();
       await standardRail.stop();

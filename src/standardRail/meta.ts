@@ -77,15 +77,15 @@ export function createStandardMetaRouter(args: {
   lifecycle: ApplicationLifecycle;
   service: StandardRailService;
   railConfig: StandardRailConfig;
-  onReady?: () => void;
 }): Router {
   const router = Router();
   router.get("/health/live", async (_req, res) => {
     const ready = !args.lifecycle.isStopping() && await args.service.commerceReadiness();
     res.status(ready ? 200 : 503).json({
       status: ready ? "alive" : "unready", version: GATEWAY_VERSION, commit: GATEWAY_COMMIT,
+      network: args.config.x402Network, chainId: args.config.chainId,
+      deploymentId: process.env.RAILWAY_DEPLOYMENT_ID ?? null,
     });
-    if (ready) { args.service.startBackground(); args.onReady?.(); }
   });
   router.get("/internal/release/v1/capabilities", async (req, res, next) => {
     if (!operatorAuthorized(req, args.config.catalogOperatorToken)) {
@@ -138,9 +138,6 @@ export function createStandardMetaRouter(args: {
   });
   router.get("/health/ready", async (req, res) => {
     const databaseReady = await args.pool.query("SELECT 1").then(() => true, () => false);
-    if (databaseReady && !args.lifecycle.isStopping() && await args.service.commerceReadiness()) {
-      args.service.startBackground(); args.onReady?.();
-    }
     const admissionOpen = args.service.isAdmissionOpen();
     const dependenciesReady = args.service.areDependenciesReady();
     const observed = databaseReady ? await args.service.operationalHealth().catch(() => null) : null;
@@ -156,6 +153,8 @@ export function createStandardMetaRouter(args: {
       status: ready ? "ready" : "unready",
       version: GATEWAY_VERSION,
       commit: GATEWAY_COMMIT,
+      network: args.config.x402Network, chainId: args.config.chainId,
+      deploymentId: process.env.RAILWAY_DEPLOYMENT_ID ?? null,
       ...(GATEWAY_SOURCE_SHA ? { sourceSha: GATEWAY_SOURCE_SHA } : {}),
       rail: "standard-exact-evm",
       railProfileHash: args.service.railProfileHash,

@@ -194,7 +194,7 @@ implements RegistrationEvidenceVerifier {
         transport: orderedRpcTransport(http(url, {
           retryCount: 0,
           timeout: 20_000,
-        })),
+        }), { scope: url, maxPerMinute: railConfig.rpcReadMaxPerMinute }),
       }),
     }));
   }

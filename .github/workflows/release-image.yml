@@ -72,8 +72,14 @@ jobs:
           container="$(docker create "$RELEASE_IMAGE")"
           trap 'docker rm "$container" >/dev/null' EXIT
           docker cp "$container:/app/dist/release-capabilities.json" release-capabilities.json
+      - name: Record exact OCI platform descriptors
+        env:
+          IMAGE: ghcr.io/${{ github.repository }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: node scripts/release-oci.mjs
       - name: Record immutable image and embedded capabilities
         env:
+          DASKI_OCI_METADATA_FILE: release-oci.json
           DIGEST: ${{ steps.build.outputs.digest }}
           IMAGE: ghcr.io/${{ github.repository }}
         run: node scripts/release-image.mjs
@@ -83,9 +89,11 @@ jobs:
           path: |
             release-image.json
             release-capabilities.json
+            release-oci.json
           retention-days: 90
       # Candidate dispatch starts only after explicit engine ownership handoff.
       - name: Notify the sandbox coordinator
+        continue-on-error: true
         if: vars.RELEASE_ENGINE_HANDOVER == 'enabled'
         env:
           GH_TOKEN: ${{ secrets.RELEASE_DISPATCH_TOKEN }}

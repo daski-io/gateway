@@ -1,3 +1,4 @@
+import { orderedRpcTransport } from "../rpc/orderedTransport.js";
 import {
   createPublicClient,
   http,
@@ -119,7 +120,7 @@ export class DirectReputationReader {
       host: new URL(url).hostname,
       client: createPublicClient({
         chain,
-        transport: http(url, { retryCount: 0, timeout: 20_000 }),
+        transport: orderedRpcTransport(http(url, { retryCount: 0, timeout: 20_000 }), { scope: url, maxPerMinute: config.rpcReadMaxPerMinute }),
       }),
     }));
   }

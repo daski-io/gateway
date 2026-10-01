@@ -1,3 +1,8 @@
+import { randomUUID } from "node:crypto";
+import { createPool, runMigrations } from "../src/db/pool.js";
+import { StandardAssetFederation } from "../src/standardRail/assetFederation.js";
+import { StandardAssetActions } from "../src/standardRail/assetActions.js";
+import { claimAssetAction } from "../src/standardRail/assetActionClaims.js";
 import { describe, expect, it } from "vitest";
 import { verifyStandardRailManifest } from "../src/standardRail/artifacts.js";
 import { canonicalHash } from "../src/standardRail/canonical.js";
@@ -41,6 +46,39 @@ describe("signed carried admission bundles", () => {
       splitterFactoryRuntimeCodeHash: ("0x" + "1".repeat(64)) as `0x${string}`,
       splitterCreationCodeHash: ("0x" + "2".repeat(64)) as `0x${string}` };
     await expect(verifyStandardRailManifest(carried.manifest, trust)).resolves.toBeUndefined();
+    // Persist epoch 1 work, advance to 2, then resolve the original claim
+    // through the real database and carried signed artifacts, not current.
+    const schema="carried_recovery_"+randomUUID().replaceAll("-","");
+    const databaseUrl=process.env.DATABASE_URL_TEST??"postgresql://postgres:password@localhost:5433/daski_gateway_test";
+    const admin=createPool({connectionString:databaseUrl,max:1});
+    await admin.query('CREATE SCHEMA "'+schema+'"');
+    const pool=createPool({connectionString:databaseUrl,searchPath:schema+",public",max:3});
+    try {
+      await runMigrations(pool);
+      const config={manifest:carried.manifest};
+      const federation=new StandardAssetFederation(pool,config as never,84532,{} as never,async()=>{throw new Error("no network");});
+      await federation.activateAdmissions();
+      const old=carried.manifest.servicingAdmissions[0],oldHash=canonicalHash(old);
+      const executionId=("0x"+"b".repeat(64)) as never,payer="0x"+"c".repeat(40);
+      await claimAssetAction(pool,{executionId,payer:payer as never,providerAgentId:"1",serviceId:definition.serviceId as never,
+        operation:"use",stagedExecutionId:null,walletAuthorizationHash:("0x"+"d".repeat(64)) as never,
+        requestHash:("0x"+"e".repeat(64)) as never,providerControlProfileHash:old.payload.providerControlProfileHash,
+        servicingAdmissionHash:oldHash,actionCatalogHash:old.payload.actionCatalogHash,
+        actionCatalogSchemaHash:old.payload.actionCatalogSchemaHash,actionCatalogEpoch:1,
+        actionDefinitionHash:canonicalHash(definition),stageValidBefore:null});
+      await federation.setTarget({providerAgentId:"1",requestId:"advance-catalog-2",expectedEpoch:1,targetEpoch:2});
+      await federation.activateAdmissions();
+      expect(federation.activeServicing("1")?.admissionHash).not.toBe(oldHash);
+      const api=new StandardAssetActions(pool,config as never,84532,{} as never,federation,async()=>{throw new Error("no network");});
+      const args={payer,providerAgentId:"1",actionId:definition.actionId,input:{operation:"recover-action",actionExecutionId:executionId,originalInput:{}}};
+      const recovered=await (api as any).resolveBound(args);
+      expect(recovered.active.admissionHash).toBe(oldHash);
+      expect(recovered.catalogEnvelope.payload.actionCatalogEpoch).toBe(1);
+      expect(recovered.definition.actionDefinitionHash).toBe(canonicalHash(definition));
+      await expect((api as any).resolveBound({...args,payer:"0x"+"f".repeat(40)})).rejects.toThrow("ASSET_ACTION_NOT_ADMITTED");
+      config.manifest={...carried.manifest,servicingAdmissions:[carried.manifest.servicingAdmissions[1]]};
+      await expect((api as any).resolveBound(args)).rejects.toThrow("ASSET_ACTION_NOT_ADMITTED");
+    } finally {await pool.end();await admin.query('DROP SCHEMA "'+schema+'" CASCADE');await admin.end();}
     const futureCatalog = carried.manifest.actionCatalogs[1];
     const changed = { ...definition, retentionSeconds: 7200 };
     futureCatalog.payload.actions = [{ ...changed, actionDefinitionHash: canonicalHash(changed) }];
@@ -49,5 +87,5 @@ describe("signed carried admission bundles", () => {
     futureAdmission.payload.actionCatalogHash = canonicalHash(carried.manifest.actionCatalogs[1]);
     carried.manifest.servicingAdmissions[1] = await signEnvelope({ ...futureAdmission, privateKey: testKey });
     await expect(verifyStandardRailManifest(carried.manifest, trust)).rejects.toThrow("immutable definition");
-  });
+  },60_000);
 });

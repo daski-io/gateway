@@ -237,6 +237,8 @@ async function setup(paymentRequired = true) {
   server = await new Promise<Server>((resolve) => {
     const listener = gateway.app.listen(0, "127.0.0.1", () => resolve(listener));
   });
+  gateway.standardRailStart();
+  expect(registrationService).toBeDefined();
   const bound = server.address();
   if (!bound || typeof bound === "string") throw new Error("test listener unavailable");
   const root = `http://127.0.0.1:${bound.port}`;

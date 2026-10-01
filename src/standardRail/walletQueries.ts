@@ -1,3 +1,4 @@
+import { orderedRpcTransport } from "../rpc/orderedTransport.js";
 import {
   createPublicClient,
   getAddress,
@@ -52,7 +53,7 @@ export class StandardWalletQueries {
       host: new URL(url).hostname,
       client: createPublicClient({
         chain,
-        transport: http(url, { retryCount: 0, timeout: 20_000 }),
+        transport: orderedRpcTransport(http(url, { retryCount: 0, timeout: 20_000 }), { scope: url, maxPerMinute: config.rpcReadMaxPerMinute }),
       }),
     }));
     this.reputationContract = config.reputationContract;

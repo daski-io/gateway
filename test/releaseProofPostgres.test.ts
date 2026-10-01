@@ -37,6 +37,7 @@ describe("candidate release execution proof", () => {
     const initial = await startupFixture();
     const initialProof = await proveStartup({ ...initial, migrationThrough: "037_runtime_listing_commitments.sql" }, databaseUrl, { probe: async ({url, databaseUrl: isolated}: any) => {
       expect((await fetch(`${url}/.well-known/mcp.json`)).status).toBe(200);
+      expect(await (await fetch(url+"/health/live")).json()).toMatchObject({network:"eip155:84532",chainId:84532});
       const pool = createPool({ connectionString: isolated, max: 1 });
       try { expect((await pool.query("SELECT count(*)::int AS count FROM _migrations")).rows[0].count).toBeGreaterThan(40); }
       finally { await pool.end(); }
@@ -61,6 +62,42 @@ describe("candidate release execution proof", () => {
       { debug: (text: string) => { output = text; } })).rejects.toThrow("fatal startup failure");
     expect(output).toMatch(/admitManifest/);
   }, 120_000);
+
+  it("recovers retained work on process startup before any HTTP health probe", async () => {
+    let observed = false;
+    const proof = await proveStartup(await startupFixture(), databaseUrl, {
+      beforeSpawn: async ({ databaseUrl: isolated }: any) => {
+        const pool = createPool({ connectionString: isolated, max: 1 });
+        try {
+          await pool.query(`INSERT INTO standard_orders
+            (order_id,order_key,order_handle,handle_hash,state,provider_agent_id,outcome_id,binding_profile,
+             listing_manifest_hash,provider_offer_hash,canonical_listing,quote_hash,canonical_quote,
+             canonical_request_hash,canonical_request,order_nonce,intent_id,gross_amount,rail_epoch,listing_epoch,
+             expires_at,updated_at)
+            VALUES ('unattended',$1,'unattended',$1,'CHALLENGE_ISSUED','1','outcome','recipe-bound-v2',
+              $1,$1,'{}',$1,'{}',$1,'{}',$1,'int_12345678-1234-4123-8123-123456789abc',1000000,1,1,
+              now()-interval '2 minutes',now()-interval '3 minutes')`, [Buffer.alloc(32,1)]);
+        } finally { await pool.end(); }
+      },
+      beforeHealthProbe: async ({ databaseUrl: isolated }: any) => {
+        const pool = createPool({ connectionString: isolated, max: 1 });
+        try {
+          // No HTTP request is issued until the compiled process's own worker
+          // has resumed this pre-existing order on the actual database.
+          for (let i=0;i<200;i++) {
+            const row=(await pool.query("SELECT state FROM standard_orders WHERE order_id='unattended'")).rows[0];
+            if(row.state==="NOT_SETTLED"){observed=true;break;}
+            await new Promise(resolve=>setTimeout(resolve,100));
+          }
+          expect(observed).toBe(true);
+          const transitions=(await pool.query("SELECT reason_code FROM standard_order_transitions WHERE order_id='unattended'")).rows;
+          expect(transitions).toContainEqual({reason_code:"signed_deadline_no_captured_payment"});
+          return { observed };
+        } finally { await pool.end(); }
+      },
+    });
+    expect(proof.checks).toContain("workers-without-health-traffic");
+  }, 60_000);
 
   it("refuses a build recorded for a different source revision", () => {
     const path = new URL("../dist/build-identity.json", import.meta.url);

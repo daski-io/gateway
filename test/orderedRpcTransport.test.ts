@@ -1,5 +1,5 @@
 import { custom } from "viem";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { orderedRpcTransport } from "../src/rpc/orderedTransport.js";
 
 interface Request {
@@ -55,4 +55,19 @@ describe("orderedRpcTransport", () => {
     expect(harness.calls).toEqual(["fail", "after"]);
     expect(harness.maximumActive()).toBe(1);
   });
+});
+
+it("paces separate read clients sharing one endpoint without retrying a failed RPC", async () => {
+  vi.useFakeTimers();
+  try {
+    const times: number[] = [];
+    const build = () => orderedRpcTransport(custom({ request: async () => { times.push(Date.now()); return "ok"; } }),
+      { scope: "shared-test-endpoint", maxPerMinute: 60 })({ retryCount: 0 }).request;
+    const a=build(), b=build();
+    const pending=Promise.all([a({method:"eth_chainId"}),b({method:"eth_chainId"}),a({method:"eth_chainId"})]);
+    await vi.runAllTimersAsync();await pending;
+    expect(times).toHaveLength(3);
+    expect(times[1]! - times[0]!).toBeGreaterThanOrEqual(1000);
+    expect(times[2]! - times[1]!).toBeGreaterThanOrEqual(1000);
+  } finally { vi.useRealTimers(); }
 });

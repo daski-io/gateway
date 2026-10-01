@@ -10,6 +10,7 @@ import { resolveFinalityTag, type FinalityTag } from "../util/finalityTag.js";
 import type { StandardRailManifest } from "./types.js";
 
 export interface StandardRailConfig {
+  rpcReadMaxPerMinute?: number;
   sandboxFacilitatorTransport?: SandboxFacilitatorTransport;
   commerceBaseline?: CommerceBaseline;
   assetActionTargetEpochs?: Record<string, number>;
@@ -315,6 +316,7 @@ export function loadStandardRailConfig(
   }
   return {
     sandboxFacilitatorTransport,
+    rpcReadMaxPerMinute: integer(env, "RPC_READ_MAX_PER_MINUTE", 300),
     commerceBaseline: parseCommerceBaseline(env.DASKI_COMMERCE_BASELINE_JSON),
     assetActionTargetEpochs: parseTargetEpochs(env.STANDARD_RAIL_ASSET_ACTION_TARGET_EPOCHS_JSON),
     localPrerequisites: new Set(Object.keys(env).filter(key => Boolean(env[key]?.trim()))),

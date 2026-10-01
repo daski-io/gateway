@@ -321,6 +321,8 @@ export async function verifyProviderEnvelope<T>(args: {
     );
   }
   const providerAgentId = args.providerAgentId(payload);
+  // Reject malformed signatures before spending shared chain-read capacity.
+  const signer = await providerEnvelopeSigner(envelope);
   let provider: unknown;
   try {
     provider = await args.marketplace.getProvider(BigInt(providerAgentId));
@@ -339,7 +341,6 @@ export async function verifyProviderEnvelope<T>(args: {
       error instanceof Error ? error.message : "provider authority is invalid",
     );
   }
-  const signer = await providerEnvelopeSigner(envelope);
   if (
     signer !== authority.owner &&
     signer !== authority.agentWallet

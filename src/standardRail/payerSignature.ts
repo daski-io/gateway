@@ -1,3 +1,4 @@
+import { orderedRpcTransport } from "../rpc/orderedTransport.js";
 import {
   BaseError,
   ContractFunctionRevertedError,
@@ -396,15 +397,16 @@ export function createContractVerificationEndpoint(args: {
   chain: Chain;
   timeoutMs: number;
   fetchFn?: typeof fetch;
+  maxPerMinute?: number;
 }): ContractVerificationEndpoint {
   const client = createPublicClient({
     chain: args.chain,
     ccipRead: false,
-    transport: http(args.url, {
+    transport: orderedRpcTransport(http(args.url, {
       retryCount: 0,
       timeout: args.timeoutMs,
       fetchFn: boundedRpcFetch(CONTRACT_VERIFICATION_RESPONSE_MAX_BYTES, args.fetchFn),
-    }),
+    }), { scope: args.url, maxPerMinute: args.maxPerMinute }),
   });
   return {
     host: new URL(args.url).hostname,

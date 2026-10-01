@@ -302,6 +302,8 @@ function catalogFor(state: FakeStoreState): StandardRailCatalog {
     listActiveByProvider: async (agent: string) =>
       state.records.filter((item) =>
         item.providerAgentId === agent && item.state === "ACTIVE"),
+    listVisibleForReadiness: async () => state.records.filter(item => item.state === "ACTIVE" && item.marketplaceEnabled),
+    registrationForListingHash: async (hash: string) => hash === runtimeCommitmentHash ? state.records[0] : null,
     listPublic: async () => state.records.filter((item) =>
       item.state === "ACTIVE" && item.marketplaceEnabled && item.cardAcceptingOrders &&
       item.chainActive && item.registrationHealthy),
@@ -570,4 +572,14 @@ describe("outcome search", () => {
     expect(vocabulary.jurisdictions).toEqual(["global"]);
     expect(vocabulary.note).toContain("ISO 3166");
   });
+});
+
+it("an unbuildable unrelated listing does not block healthy readiness, but the offered baseline remains mandatory", async () => {
+  const good=record(), bad={...record(),registrationId:"broken",prepared:{...record().prepared,
+    listings:record().prepared.listings.map(item=>({...item,listingId:"missing-row"}))}};
+  const catalog=catalogFor(fakeState([good,bad]));
+  expect(await catalog.validateCommerce([runtimeCommitmentHash])).toEqual([expect.objectContaining({listingManifestHash:runtimeCommitmentHash,compiled:true})]);
+  const broken=catalogFor(fakeState([bad]));
+  expect(await broken.validateCommerce()).toEqual([]);
+  await expect(broken.validateCommerce([runtimeCommitmentHash])).rejects.toThrow("COMMERCE_BASELINE_CONTRACT_MISSING");
 });

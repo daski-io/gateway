@@ -345,7 +345,7 @@ export class StandardRailCatalog {
 
   /** Fail closed on local compatibility, without consulting availability or upstreams. */
   async validateCommerce(baselineHashes: string[] = []): Promise<Array<{ serviceId: string; serviceSlug: string; skillId: string; skillContractHash: string; listingManifestHash: string; compiled: true }>> {
-    const loaded = [];
+    const loaded: Awaited<ReturnType<StandardRailCatalog["validateCommerce"]>> = [];
     const records = await this.registrations.listVisibleForReadiness();
     for (const hash of baselineHashes) {
       const historical = await this.registrations.registrationForListingHash(hash);
@@ -355,12 +355,23 @@ export class StandardRailCatalog {
     for (const record of records) {
       for (const prepared of record.prepared.listings) {
         if (!prepared.paymentRequired) continue;
-        const [bound, skill, facts] = await this.listingInputs(record, prepared.skillId);
-        const listing = await this.assembleListing(record, bound, skill, facts, false);
-        loaded.push({ serviceId: record.serviceId, serviceSlug: record.serviceSlug,
-          skillId: prepared.skillId, skillContractHash: prepared.skillContractHash,
-          listingManifestHash: listing.runtimeCommitmentHash, compiled: true as const });
+        try {
+          const [bound, skill, facts] = await this.listingInputs(record, prepared.skillId);
+          const listing = await this.assembleListing(record, bound, skill, facts, false);
+          loaded.push({ serviceId: record.serviceId, serviceSlug: record.serviceSlug,
+            skillId: prepared.skillId, skillContractHash: prepared.skillContractHash,
+            listingManifestHash: listing.runtimeCommitmentHash, compiled: true as const });
+        } catch {
+          // An already unbuildable non-baseline row must not take down healthy
+          // commerce on restart. The exact offered baseline below stays strict.
+          logger.warn("local listing excluded from readiness inventory", {
+            registrationId: record.registrationId, skillId: prepared.skillId,
+          });
+        }
       }
+    }
+    if (baselineHashes.some(hash => !loaded.some(item => item.listingManifestHash === hash))) {
+      throw new Error("COMMERCE_BASELINE_CONTRACT_MISSING");
     }
     return loaded;
   }

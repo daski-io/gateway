@@ -12,6 +12,9 @@ async function main(): Promise<void> {
   // the container has IPv6, which is what Railway private networking needs.
   // The bound address goes to the deploy log so that is verifiable.
   const server = bundle.app.listen(config.port, () => {
+    // Local compatibility passed during construction; listening completes
+    // readiness. Recovery must not depend on an external healthcheck request.
+    bundle.startBackground();
     const address = server.address();
     const bound = address && typeof address === "object"
       ? `${address.address}:${address.port} (${address.family})`

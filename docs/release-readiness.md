@@ -129,3 +129,17 @@ and payer-bound provider quote. It must not reuse a manual-mode quote for an
 automatic-mode request. External domains retain the provider's ownership and
 DNS gate before payment. An admitted automatic order can wait in `dns_pending`;
 the existing durable-wait clock and lifecycle projection apply unchanged.
+
+## Runtime continuity
+
+Workers start after the application binds its HTTP listener and local compatibility has passed; no health request is needed to resume retained work. Public liveness uses a shared in-flight local readiness observation cached for two seconds, and a memory-only ingress limit. Signed registration fences have a separate shared control budget and reject invalid signatures before registry RPC reads. RPC_READ_MAX_PER_MINUTE (default 300) paces the gateway read clients together per RPC endpoint; it does not retry failed calls.
+
+Migration 055 replaces ordinary sale-guard writes with a lock on a preseeded row. Release controls still update that row, so legacy serializable claims reject stale stop-sale snapshots without making an unrelated settlement invalidate an ordinary claim. The standard-settlement-parked-v1 format declares the compiled worker's durable parked-authorization recovery support; a legacy image without that capability is not an eligible overlap after stop-sale.
+
+A broken listing outside the captured offered baseline is omitted from the local inventory. Every exact baseline listing remains required. Historical asset-action recovery continues to require the original signed admission, catalog, and control profile in the carried manifest on both gateway and provider; changing the current epoch does not rebind prior work.
+
+The ongoing state proof runs after both exact revisions are built:
+
+    node scripts/reliability/state-compatibility.mjs --prior-root /path/to/fallback --output state-proof.json
+
+It requires disposable loopback PostgreSQL. Candidate code writes order authorization, signed dispatch, and encrypted review transaction records; the fallback's actual parsers and journal/worker methods resume those same identities. Review transaction transport is in memory and never reaches a chain. The receipt lists exactly the formats exercised and both manifest byte hashes; parked-work coverage is added only when the fallback declares that capability. Unsupported formats never receive coverage merely from a manifest declaration.

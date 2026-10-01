@@ -137,6 +137,7 @@ export interface StandardAppBundle {
   app: Express;
   pool: Pool;
   mcp: McpWiring | null;
+  startBackground(): void;
   beginShutdown(): void;
   shutdown(httpClosed?: Promise<void>): Promise<void>;
 }
@@ -197,7 +198,7 @@ export async function createStandardApp(options: {
   const ownsLockPool = options.pool === undefined;
   const lifecycle = new ApplicationLifecycle();
   const rateLimitStore = createRateLimitQueries(pool);
-  const { app, mcp, standardRailStop } = await createStandardGatewayHttp({
+  const { app, mcp, standardRailStart, standardRailStop } = await createStandardGatewayHttp({
     config: options.config,
     pool,
     federationPermitPool,
@@ -244,6 +245,7 @@ export async function createStandardApp(options: {
     app,
     pool,
     mcp,
+    startBackground: standardRailStart,
     beginShutdown: () => lifecycle.beginShutdown(),
     shutdown,
   };

@@ -1,3 +1,4 @@
+import { orderedRpcTransport } from "../rpc/orderedTransport.js";
 import { embeddedReleaseCapabilities } from "./releaseCapabilities.js";
 import { assertWorkerCompatibility } from "./workerCompatibility.js";
 import { ReleaseSales } from "./releaseSales.js";
@@ -219,6 +220,7 @@ export class StandardRailService {
       accountTypes: railConfig.payerAccountTypes,
       timeoutMs: railConfig.payerSignatureVerifyTimeoutMs,
       endpoints: railConfig.evidenceRpcUrls.map((url) => createContractVerificationEndpoint({
+        maxPerMinute: railConfig.rpcReadMaxPerMinute,
         url, chain, timeoutMs: railConfig.payerSignatureVerifyTimeoutMs, fetchFn,
       })),
       admit: ({ context }) => chargeSignatureVerifyAdmission(
@@ -337,7 +339,7 @@ export class StandardRailService {
     this.locallyReady = true;
   }
 
-  /** Called only after the deployment healthcheck has passed local readiness. */
+  /** Called by the listening lifecycle after local compatibility passed. */
   startBackground(): void {
     if (!this.locallyReady || this.backgroundStarted) return;
     this.backgroundStarted = true;
@@ -373,14 +375,26 @@ export class StandardRailService {
     return listings;
   }
 
+  private commerceReadinessMemo?: { expiresAt: number; result: Promise<boolean> };
+
   async commerceReadiness(): Promise<boolean> {
     if (!this.locallyReady) return false;
-    try {
-      await this.pool.query("SELECT 1");
-      await this.assetFederation.activateAdmissions({ readOnly: true });
-      await this.validateLocalCommerce();
-      return true;
-    } catch { return false; }
+    const cached = this.commerceReadinessMemo;
+    if (cached && cached.expiresAt > Date.now()) return cached.result;
+    // One in-flight local check per replica, bounded cache for public probes.
+    // Availability upstreams remain outside rollout readiness.
+    const result = (async () => {
+      try {
+        await this.pool.query("SELECT 1");
+        await this.assetFederation.activateAdmissions({ readOnly: true });
+        await this.validateLocalCommerce();
+        return true;
+      } catch { return false; }
+    })();
+    const memo = { expiresAt: Number.POSITIVE_INFINITY, result };
+    this.commerceReadinessMemo = memo;
+    void result.finally(() => { memo.expiresAt = Date.now() + 2_000; });
+    return result;
   }
 
   async setAssetActionTarget(request: { requestId: string; providerAgentId: string; expectedEpoch: number; targetEpoch: number }) {
@@ -1809,7 +1823,7 @@ export class StandardRailService {
           host: new URL(url).hostname,
           client: createPublicClient({
             chain,
-            transport: http(url, { retryCount: 0, timeout: 10_000 }),
+            transport: orderedRpcTransport(http(url, { retryCount: 0, timeout: 10_000 }), { scope: url, maxPerMinute: this.railConfig.rpcReadMaxPerMinute }),
           }),
         }));
         const balance = await withRpcFailover(

@@ -30,11 +30,22 @@ describe("local commerce readiness", () => {
     const service = build();
     service.railConfig.localPrerequisites.clear();
     expect(await service.commerceReadiness()).toBe(false);
+    delete service.commerceReadinessMemo;
     service.railConfig.localPrerequisites.add("REQUIRED_KEY");
     service.catalog.validateCommerce.mockResolvedValue([]);
     expect(await service.commerceReadiness()).toBe(false);
+    delete service.commerceReadinessMemo;
     service.catalog.validateCommerce.mockRejectedValue(new Error("unsupported schema"));
     expect(await service.commerceReadiness()).toBe(false);
+  });
+  it("shares one bounded local readiness check across a concurrent public probe flood", async () => {
+    const service = build();
+    expect(await Promise.all(Array.from({ length: 400 }, () => service.commerceReadiness()))).toEqual(Array(400).fill(true));
+    expect(service.pool.query).toHaveBeenCalledTimes(1);
+    expect(service.catalog.validateCommerce).toHaveBeenCalledTimes(1);
+    service.commerceReadinessMemo.expiresAt = 0;
+    expect(await service.commerceReadiness()).toBe(true);
+    expect(service.pool.query).toHaveBeenCalledTimes(2);
   });
   it("rejects unsafe target epochs and binds capability identity to exact artifact bytes", () => {
     expect(() => parseTargetEpochs('{"1":9007199254740992}')).toThrow();

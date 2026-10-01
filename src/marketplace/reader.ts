@@ -135,7 +135,7 @@ export class ViemMarketplaceChainReader implements MarketplaceChainReader {
   private readonly finalityTag: "safe" | "finalized";
 
   constructor(
-    config: Pick<Config, "marketplaceContracts" | "finalityTag">,
+    config: Pick<Config, "marketplaceContracts" | "finalityTag"> & Partial<Pick<Config, "rpcReadMaxPerMinute">>,
     rpcUrls: readonly [string, ...string[]],
     chain: Chain,
   ) {
@@ -152,7 +152,7 @@ export class ViemMarketplaceChainReader implements MarketplaceChainReader {
         transport: orderedRpcTransport(http(url, {
           retryCount: 0,
           timeout: 20_000,
-        })),
+        }), { scope: url, maxPerMinute: config.rpcReadMaxPerMinute }),
       }),
     }));
   }

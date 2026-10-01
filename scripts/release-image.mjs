@@ -47,6 +47,7 @@ export function releaseImage({ root = process.cwd(), env = process.env, capabili
   return {
     schemaVersion: 1, repo: env.GITHUB_REPOSITORY, commit, sourceSha: commit, version: pkg.version,
     repository, image: repository + "@" + env.DIGEST, digest: env.DIGEST,
+    ...(env.DASKI_OCI_METADATA_FILE ? {oci:JSON.parse(readFileSync(env.DASKI_OCI_METADATA_FILE,"utf8"))} : {}),
     capabilities: { hash: hash(bytes), manifest: capabilities }, capabilitiesHash: hash(bytes), fixturesHash: fixtures.hash,
     configurationHash: configuration.hash, configuration, fixtures,
     ci: { workflowRef: env.GITHUB_WORKFLOW_REF, runId, runAttempt, checks: ["image"] },

@@ -160,10 +160,12 @@ export async function proveStartup(input, databaseUrl, options={}) {
         '--mount',`type=bind,source=${rpcFile},target=/proof/rpc-facts.json,readonly`,
         options.image,'node','--import','/proof/controlled-network.mjs','dist/index.js'];
     }
+    if(options.beforeSpawn) await options.beforeSpawn({databaseUrl:migrationUrl});
     child=spawn(command,args,{cwd:runtimeRoot,env:options.image ? process.env : {...env,PATH:process.env.PATH},stdio:['ignore','pipe','pipe']});
     child.on('exit',(code,signal)=>{status={code,signal};});
     const capture=data=>{output=(output+String(data)).slice(-64000);}; child.stdout.on('data',capture); child.stderr.on('data',capture);
     child.on('error',error=>{status={code:1,error:error.message};});
+    const unattended=options.beforeHealthProbe ? await options.beforeHealthProbe({databaseUrl:migrationUrl}) : null;
     let ready=false;
     for(let attempt=0;attempt<200;attempt++) {
       if(status) break;
@@ -209,7 +211,7 @@ export async function proveStartup(input, databaseUrl, options={}) {
         durationMs:Math.round(performance.now()-started)},
       checks:[...(prior?['prior-runtime-expanded-schema']:[]),'actual-entrypoint','signed-manifest-validation','migrations-and-distinct-database-roles',
         'existing-admission-state',...(input.priorArtifacts?.length?['existing-rail-lineage']:[]),
-        'health-live','health-ready','expected-current-admissions',...(!prior?['runtime-view-read-only-access']:[]),...(probe?['candidate-probe']:[])],probe};
+        'health-live','health-ready','expected-current-admissions',...(unattended?['workers-without-health-traffic']:[]),...(!prior?['runtime-view-read-only-access']:[]),...(probe?['candidate-probe']:[])],probe};
   } finally {
     if(options.image && child) {
       try { execFileSync('docker',['stop','--time','5',`gateway-proof-${nonce}`],{stdio:'ignore'}); } catch {}

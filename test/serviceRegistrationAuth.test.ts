@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { getAddress, type Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import type { MarketplaceChainReader } from "../src/marketplace/reader.js";
@@ -114,4 +114,11 @@ describe("provider registration authentication", () => {
       marketplace: marketplace(),
     })).rejects.toThrow("current provider authority");
   });
+});
+
+it("rejects malformed registration signatures without a provider RPC read", async () => {
+  const raw = await intent(), reader = marketplace();
+  reader.getProvider = vi.fn(async () => { throw new Error("RPC must not execute"); });
+  await expect(verifyRegistrationIntent({ raw: { ...raw, signature: "0x"+"00".repeat(65) }, ...domain, marketplace: reader })).rejects.toThrow();
+  expect(reader.getProvider).not.toHaveBeenCalled();
 });
