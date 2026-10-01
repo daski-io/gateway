@@ -41,7 +41,7 @@ END $release_runtime_reads$;
 
 CREATE FUNCTION standard_fence_asset_action_target() RETURNS trigger
 LANGUAGE plpgsql AS $$
-DECLARE desired bigint; epoch bigint; profile_epoch bigint; previous_profile_epoch bigint;
+DECLARE desired bigint; epoch bigint; profile_epoch bigint; previous_profile_epoch bigint; previous_catalog_epoch bigint;
 BEGIN
   IF NOT NEW.current THEN RETURN NEW; END IF;
   PERFORM pg_advisory_xact_lock(hashtextextended('standard:servicing-admission:'||NEW.provider_agent_id,0));
@@ -50,14 +50,15 @@ BEGIN
   profile_epoch := (NEW.canonical_admission->'payload'->>'servicingProfileEpoch')::bigint;
   SELECT target_epoch INTO desired FROM standard_asset_action_targets WHERE provider_agent_id=NEW.provider_agent_id;
   IF desired IS NULL THEN
-    IF profile_epoch<>1 THEN RAISE EXCEPTION 'ASSET_ACTION_TARGET_REQUIRED'; END IF;
-    -- A legacy bootstrap may create only profile 1, never a target control.
+    IF profile_epoch<>1 OR epoch<>1 THEN RAISE EXCEPTION 'ASSET_ACTION_TARGET_REQUIRED'; END IF;
+    -- A legacy bootstrap may create only the genesis catalog/profile, never a target control.
     desired := epoch;
   END IF;
   IF epoch>desired THEN RAISE EXCEPTION 'ASSET_ACTION_TARGET_FENCED'; END IF;
-  SELECT max((canonical_admission->'payload'->>'servicingProfileEpoch')::bigint)
-    INTO previous_profile_epoch FROM standard_provider_servicing_admissions WHERE provider_agent_id=NEW.provider_agent_id;
-  IF profile_epoch<coalesce(previous_profile_epoch,profile_epoch) THEN
+  SELECT max((canonical_admission->'payload'->>'servicingProfileEpoch')::bigint),
+    max((canonical_admission->'payload'->>'actionCatalogEpoch')::bigint)
+    INTO previous_profile_epoch,previous_catalog_epoch FROM standard_provider_servicing_admissions WHERE provider_agent_id=NEW.provider_agent_id;
+  IF epoch<coalesce(previous_catalog_epoch,epoch) OR profile_epoch<coalesce(previous_profile_epoch,profile_epoch) THEN
     RAISE EXCEPTION 'ASSET_ACTION_TARGET_DOWNGRADE';
   END IF;
   RETURN NEW;

@@ -92,7 +92,8 @@ export class StandardAssetFederation {
         // The authenticated durable target is authoritative after bootstrap.
         const ceiling = Number(desired.rows[0]?.target_epoch ?? initialEpoch);
         if (options.readOnly) {
-          if (!active) active = admissions.find(item => item.payload.servicingProfileEpoch === 1) ?? null;
+          if (!active) active = admissions.find(item => item.payload.actionCatalogEpoch === 1 &&
+            item.payload.servicingProfileEpoch === 1 && item.payload.previousAdmissionHash === ZERO_HASH) ?? null;
           if (!active) throw new Error("Initial servicing admission is absent");
           await client.query("COMMIT");
           this.activeAdmissions.set(providerAgentId, active);
@@ -101,21 +102,21 @@ export class StandardAssetFederation {
         await client.query(`INSERT INTO standard_asset_action_targets(provider_agent_id,target_epoch)
           VALUES($1,$2) ON CONFLICT(provider_agent_id) DO NOTHING`, [providerAgentId, ceiling]);
         for (const admission of admissions.sort((left, right) =>
-          left.payload.servicingProfileEpoch - right.payload.servicingProfileEpoch)) {
+          left.payload.actionCatalogEpoch - right.payload.actionCatalogEpoch)) {
           if (admission.payload.actionCatalogEpoch > ceiling) continue;
           const admissionHash = canonicalHash(admission);
           if (active && canonicalHash(active) === admissionHash) continue;
-          if (active && admission.payload.servicingProfileEpoch <= active.payload.servicingProfileEpoch) {
-            if (admission.payload.servicingProfileEpoch === active.payload.servicingProfileEpoch) {
+          if (active && admission.payload.actionCatalogEpoch <= active.payload.actionCatalogEpoch) {
+            if (admission.payload.actionCatalogEpoch === active.payload.actionCatalogEpoch) {
               throw new Error("Servicing admission epoch conflicts with the activated admission");
             }
             continue;
           }
           if (
-            (!active && (admission.payload.servicingProfileEpoch !== 1 ||
+            (!active && (admission.payload.actionCatalogEpoch !== 1 || admission.payload.servicingProfileEpoch !== 1 ||
               admission.payload.previousAdmissionHash !== ZERO_HASH)) ||
             (active && (
-              admission.payload.servicingProfileEpoch !== active.payload.servicingProfileEpoch + 1 ||
+              admission.payload.actionCatalogEpoch !== active.payload.actionCatalogEpoch + 1 ||
               admission.payload.previousAdmissionHash !== canonicalHash(active)
             ))
           ) throw new Error("Servicing admission chain is invalid");

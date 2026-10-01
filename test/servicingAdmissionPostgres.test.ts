@@ -118,7 +118,7 @@ describe("servicing-admission activation against PostgreSQL", () => {
     }
   }, 60_000);
 
-  it("rejects changed catalog in the active profile epoch and rolls back partial activation", async () => {
+  it("advances catalog epochs under a stable signed profile and rolls back partial activation", async () => {
     const schema = `servicing_transition_${randomUUID().replaceAll("-", "")}`;
     const bootstrap = createPool({ connectionString: databaseUrl, max: 1 });
     await bootstrap.query(`CREATE SCHEMA "${schema}"`);
@@ -139,9 +139,9 @@ describe("servicing-admission activation against PostgreSQL", () => {
         .rejects.toThrow("Servicing admission epoch conflicts with the activated admission");
       expect(await snapshot()).toEqual(before);
 
-      const next = admission({ providerAgentId: "1", epoch: 2, catalogEpoch: 2,
+      const next = admission({ providerAgentId: "1", epoch: 1, catalogEpoch: 2,
         catalogHash: hash("4"), previousAdmissionHash: canonicalHash(active), enabled: true });
-      const brokenTail = admission({ providerAgentId: "1", epoch: 3, catalogEpoch: 3,
+      const brokenTail = admission({ providerAgentId: "1", epoch: 1, catalogEpoch: 3,
         previousAdmissionHash: hash("f"), enabled: true });
       await federation(pool, [active, next, brokenTail]).setTarget({
         requestId: "broken-target-test", providerAgentId: "1", expectedEpoch: 1, targetEpoch: 3 });
@@ -150,7 +150,7 @@ describe("servicing-admission activation against PostgreSQL", () => {
       // The valid first transition and deactivation of the prior row must both
       // roll back when the later transition fails inside the real transaction.
       expect(await snapshot()).toEqual(before);
-      const validTail = admission({ providerAgentId: "1", epoch: 3, catalogEpoch: 3,
+      const validTail = admission({ providerAgentId: "1", epoch: 1, catalogEpoch: 3,
         previousAdmissionHash: canonicalHash(next), enabled: true });
       await federation(pool, [active, next, validTail]).activateAdmissions();
       await federation(pool, [active, next, validTail], 1).activateAdmissions();
@@ -158,6 +158,10 @@ describe("servicing-admission activation against PostgreSQL", () => {
       expect(after).toHaveLength(3);
       expect(after.filter(row => row.current).map(row => row.hash))
         .toEqual([canonicalHash(validTail).slice(2)]);
+      expect((await federation(pool, [active, next, validTail]).targetStatus("1")).currentEpoch).toBe(3);
+      // Legacy SQL cannot reactivate an older catalog even when the profile is unchanged.
+      await expect(pool.query("UPDATE standard_provider_servicing_admissions SET current=true WHERE admission_hash=$1",
+        [Buffer.from(canonicalHash(active).slice(2),"hex")])).rejects.toThrow("ASSET_ACTION_TARGET_DOWNGRADE");
       await expect(federation(pool, [active]).activateAdmissions())
         .rejects.toThrow("Current servicing admission is absent from the marketplace manifest");
       expect(await snapshot()).toEqual(after);

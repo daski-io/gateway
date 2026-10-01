@@ -6,7 +6,7 @@ const { startupFixture, advancedCatalogFixture, testKey } =
   await import(new URL("../scripts/reliability/fixture.mjs", import.meta.url).href);
 
 describe("signed carried admission bundles", () => {
-  it("carries unchanged immutable actions across profiles and rejects identity changes", async () => {
+  it("carries immutable actions across catalog epochs with one stable profile and rejects identity changes", async () => {
     const initial = await startupFixture();
     const catalog = initial.manifest.actionCatalogs[0];
     const definition = { providerAgentId: "1", serviceId: "0x" + "a".repeat(64),
@@ -25,6 +25,17 @@ describe("signed carried admission bundles", () => {
     initial.priorState[0].admission = initial.manifest.servicingAdmissions[0];
     initial.expectedCurrent[0].admissionHash = canonicalHash(initial.manifest.servicingAdmissions[0]);
     const carried = await advancedCatalogFixture(initial);
+    const stableProfile = initial.manifest.providerControlProfiles[0];
+    carried.manifest.providerControlProfiles = [stableProfile];
+    const additiveCatalog = carried.manifest.actionCatalogs[1];
+    additiveCatalog.payload.providerControlProfileHash = canonicalHash(stableProfile);
+    additiveCatalog.payload.servicingProfileEpoch = stableProfile.payload.servicingProfileEpoch;
+    carried.manifest.actionCatalogs[1] = await signEnvelope({ ...additiveCatalog, privateKey: testKey });
+    const additiveAdmission = carried.manifest.servicingAdmissions[1];
+    additiveAdmission.payload.providerControlProfileHash = canonicalHash(stableProfile);
+    additiveAdmission.payload.servicingProfileEpoch = stableProfile.payload.servicingProfileEpoch;
+    additiveAdmission.payload.actionCatalogHash = canonicalHash(carried.manifest.actionCatalogs[1]);
+    carried.manifest.servicingAdmissions[1] = await signEnvelope({ ...additiveAdmission, privateKey: testKey });
     const trust = { environment: "testnet", chainId: 84532, gatewayAudience: "https://gateway.reliability.invalid",
       signers: new Map(Object.entries(initial.trustedSigners)) as never,
       splitterFactoryRuntimeCodeHash: ("0x" + "1".repeat(64)) as `0x${string}`,
