@@ -1,3 +1,4 @@
+import { RegistrationAuthError } from "./auth.js";
 import { timingSafeEqual } from "node:crypto";
 import { Router, type NextFunction, type Request, type Response } from "express";
 import type { Hex } from "viem";
@@ -90,6 +91,35 @@ export function createServiceRegistrationRouter(args: {
   const operatorToken = args.config.catalogOperatorToken;
   if (!operatorToken) throw new Error("Catalog operator token is required");
   const router = Router();
+  router.post("/internal/release/v1/registration-fences", handler(async (req, res) => {
+    // The provider's existing signed intent is the authority for its own
+    // monotonic fence; its background job never receives the operator token.
+    res.setHeader("Cache-Control", "no-store");
+    try { res.json(await args.service.acknowledgeRevisionFence(req.body)); }
+    catch (error) {
+      if (error instanceof RegistrationAuthError) {
+        throw new RegistrationError(401, "REGISTRATION_UNAUTHORIZED", "The signed registration fence is invalid.", error.reason);
+      }
+      if (error instanceof Error && error.message.startsWith("REGISTRATION_REVISION_")) {
+        throw new RegistrationError(409, error.message, "The registration revision cannot be accepted.");
+      }
+      throw error;
+    }
+  }));
+  router.get("/internal/release/v1/registration-fences", handler(async (req, res) => {
+    if (!authorizedOperator(req, operatorToken)) {
+      throw new RegistrationError(401, "OPERATOR_UNAUTHORIZED", "Operator authorization is required.");
+    }
+    const { providerAgentId, serviceId } = req.query;
+    if (typeof providerAgentId !== "string" || !/^(0|[1-9][0-9]{0,77})$/.test(providerAgentId) ||
+        typeof serviceId !== "string" || !SERVICE_ID.test(serviceId)) {
+      throw new RegistrationError(400, "INVALID_RELEASE_SCOPE", "Exact provider and service are required.");
+    }
+    res.setHeader("Cache-Control", "no-store");
+    const fence = await args.service.revisionFence(providerAgentId, serviceId.toLowerCase() as Hex);
+    res.json(fence ?? { providerAgentId, serviceId, targetRevision: 0, committed: false });
+  }));
+
 
   router.get("/public/v3/registration-policy", (_req, res) => {
     res.setHeader("Cache-Control", "public, max-age=60");

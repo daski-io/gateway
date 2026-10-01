@@ -1,3 +1,4 @@
+import { parseCommerceBaseline, parseTargetEpochs, type CommerceBaseline } from "./releaseBaseline.js";
 import { createHash } from "node:crypto";
 import { gunzipSync } from "node:zlib";
 import { getAddress, keccak256, type Address, type Hex } from "viem";
@@ -8,6 +9,9 @@ import { resolveFinalityTag, type FinalityTag } from "../util/finalityTag.js";
 import type { StandardRailManifest } from "./types.js";
 
 export interface StandardRailConfig {
+  commerceBaseline?: CommerceBaseline;
+  assetActionTargetEpochs?: Record<string, number>;
+  localPrerequisites?: ReadonlySet<string>;
   environment: string;
   migrationDatabaseUrl: string;
   gatewayAudience: string;
@@ -307,6 +311,9 @@ export function loadStandardRailConfig(
     );
   }
   return {
+    commerceBaseline: parseCommerceBaseline(env.DASKI_COMMERCE_BASELINE_JSON),
+    assetActionTargetEpochs: parseTargetEpochs(env.STANDARD_RAIL_ASSET_ACTION_TARGET_EPOCHS_JSON),
+    localPrerequisites: new Set(Object.keys(env).filter(key => Boolean(env[key]?.trim()))),
     environment: env.STANDARD_RAIL_ENVIRONMENT?.trim() || "testnet",
     finalityTag: resolveFinalityTag(env.CHAIN_FINALITY_TAG, Number(env.CHAIN_ID ?? 84532)),
     migrationDatabaseUrl: databaseUrl(required(env, "MIGRATION_DATABASE_URL")),

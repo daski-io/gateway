@@ -14,7 +14,7 @@ afterEach(async () => {
 });
 async function start(service: Record<string, unknown>) {
   const app = express(); app.use(express.json());
-  app.use(createStandardRailRouter(service as never, "https://gateway.example"));
+  app.use(createStandardRailRouter({ submissionStatus: async () => null, ...service } as never, "https://gateway.example"));
   server = app.listen(0, "127.0.0.1");
   await new Promise<void>(resolve => server!.once("listening", resolve));
   const root = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;

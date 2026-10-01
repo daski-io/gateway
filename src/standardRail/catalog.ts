@@ -258,7 +258,7 @@ export class StandardRailCatalog {
       );
     }
     for (const profile of railConfig.manifest.providerControlProfiles) {
-      this.controlProfiles.set(profile.payload.providerAgentId, profile);
+      this.controlProfiles.set(canonicalHash(profile), profile);
     }
   }
 
@@ -341,6 +341,28 @@ export class StandardRailCatalog {
         }));
       throw new Error("OUTCOME_NOT_FOUND");
     }
+  }
+
+  /** Fail closed on local compatibility, without consulting availability or upstreams. */
+  async validateCommerce(baselineHashes: string[] = []): Promise<Array<{ serviceId: string; serviceSlug: string; skillId: string; skillContractHash: string; listingManifestHash: string; compiled: true }>> {
+    const loaded = [];
+    const records = await this.registrations.listVisibleForReadiness();
+    for (const hash of baselineHashes) {
+      const historical = await this.registrations.registrationForListingHash(hash);
+      if (!historical) throw new Error("COMMERCE_BASELINE_CONTRACT_MISSING");
+      if (!records.some(record => record.registrationId === historical.registrationId)) records.push(historical);
+    }
+    for (const record of records) {
+      for (const prepared of record.prepared.listings) {
+        if (!prepared.paymentRequired) continue;
+        const [bound, skill, facts] = await this.listingInputs(record, prepared.skillId);
+        const listing = await this.assembleListing(record, bound, skill, facts, false);
+        loaded.push({ serviceId: record.serviceId, serviceSlug: record.serviceSlug,
+          skillId: prepared.skillId, skillContractHash: prepared.skillContractHash,
+          listingManifestHash: listing.runtimeCommitmentHash, compiled: true as const });
+      }
+    }
+    return loaded;
   }
 
   async listOutcomes(): Promise<PublicOutcomeV1[]> {
@@ -552,7 +574,7 @@ export class StandardRailCatalog {
       const row = rows.get(prepared.listingId);
       if (!skill || !row) continue;
       try {
-        listings.push(this.assembleListing(record, prepared, skill, row));
+        listings.push(await this.assembleListing(record, prepared, skill, row));
       } catch (error) {
         logger.warn("dynamic listing excluded from the public catalog", {
           registrationId: record.registrationId,
@@ -567,16 +589,17 @@ export class StandardRailCatalog {
     return listings;
   }
 
-  private assembleListing(
+  private async assembleListing(
     record: StoredRegistration,
     prepared: PreparedListing,
     skill: PublishedSkillContract,
     row: ListingRowFacts,
-  ): StandardListing {
+    requireAccepting = true,
+  ): Promise<StandardListing> {
     if (!prepared.preparation || !prepared.splitterAddress) {
       throw new Error("Paid listing preparation is incomplete");
     }
-    if (row.state !== "ACTIVE" || !row.acceptingNewOrders || !skill.acceptingNewOrders) {
+    if (row.state !== "ACTIVE" || (requireAccepting && (!row.acceptingNewOrders || !skill.acceptingNewOrders))) {
       throw new Error("OUTCOME_NOT_FOUND");
     }
     // §8: presentation refreshes in place, the paid contract may not. A card
@@ -608,7 +631,10 @@ export class StandardRailCatalog {
       throw new Error("Listing runtime commitment conflicts with its registration");
     }
     const checkpoint = checkpointFacts(row.activationCheckpoint);
-    const controlProfile = this.controlProfiles.get(record.providerAgentId);
+    const currentProfileHash = await this.registrations.currentProviderControlProfileHash(record.providerAgentId);
+    const controlProfile = currentProfileHash ? this.controlProfiles.get(currentProfileHash)
+      : [...this.controlProfiles.values()].filter(profile => profile.payload.providerAgentId === record.providerAgentId)
+        .sort((a,b) => a.payload.servicingProfileEpoch - b.payload.servicingProfileEpoch)[0];
     if (!controlProfile) {
       throw new Error("Provider control profile is not admitted");
     }

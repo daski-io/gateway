@@ -131,7 +131,7 @@ export async function verifyStandardRailManifest(
     }
     if (
       !/^[1-9]\d*$/.test(control.providerAgentId) || !control.providerAudience ||
-      controlProfileIds.has(control.providerAgentId) ||
+      controlProfileIds.has(control.providerAgentId + ":" + control.servicingProfileEpoch) ||
       control.assetResponseKeyId !== "provider-wallet" ||
       !/^0x[0-9a-fA-F]{40}$/.test(control.assetResponseKey) ||
       !Number.isSafeInteger(control.servicingProfileEpoch) || control.servicingProfileEpoch < 1 ||
@@ -140,7 +140,7 @@ export async function verifyStandardRailManifest(
       control.maxResponseBytes > 1_000_000 || !Number.isSafeInteger(control.timeoutMs) ||
       control.timeoutMs < 1_000 || control.timeoutMs > 120_000
     ) throw new Error("Provider control profile policy is invalid");
-    controlProfileIds.add(control.providerAgentId);
+    controlProfileIds.add(control.providerAgentId + ":" + control.servicingProfileEpoch);
   }
   for (const admission of manifest.servicingAdmissions) {
     verifyClosedEnvelope(admission, "provider servicing admission envelope");
@@ -191,7 +191,7 @@ export async function verifyStandardRailManifest(
         (action.replayPolicy === "redacted-after-window" && action.retentionSeconds > 604_800) ||
         (action.destructive && action.retentionSeconds <= 600) ||
         !Number.isSafeInteger(action.validFrom) || !Number.isSafeInteger(action.validBefore) ||
-        action.validFrom < catalog.issuedAt || action.validBefore > catalog.validBefore ||
+        action.validFrom < 0 || action.validBefore > catalog.validBefore ||
         action.validFrom >= action.validBefore ||
         (action.destructive !==
           (action.confirmationSummarySchema !== null && action.confirmationSummaryTemplate !== null))
@@ -208,7 +208,7 @@ export async function verifyStandardRailManifest(
       actionKeys.add(actionKey);
     }
   }
-  const admittedActions = new Set<string>();
+  const admittedActions = new Map<string, string>();
   for (const admission of manifest.servicingAdmissions) {
     const catalog = manifest.actionCatalogs.find((item) =>
       item.payload.providerAgentId === admission.payload.providerAgentId &&
@@ -232,9 +232,11 @@ export async function verifyStandardRailManifest(
       if (action.endpoint !== controlProfile.payload.assetActionUrl) {
         throw new Error("Action definition is outside its admitted provider service");
       }
-      const actionKey = `${action.providerAgentId}:${action.serviceId.toLowerCase()}:${action.actionId}`;
-      if (admittedActions.has(actionKey)) throw new Error("Provider service action is admitted more than once");
-      admittedActions.add(actionKey);
+      const actionKey = `${action.providerAgentId}:${action.serviceSlug}:${action.actionId}`;
+      if (admittedActions.has(actionKey) && admittedActions.get(actionKey) !== action.actionDefinitionHash) {
+        throw new Error("Provider service action identity changes its immutable definition");
+      }
+      admittedActions.set(actionKey, action.actionDefinitionHash);
     }
   }
   requireClosedKeys(manifest.facilitatorProfile.payload as unknown as Record<string, unknown>, [

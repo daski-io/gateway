@@ -25,11 +25,9 @@ function record(value: unknown, label: string): Record<string, unknown> {
 
 function closed(value: unknown, keys: readonly string[], label: string): Record<string, unknown> {
   const found = record(value, label);
-  const actual = Object.keys(found);
-  if (
-    actual.length !== keys.length ||
-    actual.some((key) => !keys.includes(key))
-  ) throw new Error(`${label} fields are invalid`);
+  if (keys.some((key) => !Object.hasOwn(found, key))) {
+    throw new Error(`${label} fields are invalid`);
+  }
   return found;
 }
 
@@ -155,6 +153,7 @@ function parseContract(
     assetType,
   });
   const contract = {
+    ...value,
     inputSchema,
     resultSchema,
     pricing,
@@ -163,7 +162,7 @@ function parseContract(
     assetType,
     fulfillmentMode: fulfillmentMode as "automated" | "human" | "hybrid",
     purchaseReadiness: value.purchaseReadiness as "payer_dns" | null,
-    capacity: { maxOpenOrders: capacity.maxOpenOrders as number },
+    capacity: { ...capacity, maxOpenOrders: capacity.maxOpenOrders as number },
     deadlines,
     assetAction,
   };
@@ -201,6 +200,7 @@ function parseSkill(
     documentationUrl.username || documentationUrl.password || documentationUrl.hash
   ) throw new Error("skill documentation URL is invalid");
   return {
+    ...value,
     skillId,
     skillContractHash,
     acceptingNewOrders: booleanValue(
@@ -208,6 +208,7 @@ function parseSkill(
       "skill acceptingNewOrders",
     ),
     presentation: {
+      ...presentation,
       name: text(presentation.name, "skill name", 160),
       description: multilineText(presentation.description, "skill description", 32_000),
       examples: stringArray(presentation.examples, "skill examples", 32),
@@ -245,6 +246,7 @@ export function parseProviderServiceCard(
     "providerTermsUrl", "providerPrivacyUrl",
   ], "service legal metadata");
   const legal = {
+    ...rawLegal,
     marketplaceTermsUrl: httpsUrl(rawLegal.marketplaceTermsUrl, "marketplace terms URL"),
     marketplacePrivacyUrl: httpsUrl(rawLegal.marketplacePrivacyUrl, "marketplace privacy URL"),
     providerLegalName: text(rawLegal.providerLegalName, "provider legal name", 512),
@@ -305,9 +307,12 @@ export function parseProviderServiceCard(
     throw new Error("skill contract set hash mismatch");
   }
   const serviceContractHash = canonicalHash({
+    ...Object.fromEntries(Object.entries(extension).filter(([key]) =>
+      !["schemaVersion", "providerAgentId", "service", "standardRail", "skillContractSetHash", "skills"].includes(key))),
     schemaVersion: 1,
     providerAgentId,
     service: {
+      ...Object.fromEntries(Object.entries(service).filter(([key]) => key !== "turnaroundEstimate")),
       serviceId,
       slug,
       version,
@@ -321,6 +326,7 @@ export function parseProviderServiceCard(
       ),
     },
     standardRail: {
+      ...standardRail,
       origin: origin.origin,
       providerAudience: sameOriginUrl(
         standardRail.providerAudience,
@@ -346,6 +352,7 @@ export function parseProviderServiceCard(
     description: multilineText(card.description, "service description", 32_000),
     providerAgentId,
     service: {
+      ...service,
       serviceId,
       slug,
       version,
@@ -357,6 +364,7 @@ export function parseProviderServiceCard(
       acceptingNewOrders: booleanValue(service.acceptingNewOrders, "service acceptingNewOrders"),
     },
     standardRail: {
+      ...standardRail,
       origin: origin.origin,
       providerAudience: sameOriginUrl(
         standardRail.providerAudience,

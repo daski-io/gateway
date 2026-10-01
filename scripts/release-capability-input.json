@@ -1,0 +1,6 @@
+{
+  "paidContracts": [],
+  "assetActions": [],
+  "intentFormats": ["ProviderServiceRegistrationIntentV1", "ProviderServiceRegistrationIntentV1:targetRevision"],
+  "workerFormats": ["standard-orders-v1", "dispatch-journal-v2", "review-journal-v1"]
+}

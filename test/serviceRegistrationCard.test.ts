@@ -191,3 +191,17 @@ describe("provider service-card admission", () => {
       .toBe(listingReuseScopeHash(first));
   });
 });
+
+it("retains unknown contract fields in the contract identity while accepting them", () => {
+  const raw = card();
+  const ext = raw.extensions["https://daski.io/a2a/v2"];
+  const skill = ext.skills[0]!;
+  const previous = skill.skillContractHash;
+  Object.assign(skill.contract, { futureOption: { enabled: true } });
+  skill.skillContractHash = canonicalHash({
+    schemaVersion: 1, serviceSlug: "orbital-logistics", serviceVersion: "1",
+    skillId: skill.skillId, contract: skill.contract,
+  });
+  ext.skillContractSetHash = canonicalHash([{ skillId: skill.skillId, skillContractHash: skill.skillContractHash }]);
+  expect(parseProviderServiceCard(raw, expected).skills[0]!.skillContractHash).not.toBe(previous);
+});

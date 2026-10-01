@@ -29,7 +29,7 @@ async function fixture() {
   } } };
   const api = new StandardAssetActions({} as never, {
     environment: "test", gatewayAudience: "https://gateway.example", manifest: { actionCatalogs: [catalogEnvelope] },
-  } as never, 84532, {} as never, { activeServicing: () => active } as never, async () => { throw new Error("unexpected fetch"); });
+  } as never, 84532, {} as never, { activateAdmissions: async () => undefined, activeServicing: () => active } as never, async () => { throw new Error("unexpected fetch"); });
   const request = { actionId: definition.actionId, providerAssetId: "asset-fixture", input: { documentId: download.documentId } };
   const grant = { validBefore: now + 120 };
   const verify = async (result: unknown, overrides = {}) => {

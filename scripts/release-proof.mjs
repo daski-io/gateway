@@ -13,7 +13,7 @@ function closed(value, keys, label) {
   assert.deepEqual(Object.keys(value).sort(), [...keys].sort(), `${label} fields mismatch`);
 }
 export function validateInput(input) {
-  closed(input, ['schemaVersion', 'priorState', 'candidateAdmissions', 'expectedCurrent'], 'gateway admission input');
+  closed(input, ['schemaVersion', 'priorState', 'candidateAdmissions', 'expectedCurrent', ...('targetEpochs' in input ? ['targetEpochs'] : [])], 'gateway admission input');
   assert.equal(input.schemaVersion, 1);
   assert.ok(Array.isArray(input.priorState));
   assert.ok(Array.isArray(input.candidateAdmissions) && input.candidateAdmissions.length > 0);
@@ -58,6 +58,12 @@ export async function proveAdmissions(input, databaseUrl) {
     const federation = new StandardAssetFederation(pool,
       { manifest: { servicingAdmissions: input.candidateAdmissions } }, 84532, {},
       () => { throw new Error('Admission proof must not dispatch network requests'); });
+    await federation.activateAdmissions();
+    for (const [providerAgentId,targetEpoch] of Object.entries(input.targetEpochs ?? {})) {
+      const status = await federation.targetStatus(providerAgentId);
+      await federation.setTarget({ requestId: "proof-target-" + providerAgentId,
+        providerAgentId,expectedEpoch:status.targetEpoch ?? 0,targetEpoch });
+    }
     await federation.activateAdmissions();
     const current = await pool.query(`SELECT provider_agent_id AS "providerAgentId",
       '0x' || encode(admission_hash,'hex') AS "admissionHash"

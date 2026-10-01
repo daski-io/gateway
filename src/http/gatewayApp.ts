@@ -162,13 +162,13 @@ export async function createStandardGatewayHttp(
       }),
     }));
   }
-  registrationService.start();
   app.use(createStandardMetaRouter({
     config: options.config,
     pool: options.pool,
     lifecycle: options.lifecycle,
     service: standardRail,
     railConfig: options.standardRailConfig,
+    onReady: () => registrationService.start(),
   }));
   app.use(createMarketplaceRouter(publicMarketplace));
   app.use(createStandardRailRouter(standardRail, options.config.publicUrl));

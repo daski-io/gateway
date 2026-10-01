@@ -405,6 +405,42 @@ export class StandardChainEvidence {
     );
   }
 
+  /** A used nonce is never labeled unpaid: it may mean payment or cancellation. */
+  async proveAuthorizationUnpaid(args: {
+    token: Address; payer: Address; nonce: Hex; validBefore: number; fromBlock: bigint;
+    onObserved?: (observation: Record<string, unknown>) => Promise<void>;
+  }): Promise<Record<string, unknown> | null> {
+    return this.observe(async ({ client }) => {
+      const block = await client.getBlock({ blockTag: this.config.finalityTag });
+      if (!block.hash) return null;
+      await this.tokenPolicyFacts(client, block.number);
+      const used = await client.readContract({
+        address: args.token, abi: transferAuthorizationAbi, functionName: "authorizationState",
+        args: [args.payer, args.nonce], blockNumber: block.number,
+      });
+      await args.onObserved?.({ blockNumber: block.number.toString(), blockHash: block.hash,
+        blockTimestamp: block.timestamp.toString(), nonceUsed: used, validBefore: args.validBefore });
+      if (used) {
+        const cancellations = await this.boundedLogs({
+          fromBlock: args.fromBlock, toBlock: block.number,
+          maxEvents: this.config.manifest.chainEvidencePolicy.payload.maximumLogPageEvents,
+          load: (fromBlock, toBlock) => client.getLogs({
+            address: args.token, event: parseAbiItem("event AuthorizationCanceled(address indexed authorizer,bytes32 indexed nonce)"),
+            args: { authorizer: args.payer, nonce: args.nonce }, fromBlock, toBlock,
+          }),
+        });
+        if (cancellations.length !== 1 || !cancellations[0]!.transactionHash) return null;
+        return { kind: "finalized-cancellation", token: args.token, payer: args.payer, nonce: args.nonce,
+          transactionHash: cancellations[0]!.transactionHash, blockNumber: block.number.toString(),
+          blockHash: block.hash, blockTimestamp: block.timestamp.toString() };
+      }
+      if (block.timestamp < BigInt(args.validBefore)) return null;
+      return { kind: "finalized-expiry-unused", token: args.token, payer: args.payer, nonce: args.nonce,
+        validBefore: args.validBefore, blockNumber: block.number.toString(), blockHash: block.hash,
+        blockTimestamp: block.timestamp.toString() };
+    });
+  }
+
   async findSettlementTransaction(args: {
     listing: StandardListing;
     payer: Address;

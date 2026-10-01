@@ -1,3 +1,4 @@
+import { parseSaleRequest, parseSaleScope } from "./releaseSales.js";
 import { EAS_PROFILE_IDS } from "./easProfiles.js";
 import { timingSafeEqual } from "node:crypto";
 import { Router, type Request, type Response } from "express";
@@ -76,13 +77,70 @@ export function createStandardMetaRouter(args: {
   lifecycle: ApplicationLifecycle;
   service: StandardRailService;
   railConfig: StandardRailConfig;
+  onReady?: () => void;
 }): Router {
   const router = Router();
-  router.get("/health/live", (_req, res) => {
-    res.json({ status: "alive", version: GATEWAY_VERSION, commit: GATEWAY_COMMIT });
+  router.get("/health/live", async (_req, res) => {
+    const ready = !args.lifecycle.isStopping() && await args.service.commerceReadiness();
+    res.status(ready ? 200 : 503).json({
+      status: ready ? "alive" : "unready", version: GATEWAY_VERSION, commit: GATEWAY_COMMIT,
+    });
+    if (ready) { args.service.startBackground(); args.onReady?.(); }
+  });
+  router.get("/internal/release/v1/capabilities", async (req, res, next) => {
+    if (!operatorAuthorized(req, args.config.catalogOperatorToken)) {
+      res.status(401).json({ error: { code: "OPERATOR_UNAUTHORIZED" } });
+      return;
+    }
+    try { res.setHeader("Cache-Control", "no-store"); res.json(await args.service.releaseCapabilities()); }
+    catch (error) { next(error); }
+  });
+  router.post("/internal/release/v1/asset-action-target", async (req, res, next) => {
+    if (!operatorAuthorized(req, args.config.catalogOperatorToken)) {
+      res.status(401).json({ error: { code: "OPERATOR_UNAUTHORIZED" } }); return;
+    }
+    try { res.setHeader("Cache-Control", "no-store"); res.json(await args.service.setAssetActionTarget(req.body)); }
+    catch (error) {
+      if (error instanceof Error && /^(INVALID_ASSET|ASSET_)/.test(error.message)) {
+        res.status(error.message.startsWith("INVALID_") ? 400 : 409).json({ error: { code: error.message } }); return;
+      }
+      next(error);
+    }
+  });
+  router.get("/internal/release/v1/asset-action-target", async (req, res, next) => {
+    if (!operatorAuthorized(req, args.config.catalogOperatorToken)) {
+      res.status(401).json({ error: { code: "OPERATOR_UNAUTHORIZED" } }); return;
+    }
+    if (typeof req.query.providerAgentId !== "string" || !/^(0|[1-9][0-9]{0,77})$/.test(req.query.providerAgentId)) {
+      res.status(400).json({ error: { code: "INVALID_RELEASE_SCOPE" } }); return;
+    }
+    try { res.setHeader("Cache-Control", "no-store"); res.json(await args.service.assetActionTargetStatus(req.query.providerAgentId)); }
+    catch (error) { next(error); }
+  });
+  router.post("/internal/release/v1/sales", async (req, res, next) => {
+    if (!operatorAuthorized(req, args.config.catalogOperatorToken)) {
+      res.status(401).json({ error: { code: "OPERATOR_UNAUTHORIZED" } }); return;
+    }
+    try { res.setHeader("Cache-Control", "no-store"); res.json(await args.service.releaseSales.set(parseSaleRequest(req.body))); }
+    catch (error) {
+      if (error instanceof Error && /^(INVALID_|SALE_)/.test(error.message)) {
+        res.status(error.message.startsWith("INVALID_") ? 400 : 409).json({ error: { code: error.message } }); return;
+      }
+      next(error);
+    }
+  });
+  router.get("/internal/release/v1/sales", async (req, res, next) => {
+    if (!operatorAuthorized(req, args.config.catalogOperatorToken)) {
+      res.status(401).json({ error: { code: "OPERATOR_UNAUTHORIZED" } }); return;
+    }
+    try { res.setHeader("Cache-Control", "no-store"); res.json(await args.service.releaseSales.state(parseSaleScope(req.query))); }
+    catch (error) { next(error); }
   });
   router.get("/health/ready", async (req, res) => {
     const databaseReady = await args.pool.query("SELECT 1").then(() => true, () => false);
+    if (databaseReady && !args.lifecycle.isStopping() && await args.service.commerceReadiness()) {
+      args.service.startBackground(); args.onReady?.();
+    }
     const admissionOpen = args.service.isAdmissionOpen();
     const dependenciesReady = args.service.areDependenciesReady();
     const observed = databaseReady ? await args.service.operationalHealth().catch(() => null) : null;

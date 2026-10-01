@@ -15,6 +15,8 @@ export interface ProviderServiceRegistrationIntentV1 {
   }>;
   railPolicyHash: Hex;
   registrationNonce: Hex;
+  /** Absent legacy payloads remain byte-for-byte signed revision zero. */
+  targetRevision?: number;
 }
 
 export type ProviderServiceRegistrationIntentEnvelope =

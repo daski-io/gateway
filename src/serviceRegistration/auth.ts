@@ -113,11 +113,17 @@ function providerIdentity(value: unknown, expectedAgentId: string): {
 }
 
 function parseIntent(value: unknown): ProviderServiceRegistrationIntentV1 {
+  const candidate = record(value, "registration intent");
   const payload = exact(value, [
+    ...(Object.hasOwn(candidate, "targetRevision") ? ["targetRevision"] : []),
     "providerAgentId", "serviceId", "serviceSlug", "serviceVersion",
     "providerPayee", "serviceContractHash", "skillContractSetHash", "skills", "railPolicyHash",
     "registrationNonce",
   ], "registration intent");
+  if (Object.hasOwn(payload, "targetRevision") &&
+      (!Number.isSafeInteger(payload.targetRevision) || (payload.targetRevision as number) < 0)) {
+    throw new Error("target revision is invalid");
+  }
   const serviceSlug = payload.serviceSlug;
   const serviceVersion = payload.serviceVersion;
   if (
@@ -168,6 +174,7 @@ function parseIntent(value: unknown): ProviderServiceRegistrationIntentV1 {
     skills,
     railPolicyHash: bytes32(payload.railPolicyHash, "rail policy hash"),
     registrationNonce: bytes32(payload.registrationNonce, "registration nonce"),
+    ...(Object.hasOwn(payload, "targetRevision") ? { targetRevision: payload.targetRevision as number } : {}),
   };
 }
 

@@ -62,7 +62,7 @@ export class StandardAssetActions {
     absoluteResourceUri: string;
     clientKey: string;
   }) {
-    const resolved = this.resolve(args.providerAgentId, args.actionId);
+    const resolved = await this.resolveBound(args);
     const action = actionName(args.providerAgentId, args.actionId, args.input);
     return this.wallet.issue({
       action,
@@ -92,7 +92,7 @@ export class StandardAssetActions {
     authorization: WalletAuthorizationTransport;
   }): Promise<unknown> {
     const request = actionRequest(args);
-    const resolved = this.resolve(args.providerAgentId, args.actionId);
+    const resolved = await this.resolveBound(args);
     const action = actionName(args.providerAgentId, args.actionId, args.input);
     this.assertCurrentAuthorization(args.authorization, resolved, action, request);
     const requestDigest = canonicalHash(request);
@@ -226,8 +226,37 @@ export class StandardAssetActions {
     return payload;
   }
 
-  private resolve(providerAgentId: string, actionId: string): ResolvedAction {
-    const active = this.federation.activeServicing(providerAgentId);
+  private async resolveBound(args: {
+    payer: string; providerAgentId: string; actionId: string; input: Record<string, unknown>;
+    authorization?: WalletAuthorizationTransport;
+  }): Promise<ResolvedAction> {
+    await this.federation.activateAdmissions({ readOnly: true });
+    const followUp = destructiveFollowUp(args.input);
+    const recovery = actionRecovery(args.input);
+    const priorId = followUp?.stagedExecutionId ?? recovery?.originalExecutionId;
+    const current = this.federation.activeServicing(args.providerAgentId);
+    const boundHash = args.authorization?.message.servicingAdmissionHash;
+    if (!priorId && (!boundHash || boundHash === current?.admissionHash)) {
+      return this.resolve(args.providerAgentId, args.actionId);
+    }
+    const result = await this.pool.query<{ servicing_admission_hash: Buffer }>(
+      `SELECT servicing_admission_hash FROM standard_asset_action_claims
+        WHERE payer=$1 AND provider_agent_id=$2 AND
+          (($3::bytea IS NOT NULL AND execution_id=$3) OR
+           ($4::bytea IS NOT NULL AND wallet_authorization_hash=$4))
+        ORDER BY created_at LIMIT 1`,
+      [args.payer.toLowerCase(), args.providerAgentId,
+        priorId ? Buffer.from(priorId.slice(2), "hex") : null,
+        args.authorization ? Buffer.from(walletAuthorizationHash(args.authorization.message, this.chainId).slice(2), "hex") : null]);
+    const row = result.rows[0];
+    if (!row) throw new Error("ASSET_ACTION_NOT_ADMITTED");
+    const admissionHash = `0x${row.servicing_admission_hash.toString("hex")}` as Hex;
+    if (boundHash && boundHash !== admissionHash) throw new Error("ASSET_ACTION_NOT_ADMITTED");
+    return this.resolve(args.providerAgentId, args.actionId, admissionHash);
+  }
+
+  private resolve(providerAgentId: string, actionId: string, boundHash?: Hex): ResolvedAction {
+    const active = boundHash ? this.federation.carriedServicing(providerAgentId, boundHash) : this.federation.activeServicing(providerAgentId);
     if (!active) throw new Error("ASSET_ACTION_NOT_ADMITTED");
     const catalogEnvelope = this.config.manifest.actionCatalogs.find((item) =>
       item.payload.providerAgentId === providerAgentId &&

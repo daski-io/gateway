@@ -24,6 +24,8 @@ import { signEnvelope } from "../src/standardRail/signing.js";
 vi.mock("../src/standardRail/service.js", () => ({
   StandardRailService: class {
     async initialize() {}
+    async commerceReadiness() { return true; }
+    startBackground() {}
     async stop() {}
   },
 }));
@@ -238,6 +240,7 @@ async function setup(paymentRequired = true) {
   const bound = server.address();
   if (!bound || typeof bound === "string") throw new Error("test listener unavailable");
   const root = `http://127.0.0.1:${bound.port}`;
+  expect((await fetch(root + "/health/live")).status).toBe(200);
   // Prime the actual public router's cache before changing its live source.
   for (const path of [`providers/${providerAgentId}`, `services/${serviceId}`]) {
     const response = await fetch(`${root}/public/v2/registry/${path}`);
@@ -256,6 +259,40 @@ async function setup(paymentRequired = true) {
 }
 
 describe("gateway authority freshness", () => {
+  it.each([true, false])("retains drift only when every exact prior paid contract is executable: %s", async executable => {
+    const test = await setup();
+    const listingHash = hash("b");
+    vi.spyOn(ServiceRegistrationStore.prototype, "listingCommitments").mockResolvedValue([
+      { listingId: test.record.prepared.listings[0]!.listingId, runtimeCommitmentHash: listingHash },
+    ] as never);
+    const retained = vi.spyOn(ServiceRegistrationStore.prototype, "retainDuringContractDrift").mockResolvedValue(undefined);
+    test.loadCard.mockResolvedValueOnce({ invalid: "changed card" }).mockResolvedValueOnce({
+      providerAudience: test.record.card.standardRail.providerAudience,
+      outcomes: [{ listingManifestHash: listingHash, executable, acceptingNewOrders: false }],
+    });
+    await test.registrationService.refreshRegistration(test.record);
+    expect(retained).toHaveBeenCalledTimes(executable ? 1 : 0);
+    expect(test.stopNewCommerce).toHaveBeenCalledTimes(executable ? 0 : 1);
+    expect(test.loadCard).toHaveBeenLastCalledWith(new URL("/standard-rail/outcomes", test.record.card.standardRail.origin).toString(), expect.any(Function));
+  });
+
+  it.each(["signature", "domain", "service", "authority"])("refuses an invalid signed revision fence: %s", async kind => {
+    const test = await setup();
+    vi.spyOn(ServiceRegistrationStore.prototype, "acknowledgedRevisionFence").mockResolvedValue(null);
+    const commit = vi.spyOn(ServiceRegistrationStore.prototype, "acknowledgeRevisionFence");
+    let fence = await signEnvelope({ ...test.intent, privateKey: providerKey,
+      payload: { ...test.intent.payload, targetRevision: 1 } });
+    if (kind === "signature") fence.signature = ("0x" + "00".repeat(65)) as Hex;
+    if (kind === "domain") fence = await signEnvelope({ ...fence, privateKey: providerKey, audience: "https://wrong.example" });
+    if (kind === "service") test.getService.mockResolvedValue({ ...test.chainService, serviceSlug: "wrong-service" });
+    if (kind === "authority") test.getProvider.mockResolvedValue({ ...test.provider, identity: { owner: address("4"), agentWallet: address("5") } });
+    const response = await fetch(test.root + "/internal/release/v1/registration-fences", {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(fence),
+    });
+    expect(response.status).toBe(401);
+    expect(commit).not.toHaveBeenCalled();
+  });
+
   it("accepts a current provider intent with a warm public cache", async () => {
     const test = await setup();
     await expect(test.registrationService.register(test.intent, "registration-test"))

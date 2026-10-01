@@ -50,12 +50,20 @@ export class StandardAssetFederation {
     private readonly permitPool: Pool = pool,
   ) {}
 
-  async activateAdmissions(): Promise<void> {
+  async activateAdmissions(options: { readOnly?: boolean } = {}): Promise<void> {
     const grouped = new Map<string, Array<SignedEnvelope<ProviderServicingAdmissionV1>>>();
     for (const admission of this.config.manifest.servicingAdmissions) {
       const values = grouped.get(admission.payload.providerAgentId) ?? [];
       values.push(admission);
       grouped.set(admission.payload.providerAgentId, values);
+    }
+    const allCurrent = await this.pool.query<{ canonical_admission: SignedEnvelope<ProviderServicingAdmissionV1> }>(
+      "SELECT canonical_admission FROM standard_provider_servicing_admissions WHERE current");
+    for (const row of allCurrent.rows) {
+      const active = row.canonical_admission;
+      if (!grouped.get(active.payload.providerAgentId)?.some(item => canonicalHash(item) === canonicalHash(active))) {
+        throw new Error("Current servicing admission is absent from the marketplace manifest");
+      }
     }
     for (const [providerAgentId, admissions] of grouped) {
       const client = await this.pool.connect();
@@ -73,9 +81,28 @@ export class StandardAssetFederation {
             WHERE provider_agent_id=$1 AND current=true FOR UPDATE`,
           [providerAgentId],
         );
-        let active = current.rows[0]?.canonical_admission ?? null;
+        let active: SignedEnvelope<ProviderServicingAdmissionV1> | null = current.rows[0]?.canonical_admission ?? null;
+        if (active && !admissions.some(item => canonicalHash(item) === canonicalHash(active!))) {
+          throw new Error("Current servicing admission is absent from the marketplace manifest");
+        }
+        const desired = await client.query<{ target_epoch: string }>(
+          "SELECT target_epoch FROM standard_asset_action_targets WHERE provider_agent_id=$1", [providerAgentId]);
+        const initialEpoch = active?.payload.actionCatalogEpoch ?? Math.min(...admissions.map(item => item.payload.actionCatalogEpoch));
+        // Carried future artifacts and restored variables never activate state.
+        // The authenticated durable target is authoritative after bootstrap.
+        const ceiling = Number(desired.rows[0]?.target_epoch ?? initialEpoch);
+        if (options.readOnly) {
+          if (!active) active = admissions.find(item => item.payload.servicingProfileEpoch === 1) ?? null;
+          if (!active) throw new Error("Initial servicing admission is absent");
+          await client.query("COMMIT");
+          this.activeAdmissions.set(providerAgentId, active);
+          continue;
+        }
+        await client.query(`INSERT INTO standard_asset_action_targets(provider_agent_id,target_epoch)
+          VALUES($1,$2) ON CONFLICT(provider_agent_id) DO NOTHING`, [providerAgentId, ceiling]);
         for (const admission of admissions.sort((left, right) =>
           left.payload.servicingProfileEpoch - right.payload.servicingProfileEpoch)) {
+          if (admission.payload.actionCatalogEpoch > ceiling) continue;
           const admissionHash = canonicalHash(admission);
           if (active && canonicalHash(active) === admissionHash) continue;
           if (active && admission.payload.servicingProfileEpoch <= active.payload.servicingProfileEpoch) {
@@ -122,6 +149,66 @@ export class StandardAssetFederation {
     }
   }
 
+  async targetStatus(providerAgentId: string) {
+    const [target, current] = await Promise.all([
+      this.pool.query<{ target_epoch: string; request_id: string | null }>(
+        "SELECT target_epoch,request_id FROM standard_asset_action_targets WHERE provider_agent_id=$1", [providerAgentId]),
+      this.pool.query<{ canonical_admission: SignedEnvelope<ProviderServicingAdmissionV1>; admission_hash: Buffer }>(
+        "SELECT canonical_admission,admission_hash FROM standard_provider_servicing_admissions WHERE provider_agent_id=$1 AND current", [providerAgentId]),
+    ]);
+    const observed = current.rows[0];
+    const currentEpoch = observed?.canonical_admission.payload.actionCatalogEpoch ?? null;
+    const targetEpoch = target.rows[0] ? Number(target.rows[0].target_epoch) : currentEpoch;
+    return { providerAgentId, targetEpoch, currentEpoch, requestId: target.rows[0]?.request_id ?? null,
+      currentAdmissionHash: observed ? `0x${observed.admission_hash.toString("hex")}` : null,
+      status: currentEpoch !== null && targetEpoch === currentEpoch ? "ACTIVE" : "PENDING" };
+  }
+
+  async setTarget(raw: { requestId: string; providerAgentId: string; expectedEpoch: number; targetEpoch: number }) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("INVALID_ASSET_ACTION_TARGET");
+    const { requestId, providerAgentId, expectedEpoch, targetEpoch } = raw;
+    if (!/^[A-Za-z0-9._:-]{8,128}$/.test(requestId) || !/^(0|[1-9][0-9]{0,77})$/.test(providerAgentId) ||
+        !Number.isSafeInteger(expectedEpoch) || expectedEpoch < 0 ||
+        !Number.isSafeInteger(targetEpoch) || targetEpoch < 1) throw new Error("INVALID_ASSET_ACTION_TARGET");
+    if (!this.config.manifest.servicingAdmissions.some(item =>
+      item.payload.providerAgentId === providerAgentId && item.payload.actionCatalogEpoch === targetEpoch)) {
+      throw new Error("ASSET_ACTION_TARGET_NOT_CARRIED");
+    }
+    const requestHash = canonicalHash(raw);
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))", [`asset-target-request:${requestId}`]);
+      const replay = await client.query<{ request_hash: string; response: Record<string, unknown> }>(
+        "SELECT request_hash,response FROM standard_asset_action_target_requests WHERE request_id=$1", [requestId]);
+      if (replay.rows[0]) {
+        if (replay.rows[0].request_hash !== requestHash) throw new Error("ASSET_TARGET_REQUEST_ID_REUSED");
+        await client.query("COMMIT"); return replay.rows[0].response;
+      }
+      await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))", [`standard:servicing-admission:${providerAgentId}`]);
+      await client.query("SELECT standard_touch_release_guard($1)", [`standard:servicing-admission:${providerAgentId}`]);
+      const desired = await client.query<{ target_epoch: string }>(
+        "SELECT target_epoch FROM standard_asset_action_targets WHERE provider_agent_id=$1 FOR UPDATE", [providerAgentId]);
+      const current = await client.query<{ epoch: string }>(
+        `SELECT canonical_admission->'payload'->>'actionCatalogEpoch' AS epoch
+          FROM standard_provider_servicing_admissions WHERE provider_agent_id=$1 AND current`, [providerAgentId]);
+      const previous = Number(desired.rows[0]?.target_epoch ?? current.rows[0]?.epoch ?? 0);
+      if (previous !== expectedEpoch || targetEpoch < previous || targetEpoch < Number(current.rows[0]?.epoch ?? 0)) {
+        throw new Error("ASSET_ACTION_TARGET_CONFLICT");
+      }
+      await client.query(`INSERT INTO standard_asset_action_targets(provider_agent_id,target_epoch,request_id)
+        VALUES($1,$2,$3) ON CONFLICT(provider_agent_id) DO UPDATE
+        SET target_epoch=EXCLUDED.target_epoch,request_id=EXCLUDED.request_id,updated_at=now()`,
+        [providerAgentId,targetEpoch,requestId]);
+      const response = { providerAgentId, requestId, targetEpoch, status: "PENDING" };
+      await client.query("INSERT INTO standard_asset_action_target_requests(request_id,request_hash,response) VALUES($1,$2,$3)",
+        [requestId,requestHash,response]);
+      await client.query("COMMIT");
+      return response;
+    } catch (error) { await client.query("ROLLBACK").catch(() => undefined); throw error; }
+    finally { client.release(); }
+  }
+
   async listAssets(args: {
     payer: string;
     providerAgentId: string | null;
@@ -137,6 +224,7 @@ export class StandardAssetFederation {
       action: "list-assets",
       request: walletRequest,
     });
+    await this.activateAdmissions({ readOnly: true });
     // Providers to federate to: those with a qualifying order by this payer
     // and those whose signed owner swap names this payer (spec C1).
     const ids = await eligibleProvidersForPayer(
@@ -169,6 +257,15 @@ export class StandardAssetFederation {
         ? { code: "ASSET_PROVIDERS_PARTIALLY_UNAVAILABLE" }
         : null,
     };
+  }
+
+  carriedServicing(providerAgentId: string, admissionHash: Hex): ActiveServicing | null {
+    const admissionEnvelope = this.config.manifest.servicingAdmissions.find(item =>
+      item.payload.providerAgentId === providerAgentId && canonicalHash(item) === admissionHash);
+    if (!admissionEnvelope) return null;
+    const controlProfile = this.config.manifest.providerControlProfiles.find(item =>
+      canonicalHash(item) === admissionEnvelope.payload.providerControlProfileHash);
+    return controlProfile ? { admissionEnvelope, admissionHash, listing: { providerControlProfile: controlProfile } } : null;
   }
 
   activeServicing(providerAgentId: string): ActiveServicing | null {

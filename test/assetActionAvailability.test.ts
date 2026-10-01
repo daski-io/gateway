@@ -90,11 +90,14 @@ function fixture(statuses: number[]) {
       issuedAt: now, validBefore: now + 60, payload,
     }));
   });
-  const api = new StandardAssetActions({} as never, {
+  const pool = { query: vi.fn(async () => ({ rows: [] as Array<{ servicing_admission_hash: Buffer }> })) };
+  const federation = { activateAdmissions: async () => undefined, activeServicing: vi.fn(() => active),
+    carriedServicing: vi.fn(() => active) };
+  const api = new StandardAssetActions(pool as never, {
     environment: "test", gatewayAudience: origin, lifecyclePrivateKey: generatePrivateKey(),
     manifest: { actionCatalogs: [catalogEnvelope] },
-  } as never, chainId, { consume } as never, { activeServicing: () => active } as never, providerFetch);
-  return { api, consume, providerFetch, body: { payer, providerAgentId: "42", ...request, authorization } };
+  } as never, chainId, { consume } as never, federation as never, providerFetch);
+  return { api, consume, providerFetch, pool, federation, active, body: { payer, providerAgentId: "42", ...request, authorization } };
 }
 
 async function withEndpoint(
@@ -138,7 +141,7 @@ describe("provider asset-action HTTP failures", () => {
       const claims = vi.mocked(claimAssetAction).mock.calls;
       expect(claims).toHaveLength(2);
       expect(claims[1]![1]).toEqual(claims[0]![1]);
-      expect(recordAssetActionState).toHaveBeenCalledExactlyOnceWith({}, claims[0]![1].executionId, "completed");
+      expect(recordAssetActionState).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ query: expect.any(Function) }), claims[0]![1].executionId, "completed");
       expect(consume.mock.calls.map(([args]) => args)).toEqual([
         expect.objectContaining({ authorization: body.authorization, allowExactReplay: true, operationHash: claims[0]![1].executionId }),
         expect.objectContaining({ authorization: body.authorization, allowExactReplay: true, operationHash: claims[0]![1].executionId }),
@@ -163,4 +166,14 @@ describe("provider asset-action HTTP failures", () => {
       expect(recordAssetActionState).not.toHaveBeenCalled();
     });
   });
+});
+
+it("finishes an already-claimed old admission after revert, but refuses never-admitted old work", async () => {
+  const f = fixture([200]);
+  f.federation.activeServicing.mockReturnValue({ ...f.active, admissionHash: `0x${"f".repeat(64)}` as Hex });
+  await expect(f.api.perform(f.body)).rejects.toThrow("ASSET_ACTION_NOT_ADMITTED");
+  expect(f.providerFetch).not.toHaveBeenCalled();
+  f.pool.query.mockResolvedValue({ rows: [{ servicing_admission_hash: Buffer.from(hash.slice(2), "hex") }] });
+  await expect(f.api.perform(f.body)).resolves.toMatchObject({ status: "completed" });
+  expect(f.federation.carriedServicing).toHaveBeenCalledWith("42", hash);
 });

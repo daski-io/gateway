@@ -352,3 +352,61 @@ describe("dynamic service registration storage", () => {
     }
   }, 60_000);
 });
+
+// Cross-replica visibility and activation-fence invariants.
+describe("release-safe registration handover", () => {
+  async function isolated(work: (store: ServiceRegistrationStore) => Promise<void>) {
+    const schema = `release_registration_${randomUUID().replaceAll("-", "")}`;
+    const bootstrap = createPool({ connectionString: databaseUrl, max: 1 });
+    await bootstrap.query(`CREATE SCHEMA "${schema}"`);
+    const pool = createPool({ connectionString: databaseUrl, searchPath: `${schema},public`, max: 4 });
+    try {
+      await runMigrations(pool);
+      await work(new ServiceRegistrationStore(pool));
+    } finally {
+      await pool.end();
+      await bootstrap.query(`DROP SCHEMA "${schema}" CASCADE`);
+      await bootstrap.end();
+    }
+  }
+  async function successor(store: ServiceRegistrationStore, revision: number, nonce: string, supersedes: string | null = null) {
+    const signed = intent(nonce);
+    (signed.payload as typeof signed.payload & { targetRevision: number }).targetRevision = revision;
+    const draft = prepared({ registrationId: randomUUID(), reused: false });
+    const document = card("Release fixture");
+    await store.create({
+      intent: signed, requestHash: canonicalHash(signed), idempotencyKey: `release-test-${nonce}-${revision}`,
+      serviceId, card: document, cardHash: canonicalHash(document), prepared: draft,
+      providerOwner: address("a"), providerAgentWallet: address("b"), providerSigner: address("a"),
+      supersedesRegistrationId: supersedes,
+    });
+    await store.recordEvidencePending({ registrationId: draft.registrationId, evidence: evidence(draft, nonce) });
+    return { signed, draft };
+  }
+  it.each([true, false])("inherits visibility at activation, including a late operator change: %s", async (visible) => isolated(async (store) => {
+    const prior = await successor(store, 0, "1");
+    await store.activate(prior.draft.registrationId, []);
+    const next = await successor(store, 0, "2", prior.draft.registrationId);
+    await store.setVisibility(prior.draft.registrationId, visible, "catalog-operator");
+    await store.activate(next.draft.registrationId, []);
+    expect(await store.getActiveByServiceId(serviceId)).toMatchObject({ marketplaceEnabled: visible });
+  }), 60_000);
+  it("withdraws old pending work and refuses stale activation after a durable fence acknowledgment", async () => isolated(async (store) => {
+    const pending = await successor(store, 1, "3");
+    const higher = intent("4");
+    (higher.payload as typeof higher.payload & { targetRevision: number }).targetRevision = 2;
+    await expect(store.acknowledgeRevisionFence(higher)).resolves.toMatchObject({ targetRevision: 2, committed: true });
+    expect(await store.get(pending.draft.registrationId)).toMatchObject({ state: "REJECTED" });
+    await expect(store.activate(pending.draft.registrationId, [])).rejects.toThrow();
+    await expect(successor(store, 0, "5")).rejects.toThrow("REGISTRATION_REVISION_FENCED");
+    await expect(successor(store, 1, "6")).rejects.toThrow("REGISTRATION_REVISION_FENCED");
+    const current = await successor(store, 2, "7");
+    await expect(store.activate(current.draft.registrationId, [])).resolves.toMatchObject({ state: "ACTIVE" });
+    await expect(store.acknowledgeRevisionFence(higher)).resolves.toMatchObject({ targetRevision: 2 });
+    const refreshed = { ...higher, issuedAt: higher.issuedAt + 1, validBefore: higher.validBefore + 1 };
+    await store.acknowledgeRevisionFence(refreshed);
+    expect(await store.acknowledgedRevisionFence(canonicalHash(higher))).toMatchObject({ targetRevision: 2, committed: true });
+    expect(await store.acknowledgedRevisionFence(canonicalHash(refreshed))).toMatchObject({ targetRevision: 2, committed: true });
+    await expect(store.acknowledgeRevisionFence(pending.signed)).rejects.toThrow("REGISTRATION_REVISION_FENCED");
+  }), 60_000);
+});

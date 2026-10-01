@@ -50,8 +50,10 @@ function admission(args: {
 function federation(
   pool: ReturnType<typeof createPool>,
   admissions: SignedEnvelope<ProviderServicingAdmissionV1>[],
+  targetEpoch = 100,
 ): StandardAssetFederation {
   const config = {
+    assetActionTargetEpochs: Object.fromEntries(admissions.map(item => [item.payload.providerAgentId, targetEpoch])),
     manifest: { servicingAdmissions: admissions, listings: [] },
   } as unknown as StandardRailConfig;
   return new StandardAssetFederation(
@@ -77,11 +79,16 @@ describe("servicing-admission activation against PostgreSQL", () => {
       });
       const suspended = admission({
         providerAgentId: "1",
-        epoch: 2,
+        epoch: 2, catalogEpoch: 2,
         previousAdmissionHash: canonicalHash(active),
         enabled: false,
       });
       const service = federation(pool, [active, suspended]);
+      await service.activateAdmissions({ readOnly: true });
+      expect((await pool.query("SELECT * FROM standard_provider_servicing_admissions")).rows).toEqual([]);
+      await service.activateAdmissions();
+      expect((await service.targetStatus("1")).currentEpoch).toBe(1);
+      await service.setTarget({ requestId: "suspend-admission", providerAgentId: "1", expectedEpoch: 1, targetEpoch: 2 });
       await service.activateAdmissions();
       expect(service.activeServicing("1")).toBeNull();
       const current = await pool.query<{
@@ -97,10 +104,12 @@ describe("servicing-admission activation against PostgreSQL", () => {
         FROM standard_provider_servicing_admissions WHERE current`);
       expect(current.rows).toEqual([{ epoch: 2, enabled: false, current_count: 1 }]);
 
+      await expect(federation(pool, []).activateAdmissions({ readOnly: true }))
+        .rejects.toThrow("Current servicing admission is absent");
       const skipped = admission({
         providerAgentId: "2", epoch: 2, previousAdmissionHash: hash("0"), enabled: true,
       });
-      await expect(federation(pool, [skipped]).activateAdmissions())
+      await expect(federation(pool, [active, suspended, skipped]).activateAdmissions())
         .rejects.toThrow("Servicing admission chain is invalid");
     } finally {
       await pool.end();
@@ -124,9 +133,9 @@ describe("servicing-admission activation against PostgreSQL", () => {
       const before = await snapshot();
       // The catalog epoch can change while the serving profile stays the same.
       // A clean-schema boot missed this because it had no activated admission.
-      const conflict = admission({ providerAgentId: "1", epoch: 1, catalogEpoch: 2,
+      const conflict = admission({ providerAgentId: "1", epoch: 1, catalogEpoch: 1,
         catalogHash: hash("4"), previousAdmissionHash: hash("0"), enabled: true });
-      await expect(federation(pool, [conflict]).activateAdmissions())
+      await expect(federation(pool, [active, conflict]).activateAdmissions())
         .rejects.toThrow("Servicing admission epoch conflicts with the activated admission");
       expect(await snapshot()).toEqual(before);
 
@@ -134,17 +143,21 @@ describe("servicing-admission activation against PostgreSQL", () => {
         catalogHash: hash("4"), previousAdmissionHash: canonicalHash(active), enabled: true });
       const brokenTail = admission({ providerAgentId: "1", epoch: 3, catalogEpoch: 3,
         previousAdmissionHash: hash("f"), enabled: true });
-      await expect(federation(pool, [next, brokenTail]).activateAdmissions())
+      await federation(pool, [active, next, brokenTail]).setTarget({
+        requestId: "broken-target-test", providerAgentId: "1", expectedEpoch: 1, targetEpoch: 3 });
+      await expect(federation(pool, [active, next, brokenTail]).activateAdmissions())
         .rejects.toThrow("Servicing admission chain is invalid");
       // The valid first transition and deactivation of the prior row must both
       // roll back when the later transition fails inside the real transaction.
       expect(await snapshot()).toEqual(before);
-      await federation(pool, [next]).activateAdmissions();
-      await federation(pool, [next]).activateAdmissions();
+      const validTail = admission({ providerAgentId: "1", epoch: 3, catalogEpoch: 3,
+        previousAdmissionHash: canonicalHash(next), enabled: true });
+      await federation(pool, [active, next, validTail]).activateAdmissions();
+      await federation(pool, [active, next, validTail], 1).activateAdmissions();
       const after = await snapshot();
-      expect(after).toHaveLength(2);
+      expect(after).toHaveLength(3);
       expect(after.filter(row => row.current).map(row => row.hash))
-        .toEqual([canonicalHash(next).slice(2)]);
+        .toEqual([canonicalHash(validTail).slice(2)]);
       await expect(federation(pool, [active]).activateAdmissions())
         .rejects.toThrow("Current servicing admission is absent from the marketplace manifest");
       expect(await snapshot()).toEqual(after);

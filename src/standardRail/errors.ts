@@ -576,6 +576,8 @@ type LegacyFactory = () => StandardRailError;
 // recovery path may still surface.
 const LEGACY_ERRORS = new Map<string, LegacyFactory>([
   ["OUTCOME_NOT_FOUND", () => standardRailError("OUTCOME_NOT_FOUND")],
+  ["SALE_SUSPENDED", () => standardRailError("OUTCOME_NOT_FOUND", { message: "New sales of this contract are suspended; existing orders remain recoverable" })],
+  ["AUTHORIZATION_PARKED", () => standardRailError("PAYMENT_PENDING_RECONCILIATION", { message: "Gateway submission is stopped; the signed authorization remains under chain reconciliation" })],
   ["LISTING_SUPERSEDED", () => standardRailError("LISTING_SUPERSEDED")],
   ["PROVIDER_QUOTE_REJECTED", () => standardRailError("PROVIDER_QUOTE_REJECTED")],
   ["PROVIDER_QUOTE_UNAVAILABLE", () => standardRailError("PROVIDER_QUOTE_UNAVAILABLE")],

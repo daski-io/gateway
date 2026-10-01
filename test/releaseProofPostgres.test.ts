@@ -19,12 +19,17 @@ describe("candidate release execution proof", () => {
     const initial = await startupFixture();
     const conflicting = await conflictingCatalogFixture(initial);
     await expect(proveAdmissions(admissionInput(conflicting), databaseUrl))
-      .rejects.toThrow("Servicing admission epoch conflicts with the activated admission");
+      .rejects.toThrow("Current servicing admission is absent from the marketplace manifest");
     const corrected = await advancedCatalogFixture(initial);
     const proof = await proveAdmissions(admissionInput(corrected), databaseUrl);
     expect(proof).toMatchObject({ status: "PASS", boundary: "gateway-admission",
       checks: expect.arrayContaining(["actual-admission-transaction", "expected-current-admissions"]) });
-    await expect(proveAdmissions({ ...admissionInput(corrected), expectedCurrent: initial.expectedCurrent }, databaseUrl))
+    const future = corrected.manifest.servicingAdmissions.at(-1);
+    const { canonicalHash } = await import("../src/standardRail/canonical.js");
+    const activation = { ...admissionInput(corrected), targetEpochs: { "1": 2 },
+      expectedCurrent: [{ providerAgentId: "1", admissionHash: canonicalHash(future) }] };
+    expect(await proveAdmissions(activation, databaseUrl)).toMatchObject({ status: "PASS" });
+    await expect(proveAdmissions({ ...activation, expectedCurrent: initial.expectedCurrent }, databaseUrl))
       .rejects.toThrow("activated admissions differ from the planned outcome");
   }, 60_000);
 
@@ -52,9 +57,9 @@ describe("candidate release execution proof", () => {
     // The production logger redacts error messages, so the proof reports the generic
     // failure; the debug output pins it to the servicing-admission activation.
     let output = "";
-    await expect(proveStartup({ ...restored, priorState: [], expectedCurrent: [] }, databaseUrl,
+    await expect(proveStartup({ ...restored, priorState: [], priorArtifacts: [], expectedCurrent: [] }, databaseUrl,
       { debug: (text: string) => { output = text; } })).rejects.toThrow("fatal startup failure");
-    expect(output).toMatch(/activateAdmissions/);
+    expect(output).toMatch(/admitManifest/);
   }, 120_000);
 
   it("refuses a build recorded for a different source revision", () => {

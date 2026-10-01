@@ -208,6 +208,14 @@ is restricted to the reviewed Circle versions and EAS calls.
 
 ## Configuration
 
+Release capability and commerce readiness use
+`DASKI_COMMERCE_BASELINE_JSON`, a captured snapshot of offered contract hashes
+and local prerequisite names. `STANDARD_RAIL_ASSET_ACTION_TARGET_EPOCHS_JSON`
+is parsed for compatibility; the durable authenticated target controls activation.
+See [runtime release controls](docs/release-controls.md) for the schemas,
+scoped stop-sale, registration fences and compatibility evidence.
+
+
 - `CONFIRMATION_CIRCLE_EXECUTION_QUALIFIED` defaults to `false`; set `true` only after the Circle direct-review execution and read-only resume qualification has passed for the target.
 
 See [.env.example](.env.example) for the complete Base Sepolia template. The

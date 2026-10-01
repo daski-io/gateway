@@ -170,8 +170,10 @@ export function createStandardRailRouter(service: StandardRailService, publicUrl
       const receipts = await service.purchaseReceipts(result.order);
       if (receipts.x402PaymentResponse) res.setHeader("PAYMENT-RESPONSE", encoded(receipts.x402PaymentResponse));
       const accepted = receipts.receipt !== null && ["DISPATCHED", "FULFILLED", "INPUT_REQUIRED"].includes(result.order.state);
+      const submission = await service.submissionStatus(result.order);
       res.status(accepted ? 200 : 202).json({ orderHandle: result.handle, state: result.order.state,
-        receipt: receipts.receipt, x402OfferReceipt: receipts.x402OfferReceipt });
+        receipt: receipts.receipt, x402OfferReceipt: receipts.x402OfferReceipt,
+        ...(submission ? { submission } : {}) });
     } catch (error) { next(error); }
   });
   router.post("/outcomes/:providerAgentId/:outcomeId/quote", async (req, res, next) => {

@@ -1,3 +1,5 @@
+import { embeddedReleaseCapabilities } from "./releaseCapabilities.js";
+import { ReleaseSales } from "./releaseSales.js";
 import { compactBazaarExtension, discoveryOpenApi, facilitatorDiscoveryPayment } from "./discovery.js";
 import { GATEWAY_VERSION } from "../version.js";
 import { StandardReviewRecovery } from "./reviewRecovery.js";
@@ -178,6 +180,8 @@ export class StandardRailService {
   private readonly reputationReader: DirectReputationReader;
   private readonly purchaseResponses = new StandardPurchaseResponses();
   private dependenciesReady = false;
+  private locallyReady = false;
+  private backgroundStarted = false;
   private operationalHealthMemo: {
     expiresAt: number;
     value: Promise<Awaited<ReturnType<StandardOperationalHealth["read"]>>>;
@@ -186,11 +190,12 @@ export class StandardRailService {
   private readinessRetry: NodeJS.Timeout | null = null;
   private readinessRefresh: Promise<void> | null = null;
   readonly railProfileHash: Hex;
+  readonly releaseSales: ReleaseSales;
 
   constructor(
     private readonly appConfig: Config,
     private readonly railConfig: StandardRailConfig,
-    pool: Pool,
+    private readonly pool: Pool,
     private readonly facilitator: StandardFacilitator,
     private readonly evidence: StandardChainEvidence,
     registrations: ServiceRegistrationStore,
@@ -200,6 +205,7 @@ export class StandardRailService {
     lockPool: Pool = pool,
   ) {
     this.store = new StandardRailStore(pool, lockPool);
+    this.releaseSales = new ReleaseSales(pool);
     this.incidents = new StandardRailIncidentStore(pool);
     this.journal = new StandardRailJournal(pool);
     this.providerTransport = new StandardProviderTransport(fetchFn);
@@ -303,6 +309,7 @@ export class StandardRailService {
   }
 
   async initialize(): Promise<void> {
+    embeddedReleaseCapabilities();
     await verifyStandardRailManifest(this.railConfig.manifest, {
       environment: this.railConfig.environment,
       chainId: this.appConfig.chainId,
@@ -315,7 +322,6 @@ export class StandardRailService {
       getAddress(this.railConfig.manifest.chainEvidencePolicy.payload.canonicalToken) !==
       getAddress(this.appConfig.usdc.address)
     ) throw new Error("Standard-rail canonical token does not match the reviewed USDC domain");
-    await this.evidence.verifyCanonicalToken(this.appConfig.chainId);
     const rail = this.railConfig.manifest.activeRailProfile.payload;
     if (
       rail.chainId !== this.appConfig.chainId || rail.environment !== this.railConfig.environment ||
@@ -324,17 +330,89 @@ export class StandardRailService {
       this.railConfig.manifest.facilitatorProfile.payload.baseUrl !==
         this.railConfig.facilitatorBaseUrl
     ) throw new Error("Standard-rail manifest does not match this runtime");
+    await this.assetFederation.activateAdmissions({ readOnly: true });
+    await this.validateLocalCommerce();
     await this.store.admitManifest(this.railConfig.manifest);
-    await this.assetFederation.activateAdmissions();
-    await this.refreshDependencyReadiness();
-    await this.warmPublicProjection();
+    this.locallyReady = true;
+  }
+
+  /** Called only after the deployment healthcheck has passed local readiness. */
+  startBackground(): void {
+    if (!this.locallyReady || this.backgroundStarted) return;
+    this.backgroundStarted = true;
+    void this.assetFederation.activateAdmissions().catch(error =>
+      logger.error("servicing activation remains pending", { error }));
+    void this.refreshDependencyReadiness().catch(() => undefined);
+    void this.warmPublicProjection().catch(() => undefined);
     this.reputationReader.start();
     this.recovery.start();
     this.reputationWorker.start();
     this.readinessInterval = setInterval(() => {
+      void this.assetFederation.activateAdmissions().catch(() => undefined);
       void this.refreshDependencyReadiness().catch(() => undefined);
     }, this.railConfig.readinessIntervalMs);
     this.readinessInterval.unref();
+  }
+
+  private async validateLocalCommerce() {
+    const listings = await this.catalog.validateCommerce(this.railConfig.commerceBaseline?.offered.map(item => item.listingManifestHash) ?? []);
+    const baseline = this.railConfig.commerceBaseline;
+    if (baseline) {
+      if (baseline.network !== this.appConfig.x402Network) throw new Error("COMMERCE_BASELINE_NETWORK_MISMATCH");
+      for (const expected of baseline.offered) {
+        if (!listings.some(item => item.listingManifestHash === expected.listingManifestHash &&
+          item.skillContractHash === expected.skillContractHash && item.serviceId === expected.serviceId)) {
+          throw new Error("COMMERCE_BASELINE_CONTRACT_MISSING");
+        }
+        if (expected.localPrerequisites.some(name => !this.railConfig.localPrerequisites?.has(name))) {
+          throw new Error("COMMERCE_BASELINE_PREREQUISITE_MISSING");
+        }
+      }
+    }
+    return listings;
+  }
+
+  async commerceReadiness(): Promise<boolean> {
+    if (!this.locallyReady) return false;
+    try {
+      await this.pool.query("SELECT 1");
+      await this.assetFederation.activateAdmissions({ readOnly: true });
+      await this.validateLocalCommerce();
+      return true;
+    } catch { return false; }
+  }
+
+  async setAssetActionTarget(request: { requestId: string; providerAgentId: string; expectedEpoch: number; targetEpoch: number }) {
+    if (!await this.commerceReadiness()) throw new Error("LOCAL_COMMERCE_UNREADY");
+    await this.assetFederation.setTarget(request);
+    await this.assetFederation.activateAdmissions();
+    return this.assetFederation.targetStatus(request.providerAgentId);
+  }
+
+  assetActionTargetStatus(providerAgentId: string) { return this.assetFederation.targetStatus(providerAgentId); }
+
+  async releaseCapabilities() {
+    const executableListings = (await this.validateLocalCommerce()).map(item => ({ ...item,
+      localPrerequisites: ["FACILITATOR_PRIVATE_KEY","STANDARD_RAIL_ENCRYPTION_KEY","CDP_API_KEY_ID",
+        "CDP_API_KEY_SECRET","STANDARD_RAIL_MANIFEST_JSON","BASE_RPC_URL"],
+    }));
+    const { artifact, artifactManifestHash } = embeddedReleaseCapabilities();
+    const current = await this.pool.query<{ admission_hash: Buffer }>(
+      "SELECT admission_hash FROM standard_provider_servicing_admissions WHERE current");
+    const carriedAdmissions = this.railConfig.manifest.servicingAdmissions.map(admission => ({
+      providerAgentId: admission.payload.providerAgentId, admissionHash: canonicalHash(admission),
+      epoch: admission.payload.actionCatalogEpoch,
+      actionIds: this.railConfig.manifest.actionCatalogs.find(catalog =>
+        canonicalHash(catalog) === admission.payload.actionCatalogHash)?.payload.actions.map(action => action.actionId) ?? [],
+    }));
+    return {
+      ...artifact, artifactManifestHash, deploymentId: process.env.RAILWAY_DEPLOYMENT_ID ?? null,
+      network: this.appConfig.x402Network,
+      executableListings, runtimeMappings: executableListings, carriedAdmissions,
+      currentAdmissions: carriedAdmissions.filter(item => current.rows.some(row =>
+        "0x" + row.admission_hash.toString("hex") === item.admissionHash)),
+      workerFormats: ["standard-orders-v1", "dispatch-journal-v2", "review-journal-v1"],
+    };
   }
 
   reconcileReputationForRetry(operationId: string): Promise<void> {
@@ -529,6 +607,7 @@ export class StandardRailService {
       return order;
     }
     const payment = this.storedPayment(order);
+    if (await this.releaseSales.isParked(order.orderId)) return order;
     if (order.state === "SETTLE_INVOKED") {
       const persisted = await this.journal.settlementRecord(order.orderId);
       if (persisted) {
@@ -587,7 +666,12 @@ export class StandardRailService {
         "authorization_consumed_before_recovered_facilitator_egress",
       );
     }
-    const mayInvokeFacilitator = await this.journal.markSettleInvoked(order.orderId);
+    let mayInvokeFacilitator: boolean;
+    try { mayInvokeFacilitator = await this.journal.markSettleInvoked(order.orderId); }
+    catch (error) {
+      if (error instanceof Error && ["SALE_SUSPENDED", "AUTHORIZATION_PARKED"].includes(error.message)) return order;
+      throw error;
+    }
     order = await this.store.transition(order, "SETTLE_INVOKED", "recovered_settle_invocation_persisted");
     if (!mayInvokeFacilitator) {
       return this.store.transition(order, "SETTLEMENT_AMBIGUOUS", "settle_invocation_outcome_unknown");
@@ -756,6 +840,18 @@ export class StandardRailService {
             });
             return;
           } else {
+            if (await this.releaseSales.isParked(order.orderId)) {
+              const terminal = await this.evidence.proveAuthorizationUnpaid({
+                token: getAddress(listing.commitment.payload.canonicalToken), payer: getAddress(order.payer!),
+                nonce, validBefore: this.paymentAuthorizationValidBefore(order),
+                fromBlock: BigInt(listing.manifest.payload.splitterActivationBlockNumber) + 1n,
+                onObserved: observation => this.releaseSales.recordObservation(order!.orderId, observation),
+              });
+              if (!terminal) return;
+              await this.releaseSales.recordFinality(order.orderId, terminal);
+              await this.store.transition(order, "NOT_SETTLED", "parked_authorization_finalized_unpaid", { encryptedPaymentPayload: null });
+              return;
+            }
             const policy = this.railConfig.manifest.chainEvidencePolicy.payload;
             const finalNoCaptureAt = (
               this.paymentAuthorizationValidBefore(order) +
@@ -1089,6 +1185,22 @@ export class StandardRailService {
       payload,
     });
     return this.store.persistReceipt(order.orderId, receipt);
+  }
+
+  async submissionStatus(order: StandardOrderRecord) {
+    const parked = await this.releaseSales.parkedStatus(order.orderId);
+    if (!parked) return null;
+    return {
+      gatewaySubmission: "stopped",
+      payment: order.depositEvidenceHash ? "observed" : parked.finality_evidence ? "finalized-unpaid" : "not-observed",
+      observedAt: parked.observed_at?.toISOString() ?? null,
+      observation: parked.observation,
+      authorizationValidBefore: order.encryptedPaymentPayload ? this.paymentAuthorizationValidBefore(order)
+        : (parked.observation as { validBefore?: number } | null)?.validBefore ?? null,
+      message: order.depositEvidenceHash ? "Payment observed; the original order remains recoverable."
+        : parked.finality_evidence ? "Finalized evidence proves this authorization unpaid."
+          : "Payment not yet confirmed; gateway submission is stopped. The authorization can still be relayed before expiry unless canceled or consumed.",
+    };
   }
 
   async purchaseReceipts(order: StandardOrderRecord) {
@@ -1549,7 +1661,8 @@ export class StandardRailService {
         ? "recovered" : response.state,
       receipt: await this.signedReceipt(order),
       ...(action === "status"
-        ? { confirmationFinal: await this.confirmationState.stored(order.orderId) }
+        ? { confirmationFinal: await this.confirmationState.stored(order.orderId),
+            submission: await this.submissionStatus(order) }
         : {}),
     };
   }
@@ -1563,6 +1676,7 @@ export class StandardRailService {
     this.assertAdmissionOpen();
     await this.assertRailFence();
     const listing = await this.listing(args.providerAgentId, args.outcomeId);
+    await this.releaseSales.assertOpen(args.providerAgentId, listing.runtimeCommitmentHash);
     await this.validateRequest(listing, args.body);
     const expectedPayer = args.payerAddress ? getAddress(args.payerAddress).toLowerCase() as Hex : null;
     if (listing.purchaseReadiness === "payer_dns" && !expectedPayer) {
@@ -1803,6 +1917,7 @@ export class StandardRailService {
       }
       return { ...intended, replay: true };
     }
+    await this.releaseSales.assertOpen(args.providerAgentId, intended.order.listingManifestHash);
     if (intended.order.expiresAt.getTime() <= Date.now()) {
       throw standardRailError("CHALLENGE_EXPIRED", {
         logContext: { intentId, orderId: intended.order.orderId },
@@ -2027,7 +2142,12 @@ export class StandardRailService {
         );
         return order;
       }
-      const mayInvokeFacilitator = await this.journal.markSettleInvoked(order.orderId);
+      let mayInvokeFacilitator: boolean;
+      try { mayInvokeFacilitator = await this.journal.markSettleInvoked(order.orderId); }
+      catch (error) {
+        if (error instanceof Error && ["SALE_SUSPENDED", "AUTHORIZATION_PARKED"].includes(error.message)) return order;
+        throw error;
+      }
       order = await this.store.transition(order, "SETTLE_INVOKED", "settle_invocation_persisted");
       if (!mayInvokeFacilitator) {
         order = await this.store.transition(order, "SETTLEMENT_AMBIGUOUS", "settle_invocation_outcome_unknown");

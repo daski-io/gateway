@@ -433,6 +433,76 @@ export class ServiceRegistrationStore {
     }
   }
 
+  async revisionFence(providerAgentId: string, serviceId: `0x${string}`) {
+    const result = await this.pool.query<{
+      target_revision: string; intent_hash: Buffer; canonical_intent: ProviderServiceRegistrationIntentEnvelope;
+    }>(`SELECT target_revision,intent_hash,canonical_intent FROM standard_registration_revision_fences
+      WHERE provider_agent_id=$1 AND service_id=$2`, [providerAgentId, bytes(serviceId)]);
+    const row = result.rows[0];
+    return row ? {
+      providerAgentId, serviceId, targetRevision: Number(row.target_revision),
+      intentHash: hex(row.intent_hash), intent: row.canonical_intent, committed: true as const,
+    } : null;
+  }
+
+  async acknowledgedRevisionFence(intentHash: `0x${string}`) {
+    const result = await this.pool.query<{ canonical_intent: ProviderServiceRegistrationIntentEnvelope }>(
+      "SELECT canonical_intent FROM standard_registration_fence_acks WHERE intent_hash=$1", [bytes(intentHash)]);
+    const intent = result.rows[0]?.canonical_intent;
+    return intent ? { providerAgentId: intent.payload.providerAgentId, serviceId: intent.payload.serviceId,
+      targetRevision: intent.payload.targetRevision!, intentHash, committed: true as const } : null;
+  }
+
+  async acknowledgeRevisionFence(intent: ProviderServiceRegistrationIntentEnvelope) {
+    const { providerAgentId, serviceId, serviceContractHash, skillContractSetHash } = intent.payload;
+    const targetRevision = intent.payload.targetRevision;
+    if (!Number.isSafeInteger(targetRevision) || targetRevision! < 1) throw new Error("REGISTRATION_REVISION_INVALID");
+    const intentHash = canonicalHash(intent);
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))",
+        [`registration-revision:${providerAgentId}:${serviceId.slice(2)}`]);
+      await client.query("SELECT standard_touch_release_guard($1)",
+        [`registration-revision:${providerAgentId}:${serviceId.slice(2)}`]);
+      const previous = await client.query<{
+        target_revision: string; service_contract_hash: Buffer; skill_contract_set_hash: Buffer;
+      }>(`SELECT * FROM standard_registration_revision_fences
+        WHERE provider_agent_id=$1 AND service_id=$2 FOR UPDATE`, [providerAgentId, bytes(serviceId)]);
+      const row = previous.rows[0];
+      if (row && Number(row.target_revision) > targetRevision!) throw new Error("REGISTRATION_REVISION_FENCED");
+      if (row && Number(row.target_revision) === targetRevision && (
+        !row.service_contract_hash.equals(bytes(serviceContractHash)) ||
+        !row.skill_contract_set_hash.equals(bytes(skillContractSetHash))
+      )) throw new Error("REGISTRATION_REVISION_CONFLICT");
+      await client.query(`INSERT INTO standard_registration_revision_fences
+        (provider_agent_id,service_id,target_revision,service_contract_hash,skill_contract_set_hash,intent_hash,canonical_intent)
+        VALUES ($1,$2,$3,$4,$5,$6,$7)
+        ON CONFLICT(provider_agent_id,service_id) DO UPDATE SET
+        target_revision=EXCLUDED.target_revision,service_contract_hash=EXCLUDED.service_contract_hash,
+        skill_contract_set_hash=EXCLUDED.skill_contract_set_hash,intent_hash=EXCLUDED.intent_hash,
+        canonical_intent=EXCLUDED.canonical_intent,acknowledged_at=now()`,
+        [providerAgentId,bytes(serviceId),targetRevision,bytes(serviceContractHash),bytes(skillContractSetHash),bytes(intentHash),intent]);
+      const withdrawn = await client.query<{ registration_id: string }>(`UPDATE standard_service_registrations
+        SET state='REJECTED',registration_healthy=false,chain_active=false,
+          last_refresh_error_code='REGISTRATION_REVISION_FENCED',updated_at=now()
+        WHERE provider_agent_id=$1 AND service_id=$2 AND state IN ('PREPARED','EVIDENCE_PENDING')
+          AND coalesce((canonical_intent->'payload'->>'targetRevision')::bigint,0)<$3
+        RETURNING registration_id`, [providerAgentId,bytes(serviceId),targetRevision]);
+      for (const pending of withdrawn.rows) {
+        await client.query(`UPDATE standard_service_listings SET state='REJECTED',updated_at=now()
+          WHERE registration_id=$1 AND state='PREPARED'`, [pending.registration_id]);
+      }
+      await client.query("INSERT INTO standard_registration_fence_acks(intent_hash,canonical_intent) VALUES($1,$2) ON CONFLICT DO NOTHING",
+        [bytes(intentHash),intent]);
+      await client.query("COMMIT");
+      return { providerAgentId, serviceId, targetRevision: targetRevision!, intentHash, committed: true as const };
+    } catch (error) {
+      await client.query("ROLLBACK").catch(() => undefined);
+      throw error;
+    } finally { client.release(); this.mutations += 1; }
+  }
+
   async activate(
     registrationId: string,
     commitments: readonly {
@@ -460,6 +530,16 @@ export class ServiceRegistrationStore {
       }
       if (current.state !== "EVIDENCE_PENDING") {
         throw new Error("REGISTRATION_STATE_CONFLICT");
+      }
+      const priorVisibility = await client.query<{ marketplace_enabled: boolean }>(
+        `SELECT marketplace_enabled FROM standard_service_registrations
+          WHERE service_id=$1 AND state='ACTIVE' AND registration_id<>$2 FOR UPDATE`,
+        [current.service_id, registrationId],
+      );
+      if (priorVisibility.rows[0]) {
+        await client.query(`UPDATE standard_service_registrations
+          SET marketplace_enabled=$2,marketplace_enabled_by='inherited-service-visibility'
+          WHERE registration_id=$1`, [registrationId, priorVisibility.rows[0].marketplace_enabled]);
       }
       await client.query(
         `UPDATE standard_service_registrations
@@ -647,6 +727,35 @@ export class ServiceRegistrationStore {
     return result.rows.map(mapRow);
   }
 
+  async currentProviderControlProfileHash(providerAgentId: string): Promise<string | null> {
+    const rows = await this.pool.query<{ profile_hash: Buffer }>(
+      "SELECT profile_hash FROM standard_provider_servicing_admissions WHERE provider_agent_id=$1 AND current",
+      [providerAgentId]);
+    return rows.rows[0] ? "0x" + rows.rows[0].profile_hash.toString("hex") : null;
+  }
+
+  async registrationForListingHash(hash: string): Promise<StoredRegistration | null> {
+    const result = await this.pool.query<RegistrationRow>(
+      `SELECT r.* FROM standard_service_registrations r
+        JOIN standard_service_listings l USING(registration_id)
+        WHERE l.runtime_commitment_hash=$1 LIMIT 1`, [bytes(hash as `0x${string}`)]);
+    return result.rows[0] ? mapRow(result.rows[0]) : null;
+  }
+
+  async listVisibleForReadiness(): Promise<StoredRegistration[]> {
+    const rows = await this.pool.query<RegistrationRow>(
+      "SELECT * FROM standard_service_registrations WHERE state='ACTIVE' AND marketplace_enabled ORDER BY registration_id");
+    return rows.rows.map(mapRow);
+  }
+
+  async retainDuringContractDrift(registrationId: string, code: string): Promise<void> {
+    await this.pool.query(`UPDATE standard_service_registrations
+      SET drift_since=coalesce(drift_since,now()),registration_healthy=true,chain_active=true,
+        last_refresh_error_code=$2,last_refresh_attempted_at=now(),last_refreshed_at=now(),updated_at=now()
+      WHERE registration_id=$1 AND state='ACTIVE'`, [registrationId, code]);
+    this.mutations += 1;
+  }
+
   async refreshed(args: {
     registrationId: string;
     card: ProviderServiceCard;
@@ -669,7 +778,7 @@ export class ServiceRegistrationStore {
       `UPDATE standard_service_registrations
           SET card_json=$2,card_hash=$3,skill_contract_set_hash=$4,
               card_accepting_orders=$5,chain_active=$6,registration_healthy=true,
-              refresh_failures=0,last_refresh_error_code=NULL,
+              refresh_failures=0,last_refresh_error_code=NULL,drift_since=NULL,
               last_refresh_attempted_at=now(),last_refreshed_at=now(),
               updated_at=now()
         WHERE registration_id=$1 AND state='ACTIVE'`,

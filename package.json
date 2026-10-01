@@ -8,14 +8,15 @@
   "scripts": {
     "dev": "tsx src/index.ts",
     "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
-    "build": "npm run clean && tsc -p tsconfig.build.json && cp -r src/db/migrations dist/db/migrations && node scripts/build-identity.mjs",
+    "build": "npm run clean && tsc -p tsconfig.build.json && cp -r src/db/migrations dist/db/migrations && node scripts/release-capabilities.mjs && node scripts/build-identity.mjs",
     "start": "node dist/index.js",
     "test": "NODE_ENV=test vitest run",
     "test:watch": "NODE_ENV=test vitest",
     "typecheck": "tsc --noEmit",
     "release:proof": "node scripts/release-proof.mjs",
     "build:verify": "node scripts/build-identity.mjs --verify",
-    "test:startup": "node scripts/reliability/startup-proof.mjs"
+    "test:startup": "node scripts/reliability/startup-proof.mjs",
+    "release:capabilities": "node scripts/release-capabilities.mjs"
   },
   "dependencies": {
     "@coinbase/cdp-sdk": "1.53.0",

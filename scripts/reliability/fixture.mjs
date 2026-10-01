@@ -83,7 +83,12 @@ export async function advancedCatalogFixture(input) {
   admission.payload.providerControlProfileHash=canonicalHash(next.manifest.providerControlProfiles[0]);
   admission.payload.actionCatalogHash=canonicalHash(next.manifest.actionCatalogs[0]);
   next.manifest.servicingAdmissions[0]=await resign(admission);
-  next.expectedCurrent[0].admissionHash=canonicalHash(next.manifest.servicingAdmissions[0]);
+  // Installation carries both epochs and preserves the durable current one.
+  // An explicit activation proof can select the higher target separately.
+  next.manifest.servicingAdmissions.unshift(...input.manifest.servicingAdmissions);
+  next.manifest.actionCatalogs.unshift(...input.manifest.actionCatalogs);
+  next.manifest.providerControlProfiles.unshift(...input.manifest.providerControlProfiles);
+  next.expectedCurrent=structuredClone(input.expectedCurrent);
   return next;
 }
 

@@ -308,6 +308,7 @@ function catalogFor(state: FakeStoreState): StandardRailCatalog {
     listingCommitments: async (ids: readonly string[]) =>
       ids.map((id) => state.rows.get(id)).filter(Boolean),
     getArtifact: async () => null,
+    currentProviderControlProfileHash: async () => null,
     get: async (id: string) =>
       state.records.find((item) => item.registrationId === id) ?? null,
   } as unknown as ServiceRegistrationStore;

@@ -1,3 +1,4 @@
+import { verifyStandardRailManifest } from "./artifacts.js";
 import type { Express } from "express";
 import type { Config } from "../config.js";
 import {
@@ -147,13 +148,21 @@ export async function createStandardApp(options: {
   federationPermitPool?: Pool;
   a2aFetch?: typeof fetch;
 }): Promise<StandardAppBundle> {
+  // Verify candidate artifacts before migrations or privilege changes.
+  await verifyStandardRailManifest(options.standardRailConfig.manifest, {
+    environment: options.standardRailConfig.environment, chainId: options.config.chainId,
+    gatewayAudience: options.standardRailConfig.gatewayAudience,
+    signers: options.standardRailConfig.trustedSigners,
+    splitterFactoryRuntimeCodeHash: options.standardRailConfig.splitterFactoryRuntimeCodeHash,
+    splitterCreationCodeHash: options.standardRailConfig.splitterCreationCodeHash,
+  });
   if (!options.pool) {
     const migrationPool = createPool({
       connectionString: options.standardRailConfig.migrationDatabaseUrl,
       max: 1,
-      connectionTimeoutMs: 0,
-      statementTimeoutMs: 0,
-      lockTimeoutMs: 0,
+      connectionTimeoutMs: 10_000,
+      statementTimeoutMs: 30_000,
+      lockTimeoutMs: 5_000,
     });
     try {
       await runMigrations(migrationPool);

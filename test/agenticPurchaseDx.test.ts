@@ -47,7 +47,7 @@ type ServiceHarness = StandardRailService & Record<string, unknown>;
 
 function serviceHarness(fields: Record<string, unknown>): ServiceHarness {
   const service = Object.create(StandardRailService.prototype) as ServiceHarness;
-  Object.assign(service, { purchaseResponses: new StandardPurchaseResponses(), ...fields });
+  Object.assign(service, { releaseSales: { assertOpen: async () => undefined, isParked: async () => false, parkedStatus: async () => null }, purchaseResponses: new StandardPurchaseResponses(), ...fields });
   return service;
 }
 

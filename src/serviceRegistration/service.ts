@@ -268,6 +268,29 @@ export class ServiceRegistrationService {
     }
   }
 
+  async acknowledgeRevisionFence(raw: unknown) {
+    const candidate = raw as { payload?: { providerAgentId?: unknown; serviceId?: unknown } };
+    const providerAgentId = candidate?.payload?.providerAgentId;
+    const serviceId = candidate?.payload?.serviceId;
+    if (typeof providerAgentId === "string" && typeof serviceId === "string" &&
+        /^(0|[1-9][0-9]{0,77})$/.test(providerAgentId) && /^0x[0-9a-f]{64}$/.test(serviceId)) {
+      const prior = await this.store.acknowledgedRevisionFence(canonicalHash(raw));
+      if (prior) return prior;
+    }
+    const { envelope } = await verifyRegistrationIntent({
+      raw, config: this.config, railConfig: this.railConfig, marketplace: this.marketplace,
+    });
+    const payload = envelope.payload;
+    const service = await this.marketplace.getService(payload.serviceId);
+    try { assertServiceMatches(service, payload); }
+    catch { throw new RegistrationError(401, "REGISTRATION_AUTH_INVALID", "The signed fence does not match the finalized service."); }
+    return this.store.acknowledgeRevisionFence(envelope);
+  }
+
+  revisionFence(providerAgentId: string, serviceId: Hex) {
+    return this.store.revisionFence(providerAgentId, serviceId);
+  }
+
   async register(raw: unknown, idempotencyKey: string) {
     return this.boundedRegistrationWork(async () => {
       let rawHash: Hex | null = null;
@@ -887,6 +910,27 @@ export class ServiceRegistrationService {
     return this.refreshOne(record);
   }
 
+  private async retainExecutableContract(record: StoredRegistration, code: string): Promise<boolean> {
+    try {
+      // Fetch from the recorded trusted origin, never a drifting card's endpoint.
+      const raw = await this.cardLoader(new URL("/standard-rail/outcomes", record.card.standardRail.origin).toString());
+      const response = raw as { providerAudience?: unknown; outcomes?: unknown };
+      if (response.providerAudience !== record.card.standardRail.providerAudience || !Array.isArray(response.outcomes)) return false;
+      const commitments = await this.store.listingCommitments(record.prepared.listings
+        .filter(item => item.paymentRequired).map(item => item.listingId));
+      if (commitments.length !== record.prepared.listings.filter(item => item.paymentRequired).length) return false;
+      if (!commitments.every(item => item.runtimeCommitmentHash && (response.outcomes as unknown[]).some((rawOutcome: unknown) => {
+        const outcome = rawOutcome as { listingManifestHash?: unknown; executable?: unknown };
+        return outcome.listingManifestHash === item.runtimeCommitmentHash && outcome.executable === true;
+      }))) return false;
+      await this.store.retainDuringContractDrift(record.registrationId, code);
+      logger.warn("dynamic catalog retains executable prior contract", {
+        registrationId: record.registrationId, serviceSlug: record.serviceSlug, code,
+      });
+      return true;
+    } catch { return false; }
+  }
+
   private async refreshOne(record: StoredRegistration): Promise<void> {
     // A schema that overran the validation budget is immutable for this
     // registration (a changed skill contract set is CARD_CONTRACT_DRIFT), so
@@ -985,6 +1029,7 @@ export class ServiceRegistrationService {
         serviceSlug: record.serviceSlug,
         code: "AGENT_CARD_INVALID",
       });
+      if (await this.retainExecutableContract(record, "AGENT_CARD_INVALID")) return;
       await this.store.stopNewCommerce(record.registrationId, "AGENT_CARD_INVALID", true);
       return;
     }
@@ -996,6 +1041,7 @@ export class ServiceRegistrationService {
         serviceSlug: record.serviceSlug,
         code: "CARD_CONTRACT_DRIFT",
       });
+      if (await this.retainExecutableContract(record, "CARD_CONTRACT_DRIFT")) return;
       await this.store.stopNewCommerce(record.registrationId, "CARD_CONTRACT_DRIFT", true);
       return;
     }
