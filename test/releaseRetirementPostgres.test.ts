@@ -36,7 +36,7 @@ async function order(id="old", state="NOT_SETTLED", hash=listingManifestHash, in
 const pending=async()=> {
   const result=await api.state(scope);
   expect(result.retired).toBe(false);
-  return "blockers" in result ? result.blockers : {};
+  return result.blockers;
 };
 
 describe("contract retirement durable proof",()=>{

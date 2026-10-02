@@ -70,7 +70,8 @@ export class ReleaseRetirements {
 
   private async response(row: ReceiptRow) {
     const now = Math.floor(Date.now() / 1000);
-    return { scope: row.receipt_payload.scope, retired: true as const, blockers: {},
+    const blockers: RetirementBlockers = {};
+    return { scope: row.receipt_payload.scope, retired: true as const, blockers,
       requestId: row.receipt_payload.requestId, retiredAt: row.receipt_payload.retiredAt,
       receipt: await signEnvelope({ artifactType: "GatewayContractRetirementV1", schemaVersion: 1,
         environment: this.signing.environment, chainId: this.signing.chainId, audience: row.provider_audience,
