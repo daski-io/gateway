@@ -62,3 +62,8 @@ export function activeRequestSignal(fallback: AbortSignal): AbortSignal {
 export function activeRequestKey(fallback: string): string {
   return requestContexts.getStore()?.clientKey ?? fallback;
 }
+
+/** The client key of the request in scope, or undefined outside a request. */
+export function activeRequestClientKey(): string | undefined {
+  return requestContexts.getStore()?.clientKey;
+}

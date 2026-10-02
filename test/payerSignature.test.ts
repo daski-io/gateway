@@ -13,10 +13,12 @@ import {
   type Hex,
 } from "viem";
 import { baseSepolia } from "viem/chains";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import { privateKeyToAccount } from "viem/accounts";
 import {
   CONTRACT_VERIFICATION_GAS,
+  ContractVerificationCallerLimit,
   ContractVerificationSemaphore,
   createPayerSignatureVerifier,
   createContractVerificationEndpoint,
@@ -359,4 +361,91 @@ it("keeps the payer's absolute 5 second deadline through the real HTTP transport
     await prior;
     expect(wire).toEqual(Array(9).fill("eth_getCode"));
   } finally {vi.useRealTimers();}
+});
+
+describe("payer signature verification: bounded pressure", () => {
+  const opaque = `0x${"c0".repeat(300)}` as Hex;
+
+  it("holds each requesting client to its share of verifications, refused as unavailable before admission", async () => {
+    let open!: () => void;
+    const gate = new Promise<void>((resolve) => { open = resolve; });
+    const primary = mockClient({ code: async () => { await gate; return "0x6001"; } });
+    const admit = vi.fn(async () => undefined);
+    const callers = new AsyncLocalStorage<string>();
+    const callerLimit = new ContractVerificationCallerLimit(2);
+    const subject = createPayerSignatureVerifier({
+      accountTypes: ["eoa", "contract"], timeoutMs: 1_000, endpoints: [{ host: "a", client: primary.client }],
+      admit, semaphore: new ContractVerificationSemaphore(8), callerLimit, caller: () => callers.getStore(),
+    });
+    const verify = (caller?: string) => {
+      const work = () => subject.verifyPayerTypedData({ payer: CONTRACT, typedData, signature: opaque });
+      return caller === undefined ? work() : callers.run(caller, work);
+    };
+    const held = [verify("203.0.113.7"), verify("203.0.113.7")];
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    await expect(verify("203.0.113.7")).rejects.toMatchObject({
+      code: "SIGNATURE_VERIFICATION_UNAVAILABLE", status: 503, retryable: true, requiresNewSignature: false,
+    });
+    // The refused attempt charged no admission and reached no endpoint.
+    expect(admit).toHaveBeenCalledTimes(2);
+    expect(primary.calls).toEqual(["getCode", "getCode"]);
+    // Other clients, and work outside any request, are not held to that share.
+    const other = verify("198.51.100.4");
+    const internal = verify();
+    open();
+    await expect(Promise.all([...held, other, internal])).resolves.toEqual(
+      Array(4).fill({ accountType: "contract", verifiedVia: "erc1271" }));
+    expect(callerLimit.inFlight("203.0.113.7")).toBe(0);
+    await expect(verify("203.0.113.7")).resolves.toMatchObject({ verifiedVia: "erc1271" });
+  });
+
+  it("releases the caller's share when admission or the semaphore refuses", async () => {
+    const callerLimit = new ContractVerificationCallerLimit(1);
+    const callers = new AsyncLocalStorage<string>();
+    const refused = createPayerSignatureVerifier({
+      accountTypes: ["eoa", "contract"], timeoutMs: 1_000, endpoints: [{ host: "a", client: mockClient({}).client }],
+      admit: async () => { throw new Error("SIGNATURE_VERIFICATION_BUSY"); },
+      semaphore: new ContractVerificationSemaphore(8), callerLimit, caller: () => callers.getStore(),
+    });
+    await expect(callers.run("203.0.113.7", () => refused.verifyPayerTypedData({ payer: CONTRACT, typedData, signature: opaque })))
+      .rejects.toThrow("SIGNATURE_VERIFICATION_BUSY");
+    const full = createPayerSignatureVerifier({
+      accountTypes: ["eoa", "contract"], timeoutMs: 1_000, endpoints: [{ host: "a", client: mockClient({}).client }],
+      semaphore: new ContractVerificationSemaphore(0), callerLimit, caller: () => callers.getStore(),
+    });
+    await expect(callers.run("203.0.113.7", () => full.verifyPayerTypedData({ payer: CONTRACT, typedData, signature: opaque })))
+      .rejects.toMatchObject({ code: "SIGNATURE_VERIFICATION_BUSY" });
+    expect(callerLimit.inFlight("203.0.113.7")).toBe(0);
+  });
+
+  it("answers a verification its endpoint client cannot queue as unavailable at once, never invalid", async () => {
+    vi.useFakeTimers();
+    try {
+      const wire: string[] = [];
+      const endpoint = createContractVerificationEndpoint({
+        url: "https://rpc-" + randomUUID() + ".invalid", chain: baseSepolia, timeoutMs: 5_000, maxPerMinute: 1,
+        fetchFn: async (_url, init) => {
+          const body = JSON.parse(String(init?.body));
+          wire.push(body.method);
+          return new Response(JSON.stringify({ jsonrpc: "2.0", id: body.id, result: "0x6001" }),
+            { status: 200, headers: { "content-type": "application/json" } });
+        },
+      });
+      // One read takes the minute's slot; eight more fill the client's queue.
+      await endpoint.client.getCode({ address: CONTRACT, blockTag: "latest" });
+      const queued = Promise.allSettled(Array.from({ length: 8 }, () =>
+        endpoint.client.getCode({ address: CONTRACT, blockTag: "latest" })));
+      await vi.advanceTimersByTimeAsync(1);
+      const outcome = verifier({ endpoints: [endpoint], timeoutMs: 5_000 })
+        .verifyPayerTypedData({ payer: CONTRACT, typedData, signature: opaque })
+        .then(value => ({ value }), error => ({ error }));
+      await vi.advanceTimersByTimeAsync(1);
+      expect(await outcome).toMatchObject({ error: {
+        code: "SIGNATURE_VERIFICATION_UNAVAILABLE", retryable: true, requiresNewSignature: false } });
+      expect(wire).toEqual(["eth_getCode"]);
+      await vi.runAllTimersAsync();
+      expect((await queued).every(result => result.status === "rejected")).toBe(true);
+      expect(wire).toEqual(["eth_getCode"]);
+    } finally { vi.useRealTimers(); }
+  });
 });

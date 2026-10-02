@@ -230,7 +230,7 @@ core groups are:
   it never changes payment audiences or signed resource URLs.
 - Standard facilitator: `CDP_API_KEY_ID`, `CDP_API_KEY_SECRET`, and the signed
   facilitator profile in `STANDARD_RAIL_MANIFEST_JSON`.
-- RPC read pacing: RPC_READ_MAX_PER_MINUTE (default 300) spaces read requests across gateway clients sharing one endpoint in a process. Each client holds at most 64 requests. The endpoint pacing wait is bounded to two seconds once a read reaches the head of its client queue; required proof batches do not expire behind their own earlier reads. Explicit caller deadlines cover the entire queue. Expired or canceled reads never reach the endpoint or consume a reserved slot. Optional quote balance preflight uses only immediately available capacity, so quote bursts cannot reserve slots ahead of payment verification or recovery. A skipped balance read leaves the challenge valid and reports an unavailable preflight. Transaction broadcast uses its separate durable path.
+- RPC read pacing: RPC_READ_MAX_PER_MINUTE (default 300) spaces read requests across gateway clients sharing one endpoint in a process. Payment and registration proof reads are served first at the endpoint; when one was just served while another read waits, that read goes next, so a proof read is never more than one other read from dispatch and a backlog of proofs (or of pre-payment screening) cannot starve the other readers. Proof reads keep their place until served; every other read waits at most two seconds once it reaches the head of its client queue, and required proof batches do not expire behind their own earlier reads. Each client presents one read at a time to the endpoint queue whatever its parallel lanes, oldest operation first, and holds at most 64 requests (contract-signature verification: 8, refusing more at once). Explicit caller deadlines cover the entire queue. Expired or canceled reads never reach the endpoint or consume a reserved slot. Optional quote balance preflight uses only immediately available capacity, so quote bursts cannot reserve slots ahead of payment verification or recovery. A skipped balance read leaves the challenge valid and reports an unavailable preflight. Transaction broadcast uses its separate durable path.
 - Evidence and screening: `BASE_RPC_URL`, optional `BASE_RPC_FALLBACK_URLS`,
   `STANDARD_RAIL_SPLITTER_FACTORY_RUNTIME_CODE_HASH`,
   `STANDARD_RAIL_SPLITTER_CREATION_CODE_HASH`, and `SANCTIONS_ORACLE_ADDRESS`.
@@ -260,7 +260,12 @@ core groups are:
   `PAYER_SIGNATURE_VERIFY_TIMEOUT_MS` (5000), the single deadline covering
   the code lookup, the call, and one RPC failover. Signatures are at most
   4,096 bytes; the call runs with 1,000,000 gas, a 16 KB response bound, and
-  at most 8 concurrent verifications per process. On Base mainnet,
+  at most 8 concurrent verifications per process and 2 per requesting client.
+  A verification refused for the client's share or a full RPC queue, or whose
+  RPC wait expires, answers the retryable 503
+  `SIGNATURE_VERIFICATION_UNAVAILABLE` (the same signature may be
+  resubmitted), never `SIGNATURE_INVALID`; the process limit and the global
+  admission answer 429 `SIGNATURE_VERIFICATION_BUSY`. On Base mainnet,
   `contract` requires `CONFORMANCE_EVIDENCE_RECORDED=1`.
 - Owner swaps: `OWNER_SWAPS_ENABLED` (`false`) and
   `OWNER_SWAPS_PER_PROVIDER_PER_DAY` (50).

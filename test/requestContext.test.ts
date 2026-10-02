@@ -2,7 +2,9 @@ import { EventEmitter } from "node:events";
 import { describe, expect, it, vi } from "vitest";
 import type { Request, Response } from "express";
 import {
+  activeRequestClientKey,
   activeRequestSignal,
+  withRequestClientKey,
   withRequestDisconnectSignal,
 } from "../src/mcp/requestContext.js";
 import { StandardProviderTransport } from "../src/standardRail/providerTransport.js";
@@ -63,5 +65,24 @@ describe("request disconnect context", () => {
       (req as unknown as EventEmitter).emit("aborted");
       expect(captured?.aborted).toBe(true);
     });
+  });
+});
+
+describe("request client key", () => {
+  it("names the edge-established client inside a request and nothing outside one", async () => {
+    const { req, res } = requestPair();
+    expect(activeRequestClientKey()).toBeUndefined();
+    await withRequestDisconnectSignal(req, res, async () => {
+      await new Promise((resolve) => setTimeout(resolve, 1));
+      expect(activeRequestClientKey()).toBe("203.0.113.1");
+    });
+    const forwarded = Object.assign(new EventEmitter(), {
+      clientAddress: "198.51.100.4", socket: { remoteAddress: "10.0.0.1" },
+    }) as unknown as Request;
+    await withRequestClientKey(forwarded, async () => {
+      await Promise.resolve();
+      expect(activeRequestClientKey()).toBe("198.51.100.4");
+    });
+    expect(activeRequestClientKey()).toBeUndefined();
   });
 });

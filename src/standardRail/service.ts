@@ -74,7 +74,7 @@ import {
 } from "./payerSignature.js";
 import { chargeSignatureVerifyAdmission } from "./signatureAdmission.js";
 import { base, baseSepolia } from "viem/chains";
-import { activeRequestKey } from "../mcp/requestContext.js";
+import { activeRequestClientKey, activeRequestKey } from "../mcp/requestContext.js";
 import { logger } from "../util/logger.js";
 import { DirectReputationReader } from "./reputationReader.js";
 import type {
@@ -223,10 +223,11 @@ export class StandardRailService {
     this.journal = new StandardRailJournal(pool);
     this.providerTransport = new StandardProviderTransport(fetchFn);
     const chain = appConfig.chainId === 8453 ? base : baseSepolia;
-    // One payer-signature verifier for every site. The contract path charges
-    // an admission before its bounded RPC call, keyed by the requesting
-    // client (never by the claimed payer, which is what the verification has
-    // yet to establish), and talks to the node through raw eth_call only.
+    // One payer-signature verifier for every site. The contract path holds at
+    // most CONTRACT_VERIFICATION_PER_CALLER verifications per requesting
+    // client (never per claimed payer, which is what the verification has yet
+    // to establish), charges the global admission before its bounded RPC call,
+    // and talks to the node through raw eth_call only.
     this.payerSignature = createPayerSignatureVerifier({
       accountTypes: railConfig.payerAccountTypes,
       timeoutMs: railConfig.payerSignatureVerifyTimeoutMs,
@@ -239,6 +240,7 @@ export class StandardRailService {
         railConfig.abuse.signatureVerificationsGlobalPerMinute,
         context,
       ),
+      caller: activeRequestClientKey,
     });
     this.walletStore = new StandardWalletStore(pool, railConfig, appConfig.chainId, this.payerSignature);
     this.walletQueries = new StandardWalletQueries(

@@ -44,6 +44,11 @@ export const CONTRACT_VERIFICATION_GAS = 1_000_000n;
 export const CONTRACT_VERIFICATION_RESPONSE_MAX_BYTES = 16_384;
 /** Process-wide concurrent contract verifications. */
 export const CONTRACT_VERIFICATION_CONCURRENCY = 8;
+/**
+ * Contract verifications one requesting client may hold at once, so that no
+ * single caller can occupy the verification lanes every caller shares.
+ */
+export const CONTRACT_VERIFICATION_PER_CALLER = 2;
 /** At most this many endpoints are tried: the primary and one failover. */
 const CONTRACT_VERIFICATION_ENDPOINTS = 2;
 
@@ -91,6 +96,14 @@ export interface PayerSignatureVerifierOptions {
    * and phase of the request it answers.
    */
   admit?: (args: { payer: Address; context?: VerifyPayerTypedDataArgs["context"] }) => Promise<void>;
+  /**
+   * The requesting client's key (the address the edge established), or
+   * undefined outside a request. A client holding its share of contract
+   * verifications is refused as unavailable before any admission or RPC.
+   * Never the claimed payer: naming a victim must not lock that wallet out.
+   */
+  caller?: () => string | undefined;
+  callerLimit?: ContractVerificationCallerLimit;
 }
 
 export interface VerifyPayerTypedDataArgs {
@@ -129,6 +142,34 @@ export class ContractVerificationSemaphore {
 
 export const sharedContractVerificationSemaphore =
   new ContractVerificationSemaphore(CONTRACT_VERIFICATION_CONCURRENCY);
+
+/** Contract verifications in flight per requesting client. */
+export class ContractVerificationCallerLimit {
+  private readonly active = new Map<string, number>();
+
+  constructor(readonly limit: number) {}
+
+  inFlight(caller: string): number {
+    return this.active.get(caller) ?? 0;
+  }
+
+  tryAcquire(caller: string): (() => void) | null {
+    const held = this.active.get(caller) ?? 0;
+    if (held >= this.limit) return null;
+    this.active.set(caller, held + 1);
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      const remaining = (this.active.get(caller) ?? 1) - 1;
+      if (remaining > 0) this.active.set(caller, remaining);
+      else this.active.delete(caller);
+    };
+  }
+}
+
+export const sharedContractVerificationCallerLimit =
+  new ContractVerificationCallerLimit(CONTRACT_VERIFICATION_PER_CALLER);
 
 /** Explicit chain answers: never retried, never failed over. */
 class ExplicitVerificationFailure extends Error {
@@ -197,6 +238,7 @@ export function createPayerSignatureVerifier(
   const accountTypes = [...new Set(options.accountTypes)];
   const contractAllowed = accountTypes.includes("contract");
   const semaphore = options.semaphore ?? sharedContractVerificationSemaphore;
+  const callerLimit = options.callerLimit ?? sharedContractVerificationCallerLimit;
   const endpoints = options.endpoints.slice(0, CONTRACT_VERIFICATION_ENDPOINTS);
 
   const invalid = (context: VerifyPayerTypedDataArgs["context"], reason: string) =>
@@ -227,6 +269,13 @@ export function createPayerSignatureVerifier(
     }
   }
 
+  const unavailable = (context: VerifyPayerTypedDataArgs["context"], internalMessage: string) =>
+    standardRailError("SIGNATURE_VERIFICATION_UNAVAILABLE", {
+      field: context?.field,
+      phase: context?.phase,
+      internalMessage,
+    });
+
   async function contractPath(args: VerifyPayerTypedDataArgs): Promise<PayerVerification> {
     const context = args.context;
     if (!contractAllowed) {
@@ -247,34 +296,42 @@ export function createPayerSignatureVerifier(
       message: args.typedData.message,
     } as never);
     const payer = getAddress(args.payer);
-    if (options.admit) await options.admit({ payer, context });
-    const release = semaphore.tryAcquire();
-    if (!release) {
-      outcome("busy");
-      throw standardRailError("SIGNATURE_VERIFICATION_BUSY", {
-        field: context?.field,
-        phase: context?.phase,
-      });
+    const caller = options.caller?.();
+    const releaseCaller = caller === undefined ? () => undefined : callerLimit.tryAcquire(caller);
+    if (!releaseCaller) {
+      outcome("unavailable", { reason: "caller-limit" });
+      throw unavailable(context, "the requesting client already holds its share of contract signature verifications");
     }
     try {
-      await verifyOnChain(payer, hash, args.signature);
-    } catch (error) {
-      if (error instanceof ExplicitVerificationFailure) {
-        outcome("invalid", { reason: error.reason });
-        throw invalid(context, error.reason);
+      if (options.admit) await options.admit({ payer, context });
+      const release = semaphore.tryAcquire();
+      if (!release) {
+        outcome("busy");
+        throw standardRailError("SIGNATURE_VERIFICATION_BUSY", {
+          field: context?.field,
+          phase: context?.phase,
+        });
       }
-      outcome("unavailable", {
-        reason: error instanceof VerificationDeadlineExceeded ? "deadline" : "transport",
-      });
-      throw standardRailError("SIGNATURE_VERIFICATION_UNAVAILABLE", {
-        field: context?.field,
-        phase: context?.phase,
-        internalMessage: error instanceof VerificationDeadlineExceeded
+      try {
+        await verifyOnChain(payer, hash, args.signature);
+      } catch (error) {
+        if (error instanceof ExplicitVerificationFailure) {
+          outcome("invalid", { reason: error.reason });
+          throw invalid(context, error.reason);
+        }
+        // Every other failure, a refused or expired RPC queue wait included,
+        // is the endpoint's, never the signature's: retryable, same signature.
+        outcome("unavailable", {
+          reason: error instanceof VerificationDeadlineExceeded ? "deadline" : "transport",
+        });
+        throw unavailable(context, error instanceof VerificationDeadlineExceeded
           ? "payer signature verification exceeded its deadline"
-          : "payer signature verification failed on every endpoint",
-      });
+          : "payer signature verification failed on every endpoint");
+      } finally {
+        release();
+      }
     } finally {
-      release();
+      releaseCaller();
     }
     outcome("verified", { accountType: "contract" });
     return { accountType: "contract", verifiedVia: "erc1271" };
@@ -390,7 +447,11 @@ export function boundedRpcFetch(maxBytes: number, fetchFn: typeof fetch = fetch)
 }
 
 /**
- * One verification endpoint over one JSON-RPC URL. The contract path talks
+ * One verification endpoint over one JSON-RPC URL. Its client runs up to
+ * CONTRACT_VERIFICATION_CONCURRENCY reads in parallel on the wire but presents
+ * one read at a time to the endpoint's shared pacing queue, behind every
+ * waiting payment-proof read, and refuses at once a read it could only queue
+ * behind its busy lanes. The contract path talks
  * to the node through viem's raw `request`, never through its `call` action:
  * the action layer follows an EIP-3668 `OffchainLookup` revert by fetching
  * the URLs the contract names with the process-global fetch (no byte bound,
@@ -413,7 +474,13 @@ export function createContractVerificationEndpoint(args: {
       retryCount: 0,
       timeout: args.timeoutMs,
       fetchFn: boundedRpcFetch(CONTRACT_VERIFICATION_RESPONSE_MAX_BYTES, args.fetchFn),
-    }), { scope: args.url, maxPerMinute: args.maxPerMinute, concurrency: 8, maxWaitMs: args.timeoutMs }),
+    }), {
+      scope: args.url,
+      maxPerMinute: args.maxPerMinute,
+      concurrency: CONTRACT_VERIFICATION_CONCURRENCY,
+      maxQueued: CONTRACT_VERIFICATION_CONCURRENCY,
+      maxWaitMs: args.timeoutMs,
+    }),
   });
   return {
     host: new URL(args.url).hostname,
