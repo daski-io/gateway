@@ -119,11 +119,27 @@ jobs:
           npm run test:startup -- --image gateway-startup:$CANDIDATE_SHA --output .tmp/gateway-startup-proof.json
           npm run test:startup -- --fixture post-epoch --image gateway-startup:$CANDIDATE_SHA --output .tmp/gateway-startup-proof-post-epoch.json
 
+      # Release qualification installs the candidate next to the gateway that
+      # production actually serves, and rolls back to it: that incumbent must
+      # boot on the schema this candidate migrates, on every run whether or not
+      # the change touches a migration. The engine reads this receipt from the
+      # artifact below and requires its priorIdentity to be this exact commit.
+      # Read-only production observation, 2026-10-02. Update through review
+      # when the deployed baseline changes; never infer it from develop HEAD^.
+      - name: Actual serving prior runtime on expanded schema
+        shell: bash
+        run: |
+          set -euo pipefail
+          base="c018b4b89d90cd0250ca05006718074e7a1346d8"
+          git cat-file -e "$base^{commit}"
+          bash scripts/reliability/prior-runtime.sh "$base" .tmp/gateway-prior-runtime-evidence.json
+
       # A rollback, and the old instance during a deploy, run the previous
       # runtime on the schema this candidate migrated. When the change touches
       # a migration, build the base commit (the pull request base, else the
       # head this push replaced, else the parent) and prove its runtime still
-      # boots there.
+      # boots there. Its receipt has its own name: the serving-baseline receipt
+      # above is the one release qualification reads.
       - name: Prior runtime on expanded schema (migration changes)
         shell: bash
         env:
@@ -138,7 +154,7 @@ jobs:
           base="${base:-$(git rev-parse HEAD^)}"
           changed="$(git diff --name-only "$base" HEAD)"
           if grep -qE '^src/db/migrations/' <<< "$changed"; then
-            bash scripts/reliability/prior-runtime.sh "$base" .tmp/gateway-prior-runtime-evidence.json
+            bash scripts/reliability/prior-runtime.sh "$base" .tmp/gateway-prior-head-runtime-evidence.json
           fi
 
       - name: Archive qualified compiled runtime
@@ -154,6 +170,7 @@ jobs:
             .tmp/gateway-startup-proof.json
             .tmp/gateway-startup-proof-post-epoch.json
             .tmp/gateway-prior-runtime-evidence.json
+            .tmp/gateway-prior-head-runtime-evidence.json
           if-no-files-found: error
           retention-days: 30
 

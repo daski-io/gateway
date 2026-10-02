@@ -68,8 +68,11 @@ never accepted. The evidence has boundary `gateway-prior-runtime`, the earlier
 build's `priorIdentity`, and the migrations only one side carries. It excludes
 `--image` and `migrationThrough`.
 `bash scripts/reliability/prior-runtime.sh <base sha> [evidence path]` builds the
-commit in a temporary worktree, runs this proof and removes the worktree; CI runs it
-when a change touches `src/db/migrations/`.
+commit in a temporary worktree, runs this proof and removes the worktree. CI runs it
+on every run with the gateway commit production serves as the base (pinned in
+`.github/workflows/ci.yml`, written to `.tmp/gateway-prior-runtime-evidence.json`,
+the receipt release qualification reads), and again with the previous head when a
+change touches `src/db/migrations/` (`.tmp/gateway-prior-head-runtime-evidence.json`).
 `registrations` optionally supplies actual store operations: `create` arguments,
 `evidence`, `commitments`, and optional `checkpoints`. These run the product store's
 create/evidence/activate path before boot. They do not replace independent chain
@@ -104,10 +107,11 @@ the named PostgreSQL container publishes the supplied loopback port, then routes
 only the newly created database to its private bridge address.
 The Docker mode verifies source and
 content identity inside the exact image before startup. A startup proof covers
-the given artifact/state combination. CI's prior-runtime proof covers the base
-commit of the change; the rollback combination for a release, the previously
-released runtime on the release's schema, must still be qualified by release
-coordination, which can run the same script with that release's commit as the base.
+the given artifact/state combination. CI's prior-runtime proofs cover the pinned
+serving commit and, for a migration change, the base commit of the change; when
+production serves a different commit than the one pinned, release coordination must
+qualify that combination itself, with the same script and that commit as the base,
+and the pin is updated through review.
 
 Proof fields include `schemaVersion`, `repo`, `boundary`, `status`, `execution`,
 `identity`, `inputHash`, `startingStateHash`, and `checks`. Hashes are lowercase
