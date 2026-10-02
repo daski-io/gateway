@@ -1,4 +1,5 @@
 import { parseSaleRequest, parseSaleScope } from "./releaseSales.js";
+import { RetirementBlocked } from "./releaseRetirements.js";
 import { EAS_PROFILE_IDS } from "./easProfiles.js";
 import { timingSafeEqual } from "node:crypto";
 import { Router, type Request, type Response } from "express";
@@ -136,6 +137,27 @@ export function createStandardMetaRouter(args: {
     try { res.setHeader("Cache-Control", "no-store"); res.json(await args.service.releaseSales.state(parseSaleScope(req.query))); }
     catch (error) { next(error); }
   });
+  for (const method of ["get", "post"] as const) {
+    router[method]("/internal/release/v1/retirements", async (req, res, next) => {
+      if (!operatorAuthorized(req, args.config.catalogOperatorToken)) {
+        res.status(401).json({ error: { code: "OPERATOR_UNAUTHORIZED" } }); return;
+      }
+      try {
+        res.setHeader("Cache-Control", "no-store");
+        res.json(await (method === "get" ? args.service.releaseRetirements.state(req.query)
+          : args.service.releaseRetirements.retire(req.body)));
+      } catch (error) {
+        if (error instanceof RetirementBlocked) {
+          res.status(409).json({ scope: error.scope, retired: false, blockers: error.blockers,
+            error: { code: "RETIREMENT_BLOCKED" } }); return;
+        }
+        if (error instanceof Error && /^(INVALID_RETIREMENT|RETIREMENT_|CONTRACT_RETIRED)/.test(error.message)) {
+          res.status(error.message.startsWith("INVALID_") ? 400 : 409).json({ error: { code: error.message } }); return;
+        }
+        next(error);
+      }
+    });
+  }
   router.get("/health/ready", async (req, res) => {
     const databaseReady = await args.pool.query("SELECT 1").then(() => true, () => false);
     const admissionOpen = args.service.isAdmissionOpen();

@@ -43,7 +43,7 @@ export class ReleaseSales {
 
   async assertOpen(providerAgentId: string, listingManifestHash: string): Promise<void> {
     const result = await this.pool.query(
-      "SELECT 1 FROM standard_sale_controls WHERE provider_agent_id=$1 AND listing_manifest_hash=$2 AND NOT accepting_new_orders",
+      "SELECT 1 FROM standard_sale_controls WHERE provider_agent_id=$1 AND listing_manifest_hash=$2 AND NOT accepting_new_orders UNION ALL SELECT 1 FROM standard_contract_retirements WHERE provider_agent_id=$1 AND kind='listing' AND contract_hash=$2",
       [providerAgentId, bytes(listingManifestHash)]);
     if (result.rowCount) throw new Error("SALE_SUSPENDED");
   }

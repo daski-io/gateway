@@ -34,7 +34,7 @@ describe("release migrations under incumbent runtime privileges", () => {
       expect((await runtime.query("SELECT current_user,rolsuper FROM pg_roles WHERE rolname=current_user")).rows[0])
         .toEqual({ current_user: role, rolsuper: false });
       for (const table of ["standard_registration_revision_fences", "standard_sale_controls",
-        "standard_parked_authorizations", "standard_asset_action_targets"]) {
+        "standard_parked_authorizations", "standard_asset_action_targets", "standard_contract_retirements"]) {
         const privileges = (await runtime.query("SELECT has_table_privilege(current_user,$1,'SELECT') AS read,has_table_privilege(current_user,$1,'INSERT,UPDATE,DELETE') AS write", [schema + "." + table])).rows[0];
         expect(privileges).toEqual({ read: true, write: false });
         expect((await pool.query("SELECT has_table_privilege($1,$2,'SELECT') AS read", [observer,schema + "." + table])).rows[0].read).toBe(false);

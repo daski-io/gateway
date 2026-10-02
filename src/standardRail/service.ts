@@ -2,6 +2,7 @@ import { orderedRpcTransport } from "../rpc/orderedTransport.js";
 import { embeddedReleaseCapabilities } from "./releaseCapabilities.js";
 import { assertWorkerCompatibility } from "./workerCompatibility.js";
 import { ReleaseSales } from "./releaseSales.js";
+import { ReleaseRetirements } from "./releaseRetirements.js";
 import { compactBazaarExtension, discoveryOpenApi, facilitatorDiscoveryPayment } from "./discovery.js";
 import { GATEWAY_VERSION } from "../version.js";
 import { StandardReviewRecovery } from "./reviewRecovery.js";
@@ -193,6 +194,7 @@ export class StandardRailService {
   private readinessRefresh: Promise<void> | null = null;
   readonly railProfileHash: Hex;
   readonly releaseSales: ReleaseSales;
+  readonly releaseRetirements: ReleaseRetirements;
 
   constructor(
     private readonly appConfig: Config,
@@ -208,6 +210,15 @@ export class StandardRailService {
   ) {
     this.store = new StandardRailStore(pool, lockPool);
     this.releaseSales = new ReleaseSales(pool);
+    this.releaseRetirements = new ReleaseRetirements(pool, {
+      environment: railConfig.environment, chainId: appConfig.chainId, privateKey: railConfig.dispatchPrivateKey,
+      providerAudience: providerAgentId => {
+        const audiences = [...new Set(railConfig.manifest.providerControlProfiles
+          .filter(profile => profile.payload.providerAgentId === providerAgentId).map(profile => profile.payload.providerAudience))];
+        if (audiences.length !== 1) throw new Error("RETIREMENT_PROVIDER_AUDIENCE_REQUIRED");
+        return audiences[0]!;
+      },
+    });
     this.incidents = new StandardRailIncidentStore(pool);
     this.journal = new StandardRailJournal(pool);
     this.providerTransport = new StandardProviderTransport(fetchFn);
@@ -419,11 +430,18 @@ export class StandardRailService {
       epoch: admission.payload.actionCatalogEpoch,
       actionIds: this.railConfig.manifest.actionCatalogs.find(catalog =>
         canonicalHash(catalog) === admission.payload.actionCatalogHash)?.payload.actions.map(action => action.actionId) ?? [],
+      actionCatalogHash: admission.payload.actionCatalogHash,
+      catalogKnown: this.railConfig.manifest.actionCatalogs.some(catalog => canonicalHash(catalog) === admission.payload.actionCatalogHash),
+      actions: this.railConfig.manifest.actionCatalogs.find(catalog =>
+        canonicalHash(catalog) === admission.payload.actionCatalogHash)?.payload.actions.map(action =>
+          ({serviceId:action.serviceId,actionDefinitionHash:action.actionDefinitionHash})) ?? null,
     }));
     return {
       ...artifact, artifactManifestHash, deploymentId: process.env.RAILWAY_DEPLOYMENT_ID ?? null,
       network: this.appConfig.x402Network,
       executableListings, runtimeMappings: executableListings, carriedAdmissions,
+      retirements: await this.releaseRetirements.inventory(),
+      retainedAdmissions: await this.releaseRetirements.retainedAdmissions(),
       currentAdmissions: carriedAdmissions.filter(item => current.rows.some(row =>
         "0x" + row.admission_hash.toString("hex") === item.admissionHash)),
       workerFormats: ["standard-orders-v1", "dispatch-journal-v2", "review-journal-v1"],
