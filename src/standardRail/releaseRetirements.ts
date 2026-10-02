@@ -18,7 +18,7 @@ export function parseRetirementScope(raw: unknown): RetirementScope {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("INVALID_RETIREMENT_SCOPE");
   const value = raw as Record<string, unknown>;
   const hex = (value: unknown): value is string => typeof value === "string" && /^0x[0-9a-f]{64}$/.test(value);
-  if (typeof value.providerAgentId !== "string" || !/^(0|[1-9][0-9]{0,77})$/.test(value.providerAgentId) ||
+  if (typeof value.providerAgentId !== "string" || !/^[1-9][0-9]{0,77}$/.test(value.providerAgentId) ||
       !hex(value.serviceId)) throw new Error("INVALID_RETIREMENT_SCOPE");
   const common = { providerAgentId: value.providerAgentId, serviceId: value.serviceId };
   if (value.kind === "listing" && hex(value.listingManifestHash)) {

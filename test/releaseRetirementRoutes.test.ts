@@ -2,7 +2,7 @@ import express from "express";
 import type { Server } from "node:http";
 import { afterEach, expect, it, vi } from "vitest";
 import { createStandardMetaRouter } from "../src/standardRail/meta.js";
-import { RetirementBlocked } from "../src/standardRail/releaseRetirements.js";
+import { RetirementBlocked, parseRetirementScope } from "../src/standardRail/releaseRetirements.js";
 const scope={kind:"listing" as const,providerAgentId:"7",serviceId:"0x"+"04".repeat(32),listingManifestHash:"0x"+"03".repeat(32)};
 let server:Server|undefined;
 afterEach(async()=>{if(server) await new Promise<void>((resolve,reject)=>server!.close(error=>error?reject(error):resolve()));server=undefined;});
@@ -32,4 +32,10 @@ it("returns scoped blockers with 409 and exposes no cached retirement observatio
   const get=await fetch(url+"?"+new URLSearchParams(scope),{headers});
   expect(get.status).toBe(200);expect(get.headers.get("cache-control")).toBe("no-store");
   expect(await get.json()).toEqual({scope,retired:false,blockers});
+});
+
+it("requires the same positive provider identity as the receipt consumer",()=>{
+  expect(()=>parseRetirementScope({...scope,providerAgentId:"0"})).toThrow("INVALID_RETIREMENT_SCOPE");
+  expect(()=>parseRetirementScope({...scope,providerAgentId:"01"})).toThrow("INVALID_RETIREMENT_SCOPE");
+  expect(parseRetirementScope(scope)).toEqual(scope);
 });
