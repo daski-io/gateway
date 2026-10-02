@@ -44,7 +44,7 @@ describe("contract retirement durable proof",()=>{
     await order();
     expect(Object.values(await pending()).every(count=>count===0)).toBe(true);
     const result=await api.retire({...scope,requestId:"retire-listing-1"});
-    expect(result).toMatchObject({scope,retired:true,receipt:{artifactType:"GatewayContractRetirementV1",
+    expect(result).toMatchObject({scope,retired:true,blockers:{},requestId:"retire-listing-1",receipt:{artifactType:"GatewayContractRetirementV1",
       audience:"https://provider.test",payload:{scope,requestId:"retire-listing-1"}}});
     const {signature,...unsigned}=result.receipt;
     expect(await recoverMessageAddress({message:{raw:artifactPayloadHash(unsigned)},signature}))
