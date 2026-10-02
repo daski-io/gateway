@@ -132,9 +132,9 @@ the existing durable-wait clock and lifecycle projection apply unchanged.
 
 ## Runtime continuity
 
-Workers start after the application binds its HTTP listener and local compatibility has passed; no health request is needed to resume retained work. Public liveness uses a shared in-flight local readiness observation cached for two seconds. It does not share an admission bucket with anonymous callers behind the same proxy. Signed registration fences reject malformed signatures before registry RPC reads; their shared admission limit accounts for up to nine reads per attempt and three attempts per endpoint. RPC_READ_MAX_PER_MINUTE (default 300) paces the gateway read clients together per RPC endpoint; it does not retry failed calls. Queue waits are bounded to two seconds and 64 requests per client, and caller cancellation removes queued work before dispatch. Optional quote balance preflight cannot reserve a future slot; overload leaves the challenge valid with its existing unavailable-preflight note.
+Workers start after the application binds its HTTP listener and local compatibility has passed; no health request is needed to resume retained work. Public liveness uses a shared in-flight local readiness observation cached for two seconds. It does not share an admission bucket with anonymous callers behind the same proxy. Signed registration fences reject malformed signatures before charging the shared RPC admission limit, which accounts for up to nine reads per attempt and three attempts per endpoint. Authenticated coordinator deliveries have independent ingress admission while retaining the same actual RPC pacing. RPC_READ_MAX_PER_MINUTE (default 300) paces the gateway read clients together per RPC endpoint; it does not retry failed calls. Each client holds at most 64 requests; the endpoint pacing wait is bounded to two seconds once a request reaches the client queue head. Explicit caller deadlines still cover the entire queue, and cancellation removes pending work without consuming a future slot. Optional quote balance preflight cannot reserve a future slot; overload leaves the challenge valid with its existing unavailable-preflight note.
 
-Migration 055 replaces ordinary sale-guard writes with a lock on a preseeded row. Additive migration 054a installs an insert trigger before the immutable 055 backfill and repairs any existing missing rows under the trigger installation lock; 056 removes only this temporary trigger after 055 installs the permanent one. Old migration checksums remain unchanged. Release controls still update that row, so legacy serializable claims reject stale stop-sale snapshots without making an unrelated settlement invalidate an ordinary claim. The standard-settlement-parked-v1 format declares the compiled worker's durable parked-authorization recovery support; a legacy image without that capability is not an eligible overlap after stop-sale.
+Migration 055 replaces ordinary sale-guard writes with a lock on a preseeded row. Additive migration 054a installs an insert trigger before the immutable 055 backfill and repairs any existing missing rows under the trigger installation lock; 056 removes only this temporary trigger after 055 installs the permanent one. Pending 056–058 are applied atomically, with 50 ms lock waits and transaction retries so incumbent readers and writers can continue between attempts. Old migration checksums remain unchanged. Release controls still update that row, so legacy serializable claims reject stale stop-sale snapshots without making an unrelated settlement invalidate an ordinary claim. The standard-settlement-parked-v1 format declares the compiled worker's durable parked-authorization recovery support; a legacy image without that capability is not an eligible overlap after stop-sale.
 
 A broken listing outside the captured offered baseline is omitted from the local inventory. Every exact baseline listing remains required. Historical asset-action recovery continues to require the original signed admission, catalog, and control profile in the carried manifest on both gateway and provider; changing the current epoch does not rebind prior work.
 
@@ -143,3 +143,21 @@ The ongoing state proof runs after both exact revisions are built:
     node scripts/reliability/state-compatibility.mjs --prior-root /path/to/fallback --output state-proof.json
 
 It requires disposable loopback PostgreSQL. Candidate code writes order authorization, signed dispatch, and encrypted review transaction records; the fallback's actual parsers and journal/worker methods resume those same identities. Review transaction transport is in memory and never reaches a chain. The receipt lists exactly the formats exercised and both manifest byte hashes; parked-work coverage is added only when the fallback declares that capability. Unsupported formats never receive coverage merely from a manifest declaration.
+
+Post-completion artifact delivery validates the projection declared by the exact
+paid listing schema: task-shaped contracts validate the task, and flat contracts
+validate their declared artifact data fields. The signed provider response and
+its original artifacts remain unchanged, and passive-output validation checks
+the entire response. Runtime commerce capabilities bind the complete executable
+skill contract to an executable definition hash; only operator-owned pricing is
+excluded from that hash. Historical action definitions may coexist in separately
+signed catalog epochs; recovery resolves the claim's original admission,
+catalog and definition hashes, never the currently active version.
+
+Migration 058 keeps generic confirmation, revocation, reputation reconciliation
+and support bookkeeping available on fulfilled orders after contract retirement.
+New order, settlement, dispatch and asset-action admission remain fenced.
+Required RPC evidence tests run the actual release and registration proof methods
+through the ordered transport at the default budget and slow archive latency.
+A fresh database still requires signed genesis lineage; a missing lineage is
+reported with the safe SERVICING_GENESIS_MISSING diagnostic code.

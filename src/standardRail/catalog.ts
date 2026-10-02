@@ -1,3 +1,4 @@
+import { projectContractResult } from "./resultProjection.js";
 import type { DiscoveryOutcome } from "./discovery.js";
 import type { ValidateFunction } from "ajv";
 import { getAddress, type Hex } from "viem";
@@ -310,9 +311,9 @@ export class StandardRailCatalog {
   }
 
   async validateResponse(listing: StandardListing, result: unknown): Promise<void> {
-    await this.withinSchemaBudget(listing, () =>
-      assertSchema(this.compiled(listing).response, result, "Response"));
     assertPassiveProviderOutput(result);
+    await this.withinSchemaBudget(listing, () =>
+      assertSchema(this.compiled(listing).response, projectContractResult(listing.responseSchema, result), "Response"));
   }
 
   // A validation that overruns its CPU budget is a hostile or broken
@@ -344,7 +345,7 @@ export class StandardRailCatalog {
   }
 
   /** Fail closed on local compatibility, without consulting availability or upstreams. */
-  async validateCommerce(baselineHashes: string[] = []): Promise<Array<{ serviceId: string; serviceSlug: string; skillId: string; skillContractHash: string; listingManifestHash: string; compiled: true }>> {
+  async validateCommerce(baselineHashes: string[] = []): Promise<Array<{ serviceId: string; serviceSlug: string; skillId: string; skillContractHash: string; executableDefinitionHash: string; listingManifestHash: string; compiled: true }>> {
     const loaded: Awaited<ReturnType<StandardRailCatalog["validateCommerce"]>> = [];
     const records = await this.registrations.listVisibleForReadiness();
     for (const hash of baselineHashes) {
@@ -358,8 +359,10 @@ export class StandardRailCatalog {
         try {
           const [bound, skill, facts] = await this.listingInputs(record, prepared.skillId);
           const listing = await this.assembleListing(record, bound, skill, facts, false);
+          const { pricing: _pricing, ...execution } = skill.contract;
+          const executableDefinitionHash = canonicalHash({ schemaVersion:1, serviceSlug:record.serviceSlug, skillId:prepared.skillId, execution });
           loaded.push({ serviceId: record.serviceId, serviceSlug: record.serviceSlug,
-            skillId: prepared.skillId, skillContractHash: prepared.skillContractHash,
+            skillId: prepared.skillId, skillContractHash: prepared.skillContractHash, executableDefinitionHash,
             listingManifestHash: listing.runtimeCommitmentHash, compiled: true as const });
         } catch {
           // An already unbuildable non-baseline row must not take down healthy

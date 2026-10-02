@@ -12,11 +12,14 @@ import {
   type Address,
   type Hex,
 } from "viem";
+import { baseSepolia } from "viem/chains";
+import { randomUUID } from "node:crypto";
 import { privateKeyToAccount } from "viem/accounts";
 import {
   CONTRACT_VERIFICATION_GAS,
   ContractVerificationSemaphore,
   createPayerSignatureVerifier,
+  createContractVerificationEndpoint,
   ERC1271_MAGIC_VALUE,
   isExplicitCallFailure,
   PAYER_SIGNATURE_MAX_BYTES,
@@ -328,4 +331,35 @@ describe("ERC-1271 magic", () => {
   it("is the bytes4 selector of isValidSignature(bytes32,bytes)", () => {
     expect(encodeAbiParameters([{ type: "bytes4" }], [ERC1271_MAGIC_VALUE]).startsWith(ERC1271_MAGIC_VALUE)).toBe(true);
   });
+});
+
+
+it("keeps the payer's absolute 5 second deadline through the real HTTP transport queue", async()=>{
+  vi.useFakeTimers();
+  try {
+    const wire:string[]=[];
+    const endpoint=createContractVerificationEndpoint({
+      url:"https://rpc-"+randomUUID()+".invalid",chain:baseSepolia,timeoutMs:5000,
+      fetchFn:async(_url,init)=>{
+        const body=JSON.parse(String(init?.body));
+        wire.push(body.method);
+        await new Promise(resolve=>setTimeout(resolve,2600));
+        return new Response(JSON.stringify({jsonrpc:"2.0",id:body.id,result:"0x6001"}),{status:200,headers:{"content-type":"application/json"}});
+      },
+    });
+    // Two legitimate reads occupy the client; the payer's own deadline still
+    // includes waiting for those reads and must not reset when its turn arrives.
+    const prior=Promise.all([
+      endpoint.client.getCode({address:CONTRACT,blockTag:"latest"}),
+      endpoint.client.getCode({address:CONTRACT,blockTag:"latest"}),
+    ]);
+    const pending=verifier({endpoints:[endpoint],timeoutMs:5000})
+      .verifyPayerTypedData({payer:CONTRACT,typedData,signature:"0x1234"})
+      .then(value=>({value}),error=>({error}));
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(await pending).toMatchObject({error:{code:"SIGNATURE_VERIFICATION_UNAVAILABLE"}});
+    await vi.runAllTimersAsync();
+    await prior;
+    expect(wire).toEqual(["eth_getCode","eth_getCode"]);
+  } finally {vi.useRealTimers();}
 });

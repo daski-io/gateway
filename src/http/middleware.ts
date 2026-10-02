@@ -1,3 +1,4 @@
+import { authorizedOperator } from "../serviceRegistration/routes.js";
 import cors from "cors";
 import express, {
   type Express,
@@ -127,13 +128,9 @@ function configurePreParserRateLimits(
   for (const limiter of [
     rateLimit({ windowMs: 60_000, max: 30, namespace: "release-fence-ingress" }),
     rateLimit({ windowMs: 60_000, max: 30, namespace: "release-fence", store: queries }),
-    // getProvider reads two blocks and seven contract values per attempt,
-    // up to three attempts per endpoint. Charge that worst-case fan-out.
-    rateLimit({ windowMs: 60_000,
-      max: Math.max(1, Math.min(config.stateChangeGlobalMaxPerMinute, Math.floor(config.rpcReadMaxPerMinute / 27))),
-      namespace: "release-fence-global", keyScope: "global", store: queries }),
+    // Shared RPC admission is charged after signature recovery in the service.
   ]) app.use("/internal/release/v1/registration-fences", (req, res, next) => {
-    if (req.method === "POST") limiter(req, res, next);
+    if (req.method === "POST" && !authorizedOperator(req, config.catalogOperatorToken ?? "")) limiter(req, res, next);
     else next();
   });
   addRateLimits(

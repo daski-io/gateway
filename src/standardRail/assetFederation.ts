@@ -62,7 +62,7 @@ export class StandardAssetFederation {
     for (const row of allCurrent.rows) {
       const active = row.canonical_admission;
       if (!grouped.get(active.payload.providerAgentId)?.some(item => canonicalHash(item) === canonicalHash(active))) {
-        throw new Error("Current servicing admission is absent from the marketplace manifest");
+        throw Object.assign(new Error("Current servicing admission is absent from the marketplace manifest"), { code: "SERVICING_CURRENT_ADMISSION_MISSING" });
       }
     }
     for (const [providerAgentId, admissions] of grouped) {
@@ -83,7 +83,7 @@ export class StandardAssetFederation {
         );
         let active: SignedEnvelope<ProviderServicingAdmissionV1> | null = current.rows[0]?.canonical_admission ?? null;
         if (active && !admissions.some(item => canonicalHash(item) === canonicalHash(active!))) {
-          throw new Error("Current servicing admission is absent from the marketplace manifest");
+          throw Object.assign(new Error("Current servicing admission is absent from the marketplace manifest"), { code: "SERVICING_CURRENT_ADMISSION_MISSING" });
         }
         const desired = await client.query<{ target_epoch: string }>(
           "SELECT target_epoch FROM standard_asset_action_targets WHERE provider_agent_id=$1", [providerAgentId]);
@@ -94,7 +94,7 @@ export class StandardAssetFederation {
         if (options.readOnly) {
           if (!active) active = admissions.find(item => item.payload.actionCatalogEpoch === 1 &&
             item.payload.servicingProfileEpoch === 1 && item.payload.previousAdmissionHash === ZERO_HASH) ?? null;
-          if (!active) throw new Error("Initial servicing admission is absent");
+          if (!active) throw Object.assign(new Error("Initial servicing admission is absent"), { code: "SERVICING_GENESIS_MISSING" });
           await client.query("COMMIT");
           this.activeAdmissions.set(providerAgentId, active);
           continue;
@@ -139,7 +139,7 @@ export class StandardAssetFederation {
           active = admission;
         }
         if (!active || !admissions.some((item) => canonicalHash(item) === canonicalHash(active!))) {
-          throw new Error("Current servicing admission is absent from the marketplace manifest");
+          throw Object.assign(new Error("Current servicing admission is absent from the marketplace manifest"), { code: "SERVICING_CURRENT_ADMISSION_MISSING" });
         }
         await client.query("COMMIT");
         this.activeAdmissions.set(providerAgentId, active);

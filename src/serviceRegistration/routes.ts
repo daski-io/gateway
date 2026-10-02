@@ -95,7 +95,7 @@ export function createServiceRegistrationRouter(args: {
     // The provider's existing signed intent is the authority for its own
     // monotonic fence; its background job never receives the operator token.
     res.setHeader("Cache-Control", "no-store");
-    try { res.json(await args.service.acknowledgeRevisionFence(req.body)); }
+    try { res.json(await args.service.acknowledgeRevisionFence(req.body, { operator: authorizedOperator(req, operatorToken) })); }
     catch (error) {
       if (error instanceof RegistrationAuthError) {
         throw new RegistrationError(401, "REGISTRATION_UNAUTHORIZED", "The signed registration fence is invalid.", error.reason);

@@ -122,3 +122,13 @@ it("rejects malformed registration signatures without a provider RPC read", asyn
   await expect(verifyRegistrationIntent({ raw: { ...raw, signature: "0x"+"00".repeat(65) }, ...domain, marketplace: reader })).rejects.toThrow();
   expect(reader.getProvider).not.toHaveBeenCalled();
 });
+
+it("charges fence RPC admission only after validating the signature", async () => {
+ const beforeAuthority=vi.fn(async()=>undefined),reader=marketplace();
+ const getProvider=vi.spyOn(reader,"getProvider");
+ const raw=await intent();raw.signature=("0x"+"00".repeat(65)) as Hex;
+ await expect(verifyRegistrationIntent({raw,...domain,marketplace:reader,beforeAuthority})).rejects.toThrow();
+ expect(beforeAuthority).not.toHaveBeenCalled();expect(getProvider).not.toHaveBeenCalled();
+ await verifyRegistrationIntent({raw:await intent(),...domain,marketplace:reader,beforeAuthority});
+ expect(beforeAuthority).toHaveBeenCalledOnce();expect(getProvider).toHaveBeenCalledOnce();
+});

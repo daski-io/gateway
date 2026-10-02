@@ -219,3 +219,23 @@ it("rejects stale asset epoch activation even when the old snapshot cannot see r
       .rejects.toMatchObject({code:"40001"});
   } finally {await legacy.query("ROLLBACK");legacy.release();}
 },60_000);
+
+it("preserves buyer review and reputation rights after fulfilled listing retirement",async()=>{
+  await order("completed","FULFILLED");
+  await pool.query("UPDATE standard_orders SET deposit_evidence_hash=$1,release_evidence_hash=$1 WHERE order_id='completed'",[Buffer.alloc(32,9)]);
+  await pool.query("INSERT INTO standard_rail_receipts(order_id,receipt_hash,canonical_receipt) VALUES('completed',$1,'{}')",[Buffer.alloc(32,9)]);
+  await api.retire({...scope,requestId:"retire-fulfilled"});
+  for (const version of ["","_v2"]) {
+    const extra=version?",profile_id,signed_deadline,profile_observation,authorization_group":"";
+    const extraValues=version?",'eas-native-1.0.1',NULL,'{}',gen_random_uuid()":"";
+    await expect(pool.query(`INSERT INTO standard_confirmation_preparations`+version+`
+      (order_id,order_key,payer,operation,submissions_used,eas_nonce,deadline,request_hash,canonical_typed_data,
+       final_transition_acknowledged,expires_at`+extra+`)
+      VALUES('completed',$1,'0x2222222222222222222222222222222222222222','attest-confirmation',0,0,1,$2,'{}',
+       false,now()+interval '1 day'`+extraValues+`)`,[Buffer.alloc(32,1),Buffer.alloc(32,version?14:13)])).resolves.toBeDefined();
+  }
+  await expect(pool.query(`INSERT INTO standard_reputation_operations(order_id,kind,logical_key,intent_hash,canonical_intent,state)
+    VALUES('completed','confirmation-v2',$1,$1,'{}','pending')`,[Buffer.alloc(32,18)])).resolves.toBeDefined();
+  await expect(pool.query("UPDATE standard_orders SET capability_epoch=capability_epoch+1 WHERE order_id='completed'")).resolves.toBeDefined();
+  await expect(order("new-after-review","DRAFT",listingManifestHash,2)).rejects.toThrow("CONTRACT_RETIRED");
+},60_000);

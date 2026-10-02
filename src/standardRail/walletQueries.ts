@@ -120,13 +120,19 @@ export class StandardWalletQueries {
     const hasMore = result.rows.length > args.limit;
     const records = await this.observe(async ({ client }) => {
       const block = await client.getBlock({ blockTag: this.finalityTag });
-      return Promise.all(rows.map((row) => client.readContract({
+      // A page can contain 100 rows; keep only a bounded batch in the ordered
+      // transport while preserving the caller's requested page and pinned block.
+      const records = [];
+      for (let start = 0; start < rows.length; start += 32) {
+        records.push(...await Promise.all(rows.slice(start, start + 32).map((row) => client.readContract({
         address: this.reputationContract,
         abi: reputationAbi,
         functionName: "getRecord",
         args: [`0x${row.order_key.toString("hex")}`],
         blockNumber: block.number,
-      })));
+        }))));
+      }
+      return records;
     });
     return {
       orders: rows.map((row, index) => {

@@ -304,6 +304,7 @@ export async function verifyProviderEnvelope<T>(args: {
   config: Pick<Config, "chainId" | "publicUrl">;
   railConfig: Pick<StandardRailConfig, "environment">;
   marketplace: MarketplaceChainReader;
+  beforeAuthority?: () => Promise<void>;
 }): Promise<{
   envelope: SignedEnvelope<T>;
   owner: Address;
@@ -323,6 +324,7 @@ export async function verifyProviderEnvelope<T>(args: {
   const providerAgentId = args.providerAgentId(payload);
   // Reject malformed signatures before spending shared chain-read capacity.
   const signer = await providerEnvelopeSigner(envelope);
+  await args.beforeAuthority?.();
   let provider: unknown;
   try {
     provider = await args.marketplace.getProvider(BigInt(providerAgentId));
@@ -357,6 +359,7 @@ export function verifyRegistrationIntent(args: {
   config: Pick<Config, "chainId" | "publicUrl">;
   railConfig: Pick<StandardRailConfig, "environment">;
   marketplace: MarketplaceChainReader;
+  beforeAuthority?: () => Promise<void>;
 }) {
   return verifyProviderEnvelope({
     ...args,

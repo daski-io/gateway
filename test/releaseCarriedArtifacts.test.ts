@@ -11,7 +11,7 @@ const { startupFixture, advancedCatalogFixture, testKey } =
   await import(new URL("../scripts/reliability/fixture.mjs", import.meta.url).href);
 
 describe("signed carried admission bundles", () => {
-  it("carries immutable actions across catalog epochs with one stable profile and rejects identity changes", async () => {
+  it("carries changed action definitions across exact signed epochs without rebinding historical claims", async () => {
     const initial = await startupFixture();
     const catalog = initial.manifest.actionCatalogs[0];
     const definition = { providerAgentId: "1", serviceId: "0x" + "a".repeat(64),
@@ -46,6 +46,15 @@ describe("signed carried admission bundles", () => {
       splitterFactoryRuntimeCodeHash: ("0x" + "1".repeat(64)) as `0x${string}`,
       splitterCreationCodeHash: ("0x" + "2".repeat(64)) as `0x${string}` };
     await expect(verifyStandardRailManifest(carried.manifest, trust)).resolves.toBeUndefined();
+    // Epoch 2 changes the action definition while epoch 1 remains executable.
+    const changed = { ...definition, retentionSeconds: 7200 };
+    const nextCatalog = carried.manifest.actionCatalogs[1];
+    nextCatalog.payload.actions = [{ ...changed, actionDefinitionHash: canonicalHash(changed) }];
+    carried.manifest.actionCatalogs[1] = await signEnvelope({ ...nextCatalog, privateKey: testKey });
+    const nextAdmission = carried.manifest.servicingAdmissions[1];
+    nextAdmission.payload.actionCatalogHash = canonicalHash(carried.manifest.actionCatalogs[1]);
+    carried.manifest.servicingAdmissions[1] = await signEnvelope({ ...nextAdmission, privateKey: testKey });
+    await expect(verifyStandardRailManifest(carried.manifest, trust)).resolves.toBeUndefined();
     // Persist epoch 1 work, advance to 2, then resolve the original claim
     // through the real database and carried signed artifacts, not current.
     const schema="carried_recovery_"+randomUUID().replaceAll("-","");
@@ -79,13 +88,12 @@ describe("signed carried admission bundles", () => {
       config.manifest={...carried.manifest,servicingAdmissions:[carried.manifest.servicingAdmissions[1]]};
       await expect((api as any).resolveBound(args)).rejects.toThrow("ASSET_ACTION_NOT_ADMITTED");
     } finally {await pool.end();await admin.query('DROP SCHEMA "'+schema+'" CASCADE');await admin.end();}
-    const futureCatalog = carried.manifest.actionCatalogs[1];
-    const changed = { ...definition, retentionSeconds: 7200 };
-    futureCatalog.payload.actions = [{ ...changed, actionDefinitionHash: canonicalHash(changed) }];
-    carried.manifest.actionCatalogs[1] = await signEnvelope({ ...futureCatalog, privateKey: testKey });
-    const futureAdmission = carried.manifest.servicingAdmissions[1];
-    futureAdmission.payload.actionCatalogHash = canonicalHash(carried.manifest.actionCatalogs[1]);
-    carried.manifest.servicingAdmissions[1] = await signEnvelope({ ...futureAdmission, privateKey: testKey });
-    await expect(verifyStandardRailManifest(carried.manifest, trust)).rejects.toThrow("immutable definition");
+    // The same catalog cannot contain ambiguous duplicate action identities.
+    const duplicate = carried.manifest.actionCatalogs[1];
+    duplicate.payload.actions.push({ ...definition, actionDefinitionHash: canonicalHash(definition) });
+    carried.manifest.actionCatalogs[1] = await signEnvelope({ ...duplicate, privateKey: testKey });
+    carried.manifest.servicingAdmissions[1].payload.actionCatalogHash = canonicalHash(carried.manifest.actionCatalogs[1]);
+    carried.manifest.servicingAdmissions[1] = await signEnvelope({ ...carried.manifest.servicingAdmissions[1], privateKey: testKey });
+    await expect(verifyStandardRailManifest(carried.manifest, trust)).rejects.toThrow("action definition");
   },60_000);
 });

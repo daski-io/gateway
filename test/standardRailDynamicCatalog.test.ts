@@ -583,3 +583,16 @@ it("an unbuildable unrelated listing does not block healthy readiness, but the o
   expect(await broken.validateCommerce()).toEqual([]);
   await expect(broken.validateCommerce([runtimeCommitmentHash])).rejects.toThrow("COMMERCE_BASELINE_CONTRACT_MISSING");
 });
+
+it("reports the executable definition from the exact admitted paid contract",async()=>{
+  const admitted=record();
+  const {pricing:_pricing,...execution}=skill().contract;
+  const [capability]=await catalogFor(fakeState([admitted])).validateCommerce([runtimeCommitmentHash]);
+  expect(capability).toMatchObject({
+    skillContractHash:hash("7"),
+    executableDefinitionHash:canonicalHash({schemaVersion:1,serviceSlug:admitted.serviceSlug,skillId:"register-domain",execution}),
+  });
+  expect(capability?.executableDefinitionHash).not.toBe(canonicalHash({
+    schemaVersion:1,serviceSlug:admitted.serviceSlug,skillId:"register-domain",execution:skill().contract,
+  }));
+});

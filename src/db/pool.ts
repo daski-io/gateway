@@ -75,9 +75,9 @@ export function createPool(opts: CreatePoolOptions): Pool {
 
 /**
  * Apply pending migrations from src/db/migrations (or dist/db/migrations
- * after build). Each .sql file is run in a single transaction and recorded
- * in the `_migrations` table so it isn't re-applied. Mirrors the
- * provider's runner so the operational surface is identical.
+ * after build). Each file is recorded in `_migrations`; related retirement
+ * changes publish atomically in one transaction. Lock contention rolls back
+ * the whole pending transaction and yields to the serving runtime.
  */
 export async function runMigrations(
   pool: Pool,
@@ -109,28 +109,43 @@ export async function runMigrations(
       .filter((f) => options.through === undefined || f <= options.through)
       .sort();
 
+    const pending: Array<{ file: string; sql: string; checksum: string }> = [];
     for (const file of files) {
       const sql = fs.readFileSync(path.join(migrationsDir, file), "utf-8");
       const checksum = createHash("sha256").update(sql, "utf8").digest("hex");
       if (appliedMap.has(file)) {
         const recorded = appliedMap.get(file);
-        if (recorded && recorded !== checksum) {
-          throw new Error(`Applied migration checksum changed: ${file}`);
-        }
-        if (!recorded) {
-          await client.query("UPDATE _migrations SET checksum=$2 WHERE name=$1 AND checksum IS NULL", [file, checksum]);
-        }
-        continue;
+        if (recorded && recorded !== checksum) throw new Error("Applied migration checksum changed: " + file);
+        if (!recorded) await client.query("UPDATE _migrations SET checksum=$2 WHERE name=$1 AND checksum IS NULL", [file, checksum]);
+      } else pending.push({ file, sql, checksum });
+    }
+    for (let index = 0; index < pending.length;) {
+      const batch = [pending[index++]!];
+      // Publish the retirement trigger and its correction atomically on a
+      // legacy schema. Applied migration bytes/checksums stay immutable.
+      if (batch[0]!.file >= "056_" && batch[0]!.file <= "058_zz") {
+        while (index < pending.length && pending[index]!.file <= "058_zz") batch.push(pending[index++]!);
       }
-      await client.query("BEGIN");
-      try {
-        await client.query(sql);
-        await client.query("INSERT INTO _migrations (name,checksum) VALUES ($1,$2)", [file, checksum]);
-        await client.query("COMMIT");
-        logger.info("database migration applied", { migration: file });
-      } catch (err) {
-        await client.query("ROLLBACK");
-        throw err;
+      const deadline = Date.now() + 120_000;
+      for (;;) {
+        await client.query("BEGIN");
+        try {
+          // Never let a waiting ACCESS EXCLUSIVE DDL lock queue serving reads
+          // for seconds. Retry the whole uncommitted expansion after yielding.
+          await client.query("SET LOCAL lock_timeout='50ms'");
+          for (const migration of batch) {
+            await client.query(migration.sql);
+            await client.query("INSERT INTO _migrations (name,checksum) VALUES ($1,$2)", [migration.file,migration.checksum]);
+          }
+          await client.query("COMMIT");
+          for (const migration of batch) logger.info("database migration applied", { migration: migration.file });
+          break;
+        } catch (err) {
+          await client.query("ROLLBACK");
+          const code = (err as { code?: string }).code;
+          if (!["40P01", "55P03"].includes(code ?? "") || Date.now() >= deadline) throw err;
+          await new Promise(resolve => setTimeout(resolve, 100 + Math.floor(Math.random() * 100)));
+        }
       }
     }
     await client.query("ALTER TABLE _migrations ALTER COLUMN checksum SET NOT NULL");

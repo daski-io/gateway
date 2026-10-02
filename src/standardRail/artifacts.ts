@@ -208,7 +208,6 @@ export async function verifyStandardRailManifest(
       actionKeys.add(actionKey);
     }
   }
-  const admittedActions = new Map<string, string>();
   for (const admission of manifest.servicingAdmissions) {
     const catalog = manifest.actionCatalogs.find((item) =>
       item.payload.providerAgentId === admission.payload.providerAgentId &&
@@ -232,11 +231,9 @@ export async function verifyStandardRailManifest(
       if (action.endpoint !== controlProfile.payload.assetActionUrl) {
         throw new Error("Action definition is outside its admitted provider service");
       }
-      const actionKey = `${action.providerAgentId}:${action.serviceSlug}:${action.actionId}`;
-      if (admittedActions.has(actionKey) && admittedActions.get(actionKey) !== action.actionDefinitionHash) {
-        throw new Error("Provider service action identity changes its immutable definition");
-      }
-      admittedActions.set(actionKey, action.actionDefinitionHash);
+      // Definitions are immutable within their signed catalog version. Different
+      // admissions may carry historical definitions of the same action; claim
+      // recovery resolves the exact admission/catalog/definition hashes.
     }
   }
   requireClosedKeys(manifest.facilitatorProfile.payload as unknown as Record<string, unknown>, [

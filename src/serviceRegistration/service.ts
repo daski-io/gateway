@@ -268,7 +268,7 @@ export class ServiceRegistrationService {
     }
   }
 
-  async acknowledgeRevisionFence(raw: unknown) {
+  async acknowledgeRevisionFence(raw: unknown, options: { operator?: boolean } = {}) {
     const candidate = raw as { payload?: { providerAgentId?: unknown; serviceId?: unknown } };
     const providerAgentId = candidate?.payload?.providerAgentId;
     const serviceId = candidate?.payload?.serviceId;
@@ -279,6 +279,16 @@ export class ServiceRegistrationService {
     }
     const { envelope } = await verifyRegistrationIntent({
       raw, config: this.config, railConfig: this.railConfig, marketplace: this.marketplace,
+      beforeAuthority: async () => {
+        // Invalid shapes/signatures spend no shared RPC capacity. The exact
+        // authenticated coordinator path has independent admission, while the
+        // transport continues enforcing the endpoint's actual read budget.
+        if (options.operator) return;
+        const maximum = Math.max(1, Math.min(this.config.stateChangeGlobalMaxPerMinute,
+          Math.floor(this.config.rpcReadMaxPerMinute / 27)));
+        if (await this.store.consumeFenceBudget() > maximum)
+          throw new RegistrationError(429, "RATE_LIMITED", "Registration fence capacity is temporarily exhausted.");
+      },
     });
     const payload = envelope.payload;
     const service = await this.marketplace.getService(payload.serviceId);

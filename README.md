@@ -230,7 +230,7 @@ core groups are:
   it never changes payment audiences or signed resource URLs.
 - Standard facilitator: `CDP_API_KEY_ID`, `CDP_API_KEY_SECRET`, and the signed
   facilitator profile in `STANDARD_RAIL_MANIFEST_JSON`.
-- RPC read pacing: RPC_READ_MAX_PER_MINUTE (default 300) spaces read requests across gateway clients sharing one endpoint in a process. Queue waits are bounded to two seconds and 64 requests per client; expired or canceled waiting requests never reach the endpoint. Optional quote balance preflight uses only immediately available capacity, so quote bursts cannot reserve slots ahead of payment verification or recovery. A skipped balance read leaves the challenge valid and reports an unavailable preflight. Transaction broadcast uses its separate durable path.
+- RPC read pacing: RPC_READ_MAX_PER_MINUTE (default 300) spaces read requests across gateway clients sharing one endpoint in a process. Each client holds at most 64 requests. The endpoint pacing wait is bounded to two seconds once a read reaches the head of its client queue; required proof batches do not expire behind their own earlier reads. Explicit caller deadlines cover the entire queue. Expired or canceled reads never reach the endpoint or consume a reserved slot. Optional quote balance preflight uses only immediately available capacity, so quote bursts cannot reserve slots ahead of payment verification or recovery. A skipped balance read leaves the challenge valid and reports an unavailable preflight. Transaction broadcast uses its separate durable path.
 - Evidence and screening: `BASE_RPC_URL`, optional `BASE_RPC_FALLBACK_URLS`,
   `STANDARD_RAIL_SPLITTER_FACTORY_RUNTIME_CODE_HASH`,
   `STANDARD_RAIL_SPLITTER_CREATION_CODE_HASH`, and `SANCTIONS_ORACLE_ADDRESS`.

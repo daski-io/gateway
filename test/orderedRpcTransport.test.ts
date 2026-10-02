@@ -107,7 +107,7 @@ it("cancels requests waiting behind a slow wire request without sending them aft
       { scope: "queue-timeout-test", maxPerMinute: 300, maxWaitMs: 100 })({ retryCount: 0 }).request;
     const first = request({ method: "slow" });
     await vi.advanceTimersByTimeAsync(0);
-    const abandoned = Promise.allSettled([request({ method: "expired" })]);
+    const abandoned = Promise.allSettled([request({ method: "expired" }, { deadline: Date.now() + 100 } as never)]);
     await vi.advanceTimersByTimeAsync(101);
     expect((await abandoned)[0]).toMatchObject({ status: "rejected" });
     finish(); await first;
@@ -133,11 +133,28 @@ it("aborts a reserved pacing wait before dispatch and bounds per-client queue gr
     let finish!: () => void;
     const blocked = orderedRpcTransport(custom({ request: async () => new Promise(resolve => { finish = () => resolve("ok"); }) }))
       ({ retryCount: 0 }).request;
-    const accepted = Array.from({ length: 64 }, () => blocked({ method: "eth_chainId" }));
+    const cancelQueue = new AbortController();
+    const accepted = Array.from({ length: 64 }, () => blocked({ method: "eth_chainId" }, { signal: cancelQueue.signal } as never));
     const results = Promise.allSettled(accepted);
     await expect(blocked({ method: "eth_chainId" })).rejects.toThrow("queue");
-    await vi.advanceTimersByTimeAsync(2_001);
+    await vi.advanceTimersByTimeAsync(1);
+    cancelQueue.abort();
     finish();
     await results;
   } finally { vi.useRealTimers(); }
+});
+
+it("returns cancelled endpoint capacity to the next required read",async()=>{
+ vi.useFakeTimers();
+ try{
+  const sent:number[]=[];
+  const request=orderedRpcTransport(custom({request:async()=>{sent.push(Date.now());return "ok";}}),
+    {scope:"reclaimed-capacity",maxPerMinute:300})({retryCount:0}).request;
+  const started=Date.now();await request({method:"eth_chainId"});
+  const cancel=new AbortController();
+  const canceled=Promise.allSettled([request({method:"eth_chainId"},{signal:cancel.signal} as never)]);
+  await vi.advanceTimersByTimeAsync(1);cancel.abort();await canceled;
+  const next=request({method:"eth_chainId"});await vi.runAllTimersAsync();await next;
+  expect(sent.map(value=>value-started)).toEqual([0,200]);
+ }finally{vi.useRealTimers();}
 });

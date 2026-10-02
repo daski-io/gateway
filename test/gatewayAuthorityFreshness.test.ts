@@ -281,6 +281,7 @@ describe("gateway authority freshness", () => {
   it.each(["signature", "domain", "service", "authority"])("refuses an invalid signed revision fence: %s", async kind => {
     const test = await setup();
     vi.spyOn(ServiceRegistrationStore.prototype, "acknowledgedRevisionFence").mockResolvedValue(null);
+    vi.spyOn(ServiceRegistrationStore.prototype, "consumeFenceBudget").mockResolvedValue(1);
     const commit = vi.spyOn(ServiceRegistrationStore.prototype, "acknowledgeRevisionFence");
     let fence = await signEnvelope({ ...test.intent, privateKey: providerKey,
       payload: { ...test.intent.payload, targetRevision: 1 } });

@@ -1616,6 +1616,11 @@ export class StandardRailService {
         internalMessage: "PROVIDER_ARTIFACT_MISSING",
       });
     }
+    if (action === "artifact" && response.result && typeof response.result === "object" &&
+        "id" in response.result && "status" in response.result &&
+        (response.result as { id: unknown }).id !== initial.providerTaskId) {
+      throw standardRailError("INTERNAL_ERROR", { internalMessage: "PROVIDER_ARTIFACT_TASK_BINDING_INVALID" });
+    }
     if (action === "artifact" && response.state !== "completed" &&
         operationsSchema.parse(response.operations).recovery?.state !== "completed") {
       throw standardRailError("INTERNAL_ERROR", { internalMessage: "PROVIDER_ARTIFACT_NOT_FULFILLED" });

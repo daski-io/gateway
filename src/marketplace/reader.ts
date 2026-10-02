@@ -234,8 +234,13 @@ export class ViemMarketplaceChainReader implements MarketplaceChainReader {
           blockNumber,
         }),
       ]);
-      const providers = await Promise.all(ids.map((agentId) =>
-        this.providerSummary(client, agentId, blockNumber)));
+      const providers = [];
+      // Each summary performs several ordered reads. Keep the maximum page
+      // below the client's queue bound without changing its pinned block.
+      for (let start = 0; start < ids.length; start += 8) {
+        providers.push(...await Promise.all(ids.slice(start, start + 8).map(agentId =>
+          this.providerSummary(client, agentId, blockNumber))));
+      }
       return { offset, limit, total: total.toString(), providers, finalizedBlock: blockNumber.toString() };
     });
   }

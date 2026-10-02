@@ -1,3 +1,4 @@
+import { createRateLimitQueries } from "../db/rateLimitQueries.js";
 import type { Pool } from "../db/pool.js";
 import { canonicalHash } from "../standardRail/canonical.js";
 import type { SignedEnvelope } from "../standardRail/types.js";
@@ -169,6 +170,10 @@ export class ServiceRegistrationStore {
   private mutations = 0;
 
   constructor(private readonly pool: Pool) {}
+
+  async consumeFenceBudget(): Promise<number> {
+    return (await createRateLimitQueries(this.pool).consumeRateLimitBucket("release-fence-authenticated:global", 60_000)).count;
+  }
 
   /** Bumped after every write on this replica; catalog memos key on it. */
   get mutationVersion(): number {
