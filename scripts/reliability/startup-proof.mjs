@@ -216,10 +216,10 @@ export async function proveStartup(input, databaseUrl, options={}) {
     if(options.image && child) {
       try { execFileSync('docker',['stop','--time','5',`gateway-proof-${nonce}`],{stdio:'ignore'}); } catch {}
     } else if(child && !status) child.kill('SIGTERM');
-    if(child && !status) {for(let i=0;i<60 && !status;i++) await delay(100); if(!status) child.kill('SIGKILL');}
+    if(child && !status) {for(let i=0;i<60 && !status;i++) await delay(100); if(!status) {child.kill('SIGKILL'); await new Promise(resolve=>child.once('close',resolve));}}
     if(temporary) rmSync(temporary,{recursive:true,force:true});
     await pool?.end();
-    if(databaseCreated) await bootstrap.query(`DROP DATABASE "${name}" WITH (FORCE)`);
+    if(databaseCreated) await bootstrap.query(`DROP DATABASE "${name}"`);
     if(roleCreated) await bootstrap.query(`DROP ROLE "${runtime}"`);
     await bootstrap.end();
   }

@@ -1,6 +1,6 @@
 import type { Transport } from "viem";
 
-interface RpcPacing { scope: string; maxPerMinute?: number; maxWaitMs?: number }
+interface RpcPacing { scope: string; maxPerMinute?: number; maxWaitMs?: number; required?: boolean; concurrency?: number }
 interface SchedulingOptions { signal?: AbortSignal; deadline?: number }
 interface Waiter { deadline: number; spacing: number; finish: (error?: Error) => void }
 interface Budget { nextAt: number; queue: Waiter[]; timer?: ReturnType<typeof setTimeout> }
@@ -56,7 +56,10 @@ function paced(pacing: RpcPacing, deadline: number, signal?: AbortSignal): Promi
  * Keep a client's reads ordered. The bounded endpoint wait starts when a read
  * reaches the head of that client's queue, so a required proof batch cannot
  * exhaust its own budget. An explicit caller deadline still covers the entire
- * queue. Optional quote reads (maxWaitMs:0) never reserve future capacity.
+ * queue. Required internal proofs retain their work under concurrent load;
+ * request-scoped clients retain the admission cap. Independent signature
+ * reads may use bounded parallel lanes without increasing endpoint rate.
+ * Optional quote reads (maxWaitMs:0) never reserve future capacity.
  */
 export function orderedRpcTransport(transport: Transport, pacing?: RpcPacing): Transport {
   if (pacing?.maxPerMinute !== undefined &&
@@ -65,12 +68,15 @@ export function orderedRpcTransport(transport: Transport, pacing?: RpcPacing): T
       (!Number.isSafeInteger(pacing.maxWaitMs) || pacing.maxWaitMs < 0)) throw new Error("Invalid RPC queue wait");
   return parameters => {
     const target = transport(parameters);
-    let tail: Promise<void> = Promise.resolve(), queued = 0;
+    const concurrency = pacing?.concurrency ?? 1;
+    if (!Number.isSafeInteger(concurrency) || concurrency < 1 || concurrency > 8) throw new Error("Invalid RPC concurrency");
+    const tails: Promise<void>[] = Array.from({ length: concurrency }, () => Promise.resolve());
+    let nextLane = 0, queued = 0;
     const request = ((...args: Parameters<typeof target.request>) => {
       const options = args[1] as SchedulingOptions | undefined;
       const signal = options?.signal, deadline = options?.deadline ?? Infinity;
       const maxWaitMs = pacing?.maxWaitMs ?? DEFAULT_MAX_WAIT_MS;
-      if (signal?.aborted || Date.now() > deadline || queued >= MAX_QUEUED_REQUESTS ||
+      if (signal?.aborted || Date.now() > deadline || (!pacing?.required && queued >= MAX_QUEUED_REQUESTS) ||
           (maxWaitMs === 0 && queued > 0)) return Promise.reject(new RpcQueueUnavailableError());
       queued++;
       let waiting = true;
@@ -79,7 +85,8 @@ export function orderedRpcTransport(transport: Transport, pacing?: RpcPacing): T
       const abort = () => { if (waiting) { waiting = false; rejectWait(new RpcQueueUnavailableError()); } };
       signal?.addEventListener("abort", abort, { once: true });
       const timer = Number.isFinite(deadline) ? setTimeout(abort, Math.max(0, deadline - Date.now())) : undefined;
-      const work = tail.then(async () => {
+      const lane = nextLane++ % concurrency;
+      const work = tails[lane]!.then(async () => {
         try {
           if (!waiting || signal?.aborted || Date.now() > deadline) throw new RpcQueueUnavailableError();
           if (pacing?.maxPerMinute !== undefined)
@@ -95,7 +102,7 @@ export function orderedRpcTransport(transport: Transport, pacing?: RpcPacing): T
           signal?.removeEventListener("abort", abort);
         }
       });
-      tail = work.then(() => undefined, () => undefined);
+      tails[lane] = work.then(() => undefined, () => undefined);
       return Promise.race([work, canceled]);
     }) as typeof target.request;
     return { ...target, request };

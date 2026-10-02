@@ -1,0 +1,4836 @@
+{
+  "provenance": "Synthetic outputs from real provider result builders at 7086205 and 412f2d6, validated against retained and current paid contracts. Supplier and database calls were mocked. No live records.",
+  "schemas": [
+    {
+      "type": "object",
+      "required": [
+        "domain",
+        "term",
+        "newExpiresAt",
+        "registrar"
+      ],
+      "properties": {
+        "term": {
+          "type": "integer",
+          "maximum": 10,
+          "minimum": 1
+        },
+        "domain": {
+          "type": "string",
+          "maxLength": 253,
+          "minLength": 1
+        },
+        "registrar": {
+          "type": "string",
+          "maxLength": 128,
+          "minLength": 1
+        },
+        "newExpiresAt": {
+          "type": "string",
+          "maxLength": 64,
+          "minLength": 1
+        }
+      },
+      "maxProperties": 4,
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "required": [
+        "domain"
+      ],
+      "properties": {
+        "domain": {
+          "type": "string",
+          "maxLength": 253,
+          "minLength": 1
+        },
+        "authCode": {
+          "type": "string",
+          "maxLength": 512,
+          "minLength": 1
+        },
+        "expiresAt": {
+          "type": "string",
+          "maxLength": 64,
+          "minLength": 1
+        },
+        "nextSteps": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 1024,
+            "minLength": 1
+          },
+          "maxItems": 16
+        },
+        "timestamp": {
+          "type": "string",
+          "maxLength": 64,
+          "minLength": 1
+        },
+        "previousAssetId": {
+          "type": "string",
+          "maxLength": 128,
+          "minLength": 1
+        }
+      },
+      "maxProperties": 6,
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "required": [
+        "address",
+        "expiresAt",
+        "renewed"
+      ],
+      "properties": {
+        "address": {
+          "type": "string",
+          "maxLength": 320,
+          "minLength": 1
+        },
+        "renewed": {
+          "type": "boolean"
+        },
+        "supplier": {
+          "type": "string",
+          "maxLength": 128,
+          "minLength": 1
+        },
+        "expiresAt": {
+          "type": "string",
+          "maxLength": 64,
+          "minLength": 1
+        }
+      },
+      "maxProperties": 4,
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "required": [
+        "entity",
+        "status"
+      ],
+      "properties": {
+        "type": {
+          "type": "string",
+          "maxLength": 128,
+          "minLength": 1
+        },
+        "title": {
+          "type": "string",
+          "maxLength": 512,
+          "minLength": 1
+        },
+        "entity": {
+          "type": "string",
+          "maxLength": 256,
+          "minLength": 1
+        },
+        "status": {
+          "type": "string",
+          "maxLength": 128,
+          "minLength": 1
+        },
+        "taskId": {
+          "type": "string",
+          "maxLength": 128,
+          "minLength": 1
+        },
+        "assetId": {
+          "type": "string",
+          "maxLength": 128,
+          "minLength": 1
+        },
+        "legalName": {
+          "type": "string",
+          "maxLength": 256,
+          "minLength": 1
+        },
+        "documentId": {
+          "type": "string",
+          "maxLength": 128,
+          "minLength": 1
+        },
+        "receivedAt": {
+          "type": "string",
+          "maxLength": 64,
+          "minLength": 1
+        },
+        "raPaidThrough": {
+          "type": "string",
+          "maxLength": 64,
+          "minLength": 1
+        }
+      },
+      "maxProperties": 10,
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "required": [
+        "id",
+        "status"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "status": {
+          "type": "object",
+          "required": [
+            "state",
+            "message"
+          ],
+          "properties": {
+            "state": {
+              "type": "string",
+              "maxLength": 4096
+            },
+            "message": {
+              "type": "object",
+              "required": [
+                "role",
+                "parts"
+              ],
+              "properties": {
+                "role": {
+                  "type": "string",
+                  "maxLength": 4096
+                },
+                "parts": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": [
+                      "kind"
+                    ],
+                    "properties": {
+                      "data": {
+                        "type": "object",
+                        "required": [
+                          "legalName",
+                          "country",
+                          "state",
+                          "entityType",
+                          "classification",
+                          "entity",
+                          "assetId",
+                          "formationDate",
+                          "registeredAgent",
+                          "raPaidThrough",
+                          "publicationObligation",
+                          "clientObligations",
+                          "notSupported",
+                          "intakeAliasProvisioned",
+                          "emailDelivery",
+                          "documents",
+                          "documentAccess"
+                        ],
+                        "properties": {
+                          "state": {
+                            "type": "string",
+                            "maxLength": 4096
+                          },
+                          "entity": {
+                            "type": "string",
+                            "maxLength": 4096
+                          },
+                          "assetId": {
+                            "type": "string",
+                            "maxLength": 4096
+                          },
+                          "country": {
+                            "type": "string",
+                            "maxLength": 4096
+                          },
+                          "documents": {
+                            "type": "array",
+                            "items": {
+                              "type": "string",
+                              "maxLength": 4096
+                            },
+                            "maxItems": 128
+                          },
+                          "legalName": {
+                            "type": "string",
+                            "maxLength": 4096
+                          },
+                          "entityType": {
+                            "type": "string",
+                            "maxLength": 4096
+                          },
+                          "nwCompanyId": {
+                            "type": "string",
+                            "maxLength": 4096
+                          },
+                          "notSupported": {
+                            "type": "array",
+                            "items": {
+                              "type": "string",
+                              "maxLength": 4096
+                            },
+                            "maxItems": 128
+                          },
+                          "ordinaryMail": {
+                            "type": "object",
+                            "required": [
+                              "includedPieces",
+                              "period",
+                              "activation",
+                              "usageStatus",
+                              "observedOrdinaryPieces",
+                              "observedPeriod",
+                              "support"
+                            ],
+                            "properties": {
+                              "period": {
+                                "type": "string",
+                                "const": "service_year"
+                              },
+                              "support": {
+                                "type": "object",
+                                "required": [
+                                  "email",
+                                  "entity",
+                                  "note"
+                                ],
+                                "properties": {
+                                  "note": {
+                                    "type": "string",
+                                    "maxLength": 1024
+                                  },
+                                  "email": {
+                                    "type": "string",
+                                    "maxLength": 512
+                                  },
+                                  "entity": {
+                                    "type": "string",
+                                    "maxLength": 512
+                                  },
+                                  "assetId": {
+                                    "type": "string",
+                                    "maxLength": 512
+                                  },
+                                  "documentId": {
+                                    "type": "string",
+                                    "maxLength": 512
+                                  }
+                                },
+                                "maxProperties": 5,
+                                "additionalProperties": false
+                              },
+                              "termEnd": {
+                                "type": "string",
+                                "maxLength": 512
+                              },
+                              "termStart": {
+                                "type": "string",
+                                "maxLength": 512
+                              },
+                              "activation": {
+                                "enum": [
+                                  "pending",
+                                  "active",
+                                  "inactive",
+                                  "unknown"
+                                ],
+                                "type": "string"
+                              },
+                              "usedPieces": {
+                                "type": "integer",
+                                "maximum": 9007199254740991,
+                                "minimum": 0
+                              },
+                              "usageSource": {
+                                "type": "string",
+                                "maxLength": 512
+                              },
+                              "usageStatus": {
+                                "enum": [
+                                  "unknown",
+                                  "verified",
+                                  "stale"
+                                ],
+                                "type": "string"
+                              },
+                              "policyVersion": {
+                                "type": "string",
+                                "maxLength": 512
+                              },
+                              "includedPieces": {
+                                "type": "integer",
+                                "const": 5
+                              },
+                              "observedPeriod": {
+                                "type": "string",
+                                "maxLength": 512
+                              },
+                              "remainingPieces": {
+                                "type": "integer",
+                                "maximum": 9007199254740991,
+                                "minimum": 0
+                              },
+                              "usageVerifiedAt": {
+                                "type": "string",
+                                "maxLength": 512
+                              },
+                              "observedOrdinaryPieces": {
+                                "type": "integer",
+                                "maximum": 9007199254740991,
+                                "minimum": 0
+                              },
+                              "originalRequestDeadline": {
+                                "type": "string",
+                                "maxLength": 512
+                              }
+                            },
+                            "maxProperties": 15,
+                            "additionalProperties": false
+                          },
+                          "emailDelivery": {
+                            "type": "object",
+                            "required": [
+                              "status",
+                              "attachment",
+                              "contents",
+                              "note"
+                            ],
+                            "properties": {
+                              "note": {
+                                "type": "string",
+                                "maxLength": 4096
+                              },
+                              "status": {
+                                "type": "string",
+                                "maxLength": 4096
+                              },
+                              "contents": {
+                                "type": "string",
+                                "maxLength": 4096
+                              },
+                              "attachment": {
+                                "type": "boolean"
+                              }
+                            },
+                            "maxProperties": 4,
+                            "additionalProperties": false
+                          },
+                          "formationDate": {
+                            "type": "string",
+                            "maxLength": 64,
+                            "minLength": 10
+                          },
+                          "raPaidThrough": {
+                            "type": "string",
+                            "maxLength": 64,
+                            "minLength": 10
+                          },
+                          "classification": {
+                            "type": "string",
+                            "maxLength": 4096
+                          },
+                          "documentAccess": {
+                            "type": "string",
+                            "maxLength": 4096
+                          },
+                          "businessAddress": {
+                            "type": "object",
+                            "required": [
+                              "permittedUses",
+                              "availability",
+                              "limitations"
+                            ],
+                            "properties": {
+                              "address": {
+                                "type": "object",
+                                "required": [
+                                  "line1",
+                                  "city",
+                                  "state",
+                                  "postalCode",
+                                  "country"
+                                ],
+                                "properties": {
+                                  "city": {
+                                    "type": "string",
+                                    "maxLength": 512
+                                  },
+                                  "line1": {
+                                    "type": "string",
+                                    "maxLength": 512
+                                  },
+                                  "line2": {
+                                    "type": "string",
+                                    "maxLength": 512
+                                  },
+                                  "state": {
+                                    "type": "string",
+                                    "maxLength": 512
+                                  },
+                                  "county": {
+                                    "type": "string",
+                                    "maxLength": 512
+                                  },
+                                  "country": {
+                                    "type": "string",
+                                    "maxLength": 512
+                                  },
+                                  "postalCode": {
+                                    "type": "string",
+                                    "maxLength": 512
+                                  }
+                                },
+                                "maxProperties": 7,
+                                "additionalProperties": false
+                              },
+                              "verifiedAt": {
+                                "type": "string",
+                                "maxLength": 512
+                              },
+                              "limitations": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string",
+                                  "maxLength": 1024
+                                },
+                                "maxItems": 128
+                              },
+                              "availability": {
+                                "enum": [
+                                  "active",
+                                  "inactive",
+                                  "unknown"
+                                ],
+                                "type": "string"
+                              },
+                              "permittedUses": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string",
+                                  "maxLength": 512
+                                },
+                                "maxItems": 128
+                              },
+                              "policyVersion": {
+                                "type": "string",
+                                "maxLength": 512
+                              }
+                            },
+                            "maxProperties": 6,
+                            "additionalProperties": false
+                          },
+                          "filingProfileId": {
+                            "type": "string",
+                            "maxLength": 36,
+                            "minLength": 1
+                          },
+                          "registeredAgent": {
+                            "type": "object",
+                            "required": [
+                              "availability"
+                            ],
+                            "properties": {
+                              "name": {
+                                "type": "string",
+                                "maxLength": 512
+                              },
+                              "reason": {
+                                "type": "string",
+                                "maxLength": 512
+                              },
+                              "verifiedAt": {
+                                "type": "string",
+                                "maxLength": 512
+                              },
+                              "availability": {
+                                "enum": [
+                                  "active",
+                                  "inactive",
+                                  "unknown"
+                                ],
+                                "type": "string"
+                              },
+                              "jurisdiction": {
+                                "type": "string",
+                                "maxLength": 512
+                              },
+                              "officeAddress": {
+                                "type": "object",
+                                "required": [
+                                  "line1",
+                                  "city",
+                                  "state",
+                                  "postalCode",
+                                  "country"
+                                ],
+                                "properties": {
+                                  "city": {
+                                    "type": "string",
+                                    "maxLength": 512
+                                  },
+                                  "line1": {
+                                    "type": "string",
+                                    "maxLength": 512
+                                  },
+                                  "line2": {
+                                    "type": "string",
+                                    "maxLength": 512
+                                  },
+                                  "state": {
+                                    "type": "string",
+                                    "maxLength": 512
+                                  },
+                                  "county": {
+                                    "type": "string",
+                                    "maxLength": 512
+                                  },
+                                  "country": {
+                                    "type": "string",
+                                    "maxLength": 512
+                                  },
+                                  "postalCode": {
+                                    "type": "string",
+                                    "maxLength": 512
+                                  }
+                                },
+                                "maxProperties": 7,
+                                "additionalProperties": false
+                              }
+                            },
+                            "maxProperties": 6,
+                            "additionalProperties": false
+                          },
+                          "clientObligations": {
+                            "type": "array",
+                            "items": {
+                              "type": "string",
+                              "maxLength": 4096
+                            },
+                            "maxItems": 128
+                          },
+                          "filingFilerOptions": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "required": [
+                                "source"
+                              ],
+                              "properties": {
+                                "source": {
+                                  "enum": [
+                                    "contact",
+                                    "official"
+                                  ],
+                                  "type": "string"
+                                },
+                                "officialRef": {
+                                  "type": "string",
+                                  "maxLength": 128
+                                },
+                                "rosterPosition": {
+                                  "type": "string",
+                                  "maxLength": 512
+                                }
+                              },
+                              "maxProperties": 3,
+                              "additionalProperties": false
+                            },
+                            "maxItems": 512
+                          },
+                          "publicationObligation": {
+                            "type": "boolean"
+                          },
+                          "intakeAliasProvisioned": {
+                            "type": "boolean"
+                          }
+                        },
+                        "maxProperties": 22,
+                        "additionalProperties": false
+                      },
+                      "file": {
+                        "type": "object",
+                        "required": [
+                          "url",
+                          "mimeType"
+                        ],
+                        "properties": {
+                          "url": {
+                            "type": "string",
+                            "maxLength": 4096
+                          },
+                          "mimeType": {
+                            "type": "string",
+                            "maxLength": 4096
+                          }
+                        },
+                        "maxProperties": 2,
+                        "additionalProperties": false
+                      },
+                      "kind": {
+                        "enum": [
+                          "text",
+                          "data",
+                          "file"
+                        ],
+                        "type": "string"
+                      },
+                      "text": {
+                        "type": "string",
+                        "maxLength": 4096
+                      }
+                    },
+                    "maxProperties": 4,
+                    "additionalProperties": false
+                  },
+                  "maxItems": 128
+                }
+              },
+              "maxProperties": 2,
+              "additionalProperties": false
+            }
+          },
+          "maxProperties": 2,
+          "additionalProperties": false
+        },
+        "artifacts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "artifactId",
+              "name",
+              "parts"
+            ],
+            "properties": {
+              "name": {
+                "type": "string",
+                "maxLength": 4096
+              },
+              "parts": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "kind"
+                  ],
+                  "properties": {
+                    "data": {
+                      "type": "object",
+                      "required": [
+                        "legalName",
+                        "country",
+                        "state",
+                        "entityType",
+                        "classification",
+                        "entity",
+                        "assetId",
+                        "formationDate",
+                        "registeredAgent",
+                        "raPaidThrough",
+                        "publicationObligation",
+                        "clientObligations",
+                        "notSupported",
+                        "intakeAliasProvisioned",
+                        "emailDelivery",
+                        "documents",
+                        "documentAccess"
+                      ],
+                      "properties": {
+                        "state": {
+                          "type": "string",
+                          "maxLength": 4096
+                        },
+                        "entity": {
+                          "type": "string",
+                          "maxLength": 4096
+                        },
+                        "assetId": {
+                          "type": "string",
+                          "maxLength": 4096
+                        },
+                        "country": {
+                          "type": "string",
+                          "maxLength": 4096
+                        },
+                        "documents": {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "maxLength": 4096
+                          },
+                          "maxItems": 128
+                        },
+                        "legalName": {
+                          "type": "string",
+                          "maxLength": 4096
+                        },
+                        "entityType": {
+                          "type": "string",
+                          "maxLength": 4096
+                        },
+                        "nwCompanyId": {
+                          "type": "string",
+                          "maxLength": 4096
+                        },
+                        "notSupported": {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "maxLength": 4096
+                          },
+                          "maxItems": 128
+                        },
+                        "ordinaryMail": {
+                          "type": "object",
+                          "required": [
+                            "includedPieces",
+                            "period",
+                            "activation",
+                            "usageStatus",
+                            "observedOrdinaryPieces",
+                            "observedPeriod",
+                            "support"
+                          ],
+                          "properties": {
+                            "period": {
+                              "type": "string",
+                              "const": "service_year"
+                            },
+                            "support": {
+                              "type": "object",
+                              "required": [
+                                "email",
+                                "entity",
+                                "note"
+                              ],
+                              "properties": {
+                                "note": {
+                                  "type": "string",
+                                  "maxLength": 1024
+                                },
+                                "email": {
+                                  "type": "string",
+                                  "maxLength": 512
+                                },
+                                "entity": {
+                                  "type": "string",
+                                  "maxLength": 512
+                                },
+                                "assetId": {
+                                  "type": "string",
+                                  "maxLength": 512
+                                },
+                                "documentId": {
+                                  "type": "string",
+                                  "maxLength": 512
+                                }
+                              },
+                              "maxProperties": 5,
+                              "additionalProperties": false
+                            },
+                            "termEnd": {
+                              "type": "string",
+                              "maxLength": 512
+                            },
+                            "termStart": {
+                              "type": "string",
+                              "maxLength": 512
+                            },
+                            "activation": {
+                              "enum": [
+                                "pending",
+                                "active",
+                                "inactive",
+                                "unknown"
+                              ],
+                              "type": "string"
+                            },
+                            "usedPieces": {
+                              "type": "integer",
+                              "maximum": 9007199254740991,
+                              "minimum": 0
+                            },
+                            "usageSource": {
+                              "type": "string",
+                              "maxLength": 512
+                            },
+                            "usageStatus": {
+                              "enum": [
+                                "unknown",
+                                "verified",
+                                "stale"
+                              ],
+                              "type": "string"
+                            },
+                            "policyVersion": {
+                              "type": "string",
+                              "maxLength": 512
+                            },
+                            "includedPieces": {
+                              "type": "integer",
+                              "const": 5
+                            },
+                            "observedPeriod": {
+                              "type": "string",
+                              "maxLength": 512
+                            },
+                            "remainingPieces": {
+                              "type": "integer",
+                              "maximum": 9007199254740991,
+                              "minimum": 0
+                            },
+                            "usageVerifiedAt": {
+                              "type": "string",
+                              "maxLength": 512
+                            },
+                            "observedOrdinaryPieces": {
+                              "type": "integer",
+                              "maximum": 9007199254740991,
+                              "minimum": 0
+                            },
+                            "originalRequestDeadline": {
+                              "type": "string",
+                              "maxLength": 512
+                            }
+                          },
+                          "maxProperties": 15,
+                          "additionalProperties": false
+                        },
+                        "emailDelivery": {
+                          "type": "object",
+                          "required": [
+                            "status",
+                            "attachment",
+                            "contents",
+                            "note"
+                          ],
+                          "properties": {
+                            "note": {
+                              "type": "string",
+                              "maxLength": 4096
+                            },
+                            "status": {
+                              "type": "string",
+                              "maxLength": 4096
+                            },
+                            "contents": {
+                              "type": "string",
+                              "maxLength": 4096
+                            },
+                            "attachment": {
+                              "type": "boolean"
+                            }
+                          },
+                          "maxProperties": 4,
+                          "additionalProperties": false
+                        },
+                        "formationDate": {
+                          "type": "string",
+                          "maxLength": 64,
+                          "minLength": 10
+                        },
+                        "raPaidThrough": {
+                          "type": "string",
+                          "maxLength": 64,
+                          "minLength": 10
+                        },
+                        "classification": {
+                          "type": "string",
+                          "maxLength": 4096
+                        },
+                        "documentAccess": {
+                          "type": "string",
+                          "maxLength": 4096
+                        },
+                        "businessAddress": {
+                          "type": "object",
+                          "required": [
+                            "permittedUses",
+                            "availability",
+                            "limitations"
+                          ],
+                          "properties": {
+                            "address": {
+                              "type": "object",
+                              "required": [
+                                "line1",
+                                "city",
+                                "state",
+                                "postalCode",
+                                "country"
+                              ],
+                              "properties": {
+                                "city": {
+                                  "type": "string",
+                                  "maxLength": 512
+                                },
+                                "line1": {
+                                  "type": "string",
+                                  "maxLength": 512
+                                },
+                                "line2": {
+                                  "type": "string",
+                                  "maxLength": 512
+                                },
+                                "state": {
+                                  "type": "string",
+                                  "maxLength": 512
+                                },
+                                "county": {
+                                  "type": "string",
+                                  "maxLength": 512
+                                },
+                                "country": {
+                                  "type": "string",
+                                  "maxLength": 512
+                                },
+                                "postalCode": {
+                                  "type": "string",
+                                  "maxLength": 512
+                                }
+                              },
+                              "maxProperties": 7,
+                              "additionalProperties": false
+                            },
+                            "verifiedAt": {
+                              "type": "string",
+                              "maxLength": 512
+                            },
+                            "limitations": {
+                              "type": "array",
+                              "items": {
+                                "type": "string",
+                                "maxLength": 1024
+                              },
+                              "maxItems": 128
+                            },
+                            "availability": {
+                              "enum": [
+                                "active",
+                                "inactive",
+                                "unknown"
+                              ],
+                              "type": "string"
+                            },
+                            "permittedUses": {
+                              "type": "array",
+                              "items": {
+                                "type": "string",
+                                "maxLength": 512
+                              },
+                              "maxItems": 128
+                            },
+                            "policyVersion": {
+                              "type": "string",
+                              "maxLength": 512
+                            }
+                          },
+                          "maxProperties": 6,
+                          "additionalProperties": false
+                        },
+                        "filingProfileId": {
+                          "type": "string",
+                          "maxLength": 36,
+                          "minLength": 1
+                        },
+                        "registeredAgent": {
+                          "type": "object",
+                          "required": [
+                            "availability"
+                          ],
+                          "properties": {
+                            "name": {
+                              "type": "string",
+                              "maxLength": 512
+                            },
+                            "reason": {
+                              "type": "string",
+                              "maxLength": 512
+                            },
+                            "verifiedAt": {
+                              "type": "string",
+                              "maxLength": 512
+                            },
+                            "availability": {
+                              "enum": [
+                                "active",
+                                "inactive",
+                                "unknown"
+                              ],
+                              "type": "string"
+                            },
+                            "jurisdiction": {
+                              "type": "string",
+                              "maxLength": 512
+                            },
+                            "officeAddress": {
+                              "type": "object",
+                              "required": [
+                                "line1",
+                                "city",
+                                "state",
+                                "postalCode",
+                                "country"
+                              ],
+                              "properties": {
+                                "city": {
+                                  "type": "string",
+                                  "maxLength": 512
+                                },
+                                "line1": {
+                                  "type": "string",
+                                  "maxLength": 512
+                                },
+                                "line2": {
+                                  "type": "string",
+                                  "maxLength": 512
+                                },
+                                "state": {
+                                  "type": "string",
+                                  "maxLength": 512
+                                },
+                                "county": {
+                                  "type": "string",
+                                  "maxLength": 512
+                                },
+                                "country": {
+                                  "type": "string",
+                                  "maxLength": 512
+                                },
+                                "postalCode": {
+                                  "type": "string",
+                                  "maxLength": 512
+                                }
+                              },
+                              "maxProperties": 7,
+                              "additionalProperties": false
+                            }
+                          },
+                          "maxProperties": 6,
+                          "additionalProperties": false
+                        },
+                        "clientObligations": {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "maxLength": 4096
+                          },
+                          "maxItems": 128
+                        },
+                        "filingFilerOptions": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "required": [
+                              "source"
+                            ],
+                            "properties": {
+                              "source": {
+                                "enum": [
+                                  "contact",
+                                  "official"
+                                ],
+                                "type": "string"
+                              },
+                              "officialRef": {
+                                "type": "string",
+                                "maxLength": 128
+                              },
+                              "rosterPosition": {
+                                "type": "string",
+                                "maxLength": 512
+                              }
+                            },
+                            "maxProperties": 3,
+                            "additionalProperties": false
+                          },
+                          "maxItems": 512
+                        },
+                        "publicationObligation": {
+                          "type": "boolean"
+                        },
+                        "intakeAliasProvisioned": {
+                          "type": "boolean"
+                        }
+                      },
+                      "maxProperties": 22,
+                      "additionalProperties": false
+                    },
+                    "file": {
+                      "type": "object",
+                      "required": [
+                        "url",
+                        "mimeType"
+                      ],
+                      "properties": {
+                        "url": {
+                          "type": "string",
+                          "maxLength": 4096
+                        },
+                        "mimeType": {
+                          "type": "string",
+                          "maxLength": 4096
+                        }
+                      },
+                      "maxProperties": 2,
+                      "additionalProperties": false
+                    },
+                    "kind": {
+                      "enum": [
+                        "text",
+                        "data",
+                        "file"
+                      ],
+                      "type": "string"
+                    },
+                    "text": {
+                      "type": "string",
+                      "maxLength": 4096
+                    }
+                  },
+                  "maxProperties": 4,
+                  "additionalProperties": false
+                },
+                "maxItems": 128
+              },
+              "artifactId": {
+                "type": "string",
+                "maxLength": 4096
+              }
+            },
+            "maxProperties": 3,
+            "additionalProperties": false
+          },
+          "maxItems": 128
+        }
+      },
+      "maxProperties": 3,
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "required": [
+        "id",
+        "status"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "status": {
+          "type": "object",
+          "required": [
+            "state",
+            "message"
+          ],
+          "properties": {
+            "state": {
+              "type": "string",
+              "maxLength": 4096
+            },
+            "message": {
+              "type": "object",
+              "required": [
+                "role",
+                "parts"
+              ],
+              "properties": {
+                "role": {
+                  "type": "string",
+                  "maxLength": 4096
+                },
+                "parts": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": [
+                      "kind"
+                    ],
+                    "properties": {
+                      "data": {
+                        "type": "object",
+                        "required": [
+                          "domain",
+                          "registrar",
+                          "nameservers",
+                          "expiresAt",
+                          "orderId",
+                          "whoisPrivacy",
+                          "verificationDeadlineDays",
+                          "verificationNote"
+                        ],
+                        "properties": {
+                          "domain": {
+                            "type": "string",
+                            "maxLength": 4096
+                          },
+                          "orderId": {
+                            "type": "string",
+                            "maxLength": 4096
+                          },
+                          "expiresAt": {
+                            "type": "string",
+                            "maxLength": 64,
+                            "minLength": 10
+                          },
+                          "registrar": {
+                            "type": "string",
+                            "maxLength": 4096
+                          },
+                          "nameservers": {
+                            "type": "array",
+                            "items": {
+                              "type": "string",
+                              "maxLength": 4096
+                            }
+                          },
+                          "whoisPrivacy": {
+                            "type": "string",
+                            "maxLength": 4096
+                          },
+                          "verificationNote": {
+                            "type": "string",
+                            "maxLength": 4096
+                          },
+                          "verificationDeadlineDays": {
+                            "type": "integer"
+                          }
+                        },
+                        "additionalProperties": false
+                      },
+                      "file": {
+                        "type": "object",
+                        "required": [
+                          "url",
+                          "mimeType"
+                        ],
+                        "properties": {
+                          "url": {
+                            "type": "string",
+                            "maxLength": 4096
+                          },
+                          "mimeType": {
+                            "type": "string",
+                            "maxLength": 4096
+                          }
+                        },
+                        "additionalProperties": false
+                      },
+                      "kind": {
+                        "enum": [
+                          "text",
+                          "data",
+                          "file"
+                        ],
+                        "type": "string"
+                      },
+                      "text": {
+                        "type": "string",
+                        "maxLength": 4096
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        },
+        "artifacts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "artifactId",
+              "name",
+              "parts"
+            ],
+            "properties": {
+              "name": {
+                "type": "string",
+                "maxLength": 4096
+              },
+              "parts": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "kind"
+                  ],
+                  "properties": {
+                    "data": {
+                      "type": "object",
+                      "required": [
+                        "domain",
+                        "registrar",
+                        "nameservers",
+                        "expiresAt",
+                        "orderId",
+                        "whoisPrivacy",
+                        "verificationDeadlineDays",
+                        "verificationNote"
+                      ],
+                      "properties": {
+                        "domain": {
+                          "type": "string",
+                          "maxLength": 4096
+                        },
+                        "orderId": {
+                          "type": "string",
+                          "maxLength": 4096
+                        },
+                        "expiresAt": {
+                          "type": "string",
+                          "maxLength": 64,
+                          "minLength": 10
+                        },
+                        "registrar": {
+                          "type": "string",
+                          "maxLength": 4096
+                        },
+                        "nameservers": {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "maxLength": 4096
+                          }
+                        },
+                        "whoisPrivacy": {
+                          "type": "string",
+                          "maxLength": 4096
+                        },
+                        "verificationNote": {
+                          "type": "string",
+                          "maxLength": 4096
+                        },
+                        "verificationDeadlineDays": {
+                          "type": "integer"
+                        }
+                      },
+                      "additionalProperties": false
+                    },
+                    "file": {
+                      "type": "object",
+                      "required": [
+                        "url",
+                        "mimeType"
+                      ],
+                      "properties": {
+                        "url": {
+                          "type": "string",
+                          "maxLength": 4096
+                        },
+                        "mimeType": {
+                          "type": "string",
+                          "maxLength": 4096
+                        }
+                      },
+                      "additionalProperties": false
+                    },
+                    "kind": {
+                      "enum": [
+                        "text",
+                        "data",
+                        "file"
+                      ],
+                      "type": "string"
+                    },
+                    "text": {
+                      "type": "string",
+                      "maxLength": 4096
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              },
+              "artifactId": {
+                "type": "string",
+                "maxLength": 4096
+              }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "required": [
+        "id",
+        "status"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "status": {
+          "type": "object",
+          "required": [
+            "state",
+            "message"
+          ],
+          "properties": {
+            "state": {
+              "type": "string",
+              "maxLength": 4096
+            },
+            "message": {
+              "type": "object",
+              "required": [
+                "role",
+                "parts"
+              ],
+              "properties": {
+                "role": {
+                  "type": "string",
+                  "maxLength": 4096
+                },
+                "parts": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": [
+                      "kind"
+                    ],
+                    "properties": {
+                      "data": {
+                        "type": "object",
+                        "required": [
+                          "address",
+                          "credentials",
+                          "expiresAt",
+                          "domainKind",
+                          "publicResolutionVerified",
+                          "publicResolutionNote",
+                          "credentialPolicy"
+                        ],
+                        "properties": {
+                          "address": {
+                            "type": "string",
+                            "maxLength": 4096
+                          },
+                          "dnsStatus": {
+                            "type": "string",
+                            "maxLength": 4096
+                          },
+                          "expiresAt": {
+                            "type": "string",
+                            "maxLength": 64,
+                            "minLength": 10
+                          },
+                          "dnsApplied": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "required": [
+                                "type",
+                                "name",
+                                "content",
+                                "ttl"
+                              ],
+                              "properties": {
+                                "ttl": {
+                                  "type": "integer"
+                                },
+                                "name": {
+                                  "type": "string",
+                                  "maxLength": 4096
+                                },
+                                "type": {
+                                  "type": "string",
+                                  "maxLength": 4096
+                                },
+                                "content": {
+                                  "type": "string",
+                                  "maxLength": 4096
+                                },
+                                "priority": {
+                                  "type": "integer"
+                                }
+                              },
+                              "additionalProperties": false
+                            }
+                          },
+                          "domainKind": {
+                            "type": "string",
+                            "maxLength": 4096
+                          },
+                          "credentials": {
+                            "type": "object",
+                            "required": [
+                              "username",
+                              "password",
+                              "imap",
+                              "smtp",
+                              "webmail_url"
+                            ],
+                            "properties": {
+                              "imap": {
+                                "type": "object",
+                                "required": [
+                                  "host",
+                                  "port",
+                                  "security"
+                                ],
+                                "properties": {
+                                  "host": {
+                                    "type": "string",
+                                    "maxLength": 4096
+                                  },
+                                  "port": {
+                                    "type": "integer",
+                                    "minimum": 1
+                                  },
+                                  "security": {
+                                    "type": "string",
+                                    "maxLength": 4096
+                                  }
+                                },
+                                "additionalProperties": false
+                              },
+                              "smtp": {
+                                "type": "object",
+                                "required": [
+                                  "host",
+                                  "port",
+                                  "security"
+                                ],
+                                "properties": {
+                                  "host": {
+                                    "type": "string",
+                                    "maxLength": 4096
+                                  },
+                                  "port": {
+                                    "type": "integer",
+                                    "minimum": 1
+                                  },
+                                  "security": {
+                                    "type": "string",
+                                    "maxLength": 4096
+                                  }
+                                },
+                                "additionalProperties": false
+                              },
+                              "password": {
+                                "type": "string",
+                                "maxLength": 4096
+                              },
+                              "username": {
+                                "type": "string",
+                                "maxLength": 4096
+                              },
+                              "webmail_url": {
+                                "type": "string",
+                                "maxLength": 4096
+                              }
+                            },
+                            "additionalProperties": false
+                          },
+                          "credentialPolicy": {
+                            "type": "string",
+                            "maxLength": 4096
+                          },
+                          "publicResolutionNote": {
+                            "type": "string",
+                            "maxLength": 4096
+                          },
+                          "publicResolutionVerified": {
+                            "type": "boolean"
+                          }
+                        },
+                        "additionalProperties": false
+                      },
+                      "file": {
+                        "type": "object",
+                        "required": [
+                          "url",
+                          "mimeType"
+                        ],
+                        "properties": {
+                          "url": {
+                            "type": "string",
+                            "maxLength": 4096
+                          },
+                          "mimeType": {
+                            "type": "string",
+                            "maxLength": 4096
+                          }
+                        },
+                        "additionalProperties": false
+                      },
+                      "kind": {
+                        "enum": [
+                          "text",
+                          "data",
+                          "file"
+                        ],
+                        "type": "string"
+                      },
+                      "text": {
+                        "type": "string",
+                        "maxLength": 4096
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        },
+        "artifacts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "artifactId",
+              "name",
+              "parts"
+            ],
+            "properties": {
+              "name": {
+                "type": "string",
+                "maxLength": 4096
+              },
+              "parts": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "kind"
+                  ],
+                  "properties": {
+                    "data": {
+                      "type": "object",
+                      "required": [
+                        "address",
+                        "credentials",
+                        "expiresAt",
+                        "domainKind",
+                        "publicResolutionVerified",
+                        "publicResolutionNote",
+                        "credentialPolicy"
+                      ],
+                      "properties": {
+                        "address": {
+                          "type": "string",
+                          "maxLength": 4096
+                        },
+                        "dnsStatus": {
+                          "type": "string",
+                          "maxLength": 4096
+                        },
+                        "expiresAt": {
+                          "type": "string",
+                          "maxLength": 64,
+                          "minLength": 10
+                        },
+                        "dnsApplied": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "required": [
+                              "type",
+                              "name",
+                              "content",
+                              "ttl"
+                            ],
+                            "properties": {
+                              "ttl": {
+                                "type": "integer"
+                              },
+                              "name": {
+                                "type": "string",
+                                "maxLength": 4096
+                              },
+                              "type": {
+                                "type": "string",
+                                "maxLength": 4096
+                              },
+                              "content": {
+                                "type": "string",
+                                "maxLength": 4096
+                              },
+                              "priority": {
+                                "type": "integer"
+                              }
+                            },
+                            "additionalProperties": false
+                          }
+                        },
+                        "domainKind": {
+                          "type": "string",
+                          "maxLength": 4096
+                        },
+                        "credentials": {
+                          "type": "object",
+                          "required": [
+                            "username",
+                            "password",
+                            "imap",
+                            "smtp",
+                            "webmail_url"
+                          ],
+                          "properties": {
+                            "imap": {
+                              "type": "object",
+                              "required": [
+                                "host",
+                                "port",
+                                "security"
+                              ],
+                              "properties": {
+                                "host": {
+                                  "type": "string",
+                                  "maxLength": 4096
+                                },
+                                "port": {
+                                  "type": "integer",
+                                  "minimum": 1
+                                },
+                                "security": {
+                                  "type": "string",
+                                  "maxLength": 4096
+                                }
+                              },
+                              "additionalProperties": false
+                            },
+                            "smtp": {
+                              "type": "object",
+                              "required": [
+                                "host",
+                                "port",
+                                "security"
+                              ],
+                              "properties": {
+                                "host": {
+                                  "type": "string",
+                                  "maxLength": 4096
+                                },
+                                "port": {
+                                  "type": "integer",
+                                  "minimum": 1
+                                },
+                                "security": {
+                                  "type": "string",
+                                  "maxLength": 4096
+                                }
+                              },
+                              "additionalProperties": false
+                            },
+                            "password": {
+                              "type": "string",
+                              "maxLength": 4096
+                            },
+                            "username": {
+                              "type": "string",
+                              "maxLength": 4096
+                            },
+                            "webmail_url": {
+                              "type": "string",
+                              "maxLength": 4096
+                            }
+                          },
+                          "additionalProperties": false
+                        },
+                        "credentialPolicy": {
+                          "type": "string",
+                          "maxLength": 4096
+                        },
+                        "publicResolutionNote": {
+                          "type": "string",
+                          "maxLength": 4096
+                        },
+                        "publicResolutionVerified": {
+                          "type": "boolean"
+                        }
+                      },
+                      "additionalProperties": false
+                    },
+                    "file": {
+                      "type": "object",
+                      "required": [
+                        "url",
+                        "mimeType"
+                      ],
+                      "properties": {
+                        "url": {
+                          "type": "string",
+                          "maxLength": 4096
+                        },
+                        "mimeType": {
+                          "type": "string",
+                          "maxLength": 4096
+                        }
+                      },
+                      "additionalProperties": false
+                    },
+                    "kind": {
+                      "enum": [
+                        "text",
+                        "data",
+                        "file"
+                      ],
+                      "type": "string"
+                    },
+                    "text": {
+                      "type": "string",
+                      "maxLength": 4096
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              },
+              "artifactId": {
+                "type": "string",
+                "maxLength": 4096
+              }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    }
+  ],
+  "results": [
+    {
+      "id": "3f1c2b7e-9a1d-4c3e-8f5a-0b2c4d6e8f10",
+      "status": {
+        "state": "TASK_STATE_COMPLETED",
+        "message": {
+          "role": "ROLE_AGENT",
+          "parts": [
+            {
+              "kind": "text",
+              "text": "example-daski.com renewed for 1 year(s). New expiry: 2028-10-02T12:00:00.000Z."
+            }
+          ]
+        }
+      },
+      "artifacts": [
+        {
+          "artifactId": "evt-art-0",
+          "name": "renewal_details",
+          "parts": [
+            {
+              "kind": "data",
+              "data": {
+                "domain": "example-daski.com",
+                "term": 1,
+                "newExpiresAt": "2028-10-02T12:00:00.000Z",
+                "registrar": "wholesale"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "3f1c2b7e-9a1d-4c3e-8f5a-0b2c4d6e8f10",
+      "status": {
+        "state": "TASK_STATE_COMPLETED",
+        "message": {
+          "role": "ROLE_AGENT",
+          "parts": [
+            {
+              "kind": "text",
+              "text": "example-daski.com renewed for 1 year(s). New expiry: 2028-10-02T12:00:00.000Z."
+            }
+          ]
+        }
+      },
+      "artifacts": [
+        {
+          "artifactId": "rec-0001:renewal_details",
+          "name": "renewal_details",
+          "parts": [
+            {
+              "kind": "data",
+              "data": {
+                "domain": "example-daski.com",
+                "term": 1,
+                "newExpiresAt": "2028-10-02T12:00:00.000Z",
+                "registrar": "wholesale"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "3f1c2b7e-9a1d-4c3e-8f5a-0b2c4d6e8f10",
+      "status": {
+        "state": "TASK_STATE_COMPLETED",
+        "message": {
+          "role": "ROLE_AGENT",
+          "parts": [
+            {
+              "kind": "text",
+              "text": "Auth code delivered inline in artifact."
+            }
+          ]
+        }
+      },
+      "artifacts": [
+        {
+          "artifactId": "evt-art-0",
+          "name": "transfer_auth_code",
+          "parts": [
+            {
+              "kind": "data",
+              "data": {
+                "domain": "example-daski.com",
+                "authCode": "EPP-REAL-CODE-7f3a",
+                "expiresAt": "2026-10-09T12:00:00.000Z"
+              }
+            }
+          ]
+        },
+        {
+          "artifactId": "evt-art-1",
+          "name": "domain_transferred_out",
+          "parts": [
+            {
+              "kind": "data",
+              "data": {
+                "domain": "example-daski.com",
+                "timestamp": "2026-10-02T18:36:31.818Z",
+                "previousAssetId": "5d2e8c1a-7b3f-4e9d-a1c2-3b4c5d6e7f80",
+                "nextSteps": "Submit this auth code at the destination registrar within 7 days. After successful transfer, the domain will no longer be manageable through Daski."
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "3f1c2b7e-9a1d-4c3e-8f5a-0b2c4d6e8f10",
+      "status": {
+        "state": "TASK_STATE_COMPLETED",
+        "message": {
+          "role": "ROLE_AGENT",
+          "parts": [
+            {
+              "kind": "text",
+              "text": "Auth code delivered inline in artifact."
+            }
+          ]
+        }
+      },
+      "artifacts": [
+        {
+          "artifactId": "rec-0001:transfer_auth_code",
+          "name": "transfer_auth_code",
+          "parts": [
+            {
+              "kind": "data",
+              "data": {
+                "domain": "example-daski.com",
+                "authCode": "EPP-REAL-CODE-7f3a",
+                "expiresAt": "2026-10-09T12:00:00.000Z"
+              }
+            }
+          ]
+        },
+        {
+          "artifactId": "rec-0001:domain_transferred_out",
+          "name": "domain_transferred_out",
+          "parts": [
+            {
+              "kind": "data",
+              "data": {
+                "domain": "example-daski.com",
+                "timestamp": "2026-10-02T18:36:31.818Z",
+                "previousAssetId": "5d2e8c1a-7b3f-4e9d-a1c2-3b4c5d6e7f80",
+                "nextSteps": "Submit this auth code at the destination registrar within 7 days. After successful transfer, the domain will no longer be manageable through Daski."
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "3f1c2b7e-9a1d-4c3e-8f5a-0b2c4d6e8f10",
+      "status": {
+        "state": "TASK_STATE_COMPLETED",
+        "message": {
+          "role": "ROLE_AGENT",
+          "parts": [
+            {
+              "kind": "text",
+              "text": "alice@example-daski.com renewed. New expiry: 2027-10-02T12:00:00.000Z."
+            }
+          ]
+        }
+      },
+      "artifacts": [
+        {
+          "artifactId": "evt-art-0",
+          "name": "mailbox_renewed",
+          "parts": [
+            {
+              "kind": "data",
+              "data": {
+                "address": "alice@example-daski.com",
+                "expiresAt": "2027-10-02T12:00:00.000Z",
+                "restored": false
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "3f1c2b7e-9a1d-4c3e-8f5a-0b2c4d6e8f10",
+      "status": {
+        "state": "TASK_STATE_COMPLETED",
+        "message": {
+          "role": "ROLE_AGENT",
+          "parts": [
+            {
+              "kind": "text",
+              "text": "alice@example-daski.com renewed. New expiry: 2027-10-02T12:00:00.000Z."
+            }
+          ]
+        }
+      },
+      "artifacts": [
+        {
+          "artifactId": "rec-0001:mailbox_renewed",
+          "name": "mailbox_renewed",
+          "parts": [
+            {
+              "kind": "data",
+              "data": {
+                "address": "alice@example-daski.com",
+                "expiresAt": "2027-10-02T12:00:00.000Z",
+                "restored": false
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "3f1c2b7e-9a1d-4c3e-8f5a-0b2c4d6e8f10",
+      "status": {
+        "state": "TASK_STATE_COMPLETED",
+        "message": {
+          "role": "ROLE_AGENT",
+          "parts": [
+            {
+              "kind": "text",
+              "text": "alice@example-daski.com renewed. New expiry: 2027-10-02T12:00:00.000Z. Note: this mailbox is suspended for abuse; renewal extends the term but does not restore sending \u2014 contact the operator."
+            }
+          ]
+        }
+      },
+      "artifacts": [
+        {
+          "artifactId": "evt-art-0",
+          "name": "mailbox_renewed",
+          "parts": [
+            {
+              "kind": "data",
+              "data": {
+                "address": "alice@example-daski.com",
+                "expiresAt": "2027-10-02T12:00:00.000Z",
+                "restored": false
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "3f1c2b7e-9a1d-4c3e-8f5a-0b2c4d6e8f10",
+      "status": {
+        "state": "TASK_STATE_COMPLETED",
+        "message": {
+          "role": "ROLE_AGENT",
+          "parts": [
+            {
+              "kind": "text",
+              "text": "alice@example-daski.com renewed. New expiry: 2027-10-02T12:00:00.000Z. Note: this mailbox is suspended for abuse; renewal extends the term but does not restore sending \u2014 contact the operator."
+            }
+          ]
+        }
+      },
+      "artifacts": [
+        {
+          "artifactId": "rec-0001:mailbox_renewed",
+          "name": "mailbox_renewed",
+          "parts": [
+            {
+              "kind": "data",
+              "data": {
+                "address": "alice@example-daski.com",
+                "expiresAt": "2027-10-02T12:00:00.000Z",
+                "restored": false
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "3f1c2b7e-9a1d-4c3e-8f5a-0b2c4d6e8f10",
+      "status": {
+        "state": "TASK_STATE_COMPLETED",
+        "message": {
+          "role": "ROLE_AGENT",
+          "parts": [
+            {
+              "kind": "text",
+              "text": "Compliance filing accepted."
+            }
+          ]
+        }
+      },
+      "artifacts": [
+        {
+          "artifactId": "evt-art-0",
+          "name": "compliance_filing_details",
+          "parts": [
+            {
+              "kind": "data",
+              "data": {
+                "entity": "us-wy-example-holdings-llc",
+                "assetId": "5d2e8c1a-7b3f-4e9d-a1c2-3b4c5d6e7f80",
+                "documents": [
+                  "8b0c3d2e-1f4a-4b5c-9d6e-7f8a9b0c1d2e"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "artifactId": "evt-art-1",
+          "name": "compliance_filing_document",
+          "parts": [
+            {
+              "kind": "file",
+              "file": {
+                "url": "https://provider.bluetgroup.com/services/entity-formation/entity-documents/v1.tok_9f2c1d0e8a7b6c5d4e3f2a1b0c9d8e7f",
+                "mimeType": "application/pdf"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "3f1c2b7e-9a1d-4c3e-8f5a-0b2c4d6e8f10",
+      "status": {
+        "state": "TASK_STATE_COMPLETED",
+        "message": {
+          "role": "ROLE_AGENT",
+          "parts": [
+            {
+              "kind": "text",
+              "text": "Compliance filing accepted."
+            }
+          ]
+        }
+      },
+      "artifacts": [
+        {
+          "artifactId": "rec-0001:compliance_filing_details",
+          "name": "compliance_filing_details",
+          "parts": [
+            {
+              "kind": "data",
+              "data": {
+                "entity": "us-wy-example-holdings-llc",
+                "assetId": "5d2e8c1a-7b3f-4e9d-a1c2-3b4c5d6e7f80",
+                "documents": [
+                  "8b0c3d2e-1f4a-4b5c-9d6e-7f8a9b0c1d2e"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "artifactId": "rec-0001:compliance_filing_document",
+          "name": "compliance_filing_document",
+          "parts": [
+            {
+              "kind": "file",
+              "file": {
+                "url": "https://provider.bluetgroup.com/services/entity-formation/entity-documents/v1.tok_9f2c1d0e8a7b6c5d4e3f2a1b0c9d8e7f",
+                "mimeType": "application/pdf"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "3f1c2b7e-9a1d-4c3e-8f5a-0b2c4d6e8f10",
+      "status": {
+        "state": "TASK_STATE_COMPLETED",
+        "message": {
+          "role": "ROLE_AGENT",
+          "parts": [
+            {
+              "kind": "text",
+              "text": "Compliance filing accepted."
+            }
+          ]
+        }
+      },
+      "artifacts": [
+        {
+          "artifactId": "evt-art-0",
+          "name": "compliance_filing_details",
+          "parts": [
+            {
+              "kind": "data",
+              "data": {
+                "entity": "us-wy-example-holdings-llc",
+                "assetId": "5d2e8c1a-7b3f-4e9d-a1c2-3b4c5d6e7f80",
+                "documents": []
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "3f1c2b7e-9a1d-4c3e-8f5a-0b2c4d6e8f10",
+      "status": {
+        "state": "TASK_STATE_COMPLETED",
+        "message": {
+          "role": "ROLE_AGENT",
+          "parts": [
+            {
+              "kind": "text",
+              "text": "Compliance filing accepted."
+            }
+          ]
+        }
+      },
+      "artifacts": [
+        {
+          "artifactId": "rec-0001:compliance_filing_details",
+          "name": "compliance_filing_details",
+          "parts": [
+            {
+              "kind": "data",
+              "data": {
+                "entity": "us-wy-example-holdings-llc",
+                "assetId": "5d2e8c1a-7b3f-4e9d-a1c2-3b4c5d6e7f80",
+                "documents": []
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "3f1c2b7e-9a1d-4c3e-8f5a-0b2c4d6e8f10",
+      "status": {
+        "state": "TASK_STATE_COMPLETED",
+        "message": {
+          "role": "ROLE_AGENT",
+          "parts": [
+            {
+              "kind": "text",
+              "text": "us-wy-example-holdings-llc is dissolved (terminal). Documents remain downloadable."
+            }
+          ]
+        }
+      },
+      "artifacts": [
+        {
+          "artifactId": "evt-art-0",
+          "name": "dissolution_details",
+          "parts": [
+            {
+              "kind": "data",
+              "data": {
+                "entity": "us-wy-example-holdings-llc",
+                "assetId": "5d2e8c1a-7b3f-4e9d-a1c2-3b4c5d6e7f80",
+                "dissolutionDocumentId": "8b0c3d2e-1f4a-4b5c-9d6e-7f8a9b0c1d2e",
+                "terminalState": "dissolved"
+              }
+            }
+          ]
+        },
+        {
+          "artifactId": "evt-art-1",
+          "name": "dissolution_document",
+          "parts": [
+            {
+              "kind": "file",
+              "file": {
+                "url": "https://provider.bluetgroup.com/services/entity-formation/entity-documents/v1.tok_9f2c1d0e8a7b6c5d4e3f2a1b0c9d8e7f",
+                "mimeType": "application/pdf"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "3f1c2b7e-9a1d-4c3e-8f5a-0b2c4d6e8f10",
+      "status": {
+        "state": "TASK_STATE_COMPLETED",
+        "message": {
+          "role": "ROLE_AGENT",
+          "parts": [
+            {
+              "kind": "text",
+              "text": "us-wy-example-holdings-llc is dissolved (terminal). Documents remain downloadable."
+            }
+          ]
+        }
+      },
+      "artifacts": [
+        {
+          "artifactId": "rec-0001:dissolution_details",
+          "name": "dissolution_details",
+          "parts": [
+            {
+              "kind": "data",
+              "data": {
+                "entity": "us-wy-example-holdings-llc",
+                "assetId": "5d2e8c1a-7b3f-4e9d-a1c2-3b4c5d6e7f80",
+                "dissolutionDocumentId": "8b0c3d2e-1f4a-4b5c-9d6e-7f8a9b0c1d2e",
+                "terminalState": "dissolved"
+              }
+            }
+          ]
+        },
+        {
+          "artifactId": "rec-0001:dissolution_document",
+          "name": "dissolution_document",
+          "parts": [
+            {
+              "kind": "file",
+              "file": {
+                "url": "https://provider.bluetgroup.com/services/entity-formation/entity-documents/v1.tok_9f2c1d0e8a7b6c5d4e3f2a1b0c9d8e7f",
+                "mimeType": "application/pdf"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "3f1c2b7e-9a1d-4c3e-8f5a-0b2c4d6e8f10",
+      "status": {
+        "state": "TASK_STATE_COMPLETED",
+        "message": {
+          "role": "ROLE_AGENT",
+          "parts": [
+            {
+              "kind": "text",
+              "text": "us-wy-example-holdings-llc is dissolved (terminal). Documents remain downloadable."
+            }
+          ]
+        }
+      },
+      "artifacts": [
+        {
+          "artifactId": "evt-art-0",
+          "name": "dissolution_details",
+          "parts": [
+            {
+              "kind": "data",
+              "data": {
+                "entity": "us-wy-example-holdings-llc",
+                "assetId": "5d2e8c1a-7b3f-4e9d-a1c2-3b4c5d6e7f80",
+                "terminalState": "dissolved"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "3f1c2b7e-9a1d-4c3e-8f5a-0b2c4d6e8f10",
+      "status": {
+        "state": "TASK_STATE_COMPLETED",
+        "message": {
+          "role": "ROLE_AGENT",
+          "parts": [
+            {
+              "kind": "text",
+              "text": "us-wy-example-holdings-llc is dissolved (terminal). Documents remain downloadable."
+            }
+          ]
+        }
+      },
+      "artifacts": [
+        {
+          "artifactId": "rec-0001:dissolution_details",
+          "name": "dissolution_details",
+          "parts": [
+            {
+              "kind": "data",
+              "data": {
+                "entity": "us-wy-example-holdings-llc",
+                "assetId": "5d2e8c1a-7b3f-4e9d-a1c2-3b4c5d6e7f80",
+                "terminalState": "dissolved"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "3f1c2b7e-9a1d-4c3e-8f5a-0b2c4d6e8f10",
+      "status": {
+        "state": "TASK_STATE_COMPLETED",
+        "message": {
+          "role": "ROLE_AGENT",
+          "parts": [
+            {
+              "kind": "text",
+              "text": "Certificate of good standing issued."
+            }
+          ]
+        }
+      },
+      "artifacts": [
+        {
+          "artifactId": "evt-art-0",
+          "name": "good_standing_details",
+          "parts": [
+            {
+              "kind": "data",
+              "data": {
+                "entity": "us-wy-example-holdings-llc",
+                "assetId": "5d2e8c1a-7b3f-4e9d-a1c2-3b4c5d6e7f80",
+                "documents": [
+                  "8b0c3d2e-1f4a-4b5c-9d6e-7f8a9b0c1d2e"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "artifactId": "evt-art-1",
+          "name": "good_standing_certificate",
+          "parts": [
+            {
+              "kind": "file",
+              "file": {
+                "url": "https://provider.bluetgroup.com/services/entity-formation/entity-documents/v1.tok_9f2c1d0e8a7b6c5d4e3f2a1b0c9d8e7f",
+                "mimeType": "application/pdf"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "3f1c2b7e-9a1d-4c3e-8f5a-0b2c4d6e8f10",
+      "status": {
+        "state": "TASK_STATE_COMPLETED",
+        "message": {
+          "role": "ROLE_AGENT",
+          "parts": [
+            {
+              "kind": "text",
+              "text": "Certificate of good standing issued."
+            }
+          ]
+        }
+      },
+      "artifacts": [
+        {
+          "artifactId": "rec-0001:good_standing_details",
+          "name": "good_standing_details",
+          "parts": [
+            {
+              "kind": "data",
+              "data": {
+                "entity": "us-wy-example-holdings-llc",
+                "assetId": "5d2e8c1a-7b3f-4e9d-a1c2-3b4c5d6e7f80",
+                "documents": [
+                  "8b0c3d2e-1f4a-4b5c-9d6e-7f8a9b0c1d2e"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "artifactId": "rec-0001:good_standing_certificate",
+          "name": "good_standing_certificate",
+          "parts": [
+            {
+              "kind": "file",
+              "file": {
+                "url": "https://provider.bluetgroup.com/services/entity-formation/entity-documents/v1.tok_9f2c1d0e8a7b6c5d4e3f2a1b0c9d8e7f",
+                "mimeType": "application/pdf"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "3f1c2b7e-9a1d-4c3e-8f5a-0b2c4d6e8f10",
+      "status": {
+        "state": "TASK_STATE_COMPLETED",
+        "message": {
+          "role": "ROLE_AGENT",
+          "parts": [
+            {
+              "kind": "text",
+              "text": "Certificate of good standing issued."
+            }
+          ]
+        }
+      },
+      "artifacts": [
+        {
+          "artifactId": "evt-art-0",
+          "name": "good_standing_details",
+          "parts": [
+            {
+              "kind": "data",
+              "data": {
+                "entity": "us-wy-example-holdings-llc",
+                "assetId": "5d2e8c1a-7b3f-4e9d-a1c2-3b4c5d6e7f80",
+                "documents": []
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "3f1c2b7e-9a1d-4c3e-8f5a-0b2c4d6e8f10",
+      "status": {
+        "state": "TASK_STATE_COMPLETED",
+        "message": {
+          "role": "ROLE_AGENT",
+          "parts": [
+            {
+              "kind": "text",
+              "text": "Certificate of good standing issued."
+            }
+          ]
+        }
+      },
+      "artifacts": [
+        {
+          "artifactId": "rec-0001:good_standing_details",
+          "name": "good_standing_details",
+          "parts": [
+            {
+              "kind": "data",
+              "data": {
+                "entity": "us-wy-example-holdings-llc",
+                "assetId": "5d2e8c1a-7b3f-4e9d-a1c2-3b4c5d6e7f80",
+                "documents": []
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "3f1c2b7e-9a1d-4c3e-8f5a-0b2c4d6e8f10",
+      "status": {
+        "state": "TASK_STATE_COMPLETED",
+        "message": {
+          "role": "ROLE_AGENT",
+          "parts": [
+            {
+              "kind": "text",
+              "text": "EIN assigned; the letter is available under your entity's documents."
+            }
+          ]
+        }
+      },
+      "artifacts": [
+        {
+          "artifactId": "evt-art-0",
+          "name": "ein_details",
+          "parts": [
+            {
+              "kind": "data",
+              "data": {
+                "entity": "us-wy-example-holdings-llc",
+                "assetId": "5d2e8c1a-7b3f-4e9d-a1c2-3b4c5d6e7f80",
+                "documents": [
+                  "8b0c3d2e-1f4a-4b5c-9d6e-7f8a9b0c1d2e"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "artifactId": "evt-art-1",
+          "name": "ein_letter",
+          "parts": [
+            {
+              "kind": "file",
+              "file": {
+                "url": "https://provider.bluetgroup.com/services/entity-formation/entity-documents/v1.tok_9f2c1d0e8a7b6c5d4e3f2a1b0c9d8e7f",
+                "mimeType": "application/pdf"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "3f1c2b7e-9a1d-4c3e-8f5a-0b2c4d6e8f10",
+      "status": {
+        "state": "TASK_STATE_COMPLETED",
+        "message": {
+          "role": "ROLE_AGENT",
+          "parts": [
+            {
+              "kind": "text",
+              "text": "EIN assigned; the letter is available under your entity's documents."
+            }
+          ]
+        }
+      },
+      "artifacts": [
+        {
+          "artifactId": "rec-0001:ein_details",
+          "name": "ein_details",
+          "parts": [
+            {
+              "kind": "data",
+              "data": {
+                "entity": "us-wy-example-holdings-llc",
+                "assetId": "5d2e8c1a-7b3f-4e9d-a1c2-3b4c5d6e7f80",
+                "documents": [
+                  "8b0c3d2e-1f4a-4b5c-9d6e-7f8a9b0c1d2e"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "artifactId": "rec-0001:ein_letter",
+          "name": "ein_letter",
+          "parts": [
+            {
+              "kind": "file",
+              "file": {
+                "url": "https://provider.bluetgroup.com/services/entity-formation/entity-documents/v1.tok_9f2c1d0e8a7b6c5d4e3f2a1b0c9d8e7f",
+                "mimeType": "application/pdf"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "3f1c2b7e-9a1d-4c3e-8f5a-0b2c4d6e8f10",
+      "status": {
+        "state": "TASK_STATE_COMPLETED",
+        "message": {
+          "role": "ROLE_AGENT",
+          "parts": [
+            {
+              "kind": "text",
+              "text": "EIN assigned; the letter is available under your entity's documents."
+            }
+          ]
+        }
+      },
+      "artifacts": [
+        {
+          "artifactId": "evt-art-0",
+          "name": "ein_details",
+          "parts": [
+            {
+              "kind": "data",
+              "data": {
+                "entity": "us-wy-example-holdings-llc",
+                "assetId": "5d2e8c1a-7b3f-4e9d-a1c2-3b4c5d6e7f80",
+                "documents": []
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "3f1c2b7e-9a1d-4c3e-8f5a-0b2c4d6e8f10",
+      "status": {
+        "state": "TASK_STATE_COMPLETED",
+        "message": {
+          "role": "ROLE_AGENT",
+          "parts": [
+            {
+              "kind": "text",
+              "text": "EIN assigned; the letter is available under your entity's documents."
+            }
+          ]
+        }
+      },
+      "artifacts": [
+        {
+          "artifactId": "rec-0001:ein_details",
+          "name": "ein_details",
+          "parts": [
+            {
+              "kind": "data",
+              "data": {
+                "entity": "us-wy-example-holdings-llc",
+                "assetId": "5d2e8c1a-7b3f-4e9d-a1c2-3b4c5d6e7f80",
+                "documents": []
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "3f1c2b7e-9a1d-4c3e-8f5a-0b2c4d6e8f10",
+      "status": {
+        "state": "TASK_STATE_COMPLETED",
+        "message": {
+          "role": "ROLE_AGENT",
+          "parts": [
+            {
+              "kind": "text",
+              "text": "Amendment filed and accepted."
+            }
+          ]
+        }
+      },
+      "artifacts": [
+        {
+          "artifactId": "evt-art-0",
+          "name": "amendment_details",
+          "parts": [
+            {
+              "kind": "data",
+              "data": {
+                "entity": "us-wy-example-holdings-llc",
+                "assetId": "5d2e8c1a-7b3f-4e9d-a1c2-3b4c5d6e7f80",
+                "identifierChanged": false,
+                "documents": [
+                  "8b0c3d2e-1f4a-4b5c-9d6e-7f8a9b0c1d2e"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "artifactId": "evt-art-1",
+          "name": "amendment_document",
+          "parts": [
+            {
+              "kind": "file",
+              "file": {
+                "url": "https://provider.bluetgroup.com/services/entity-formation/entity-documents/v1.tok_9f2c1d0e8a7b6c5d4e3f2a1b0c9d8e7f",
+                "mimeType": "application/pdf"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "3f1c2b7e-9a1d-4c3e-8f5a-0b2c4d6e8f10",
+      "status": {
+        "state": "TASK_STATE_COMPLETED",
+        "message": {
+          "role": "ROLE_AGENT",
+          "parts": [
+            {
+              "kind": "text",
+              "text": "Amendment filed and accepted."
+            }
+          ]
+        }
+      },
+      "artifacts": [
+        {
+          "artifactId": "rec-0001:amendment_details",
+          "name": "amendment_details",
+          "parts": [
+            {
+              "kind": "data",
+              "data": {
+                "entity": "us-wy-example-holdings-llc",
+                "assetId": "5d2e8c1a-7b3f-4e9d-a1c2-3b4c5d6e7f80",
+                "identifierChanged": false,
+                "documents": [
+                  "8b0c3d2e-1f4a-4b5c-9d6e-7f8a9b0c1d2e"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "artifactId": "rec-0001:amendment_document",
+          "name": "amendment_document",
+          "parts": [
+            {
+              "kind": "file",
+              "file": {
+                "url": "https://provider.bluetgroup.com/services/entity-formation/entity-documents/v1.tok_9f2c1d0e8a7b6c5d4e3f2a1b0c9d8e7f",
+                "mimeType": "application/pdf"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "3f1c2b7e-9a1d-4c3e-8f5a-0b2c4d6e8f10",
+      "status": {
+        "state": "TASK_STATE_COMPLETED",
+        "message": {
+          "role": "ROLE_AGENT",
+          "parts": [
+            {
+              "kind": "text",
+              "text": "Amendment filed and accepted."
+            }
+          ]
+        }
+      },
+      "artifacts": [
+        {
+          "artifactId": "evt-art-0",
+          "name": "amendment_details",
+          "parts": [
+            {
+              "kind": "data",
+              "data": {
+                "entity": "us-wy-example-holdings-llc",
+                "assetId": "5d2e8c1a-7b3f-4e9d-a1c2-3b4c5d6e7f80",
+                "identifierChanged": false,
+                "documents": []
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "3f1c2b7e-9a1d-4c3e-8f5a-0b2c4d6e8f10",
+      "status": {
+        "state": "TASK_STATE_COMPLETED",
+        "message": {
+          "role": "ROLE_AGENT",
+          "parts": [
+            {
+              "kind": "text",
+              "text": "Amendment filed and accepted."
+            }
+          ]
+        }
+      },
+      "artifacts": [
+        {
+          "artifactId": "rec-0001:amendment_details",
+          "name": "amendment_details",
+          "parts": [
+            {
+              "kind": "data",
+              "data": {
+                "entity": "us-wy-example-holdings-llc",
+                "assetId": "5d2e8c1a-7b3f-4e9d-a1c2-3b4c5d6e7f80",
+                "identifierChanged": false,
+                "documents": []
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "3f1c2b7e-9a1d-4c3e-8f5a-0b2c4d6e8f10",
+      "status": {
+        "state": "TASK_STATE_COMPLETED",
+        "message": {
+          "role": "ROLE_AGENT",
+          "parts": [
+            {
+              "kind": "text",
+              "text": "Registered agent renewed; paid through 2027-10-01."
+            }
+          ]
+        }
+      },
+      "artifacts": [
+        {
+          "artifactId": "evt-art-0",
+          "name": "ra_renewal_details",
+          "parts": [
+            {
+              "kind": "data",
+              "data": {
+                "entity": "us-wy-example-holdings-llc",
+                "assetId": "5d2e8c1a-7b3f-4e9d-a1c2-3b4c5d6e7f80",
+                "raPaidThrough": "2027-10-01",
+                "invoiceSettled": true
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "3f1c2b7e-9a1d-4c3e-8f5a-0b2c4d6e8f10",
+      "status": {
+        "state": "TASK_STATE_COMPLETED",
+        "message": {
+          "role": "ROLE_AGENT",
+          "parts": [
+            {
+              "kind": "text",
+              "text": "Registered agent renewed; paid through 2027-10-01."
+            }
+          ]
+        }
+      },
+      "artifacts": [
+        {
+          "artifactId": "rec-0001:ra_renewal_details",
+          "name": "ra_renewal_details",
+          "parts": [
+            {
+              "kind": "data",
+              "data": {
+                "entity": "us-wy-example-holdings-llc",
+                "assetId": "5d2e8c1a-7b3f-4e9d-a1c2-3b4c5d6e7f80",
+                "raPaidThrough": "2027-10-01",
+                "invoiceSettled": true
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "3f1c2b7e-9a1d-4c3e-8f5a-0b2c4d6e8f10",
+      "status": {
+        "state": "TASK_STATE_COMPLETED",
+        "message": {
+          "role": "ROLE_AGENT",
+          "parts": [
+            {
+              "kind": "text",
+              "text": "Registered agent renewed; paid through 2027-10-01."
+            }
+          ]
+        }
+      },
+      "artifacts": [
+        {
+          "artifactId": "evt-art-0",
+          "name": "ra_renewal_details",
+          "parts": [
+            {
+              "kind": "data",
+              "data": {
+                "entity": "us-wy-example-holdings-llc",
+                "assetId": "5d2e8c1a-7b3f-4e9d-a1c2-3b4c5d6e7f80",
+                "raPaidThrough": "2027-10-01",
+                "invoiceSettled": false
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "3f1c2b7e-9a1d-4c3e-8f5a-0b2c4d6e8f10",
+      "status": {
+        "state": "TASK_STATE_COMPLETED",
+        "message": {
+          "role": "ROLE_AGENT",
+          "parts": [
+            {
+              "kind": "text",
+              "text": "Registered agent renewed; paid through 2027-10-01."
+            }
+          ]
+        }
+      },
+      "artifacts": [
+        {
+          "artifactId": "rec-0001:ra_renewal_details",
+          "name": "ra_renewal_details",
+          "parts": [
+            {
+              "kind": "data",
+              "data": {
+                "entity": "us-wy-example-holdings-llc",
+                "assetId": "5d2e8c1a-7b3f-4e9d-a1c2-3b4c5d6e7f80",
+                "raPaidThrough": "2027-10-01",
+                "invoiceSettled": false
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "3f1c2b7e-9a1d-4c3e-8f5a-0b2c4d6e8f10",
+      "status": {
+        "state": "TASK_STATE_COMPLETED",
+        "message": {
+          "role": "ROLE_AGENT",
+          "parts": [
+            {
+              "kind": "text",
+              "text": "Example Holdings LLC is registered in WY. Entity handle: us-wy-example-holdings-llc."
+            }
+          ]
+        }
+      },
+      "artifacts": [
+        {
+          "artifactId": "evt-art-0",
+          "name": "entity_details",
+          "parts": [
+            {
+              "kind": "data",
+              "data": {
+                "legalName": "Example Holdings LLC",
+                "country": "US",
+                "state": "WY",
+                "entityType": "llc",
+                "classification": "default",
+                "entity": "us-wy-example-holdings-llc",
+                "assetId": "5d2e8c1a-7b3f-4e9d-a1c2-3b4c5d6e7f80",
+                "nwCompanyId": "co-123",
+                "formationDate": "2026-10-02",
+                "registeredAgent": {
+                  "jurisdiction": "WY",
+                  "availability": "unknown",
+                  "reason": "Current supplier service/address evidence is unavailable or stale."
+                },
+                "businessAddress": {
+                  "permittedUses": [],
+                  "availability": "unknown",
+                  "limitations": [
+                    "Use only for the verified filing fields."
+                  ]
+                },
+                "ordinaryMail": {
+                  "includedPieces": 5,
+                  "period": "service_year",
+                  "activation": "unknown",
+                  "policyVersion": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                  "usageStatus": "unknown",
+                  "observedOrdinaryPieces": 0,
+                  "observedPeriod": "all_local_records",
+                  "support": {
+                    "email": "support@example.com",
+                    "entity": "us-wy-example-holdings-llc",
+                    "assetId": "5d2e8c1a-7b3f-4e9d-a1c2-3b4c5d6e7f80",
+                    "note": "Contact support."
+                  }
+                },
+                "filingFilerOptions": [],
+                "raPaidThrough": "2027-10-01",
+                "publicationObligation": false,
+                "clientObligations": [
+                  "Annual report"
+                ],
+                "notSupported": [],
+                "intakeAliasProvisioned": true,
+                "documents": [
+                  "8b0c3d2e-1f4a-4b5c-9d6e-7f8a9b0c1d2e"
+                ],
+                "documentAccess": "Use list-entity-documents and download-entity-document with the current owner wallet.",
+                "emailDelivery": {
+                  "status": "sent",
+                  "attachment": false,
+                  "contents": "formation summary + instructions for wallet-authorized document retrieval (no attachment or bearer link)",
+                  "note": "Sent to the entity's contactEmail. Do not assert inbox arrival."
+                }
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "3f1c2b7e-9a1d-4c3e-8f5a-0b2c4d6e8f10",
+      "status": {
+        "state": "TASK_STATE_COMPLETED",
+        "message": {
+          "role": "ROLE_AGENT",
+          "parts": [
+            {
+              "kind": "text",
+              "text": "Example Holdings LLC is registered in WY. Entity handle: us-wy-example-holdings-llc."
+            }
+          ]
+        }
+      },
+      "artifacts": [
+        {
+          "artifactId": "rec-0001:entity_details",
+          "name": "entity_details",
+          "parts": [
+            {
+              "kind": "data",
+              "data": {
+                "legalName": "Example Holdings LLC",
+                "country": "US",
+                "state": "WY",
+                "entityType": "llc",
+                "classification": "default",
+                "entity": "us-wy-example-holdings-llc",
+                "assetId": "5d2e8c1a-7b3f-4e9d-a1c2-3b4c5d6e7f80",
+                "nwCompanyId": "co-123",
+                "formationDate": "2026-10-02",
+                "registeredAgent": {
+                  "jurisdiction": "WY",
+                  "availability": "unknown",
+                  "reason": "Current supplier service/address evidence is unavailable or stale."
+                },
+                "businessAddress": {
+                  "permittedUses": [],
+                  "availability": "unknown",
+                  "limitations": [
+                    "Use only for the verified filing fields."
+                  ]
+                },
+                "ordinaryMail": {
+                  "includedPieces": 5,
+                  "period": "service_year",
+                  "activation": "unknown",
+                  "policyVersion": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                  "usageStatus": "unknown",
+                  "observedOrdinaryPieces": 0,
+                  "observedPeriod": "all_local_records",
+                  "support": {
+                    "email": "support@example.com",
+                    "entity": "us-wy-example-holdings-llc",
+                    "assetId": "5d2e8c1a-7b3f-4e9d-a1c2-3b4c5d6e7f80",
+                    "note": "Contact support."
+                  }
+                },
+                "filingFilerOptions": [],
+                "raPaidThrough": "2027-10-01",
+                "publicationObligation": false,
+                "clientObligations": [
+                  "Annual report"
+                ],
+                "notSupported": [],
+                "intakeAliasProvisioned": true,
+                "documents": [
+                  "8b0c3d2e-1f4a-4b5c-9d6e-7f8a9b0c1d2e"
+                ],
+                "documentAccess": "Use list-entity-documents and download-entity-document with the current owner wallet.",
+                "emailDelivery": {
+                  "status": "sent",
+                  "attachment": false,
+                  "contents": "formation summary + instructions for wallet-authorized document retrieval (no attachment or bearer link)",
+                  "note": "Sent to the entity's contactEmail. Do not assert inbox arrival."
+                }
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "3f1c2b7e-9a1d-4c3e-8f5a-0b2c4d6e8f10",
+      "status": {
+        "state": "TASK_STATE_COMPLETED",
+        "message": {
+          "role": "ROLE_AGENT",
+          "parts": [
+            {
+              "kind": "text",
+              "text": "example-daski.com registered successfully. DNS managed via the wholesale registrar."
+            }
+          ]
+        }
+      },
+      "artifacts": [
+        {
+          "artifactId": "evt-art-0",
+          "name": "registration_details",
+          "parts": [
+            {
+              "kind": "data",
+              "data": {
+                "domain": "example-daski.com",
+                "registrar": "wholesale",
+                "nameservers": [
+                  "ns1.name.com"
+                ],
+                "expiresAt": "2027-10-02T12:00:00.000Z",
+                "orderId": "123",
+                "whoisPrivacy": "enabled",
+                "verificationDeadlineDays": 15,
+                "verificationNote": "The registry emails a verification link."
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "3f1c2b7e-9a1d-4c3e-8f5a-0b2c4d6e8f10",
+      "status": {
+        "state": "TASK_STATE_COMPLETED",
+        "message": {
+          "role": "ROLE_AGENT",
+          "parts": [
+            {
+              "kind": "text",
+              "text": "example-daski.com registered successfully. DNS managed via the wholesale registrar."
+            }
+          ]
+        }
+      },
+      "artifacts": [
+        {
+          "artifactId": "rec-0001:registration_details",
+          "name": "registration_details",
+          "parts": [
+            {
+              "kind": "data",
+              "data": {
+                "domain": "example-daski.com",
+                "registrar": "wholesale",
+                "nameservers": [
+                  "ns1.name.com"
+                ],
+                "expiresAt": "2027-10-02T12:00:00.000Z",
+                "orderId": "123",
+                "whoisPrivacy": "enabled",
+                "verificationDeadlineDays": 15,
+                "verificationNote": "The registry emails a verification link."
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "3f1c2b7e-9a1d-4c3e-8f5a-0b2c4d6e8f10",
+      "status": {
+        "state": "TASK_STATE_COMPLETED",
+        "message": {
+          "role": "ROLE_AGENT",
+          "parts": [
+            {
+              "kind": "text",
+              "text": "alice@example-daski.com provisioned."
+            }
+          ]
+        }
+      },
+      "artifacts": [
+        {
+          "artifactId": "evt-art-0",
+          "name": "mailbox",
+          "parts": [
+            {
+              "kind": "data",
+              "data": {
+                "address": "alice@example-daski.com",
+                "credentials": {
+                  "username": "alice@example-daski.com",
+                  "password": "pw-shown-once",
+                  "imap": {
+                    "host": "mail.example.com",
+                    "port": 993,
+                    "security": "SSL/TLS"
+                  },
+                  "smtp": {
+                    "host": "mail.example.com",
+                    "port": 465,
+                    "security": "SSL/TLS"
+                  },
+                  "webmail_url": "https://mail.example.com"
+                },
+                "expiresAt": "2027-10-02T12:00:00.000Z",
+                "domainKind": "shared",
+                "publicResolutionVerified": false,
+                "publicResolutionNote": "No public-resolver check backs this response.",
+                "credentialPolicy": "Shown once."
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "3f1c2b7e-9a1d-4c3e-8f5a-0b2c4d6e8f10",
+      "status": {
+        "state": "TASK_STATE_COMPLETED",
+        "message": {
+          "role": "ROLE_AGENT",
+          "parts": [
+            {
+              "kind": "text",
+              "text": "alice@example-daski.com provisioned."
+            }
+          ]
+        }
+      },
+      "artifacts": [
+        {
+          "artifactId": "rec-0001:mailbox",
+          "name": "mailbox",
+          "parts": [
+            {
+              "kind": "data",
+              "data": {
+                "address": "alice@example-daski.com",
+                "credentials": {
+                  "username": "alice@example-daski.com",
+                  "password": "pw-shown-once",
+                  "imap": {
+                    "host": "mail.example.com",
+                    "port": 993,
+                    "security": "SSL/TLS"
+                  },
+                  "smtp": {
+                    "host": "mail.example.com",
+                    "port": 465,
+                    "security": "SSL/TLS"
+                  },
+                  "webmail_url": "https://mail.example.com"
+                },
+                "expiresAt": "2027-10-02T12:00:00.000Z",
+                "domainKind": "shared",
+                "publicResolutionVerified": false,
+                "publicResolutionNote": "No public-resolver check backs this response.",
+                "credentialPolicy": "Shown once."
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "3f1c2b7e-9a1d-4c3e-8f5a-0b2c4d6e8f10",
+      "status": {
+        "state": "TASK_STATE_COMPLETED",
+        "message": {
+          "role": "ROLE_AGENT",
+          "parts": [
+            {
+              "kind": "text",
+              "text": "Auth code delivered inline in artifact."
+            }
+          ]
+        }
+      },
+      "artifacts": [
+        {
+          "artifactId": "evt-art-0",
+          "name": "transfer_auth_code",
+          "parts": [
+            {
+              "kind": "data",
+              "data": {
+                "domain": "example-daski.com",
+                "authCode": "EPP-REAL-CODE-7f3a",
+                "expiresAt": "2026-10-09T12:00:00.000Z"
+              }
+            }
+          ]
+        },
+        {
+          "artifactId": "evt-art-1",
+          "name": "domain_transferred_out",
+          "parts": [
+            {
+              "kind": "data",
+              "data": {
+                "domain": "example-daski.com",
+                "timestamp": "2026-10-02T18:36:30.319Z",
+                "previousAssetId": "5d2e8c1a-7b3f-4e9d-a1c2-3b4c5d6e7f80",
+                "nextSteps": "Submit this auth code at the destination registrar within 7 days. After successful transfer, the domain will no longer be manageable through Daski."
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "3f1c2b7e-9a1d-4c3e-8f5a-0b2c4d6e8f10",
+      "status": {
+        "state": "TASK_STATE_COMPLETED",
+        "message": {
+          "role": "ROLE_AGENT",
+          "parts": [
+            {
+              "kind": "text",
+              "text": "Auth code delivered inline in artifact."
+            }
+          ]
+        }
+      },
+      "artifacts": [
+        {
+          "artifactId": "rec-0001:transfer_auth_code",
+          "name": "transfer_auth_code",
+          "parts": [
+            {
+              "kind": "data",
+              "data": {
+                "domain": "example-daski.com",
+                "authCode": "EPP-REAL-CODE-7f3a",
+                "expiresAt": "2026-10-09T12:00:00.000Z"
+              }
+            }
+          ]
+        },
+        {
+          "artifactId": "rec-0001:domain_transferred_out",
+          "name": "domain_transferred_out",
+          "parts": [
+            {
+              "kind": "data",
+              "data": {
+                "domain": "example-daski.com",
+                "timestamp": "2026-10-02T18:36:30.319Z",
+                "previousAssetId": "5d2e8c1a-7b3f-4e9d-a1c2-3b4c5d6e7f80",
+                "nextSteps": "Submit this auth code at the destination registrar within 7 days. After successful transfer, the domain will no longer be manageable through Daski."
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "cases": [
+    {
+      "product": "domain-management:renew-domain",
+      "version": "7086205",
+      "label": "renewed",
+      "kind": "response",
+      "schema": 0,
+      "result": 0
+    },
+    {
+      "product": "domain-management:renew-domain",
+      "version": "7086205",
+      "label": "renewed",
+      "kind": "recovery",
+      "schema": 0,
+      "result": 1
+    },
+    {
+      "product": "domain-management:renew-domain",
+      "version": "7086205",
+      "label": "renewed",
+      "kind": "response",
+      "schema": 0,
+      "result": 0
+    },
+    {
+      "product": "domain-management:renew-domain",
+      "version": "7086205",
+      "label": "renewed",
+      "kind": "recovery",
+      "schema": 0,
+      "result": 1
+    },
+    {
+      "product": "domain-management:transfer-domain-out",
+      "version": "7086205",
+      "label": "first attempt",
+      "kind": "response",
+      "schema": 1,
+      "result": 2
+    },
+    {
+      "product": "domain-management:transfer-domain-out",
+      "version": "7086205",
+      "label": "first attempt",
+      "kind": "recovery",
+      "schema": 1,
+      "result": 3
+    },
+    {
+      "product": "domain-management:transfer-domain-out",
+      "version": "7086205",
+      "label": "first attempt",
+      "kind": "response",
+      "schema": 1,
+      "result": 2
+    },
+    {
+      "product": "domain-management:transfer-domain-out",
+      "version": "7086205",
+      "label": "first attempt",
+      "kind": "recovery",
+      "schema": 1,
+      "result": 3
+    },
+    {
+      "product": "domain-management:transfer-domain-out",
+      "version": "7086205",
+      "label": "confirmed retry",
+      "kind": "response",
+      "schema": 1,
+      "result": 2
+    },
+    {
+      "product": "domain-management:transfer-domain-out",
+      "version": "7086205",
+      "label": "confirmed retry",
+      "kind": "recovery",
+      "schema": 1,
+      "result": 3
+    },
+    {
+      "product": "domain-management:transfer-domain-out",
+      "version": "7086205",
+      "label": "confirmed retry",
+      "kind": "response",
+      "schema": 1,
+      "result": 2
+    },
+    {
+      "product": "domain-management:transfer-domain-out",
+      "version": "7086205",
+      "label": "confirmed retry",
+      "kind": "recovery",
+      "schema": 1,
+      "result": 3
+    },
+    {
+      "product": "mailboxes:renew-mailbox",
+      "version": "7086205",
+      "label": "active",
+      "kind": "response",
+      "schema": 2,
+      "result": 4
+    },
+    {
+      "product": "mailboxes:renew-mailbox",
+      "version": "7086205",
+      "label": "active",
+      "kind": "recovery",
+      "schema": 2,
+      "result": 5
+    },
+    {
+      "product": "mailboxes:renew-mailbox",
+      "version": "7086205",
+      "label": "active",
+      "kind": "response",
+      "schema": 2,
+      "result": 4
+    },
+    {
+      "product": "mailboxes:renew-mailbox",
+      "version": "7086205",
+      "label": "active",
+      "kind": "recovery",
+      "schema": 2,
+      "result": 5
+    },
+    {
+      "product": "mailboxes:renew-mailbox",
+      "version": "7086205",
+      "label": "suspended",
+      "kind": "response",
+      "schema": 2,
+      "result": 6
+    },
+    {
+      "product": "mailboxes:renew-mailbox",
+      "version": "7086205",
+      "label": "suspended",
+      "kind": "recovery",
+      "schema": 2,
+      "result": 7
+    },
+    {
+      "product": "mailboxes:renew-mailbox",
+      "version": "7086205",
+      "label": "suspended",
+      "kind": "response",
+      "schema": 2,
+      "result": 6
+    },
+    {
+      "product": "mailboxes:renew-mailbox",
+      "version": "7086205",
+      "label": "suspended",
+      "kind": "recovery",
+      "schema": 2,
+      "result": 7
+    },
+    {
+      "product": "entity-formation:file-compliance",
+      "version": "7086205",
+      "label": "docs=1",
+      "kind": "response",
+      "schema": 3,
+      "result": 8
+    },
+    {
+      "product": "entity-formation:file-compliance",
+      "version": "7086205",
+      "label": "docs=1",
+      "kind": "recovery",
+      "schema": 3,
+      "result": 9
+    },
+    {
+      "product": "entity-formation:file-compliance",
+      "version": "7086205",
+      "label": "docs=1",
+      "kind": "response",
+      "schema": 3,
+      "result": 8
+    },
+    {
+      "product": "entity-formation:file-compliance",
+      "version": "7086205",
+      "label": "docs=1",
+      "kind": "recovery",
+      "schema": 3,
+      "result": 9
+    },
+    {
+      "product": "entity-formation:file-compliance",
+      "version": "7086205",
+      "label": "docs=0",
+      "kind": "response",
+      "schema": 3,
+      "result": 10
+    },
+    {
+      "product": "entity-formation:file-compliance",
+      "version": "7086205",
+      "label": "docs=0",
+      "kind": "recovery",
+      "schema": 3,
+      "result": 11
+    },
+    {
+      "product": "entity-formation:file-compliance",
+      "version": "7086205",
+      "label": "docs=0",
+      "kind": "response",
+      "schema": 3,
+      "result": 10
+    },
+    {
+      "product": "entity-formation:file-compliance",
+      "version": "7086205",
+      "label": "docs=0",
+      "kind": "recovery",
+      "schema": 3,
+      "result": 11
+    },
+    {
+      "product": "entity-formation:file-dissolution",
+      "version": "7086205",
+      "label": "docs=1",
+      "kind": "response",
+      "schema": 3,
+      "result": 12
+    },
+    {
+      "product": "entity-formation:file-dissolution",
+      "version": "7086205",
+      "label": "docs=1",
+      "kind": "recovery",
+      "schema": 3,
+      "result": 13
+    },
+    {
+      "product": "entity-formation:file-dissolution",
+      "version": "7086205",
+      "label": "docs=1",
+      "kind": "response",
+      "schema": 3,
+      "result": 12
+    },
+    {
+      "product": "entity-formation:file-dissolution",
+      "version": "7086205",
+      "label": "docs=1",
+      "kind": "recovery",
+      "schema": 3,
+      "result": 13
+    },
+    {
+      "product": "entity-formation:file-dissolution",
+      "version": "7086205",
+      "label": "docs=0",
+      "kind": "response",
+      "schema": 3,
+      "result": 14
+    },
+    {
+      "product": "entity-formation:file-dissolution",
+      "version": "7086205",
+      "label": "docs=0",
+      "kind": "recovery",
+      "schema": 3,
+      "result": 15
+    },
+    {
+      "product": "entity-formation:file-dissolution",
+      "version": "7086205",
+      "label": "docs=0",
+      "kind": "response",
+      "schema": 3,
+      "result": 14
+    },
+    {
+      "product": "entity-formation:file-dissolution",
+      "version": "7086205",
+      "label": "docs=0",
+      "kind": "recovery",
+      "schema": 3,
+      "result": 15
+    },
+    {
+      "product": "entity-formation:order-good-standing",
+      "version": "7086205",
+      "label": "docs=1",
+      "kind": "response",
+      "schema": 3,
+      "result": 16
+    },
+    {
+      "product": "entity-formation:order-good-standing",
+      "version": "7086205",
+      "label": "docs=1",
+      "kind": "recovery",
+      "schema": 3,
+      "result": 17
+    },
+    {
+      "product": "entity-formation:order-good-standing",
+      "version": "7086205",
+      "label": "docs=1",
+      "kind": "response",
+      "schema": 3,
+      "result": 16
+    },
+    {
+      "product": "entity-formation:order-good-standing",
+      "version": "7086205",
+      "label": "docs=1",
+      "kind": "recovery",
+      "schema": 3,
+      "result": 17
+    },
+    {
+      "product": "entity-formation:order-good-standing",
+      "version": "7086205",
+      "label": "docs=0",
+      "kind": "response",
+      "schema": 3,
+      "result": 18
+    },
+    {
+      "product": "entity-formation:order-good-standing",
+      "version": "7086205",
+      "label": "docs=0",
+      "kind": "recovery",
+      "schema": 3,
+      "result": 19
+    },
+    {
+      "product": "entity-formation:order-good-standing",
+      "version": "7086205",
+      "label": "docs=0",
+      "kind": "response",
+      "schema": 3,
+      "result": 18
+    },
+    {
+      "product": "entity-formation:order-good-standing",
+      "version": "7086205",
+      "label": "docs=0",
+      "kind": "recovery",
+      "schema": 3,
+      "result": 19
+    },
+    {
+      "product": "entity-formation:file-ein",
+      "version": "7086205",
+      "label": "docs=1",
+      "kind": "response",
+      "schema": 3,
+      "result": 20
+    },
+    {
+      "product": "entity-formation:file-ein",
+      "version": "7086205",
+      "label": "docs=1",
+      "kind": "recovery",
+      "schema": 3,
+      "result": 21
+    },
+    {
+      "product": "entity-formation:file-ein",
+      "version": "7086205",
+      "label": "docs=1",
+      "kind": "response",
+      "schema": 3,
+      "result": 20
+    },
+    {
+      "product": "entity-formation:file-ein",
+      "version": "7086205",
+      "label": "docs=1",
+      "kind": "recovery",
+      "schema": 3,
+      "result": 21
+    },
+    {
+      "product": "entity-formation:file-ein",
+      "version": "7086205",
+      "label": "docs=0",
+      "kind": "response",
+      "schema": 3,
+      "result": 22
+    },
+    {
+      "product": "entity-formation:file-ein",
+      "version": "7086205",
+      "label": "docs=0",
+      "kind": "recovery",
+      "schema": 3,
+      "result": 23
+    },
+    {
+      "product": "entity-formation:file-ein",
+      "version": "7086205",
+      "label": "docs=0",
+      "kind": "response",
+      "schema": 3,
+      "result": 22
+    },
+    {
+      "product": "entity-formation:file-ein",
+      "version": "7086205",
+      "label": "docs=0",
+      "kind": "recovery",
+      "schema": 3,
+      "result": 23
+    },
+    {
+      "product": "entity-formation:file-amendment",
+      "version": "7086205",
+      "label": "docs=1",
+      "kind": "response",
+      "schema": 3,
+      "result": 24
+    },
+    {
+      "product": "entity-formation:file-amendment",
+      "version": "7086205",
+      "label": "docs=1",
+      "kind": "recovery",
+      "schema": 3,
+      "result": 25
+    },
+    {
+      "product": "entity-formation:file-amendment",
+      "version": "7086205",
+      "label": "docs=1",
+      "kind": "response",
+      "schema": 3,
+      "result": 24
+    },
+    {
+      "product": "entity-formation:file-amendment",
+      "version": "7086205",
+      "label": "docs=1",
+      "kind": "recovery",
+      "schema": 3,
+      "result": 25
+    },
+    {
+      "product": "entity-formation:file-amendment",
+      "version": "7086205",
+      "label": "docs=0",
+      "kind": "response",
+      "schema": 3,
+      "result": 26
+    },
+    {
+      "product": "entity-formation:file-amendment",
+      "version": "7086205",
+      "label": "docs=0",
+      "kind": "recovery",
+      "schema": 3,
+      "result": 27
+    },
+    {
+      "product": "entity-formation:file-amendment",
+      "version": "7086205",
+      "label": "docs=0",
+      "kind": "response",
+      "schema": 3,
+      "result": 26
+    },
+    {
+      "product": "entity-formation:file-amendment",
+      "version": "7086205",
+      "label": "docs=0",
+      "kind": "recovery",
+      "schema": 3,
+      "result": 27
+    },
+    {
+      "product": "entity-formation:renew-registered-agent",
+      "version": "7086205",
+      "label": "invoiceSettled=true",
+      "kind": "response",
+      "schema": 3,
+      "result": 28
+    },
+    {
+      "product": "entity-formation:renew-registered-agent",
+      "version": "7086205",
+      "label": "invoiceSettled=true",
+      "kind": "recovery",
+      "schema": 3,
+      "result": 29
+    },
+    {
+      "product": "entity-formation:renew-registered-agent",
+      "version": "7086205",
+      "label": "invoiceSettled=true",
+      "kind": "response",
+      "schema": 3,
+      "result": 28
+    },
+    {
+      "product": "entity-formation:renew-registered-agent",
+      "version": "7086205",
+      "label": "invoiceSettled=true",
+      "kind": "recovery",
+      "schema": 3,
+      "result": 29
+    },
+    {
+      "product": "entity-formation:renew-registered-agent",
+      "version": "7086205",
+      "label": "invoiceSettled=false",
+      "kind": "response",
+      "schema": 3,
+      "result": 30
+    },
+    {
+      "product": "entity-formation:renew-registered-agent",
+      "version": "7086205",
+      "label": "invoiceSettled=false",
+      "kind": "recovery",
+      "schema": 3,
+      "result": 31
+    },
+    {
+      "product": "entity-formation:renew-registered-agent",
+      "version": "7086205",
+      "label": "invoiceSettled=false",
+      "kind": "response",
+      "schema": 3,
+      "result": 30
+    },
+    {
+      "product": "entity-formation:renew-registered-agent",
+      "version": "7086205",
+      "label": "invoiceSettled=false",
+      "kind": "recovery",
+      "schema": 3,
+      "result": 31
+    },
+    {
+      "product": "entity-formation:form-entity",
+      "version": "7086205",
+      "label": "buildFormationResult",
+      "kind": "response",
+      "schema": 4,
+      "result": 32
+    },
+    {
+      "product": "entity-formation:form-entity",
+      "version": "7086205",
+      "label": "buildFormationResult",
+      "kind": "recovery",
+      "schema": 4,
+      "result": 33
+    },
+    {
+      "product": "entity-formation:form-entity",
+      "version": "7086205",
+      "label": "buildFormationResult",
+      "kind": "response",
+      "schema": 4,
+      "result": 32
+    },
+    {
+      "product": "entity-formation:form-entity",
+      "version": "7086205",
+      "label": "buildFormationResult",
+      "kind": "recovery",
+      "schema": 4,
+      "result": 33
+    },
+    {
+      "product": "domain-management:register-domain",
+      "version": "7086205",
+      "label": "registered",
+      "kind": "response",
+      "schema": 5,
+      "result": 34
+    },
+    {
+      "product": "domain-management:register-domain",
+      "version": "7086205",
+      "label": "registered",
+      "kind": "recovery",
+      "schema": 5,
+      "result": 35
+    },
+    {
+      "product": "domain-management:register-domain",
+      "version": "7086205",
+      "label": "registered",
+      "kind": "response",
+      "schema": 5,
+      "result": 34
+    },
+    {
+      "product": "domain-management:register-domain",
+      "version": "7086205",
+      "label": "registered",
+      "kind": "recovery",
+      "schema": 5,
+      "result": 35
+    },
+    {
+      "product": "mailboxes:create-mailbox",
+      "version": "7086205",
+      "label": "shared",
+      "kind": "response",
+      "schema": 6,
+      "result": 36
+    },
+    {
+      "product": "mailboxes:create-mailbox",
+      "version": "7086205",
+      "label": "shared",
+      "kind": "recovery",
+      "schema": 6,
+      "result": 37
+    },
+    {
+      "product": "mailboxes:create-mailbox",
+      "version": "7086205",
+      "label": "shared",
+      "kind": "response",
+      "schema": 6,
+      "result": 36
+    },
+    {
+      "product": "mailboxes:create-mailbox",
+      "version": "7086205",
+      "label": "shared",
+      "kind": "recovery",
+      "schema": 6,
+      "result": 37
+    },
+    {
+      "product": "mailboxes:create-mailbox",
+      "version": "7086205",
+      "label": "shared",
+      "kind": "response",
+      "schema": 6,
+      "result": 36
+    },
+    {
+      "product": "mailboxes:create-mailbox",
+      "version": "7086205",
+      "label": "shared",
+      "kind": "recovery",
+      "schema": 6,
+      "result": 37
+    },
+    {
+      "product": "domain-management:renew-domain",
+      "version": "412f2d6",
+      "label": "renewed",
+      "kind": "response",
+      "schema": 0,
+      "result": 0
+    },
+    {
+      "product": "domain-management:renew-domain",
+      "version": "412f2d6",
+      "label": "renewed",
+      "kind": "recovery",
+      "schema": 0,
+      "result": 1
+    },
+    {
+      "product": "domain-management:renew-domain",
+      "version": "412f2d6",
+      "label": "renewed",
+      "kind": "response",
+      "schema": 0,
+      "result": 0
+    },
+    {
+      "product": "domain-management:renew-domain",
+      "version": "412f2d6",
+      "label": "renewed",
+      "kind": "recovery",
+      "schema": 0,
+      "result": 1
+    },
+    {
+      "product": "domain-management:transfer-domain-out",
+      "version": "412f2d6",
+      "label": "first attempt",
+      "kind": "response",
+      "schema": 1,
+      "result": 38
+    },
+    {
+      "product": "domain-management:transfer-domain-out",
+      "version": "412f2d6",
+      "label": "first attempt",
+      "kind": "recovery",
+      "schema": 1,
+      "result": 39
+    },
+    {
+      "product": "domain-management:transfer-domain-out",
+      "version": "412f2d6",
+      "label": "first attempt",
+      "kind": "response",
+      "schema": 1,
+      "result": 38
+    },
+    {
+      "product": "domain-management:transfer-domain-out",
+      "version": "412f2d6",
+      "label": "first attempt",
+      "kind": "recovery",
+      "schema": 1,
+      "result": 39
+    },
+    {
+      "product": "domain-management:transfer-domain-out",
+      "version": "412f2d6",
+      "label": "confirmed retry",
+      "kind": "response",
+      "schema": 1,
+      "result": 38
+    },
+    {
+      "product": "domain-management:transfer-domain-out",
+      "version": "412f2d6",
+      "label": "confirmed retry",
+      "kind": "recovery",
+      "schema": 1,
+      "result": 39
+    },
+    {
+      "product": "domain-management:transfer-domain-out",
+      "version": "412f2d6",
+      "label": "confirmed retry",
+      "kind": "response",
+      "schema": 1,
+      "result": 38
+    },
+    {
+      "product": "domain-management:transfer-domain-out",
+      "version": "412f2d6",
+      "label": "confirmed retry",
+      "kind": "recovery",
+      "schema": 1,
+      "result": 39
+    },
+    {
+      "product": "mailboxes:renew-mailbox",
+      "version": "412f2d6",
+      "label": "active",
+      "kind": "response",
+      "schema": 2,
+      "result": 4
+    },
+    {
+      "product": "mailboxes:renew-mailbox",
+      "version": "412f2d6",
+      "label": "active",
+      "kind": "recovery",
+      "schema": 2,
+      "result": 5
+    },
+    {
+      "product": "mailboxes:renew-mailbox",
+      "version": "412f2d6",
+      "label": "active",
+      "kind": "response",
+      "schema": 2,
+      "result": 4
+    },
+    {
+      "product": "mailboxes:renew-mailbox",
+      "version": "412f2d6",
+      "label": "active",
+      "kind": "recovery",
+      "schema": 2,
+      "result": 5
+    },
+    {
+      "product": "mailboxes:renew-mailbox",
+      "version": "412f2d6",
+      "label": "suspended",
+      "kind": "response",
+      "schema": 2,
+      "result": 6
+    },
+    {
+      "product": "mailboxes:renew-mailbox",
+      "version": "412f2d6",
+      "label": "suspended",
+      "kind": "recovery",
+      "schema": 2,
+      "result": 7
+    },
+    {
+      "product": "mailboxes:renew-mailbox",
+      "version": "412f2d6",
+      "label": "suspended",
+      "kind": "response",
+      "schema": 2,
+      "result": 6
+    },
+    {
+      "product": "mailboxes:renew-mailbox",
+      "version": "412f2d6",
+      "label": "suspended",
+      "kind": "recovery",
+      "schema": 2,
+      "result": 7
+    },
+    {
+      "product": "entity-formation:file-compliance",
+      "version": "412f2d6",
+      "label": "docs=1",
+      "kind": "response",
+      "schema": 3,
+      "result": 8
+    },
+    {
+      "product": "entity-formation:file-compliance",
+      "version": "412f2d6",
+      "label": "docs=1",
+      "kind": "recovery",
+      "schema": 3,
+      "result": 9
+    },
+    {
+      "product": "entity-formation:file-compliance",
+      "version": "412f2d6",
+      "label": "docs=1",
+      "kind": "response",
+      "schema": 3,
+      "result": 8
+    },
+    {
+      "product": "entity-formation:file-compliance",
+      "version": "412f2d6",
+      "label": "docs=1",
+      "kind": "recovery",
+      "schema": 3,
+      "result": 9
+    },
+    {
+      "product": "entity-formation:file-compliance",
+      "version": "412f2d6",
+      "label": "docs=0",
+      "kind": "response",
+      "schema": 3,
+      "result": 10
+    },
+    {
+      "product": "entity-formation:file-compliance",
+      "version": "412f2d6",
+      "label": "docs=0",
+      "kind": "recovery",
+      "schema": 3,
+      "result": 11
+    },
+    {
+      "product": "entity-formation:file-compliance",
+      "version": "412f2d6",
+      "label": "docs=0",
+      "kind": "response",
+      "schema": 3,
+      "result": 10
+    },
+    {
+      "product": "entity-formation:file-compliance",
+      "version": "412f2d6",
+      "label": "docs=0",
+      "kind": "recovery",
+      "schema": 3,
+      "result": 11
+    },
+    {
+      "product": "entity-formation:file-dissolution",
+      "version": "412f2d6",
+      "label": "docs=1",
+      "kind": "response",
+      "schema": 3,
+      "result": 12
+    },
+    {
+      "product": "entity-formation:file-dissolution",
+      "version": "412f2d6",
+      "label": "docs=1",
+      "kind": "recovery",
+      "schema": 3,
+      "result": 13
+    },
+    {
+      "product": "entity-formation:file-dissolution",
+      "version": "412f2d6",
+      "label": "docs=1",
+      "kind": "response",
+      "schema": 3,
+      "result": 12
+    },
+    {
+      "product": "entity-formation:file-dissolution",
+      "version": "412f2d6",
+      "label": "docs=1",
+      "kind": "recovery",
+      "schema": 3,
+      "result": 13
+    },
+    {
+      "product": "entity-formation:file-dissolution",
+      "version": "412f2d6",
+      "label": "docs=0",
+      "kind": "response",
+      "schema": 3,
+      "result": 14
+    },
+    {
+      "product": "entity-formation:file-dissolution",
+      "version": "412f2d6",
+      "label": "docs=0",
+      "kind": "recovery",
+      "schema": 3,
+      "result": 15
+    },
+    {
+      "product": "entity-formation:file-dissolution",
+      "version": "412f2d6",
+      "label": "docs=0",
+      "kind": "response",
+      "schema": 3,
+      "result": 14
+    },
+    {
+      "product": "entity-formation:file-dissolution",
+      "version": "412f2d6",
+      "label": "docs=0",
+      "kind": "recovery",
+      "schema": 3,
+      "result": 15
+    },
+    {
+      "product": "entity-formation:order-good-standing",
+      "version": "412f2d6",
+      "label": "docs=1",
+      "kind": "response",
+      "schema": 3,
+      "result": 16
+    },
+    {
+      "product": "entity-formation:order-good-standing",
+      "version": "412f2d6",
+      "label": "docs=1",
+      "kind": "recovery",
+      "schema": 3,
+      "result": 17
+    },
+    {
+      "product": "entity-formation:order-good-standing",
+      "version": "412f2d6",
+      "label": "docs=1",
+      "kind": "response",
+      "schema": 3,
+      "result": 16
+    },
+    {
+      "product": "entity-formation:order-good-standing",
+      "version": "412f2d6",
+      "label": "docs=1",
+      "kind": "recovery",
+      "schema": 3,
+      "result": 17
+    },
+    {
+      "product": "entity-formation:order-good-standing",
+      "version": "412f2d6",
+      "label": "docs=0",
+      "kind": "response",
+      "schema": 3,
+      "result": 18
+    },
+    {
+      "product": "entity-formation:order-good-standing",
+      "version": "412f2d6",
+      "label": "docs=0",
+      "kind": "recovery",
+      "schema": 3,
+      "result": 19
+    },
+    {
+      "product": "entity-formation:order-good-standing",
+      "version": "412f2d6",
+      "label": "docs=0",
+      "kind": "response",
+      "schema": 3,
+      "result": 18
+    },
+    {
+      "product": "entity-formation:order-good-standing",
+      "version": "412f2d6",
+      "label": "docs=0",
+      "kind": "recovery",
+      "schema": 3,
+      "result": 19
+    },
+    {
+      "product": "entity-formation:file-ein",
+      "version": "412f2d6",
+      "label": "docs=1",
+      "kind": "response",
+      "schema": 3,
+      "result": 20
+    },
+    {
+      "product": "entity-formation:file-ein",
+      "version": "412f2d6",
+      "label": "docs=1",
+      "kind": "recovery",
+      "schema": 3,
+      "result": 21
+    },
+    {
+      "product": "entity-formation:file-ein",
+      "version": "412f2d6",
+      "label": "docs=1",
+      "kind": "response",
+      "schema": 3,
+      "result": 20
+    },
+    {
+      "product": "entity-formation:file-ein",
+      "version": "412f2d6",
+      "label": "docs=1",
+      "kind": "recovery",
+      "schema": 3,
+      "result": 21
+    },
+    {
+      "product": "entity-formation:file-ein",
+      "version": "412f2d6",
+      "label": "docs=0",
+      "kind": "response",
+      "schema": 3,
+      "result": 22
+    },
+    {
+      "product": "entity-formation:file-ein",
+      "version": "412f2d6",
+      "label": "docs=0",
+      "kind": "recovery",
+      "schema": 3,
+      "result": 23
+    },
+    {
+      "product": "entity-formation:file-ein",
+      "version": "412f2d6",
+      "label": "docs=0",
+      "kind": "response",
+      "schema": 3,
+      "result": 22
+    },
+    {
+      "product": "entity-formation:file-ein",
+      "version": "412f2d6",
+      "label": "docs=0",
+      "kind": "recovery",
+      "schema": 3,
+      "result": 23
+    },
+    {
+      "product": "entity-formation:file-amendment",
+      "version": "412f2d6",
+      "label": "docs=1",
+      "kind": "response",
+      "schema": 3,
+      "result": 24
+    },
+    {
+      "product": "entity-formation:file-amendment",
+      "version": "412f2d6",
+      "label": "docs=1",
+      "kind": "recovery",
+      "schema": 3,
+      "result": 25
+    },
+    {
+      "product": "entity-formation:file-amendment",
+      "version": "412f2d6",
+      "label": "docs=1",
+      "kind": "response",
+      "schema": 3,
+      "result": 24
+    },
+    {
+      "product": "entity-formation:file-amendment",
+      "version": "412f2d6",
+      "label": "docs=1",
+      "kind": "recovery",
+      "schema": 3,
+      "result": 25
+    },
+    {
+      "product": "entity-formation:file-amendment",
+      "version": "412f2d6",
+      "label": "docs=0",
+      "kind": "response",
+      "schema": 3,
+      "result": 26
+    },
+    {
+      "product": "entity-formation:file-amendment",
+      "version": "412f2d6",
+      "label": "docs=0",
+      "kind": "recovery",
+      "schema": 3,
+      "result": 27
+    },
+    {
+      "product": "entity-formation:file-amendment",
+      "version": "412f2d6",
+      "label": "docs=0",
+      "kind": "response",
+      "schema": 3,
+      "result": 26
+    },
+    {
+      "product": "entity-formation:file-amendment",
+      "version": "412f2d6",
+      "label": "docs=0",
+      "kind": "recovery",
+      "schema": 3,
+      "result": 27
+    },
+    {
+      "product": "entity-formation:renew-registered-agent",
+      "version": "412f2d6",
+      "label": "invoiceSettled=true",
+      "kind": "response",
+      "schema": 3,
+      "result": 28
+    },
+    {
+      "product": "entity-formation:renew-registered-agent",
+      "version": "412f2d6",
+      "label": "invoiceSettled=true",
+      "kind": "recovery",
+      "schema": 3,
+      "result": 29
+    },
+    {
+      "product": "entity-formation:renew-registered-agent",
+      "version": "412f2d6",
+      "label": "invoiceSettled=true",
+      "kind": "response",
+      "schema": 3,
+      "result": 28
+    },
+    {
+      "product": "entity-formation:renew-registered-agent",
+      "version": "412f2d6",
+      "label": "invoiceSettled=true",
+      "kind": "recovery",
+      "schema": 3,
+      "result": 29
+    },
+    {
+      "product": "entity-formation:renew-registered-agent",
+      "version": "412f2d6",
+      "label": "invoiceSettled=false",
+      "kind": "response",
+      "schema": 3,
+      "result": 30
+    },
+    {
+      "product": "entity-formation:renew-registered-agent",
+      "version": "412f2d6",
+      "label": "invoiceSettled=false",
+      "kind": "recovery",
+      "schema": 3,
+      "result": 31
+    },
+    {
+      "product": "entity-formation:renew-registered-agent",
+      "version": "412f2d6",
+      "label": "invoiceSettled=false",
+      "kind": "response",
+      "schema": 3,
+      "result": 30
+    },
+    {
+      "product": "entity-formation:renew-registered-agent",
+      "version": "412f2d6",
+      "label": "invoiceSettled=false",
+      "kind": "recovery",
+      "schema": 3,
+      "result": 31
+    },
+    {
+      "product": "entity-formation:form-entity",
+      "version": "412f2d6",
+      "label": "buildFormationResult",
+      "kind": "response",
+      "schema": 4,
+      "result": 32
+    },
+    {
+      "product": "entity-formation:form-entity",
+      "version": "412f2d6",
+      "label": "buildFormationResult",
+      "kind": "recovery",
+      "schema": 4,
+      "result": 33
+    },
+    {
+      "product": "entity-formation:form-entity",
+      "version": "412f2d6",
+      "label": "buildFormationResult",
+      "kind": "response",
+      "schema": 4,
+      "result": 32
+    },
+    {
+      "product": "entity-formation:form-entity",
+      "version": "412f2d6",
+      "label": "buildFormationResult",
+      "kind": "recovery",
+      "schema": 4,
+      "result": 33
+    },
+    {
+      "product": "domain-management:register-domain",
+      "version": "412f2d6",
+      "label": "registered",
+      "kind": "response",
+      "schema": 5,
+      "result": 34
+    },
+    {
+      "product": "domain-management:register-domain",
+      "version": "412f2d6",
+      "label": "registered",
+      "kind": "recovery",
+      "schema": 5,
+      "result": 35
+    },
+    {
+      "product": "domain-management:register-domain",
+      "version": "412f2d6",
+      "label": "registered",
+      "kind": "response",
+      "schema": 5,
+      "result": 34
+    },
+    {
+      "product": "domain-management:register-domain",
+      "version": "412f2d6",
+      "label": "registered",
+      "kind": "recovery",
+      "schema": 5,
+      "result": 35
+    },
+    {
+      "product": "mailboxes:create-mailbox",
+      "version": "412f2d6",
+      "label": "shared",
+      "kind": "response",
+      "schema": 6,
+      "result": 36
+    },
+    {
+      "product": "mailboxes:create-mailbox",
+      "version": "412f2d6",
+      "label": "shared",
+      "kind": "recovery",
+      "schema": 6,
+      "result": 37
+    },
+    {
+      "product": "mailboxes:create-mailbox",
+      "version": "412f2d6",
+      "label": "shared",
+      "kind": "response",
+      "schema": 6,
+      "result": 36
+    },
+    {
+      "product": "mailboxes:create-mailbox",
+      "version": "412f2d6",
+      "label": "shared",
+      "kind": "recovery",
+      "schema": 6,
+      "result": 37
+    },
+    {
+      "product": "mailboxes:create-mailbox",
+      "version": "412f2d6",
+      "label": "shared",
+      "kind": "response",
+      "schema": 6,
+      "result": 36
+    },
+    {
+      "product": "mailboxes:create-mailbox",
+      "version": "412f2d6",
+      "label": "shared",
+      "kind": "recovery",
+      "schema": 6,
+      "result": 37
+    }
+  ]
+}

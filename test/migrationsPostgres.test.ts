@@ -57,3 +57,48 @@ describe("gateway migrations", () => {
     }
   }, 60_000);
 });
+
+it("waits for the migration advisory lock beyond the pool lock timeout and applies one shared startup budget",async()=>{
+ const schema="gateway_migration_wait_"+randomUUID().replaceAll("-","");
+ const admin=createPool({connectionString:databaseUrl,max:2});
+ await admin.query('CREATE SCHEMA "'+schema+'"');
+ const pool=createPool({connectionString:databaseUrl,searchPath:schema+",public",max:1,lockTimeoutMs:50});
+ const holder=await admin.connect();
+ try{
+  await runMigrations(pool,{through:"055_commerce_revision_atomicity.sql"});
+  await holder.query("SELECT pg_advisory_lock(hashtextextended($1,0))",["daski-gateway:migrations"]);
+  const migrating=runMigrations(pool,{timeoutMs:5_000});
+  const outcome=migrating.then(()=>null,error=>error);
+  await new Promise(resolve=>setTimeout(resolve,200));
+  await holder.query("SELECT pg_advisory_unlock(hashtextextended($1,0))",["daski-gateway:migrations"]);
+  expect(await outcome).toBeNull();
+ }finally{
+  await holder.query("SELECT pg_advisory_unlock_all()");holder.release();
+  await pool.end();await admin.query('DROP SCHEMA "'+schema+'" CASCADE');await admin.end();
+ }
+},15_000);
+
+it("counts advisory-lock waiting and all migration batches against the same deadline",async()=>{
+ const schema="gateway_migration_budget_"+randomUUID().replaceAll("-","");
+ const admin=createPool({connectionString:databaseUrl,max:3});
+ await admin.query('CREATE SCHEMA "'+schema+'"');
+ const pool=createPool({connectionString:databaseUrl,searchPath:schema+",public",max:1,lockTimeoutMs:50});
+ const holder=await admin.connect(), ddl=await admin.connect();
+ try{
+  await runMigrations(pool,{through:"055_zz"});
+  await ddl.query("BEGIN");
+  await ddl.query('LOCK TABLE "'+schema+'".standard_orders IN ACCESS SHARE MODE');
+  await holder.query("SELECT pg_advisory_lock(hashtextextended($1,0))",["daski-gateway:migrations"]);
+  const started=Date.now();
+  const outcome=runMigrations(pool,{timeoutMs:450}).then(()=>null,error=>error);
+  await new Promise(resolve=>setTimeout(resolve,250));
+  await holder.query("SELECT pg_advisory_unlock(hashtextextended($1,0))",["daski-gateway:migrations"]);
+  expect(await outcome).toBeInstanceOf(Error);
+  expect(Date.now()-started).toBeLessThan(1_000);
+  expect((await pool.query("SELECT count(*)::int AS n FROM _migrations WHERE name >= '056_'")).rows[0].n).toBe(0);
+ }finally{
+  await holder.query("SELECT pg_advisory_unlock_all()");holder.release();
+  await ddl.query("ROLLBACK");ddl.release();
+  await pool.end();await admin.query('DROP SCHEMA "'+schema+'" CASCADE');await admin.end();
+ }
+},15_000);

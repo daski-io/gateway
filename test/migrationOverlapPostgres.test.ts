@@ -28,7 +28,7 @@ it("yields the DDL lock queue promptly while an incumbent transaction is open",a
   await reader.query("COMMIT");
   expect(await checked).toBeNull();
   const applied=await pool.query("SELECT name FROM _migrations WHERE name>='056_' ORDER BY name");
-  expect(applied.rows.map(row=>row.name)).toEqual(["056_sale_guard_install_complete.sql","057_contract_retirement.sql","058_retirement_post_completion.sql"]);
+  expect(applied.rows.map(row=>row.name)).toEqual(["056_sale_guard_install_complete.sql","057_contract_retirement.sql","058_retirement_post_completion.sql","059_retirement_journal_serialization.sql"]);
  }finally{await reader.query("ROLLBACK");reader.release();await migration?.catch(()=>undefined);}
 },60_000);
 it("retries the expansion when the incumbent writes tables in its existing lock order",async()=>{

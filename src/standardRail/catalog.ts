@@ -1,3 +1,4 @@
+import { assertBoundedJsonValue, RESPONSE_JSON_BUDGET } from "./jsonBounds.js";
 import { projectContractResult } from "./resultProjection.js";
 import type { DiscoveryOutcome } from "./discovery.js";
 import type { ValidateFunction } from "ajv";
@@ -311,6 +312,7 @@ export class StandardRailCatalog {
   }
 
   async validateResponse(listing: StandardListing, result: unknown): Promise<void> {
+    assertBoundedJsonValue(result, RESPONSE_JSON_BUDGET, "Response");
     assertPassiveProviderOutput(result);
     await this.withinSchemaBudget(listing, () =>
       assertSchema(this.compiled(listing).response, projectContractResult(listing.responseSchema, result), "Response"));

@@ -347,12 +347,9 @@ it("keeps the payer's absolute 5 second deadline through the real HTTP transport
         return new Response(JSON.stringify({jsonrpc:"2.0",id:body.id,result:"0x6001"}),{status:200,headers:{"content-type":"application/json"}});
       },
     });
-    // Two legitimate reads occupy the client; the payer's own deadline still
-    // includes waiting for those reads and must not reset when its turn arrives.
-    const prior=Promise.all([
-      endpoint.client.getCode({address:CONTRACT,blockTag:"latest"}),
-      endpoint.client.getCode({address:CONTRACT,blockTag:"latest"}),
-    ]);
+    // Fill all eight bounded wire lanes. The payer's deadline includes queue
+    // waiting and its code read; an expired verification must not start a call.
+    const prior=Promise.all(Array.from({length:8},()=>endpoint.client.getCode({address:CONTRACT,blockTag:"latest"})));
     const pending=verifier({endpoints:[endpoint],timeoutMs:5000})
       .verifyPayerTypedData({payer:CONTRACT,typedData,signature:"0x1234"})
       .then(value=>({value}),error=>({error}));
@@ -360,6 +357,6 @@ it("keeps the payer's absolute 5 second deadline through the real HTTP transport
     expect(await pending).toMatchObject({error:{code:"SIGNATURE_VERIFICATION_UNAVAILABLE"}});
     await vi.runAllTimersAsync();
     await prior;
-    expect(wire).toEqual(["eth_getCode","eth_getCode"]);
+    expect(wire).toEqual(Array(9).fill("eth_getCode"));
   } finally {vi.useRealTimers();}
 });

@@ -279,8 +279,8 @@ export class ServiceRegistrationService {
     }
     const { envelope } = await verifyRegistrationIntent({
       raw, config: this.config, railConfig: this.railConfig, marketplace: this.marketplace,
-      beforeAuthority: async () => {
-        // Invalid shapes/signatures spend no shared RPC capacity. The exact
+      afterAuthority: async () => {
+        // Only the finalized provider authority charges this bucket. The exact
         // authenticated coordinator path has independent admission, while the
         // transport continues enforcing the endpoint's actual read budget.
         if (options.operator) return;

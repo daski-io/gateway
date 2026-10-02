@@ -185,7 +185,7 @@ export class StandardChainEvidence {
       host: new URL(url).hostname,
       client: createPublicClient({
         chain,
-        transport: orderedRpcTransport(http(url, { retryCount: 0, timeout: 20_000 }), { scope: url, maxPerMinute: config.rpcReadMaxPerMinute }),
+        transport: orderedRpcTransport(http(url, { retryCount: 0, timeout: 20_000 }), { scope: url, maxPerMinute: config.rpcReadMaxPerMinute, required: true }),
       }),
     }));
     this.wallet = createWalletClient({
@@ -208,6 +208,26 @@ export class StandardChainEvidence {
     });
   }
 
+  private async finalizedReceipt(
+    client: (typeof this.clients)[number]["client"], hash: Hex, deadline: number,
+  ) {
+    // Each observation owns its polling loop. No shared watcher/listener can
+    // survive a failed proof and leave the next attempt waiting for 180 seconds.
+    for (;;) {
+      const [receipt, head] = await Promise.all([
+        client.getTransactionReceipt({ hash }).catch(error => {
+          if ((error as { name?: string }).name === "TransactionReceiptNotFoundError") return null;
+          throw error;
+        }),
+        client.getBlockNumber(),
+      ]);
+      if (receipt && hasRequiredConfirmations(head, receipt.blockNumber, this.config.finalityConfirmations))
+        return { receipt, head };
+      if (Date.now() >= deadline) throw new Error("Transaction finality observation deadline expired");
+      await new Promise(resolve => setTimeout(resolve, Math.min(2_000, deadline - Date.now())));
+    }
+  }
+
   private async submitRelease(splitter: Address): Promise<Hex> {
     return this.nonceLock.run(async () => {
       const submitted = await this.wallet.writeContract({
@@ -215,12 +235,8 @@ export class StandardChainEvidence {
         abi: splitterAbi,
         functionName: "releaseAll",
       });
-      await this.observe(({ client }) =>
-        client.waitForTransactionReceipt({
-          hash: submitted,
-          confirmations: this.config.finalityConfirmations,
-        })
-      );
+      const deadline = Date.now() + 180_000;
+      await this.observe(({ client }) => this.finalizedReceipt(client, submitted, deadline));
       return submitted;
     });
   }
@@ -304,16 +320,7 @@ export class StandardChainEvidence {
     const finalityDeadline = args.order.updatedAt.getTime() +
       args.listing.deadlinePolicy.settlementEvidenceSeconds * 1_000;
     const observation = await this.observe(async ({ client, host }) => {
-      await client.waitForTransactionReceipt({
-        hash: args.transactionHash,
-        confirmations: this.config.finalityConfirmations,
-        pollingInterval: 2_000,
-        timeout: Math.max(1, finalityDeadline - Date.now()),
-      });
-      const [receipt, head] = await Promise.all([
-        client.getTransactionReceipt({ hash: args.transactionHash }),
-        client.getBlockNumber(),
-      ]);
+      const { receipt, head } = await this.finalizedReceipt(client, args.transactionHash, finalityDeadline);
       if (
         receipt.status !== "success" ||
         !hasRequiredConfirmations(head, receipt.blockNumber, this.config.finalityConfirmations) ||
@@ -489,10 +496,9 @@ export class StandardChainEvidence {
     }
     const hash = releaseReference.transactionHash;
     const selected = await this.observe(async ({ client, host }) => {
-      await client.waitForTransactionReceipt({
-        hash,
-        confirmations: this.config.finalityConfirmations,
-      });
+      // findCoveringRelease already selected a finalized log. Read the receipt
+      // and head directly and bind both below; a retried observation must not
+      // re-enter viem's shared receipt watcher for the same transaction.
       const manifest = args.listing.manifest.payload;
       const commitmentView = args.listing.commitment.payload;
       const activationBlockNumber = BigInt(manifest.splitterActivationBlockNumber);

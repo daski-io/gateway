@@ -33,8 +33,8 @@ describe("paid result projection",()=>{
   const validate=compileClosedResponseSchema(paid);
   expect(validate(projectContractResult(paid,original))).toBe(true);
   expect(projectContractResult(paid,original)).toEqual({address:"a@example.test",expiresAt:"2027-01-01",renewed:true});
-  expect(validate(projectContractResult(paid,{...original,status:{state:"TASK_STATE_WORKING"}}))).toBe(false);
-  expect(validate(projectContractResult(paid,{...original,artifacts:[{...original.artifacts[0],name:"unrelated"}]}))).toBe(false);
+  expect(()=>projectContractResult(paid,{...original,status:{state:"TASK_STATE_WORKING"}})).toThrow("not completed");
+  expect(()=>projectContractResult(paid,{...original,artifacts:[{...original.artifacts[0],name:"unrelated"}]})).toThrow("Undeclared");
  });
  it("retains task contracts and rejects conflicting artifact fields",()=>{
   const original=task();
@@ -43,7 +43,7 @@ describe("paid result projection",()=>{
   expect(()=>projectContractResult(schema,original)).toThrow("Conflicting");
  });
  it("maps the signed terminal state for flat lifecycle contracts and still checks all raw output",async()=>{
-  const original=task(),listing={responseSchema:{type:"object",properties:{domain:string,status:string},required:["domain","status"],additionalProperties:false}};
+  const original=task(),listing={responseSchema:{type:"object",properties:{domain:string,authCode:string,nextSteps:{type:"array",items:string},status:string},required:["domain","status"],additionalProperties:false}};
   await expect(catalog().validateResponse(listing,original)).resolves.toBeUndefined();
   (original.artifacts[0]!.parts[0]!.data as any).ignored="<script>active</script>";
   await expect(catalog().validateResponse(listing,original)).rejects.toThrow("ACTIVE_CONTENT");
@@ -70,4 +70,30 @@ describe("paid result projection",()=>{
   await expect(service.applyLifecycleResult(order,listing,await response(otherTask),"artifact","handle")).rejects.toThrow();
   await expect(service.applyLifecycleResult(order,{...listing,responseSchema:{...schema,required:[...schema.required,"missing"],properties:{...schema.properties,missing:string}}},signed,"artifact","handle")).rejects.toThrow();
  });
+});
+
+
+it.each(["oversized", "deep", "long-key", "file", "undeclared", "failed"])("rejects %s raw output hidden by a flat projection", async kind => {
+ const original:any=task();
+ if(kind==="oversized") original.status.message.parts.push({kind:"text",text:"x".repeat(300_000)});
+ if(kind==="deep") {let cursor:any={};original.extra=cursor;for(let i=0;i<30;i++){cursor.n={};cursor=cursor.n;}}
+ if(kind==="long-key") original.artifacts[0].parts[0].data["x".repeat(200)]="hidden";
+ if(kind==="file") original.artifacts.push({name:"unrelated",parts:[{kind:"file",file:{url:"https://evil.example/payload.exe"}}]});
+ if(kind==="undeclared") original.artifacts[0].parts[0].data.unlisted="hidden";
+ if(kind==="failed") original.status.state="TASK_STATE_FAILED";
+ await expect(catalog().validateResponse({responseSchema:schema},original)).rejects.toThrow();
+});
+
+
+it("validates retained paid schemas against actual provider result-builder fixtures",async()=>{
+ const {readFileSync}=await import("node:fs");
+ const fixture=JSON.parse(readFileSync(new URL("./fixtures/retainedPaidResults.json",import.meta.url),"utf8"));
+ const cases=fixture.cases.map((item:any)=>({...item,schema:fixture.schemas[item.schema],result:fixture.results[item.result]}));
+ expect(cases.length).toBeGreaterThan(100);
+ for(const item of cases){
+  const before=JSON.stringify(item.result);
+  try{await catalog().validateResponse({responseSchema:item.schema},item.result);}
+  catch(error){throw new Error([item.version,item.product,item.label,item.kind].join(" ")+": "+String(error));}
+  expect(JSON.stringify(item.result)).toBe(before);
+ }
 });

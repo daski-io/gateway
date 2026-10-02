@@ -413,7 +413,7 @@ export function createContractVerificationEndpoint(args: {
       retryCount: 0,
       timeout: args.timeoutMs,
       fetchFn: boundedRpcFetch(CONTRACT_VERIFICATION_RESPONSE_MAX_BYTES, args.fetchFn),
-    }), { scope: args.url, maxPerMinute: args.maxPerMinute }),
+    }), { scope: args.url, maxPerMinute: args.maxPerMinute, concurrency: 8, maxWaitMs: args.timeoutMs }),
   });
   return {
     host: new URL(args.url).hostname,

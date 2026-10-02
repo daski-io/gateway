@@ -123,12 +123,15 @@ it("rejects malformed registration signatures without a provider RPC read", asyn
   expect(reader.getProvider).not.toHaveBeenCalled();
 });
 
-it("charges fence RPC admission only after validating the signature", async () => {
- const beforeAuthority=vi.fn(async()=>undefined),reader=marketplace();
+it("charges fence admission only after validating the provider authority", async () => {
+ const afterAuthority=vi.fn(async()=>undefined),reader=marketplace();
  const getProvider=vi.spyOn(reader,"getProvider");
  const raw=await intent();raw.signature=("0x"+"00".repeat(65)) as Hex;
- await expect(verifyRegistrationIntent({raw,...domain,marketplace:reader,beforeAuthority})).rejects.toThrow();
- expect(beforeAuthority).not.toHaveBeenCalled();expect(getProvider).not.toHaveBeenCalled();
- await verifyRegistrationIntent({raw:await intent(),...domain,marketplace:reader,beforeAuthority});
- expect(beforeAuthority).toHaveBeenCalledOnce();expect(getProvider).toHaveBeenCalledOnce();
+ await expect(verifyRegistrationIntent({raw,...domain,marketplace:reader,afterAuthority})).rejects.toThrow();
+ expect(afterAuthority).not.toHaveBeenCalled();expect(getProvider).not.toHaveBeenCalled();
+ await expect(verifyRegistrationIntent({raw:await intent(otherKey),...domain,marketplace:reader,afterAuthority})).rejects.toThrow("current provider authority");
+ expect(afterAuthority).not.toHaveBeenCalled();
+ getProvider.mockClear();
+ await verifyRegistrationIntent({raw:await intent(),...domain,marketplace:reader,afterAuthority});
+ expect(afterAuthority).toHaveBeenCalledOnce();expect(getProvider).toHaveBeenCalledOnce();
 });

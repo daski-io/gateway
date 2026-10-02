@@ -81,16 +81,27 @@ export function createPool(opts: CreatePoolOptions): Pool {
  */
 export async function runMigrations(
   pool: Pool,
-  options: { through?: string } = {},
+  options: { through?: string; timeoutMs?: number } = {},
 ): Promise<void> {
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
   const migrationsDir = path.join(__dirname, "migrations");
+  const deadline = Date.now() + positiveMilliseconds("migration timeout", options.timeoutMs, 120_000);
+  const remaining = () => {
+    const ms = deadline - Date.now();
+    if (ms <= 0) throw new Error("Migration startup time budget exhausted");
+    return ms;
+  };
   const client = await pool.connect();
+  let acquired = false;
   try {
-    await client.query(
-      "SELECT pg_advisory_lock(hashtextextended($1, 0))",
-      ["daski-gateway:migrations"],
-    );
+    // A competing candidate may hold this lock while yielding to serving
+    // traffic. Poll without inheriting the runtime's five-second lock timeout.
+    while (!acquired) {
+      remaining();
+      acquired = (await client.query("SELECT pg_try_advisory_lock(hashtextextended($1, 0)) AS acquired",
+        ["daski-gateway:migrations"])).rows[0].acquired;
+      if (!acquired) await new Promise(resolve => setTimeout(resolve, Math.min(100, remaining())));
+    }
     await client.query(`
       CREATE TABLE IF NOT EXISTS _migrations (
         name TEXT PRIMARY KEY,
@@ -123,17 +134,18 @@ export async function runMigrations(
       const batch = [pending[index++]!];
       // Publish the retirement trigger and its correction atomically on a
       // legacy schema. Applied migration bytes/checksums stay immutable.
-      if (batch[0]!.file >= "056_" && batch[0]!.file <= "058_zz") {
-        while (index < pending.length && pending[index]!.file <= "058_zz") batch.push(pending[index++]!);
+      if (batch[0]!.file >= "056_" && batch[0]!.file <= "059_zz") {
+        while (index < pending.length && pending[index]!.file <= "059_zz") batch.push(pending[index++]!);
       }
-      const deadline = Date.now() + 120_000;
       for (;;) {
+        remaining();
         await client.query("BEGIN");
         try {
           // Never let a waiting ACCESS EXCLUSIVE DDL lock queue serving reads
           // for seconds. Retry the whole uncommitted expansion after yielding.
           await client.query("SET LOCAL lock_timeout='50ms'");
           for (const migration of batch) {
+            await client.query("SELECT set_config('statement_timeout', $1, true)", [String(remaining())]);
             await client.query(migration.sql);
             await client.query("INSERT INTO _migrations (name,checksum) VALUES ($1,$2)", [migration.file,migration.checksum]);
           }
@@ -150,7 +162,7 @@ export async function runMigrations(
     }
     await client.query("ALTER TABLE _migrations ALTER COLUMN checksum SET NOT NULL");
   } finally {
-    await client
+    if (acquired) await client
       .query("SELECT pg_advisory_unlock(hashtextextended($1, 0))", [
         "daski-gateway:migrations",
       ])

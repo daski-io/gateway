@@ -94,8 +94,12 @@ describe("contract retirement durable proof",()=>{
     } finally {await legacy.query("ROLLBACK");legacy.release();}
   },60_000);
 
-  it("waits for an in-flight journal write and refuses its unresolved obligation",async()=>{
-    await order();
+  it.each(["NOT_SETTLED","FULFILLED"])("waits for an in-flight %s journal write and refuses its unresolved obligation",async state=>{
+    await order("old",state);
+    if(state==="FULFILLED"){
+      await pool.query("UPDATE standard_orders SET deposit_evidence_hash=$1,release_evidence_hash=$1 WHERE order_id='old'",[Buffer.alloc(32,9)]);
+      await pool.query("INSERT INTO standard_rail_receipts(order_id,receipt_hash,canonical_receipt) VALUES('old',$1,'{}')",[Buffer.alloc(32,9)]);
+    }
     const writer=await pool.connect();
     try {
       await writer.query("BEGIN");

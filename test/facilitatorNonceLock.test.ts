@@ -70,9 +70,11 @@ describe("facilitator nonce coordination", () => {
       clients: [{
         host: "rpc-a.example",
         client: {
-          waitForTransactionReceipt: vi.fn(async () => {
+          getTransactionReceipt: vi.fn(async () => {
             events.push("finalized");
+            return {blockNumber:100n,transactionHash:hash("a"),status:"success"};
           }),
+          getBlockNumber: vi.fn(async () => 111n),
         },
       }],
     });
