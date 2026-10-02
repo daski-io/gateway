@@ -1823,7 +1823,7 @@ export class StandardRailService {
           host: new URL(url).hostname,
           client: createPublicClient({
             chain,
-            transport: orderedRpcTransport(http(url, { retryCount: 0, timeout: 10_000 }), { scope: url, maxPerMinute: this.railConfig.rpcReadMaxPerMinute }),
+            transport: orderedRpcTransport(http(url, { retryCount: 0, timeout: 10_000 }), { scope: url, maxPerMinute: this.railConfig.rpcReadMaxPerMinute, maxWaitMs: 0 }),
           }),
         }));
         const balance = await withRpcFailover(

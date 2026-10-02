@@ -72,8 +72,8 @@ export interface PayerVerification {
 
 /** The subset of a viem public client the contract path uses. */
 export interface ContractVerificationClient {
-  getCode(args: { address: Address; blockTag: "latest" }): Promise<Hex | undefined>;
-  call(args: { to: Address; data: Hex; gas: bigint; blockTag: "latest" }): Promise<{ data?: Hex | undefined }>;
+  getCode(args: { address: Address; blockTag: "latest"; signal?: AbortSignal; deadline?: number }): Promise<Hex | undefined>;
+  call(args: { to: Address; data: Hex; gas: bigint; blockTag: "latest"; signal?: AbortSignal; deadline?: number }): Promise<{ data?: Hex | undefined }>;
 }
 
 export type ContractVerificationEndpoint = RpcEndpoint<ContractVerificationClient>;
@@ -288,35 +288,42 @@ export function createPayerSignatureVerifier(
       functionName: "isValidSignature",
       args: [hash, signature],
     });
-    await withRpcFailover(endpoints, async ({ client }) => {
-      const code = await withinDeadline(deadline, client.getCode({ address: payer, blockTag: "latest" }));
-      if (!code || code === "0x") throw new ExplicitVerificationFailure("payer has no deployed code");
-      let returned: Hex;
-      try {
-        const result = await withinDeadline(deadline, client.call({
-          to: payer,
-          data,
-          gas: CONTRACT_VERIFICATION_GAS,
-          blockTag: "latest",
-        }));
-        returned = result.data ?? "0x";
-      } catch (error) {
-        if (error instanceof VerificationDeadlineExceeded) throw error;
-        if (isExplicitCallFailure(error)) throw new ExplicitVerificationFailure("isValidSignature reverted");
-        throw error;
-      }
-      if (byteLength(returned) !== 32 || !returned.toLowerCase().startsWith(ERC1271_MAGIC_VALUE)) {
-        throw new ExplicitVerificationFailure("isValidSignature did not return the magic value");
-      }
-    }, {
-      attempts: 1,
-      baseDelayMs: 0,
-      terminal: (error) =>
-        error instanceof ExplicitVerificationFailure || error instanceof VerificationDeadlineExceeded,
-      onFallback: ({ primaryHost, selectedHost }) => {
-        logger.warn("payer signature verification RPC fallback selected", { primaryHost, selectedHost });
-      },
-    });
+    const abort = new AbortController();
+    const timer = setTimeout(() => abort.abort(new VerificationDeadlineExceeded()), options.timeoutMs);
+    try {
+      await withRpcFailover(endpoints, async ({ client }) => {
+        if (Date.now() >= deadline) throw new VerificationDeadlineExceeded();
+        const code = await withinDeadline(deadline, client.getCode({ address: payer, blockTag: "latest", signal: abort.signal, deadline }));
+        if (!code || code === "0x") throw new ExplicitVerificationFailure("payer has no deployed code");
+        let returned: Hex;
+        try {
+          const result = await withinDeadline(deadline, client.call({
+            to: payer,
+            data,
+            gas: CONTRACT_VERIFICATION_GAS,
+            blockTag: "latest",
+            signal: abort.signal,
+            deadline,
+          }));
+          returned = result.data ?? "0x";
+        } catch (error) {
+          if (error instanceof VerificationDeadlineExceeded) throw error;
+          if (isExplicitCallFailure(error)) throw new ExplicitVerificationFailure("isValidSignature reverted");
+          throw error;
+        }
+        if (byteLength(returned) !== 32 || !returned.toLowerCase().startsWith(ERC1271_MAGIC_VALUE)) {
+          throw new ExplicitVerificationFailure("isValidSignature did not return the magic value");
+        }
+      }, {
+        attempts: 1,
+        baseDelayMs: 0,
+        terminal: (error) =>
+          error instanceof ExplicitVerificationFailure || error instanceof VerificationDeadlineExceeded,
+        onFallback: ({ primaryHost, selectedHost }) => {
+          logger.warn("payer signature verification RPC fallback selected", { primaryHost, selectedHost });
+        },
+      });
+    } finally { clearTimeout(timer); abort.abort(); }
   }
 
   return {
@@ -411,15 +418,15 @@ export function createContractVerificationEndpoint(args: {
   return {
     host: new URL(args.url).hostname,
     client: {
-      async getCode({ address }) {
-        const code = await client.request({ method: "eth_getCode", params: [address, "latest"] });
+      async getCode({ address, signal, deadline }) {
+        const code = await client.request({ method: "eth_getCode", params: [address, "latest"] }, { signal, deadline } as never);
         return typeof code === "string" ? code : undefined;
       },
-      async call({ to, data, gas }) {
+      async call({ to, data, gas, signal, deadline }) {
         const returned = await client.request({
           method: "eth_call",
           params: [{ to, data, gas: `0x${gas.toString(16)}` }, "latest"],
-        });
+        }, { signal, deadline } as never);
         return { data: typeof returned === "string" ? returned : undefined };
       },
     },

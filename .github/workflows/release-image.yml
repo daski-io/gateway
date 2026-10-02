@@ -94,12 +94,20 @@ jobs:
       # Candidate dispatch starts only after explicit engine ownership handoff.
       - name: Notify the sandbox coordinator
         continue-on-error: true
-        if: vars.RELEASE_ENGINE_HANDOVER == 'enabled'
+        if: vars.RELEASE_ENGINE_HANDOVER == 'enabled' && github.event_name == 'push' && github.ref == 'refs/heads/develop'
         env:
           GH_TOKEN: ${{ secrets.RELEASE_DISPATCH_TOKEN }}
         run: |
           set -euo pipefail
-          test -n "$GH_TOKEN" || { echo "RELEASE_DISPATCH_TOKEN is required after handoff"; exit 1; }
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::warning::Sandbox notification was not sent: RELEASE_DISPATCH_TOKEN is missing after handoff."
+            echo "Sandbox notification failed: the handover is enabled but RELEASE_DISPATCH_TOKEN is missing. This image has no new sandbox evidence." >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
           jq -n --arg repo "$GITHUB_REPOSITORY" --arg commit "$GITHUB_SHA" --argjson runId "$GITHUB_RUN_ID" \
             '{event_type:"release-image",client_payload:{repo:$repo,commit:$commit,runId:$runId}}' > dispatch.json
-          gh api --method POST repos/daski-io/deploy-mainnet/dispatches --input dispatch.json
+          if ! gh api --method POST repos/daski-io/deploy-mainnet/dispatches --input dispatch.json; then
+            echo "::warning::Sandbox notification failed; this image has no new sandbox evidence."
+            echo "Sandbox notification failed. The image is published, but release preparation still requires authenticated sandbox evidence." >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi

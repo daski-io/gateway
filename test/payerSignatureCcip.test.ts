@@ -96,3 +96,25 @@ describe("contract path against an EIP-3668 OffchainLookup revert", () => {
     expect(log).toEqual(["eth_getCode", "eth_call"]);
   });
 });
+
+
+it("does not send an aborted contract verification while it waits for the paced endpoint", async () => {
+  vi.useFakeTimers();
+  try {
+    const log: string[] = [];
+    const endpoint=createContractVerificationEndpoint({
+      url:"https://paced-verification.example",chain:baseSepolia,timeoutMs:5_000,
+      maxPerMinute:60,fetchFn:rpcFetch(log,"magic"),
+    });
+    const first=endpoint.client.getCode({address:PAYER,blockTag:"latest"});
+    await vi.advanceTimersByTimeAsync(0);await first;
+    const controller=new AbortController();
+    const waiting=Promise.allSettled([endpoint.client.getCode({
+      address:PAYER,blockTag:"latest",signal:controller.signal,deadline:Date.now()+5_000,
+    })]);
+    await vi.advanceTimersByTimeAsync(10);controller.abort();
+    expect((await waiting)[0]).toMatchObject({status:"rejected"});
+    await vi.runAllTimersAsync();
+    expect(log).toEqual(["eth_getCode"]);
+  } finally {vi.useRealTimers();}
+});

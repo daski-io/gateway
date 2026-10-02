@@ -119,18 +119,18 @@ function configurePreParserRateLimits(
   config: Config,
   railConfig: StandardRailConfig,
 ): void {
-  // Public liveness is a memoized local read. Do not touch the purchase DB
-  // merely to rate-limit anonymous probes.
-  app.use("/health/live", rateLimit({ windowMs: 60_000, max: config.publicReadMaxPerMinute,
-    namespace: "local-health" }));
-  app.use("/health/live", rateLimit({ windowMs: 60_000, max: config.publicReadGlobalMaxPerMinute,
-    namespace: "local-health-global", keyScope: "global" }));
+  // Liveness is single-flight and cached. A shared proxy's bucket must not
+  // let an anonymous caller suppress coordinator probes; no DB rate-limit
+  // lookup or per-client/global admission is needed for this bounded read.
   // Only the signature-authorized fence write is anonymous. Do not throttle
   // authenticated fleet/status observation behind this ingress budget.
   for (const limiter of [
     rateLimit({ windowMs: 60_000, max: 30, namespace: "release-fence-ingress" }),
     rateLimit({ windowMs: 60_000, max: 30, namespace: "release-fence", store: queries }),
-    rateLimit({ windowMs: 60_000, max: Math.min(config.stateChangeGlobalMaxPerMinute, config.rpcReadMaxPerMinute),
+    // getProvider reads two blocks and seven contract values per attempt,
+    // up to three attempts per endpoint. Charge that worst-case fan-out.
+    rateLimit({ windowMs: 60_000,
+      max: Math.max(1, Math.min(config.stateChangeGlobalMaxPerMinute, Math.floor(config.rpcReadMaxPerMinute / 27))),
       namespace: "release-fence-global", keyScope: "global", store: queries }),
   ]) app.use("/internal/release/v1/registration-fences", (req, res, next) => {
     if (req.method === "POST") limiter(req, res, next);
