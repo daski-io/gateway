@@ -91,6 +91,24 @@ export function clientAddress(req: Pick<Request, "clientAddress" | "socket">): s
   return req.clientAddress ?? (normalizeAddress(req.socket?.remoteAddress) || "unknown");
 }
 
+/**
+ * The network a client is limited as. A public IPv6 client is keyed by its
+ * /64, which one host or subscriber normally holds whole and can draw a fresh
+ * source address from for every request; an IPv4 address and a private peer
+ * (Railway's own services) stay exact; anything else is returned as given.
+ */
+export function clientNetworkKey(address: string): string {
+  const ip = normalizeAddress(address);
+  if (isIP(ip) !== 6 || isPrivatePeer(ip)) return ip || address;
+  const [head, tail] = ip.includes("::") ? ip.split("::") : [ip, undefined];
+  // An embedded IPv4 tail fills the last two groups; only the first four count.
+  const groups = (part: string | undefined) =>
+    part ? part.split(":").flatMap(group => group.includes(".") ? ["0", "0"] : [group]) : [];
+  const left = groups(head), right = groups(tail);
+  const hextets = tail === undefined ? left : [...left, ...Array<string>(8 - left.length - right.length).fill("0"), ...right];
+  return hextets.slice(0, 4).map(group => Number.parseInt(group, 16).toString(16)).join(":") + "::/64";
+}
+
 export function installEdgeBoundary(app: Express, config: Pick<Config, "edgeSecret">): void {
   // Forwarding chains are not counted; the boundary names the client.
   app.set("trust proxy", false);

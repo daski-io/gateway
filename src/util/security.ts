@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { Request, Response, NextFunction } from "express";
-import { clientAddress } from "../http/edgeBoundary.js";
+import { clientAddress, clientNetworkKey } from "../http/edgeBoundary.js";
 
 // Inline equivalents of the bits of `helmet` + `express-rate-limit` we
 // actually need. Kept dependency-free so a security audit doesn't require
@@ -36,11 +36,12 @@ interface Bucket {
 
 const MAX_BUCKET_KEY_LENGTH = 128;
 
-// The client address is what the edge boundary established (edgeBoundary.ts).
-// Keys stay bounded and index-safe: anything long or outside the
-// address/token alphabet is replaced by its digest.
+// The client address is what the edge boundary established (edgeBoundary.ts);
+// a public IPv6 client is limited by its /64. Keys stay bounded and
+// index-safe: anything long or outside the address/token alphabet is
+// replaced by its digest.
 export function boundedBucketKey(value: string): string {
-  if (value.length <= MAX_BUCKET_KEY_LENGTH && /^[A-Za-z0-9.:_-]+$/.test(value)) return value;
+  if (value.length <= MAX_BUCKET_KEY_LENGTH && /^[A-Za-z0-9.:_/-]+$/.test(value)) return value;
   return `h:${createHash("sha256").update(value).digest("hex")}`;
 }
 
@@ -67,7 +68,8 @@ export interface RateLimitOptions {
 }
 
 /**
- * Per-IP token bucket. Use on POST endpoints whose work costs facilitator
+ * Per-client token bucket (an IPv4 address, or a public IPv6 client's /64).
+ * Use on POST endpoints whose work costs facilitator
  * gas, including confirmation and settlement, so a
  * single hostile client can't drain operator funds via a tight loop.
  */
@@ -133,7 +135,7 @@ export function rateLimit(opts: RateLimitOptions) {
         ? opts.key(req)
         : opts.keyScope === "global"
           ? "global"
-          : clientAddress(req),
+          : clientNetworkKey(clientAddress(req)),
     );
     const key = `${opts.namespace ?? "default"}:${clientKey}`;
     if (opts.store) {

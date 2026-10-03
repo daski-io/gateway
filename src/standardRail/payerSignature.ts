@@ -1,4 +1,5 @@
 import { orderedRpcTransport } from "../rpc/orderedTransport.js";
+import { clientNetworkKey } from "../http/edgeBoundary.js";
 import {
   BaseError,
   ContractFunctionRevertedError,
@@ -46,7 +47,8 @@ export const CONTRACT_VERIFICATION_RESPONSE_MAX_BYTES = 16_384;
 export const CONTRACT_VERIFICATION_CONCURRENCY = 8;
 /**
  * Contract verifications one requesting client may hold at once, so that no
- * single caller can occupy the verification lanes every caller shares.
+ * single caller can occupy the verification lanes every caller shares. A
+ * public IPv6 client is one caller per /64.
  */
 export const CONTRACT_VERIFICATION_PER_CALLER = 2;
 /**
@@ -150,17 +152,21 @@ export class ContractVerificationSemaphore {
 export const sharedContractVerificationSemaphore =
   new ContractVerificationSemaphore(CONTRACT_VERIFICATION_CONCURRENCY);
 
-/** Contract verifications in flight per requesting client. */
+/**
+ * Contract verifications in flight per requesting client: an IPv4 address, or
+ * a public IPv6 client's /64, which one host can rotate source addresses in.
+ */
 export class ContractVerificationCallerLimit {
   private readonly active = new Map<string, number>();
 
   constructor(readonly limit: number) {}
 
-  inFlight(caller: string): number {
-    return this.active.get(caller) ?? 0;
+  inFlight(client: string): number {
+    return this.active.get(clientNetworkKey(client)) ?? 0;
   }
 
-  tryAcquire(caller: string): (() => void) | null {
+  tryAcquire(client: string): (() => void) | null {
+    const caller = clientNetworkKey(client);
     const held = this.active.get(caller) ?? 0;
     if (held >= this.limit) return null;
     this.active.set(caller, held + 1);

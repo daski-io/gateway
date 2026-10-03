@@ -50,6 +50,7 @@ describe("rate-limit bucket keys", () => {
     expect(boundedBucketKey("203.0.113.9")).toBe("203.0.113.9");
     expect(boundedBucketKey("::ffff:203.0.113.9")).toBe("::ffff:203.0.113.9");
     expect(boundedBucketKey("provider:8327")).toBe("provider:8327");
+    expect(boundedBucketKey("2001:db8:1:2::/64")).toBe("2001:db8:1:2::/64");
   });
 
   it("digests anything long or outside the address alphabet", () => {

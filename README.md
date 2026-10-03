@@ -260,7 +260,8 @@ core groups are:
   `PAYER_SIGNATURE_VERIFY_TIMEOUT_MS` (5000), the single deadline covering
   the code lookup, the call, and one RPC failover. Signatures are at most
   4,096 bytes; the call runs with 1,000,000 gas, a 16 KB response bound, and
-  at most 8 concurrent verifications per process and 2 per requesting client.
+  at most 8 concurrent verifications per process and 2 per requesting client
+  (a public IPv6 client per /64).
   A verification refused for the client's share or a full RPC queue, or whose
   RPC wait expires, answers the retryable 503
   `SIGNATURE_VERIFICATION_UNAVAILABLE` (the same signature may be
@@ -284,7 +285,10 @@ request it forwards, a request without it is refused with 403
 `EDGE_REQUIRED`, and the client address is the one Cloudflare names in
 `CF-Connecting-IP`; forwarding chains are never counted. Private-network
 callers are trusted for one forwarded hop (the website names the MCP client
-it serves), and `/health/*` needs no header.
+it serves), and `/health/*` needs no header. Per-client limits (the rate
+limits and the contract-verification share) count a public IPv6 client once
+per /64, since one host can draw a fresh source address from its /64 for
+every request; IPv4 addresses and private-network peers count exactly.
 
 The runtime rejects mock chain mode, unknown USDC domains, missing standard
 artifacts and configuration that does not match the

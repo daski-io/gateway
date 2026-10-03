@@ -5,11 +5,13 @@ import express from "express";
 import { describe, expect, it } from "vitest";
 import {
   clientAddress,
+  clientNetworkKey,
   decideEdge,
   installEdgeBoundary,
   isPrivatePeer,
   normalizeAddress,
 } from "../src/http/edgeBoundary.js";
+import { rateLimit } from "../src/util/security.js";
 
 const secret = Buffer.from("s".repeat(64));
 const publicRequest = {
@@ -75,5 +77,36 @@ describe("edge boundary", () => {
     } finally {
       await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
     }
+  });
+
+  it("keys a public IPv6 client by its /64 and leaves IPv4 and private peers exact", () => {
+    for (const address of ["2001:db8:1:2::a", "2001:db8:1:2:ffff:ffff:ffff:ffff", "2001:DB8:0001:0002::", "[2001:db8:1:2::9]"])
+      expect(clientNetworkKey(address)).toBe("2001:db8:1:2::/64");
+    expect(clientNetworkKey("2001:db8:1:3::a")).toBe("2001:db8:1:3::/64");
+    expect(clientNetworkKey("2606:4700::1")).toBe("2606:4700:0:0::/64");
+    expect(clientNetworkKey("64:ff9b::198.51.100.7")).toBe("64:ff9b:0:0::/64");
+    expect(clientNetworkKey("2001:db8::")).toBe("2001:db8:0:0::/64");
+    expect(clientNetworkKey("203.0.113.9")).toBe("203.0.113.9");
+    expect(clientNetworkKey("::ffff:203.0.113.9")).toBe("203.0.113.9");
+    // Railway's private network and loopback stay exact: those are the gateway's own neighbours.
+    expect(clientNetworkKey("fd12:2517:318f::a")).toBe("fd12:2517:318f::a");
+    expect(clientNetworkKey("::1")).toBe("::1");
+    expect(clientNetworkKey("unknown")).toBe("unknown");
+  });
+
+  it("holds every address of one public /64 to one per-client rate limit", () => {
+    const limiter = rateLimit({ windowMs: 60_000, max: 2, namespace: "network-key-test" });
+    const statuses: number[] = [];
+    const send = (clientAddress: string) => {
+      let status = 200;
+      const res = { setHeader: () => res, status: (code: number) => { status = code; return res; }, json: () => res };
+      limiter({ clientAddress, socket: {} } as never, res as never, () => undefined);
+      statuses.push(status);
+    };
+    // One host drawing a fresh source address from its /64 for every request.
+    for (const host of ["2001:db8:7:7::1", "2001:db8:7:7::2", "2001:db8:7:7:abcd::3"]) send(host);
+    // Its neighbouring /64 and IPv4 neighbours keep buckets of their own.
+    for (const other of ["2001:db8:7:8::1", "198.51.100.1", "198.51.100.2"]) send(other);
+    expect(statuses).toEqual([200, 200, 429, 200, 200, 200]);
   });
 });

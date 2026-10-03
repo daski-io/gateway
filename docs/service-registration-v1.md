@@ -46,7 +46,8 @@ for another body is a conflict. One service may have only one pending revision.
 ## Request limits and retry pacing
 
 Registration GET polls and POSTs share **10 requests per client IP per
-60-second window**, across all services and `/v1/owner-swaps`. Signed provider
+60-second window** (an IPv6 client is counted per /64), across all services
+and `/v1/owner-swaps`. Signed provider
 requests use the same budget. A shared global budget is the smaller of 100 and
 `STATE_CHANGE_GLOBAL_MAX_PER_MINUTE` requests per minute. POSTs also have a
 20-per-minute resource budget, keyed by provider ID when present, otherwise by

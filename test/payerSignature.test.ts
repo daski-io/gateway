@@ -399,6 +399,32 @@ describe("payer signature verification: bounded pressure", () => {
     await expect(verify("203.0.113.7")).resolves.toMatchObject({ verifiedVia: "erc1271" });
   });
 
+  it("holds a public IPv6 client to one share per /64, however many source addresses it uses", async () => {
+    let open!: () => void;
+    const gate = new Promise<void>((resolve) => { open = resolve; });
+    const callers = new AsyncLocalStorage<string>();
+    const callerLimit = new ContractVerificationCallerLimit(2);
+    const subject = createPayerSignatureVerifier({
+      accountTypes: ["eoa", "contract"], timeoutMs: 1_000,
+      endpoints: [{ host: "a", client: mockClient({ code: async () => { await gate; return "0x6001"; } }).client }],
+      semaphore: new ContractVerificationSemaphore(8), callerLimit, caller: () => callers.getStore(),
+    });
+    const verify = (caller: string) => callers.run(caller, () =>
+      subject.verifyPayerTypedData({ payer: CONTRACT, typedData, signature: opaque }));
+    const held = [verify("2001:db8:5:5::1"), verify("2001:db8:5:5::2")];
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(callerLimit.inFlight("2001:db8:5:5:ffff::9")).toBe(2);
+    await expect(verify("2001:db8:5:5:ffff::9")).rejects.toMatchObject({
+      code: "SIGNATURE_VERIFICATION_UNAVAILABLE", retryable: true, requiresNewSignature: false,
+    });
+    // Another /64 is another client.
+    const neighbour = verify("2001:db8:5:6::1");
+    open();
+    await expect(Promise.all([...held, neighbour])).resolves.toEqual(
+      Array(3).fill({ accountType: "contract", verifiedVia: "erc1271" }));
+    expect(callerLimit.inFlight("2001:db8:5:5::1")).toBe(0);
+  });
+
   it("releases the caller's share when admission or the semaphore refuses", async () => {
     const callerLimit = new ContractVerificationCallerLimit(1);
     const callers = new AsyncLocalStorage<string>();
