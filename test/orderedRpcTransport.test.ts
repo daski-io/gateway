@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { custom } from "viem";
 import { describe, expect, it, vi } from "vitest";
-import { orderedRpcTransport } from "../src/rpc/orderedTransport.js";
+import { orderedRpcTransport, type RpcProofPriority } from "../src/rpc/orderedTransport.js";
 
 interface Request {
   method: string;
@@ -160,10 +160,10 @@ it("returns cancelled endpoint capacity to the next required read",async()=>{
  }finally{vi.useRealTimers();}
 });
 
-describe("required proof reads at a shared endpoint", () => {
+describe("proof reads at a shared endpoint", () => {
   const client = (scope: string, name: string, sent: Array<{ name: string; at: number }>, started: number,
-    pacing: { required?: boolean; concurrency?: number; presented?: number; maxWaitMs?: number; maxQueued?: number;
-      maxPerMinute?: number } = {},
+    pacing: { priority?: RpcProofPriority; concurrency?: number; presented?: number; maxWaitMs?: number;
+      maxQueued?: number; maxPerMinute?: number } = {},
     wire?: () => Promise<unknown>) =>
     orderedRpcTransport(custom({ request: async ({ method }: Request) => {
       sent.push({ name: name + ":" + method, at: Date.now() - started });
@@ -172,7 +172,7 @@ describe("required proof reads at a shared endpoint", () => {
       args: Request, options?: { deadline?: number; signal?: AbortSignal },
     ) => Promise<unknown>;
 
-  it("serves a required read before other waiting reads, never more than one other read apart", async () => {
+  it("serves a payment proof read before other waiting reads, never more than one other read apart", async () => {
     vi.useFakeTimers();
     try {
       const sent: Array<{ name: string; at: number }> = [];
@@ -180,7 +180,7 @@ describe("required proof reads at a shared endpoint", () => {
       const scope = "required-priority-" + randomUUID();
       const verify = client(scope, "verify", sent, started, { concurrency: 8, maxWaitMs: 5_000 });
       const [a, b] = [client(scope, "a", sent, started), client(scope, "b", sent, started)];
-      const proof = client(scope, "proof", sent, started, { required: true });
+      const proof = client(scope, "proof", sent, started, { priority: "payment" });
       const flood = Promise.allSettled(Array.from({ length: 8 }, (_, i) => verify({ method: "v" + i })));
       const others = Promise.allSettled([a({ method: "x" }), b({ method: "x" })]);
       const proofs = Promise.all([proof({ method: "p1" }), proof({ method: "p2" }), proof({ method: "p3" })]);
@@ -200,14 +200,53 @@ describe("required proof reads at a shared endpoint", () => {
     } finally { vi.useRealTimers(); }
   });
 
-  it("keeps a required read waiting past the two-second bound while other reads expire at it", async () => {
+  it("serves registration proofs after payment proofs and before ordinary reads, starving neither", async () => {
+    vi.useFakeTimers();
+    try {
+      const sent: Array<{ name: string; at: number }> = [];
+      const started = Date.now();
+      const scope = "proof-levels-" + randomUUID();
+      const payment = client(scope, "pay", sent, started, { priority: "payment" });
+      const registration = client(scope, "reg", sent, started, { priority: "registration" });
+      const ordinary = client(scope, "ord", sent, started);
+      const all = Promise.all([
+        ...Array.from({ length: 8 }, (_, i) => payment({ method: String(i) })),
+        ...Array.from({ length: 4 }, (_, i) => registration({ method: String(i) })),
+        ...Array.from({ length: 4 }, (_, i) => ordinary({ method: String(i) })),
+      ]);
+      await vi.runAllTimersAsync();
+      await all;
+      // Payment proofs take every other slot, so at most one other read goes
+      // between two of them; registration proofs and ordinary reads share the
+      // rest, a quarter each, and neither waits more than three slots.
+      expect(sent.map(entry => entry.name)).toEqual([
+        "pay:0", "pay:1", "reg:0", "pay:2", "ord:0", "pay:3", "reg:1", "pay:4",
+        "ord:1", "pay:5", "reg:2", "pay:6", "ord:2", "pay:7", "reg:3", "ord:3",
+      ]);
+      expect(sent.map(entry => entry.at)).toEqual(Array.from({ length: 16 }, (_, i) => i * 200));
+      // Without payment proofs waiting, registration proofs and ordinary reads alternate.
+      const later: Array<{ name: string; at: number }> = [];
+      const restart = Date.now();
+      const rest = Promise.all([
+        ...Array.from({ length: 3 }, (_, i) => client(scope, "reg", later, restart, { priority: "registration" })({ method: String(i) })),
+        ...Array.from({ length: 3 }, (_, i) => client(scope, "ord", later, restart)({ method: String(i) })),
+      ]);
+      await vi.runAllTimersAsync();
+      await rest;
+      expect(later.map(entry => entry.name.slice(0, 3))).toEqual(["reg", "ord", "reg", "ord", "reg", "ord"]);
+      expect(() => orderedRpcTransport(custom({ request: async () => "ok" }),
+        { scope: "x", priority: "urgent" as never })).toThrow("Invalid RPC read priority");
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("keeps a proof read waiting past the two-second bound while other reads expire at it", async () => {
     vi.useFakeTimers();
     try {
       const sent: Array<{ name: string; at: number }> = [];
       const started = Date.now();
       const scope = "required-wait-" + randomUUID();
       // 20/min: a 3 s slot spacing, longer than the default two-second wait.
-      const proof = client(scope, "proof", sent, started, { required: true, maxPerMinute: 20 });
+      const proof = client(scope, "proof", sent, started, { priority: "payment", maxPerMinute: 20 });
       const other = client(scope, "other", sent, started, { maxPerMinute: 20 });
       await proof({ method: "first" });
       const waiting = Promise.allSettled([other({ method: "late" }), proof({ method: "second" }),
@@ -216,7 +255,7 @@ describe("required proof reads at a shared endpoint", () => {
       const [late, second, bounded] = await waiting;
       expect(late).toMatchObject({ status: "rejected", reason: { name: "RpcQueueUnavailableError" } });
       expect(second).toMatchObject({ status: "fulfilled" });
-      // An explicit caller deadline stays authoritative for required reads.
+      // An explicit caller deadline stays authoritative for proof reads.
       expect(bounded).toMatchObject({ status: "rejected", reason: { name: "RpcQueueUnavailableError" } });
       expect(sent).toEqual([{ name: "proof:first", at: 0 }, { name: "proof:second", at: 3_000 }]);
     } finally { vi.useRealTimers(); }

@@ -1,6 +1,7 @@
 // Local JSON-RPC stub for a CONSISTENT deposit + release history, so the real
 // StandardChainEvidence.proveDeposit and releaseAndProve can both succeed.
-// Plain HTTP on 127.0.0.1; no real chain. Optional per-call latency.
+// Plain HTTP on 127.0.0.1 (startStub) or an in-process fetch for simulated
+// time (fetchStub); no real chain. Optional per-call latency.
 import http from "node:http";
 import { encodeAbiParameters, keccak256, pad, toHex, encodeEventTopics, parseAbiItem, toFunctionSelector, getAddress } from "viem";
 
@@ -68,8 +69,7 @@ const calls = {
   [sel("authorizationState(address,bytes32)")]: u256(1n),
   ["0x1626ba7e"]: "0x1626ba7e" + "0".repeat(56),
 };
-export function startStub({ latency = () => 0 } = {}) {
-  const started = Date.now(), log = [];
+function rpcAnswers(started) {
   const head = () => 40_000_000 + Math.floor((Date.now() - started) / 2000);
   const block = n => ({ number: toHex(n), hash: bh(n), parentHash: bh(n - 1), timestamp: toHex(Math.floor(Date.now() / 1000)), transactions: [],
     gasLimit: "0x1c9c380", gasUsed: "0x0", baseFeePerGas: "0x1", miner: "0x" + "0".repeat(40), difficulty: "0x0", totalDifficulty: "0x0", size: "0x1",
@@ -107,15 +107,41 @@ export function startStub({ latency = () => 0 } = {}) {
       default: return null;
     }
   };
+  return answer;
+}
+
+// One JSON-RPC body in, one out: the requests are logged when they arrive,
+// answered after the slowest one's latency.
+function respond(started, log, latency) {
+  const answer = rpcAnswers(started);
+  return async body => {
+    const parsed = JSON.parse(body);
+    const batch = Array.isArray(parsed) ? parsed : [parsed];
+    const arrived = Date.now() - started;
+    const wait = Math.max(...batch.map(c => latency(c.method)));
+    if (wait > 0) await new Promise(r => setTimeout(r, wait));
+    for (const c of batch) log.push({ method: c.method, arrived, done: Date.now() - started, to: c.params?.[0]?.to });
+    const out = batch.map(c => ({ jsonrpc: "2.0", id: c.id, result: answer(c) }));
+    return JSON.stringify(Array.isArray(parsed) ? out : out[0]);
+  };
+}
+
+/** The stub as an in-process fetch, for simulated time: stub it as the global fetch. */
+export function fetchStub({ latency = () => 0 } = {}) {
+  const started = Date.now(), log = [];
+  const reply = respond(started, log, latency);
+  const fetchFn = async (_url, init) => new Response(await reply(String(init.body)),
+    { status: 200, headers: { "content-type": "application/json" } });
+  return { fetchFn, log };
+}
+
+export function startStub({ latency = () => 0 } = {}) {
+  const started = Date.now(), log = [];
+  const reply = respond(started, log, latency);
   const server = http.createServer((req, res) => {
     let body = ""; req.on("data", c => body += c); req.on("end", async () => {
-      const parsed = JSON.parse(body);
-      const batch = Array.isArray(parsed) ? parsed : [parsed];
-      const arrived = Date.now() - started;
-      await new Promise(r => setTimeout(r, Math.max(...batch.map(c => latency(c.method)))));
-      for (const c of batch) log.push({ method: c.method, arrived, done: Date.now() - started });
-      const out = batch.map(c => ({ jsonrpc: "2.0", id: c.id, result: answer(c) }));
-      res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(Array.isArray(parsed) ? out : out[0]));
+      const out = await reply(body);
+      res.writeHead(200, { "content-type": "application/json" }).end(out);
     });
   });
   return new Promise(resolve => server.listen(0, "127.0.0.1", () => {

@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { custom, type Hex } from "viem";
 import { baseSepolia } from "viem/chains";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { orderedRpcTransport } from "../src/rpc/orderedTransport.js";
+import { orderedRpcTransport, type RpcProofPriority } from "../src/rpc/orderedTransport.js";
 import {
   ContractVerificationCallerLimit,
   ContractVerificationSemaphore,
@@ -32,7 +32,7 @@ function sharedEndpoint() {
     await pause(LATENCY);
     return method === "eth_getCode" ? "0x6001" : "0x1626ba7e" + "0".repeat(56);
   };
-  const client = (method: string, pacing: { required?: boolean } = {}) => {
+  const client = (method: string, pacing: { priority?: RpcProofPriority } = {}) => {
     const request = orderedRpcTransport(custom({ request: async () => wire(method) }),
       { scope, maxPerMinute: RATE, ...pacing })({ retryCount: 0 } as never).request as Read;
     return () => request({ method });
@@ -51,7 +51,7 @@ function sharedEndpoint() {
 // `busy` ordinary clients re-read as soon as each read returns.
 function load(endpoint: ReturnType<typeof sharedEndpoint>, busy: number, proofs: boolean) {
   let done = false;
-  const proof = endpoint.client("proof", { required: true });
+  const proof = endpoint.client("proof", { priority: "payment" });
   const loops: Promise<void>[] = [];
   if (proofs) loops.push((async () => {
     while (!done) await Promise.all([proof(), proof(), proof()]).catch(() => pause(LATENCY));

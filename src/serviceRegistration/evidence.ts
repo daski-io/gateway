@@ -191,12 +191,14 @@ implements RegistrationEvidenceVerifier {
       host: new URL(url).hostname,
       client: createPublicClient({
         chain,
-        // A paid listing's activation proof is served ahead of other reads
-        // at the shared endpoint, like the payment proofs it enables.
+        // A paid listing's activation proof is served ahead of ordinary reads
+        // at the shared endpoint, but after the payment proofs of listings
+        // already selling, which keep at least every other slot: a
+        // registration backlog takes no more from them than ordinary reads.
         transport: orderedRpcTransport(http(url, {
           retryCount: 0,
           timeout: 20_000,
-        }), { scope: url, maxPerMinute: railConfig.rpcReadMaxPerMinute, required: true }),
+        }), { scope: url, maxPerMinute: railConfig.rpcReadMaxPerMinute, priority: "registration" }),
       }),
     }));
   }

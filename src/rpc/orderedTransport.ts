@@ -1,15 +1,21 @@
 import type { Transport } from "viem";
 
+/**
+ * Proof reads, served ahead of every ordinary read at their endpoint: payment
+ * proofs first, then the registration proofs that activate paid listings.
+ */
+export type RpcProofPriority = "payment" | "registration";
+
 interface RpcPacing {
   scope: string;
   maxPerMinute?: number;
   maxWaitMs?: number;
   /**
-   * Payment and registration proof reads: served ahead of every ordinary
-   * read at the endpoint, and kept in place until served; only an explicit
-   * caller deadline or an abort ends their wait.
+   * A proof client. Its reads go ahead of every ordinary read at the endpoint
+   * and keep their place until served; only an explicit caller deadline or an
+   * abort ends their wait. Without it the client's reads are ordinary.
    */
-  required?: boolean;
+  priority?: RpcProofPriority;
   concurrency?: number;
   /** Reads this client presents to the endpoint queue at once: 1 by default, at most its lanes. */
   presented?: number;
@@ -18,7 +24,7 @@ interface RpcPacing {
 }
 interface SchedulingOptions { signal?: AbortSignal; deadline?: number }
 /** Endpoint precedence levels, highest first. */
-const REQUIRED = 0, ORDINARY = 1;
+const PAYMENT = 0, REGISTRATION = 1, ORDINARY = 2;
 interface Waiter {
   /** The caller's explicit deadline, or Infinity. */
   deadline: number;
@@ -34,13 +40,13 @@ interface Waiter {
 }
 interface Budget {
   nextAt: number;
-  /** Waiting reads by level: proof reads, then ordinary reads. */
-  levels: [Waiter[], Waiter[]];
+  /** Waiting reads by level: payment proofs, registration proofs, ordinary reads. */
+  levels: [Waiter[], Waiter[], Waiter[]];
   /**
    * owes[level]: that level took the last slot it competed for while a read
    * of a lower level waited, so the next slot it competes for goes lower.
    */
-  owes: [boolean, boolean];
+  owes: [boolean, boolean, boolean];
   timer?: ReturnType<typeof setTimeout>;
 }
 const endpointBudgets = new Map<string, Budget>();
@@ -55,11 +61,14 @@ const expiry = (waiter: Waiter) => Math.min(waiter.deadline, waiter.budget);
 
 // The level the next slot goes to. The highest level with a waiting read is
 // served, unless it took the last slot it competed for while a lower level
-// waited: then the slot goes to the levels below. So while proof reads wait,
-// at most one ordinary read is dispatched before the next of them (G5-H1),
-// and a backlog of proofs leaves ordinary reads every other slot.
+// waited: then the slot goes to the levels below, by the same rule. So while
+// payment proofs wait, at most one other read is dispatched before the next
+// of them (G5-H1), and each lower level that waits gets at least every
+// fourth slot. With every level backlogged, payment proofs get half the
+// endpoint and registration proofs and ordinary reads a quarter each; a
+// level with nothing waiting leaves its share to the others.
 function nextLevel(budget: Budget): number | undefined {
-  for (let level = REQUIRED; level <= ORDINARY; level++) {
+  for (let level = PAYMENT; level <= ORDINARY; level++) {
     if (!budget.levels[level]!.length) continue;
     if (budget.owes[level] && budget.levels.some((queue, lower) => lower > level && queue.length > 0)) continue;
     return level;
@@ -77,7 +86,7 @@ function pump(budget: Budget): void {
     for (const waiter of budget.levels.flat())
       if (now > expiry(waiter)) waiter.finish(new RpcQueueUnavailableError());
     const level = nextLevel(budget);
-    if (level === undefined) { budget.owes = [false, false]; return; }
+    if (level === undefined) { budget.owes = [false, false, false]; return; }
     if (budget.nextAt > now) {
       let wake = budget.nextAt;
       for (const waiter of budget.levels.flat()) wake = Math.min(wake, expiry(waiter) + 1);
@@ -88,7 +97,7 @@ function pump(budget: Budget): void {
     const lower = budget.levels.slice(level + 1).flat();
     // The levels above had nothing waiting or were owing this slot, which
     // settles their debt; this level owes the next one when a lower one waits.
-    for (let above = REQUIRED; above < level; above++) budget.owes[above] = false;
+    for (let above = PAYMENT; above < level; above++) budget.owes[above] = false;
     budget.owes[level] = lower.length > 0;
     for (const yielded of lower) yielded.budget += waiter.spacing;
     budget.nextAt = now + waiter.spacing;
@@ -97,7 +106,7 @@ function pump(budget: Budget): void {
 }
 function paced(pacing: RpcPacing, level: number, deadline: number, waitBudget: number, signal?: AbortSignal): Promise<void> {
   let budget = endpointBudgets.get(pacing.scope);
-  if (!budget) endpointBudgets.set(pacing.scope, budget = { nextAt: 0, levels: [[], []], owes: [false, false] });
+  if (!budget) endpointBudgets.set(pacing.scope, budget = { nextAt: 0, levels: [[], [], []], owes: [false, false, false] });
   const queue = budget.levels[level]!;
   if (queue.length >= MAX_QUEUED_REQUESTS || signal?.aborted) return Promise.reject(new RpcQueueUnavailableError());
   if (pacing.maxWaitMs === 0 && (budget.levels.some(waiting => waiting.length > 0) || budget.nextAt > Date.now()))
@@ -126,7 +135,7 @@ function paced(pacing: RpcPacing, level: number, deadline: number, waitBudget: n
  * same endpoint. A client presents at most `presented` reads (one by default)
  * to the endpoint queue at once, whatever its parallel lanes, oldest
  * operation first, so parallel lanes overlap only wire latency and a client
- * can never crowd out the others. A proof read (`required`) keeps its place
+ * can never crowd out the others. A proof read (`priority`) keeps its place
  * at the endpoint until it is served; an explicit caller deadline or abort
  * still ends it. An ordinary read waits at most maxWaitMs (two seconds by
  * default) from the moment its client presents it; slots that proof reads
@@ -145,7 +154,9 @@ export function orderedRpcTransport(transport: Transport, pacing?: RpcPacing): T
   if (pacing?.maxQueued !== undefined &&
       (!Number.isSafeInteger(pacing.maxQueued) || pacing.maxQueued < 1 || pacing.maxQueued > MAX_QUEUED_REQUESTS))
     throw new Error("Invalid RPC queue bound");
-  const level = pacing?.required ? REQUIRED : ORDINARY;
+  if (pacing?.priority !== undefined && pacing.priority !== "payment" && pacing.priority !== "registration")
+    throw new Error("Invalid RPC read priority");
+  const level = pacing?.priority === "payment" ? PAYMENT : pacing?.priority === "registration" ? REGISTRATION : ORDINARY;
   const proof = level !== ORDINARY;
   return parameters => {
     const target = transport(parameters);
