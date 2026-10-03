@@ -1,10 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createPublicClient, http, keccak256, type Hex, type PublicClient } from "viem";
+import { createPublicClient, http, keccak256, type Address, type Hex, type PublicClient } from "viem";
 import { base } from "viem/chains";
 import { orderedRpcTransport } from "../src/rpc/orderedTransport.js";
 import { ViemRegistrationEvidenceVerifier } from "../src/serviceRegistration/evidence.js";
 import { StandardChainEvidence } from "../src/standardRail/evidence.js";
-const { fetchStub, policy, listing, PAYER, NONCE, TX, GROSS, TOKEN, RECEIVER } =
+const { fetchStub, policy, listing, PAYER, NONCE, TX, GROSS, TOKEN, RECEIVER, ORACLE, ORACLE_CODE } =
   await import(new URL("./fixtures/releaseRpc.mjs", import.meta.url).href);
 
 // What else reads the endpoint must not slow a paid order's proofs: they are
@@ -98,5 +98,47 @@ describe("payment proofs beside registration proofs", () => {
     // proof took 21.5 s beside them instead of 10.25 s.
     expect(alone).toBeLessThan(12_000);
     expect(besideRegistration).toBeLessThanOrEqual(alone * 1.05);
+  }, 60_000);
+});
+
+describe("payment proofs beside anonymous pre-payment screening", () => {
+  // Every claimed purchase attempt screens its participants before the
+  // facilitator is reached; an unfunded signer is enough to open one, and a
+  // held attempt screens again until the facilitator refuses it.
+  it.each([30, 160])("keep their pace while %i attempts screen at once, and every screening settles promptly", async attempts => {
+    vi.useFakeTimers();
+    const { url, evidence, rpc } = endpoint();
+    let done = false;
+    const loops = busyReaders(url, 3, () => done);
+    const screenings = { passed: 0, refused: 0, longest: 0 };
+    loops.push(...Array.from({ length: attempts }, async () => {
+      while (!done) {
+        const started = Date.now();
+        await evidence.assertNotSanctioned(ORACLE as Address, keccak256(ORACLE_CODE), [PAYER as Address])
+          .then(() => screenings.passed++, (error: Error) => {
+            // The endpoint's refusal, never a sanctions finding.
+            expect(error.message).not.toBe("SANCTIONS_ADDRESS_REJECTED");
+            screenings.refused++;
+          });
+        screenings.longest = Math.max(screenings.longest, Date.now() - started);
+        await pause(300);
+      }
+    }));
+    await vi.advanceTimersByTimeAsync(5_000);
+    const elapsed = await timedProof(evidence);
+    done = true;
+    await vi.advanceTimersByTimeAsync(60_000);
+    await Promise.all(loops);
+
+    // Before, each held attempt added about 5.6 s: 176 s at 30 and 904 s,
+    // past the 900 s evidence deadline, at 160. The proofs now take what they
+    // take beside the three readers alone.
+    expect(elapsed).toBeLessThan(12_000);
+    // Screening kept its share of the ordinary reads, and what the endpoint
+    // could not serve was refused within its bounded waits, not queued.
+    expect(screenings.passed).toBeGreaterThan(0);
+    expect(screenings.refused).toBeGreaterThan(0);
+    expect(screenings.longest).toBeLessThan(20_000);
+    expect(rpc.log.some((entry: { to?: string }) => entry.to === "0xca11bde05977b3631167028862be2a173976ca11")).toBe(true);
   }, 60_000);
 });

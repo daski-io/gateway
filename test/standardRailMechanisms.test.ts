@@ -88,7 +88,7 @@ describe("standard rail hardened mechanisms", () => {
     }
   });
 
-  it("aggregates sanctions screening into one pinned read through the selected RPC", async () => {
+  it("aggregates sanctions screening into one pinned read through the selected screening RPC", async () => {
     const oracleCode = "0x6001600101" as const;
     const multicall = vi.fn(async ({ contracts, allowFailure, blockNumber }: {
       contracts: Array<{ functionName: string; args: readonly unknown[] }>;
@@ -110,8 +110,11 @@ describe("standard rail hardened mechanisms", () => {
       releasePrivateKey: privateKey,
       manifest: { chainEvidencePolicy: { payload: { maximumSourceLagBlocks: 4 } } },
     } as unknown as StandardRailConfig, baseSepolia, unlockedFacilitatorNonceLock);
-    Object.assign(evidence as unknown as { clients: unknown[] }, {
-      clients: [{ host: "rpc-a.example", client }, { host: "rpc-b.example", client }],
+    // Screening reads through its own client, never the payment-proof one.
+    const proofClient = new Proxy({}, { get: () => { throw new Error("screening used the payment-proof client"); } });
+    Object.assign(evidence as unknown as { clients: unknown[]; screeningClients: unknown[] }, {
+      clients: [{ host: "rpc-a.example", client: proofClient }, { host: "rpc-b.example", client: proofClient }],
+      screeningClients: [{ host: "rpc-a.example", client }, { host: "rpc-b.example", client }],
     });
     await expect(evidence.assertNotSanctioned(
       "0x1111111111111111111111111111111111111111",

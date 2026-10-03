@@ -1,11 +1,16 @@
 // Local JSON-RPC stub for a CONSISTENT deposit + release history, so the real
-// StandardChainEvidence.proveDeposit and releaseAndProve can both succeed.
-// Plain HTTP on 127.0.0.1 (startStub) or an in-process fetch for simulated
-// time (fetchStub); no real chain. Optional per-call latency.
+// StandardChainEvidence.proveDeposit and releaseAndProve can both succeed, and
+// for a sanctions oracle (behind multicall3) that clears every account, so its
+// assertNotSanctioned succeeds. Plain HTTP on 127.0.0.1 (startStub) or an
+// in-process fetch for simulated time (fetchStub); no real chain. Optional
+// per-call latency.
 import http from "node:http";
-import { encodeAbiParameters, keccak256, pad, toHex, encodeEventTopics, parseAbiItem, toFunctionSelector, getAddress } from "viem";
+import { decodeFunctionData, encodeAbiParameters, encodeFunctionResult, keccak256, multicall3Abi, pad, toHex, encodeEventTopics, parseAbiItem, toFunctionSelector, getAddress } from "viem";
 
 export const TOKEN = "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913";
+export const ORACLE = "0x" + "3c".repeat(20);
+export const ORACLE_CODE = "0x6080600404";
+const MULTICALL3 = "0xca11bde05977b3631167028862be2a173976ca11";
 export const IMPLEMENTATION = "0x2ce6311ddae708829bc0784c967b7d77d19fd779";
 export const SPLITTER = "0x" + "5a".repeat(20);
 export const PAYEE = "0x" + "6b".repeat(20);
@@ -93,9 +98,17 @@ function rpcAnswers(started) {
       case "eth_getStorageAt": return pad(IMPLEMENTATION, { size: 32 });
       case "eth_getCode": {
         const a = String(params?.[0]).toLowerCase();
-        return a === TOKEN ? TOKEN_CODE : a === IMPLEMENTATION ? IMPL_CODE : a === SPLITTER ? SPLITTER_CODE : a === PAYER ? "0x6001" : "0x";
+        return a === TOKEN ? TOKEN_CODE : a === IMPLEMENTATION ? IMPL_CODE : a === SPLITTER ? SPLITTER_CODE : a === PAYER ? "0x6001" :
+          a === ORACLE ? ORACLE_CODE : "0x";
       }
-      case "eth_call": return calls[String(params?.[0]?.data ?? "").slice(0, 10)] ?? "0x";
+      case "eth_call":
+        // Sanctions screening aggregates isSanctioned through multicall3: nobody is sanctioned.
+        if (String(params?.[0]?.to ?? "").toLowerCase() === MULTICALL3) {
+          const { args } = decodeFunctionData({ abi: multicall3Abi, data: params[0].data });
+          return encodeFunctionResult({ abi: multicall3Abi, functionName: "aggregate3",
+            result: args[0].map(() => ({ success: true, returnData: encodeAbiParameters([{ type: "bool" }], [false]) })) });
+        }
+        return calls[String(params?.[0]?.data ?? "").slice(0, 10)] ?? "0x";
       case "eth_getLogs": {
         const f = params[0], from = Number(f.fromBlock), to = Number(f.toBlock);
         const t0 = Array.isArray(f.topics) ? f.topics[0] : null;

@@ -62,6 +62,13 @@ const transferEvent = parseAbiItem("event Transfer(address indexed from,address 
 const authorizationUsedEvent = parseAbiItem("event AuthorizationUsed(address indexed authorizer,bytes32 indexed nonce)");
 const releasedEvent = parseAbiItem("event Released(bytes32 indexed outcomeIdHash,uint64 indexed listingEpoch,uint64 indexed releaseSequence,bytes32 policyVersionHash,bytes32 listingCommitmentHash,uint256 grossAmount,uint256 providerNetAmount,uint256 daskiCommissionAmount)");
 const tokenPolicyAbi = parseAbi(["function DOMAIN_SEPARATOR() view returns (bytes32)"]);
+/**
+ * Screening reads one endpoint's screening client holds before it refuses
+ * more at once. A screening reads the head, then the oracle's code and one
+ * multicall at that head, so two screenings fit; the client presents one
+ * read at a time anyway, and a deeper queue would only add waiting.
+ */
+export const SCREENING_MAX_QUEUED_READS = 4;
 interface SourceObservation {
   source: string;
   blockNumber: string;
@@ -173,6 +180,7 @@ function normalizeReleases(logs: readonly unknown[]): ReleasedEvidence[] {
 
 export class StandardChainEvidence {
   private readonly clients;
+  private readonly screeningClients;
   private readonly wallet;
 
   constructor(
@@ -188,6 +196,25 @@ export class StandardChainEvidence {
         transport: orderedRpcTransport(http(url, { retryCount: 0, timeout: 20_000 }), { scope: url, maxPerMinute: config.rpcReadMaxPerMinute, priority: "payment" }),
       }),
     }));
+    // Sanctions screening runs before any money moves, for every claimed
+    // purchase attempt, which anyone can open with an unfunded signer. It
+    // reads through its own ordinary client: never in the payment-proof
+    // client's queue, where each held attempt delayed every proof of every
+    // paid order (round-6 review A), and never ahead of other readers. Its
+    // queue is bounded and each read waits the ordinary two seconds, so a
+    // screening the endpoint cannot serve fails before the facilitator
+    // settles anything; the claimed authorization stays with recovery,
+    // which screens it again.
+    this.screeningClients = config.evidenceRpcUrls.map((url) => ({
+      url,
+      host: new URL(url).hostname,
+      client: createPublicClient({
+        chain,
+        transport: orderedRpcTransport(http(url, { retryCount: 0, timeout: 20_000 }), {
+          scope: url, maxPerMinute: config.rpcReadMaxPerMinute, maxQueued: SCREENING_MAX_QUEUED_READS,
+        }),
+      }),
+    }));
     this.wallet = createWalletClient({
       account: privateKeyToAccount(config.releasePrivateKey),
       chain,
@@ -197,8 +224,9 @@ export class StandardChainEvidence {
 
   private observe<Result>(
     work: (endpoint: (typeof this.clients)[number]) => Promise<Result>,
+    endpoints: typeof this.clients = this.clients,
   ): Promise<Result> {
-    return withRpcFailover(this.clients, work, {
+    return withRpcFailover(endpoints, work, {
       onFallback: ({ primaryHost, selectedHost }) => {
         logger.warn("standard-rail RPC fallback selected", {
           primaryHost,
@@ -397,7 +425,7 @@ export class StandardChainEvidence {
         throw new Error("Screening oracle runtime code changed");
       }
       return results;
-    });
+    }, this.screeningClients);
     if (observation.some(Boolean)) throw new Error("SANCTIONS_ADDRESS_REJECTED");
   }
 
