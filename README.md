@@ -230,7 +230,7 @@ core groups are:
   it never changes payment audiences or signed resource URLs.
 - Standard facilitator: `CDP_API_KEY_ID`, `CDP_API_KEY_SECRET`, and the signed
   facilitator profile in `STANDARD_RAIL_MANIFEST_JSON`.
-- RPC read pacing: RPC_READ_MAX_PER_MINUTE (default 300) spaces read requests across gateway clients sharing one endpoint in a process. Payment and registration proof reads are served first at the endpoint; when one was just served while another read waits, that read goes next, so a proof read is never more than one other read from dispatch and a backlog of proofs (or of pre-payment screening) cannot starve the other readers. Proof reads keep their place until served; every other read waits at most two seconds once it reaches the head of its client queue, and required proof batches do not expire behind their own earlier reads. Each client presents one read at a time to the endpoint queue whatever its parallel lanes, oldest operation first, and holds at most 64 requests (contract-signature verification: 8, refusing more at once). Explicit caller deadlines cover the entire queue. Expired or canceled reads never reach the endpoint or consume a reserved slot. Optional quote balance preflight uses only immediately available capacity, so quote bursts cannot reserve slots ahead of payment verification or recovery. A skipped balance read leaves the challenge valid and reports an unavailable preflight. Transaction broadcast uses its separate durable path.
+- RPC read pacing: RPC_READ_MAX_PER_MINUTE (default 300) is the whole read rate of one RPC endpoint, shared by every gateway client of that endpoint in a process. Payment and registration proof reads are served first: while a proof read is presented, at most one other read is dispatched before it. In return, whenever proofs took the last slot and an ordinary read waits, the next slot is the ordinary read's, so a sustained proof backlog leaves ordinary reads every other slot. Proof reads keep their place until served. Every other read waits at most two seconds from the moment its client presents it, and the slots proofs take meanwhile do not count against those two seconds: a proof backlog delays ordinary reads but does not expire them. Each client presents one read at a time to the endpoint queue (contract-signature verification: two, oldest verification first), however many parallel lanes it runs, so its reads go out in its turn among the other clients; a proof client serializes its own reads, so a proof read can also wait behind the earlier reads of its own client. Ordinary clients hold at most 64 requests (contract-signature verification: 8) and refuse more at once; proof clients are not bounded. Explicit caller deadlines cover the entire queue. Expired or canceled reads never reach the endpoint or consume a reserved slot. Optional quote balance preflight uses only immediately available capacity, so quote bursts cannot reserve slots ahead of payment verification or recovery. A skipped balance read leaves the challenge valid and reports an unavailable preflight. Transaction broadcast uses its separate durable path.
 - Evidence and screening: `BASE_RPC_URL`, optional `BASE_RPC_FALLBACK_URLS`,
   `STANDARD_RAIL_SPLITTER_FACTORY_RUNTIME_CODE_HASH`,
   `STANDARD_RAIL_SPLITTER_CREATION_CODE_HASH`, and `SANCTIONS_ORACLE_ADDRESS`.
@@ -265,7 +265,12 @@ core groups are:
   RPC wait expires, answers the retryable 503
   `SIGNATURE_VERIFICATION_UNAVAILABLE` (the same signature may be
   resubmitted), never `SIGNATURE_INVALID`; the process limit and the global
-  admission answer 429 `SIGNATURE_VERIFICATION_BUSY`. On Base mainnet,
+  admission answer 429 `SIGNATURE_VERIFICATION_BUSY`. The verification client
+  is one ordinary reader of the shared endpoint and presents two reads at a
+  time, so two verifications advance together. The process limit keeps its
+  queue of 8 reads from filling, so an endpoint too busy to serve a
+  verification's code lookup and call within the deadline shows as that
+  retryable 503 when the deadline expires. On Base mainnet,
   `contract` requires `CONFORMANCE_EVIDENCE_RECORDED=1`.
 - Owner swaps: `OWNER_SWAPS_ENABLED` (`false`) and
   `OWNER_SWAPS_PER_PROVIDER_PER_DAY` (50).

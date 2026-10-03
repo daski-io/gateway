@@ -49,6 +49,13 @@ export const CONTRACT_VERIFICATION_CONCURRENCY = 8;
  * single caller can occupy the verification lanes every caller shares.
  */
 export const CONTRACT_VERIFICATION_PER_CALLER = 2;
+/**
+ * Verification reads presented to the endpoint's pacing queue at once. Each
+ * verification is a code lookup and then a call; with two reads presented,
+ * two concurrent verifications advance together instead of one taking the
+ * turn the other's call needs.
+ */
+export const CONTRACT_VERIFICATION_PRESENTED_READS = 2;
 /** At most this many endpoints are tried: the primary and one failover. */
 const CONTRACT_VERIFICATION_ENDPOINTS = 2;
 
@@ -449,9 +456,10 @@ export function boundedRpcFetch(maxBytes: number, fetchFn: typeof fetch = fetch)
 /**
  * One verification endpoint over one JSON-RPC URL. Its client runs up to
  * CONTRACT_VERIFICATION_CONCURRENCY reads in parallel on the wire but presents
- * one read at a time to the endpoint's shared pacing queue, behind every
- * waiting payment-proof read, and refuses at once a read it could only queue
- * behind its busy lanes. The contract path talks
+ * at most CONTRACT_VERIFICATION_PRESENTED_READS to the endpoint's shared
+ * pacing queue, oldest verification first, as one ordinary client among the
+ * others and behind every waiting proof read; it refuses at once a read it
+ * could only queue behind its busy lanes. The contract path talks
  * to the node through viem's raw `request`, never through its `call` action:
  * the action layer follows an EIP-3668 `OffchainLookup` revert by fetching
  * the URLs the contract names with the process-global fetch (no byte bound,
@@ -478,6 +486,7 @@ export function createContractVerificationEndpoint(args: {
       scope: args.url,
       maxPerMinute: args.maxPerMinute,
       concurrency: CONTRACT_VERIFICATION_CONCURRENCY,
+      presented: CONTRACT_VERIFICATION_PRESENTED_READS,
       maxQueued: CONTRACT_VERIFICATION_CONCURRENCY,
       maxWaitMs: args.timeoutMs,
     }),

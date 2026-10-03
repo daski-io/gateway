@@ -4,22 +4,43 @@ interface RpcPacing {
   scope: string;
   maxPerMinute?: number;
   maxWaitMs?: number;
-  /** Payment and registration proof reads: served ahead of other reads at the endpoint. */
+  /**
+   * Payment and registration proof reads: served ahead of every ordinary
+   * read at the endpoint, and kept in place until served; only an explicit
+   * caller deadline or an abort ends their wait.
+   */
   required?: boolean;
   concurrency?: number;
+  /** Reads this client presents to the endpoint queue at once: 1 by default, at most its lanes. */
+  presented?: number;
   /** Requests this client holds before dispatch; one more is refused at once. */
   maxQueued?: number;
 }
 interface SchedulingOptions { signal?: AbortSignal; deadline?: number }
-interface Waiter { deadline: number; spacing: number; queue: Waiter[]; finish: (error?: Error) => void }
+/** Endpoint precedence levels, highest first. */
+const REQUIRED = 0, ORDINARY = 1;
+interface Waiter {
+  /** The caller's explicit deadline, or Infinity. */
+  deadline: number;
+  /**
+   * The end of an ordinary read's bounded wait (Infinity for proof reads).
+   * Each slot a higher level takes while the read waits moves it one slot
+   * later: the read yielded that slot, so it does not count against the wait.
+   */
+  budget: number;
+  spacing: number;
+  queue: Waiter[];
+  finish: (error?: Error) => void;
+}
 interface Budget {
   nextAt: number;
-  /** Waiting reads of `required` clients, served first. */
-  required: Waiter[];
-  /** Waiting reads of every other paced client. */
-  other: Waiter[];
-  /** The last dispatch passed over a waiting read of the other class. */
-  owesOther: boolean;
+  /** Waiting reads by level: proof reads, then ordinary reads. */
+  levels: [Waiter[], Waiter[]];
+  /**
+   * owes[level]: that level took the last slot it competed for while a read
+   * of a lower level waited, so the next slot it competes for goes lower.
+   */
+  owes: [boolean, boolean];
   timer?: ReturnType<typeof setTimeout>;
 }
 const endpointBudgets = new Map<string, Budget>();
@@ -30,49 +51,62 @@ export class RpcQueueUnavailableError extends Error {
   constructor() { super("RPC read queue is full or its wait deadline expired"); this.name = "RpcQueueUnavailableError"; }
 }
 
+const expiry = (waiter: Waiter) => Math.min(waiter.deadline, waiter.budget);
+
+// The level the next slot goes to. The highest level with a waiting read is
+// served, unless it took the last slot it competed for while a lower level
+// waited: then the slot goes to the levels below. So while proof reads wait,
+// at most one ordinary read is dispatched before the next of them (G5-H1),
+// and a backlog of proofs leaves ordinary reads every other slot.
+function nextLevel(budget: Budget): number | undefined {
+  for (let level = REQUIRED; level <= ORDINARY; level++) {
+    if (!budget.levels[level]!.length) continue;
+    if (budget.owes[level] && budget.levels.some((queue, lower) => lower > level && queue.length > 0)) continue;
+    return level;
+  }
+  return undefined;
+}
+
 // Only dispatched reads consume a slot. Removing a cancelled waiter cannot
 // leave a reservation behind or delay a later payment/settlement read.
-//
-// Required proof reads are served before every other read at the endpoint, so
-// a payment proof never fails because other work queued ahead of it (G5-H1).
-// While a required read was just served and another read is waiting, that read
-// goes next: a backlog of required reads (concurrent proofs, or pre-payment
-// screening, which reads through the same client) cannot starve the readers
-// that keep the purchase fence, wallet queries and payer verification alive.
-// A required read is therefore never more than one other read from dispatch.
 function pump(budget: Budget): void {
   if (budget.timer) clearTimeout(budget.timer);
   budget.timer = undefined;
   for (;;) {
     const now = Date.now();
-    for (const waiter of [...budget.required, ...budget.other])
-      if (now > waiter.deadline) waiter.finish(new RpcQueueUnavailableError());
-    const required = budget.required[0], other = budget.other[0];
-    if (!required && !other) { budget.owesOther = false; return; }
+    for (const waiter of budget.levels.flat())
+      if (now > expiry(waiter)) waiter.finish(new RpcQueueUnavailableError());
+    const level = nextLevel(budget);
+    if (level === undefined) { budget.owes = [false, false]; return; }
     if (budget.nextAt > now) {
       let wake = budget.nextAt;
-      for (const waiter of [...budget.required, ...budget.other]) wake = Math.min(wake, waiter.deadline + 1);
+      for (const waiter of budget.levels.flat()) wake = Math.min(wake, expiry(waiter) + 1);
       budget.timer = setTimeout(() => pump(budget), Math.max(1, wake - now));
       return;
     }
-    const waiter = required && !(other && budget.owesOther) ? required : other!;
-    budget.owesOther = waiter === required && other !== undefined;
+    const waiter = budget.levels[level]![0]!;
+    const lower = budget.levels.slice(level + 1).flat();
+    // The levels above had nothing waiting or were owing this slot, which
+    // settles their debt; this level owes the next one when a lower one waits.
+    for (let above = REQUIRED; above < level; above++) budget.owes[above] = false;
+    budget.owes[level] = lower.length > 0;
+    for (const yielded of lower) yielded.budget += waiter.spacing;
     budget.nextAt = now + waiter.spacing;
     waiter.finish();
   }
 }
-function paced(pacing: RpcPacing, deadline: number, signal?: AbortSignal): Promise<void> {
+function paced(pacing: RpcPacing, level: number, deadline: number, waitBudget: number, signal?: AbortSignal): Promise<void> {
   let budget = endpointBudgets.get(pacing.scope);
-  if (!budget) endpointBudgets.set(pacing.scope, budget = { nextAt: 0, required: [], other: [], owesOther: false });
-  const queue = pacing.required ? budget.required : budget.other;
+  if (!budget) endpointBudgets.set(pacing.scope, budget = { nextAt: 0, levels: [[], []], owes: [false, false] });
+  const queue = budget.levels[level]!;
   if (queue.length >= MAX_QUEUED_REQUESTS || signal?.aborted) return Promise.reject(new RpcQueueUnavailableError());
-  if (pacing.maxWaitMs === 0 && (budget.required.length || budget.other.length || budget.nextAt > Date.now()))
+  if (pacing.maxWaitMs === 0 && (budget.levels.some(waiting => waiting.length > 0) || budget.nextAt > Date.now()))
     return Promise.reject(new RpcQueueUnavailableError());
   const endpoint = budget;
   return new Promise((resolve, reject) => {
     let done = false;
     const abort = () => { waiter.finish(new RpcQueueUnavailableError()); pump(endpoint); };
-    const waiter: Waiter = { deadline, spacing: Math.ceil(60_000 / pacing.maxPerMinute!), queue,
+    const waiter: Waiter = { deadline, budget: waitBudget, spacing: Math.ceil(60_000 / pacing.maxPerMinute!), queue,
       finish(error) {
         if (done) return;
         done = true;
@@ -88,17 +122,19 @@ function paced(pacing: RpcPacing, deadline: number, signal?: AbortSignal): Promi
 }
 
 /**
- * Keep a client's reads ordered. The bounded endpoint wait starts when a read
- * reaches the head of that client's queue, so a required proof batch cannot
- * exhaust its own budget. An explicit caller deadline still covers the entire
- * queue. Required internal proofs retain their work under concurrent load and
- * are served first at the endpoint, waiting there until the caller's deadline
- * rather than the two-second wait; request-scoped clients retain the
- * admission cap. Independent signature reads may use bounded parallel lanes
- * without increasing endpoint rate: whatever its lanes, a client presents one
- * read at a time to the endpoint queue, so parallel lanes overlap only wire
- * latency and never crowd out other clients. `maxQueued` refuses at once what
- * the client could only queue behind its lanes.
+ * Keep a client's reads ordered and paced with every other client of the
+ * same endpoint. A client presents at most `presented` reads (one by default)
+ * to the endpoint queue at once, whatever its parallel lanes, oldest
+ * operation first, so parallel lanes overlap only wire latency and a client
+ * can never crowd out the others. A proof read (`required`) keeps its place
+ * at the endpoint until it is served; an explicit caller deadline or abort
+ * still ends it. An ordinary read waits at most maxWaitMs (two seconds by
+ * default) from the moment its client presents it; slots that proof reads
+ * take meanwhile do not count against that wait, so a proof backlog delays
+ * ordinary reads but cannot expire them. A batch never exhausts its wait
+ * behind its own earlier reads, and an explicit caller deadline covers the
+ * entire queue. Ordinary clients hold at most 64 requests (`maxQueued`
+ * fewer) and refuse more at once; proof clients are not bounded.
  * Optional quote reads (maxWaitMs:0) never reserve future capacity.
  */
 export function orderedRpcTransport(transport: Transport, pacing?: RpcPacing): Transport {
@@ -109,26 +145,31 @@ export function orderedRpcTransport(transport: Transport, pacing?: RpcPacing): T
   if (pacing?.maxQueued !== undefined &&
       (!Number.isSafeInteger(pacing.maxQueued) || pacing.maxQueued < 1 || pacing.maxQueued > MAX_QUEUED_REQUESTS))
     throw new Error("Invalid RPC queue bound");
+  const level = pacing?.required ? REQUIRED : ORDINARY;
+  const proof = level !== ORDINARY;
   return parameters => {
     const target = transport(parameters);
     const concurrency = pacing?.concurrency ?? 1;
     if (!Number.isSafeInteger(concurrency) || concurrency < 1 || concurrency > 8) throw new Error("Invalid RPC concurrency");
+    const presented = pacing?.presented ?? 1;
+    if (!Number.isSafeInteger(presented) || presented < 1 || presented > concurrency) throw new Error("Invalid RPC presentation");
     const tails: Promise<void>[] = Array.from({ length: concurrency }, () => Promise.resolve());
     const pending: number[] = Array.from({ length: concurrency }, () => 0);
-    const maxQueued = pacing?.maxQueued ?? (pacing?.required ? Infinity : MAX_QUEUED_REQUESTS);
+    const maxQueued = pacing?.maxQueued ?? (proof ? Infinity : MAX_QUEUED_REQUESTS);
     let queued = 0;
-    // The client's reads take turns at the endpoint queue one at a time,
-    // oldest operation first: reads sharing an abort signal are one operation
-    // (a payer verification's code lookup and call), so under contention the
-    // client finishes verifications it started instead of starting every
-    // queued one and finishing none before their deadlines.
+    // The client's reads take turns at the endpoint queue, at most
+    // `presented` at a time, oldest operation first: reads sharing an abort
+    // signal are one operation (a payer verification's code lookup and call),
+    // so a verification's call waiting for a turn goes before the code
+    // lookups of verifications that started after it.
     const turns: Array<{ order: number; start: () => void }> = [];
     const operations = new WeakMap<AbortSignal, number>();
-    let sequence = 0, turnHeld = false;
+    let sequence = 0, turnsHeld = 0;
     const nextTurn = () => {
-      if (turnHeld || !turns.length) return;
-      turnHeld = true;
-      turns.shift()!.start();
+      while (turnsHeld < presented && turns.length) {
+        turnsHeld++;
+        turns.shift()!.start();
+      }
     };
     const request = ((...args: Parameters<typeof target.request>) => {
       const options = args[1] as SchedulingOptions | undefined;
@@ -159,14 +200,12 @@ export function orderedRpcTransport(transport: Transport, pacing?: RpcPacing): T
         try {
           if (expired()) throw new RpcQueueUnavailableError();
           if (pacing?.maxPerMinute !== undefined) {
-            // A required proof read keeps its place at the endpoint until the
-            // caller's deadline; every other read waits at most maxWaitMs.
-            const waitUntil = pacing.required ? deadline : Math.min(deadline, Date.now() + maxWaitMs);
             await new Promise<void>((resolve, reject) => {
               const start = () => {
-                const done = (error?: unknown) => { turnHeld = false; nextTurn(); if (error) reject(error); else resolve(); };
-                if (expired() || Date.now() > waitUntil) done(new RpcQueueUnavailableError());
-                else paced(pacing, waitUntil, signal).then(() => done(), done);
+                const done = (error?: unknown) => { turnsHeld--; nextTurn(); if (error) reject(error); else resolve(); };
+                // Presented now: an ordinary read's bounded wait starts here.
+                if (expired()) done(new RpcQueueUnavailableError());
+                else paced(pacing, level, deadline, proof ? Infinity : Date.now() + maxWaitMs, signal).then(() => done(), done);
               };
               const at = turns.findIndex(turn => turn.order > order);
               turns.splice(at < 0 ? turns.length : at, 0, { order, start });

@@ -162,7 +162,8 @@ it("returns cancelled endpoint capacity to the next required read",async()=>{
 
 describe("required proof reads at a shared endpoint", () => {
   const client = (scope: string, name: string, sent: Array<{ name: string; at: number }>, started: number,
-    pacing: { required?: boolean; concurrency?: number; maxWaitMs?: number; maxQueued?: number; maxPerMinute?: number } = {},
+    pacing: { required?: boolean; concurrency?: number; presented?: number; maxWaitMs?: number; maxQueued?: number;
+      maxPerMinute?: number } = {},
     wire?: () => Promise<unknown>) =>
     orderedRpcTransport(custom({ request: async ({ method }: Request) => {
       sent.push({ name: name + ":" + method, at: Date.now() - started });
@@ -237,6 +238,28 @@ describe("required proof reads at a shared endpoint", () => {
       // Before, the reader queued behind all seven waiting lanes (1.6 s).
       expect(sent.slice(0, 3).map(entry => entry.name)).toEqual(["verify:v0", "verify:v1", "reader:registry"]);
       expect(sent.find(entry => entry.name === "reader:registry")?.at).toBe(400);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("presents at most its configured number of reads to the endpoint queue", async () => {
+    vi.useFakeTimers();
+    try {
+      const sent: Array<{ name: string; at: number }> = [];
+      const started = Date.now();
+      const scope = "two-waiters-" + randomUUID();
+      const verify = client(scope, "verify", sent, started, { concurrency: 8, presented: 2, maxWaitMs: 5_000 });
+      const reader = client(scope, "reader", sent, started);
+      const flood = Promise.all(Array.from({ length: 8 }, (_, i) => verify({ method: "v" + i })));
+      await vi.advanceTimersByTimeAsync(1);
+      const read = reader({ method: "registry" });
+      await vi.runAllTimersAsync();
+      await Promise.all([flood, read]);
+      // Two verification reads wait ahead of the reader, never all seven.
+      expect(sent.slice(0, 4).map(entry => entry.name)).toEqual(["verify:v0", "verify:v1", "verify:v2", "reader:registry"]);
+      expect(sent.find(entry => entry.name === "reader:registry")?.at).toBe(600);
+      expect(sent.map(entry => entry.at)).toEqual(Array.from({ length: 9 }, (_, i) => i * 200));
+      expect(() => orderedRpcTransport(custom({ request: async () => "ok" }),
+        { scope: "x", concurrency: 2, presented: 3 })({ retryCount: 0 })).toThrow("Invalid RPC presentation");
     } finally { vi.useRealTimers(); }
   });
 
