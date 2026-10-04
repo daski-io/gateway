@@ -24,6 +24,7 @@ import type { Config } from "../config.js";
 import type { Pool } from "../db/pool.js";
 import { canonicalHash } from "./canonical.js";
 import { asStandardRailError, standardRailError } from "./errors.js";
+import { retryTransientRead } from "../db/transientRead.js";
 import type { StandardRailConfig } from "./config.js";
 import type {
   EvidenceResult,
@@ -420,6 +421,10 @@ export class StandardRailService {
   assetActionTargetStatus(providerAgentId: string) { return this.assetFederation.targetStatus(providerAgentId); }
 
   async releaseCapabilities() {
+    return retryTransientRead(() => this.readReleaseCapabilities());
+  }
+
+  private async readReleaseCapabilities() {
     const executableListings = (await this.validateLocalCommerce()).map(item => ({ ...item,
       localPrerequisites: ["FACILITATOR_PRIVATE_KEY","STANDARD_RAIL_ENCRYPTION_KEY","CDP_API_KEY_ID",
         "CDP_API_KEY_SECRET","STANDARD_RAIL_MANIFEST_JSON","BASE_RPC_URL"],
