@@ -10,7 +10,7 @@ FROM node:22-bookworm-slim@sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3e
 # Debian security update for the PCRE2 library in the Node image. The develop
 # image scan (release-image.yml) fails on fixable MEDIUM+ findings.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends libpcre2-8-0=10.42-1+deb12u1 \
+ && apt-get install -y --no-install-recommends libpcre2-8-0=10.42-1+deb12u2 \
  && rm -rf /var/lib/apt/lists/*
 
 FROM base AS builder
