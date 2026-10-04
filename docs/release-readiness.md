@@ -1,21 +1,23 @@
 # Release readiness
 
-Releases are run by the deploy-testnet coordinator
-([daski-io/deploy-testnet](https://github.com/daski-io/deploy-testnet)) with two
-commands: `prep` makes the next release green, fixing whatever blocks it in the
-owning repository, and `go` ships it. The coordinator only checks that CI passed
-on the exact `develop` commit and promotes the artifact that CI built: the
+Releases are run by the release engine in the coordinator
+([daski-io/deploy-mainnet](https://github.com/daski-io/deploy-mainnet)) with two
+commands per target: `prep` prints exactly what the release deploys and the
+wording that authorizes it, and `go` ships it. The engine only checks that CI
+passed on the exact commit and deploys the artifact that CI built: the
 `ghcr.io/daski-io/gateway:<sha>` image whose immutable digest the Release image
-workflow records. Every code-quality check therefore lives in this repository's
-CI, and `develop` must always be releasable.
+workflow records. Railway is asked for that digest; no service deploys from a
+branch and autodeploy stays off. Every code-quality check therefore lives in
+this repository's CI, and `develop` must always be releasable.
 
-Three branches carry a release. `develop` integrates. `sandbox` is what runs on
-the testnet sandbox: `go` merges the `develop` → `sandbox` release pull request
-at the exact commit CI proved and tags the merge commit `vX.Y.Z`, and Railway
-deploys `sandbox` to the sandbox. `main` is production: it moves only by
-fast-forward, performed by the production coordinator, to a release commit that
-already ran on the sandbox. An emergency fix branches from `main` as
-`hotfix/<id>`.
+Every release deploys the image of a `develop` commit; an emergency fix is a
+`hotfix/<id>` commit cut from `main`. A release reaches the testnet sandbox
+first, and production promotes the combination the sandbox last served. After
+a release is verified serving, the engine fast-forwards `sandbox` (testnet) or
+`main` (production) to the commit it released, as history; neither branch
+triggers a deploy. The testnet sandbox has been released this way since
+2026-10-04. Production moves to the engine at its installation; until then
+the retained production coordinator promotes `main`.
 
 ## Definition of done for develop
 
@@ -48,24 +50,25 @@ already ran on the sandbox. An emergency fix branches from `main` as
 - A new environment variable is parsed in `src/config.ts` (rail settings in
   `src/standardRail/config.ts`), listed in `.env.example`, and documented in
   the README's Configuration section.
-- Notes discipline stays as practiced: the release tag and its two-parent
-  `release: vX.Y.Z` merge commit are the version of record (`src/version.ts`
-  derives the runtime version from the deployed commit; nothing is edited for
-  a release), and there is no changelog file. Document user-visible behaviour
+- Notes discipline stays as practiced: the released commit and its image
+  digest, as the engine's release record names them, are the version of record
+  (`src/version.ts` derives the runtime version from the commit embedded in the
+  image; nothing is edited for a release), and there is no changelog file. The
+  `vX.Y.Z` tags and `release:` merge commits belong to releases before
+  2026-10-04; the engine creates neither. Document user-visible behaviour
   in `README.md` and `docs/` (agent guides are website-owned) in the same change set as the code.
 - Never leave `develop` red. A red push is fixed forward or reverted at once;
   it is never left for the release to sort out.
-- Never merge to `sandbox` or `main` or tag by hand. `sandbox` is deployed by
-  Railway to the sandbox and is written only by the coordinator's authorized
-  `go`; `main` is production and is moved only by the production coordinator's
-  fast-forward.
+- Never push, merge or tag `sandbox` or `main` by hand. Both are history that
+  only the release coordinator moves, by fast-forward to a released commit;
+  neither deploys anything.
 
 ## What CI proves
 
 CI runs on every push to `develop`, `sandbox`, `main` and `hotfix/**`, and on
-pull requests into `develop`. The release merge commit on `sandbox` therefore
-gets its own push run, which production promotion reads as the proof for that
-exact commit. The Release image workflow runs on `develop` pushes.
+pull requests into `develop`. The Release image workflow runs on `develop` and
+`hotfix/**` pushes. A release deploys a commit's image only when that commit's
+CI and Release image runs both passed.
 
 | Workflow / job / step | What it proves |
 | --- | --- |
@@ -80,12 +83,12 @@ exact commit. The Release image workflow runs on `develop` pushes.
 | CI `validate` / Audit dependencies | `npm audit --audit-level=high` fails on a high-severity advisory; registry transport failures are retried, not treated as findings. |
 | Release image `image` / `docker/build-push-action` | Builds and pushes `ghcr.io/daski-io/gateway:<sha>` with `SOURCE_SHA` bound, provenance (`mode=max`) and an SBOM, and outputs the immutable digest. |
 | Release image `image` / Pull the pushed image by digest, Scan the pushed image | Pulls the exact pushed digest back and runs Trivy 0.67.2 (pinned by digest) with `--severity MEDIUM,HIGH,CRITICAL --ignore-unfixed --exit-code 1`: the shipped image carries no fixable MEDIUM-or-higher OS or Node package advisory. The Dockerfile keeps this green by installing Debian's patched PCRE2 and removing npm/npx from the runtime stage. |
-| Release image `image` / `actions/attest-build-provenance`, Record immutable image | Attests build provenance (public repositories) and uploads `release-image-<sha>` with the digest the coordinator promotes. A failed scan stops before this step, so no candidate artifact exists for a vulnerable image. |
+| Release image `image` / `actions/attest-build-provenance`, Record immutable image | Attests build provenance (public repositories) and uploads `release-image-<sha>` with the digest the release engine deploys. A failed scan stops before this step, so no candidate artifact exists for a vulnerable image. |
 
 ## Hand-off to the release agent
 
 The release agent reads nothing but your commits. If a change needs anything at
-deploy time beyond merging, put it in git trailers on the commit that needs it,
+deploy time beyond its image, put it in git trailers on the commit that needs it,
 one per line at the end of the commit message:
 
 ```
@@ -117,7 +120,7 @@ runs `scripts/check-release-trailers.mjs` over every pushed commit.
 
 ## Follow-ups
 
-- The Dockerfile pins `libpcre2-8-0=10.42-1+deb12u1` (the provider's fix). When
+- The Dockerfile pins `libpcre2-8-0=10.42-1+deb12u2` (the provider's fix). When
   Debian supersedes that package the build fails loudly; bump the pin or move
   to a base image that already carries the fix.
 - The `hono` override (`4.13.5`, three MEDIUM advisories in 4.13.0) can be

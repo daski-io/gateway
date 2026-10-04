@@ -305,7 +305,7 @@ npm test
 The tests include a complete clean-schema migration smoke and PostgreSQL-backed
 evidence-locator behavior: one aggregated release event may cover multiple
 orders, while each deposit is globally single-use. Deployment coordination
-lives in [daski-io/deploy-testnet](https://github.com/daski-io/deploy-testnet).
+lives in [daski-io/deploy-mainnet](https://github.com/daski-io/deploy-mainnet).
 
 ## Architecture
 
