@@ -120,9 +120,11 @@ runs `scripts/check-release-trailers.mjs` over every pushed commit.
 
 ## Follow-ups
 
-- The Dockerfile pins `libpcre2-8-0=10.42-1+deb12u2` and `perl-base=5.36.0-7+deb12u4` (as the provider does). When
-  Debian supersedes that package the build fails loudly; bump the pin or move
-  to a base image that already carries the fix.
+- The Dockerfile pins `libpcre2-8-0=10.42-1+deb12u2` and `perl-base=5.36.0-7+deb12u4`
+  (as the provider does). When Debian supersedes either package the build
+  fails loudly; bump the pin or move to a base image that already carries the
+  fix. A new Debian security update for another base-image package fails the
+  image scan the same way, and is pinned the same way.
 - The `hono` override (`4.13.5`, three MEDIUM advisories in 4.13.0) can be
   dropped once `@modelcontextprotocol/node` requires that version or later.
 
