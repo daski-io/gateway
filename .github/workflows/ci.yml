@@ -124,13 +124,13 @@ jobs:
       # boot on the schema this candidate migrates, on every run whether or not
       # the change touches a migration. The engine reads this receipt from the
       # artifact below and requires its priorIdentity to be this exact commit.
-      # Read-only production observation, 2026-10-04. Update through review
+      # Read-only production observation, 2026-10-05. Update through review
       # when the deployed baseline changes; never infer it from develop HEAD^.
       - name: Actual serving prior runtime on expanded schema
         shell: bash
         run: |
           set -euo pipefail
-          base="8937ca25e0e1b1ab36c5b7466f47fec7ca964064"
+          base="2e4bb7acf2b6e01697c8692d40b258c6f22bf0a8"
           git cat-file -e "$base^{commit}"
           bash scripts/reliability/prior-runtime.sh "$base" .tmp/gateway-prior-runtime-evidence.json
 
