@@ -355,6 +355,53 @@ describe("delivery confirmation modes", () => {
     expect((await sponsorshipRows()).map((row) => row.operation).at(-1)).toBe("revoke-confirmation");
   });
 
+  it("answers a review parked for the operator as held, never as a retryable queued one", async () => {
+    await resetSponsorships();
+    const subject = confirmations();
+    chain.latest = { ...chain.latest, submissionsUsed: 0, currentUid: ZERO_UID };
+    chain.easNonce = 40n;
+    const { prepared, submitted } = await sponsoredSubmit(subject, "confirmation");
+    const operationId = (submitted as { expected: { operationId: string } }).expected.operationId;
+    expect(submitted).toMatchObject({ code: "CONFIRMATION_SUBMISSION_PENDING", retryable: true,
+      expected: { operationId, disposition: "pending" } });
+    await pool.query("UPDATE standard_reputation_operations SET state='operator_attention' WHERE operation_id=$1", [operationId]);
+    const held = { code: "CONFIRMATION_SUBMISSION_PENDING", retryable: false,
+      expected: { operationId, disposition: "operator_attention" } };
+    // Resuming the same submission, and preparing another review at the held nonce, both say so.
+    const signature = await signPreparation(prepared.result.signableTypedData as Record<string, unknown>);
+    await expect(subject.handle(order, "confirmation", {
+      phase: "submit", submission: "sponsored", reviewProtocol: 2, preparationId: prepared.result.preparationId, signature,
+    }, eoa)).rejects.toMatchObject({ ...held, nextAction: expect.stringMatching(/daski_contact_order_support/) });
+    await expect(subject.handle(order, "confirmation", {
+      phase: "prepare", submission: "sponsored", reviewProtocol: 2, confirmation: "Confirmed", acknowledgeFinalTransition: false,
+    }, eoa)).rejects.toMatchObject(held);
+  });
+
+  it("answers a parked EAS 1.0.1 review as still live with its disposition, sending the payer to support, not reaffirmation", async () => {
+    // Base mainnet's profile signs no deadline, so a parked review stays live.
+    await resetSponsorships(); chain.profileId = "eas-native-1.0.1";
+    const subject = confirmations();
+    chain.latest = { ...chain.latest, submissionsUsed: 0, currentUid: ZERO_UID };
+    chain.easNonce = 50n;
+    const { prepared, submitted } = await sponsoredSubmit(subject, "confirmation");
+    const operationId = (submitted as { expected: { operationId: string } }).expected.operationId;
+    await pool.query("UPDATE standard_reputation_operations SET state='operator_attention' WHERE operation_id=$1", [operationId]);
+    const held = { code: "CONFIRMATION_AUTHORIZATION_STILL_LIVE", retryable: false,
+      expected: { operationId, safeRetired: false, disposition: "operator_attention" },
+      nextAction: expect.stringMatching(/daski_contact_order_support/) };
+    const signature = await signPreparation(prepared.result.signableTypedData as Record<string, unknown>);
+    await expect(subject.handle(order, "confirmation", {
+      phase: "submit", submission: "sponsored", reviewProtocol: 2, preparationId: prepared.result.preparationId, signature,
+    }, eoa)).rejects.toMatchObject(held);
+    await expect(subject.handle(order, "confirmation", { phase: "reaffirm", submission: "sponsored", reviewProtocol: 2, operationId }, eoa))
+      .rejects.toMatchObject(held);
+    await expect(subject.handle(order, "confirmation", {
+      phase: "prepare", submission: "sponsored", reviewProtocol: 2, confirmation: "Confirmed", acknowledgeFinalTransition: false,
+    }, eoa)).rejects.toMatchObject(held);
+    expect((await pool.query("SELECT state FROM standard_reputation_operations WHERE operation_id=$1", [operationId])).rows[0].state)
+      .toBe("operator_attention");
+  });
+
   it("answers an exhausted attestation budget with CONFIRMATION_SPONSORSHIP_LIMIT and chainEligible", async () => {
     await resetSponsorships();
     const subject = confirmations({ confirmationMaxPerOrder: 1 });

@@ -194,6 +194,39 @@ function invalidRequest(message?: string) {
   return standardRailError("CONFIRMATION_REQUEST_INVALID", message ? { message } : {});
 }
 
+/**
+ * The answer for an order whose sponsored review is already queued. One the
+ * relayer parked for the operator keeps the same code, so an older buyer still
+ * keeps its signature, but it is not retryable: resuming cannot move it, and
+ * the payer's next step is support, not another check.
+ */
+function queuedReview(operationId: string, state: string) {
+  if (state === "operator_attention") return standardRailError("CONFIRMATION_SUBMISSION_PENDING", {
+    message: "The sponsored review is held for the operator; checking it again will not move it",
+    retryable: false,
+    nextAction: "Keep the saved review and do not sign another. Contact support for this order " +
+      "(daski_contact_order_support) quoting the operation ID; once the operator resolves it, resuming reports the outcome.",
+    expected: { operationId, disposition: state },
+  });
+  return standardRailError("CONFIRMATION_SUBMISSION_PENDING", { expected: { operationId, disposition: state } });
+}
+
+/**
+ * The answer for an admitted review whose delegated signature can still
+ * execute. EAS 1.0.1 (Base mainnet) signs no deadline, so a review the relayer
+ * parked stays live and is answered here, not as queued: it names its
+ * disposition, and a parked one sends the payer to support, since the
+ * reaffirmation the default next action offers refuses it.
+ */
+function liveReview(operationId: string, state: string | undefined) {
+  return standardRailError("CONFIRMATION_AUTHORIZATION_STILL_LIVE", {
+    ...(state === "operator_attention" ? { nextAction: "The review is held for the operator and can still execute: keep the " +
+      "saved review and do not reaffirm or replace it unless the payer wants a different review. Contact support for this " +
+      "order (daski_contact_order_support) quoting the operation ID." } : {}),
+    expected: { operationId, safeRetired: false, ...(state ? { disposition: state } : {}) },
+  });
+}
+
 function exact(value: Record<string, unknown>, keys: string[]): void {
   const actual = Object.keys(value).sort();
   const expected = [...keys].sort();
@@ -395,7 +428,7 @@ export class StandardConfirmations {
       const op = row.rows[0];
       if (!op || !op.relay_candidate || op.signed_deadline !== null || op.profile_id !== profile.profileId ||
           op.eas_nonce !== nonce.toString() || !["authorization_live", "pending", "broadcast"].includes(op.state) || op.attempts >= 5)
-        throw standardRailError("CONFIRMATION_AUTHORIZATION_STILL_LIVE", { expected: { operationId: request.operationId, safeRetired: false } });
+        throw liveReview(request.operationId, op?.state);
       await client.query(`UPDATE standard_reputation_operations SET state='pending',next_attempt_at=now(),
         review_relay_until=now()+($2::text||' seconds')::interval,updated_at=now() WHERE operation_id=$1`,
         [request.operationId,this.config.confirmationDeadlineSeconds]);
@@ -750,11 +783,9 @@ export class StandardConfirmations {
         const op = existing.rows[0];
         if (["authorization_live", "superseded"].includes(op.state) ||
             (op.state === "operator_attention" && prep.signed_deadline === null)) {
-          throw standardRailError("CONFIRMATION_AUTHORIZATION_STILL_LIVE", { expected: { operationId: op.operation_id, safeRetired: false } });
+          throw liveReview(op.operation_id, op.state);
         }
-        if (["pending", "broadcast", "operator_attention"].includes(op.state)) {
-          throw standardRailError("CONFIRMATION_SUBMISSION_PENDING", { expected: { operationId: op.operation_id, disposition: op.state } });
-        }
+        if (["pending", "broadcast", "operator_attention"].includes(op.state)) throw queuedReview(op.operation_id, op.state);
         if (op.state !== "final") throw standardRailError("CONFIRMATION_SUBMISSION_FAILED", {
           expected: { operationId: op.operation_id, disposition: op.state, safeRetired: op.result?.safeRetired === true },
         });
@@ -800,8 +831,8 @@ export class StandardConfirmations {
     orderId: string,
     allowedGroup?: string,
   ): Promise<void> {
-    const inFlight = await client.query<{ order_id: string; operation_id: string; signed_deadline: string | null }>(
-      `SELECT p.order_id,o.operation_id,p.signed_deadline FROM standard_review_sponsorships s
+    const inFlight = await client.query<{ order_id: string; operation_id: string; state: string; signed_deadline: string | null }>(
+      `SELECT p.order_id,o.operation_id,o.state,p.signed_deadline FROM standard_review_sponsorships s
          JOIN standard_review_preparations p ON p.preparation_id=s.preparation_id
          JOIN standard_reputation_operations o ON o.operation_id=s.operation_id
         WHERE p.payer=$1 AND p.eas_nonce=$2::numeric
@@ -812,10 +843,8 @@ export class StandardConfirmations {
     );
     const held = inFlight.rows[0];
     if (!held) return;
-    if (held.signed_deadline === null) throw standardRailError("CONFIRMATION_AUTHORIZATION_STILL_LIVE", {
-      expected: { operationId: held.operation_id, safeRetired: false },
-    });
-    if (held.order_id === orderId) throw standardRailError("CONFIRMATION_SUBMISSION_PENDING", { expected: { operationId: held.operation_id } });
+    if (held.signed_deadline === null) throw liveReview(held.operation_id, held.state);
+    if (held.order_id === orderId) throw queuedReview(held.operation_id, held.state);
     throw standardRailError("CONFIRMATION_NONCE_BUSY", {
       message: "A sponsored submission for another of this payer's orders is queued at the same EAS nonce",
     });
