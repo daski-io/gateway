@@ -657,10 +657,27 @@ export function standardRailPublicError(
 
 const logged = new WeakSet<StandardRailError>();
 
+/** Answers that a valid request is still in progress; the caller retries the same request later. */
+const IN_PROGRESS_CODES: ReadonlySet<StandardRailErrorCode> = new Set([
+  "CONFIRMATION_SUBMISSION_PENDING",
+  "PAYMENT_PENDING_RECONCILIATION",
+]);
+
+/**
+ * Server faults (5xx) are errors. A refusal of the caller's request (4xx),
+ * such as a quote the provider declined for the buyer's input, is a warning,
+ * and an operation that is merely still in progress is info. Logging every
+ * outcome as an error made expected buyer corrections read as failures.
+ */
+export function standardRailLogLevel(error: StandardRailError): "info" | "warn" | "error" {
+  if (error.status >= 500) return "error";
+  return IN_PROGRESS_CODES.has(error.code) ? "info" : "warn";
+}
+
 export function logStandardRailError(error: StandardRailError): void {
   if (logged.has(error)) return;
   logged.add(error);
-  logger.error("standard rail request failed", {
+  logger[standardRailLogLevel(error)]("standard rail request failed", {
     correlationId: error.correlationId,
     code: error.code,
     phase: error.phase,
