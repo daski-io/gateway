@@ -58,7 +58,7 @@ function conditionalGet(url: string, etag: string): Promise<{ status: number; bo
   });
 }
 
-async function startMeta(outcomes: PublicChainMetadataV3["outcomes"]): Promise<string> {
+async function startMeta(outcomes: PublicChainMetadataV3["outcomes"], railConfig: Record<string, unknown> = {}): Promise<string> {
   const app = express();
   app.use(createStandardMetaRouter({
     config: {
@@ -71,7 +71,7 @@ async function startMeta(outcomes: PublicChainMetadataV3["outcomes"]): Promise<s
       marketplaceContracts: ADDRESSES,
       usdc: { address: USDC },
     } as unknown as Config,
-    railConfig: { easAddress: EAS, payerAccountTypes: ["eoa"] } as never,
+    railConfig: { easAddress: EAS, payerAccountTypes: ["eoa"], ...railConfig } as never,
     pool: { query: async () => ({ rows: [] }) } as never,
     lifecycle: { isStopping: () => false } as never,
     service: {
@@ -150,6 +150,16 @@ describe("standard rail metadata", () => {
       package: "@circle-fin/cli", version: "1.0.0", repository: "https://github.com/circlefin/cli",
     });
 
+  });
+
+  it("advertises Circle review execution only for a qualified target, and estimation either way", async () => {
+    for (const qualified of [false, true]) {
+      const root = await startMeta([], { confirmationCircleExecutionQualified: qualified });
+      const mcp = await (await fetch(`${root}/.well-known/mcp.json`)).json() as { confirmation: { directReview: unknown } };
+      expect(mcp.confirmation.directReview).toEqual({ circleEstimate: true, circleExecute: qualified });
+      await new Promise<void>((resolve, reject) => server!.close((error) => error ? reject(error) : resolve()));
+      server = undefined;
+    }
   });
 
   it("redirects every legacy documentation surface and rejects unknown guides", async () => {
