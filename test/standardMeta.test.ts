@@ -147,7 +147,7 @@ describe("standard rail metadata", () => {
     });
     expect(mcp.signerClis).toEqual(PINNED_SIGNER_CLIS);
     expect(mcp.signerClis["circle-agent"]).toEqual({
-      package: "@circle-fin/cli", version: "1.0.0", repository: "https://github.com/circlefin/cli",
+      package: "@circle-fin/cli", version: "1.2.0", repository: "https://github.com/circlefin/cli",
     });
 
   });

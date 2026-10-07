@@ -20,7 +20,7 @@ export const PINNED_BUYER_CLI = {
 export const PINNED_SIGNER_CLIS = {
   "circle-agent": {
     package: "@circle-fin/cli",
-    version: "1.0.0",
+    version: "1.2.0",
     repository: "https://github.com/circlefin/cli",
   },
 } as const;
