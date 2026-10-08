@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 import { privateKeyToAccount } from "viem/accounts";
 import type { Hex } from "viem";
 import { canonicalHash } from "../src/standardRail/canonical.js";
+import { ORDER_STATUS_VIEW_HEADER, PROVIDER_LIFECYCLE_HEADERS } from "../src/standardRail/orderStatusView.js";
+import { issueReadCapability } from "../src/standardRail/readCapability.js";
 import { StandardRailService } from "../src/standardRail/service.js";
 import { assertTransition } from "../src/standardRail/stateMachine.js";
 import type { StandardListing, StandardOrderRecord } from "../src/standardRail/types.js";
@@ -105,6 +107,40 @@ describe("order status additions", () => {
 
     await expect(service.applyLifecycleResult(order, listing, { ...response, documents: DOCUMENTS }, "status", "handle"))
       .rejects.toThrow("PROVIDER_LIFECYCLE_SIGNATURE_INVALID");
+  });
+
+  it("asks the provider for them on its lifecycle POST", async () => {
+    // A provider adds them only when asked: a gateway released before them
+    // refuses any response key it does not know.
+    const key = Buffer.alloc(32, 7);
+    const providerFetch = vi.fn(async (_listing: unknown, _url: string, _init: RequestInit) => {
+      throw new Error("lifecycle POST captured");
+    });
+    const order = {
+      orderId: "ord", providerTaskId: "task", state: "INPUT_REQUIRED", payer: signer.address, capabilityEpoch: 0,
+      listing: { providerControlProfile: { payload: {
+        providerAudience: "provider.example", lifecycleUrl: "https://provider.example/standard-rail/lifecycle",
+        timeoutMs: 3_000, maxResponseBytes: 65_536,
+      } } },
+    } as unknown as StandardOrderRecord;
+    const service = Object.assign(Object.create(StandardRailService.prototype), {
+      assertRailFence: async () => undefined,
+      store: { findByHandle: async () => order },
+      appConfig: { chainId: 84532, publicUrl: "https://gateway.example" },
+      railConfig: { encryptionKey: key, gatewayAudience: "gateway.example", environment: "testnet",
+        lifecyclePrivateKey: `0x${"34".repeat(32)}`, dispatchTimeoutMs: 3_000 },
+      providerFetch,
+    }) as StandardRailService;
+    const { readCapability } = issueReadCapability({
+      key, orderId: "ord", payer: signer.address, audience: "gateway.example", capabilityEpoch: 0, ttlSeconds: 60,
+    });
+
+    await expect(service.performAction({ handle: "handle", action: "status", request: {}, readCapability }))
+      .rejects.toThrow("lifecycle POST captured");
+
+    const headers = providerFetch.mock.calls[0]![2].headers as Record<string, string>;
+    expect(headers).toEqual(PROVIDER_LIFECYCLE_HEADERS);
+    expect(headers[ORDER_STATUS_VIEW_HEADER]).toBe("1");
   });
 
   it("fulfills an order straight from input-required on a signed completion", async () => {

@@ -113,6 +113,17 @@
         "daski-provider src/core/standardRail/lifecycle.ts performAction (read-capability stub + ProviderLifecycleGrantV1)"
       ]
     },
+    "provider-lifecycle-headers.json": {
+      "consumers": [
+        "daski-provider"
+      ],
+      "emittedBy": [
+        "src/standardRail/orderStatusView.ts PROVIDER_LIFECYCLE_HEADERS (src/standardRail/service.ts performAction, provider lifecycle POST headers)"
+      ],
+      "parsedBy": [
+        "daski-provider src/core/standardRail/routes.ts POST /lifecycle (adds the order status view only when asked)"
+      ]
+    },
     "confirmation-request-shapes.json": {
       "consumers": [
         "daski-test",

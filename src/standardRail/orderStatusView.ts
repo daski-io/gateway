@@ -45,5 +45,18 @@ export const orderStatusAdditionsSchema = z.object({
   documents: orderDocumentsSchema.optional(),
 }).strict();
 
+/// Every provider lifecycle POST asks for the additions with this header. A
+/// provider adds them only when asked, because a gateway released before
+/// them checks the response's keys exactly and refuses the read. Expand,
+/// then contract: once every network serves a gateway that sends it,
+/// providers can add them unasked and the header can go.
+export const ORDER_STATUS_VIEW_HEADER = "daski-order-status-view";
+
+/** The headers of a provider lifecycle POST, published as a wire fixture. */
+export const PROVIDER_LIFECYCLE_HEADERS: Readonly<Record<string, string>> = Object.freeze({
+  "content-type": "application/json",
+  [ORDER_STATUS_VIEW_HEADER]: "1",
+});
+
 export type InputRequest = z.infer<typeof inputRequestSchema>;
 export type OrderDocument = z.infer<typeof orderDocumentSchema>;

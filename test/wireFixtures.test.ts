@@ -1,4 +1,4 @@
-import { orderStatusAdditionsSchema } from "../src/standardRail/orderStatusView.js";
+import { orderStatusAdditionsSchema, PROVIDER_LIFECYCLE_HEADERS } from "../src/standardRail/orderStatusView.js";
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -251,6 +251,14 @@ async function providerLifecycleRequestFixture() {
 }
 
 /**
+ * The headers of every provider lifecycle POST. A provider adds the order
+ * status view (below) only when they ask for it.
+ */
+function providerLifecycleHeadersFixture() {
+  return { ...PROVIDER_LIFECYCLE_HEADERS };
+}
+
+/**
  * The provider's input request and order documents exactly as the gateway
  * passes them through on a payer-authorized status read (and an order input
  * answer). Values are synthetic; the shape is validated by the gateway's own
@@ -398,6 +406,7 @@ const fixtures: Record<string, () => unknown | Promise<unknown>> = {
   "order-action-challenge.json": orderActionChallengeFixture,
   "standard-rail-error.json": standardRailErrorFixture,
   "provider-lifecycle-request.json": providerLifecycleRequestFixture,
+  "provider-lifecycle-headers.json": providerLifecycleHeadersFixture,
   "order-status-input-request.json": orderStatusInputRequestFixture,
 };
 

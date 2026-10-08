@@ -9,7 +9,7 @@ import { StandardReviewRecovery } from "./reviewRecovery.js";
 import { createHmac, randomBytes, randomUUID } from "node:crypto";
 import { fulfillmentClock } from "./operationsStore.js";
 import { operationsSchema } from "./operationsSchema.js";
-import { inputRequestSchema, orderDocumentsSchema } from "./orderStatusView.js";
+import { inputRequestSchema, orderDocumentsSchema, PROVIDER_LIFECYCLE_HEADERS } from "./orderStatusView.js";
 import { supportResultSchema, validateSupportRequest } from "./supportRequest.js";
 import { readinessSchema, type PurchaseReadiness } from "./readinessSchema.js";
 import type { PaymentPayload, PaymentRequired, PaymentRequirements } from "@x402/core/types";
@@ -1556,7 +1556,7 @@ export class StandardRailService {
       listing.providerControlProfile.payload.lifecycleUrl,
       {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: { ...PROVIDER_LIFECYCLE_HEADERS },
         body: JSON.stringify({
           orderId: order.orderId,
           providerTaskId: order.providerTaskId,
