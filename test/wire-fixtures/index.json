@@ -150,6 +150,22 @@
         "daski-test scripts/standardConfirmation.ts performConfirmationTransition",
         "daski-buyer packages/pay/src/commands/confirmation.ts validateConfirmationPreparation"
       ]
+    },
+    "order-status-input-request.json": {
+      "consumers": [
+        "daski-test",
+        "daski-buyer",
+        "daski-provider"
+      ],
+      "emittedBy": [
+        "src/standardRail/service.ts applyLifecycleResult (passes the provider's inputRequest and documents through on status reads and order input answers)",
+        "src/standardRail/orderStatusView.ts orderStatusAdditionsSchema"
+      ],
+      "parsedBy": [
+        "daski-buyer packages/pay/src/gateway/inputRequest.ts (order status display)",
+        "daski-test scripts/orderOperations.ts inputRequestOf",
+        "daski-provider src/core/standardRail/orderStatusView.ts orderStatusViewSchema (the provider emits the same shape)"
+      ]
     }
   }
 }

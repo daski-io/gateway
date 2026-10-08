@@ -18,7 +18,10 @@ const TRANSITIONS: Readonly<Record<StandardOrderState, readonly StandardOrderSta
   DISPATCH_AMBIGUOUS: ["DISPATCHED", "PROVIDER_FAILED", "LEGAL_HOLD"],
   FULFILLED: [],
   PROVIDER_FAILED: ["RELEASE_FINAL", "DISPATCHED"],
-  INPUT_REQUIRED: ["DISPATCHED", "PROVIDER_FAILED", "LEGAL_HOLD"],
+  // A status read can miss the brief working state between an accepted
+  // correction and completion; the provider's signed terminal attestation is
+  // what proves the order fulfilled.
+  INPUT_REQUIRED: ["DISPATCHED", "FULFILLED", "PROVIDER_FAILED", "LEGAL_HOLD"],
   LEGAL_HOLD: [],
   NOT_SETTLED: [],
 };

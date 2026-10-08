@@ -1,3 +1,4 @@
+import { orderStatusAdditionsSchema } from "../src/standardRail/orderStatusView.js";
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -250,6 +251,46 @@ async function providerLifecycleRequestFixture() {
 }
 
 /**
+ * The provider's input request and order documents exactly as the gateway
+ * passes them through on a payer-authorized status read (and an order input
+ * answer). Values are synthetic; the shape is validated by the gateway's own
+ * schema, which mirrors the provider's.
+ */
+function orderStatusInputRequestFixture() {
+  return orderStatusAdditionsSchema.parse({
+    inputRequest: {
+      schemaVersion: 1,
+      requestedAt: ISSUED_AT,
+      cause: "supplier_attention",
+      summary: "Northwest, our filing agent, could not complete this filing with the information on file " +
+        "and did not say which detail is wrong. Review every field below, correct anything that is " +
+        "wrong, and resubmit the complete request. Fields marked withheld must be provided again. " +
+        "If everything is correct, contact support.",
+      reason: null,
+      fields: [
+        { path: "entity", label: "Entity", value: "US-WY:synthetic-labs", status: "as_submitted", editable: false },
+        { path: "formData.responsible_party.first_name", label: "Responsible Party: First Name",
+          value: "Riley Chen", status: "as_submitted", editable: true },
+        { path: "formData.responsible_party.last_name", label: "Responsible Party: Last Name",
+          value: "personally", status: "as_submitted", editable: true },
+        { path: "formData.responsible_party.dob", label: "Responsible Party: Dob", value: null, status: "withheld", editable: true },
+        { path: "formData.ssn", label: "Social Security Number", value: null, status: "withheld", editable: true },
+        { path: "formData.ein_has_employees", label: "Employees in the next 12 months", value: false,
+          status: "as_submitted", editable: true },
+        { path: "filingProfile.presidents[0].lastName", label: "Filed from the entity's records: President 1: Last name",
+          value: "Chen", status: "set_by_daski", editable: false },
+      ],
+    },
+    documents: [{
+      documentId: "8d42e3f9-1111-4222-8333-944455556666",
+      title: "Rejection Notice",
+      type: "Rejection Notice",
+      receivedAt: ISSUED_AT,
+    }],
+  });
+}
+
+/**
  * The closed request shapes the confirmation handler accepts per action and
  * phase (its `exact` key sets), plus the submission modes. A consumer that
  * builds a prepare, submit, or check request proves it against these key sets
@@ -357,6 +398,7 @@ const fixtures: Record<string, () => unknown | Promise<unknown>> = {
   "order-action-challenge.json": orderActionChallengeFixture,
   "standard-rail-error.json": standardRailErrorFixture,
   "provider-lifecycle-request.json": providerLifecycleRequestFixture,
+  "order-status-input-request.json": orderStatusInputRequestFixture,
 };
 
 describe("wire fixtures", () => {

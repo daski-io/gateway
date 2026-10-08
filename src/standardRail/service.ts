@@ -9,6 +9,7 @@ import { StandardReviewRecovery } from "./reviewRecovery.js";
 import { createHmac, randomBytes, randomUUID } from "node:crypto";
 import { fulfillmentClock } from "./operationsStore.js";
 import { operationsSchema } from "./operationsSchema.js";
+import { inputRequestSchema, orderDocumentsSchema } from "./orderStatusView.js";
 import { supportResultSchema, validateSupportRequest } from "./supportRequest.js";
 import { readinessSchema, type PurchaseReadiness } from "./readinessSchema.js";
 import type { PaymentPayload, PaymentRequired, PaymentRequirements } from "@x402/core/types";
@@ -109,6 +110,32 @@ export function isAdmissionWindowOpen(
   nowSeconds = Math.floor(Date.now() / 1_000),
 ): boolean {
   return nowSeconds < Math.min(railValidBefore, facilitatorValidBefore);
+}
+
+/// The buyer-facing additions ride only on the payer-authorized status read
+/// and the answer to an order input; the input request only while the order
+/// waits for the buyer. Their values are the buyer's own: validated against
+/// the mirrored schema, passed through, never stored or echoed in errors.
+function assertOrderStatusAdditions(
+  response: { state?: unknown; inputRequest?: unknown; documents?: unknown },
+  action: string,
+): void {
+  const hasRequest = "inputRequest" in response;
+  const hasDocuments = "documents" in response;
+  if (!hasRequest && !hasDocuments) return;
+  if ((action !== "status" && action !== "input") || (hasRequest && response.state !== "input-required")) {
+    throw standardRailError("INTERNAL_ERROR", {
+      phase: "dispatch",
+      internalMessage: "PROVIDER_LIFECYCLE_UNEXPECTED_CONTENT",
+    });
+  }
+  if ((hasRequest && !inputRequestSchema.safeParse(response.inputRequest).success) ||
+      (hasDocuments && !orderDocumentsSchema.safeParse(response.documents).success)) {
+    throw standardRailError("INTERNAL_ERROR", {
+      phase: "dispatch",
+      internalMessage: "PROVIDER_ORDER_STATUS_VIEW_INVALID",
+    });
+  }
 }
 
 function assertExactKeys(value: unknown, expected: readonly string[], label: string): void {
@@ -1583,12 +1610,17 @@ export class StandardRailService {
       operations?: unknown;
       signature?: unknown;
       terminalAttestation?: { payload?: Record<string, unknown>; signature?: unknown };
+      inputRequest?: unknown;
+      documents?: unknown;
     };
     const lifecycleKeys = ["orderId", "taskId", "state", "signature", "operations"];
     if ("result" in response) lifecycleKeys.push("result");
     if ("terminalAttestation" in response) lifecycleKeys.push("terminalAttestation");
+    if ("inputRequest" in response) lifecycleKeys.push("inputRequest");
+    if ("documents" in response) lifecycleKeys.push("documents");
     assertExactKeys(response, lifecycleKeys, "provider lifecycle response");
     operationsSchema.parse(response.operations);
+    assertOrderStatusAdditions(response, action);
     if (
       response.orderId !== initial.orderId || response.taskId !== initial.providerTaskId ||
       typeof response.signature !== "string" ||
