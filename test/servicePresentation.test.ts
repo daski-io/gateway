@@ -45,6 +45,7 @@ function reader(providerAgentId = "8327"): MarketplaceChainReader {
     listProviders: vi.fn(),
     getProvider: vi.fn(),
     getService: vi.fn(async () => serviceRecord(providerAgentId)),
+    readRecovered: vi.fn(),
   };
 }
 
@@ -101,6 +102,7 @@ describe("admitted service presentation", () => {
 
     expect(chainReader.getService).toHaveBeenCalledTimes(1);
     expect(fetchCard).toHaveBeenCalledTimes(1);
+    expect(chainReader.readRecovered).not.toHaveBeenCalled();
   });
 
   it("rejects a registry record owned by another provider", async () => {

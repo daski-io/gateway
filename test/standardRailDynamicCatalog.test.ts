@@ -297,7 +297,12 @@ function fakeState(records: StoredRegistration[]): FakeStoreState {
   };
 }
 
-function catalogFor(state: FakeStoreState): StandardRailCatalog {
+function catalogFor(
+  state: FakeStoreState,
+  reputationReader: Pick<DirectReputationReader, "forOutcomes"> = {
+    forOutcomes: async () => { throw new Error("reputation offline"); },
+  },
+): StandardRailCatalog {
   const store = {
     listActiveByProvider: async (agent: string) =>
       state.records.filter((item) =>
@@ -338,9 +343,7 @@ function catalogFor(state: FakeStoreState): StandardRailCatalog {
       state.refreshes += 1;
       state.onRefresh?.(state);
     },
-    {
-      forOutcomes: async () => { throw new Error("reputation offline"); },
-    } as unknown as DirectReputationReader,
+    reputationReader as DirectReputationReader,
   );
 }
 
@@ -561,6 +564,34 @@ describe("outcome search", () => {
     expect(rows[0]).not.toHaveProperty("reputation");
     expect(rows[0]).toHaveProperty("serviceReputation");
     expect(rows[0]).toHaveProperty("splitter");
+  });
+
+  it("carries the snapshot's recovered counts and leaves them unknown without one", async () => {
+    // Without a snapshot the blocks are empty, and their recovered count is
+    // unknown rather than zero.
+    const [offline] = await catalogFor(fakeState([record()])).publicOutcomes();
+    expect(offline!.providerReputation).toMatchObject({ failedCount: "0", recoveredCount: null, safeBlock: null });
+    expect(offline!.serviceReputation).toMatchObject({ failedCount: "0", recoveredCount: null, safeBlock: null });
+
+    const figures = (failedCount: string, recoveredCount: string) => ({
+      ...offline!.providerReputation,
+      failedCount,
+      recoveredCount,
+      safeBlock: "77",
+    });
+    const catalog = catalogFor(fakeState([record()]), {
+      forOutcomes: async () => ({
+        providers: new Map([[providerAgentId, figures("3", "2")]]),
+        services: new Map([[serviceId, figures("2", "1")]]),
+        safeBlock: "77",
+      }),
+    });
+    const [row] = await catalog.publicOutcomes();
+    expect(row!.providerReputation).toMatchObject({ failedCount: "3", recoveredCount: "2", safeBlock: "77" });
+    expect(row!.serviceReputation).toMatchObject({ failedCount: "2", recoveredCount: "1", safeBlock: "77" });
+    const [summary] = await catalog.searchOutcomes({ limit: 10 });
+    expect(summary!.providerReputation).toMatchObject({ recoveredCount: "2" });
+    expect(summary!.serviceReputation).toMatchObject({ recoveredCount: "1" });
   });
 
   it("serves the live catalog vocabulary for zero-hit steering", async () => {

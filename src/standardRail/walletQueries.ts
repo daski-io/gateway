@@ -10,6 +10,7 @@ import {
 import type { Pool } from "../db/pool.js";
 import { withRpcFailover } from "../rpc/failover.js";
 import { logger } from "../util/logger.js";
+import { supportsOrderRecoveries } from "../marketplace/recoveryVersion.js";
 import type { StandardRailConfig } from "./config.js";
 import type { FinalityTag } from "../util/finalityTag.js";
 import type { StandardWalletStore } from "./walletStore.js";
@@ -36,9 +37,16 @@ const reputationAbi = parseAbi([
   "function getBuyerStats(address payer) view returns (uint256,uint256,uint256)",
   "function totalPaidByPayer(address payer) view returns (uint256)",
   "function refundedAmountByPayer(address payer) view returns (uint256)",
+  "function version() view returns (string)",
+  "function getRecovery(bytes32 orderKey) view returns (uint64 recoveredAt, bytes32 evidenceHash, bytes32 attestationUid)",
 ]);
 
 const ZERO_HASH = `0x${"00".repeat(32)}`;
+
+interface OrderRecoveryView {
+  /** Unix seconds as a decimal string, or null when the order was not recovered. */
+  recoveredAt: string | null;
+}
 
 export class StandardWalletQueries {
   private readonly clients;
@@ -118,7 +126,7 @@ export class StandardWalletQueries {
     );
     const rows = result.rows.slice(0, args.limit);
     const hasMore = result.rows.length > args.limit;
-    const records = await this.observe(async ({ client }) => {
+    const { records, recoveries } = await this.observe(async ({ client }) => {
       const block = await client.getBlock({ blockTag: this.finalityTag });
       // A page can contain 100 rows; keep only a bounded batch in the ordered
       // transport while preserving the caller's requested page and pinned block.
@@ -132,7 +140,7 @@ export class StandardWalletQueries {
         blockNumber: block.number,
         }))));
       }
-      return records;
+      return { records, recoveries: await this.readRecoveries(client, rows, records, block.number) };
     });
     return {
       orders: rows.map((row, index) => {
@@ -156,6 +164,7 @@ export class StandardWalletQueries {
             : "Pending",
           buyerConfirmation: registered ? confirmation(reputation.confirmation) : "Pending",
           confirmationSubmissionsUsed: registered ? reputation.confirmationSubmissions : 0,
+          recovery: recoveries[index] ?? null,
         },
         createdAt: row.created_at.toISOString(),
         updatedAt: row.updated_at.toISOString(),
@@ -167,6 +176,52 @@ export class StandardWalletQueries {
           }, binding)
         : null,
     };
+  }
+
+  // An order's recovery is read at the block of its record, and only where
+  // that block's contract records recoveries: null when it does not, when its
+  // version cannot be read, or when the order's own read fails; otherwise
+  // { recoveredAt }, null for an order not recovered. Only a registered Failed
+  // outcome can carry a recovery, so only those orders are read, in the same
+  // bounded batches as their records.
+  private async readRecoveries(
+    client: (typeof this.clients)[number]["client"],
+    rows: readonly OrderHistoryRow[],
+    records: ReadonlyArray<{ orderKey: string; outcome: number; outcomeRecorded: boolean }>,
+    blockNumber: bigint,
+  ): Promise<Array<OrderRecoveryView | null>> {
+    if (records.length === 0) return [];
+    try {
+      const version = await client.readContract({
+        address: this.reputationContract,
+        abi: reputationAbi,
+        functionName: "version",
+        blockNumber,
+      });
+      if (!supportsOrderRecoveries(version)) return records.map(() => null);
+    } catch {
+      return records.map(() => null);
+    }
+    const recoveries: Array<OrderRecoveryView | null> = records.map(() => ({ recoveredAt: null }));
+    const failed = records.flatMap((record, index) =>
+      record.orderKey !== ZERO_HASH && record.outcomeRecorded && record.outcome === 1 ? [index] : []);
+    for (let start = 0; start < failed.length; start += 32) {
+      await Promise.all(failed.slice(start, start + 32).map(async (index) => {
+        try {
+          const [recoveredAt] = await client.readContract({
+            address: this.reputationContract,
+            abi: reputationAbi,
+            functionName: "getRecovery",
+            args: [`0x${rows[index]!.order_key.toString("hex")}`],
+            blockNumber,
+          });
+          recoveries[index] = { recoveredAt: recoveredAt === 0n ? null : recoveredAt.toString() };
+        } catch {
+          recoveries[index] = null;
+        }
+      }));
+    }
+    return recoveries;
   }
 
   async getReputation(args: {

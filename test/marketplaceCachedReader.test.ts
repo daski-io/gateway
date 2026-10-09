@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Hex } from "viem";
 import { CachedMarketplaceChainReader } from "../src/marketplace/cachedReader.js";
-import type { MarketplaceChainReader } from "../src/marketplace/reader.js";
+import type { MarketplaceChainReader, RecoveredFigure } from "../src/marketplace/reader.js";
 
 const SERVICE_ID = `0x${"22".repeat(32)}` as Hex;
 
@@ -12,6 +12,7 @@ function source() {
     listProviders: vi.fn(async () => ({ total: "1" })),
     getProvider: vi.fn(async () => ({ agentId: "7" })),
     getService: vi.fn(async () => ({ serviceId: SERVICE_ID } as never)),
+    readRecovered: vi.fn(async (figure: RecoveredFigure) => figure.kind === "provider" ? "3" : "2"),
   };
 }
 
@@ -74,6 +75,34 @@ describe("cached marketplace reader", () => {
       vi.advanceTimersByTime(24 * 60 * 60_000 + 1_000);
       inner.getService.mockRejectedValue(new Error("RPC_DOWN"));
       await expect(reader.getService(SERVICE_ID)).rejects.toThrow("RPC_DOWN");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("caches recovered figures per figure and safe block until the TTL lapses", async () => {
+    vi.useFakeTimers();
+    try {
+      const inner = source();
+      const reader = new CachedMarketplaceChainReader(inner as unknown as MarketplaceChainReader);
+      const serviceId = `0x${"ab".repeat(32)}` as Hex;
+
+      await expect(reader.readRecovered({ kind: "service", serviceId }, 110n)).resolves.toBe("2");
+      // The same service id in other letter case is the same entry.
+      await expect(reader.readRecovered({
+        kind: "service",
+        serviceId: `0x${"AB".repeat(32)}` as Hex,
+      }, 110n)).resolves.toBe("2");
+      expect(inner.readRecovered).toHaveBeenCalledOnce();
+
+      await expect(reader.readRecovered({ kind: "service", serviceId }, 111n)).resolves.toBe("2");
+      await expect(reader.readRecovered({ kind: "provider", agentId: 7n }, 110n)).resolves.toBe("3");
+      expect(inner.readRecovered).toHaveBeenCalledTimes(3);
+      expect(inner.readRecovered).toHaveBeenLastCalledWith({ kind: "provider", agentId: 7n }, 110n);
+
+      vi.advanceTimersByTime(61_000);
+      await reader.readRecovered({ kind: "provider", agentId: 7n }, 110n);
+      expect(inner.readRecovered).toHaveBeenCalledTimes(4);
     } finally {
       vi.useRealTimers();
     }

@@ -122,7 +122,10 @@ it("reads all 100 wallet orders through the bounded transport at one pinned bloc
   }) as StandardWalletQueries;
   const result=await finish(queries.listOrders({payer,limit:100,cursor:null,authorization:{} as never}));
   expect(result.orders).toHaveLength(100);expect(result.nextCursor).toBeNull();
-  expect(calls.filter(call=>call==="readContract")).toHaveLength(100);expect(new Set(blocks)).toEqual(new Set([100n]));
+  // One record per order plus the contract version that gates recoveries; the
+  // stub answers no version, so no order's recovery is read.
+  expect(calls.filter(call=>call==="readContract")).toHaveLength(101);expect(new Set(blocks)).toEqual(new Set([100n]));
+  expect(result.orders.every(order=>order.reputation.recovery===null)).toBe(true);
  }finally{vi.useRealTimers();}
 });
 

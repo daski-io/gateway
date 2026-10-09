@@ -1,6 +1,11 @@
 import { Router } from "express";
 import { getAddress, type Address, type Hex } from "viem";
-import { MarketplaceNotFoundError, type MarketplaceChainReader } from "./reader.js";
+import {
+  MarketplaceNotFoundError,
+  withRecovered,
+  type MarketplaceChainReader,
+  type RecoveredFigure,
+} from "./reader.js";
 
 function positiveDecimal(raw: string): bigint | null {
   if (!/^(0|[1-9]\d{0,77})$/.test(raw)) return null;
@@ -27,6 +32,18 @@ async function sendChainRead(res: import("express").Response, read: () => Promis
       error: { code: "MARKETPLACE_CHAIN_READ_FAILED", message: "Marketplace chain state is unavailable." },
     });
   }
+}
+
+// The public view adds the recovered figure to the record's reputation block,
+// read after the registry read at that block's own safe block.
+async function presentRecovered(
+  reader: MarketplaceChainReader,
+  figure: RecoveredFigure,
+  record: unknown,
+): Promise<unknown> {
+  const reputation = (record as { standardReputation?: unknown } | null)?.standardReputation;
+  if (!reputation || typeof reputation !== "object") return record;
+  return { ...record as object, standardReputation: await withRecovered(reader, figure, reputation) };
 }
 
 export function createMarketplaceRouter(reader: MarketplaceChainReader): Router {
@@ -66,7 +83,8 @@ export function createMarketplaceRouter(reader: MarketplaceChainReader): Router 
       res.status(400).json({ error: { code: "INVALID_AGENT_ID", message: "agentId must be uint256 decimal." } });
       return;
     }
-    await sendChainRead(res, () => reader.getProvider(agentId));
+    await sendChainRead(res, async () =>
+      presentRecovered(reader, { kind: "provider", agentId }, await reader.getProvider(agentId)));
   });
   router.get("/public/v2/registry/services/:serviceId", async (req, res) => {
     const serviceId = req.params.serviceId;
@@ -74,7 +92,11 @@ export function createMarketplaceRouter(reader: MarketplaceChainReader): Router 
       res.status(400).json({ error: { code: "INVALID_SERVICE_ID", message: "serviceId must be bytes32." } });
       return;
     }
-    await sendChainRead(res, () => reader.getService(serviceId as Hex));
+    await sendChainRead(res, async () => presentRecovered(
+      reader,
+      { kind: "service", serviceId: serviceId as Hex },
+      await reader.getService(serviceId as Hex),
+    ));
   });
   return router;
 }

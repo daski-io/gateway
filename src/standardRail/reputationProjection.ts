@@ -12,6 +12,9 @@ export interface ProjectedReputationRecord {
   outcomeAttestationDelay: bigint;
   outcomeRecorded: boolean;
   reputationEligible: boolean;
+  /** Whether a Failed record carries a provider recovery at the read block;
+   *  null when that read failed. Only Failed records are read. */
+  recovered: boolean | null;
   refundedAmount: bigint;
   settlementTransactionHash: Hex | null;
   buyerAgentId: string | null;
@@ -45,14 +48,24 @@ function timestamp(seconds: bigint): string {
   return value.toISOString();
 }
 
+/**
+ * `recoveriesRecorded` says whether the contract at `safeBlock` records
+ * provider recoveries and its version could be read. A recovered order keeps
+ * its Failed outcome, so recoveries are counted beside the outcome figures and
+ * never change completion or timing; an unknown count is null, never zero.
+ */
 export function presentReputation(
   source: readonly ProjectedReputationRecord[],
   safeBlock: bigint,
+  recoveriesRecorded: boolean,
 ) {
   const records = source.filter((record) => record.reputationEligible);
   const completed = records.filter((record) => record.outcomeRecorded && record.outcome === 0);
   const failed = records.filter((record) => record.outcomeRecorded && record.outcome === 1);
   const canceled = records.filter((record) => record.outcomeRecorded && record.outcome === 2);
+  const recoveredCount = recoveriesRecorded && failed.every((record) => record.recovered !== null)
+    ? failed.filter((record) => record.recovered === true).length.toString()
+    : null;
   const confirmed = records.filter((record) => record.confirmation === 1);
   const notConfirmed = records.filter((record) => record.confirmation === 2);
   const completionSamples = BigInt(completed.length + failed.length + canceled.length);
@@ -90,6 +103,7 @@ export function presentReputation(
     completedCount: completed.length.toString(),
     failedCount: failed.length.toString(),
     canceledCount: canceled.length.toString(),
+    recoveredCount,
     completionSampleSize: completionSamples.toString(),
     completionRate: rate(BigInt(completed.length), completionSamples),
     confirmedCount: confirmed.length.toString(),

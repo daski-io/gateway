@@ -14,6 +14,7 @@ import {
   identityRegistryAbi,
   reputationStorageAbi,
 } from "../marketplace/abis.js";
+import { supportsOrderRecoveries } from "../marketplace/recoveryVersion.js";
 import type { StandardRailConfig } from "./config.js";
 import {
   presentReputation,
@@ -220,7 +221,7 @@ export class DirectReputationReader {
   }
 
   private async readOutcomes(outcomes: OutcomeDescriptor[]): Promise<ReputationSnapshot> {
-    const { block, chainRows, settlementRows } = await this.observe(async ({ client }) => {
+    const { block, chainRows, settlementRows, recoveries } = await this.observe(async ({ client }) => {
       const block = await client.getBlock({ blockTag: "safe" });
       const count = await client.readContract({
         address: this.config.reputationContract,
@@ -271,7 +272,12 @@ export class DirectReputationReader {
         record: recordValues[index]!,
         refundedAmount: refundValues[index]!,
       }));
-      return { block, chainRows, settlementRows };
+      const recoveries = await this.readRecoveries(
+        client,
+        chainRows.map(({ record }) => record),
+        block.number,
+      );
+      return { block, chainRows, settlementRows, recoveries };
     });
     const settlementByOrder = new Map(settlementRows.map((row) => [
       row.order_key.toLowerCase(),
@@ -285,7 +291,7 @@ export class DirectReputationReader {
       .map(({ record }) => record.payer.toLowerCase()))] as Address[];
     const buyers = await this.resolveBuyers(eligiblePayers, block.number);
     const byManifest = new Map(outcomes.map((outcome) => [outcome.listingManifestHash.toLowerCase(), outcome]));
-    const records: ProjectedReputationRecord[] = chainRows.map(({ record, refundedAmount }) => {
+    const records: ProjectedReputationRecord[] = chainRows.map(({ record, refundedAmount }, index) => {
       // A service contains multiple skills. Never infer a historical skill from
       // serviceId: a catalog refresh may retire or replace its original manifest.
       const candidate = ordersByKey.get(record.orderKey.toLowerCase());
@@ -312,6 +318,7 @@ export class DirectReputationReader {
         outcomeAttestationDelay: record.outcomeAttestationDelay,
         outcomeRecorded: record.outcomeRecorded,
         reputationEligible: record.reputationEligible,
+        recovered: recoveries ? recoveries[index]! : null,
         refundedAmount,
         settlementTransactionHash: settlementByOrder.get(record.orderKey.toLowerCase()) ?? null,
         buyerAgentId: buyer.agentId,
@@ -323,20 +330,78 @@ export class DirectReputationReader {
     });
     const providerIds = [...new Set(outcomes.map((item) => item.providerAgentId))];
     const serviceIds = [...new Set(outcomes.map((item) => item.serviceId))];
+    const recoveriesRecorded = recoveries !== null;
     return {
       providers: new Map(providerIds.map((id) => [
         id,
-        presentReputation(records.filter((record) => record.providerAgentId === id), block.number),
+        presentReputation(
+          records.filter((record) => record.providerAgentId === id),
+          block.number,
+          recoveriesRecorded,
+        ),
       ])),
       services: new Map(serviceIds.map((id) => [
         id,
         presentReputation(
           records.filter((record) => record.serviceId.toLowerCase() === id.toLowerCase()),
           block.number,
+          recoveriesRecorded,
         ),
       ])),
       safeBlock: block.number.toString(),
     };
+  }
+
+  // Recoveries are read at the walk's block, only where that block's contract
+  // records them, and only for the Failed records a recovery can attach to.
+  // The answer is null when the contract does not record them or its version
+  // cannot be read. A Failed record whose own read fails is null, so only the
+  // figures that include it become unknown. Neither case fails the walk.
+  private async readRecoveries(
+    client: (typeof this.clients)[number]["client"],
+    records: ReadonlyArray<{
+      orderKey: Hex;
+      outcome: number;
+      outcomeRecorded: boolean;
+      reputationEligible: boolean;
+    }>,
+    blockNumber: bigint,
+  ): Promise<Array<boolean | null> | null> {
+    try {
+      const version = await client.readContract({
+        address: this.config.reputationContract,
+        abi: reputationStorageAbi,
+        functionName: "version",
+        blockNumber,
+      });
+      if (!supportsOrderRecoveries(version)) return null;
+    } catch {
+      return null;
+    }
+    const recovered: Array<boolean | null> = records.map(() => false);
+    const failed = records.flatMap((record, index) =>
+      record.reputationEligible && record.outcomeRecorded && record.outcome === 1 ? [index] : []);
+    if (failed.length === 0) return recovered;
+    try {
+      const results = await client.multicall({
+        contracts: failed.map((index) => ({
+          address: this.config.reputationContract,
+          abi: reputationStorageAbi,
+          functionName: "getRecovery",
+          args: [records[index]!.orderKey],
+        } as const)),
+        allowFailure: true,
+        batchSize: MULTICALL_BATCH_BYTES,
+        blockNumber,
+      });
+      failed.forEach((recordIndex, position) => {
+        const result = results[position];
+        recovered[recordIndex] = result?.status === "success" ? result.result[0] !== 0n : null;
+      });
+    } catch {
+      for (const index of failed) recovered[index] = null;
+    }
+    return recovered;
   }
 
   private settlementRows(orderKeys: Hex[]): Promise<SettlementRow[]> {

@@ -59,6 +59,7 @@ const EMPTY_REPUTATION = {
   completedCount: "0",
   failedCount: "0",
   canceledCount: "0",
+  recoveredCount: null,
   completionSampleSize: "0",
   completionRate: null,
   confirmedCount: "0",

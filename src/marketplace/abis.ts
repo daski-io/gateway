@@ -37,4 +37,8 @@ export const reputationStorageAbi = parseAbi([
   "function totalPaidByService(bytes32 id) view returns (uint256)",
   "function confirmedWeightByService(bytes32 id) view returns (uint256)",
   "function notConfirmedWeightByService(bytes32 id) view returns (uint256)",
+  "function version() view returns (string)",
+  "function getRecovery(bytes32 orderKey) view returns (uint64 recoveredAt, bytes32 evidenceHash, bytes32 attestationUid)",
+  "function recoveredCount(uint256 providerAgentId) view returns (uint256)",
+  "function recoveredByService(bytes32 serviceId) view returns (uint256)",
 ]);

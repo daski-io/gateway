@@ -33,6 +33,9 @@ function marketplace(
         agentWallet: getAddress("0x0000000000000000000000000000000000000042"),
       },
     }),
+    readRecovered: async () => {
+      throw new Error("not used");
+    },
   } as MarketplaceChainReader;
 }
 

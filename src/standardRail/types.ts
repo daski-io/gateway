@@ -295,6 +295,13 @@ export interface PublicReputationV1 {
   completedCount: string;
   failedCount: string;
   canceledCount: string;
+  /**
+   * Of the Failed orders in `failedCount`, those the provider later recovered.
+   * A recovered order keeps its Failed outcome, so no other figure changes.
+   * Null when the reputation contract does not record recoveries at
+   * `safeBlock` or they could not be read; never a stand-in zero.
+   */
+  recoveredCount: string | null;
   completionSampleSize: string;
   completionRate: number | null;
   confirmedCount: string;

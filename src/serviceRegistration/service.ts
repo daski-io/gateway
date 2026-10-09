@@ -1,9 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { getAddress, type Address, type Hex } from "viem";
 import type { Config } from "../config.js";
-import type {
-  MarketplaceChainReader,
-  MarketplaceServiceRecord,
+import {
+  withRecovered,
+  type MarketplaceChainReader,
+  type MarketplaceServiceRecord,
 } from "../marketplace/reader.js";
 import { canonicalHash } from "../standardRail/canonical.js";
 import type { StandardRailConfig } from "../standardRail/config.js";
@@ -891,27 +892,42 @@ export class ServiceRegistrationService {
     };
   }
 
-  // Separate provider- and service-scoped blocks on the detail view, sourced
-  // from the cached chain reader. Reputation is a nullable enrichment: a read
-  // failure must never take the public catalog down with it.
+  // Separate provider- and service-scoped blocks on the detail view, read
+  // through this service's chain reader. Each block's additive `recovered`
+  // figure is read afterwards, at that block's own safe block. Reputation is
+  // a nullable enrichment: a read failure must never take the public catalog
+  // down with it, and a failed recovered read only leaves `recovered` null.
   private async publicReputation(record: StoredRegistration): Promise<{
-    providerReputation: Record<string, string> | null;
-    serviceReputation: Record<string, string> | null;
+    providerReputation: Record<string, string | null> | null;
+    serviceReputation: Record<string, string | null> | null;
   }> {
+    let providerBlock: Record<string, string> | null;
+    let serviceBlock: Record<string, string> | null;
     try {
       const [provider, service] = await Promise.all([
         this.marketplace.getProvider(BigInt(record.providerAgentId)),
         this.marketplace.getService(record.serviceId),
       ]);
-      return {
-        providerReputation: (provider as {
-          standardReputation?: Record<string, string>;
-        } | null)?.standardReputation ?? null,
-        serviceReputation: service.standardReputation ?? null,
-      };
+      providerBlock = (provider as {
+        standardReputation?: Record<string, string>;
+      } | null)?.standardReputation ?? null;
+      serviceBlock = service.standardReputation ?? null;
     } catch {
       return { providerReputation: null, serviceReputation: null };
     }
+    const [providerReputation, serviceReputation] = await Promise.all([
+      providerBlock && withRecovered(
+        this.marketplace,
+        { kind: "provider", agentId: BigInt(record.providerAgentId) },
+        providerBlock,
+      ),
+      serviceBlock && withRecovered(
+        this.marketplace,
+        { kind: "service", serviceId: record.serviceId },
+        serviceBlock,
+      ),
+    ]);
+    return { providerReputation, serviceReputation };
   }
 
   /** One synchronous card refresh, used by checkout to satisfy the §10

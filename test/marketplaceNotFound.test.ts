@@ -341,6 +341,7 @@ function stubReader(overrides: Partial<MarketplaceChainReader>): MarketplaceChai
     listProviders: vi.fn(async () => ({ total: "0", providers: [] })),
     getProvider: vi.fn(async (agentId: bigint) => ({ agentId: agentId.toString() })),
     getService: vi.fn(async () => { throw new Error("not exercised"); }),
+    readRecovered: vi.fn(async () => null),
     ...overrides,
   };
 }

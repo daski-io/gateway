@@ -20,6 +20,7 @@ import {
   providerRegistryAbi,
   serviceRegistryAbi,
 } from "./abis.js";
+import { supportsOrderRecoveries } from "./recoveryVersion.js";
 
 interface MarketplaceAddresses {
   identityRegistry: Address;
@@ -36,6 +37,12 @@ export interface MarketplaceChainReader {
   listProviders(offset: number, limit: number): Promise<unknown>;
   getProvider(agentId: bigint): Promise<unknown>;
   getService(serviceId: Hex): Promise<MarketplaceServiceRecord>;
+  /**
+   * How many of the provider's or service's Failed orders were later
+   * recovered, at `safeBlock`; null when that block's reputation contract
+   * does not record recoveries or the read fails. Never rejects.
+   */
+  readRecovered(figure: RecoveredFigure, safeBlock: bigint): Promise<string | null>;
 }
 
 export interface MarketplaceServiceRecord {
@@ -48,6 +55,34 @@ export interface MarketplaceServiceRecord {
   createdAt: string;
   active: boolean;
   standardReputation: ReturnType<typeof serviceStats> & { safeBlock: string };
+}
+
+export type RecoveredFigure =
+  | { kind: "provider"; agentId: bigint }
+  | { kind: "service"; serviceId: Hex };
+
+/**
+ * A public presentation's reputation block with its additive `recovered`
+ * figure. Only public views call this: the registry reads that registration,
+ * authority and checkout depend on never carry it. It is read after them, at
+ * the block's own safe block, and is null when unsupported, unreadable or
+ * without a safe block; it never fails the presentation.
+ */
+export async function withRecovered<Block extends object>(
+  reader: Pick<MarketplaceChainReader, "readRecovered">,
+  figure: RecoveredFigure,
+  block: Block,
+): Promise<Block & { recovered: string | null }> {
+  const { safeBlock } = block as { safeBlock?: unknown };
+  let recovered: string | null = null;
+  if (typeof safeBlock === "string" && /^(0|[1-9]\d{0,77})$/.test(safeBlock)) {
+    try {
+      recovered = await reader.readRecovered(figure, BigInt(safeBlock));
+    } catch {
+      recovered = null;
+    }
+  }
+  return { ...block, recovered };
 }
 
 export type MarketplaceNotFoundKind = "provider" | "service" | "agent";
@@ -351,5 +386,34 @@ export class ViemMarketplaceChainReader implements MarketplaceChainReader {
         standardReputation: { ...serviceStats(reputation), safeBlock: safeBlock.number.toString() },
       };
     });
+  }
+
+  // The recovered figure is additive and read only for public presentation,
+  // never by the registry reads above. It is its own observation at the safe
+  // block of the stats it accompanies, in one batch with the contract version
+  // that decides whether that block records recoveries at all. Any failure
+  // answers null after at most one attempt per endpoint and no backoff.
+  async readRecovered(figure: RecoveredFigure, safeBlock: bigint): Promise<string | null> {
+    const counter = figure.kind === "provider"
+      ? { functionName: "recoveredCount", args: [figure.agentId] } as const
+      : { functionName: "recoveredByService", args: [figure.serviceId] } as const;
+    try {
+      return await withRpcFailover(this.clients, async ({ client }) => {
+        const [version, recovered] = await client.multicall({
+          contracts: [
+            { address: this.addresses.reputationStorage, abi: reputationStorageAbi, functionName: "version" },
+            { address: this.addresses.reputationStorage, abi: reputationStorageAbi, ...counter },
+          ],
+          allowFailure: true,
+          blockNumber: safeBlock,
+        });
+        if (version.status === "failure") throw version.error;
+        if (!supportsOrderRecoveries(version.result)) return null;
+        if (recovered.status === "failure") throw recovered.error;
+        return recovered.result.toString();
+      }, { attempts: 1, terminal: isContractRevert });
+    } catch {
+      return null;
+    }
   }
 }

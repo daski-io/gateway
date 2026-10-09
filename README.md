@@ -95,6 +95,8 @@ steady-state prompt is `Use Daski to [your task]`.
   every finalized reputation write, so requests never wait on the chain.
   Responses carry `Cache-Control: public, max-age=30,
   stale-while-revalidate=300`, an `ETag`, and `DASKI-PROJECTION-REFRESHED-AT`.
+  Each outcome's `providerReputation` and `serviceReputation` carry the
+  additive `recoveredCount` (see [recovered orders](#recovered-orders)).
 - `/public/v3/activity?limit=50` publishes the compact marketplace activity
   projection from the same warm data: the newest purchases across services
   with service and skill names, marketplace totals, the safe block, and the
@@ -104,9 +106,13 @@ steady-state prompt is `Use Daski to [your task]`.
   purchase whose local order is missing displays an unknown skill, never
   another skill from the same service.
 - `/public/v3/services` publishes the service-first dynamic catalog when the
-  registration route group is enabled.
+  registration route group is enabled. `/public/v3/services/:serviceId` adds
+  the provider's and the service's on-chain reputation counters as
+  `providerReputation` and `serviceReputation`, each with the additive
+  `recovered` (see [recovered orders](#recovered-orders)).
 - `/public/v2/registry/*` exposes read-only ERC-8004 identity, Daski provider
-  and service catalog state.
+  and service catalog state. The provider and service reads carry the on-chain
+  reputation counters as `standardReputation`, with the additive `recovered`.
 - `POST /outcomes/:providerAgentId/:outcomeId/quote` returns the prepared
   challenge and payer preflight. `POST .../purchase` accepts `{ request,
   payerAddress?, paymentPayload? }`, retaining the complete payment in JSON
@@ -131,7 +137,8 @@ steady-state prompt is `Use Daski to [your task]`.
   vocabulary hints; `GET /public/v2/outcomes/:providerAgentId/:outcomeId`
   provides the complete detail with capped recent-purchase history.
 - `POST /wallet/orders` accepts an optional `paymentIdentifier` for
-  payer-authorized reconciliation.
+  payer-authorized reconciliation. Each order's `reputation` carries the
+  additive `recovery` (see [recovered orders](#recovered-orders)).
 - `/mcp` redirects to the website's MCP server.
 - `/health/live` and `/health/ready` report process and dependency readiness.
 
@@ -140,6 +147,33 @@ and service lookup tools. Identity and catalog registration remain independent
 of payment. Standard purchases register transaction-linked reputation against
 the configured `ReputationStorage`; provider outcomes and payer confirmations
 complete that record asynchronously.
+
+### Recovered orders
+
+A provider can later record on chain that it recovered an order whose outcome
+was Failed. The order keeps its Failed outcome: the reputation contract records
+the recovery beside it, so completed and failed counts, completion rate and
+fulfillment timing are unchanged. The gateway reports recoveries in additive
+fields, each read at the same block as the figures beside it:
+
+- `recoveredCount` in every outcome's `providerReputation` and
+  `serviceReputation` (the chain document, outcome search and outcome detail):
+  of the Failed orders counted in `failedCount`, those later recovered.
+- `recovered` in `standardReputation` on the `/public/v2/registry` provider and
+  service reads, and in `providerReputation` and `serviceReputation` on
+  `/public/v3/services/:serviceId`: the contract's recovered counter for that
+  provider or service, read at the same safe block as the other counters. Only
+  these public views read it, after their registry reads; the registry reads
+  that registration, authority checks and checkout make never include it.
+- `reputation.recovery` on each `POST /wallet/orders` order:
+  `{ recoveredAt }`, the time of the recovery in unix seconds as a decimal
+  string, or `recoveredAt: null` when the order was not recovered.
+
+Recoveries are reported where the reputation contract at the read block is
+implementation 2.2.0 or later, as its `version()` reports at that block. `null`
+in place of any of these fields means recoveries are unsupported at that block
+or could not be read; it never stands for zero, and a failed recovery read never
+fails or changes the other figures.
 
 There is no alternate payment rail, native facilitator endpoint, or legacy
 paid MCP workflow. Direct on-chain provider/service registration remains valid;
@@ -343,8 +377,11 @@ for that request ID, including after newer messages; `operations.support` shows
 the latest accepted request and Review state. Each operations view carries a
 revision; a view older than the stored one is still returned to its caller but
 never replaces the newer stored view. A completed provider recovery appears as `fulfillmentState: "recovered"`
-and `operations.recovery`, while the original failed order and reputation outcome
-remain unchanged. Status and artifact reads always obtain fresh provider evidence.
+and `operations.recovery`, while the original failed order and its Failed reputation
+outcome remain unchanged. A recovery the provider also records on chain is a
+separate recovery record that the reputation contract keeps beside that outcome
+(see [recovered orders](#recovered-orders)). Status and artifact reads always
+obtain fresh provider evidence.
 
 An order in `INPUT_REQUIRED` also carries the provider's `inputRequest` on the
 payer-authorized status read and on the answer to an order input. It holds a

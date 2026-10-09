@@ -2,6 +2,7 @@ import type { Address, Hex } from "viem";
 import type {
   MarketplaceChainReader,
   MarketplaceServiceRecord,
+  RecoveredFigure,
 } from "./reader.js";
 
 // Public discovery only: a short shared cache avoids re-reading chain state
@@ -40,6 +41,16 @@ export class CachedMarketplaceChainReader implements MarketplaceChainReader {
 
   getService(serviceId: Hex): Promise<MarketplaceServiceRecord> {
     return this.cached(`service:${serviceId.toLowerCase()}`, () => this.source.getService(serviceId));
+  }
+
+  // Keyed by the safe block it was read at, so it pairs with the cached
+  // stats it accompanies.
+  readRecovered(figure: RecoveredFigure, safeBlock: bigint): Promise<string | null> {
+    const id = figure.kind === "provider" ? figure.agentId.toString() : figure.serviceId.toLowerCase();
+    return this.cached(
+      `recovered:${figure.kind}:${id}:${safeBlock}`,
+      () => this.source.readRecovered(figure, safeBlock),
+    );
   }
 
   private cached<T>(key: string, load: () => Promise<T>): Promise<T> {
