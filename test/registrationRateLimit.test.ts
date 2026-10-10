@@ -26,7 +26,7 @@ async function setup(exhaustedNamespace?: string) {
   const app = express();
   configureMiddleware(app, store, {
     nodeEnv: "production", dynamicServiceRegistrationEnabled: true,
-    stateChangeGlobalMaxPerMinute: 100,
+    stateChangeGlobalMaxPerMinute: 100, paymentResourcePerClientPerMinute: 30,
     rpcReadMaxPerMinute: 300, publicReadMaxPerMinute: 100,
     publicReadGlobalMaxPerMinute: 100,
   } as Config, {

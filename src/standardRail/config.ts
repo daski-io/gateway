@@ -120,14 +120,16 @@ const DEFAULTS = {
   challengeTtlSeconds: 600,
   orderReadCapTtlSeconds: 1_800,
   reputationRetryDelaysSeconds: [5, 60, 3_000, 30_000] as const,
+  // Customer limits sized for real volume (the owner's decision of
+  // 2026-10-10); each one a customer can reach is tunable by its variable.
   abuse: {
-    walletChallengesPerClientPerMinute: 30,
-    walletChallengesGlobalPerMinute: 300,
+    walletChallengesPerClientPerMinute: 300,
+    walletChallengesGlobalPerMinute: 3_000,
     walletChallengesOutstandingGlobal: 10_000,
-    signatureVerificationsGlobalPerMinute: 300,
-    protectedReadsPerPayerPerMinute: 30,
-    assetListsPerPayerPerMinute: 6,
-    assetStateChangesPerPayerPerMinute: 10,
+    signatureVerificationsGlobalPerMinute: 1_200,
+    protectedReadsPerPayerPerMinute: 300,
+    assetListsPerPayerPerMinute: 60,
+    assetStateChangesPerPayerPerMinute: 100,
     federationGlobalConcurrency: 20,
     federationPerProviderConcurrency: 4,
     federationMaxProviders: 20,
@@ -408,10 +410,35 @@ export function loadStandardRailConfig(
     },
     abuse: {
       ...DEFAULTS.abuse,
+      walletChallengesPerClientPerMinute: integer(
+        env,
+        "WALLET_CHALLENGES_PER_CLIENT_PER_MINUTE",
+        DEFAULTS.abuse.walletChallengesPerClientPerMinute,
+      ),
+      walletChallengesGlobalPerMinute: integer(
+        env,
+        "WALLET_CHALLENGES_GLOBAL_PER_MINUTE",
+        DEFAULTS.abuse.walletChallengesGlobalPerMinute,
+      ),
       signatureVerificationsGlobalPerMinute: integer(
         env,
         "PAYER_SIGNATURE_VERIFICATIONS_GLOBAL_PER_MINUTE",
         DEFAULTS.abuse.signatureVerificationsGlobalPerMinute,
+      ),
+      protectedReadsPerPayerPerMinute: integer(
+        env,
+        "PROTECTED_READS_PER_PAYER_PER_MINUTE",
+        DEFAULTS.abuse.protectedReadsPerPayerPerMinute,
+      ),
+      assetListsPerPayerPerMinute: integer(
+        env,
+        "ASSET_LISTS_PER_PAYER_PER_MINUTE",
+        DEFAULTS.abuse.assetListsPerPayerPerMinute,
+      ),
+      assetStateChangesPerPayerPerMinute: integer(
+        env,
+        "ASSET_STATE_CHANGES_PER_PAYER_PER_MINUTE",
+        DEFAULTS.abuse.assetStateChangesPerPayerPerMinute,
       ),
     },
   };

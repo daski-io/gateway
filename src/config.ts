@@ -46,6 +46,8 @@ export interface Config {
   };
   rpcReadMaxPerMinute: number;
   stateChangeGlobalMaxPerMinute: number;
+  /** Each client network's purchases, uploads and order reads per minute. */
+  paymentResourcePerClientPerMinute: number;
   publicReadMaxPerMinute: number;
   publicReadGlobalMaxPerMinute: number;
   shutdownGraceMs: number;
@@ -241,16 +243,23 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       ),
     },
     rpcReadMaxPerMinute: integer("RPC_READ_MAX_PER_MINUTE", env.RPC_READ_MAX_PER_MINUTE, 300),
+    // Customer limits sized for real volume: an agent watching a few orders
+    // from one address, or many agents at once, stays well inside them.
     stateChangeGlobalMaxPerMinute: integer(
       "STATE_CHANGE_GLOBAL_MAX_PER_MINUTE",
       env.STATE_CHANGE_GLOBAL_MAX_PER_MINUTE,
+      3000,
+    ),
+    paymentResourcePerClientPerMinute: integer(
+      "PAYMENT_RESOURCE_PER_CLIENT_PER_MINUTE",
+      env.PAYMENT_RESOURCE_PER_CLIENT_PER_MINUTE,
       300,
     ),
-    publicReadMaxPerMinute: integer("PUBLIC_READ_MAX_PER_MINUTE", env.PUBLIC_READ_MAX_PER_MINUTE, 120),
+    publicReadMaxPerMinute: integer("PUBLIC_READ_MAX_PER_MINUTE", env.PUBLIC_READ_MAX_PER_MINUTE, 600),
     publicReadGlobalMaxPerMinute: integer(
       "PUBLIC_READ_GLOBAL_MAX_PER_MINUTE",
       env.PUBLIC_READ_GLOBAL_MAX_PER_MINUTE,
-      1200,
+      6000,
     ),
     shutdownGraceMs: integer("SHUTDOWN_GRACE_MS", env.SHUTDOWN_GRACE_MS, 25_000),
   };

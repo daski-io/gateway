@@ -211,3 +211,27 @@ it("keeps Circle execution qualification explicit and independent of wallet conf
   expect(loadStandardRailConfig({...standardEnv(),CONFIRMATION_CIRCLE_EXECUTION_QUALIFIED:"true"}).confirmationCircleExecutionQualified).toBe(true);
   expect(()=>loadStandardRailConfig({...standardEnv(),CONFIRMATION_CIRCLE_EXECUTION_QUALIFIED:"yes"})).toThrow(/CONFIRMATION_CIRCLE_EXECUTION_QUALIFIED/);
 });
+
+describe("customer rate limits", () => {
+  it("default to volume-sized limits and accept a positive override for each", () => {
+    const abuse = loadStandardRailConfig(standardEnv()).abuse;
+    expect(abuse).toMatchObject({
+      walletChallengesPerClientPerMinute: 300, walletChallengesGlobalPerMinute: 3000,
+      signatureVerificationsGlobalPerMinute: 1200, protectedReadsPerPayerPerMinute: 300,
+      assetListsPerPayerPerMinute: 60, assetStateChangesPerPayerPerMinute: 100,
+    });
+    const overridden = loadStandardRailConfig({
+      ...standardEnv(), WALLET_CHALLENGES_PER_CLIENT_PER_MINUTE: "500", WALLET_CHALLENGES_GLOBAL_PER_MINUTE: "5000",
+      PROTECTED_READS_PER_PAYER_PER_MINUTE: "600", ASSET_LISTS_PER_PAYER_PER_MINUTE: "120",
+      ASSET_STATE_CHANGES_PER_PAYER_PER_MINUTE: "200", PAYER_SIGNATURE_VERIFICATIONS_GLOBAL_PER_MINUTE: "2400",
+    }).abuse;
+    expect(overridden).toMatchObject({
+      walletChallengesPerClientPerMinute: 500, walletChallengesGlobalPerMinute: 5000,
+      protectedReadsPerPayerPerMinute: 600, assetListsPerPayerPerMinute: 120,
+      assetStateChangesPerPayerPerMinute: 200, signatureVerificationsGlobalPerMinute: 2400,
+    });
+    for (const name of ["WALLET_CHALLENGES_PER_CLIENT_PER_MINUTE", "PROTECTED_READS_PER_PAYER_PER_MINUTE"]) {
+      expect(() => loadStandardRailConfig({ ...standardEnv(), [name]: "0" })).toThrow(new RegExp(name));
+    }
+  });
+});

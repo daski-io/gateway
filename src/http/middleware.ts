@@ -138,7 +138,7 @@ function configurePreParserRateLimits(
     ["/outcomes", "/uploads", "/orders"],
     {
       namespace: "payment-resource",
-      perClient: 30,
+      perClient: config.paymentResourcePerClientPerMinute,
       global: config.stateChangeGlobalMaxPerMinute,
       store: queries,
     },
@@ -154,7 +154,7 @@ function configurePreParserRateLimits(
     forPaidPurchaseRetry(
       rateLimit({
         windowMs: 60_000,
-        max: 30,
+        max: config.paymentResourcePerClientPerMinute,
         namespace: "payment-resource-retry",
         store: queries,
       }),

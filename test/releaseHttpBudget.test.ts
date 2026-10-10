@@ -12,7 +12,7 @@ it("keeps health and authenticated fences available after anonymous fence ingres
   });
   configureMiddleware(app,{consumeRateLimitBucket},{
     nodeEnv:"production",catalogOperatorToken:"fixture-operator",publicReadMaxPerMinute:2,publicReadGlobalMaxPerMinute:10,
-    stateChangeGlobalMaxPerMinute:100,rpcReadMaxPerMinute:100,dynamicServiceRegistrationEnabled:false,
+    stateChangeGlobalMaxPerMinute:100,paymentResourcePerClientPerMinute:30,rpcReadMaxPerMinute:100,dynamicServiceRegistrationEnabled:false,
   } as never,{abuse:{walletChallengesPerClientPerMinute:30,walletChallengesGlobalPerMinute:100}} as never);
   const fence=vi.fn((_req,res)=>res.json({ok:true}));
   app.get("/health/live",(_req,res)=>res.json({ok:true}));
