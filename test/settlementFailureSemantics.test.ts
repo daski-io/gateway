@@ -20,7 +20,6 @@ function harness(fields: Record<string, unknown>): ServiceHarness {
   return service;
 }
 
-type LockOutcome = { acquired: boolean; result?: unknown };
 
 const listing = {
   registrationId: "reg-1",
@@ -53,9 +52,7 @@ function settlementHarness(overrides: Record<string, unknown>) {
       return { ...order, state: to, ...changes } as StandardOrderRecord;
     }),
     releaseCapacity: vi.fn(async () => undefined),
-    listingSettlementAvailable: vi.fn(async () => true),
-    tryWithListingSettlementLock: vi.fn(async (_hash: Hex, work: () => Promise<unknown>): Promise<LockOutcome> =>
-      ({ acquired: true, result: await work() })),
+    listingSettlementFrozen: vi.fn(async () => false),
   };
   const journal = {
     markVerifyInvoked: vi.fn(async () => undefined),
@@ -127,11 +124,18 @@ describe("settlement failure semantics after the authorization is claimed", () =
     });
   });
 
-  it("answers with the VERIFIED order at once when the listing's settlement lock is busy", async () => {
+  it("answers with the VERIFIED order and settles nothing while an unreleased legal hold freezes the listing", async () => {
     const { service, store, journal } = settlementHarness({});
-    store.tryWithListingSettlementLock.mockImplementationOnce(async () => ({ acquired: false }));
+    store.listingSettlementFrozen.mockResolvedValueOnce(true);
     await expect(service.settleClaimedOrder(settleArgs())).resolves.toMatchObject({ state: "VERIFIED" });
     expect(journal.markSettleInvoked).not.toHaveBeenCalled();
+  });
+
+  it("settles with no listing-wide lock: other orders of the listing settle side by side", async () => {
+    const { service, store, journal } = settlementHarness({});
+    await service.settleClaimedOrder(settleArgs()).catch(() => undefined);
+    expect(store.listingSettlementFrozen).toHaveBeenCalledOnce();
+    expect(journal.markSettleInvoked).toHaveBeenCalledOnce();
   });
 });
 
@@ -188,10 +192,7 @@ describe("recovery of a deposit proven on chain without a facilitator settle rec
       assertRailFence: vi.fn(async () => undefined),
       resumePreSettlement: vi.fn(async (value: StandardOrderRecord) => value),
       paymentNonce: vi.fn(() => hash("6")),
-      withRailFence: vi.fn(async () => { throw new Error("stop-before-release"); }),
       store: {
-        tryWithListingSettlementLock: async (_hash: Hex, work: () => Promise<unknown>) =>
-          ({ acquired: true, result: await work() }),
         findById: vi.fn(async () => order),
         transition: vi.fn(async (value: StandardOrderRecord, to: string, reason: string, changes = {}) => {
           transitions.push({ to, reason, changes });
@@ -206,6 +207,7 @@ describe("recovery of a deposit proven on chain without a facilitator settle rec
       evidence: {
         findSettlementTransaction: vi.fn(async () => hash("7")),
         proveDeposit: vi.fn(async () => ({ evidenceHash: hash("8") })),
+        releaseAndProve: vi.fn(async () => { throw new Error("stop-before-release"); }),
       },
     });
     await expect(service.resumePaidOrder(order)).rejects.toThrow("stop-before-release");

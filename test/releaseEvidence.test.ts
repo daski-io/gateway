@@ -120,6 +120,45 @@ describe("release evidence", () => {
       .toMatchObject({ providerNetAmount: 90n, daskiCommissionAmount: 10n });
   });
 
+  it("splits one release between two orders' deposits: each proves its own share, together exactly the release", () => {
+    const other = "0x9999999999999999999999999999999999999999" as Address;
+    const previous = release({
+      blockNumber: 101n, transactionIndex: 0, logIndex: 1,
+      transactionHash: hash("5"), sequence: 8n, gross: 50n, provider: 45n, commission: 5n,
+    });
+    // Odd amounts, so each order's commission share rounds and the shares must still add up.
+    const first = transfer({
+      blockNumber: 102n, transactionIndex: 0, logIndex: 2,
+      transactionHash: hash("1"), from: payer, to: splitter, value: 17_990_005n,
+    });
+    const second = transfer({
+      blockNumber: 102n, transactionIndex: 3, logIndex: 9,
+      transactionHash: hash("4"), from: other, to: splitter, value: 27_100_007n,
+    });
+    const gross = first.value + second.value;
+    const commission = gross * 1_000n / 10_000n;
+    const current = release({
+      blockNumber: 103n, transactionIndex: 1, logIndex: 7,
+      transactionHash: hash("2"), sequence: 9n, gross, provider: gross - commission, commission,
+    });
+    const payouts = [
+      transfer({ blockNumber: 103n, transactionIndex: 1, logIndex: 5,
+        transactionHash: hash("2"), from: splitter, to: payee, value: gross - commission }),
+      transfer({ blockNumber: 103n, transactionIndex: 1, logIndex: 6,
+        transactionHash: hash("2"), from: splitter, to: receiver, value: commission }),
+    ];
+    const credits = [first, second];
+    const a = verify({ deposit: first, current, previous, credits, payouts });
+    const b = verify({ deposit: second, current, previous, credits, payouts });
+    expect(a.providerNetAmount + a.daskiCommissionAmount).toBe(first.value);
+    expect(b.providerNetAmount + b.daskiCommissionAmount).toBe(second.value);
+    expect(a.providerNetAmount + b.providerNetAmount).toBe(gross - commission);
+    expect(a.daskiCommissionAmount + b.daskiCommissionAmount).toBe(commission);
+    expect(a.interval).toHaveLength(2);
+    // A release that missed one of them proves neither.
+    expect(() => verify({ deposit: first, current, previous, credits: [first], payouts })).toThrow();
+  });
+
   it("binds a later release among multiple releases in one wrapper transaction", () => {
     const wrapperTx = hash("3");
     const previous = release({

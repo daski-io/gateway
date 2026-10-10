@@ -69,6 +69,12 @@ const tokenPolicyAbi = parseAbi(["function DOMAIN_SEPARATOR() view returns (byte
  * read at a time anyway, and a deeper queue would only add waiting.
  */
 export const SCREENING_MAX_QUEUED_READS = 4;
+// A release this gateway submits is awaited only until it is included while
+// the release wallet's nonce lock is held; its finality is awaited after
+// the lock is released, against this overall deadline.
+const RELEASE_INCLUSION_DEADLINE_MS = 60_000;
+const RELEASE_FINALITY_DEADLINE_MS = 180_000;
+const RELEASE_POLL_MS = 2_000;
 interface SourceObservation {
   source: string;
   blockNumber: string;
@@ -256,15 +262,40 @@ export class StandardChainEvidence {
     }
   }
 
-  private async submitRelease(splitter: Address): Promise<Hex> {
+  private async includedReceipt(
+    client: (typeof this.clients)[number]["client"], hash: Hex, deadline: number,
+  ) {
+    for (;;) {
+      const receipt = await client.getTransactionReceipt({ hash }).catch(error => {
+        if ((error as { name?: string }).name === "TransactionReceiptNotFoundError") return null;
+        throw error;
+      });
+      if (receipt) {
+        if (receipt.status !== "success") throw new Error("Release transaction reverted");
+        return receipt;
+      }
+      if (Date.now() >= deadline) throw new Error("Release transaction inclusion deadline expired");
+      await new Promise(resolve => setTimeout(resolve, Math.min(1_000, deadline - Date.now())));
+    }
+  }
+
+  /**
+   * Submits `releaseAll()` under the release wallet's nonce lock, which it
+   * holds only until the transaction is included: orders of every listing
+   * share this wallet, and none waits for another release's finality. A
+   * release that already covers the deposit, even one not yet final, is
+   * never duplicated (`covered`, asked again under the lock).
+   */
+  private async submitRelease(splitter: Address, covered: () => Promise<boolean> = async () => false): Promise<Hex | null> {
     return this.nonceLock.run(async () => {
+      if (await covered()) return null;
       const submitted = await this.wallet.writeContract({
         address: splitter,
         abi: splitterAbi,
         functionName: "releaseAll",
       });
-      const deadline = Date.now() + 180_000;
-      await this.observe(({ client }) => this.finalizedReceipt(client, submitted, deadline));
+      const deadline = Date.now() + RELEASE_INCLUSION_DEADLINE_MS;
+      await this.observe(({ client }) => this.includedReceipt(client, submitted, deadline));
       return submitted;
     });
   }
@@ -503,25 +534,23 @@ export class StandardChainEvidence {
     });
   }
 
+  /**
+   * Releases this order's deposit from its splitter and proves the payout.
+   * Several orders of one listing may settle at once: `releaseAll()` pays out
+   * every deposit in the splitter, so the first release after this deposit
+   * covers it, whoever submitted it, and the proof attributes this order's
+   * share of that release (`verifyReleaseInterval`). Only a submission runs
+   * inside `fence` (the rail fence, for money movement); waiting for
+   * finality and proving hold no lock.
+   */
   async releaseAndProve(args: {
     order: StandardOrderRecord;
     listing: StandardListing;
     deposit: EvidenceResult;
+    fence?: <T>(work: () => Promise<T>) => Promise<T>;
   }): Promise<ReleaseEvidenceResult> {
     const splitter = getAddress(args.listing.manifest.payload.splitterAddress);
-    const findRelease = () =>
-      this.observe(({ client }) => this.findCoveringRelease(client, args));
-    let releaseReference = await findRelease();
-    if (!releaseReference) {
-      try {
-        await this.submitRelease(splitter);
-      } catch (error) {
-        releaseReference = await findRelease();
-        if (!releaseReference) throw error;
-      }
-      releaseReference ??= await findRelease();
-      if (!releaseReference) throw new Error("Finalized release event was not found after release submission");
-    }
+    const releaseReference = await this.coveringRelease(args, splitter, args.fence ?? (<T>(work: () => Promise<T>) => work()));
     const hash = releaseReference.transactionHash;
     const selected = await this.observe(async ({ client, host }) => {
       // findCoveringRelease already selected a finalized log. Read the receipt
@@ -705,12 +734,53 @@ export class StandardChainEvidence {
     };
   }
 
+  /**
+   * The finalized release covering this order's deposit. A covering release
+   * that is mined but not yet final is waited for; without one (none yet, or
+   * one a reorg removed) this order submits one, inside `fence`.
+   */
+  private async coveringRelease(
+    args: { order: StandardOrderRecord; listing: StandardListing; deposit: EvidenceResult },
+    splitter: Address,
+    fence: <T>(work: () => Promise<T>) => Promise<T>,
+  ): Promise<ReleaseReference> {
+    const findRelease = (finalOnly = true) =>
+      this.observe(({ client }) => this.findCoveringRelease(client, args, finalOnly));
+    const deadline = Date.now() + RELEASE_FINALITY_DEADLINE_MS;
+    for (;;) {
+      const final = await findRelease();
+      if (final) return final;
+      if (Date.now() >= deadline) throw new Error("Finalized release event was not found after release submission");
+      let mined = await findRelease(false);
+      if (!mined) {
+        try {
+          await fence(() => this.submitRelease(splitter, async () => Boolean(await findRelease(false))));
+        } catch (error) {
+          // A release another order submitted may have emptied the splitter
+          // first, so this one reverts: that release covers this deposit.
+          if (!await findRelease(false)) throw error;
+        }
+        mined = await findRelease(false);
+      }
+      // Until the mined release can be final, only the head is read; the
+      // covering release is looked up again once it has its confirmations.
+      for (;;) {
+        await new Promise(resolve => setTimeout(resolve, RELEASE_POLL_MS));
+        if (!mined || Date.now() >= deadline) break;
+        const head = await this.observe(({ client }) => client.getBlockNumber());
+        if (hasRequiredConfirmations(head, mined.blockNumber, this.config.finalityConfirmations)) break;
+      }
+    }
+  }
+
+  /** The first release after the deposit: finalized, or with `finalOnly` false, the first mined one. */
   private async findCoveringRelease(
     client: (typeof this.clients)[number]["client"],
     args: { order: StandardOrderRecord; listing: StandardListing; deposit: EvidenceResult },
+    finalOnly = true,
   ): Promise<ReleaseReference | null> {
     const head = await client.getBlockNumber();
-    const confirmationDepth = BigInt(this.config.finalityConfirmations - 1);
+    const confirmationDepth = finalOnly ? BigInt(this.config.finalityConfirmations - 1) : 0n;
     if (head < confirmationDepth) return null;
     const finalizedBlock = head - confirmationDepth;
     const activationBlock = BigInt(args.listing.manifest.payload.splitterActivationBlockNumber);

@@ -63,9 +63,7 @@ export function purchaseHarness(stage: Stage = "settlement") {
       current = { ...current, ...patch, state, version: current.version + 1 };
       return current;
     }),
-    tryWithListingSettlementLock: vi.fn(async (_hash: string, work: () => Promise<unknown>) =>
-      ({ acquired: true, result: await work() })),
-    listingSettlementAvailable: vi.fn(async () => true),
+    listingSettlementFrozen: vi.fn(async () => false),
     releaseCapacity: vi.fn(async () => undefined),
   };
   const journal = {

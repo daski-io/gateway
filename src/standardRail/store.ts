@@ -1,10 +1,6 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { keccak256, toBytes } from "viem";
-import {
-  tryWithAdvisoryLock,
-  withAdvisoryLock,
-  type AdvisoryLockOutcome,
-} from "../db/advisoryLock.js";
+import { withAdvisoryLock } from "../db/advisoryLock.js";
 import type { Pool } from "../db/pool.js";
 import type { Hex } from "../types.js";
 import { assertTransition, isTerminalState } from "./stateMachine.js";
@@ -33,6 +29,9 @@ export const RECOVERABLE_ORDER_STATES = [
   "RELEASE_FINAL", "DISPATCH_STARTED", "DISPATCHED", "DISPATCH_AMBIGUOUS",
   "INPUT_REQUIRED",
 ] as const satisfies readonly StandardOrderState[];
+// Orders holding a claimed or verified authorization, which expires unless
+// it settles: recovery drives them first and on its own lane.
+export const PRE_SETTLEMENT_ORDER_STATES = ["ATTEMPT_OPENED", "VERIFIED"] as const satisfies readonly StandardOrderState[];
 
 interface OrderRow {
   order_id: string;
@@ -181,26 +180,6 @@ export class StandardRailStore {
     return stored;
   }
 
-  /**
-   * Per-listing settlement serialization. The holder runs the whole
-   * settlement pipeline (facilitator settle, deposit and release finality,
-   * dispatch) under the lock, so a busy lock is answered immediately: the
-   * caller leaves the order in its current durable state and the recovery
-   * worker drives it once the listing is free. Waiting here would pin a
-   * pooled connection for minutes per caller.
-   */
-  async tryWithListingSettlementLock<T>(
-    listingManifestHash: Hex,
-    work: () => Promise<T>,
-  ): Promise<AdvisoryLockOutcome<T>> {
-    return tryWithAdvisoryLock(
-      this.lockPool,
-      `standard:settlement:${listingManifestHash.toLowerCase()}`,
-      work,
-      { waitMs: 0 },
-    );
-  }
-
   async assertActiveRail(railProfileHash: Hex): Promise<void> {
     await this.assertActiveRailWithQuery(this.pool, railProfileHash);
   }
@@ -240,19 +219,23 @@ export class StandardRailStore {
     }
   }
 
-  async listingSettlementAvailable(listingManifestHash: Hex, orderId: string): Promise<boolean> {
-    const result = await this.pool.query<{ blocked: boolean }>(
+  /**
+   * Whether this listing's settlements wait for an operator. Orders of one
+   * listing otherwise settle side by side, each proving its share of the
+   * release that covered its deposit. An order on legal hold that claimed an
+   * authorization but never proved a release may still have money in the
+   * splitter, which any release would pay out with the next order's.
+   */
+  async listingSettlementFrozen(listingManifestHash: Hex, orderId: string): Promise<boolean> {
+    const result = await this.pool.query<{ frozen: boolean }>(
       `SELECT EXISTS (
          SELECT 1 FROM standard_orders
-          WHERE listing_manifest_hash=$1 AND order_id<>$2
-            AND state IN ('SETTLE_INVOKED','FACILITATOR_CONFIRMED','SETTLEMENT_AMBIGUOUS',
-                          'SETTLEMENT_FAILED','EXTERNAL_OR_UNPROVEN_DEPOSIT','DEPOSIT_FINAL')
-            OR (listing_manifest_hash=$1 AND order_id<>$2 AND state='LEGAL_HOLD'
-                AND authorization_key IS NOT NULL AND release_evidence_hash IS NULL)
-       ) AS blocked`,
+          WHERE listing_manifest_hash=$1 AND order_id<>$2 AND state='LEGAL_HOLD'
+            AND authorization_key IS NOT NULL AND release_evidence_hash IS NULL
+       ) AS frozen`,
       [bytes(listingManifestHash), orderId],
     );
-    return result.rows[0]?.blocked !== true;
+    return result.rows[0]?.frozen === true;
   }
 
   async findByAuthorizationKey(authorizationKey: Hex): Promise<{
@@ -472,28 +455,37 @@ export class StandardRailStore {
     return record(result.rows[0]);
   }
 
+  /**
+   * The next order due for recovery, leased to `workerId`. A claimed or
+   * verified authorization expires, so those orders are due after five
+   * seconds and come first; `lane: "settlement"` leases only them, for a
+   * worker that never waits behind slower recovery such as dispatch polling.
+   */
   async leaseRecoverable(
     workerId: string,
     leaseSeconds: number,
     excludedOrderIds: readonly string[] = [],
+    lane: "all" | "settlement" = "all",
   ): Promise<StandardOrderRecord | null> {
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
       const candidate = await client.query<OrderRow>(
         `SELECT * FROM standard_orders
-         WHERE (state = ANY($1::text[]) OR (state='PROVIDER_FAILED' AND EXISTS (
+         WHERE (state = ANY($1::text[]) OR ($3::boolean AND state='PROVIDER_FAILED' AND EXISTS (
            SELECT 1 FROM standard_order_operations op WHERE op.order_id=standard_orders.order_id
            AND greatest(op.refreshed_at,op.last_poll_at) < now() - interval '5 minutes'
            AND (op.safe_projection->'support'->>'status'='open' OR
              op.safe_projection->'recovery'->>'state' IN ('queued','pending','running','attention')))))
            AND (lease_until IS NULL OR lease_until < now())
-           AND updated_at < now() - CASE WHEN state IN ('RELEASE_FINAL','DISPATCH_STARTED','DISPATCH_AMBIGUOUS')
-             THEN interval '10 seconds' ELSE interval '30 seconds' END
+           AND updated_at < now() - CASE
+             WHEN state IN ('ATTEMPT_OPENED','VERIFIED') THEN interval '5 seconds'
+             WHEN state IN ('RELEASE_FINAL','DISPATCH_STARTED','DISPATCH_AMBIGUOUS') THEN interval '10 seconds'
+             ELSE interval '30 seconds' END
            AND NOT (order_id = ANY($2::text[]))
-         ORDER BY recovery_checked_at ASC NULLS FIRST, updated_at ASC
+         ORDER BY (state IN ('ATTEMPT_OPENED','VERIFIED')) DESC, recovery_checked_at ASC NULLS FIRST, updated_at ASC
          LIMIT 1 FOR UPDATE SKIP LOCKED`,
-        [RECOVERABLE_ORDER_STATES, excludedOrderIds],
+        [lane === "settlement" ? PRE_SETTLEMENT_ORDER_STATES : RECOVERABLE_ORDER_STATES, excludedOrderIds, lane === "all"],
       );
       if (!candidate.rows[0]) {
         await client.query("COMMIT");

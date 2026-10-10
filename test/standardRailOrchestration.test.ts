@@ -450,10 +450,6 @@ describe("standard rail orchestration", () => {
       assertRailFence: vi.fn(async () => undefined),
       resumePreSettlement: vi.fn(async () => order),
       store: { loadOperations: vi.fn(async () => null), persistOperations: vi.fn(async () => undefined),
-        tryWithListingSettlementLock: async (
-          _listingHash: Hex,
-          action: () => Promise<void>,
-        ) => ({ acquired: true, result: await action() }),
         findById: vi.fn(async () => order),
         transition: vi.fn(),
       },
@@ -482,7 +478,7 @@ describe("live fulfillment deadline", () => {
     const transition=vi.fn(); const record=vi.fn();
     const service=harness({ assertRailFence:async()=>undefined,resumePreSettlement:async()=>order,
       listing:async()=>({deadlinePolicy:{fulfillmentSeconds:30*86400}}),
-      store:{tryWithListingSettlementLock:async(_hash:Hex,work:()=>Promise<void>)=>work(),findById:async()=>order,
+      store:{findById:async()=>order,
         transition,loadOperations:async()=>({accumulatedWaitSeconds:31*86400,operations:{observedAt:now-700,
           fulfillment:{phase:"dns_pending",accumulatedWaitSeconds:31*86400,nextCheckAt:now-400}}})},
       journal:{dispatchClaim:async()=>({dispatch:{}}),dispatchResolvedAt:async()=>order.updatedAt},
@@ -506,7 +502,6 @@ describe("live fulfillment deadline", () => {
       assertRailFence: vi.fn(), resumePreSettlement: async () => order,
       listing: currentListing,
       store: { loadOperations: vi.fn(async () => null), persistOperations: vi.fn(async () => undefined),
-        tryWithListingSettlementLock: async (_hash: Hex, work: () => Promise<void>) => work(),
         findById: async () => order, transition,
       },
       journal: { dispatchClaim: async () => ({ dispatch: {} }), dispatchResolvedAt: async () => resolvedAt },

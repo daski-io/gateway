@@ -718,9 +718,7 @@ export class StandardRailService {
       order = await this.store.transition(order, "VERIFIED", "recovered_facilitator_verified");
     }
     if (order.state !== "VERIFIED") return order;
-    if (!await this.store.listingSettlementAvailable(order.listingManifestHash, order.orderId)) {
-      return order;
-    }
+    if (await this.store.listingSettlementFrozen(order.listingManifestHash, order.orderId)) return order;
     await this.screenParticipants(listing, getAddress(order.payer!));
     if (await this.evidence.authorizationUsed(
       getAddress(listing.commitment.payload.canonicalToken),
@@ -770,267 +768,265 @@ export class StandardRailService {
 
   private async resumePaidOrder(initial: StandardOrderRecord): Promise<void> {
     await this.assertRailFence();
-    // A busy listing lock means another driver is settling on this listing;
-    // the order stays leased-free in its durable state and is due again on
-    // the next recovery tick.
-    await this.store.tryWithListingSettlementLock(initial.listingManifestHash, async () => {
-      let order = await this.store.findById(initial.orderId);
-      if (!order || ![
-        "ATTEMPT_OPENED", "VERIFIED", "VERIFY_REJECTED", "SETTLE_INVOKED",
-        "FACILITATOR_CONFIRMED", "SETTLEMENT_AMBIGUOUS", "SETTLEMENT_FAILED",
-        "EXTERNAL_OR_UNPROVEN_DEPOSIT", "DEPOSIT_FINAL", "RELEASE_FINAL",
-        "DISPATCH_STARTED", "DISPATCH_AMBIGUOUS", "DISPATCHED", "INPUT_REQUIRED",
-        "PROVIDER_FAILED",
-      ].includes(order.state)) return;
-      const listing = order.listing;
-      if (order.state === "PROVIDER_FAILED") {
-        await this.store.markOperationsPoll(order.orderId);
-        const claim = await this.journal.dispatchClaim(order.orderId);
-        if (claim) await this.dispatcher.reconcile(order, listing, canonicalHash(claim.dispatch));
+    // The order's lease keeps every other driver off it; orders of one
+    // listing recover side by side.
+    let order = await this.store.findById(initial.orderId);
+    if (!order || ![
+      "ATTEMPT_OPENED", "VERIFIED", "VERIFY_REJECTED", "SETTLE_INVOKED",
+      "FACILITATOR_CONFIRMED", "SETTLEMENT_AMBIGUOUS", "SETTLEMENT_FAILED",
+      "EXTERNAL_OR_UNPROVEN_DEPOSIT", "DEPOSIT_FINAL", "RELEASE_FINAL",
+      "DISPATCH_STARTED", "DISPATCH_AMBIGUOUS", "DISPATCHED", "INPUT_REQUIRED",
+      "PROVIDER_FAILED",
+    ].includes(order.state)) return;
+    const listing = order.listing;
+    if (order.state === "PROVIDER_FAILED") {
+      await this.store.markOperationsPoll(order.orderId);
+      const claim = await this.journal.dispatchClaim(order.orderId);
+      if (claim) await this.dispatcher.reconcile(order, listing, canonicalHash(claim.dispatch));
+      return;
+    }
+    order = await this.resumePreSettlement(order, listing);
+    if (["NOT_SETTLED", "LEGAL_HOLD"].includes(order.state)) return;
+    if (["DISPATCHED", "INPUT_REQUIRED"].includes(order.state)) {
+      const claim = await this.journal.dispatchClaim(order.orderId);
+      if (!claim) throw new Error("Dispatch recovery is missing its persisted claim");
+      const resolvedAt = await this.journal.dispatchResolvedAt(order.orderId) ?? order.updatedAt;
+      let reconciliationError: unknown;
+      let reconciliationFailed = false;
+      try {
+        order = await this.dispatcher.reconcile(
+          order,
+          listing,
+          canonicalHash(claim.dispatch),
+        );
+        if (["FULFILLED", "PROVIDER_FAILED"].includes(order.state)) return;
+      } catch (error) {
+        reconciliationFailed = true;
+        reconciliationError = error;
+      }
+      // Only this operational deadline is live; provider identity and all
+      // other order terms continue to come from the checkout snapshot.
+      const currentListing = await this.listing(order.providerAgentId, order.outcomeId);
+      const cached = await this.store.loadOperations(order.orderId);
+      const clock = fulfillmentClock(cached?.operations ?? null, listing.purchaseReadiness === "payer_dns",
+        Math.floor(Date.now()/1000), cached?.accumulatedWaitSeconds ?? 0);
+      if (clock.waiting) {
+        if (clock.stale) await this.incidents.record({
+          kind: "provider_wait_progress_stale", orderId: order.orderId, state: order.state,
+        });
         return;
       }
-      order = await this.resumePreSettlement(order, listing);
-      if (["NOT_SETTLED", "LEGAL_HOLD"].includes(order.state)) return;
-      if (["DISPATCHED", "INPUT_REQUIRED"].includes(order.state)) {
-        const claim = await this.journal.dispatchClaim(order.orderId);
-        if (!claim) throw new Error("Dispatch recovery is missing its persisted claim");
-        const resolvedAt = await this.journal.dispatchResolvedAt(order.orderId) ?? order.updatedAt;
-        let reconciliationError: unknown;
-        let reconciliationFailed = false;
-        try {
-          order = await this.dispatcher.reconcile(
-            order,
-            listing,
-            canonicalHash(claim.dispatch),
-          );
-          if (["FULFILLED", "PROVIDER_FAILED"].includes(order.state)) return;
-        } catch (error) {
-          reconciliationFailed = true;
-          reconciliationError = error;
-        }
-        // Only this operational deadline is live; provider identity and all
-        // other order terms continue to come from the checkout snapshot.
-        const currentListing = await this.listing(order.providerAgentId, order.outcomeId);
-        const cached = await this.store.loadOperations(order.orderId);
-        const clock = fulfillmentClock(cached?.operations ?? null, listing.purchaseReadiness === "payer_dns",
-          Math.floor(Date.now()/1000), cached?.accumulatedWaitSeconds ?? 0);
-        if (clock.waiting) {
-          if (clock.stale) await this.incidents.record({
-            kind: "provider_wait_progress_stale", orderId: order.orderId, state: order.state,
+      const deadline = resolvedAt.getTime() +
+        (currentListing.deadlinePolicy.fulfillmentSeconds + clock.excludedSeconds) * 1_000;
+      if (Date.now() >= deadline) {
+        await this.store.transition(order, "PROVIDER_FAILED", "signed_provider_deadline_elapsed");
+      } else if (reconciliationFailed) {
+        throw reconciliationError;
+      }
+      return;
+    }
+    const authenticatedSettlement = await this.journal.settlementRecord(order.orderId);
+    if (
+      authenticatedSettlement &&
+      (["SETTLE_INVOKED", "SETTLEMENT_AMBIGUOUS"].includes(order.state) ||
+        (order.state === "EXTERNAL_OR_UNPROVEN_DEPOSIT" &&
+          order.settlementTxHash === authenticatedSettlement.transactionHash))
+    ) {
+      order = await this.store.transition(
+        order,
+        "FACILITATOR_CONFIRMED",
+        "persisted_authenticated_settlement_response_recovered",
+        { settlementTxHash: authenticatedSettlement.transactionHash },
+      );
+    }
+    const unconfirmedStates = [
+      "ATTEMPT_OPENED", "VERIFIED", "VERIFY_REJECTED", "SETTLE_INVOKED",
+      "SETTLEMENT_AMBIGUOUS", "SETTLEMENT_FAILED", "EXTERNAL_OR_UNPROVEN_DEPOSIT",
+    ];
+    if (unconfirmedStates.includes(order.state)) {
+      const nonce = this.paymentNonce(order);
+      if (!order.depositEvidenceHash) {
+        const transactionHash = await this.evidence.findSettlementTransaction({
+          listing,
+          payer: getAddress(order.payer!),
+          nonce,
+        });
+        if (transactionHash) {
+          try {
+            const externalDeposit = await this.evidence.proveDeposit({
+              order,
+              listing,
+              transactionHash,
+              paymentNonce: nonce,
+            });
+            await this.journal.recordEvidence(
+              order.orderId,
+              "deposit",
+              externalDeposit,
+              this.appConfig.chainId,
+            );
+            const proven = {
+              settlementTxHash: transactionHash,
+              depositEvidenceHash: externalDeposit.evidenceHash,
+            };
+            order = order.state === "EXTERNAL_OR_UNPROVEN_DEPOSIT"
+              ? await this.store.transition(
+                order,
+                "DEPOSIT_FINAL",
+                "proven_deposit_accepted_as_settlement",
+                proven,
+              )
+              : await this.store.transition(
+                order,
+                "EXTERNAL_OR_UNPROVEN_DEPOSIT",
+                "exact_deposit_without_authenticated_facilitator_success",
+                proven,
+              );
+          } catch (error) {
+            if (Date.now() < order.updatedAt.getTime() +
+              listing.deadlinePolicy.settlementEvidenceSeconds * 1_000) throw error;
+            await this.store.transition(order, "LEGAL_HOLD", "unproven_external_deposit_evidence_deadline", {
+              encryptedPaymentPayload: null,
+            });
+            return;
+          }
+        } else if (order.state === "EXTERNAL_OR_UNPROVEN_DEPOSIT") {
+          // The authorization was seen consumed before facilitator egress
+          // but its transfer is not discoverable yet; hold the evidence
+          // window before parking the order.
+          if (Date.now() < order.updatedAt.getTime() +
+            listing.deadlinePolicy.settlementEvidenceSeconds * 1_000) {
+            throw new Error("External deposit transaction is not yet discoverable");
+          }
+          await this.store.transition(order, "LEGAL_HOLD", "captured_settlement_evidence_unavailable", {
+            encryptedPaymentPayload: null,
           });
           return;
-        }
-        const deadline = resolvedAt.getTime() +
-          (currentListing.deadlinePolicy.fulfillmentSeconds + clock.excludedSeconds) * 1_000;
-        if (Date.now() >= deadline) {
-          await this.store.transition(order, "PROVIDER_FAILED", "signed_provider_deadline_elapsed");
-        } else if (reconciliationFailed) {
-          throw reconciliationError;
-        }
-        return;
-      }
-      const authenticatedSettlement = await this.journal.settlementRecord(order.orderId);
-      if (
-        authenticatedSettlement &&
-        (["SETTLE_INVOKED", "SETTLEMENT_AMBIGUOUS"].includes(order.state) ||
-          (order.state === "EXTERNAL_OR_UNPROVEN_DEPOSIT" &&
-            order.settlementTxHash === authenticatedSettlement.transactionHash))
-      ) {
-        order = await this.store.transition(
-          order,
-          "FACILITATOR_CONFIRMED",
-          "persisted_authenticated_settlement_response_recovered",
-          { settlementTxHash: authenticatedSettlement.transactionHash },
-        );
-      }
-      const unconfirmedStates = [
-        "ATTEMPT_OPENED", "VERIFIED", "VERIFY_REJECTED", "SETTLE_INVOKED",
-        "SETTLEMENT_AMBIGUOUS", "SETTLEMENT_FAILED", "EXTERNAL_OR_UNPROVEN_DEPOSIT",
-      ];
-      if (unconfirmedStates.includes(order.state)) {
-        const nonce = this.paymentNonce(order);
-        if (!order.depositEvidenceHash) {
-          const transactionHash = await this.evidence.findSettlementTransaction({
-            listing,
-            payer: getAddress(order.payer!),
-            nonce,
-          });
-          if (transactionHash) {
-            try {
-              const externalDeposit = await this.evidence.proveDeposit({
-                order,
-                listing,
-                transactionHash,
-                paymentNonce: nonce,
-              });
-              await this.journal.recordEvidence(
-                order.orderId,
-                "deposit",
-                externalDeposit,
-                this.appConfig.chainId,
-              );
-              const proven = {
-                settlementTxHash: transactionHash,
-                depositEvidenceHash: externalDeposit.evidenceHash,
-              };
-              order = order.state === "EXTERNAL_OR_UNPROVEN_DEPOSIT"
-                ? await this.store.transition(
-                  order,
-                  "DEPOSIT_FINAL",
-                  "proven_deposit_accepted_as_settlement",
-                  proven,
-                )
-                : await this.store.transition(
-                  order,
-                  "EXTERNAL_OR_UNPROVEN_DEPOSIT",
-                  "exact_deposit_without_authenticated_facilitator_success",
-                  proven,
-                );
-            } catch (error) {
-              if (Date.now() < order.updatedAt.getTime() +
-                listing.deadlinePolicy.settlementEvidenceSeconds * 1_000) throw error;
-              await this.store.transition(order, "LEGAL_HOLD", "unproven_external_deposit_evidence_deadline", {
-                encryptedPaymentPayload: null,
-              });
-              return;
-            }
-          } else if (order.state === "EXTERNAL_OR_UNPROVEN_DEPOSIT") {
-            // The authorization was seen consumed before facilitator egress
-            // but its transfer is not discoverable yet; hold the evidence
-            // window before parking the order.
+        } else {
+          if (await this.releaseSales.isParked(order.orderId)) {
+            const terminal = await this.evidence.proveAuthorizationUnpaid({
+              token: getAddress(listing.commitment.payload.canonicalToken), payer: getAddress(order.payer!),
+              nonce, validBefore: this.paymentAuthorizationValidBefore(order),
+              fromBlock: BigInt(listing.manifest.payload.splitterActivationBlockNumber) + 1n,
+              onObserved: observation => this.releaseSales.recordObservation(order!.orderId, observation),
+            });
+            if (!terminal) return;
+            await this.releaseSales.recordFinality(order.orderId, terminal);
+            await this.store.transition(order, "NOT_SETTLED", "parked_authorization_finalized_unpaid", { encryptedPaymentPayload: null });
+            return;
+          }
+          const policy = this.railConfig.manifest.chainEvidencePolicy.payload;
+          const finalNoCaptureAt = (
+            this.paymentAuthorizationValidBefore(order) +
+            (this.railConfig.finalityConfirmations + policy.maximumSourceLagBlocks) *
+              policy.finalityBlockTimeSeconds
+          ) * 1_000;
+          if (Date.now() < finalNoCaptureAt) throw new Error("Settlement authorization is not final");
+          if (await this.settlementCaptured(order)) {
             if (Date.now() < order.updatedAt.getTime() +
               listing.deadlinePolicy.settlementEvidenceSeconds * 1_000) {
-              throw new Error("External deposit transaction is not yet discoverable");
+              throw new Error("Captured settlement transaction is not yet discoverable");
             }
             await this.store.transition(order, "LEGAL_HOLD", "captured_settlement_evidence_unavailable", {
               encryptedPaymentPayload: null,
             });
             return;
-          } else {
-            if (await this.releaseSales.isParked(order.orderId)) {
-              const terminal = await this.evidence.proveAuthorizationUnpaid({
-                token: getAddress(listing.commitment.payload.canonicalToken), payer: getAddress(order.payer!),
-                nonce, validBefore: this.paymentAuthorizationValidBefore(order),
-                fromBlock: BigInt(listing.manifest.payload.splitterActivationBlockNumber) + 1n,
-                onObserved: observation => this.releaseSales.recordObservation(order!.orderId, observation),
-              });
-              if (!terminal) return;
-              await this.releaseSales.recordFinality(order.orderId, terminal);
-              await this.store.transition(order, "NOT_SETTLED", "parked_authorization_finalized_unpaid", { encryptedPaymentPayload: null });
-              return;
-            }
-            const policy = this.railConfig.manifest.chainEvidencePolicy.payload;
-            const finalNoCaptureAt = (
-              this.paymentAuthorizationValidBefore(order) +
-              (this.railConfig.finalityConfirmations + policy.maximumSourceLagBlocks) *
-                policy.finalityBlockTimeSeconds
-            ) * 1_000;
-            if (Date.now() < finalNoCaptureAt) throw new Error("Settlement authorization is not final");
-            if (await this.settlementCaptured(order)) {
-              if (Date.now() < order.updatedAt.getTime() +
-                listing.deadlinePolicy.settlementEvidenceSeconds * 1_000) {
-                throw new Error("Captured settlement transaction is not yet discoverable");
-              }
-              await this.store.transition(order, "LEGAL_HOLD", "captured_settlement_evidence_unavailable", {
-                encryptedPaymentPayload: null,
-              });
-              return;
-            }
-            await this.store.transition(order, "NOT_SETTLED", "independent_chain_observation_no_capture", {
-              encryptedPaymentPayload: null,
-            });
-            return;
           }
-        }
-        if (order.state === "EXTERNAL_OR_UNPROVEN_DEPOSIT") {
-          // The deposit is proven on chain and bound to this order's payer,
-          // nonce, splitter and amount: the same evidence the facilitator
-          // path relies on. Whether the facilitator's settle response was
-          // lost or the payer relayed the authorization themselves, the funds
-          // are in the splitter for this order, so it proceeds to release and
-          // dispatch instead of parking in LEGAL_HOLD, where it blocked every
-          // later purchase of the listing (audit M1, 2026-09-01).
-          order = await this.store.transition(
-            order,
-            "DEPOSIT_FINAL",
-            "proven_deposit_accepted_as_settlement",
-          );
-        }
-      }
-      let deposit: import("./evidence.js").EvidenceResult;
-      if (order.state === "FACILITATOR_CONFIRMED") {
-        const nonce = this.paymentNonce(order);
-        const transactionHash = order.settlementTxHash ?? authenticatedSettlement?.transactionHash;
-        if (!transactionHash) throw new Error("Authenticated settlement transaction is unavailable");
-        try {
-          deposit = await this.evidence.proveDeposit({
-            order,
-            listing,
-            transactionHash,
-            paymentNonce: nonce,
-          });
-        } catch (error) {
-          if (Date.now() < order.updatedAt.getTime() + listing.deadlinePolicy.settlementEvidenceSeconds * 1_000) throw error;
-          await this.store.transition(order, "LEGAL_HOLD", "signed_deposit_evidence_deadline_elapsed", {
-            encryptedPaymentPayload: null,
-          });
-          return;
-        }
-        await this.journal.recordEvidence(order.orderId, "deposit", deposit, this.appConfig.chainId);
-        order = await this.store.transition(order, "DEPOSIT_FINAL", "deposit_evidence_recovered", {
-          settlementTxHash: transactionHash,
-          depositEvidenceHash: deposit.evidenceHash,
-        });
-      } else {
-        deposit = await this.journal.loadEvidence(order.orderId, "deposit");
-      }
-      if (order.state === "DEPOSIT_FINAL") {
-        try {
-          const depositOrder = order;
-          const release = await this.withRailFence(() =>
-            this.evidence.releaseAndProve({ order: depositOrder, listing, deposit }));
-          await this.journal.recordEvidence(order.orderId, "release", release, this.appConfig.chainId);
-          const reputation = await buildReputationRegistration({
-            order,
-            listing,
-            deposit,
-            releaseEvidenceHash: release.evidenceHash,
-            config: this.railConfig,
-            chainId: this.appConfig.chainId,
-            marketplaceContracts: this.appConfig.marketplaceContracts,
-            evidence: this.evidence,
-          });
-          order = await this.store.transition(order, "RELEASE_FINAL", "release_evidence_recovered", {
-            releaseTxHash: release.transactionHash,
-            releaseEvidenceHash: release.evidenceHash,
-            providerNetAmount: release.providerNetAmount.toString(),
-            daskiCommissionAmount: release.daskiCommissionAmount.toString(),
-            encryptedPaymentPayload: null,
-          }, {
-            kind: "register",
-            logicalKey: order.orderKey,
-            ...reputation,
-          });
-        } catch (error) {
-          if (Date.now() < order.updatedAt.getTime() + listing.deadlinePolicy.releaseEvidenceSeconds * 1_000) throw error;
-          await this.store.transition(order, "LEGAL_HOLD", "signed_release_evidence_deadline_elapsed", {
+          await this.store.transition(order, "NOT_SETTLED", "independent_chain_observation_no_capture", {
             encryptedPaymentPayload: null,
           });
           return;
         }
       }
-      if (["RELEASE_FINAL", "DISPATCH_STARTED", "DISPATCH_AMBIGUOUS"].includes(order.state)) {
-        const release = await this.journal.loadEvidence(order.orderId, "release");
-        const confirmationHash = await this.journal.settlementResponseHash(order.orderId);
-        await this.dispatch(
+      if (order.state === "EXTERNAL_OR_UNPROVEN_DEPOSIT") {
+        // The deposit is proven on chain and bound to this order's payer,
+        // nonce, splitter and amount: the same evidence the facilitator
+        // path relies on. Whether the facilitator's settle response was
+        // lost or the payer relayed the authorization themselves, the funds
+        // are in the splitter for this order, so it proceeds to release and
+        // dispatch instead of parking in LEGAL_HOLD, where it blocked every
+        // later purchase of the listing (audit M1, 2026-09-01).
+        order = await this.store.transition(
           order,
-          listing,
-          order.canonicalRequest,
-          confirmationHash,
-          { deposit, release },
+          "DEPOSIT_FINAL",
+          "proven_deposit_accepted_as_settlement",
         );
       }
-    });
+    }
+    let deposit: import("./evidence.js").EvidenceResult;
+    if (order.state === "FACILITATOR_CONFIRMED") {
+      const nonce = this.paymentNonce(order);
+      const transactionHash = order.settlementTxHash ?? authenticatedSettlement?.transactionHash;
+      if (!transactionHash) throw new Error("Authenticated settlement transaction is unavailable");
+      try {
+        deposit = await this.evidence.proveDeposit({
+          order,
+          listing,
+          transactionHash,
+          paymentNonce: nonce,
+        });
+      } catch (error) {
+        if (Date.now() < order.updatedAt.getTime() + listing.deadlinePolicy.settlementEvidenceSeconds * 1_000) throw error;
+        await this.store.transition(order, "LEGAL_HOLD", "signed_deposit_evidence_deadline_elapsed", {
+          encryptedPaymentPayload: null,
+        });
+        return;
+      }
+      await this.journal.recordEvidence(order.orderId, "deposit", deposit, this.appConfig.chainId);
+      order = await this.store.transition(order, "DEPOSIT_FINAL", "deposit_evidence_recovered", {
+        settlementTxHash: transactionHash,
+        depositEvidenceHash: deposit.evidenceHash,
+      });
+    } else {
+      deposit = await this.journal.loadEvidence(order.orderId, "deposit");
+    }
+    if (order.state === "DEPOSIT_FINAL") {
+      try {
+        const depositOrder = order;
+        const release = await this.evidence.releaseAndProve({
+          order: depositOrder, listing, deposit, fence: work => this.withRailFence(work),
+        });
+        await this.journal.recordEvidence(order.orderId, "release", release, this.appConfig.chainId);
+        const reputation = await buildReputationRegistration({
+          order,
+          listing,
+          deposit,
+          releaseEvidenceHash: release.evidenceHash,
+          config: this.railConfig,
+          chainId: this.appConfig.chainId,
+          marketplaceContracts: this.appConfig.marketplaceContracts,
+          evidence: this.evidence,
+        });
+        order = await this.store.transition(order, "RELEASE_FINAL", "release_evidence_recovered", {
+          releaseTxHash: release.transactionHash,
+          releaseEvidenceHash: release.evidenceHash,
+          providerNetAmount: release.providerNetAmount.toString(),
+          daskiCommissionAmount: release.daskiCommissionAmount.toString(),
+          encryptedPaymentPayload: null,
+        }, {
+          kind: "register",
+          logicalKey: order.orderKey,
+          ...reputation,
+        });
+      } catch (error) {
+        if (Date.now() < order.updatedAt.getTime() + listing.deadlinePolicy.releaseEvidenceSeconds * 1_000) throw error;
+        await this.store.transition(order, "LEGAL_HOLD", "signed_release_evidence_deadline_elapsed", {
+          encryptedPaymentPayload: null,
+        });
+        return;
+      }
+    }
+    if (["RELEASE_FINAL", "DISPATCH_STARTED", "DISPATCH_AMBIGUOUS"].includes(order.state)) {
+      const release = await this.journal.loadEvidence(order.orderId, "release");
+      const confirmationHash = await this.journal.settlementResponseHash(order.orderId);
+      await this.dispatch(
+        order,
+        listing,
+        order.canonicalRequest,
+        confirmationHash,
+        { deposit, release },
+      );
+    }
   }
 
   listing(providerAgentId: string, outcomeId: string): Promise<StandardListing> {
@@ -2191,146 +2187,144 @@ export class StandardRailService {
       });
     }
     order = await this.store.transition(order, "VERIFIED", "facilitator_verified");
-    // The verified order is durable. When another purchase already holds
-    // this listing's settlement lock the request answers with the VERIFIED
-    // order at once; the recovery worker settles it when the listing frees.
-    const settled = await this.store.tryWithListingSettlementLock(order.listingManifestHash, async () => {
-      if (!await this.store.listingSettlementAvailable(order.listingManifestHash, order.orderId)) {
-        return order;
-      }
-      // From here the verified authorization is recovery's to settle. A
-      // failure in these pre-settlement checks must never tell the client to
-      // sign again (a LISTING_SUPERSEDED 409 or a plain 500 did), because the
-      // fresh signature would settle beside the original one.
-      const consumedBeforeEgress = await this.reconcileInsteadOfResigning(order, authorization.payer, async () => {
-        await this.screenParticipants(listing, authorization.payer);
-        await this.verifyListingIdentity(listing);
-        return this.evidence.authorizationUsed(
-          getAddress(listing.commitment.payload.canonicalToken),
-          authorization.payer,
-          authorization.nonce,
-        );
-      });
-      if (consumedBeforeEgress) {
-        order = await this.store.transition(
-          order,
-          "EXTERNAL_OR_UNPROVEN_DEPOSIT",
-          "authorization_consumed_before_facilitator_egress",
-        );
-        return order;
-      }
-      let mayInvokeFacilitator: boolean;
-      try { mayInvokeFacilitator = await this.journal.markSettleInvoked(order.orderId); }
-      catch (error) {
-        if (error instanceof Error && ["SALE_SUSPENDED", "AUTHORIZATION_PARKED"].includes(error.message)) return order;
-        throw error;
-      }
-      order = await this.store.transition(order, "SETTLE_INVOKED", "settle_invocation_persisted");
-      if (!mayInvokeFacilitator) {
-        order = await this.store.transition(order, "SETTLEMENT_AMBIGUOUS", "settle_invocation_outcome_unknown");
-        return order;
-      }
-      let settlement;
-      try {
-        settlement = await this.withRailFence(() => this.facilitator.settle(facilitatorDiscoveryPayment(this.appConfig, order.listing, args.payment), requirements));
-      } catch (error) {
-        order = await this.store
-          .transition(order, "SETTLEMENT_AMBIGUOUS", "settle_response_unknown")
-          .catch(() => order);
-        throw standardRailError("PAYMENT_PENDING_RECONCILIATION", {
-          cause: error,
-          logContext: {
-            orderId: order.orderId,
-            intentId: order.intentId,
-            payer: authorization.payer,
-          },
-        });
-      }
-      try {
-        if (
-          !settlement.success || !/^0x[0-9a-fA-F]{64}$/.test(settlement.transaction) ||
-          !settlement.payer || getAddress(settlement.payer) !== authorization.payer ||
-          settlement.network !== this.appConfig.x402Network
-        ) {
-          order = await this.store.transition(order, "SETTLEMENT_FAILED", "facilitator_settlement_failed");
-          throw standardRailError("FACILITATOR_REJECTED", {
-            phase: "facilitator_settle",
-            paymentMayHaveSettled: true,
-            requiresNewSignature: false,
-            logContext: {
-              orderId: order.orderId,
-              intentId: order.intentId,
-              payer: authorization.payer,
-              facilitatorSummary: {
-                success: settlement.success,
-                errorReason: settlement.errorReason,
-                network: settlement.network,
-                hasTransaction: /^0x[0-9a-fA-F]{64}$/.test(settlement.transaction),
-              },
-            },
-          });
-        }
-        const transactionHash = settlement.transaction as Hex;
-        await this.journal.recordSettlement(order.orderId, canonicalHash(settlement), transactionHash);
-        order = await this.store.transition(order, "FACILITATOR_CONFIRMED", "facilitator_settlement_confirmed", { settlementTxHash: transactionHash });
-        const deposit = await this.evidence.proveDeposit({
-          order,
-          listing,
-          transactionHash,
-          paymentNonce: authorization.nonce,
-        });
-        await this.journal.recordEvidence(order.orderId, "deposit", deposit, this.appConfig.chainId);
-        order = await this.store.transition(order, "DEPOSIT_FINAL", "deposit_evidence_final", { depositEvidenceHash: deposit.evidenceHash });
-        const release = await this.withRailFence(() =>
-          this.evidence.releaseAndProve({ order, listing, deposit }));
-        await this.journal.recordEvidence(order.orderId, "release", release, this.appConfig.chainId);
-        const reputation = await buildReputationRegistration({
-          order,
-          listing,
-          deposit,
-          releaseEvidenceHash: release.evidenceHash,
-          config: this.railConfig,
-          chainId: this.appConfig.chainId,
-          marketplaceContracts: this.appConfig.marketplaceContracts,
-          evidence: this.evidence,
-        });
-        order = await this.store.transition(order, "RELEASE_FINAL", "release_evidence_final", {
-          releaseTxHash: release.transactionHash,
-          releaseEvidenceHash: release.evidenceHash,
-          providerNetAmount: release.providerNetAmount.toString(),
-          daskiCommissionAmount: release.daskiCommissionAmount.toString(),
-          encryptedPaymentPayload: null,
-        }, {
-          kind: "register",
-          logicalKey: order.orderKey,
-          ...reputation,
-        });
-        order = await this.dispatch(
-          order,
-          listing,
-          args.body,
-          canonicalHash(settlement),
-          { deposit, release },
-        );
-        return order;
-      } catch (error) {
-        const classified = asStandardRailError(error);
-        if (classified?.paymentMayHaveSettled) throw classified;
-        throw standardRailError("PAYMENT_PENDING_RECONCILIATION", {
-          internalMessage: error instanceof Error
-            ? `Post-settlement processing failed: ${error.message}`
-            : "Post-settlement processing failed",
-          cause: error,
-          logContext: {
-            orderId: order.orderId,
-            intentId: order.intentId,
-            payer: authorization.payer,
-            facilitatorSummary: { success: settlement.success },
-          },
-        });
-      }
+    // Orders of one listing settle side by side: each release pays out every
+    // deposit before it, and each order proves its own share of the release
+    // that covered it (StandardChainEvidence.releaseAndProve). Only a listing
+    // frozen by an unreleased legal hold leaves the verified order to the
+    // operator.
+    if (await this.store.listingSettlementFrozen(order.listingManifestHash, order.orderId)) return order;
+    // From here the verified authorization is recovery's to settle. A
+    // failure in these pre-settlement checks must never tell the client to
+    // sign again (a LISTING_SUPERSEDED 409 or a plain 500 did), because the
+    // fresh signature would settle beside the original one.
+    const consumedBeforeEgress = await this.reconcileInsteadOfResigning(order, authorization.payer, async () => {
+      await this.screenParticipants(listing, authorization.payer);
+      await this.verifyListingIdentity(listing);
+      return this.evidence.authorizationUsed(
+        getAddress(listing.commitment.payload.canonicalToken),
+        authorization.payer,
+        authorization.nonce,
+      );
     });
-    return settled.acquired ? settled.result : order;
+    if (consumedBeforeEgress) {
+      order = await this.store.transition(
+        order,
+        "EXTERNAL_OR_UNPROVEN_DEPOSIT",
+        "authorization_consumed_before_facilitator_egress",
+      );
+      return order;
+    }
+    let mayInvokeFacilitator: boolean;
+    try { mayInvokeFacilitator = await this.journal.markSettleInvoked(order.orderId); }
+    catch (error) {
+      if (error instanceof Error && ["SALE_SUSPENDED", "AUTHORIZATION_PARKED"].includes(error.message)) return order;
+      throw error;
+    }
+    order = await this.store.transition(order, "SETTLE_INVOKED", "settle_invocation_persisted");
+    if (!mayInvokeFacilitator) {
+      order = await this.store.transition(order, "SETTLEMENT_AMBIGUOUS", "settle_invocation_outcome_unknown");
+      return order;
+    }
+    let settlement;
+    try {
+      settlement = await this.withRailFence(() => this.facilitator.settle(facilitatorDiscoveryPayment(this.appConfig, order.listing, args.payment), requirements));
+    } catch (error) {
+      order = await this.store
+        .transition(order, "SETTLEMENT_AMBIGUOUS", "settle_response_unknown")
+        .catch(() => order);
+      throw standardRailError("PAYMENT_PENDING_RECONCILIATION", {
+        cause: error,
+        logContext: {
+          orderId: order.orderId,
+          intentId: order.intentId,
+          payer: authorization.payer,
+        },
+      });
+    }
+    try {
+      if (
+        !settlement.success || !/^0x[0-9a-fA-F]{64}$/.test(settlement.transaction) ||
+        !settlement.payer || getAddress(settlement.payer) !== authorization.payer ||
+        settlement.network !== this.appConfig.x402Network
+      ) {
+        order = await this.store.transition(order, "SETTLEMENT_FAILED", "facilitator_settlement_failed");
+        throw standardRailError("FACILITATOR_REJECTED", {
+          phase: "facilitator_settle",
+          paymentMayHaveSettled: true,
+          requiresNewSignature: false,
+          logContext: {
+            orderId: order.orderId,
+            intentId: order.intentId,
+            payer: authorization.payer,
+            facilitatorSummary: {
+              success: settlement.success,
+              errorReason: settlement.errorReason,
+              network: settlement.network,
+              hasTransaction: /^0x[0-9a-fA-F]{64}$/.test(settlement.transaction),
+            },
+          },
+        });
+      }
+      const transactionHash = settlement.transaction as Hex;
+      await this.journal.recordSettlement(order.orderId, canonicalHash(settlement), transactionHash);
+      order = await this.store.transition(order, "FACILITATOR_CONFIRMED", "facilitator_settlement_confirmed", { settlementTxHash: transactionHash });
+      const deposit = await this.evidence.proveDeposit({
+        order,
+        listing,
+        transactionHash,
+        paymentNonce: authorization.nonce,
+      });
+      await this.journal.recordEvidence(order.orderId, "deposit", deposit, this.appConfig.chainId);
+      order = await this.store.transition(order, "DEPOSIT_FINAL", "deposit_evidence_final", { depositEvidenceHash: deposit.evidenceHash });
+      const release = await this.evidence.releaseAndProve({
+        order, listing, deposit, fence: work => this.withRailFence(work),
+      });
+      await this.journal.recordEvidence(order.orderId, "release", release, this.appConfig.chainId);
+      const reputation = await buildReputationRegistration({
+        order,
+        listing,
+        deposit,
+        releaseEvidenceHash: release.evidenceHash,
+        config: this.railConfig,
+        chainId: this.appConfig.chainId,
+        marketplaceContracts: this.appConfig.marketplaceContracts,
+        evidence: this.evidence,
+      });
+      order = await this.store.transition(order, "RELEASE_FINAL", "release_evidence_final", {
+        releaseTxHash: release.transactionHash,
+        releaseEvidenceHash: release.evidenceHash,
+        providerNetAmount: release.providerNetAmount.toString(),
+        daskiCommissionAmount: release.daskiCommissionAmount.toString(),
+        encryptedPaymentPayload: null,
+      }, {
+        kind: "register",
+        logicalKey: order.orderKey,
+        ...reputation,
+      });
+      order = await this.dispatch(
+        order,
+        listing,
+        args.body,
+        canonicalHash(settlement),
+        { deposit, release },
+      );
+      return order;
+    } catch (error) {
+      const classified = asStandardRailError(error);
+      if (classified?.paymentMayHaveSettled) throw classified;
+      throw standardRailError("PAYMENT_PENDING_RECONCILIATION", {
+        internalMessage: error instanceof Error
+          ? `Post-settlement processing failed: ${error.message}`
+          : "Post-settlement processing failed",
+        cause: error,
+        logContext: {
+          orderId: order.orderId,
+          intentId: order.intentId,
+          payer: authorization.payer,
+          facilitatorSummary: { success: settlement.success },
+        },
+      });
+    }
   }
 
   // Runs a pre-settlement check for an order whose signed authorization is

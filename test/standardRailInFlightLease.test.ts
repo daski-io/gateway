@@ -166,7 +166,7 @@ describe("recovery worker lease hand-back", () => {
     await runBatch();
     expect(resumePaid).toHaveBeenCalledOnce();
     expect(store.releaseLease).toHaveBeenCalledWith("order-1", workerId, 9);
-    expect(store.leaseRecoverable).toHaveBeenLastCalledWith(expect.any(String), 45, ["order-1"]);
+    expect(store.leaseRecoverable).toHaveBeenLastCalledWith(expect.any(String), 45, ["order-1"], "all");
   });
 
   it("visits unchanged ambiguous orders only once per batch", async () => {
@@ -184,7 +184,7 @@ describe("recovery worker lease hand-back", () => {
     await runBatch();
     expect(resumePaid).not.toHaveBeenCalled();
     expect(store.releaseLease).toHaveBeenCalledWith("order-1", workerId, 9);
-    expect(store.leaseRecoverable).toHaveBeenLastCalledWith(expect.any(String), 45, ["order-1"]);
+    expect(store.leaseRecoverable).toHaveBeenLastCalledWith(expect.any(String), 45, ["order-1"], "all");
   });
 
   it("skips and releases an order whose recovery failed", async () => {
@@ -192,7 +192,7 @@ describe("recovery worker lease hand-back", () => {
     const { store, runBatch } = worker(paidOrder(new Date(Date.now() - 60_000)), resumePaid);
     await runBatch();
     expect(store.releaseLease).toHaveBeenCalledWith("order-1", workerId, 9);
-    expect(store.leaseRecoverable).toHaveBeenLastCalledWith(expect.any(String), 45, ["order-1"]);
+    expect(store.leaseRecoverable).toHaveBeenLastCalledWith(expect.any(String), 45, ["order-1"], "all");
   });
 });
 

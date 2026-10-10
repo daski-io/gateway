@@ -41,7 +41,7 @@ describe("facilitator nonce coordination", () => {
     expect(client.release).toHaveBeenCalledOnce();
   });
 
-  it("submits splitter releases while holding the shared nonce lock", async () => {
+  it("submits splitter releases while holding the shared nonce lock, until inclusion only", async () => {
     const events: string[] = [];
     const lockUsed = vi.fn();
     const nonceLock: FacilitatorNonceLock = {
@@ -71,7 +71,7 @@ describe("facilitator nonce coordination", () => {
         host: "rpc-a.example",
         client: {
           getTransactionReceipt: vi.fn(async () => {
-            events.push("finalized");
+            events.push("included");
             return {blockNumber:100n,transactionHash:hash("a"),status:"success"};
           }),
           getBlockNumber: vi.fn(async () => 111n),
@@ -82,7 +82,7 @@ describe("facilitator nonce coordination", () => {
     await expect((evidence as unknown as {
       submitRelease(splitter: typeof address): Promise<string>;
     }).submitRelease(address)).resolves.toBe(hash("a"));
-    expect(events).toEqual(["lock", "send", "finalized", "unlock"]);
+    expect(events).toEqual(["lock", "send", "included", "unlock"]);
     expect(lockUsed).toHaveBeenCalledOnce();
   });
 

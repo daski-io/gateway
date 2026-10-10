@@ -12,10 +12,15 @@ interface RecoveryOptions {
   cleanup(): Promise<void>;
 }
 
+// How often the settlement lane looks for claimed or verified authorizations.
+const SETTLEMENT_LANE_INTERVAL_MS = 2_000;
+
 export class StandardRailRecoveryWorker {
   private readonly workerId = `standard-recovery-${randomUUID()}`;
   private timer: NodeJS.Timeout | null = null;
+  private settlementTimer: NodeJS.Timeout | null = null;
   private running: Promise<void> | null = null;
+  private settling: Promise<void> | null = null;
 
   constructor(private readonly options: RecoveryOptions) {}
 
@@ -23,30 +28,51 @@ export class StandardRailRecoveryWorker {
     if (this.timer) return;
     this.timer = setInterval(() => this.schedule(), this.options.config.recoveryIntervalMs);
     this.timer.unref();
+    // A claimed or verified authorization expires unless it settles, so its
+    // recovery runs on its own lane and never waits behind a batch busy with
+    // slower work, such as polling a provider (2026-10-10: a verified order
+    // expired unsettled while its listing was free).
+    this.settlementTimer = setInterval(
+      () => this.scheduleSettlement(),
+      Math.min(SETTLEMENT_LANE_INTERVAL_MS, this.options.config.recoveryIntervalMs),
+    );
+    this.settlementTimer.unref();
     this.schedule();
+    this.scheduleSettlement();
   }
 
   async stop(): Promise<void> {
     if (this.timer) clearInterval(this.timer);
+    if (this.settlementTimer) clearInterval(this.settlementTimer);
     this.timer = null;
-    await this.running;
+    this.settlementTimer = null;
+    await Promise.all([this.running, this.settling]);
   }
 
   private schedule(): void {
     if (this.running) return;
-    this.running = this.runBatch()
+    this.running = this.runBatch("all")
       .catch((error) => logger.error("standard-rail recovery batch failed", { error }))
       .finally(() => { this.running = null; });
   }
 
-  private async runBatch(): Promise<void> {
-    await this.options.cleanup();
+  private scheduleSettlement(): void {
+    if (this.settling) return;
+    this.settling = this.runBatch("settlement")
+      .catch((error) => logger.error("standard-rail settlement recovery batch failed", { error }))
+      .finally(() => { this.settling = null; });
+  }
+
+  private async runBatch(lane: "all" | "settlement" = "all"): Promise<void> {
+    if (lane === "all") await this.options.cleanup();
+    const workerId = lane === "all" ? this.workerId : `${this.workerId}-settlement`;
     const skipped: string[] = [];
     for (let count = 0; count < 50; count += 1) {
       const order = await this.options.store.leaseRecoverable(
-        this.workerId,
+        workerId,
         this.options.config.leaseSeconds,
         skipped,
+        lane,
       );
       if (!order) return;
       skipped.push(order.orderId);
@@ -62,7 +88,7 @@ export class StandardRailRecoveryWorker {
       // Transitions keep a live lease with its driver, so the worker hands
       // the order back explicitly once it is done with it; the next due
       // check then runs on the usual cadence.
-      await this.options.store.releaseLease(order.orderId, this.workerId, order.leaseFence);
+      await this.options.store.releaseLease(order.orderId, workerId, order.leaseFence);
     }
   }
 
@@ -71,7 +97,7 @@ export class StandardRailRecoveryWorker {
       switch (order.state) {
         case "CHALLENGE_ISSUED": return Math.max(30, Math.floor((order.expiresAt.getTime() - order.updatedAt.getTime()) / 1_000));
         case "ATTEMPT_OPENED":
-        case "VERIFIED":
+        case "VERIFIED": return 5;
         case "VERIFY_REJECTED":
         case "SETTLE_INVOKED":
         case "FACILITATOR_CONFIRMED":

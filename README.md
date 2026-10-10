@@ -127,6 +127,11 @@ steady-state prompt is `Use Daski to [your task]`.
   or use authorized order status after a timeout or pending response; never
   create another payment authorization to recover the purchase. A pending
   response confirms admission, not settlement or fulfillment.
+  Purchases of the same outcome settle side by side: each payment lands in the
+  listing's splitter, the first payout after it releases every deposit before
+  it, and each order proves its own share of that payout. A listing stops
+  settling only while an order on legal hold may still have money in its
+  splitter; its verified purchases then wait for an operator.
   Outcomes declaring `purchaseReadiness: "payer_dns"` require `payerAddress`
   before quoting. A readiness rejection includes structured DNS records in
   `error.readiness`; install them and obtain a fresh quote before signing.
@@ -345,6 +350,10 @@ lives in [daski-io/deploy-mainnet](https://github.com/daski-io/deploy-mainnet).
 
 - `src/standardRail/` contains signed artifacts, standard payment handling,
   evidence verification, state transitions, dispatch, reputation, and recovery.
+  Recovery drives claimed and verified authorizations on their own lane within
+  seconds, since they expire unless settled; slower work such as provider
+  polling runs on the main lane. The release wallet's nonce lock and the rail
+  fence are held only to submit a payout, never across finality waits.
 - `src/marketplace/` contains payment-independent finalized identity and
   service-registry reads.
 - `src/serviceRegistration/` contains provider-authenticated enrollment,
