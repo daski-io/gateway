@@ -131,7 +131,11 @@ steady-state prompt is `Use Daski to [your task]`.
   listing's splitter, the first payout after it releases every deposit before
   it, and each order proves its own share of that payout. A listing stops
   settling only while an order on legal hold may still have money in its
-  splitter; its verified purchases then wait for an operator.
+  splitter; its verified purchases then wait for an operator. The proof
+  reads the chain for the payout's predecessor from the payout downward, so
+  its cost follows the time since the listing's previous payout, not the
+  listing's age, and it reads the head again about when the payout's
+  confirmations are due at the listing's signed block time.
   Outcomes declaring `purchaseReadiness: "payer_dns"` require `payerAddress`
   before quoting. A readiness rejection includes structured DNS records in
   `error.readiness`; install them and obtain a fresh quote before signing.

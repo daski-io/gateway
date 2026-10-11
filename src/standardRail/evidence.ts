@@ -23,7 +23,7 @@ import { canonicalHash } from "./canonical.js";
 import { chainLogsHash } from "./chainLogHash.js";
 import { hasRequiredConfirmations } from "./finality.js";
 import type { StandardListing, StandardOrderRecord } from "./types.js";
-import { loadLogsPaged } from "./chainLogPagination.js";
+import { loadLogsPaged, loadNewestLogs } from "./chainLogPagination.js";
 import {
   assertActivationCheckpoint,
   compareEvidencePosition,
@@ -762,13 +762,19 @@ export class StandardChainEvidence {
         }
         mined = await findRelease(false);
       }
-      // Until the mined release can be final, only the head is read; the
-      // covering release is looked up again once it has its confirmations.
+      // Until the mined release can be final, only the head is read, and
+      // only about when its missing confirmations are due at the listing's
+      // signed block time; the covering release is looked up again once it
+      // has them. Every read shares the endpoint's budget with other orders.
+      const blockMs = this.config.manifest.chainEvidencePolicy.payload.finalityBlockTimeSeconds * 1_000;
+      let wait = RELEASE_POLL_MS;
       for (;;) {
-        await new Promise(resolve => setTimeout(resolve, RELEASE_POLL_MS));
+        await new Promise(resolve => setTimeout(resolve, wait));
         if (!mined || Date.now() >= deadline) break;
         const head = await this.observe(({ client }) => client.getBlockNumber());
         if (hasRequiredConfirmations(head, mined.blockNumber, this.config.finalityConfirmations)) break;
+        const missing = Number(mined.blockNumber + BigInt(this.config.finalityConfirmations - 1) - head);
+        wait = Math.min(Math.max(RELEASE_POLL_MS, missing * blockMs), Math.max(0, deadline - Date.now()));
       }
     }
   }
@@ -835,7 +841,15 @@ export class StandardChainEvidence {
     if (release.releaseSequence <= startingReleaseSequence + 1n) {
       throw new Error("Release sequence is outside the activated history");
     }
-    const raw = await loadLogsPaged({
+    // The splitter's verified code numbers releases one by one, so the
+    // predecessor is the newest earlier release with the previous sequence.
+    // Searching down from this release costs windows back to it, not to the
+    // activation: a full scan grew with the listing's age (52 windows per
+    // order on the sandbox, 2026-10-10).
+    const isPredecessor = (event: ReleasedEvidence) =>
+      event.releaseSequence === release.releaseSequence - 1n &&
+      compareEvidencePosition(event, release) < 0;
+    const raw = await loadNewestLogs({
       fromBlock: activationBlock + 1n,
       toBlock: release.blockNumber,
       maximumPageEvents,
@@ -846,11 +860,9 @@ export class StandardChainEvidence {
         fromBlock,
         toBlock,
       }),
+      matches: log => normalizeReleases([log]).some(isPredecessor),
     });
-    const previous = normalizeReleases(raw).filter((event) =>
-      event.releaseSequence === release.releaseSequence - 1n &&
-      compareEvidencePosition(event, release) < 0
-    );
+    const previous = normalizeReleases(raw).filter(isPredecessor);
     if (previous.length !== 1) throw new Error("Previous release event is missing or ambiguous");
     return previous[0]!;
   }

@@ -31,10 +31,12 @@ function harness(world: World, whileLocking: () => void = () => undefined) {
   };
   const findCoveringRelease = vi.fn(async (_client: unknown, _args: unknown, finalOnly = true) =>
     finalOnly ? world.final : world.mined ?? world.final);
+  const getBlockNumber = vi.fn(async () => world.head ?? 200n);
   const evidence = new StandardChainEvidence({
     evidenceRpcUrls: ["https://rpc-a.example"],
     releasePrivateKey: `0x${"11".repeat(32)}`,
     finalityConfirmations: 12,
+    manifest: { chainEvidencePolicy: { payload: { finalityBlockTimeSeconds: 2 } } },
   } as unknown as StandardRailConfig, baseSepolia, nonceLock);
   const writeContract = vi.fn(async (): Promise<Hex> => {
     events.push("send");
@@ -52,7 +54,7 @@ function harness(world: World, whileLocking: () => void = () => undefined) {
           events.push("included");
           return { status: "success", blockNumber: 105n };
         }),
-        getBlockNumber: vi.fn(async () => world.head ?? 200n),
+        getBlockNumber,
       },
     }],
     findCoveringRelease,
@@ -64,7 +66,7 @@ function harness(world: World, whileLocking: () => void = () => undefined) {
   const wait = () => (evidence as unknown as {
     coveringRelease(args: unknown, splitter: string, fence: Fence): Promise<Reference>;
   }).coveringRelease({}, splitter, fence as unknown as Fence);
-  return { events, fence, writeContract, wait, findCoveringRelease };
+  return { events, fence, writeContract, wait, findCoveringRelease, getBlockNumber };
 }
 
 /** Advances the poll timer until `promise` settles; `afterFirstPoll` changes the chain once. */
@@ -107,22 +109,43 @@ describe("concurrent orders of one listing share the release that covers their d
     expect(h.events).toEqual(["fence", "lock", "send", "included", "unlock", "unfence"]);
   });
 
-  it("reads only the head until the mined release can be final, then looks it up once", async () => {
-    // Twelve confirmations: block 105 is final at head 116.
+  it("reads only the head, about when the confirmations are due, then looks the release up once", async () => {
+    // Twelve confirmations: block 105 is final at head 116, ten blocks of two
+    // seconds after the first head read at 106.
     const world: World = { final: null, mined: covering, head: 106n };
     const h = harness(world);
     let state: { done: boolean; value?: Reference } = { done: false };
     const waiting = h.wait().then(value => { state = { done: true, value }; });
-    for (let poll = 0; poll < 5; poll += 1) await vi.advanceTimersByTimeAsync(2_000);
+    for (let poll = 0; poll < 10; poll += 1) await vi.advanceTimersByTimeAsync(2_000);
     expect(state.done).toBe(false);
     expect(h.findCoveringRelease).toHaveBeenCalledTimes(2);
+    expect(h.getBlockNumber).toHaveBeenCalledOnce();
     world.head = 116n;
     world.final = covering;
     for (let poll = 0; poll < 3 && !state.done; poll += 1) await vi.advanceTimersByTimeAsync(2_000);
     await waiting;
     expect(state.value).toEqual(covering);
     expect(h.findCoveringRelease).toHaveBeenCalledTimes(3);
+    expect(h.getBlockNumber).toHaveBeenCalledTimes(2);
     expect(h.writeContract).not.toHaveBeenCalled();
+  });
+
+  it("reads the head again for the blocks still missing when the chain runs behind its block time", async () => {
+    const world: World = { final: null, mined: covering, head: 106n };
+    const h = harness(world);
+    let done = false;
+    const waiting = h.wait().then(() => { done = true; });
+    for (let poll = 0; poll < 10; poll += 1) await vi.advanceTimersByTimeAsync(2_000);
+    // Due at 22 seconds, the head has reached only 114: two blocks remain.
+    world.head = 114n;
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(h.getBlockNumber).toHaveBeenCalledTimes(2);
+    expect(done).toBe(false);
+    world.head = 116n;
+    world.final = covering;
+    for (let poll = 0; poll < 3 && !done; poll += 1) await vi.advanceTimersByTimeAsync(2_000);
+    await waiting;
+    expect(h.getBlockNumber).toHaveBeenCalledTimes(3);
   });
 
   it("looks again under the lock, so a release mined while it waited is never duplicated", async () => {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { loadLogsPaged } from "../src/standardRail/chainLogPagination.js";
+import { loadLogsPaged, loadNewestLogs } from "../src/standardRail/chainLogPagination.js";
 
 describe("loadLogsPaged", () => {
   it("does not treat cumulative history as a correctness limit", async () => {
@@ -105,5 +105,47 @@ describe("loadLogsPaged", () => {
     });
 
     expect(await run()).toEqual(await run());
+  });
+});
+
+describe("loadNewestLogs", () => {
+  const windows = (calls: Array<[bigint, bigint]>) => calls.map(([from, to]) => `${from}-${to}`);
+  const history = (events: bigint[], calls: Array<[bigint, bigint]>) => async (fromBlock: bigint, toBlock: bigint) => {
+    calls.push([fromBlock, toBlock]);
+    return events.filter(block => block >= fromBlock && block <= toBlock);
+  };
+
+  it("reads only the newest window when the event is recent", async () => {
+    const calls: Array<[bigint, bigint]> = [];
+    const found = await loadNewestLogs({
+      fromBlock: 1n, toBlock: 1_000_000n, maximumPageEvents: 1000,
+      load: history([12n, 995_000n], calls), matches: () => true,
+    });
+    expect(found).toEqual([995_000n]);
+    expect(windows(calls)).toEqual(["990001-1000000"]);
+  });
+
+  it("walks down window by window to an older event and never below the range", async () => {
+    const calls: Array<[bigint, bigint]> = [];
+    const found = await loadNewestLogs({
+      fromBlock: 5n, toBlock: 30_000n, maximumPageEvents: 1000,
+      load: history([7n, 25_000n], calls), matches: block => block < 20_000n,
+    });
+    expect(found).toEqual([7n]);
+    expect(windows(calls)).toEqual(["20001-30000", "10001-20000", "5-10000"]);
+  });
+
+  it("returns every match in the window it stops at, and nothing when the range has none", async () => {
+    const calls: Array<[bigint, bigint]> = [];
+    expect(await loadNewestLogs({
+      fromBlock: 1n, toBlock: 20_000n, maximumPageEvents: 1000,
+      load: history([15_000n, 19_000n, 3n], calls), matches: () => true,
+    })).toEqual([15_000n, 19_000n]);
+    const empty: Array<[bigint, bigint]> = [];
+    expect(await loadNewestLogs({
+      fromBlock: 1n, toBlock: 20_000n, maximumPageEvents: 1000,
+      load: history([], empty), matches: () => true,
+    })).toEqual([]);
+    expect(windows(empty)).toEqual(["10001-20000", "1-10000"]);
   });
 });
