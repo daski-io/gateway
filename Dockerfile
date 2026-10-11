@@ -1,12 +1,14 @@
-# syntax=docker/dockerfile:1
+# syntax=mirror.gcr.io/docker/dockerfile:1
 # node:22-slim resolves to this bookworm image today; the explicit tag keeps
 # the Debian package pin below valid if the alias moves to a newer Debian.
 # The digest pins the base itself: the sandbox and production build the same
 # commit days apart, so the base must not drift between them. To refresh it
 # when the image scan flags the base, re-resolve the digest
 # (`docker buildx imagetools inspect node:22-bookworm-slim`, the top-level
-# Digest) and update this line.
-FROM node:22-bookworm-slim@sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5 AS base
+# Digest) and update this line. Docker Hub images, this base and the syntax
+# frontend above, come through Google's mirror with the same digests:
+# anonymous Docker Hub pulls from shared CI runners hit its rate limit.
+FROM mirror.gcr.io/library/node:22-bookworm-slim@sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5 AS base
 # Debian security updates for PCRE2 and Perl in the Node image. The develop
 # image scan (release-image.yml) fails on fixable MEDIUM+ findings.
 RUN apt-get update \
