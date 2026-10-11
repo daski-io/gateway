@@ -38,14 +38,73 @@ permissions:
   contents: read
 
 jobs:
-  # "validate" is the check name the release gate requires — keep it stable.
-  validate:
+  # The suite runs one file at a time against a single database
+  # (fileParallelism is off), which made it most of a 6-7 minute run. Each
+  # shard gets its own database, so the five run side by side; four files
+  # take about a minute each, and five shards keep any two of them from
+  # sharing one in the current layout.
+  test:
+    name: test (${{ matrix.shard }}/5)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5]
+
+    services:
+      postgres:
+        # Docker Hub images come through Google's mirror, same image and tag:
+        # anonymous Docker Hub pulls from shared runners hit its rate limit
+        # (2026-10-09).
+        image: mirror.gcr.io/pgvector/pgvector:pg16
+        env:
+          POSTGRES_DB: daski_gateway_test
+          POSTGRES_PASSWORD: password
+          POSTGRES_USER: postgres
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d daski_gateway_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+
+    env:
+      DATABASE_URL_TEST: postgresql://postgres:password@127.0.0.1:5433/daski_gateway_test
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Some tests read the compiled runtime in dist/.
+      - name: Build
+        run: npm run build
+
+      - name: Test
+        run: npm test -- --shard=${{ matrix.shard }}/5
+
+  checks:
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
     services:
       postgres:
-        image: pgvector/pgvector:pg16
+        # Docker Hub images come through Google's mirror, same image and tag:
+        # anonymous Docker Hub pulls from shared runners hit its rate limit
+        # (2026-10-09).
+        image: mirror.gcr.io/pgvector/pgvector:pg16
         env:
           POSTGRES_DB: daski_gateway_test
           POSTGRES_PASSWORD: password
@@ -93,9 +152,6 @@ jobs:
       # is this stack's historically most expensive bug class).
       - name: Typecheck (src + test)
         run: npm run typecheck
-
-      - name: Test
-        run: npm test
 
       # test/wire-fixtures/ is generated from the real builders by
       # test/wireFixtures.test.ts and vendored verbatim by daski-test,
@@ -193,6 +249,22 @@ jobs:
           done
           echo "npm audit endpoint unavailable after 4 attempts"
           exit 1
+
+  # "validate" is the check name the release gate requires — keep it stable.
+  # It passes only when every test shard and the checks above passed.
+  validate:
+    needs: [test, checks]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Every test shard and check passed
+        env:
+          TEST: ${{ needs.test.result }}
+          CHECKS: ${{ needs.checks.result }}
+        run: |
+          echo "test: $TEST, checks: $CHECKS"
+          test "$TEST" = success && test "$CHECKS" = success
 
   handoff:
     runs-on: ubuntu-latest
