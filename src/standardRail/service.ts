@@ -100,6 +100,9 @@ import { createX402OfferReceipt, x402PaymentResponse } from "./x402Receipt.js";
 import { getIntakeRequirements } from "./intake.js";
 import { StandardPurchaseResponses } from "./purchaseResponse.js";
 
+// How long a challenge's optional balance read waits for an RPC slot.
+const PREFLIGHT_BALANCE_WAIT_MS = 5_000;
+
 /** A fixed-price readiness quote may last at most the sealed draft window; the
  *  challenge is still clamped to the listing's own draft window. */
 export const FIXED_READINESS_QUOTE_MAX_SECONDS = 300;
@@ -1881,7 +1884,11 @@ export class StandardRailService {
           host: new URL(url).hostname,
           client: createPublicClient({
             chain,
-            transport: orderedRpcTransport(http(url, { retryCount: 0, timeout: 10_000 }), { scope: url, maxPerMinute: this.railConfig.rpcReadMaxPerMinute, maxWaitMs: 0 }),
+            // The balance preflight waits its turn at ordinary priority, behind
+            // payment and registration proofs, rather than failing when another
+            // read holds the next slot (2026-10-12: several agents asking for
+            // challenges within 200 ms got none but the first's balance).
+            transport: orderedRpcTransport(http(url, { retryCount: 0, timeout: 10_000 }), { scope: url, maxPerMinute: this.railConfig.rpcReadMaxPerMinute, maxWaitMs: PREFLIGHT_BALANCE_WAIT_MS }),
           }),
         }));
         const balance = await withRpcFailover(

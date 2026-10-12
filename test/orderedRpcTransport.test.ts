@@ -96,6 +96,23 @@ it("a burst of optional quote clients cannot reserve slots ahead of evidence and
   } finally { vi.useRealTimers(); }
 });
 
+it("serves a burst of balance preflights in turn when they may wait", async () => {
+  // 2026-10-12: three acceptance lanes asked for challenges within 200 ms; with
+  // no wait only the first challenge carried its balance preflight.
+  vi.useFakeTimers();
+  try {
+    const calls: number[] = [];
+    const started = Date.now();
+    const build = () => orderedRpcTransport(custom({
+      request: async () => { calls.push(Date.now() - started); return "ok"; },
+    }), { scope: "preflight-burst-test", maxPerMinute: 300, maxWaitMs: 5_000 })({ retryCount: 0 }).request;
+    const reads = Promise.allSettled(Array.from({ length: 5 }, () => build()({ method: "eth_call" })));
+    await vi.runAllTimersAsync();
+    expect((await reads).every(result => result.status === "fulfilled")).toBe(true);
+    expect(calls).toEqual([0, 200, 400, 600, 800]);
+  } finally { vi.useRealTimers(); }
+});
+
 it("cancels requests waiting behind a slow wire request without sending them after the deadline", async () => {
   vi.useFakeTimers();
   try {
