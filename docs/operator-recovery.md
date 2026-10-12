@@ -73,7 +73,13 @@ envelopes after 10, 20, 40, then 60 seconds, bounded by the listing's
 `fulfillmentSeconds` from recorded release evidence (or explicit revival).
 A five-minute envelope expiry does not end the fulfillment window. Transport
 failures, timeouts and responses without a usable JSON error remain ambiguous;
-recovery only polls their existing dispatch hash. Each recovery batch visits an
+recovery only polls their existing dispatch hash. Once that envelope has expired
+(its `validBefore` plus 60 seconds), a status answer of 404 with a JSON `error`
+means the provider holds no record of it and never accepted it: recovery records
+it as a refusal (HTTP status 404, reason `{ source: "dispatch_status", error,
+reason }`) and retries with a fresh envelope like any refusal. The provider keeps
+at most one task per order. Before expiry, or on any other status answer, recovery
+keeps polling. Each recovery batch visits an
 order at most once, including when a status query leaves its state unchanged.
 
 The default fulfillment deadline is 2,592,000 seconds (30 days). For accepted

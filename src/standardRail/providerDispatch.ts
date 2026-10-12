@@ -24,6 +24,16 @@ import { buildStandardEvidenceBundleV2 } from "./wireContracts.js";
 import { operationsSchema } from "./operationsSchema.js";
 
 const ZERO_HASH = `0x${"00".repeat(32)}` as Hex;
+// A dispatch envelope the provider could still be accepting is never replaced:
+// past its validBefore and this margin, no request carrying it can land.
+const DISPATCH_EXPIRY_GRACE_SECONDS = 60;
+
+/** The provider answered a dispatch status query with a structured 404: it holds no record of that dispatch. */
+class ProviderDispatchUnknown extends Error {
+  constructor(readonly status: number, readonly reason: unknown) {
+    super("PROVIDER_DISPATCH_STATUS_UNAVAILABLE");
+  }
+}
 
 type ProviderFetch = (
   listing: StandardListing,
@@ -217,7 +227,22 @@ export class StandardProviderDispatch {
           dispatchHash,
         );
         return await this.applyDispatchResponse(order, listing, dispatchHash, response);
-      } catch {
+      } catch (error) {
+        // A provider holding no record of an ambiguous dispatch whose envelope
+        // can no longer be accepted never accepted it. Retry it with a fresh
+        // envelope, as after a refusal; the provider keeps at most one task per
+        // order. Before expiry an in-flight request could still land, so it
+        // stays ambiguous (2026-10-12: an edge fault kept two paid sandbox
+        // orders from the provider, and recovery would have polled for 30 days).
+        if (
+          error instanceof ProviderDispatchUnknown && order.state === "DISPATCH_AMBIGUOUS" &&
+          Date.now() >= (dispatch.payload.validBefore + DISPATCH_EXPIRY_GRACE_SECONDS) * 1_000
+        ) {
+          try {
+            await this.journal.recordDispatchRefusal(order.orderId, dispatchHash, error.status, error.reason);
+          } catch { /* A concurrent change keeps the order ambiguous for the next visit. */ }
+          return order;
+        }
         return order.state === "DISPATCH_STARTED"
           ? this.store.transition(
               order,
@@ -322,7 +347,21 @@ export class StandardProviderDispatch {
       },
     );
     if (!response.ok) {
-      await discardResponseBody(response);
+      // Only a 404 with a JSON error is the provider's own answer; an edge page,
+      // another status or a malformed body leaves the dispatch unknown.
+      if (response.status === 404) {
+        const body = await readBoundedJsonResponse(
+          response,
+          listing.providerControlProfile.payload.maxResponseBytes,
+        ).catch(() => null);
+        if (body && typeof body === "object" && !Array.isArray(body) &&
+            "error" in body && body.error !== null && body.error !== undefined) {
+          const { error, reason } = body as { error: unknown; reason?: unknown };
+          throw new ProviderDispatchUnknown(404, { source: "dispatch_status", error, reason: reason ?? null });
+        }
+      } else {
+        await discardResponseBody(response);
+      }
       throw new Error("PROVIDER_DISPATCH_STATUS_UNAVAILABLE");
     }
     return readBoundedJsonResponse(

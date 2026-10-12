@@ -388,6 +388,73 @@ describe("dispatch refusal recovery", () => {
     expect(calls).toBe(2);
   });
 
+  it("retries an expired ambiguous dispatch the provider holds no record of, with a fresh envelope", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-10-12T19:56:28Z"));
+    try {
+      let dispatches = 0;
+      const fetcher = vi.fn(async (url: string, init: RequestInit) => {
+        if (url.endsWith("/dispatch/status")) {
+          return Response.json({ error: "dispatch_status_unavailable", reason: "outcome_policy" }, { status: 404 });
+        }
+        // 2026-10-12: an edge fault in front of the provider answered the first dispatch.
+        if (++dispatches === 1) throw new Error("upstream error");
+        const sent = JSON.parse(String(init.body)) as { dispatch: unknown };
+        const response = { taskId: "accepted-task", dispatchHash: canonicalHash(sent.dispatch), state: "working",
+          operations: { schemaVersion: 1, revision: 0, observedAt: Math.floor(Date.now()/1000), fulfillment: null, support: null, recovery: null } };
+        const signature = await privateKeyToAccount(privateKey).signMessage({ message: { raw: canonicalHash(response) } });
+        return Response.json({ ...response, signature });
+      });
+      const driver = retrying(fetcher);
+      let current = await driver.dispatch(order());
+      expect(current.state).toBe("DISPATCH_AMBIGUOUS");
+      // While its envelope could still be accepted, a missing record proves nothing.
+      vi.setSystemTime(Date.now() + 300_000);
+      current = await driver.dispatch(current);
+      expect(current.state).toBe("DISPATCH_AMBIGUOUS");
+      expect(driver.refusals).toHaveLength(0);
+      // Past validBefore and the grace, it can no longer land: the provider never accepted it.
+      vi.setSystemTime(Date.now() + 61_000);
+      current = await driver.dispatch(current);
+      expect(current.state).toBe("DISPATCH_AMBIGUOUS");
+      expect(driver.refusals).toEqual([{ status: 404,
+        reason: { source: "dispatch_status", error: "dispatch_status_unavailable", reason: "outcome_policy" } }]);
+      vi.setSystemTime(Date.now() + 10_000);
+      current = await driver.dispatch(current);
+      expect(current.state).toBe("DISPATCHED");
+      expect(driver.claims).toHaveLength(2);
+      expect(driver.claims[1]!.payload.dispatchNonce).not.toBe(driver.claims[0]!.payload.dispatchNonce);
+      expect(dispatches).toBe(2);
+      expect(driver.resolveDispatch).toHaveBeenCalledOnce();
+    } finally { vi.useRealTimers(); }
+  });
+
+  it.each(["edge-404", "json-503", "timeout"])("keeps an expired ambiguous dispatch polling on a %s status answer", async (kind) => {
+    vi.useFakeTimers();
+    try {
+      let dispatched = false;
+      const fetcher = vi.fn(async (url: string) => {
+        if (!url.endsWith("/dispatch/status")) {
+          if (dispatched) throw new Error("dispatched again");
+          dispatched = true;
+          throw new Error("upstream error");
+        }
+        if (kind === "timeout") throw new Error("timed out");
+        return kind === "edge-404"
+          ? new Response("<html>Not Found</html>", { status: 404, headers: { "content-type": "text/html" } })
+          : Response.json({ error: "unavailable" }, { status: 503 });
+      });
+      const driver = retrying(fetcher);
+      let current = await driver.dispatch(order());
+      vi.setSystemTime(Date.now() + 400_000);
+      current = await driver.dispatch(current);
+      expect(current.state).toBe("DISPATCH_AMBIGUOUS");
+      expect(driver.refusals).toHaveLength(0);
+      expect(driver.claims).toHaveLength(1);
+      expect(fetcher).toHaveBeenCalledTimes(2);
+    } finally { vi.useRealTimers(); }
+  });
+
   it.each(["timeout", "non-json-503", "malformed-409", "malformed-200"])("keeps %s ambiguous and only polls its existing hash", async (kind) => {
     const fetcher = vi.fn(async (_url: string, _init: RequestInit) => {
       if (kind === "timeout") throw new Error("timed out");
