@@ -261,7 +261,8 @@ describe("dispatch refusal recovery", () => {
     const recovery = { started_at: new Date(), retry_pending: false, next_attempt_at: new Date() };
     const refusals: Array<{ status: number; reason: unknown }> = [];
     const claims: Array<SignedEnvelope<StandardRailDispatchV2, 2>> = [];
-    const transition = vi.fn(async (value: StandardOrderRecord, state: StandardOrderRecord["state"]) => ({ ...value, state }));
+    const transition = vi.fn(async (value: StandardOrderRecord, state: StandardOrderRecord["state"],
+      _reason?: string, changes: Partial<StandardOrderRecord> = {}) => ({ ...value, ...changes, state }));
     const resolveDispatch = vi.fn(async () => undefined);
     const dispatchListing = listing();
     dispatchListing.commitment.payload.providerAuthorityKey = privateKeyToAccount(privateKey).address;
@@ -469,5 +470,169 @@ describe("dispatch refusal recovery", () => {
     expect(fetcher.mock.calls[1]?.[0]).toBe("https://provider.example/dispatch/status");
     expect(driver.refusals).toHaveLength(0);
     expect(driver.claims).toHaveLength(1);
+  });
+
+  describe("edge outage", () => {
+    // Mid-second, so no 10 s visit lands exactly on an envelope's expiry.
+    const start = new Date("2026-10-12T19:56:28.500Z");
+
+    // An edge answers with its own page, never the provider's JSON.
+    const edgePage = (count: number) => count % 2 === 0
+      ? new Response("upstream error", { status: 502 })
+      : new Response("<html><body><h1>503 Service Temporarily Unavailable</h1></body></html>",
+        { status: 503, headers: { "content-type": "text/html" } });
+
+    async function accepted(dispatchHash: Hex): Promise<Response> {
+      const response = { taskId: "accepted-task", dispatchHash, state: "working",
+        operations: { schemaVersion: 1, revision: 0, observedAt: Math.floor(Date.now()/1000), fulfillment: null, support: null, recovery: null } };
+      const signature = await privateKeyToAccount(privateKey).signMessage({ message: { raw: canonicalHash(response) } });
+      return Response.json({ ...response, signature });
+    }
+
+    // Until upAt the edge pages every request. Behind it the provider keeps a task for each
+    // dispatch it received, including one whose answer the edge lost when `received` is set.
+    function edge(upAt: number, received = false) {
+      const tasks = new Set<Hex>();
+      const posted: Hex[] = [];
+      const polled: Hex[] = [];
+      const log: string[] = [];
+      const fetcher = vi.fn(async (url: string, init: RequestInit) => {
+        const sent = JSON.parse(String(init.body)) as { dispatch?: unknown; query?: { payload: { dispatchHash: Hex } } };
+        const status = url.endsWith("/dispatch/status");
+        const dispatchHash = status ? sent.query!.payload.dispatchHash : canonicalHash(sent.dispatch);
+        (status ? polled : posted).push(dispatchHash);
+        let response: Response;
+        if (Date.now() < upAt) {
+          if (!status && received) tasks.add(dispatchHash);
+          response = edgePage(log.length);
+        } else if (!status || tasks.has(dispatchHash)) {
+          tasks.add(dispatchHash);
+          response = await accepted(dispatchHash);
+        } else {
+          response = Response.json({ error: "dispatch_status_unavailable", reason: "outcome_policy" }, { status: 404 });
+        }
+        log.push(`${status ? "status" : "dispatch"} ${response.status}`);
+        return response;
+      });
+      return { fetcher, posted, polled, log };
+    }
+
+    // A recovery batch visits a due order every 10 s and, as resumePaidOrder does, dispatches an
+    // undispatched order but only reconciles a dispatched one.
+    async function visit(driver: ReturnType<typeof retrying>, current: StandardOrderRecord) {
+      vi.setSystemTime(Date.now() + 10_000);
+      return current.state === "DISPATCHED"
+        ? driver.dispatcher.reconcile(current, driver.dispatchListing, canonicalHash(driver.claims.at(-1)))
+        : driver.dispatch(current);
+    }
+
+    // Past expiry the provider's structured 404 is one refusal; after its 10 s backoff one fresh
+    // envelope is dispatched and accepted, and later visits only poll it.
+    async function expectOneFreshDispatch(
+      driver: ReturnType<typeof retrying>, provider: ReturnType<typeof edge>, initial: StandardOrderRecord,
+    ) {
+      const original = driver.claims[0]!;
+      let current = await visit(driver, initial);
+      expect(current.state).toBe("DISPATCH_AMBIGUOUS");
+      expect(driver.refusals).toEqual([{ status: 404,
+        reason: { source: "dispatch_status", error: "dispatch_status_unavailable", reason: "outcome_policy" } }]);
+      expect(provider.posted).toEqual([canonicalHash(original)]);
+      current = await visit(driver, current);
+      expect(current.state).toBe("DISPATCHED");
+      expect(driver.claims).toHaveLength(2);
+      const fresh = driver.claims[1]!;
+      expect(fresh.payload.dispatchNonce).not.toBe(original.payload.dispatchNonce);
+      expect(fresh.payload.issuedAt).toBeGreaterThanOrEqual(original.payload.validBefore + 60);
+      expect(provider.posted).toEqual([canonicalHash(original), canonicalHash(fresh)]);
+      expect(driver.resolveDispatch).toHaveBeenCalledExactlyOnceWith(
+        order().orderId, "accepted-task", expect.anything(), canonicalHash(fresh));
+      const polls = provider.polled.length;
+      for (let visits = 0; visits < 30; visits += 1) current = await visit(driver, current);
+      expect(current.state).toBe("DISPATCHED");
+      expect(provider.posted).toHaveLength(2);
+      expect(new Set(provider.polled.slice(polls))).toEqual(new Set([canonicalHash(fresh)]));
+      expect(driver.claims).toHaveLength(2);
+      expect(driver.refusals).toHaveLength(1);
+      expect(driver.transition.mock.calls.map(([, state]) => state))
+        .toEqual(["DISPATCH_STARTED", "DISPATCH_AMBIGUOUS", "DISPATCHED"]);
+    }
+
+    it("dispatches once more after expiry when the provider never received the dispatch", async () => {
+      // 2026-10-12: an edge fault kept two paid sandbox orders from the provider; once an envelope
+      // the provider never saw has expired, it is dispatched again, once.
+      vi.useFakeTimers();
+      vi.setSystemTime(start);
+      try {
+        const provider = edge(start.getTime() + 30_000);
+        const driver = retrying(provider.fetcher);
+        let current = await driver.dispatch(order());
+        expect(current.state).toBe("DISPATCH_AMBIGUOUS");
+        const expiry = (driver.claims[0]!.payload.validBefore + 60) * 1000;
+        // While the envelope could still land, neither an edge page nor the provider's 404 proves anything.
+        while (Date.now() + 10_000 < expiry) {
+          current = await visit(driver, current);
+          expect(current.state).toBe("DISPATCH_AMBIGUOUS");
+        }
+        expect(provider.log.slice(0, 4)).toEqual(["dispatch 502", "status 503", "status 502", "status 404"]);
+        expect(provider.log.at(-1)).toBe("status 404");
+        expect(driver.refusals).toHaveLength(0);
+        expect(provider.posted).toHaveLength(1);
+        await expectOneFreshDispatch(driver, provider, current);
+      } finally { vi.useRealTimers(); }
+    });
+
+    it("takes the accepted task from status, and never dispatches again, when the edge lost the answer", async () => {
+      // 2026-10-12: an edge fault kept two paid sandbox orders from the provider; a dispatch the
+      // provider did receive is found by status and never sent twice.
+      vi.useFakeTimers();
+      vi.setSystemTime(start);
+      try {
+        const provider = edge(start.getTime() + 30_000, true);
+        const driver = retrying(provider.fetcher);
+        let current = await driver.dispatch(order());
+        expect(current.state).toBe("DISPATCH_AMBIGUOUS");
+        const original = canonicalHash(driver.claims[0]);
+        for (let visits = 0; visits < 3; visits += 1) current = await visit(driver, current);
+        expect(provider.log).toEqual(["dispatch 502", "status 503", "status 502", "status 200"]);
+        expect(current.state).toBe("DISPATCHED");
+        expect(driver.resolveDispatch).toHaveBeenCalledExactlyOnceWith(
+          order().orderId, "accepted-task", expect.anything(), original);
+        // Polled on past its envelope's expiry, it is never dispatched again.
+        for (let visits = 0; visits < 60; visits += 1) current = await visit(driver, current);
+        expect(Date.now()).toBeGreaterThan((driver.claims[0]!.payload.validBefore + 60) * 1000);
+        expect(current.state).toBe("DISPATCHED");
+        expect(provider.posted).toEqual([original]);
+        expect(new Set(provider.polled)).toEqual(new Set([original]));
+        expect(driver.refusals).toHaveLength(0);
+        expect(driver.claims).toHaveLength(1);
+        expect(driver.transition.mock.calls.map(([, state]) => state))
+          .toEqual(["DISPATCH_STARTED", "DISPATCH_AMBIGUOUS", "DISPATCHED"]);
+      } finally { vi.useRealTimers(); }
+    });
+
+    it("keeps polling through edge pages past expiry until the provider itself answers", async () => {
+      // 2026-10-12: an edge fault kept two paid sandbox orders from the provider; an edge page,
+      // however long past expiry, is never the provider's word that it holds no record.
+      vi.useFakeTimers();
+      vi.setSystemTime(start);
+      try {
+        const upAt = start.getTime() + 900_000;
+        const provider = edge(upAt);
+        const driver = retrying(provider.fetcher);
+        let current = await driver.dispatch(order());
+        expect(current.state).toBe("DISPATCH_AMBIGUOUS");
+        const expiry = (driver.claims[0]!.payload.validBefore + 60) * 1000;
+        while (Date.now() + 10_000 < upAt) {
+          current = await visit(driver, current);
+          expect(current.state).toBe("DISPATCH_AMBIGUOUS");
+        }
+        expect(Date.now()).toBeGreaterThan(expiry + 500_000);
+        expect(new Set(provider.log)).toEqual(new Set(["dispatch 502", "status 503", "status 502"]));
+        expect(driver.refusals).toHaveLength(0);
+        expect(driver.claims).toHaveLength(1);
+        expect(provider.posted).toHaveLength(1);
+        await expectOneFreshDispatch(driver, provider, current);
+      } finally { vi.useRealTimers(); }
+    });
   });
 });
