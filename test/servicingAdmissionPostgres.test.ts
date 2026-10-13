@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { createPool, runMigrations } from "../src/db/pool.js";
+import { createPool, runMigrations, type Pool } from "../src/db/pool.js";
 import { StandardAssetFederation } from "../src/standardRail/assetFederation.js";
 import { canonicalHash } from "../src/standardRail/canonical.js";
 import type { StandardRailConfig } from "../src/standardRail/config.js";
@@ -65,7 +65,60 @@ function federation(
   );
 }
 
+// The pool, with every COMMIT on a checked-out client first noting the
+// transaction id the committing transaction holds. Only a transaction with
+// one waits for a WAL flush when it commits.
+function commitXids(pool: Pool): { pool: Pool; xids: Array<string | null> } {
+  const xids: Array<string | null> = [];
+  const probed = {
+    query: pool.query.bind(pool),
+    connect: async () => {
+      const client = await pool.connect();
+      return {
+        release: (error?: Error | boolean) => client.release(error),
+        query: async (text: string, values?: unknown[]) => {
+          if (text === "COMMIT") {
+            xids.push((await client.query<{ xid: string | null }>(
+              "SELECT pg_current_xact_id_if_assigned()::text AS xid")).rows[0]!.xid);
+          }
+          return client.query(text, values);
+        },
+      };
+    },
+  };
+  return { pool: probed as unknown as Pool, xids };
+}
+
 describe("servicing-admission activation against PostgreSQL", () => {
+  it("checks the current admission read-only without a transaction id", async () => {
+    const schema = `servicing_read_${randomUUID().replaceAll("-", "")}`;
+    const bootstrap = createPool({ connectionString: databaseUrl, max: 1 });
+    await bootstrap.query(`CREATE SCHEMA "${schema}"`);
+    const pool = createPool({ connectionString: databaseUrl, searchPath: `${schema},public`, max: 2 });
+    try {
+      await runMigrations(pool);
+      const active = admission({ providerAgentId: "1", epoch: 1,
+        previousAdmissionHash: hash("0"), enabled: true });
+      await federation(pool, [active]).activateAdmissions();
+
+      // /health/live runs the read-only check: its commit must not wait on
+      // storage writes, so it may hold no transaction id.
+      const probe = commitXids(pool);
+      const service = federation(probe.pool, [active]);
+      await service.activateAdmissions({ readOnly: true });
+      expect(probe.xids).toEqual([null]);
+
+      // Activation itself still locks the row it may replace.
+      await service.activateAdmissions();
+      expect(probe.xids).toHaveLength(2);
+      expect(probe.xids[1]).not.toBeNull();
+    } finally {
+      await pool.end();
+      await bootstrap.query(`DROP SCHEMA "${schema}" CASCADE`).catch(() => undefined);
+      await bootstrap.end();
+    }
+  }, 60_000);
+
   it("activates only a contiguous chain and persists a signed suspension", async () => {
     const schema = `servicing_admission_${randomUUID().replaceAll("-", "")}`;
     const bootstrap = createPool({ connectionString: databaseUrl, max: 1 });

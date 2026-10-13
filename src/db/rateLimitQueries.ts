@@ -6,13 +6,21 @@ export function createRateLimitQueries(pool: Pool) {
       bucketKey: string,
       windowMs: number,
     ): Promise<{ count: number; resetAt: Date }> {
+      // A bucket is throttling state, not a record: a database crash that
+      // loses its last increments lets a client through a few requests
+      // early. Waiting for the WAL flush put storage write latency in front
+      // of every limited request instead: on 2026-10-13 commits stalled for
+      // up to 15 s while reads answered at once, and each public read waited
+      // twice. set_config(..., true) holds only for this statement's own
+      // transaction, so the connection's next commit is durable again.
       const result = await pool.query<{
         request_count: number;
         reset_at: Date;
       }>(
         `INSERT INTO rate_limit_buckets
            (bucket_key, window_started_at, request_count)
-         VALUES ($1, now(), 1)
+         SELECT $1::text, now(), 1
+           FROM (SELECT set_config('synchronous_commit', 'off', true)) AS async_commit
          ON CONFLICT (bucket_key) DO UPDATE
            SET window_started_at =
                  CASE

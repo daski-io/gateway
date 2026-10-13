@@ -72,13 +72,18 @@ export class StandardAssetFederation {
         await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))", [
           `standard:servicing-admission:${providerAgentId}`,
         ]);
+        // Every admission writer holds the advisory lock above (the retirement
+        // guard trigger takes it too), so a read-only check needs no row lock.
+        // One would give the check a transaction id, and its commit would wait
+        // for a WAL flush: /health/live runs this check, and on 2026-10-13
+        // storage write stalls held it for up to 15 s.
         const current = await client.query<{
           admission_hash: Buffer;
           canonical_admission: SignedEnvelope<ProviderServicingAdmissionV1>;
         }>(
           `SELECT admission_hash,canonical_admission
              FROM standard_provider_servicing_admissions
-            WHERE provider_agent_id=$1 AND current=true FOR UPDATE`,
+            WHERE provider_agent_id=$1 AND current=true${options.readOnly ? "" : " FOR UPDATE"}`,
           [providerAgentId],
         );
         let active: SignedEnvelope<ProviderServicingAdmissionV1> | null = current.rows[0]?.canonical_admission ?? null;
