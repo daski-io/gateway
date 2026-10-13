@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import type { Hex } from "viem";
 import type { Config } from "../src/config.js";
+import { CachedMarketplaceChainReader } from "../src/marketplace/cachedReader.js";
 import type { MarketplaceChainReader, RecoveredFigure } from "../src/marketplace/reader.js";
 import { publicServiceView, ServiceRegistrationService } from "../src/serviceRegistration/service.js";
 import type { ServiceRegistrationStore, StoredRegistration } from "../src/serviceRegistration/store.js";
@@ -106,6 +107,57 @@ describe("public v3 services contract", () => {
       serviceReputation: null,
     });
     expect(marketplace.readRecovered).not.toHaveBeenCalled();
+  });
+
+  it("reads the detail view's reputation once through the shared public cache", async () => {
+    const registration = registrationFromFixture();
+    // Chain reads that answer only once released, as behind a busy RPC lane.
+    let release!: () => void;
+    const lane = new Promise<void>((resolve) => { release = resolve; });
+    const chain = {
+      addresses: {},
+      getProvider: vi.fn(async () => {
+        await lane;
+        return { agentId: registration.providerAgentId, standardReputation: PROVIDER_REPUTATION };
+      }),
+      getService: vi.fn(async () => {
+        await lane;
+        return { serviceId: registration.serviceId, standardReputation: SERVICE_REPUTATION };
+      }),
+      readRecovered: vi.fn(async (figure: RecoveredFigure) => figure.kind === "provider" ? "2" : "1"),
+    };
+    const authority = { getProvider: vi.fn(), getService: vi.fn(), readRecovered: vi.fn() };
+    const store = {
+      getPublicByServiceId: vi.fn(async () => registration),
+      listingCommitments: vi.fn(async () => []),
+    };
+    const service = new ServiceRegistrationService(
+      {} as Config,
+      {} as StandardRailConfig,
+      store as unknown as ServiceRegistrationStore,
+      authority as unknown as MarketplaceChainReader,
+      {} as never,
+      undefined,
+      new CachedMarketplaceChainReader(chain as unknown as MarketplaceChainReader),
+    );
+
+    // A page view and two retries of a caller that gave up waiting for it.
+    const views = Array.from({ length: 3 }, () => service.getPublic(registration.serviceId));
+    release();
+    const expected = {
+      ...publicServiceView(registration),
+      providerReputation: { ...PROVIDER_REPUTATION, recovered: "2" },
+      serviceReputation: { ...SERVICE_REPUTATION, recovered: "1" },
+    };
+    await expect(Promise.all(views)).resolves.toEqual([expected, expected, expected]);
+    // The retries joined the reads already in flight instead of queueing their own.
+    expect(chain.getProvider).toHaveBeenCalledTimes(1);
+    expect(chain.getService).toHaveBeenCalledTimes(1);
+    expect(chain.readRecovered).toHaveBeenCalledTimes(2);
+    // The live reader authority uses is never asked for presentation.
+    expect(authority.getProvider).not.toHaveBeenCalled();
+    expect(authority.getService).not.toHaveBeenCalled();
+    expect(authority.readRecovered).not.toHaveBeenCalled();
   });
 });
 

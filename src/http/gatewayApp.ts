@@ -131,6 +131,7 @@ export async function createStandardGatewayHttp(
       liveMarketplace,
     ),
     (url) => fetchProviderCardJson(url, options.a2aFetch ?? fetch),
+    publicMarketplace,
   );
   const standardRail = new StandardRailService(
     options.config,

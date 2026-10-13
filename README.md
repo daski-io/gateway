@@ -113,6 +113,10 @@ steady-state prompt is `Use Daski to [your task]`.
 - `/public/v2/registry/*` exposes read-only ERC-8004 identity, Daski provider
   and service catalog state. The provider and service reads carry the on-chain
   reputation counters as `standardReputation`, with the additive `recovered`.
+- Both read chain state through a shared cache: a value is reused for 60
+  seconds, then served while it is read again in the background, for up to
+  24 hours if the chain cannot be read. Concurrent requests share one read.
+  Authority, activation and checkout always read the chain live.
 - `POST /outcomes/:providerAgentId/:outcomeId/quote` returns the prepared
   challenge and payer preflight. `POST .../purchase` accepts `{ request,
   payerAddress?, paymentPayload? }`, retaining the complete payment in JSON

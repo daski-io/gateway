@@ -230,6 +230,9 @@ export class ServiceRegistrationService {
     private readonly evidenceVerifier: RegistrationEvidenceVerifier,
     private readonly cardLoader: (url: string) => Promise<unknown> =
       (url) => fetchProviderCardJson(url),
+    // The reader public views present reputation through. Authority,
+    // activation and refresh keep the live `marketplace`.
+    private readonly publicMarketplace: MarketplaceChainReader = marketplace,
   ) {}
 
   policy() {
@@ -893,7 +896,12 @@ export class ServiceRegistrationService {
   }
 
   // Separate provider- and service-scoped blocks on the detail view, read
-  // through this service's chain reader. Each block's additive `recovered`
+  // through the public reader: the shared chain cache, not the live reads
+  // authority makes. On 2026-10-10 three detail pages read live queued
+  // their fifteen reads apiece behind the catalog refresh in the endpoint's
+  // one paced lane, past the website's 10-second timeout, and its retries
+  // queued behind the abandoned first copies; a cached read is shared, so a
+  // retry joins the read already in flight. Each block's additive `recovered`
   // figure is read afterwards, at that block's own safe block. Reputation is
   // a nullable enrichment: a read failure must never take the public catalog
   // down with it, and a failed recovered read only leaves `recovered` null.
@@ -905,8 +913,8 @@ export class ServiceRegistrationService {
     let serviceBlock: Record<string, string> | null;
     try {
       const [provider, service] = await Promise.all([
-        this.marketplace.getProvider(BigInt(record.providerAgentId)),
-        this.marketplace.getService(record.serviceId),
+        this.publicMarketplace.getProvider(BigInt(record.providerAgentId)),
+        this.publicMarketplace.getService(record.serviceId),
       ]);
       providerBlock = (provider as {
         standardReputation?: Record<string, string>;
@@ -917,12 +925,12 @@ export class ServiceRegistrationService {
     }
     const [providerReputation, serviceReputation] = await Promise.all([
       providerBlock && withRecovered(
-        this.marketplace,
+        this.publicMarketplace,
         { kind: "provider", agentId: BigInt(record.providerAgentId) },
         providerBlock,
       ),
       serviceBlock && withRecovered(
-        this.marketplace,
+        this.publicMarketplace,
         { kind: "service", serviceId: record.serviceId },
         serviceBlock,
       ),
