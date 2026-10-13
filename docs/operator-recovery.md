@@ -75,7 +75,9 @@ A five-minute envelope expiry does not end the fulfillment window. Transport
 failures, timeouts and responses without a usable JSON error remain ambiguous;
 recovery only polls their existing dispatch hash. Once that envelope has expired
 (its `validBefore` plus 60 seconds), a status answer of 404 with a JSON `error`
-means the provider holds no record of it and never accepted it: recovery records
+and reason `outcome_policy` means the provider holds no claim for it and never
+accepted it (the provider answers the same 404 for a bad signature, clock skew
+and its own internal errors, reason `validator`, which keep the order polling): recovery records
 it as a refusal (HTTP status 404, reason `{ source: "dispatch_status", error,
 reason }`) and retries with a fresh envelope like any refusal. The provider keeps
 at most one task per order. Before expiry, or on any other status answer, recovery

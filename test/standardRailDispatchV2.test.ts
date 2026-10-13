@@ -430,6 +430,39 @@ describe("dispatch refusal recovery", () => {
     } finally { vi.useRealTimers(); }
   });
 
+  it("keeps polling when the provider's 404 is its own fault, not a missing claim", async () => {
+    // The provider answers 404 for a bad signature, clock skew and its internal
+    // errors (reason validator) as well as for a missing claim; only the latter
+    // may drop the claim, or an accepted dispatch would be replayed in a loop.
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-10-12T19:56:28Z"));
+    try {
+      let reason = "validator", dispatches = 0;
+      const fetcher = vi.fn(async (url: string, init: RequestInit) => {
+        if (url.endsWith("/dispatch/status")) return Response.json({ error: "dispatch_status_unavailable", reason }, { status: 404 });
+        if (++dispatches === 1) throw new Error("upstream error");
+        const sent = JSON.parse(String(init.body)) as { dispatch: unknown };
+        const response = { taskId: "accepted-task", dispatchHash: canonicalHash(sent.dispatch), state: "working",
+          operations: { schemaVersion: 1, revision: 0, observedAt: Math.floor(Date.now()/1000), fulfillment: null, support: null, recovery: null } };
+        const signature = await privateKeyToAccount(privateKey).signMessage({ message: { raw: canonicalHash(response) } });
+        return Response.json({ ...response, signature });
+      });
+      const driver = retrying(fetcher);
+      let current = await driver.dispatch(order());
+      vi.setSystemTime(Date.now() + 400_000);
+      for (let visit = 0; visit < 5; visit++) { current = await driver.dispatch(current); vi.setSystemTime(Date.now() + 10_000); }
+      expect(current.state).toBe("DISPATCH_AMBIGUOUS");
+      expect(driver.refusals).toHaveLength(0);
+      expect(dispatches).toBe(1);
+      reason = "outcome_policy";
+      current = await driver.dispatch(current);
+      expect(driver.refusals).toHaveLength(1);
+      vi.setSystemTime(Date.now() + 10_000);
+      expect((await driver.dispatch(current)).state).toBe("DISPATCHED");
+      expect(dispatches).toBe(2);
+    } finally { vi.useRealTimers(); }
+  });
+
   it.each(["edge-404", "json-503", "timeout"])("keeps an expired ambiguous dispatch polling on a %s status answer", async (kind) => {
     vi.useFakeTimers();
     try {

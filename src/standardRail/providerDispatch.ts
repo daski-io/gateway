@@ -347,15 +347,20 @@ export class StandardProviderDispatch {
       },
     );
     if (!response.ok) {
-      // Only a 404 with a JSON error is the provider's own answer; an edge page,
-      // another status or a malformed body leaves the dispatch unknown.
+      // Only the provider's own 404 saying it holds no claim for this dispatch
+      // (reason outcome_policy) means it never accepted it. It answers the same
+      // 404 for a bad signature, clock skew and its own internal errors
+      // (validator): those, an edge page, another status or a malformed body
+      // leave the dispatch unknown, so a passing provider fault never drops a
+      // claim it accepted.
       if (response.status === 404) {
         const body = await readBoundedJsonResponse(
           response,
           listing.providerControlProfile.payload.maxResponseBytes,
         ).catch(() => null);
         if (body && typeof body === "object" && !Array.isArray(body) &&
-            "error" in body && body.error !== null && body.error !== undefined) {
+            "error" in body && body.error !== null && body.error !== undefined &&
+            (body as { reason?: unknown }).reason === "outcome_policy") {
           const { error, reason } = body as { error: unknown; reason?: unknown };
           throw new ProviderDispatchUnknown(404, { source: "dispatch_status", error, reason: reason ?? null });
         }
