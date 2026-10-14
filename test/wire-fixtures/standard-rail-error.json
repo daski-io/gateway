@@ -36,6 +36,42 @@
       "correlationId": "00000000-0000-4000-8000-00000000c0de"
     }
   },
+  "orderActionUnsupported": {
+    "error": {
+      "code": "ORDER_ACTION_UNSUPPORTED",
+      "message": "The provider does not support this action for this order; nothing was changed",
+      "phase": "dispatch",
+      "retryable": false,
+      "requiresNewSignature": false,
+      "paymentMayHaveSettled": false,
+      "docs": "https://sandbox-gateway.daski.io/skills/buy.md#errors",
+      "correlationId": "00000000-0000-4000-8000-00000000c0de"
+    }
+  },
+  "orderActionConflict": {
+    "error": {
+      "code": "ORDER_ACTION_CONFLICT",
+      "message": "The provider already bound this action's identity to different content",
+      "phase": "dispatch",
+      "retryable": false,
+      "requiresNewSignature": false,
+      "paymentMayHaveSettled": false,
+      "docs": "https://sandbox-gateway.daski.io/skills/buy.md#errors",
+      "correlationId": "00000000-0000-4000-8000-00000000c0de"
+    }
+  },
+  "providerLifecycleUnavailable": {
+    "error": {
+      "code": "PROVIDER_LIFECYCLE_UNAVAILABLE",
+      "message": "The provider could not complete this order action right now; it may still have taken effect",
+      "phase": "dispatch",
+      "retryable": true,
+      "requiresNewSignature": true,
+      "paymentMayHaveSettled": false,
+      "docs": "https://sandbox-gateway.daski.io/skills/buy.md#errors",
+      "correlationId": "00000000-0000-4000-8000-00000000c0de"
+    }
+  },
   "requestSchemaInvalid": {
     "error": {
       "code": "REQUEST_SCHEMA_INVALID",

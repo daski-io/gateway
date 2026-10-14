@@ -400,6 +400,23 @@ separate recovery record that the reputation contract keeps beside that outcome
 (see [recovered orders](#recovered-orders)). Status and artifact reads always
 obtain fresh provider evidence.
 
+A provider can refuse an order action with an exact body whose only key is
+`error`, at most 1 KiB of uncompressed JSON. 409 `unsupported_action` answers
+the buyer HTTP 409 `ORDER_ACTION_UNSUPPORTED`: the provider changed nothing and
+the action is not retried. 409 `action_conflict` answers HTTP 409
+`ORDER_ACTION_CONFLICT`: the action's identity, such as a support `requestId`,
+is already bound to different content, which the provider keeps. 503
+`lifecycle_unavailable` answers HTTP 503 `PROVIDER_LIFECYCLE_UNAVAILABLE` with
+`Retry-After: 10`; the action may already have taken effect, so it is retried
+at most three times with the same request before reading status. An artifact
+read refused with 409 `artifact_unavailable` still answers
+`ARTIFACT_NOT_AVAILABLE`. Any other status or body, including an extra key, an
+edge page or an oversized body, stays `INTERNAL_ERROR`, and no provider text
+reaches the buyer. A payer-signed action spends its authorization before the
+provider is called and no refusal returns it: every retry carries a fresh
+authorization and the same request, so the provider's deduplication by its
+identity keeps one effect. A read capability is reused unchanged.
+
 An order in `INPUT_REQUIRED` also carries the provider's `inputRequest` on the
 payer-authorized status read and on the answer to an order input. It holds a
 summary, the cause and any known reason, and every field the provider has on

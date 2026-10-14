@@ -63,6 +63,9 @@ export type StandardRailErrorCode =
   | "REPUTATION_NOT_READY"
   | "REPUTATION_UNAVAILABLE"
   | "ARTIFACT_NOT_AVAILABLE"
+  | "ORDER_ACTION_UNSUPPORTED"
+  | "ORDER_ACTION_CONFLICT"
+  | "PROVIDER_LIFECYCLE_UNAVAILABLE"
   | "INTERNAL_ERROR";
 
 export interface StandardRailFieldError {
@@ -469,6 +472,41 @@ const DEFAULTS: Record<StandardRailErrorCode, ErrorDefaults> = {
     requiresNewSignature: false,
     paymentMayHaveSettled: false,
     nextAction: "Read the order status. Artifacts are available once it is completed or completed after recovery.",
+  },
+  // The provider's exact lifecycle refusals (lifecycleRefusal.ts). A
+  // payer-signed action spent its authorization before the provider answered
+  // and none of them returns it, so another attempt carries a fresh one; a
+  // read capability is reused.
+  ORDER_ACTION_UNSUPPORTED: {
+    status: 409,
+    message: "The provider does not support this action for this order; nothing was changed",
+    phase: "dispatch",
+    retryable: false,
+    requiresNewSignature: false,
+    paymentMayHaveSettled: false,
+    nextAction: "Do not retry this action; the order is unchanged. Read the order status for its current state.",
+  },
+  ORDER_ACTION_CONFLICT: {
+    status: 409,
+    message: "The provider already bound this action's identity to different content",
+    phase: "dispatch",
+    retryable: false,
+    requiresNewSignature: false,
+    paymentMayHaveSettled: false,
+    nextAction:
+      "Do not resend different content under the same identity; the provider keeps what it accepted first. " +
+      "Read the order status; a different support message needs a new requestId and a fresh authorization.",
+  },
+  PROVIDER_LIFECYCLE_UNAVAILABLE: {
+    status: 503,
+    message: "The provider could not complete this order action right now; it may still have taken effect",
+    phase: "dispatch",
+    retryable: true,
+    requiresNewSignature: true,
+    paymentMayHaveSettled: false,
+    nextAction:
+      "Wait for Retry-After, then retry at most three times with the same request, keeping any requestId. " +
+      "A signed action needs a fresh order action authorization; a read capability is reused. Then read the order status.",
   },
   INTERNAL_ERROR: {
     status: 500,

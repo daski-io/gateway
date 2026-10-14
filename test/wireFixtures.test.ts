@@ -200,6 +200,18 @@ function standardRailErrorFixture() {
     artifactNotAvailable: http(new StandardRailError("ARTIFACT_NOT_AVAILABLE", {
       correlationId: CORRELATION_ID,
     })),
+    // The provider's named lifecycle refusals (lifecycleRefusal.ts). The
+    // unavailable answer is shown for a signed action: a read capability
+    // retries with requiresNewSignature false.
+    orderActionUnsupported: http(new StandardRailError("ORDER_ACTION_UNSUPPORTED", {
+      correlationId: CORRELATION_ID,
+    })),
+    orderActionConflict: http(new StandardRailError("ORDER_ACTION_CONFLICT", {
+      correlationId: CORRELATION_ID,
+    })),
+    providerLifecycleUnavailable: http(new StandardRailError("PROVIDER_LIFECYCLE_UNAVAILABLE", {
+      correlationId: CORRELATION_ID,
+    })),
     requestSchemaInvalid: http(new StandardRailError("REQUEST_SCHEMA_INVALID", {
       message: "Request body does not match the outcome schema",
       fieldErrors: [{ path: "/registrantState", rule: "pattern", message: "must match pattern" }],

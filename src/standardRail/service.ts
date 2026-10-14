@@ -1573,7 +1573,9 @@ export class StandardRailService {
         )),
       },
     );
-    if (!response.ok) throw await providerLifecycleRefusal(args.action, response);
+    if (!response.ok) {
+      throw await providerLifecycleRefusal(args.action, response, { readCapability: Boolean(args.readCapability) });
+    }
     const providerResult = await readBoundedJson(
       response,
       listing.providerControlProfile.payload.maxResponseBytes,
