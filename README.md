@@ -379,9 +379,15 @@ provider owner-swap notice in [docs/owner-swaps-v1.md](docs/owner-swaps-v1.md). 
 active database-backed skill listings. Registration and activation require live
 chain authority; new commerce requires successful authority and card validation
 within five minutes. Existing orders retain their immutable listing snapshots.
-The operational fulfillment deadline for accepted orders uses the listing's current policy,
-with a default of 30 days, including orders placed under the former one-hour
-default. Provider-reported failure still takes effect immediately. Operators can
+An accepted order's fulfillment deadline runs from its original dispatch
+resolution for the longest of its snapshot's duration, a longer duration
+already recorded for it and the current listing's (30 days by default),
+whether or not that listing is on sale; a longer duration is recorded before it
+is used, so a shorter, paused or missing listing never shortens the deadline or
+suspends it ([operator recovery](docs/operator-recovery.md)). Provider-reported
+failure still takes effect immediately. An expired deadline fails the gateway
+order without cancelling or refunding the provider's task, whose later
+completion stays readable. Operators can
 [revive a deadline-failed order](docs/operator-recovery.md) when its existing
 provider task is still active.
 

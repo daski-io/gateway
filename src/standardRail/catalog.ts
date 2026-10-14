@@ -37,6 +37,7 @@ import type {
   PublicReputationV1,
   SignedEnvelope,
   StandardListing,
+  StandardOrderRecord,
 } from "./types.js";
 
 /** §10 commerce fence: a purchase requires provider facts newer than this. */
@@ -305,6 +306,40 @@ export class StandardRailCatalog {
     if (current.runtimeCommitmentHash !== listing.runtimeCommitmentHash) {
       throw new Error("LISTING_SUPERSEDED");
     }
+  }
+
+  /**
+   * The fulfillment duration the catalog currently applies to a paid order,
+   * for servicing rather than sale: the service's current version of the
+   * outcome and the order's own version while a registration retains it,
+   * read from stored registrations without a card refresh. Paused or closed
+   * sales, a hidden service and a stale card still count; a version that no
+   * longer assembles does not. Null when no applicable listing remains.
+   */
+  async servicingFulfillmentSeconds(
+    order: Pick<StandardOrderRecord, "providerAgentId" | "outcomeId" | "listingManifestHash" | "listing">,
+  ): Promise<number | null> {
+    const serviceId = order.listing.commitment?.payload?.serviceId;
+    if (typeof serviceId !== "string") return null;
+    const sameService = (record: StoredRegistration) =>
+      record.providerAgentId === order.providerAgentId && record.serviceId.toLowerCase() === serviceId.toLowerCase();
+    const records = (await this.registrations.listActiveByProvider(order.providerAgentId)).filter(sameService);
+    const retained = await this.registrations.registrationForListingHash(order.listingManifestHash);
+    const ownVersion = retained && sameService(retained) &&
+      !records.some((record) => record.registrationId === retained.registrationId) ? retained : null;
+    if (ownVersion) records.push(ownVersion);
+    let seconds: number | null = null;
+    for (const record of records) {
+      try {
+        const listing = await this.assembleListing(record, ...(await this.listingInputs(record, order.outcomeId)), false);
+        if (record === ownVersion &&
+            listing.runtimeCommitmentHash.toLowerCase() !== order.listingManifestHash.toLowerCase()) continue;
+        seconds = Math.max(seconds ?? 0, listing.deadlinePolicy.fulfillmentSeconds);
+      } catch {
+        // A version that no longer assembles does not service the order.
+      }
+    }
+    return seconds;
   }
 
   async validateRequest(listing: StandardListing, body: unknown): Promise<void> {

@@ -769,6 +769,41 @@ export class StandardRailService {
     );
   }
 
+  /**
+   * A dispatched order's fulfillment duration: never below its checkout
+   * snapshot or a longer duration already recorded for it, raised by the
+   * listing that services it now when the catalog can say (paused sales and
+   * retained versions included). A raise is recorded under the order's
+   * version and lease fence before the deadline relies on it, so a later
+   * shorter listing, missing listing or failed lookup cannot retract it.
+   */
+  private async fulfillmentDuration(
+    order: StandardOrderRecord,
+  ): Promise<{ order: StandardOrderRecord; seconds: number }> {
+    const snapshot = order.listing.deadlinePolicy?.fulfillmentSeconds;
+    const floor = Math.max(
+      typeof snapshot === "number" && Number.isSafeInteger(snapshot) && snapshot > 0 ? snapshot : 0,
+      order.effectiveFulfillmentSeconds ?? 0,
+    );
+    let current: number | null = null;
+    try {
+      current = await this.catalog.servicingFulfillmentSeconds(order);
+    } catch (error) {
+      logger.warn("current fulfillment policy unavailable; the recorded duration applies", {
+        orderId: order.orderId, error,
+      });
+    }
+    if (current !== null && current > floor) {
+      const extended = await this.store.extendFulfillment(order, current);
+      logger.info("order fulfillment duration extended", {
+        orderId: order.orderId, fulfillmentSeconds: current, previousSeconds: floor,
+      });
+      return { order: extended, seconds: current };
+    }
+    if (floor === 0) throw new Error("Dispatched order has no fulfillment duration");
+    return { order, seconds: floor };
+  }
+
   private async resumePaidOrder(initial: StandardOrderRecord): Promise<void> {
     await this.assertRailFence();
     // The order's lease keeps every other driver off it; orders of one
@@ -807,9 +842,6 @@ export class StandardRailService {
         reconciliationFailed = true;
         reconciliationError = error;
       }
-      // Only this operational deadline is live; provider identity and all
-      // other order terms continue to come from the checkout snapshot.
-      const currentListing = await this.listing(order.providerAgentId, order.outcomeId);
       const cached = await this.store.loadOperations(order.orderId);
       const clock = fulfillmentClock(cached?.operations ?? null, listing.purchaseReadiness === "payer_dns",
         Math.floor(Date.now()/1000), cached?.accumulatedWaitSeconds ?? 0);
@@ -819,8 +851,12 @@ export class StandardRailService {
         });
         return;
       }
-      const deadline = resolvedAt.getTime() +
-        (currentListing.deadlinePolicy.fulfillmentSeconds + clock.excludedSeconds) * 1_000;
+      // The deadline runs from the original dispatch resolution. Only its
+      // duration can grow; provider identity and every other order term
+      // continue to come from the checkout snapshot.
+      const fulfillment = await this.fulfillmentDuration(order);
+      order = fulfillment.order;
+      const deadline = resolvedAt.getTime() + (fulfillment.seconds + clock.excludedSeconds) * 1_000;
       if (Date.now() >= deadline) {
         await this.store.transition(order, "PROVIDER_FAILED", "signed_provider_deadline_elapsed");
       } else if (reconciliationFailed) {

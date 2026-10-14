@@ -66,6 +66,7 @@ interface OrderRow {
   provider_task_id: string | null;
   rail_epoch: string;
   capability_epoch: string;
+  effective_fulfillment_seconds?: string | null;
   version: string;
   lease_fence: string;
   expires_at: Date;
@@ -106,6 +107,8 @@ function record(row: OrderRow): StandardOrderRecord {
     providerTaskId: row.provider_task_id,
     railEpoch: row.rail_epoch,
     capabilityEpoch: Number(row.capability_epoch),
+    effectiveFulfillmentSeconds: row.effective_fulfillment_seconds == null
+      ? null : Number(row.effective_fulfillment_seconds),
     version: Number(row.version),
     leaseFence: Number(row.lease_fence),
     expiresAt: row.expires_at,
@@ -452,6 +455,26 @@ export class StandardRailStore {
       [orderId],
     );
     if (!result.rows[0]) throw new Error("ORDER_NOT_FOUND");
+    return record(result.rows[0]);
+  }
+
+  /**
+   * Records a longer fulfillment duration for a dispatched order before its
+   * deadline relies on it. Fenced like a transition (version, state and lease
+   * fence) and never lowered; it moves neither updated_at nor the dispatch
+   * resolution, so the deadline keeps its origin.
+   */
+  async extendFulfillment(order: StandardOrderRecord, seconds: number): Promise<StandardOrderRecord> {
+    if (!Number.isSafeInteger(seconds) || seconds <= 0) throw new Error("Fulfillment duration is invalid");
+    const result = await this.pool.query<OrderRow>(
+      `UPDATE standard_orders SET effective_fulfillment_seconds=$2,version=version+1
+        WHERE order_id=$1 AND version=$3 AND state=$4 AND lease_fence=$5
+          AND state IN ('DISPATCHED','INPUT_REQUIRED')
+          AND (effective_fulfillment_seconds IS NULL OR effective_fulfillment_seconds<$2)
+        RETURNING *`,
+      [order.orderId, seconds, order.version, order.state, order.leaseFence],
+    );
+    if (!result.rows[0]) throw new Error("ORDER_FULFILLMENT_EXTENSION_CONFLICT");
     return record(result.rows[0]);
   }
 

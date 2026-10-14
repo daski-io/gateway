@@ -498,6 +498,74 @@ describe("dynamic listing catalog", () => {
   });
 });
 
+describe("servicing fulfillment duration", () => {
+  // A paid order's view of the listing that services it: never the sale-time
+  // lookup, which refuses closed commerce and refreshes stale cards.
+  const paidOrder = (listingManifestHash: Hex = runtimeCommitmentHash, orderServiceId: Hex = serviceId) => ({
+    providerAgentId, outcomeId: "register-domain", listingManifestHash,
+    listing: { commitment: { payload: { serviceId: orderServiceId } } },
+  }) as unknown as Parameters<StandardRailCatalog["servicingFulfillmentSeconds"]>[0];
+  const lasting = (fulfillmentSeconds: number | null, overrides: Partial<StoredRegistration> = {},
+    skillOverrides: Record<string, unknown> = {}) => {
+    const registration = record(overrides);
+    (registration.card as { skills: unknown[] }).skills = [skill({ ...skillOverrides, contract: {
+      ...skill().contract,
+      deadlines: fulfillmentSeconds === null ? { dispatchSeconds: 300 } : { dispatchSeconds: 300, fulfillmentSeconds },
+    } })];
+    return registration;
+  };
+
+  it("reads a closed sale's current duration from stored state without refreshing it", async () => {
+    const closed = lasting(172_800, {
+      marketplaceEnabled: false, cardAcceptingOrders: false, chainActive: false, registrationHealthy: false,
+      lastRefreshedAt: new Date(Date.now() - 2 * 86_400_000),
+    }, { acceptingNewOrders: false });
+    const state = fakeState([closed]);
+    state.rows.get(listingId)!.acceptingNewOrders = false;
+    const catalog = catalogFor(state);
+
+    await expect(catalog.listing(providerAgentId, "register-domain")).rejects.toThrow("OUTCOME_NOT_FOUND");
+    expect(await catalog.servicingFulfillmentSeconds(paidOrder())).toBe(172_800);
+    expect(state.refreshes).toBe(0);
+  });
+
+  it("applies the current default to a contract without its own duration", async () => {
+    const catalog = catalogFor(fakeState([lasting(null)]));
+    expect(await catalog.servicingFulfillmentSeconds(paidOrder())).toBe(2_592_000);
+  });
+
+  it("includes the order's own version while a superseded registration retains it", async () => {
+    const retained = lasting(259_200, { state: "SUPERSEDED", marketplaceEnabled: false });
+    const catalog = catalogFor(fakeState([retained]));
+
+    expect(await catalog.servicingFulfillmentSeconds(paidOrder())).toBe(259_200);
+    // Another version's order has no retained listing here.
+    expect(await catalog.servicingFulfillmentSeconds(paidOrder(hash("e")))).toBeNull();
+  });
+
+  it("takes the longer of the current version and the order's retained version", async () => {
+    const retained = lasting(259_200, { state: "SUPERSEDED" });
+    const current = lasting(604_800, { registrationId: "reg-2" });
+    expect(await catalogFor(fakeState([retained, current])).servicingFulfillmentSeconds(paidOrder())).toBe(604_800);
+    const shorter = lasting(43_200, { registrationId: "reg-2" });
+    expect(await catalogFor(fakeState([retained, shorter])).servicingFulfillmentSeconds(paidOrder())).toBe(259_200);
+  });
+
+  it("counts only the order's own service", async () => {
+    const catalog = catalogFor(fakeState([lasting(604_800)]));
+    expect(await catalog.servicingFulfillmentSeconds(paidOrder(runtimeCommitmentHash, hash("9")))).toBeNull();
+  });
+
+  it("skips a version that no longer assembles", async () => {
+    const drifted = lasting(604_800, {}, { skillContractHash: hash("f") });
+    expect(await catalogFor(fakeState([drifted])).servicingFulfillmentSeconds(paidOrder())).toBeNull();
+    const state = fakeState([lasting(604_800)]);
+    state.rows.get(listingId)!.state = "RETIRED";
+    expect(await catalogFor(state).servicingFulfillmentSeconds(paidOrder())).toBeNull();
+    expect(await catalogFor(fakeState([])).servicingFulfillmentSeconds(paidOrder())).toBeNull();
+  });
+});
+
 describe("outcome search", () => {
   function catalogWithJurisdictions(jurisdictions: string[]): StandardRailCatalog {
     const row = record();

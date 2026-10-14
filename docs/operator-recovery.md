@@ -69,9 +69,12 @@ coordinator should still persist which registrations that run changed.
 
 Provider dispatch refusals containing a JSON `error` are recorded with their HTTP
 status, reason and signed envelope. Recovery retries with fresh nonces and
-envelopes after 10, 20, 40, then 60 seconds, bounded by the listing's
-`fulfillmentSeconds` from recorded release evidence (or explicit revival).
-A five-minute envelope expiry does not end the fulfillment window. Transport
+envelopes after 10, 20, 40, then 60 seconds, bounded by the checkout snapshot's
+`fulfillmentSeconds` from the first recorded release-evidence observation (or
+explicit revival). This initial dispatch window is separate from the fulfillment
+deadline below and does not use a recorded longer duration. A five-minute
+envelope expiry does not end the window, so a timely-paid order is still
+dispatched, with a fresh envelope, days after its quote expired. Transport
 failures, timeouts and responses without a usable JSON error remain ambiguous;
 recovery only polls their existing dispatch hash. Once that envelope has expired
 (its `validBefore` plus 60 seconds), a status answer of 404 with a JSON `error`
@@ -84,13 +87,36 @@ at most one task per order. Before expiry, or on any other status answer, recove
 keeps polling. Each recovery batch visits an
 order at most once, including when a status query leaves its state unchanged.
 
-The default fulfillment deadline is 2,592,000 seconds (30 days). For accepted
-orders in `DISPATCHED` or `INPUT_REQUIRED`, deadline evaluation uses the current
-listing's `fulfillmentSeconds`, measured from the original dispatch resolution,
-even when the checkout snapshot contains the previous 3,600-second default.
-Other order terms continue to use the immutable checkout snapshot. A provider
-reporting failure still fails through reconciliation immediately; an active
-status does not restart the clock.
+The default fulfillment deadline is 2,592,000 seconds (30 days). An accepted
+order in `DISPATCHED` or `INPUT_REQUIRED` fails at its original dispatch
+resolution plus its effective fulfillment duration plus any admitted wait
+below. The effective duration is the longest of the checkout snapshot's
+`fulfillmentSeconds`, a longer duration already recorded for the order
+(`standard_orders.effective_fulfillment_seconds`), and the listing that services
+it now: the service's current version of the outcome, and the order's own
+version while a registration retains it, read from stored registrations
+whether or not sales are open, the service is visible or its card is fresh. A
+longer current duration is recorded, under the order's version and lease
+fence, before the deadline relies on it; a shorter later listing, a missing
+listing, a failed catalog lookup or a restart therefore never shortens the
+deadline or stops it being enforced. An order placed under the former
+3,600-second default gains the 30-day default when its own or its service's
+current version is read, and keeps it from then on. Orders that predate the
+recorded duration start from their snapshot; no unrecorded extension is assumed. A
+database failure delays an evaluation without moving its origin. Other order
+terms continue to use the immutable checkout snapshot. A provider reporting
+failure still fails through reconciliation immediately; an active status does
+not restart the clock.
+
+An expired deadline records `PROVIDER_FAILED` with reason
+`signed_provider_deadline_elapsed`. It neither cancels nor refunds the
+provider's task, and nothing revives the order automatically. Authorized status
+and artifact reads keep working: a task the provider completes later returns its
+artifact with `fulfillmentState: "completed"` while `orderState` stays
+`PROVIDER_FAILED` and the signed payment receipt is unchanged. Only the operator
+revival above returns such an order to `DISPATCHED`; it keeps the original
+dispatch resolution and recorded duration, so the order fails again unless a
+longer duration has become available.
 
 For listings admitting payer DNS readiness, signed `dns_pending` and
 `waiting_capacity` observations suspend that clock. The provider's cumulative

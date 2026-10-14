@@ -477,7 +477,6 @@ describe("live fulfillment deadline", () => {
       updatedAt:new Date((now-31*86400)*1000) } as unknown as StandardOrderRecord;
     const transition=vi.fn(); const record=vi.fn();
     const service=harness({ assertRailFence:async()=>undefined,resumePreSettlement:async()=>order,
-      listing:async()=>({deadlinePolicy:{fulfillmentSeconds:30*86400}}),
       store:{findById:async()=>order,
         transition,loadOperations:async()=>({accumulatedWaitSeconds:31*86400,operations:{observedAt:now-700,
           fulfillment:{phase:"dns_pending",accumulatedWaitSeconds:31*86400,nextCheckAt:now-400}}})},
@@ -491,18 +490,23 @@ describe("live fulfillment deadline", () => {
   it.each(["DISPATCHED", "INPUT_REQUIRED"] as const)("keeps an old snapshot alive at 61 minutes in %s and fails at 30 days", async (state) => {
     const resolvedAt = new Date("2026-09-28T00:00:36Z");
     const order = {
-      orderId: "order-1", providerAgentId: "7", outcomeId: "formation", state,
+      orderId: "order-1", providerAgentId: "7", outcomeId: "formation", state, version: 3, leaseFence: 2,
       listingManifestHash: hash("1"),
       listing: { deadlinePolicy: { fulfillmentSeconds: 3600 } }, updatedAt: resolvedAt,
     } as unknown as StandardOrderRecord;
-    const currentListing = vi.fn(async () => ({ deadlinePolicy: { fulfillmentSeconds: 2_592_000 } }));
-    const reconcile = vi.fn(async () => order);
+    let stored = order;
+    const servicingFulfillmentSeconds = vi.fn(async (): Promise<number | null> => 2_592_000);
+    const extendFulfillment = vi.fn(async (current: StandardOrderRecord, seconds: number) =>
+      (stored = { ...current, effectiveFulfillmentSeconds: seconds, version: current.version + 1 }));
+    const reconcile = vi.fn(async (current: StandardOrderRecord) => current);
     const transition = vi.fn();
+    const commerceListing = vi.fn(async () => { throw new Error("OUTCOME_NOT_FOUND"); });
     const service = harness({
-      assertRailFence: vi.fn(), resumePreSettlement: async () => order,
-      listing: currentListing,
+      assertRailFence: vi.fn(), resumePreSettlement: async (current: StandardOrderRecord) => current,
+      listing: commerceListing,
+      catalog: { servicingFulfillmentSeconds },
       store: { loadOperations: vi.fn(async () => null), persistOperations: vi.fn(async () => undefined),
-        findById: async () => order, transition,
+        findById: async () => stored, transition, extendFulfillment,
       },
       journal: { dispatchClaim: async () => ({ dispatch: {} }), dispatchResolvedAt: async () => resolvedAt },
       dispatcher: { reconcile },
@@ -515,27 +519,33 @@ describe("live fulfillment deadline", () => {
       vi.setSystemTime(resolvedAt.getTime() + 61 * 60_000);
       await resume();
       expect(transition).not.toHaveBeenCalled();
-      expect(currentListing).toHaveBeenCalledWith("7", "formation");
+      expect(servicingFulfillmentSeconds).toHaveBeenCalledWith(order);
+      expect(extendFulfillment).toHaveBeenCalledExactlyOnceWith(order, 2_592_000);
       expect(reconcile).toHaveBeenCalledWith(order, order.listing, canonicalHash({}));
       reconcile.mockRejectedValueOnce(new Error("provider unavailable"));
       await expect(resume()).rejects.toThrow("provider unavailable");
       expect(transition).not.toHaveBeenCalled();
+      // The recorded duration holds once the catalog stops offering it.
+      servicingFulfillmentSeconds.mockResolvedValue(null);
       vi.setSystemTime(resolvedAt.getTime() + 2_592_000_000 - 1);
       await resume();
       expect(transition).not.toHaveBeenCalled();
       vi.advanceTimersByTime(1);
       await resume();
-      expect(transition).toHaveBeenCalledExactlyOnceWith(order, "PROVIDER_FAILED", "signed_provider_deadline_elapsed");
+      expect(transition).toHaveBeenCalledExactlyOnceWith(stored, "PROVIDER_FAILED", "signed_provider_deadline_elapsed");
       transition.mockClear();
       reconcile.mockRejectedValueOnce(new Error("provider unavailable"));
       await resume();
-      expect(transition).toHaveBeenCalledExactlyOnceWith(order, "PROVIDER_FAILED", "signed_provider_deadline_elapsed");
+      expect(transition).toHaveBeenCalledExactlyOnceWith(stored, "PROVIDER_FAILED", "signed_provider_deadline_elapsed");
+      expect(extendFulfillment).toHaveBeenCalledOnce();
       expect(order.listing.deadlinePolicy.fulfillmentSeconds).toBe(3600);
+      // The sale-time lookup, which refuses closed commerce, is never consulted.
+      expect(commerceListing).not.toHaveBeenCalled();
       for (const terminal of ["PROVIDER_FAILED", "FULFILLED"] as const) {
-        currentListing.mockClear(); transition.mockClear();
-        reconcile.mockResolvedValueOnce({ ...order, state: terminal });
+        servicingFulfillmentSeconds.mockClear(); transition.mockClear();
+        reconcile.mockResolvedValueOnce({ ...stored, state: terminal });
         await resume();
-        expect(currentListing).not.toHaveBeenCalled();
+        expect(servicingFulfillmentSeconds).not.toHaveBeenCalled();
         expect(transition).not.toHaveBeenCalled();
       }
     } finally { vi.useRealTimers(); }

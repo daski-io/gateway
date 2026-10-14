@@ -682,6 +682,12 @@ export interface StandardOrderRecord {
   providerTaskId: string | null;
   railEpoch: string;
   capabilityEpoch: number;
+  /**
+   * A fulfillment duration longer than the snapshot's, recorded once the
+   * listing servicing the order offered it; never lowered. Null when only the
+   * snapshot applies.
+   */
+  effectiveFulfillmentSeconds?: number | null;
   version: number;
   leaseFence: number;
   expiresAt: Date;
