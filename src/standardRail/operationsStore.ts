@@ -1,4 +1,5 @@
 import type { Pool } from "../db/pool.js";
+import type { Hex } from "../types.js";
 import { canonicalHash } from "./canonical.js";
 import { operationsSchema, type OrderOperations } from "./operationsSchema.js";
 
@@ -10,6 +11,19 @@ export interface StoredOperations {
   operations: OrderOperations;
   accumulatedWaitSeconds: number;
   originalTerminal: TerminalEvidence | null;
+}
+/** A provider observation as stored, against which the next one is judged. */
+export interface StoredObservation {
+  revision: number;
+  observedAt: number;
+  /** Hash of the observation without observedAt: the content its revision names. */
+  projectionHash: Hex;
+  waitSeconds: number;
+  originalTerminal: TerminalEvidence | null;
+}
+export interface ObservedOperations {
+  operations: OrderOperations;
+  projectionHash: Hex;
 }
 
 function withoutReply(support: NonNullable<OrderOperations["support"]>) {
@@ -31,17 +45,70 @@ export async function loadOperations(pool: Pool, orderId: string): Promise<Store
     originalTerminal: row.original_terminal } : null;
 }
 
-/** Called only after outer signature, task binding and terminal signature verification. */
-export async function persistOperations(
-  pool: Pool, orderId: string, input: unknown, terminal: TerminalEvidence | null,
-): Promise<void> {
+/**
+ * A provider's signed operations, parsed and fresh at `now`: observed at most
+ * 300 seconds before it and at most 30 seconds after it.
+ */
+export function observeOperations(input: unknown, now = Math.floor(Date.now() / 1_000)): ObservedOperations {
   const operations = operationsSchema.parse(input);
-  const now = Math.floor(Date.now() / 1_000);
   if (operations.observedAt > now + 30 || operations.observedAt < now - 300) {
     throw new Error("provider_operations_observation_stale");
   }
   const { observedAt: _observedAt, ...semantic } = operations;
-  const projectionHash = Buffer.from(canonicalHash(semantic).slice(2), "hex");
+  return { operations, projectionHash: canonicalHash(semantic) };
+}
+
+/**
+ * The observation kept once `observed` arrives with its terminal evidence, or
+ * null when it is older than the stored one and changes nothing. Throws when
+ * the provider equivocates on a revision or an original terminal, binds a
+ * recovery to another terminal, or turns its wait clock back.
+ */
+export function nextObservation(
+  stored: StoredObservation | null, observed: ObservedOperations, terminal: TerminalEvidence | null,
+): StoredObservation | null {
+  const { operations, projectionHash } = observed;
+  // One revision names exactly one projection; a different body under a
+  // stored revision is provider equivocation, never a benign race.
+  if (stored && operations.revision === stored.revision && projectionHash !== stored.projectionHash) {
+    throw new Error("provider_operations_revision_conflict");
+  }
+  if (stored?.originalTerminal && terminal &&
+      canonicalHash(terminalIdentity(stored.originalTerminal)) !== canonicalHash(terminalIdentity(terminal))) {
+    throw new Error("provider_original_terminal_changed");
+  }
+  // Concurrent reads of the same order can arrive out of order. An older
+  // observation is valid signed evidence, but it never replaces a newer one.
+  if (stored && (operations.revision < stored.revision || operations.observedAt < stored.observedAt)) {
+    return null;
+  }
+  const original = stored?.originalTerminal ?? terminal;
+  const recovery = operations.recovery;
+  if (recovery && (!original || original.payload.state !== "failed" ||
+      recovery.originalTerminal.resultHash !== original.payload.resultHash ||
+      recovery.originalTerminal.completedAt !== original.payload.completedAt ||
+      (recovery.state === "completed" && (!recovery.completedAt || !recovery.resultHash)))) {
+    throw new Error("provider_recovery_terminal_binding_invalid");
+  }
+  if (stored && operations.fulfillment &&
+      operations.fulfillment.accumulatedWaitSeconds < stored.waitSeconds) {
+    throw new Error("provider_wait_clock_regressed");
+  }
+  return {
+    revision: operations.revision,
+    observedAt: operations.observedAt,
+    projectionHash,
+    waitSeconds: Math.max(stored?.waitSeconds ?? 0, operations.fulfillment?.accumulatedWaitSeconds ?? 0),
+    originalTerminal: original,
+  };
+}
+
+/** Called only after outer signature, task binding and terminal signature verification. */
+export async function persistOperations(
+  pool: Pool, orderId: string, input: unknown, terminal: TerminalEvidence | null,
+): Promise<void> {
+  const observed = observeOperations(input);
+  const { operations } = observed;
   // DNS names/values and operator replies are transient buyer content, never
   // retained in this table; the stored projection stays readable by the
   // previous runtime, which knows no reply.
@@ -57,32 +124,16 @@ export async function persistOperations(
       safe_projection: OrderOperations; wait_seconds: string; original_terminal: TerminalEvidence | null;
     }>("SELECT * FROM standard_order_operations WHERE order_id=$1 FOR UPDATE", [orderId]);
     const old = previous.rows[0];
-    // One revision names exactly one projection; a different body under a
-    // stored revision is provider equivocation, never a benign race.
-    if (old && operations.revision === Number(old.revision) && !projectionHash.equals(old.projection_hash)) {
-      throw new Error("provider_operations_revision_conflict");
-    }
-    if (old?.original_terminal && terminal &&
-        canonicalHash(terminalIdentity(old.original_terminal)) !== canonicalHash(terminalIdentity(terminal))) {
-      throw new Error("provider_original_terminal_changed");
-    }
-    // Concurrent reads of the same order can arrive out of order. An older
-    // observation is valid signed evidence, but it never replaces a newer one.
-    if (old && (operations.revision < Number(old.revision) || operations.observedAt < Number(old.observed_at))) {
+    const next = nextObservation(old ? {
+      revision: Number(old.revision),
+      observedAt: Number(old.observed_at),
+      projectionHash: `0x${old.projection_hash.toString("hex")}`,
+      waitSeconds: Number(old.wait_seconds),
+      originalTerminal: old.original_terminal,
+    } : null, observed, terminal);
+    if (!next) {
       await client.query("COMMIT");
       return;
-    }
-    const original = old?.original_terminal ?? terminal;
-    const recovery = operations.recovery;
-    if (recovery && (!original || original.payload.state !== "failed" ||
-        recovery.originalTerminal.resultHash !== original.payload.resultHash ||
-        recovery.originalTerminal.completedAt !== original.payload.completedAt ||
-        (recovery.state === "completed" && (!recovery.completedAt || !recovery.resultHash)))) {
-      throw new Error("provider_recovery_terminal_binding_invalid");
-    }
-    if (old && operations.fulfillment &&
-        operations.fulfillment.accumulatedWaitSeconds < Number(old.wait_seconds)) {
-      throw new Error("provider_wait_clock_regressed");
     }
     await client.query(
       `INSERT INTO standard_order_operations(order_id,revision,observed_at,projection_hash,safe_projection,original_terminal,wait_seconds)
@@ -90,7 +141,8 @@ export async function persistOperations(
        revision=EXCLUDED.revision,observed_at=EXCLUDED.observed_at,projection_hash=EXCLUDED.projection_hash,
        safe_projection=EXCLUDED.safe_projection,original_terminal=COALESCE(standard_order_operations.original_terminal,EXCLUDED.original_terminal),
        wait_seconds=greatest(standard_order_operations.wait_seconds,EXCLUDED.wait_seconds),refreshed_at=now()`,
-      [orderId, operations.revision, operations.observedAt, projectionHash, safe, original, operations.fulfillment?.accumulatedWaitSeconds ?? 0],
+      [orderId, next.revision, next.observedAt, Buffer.from(next.projectionHash.slice(2), "hex"), safe,
+        next.originalTerminal, next.waitSeconds],
     );
     await client.query("COMMIT");
   } catch (error) { await client.query("ROLLBACK"); throw error; }
