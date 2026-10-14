@@ -1,0 +1,682 @@
+{
+  "schemaVersion": 1,
+  "surface": "POST dispatchStatusUrl with {query: DispatchStatusQueryV1}; answer exactly like the dispatch for the queried hash, or 404 {\"error\":\"dispatch_status_unavailable\",\"reason\":\"outcome_policy\"} only when an authoritative lookup finds no claim for the order",
+  "verdicts": {
+    "accepted": "The gateway resolves the dispatch and moves the order from DISPATCH_AMBIGUOUS to orderStateAfter.",
+    "noClaim": "The gateway records the absence only from the original envelope's validBefore plus 60 seconds, then sends a fresh envelope.",
+    "unknown": "The gateway keeps the order DISPATCH_AMBIGUOUS and polls again; it never drops the claim."
+  },
+  "requests": {
+    "working": {
+      "gateway": {
+        "now": 1790000600
+      },
+      "dispatchHash": "0x68df0a341c25d30f3e22b9585038fa7f0abd2a19f6de59ca88df83e9978a282f",
+      "http": {
+        "method": "POST",
+        "url": "https://provider.example/standard-rail/dispatch/status",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "query": {
+            "artifactType": "DispatchStatusQueryV1",
+            "schemaVersion": 1,
+            "environment": "testnet",
+            "chainId": 84532,
+            "audience": "https://provider.example",
+            "signerKeyId": "gateway-dispatch",
+            "issuedAt": 1790000600,
+            "validBefore": 1790000660,
+            "payload": {
+              "orderId": "ord_00000000-0000-4000-8000-000000000001",
+              "dispatchHash": "0x68df0a341c25d30f3e22b9585038fa7f0abd2a19f6de59ca88df83e9978a282f",
+              "issuedAt": 1790000600,
+              "validBefore": 1790000660
+            },
+            "signature": "0xa22ab022f1a75407596b0a1a2813753948523e59c2dc117e0a0309ece0a66402513b9259668eb07391a5ffe7cee8d4c0408150e0747ae75917c027e57d64e5301c"
+          }
+        },
+        "bodyText": "{\"query\":{\"artifactType\":\"DispatchStatusQueryV1\",\"schemaVersion\":1,\"environment\":\"testnet\",\"chainId\":84532,\"audience\":\"https://provider.example\",\"signerKeyId\":\"gateway-dispatch\",\"issuedAt\":1790000600,\"validBefore\":1790000660,\"payload\":{\"orderId\":\"ord_00000000-0000-4000-8000-000000000001\",\"dispatchHash\":\"0x68df0a341c25d30f3e22b9585038fa7f0abd2a19f6de59ca88df83e9978a282f\",\"issuedAt\":1790000600,\"validBefore\":1790000660},\"signature\":\"0xa22ab022f1a75407596b0a1a2813753948523e59c2dc117e0a0309ece0a66402513b9259668eb07391a5ffe7cee8d4c0408150e0747ae75917c027e57d64e5301c\"}}"
+      }
+    },
+    "completed": {
+      "gateway": {
+        "now": 1790003700
+      },
+      "dispatchHash": "0x68df0a341c25d30f3e22b9585038fa7f0abd2a19f6de59ca88df83e9978a282f",
+      "http": {
+        "method": "POST",
+        "url": "https://provider.example/standard-rail/dispatch/status",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "query": {
+            "artifactType": "DispatchStatusQueryV1",
+            "schemaVersion": 1,
+            "environment": "testnet",
+            "chainId": 84532,
+            "audience": "https://provider.example",
+            "signerKeyId": "gateway-dispatch",
+            "issuedAt": 1790003700,
+            "validBefore": 1790003760,
+            "payload": {
+              "orderId": "ord_00000000-0000-4000-8000-000000000001",
+              "dispatchHash": "0x68df0a341c25d30f3e22b9585038fa7f0abd2a19f6de59ca88df83e9978a282f",
+              "issuedAt": 1790003700,
+              "validBefore": 1790003760
+            },
+            "signature": "0xd66026c09160293a505c44dcc1ce6ced07ef69ba8c5b6693ebbcc2064ca12af468b71bc4926503f39c30239b41a20ef4752abfa6a1d8d4afc16ee108f35f05631c"
+          }
+        },
+        "bodyText": "{\"query\":{\"artifactType\":\"DispatchStatusQueryV1\",\"schemaVersion\":1,\"environment\":\"testnet\",\"chainId\":84532,\"audience\":\"https://provider.example\",\"signerKeyId\":\"gateway-dispatch\",\"issuedAt\":1790003700,\"validBefore\":1790003760,\"payload\":{\"orderId\":\"ord_00000000-0000-4000-8000-000000000001\",\"dispatchHash\":\"0x68df0a341c25d30f3e22b9585038fa7f0abd2a19f6de59ca88df83e9978a282f\",\"issuedAt\":1790003700,\"validBefore\":1790003760},\"signature\":\"0xd66026c09160293a505c44dcc1ce6ced07ef69ba8c5b6693ebbcc2064ca12af468b71bc4926503f39c30239b41a20ef4752abfa6a1d8d4afc16ee108f35f05631c\"}}"
+      }
+    },
+    "no-claim-within-grace": {
+      "gateway": {
+        "now": 1790000419
+      },
+      "dispatchHash": "0x68df0a341c25d30f3e22b9585038fa7f0abd2a19f6de59ca88df83e9978a282f",
+      "http": {
+        "method": "POST",
+        "url": "https://provider.example/standard-rail/dispatch/status",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "query": {
+            "artifactType": "DispatchStatusQueryV1",
+            "schemaVersion": 1,
+            "environment": "testnet",
+            "chainId": 84532,
+            "audience": "https://provider.example",
+            "signerKeyId": "gateway-dispatch",
+            "issuedAt": 1790000419,
+            "validBefore": 1790000479,
+            "payload": {
+              "orderId": "ord_00000000-0000-4000-8000-000000000001",
+              "dispatchHash": "0x68df0a341c25d30f3e22b9585038fa7f0abd2a19f6de59ca88df83e9978a282f",
+              "issuedAt": 1790000419,
+              "validBefore": 1790000479
+            },
+            "signature": "0xb8f15eebc406fd32d17976f6d913fc9c43fe31f7f48fc34a226e617971e29e42643acc9b2f8c3f155f2a19b3eb9fba5caa5b6d8e8d47f424fd9850de7105ba9b1b"
+          }
+        },
+        "bodyText": "{\"query\":{\"artifactType\":\"DispatchStatusQueryV1\",\"schemaVersion\":1,\"environment\":\"testnet\",\"chainId\":84532,\"audience\":\"https://provider.example\",\"signerKeyId\":\"gateway-dispatch\",\"issuedAt\":1790000419,\"validBefore\":1790000479,\"payload\":{\"orderId\":\"ord_00000000-0000-4000-8000-000000000001\",\"dispatchHash\":\"0x68df0a341c25d30f3e22b9585038fa7f0abd2a19f6de59ca88df83e9978a282f\",\"issuedAt\":1790000419,\"validBefore\":1790000479},\"signature\":\"0xb8f15eebc406fd32d17976f6d913fc9c43fe31f7f48fc34a226e617971e29e42643acc9b2f8c3f155f2a19b3eb9fba5caa5b6d8e8d47f424fd9850de7105ba9b1b\"}}"
+      }
+    },
+    "no-claim-after-grace": {
+      "gateway": {
+        "now": 1790000420
+      },
+      "dispatchHash": "0x68df0a341c25d30f3e22b9585038fa7f0abd2a19f6de59ca88df83e9978a282f",
+      "http": {
+        "method": "POST",
+        "url": "https://provider.example/standard-rail/dispatch/status",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "query": {
+            "artifactType": "DispatchStatusQueryV1",
+            "schemaVersion": 1,
+            "environment": "testnet",
+            "chainId": 84532,
+            "audience": "https://provider.example",
+            "signerKeyId": "gateway-dispatch",
+            "issuedAt": 1790000420,
+            "validBefore": 1790000480,
+            "payload": {
+              "orderId": "ord_00000000-0000-4000-8000-000000000001",
+              "dispatchHash": "0x68df0a341c25d30f3e22b9585038fa7f0abd2a19f6de59ca88df83e9978a282f",
+              "issuedAt": 1790000420,
+              "validBefore": 1790000480
+            },
+            "signature": "0x8cbb3c04b61ebbe71c6ed519477fbf723e1c91d4af5291c6491221a3893730ba64529d147352e84cd25bc13b0065eb685d0d48a2c2283863a7681501dad4ec611c"
+          }
+        },
+        "bodyText": "{\"query\":{\"artifactType\":\"DispatchStatusQueryV1\",\"schemaVersion\":1,\"environment\":\"testnet\",\"chainId\":84532,\"audience\":\"https://provider.example\",\"signerKeyId\":\"gateway-dispatch\",\"issuedAt\":1790000420,\"validBefore\":1790000480,\"payload\":{\"orderId\":\"ord_00000000-0000-4000-8000-000000000001\",\"dispatchHash\":\"0x68df0a341c25d30f3e22b9585038fa7f0abd2a19f6de59ca88df83e9978a282f\",\"issuedAt\":1790000420,\"validBefore\":1790000480},\"signature\":\"0x8cbb3c04b61ebbe71c6ed519477fbf723e1c91d4af5291c6491221a3893730ba64529d147352e84cd25bc13b0065eb685d0d48a2c2283863a7681501dad4ec611c\"}}"
+      }
+    }
+  },
+  "responses": [
+    {
+      "id": "working.accepted",
+      "request": "working",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "The admitted snapshot for the queried hash, observed and signed afresh.",
+      "provider": {
+        "now": 1790000600,
+        "taskId": "00000000-0000-4000-8000-00000000a001",
+        "state": "working",
+        "operations": {
+          "schemaVersion": 1,
+          "revision": 0,
+          "observedAt": 1790000600,
+          "fulfillment": null,
+          "support": null,
+          "recovery": null
+        },
+        "signer": "providerAuthority"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "taskId": "00000000-0000-4000-8000-00000000a001",
+          "dispatchHash": "0x68df0a341c25d30f3e22b9585038fa7f0abd2a19f6de59ca88df83e9978a282f",
+          "state": "working",
+          "operations": {
+            "schemaVersion": 1,
+            "revision": 0,
+            "observedAt": 1790000600,
+            "fulfillment": null,
+            "support": null,
+            "recovery": null
+          },
+          "signature": "0x3dd149a639bc4e89d69f2e79afca8d291279d7d497338ba32f64295e3ec9aec34a7fb7aa46483a48c7003355eaf5b47b0e78a641fa12102f7010ecf2340172461b"
+        }
+      },
+      "gateway": {
+        "orderState": "DISPATCH_AMBIGUOUS",
+        "receivedAt": 1790000600,
+        "verdict": "accepted",
+        "orderStateAfter": "DISPATCHED"
+      }
+    },
+    {
+      "id": "completed.accepted",
+      "request": "completed",
+      "appliesTo": [
+        "daski-io/provider"
+      ],
+      "purpose": "A completion polled from status; the attestation binds the hash of the frozen service result.",
+      "provider": {
+        "now": 1790003700,
+        "taskId": "00000000-0000-4000-8000-00000000a001",
+        "state": "completed",
+        "operations": {
+          "schemaVersion": 1,
+          "revision": 0,
+          "observedAt": 1790003700,
+          "fulfillment": null,
+          "support": null,
+          "recovery": null
+        },
+        "result": {
+          "status": "completed",
+          "message": "Note created.",
+          "artifacts": [
+            {
+              "name": "note",
+              "data": {
+                "note": "note-0001",
+                "title": "Synthetic fixture note",
+                "characters": 48
+              }
+            }
+          ]
+        },
+        "resultHash": "0x24656d0d9dcb863d5fdbf82efbd143139ad7e904ff2cadadc91b39e3552978eb",
+        "completedAt": 1790003600,
+        "signer": "providerAuthority",
+        "terminalSigner": "providerTerminalAttestation"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "taskId": "00000000-0000-4000-8000-00000000a001",
+          "dispatchHash": "0x68df0a341c25d30f3e22b9585038fa7f0abd2a19f6de59ca88df83e9978a282f",
+          "state": "completed",
+          "operations": {
+            "schemaVersion": 1,
+            "revision": 0,
+            "observedAt": 1790003700,
+            "fulfillment": null,
+            "support": null,
+            "recovery": null
+          },
+          "signature": "0x80fa571b1d39935fa0a6e10534d2ccfad6dcd6b7bdbb38f343e3146ae95b034d32c9209e4e81bbaa1d44d031c3a3fd1c132f6b5d2dac29d62fc85e8a8f1a236e1c",
+          "terminalAttestation": {
+            "payload": {
+              "taskId": "00000000-0000-4000-8000-00000000a001",
+              "dispatchHash": "0x68df0a341c25d30f3e22b9585038fa7f0abd2a19f6de59ca88df83e9978a282f",
+              "state": "completed",
+              "resultHash": "0x24656d0d9dcb863d5fdbf82efbd143139ad7e904ff2cadadc91b39e3552978eb",
+              "completedAt": 1790003600
+            },
+            "signature": "0x9b672a561df36665952e142aea75a2aedf52ea8a6150ce59cd28e55405ef7c2b04f3e039cef3d3a839f936ff20befe116cd49529b9b84af139542f625d16d2ea1b"
+          }
+        }
+      },
+      "gateway": {
+        "orderState": "DISPATCH_AMBIGUOUS",
+        "receivedAt": 1790003700,
+        "verdict": "accepted",
+        "orderStateAfter": "FULFILLED"
+      }
+    },
+    {
+      "id": "completed-task.accepted",
+      "request": "completed",
+      "appliesTo": [
+        "daski-io/provider-full"
+      ],
+      "purpose": "A completion polled from status; the attestation binds the hash of the frozen unrevealed task projection.",
+      "provider": {
+        "now": 1790003700,
+        "taskId": "00000000-0000-4000-8000-00000000a001",
+        "state": "completed",
+        "operations": {
+          "schemaVersion": 1,
+          "revision": 0,
+          "observedAt": 1790003700,
+          "fulfillment": null,
+          "support": null,
+          "recovery": null
+        },
+        "result": {
+          "id": "00000000-0000-4000-8000-00000000a001",
+          "status": {
+            "state": "TASK_STATE_COMPLETED",
+            "message": {
+              "role": "ROLE_AGENT",
+              "parts": [
+                {
+                  "kind": "text",
+                  "text": "Note created."
+                }
+              ]
+            }
+          },
+          "artifacts": [
+            {
+              "artifactId": "note",
+              "name": "note_created",
+              "parts": [
+                {
+                  "kind": "data",
+                  "data": {
+                    "note": "note-0001",
+                    "title": "Synthetic fixture note",
+                    "characters": 48
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        "resultHash": "0x134fb3658986682b4285c13c3b1bfb971117f62f9c4fdc6d0cfad262c1a31388",
+        "completedAt": 1790003600,
+        "signer": "providerAuthority",
+        "terminalSigner": "providerTerminalAttestation"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "taskId": "00000000-0000-4000-8000-00000000a001",
+          "dispatchHash": "0x68df0a341c25d30f3e22b9585038fa7f0abd2a19f6de59ca88df83e9978a282f",
+          "state": "completed",
+          "operations": {
+            "schemaVersion": 1,
+            "revision": 0,
+            "observedAt": 1790003700,
+            "fulfillment": null,
+            "support": null,
+            "recovery": null
+          },
+          "signature": "0x80fa571b1d39935fa0a6e10534d2ccfad6dcd6b7bdbb38f343e3146ae95b034d32c9209e4e81bbaa1d44d031c3a3fd1c132f6b5d2dac29d62fc85e8a8f1a236e1c",
+          "terminalAttestation": {
+            "payload": {
+              "taskId": "00000000-0000-4000-8000-00000000a001",
+              "dispatchHash": "0x68df0a341c25d30f3e22b9585038fa7f0abd2a19f6de59ca88df83e9978a282f",
+              "state": "completed",
+              "resultHash": "0x134fb3658986682b4285c13c3b1bfb971117f62f9c4fdc6d0cfad262c1a31388",
+              "completedAt": 1790003600
+            },
+            "signature": "0x35a0f7cfdb004ac84a877bba01ffc6e42e79fadc69991a37cb5cd52fc8c4cc316ee342954eb910937fef58f3ed521875b65651fb4d311c740a654067c2cc37c91b"
+          }
+        }
+      },
+      "gateway": {
+        "orderState": "DISPATCH_AMBIGUOUS",
+        "receivedAt": 1790003700,
+        "verdict": "accepted",
+        "orderStateAfter": "FULFILLED"
+      }
+    },
+    {
+      "id": "failed.accepted",
+      "request": "completed",
+      "appliesTo": [
+        "daski-io/provider"
+      ],
+      "purpose": "A failure polled from status.",
+      "provider": {
+        "now": 1790003700,
+        "taskId": "00000000-0000-4000-8000-00000000a001",
+        "state": "failed",
+        "operations": {
+          "schemaVersion": 1,
+          "revision": 0,
+          "observedAt": 1790003700,
+          "fulfillment": null,
+          "support": null,
+          "recovery": null
+        },
+        "result": {
+          "status": "failed",
+          "errorCode": "service_execution_failed"
+        },
+        "resultHash": "0x5ff10ff1a0b6ff5ed019c2f9b8c5a60f24bdfce6ed3748a7584b3cc1e7a77c9c",
+        "completedAt": 1790003600,
+        "signer": "providerAuthority",
+        "terminalSigner": "providerTerminalAttestation"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "taskId": "00000000-0000-4000-8000-00000000a001",
+          "dispatchHash": "0x68df0a341c25d30f3e22b9585038fa7f0abd2a19f6de59ca88df83e9978a282f",
+          "state": "failed",
+          "operations": {
+            "schemaVersion": 1,
+            "revision": 0,
+            "observedAt": 1790003700,
+            "fulfillment": null,
+            "support": null,
+            "recovery": null
+          },
+          "signature": "0x36570dfd2ece16f6147dc3d97e461edfb4ad76a8fee92075d42254e6e58288bd2a6198e522e9f61242ae75aad6d8c930835ca28b9a6e17deafd701c0e8e015c91c",
+          "terminalAttestation": {
+            "payload": {
+              "taskId": "00000000-0000-4000-8000-00000000a001",
+              "dispatchHash": "0x68df0a341c25d30f3e22b9585038fa7f0abd2a19f6de59ca88df83e9978a282f",
+              "state": "failed",
+              "resultHash": "0x5ff10ff1a0b6ff5ed019c2f9b8c5a60f24bdfce6ed3748a7584b3cc1e7a77c9c",
+              "completedAt": 1790003600
+            },
+            "signature": "0xb5c6c42d937c81881aa3d29ea291a2843eb54a13d84a5ce694dd2800ac30542a5a14d83a73462357b8fbf1fa3a6add9bf9ec174a23976687d1fa35d67ad446031c"
+          }
+        }
+      },
+      "gateway": {
+        "orderState": "DISPATCH_AMBIGUOUS",
+        "receivedAt": 1790003700,
+        "verdict": "accepted",
+        "orderStateAfter": "PROVIDER_FAILED"
+      }
+    },
+    {
+      "id": "no-claim.within-grace",
+      "request": "no-claim-within-grace",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "The provider proves it holds no claim; before the envelope's validBefore plus 60 seconds the gateway keeps polling.",
+      "provider": {
+        "now": 1790000419,
+        "claim": null
+      },
+      "response": {
+        "status": 404,
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "error": "dispatch_status_unavailable",
+          "reason": "outcome_policy"
+        }
+      },
+      "gateway": {
+        "orderState": "DISPATCH_AMBIGUOUS",
+        "receivedAt": 1790000419,
+        "verdict": "noClaim",
+        "refusalRecorded": false
+      }
+    },
+    {
+      "id": "no-claim.after-grace",
+      "request": "no-claim-after-grace",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "From validBefore plus 60 seconds the no-claim answer is recorded and a fresh envelope follows.",
+      "provider": {
+        "now": 1790000420,
+        "claim": null
+      },
+      "response": {
+        "status": 404,
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "error": "dispatch_status_unavailable",
+          "reason": "outcome_policy"
+        }
+      },
+      "gateway": {
+        "orderState": "DISPATCH_AMBIGUOUS",
+        "receivedAt": 1790000420,
+        "verdict": "noClaim",
+        "refusalRecorded": true,
+        "refusal": {
+          "status": 404,
+          "reason": {
+            "source": "dispatch_status",
+            "error": "dispatch_status_unavailable",
+            "reason": "outcome_policy"
+          }
+        }
+      }
+    },
+    {
+      "id": "unknown.no-reason",
+      "request": "no-claim-after-grace",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "A 404 without reason outcome_policy never proves absence.",
+      "provider": {
+        "now": 1790000420
+      },
+      "response": {
+        "status": 404,
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "error": "dispatch_status_unavailable"
+        }
+      },
+      "gateway": {
+        "orderState": "DISPATCH_AMBIGUOUS",
+        "receivedAt": 1790000420,
+        "verdict": "unknown"
+      }
+    },
+    {
+      "id": "unknown.other-reason",
+      "request": "no-claim-after-grace",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "Signature, clock and internal failures must not use outcome_policy.",
+      "provider": {
+        "now": 1790000420
+      },
+      "response": {
+        "status": 404,
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "error": "dispatch_status_unavailable",
+          "reason": "signature"
+        }
+      },
+      "gateway": {
+        "orderState": "DISPATCH_AMBIGUOUS",
+        "receivedAt": 1790000420,
+        "verdict": "unknown"
+      }
+    },
+    {
+      "id": "unknown.null-error",
+      "request": "no-claim-after-grace",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "A null error proves nothing.",
+      "provider": {
+        "now": 1790000420
+      },
+      "response": {
+        "status": 404,
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "error": null,
+          "reason": "outcome_policy"
+        }
+      },
+      "gateway": {
+        "orderState": "DISPATCH_AMBIGUOUS",
+        "receivedAt": 1790000420,
+        "verdict": "unknown"
+      }
+    },
+    {
+      "id": "unknown.not-json",
+      "request": "no-claim-after-grace",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "An edge 404 page proves nothing.",
+      "provider": {
+        "now": 1790000420
+      },
+      "response": {
+        "status": 404,
+        "headers": {
+          "content-type": "text/plain"
+        },
+        "bodyText": "Not Found"
+      },
+      "gateway": {
+        "orderState": "DISPATCH_AMBIGUOUS",
+        "receivedAt": 1790000420,
+        "verdict": "unknown"
+      }
+    },
+    {
+      "id": "unknown.empty-503",
+      "request": "no-claim-after-grace",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "An empty 503 leaves the dispatch unknown.",
+      "provider": {
+        "now": 1790000420
+      },
+      "response": {
+        "status": 503,
+        "headers": {},
+        "bodyText": ""
+      },
+      "gateway": {
+        "orderState": "DISPATCH_AMBIGUOUS",
+        "receivedAt": 1790000420,
+        "verdict": "unknown"
+      }
+    },
+    {
+      "id": "unknown.outcome-policy-at-500",
+      "request": "no-claim-after-grace",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "Only a 404 can carry the no-claim answer.",
+      "provider": {
+        "now": 1790000420
+      },
+      "response": {
+        "status": 500,
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "error": "dispatch_status_unavailable",
+          "reason": "outcome_policy"
+        }
+      },
+      "gateway": {
+        "orderState": "DISPATCH_AMBIGUOUS",
+        "receivedAt": 1790000420,
+        "verdict": "unknown"
+      }
+    },
+    {
+      "id": "unknown.answer-for-other-dispatch",
+      "request": "no-claim-after-grace",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "An answer for another dispatch hash is not an answer for this one.",
+      "provider": {
+        "now": 1790000420
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "taskId": "00000000-0000-4000-8000-00000000a001",
+          "dispatchHash": "0xa241a01ce64c1fdb1503502d670db831fefc5e8636d0af9c161d3b425ca83600",
+          "state": "working",
+          "operations": {
+            "schemaVersion": 1,
+            "revision": 0,
+            "observedAt": 1790000420,
+            "fulfillment": null,
+            "support": null,
+            "recovery": null
+          },
+          "signature": "0xfb4f51a095d360de7502052aa1bde4cab350e8f5fa885adf36f51d1c7c5e7fda29679971cd9dd0c88287d913b640fcf94dbd075eef4b9e92115bde4f87a6cec51c"
+        }
+      },
+      "gateway": {
+        "orderState": "DISPATCH_AMBIGUOUS",
+        "receivedAt": 1790000420,
+        "verdict": "unknown"
+      }
+    }
+  ]
+}

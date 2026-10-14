@@ -1,0 +1,644 @@
+{
+  "schemaVersion": 1,
+  "surface": "POST quoteUrl with {request: ProviderIntakeRequestV1}; answer the twelve intake keys",
+  "signature": "EIP-191 by the provider authority key over keccak256(canonicalJson of the answer without signature)",
+  "requests": {
+    "intake": {
+      "listing": "fixed",
+      "gateway": {
+        "now": 1789999940
+      },
+      "http": {
+        "method": "POST",
+        "url": "https://provider.example/standard-rail/quote",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "request": {
+            "artifactType": "ProviderIntakeRequestV1",
+            "schemaVersion": 1,
+            "environment": "testnet",
+            "chainId": 84532,
+            "audience": "https://provider.example",
+            "signerKeyId": "gateway-dispatch",
+            "issuedAt": 1789999940,
+            "validBefore": 1790000000,
+            "payload": {
+              "outcomeId": "create-note",
+              "listingManifestHash": "0x2efa3883986e0ef9f11acf05ad5c70f9da45b5293026344c0b38c87a7319e784",
+              "requestHash": "0xa8750b57c1a8df7c758bafae75f3bda04ee956ac4449748be0356e3807d2965c",
+              "request": {
+                "title": "Synthetic fixture note"
+              }
+            },
+            "signature": "0x9b52765041d58e925d52a523f3425eae5da087d6119f407f5248c3e411e43935409440b5d1525854009bc6fe01aa4b4255e7f626301bf0ce37bff041b090956b1b"
+          }
+        },
+        "bodyText": "{\"request\":{\"artifactType\":\"ProviderIntakeRequestV1\",\"schemaVersion\":1,\"environment\":\"testnet\",\"chainId\":84532,\"audience\":\"https://provider.example\",\"signerKeyId\":\"gateway-dispatch\",\"issuedAt\":1789999940,\"validBefore\":1790000000,\"payload\":{\"outcomeId\":\"create-note\",\"listingManifestHash\":\"0x2efa3883986e0ef9f11acf05ad5c70f9da45b5293026344c0b38c87a7319e784\",\"requestHash\":\"0xa8750b57c1a8df7c758bafae75f3bda04ee956ac4449748be0356e3807d2965c\",\"request\":{\"title\":\"Synthetic fixture note\"}},\"signature\":\"0x9b52765041d58e925d52a523f3425eae5da087d6119f407f5248c3e411e43935409440b5d1525854009bc6fe01aa4b4255e7f626301bf0ce37bff041b090956b1b\"}}"
+      }
+    }
+  },
+  "responses": [
+    {
+      "id": "accepted",
+      "request": "intake",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "Signed intake requirements bound to the request, the listing and its published request schema.",
+      "provider": {
+        "now": 1789999940,
+        "signer": "providerAuthority",
+        "outcomeId": "create-note",
+        "listingManifestHash": "0x2efa3883986e0ef9f11acf05ad5c70f9da45b5293026344c0b38c87a7319e784",
+        "requestHash": "0xa8750b57c1a8df7c758bafae75f3bda04ee956ac4449748be0356e3807d2965c",
+        "requestSchema": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "title"
+          ],
+          "properties": {
+            "title": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 80
+            },
+            "body": {
+              "type": "string",
+              "maxLength": 2000
+            }
+          }
+        },
+        "requiredFields": {},
+        "selectorsRequired": [],
+        "normalizedSelectors": {},
+        "fieldErrors": [],
+        "supported": true,
+        "issuedAt": 1789999940,
+        "validBefore": 1790000000
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "outcomeId": "create-note",
+          "listingManifestHash": "0x2efa3883986e0ef9f11acf05ad5c70f9da45b5293026344c0b38c87a7319e784",
+          "requestHash": "0xa8750b57c1a8df7c758bafae75f3bda04ee956ac4449748be0356e3807d2965c",
+          "requestSchema": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "title"
+            ],
+            "properties": {
+              "title": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 80
+              },
+              "body": {
+                "type": "string",
+                "maxLength": 2000
+              }
+            }
+          },
+          "requiredFields": {},
+          "selectorsRequired": [],
+          "normalizedSelectors": {},
+          "fieldErrors": [],
+          "supported": true,
+          "issuedAt": 1789999940,
+          "validBefore": 1790000000,
+          "signature": "0x48b454ff247e46d2619ecc0eb70279bc7599e6de6005f7e76878900dc7d2613b41d932239ef391033c7c9f4f63afd9b290a0c48122e3fd44a95beec376b1210d1b"
+        }
+      },
+      "gateway": {
+        "receivedAt": 1789999940,
+        "verdict": "accepted"
+      }
+    },
+    {
+      "id": "schema-differs.rejected",
+      "request": "intake",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "The published request schema stays authoritative.",
+      "provider": {
+        "now": 1789999940,
+        "signer": "providerAuthority",
+        "outcomeId": "create-note",
+        "listingManifestHash": "0x2efa3883986e0ef9f11acf05ad5c70f9da45b5293026344c0b38c87a7319e784",
+        "requestHash": "0xa8750b57c1a8df7c758bafae75f3bda04ee956ac4449748be0356e3807d2965c",
+        "requestSchema": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [],
+          "properties": {
+            "title": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 80
+            },
+            "body": {
+              "type": "string",
+              "maxLength": 2000
+            }
+          }
+        },
+        "requiredFields": {},
+        "selectorsRequired": [],
+        "normalizedSelectors": {},
+        "fieldErrors": [],
+        "supported": true,
+        "issuedAt": 1789999940,
+        "validBefore": 1790000000
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "outcomeId": "create-note",
+          "listingManifestHash": "0x2efa3883986e0ef9f11acf05ad5c70f9da45b5293026344c0b38c87a7319e784",
+          "requestHash": "0xa8750b57c1a8df7c758bafae75f3bda04ee956ac4449748be0356e3807d2965c",
+          "requestSchema": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [],
+            "properties": {
+              "title": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 80
+              },
+              "body": {
+                "type": "string",
+                "maxLength": 2000
+              }
+            }
+          },
+          "requiredFields": {},
+          "selectorsRequired": [],
+          "normalizedSelectors": {},
+          "fieldErrors": [],
+          "supported": true,
+          "issuedAt": 1789999940,
+          "validBefore": 1790000000,
+          "signature": "0xbc133640f2cf07d40da28319202a4eccb4d3dbd9363a2ee359aee109f04d90730d98ff5f9fa4c584464e714855e7405e7dba03f99313ecbe7ff1d9c78b27ebc51c"
+        }
+      },
+      "gateway": {
+        "receivedAt": 1789999940,
+        "verdict": "rejected",
+        "code": "PROVIDER_INTAKE_UNAVAILABLE"
+      }
+    },
+    {
+      "id": "expired.rejected",
+      "request": "intake",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "validBefore must lie after the gateway's clock.",
+      "provider": {
+        "now": 1789999940,
+        "signer": "providerAuthority",
+        "outcomeId": "create-note",
+        "listingManifestHash": "0x2efa3883986e0ef9f11acf05ad5c70f9da45b5293026344c0b38c87a7319e784",
+        "requestHash": "0xa8750b57c1a8df7c758bafae75f3bda04ee956ac4449748be0356e3807d2965c",
+        "requestSchema": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "title"
+          ],
+          "properties": {
+            "title": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 80
+            },
+            "body": {
+              "type": "string",
+              "maxLength": 2000
+            }
+          }
+        },
+        "requiredFields": {},
+        "selectorsRequired": [],
+        "normalizedSelectors": {},
+        "fieldErrors": [],
+        "supported": true,
+        "issuedAt": 1789999940,
+        "validBefore": 1789999940
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "outcomeId": "create-note",
+          "listingManifestHash": "0x2efa3883986e0ef9f11acf05ad5c70f9da45b5293026344c0b38c87a7319e784",
+          "requestHash": "0xa8750b57c1a8df7c758bafae75f3bda04ee956ac4449748be0356e3807d2965c",
+          "requestSchema": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "title"
+            ],
+            "properties": {
+              "title": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 80
+              },
+              "body": {
+                "type": "string",
+                "maxLength": 2000
+              }
+            }
+          },
+          "requiredFields": {},
+          "selectorsRequired": [],
+          "normalizedSelectors": {},
+          "fieldErrors": [],
+          "supported": true,
+          "issuedAt": 1789999940,
+          "validBefore": 1789999940,
+          "signature": "0xccff1aa294b0871054c343e909059cf2c3024c39206a16b8ec9efec33832c56172b8c3bc1f8933ad5993b8dae708981ed9a671702b9e42f520258860381fe7891b"
+        }
+      },
+      "gateway": {
+        "receivedAt": 1789999940,
+        "verdict": "rejected",
+        "code": "PROVIDER_INTAKE_UNAVAILABLE"
+      }
+    },
+    {
+      "id": "lifetime-121.rejected",
+      "request": "intake",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "Intake answers last at most 120 seconds.",
+      "provider": {
+        "now": 1789999940,
+        "signer": "providerAuthority",
+        "outcomeId": "create-note",
+        "listingManifestHash": "0x2efa3883986e0ef9f11acf05ad5c70f9da45b5293026344c0b38c87a7319e784",
+        "requestHash": "0xa8750b57c1a8df7c758bafae75f3bda04ee956ac4449748be0356e3807d2965c",
+        "requestSchema": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "title"
+          ],
+          "properties": {
+            "title": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 80
+            },
+            "body": {
+              "type": "string",
+              "maxLength": 2000
+            }
+          }
+        },
+        "requiredFields": {},
+        "selectorsRequired": [],
+        "normalizedSelectors": {},
+        "fieldErrors": [],
+        "supported": true,
+        "issuedAt": 1789999940,
+        "validBefore": 1790000061
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "outcomeId": "create-note",
+          "listingManifestHash": "0x2efa3883986e0ef9f11acf05ad5c70f9da45b5293026344c0b38c87a7319e784",
+          "requestHash": "0xa8750b57c1a8df7c758bafae75f3bda04ee956ac4449748be0356e3807d2965c",
+          "requestSchema": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "title"
+            ],
+            "properties": {
+              "title": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 80
+              },
+              "body": {
+                "type": "string",
+                "maxLength": 2000
+              }
+            }
+          },
+          "requiredFields": {},
+          "selectorsRequired": [],
+          "normalizedSelectors": {},
+          "fieldErrors": [],
+          "supported": true,
+          "issuedAt": 1789999940,
+          "validBefore": 1790000061,
+          "signature": "0xd5f614fb12ba8c46a1b2ea51c9543734721efea54b6834d3a02f4e230ba300107820d52cbb4a61a4f3fadd1bb59aa41e49509a2c9f5eb58972deb9e3f621b6c71b"
+        }
+      },
+      "gateway": {
+        "receivedAt": 1789999940,
+        "verdict": "rejected",
+        "code": "PROVIDER_INTAKE_UNAVAILABLE"
+      }
+    },
+    {
+      "id": "request-hash-differs.rejected",
+      "request": "intake",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "The answer must bind the request hash.",
+      "provider": {
+        "now": 1789999940,
+        "signer": "providerAuthority",
+        "outcomeId": "create-note",
+        "listingManifestHash": "0x2efa3883986e0ef9f11acf05ad5c70f9da45b5293026344c0b38c87a7319e784",
+        "requestHash": "0xdeea7c1acf3bf23c6368505eab700bba33519c38c0780c26719cc11181d2836e",
+        "requestSchema": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "title"
+          ],
+          "properties": {
+            "title": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 80
+            },
+            "body": {
+              "type": "string",
+              "maxLength": 2000
+            }
+          }
+        },
+        "requiredFields": {},
+        "selectorsRequired": [],
+        "normalizedSelectors": {},
+        "fieldErrors": [],
+        "supported": true,
+        "issuedAt": 1789999940,
+        "validBefore": 1790000000
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "outcomeId": "create-note",
+          "listingManifestHash": "0x2efa3883986e0ef9f11acf05ad5c70f9da45b5293026344c0b38c87a7319e784",
+          "requestHash": "0xdeea7c1acf3bf23c6368505eab700bba33519c38c0780c26719cc11181d2836e",
+          "requestSchema": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "title"
+            ],
+            "properties": {
+              "title": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 80
+              },
+              "body": {
+                "type": "string",
+                "maxLength": 2000
+              }
+            }
+          },
+          "requiredFields": {},
+          "selectorsRequired": [],
+          "normalizedSelectors": {},
+          "fieldErrors": [],
+          "supported": true,
+          "issuedAt": 1789999940,
+          "validBefore": 1790000000,
+          "signature": "0xfb01738b50ee3d8614e9657193a1ec52d964bd3c6bd547ce1ade03780826b2340461870886920b75d40fa91dd1dacaba638a42c5e291d5eea6dd17e24c9c6fed1b"
+        }
+      },
+      "gateway": {
+        "receivedAt": 1789999940,
+        "verdict": "rejected",
+        "code": "PROVIDER_INTAKE_UNAVAILABLE"
+      }
+    },
+    {
+      "id": "signed-by-terminal-key.rejected",
+      "request": "intake",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "Intake is signed by the provider authority key.",
+      "provider": {
+        "now": 1789999940,
+        "signer": "providerTerminalAttestation",
+        "outcomeId": "create-note",
+        "listingManifestHash": "0x2efa3883986e0ef9f11acf05ad5c70f9da45b5293026344c0b38c87a7319e784",
+        "requestHash": "0xa8750b57c1a8df7c758bafae75f3bda04ee956ac4449748be0356e3807d2965c",
+        "requestSchema": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "title"
+          ],
+          "properties": {
+            "title": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 80
+            },
+            "body": {
+              "type": "string",
+              "maxLength": 2000
+            }
+          }
+        },
+        "requiredFields": {},
+        "selectorsRequired": [],
+        "normalizedSelectors": {},
+        "fieldErrors": [],
+        "supported": true,
+        "issuedAt": 1789999940,
+        "validBefore": 1790000000
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "outcomeId": "create-note",
+          "listingManifestHash": "0x2efa3883986e0ef9f11acf05ad5c70f9da45b5293026344c0b38c87a7319e784",
+          "requestHash": "0xa8750b57c1a8df7c758bafae75f3bda04ee956ac4449748be0356e3807d2965c",
+          "requestSchema": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "title"
+            ],
+            "properties": {
+              "title": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 80
+              },
+              "body": {
+                "type": "string",
+                "maxLength": 2000
+              }
+            }
+          },
+          "requiredFields": {},
+          "selectorsRequired": [],
+          "normalizedSelectors": {},
+          "fieldErrors": [],
+          "supported": true,
+          "issuedAt": 1789999940,
+          "validBefore": 1790000000,
+          "signature": "0xfeac2c69286498fd9179687e47e81c18cadb717e0d9074e024abafb8257f5f9a6231b5048a8773d95d71a60e7eebe22d73dcd0919ae3acad0420c8db88c826521c"
+        }
+      },
+      "gateway": {
+        "receivedAt": 1789999940,
+        "verdict": "rejected",
+        "code": "PROVIDER_INTAKE_UNAVAILABLE"
+      }
+    },
+    {
+      "id": "extra-key.rejected",
+      "request": "intake",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "Exactly the twelve intake keys.",
+      "provider": {
+        "now": 1789999940,
+        "signer": "providerAuthority",
+        "outcomeId": "create-note",
+        "listingManifestHash": "0x2efa3883986e0ef9f11acf05ad5c70f9da45b5293026344c0b38c87a7319e784",
+        "requestHash": "0xa8750b57c1a8df7c758bafae75f3bda04ee956ac4449748be0356e3807d2965c",
+        "requestSchema": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "title"
+          ],
+          "properties": {
+            "title": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 80
+            },
+            "body": {
+              "type": "string",
+              "maxLength": 2000
+            }
+          }
+        },
+        "requiredFields": {},
+        "selectorsRequired": [],
+        "normalizedSelectors": {},
+        "fieldErrors": [],
+        "supported": true,
+        "issuedAt": 1789999940,
+        "validBefore": 1790000000
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "outcomeId": "create-note",
+          "listingManifestHash": "0x2efa3883986e0ef9f11acf05ad5c70f9da45b5293026344c0b38c87a7319e784",
+          "requestHash": "0xa8750b57c1a8df7c758bafae75f3bda04ee956ac4449748be0356e3807d2965c",
+          "requestSchema": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "title"
+            ],
+            "properties": {
+              "title": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 80
+              },
+              "body": {
+                "type": "string",
+                "maxLength": 2000
+              }
+            }
+          },
+          "requiredFields": {},
+          "selectorsRequired": [],
+          "normalizedSelectors": {},
+          "fieldErrors": [],
+          "supported": true,
+          "issuedAt": 1789999940,
+          "validBefore": 1790000000,
+          "signature": "0x48b454ff247e46d2619ecc0eb70279bc7599e6de6005f7e76878900dc7d2613b41d932239ef391033c7c9f4f63afd9b290a0c48122e3fd44a95beec376b1210d1b",
+          "note": "extra"
+        }
+      },
+      "gateway": {
+        "receivedAt": 1789999940,
+        "verdict": "rejected",
+        "code": "PROVIDER_INTAKE_UNAVAILABLE"
+      }
+    },
+    {
+      "id": "refusal.unavailable",
+      "request": "intake",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "Any non-2xx leaves intake unavailable.",
+      "response": {
+        "status": 503,
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "error": "intake_unavailable"
+        }
+      },
+      "gateway": {
+        "receivedAt": 1789999940,
+        "verdict": "rejected",
+        "code": "PROVIDER_INTAKE_UNAVAILABLE"
+      }
+    }
+  ]
+}

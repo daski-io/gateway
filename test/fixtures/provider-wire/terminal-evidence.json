@@ -1,0 +1,747 @@
+{
+  "schemaVersion": 1,
+  "rule": "The gateway stores the first terminal attestation it accepts. Every later attestation, dispatch or lifecycle, must carry the same taskId, state, resultHash and completedAt; anything else is provider_original_terminal_changed.",
+  "original": {
+    "serviceResult": {
+      "payload": {
+        "taskId": "00000000-0000-4000-8000-00000000a001",
+        "dispatchHash": "0x68df0a341c25d30f3e22b9585038fa7f0abd2a19f6de59ca88df83e9978a282f",
+        "state": "completed",
+        "resultHash": "0x24656d0d9dcb863d5fdbf82efbd143139ad7e904ff2cadadc91b39e3552978eb",
+        "completedAt": 1790003600
+      },
+      "signature": "0x9b672a561df36665952e142aea75a2aedf52ea8a6150ce59cd28e55405ef7c2b04f3e039cef3d3a839f936ff20befe116cd49529b9b84af139542f625d16d2ea1b"
+    },
+    "taskProjection": {
+      "payload": {
+        "taskId": "00000000-0000-4000-8000-00000000a001",
+        "dispatchHash": "0x68df0a341c25d30f3e22b9585038fa7f0abd2a19f6de59ca88df83e9978a282f",
+        "state": "completed",
+        "resultHash": "0x134fb3658986682b4285c13c3b1bfb971117f62f9c4fdc6d0cfad262c1a31388",
+        "completedAt": 1790003600
+      },
+      "signature": "0x35a0f7cfdb004ac84a877bba01ffc6e42e79fadc69991a37cb5cd52fc8c4cc316ee342954eb910937fef58f3ed521875b65651fb4d311c740a654067c2cc37c91b"
+    }
+  },
+  "requests": "lifecycle.json",
+  "responses": [
+    {
+      "id": "service-result.lifecycle-attestation.accepted",
+      "request": "status.read-capability.completed",
+      "appliesTo": [
+        "daski-io/provider"
+      ],
+      "purpose": "The lifecycle attestation names orderId instead of dispatchHash; taskId, state, resultHash and completedAt equal the dispatch attestation.",
+      "provider": {
+        "now": 1790004000,
+        "orderId": "ord_00000000-0000-4000-8000-000000000001",
+        "taskId": "00000000-0000-4000-8000-00000000a001",
+        "state": "completed",
+        "operations": {
+          "schemaVersion": 1,
+          "revision": 0,
+          "observedAt": 1790004000,
+          "fulfillment": null,
+          "support": null,
+          "recovery": null
+        },
+        "frozenResult": {
+          "status": "completed",
+          "message": "Note created.",
+          "artifacts": [
+            {
+              "name": "note",
+              "data": {
+                "note": "note-0001",
+                "title": "Synthetic fixture note",
+                "characters": 48
+              }
+            }
+          ]
+        },
+        "resultHash": "0x24656d0d9dcb863d5fdbf82efbd143139ad7e904ff2cadadc91b39e3552978eb",
+        "completedAt": 1790003600
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "orderId": "ord_00000000-0000-4000-8000-000000000001",
+          "taskId": "00000000-0000-4000-8000-00000000a001",
+          "state": "completed",
+          "operations": {
+            "schemaVersion": 1,
+            "revision": 0,
+            "observedAt": 1790004000,
+            "fulfillment": null,
+            "support": null,
+            "recovery": null
+          },
+          "terminalAttestation": {
+            "payload": {
+              "orderId": "ord_00000000-0000-4000-8000-000000000001",
+              "taskId": "00000000-0000-4000-8000-00000000a001",
+              "state": "completed",
+              "resultHash": "0x24656d0d9dcb863d5fdbf82efbd143139ad7e904ff2cadadc91b39e3552978eb",
+              "completedAt": 1790003600
+            },
+            "signature": "0x53364f3140b59256e4c43b38bce2525ce1443259518886e7056b6703d218e03a06c4f7fddd214c1b87f29aa15ad0f01097297a94c56e31bd54564f00db19255c1c"
+          },
+          "signature": "0x045468e385b672a8646e2a154799a762dfc424cc6fcaa61689c08aafa39b982044428a6892effdd5f8fc9f2f1e34c30cc181c89bd0ec6cdd6771e47b7afac94f1b"
+        }
+      },
+      "gateway": {
+        "orderState": "FULFILLED",
+        "resultSchema": "serviceResult",
+        "storedOperations": {
+          "schemaVersion": 1,
+          "revision": 0,
+          "observedAt": 1790003700,
+          "fulfillment": null,
+          "support": null,
+          "recovery": null
+        },
+        "storedTerminal": {
+          "payload": {
+            "taskId": "00000000-0000-4000-8000-00000000a001",
+            "dispatchHash": "0x68df0a341c25d30f3e22b9585038fa7f0abd2a19f6de59ca88df83e9978a282f",
+            "state": "completed",
+            "resultHash": "0x24656d0d9dcb863d5fdbf82efbd143139ad7e904ff2cadadc91b39e3552978eb",
+            "completedAt": 1790003600
+          },
+          "signature": "0x9b672a561df36665952e142aea75a2aedf52ea8a6150ce59cd28e55405ef7c2b04f3e039cef3d3a839f936ff20befe116cd49529b9b84af139542f625d16d2ea1b"
+        },
+        "receivedAt": 1790004000,
+        "verdict": "accepted",
+        "orderStateAfter": "FULFILLED"
+      }
+    },
+    {
+      "id": "service-result.rehashed.rejected",
+      "request": "status.read-capability.completed",
+      "appliesTo": [
+        "daski-io/provider"
+      ],
+      "purpose": "A result hash recomputed after completion is a changed terminal identity.",
+      "provider": {
+        "now": 1790004000,
+        "orderId": "ord_00000000-0000-4000-8000-000000000001",
+        "taskId": "00000000-0000-4000-8000-00000000a001",
+        "state": "completed",
+        "operations": {
+          "schemaVersion": 1,
+          "revision": 0,
+          "observedAt": 1790004000,
+          "fulfillment": null,
+          "support": null,
+          "recovery": null
+        },
+        "frozenResult": {
+          "status": "completed",
+          "message": "Note created.",
+          "artifacts": [
+            {
+              "name": "note",
+              "data": {
+                "note": "note-0001",
+                "title": "Synthetic fixture note",
+                "characters": 48
+              }
+            }
+          ]
+        },
+        "resultHash": "0x3ac42d4bbe2cd5b5a1afffb756bdd163bbf0aaee600c771e7f4770e349c3c9d2",
+        "completedAt": 1790003600
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "orderId": "ord_00000000-0000-4000-8000-000000000001",
+          "taskId": "00000000-0000-4000-8000-00000000a001",
+          "state": "completed",
+          "operations": {
+            "schemaVersion": 1,
+            "revision": 0,
+            "observedAt": 1790004000,
+            "fulfillment": null,
+            "support": null,
+            "recovery": null
+          },
+          "terminalAttestation": {
+            "payload": {
+              "orderId": "ord_00000000-0000-4000-8000-000000000001",
+              "taskId": "00000000-0000-4000-8000-00000000a001",
+              "state": "completed",
+              "resultHash": "0x3ac42d4bbe2cd5b5a1afffb756bdd163bbf0aaee600c771e7f4770e349c3c9d2",
+              "completedAt": 1790003600
+            },
+            "signature": "0xc583fd11867f4be4fe1b963951f6a8c4ae2a2770ac3f491b45e20c9b10f9546226b6fe04749f76b705eac766aad7046b630cd01787269a9141bbc428ed66d8761b"
+          },
+          "signature": "0xa928ae234e1d28229057672372492829dde0e677d6f7de7b18216716a80589e62154542f99830ebfafba896c071c684d0e39a95eac3b4544733674b5146a8a9b1b"
+        }
+      },
+      "gateway": {
+        "orderState": "FULFILLED",
+        "resultSchema": "serviceResult",
+        "storedOperations": {
+          "schemaVersion": 1,
+          "revision": 0,
+          "observedAt": 1790003700,
+          "fulfillment": null,
+          "support": null,
+          "recovery": null
+        },
+        "storedTerminal": {
+          "payload": {
+            "taskId": "00000000-0000-4000-8000-00000000a001",
+            "dispatchHash": "0x68df0a341c25d30f3e22b9585038fa7f0abd2a19f6de59ca88df83e9978a282f",
+            "state": "completed",
+            "resultHash": "0x24656d0d9dcb863d5fdbf82efbd143139ad7e904ff2cadadc91b39e3552978eb",
+            "completedAt": 1790003600
+          },
+          "signature": "0x9b672a561df36665952e142aea75a2aedf52ea8a6150ce59cd28e55405ef7c2b04f3e039cef3d3a839f936ff20befe116cd49529b9b84af139542f625d16d2ea1b"
+        },
+        "receivedAt": 1790004000,
+        "verdict": "rejected",
+        "message": "provider_original_terminal_changed"
+      }
+    },
+    {
+      "id": "service-result.completion-moved.rejected",
+      "request": "status.read-capability.completed",
+      "appliesTo": [
+        "daski-io/provider"
+      ],
+      "purpose": "completedAt is part of the terminal identity.",
+      "provider": {
+        "now": 1790004000,
+        "orderId": "ord_00000000-0000-4000-8000-000000000001",
+        "taskId": "00000000-0000-4000-8000-00000000a001",
+        "state": "completed",
+        "operations": {
+          "schemaVersion": 1,
+          "revision": 0,
+          "observedAt": 1790004000,
+          "fulfillment": null,
+          "support": null,
+          "recovery": null
+        },
+        "frozenResult": {
+          "status": "completed",
+          "message": "Note created.",
+          "artifacts": [
+            {
+              "name": "note",
+              "data": {
+                "note": "note-0001",
+                "title": "Synthetic fixture note",
+                "characters": 48
+              }
+            }
+          ]
+        },
+        "resultHash": "0x24656d0d9dcb863d5fdbf82efbd143139ad7e904ff2cadadc91b39e3552978eb",
+        "completedAt": 1790003601
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "orderId": "ord_00000000-0000-4000-8000-000000000001",
+          "taskId": "00000000-0000-4000-8000-00000000a001",
+          "state": "completed",
+          "operations": {
+            "schemaVersion": 1,
+            "revision": 0,
+            "observedAt": 1790004000,
+            "fulfillment": null,
+            "support": null,
+            "recovery": null
+          },
+          "terminalAttestation": {
+            "payload": {
+              "orderId": "ord_00000000-0000-4000-8000-000000000001",
+              "taskId": "00000000-0000-4000-8000-00000000a001",
+              "state": "completed",
+              "resultHash": "0x24656d0d9dcb863d5fdbf82efbd143139ad7e904ff2cadadc91b39e3552978eb",
+              "completedAt": 1790003601
+            },
+            "signature": "0xd29d92f3c91478caaee73caf55cb874552380d36061b55498e9a3e60052be695162510fc0fcd6a3fff29591c23f3cd6c67d779281368a149cfe4c076225a22491c"
+          },
+          "signature": "0x3be85fe0e0780a7f34b1ec971daa3ec24352847d59207637cdd1f0fb603200c41a320f41235ad261ad86398d7f6870740e06ff22902a59d8c9089b5a61f1697a1b"
+        }
+      },
+      "gateway": {
+        "orderState": "FULFILLED",
+        "resultSchema": "serviceResult",
+        "storedOperations": {
+          "schemaVersion": 1,
+          "revision": 0,
+          "observedAt": 1790003700,
+          "fulfillment": null,
+          "support": null,
+          "recovery": null
+        },
+        "storedTerminal": {
+          "payload": {
+            "taskId": "00000000-0000-4000-8000-00000000a001",
+            "dispatchHash": "0x68df0a341c25d30f3e22b9585038fa7f0abd2a19f6de59ca88df83e9978a282f",
+            "state": "completed",
+            "resultHash": "0x24656d0d9dcb863d5fdbf82efbd143139ad7e904ff2cadadc91b39e3552978eb",
+            "completedAt": 1790003600
+          },
+          "signature": "0x9b672a561df36665952e142aea75a2aedf52ea8a6150ce59cd28e55405ef7c2b04f3e039cef3d3a839f936ff20befe116cd49529b9b84af139542f625d16d2ea1b"
+        },
+        "receivedAt": 1790004000,
+        "verdict": "rejected",
+        "message": "provider_original_terminal_changed"
+      }
+    },
+    {
+      "id": "service-result.state-changed.rejected",
+      "request": "status.read-capability.completed",
+      "appliesTo": [
+        "daski-io/provider"
+      ],
+      "purpose": "A completed order never becomes failed.",
+      "provider": {
+        "now": 1790004000,
+        "orderId": "ord_00000000-0000-4000-8000-000000000001",
+        "taskId": "00000000-0000-4000-8000-00000000a001",
+        "state": "failed",
+        "operations": {
+          "schemaVersion": 1,
+          "revision": 0,
+          "observedAt": 1790004000,
+          "fulfillment": null,
+          "support": null,
+          "recovery": null
+        },
+        "frozenResult": {
+          "status": "completed",
+          "message": "Note created.",
+          "artifacts": [
+            {
+              "name": "note",
+              "data": {
+                "note": "note-0001",
+                "title": "Synthetic fixture note",
+                "characters": 48
+              }
+            }
+          ]
+        },
+        "resultHash": "0x24656d0d9dcb863d5fdbf82efbd143139ad7e904ff2cadadc91b39e3552978eb",
+        "completedAt": 1790003600
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "orderId": "ord_00000000-0000-4000-8000-000000000001",
+          "taskId": "00000000-0000-4000-8000-00000000a001",
+          "state": "failed",
+          "operations": {
+            "schemaVersion": 1,
+            "revision": 0,
+            "observedAt": 1790004000,
+            "fulfillment": null,
+            "support": null,
+            "recovery": null
+          },
+          "terminalAttestation": {
+            "payload": {
+              "orderId": "ord_00000000-0000-4000-8000-000000000001",
+              "taskId": "00000000-0000-4000-8000-00000000a001",
+              "state": "failed",
+              "resultHash": "0x24656d0d9dcb863d5fdbf82efbd143139ad7e904ff2cadadc91b39e3552978eb",
+              "completedAt": 1790003600
+            },
+            "signature": "0x5448078700ccbf61d791286732914505e5622605551c6446fe74f8d1c593ee2a7519ab0b62a75cae3faff1c7e729f13f00950ff67a9ee040d0e879297c236ca11b"
+          },
+          "signature": "0x9e8f088c0e5f64060dde0e1a993ad77411afdcf95efc9d3c594e106b85f52e2c03ffe8a318341e33436ba283e483b29f084d78e82033e91b09bca24ce1c21b361b"
+        }
+      },
+      "gateway": {
+        "orderState": "FULFILLED",
+        "resultSchema": "serviceResult",
+        "storedOperations": {
+          "schemaVersion": 1,
+          "revision": 0,
+          "observedAt": 1790003700,
+          "fulfillment": null,
+          "support": null,
+          "recovery": null
+        },
+        "storedTerminal": {
+          "payload": {
+            "taskId": "00000000-0000-4000-8000-00000000a001",
+            "dispatchHash": "0x68df0a341c25d30f3e22b9585038fa7f0abd2a19f6de59ca88df83e9978a282f",
+            "state": "completed",
+            "resultHash": "0x24656d0d9dcb863d5fdbf82efbd143139ad7e904ff2cadadc91b39e3552978eb",
+            "completedAt": 1790003600
+          },
+          "signature": "0x9b672a561df36665952e142aea75a2aedf52ea8a6150ce59cd28e55405ef7c2b04f3e039cef3d3a839f936ff20befe116cd49529b9b84af139542f625d16d2ea1b"
+        },
+        "receivedAt": 1790004000,
+        "verdict": "rejected",
+        "message": "provider_original_terminal_changed"
+      }
+    },
+    {
+      "id": "task-projection.after-support-message.accepted",
+      "request": "status.payer-signed.completed",
+      "appliesTo": [
+        "daski-io/provider-full"
+      ],
+      "purpose": "A support message changes operations (higher revision) but never the terminal identity.",
+      "provider": {
+        "now": 1790004000,
+        "orderId": "ord_00000000-0000-4000-8000-000000000001",
+        "taskId": "00000000-0000-4000-8000-00000000a001",
+        "state": "completed",
+        "operations": {
+          "schemaVersion": 1,
+          "revision": 1,
+          "observedAt": 1790004000,
+          "fulfillment": null,
+          "support": {
+            "reviewId": "00000000-0000-4000-8000-0000000000b2",
+            "status": "open",
+            "lastAcceptedRequest": {
+              "requestId": "support-0001",
+              "messageId": "00000000-0000-4000-8000-0000000000b1",
+              "acceptedAt": 1790003900
+            }
+          },
+          "recovery": null
+        },
+        "frozenResult": {
+          "id": "00000000-0000-4000-8000-00000000a001",
+          "status": {
+            "state": "TASK_STATE_COMPLETED",
+            "message": {
+              "role": "ROLE_AGENT",
+              "parts": [
+                {
+                  "kind": "text",
+                  "text": "Note created."
+                }
+              ]
+            }
+          },
+          "artifacts": [
+            {
+              "artifactId": "note",
+              "name": "note_created",
+              "parts": [
+                {
+                  "kind": "data",
+                  "data": {
+                    "note": "note-0001",
+                    "title": "Synthetic fixture note",
+                    "characters": 48
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        "resultHash": "0x134fb3658986682b4285c13c3b1bfb971117f62f9c4fdc6d0cfad262c1a31388",
+        "completedAt": 1790003600
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "orderId": "ord_00000000-0000-4000-8000-000000000001",
+          "taskId": "00000000-0000-4000-8000-00000000a001",
+          "state": "completed",
+          "operations": {
+            "schemaVersion": 1,
+            "revision": 1,
+            "observedAt": 1790004000,
+            "fulfillment": null,
+            "support": {
+              "reviewId": "00000000-0000-4000-8000-0000000000b2",
+              "status": "open",
+              "lastAcceptedRequest": {
+                "requestId": "support-0001",
+                "messageId": "00000000-0000-4000-8000-0000000000b1",
+                "acceptedAt": 1790003900
+              }
+            },
+            "recovery": null
+          },
+          "terminalAttestation": {
+            "payload": {
+              "orderId": "ord_00000000-0000-4000-8000-000000000001",
+              "taskId": "00000000-0000-4000-8000-00000000a001",
+              "state": "completed",
+              "resultHash": "0x134fb3658986682b4285c13c3b1bfb971117f62f9c4fdc6d0cfad262c1a31388",
+              "completedAt": 1790003600
+            },
+            "signature": "0x0627d3a0c7a9266eaf1f593d21dd060356e81c90e164b91c5910e24d7d7220e541916647fd5a65aba31c6d0df4cb28bd3f89c8b618353b23bfcceca977e1effb1b"
+          },
+          "signature": "0x29b8646709f7c0e1dd56a6abe5639b2a596ab23cee25f037374fa4afdb9c4caf6ab5967175228802e2537bfc60baa11673b5af178c367553749fbabd940b11da1c"
+        }
+      },
+      "gateway": {
+        "orderState": "FULFILLED",
+        "resultSchema": "serviceResult",
+        "storedOperations": {
+          "schemaVersion": 1,
+          "revision": 0,
+          "observedAt": 1790003700,
+          "fulfillment": null,
+          "support": null,
+          "recovery": null
+        },
+        "storedTerminal": {
+          "payload": {
+            "taskId": "00000000-0000-4000-8000-00000000a001",
+            "dispatchHash": "0x68df0a341c25d30f3e22b9585038fa7f0abd2a19f6de59ca88df83e9978a282f",
+            "state": "completed",
+            "resultHash": "0x134fb3658986682b4285c13c3b1bfb971117f62f9c4fdc6d0cfad262c1a31388",
+            "completedAt": 1790003600
+          },
+          "signature": "0x35a0f7cfdb004ac84a877bba01ffc6e42e79fadc69991a37cb5cd52fc8c4cc316ee342954eb910937fef58f3ed521875b65651fb4d311c740a654067c2cc37c91b"
+        },
+        "receivedAt": 1790004000,
+        "verdict": "accepted",
+        "orderStateAfter": "FULFILLED"
+      }
+    },
+    {
+      "id": "task-projection.revealed-hash.rejected",
+      "request": "status.payer-signed.completed",
+      "appliesTo": [
+        "daski-io/provider-full"
+      ],
+      "purpose": "The attestation keeps the frozen unrevealed projection's hash; the revealed representation's hash is a changed identity.",
+      "provider": {
+        "now": 1790004000,
+        "orderId": "ord_00000000-0000-4000-8000-000000000001",
+        "taskId": "00000000-0000-4000-8000-00000000a001",
+        "state": "completed",
+        "operations": {
+          "schemaVersion": 1,
+          "revision": 0,
+          "observedAt": 1790004000,
+          "fulfillment": null,
+          "support": null,
+          "recovery": null
+        },
+        "frozenResult": {
+          "id": "00000000-0000-4000-8000-00000000a001",
+          "status": {
+            "state": "TASK_STATE_COMPLETED",
+            "message": {
+              "role": "ROLE_AGENT",
+              "parts": [
+                {
+                  "kind": "text",
+                  "text": "Note created."
+                }
+              ]
+            }
+          },
+          "artifacts": [
+            {
+              "artifactId": "note",
+              "name": "note_created",
+              "parts": [
+                {
+                  "kind": "data",
+                  "data": {
+                    "note": "note-0001",
+                    "title": "Synthetic fixture note",
+                    "characters": 48
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        "resultHash": "0xb69c517a8214413eef9afce078b719573067a4372dfd917382a49cbe4d3eb876",
+        "completedAt": 1790003600
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "orderId": "ord_00000000-0000-4000-8000-000000000001",
+          "taskId": "00000000-0000-4000-8000-00000000a001",
+          "state": "completed",
+          "operations": {
+            "schemaVersion": 1,
+            "revision": 0,
+            "observedAt": 1790004000,
+            "fulfillment": null,
+            "support": null,
+            "recovery": null
+          },
+          "terminalAttestation": {
+            "payload": {
+              "orderId": "ord_00000000-0000-4000-8000-000000000001",
+              "taskId": "00000000-0000-4000-8000-00000000a001",
+              "state": "completed",
+              "resultHash": "0xb69c517a8214413eef9afce078b719573067a4372dfd917382a49cbe4d3eb876",
+              "completedAt": 1790003600
+            },
+            "signature": "0x880a64b51f67a7ee786a3d69a10fe6b3a517241f3eae9d299319a1d432a86a8f66f493ea0b1d53f674e51a2c2116dd9c33491a81492f59c909d2b896805e16ae1b"
+          },
+          "signature": "0xe3a4358177d9aeab9af66406c7144e6969b5f8e9ee888332016ffefa658429456dd64fd11bf740d0d52f076da4ed21e5c2020220a0d3ef549de8c63512bf496c1b"
+        }
+      },
+      "gateway": {
+        "orderState": "FULFILLED",
+        "resultSchema": "serviceResult",
+        "storedOperations": {
+          "schemaVersion": 1,
+          "revision": 0,
+          "observedAt": 1790003700,
+          "fulfillment": null,
+          "support": null,
+          "recovery": null
+        },
+        "storedTerminal": {
+          "payload": {
+            "taskId": "00000000-0000-4000-8000-00000000a001",
+            "dispatchHash": "0x68df0a341c25d30f3e22b9585038fa7f0abd2a19f6de59ca88df83e9978a282f",
+            "state": "completed",
+            "resultHash": "0x134fb3658986682b4285c13c3b1bfb971117f62f9c4fdc6d0cfad262c1a31388",
+            "completedAt": 1790003600
+          },
+          "signature": "0x35a0f7cfdb004ac84a877bba01ffc6e42e79fadc69991a37cb5cd52fc8c4cc316ee342954eb910937fef58f3ed521875b65651fb4d311c740a654067c2cc37c91b"
+        },
+        "receivedAt": 1790004000,
+        "verdict": "rejected",
+        "message": "provider_original_terminal_changed"
+      }
+    },
+    {
+      "id": "task-projection.reconstructed.rejected",
+      "request": "status.payer-signed.completed",
+      "appliesTo": [
+        "daski-io/provider-full"
+      ],
+      "purpose": "A projection rebuilt from mutable events after cleanup hashes differently: serve the frozen identity instead.",
+      "provider": {
+        "now": 1790004000,
+        "orderId": "ord_00000000-0000-4000-8000-000000000001",
+        "taskId": "00000000-0000-4000-8000-00000000a001",
+        "state": "completed",
+        "operations": {
+          "schemaVersion": 1,
+          "revision": 0,
+          "observedAt": 1790004000,
+          "fulfillment": null,
+          "support": null,
+          "recovery": null
+        },
+        "frozenResult": {
+          "id": "00000000-0000-4000-8000-00000000a001",
+          "status": {
+            "state": "TASK_STATE_COMPLETED",
+            "message": {
+              "role": "ROLE_AGENT",
+              "parts": [
+                {
+                  "kind": "text",
+                  "text": "Note created."
+                }
+              ]
+            }
+          },
+          "artifacts": [
+            {
+              "artifactId": "note",
+              "name": "note_created",
+              "parts": [
+                {
+                  "kind": "data",
+                  "data": {
+                    "note": "note-0001",
+                    "title": "Synthetic fixture note",
+                    "characters": 48
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        "resultHash": "0x4937f7cb46e3a39b2de2158e5c48d4efe66e51f056e8c220e04e834aad1c1868",
+        "completedAt": 1790003600
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "orderId": "ord_00000000-0000-4000-8000-000000000001",
+          "taskId": "00000000-0000-4000-8000-00000000a001",
+          "state": "completed",
+          "operations": {
+            "schemaVersion": 1,
+            "revision": 0,
+            "observedAt": 1790004000,
+            "fulfillment": null,
+            "support": null,
+            "recovery": null
+          },
+          "terminalAttestation": {
+            "payload": {
+              "orderId": "ord_00000000-0000-4000-8000-000000000001",
+              "taskId": "00000000-0000-4000-8000-00000000a001",
+              "state": "completed",
+              "resultHash": "0x4937f7cb46e3a39b2de2158e5c48d4efe66e51f056e8c220e04e834aad1c1868",
+              "completedAt": 1790003600
+            },
+            "signature": "0x6c957a4b02c97ce76c11b70a8806bb20370cff507b8bf98b3c550b79224124672fa8a735468bf96be8848462c3952a0e5626da605f303738e7794faf54deacee1b"
+          },
+          "signature": "0xea80aaefcc7b19bcfcd3ab63631c2abf6ab2ce8fc9ec34c7a32ebf59d68a676d3b403203b798018da7ea31a50730db0a2327fe1fac861b9b839fc9a59b55bafa1c"
+        }
+      },
+      "gateway": {
+        "orderState": "FULFILLED",
+        "resultSchema": "serviceResult",
+        "storedOperations": {
+          "schemaVersion": 1,
+          "revision": 0,
+          "observedAt": 1790003700,
+          "fulfillment": null,
+          "support": null,
+          "recovery": null
+        },
+        "storedTerminal": {
+          "payload": {
+            "taskId": "00000000-0000-4000-8000-00000000a001",
+            "dispatchHash": "0x68df0a341c25d30f3e22b9585038fa7f0abd2a19f6de59ca88df83e9978a282f",
+            "state": "completed",
+            "resultHash": "0x134fb3658986682b4285c13c3b1bfb971117f62f9c4fdc6d0cfad262c1a31388",
+            "completedAt": 1790003600
+          },
+          "signature": "0x35a0f7cfdb004ac84a877bba01ffc6e42e79fadc69991a37cb5cd52fc8c4cc316ee342954eb910937fef58f3ed521875b65651fb4d311c740a654067c2cc37c91b"
+        },
+        "receivedAt": 1790004000,
+        "verdict": "rejected",
+        "message": "provider_original_terminal_changed"
+      }
+    }
+  ]
+}

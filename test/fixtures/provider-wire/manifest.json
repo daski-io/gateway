@@ -1,0 +1,123 @@
+{
+  "schemaVersion": 1,
+  "name": "daski-provider-wire",
+  "synthetic": true,
+  "owner": "daski-io/gateway",
+  "consumers": [
+    "daski-io/provider",
+    "daski-io/provider-full"
+  ],
+  "generator": "test/providerWireFixtures.test.ts (UPDATE_PROVIDER_WIRE_FIXTURES=1 npx vitest run test/providerWireFixtures.test.ts)",
+  "verifier": "test/providerWireConsumer.test.ts",
+  "hash": "sha256 of the exact file bytes",
+  "files": {
+    "README.md": {
+      "sha256": "8b6da0f3521485e5de9933fdca25c31ef5c46ab2fcabafc7f57fa9d2becb3a3f",
+      "purpose": "How the set is generated, compared, vendored and verified.",
+      "consumers": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "exercises": "documentation"
+    },
+    "keys.json": {
+      "sha256": "4a98d4c77a08cfe1e7910a0a238e965fac8f2a01c00a892e7d5d1bde7e6acc00",
+      "purpose": "Synthetic test-only signing keys of the gateway, provider and payer, with their derivation.",
+      "consumers": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "exercises": "provider configuration for every handler below"
+    },
+    "context.json": {
+      "sha256": "15a375e2610ba9a194e61c0fb5ed543456c1316cd96e9ed8871281b29d4d3566",
+      "purpose": "Synthetic rail, provider, listing, order and payment facts every vector is bound to.",
+      "consumers": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "exercises": "provider configuration for every handler below"
+    },
+    "quote.json": {
+      "sha256": "8328e0040e1a60ca18d806998dfef1b62efbd98ae0937c2bfa8b514b4b29c9bd",
+      "purpose": "ProviderQuoteRequestV1 the gateway sends (fixed with null and lowercase payer, dynamic) and quote answers with the gateway's verdict at receipt.",
+      "consumers": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "exercises": "quote handler: POST quoteUrl with a ProviderQuoteRequestV1"
+    },
+    "intake.json": {
+      "sha256": "b1f3048a624abd2ef1a7caaba69a5d1828c783d7ba6eaa847ab1e5fd1e53eb3d",
+      "purpose": "ProviderIntakeRequestV1 the gateway sends to the quote URL and intake answers with the gateway's verdict.",
+      "consumers": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "exercises": "intake handler: POST quoteUrl with a ProviderIntakeRequestV1"
+    },
+    "dispatch.json": {
+      "sha256": "c897596e7a83440bc7f78f1c5e8f6971f5162a4fa60ef977b18a18b372ac8f5e",
+      "purpose": "Dispatch POSTs (initial, fresh envelope after a refusal, first dispatch 26 hours after the quote) and dispatch answers: accepted states, definite refusals, ambiguity and rejected answers.",
+      "consumers": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "exercises": "dispatch handler: POST dispatchUrl"
+    },
+    "dispatch-status.json": {
+      "sha256": "92116c7fe27c2c3f29a3f0b95f32850e613d1194c80deb3eccc8d8acb2fff6f1",
+      "purpose": "DispatchStatusQueryV1 polls for the original dispatch hash and answers: admitted states, the no-claim 404 and answers that never prove absence.",
+      "consumers": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "exercises": "dispatch status handler: POST dispatchStatusUrl"
+    },
+    "lifecycle.json": {
+      "sha256": "f56fe2c733c9d79c13074cf758289329be0a9cad76db54eae58b9b3d8e3e1df1",
+      "purpose": "Lifecycle POSTs with grant-attested read capabilities and payer-signed authorizations (status, artifact, support, input, cancel), their headers, answers and the named refusals.",
+      "consumers": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "exercises": "lifecycle handler: POST lifecycleUrl"
+    },
+    "terminal-evidence.json": {
+      "sha256": "65dcc6a85e5feffed7f7b9ead989bc4a73215ed8d734e9c514446a942f7d91a9",
+      "purpose": "Lifecycle reads of a completed order whose terminal identity must never change after the dispatch attestation.",
+      "consumers": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "exercises": "lifecycle handler and terminal-result freezing"
+    },
+    "operations.json": {
+      "sha256": "fbf733dbc3045de3cb8d3407b402ef08b9609a716e173eaa50ca789117b93c7f",
+      "purpose": "Sequences of operations observations and the gateway's freshness and revision verdicts.",
+      "consumers": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "exercises": "operations projection, revision and observedAt stamping on every signed answer"
+    },
+    "deadlines.json": {
+      "sha256": "7e94bfe5d3e8d890d70e05e66bcbcc42c3f8703347232e21708caca35b724843",
+      "purpose": "Gateway fulfillment deadlines (snapshot, recorded and current durations, paused sales, admitted waits) and the initial dispatch horizon.",
+      "consumers": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "exercises": "none: the gateway clocks a declared fulfillment duration must cover"
+    },
+    "envelope-negatives.json": {
+      "sha256": "ef782d5e6dc3624a22618cd77c70443e825803b594e765d5ece3f878ea41253a",
+      "purpose": "Requests a provider must refuse: cross-type envelopes, wrong audience, environment or chain, stale or future envelopes, wrong signers, tampering and broken bindings.",
+      "consumers": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "exercises": "envelope verification in every handler"
+    }
+  }
+}

@@ -1,0 +1,53 @@
+{
+  "schemaVersion": 1,
+  "testOnly": true,
+  "warning": "Synthetic keys derived from public labels. They sign nothing real, hold no funds and must never be configured for any network.",
+  "derivation": "privateKey = keccak256(utf8(label)); address = EIP-55 address of privateKey",
+  "keys": {
+    "gatewayDispatch": {
+      "label": "daski provider-wire fixture key: gatewayDispatch (test only)",
+      "signerKeyId": "gateway-dispatch",
+      "role": "Gateway: signs ProviderQuoteRequestV1, ProviderIntakeRequestV1, StandardRailDispatchV2 and DispatchStatusQueryV1",
+      "privateKey": "0x93c58204227721c54ed55f96f38ba31781d8096c8a297ee1597643f7fe7a28f4",
+      "address": "0xcD2843D358786e4906ecA1E889C7Fb8d3174fE98"
+    },
+    "gatewayQuote": {
+      "label": "daski provider-wire fixture key: gatewayQuote (test only)",
+      "signerKeyId": "gateway-quote",
+      "role": "Gateway: signs the QuoteV1 forwarded with every dispatch",
+      "privateKey": "0x45129b7a6b7563af4527e9794414066def1a4ac2c9cd2d8e16761b3fc6c3c43e",
+      "address": "0x3C5a5eC86C046B930A6E238b0843E6ef89001195"
+    },
+    "gatewayLifecycle": {
+      "label": "daski provider-wire fixture key: gatewayLifecycle (test only)",
+      "signerKeyId": "gateway-lifecycle",
+      "role": "Gateway: signs ProviderLifecycleGrantV1",
+      "privateKey": "0x64b91021787db5fdf1d1e1190b8bdece3f063e6be492dc976f3b04f32300f037",
+      "address": "0xe0e61a0d749777fb54A117De56D707238c1D3AA9"
+    },
+    "providerAuthority": {
+      "label": "daski provider-wire fixture key: providerAuthority (test only)",
+      "role": "Provider authority key: signs quote, intake, dispatch, dispatch status and lifecycle responses",
+      "privateKey": "0x5e29adedcef56892a048efc0a6825e25d29c7e0f52e6950025a55e10470d36d8",
+      "address": "0x8aa1C85a57A852fC365b0cFad757140a99F3EF8a"
+    },
+    "providerTerminalAttestation": {
+      "label": "daski provider-wire fixture key: providerTerminalAttestation (test only)",
+      "role": "Provider terminal attestation key: signs terminal attestations",
+      "privateKey": "0x13acee11b5b7683c190ac5cf9b4e151d239963dbc0455f3ece27c4e2397ad195",
+      "address": "0x9203340e79D61EC5270d1C0A592Badb9F6548e91"
+    },
+    "payer": {
+      "label": "daski provider-wire fixture key: payer (test only)",
+      "role": "Buyer EOA: signs OrderActionAuthorizationV1 (EIP-712) for payer-signed lifecycle actions",
+      "privateKey": "0xcb78d6c3d655c68a0f86e3beb952b737dafe2b0cd11cc658d0be04b1353599a1",
+      "address": "0x52a321854C93234C5281Fe3f3846Dd817784343F"
+    },
+    "unrecognized": {
+      "label": "daski provider-wire fixture key: unrecognized (test only)",
+      "role": "Configured by no party: anything it signs must be rejected",
+      "privateKey": "0xd8bb6c4dab5775e9d8d55aab68e4fe80e42cd4cbf5b52d1c6914fc19d287c823",
+      "address": "0xc858D0448ECF6aC1f50717625d11E52cE79216e8"
+    }
+  }
+}

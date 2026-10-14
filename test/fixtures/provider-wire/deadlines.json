@@ -1,0 +1,286 @@
+{
+  "schemaVersion": 1,
+  "rule": "deadline = dispatch resolution + max(snapshot, recorded, current servicing duration) + admitted prerequisite waits. A longer current duration is recorded before the deadline relies on it; nothing shortens it. In every vector sales are paused: the sale-time listing lookup refuses and is never asked.",
+  "fulfillment": [
+    {
+      "id": "shorter-current-keeps-snapshot",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "A 12-hour snapshot followed by a 6-hour listing keeps 12 hours from the original dispatch resolution.",
+      "order": {
+        "snapshotSeconds": 43200,
+        "recordedSeconds": null,
+        "purchaseReadiness": null
+      },
+      "resolvedAt": 1790000061,
+      "operations": null,
+      "probes": [
+        {
+          "at": 1790043260,
+          "servicing": 21600,
+          "expect": {
+            "providerFailed": false,
+            "recordedSeconds": null
+          }
+        },
+        {
+          "at": 1790043261,
+          "servicing": 21600,
+          "expect": {
+            "providerFailed": true,
+            "recordedSeconds": null
+          }
+        }
+      ]
+    },
+    {
+      "id": "longer-current-is-recorded",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "A 24-hour listing extends a 12-hour snapshot; a later 6-hour listing or a missing one cannot retract it.",
+      "order": {
+        "snapshotSeconds": 43200,
+        "recordedSeconds": null,
+        "purchaseReadiness": null
+      },
+      "resolvedAt": 1790000061,
+      "operations": null,
+      "probes": [
+        {
+          "at": 1790043261,
+          "servicing": 86400,
+          "expect": {
+            "providerFailed": false,
+            "recordedSeconds": 86400
+          }
+        },
+        {
+          "at": 1790086460,
+          "servicing": 21600,
+          "expect": {
+            "providerFailed": false,
+            "recordedSeconds": 86400
+          }
+        },
+        {
+          "at": 1790086461,
+          "servicing": null,
+          "expect": {
+            "providerFailed": true,
+            "recordedSeconds": 86400
+          }
+        }
+      ]
+    },
+    {
+      "id": "recorded-survives-lookup-failure",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "After a restart the recorded 24 hours hold while the servicing lookup fails.",
+      "order": {
+        "snapshotSeconds": 43200,
+        "recordedSeconds": 86400,
+        "purchaseReadiness": null
+      },
+      "resolvedAt": 1790000061,
+      "operations": null,
+      "probes": [
+        {
+          "at": 1790086460,
+          "servicing": "lookup-failed",
+          "expect": {
+            "providerFailed": false,
+            "recordedSeconds": 86400
+          }
+        },
+        {
+          "at": 1790086461,
+          "servicing": "lookup-failed",
+          "expect": {
+            "providerFailed": true,
+            "recordedSeconds": 86400
+          }
+        }
+      ]
+    },
+    {
+      "id": "admitted-wait-is-excluded",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "Only a validated, admitted prerequisite wait (payer_dns readiness) moves the deadline.",
+      "order": {
+        "snapshotSeconds": 43200,
+        "recordedSeconds": null,
+        "purchaseReadiness": "payer_dns"
+      },
+      "resolvedAt": 1790000061,
+      "operations": {
+        "accumulatedWaitSeconds": 1800,
+        "operations": {
+          "schemaVersion": 1,
+          "revision": 1,
+          "observedAt": 1790043261,
+          "fulfillment": {
+            "phase": "provisioning",
+            "reasons": [],
+            "pendingSince": null,
+            "lastCheckedAt": null,
+            "nextCheckAt": null,
+            "missingRecords": [],
+            "accumulatedWaitSeconds": 1800
+          },
+          "support": null,
+          "recovery": null
+        }
+      },
+      "probes": [
+        {
+          "at": 1790045060,
+          "servicing": null,
+          "expect": {
+            "providerFailed": false,
+            "recordedSeconds": null
+          }
+        },
+        {
+          "at": 1790045061,
+          "servicing": null,
+          "expect": {
+            "providerFailed": true,
+            "recordedSeconds": null
+          }
+        }
+      ]
+    },
+    {
+      "id": "all-null-audit-earns-nothing",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "An external audit observed with all-null operations accrues no wait exemption.",
+      "order": {
+        "snapshotSeconds": 43200,
+        "recordedSeconds": null,
+        "purchaseReadiness": null
+      },
+      "resolvedAt": 1790000061,
+      "operations": {
+        "accumulatedWaitSeconds": 0,
+        "operations": {
+          "schemaVersion": 1,
+          "revision": 0,
+          "observedAt": 1790043261,
+          "fulfillment": null,
+          "support": null,
+          "recovery": null
+        }
+      },
+      "probes": [
+        {
+          "at": 1790043260,
+          "servicing": null,
+          "expect": {
+            "providerFailed": false,
+            "recordedSeconds": null
+          }
+        },
+        {
+          "at": 1790043261,
+          "servicing": null,
+          "expect": {
+            "providerFailed": true,
+            "recordedSeconds": null
+          }
+        }
+      ]
+    },
+    {
+      "id": "reported-wait-without-admission-earns-nothing",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "An ordinary audit must not be reported as a DNS wait; if it is, it still earns nothing without admitted payer_dns readiness.",
+      "order": {
+        "snapshotSeconds": 43200,
+        "recordedSeconds": null,
+        "purchaseReadiness": null
+      },
+      "resolvedAt": 1790000061,
+      "operations": {
+        "accumulatedWaitSeconds": 1800,
+        "operations": {
+          "schemaVersion": 1,
+          "revision": 1,
+          "observedAt": 1790043261,
+          "fulfillment": {
+            "phase": "dns_pending",
+            "reasons": [
+              "audit_running"
+            ],
+            "pendingSince": 1790000061,
+            "lastCheckedAt": 1790043261,
+            "nextCheckAt": 1790043321,
+            "missingRecords": [],
+            "accumulatedWaitSeconds": 1800
+          },
+          "support": null,
+          "recovery": null
+        }
+      },
+      "probes": [
+        {
+          "at": 1790043260,
+          "servicing": null,
+          "expect": {
+            "providerFailed": false,
+            "recordedSeconds": null
+          }
+        },
+        {
+          "at": 1790043261,
+          "servicing": null,
+          "expect": {
+            "providerFailed": true,
+            "recordedSeconds": null
+          }
+        }
+      ]
+    }
+  ],
+  "initialDispatch": [
+    {
+      "id": "delayed-first-dispatch",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "A timely-paid order is dispatched afresh until its first release observation plus the snapshot's fulfillment duration, then stops.",
+      "firstReleaseObservedAt": 1790000050,
+      "snapshotSeconds": 2592000,
+      "probes": [
+        {
+          "at": 1790093600,
+          "expect": "dispatched"
+        },
+        {
+          "at": 1792592049,
+          "expect": "dispatched"
+        },
+        {
+          "at": 1792592050,
+          "expect": "providerFailed"
+        }
+      ]
+    }
+  ]
+}

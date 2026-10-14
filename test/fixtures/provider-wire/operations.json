@@ -1,0 +1,428 @@
+{
+  "schemaVersion": 1,
+  "rules": [
+    "operations is exactly {schemaVersion: 1, revision, observedAt, fulfillment, support, recovery}; all three sections are required and may be null.",
+    "observedAt must lie within [now - 300, now + 30] of the gateway's receipt on every dispatch, status and lifecycle answer: stamp it afresh and re-sign; never replay a cached signed answer.",
+    "A revision names exactly one semantic projection: everything except observedAt. Different content under a stored revision is refused; changed content needs a higher revision.",
+    "A lower revision, or the same revision observed earlier, is valid but ignored.",
+    "An all-null projection may keep revision 0 forever; repeated fresh observations of unchanged content are stored without a new revision."
+  ],
+  "sequences": [
+    {
+      "id": "all-null-constant-revision",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "An unchanged pending order read after six minutes and eight hours keeps revision 0.",
+      "steps": [
+        {
+          "now": 1790000061,
+          "operations": {
+            "schemaVersion": 1,
+            "revision": 0,
+            "observedAt": 1790000061,
+            "fulfillment": null,
+            "support": null,
+            "recovery": null
+          },
+          "terminal": null,
+          "expect": "stored"
+        },
+        {
+          "now": 1790000421,
+          "operations": {
+            "schemaVersion": 1,
+            "revision": 0,
+            "observedAt": 1790000421,
+            "fulfillment": null,
+            "support": null,
+            "recovery": null
+          },
+          "terminal": null,
+          "expect": "stored"
+        },
+        {
+          "now": 1790028861,
+          "operations": {
+            "schemaVersion": 1,
+            "revision": 0,
+            "observedAt": 1790028861,
+            "fulfillment": null,
+            "support": null,
+            "recovery": null
+          },
+          "terminal": null,
+          "expect": "stored"
+        }
+      ]
+    },
+    {
+      "id": "observed-0s-before-receipt",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "The freshness window at the gateway's receipt.",
+      "steps": [
+        {
+          "now": 1790000061,
+          "operations": {
+            "schemaVersion": 1,
+            "revision": 0,
+            "observedAt": 1790000061,
+            "fulfillment": null,
+            "support": null,
+            "recovery": null
+          },
+          "terminal": null,
+          "expect": "stored"
+        }
+      ]
+    },
+    {
+      "id": "observed-300s-before-receipt",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "The freshness window at the gateway's receipt.",
+      "steps": [
+        {
+          "now": 1790000061,
+          "operations": {
+            "schemaVersion": 1,
+            "revision": 0,
+            "observedAt": 1789999761,
+            "fulfillment": null,
+            "support": null,
+            "recovery": null
+          },
+          "terminal": null,
+          "expect": "stored"
+        }
+      ]
+    },
+    {
+      "id": "observed-301s-before-receipt",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "The freshness window at the gateway's receipt.",
+      "steps": [
+        {
+          "now": 1790000061,
+          "operations": {
+            "schemaVersion": 1,
+            "revision": 0,
+            "observedAt": 1789999760,
+            "fulfillment": null,
+            "support": null,
+            "recovery": null
+          },
+          "terminal": null,
+          "expect": "rejected",
+          "error": "provider_operations_observation_stale"
+        }
+      ]
+    },
+    {
+      "id": "observed-30s-after-receipt",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "The freshness window at the gateway's receipt.",
+      "steps": [
+        {
+          "now": 1790000061,
+          "operations": {
+            "schemaVersion": 1,
+            "revision": 0,
+            "observedAt": 1790000091,
+            "fulfillment": null,
+            "support": null,
+            "recovery": null
+          },
+          "terminal": null,
+          "expect": "stored"
+        }
+      ]
+    },
+    {
+      "id": "observed-31s-after-receipt",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "The freshness window at the gateway's receipt.",
+      "steps": [
+        {
+          "now": 1790000061,
+          "operations": {
+            "schemaVersion": 1,
+            "revision": 0,
+            "observedAt": 1790000092,
+            "fulfillment": null,
+            "support": null,
+            "recovery": null
+          },
+          "terminal": null,
+          "expect": "rejected",
+          "error": "provider_operations_observation_stale"
+        }
+      ]
+    },
+    {
+      "id": "same-revision-different-content",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "Changed content under a stored revision is equivocation.",
+      "steps": [
+        {
+          "now": 1790000061,
+          "operations": {
+            "schemaVersion": 1,
+            "revision": 0,
+            "observedAt": 1790000061,
+            "fulfillment": null,
+            "support": null,
+            "recovery": null
+          },
+          "terminal": null,
+          "expect": "stored"
+        },
+        {
+          "now": 1790000121,
+          "operations": {
+            "schemaVersion": 1,
+            "revision": 0,
+            "observedAt": 1790000121,
+            "fulfillment": null,
+            "support": {
+              "reviewId": "00000000-0000-4000-8000-0000000000b2",
+              "status": "open",
+              "lastAcceptedRequest": {
+                "requestId": "support-0001",
+                "messageId": "00000000-0000-4000-8000-0000000000b1",
+                "acceptedAt": 1790000061
+              }
+            },
+            "recovery": null
+          },
+          "terminal": null,
+          "expect": "rejected",
+          "error": "provider_operations_revision_conflict"
+        }
+      ]
+    },
+    {
+      "id": "higher-revision-different-content",
+      "appliesTo": [
+        "daski-io/provider-full"
+      ],
+      "purpose": "Changed content takes a higher revision.",
+      "steps": [
+        {
+          "now": 1790000061,
+          "operations": {
+            "schemaVersion": 1,
+            "revision": 0,
+            "observedAt": 1790000061,
+            "fulfillment": null,
+            "support": null,
+            "recovery": null
+          },
+          "terminal": null,
+          "expect": "stored"
+        },
+        {
+          "now": 1790000121,
+          "operations": {
+            "schemaVersion": 1,
+            "revision": 1,
+            "observedAt": 1790000121,
+            "fulfillment": null,
+            "support": {
+              "reviewId": "00000000-0000-4000-8000-0000000000b2",
+              "status": "open",
+              "lastAcceptedRequest": {
+                "requestId": "support-0001",
+                "messageId": "00000000-0000-4000-8000-0000000000b1",
+                "acceptedAt": 1790000061
+              }
+            },
+            "recovery": null
+          },
+          "terminal": null,
+          "expect": "stored"
+        },
+        {
+          "now": 1790000181,
+          "operations": {
+            "schemaVersion": 1,
+            "revision": 1,
+            "observedAt": 1790000181,
+            "fulfillment": null,
+            "support": {
+              "reviewId": "00000000-0000-4000-8000-0000000000b2",
+              "status": "open",
+              "lastAcceptedRequest": {
+                "requestId": "support-0001",
+                "messageId": "00000000-0000-4000-8000-0000000000b1",
+                "acceptedAt": 1790000061
+              }
+            },
+            "recovery": null
+          },
+          "terminal": null,
+          "expect": "stored"
+        }
+      ]
+    },
+    {
+      "id": "lower-revision-ignored",
+      "appliesTo": [
+        "daski-io/provider-full"
+      ],
+      "purpose": "A late answer with a lower revision never replaces a newer one.",
+      "steps": [
+        {
+          "now": 1790000061,
+          "operations": {
+            "schemaVersion": 1,
+            "revision": 1,
+            "observedAt": 1790000061,
+            "fulfillment": null,
+            "support": {
+              "reviewId": "00000000-0000-4000-8000-0000000000b2",
+              "status": "open",
+              "lastAcceptedRequest": {
+                "requestId": "support-0001",
+                "messageId": "00000000-0000-4000-8000-0000000000b1",
+                "acceptedAt": 1790000061
+              }
+            },
+            "recovery": null
+          },
+          "terminal": null,
+          "expect": "stored"
+        },
+        {
+          "now": 1790000121,
+          "operations": {
+            "schemaVersion": 1,
+            "revision": 0,
+            "observedAt": 1790000121,
+            "fulfillment": null,
+            "support": null,
+            "recovery": null
+          },
+          "terminal": null,
+          "expect": "ignored"
+        }
+      ]
+    },
+    {
+      "id": "older-observation-ignored",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "A late answer observed earlier never replaces a newer one.",
+      "steps": [
+        {
+          "now": 1790000121,
+          "operations": {
+            "schemaVersion": 1,
+            "revision": 0,
+            "observedAt": 1790000121,
+            "fulfillment": null,
+            "support": null,
+            "recovery": null
+          },
+          "terminal": null,
+          "expect": "stored"
+        },
+        {
+          "now": 1790000121,
+          "operations": {
+            "schemaVersion": 1,
+            "revision": 0,
+            "observedAt": 1790000091,
+            "fulfillment": null,
+            "support": null,
+            "recovery": null
+          },
+          "terminal": null,
+          "expect": "ignored"
+        }
+      ]
+    },
+    {
+      "id": "reply-is-content",
+      "appliesTo": [
+        "daski-io/provider-full"
+      ],
+      "purpose": "An operator reply is part of the projection its revision names.",
+      "steps": [
+        {
+          "now": 1790000061,
+          "operations": {
+            "schemaVersion": 1,
+            "revision": 2,
+            "observedAt": 1790000061,
+            "fulfillment": null,
+            "support": {
+              "reviewId": "00000000-0000-4000-8000-0000000000b2",
+              "status": "open",
+              "lastAcceptedRequest": {
+                "requestId": "support-0001",
+                "messageId": "00000000-0000-4000-8000-0000000000b1",
+                "acceptedAt": 1790000061
+              },
+              "lastReply": {
+                "messageId": "00000000-0000-4000-8000-0000000000b3",
+                "repliedAt": 1790000061,
+                "message": "We saved your note."
+              }
+            },
+            "recovery": null
+          },
+          "terminal": null,
+          "expect": "stored"
+        },
+        {
+          "now": 1790000121,
+          "operations": {
+            "schemaVersion": 1,
+            "revision": 2,
+            "observedAt": 1790000121,
+            "fulfillment": null,
+            "support": {
+              "reviewId": "00000000-0000-4000-8000-0000000000b2",
+              "status": "open",
+              "lastAcceptedRequest": {
+                "requestId": "support-0001",
+                "messageId": "00000000-0000-4000-8000-0000000000b1",
+                "acceptedAt": 1790000061
+              },
+              "lastReply": {
+                "messageId": "00000000-0000-4000-8000-0000000000b3",
+                "repliedAt": 1790000121,
+                "message": "We saved your note twice."
+              }
+            },
+            "recovery": null
+          },
+          "terminal": null,
+          "expect": "rejected",
+          "error": "provider_operations_revision_conflict"
+        }
+      ]
+    }
+  ]
+}

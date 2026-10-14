@@ -1,0 +1,2623 @@
+{
+  "schemaVersion": 1,
+  "rule": "Each request must be refused before any lookup, admission or mutation: a quote, intake, dispatch or lifecycle handler answers a 4xx refusal (a dispatch pre-admission refusal is {\"error\":\"dispatch_rejected\",\"reason\":...}); a status handler must never answer 404 with reason outcome_policy. A handler checks artifactType and schemaVersion before it trusts any signature, because one gateway key signs several envelope types.",
+  "bytes": "Send JSON.stringify(http.body) with http.headers to http.url.",
+  "checks": {
+    "field": "Every envelope is validly signed by the key its signerKeyId names; the value at path is actual, not expected.",
+    "window": "Every envelope is validly signed; at provider.now the envelope has expired (validBefore <= now) or was issued more than 30 seconds ahead.",
+    "signer": "The envelope's signature recovers to signedBy, not to the key its signerKeyId names.",
+    "tampered": "The envelope changed after signing; its signature recovers to no configured key.",
+    "binding": "Every envelope is validly signed; the value at left differs from the value at right (compare equal) or from canonicalHash of it (compare hash).",
+    "capability": "The grant is validly signed and binds this authorization, but a read capability never authorizes this action.",
+    "payer-signature": "The grant is validly signed and binds this authorization; its EIP-712 signature recovers to signedBy for audience, not to the order's payer for the gateway audience."
+  },
+  "vectors": [
+    {
+      "id": "quote.status-query-envelope",
+      "handler": "quote",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "Cross-type: a validly signed DispatchStatusQueryV1 is not a quote request.",
+      "provider": {
+        "now": 1790000900
+      },
+      "check": {
+        "kind": "field",
+        "envelope": "request",
+        "path": "request.artifactType",
+        "actual": "DispatchStatusQueryV1",
+        "expected": [
+          "ProviderQuoteRequestV1",
+          "ProviderIntakeRequestV1"
+        ]
+      },
+      "http": {
+        "method": "POST",
+        "url": "https://provider.example/standard-rail/quote",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "request": {
+            "artifactType": "DispatchStatusQueryV1",
+            "schemaVersion": 1,
+            "environment": "testnet",
+            "chainId": 84532,
+            "audience": "https://provider.example",
+            "signerKeyId": "gateway-dispatch",
+            "issuedAt": 1790000895,
+            "validBefore": 1790000955,
+            "payload": {
+              "orderId": "ord_00000000-0000-4000-8000-000000000001",
+              "dispatchHash": "0x68df0a341c25d30f3e22b9585038fa7f0abd2a19f6de59ca88df83e9978a282f",
+              "issuedAt": 1790000600,
+              "validBefore": 1790000660
+            },
+            "signature": "0xe61586aae7c4226c0783e03010d9ab43a1d257ebc2d64dbb777e47b5b5b7715741915527249b5af1f2a620562020ee5ece2bb796ded383880e4529fcf93f88601b"
+          }
+        }
+      },
+      "expect": "reject"
+    },
+    {
+      "id": "quote.dispatch-envelope",
+      "handler": "quote",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "Cross-type: a validly signed StandardRailDispatchV2 is not a quote request.",
+      "provider": {
+        "now": 1790000061
+      },
+      "check": {
+        "kind": "field",
+        "envelope": "request",
+        "path": "request.artifactType",
+        "actual": "StandardRailDispatchV2",
+        "expected": [
+          "ProviderQuoteRequestV1",
+          "ProviderIntakeRequestV1"
+        ]
+      },
+      "http": {
+        "method": "POST",
+        "url": "https://provider.example/standard-rail/quote",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "request": {
+            "artifactType": "StandardRailDispatchV2",
+            "schemaVersion": 2,
+            "environment": "testnet",
+            "chainId": 84532,
+            "audience": "https://provider.example",
+            "signerKeyId": "gateway-dispatch",
+            "issuedAt": 1790000060,
+            "validBefore": 1790000360,
+            "payload": {
+              "environment": "testnet",
+              "chainId": 84532,
+              "gatewayAudience": "https://gateway.example",
+              "providerAudience": "https://provider.example",
+              "providerControlProfileHash": "0x3f4c52f6d596c9911e0bf03aab74941011a1792d9c70086fe0ef06dc76f5734c",
+              "orderId": "ord_00000000-0000-4000-8000-000000000001",
+              "orderKey": "0x6ca8ece73f2c70035c9d42d864493af5223ba77205724148ce886556a5de4651",
+              "serviceId": "0x7d456d91e036748dfdb7b570d333491cd2000bc86db43fbf95047d166cb7a864",
+              "reputationEligible": true,
+              "reputationContract": "0x9b5AA6961eC02F0bB6185047FF72af37c68e179f",
+              "outcomeSchemaUid": "0x0aba7e41cb05ad3911e8e0a4fcdd5aa5e6033e65bc8827f69b2da8a8cdd74f3a",
+              "dispatchNonce": "0xc846b3e56a3549ded8ebaf1e631f68e7a6461a5874b069b83b498d206acbb4df",
+              "payer": "0x52a321854C93234C5281Fe3f3846Dd817784343F",
+              "listingManifestHash": "0x2efa3883986e0ef9f11acf05ad5c70f9da45b5293026344c0b38c87a7319e784",
+              "providerOfferHash": "0xf097bfa76765936f5bbcd78cfd23cea437dc6ed4939a66603a45a9e1e2e66bd8",
+              "quoteHash": "0xeea01f1009984e1a47d440e6177fbfe5811b1c9090f13ab721aeadb0db5b56ad",
+              "bindingProfile": "recipe-bound-v2",
+              "canonicalRequestHash": "0x6dafea8cb3553869537f4f4643fb31f6a478838f81967374cbf496e0dfd7cf51",
+              "orderNonce": "0x698715df0f12815c2899be7896c96638fd58b0d8c5c7ddcf9b53d14a51ada70d",
+              "buyerIdentityProofHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+              "activeRailProfileHash": "0x533df1c2dfc04f1070c2ac142f340a84be0afcce45c66945b6d56d4b8ed16b0a",
+              "facilitatorConfirmationHash": "0x2ddd22f6e1f3d2ed00b20bef98a41526021ecee8cff64c696a0e9364b3cd6f59",
+              "settlementTxHash": "0x570dd5fa19566e259fc94b547cda3dd2f7e5c4aa7198d8dd35a1ec2582249549",
+              "depositEvidenceHash": "0xdeb50cfe6d7d949b1d143c43a3c82e1ece1609eca6e71a8fad635e4a0e8c6d51",
+              "depositBlockNumber": "35000000",
+              "depositBlockHash": "0x0636b0db68d0e1c0baa37e797d32a1dd05f60df2bac4aa835f78627143ee6d62",
+              "depositTransactionIndex": 7,
+              "depositLogIndex": 12,
+              "releaseTxHash": "0x0bc3938a491551660ffc731adb1749c606ccdc8c159aa4805d23325f03f41459",
+              "releaseEvidenceHash": "0x57f58c3734fdfd4207d336cf8713eeb358070b25410bae51afc07b81ffe63123",
+              "releaseBlockNumber": "35000002",
+              "releaseBlockHash": "0xca4c191ec965ecf81ae95af29486b9cc95bc20bb17b2acefe39c4198f44bea3f",
+              "releaseTransactionIndex": 3,
+              "releaseLogIndex": 5,
+              "releaseSequence": "1",
+              "grossAmount": "250000",
+              "providerNetAmount": "237500",
+              "daskiCommissionAmount": "12500",
+              "canonicalProviderRequestHash": "0x1bf2ac01775ea9f4293cb261f84a0f40d93f45a68e3e26bfdbcbd1ebdeb0e708",
+              "dispatchDeadlineSeconds": 300,
+              "issuedAt": 1790000060,
+              "validBefore": 1790000360
+            },
+            "signature": "0x029c66b21003c1908884ba884ec8d4d97ad7e25f512ff29266a49ce4ce1cc80c23accdc2ff9393ac08dd57b35b8e14156761d573876a420cd06626c728b3893c1b"
+          }
+        }
+      },
+      "expect": "reject"
+    },
+    {
+      "id": "quote.lifecycle-grant",
+      "handler": "quote",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "Cross-type: a lifecycle grant, signed by another gateway key, is not a quote request.",
+      "provider": {
+        "now": 1790000900
+      },
+      "check": {
+        "kind": "field",
+        "envelope": "request",
+        "path": "request.artifactType",
+        "actual": "ProviderLifecycleGrantV1",
+        "expected": [
+          "ProviderQuoteRequestV1",
+          "ProviderIntakeRequestV1"
+        ]
+      },
+      "http": {
+        "method": "POST",
+        "url": "https://provider.example/standard-rail/quote",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "request": {
+            "artifactType": "ProviderLifecycleGrantV1",
+            "schemaVersion": 1,
+            "environment": "testnet",
+            "chainId": 84532,
+            "audience": "https://provider.example",
+            "signerKeyId": "gateway-lifecycle",
+            "issuedAt": 1790000900,
+            "validBefore": 1790001020,
+            "payload": {
+              "orderId": "ord_00000000-0000-4000-8000-000000000001",
+              "providerTaskId": "00000000-0000-4000-8000-00000000a001",
+              "action": "status",
+              "requestHash": "0xb48d38f93eaa084033fc5970bf96e559c33c4cdc07d889ab00b4d63f9590739d",
+              "authorizationHash": "0x76a73d8f587e039d82fa39a50b1a060f83849a7a0a1019033b6510646b4ecbf5",
+              "payer": "0x52a321854C93234C5281Fe3f3846Dd817784343F"
+            },
+            "signature": "0xf798cb142e54c4770b540fa3608dc9aab1e6892fdabcb515bd05c898c7e3208558c806d74702a053e592ae5ee3fc52595a5b55563eff0c36a05d6facc0b85f571c"
+          }
+        }
+      },
+      "expect": "reject"
+    },
+    {
+      "id": "quote.wrong-audience",
+      "handler": "quote",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "A request for another provider's audience.",
+      "provider": {
+        "now": 1790000900
+      },
+      "check": {
+        "kind": "field",
+        "envelope": "request",
+        "path": "request.audience",
+        "actual": "https://other-provider.example",
+        "expected": "https://provider.example"
+      },
+      "http": {
+        "method": "POST",
+        "url": "https://provider.example/standard-rail/quote",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "request": {
+            "artifactType": "ProviderQuoteRequestV1",
+            "schemaVersion": 1,
+            "environment": "testnet",
+            "chainId": 84532,
+            "audience": "https://other-provider.example",
+            "signerKeyId": "gateway-dispatch",
+            "issuedAt": 1790000895,
+            "validBefore": 1790000955,
+            "payload": {
+              "outcomeId": "create-note",
+              "listingManifestHash": "0x2efa3883986e0ef9f11acf05ad5c70f9da45b5293026344c0b38c87a7319e784",
+              "requestHash": "0x1bf2ac01775ea9f4293cb261f84a0f40d93f45a68e3e26bfdbcbd1ebdeb0e708",
+              "request": {
+                "title": "Synthetic fixture note",
+                "body": "Written by the gateway's provider-wire fixtures."
+              },
+              "payer": "0x52a321854c93234c5281fe3f3846dd817784343f"
+            },
+            "signature": "0xdfde28bad749dbd8a67453925284b95d8c6ab517f8b65ad01abf5386bb9aedf92b55de3a0d556617287275638a361a6e39463e47cad114f3487390ff6743c2ca1c"
+          }
+        }
+      },
+      "expect": "reject"
+    },
+    {
+      "id": "quote.expired",
+      "handler": "quote",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "validBefore has passed.",
+      "provider": {
+        "now": 1790000900
+      },
+      "check": {
+        "kind": "window",
+        "envelope": "request",
+        "problem": "expired"
+      },
+      "http": {
+        "method": "POST",
+        "url": "https://provider.example/standard-rail/quote",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "request": {
+            "artifactType": "ProviderQuoteRequestV1",
+            "schemaVersion": 1,
+            "environment": "testnet",
+            "chainId": 84532,
+            "audience": "https://provider.example",
+            "signerKeyId": "gateway-dispatch",
+            "issuedAt": 1790000000,
+            "validBefore": 1790000060,
+            "payload": {
+              "outcomeId": "create-note",
+              "listingManifestHash": "0x2efa3883986e0ef9f11acf05ad5c70f9da45b5293026344c0b38c87a7319e784",
+              "requestHash": "0x1bf2ac01775ea9f4293cb261f84a0f40d93f45a68e3e26bfdbcbd1ebdeb0e708",
+              "request": {
+                "title": "Synthetic fixture note",
+                "body": "Written by the gateway's provider-wire fixtures."
+              },
+              "payer": "0x52a321854c93234c5281fe3f3846dd817784343f"
+            },
+            "signature": "0xff9dbcafa3dc8cb90bea0b791b49df3349b75de33e019643ca3450b101f0fb175fe4d03b3c0e9ce334eea57421a14a839974f9a827b041ae34df5ab759915e491c"
+          }
+        }
+      },
+      "expect": "reject"
+    },
+    {
+      "id": "quote.issued-in-future",
+      "handler": "quote",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "issuedAt more than 30 seconds ahead of the provider clock.",
+      "provider": {
+        "now": 1790000900
+      },
+      "check": {
+        "kind": "window",
+        "envelope": "request",
+        "problem": "issued-in-future"
+      },
+      "http": {
+        "method": "POST",
+        "url": "https://provider.example/standard-rail/quote",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "request": {
+            "artifactType": "ProviderQuoteRequestV1",
+            "schemaVersion": 1,
+            "environment": "testnet",
+            "chainId": 84532,
+            "audience": "https://provider.example",
+            "signerKeyId": "gateway-dispatch",
+            "issuedAt": 1790001020,
+            "validBefore": 1790001080,
+            "payload": {
+              "outcomeId": "create-note",
+              "listingManifestHash": "0x2efa3883986e0ef9f11acf05ad5c70f9da45b5293026344c0b38c87a7319e784",
+              "requestHash": "0x1bf2ac01775ea9f4293cb261f84a0f40d93f45a68e3e26bfdbcbd1ebdeb0e708",
+              "request": {
+                "title": "Synthetic fixture note",
+                "body": "Written by the gateway's provider-wire fixtures."
+              },
+              "payer": "0x52a321854c93234c5281fe3f3846dd817784343f"
+            },
+            "signature": "0x8f00df2e9d9adc506425c04052b97db1c8112d570df299656dd2b69fc24e1991793ee1b7bf6471b479466c9ad923db272c171a92a6e61327cd1e42c40ac36c551c"
+          }
+        }
+      },
+      "expect": "reject"
+    },
+    {
+      "id": "quote.wrong-environment",
+      "handler": "quote",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "A mainnet envelope at a testnet provider.",
+      "provider": {
+        "now": 1790000900
+      },
+      "check": {
+        "kind": "field",
+        "envelope": "request",
+        "path": "request.environment",
+        "actual": "mainnet",
+        "expected": "testnet"
+      },
+      "http": {
+        "method": "POST",
+        "url": "https://provider.example/standard-rail/quote",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "request": {
+            "artifactType": "ProviderQuoteRequestV1",
+            "schemaVersion": 1,
+            "environment": "mainnet",
+            "chainId": 84532,
+            "audience": "https://provider.example",
+            "signerKeyId": "gateway-dispatch",
+            "issuedAt": 1790000895,
+            "validBefore": 1790000955,
+            "payload": {
+              "outcomeId": "create-note",
+              "listingManifestHash": "0x2efa3883986e0ef9f11acf05ad5c70f9da45b5293026344c0b38c87a7319e784",
+              "requestHash": "0x1bf2ac01775ea9f4293cb261f84a0f40d93f45a68e3e26bfdbcbd1ebdeb0e708",
+              "request": {
+                "title": "Synthetic fixture note",
+                "body": "Written by the gateway's provider-wire fixtures."
+              },
+              "payer": "0x52a321854c93234c5281fe3f3846dd817784343f"
+            },
+            "signature": "0x975320fff22a5d569b9d2a80f56a854e268791979a5036345391d80b66ad253b1bcd777f43d69cc86d39754dc17d8695cac798edda1c6672af460262d8b800bd1b"
+          }
+        }
+      },
+      "expect": "reject"
+    },
+    {
+      "id": "quote.wrong-chain",
+      "handler": "quote",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "An envelope for another chain.",
+      "provider": {
+        "now": 1790000900
+      },
+      "check": {
+        "kind": "field",
+        "envelope": "request",
+        "path": "request.chainId",
+        "actual": 8453,
+        "expected": 84532
+      },
+      "http": {
+        "method": "POST",
+        "url": "https://provider.example/standard-rail/quote",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "request": {
+            "artifactType": "ProviderQuoteRequestV1",
+            "schemaVersion": 1,
+            "environment": "testnet",
+            "chainId": 8453,
+            "audience": "https://provider.example",
+            "signerKeyId": "gateway-dispatch",
+            "issuedAt": 1790000895,
+            "validBefore": 1790000955,
+            "payload": {
+              "outcomeId": "create-note",
+              "listingManifestHash": "0x2efa3883986e0ef9f11acf05ad5c70f9da45b5293026344c0b38c87a7319e784",
+              "requestHash": "0x1bf2ac01775ea9f4293cb261f84a0f40d93f45a68e3e26bfdbcbd1ebdeb0e708",
+              "request": {
+                "title": "Synthetic fixture note",
+                "body": "Written by the gateway's provider-wire fixtures."
+              },
+              "payer": "0x52a321854c93234c5281fe3f3846dd817784343f"
+            },
+            "signature": "0xd3c9691338fc6fa0a0ef5db38c23bec516dfde06c7722fe8bb86644054eb6e0177ab8b747d10b5b2630e00d2c81f19533359c4cb0ce10d7d8eb6a1e20ce46c621b"
+          }
+        }
+      },
+      "expect": "reject"
+    },
+    {
+      "id": "quote.schema-version-2",
+      "handler": "quote",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "An unknown schema version.",
+      "provider": {
+        "now": 1790000900
+      },
+      "check": {
+        "kind": "field",
+        "envelope": "request",
+        "path": "request.schemaVersion",
+        "actual": 2,
+        "expected": 1
+      },
+      "http": {
+        "method": "POST",
+        "url": "https://provider.example/standard-rail/quote",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "request": {
+            "artifactType": "ProviderQuoteRequestV1",
+            "schemaVersion": 2,
+            "environment": "testnet",
+            "chainId": 84532,
+            "audience": "https://provider.example",
+            "signerKeyId": "gateway-dispatch",
+            "issuedAt": 1790000895,
+            "validBefore": 1790000955,
+            "payload": {
+              "outcomeId": "create-note",
+              "listingManifestHash": "0x2efa3883986e0ef9f11acf05ad5c70f9da45b5293026344c0b38c87a7319e784",
+              "requestHash": "0x1bf2ac01775ea9f4293cb261f84a0f40d93f45a68e3e26bfdbcbd1ebdeb0e708",
+              "request": {
+                "title": "Synthetic fixture note",
+                "body": "Written by the gateway's provider-wire fixtures."
+              },
+              "payer": "0x52a321854c93234c5281fe3f3846dd817784343f"
+            },
+            "signature": "0x4b5e1bf6351e08634818d9434e97451c3c01eb03d083d51ba16258d5827712ac1e4199dbce280ef24423180f60c86bf6124f5e43cf6ef6305136d321335892271b"
+          }
+        }
+      },
+      "expect": "reject"
+    },
+    {
+      "id": "quote.request-hash-mismatch",
+      "handler": "quote",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "Validly signed, but payload.requestHash does not hash payload.request.",
+      "provider": {
+        "now": 1790000900
+      },
+      "check": {
+        "kind": "binding",
+        "left": "request.payload.requestHash",
+        "right": "request.payload.request",
+        "compare": "hash"
+      },
+      "http": {
+        "method": "POST",
+        "url": "https://provider.example/standard-rail/quote",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "request": {
+            "artifactType": "ProviderQuoteRequestV1",
+            "schemaVersion": 1,
+            "environment": "testnet",
+            "chainId": 84532,
+            "audience": "https://provider.example",
+            "signerKeyId": "gateway-dispatch",
+            "issuedAt": 1790000895,
+            "validBefore": 1790000955,
+            "payload": {
+              "outcomeId": "create-note",
+              "listingManifestHash": "0x2efa3883986e0ef9f11acf05ad5c70f9da45b5293026344c0b38c87a7319e784",
+              "requestHash": "0x1bf2ac01775ea9f4293cb261f84a0f40d93f45a68e3e26bfdbcbd1ebdeb0e708",
+              "request": {
+                "title": "Another title"
+              },
+              "payer": "0x52a321854c93234c5281fe3f3846dd817784343f"
+            },
+            "signature": "0x45ca7154dd0a0643ab4795284aaed0c179092fefb0e55ccfea9f503b0c078c886b8af96eeb55e27e17bc8ee627f54ee950169891b3ab495ae2496381e06a48501b"
+          }
+        }
+      },
+      "expect": "reject"
+    },
+    {
+      "id": "quote.signed-by-lifecycle-key",
+      "handler": "quote",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "Signed by gateway-lifecycle while naming gateway-dispatch.",
+      "provider": {
+        "now": 1790000900
+      },
+      "check": {
+        "kind": "signer",
+        "envelope": "request",
+        "signedBy": "gatewayLifecycle"
+      },
+      "http": {
+        "method": "POST",
+        "url": "https://provider.example/standard-rail/quote",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "request": {
+            "artifactType": "ProviderQuoteRequestV1",
+            "schemaVersion": 1,
+            "environment": "testnet",
+            "chainId": 84532,
+            "audience": "https://provider.example",
+            "signerKeyId": "gateway-dispatch",
+            "issuedAt": 1790000895,
+            "validBefore": 1790000955,
+            "payload": {
+              "outcomeId": "create-note",
+              "listingManifestHash": "0x2efa3883986e0ef9f11acf05ad5c70f9da45b5293026344c0b38c87a7319e784",
+              "requestHash": "0x1bf2ac01775ea9f4293cb261f84a0f40d93f45a68e3e26bfdbcbd1ebdeb0e708",
+              "request": {
+                "title": "Synthetic fixture note",
+                "body": "Written by the gateway's provider-wire fixtures."
+              },
+              "payer": "0x52a321854c93234c5281fe3f3846dd817784343f"
+            },
+            "signature": "0x1b1d9cd0be1b12f94fcbb54cb973ee52f42c2f45a3fc4e9c8eb6fdfdcf3f24dd3c97555c0a8182463c329bcdd135a6443a20c0022fa1dd37b3911705279734581b"
+          }
+        }
+      },
+      "expect": "reject"
+    },
+    {
+      "id": "quote.signed-by-unrecognized-key",
+      "handler": "quote",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "Signed by a key no gateway uses.",
+      "provider": {
+        "now": 1790000900
+      },
+      "check": {
+        "kind": "signer",
+        "envelope": "request",
+        "signedBy": "unrecognized"
+      },
+      "http": {
+        "method": "POST",
+        "url": "https://provider.example/standard-rail/quote",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "request": {
+            "artifactType": "ProviderQuoteRequestV1",
+            "schemaVersion": 1,
+            "environment": "testnet",
+            "chainId": 84532,
+            "audience": "https://provider.example",
+            "signerKeyId": "gateway-dispatch",
+            "issuedAt": 1790000895,
+            "validBefore": 1790000955,
+            "payload": {
+              "outcomeId": "create-note",
+              "listingManifestHash": "0x2efa3883986e0ef9f11acf05ad5c70f9da45b5293026344c0b38c87a7319e784",
+              "requestHash": "0x1bf2ac01775ea9f4293cb261f84a0f40d93f45a68e3e26bfdbcbd1ebdeb0e708",
+              "request": {
+                "title": "Synthetic fixture note",
+                "body": "Written by the gateway's provider-wire fixtures."
+              },
+              "payer": "0x52a321854c93234c5281fe3f3846dd817784343f"
+            },
+            "signature": "0x87a3ff8c6fff5503f64c247139b23cf675def894022ab07c65d56eadeaffdc9c10840d377eb9961fb43e8a793490cd5efd4edf0e01302103c55eb175a3290d6c1b"
+          }
+        }
+      },
+      "expect": "reject"
+    },
+    {
+      "id": "quote.tampered",
+      "handler": "quote",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "The payload changed after signing.",
+      "provider": {
+        "now": 1790000900
+      },
+      "check": {
+        "kind": "tampered",
+        "envelope": "request"
+      },
+      "http": {
+        "method": "POST",
+        "url": "https://provider.example/standard-rail/quote",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "request": {
+            "artifactType": "ProviderQuoteRequestV1",
+            "schemaVersion": 1,
+            "environment": "testnet",
+            "chainId": 84532,
+            "audience": "https://provider.example",
+            "signerKeyId": "gateway-dispatch",
+            "issuedAt": 1790000895,
+            "validBefore": 1790000955,
+            "payload": {
+              "outcomeId": "create-note",
+              "listingManifestHash": "0x2efa3883986e0ef9f11acf05ad5c70f9da45b5293026344c0b38c87a7319e784",
+              "requestHash": "0x1bf2ac01775ea9f4293cb261f84a0f40d93f45a68e3e26bfdbcbd1ebdeb0e708",
+              "request": {
+                "title": "Synthetic fixture note",
+                "body": "Written by the gateway's provider-wire fixtures."
+              },
+              "payer": null
+            },
+            "signature": "0xc50f0d3e161afd670c19bb503eaeb07226133b171901e427c28db93acf9f74536801f510ae1c79ad21686459a8655956fc4daea9b694cb96f56e7d6f7196b2df1c"
+          }
+        }
+      },
+      "expect": "reject"
+    },
+    {
+      "id": "intake.wrong-audience",
+      "handler": "intake",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "An intake request for another provider's audience.",
+      "provider": {
+        "now": 1790000900
+      },
+      "check": {
+        "kind": "field",
+        "envelope": "request",
+        "path": "request.audience",
+        "actual": "https://other-provider.example",
+        "expected": "https://provider.example"
+      },
+      "http": {
+        "method": "POST",
+        "url": "https://provider.example/standard-rail/quote",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "request": {
+            "artifactType": "ProviderIntakeRequestV1",
+            "schemaVersion": 1,
+            "environment": "testnet",
+            "chainId": 84532,
+            "audience": "https://other-provider.example",
+            "signerKeyId": "gateway-dispatch",
+            "issuedAt": 1790000895,
+            "validBefore": 1790000955,
+            "payload": {
+              "outcomeId": "create-note",
+              "listingManifestHash": "0x2efa3883986e0ef9f11acf05ad5c70f9da45b5293026344c0b38c87a7319e784",
+              "requestHash": "0xa8750b57c1a8df7c758bafae75f3bda04ee956ac4449748be0356e3807d2965c",
+              "request": {
+                "title": "Synthetic fixture note"
+              }
+            },
+            "signature": "0xe916d9dd14f49a167b338bc503f2bd187985ea229caf0341e1294fce742f2de5313a2a7f0ab73fe2af553f4c2231edd34f88eea0ca379a50befd218fe935527c1b"
+          }
+        }
+      },
+      "expect": "reject"
+    },
+    {
+      "id": "intake.expired",
+      "handler": "intake",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "validBefore has passed.",
+      "provider": {
+        "now": 1790000900
+      },
+      "check": {
+        "kind": "window",
+        "envelope": "request",
+        "problem": "expired"
+      },
+      "http": {
+        "method": "POST",
+        "url": "https://provider.example/standard-rail/quote",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "request": {
+            "artifactType": "ProviderIntakeRequestV1",
+            "schemaVersion": 1,
+            "environment": "testnet",
+            "chainId": 84532,
+            "audience": "https://provider.example",
+            "signerKeyId": "gateway-dispatch",
+            "issuedAt": 1789999940,
+            "validBefore": 1790000000,
+            "payload": {
+              "outcomeId": "create-note",
+              "listingManifestHash": "0x2efa3883986e0ef9f11acf05ad5c70f9da45b5293026344c0b38c87a7319e784",
+              "requestHash": "0xa8750b57c1a8df7c758bafae75f3bda04ee956ac4449748be0356e3807d2965c",
+              "request": {
+                "title": "Synthetic fixture note"
+              }
+            },
+            "signature": "0x9b52765041d58e925d52a523f3425eae5da087d6119f407f5248c3e411e43935409440b5d1525854009bc6fe01aa4b4255e7f626301bf0ce37bff041b090956b1b"
+          }
+        }
+      },
+      "expect": "reject"
+    },
+    {
+      "id": "dispatch.status-query-envelope",
+      "handler": "dispatch",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "Cross-type: a DispatchStatusQueryV1 in the dispatch field.",
+      "provider": {
+        "now": 1790000900
+      },
+      "check": {
+        "kind": "field",
+        "envelope": "dispatch",
+        "path": "dispatch.artifactType",
+        "actual": "DispatchStatusQueryV1",
+        "expected": "StandardRailDispatchV2"
+      },
+      "http": {
+        "method": "POST",
+        "url": "https://provider.example/standard-rail/dispatch",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "dispatch": {
+            "artifactType": "DispatchStatusQueryV1",
+            "schemaVersion": 1,
+            "environment": "testnet",
+            "chainId": 84532,
+            "audience": "https://provider.example",
+            "signerKeyId": "gateway-dispatch",
+            "issuedAt": 1790000895,
+            "validBefore": 1790000955,
+            "payload": {
+              "orderId": "ord_00000000-0000-4000-8000-000000000001",
+              "dispatchHash": "0x68df0a341c25d30f3e22b9585038fa7f0abd2a19f6de59ca88df83e9978a282f",
+              "issuedAt": 1790000600,
+              "validBefore": 1790000660
+            },
+            "signature": "0xe61586aae7c4226c0783e03010d9ab43a1d257ebc2d64dbb777e47b5b5b7715741915527249b5af1f2a620562020ee5ece2bb796ded383880e4529fcf93f88601b"
+          },
+          "quote": {
+            "artifactType": "QuoteV1",
+            "schemaVersion": 1,
+            "environment": "testnet",
+            "chainId": 84532,
+            "audience": "https://gateway.example",
+            "signerKeyId": "gateway-quote",
+            "issuedAt": 1790000000,
+            "validBefore": 1790000120,
+            "payload": {
+              "listingManifestHash": "0x2efa3883986e0ef9f11acf05ad5c70f9da45b5293026344c0b38c87a7319e784",
+              "providerOfferHash": "0xf097bfa76765936f5bbcd78cfd23cea437dc6ed4939a66603a45a9e1e2e66bd8",
+              "providerQuoteHash": "0xaac6fa3c4af39539095331e507dea96b875b26084ffc9fafb27e6bed59b44d5c",
+              "canonicalRequestHash": "0x6dafea8cb3553869537f4f4643fb31f6a478838f81967374cbf496e0dfd7cf51",
+              "grossAmount": "250000",
+              "token": "0xc648DB599F8eca8F96854B7a8D16F8f3552C0428",
+              "splitter": "0xC88C22F5501023b81A291959c0C3c7bA8Be57a37",
+              "orderNonce": "0x698715df0f12815c2899be7896c96638fd58b0d8c5c7ddcf9b53d14a51ada70d",
+              "issuedAt": 1790000000,
+              "validBefore": 1790000120
+            },
+            "signature": "0xc29897ee1151828c70c82db14b8632332a2abb2e24cb58c3aa49f1e49bedd37d31b607cb1bbc3a178d85c62a128403469b5d1838473639cb8b7631f81324abca1c"
+          },
+          "request": {
+            "title": "Synthetic fixture note",
+            "body": "Written by the gateway's provider-wire fixtures."
+          },
+          "evidenceBundle": {
+            "deposit": {
+              "transactionHash": "0x570dd5fa19566e259fc94b547cda3dd2f7e5c4aa7198d8dd35a1ec2582249549",
+              "blockNumber": "35000000",
+              "blockHash": "0x0636b0db68d0e1c0baa37e797d32a1dd05f60df2bac4aa835f78627143ee6d62",
+              "transactionIndex": 7,
+              "logIndex": 12,
+              "evidenceHash": "0xdeb50cfe6d7d949b1d143c43a3c82e1ece1609eca6e71a8fad635e4a0e8c6d51",
+              "canonicalEvidence": {
+                "synthetic": "provider-wire fixture deposit; no chain holds it",
+                "orderId": "ord_00000000-0000-4000-8000-000000000001",
+                "transactionHash": "0x570dd5fa19566e259fc94b547cda3dd2f7e5c4aa7198d8dd35a1ec2582249549",
+                "blockNumber": "35000000",
+                "logIndex": 12
+              },
+              "sources": [
+                "synthetic-rpc-a",
+                "synthetic-rpc-b"
+              ]
+            },
+            "release": {
+              "transactionHash": "0x0bc3938a491551660ffc731adb1749c606ccdc8c159aa4805d23325f03f41459",
+              "blockNumber": "35000002",
+              "blockHash": "0xca4c191ec965ecf81ae95af29486b9cc95bc20bb17b2acefe39c4198f44bea3f",
+              "transactionIndex": 3,
+              "logIndex": 5,
+              "releaseSequence": "1",
+              "evidenceHash": "0x57f58c3734fdfd4207d336cf8713eeb358070b25410bae51afc07b81ffe63123",
+              "canonicalEvidence": {
+                "synthetic": "provider-wire fixture release; no chain holds it",
+                "orderId": "ord_00000000-0000-4000-8000-000000000001",
+                "transactionHash": "0x0bc3938a491551660ffc731adb1749c606ccdc8c159aa4805d23325f03f41459",
+                "blockNumber": "35000002",
+                "releaseSequence": "1",
+                "providerNetAmount": "237500",
+                "daskiCommissionAmount": "12500"
+              },
+              "sources": [
+                "synthetic-rpc-a",
+                "synthetic-rpc-b"
+              ]
+            }
+          }
+        }
+      },
+      "expect": "reject"
+    },
+    {
+      "id": "dispatch.wrong-audience",
+      "handler": "dispatch",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "A dispatch for another provider's audience.",
+      "provider": {
+        "now": 1790000900
+      },
+      "check": {
+        "kind": "field",
+        "envelope": "dispatch",
+        "path": "dispatch.audience",
+        "actual": "https://other-provider.example",
+        "expected": "https://provider.example"
+      },
+      "http": {
+        "method": "POST",
+        "url": "https://provider.example/standard-rail/dispatch",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "dispatch": {
+            "artifactType": "StandardRailDispatchV2",
+            "schemaVersion": 2,
+            "environment": "testnet",
+            "chainId": 84532,
+            "audience": "https://other-provider.example",
+            "signerKeyId": "gateway-dispatch",
+            "issuedAt": 1790000895,
+            "validBefore": 1790001195,
+            "payload": {
+              "environment": "testnet",
+              "chainId": 84532,
+              "gatewayAudience": "https://gateway.example",
+              "providerAudience": "https://provider.example",
+              "providerControlProfileHash": "0x3f4c52f6d596c9911e0bf03aab74941011a1792d9c70086fe0ef06dc76f5734c",
+              "orderId": "ord_00000000-0000-4000-8000-000000000001",
+              "orderKey": "0x6ca8ece73f2c70035c9d42d864493af5223ba77205724148ce886556a5de4651",
+              "serviceId": "0x7d456d91e036748dfdb7b570d333491cd2000bc86db43fbf95047d166cb7a864",
+              "reputationEligible": true,
+              "reputationContract": "0x9b5AA6961eC02F0bB6185047FF72af37c68e179f",
+              "outcomeSchemaUid": "0x0aba7e41cb05ad3911e8e0a4fcdd5aa5e6033e65bc8827f69b2da8a8cdd74f3a",
+              "dispatchNonce": "0xc846b3e56a3549ded8ebaf1e631f68e7a6461a5874b069b83b498d206acbb4df",
+              "payer": "0x52a321854C93234C5281Fe3f3846Dd817784343F",
+              "listingManifestHash": "0x2efa3883986e0ef9f11acf05ad5c70f9da45b5293026344c0b38c87a7319e784",
+              "providerOfferHash": "0xf097bfa76765936f5bbcd78cfd23cea437dc6ed4939a66603a45a9e1e2e66bd8",
+              "quoteHash": "0xeea01f1009984e1a47d440e6177fbfe5811b1c9090f13ab721aeadb0db5b56ad",
+              "bindingProfile": "recipe-bound-v2",
+              "canonicalRequestHash": "0x6dafea8cb3553869537f4f4643fb31f6a478838f81967374cbf496e0dfd7cf51",
+              "orderNonce": "0x698715df0f12815c2899be7896c96638fd58b0d8c5c7ddcf9b53d14a51ada70d",
+              "buyerIdentityProofHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+              "activeRailProfileHash": "0x533df1c2dfc04f1070c2ac142f340a84be0afcce45c66945b6d56d4b8ed16b0a",
+              "facilitatorConfirmationHash": "0x2ddd22f6e1f3d2ed00b20bef98a41526021ecee8cff64c696a0e9364b3cd6f59",
+              "settlementTxHash": "0x570dd5fa19566e259fc94b547cda3dd2f7e5c4aa7198d8dd35a1ec2582249549",
+              "depositEvidenceHash": "0xdeb50cfe6d7d949b1d143c43a3c82e1ece1609eca6e71a8fad635e4a0e8c6d51",
+              "depositBlockNumber": "35000000",
+              "depositBlockHash": "0x0636b0db68d0e1c0baa37e797d32a1dd05f60df2bac4aa835f78627143ee6d62",
+              "depositTransactionIndex": 7,
+              "depositLogIndex": 12,
+              "releaseTxHash": "0x0bc3938a491551660ffc731adb1749c606ccdc8c159aa4805d23325f03f41459",
+              "releaseEvidenceHash": "0x57f58c3734fdfd4207d336cf8713eeb358070b25410bae51afc07b81ffe63123",
+              "releaseBlockNumber": "35000002",
+              "releaseBlockHash": "0xca4c191ec965ecf81ae95af29486b9cc95bc20bb17b2acefe39c4198f44bea3f",
+              "releaseTransactionIndex": 3,
+              "releaseLogIndex": 5,
+              "releaseSequence": "1",
+              "grossAmount": "250000",
+              "providerNetAmount": "237500",
+              "daskiCommissionAmount": "12500",
+              "canonicalProviderRequestHash": "0x1bf2ac01775ea9f4293cb261f84a0f40d93f45a68e3e26bfdbcbd1ebdeb0e708",
+              "dispatchDeadlineSeconds": 300,
+              "issuedAt": 1790000895,
+              "validBefore": 1790001195
+            },
+            "signature": "0x2454cc9c09af60ed951455e9a5836e7174bf314a4de00e9fb9ff62925007f3ec6413f0d90daf84f5b2d31d9871fad1dd512f36c9068810c7660b5933e2635cb11b"
+          },
+          "quote": {
+            "artifactType": "QuoteV1",
+            "schemaVersion": 1,
+            "environment": "testnet",
+            "chainId": 84532,
+            "audience": "https://gateway.example",
+            "signerKeyId": "gateway-quote",
+            "issuedAt": 1790000000,
+            "validBefore": 1790000120,
+            "payload": {
+              "listingManifestHash": "0x2efa3883986e0ef9f11acf05ad5c70f9da45b5293026344c0b38c87a7319e784",
+              "providerOfferHash": "0xf097bfa76765936f5bbcd78cfd23cea437dc6ed4939a66603a45a9e1e2e66bd8",
+              "providerQuoteHash": "0xaac6fa3c4af39539095331e507dea96b875b26084ffc9fafb27e6bed59b44d5c",
+              "canonicalRequestHash": "0x6dafea8cb3553869537f4f4643fb31f6a478838f81967374cbf496e0dfd7cf51",
+              "grossAmount": "250000",
+              "token": "0xc648DB599F8eca8F96854B7a8D16F8f3552C0428",
+              "splitter": "0xC88C22F5501023b81A291959c0C3c7bA8Be57a37",
+              "orderNonce": "0x698715df0f12815c2899be7896c96638fd58b0d8c5c7ddcf9b53d14a51ada70d",
+              "issuedAt": 1790000000,
+              "validBefore": 1790000120
+            },
+            "signature": "0xc29897ee1151828c70c82db14b8632332a2abb2e24cb58c3aa49f1e49bedd37d31b607cb1bbc3a178d85c62a128403469b5d1838473639cb8b7631f81324abca1c"
+          },
+          "request": {
+            "title": "Synthetic fixture note",
+            "body": "Written by the gateway's provider-wire fixtures."
+          },
+          "evidenceBundle": {
+            "deposit": {
+              "transactionHash": "0x570dd5fa19566e259fc94b547cda3dd2f7e5c4aa7198d8dd35a1ec2582249549",
+              "blockNumber": "35000000",
+              "blockHash": "0x0636b0db68d0e1c0baa37e797d32a1dd05f60df2bac4aa835f78627143ee6d62",
+              "transactionIndex": 7,
+              "logIndex": 12,
+              "evidenceHash": "0xdeb50cfe6d7d949b1d143c43a3c82e1ece1609eca6e71a8fad635e4a0e8c6d51",
+              "canonicalEvidence": {
+                "synthetic": "provider-wire fixture deposit; no chain holds it",
+                "orderId": "ord_00000000-0000-4000-8000-000000000001",
+                "transactionHash": "0x570dd5fa19566e259fc94b547cda3dd2f7e5c4aa7198d8dd35a1ec2582249549",
+                "blockNumber": "35000000",
+                "logIndex": 12
+              },
+              "sources": [
+                "synthetic-rpc-a",
+                "synthetic-rpc-b"
+              ]
+            },
+            "release": {
+              "transactionHash": "0x0bc3938a491551660ffc731adb1749c606ccdc8c159aa4805d23325f03f41459",
+              "blockNumber": "35000002",
+              "blockHash": "0xca4c191ec965ecf81ae95af29486b9cc95bc20bb17b2acefe39c4198f44bea3f",
+              "transactionIndex": 3,
+              "logIndex": 5,
+              "releaseSequence": "1",
+              "evidenceHash": "0x57f58c3734fdfd4207d336cf8713eeb358070b25410bae51afc07b81ffe63123",
+              "canonicalEvidence": {
+                "synthetic": "provider-wire fixture release; no chain holds it",
+                "orderId": "ord_00000000-0000-4000-8000-000000000001",
+                "transactionHash": "0x0bc3938a491551660ffc731adb1749c606ccdc8c159aa4805d23325f03f41459",
+                "blockNumber": "35000002",
+                "releaseSequence": "1",
+                "providerNetAmount": "237500",
+                "daskiCommissionAmount": "12500"
+              },
+              "sources": [
+                "synthetic-rpc-a",
+                "synthetic-rpc-b"
+              ]
+            }
+          }
+        }
+      },
+      "expect": "reject"
+    },
+    {
+      "id": "dispatch.expired",
+      "handler": "dispatch",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "A new dispatch whose validBefore has passed is never admitted.",
+      "provider": {
+        "now": 1790000900
+      },
+      "check": {
+        "kind": "window",
+        "envelope": "dispatch",
+        "problem": "expired"
+      },
+      "http": {
+        "method": "POST",
+        "url": "https://provider.example/standard-rail/dispatch",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "dispatch": {
+            "artifactType": "StandardRailDispatchV2",
+            "schemaVersion": 2,
+            "environment": "testnet",
+            "chainId": 84532,
+            "audience": "https://provider.example",
+            "signerKeyId": "gateway-dispatch",
+            "issuedAt": 1790000060,
+            "validBefore": 1790000360,
+            "payload": {
+              "environment": "testnet",
+              "chainId": 84532,
+              "gatewayAudience": "https://gateway.example",
+              "providerAudience": "https://provider.example",
+              "providerControlProfileHash": "0x3f4c52f6d596c9911e0bf03aab74941011a1792d9c70086fe0ef06dc76f5734c",
+              "orderId": "ord_00000000-0000-4000-8000-000000000001",
+              "orderKey": "0x6ca8ece73f2c70035c9d42d864493af5223ba77205724148ce886556a5de4651",
+              "serviceId": "0x7d456d91e036748dfdb7b570d333491cd2000bc86db43fbf95047d166cb7a864",
+              "reputationEligible": true,
+              "reputationContract": "0x9b5AA6961eC02F0bB6185047FF72af37c68e179f",
+              "outcomeSchemaUid": "0x0aba7e41cb05ad3911e8e0a4fcdd5aa5e6033e65bc8827f69b2da8a8cdd74f3a",
+              "dispatchNonce": "0xc846b3e56a3549ded8ebaf1e631f68e7a6461a5874b069b83b498d206acbb4df",
+              "payer": "0x52a321854C93234C5281Fe3f3846Dd817784343F",
+              "listingManifestHash": "0x2efa3883986e0ef9f11acf05ad5c70f9da45b5293026344c0b38c87a7319e784",
+              "providerOfferHash": "0xf097bfa76765936f5bbcd78cfd23cea437dc6ed4939a66603a45a9e1e2e66bd8",
+              "quoteHash": "0xeea01f1009984e1a47d440e6177fbfe5811b1c9090f13ab721aeadb0db5b56ad",
+              "bindingProfile": "recipe-bound-v2",
+              "canonicalRequestHash": "0x6dafea8cb3553869537f4f4643fb31f6a478838f81967374cbf496e0dfd7cf51",
+              "orderNonce": "0x698715df0f12815c2899be7896c96638fd58b0d8c5c7ddcf9b53d14a51ada70d",
+              "buyerIdentityProofHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+              "activeRailProfileHash": "0x533df1c2dfc04f1070c2ac142f340a84be0afcce45c66945b6d56d4b8ed16b0a",
+              "facilitatorConfirmationHash": "0x2ddd22f6e1f3d2ed00b20bef98a41526021ecee8cff64c696a0e9364b3cd6f59",
+              "settlementTxHash": "0x570dd5fa19566e259fc94b547cda3dd2f7e5c4aa7198d8dd35a1ec2582249549",
+              "depositEvidenceHash": "0xdeb50cfe6d7d949b1d143c43a3c82e1ece1609eca6e71a8fad635e4a0e8c6d51",
+              "depositBlockNumber": "35000000",
+              "depositBlockHash": "0x0636b0db68d0e1c0baa37e797d32a1dd05f60df2bac4aa835f78627143ee6d62",
+              "depositTransactionIndex": 7,
+              "depositLogIndex": 12,
+              "releaseTxHash": "0x0bc3938a491551660ffc731adb1749c606ccdc8c159aa4805d23325f03f41459",
+              "releaseEvidenceHash": "0x57f58c3734fdfd4207d336cf8713eeb358070b25410bae51afc07b81ffe63123",
+              "releaseBlockNumber": "35000002",
+              "releaseBlockHash": "0xca4c191ec965ecf81ae95af29486b9cc95bc20bb17b2acefe39c4198f44bea3f",
+              "releaseTransactionIndex": 3,
+              "releaseLogIndex": 5,
+              "releaseSequence": "1",
+              "grossAmount": "250000",
+              "providerNetAmount": "237500",
+              "daskiCommissionAmount": "12500",
+              "canonicalProviderRequestHash": "0x1bf2ac01775ea9f4293cb261f84a0f40d93f45a68e3e26bfdbcbd1ebdeb0e708",
+              "dispatchDeadlineSeconds": 300,
+              "issuedAt": 1790000060,
+              "validBefore": 1790000360
+            },
+            "signature": "0x029c66b21003c1908884ba884ec8d4d97ad7e25f512ff29266a49ce4ce1cc80c23accdc2ff9393ac08dd57b35b8e14156761d573876a420cd06626c728b3893c1b"
+          },
+          "quote": {
+            "artifactType": "QuoteV1",
+            "schemaVersion": 1,
+            "environment": "testnet",
+            "chainId": 84532,
+            "audience": "https://gateway.example",
+            "signerKeyId": "gateway-quote",
+            "issuedAt": 1790000000,
+            "validBefore": 1790000120,
+            "payload": {
+              "listingManifestHash": "0x2efa3883986e0ef9f11acf05ad5c70f9da45b5293026344c0b38c87a7319e784",
+              "providerOfferHash": "0xf097bfa76765936f5bbcd78cfd23cea437dc6ed4939a66603a45a9e1e2e66bd8",
+              "providerQuoteHash": "0xaac6fa3c4af39539095331e507dea96b875b26084ffc9fafb27e6bed59b44d5c",
+              "canonicalRequestHash": "0x6dafea8cb3553869537f4f4643fb31f6a478838f81967374cbf496e0dfd7cf51",
+              "grossAmount": "250000",
+              "token": "0xc648DB599F8eca8F96854B7a8D16F8f3552C0428",
+              "splitter": "0xC88C22F5501023b81A291959c0C3c7bA8Be57a37",
+              "orderNonce": "0x698715df0f12815c2899be7896c96638fd58b0d8c5c7ddcf9b53d14a51ada70d",
+              "issuedAt": 1790000000,
+              "validBefore": 1790000120
+            },
+            "signature": "0xc29897ee1151828c70c82db14b8632332a2abb2e24cb58c3aa49f1e49bedd37d31b607cb1bbc3a178d85c62a128403469b5d1838473639cb8b7631f81324abca1c"
+          },
+          "request": {
+            "title": "Synthetic fixture note",
+            "body": "Written by the gateway's provider-wire fixtures."
+          },
+          "evidenceBundle": {
+            "deposit": {
+              "transactionHash": "0x570dd5fa19566e259fc94b547cda3dd2f7e5c4aa7198d8dd35a1ec2582249549",
+              "blockNumber": "35000000",
+              "blockHash": "0x0636b0db68d0e1c0baa37e797d32a1dd05f60df2bac4aa835f78627143ee6d62",
+              "transactionIndex": 7,
+              "logIndex": 12,
+              "evidenceHash": "0xdeb50cfe6d7d949b1d143c43a3c82e1ece1609eca6e71a8fad635e4a0e8c6d51",
+              "canonicalEvidence": {
+                "synthetic": "provider-wire fixture deposit; no chain holds it",
+                "orderId": "ord_00000000-0000-4000-8000-000000000001",
+                "transactionHash": "0x570dd5fa19566e259fc94b547cda3dd2f7e5c4aa7198d8dd35a1ec2582249549",
+                "blockNumber": "35000000",
+                "logIndex": 12
+              },
+              "sources": [
+                "synthetic-rpc-a",
+                "synthetic-rpc-b"
+              ]
+            },
+            "release": {
+              "transactionHash": "0x0bc3938a491551660ffc731adb1749c606ccdc8c159aa4805d23325f03f41459",
+              "blockNumber": "35000002",
+              "blockHash": "0xca4c191ec965ecf81ae95af29486b9cc95bc20bb17b2acefe39c4198f44bea3f",
+              "transactionIndex": 3,
+              "logIndex": 5,
+              "releaseSequence": "1",
+              "evidenceHash": "0x57f58c3734fdfd4207d336cf8713eeb358070b25410bae51afc07b81ffe63123",
+              "canonicalEvidence": {
+                "synthetic": "provider-wire fixture release; no chain holds it",
+                "orderId": "ord_00000000-0000-4000-8000-000000000001",
+                "transactionHash": "0x0bc3938a491551660ffc731adb1749c606ccdc8c159aa4805d23325f03f41459",
+                "blockNumber": "35000002",
+                "releaseSequence": "1",
+                "providerNetAmount": "237500",
+                "daskiCommissionAmount": "12500"
+              },
+              "sources": [
+                "synthetic-rpc-a",
+                "synthetic-rpc-b"
+              ]
+            }
+          }
+        }
+      },
+      "expect": "reject"
+    },
+    {
+      "id": "dispatch.signed-by-unrecognized-key",
+      "handler": "dispatch",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "Signed by a key no gateway uses.",
+      "provider": {
+        "now": 1790000900
+      },
+      "check": {
+        "kind": "signer",
+        "envelope": "dispatch",
+        "signedBy": "unrecognized"
+      },
+      "http": {
+        "method": "POST",
+        "url": "https://provider.example/standard-rail/dispatch",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "dispatch": {
+            "artifactType": "StandardRailDispatchV2",
+            "schemaVersion": 2,
+            "environment": "testnet",
+            "chainId": 84532,
+            "audience": "https://provider.example",
+            "signerKeyId": "gateway-dispatch",
+            "issuedAt": 1790000895,
+            "validBefore": 1790001195,
+            "payload": {
+              "environment": "testnet",
+              "chainId": 84532,
+              "gatewayAudience": "https://gateway.example",
+              "providerAudience": "https://provider.example",
+              "providerControlProfileHash": "0x3f4c52f6d596c9911e0bf03aab74941011a1792d9c70086fe0ef06dc76f5734c",
+              "orderId": "ord_00000000-0000-4000-8000-000000000001",
+              "orderKey": "0x6ca8ece73f2c70035c9d42d864493af5223ba77205724148ce886556a5de4651",
+              "serviceId": "0x7d456d91e036748dfdb7b570d333491cd2000bc86db43fbf95047d166cb7a864",
+              "reputationEligible": true,
+              "reputationContract": "0x9b5AA6961eC02F0bB6185047FF72af37c68e179f",
+              "outcomeSchemaUid": "0x0aba7e41cb05ad3911e8e0a4fcdd5aa5e6033e65bc8827f69b2da8a8cdd74f3a",
+              "dispatchNonce": "0xc846b3e56a3549ded8ebaf1e631f68e7a6461a5874b069b83b498d206acbb4df",
+              "payer": "0x52a321854C93234C5281Fe3f3846Dd817784343F",
+              "listingManifestHash": "0x2efa3883986e0ef9f11acf05ad5c70f9da45b5293026344c0b38c87a7319e784",
+              "providerOfferHash": "0xf097bfa76765936f5bbcd78cfd23cea437dc6ed4939a66603a45a9e1e2e66bd8",
+              "quoteHash": "0xeea01f1009984e1a47d440e6177fbfe5811b1c9090f13ab721aeadb0db5b56ad",
+              "bindingProfile": "recipe-bound-v2",
+              "canonicalRequestHash": "0x6dafea8cb3553869537f4f4643fb31f6a478838f81967374cbf496e0dfd7cf51",
+              "orderNonce": "0x698715df0f12815c2899be7896c96638fd58b0d8c5c7ddcf9b53d14a51ada70d",
+              "buyerIdentityProofHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+              "activeRailProfileHash": "0x533df1c2dfc04f1070c2ac142f340a84be0afcce45c66945b6d56d4b8ed16b0a",
+              "facilitatorConfirmationHash": "0x2ddd22f6e1f3d2ed00b20bef98a41526021ecee8cff64c696a0e9364b3cd6f59",
+              "settlementTxHash": "0x570dd5fa19566e259fc94b547cda3dd2f7e5c4aa7198d8dd35a1ec2582249549",
+              "depositEvidenceHash": "0xdeb50cfe6d7d949b1d143c43a3c82e1ece1609eca6e71a8fad635e4a0e8c6d51",
+              "depositBlockNumber": "35000000",
+              "depositBlockHash": "0x0636b0db68d0e1c0baa37e797d32a1dd05f60df2bac4aa835f78627143ee6d62",
+              "depositTransactionIndex": 7,
+              "depositLogIndex": 12,
+              "releaseTxHash": "0x0bc3938a491551660ffc731adb1749c606ccdc8c159aa4805d23325f03f41459",
+              "releaseEvidenceHash": "0x57f58c3734fdfd4207d336cf8713eeb358070b25410bae51afc07b81ffe63123",
+              "releaseBlockNumber": "35000002",
+              "releaseBlockHash": "0xca4c191ec965ecf81ae95af29486b9cc95bc20bb17b2acefe39c4198f44bea3f",
+              "releaseTransactionIndex": 3,
+              "releaseLogIndex": 5,
+              "releaseSequence": "1",
+              "grossAmount": "250000",
+              "providerNetAmount": "237500",
+              "daskiCommissionAmount": "12500",
+              "canonicalProviderRequestHash": "0x1bf2ac01775ea9f4293cb261f84a0f40d93f45a68e3e26bfdbcbd1ebdeb0e708",
+              "dispatchDeadlineSeconds": 300,
+              "issuedAt": 1790000895,
+              "validBefore": 1790001195
+            },
+            "signature": "0x28ef38c45611052018ad619a5950924c69afb6ea5ae12b6e80837199c24731c63bc38610705d511f873396944ff4cb09614c6b594a58e9af145be71e83b8f7961c"
+          },
+          "quote": {
+            "artifactType": "QuoteV1",
+            "schemaVersion": 1,
+            "environment": "testnet",
+            "chainId": 84532,
+            "audience": "https://gateway.example",
+            "signerKeyId": "gateway-quote",
+            "issuedAt": 1790000000,
+            "validBefore": 1790000120,
+            "payload": {
+              "listingManifestHash": "0x2efa3883986e0ef9f11acf05ad5c70f9da45b5293026344c0b38c87a7319e784",
+              "providerOfferHash": "0xf097bfa76765936f5bbcd78cfd23cea437dc6ed4939a66603a45a9e1e2e66bd8",
+              "providerQuoteHash": "0xaac6fa3c4af39539095331e507dea96b875b26084ffc9fafb27e6bed59b44d5c",
+              "canonicalRequestHash": "0x6dafea8cb3553869537f4f4643fb31f6a478838f81967374cbf496e0dfd7cf51",
+              "grossAmount": "250000",
+              "token": "0xc648DB599F8eca8F96854B7a8D16F8f3552C0428",
+              "splitter": "0xC88C22F5501023b81A291959c0C3c7bA8Be57a37",
+              "orderNonce": "0x698715df0f12815c2899be7896c96638fd58b0d8c5c7ddcf9b53d14a51ada70d",
+              "issuedAt": 1790000000,
+              "validBefore": 1790000120
+            },
+            "signature": "0xc29897ee1151828c70c82db14b8632332a2abb2e24cb58c3aa49f1e49bedd37d31b607cb1bbc3a178d85c62a128403469b5d1838473639cb8b7631f81324abca1c"
+          },
+          "request": {
+            "title": "Synthetic fixture note",
+            "body": "Written by the gateway's provider-wire fixtures."
+          },
+          "evidenceBundle": {
+            "deposit": {
+              "transactionHash": "0x570dd5fa19566e259fc94b547cda3dd2f7e5c4aa7198d8dd35a1ec2582249549",
+              "blockNumber": "35000000",
+              "blockHash": "0x0636b0db68d0e1c0baa37e797d32a1dd05f60df2bac4aa835f78627143ee6d62",
+              "transactionIndex": 7,
+              "logIndex": 12,
+              "evidenceHash": "0xdeb50cfe6d7d949b1d143c43a3c82e1ece1609eca6e71a8fad635e4a0e8c6d51",
+              "canonicalEvidence": {
+                "synthetic": "provider-wire fixture deposit; no chain holds it",
+                "orderId": "ord_00000000-0000-4000-8000-000000000001",
+                "transactionHash": "0x570dd5fa19566e259fc94b547cda3dd2f7e5c4aa7198d8dd35a1ec2582249549",
+                "blockNumber": "35000000",
+                "logIndex": 12
+              },
+              "sources": [
+                "synthetic-rpc-a",
+                "synthetic-rpc-b"
+              ]
+            },
+            "release": {
+              "transactionHash": "0x0bc3938a491551660ffc731adb1749c606ccdc8c159aa4805d23325f03f41459",
+              "blockNumber": "35000002",
+              "blockHash": "0xca4c191ec965ecf81ae95af29486b9cc95bc20bb17b2acefe39c4198f44bea3f",
+              "transactionIndex": 3,
+              "logIndex": 5,
+              "releaseSequence": "1",
+              "evidenceHash": "0x57f58c3734fdfd4207d336cf8713eeb358070b25410bae51afc07b81ffe63123",
+              "canonicalEvidence": {
+                "synthetic": "provider-wire fixture release; no chain holds it",
+                "orderId": "ord_00000000-0000-4000-8000-000000000001",
+                "transactionHash": "0x0bc3938a491551660ffc731adb1749c606ccdc8c159aa4805d23325f03f41459",
+                "blockNumber": "35000002",
+                "releaseSequence": "1",
+                "providerNetAmount": "237500",
+                "daskiCommissionAmount": "12500"
+              },
+              "sources": [
+                "synthetic-rpc-a",
+                "synthetic-rpc-b"
+              ]
+            }
+          }
+        }
+      },
+      "expect": "reject"
+    },
+    {
+      "id": "dispatch.quote-signed-by-dispatch-key",
+      "handler": "dispatch",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "The forwarded QuoteV1 must be signed by gateway-quote.",
+      "provider": {
+        "now": 1790000900
+      },
+      "check": {
+        "kind": "signer",
+        "envelope": "quote",
+        "signedBy": "gatewayDispatch"
+      },
+      "http": {
+        "method": "POST",
+        "url": "https://provider.example/standard-rail/dispatch",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "dispatch": {
+            "artifactType": "StandardRailDispatchV2",
+            "schemaVersion": 2,
+            "environment": "testnet",
+            "chainId": 84532,
+            "audience": "https://provider.example",
+            "signerKeyId": "gateway-dispatch",
+            "issuedAt": 1790000895,
+            "validBefore": 1790001195,
+            "payload": {
+              "environment": "testnet",
+              "chainId": 84532,
+              "gatewayAudience": "https://gateway.example",
+              "providerAudience": "https://provider.example",
+              "providerControlProfileHash": "0x3f4c52f6d596c9911e0bf03aab74941011a1792d9c70086fe0ef06dc76f5734c",
+              "orderId": "ord_00000000-0000-4000-8000-000000000001",
+              "orderKey": "0x6ca8ece73f2c70035c9d42d864493af5223ba77205724148ce886556a5de4651",
+              "serviceId": "0x7d456d91e036748dfdb7b570d333491cd2000bc86db43fbf95047d166cb7a864",
+              "reputationEligible": true,
+              "reputationContract": "0x9b5AA6961eC02F0bB6185047FF72af37c68e179f",
+              "outcomeSchemaUid": "0x0aba7e41cb05ad3911e8e0a4fcdd5aa5e6033e65bc8827f69b2da8a8cdd74f3a",
+              "dispatchNonce": "0xc846b3e56a3549ded8ebaf1e631f68e7a6461a5874b069b83b498d206acbb4df",
+              "payer": "0x52a321854C93234C5281Fe3f3846Dd817784343F",
+              "listingManifestHash": "0x2efa3883986e0ef9f11acf05ad5c70f9da45b5293026344c0b38c87a7319e784",
+              "providerOfferHash": "0xf097bfa76765936f5bbcd78cfd23cea437dc6ed4939a66603a45a9e1e2e66bd8",
+              "quoteHash": "0xeea01f1009984e1a47d440e6177fbfe5811b1c9090f13ab721aeadb0db5b56ad",
+              "bindingProfile": "recipe-bound-v2",
+              "canonicalRequestHash": "0x6dafea8cb3553869537f4f4643fb31f6a478838f81967374cbf496e0dfd7cf51",
+              "orderNonce": "0x698715df0f12815c2899be7896c96638fd58b0d8c5c7ddcf9b53d14a51ada70d",
+              "buyerIdentityProofHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+              "activeRailProfileHash": "0x533df1c2dfc04f1070c2ac142f340a84be0afcce45c66945b6d56d4b8ed16b0a",
+              "facilitatorConfirmationHash": "0x2ddd22f6e1f3d2ed00b20bef98a41526021ecee8cff64c696a0e9364b3cd6f59",
+              "settlementTxHash": "0x570dd5fa19566e259fc94b547cda3dd2f7e5c4aa7198d8dd35a1ec2582249549",
+              "depositEvidenceHash": "0xdeb50cfe6d7d949b1d143c43a3c82e1ece1609eca6e71a8fad635e4a0e8c6d51",
+              "depositBlockNumber": "35000000",
+              "depositBlockHash": "0x0636b0db68d0e1c0baa37e797d32a1dd05f60df2bac4aa835f78627143ee6d62",
+              "depositTransactionIndex": 7,
+              "depositLogIndex": 12,
+              "releaseTxHash": "0x0bc3938a491551660ffc731adb1749c606ccdc8c159aa4805d23325f03f41459",
+              "releaseEvidenceHash": "0x57f58c3734fdfd4207d336cf8713eeb358070b25410bae51afc07b81ffe63123",
+              "releaseBlockNumber": "35000002",
+              "releaseBlockHash": "0xca4c191ec965ecf81ae95af29486b9cc95bc20bb17b2acefe39c4198f44bea3f",
+              "releaseTransactionIndex": 3,
+              "releaseLogIndex": 5,
+              "releaseSequence": "1",
+              "grossAmount": "250000",
+              "providerNetAmount": "237500",
+              "daskiCommissionAmount": "12500",
+              "canonicalProviderRequestHash": "0x1bf2ac01775ea9f4293cb261f84a0f40d93f45a68e3e26bfdbcbd1ebdeb0e708",
+              "dispatchDeadlineSeconds": 300,
+              "issuedAt": 1790000895,
+              "validBefore": 1790001195
+            },
+            "signature": "0x476e6bdeb27c8b00b3dc978592f2eb6d0db2e474287b50e868ebc6dae7900ba76fa5478865fa0bce52dd8f54cc21998c9f6bb3fe60ad334d3a15c2a12d374a951b"
+          },
+          "quote": {
+            "artifactType": "QuoteV1",
+            "schemaVersion": 1,
+            "environment": "testnet",
+            "chainId": 84532,
+            "audience": "https://gateway.example",
+            "signerKeyId": "gateway-quote",
+            "issuedAt": 1790000000,
+            "validBefore": 1790000120,
+            "payload": {
+              "listingManifestHash": "0x2efa3883986e0ef9f11acf05ad5c70f9da45b5293026344c0b38c87a7319e784",
+              "providerOfferHash": "0xf097bfa76765936f5bbcd78cfd23cea437dc6ed4939a66603a45a9e1e2e66bd8",
+              "providerQuoteHash": "0xaac6fa3c4af39539095331e507dea96b875b26084ffc9fafb27e6bed59b44d5c",
+              "canonicalRequestHash": "0x6dafea8cb3553869537f4f4643fb31f6a478838f81967374cbf496e0dfd7cf51",
+              "grossAmount": "250000",
+              "token": "0xc648DB599F8eca8F96854B7a8D16F8f3552C0428",
+              "splitter": "0xC88C22F5501023b81A291959c0C3c7bA8Be57a37",
+              "orderNonce": "0x698715df0f12815c2899be7896c96638fd58b0d8c5c7ddcf9b53d14a51ada70d",
+              "issuedAt": 1790000000,
+              "validBefore": 1790000120
+            },
+            "signature": "0xe6b1e20774190936fb2bbf48ce2651dbbea96c559de955de4f6cca2c7387ca4a18d7857836652f311f423af4058e0a978fec42065eddbd376ce0e138484364221c"
+          },
+          "request": {
+            "title": "Synthetic fixture note",
+            "body": "Written by the gateway's provider-wire fixtures."
+          },
+          "evidenceBundle": {
+            "deposit": {
+              "transactionHash": "0x570dd5fa19566e259fc94b547cda3dd2f7e5c4aa7198d8dd35a1ec2582249549",
+              "blockNumber": "35000000",
+              "blockHash": "0x0636b0db68d0e1c0baa37e797d32a1dd05f60df2bac4aa835f78627143ee6d62",
+              "transactionIndex": 7,
+              "logIndex": 12,
+              "evidenceHash": "0xdeb50cfe6d7d949b1d143c43a3c82e1ece1609eca6e71a8fad635e4a0e8c6d51",
+              "canonicalEvidence": {
+                "synthetic": "provider-wire fixture deposit; no chain holds it",
+                "orderId": "ord_00000000-0000-4000-8000-000000000001",
+                "transactionHash": "0x570dd5fa19566e259fc94b547cda3dd2f7e5c4aa7198d8dd35a1ec2582249549",
+                "blockNumber": "35000000",
+                "logIndex": 12
+              },
+              "sources": [
+                "synthetic-rpc-a",
+                "synthetic-rpc-b"
+              ]
+            },
+            "release": {
+              "transactionHash": "0x0bc3938a491551660ffc731adb1749c606ccdc8c159aa4805d23325f03f41459",
+              "blockNumber": "35000002",
+              "blockHash": "0xca4c191ec965ecf81ae95af29486b9cc95bc20bb17b2acefe39c4198f44bea3f",
+              "transactionIndex": 3,
+              "logIndex": 5,
+              "releaseSequence": "1",
+              "evidenceHash": "0x57f58c3734fdfd4207d336cf8713eeb358070b25410bae51afc07b81ffe63123",
+              "canonicalEvidence": {
+                "synthetic": "provider-wire fixture release; no chain holds it",
+                "orderId": "ord_00000000-0000-4000-8000-000000000001",
+                "transactionHash": "0x0bc3938a491551660ffc731adb1749c606ccdc8c159aa4805d23325f03f41459",
+                "blockNumber": "35000002",
+                "releaseSequence": "1",
+                "providerNetAmount": "237500",
+                "daskiCommissionAmount": "12500"
+              },
+              "sources": [
+                "synthetic-rpc-a",
+                "synthetic-rpc-b"
+              ]
+            }
+          }
+        }
+      },
+      "expect": "reject"
+    },
+    {
+      "id": "dispatch.request-hash-mismatch",
+      "handler": "dispatch",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "The forwarded request does not hash to canonicalProviderRequestHash.",
+      "provider": {
+        "now": 1790000900
+      },
+      "check": {
+        "kind": "binding",
+        "left": "dispatch.payload.canonicalProviderRequestHash",
+        "right": "request",
+        "compare": "hash"
+      },
+      "http": {
+        "method": "POST",
+        "url": "https://provider.example/standard-rail/dispatch",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "dispatch": {
+            "artifactType": "StandardRailDispatchV2",
+            "schemaVersion": 2,
+            "environment": "testnet",
+            "chainId": 84532,
+            "audience": "https://provider.example",
+            "signerKeyId": "gateway-dispatch",
+            "issuedAt": 1790000895,
+            "validBefore": 1790001195,
+            "payload": {
+              "environment": "testnet",
+              "chainId": 84532,
+              "gatewayAudience": "https://gateway.example",
+              "providerAudience": "https://provider.example",
+              "providerControlProfileHash": "0x3f4c52f6d596c9911e0bf03aab74941011a1792d9c70086fe0ef06dc76f5734c",
+              "orderId": "ord_00000000-0000-4000-8000-000000000001",
+              "orderKey": "0x6ca8ece73f2c70035c9d42d864493af5223ba77205724148ce886556a5de4651",
+              "serviceId": "0x7d456d91e036748dfdb7b570d333491cd2000bc86db43fbf95047d166cb7a864",
+              "reputationEligible": true,
+              "reputationContract": "0x9b5AA6961eC02F0bB6185047FF72af37c68e179f",
+              "outcomeSchemaUid": "0x0aba7e41cb05ad3911e8e0a4fcdd5aa5e6033e65bc8827f69b2da8a8cdd74f3a",
+              "dispatchNonce": "0xc846b3e56a3549ded8ebaf1e631f68e7a6461a5874b069b83b498d206acbb4df",
+              "payer": "0x52a321854C93234C5281Fe3f3846Dd817784343F",
+              "listingManifestHash": "0x2efa3883986e0ef9f11acf05ad5c70f9da45b5293026344c0b38c87a7319e784",
+              "providerOfferHash": "0xf097bfa76765936f5bbcd78cfd23cea437dc6ed4939a66603a45a9e1e2e66bd8",
+              "quoteHash": "0xeea01f1009984e1a47d440e6177fbfe5811b1c9090f13ab721aeadb0db5b56ad",
+              "bindingProfile": "recipe-bound-v2",
+              "canonicalRequestHash": "0x6dafea8cb3553869537f4f4643fb31f6a478838f81967374cbf496e0dfd7cf51",
+              "orderNonce": "0x698715df0f12815c2899be7896c96638fd58b0d8c5c7ddcf9b53d14a51ada70d",
+              "buyerIdentityProofHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+              "activeRailProfileHash": "0x533df1c2dfc04f1070c2ac142f340a84be0afcce45c66945b6d56d4b8ed16b0a",
+              "facilitatorConfirmationHash": "0x2ddd22f6e1f3d2ed00b20bef98a41526021ecee8cff64c696a0e9364b3cd6f59",
+              "settlementTxHash": "0x570dd5fa19566e259fc94b547cda3dd2f7e5c4aa7198d8dd35a1ec2582249549",
+              "depositEvidenceHash": "0xdeb50cfe6d7d949b1d143c43a3c82e1ece1609eca6e71a8fad635e4a0e8c6d51",
+              "depositBlockNumber": "35000000",
+              "depositBlockHash": "0x0636b0db68d0e1c0baa37e797d32a1dd05f60df2bac4aa835f78627143ee6d62",
+              "depositTransactionIndex": 7,
+              "depositLogIndex": 12,
+              "releaseTxHash": "0x0bc3938a491551660ffc731adb1749c606ccdc8c159aa4805d23325f03f41459",
+              "releaseEvidenceHash": "0x57f58c3734fdfd4207d336cf8713eeb358070b25410bae51afc07b81ffe63123",
+              "releaseBlockNumber": "35000002",
+              "releaseBlockHash": "0xca4c191ec965ecf81ae95af29486b9cc95bc20bb17b2acefe39c4198f44bea3f",
+              "releaseTransactionIndex": 3,
+              "releaseLogIndex": 5,
+              "releaseSequence": "1",
+              "grossAmount": "250000",
+              "providerNetAmount": "237500",
+              "daskiCommissionAmount": "12500",
+              "canonicalProviderRequestHash": "0x1bf2ac01775ea9f4293cb261f84a0f40d93f45a68e3e26bfdbcbd1ebdeb0e708",
+              "dispatchDeadlineSeconds": 300,
+              "issuedAt": 1790000895,
+              "validBefore": 1790001195
+            },
+            "signature": "0x476e6bdeb27c8b00b3dc978592f2eb6d0db2e474287b50e868ebc6dae7900ba76fa5478865fa0bce52dd8f54cc21998c9f6bb3fe60ad334d3a15c2a12d374a951b"
+          },
+          "quote": {
+            "artifactType": "QuoteV1",
+            "schemaVersion": 1,
+            "environment": "testnet",
+            "chainId": 84532,
+            "audience": "https://gateway.example",
+            "signerKeyId": "gateway-quote",
+            "issuedAt": 1790000000,
+            "validBefore": 1790000120,
+            "payload": {
+              "listingManifestHash": "0x2efa3883986e0ef9f11acf05ad5c70f9da45b5293026344c0b38c87a7319e784",
+              "providerOfferHash": "0xf097bfa76765936f5bbcd78cfd23cea437dc6ed4939a66603a45a9e1e2e66bd8",
+              "providerQuoteHash": "0xaac6fa3c4af39539095331e507dea96b875b26084ffc9fafb27e6bed59b44d5c",
+              "canonicalRequestHash": "0x6dafea8cb3553869537f4f4643fb31f6a478838f81967374cbf496e0dfd7cf51",
+              "grossAmount": "250000",
+              "token": "0xc648DB599F8eca8F96854B7a8D16F8f3552C0428",
+              "splitter": "0xC88C22F5501023b81A291959c0C3c7bA8Be57a37",
+              "orderNonce": "0x698715df0f12815c2899be7896c96638fd58b0d8c5c7ddcf9b53d14a51ada70d",
+              "issuedAt": 1790000000,
+              "validBefore": 1790000120
+            },
+            "signature": "0xc29897ee1151828c70c82db14b8632332a2abb2e24cb58c3aa49f1e49bedd37d31b607cb1bbc3a178d85c62a128403469b5d1838473639cb8b7631f81324abca1c"
+          },
+          "request": {
+            "title": "Another title"
+          },
+          "evidenceBundle": {
+            "deposit": {
+              "transactionHash": "0x570dd5fa19566e259fc94b547cda3dd2f7e5c4aa7198d8dd35a1ec2582249549",
+              "blockNumber": "35000000",
+              "blockHash": "0x0636b0db68d0e1c0baa37e797d32a1dd05f60df2bac4aa835f78627143ee6d62",
+              "transactionIndex": 7,
+              "logIndex": 12,
+              "evidenceHash": "0xdeb50cfe6d7d949b1d143c43a3c82e1ece1609eca6e71a8fad635e4a0e8c6d51",
+              "canonicalEvidence": {
+                "synthetic": "provider-wire fixture deposit; no chain holds it",
+                "orderId": "ord_00000000-0000-4000-8000-000000000001",
+                "transactionHash": "0x570dd5fa19566e259fc94b547cda3dd2f7e5c4aa7198d8dd35a1ec2582249549",
+                "blockNumber": "35000000",
+                "logIndex": 12
+              },
+              "sources": [
+                "synthetic-rpc-a",
+                "synthetic-rpc-b"
+              ]
+            },
+            "release": {
+              "transactionHash": "0x0bc3938a491551660ffc731adb1749c606ccdc8c159aa4805d23325f03f41459",
+              "blockNumber": "35000002",
+              "blockHash": "0xca4c191ec965ecf81ae95af29486b9cc95bc20bb17b2acefe39c4198f44bea3f",
+              "transactionIndex": 3,
+              "logIndex": 5,
+              "releaseSequence": "1",
+              "evidenceHash": "0x57f58c3734fdfd4207d336cf8713eeb358070b25410bae51afc07b81ffe63123",
+              "canonicalEvidence": {
+                "synthetic": "provider-wire fixture release; no chain holds it",
+                "orderId": "ord_00000000-0000-4000-8000-000000000001",
+                "transactionHash": "0x0bc3938a491551660ffc731adb1749c606ccdc8c159aa4805d23325f03f41459",
+                "blockNumber": "35000002",
+                "releaseSequence": "1",
+                "providerNetAmount": "237500",
+                "daskiCommissionAmount": "12500"
+              },
+              "sources": [
+                "synthetic-rpc-a",
+                "synthetic-rpc-b"
+              ]
+            }
+          }
+        }
+      },
+      "expect": "reject"
+    },
+    {
+      "id": "dispatch.tampered",
+      "handler": "dispatch",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "The payload changed after signing.",
+      "provider": {
+        "now": 1790000900
+      },
+      "check": {
+        "kind": "tampered",
+        "envelope": "dispatch"
+      },
+      "http": {
+        "method": "POST",
+        "url": "https://provider.example/standard-rail/dispatch",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "dispatch": {
+            "artifactType": "StandardRailDispatchV2",
+            "schemaVersion": 2,
+            "environment": "testnet",
+            "chainId": 84532,
+            "audience": "https://provider.example",
+            "signerKeyId": "gateway-dispatch",
+            "issuedAt": 1790000895,
+            "validBefore": 1790001195,
+            "payload": {
+              "environment": "testnet",
+              "chainId": 84532,
+              "gatewayAudience": "https://gateway.example",
+              "providerAudience": "https://provider.example",
+              "providerControlProfileHash": "0x3f4c52f6d596c9911e0bf03aab74941011a1792d9c70086fe0ef06dc76f5734c",
+              "orderId": "ord_00000000-0000-4000-8000-000000000001",
+              "orderKey": "0x6ca8ece73f2c70035c9d42d864493af5223ba77205724148ce886556a5de4651",
+              "serviceId": "0x7d456d91e036748dfdb7b570d333491cd2000bc86db43fbf95047d166cb7a864",
+              "reputationEligible": true,
+              "reputationContract": "0x9b5AA6961eC02F0bB6185047FF72af37c68e179f",
+              "outcomeSchemaUid": "0x0aba7e41cb05ad3911e8e0a4fcdd5aa5e6033e65bc8827f69b2da8a8cdd74f3a",
+              "dispatchNonce": "0xc846b3e56a3549ded8ebaf1e631f68e7a6461a5874b069b83b498d206acbb4df",
+              "payer": "0x52a321854C93234C5281Fe3f3846Dd817784343F",
+              "listingManifestHash": "0x2efa3883986e0ef9f11acf05ad5c70f9da45b5293026344c0b38c87a7319e784",
+              "providerOfferHash": "0xf097bfa76765936f5bbcd78cfd23cea437dc6ed4939a66603a45a9e1e2e66bd8",
+              "quoteHash": "0xeea01f1009984e1a47d440e6177fbfe5811b1c9090f13ab721aeadb0db5b56ad",
+              "bindingProfile": "recipe-bound-v2",
+              "canonicalRequestHash": "0x6dafea8cb3553869537f4f4643fb31f6a478838f81967374cbf496e0dfd7cf51",
+              "orderNonce": "0x698715df0f12815c2899be7896c96638fd58b0d8c5c7ddcf9b53d14a51ada70d",
+              "buyerIdentityProofHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+              "activeRailProfileHash": "0x533df1c2dfc04f1070c2ac142f340a84be0afcce45c66945b6d56d4b8ed16b0a",
+              "facilitatorConfirmationHash": "0x2ddd22f6e1f3d2ed00b20bef98a41526021ecee8cff64c696a0e9364b3cd6f59",
+              "settlementTxHash": "0x570dd5fa19566e259fc94b547cda3dd2f7e5c4aa7198d8dd35a1ec2582249549",
+              "depositEvidenceHash": "0xdeb50cfe6d7d949b1d143c43a3c82e1ece1609eca6e71a8fad635e4a0e8c6d51",
+              "depositBlockNumber": "35000000",
+              "depositBlockHash": "0x0636b0db68d0e1c0baa37e797d32a1dd05f60df2bac4aa835f78627143ee6d62",
+              "depositTransactionIndex": 7,
+              "depositLogIndex": 12,
+              "releaseTxHash": "0x0bc3938a491551660ffc731adb1749c606ccdc8c159aa4805d23325f03f41459",
+              "releaseEvidenceHash": "0x57f58c3734fdfd4207d336cf8713eeb358070b25410bae51afc07b81ffe63123",
+              "releaseBlockNumber": "35000002",
+              "releaseBlockHash": "0xca4c191ec965ecf81ae95af29486b9cc95bc20bb17b2acefe39c4198f44bea3f",
+              "releaseTransactionIndex": 3,
+              "releaseLogIndex": 5,
+              "releaseSequence": "1",
+              "grossAmount": "1",
+              "providerNetAmount": "237500",
+              "daskiCommissionAmount": "12500",
+              "canonicalProviderRequestHash": "0x1bf2ac01775ea9f4293cb261f84a0f40d93f45a68e3e26bfdbcbd1ebdeb0e708",
+              "dispatchDeadlineSeconds": 300,
+              "issuedAt": 1790000895,
+              "validBefore": 1790001195
+            },
+            "signature": "0x476e6bdeb27c8b00b3dc978592f2eb6d0db2e474287b50e868ebc6dae7900ba76fa5478865fa0bce52dd8f54cc21998c9f6bb3fe60ad334d3a15c2a12d374a951b"
+          },
+          "quote": {
+            "artifactType": "QuoteV1",
+            "schemaVersion": 1,
+            "environment": "testnet",
+            "chainId": 84532,
+            "audience": "https://gateway.example",
+            "signerKeyId": "gateway-quote",
+            "issuedAt": 1790000000,
+            "validBefore": 1790000120,
+            "payload": {
+              "listingManifestHash": "0x2efa3883986e0ef9f11acf05ad5c70f9da45b5293026344c0b38c87a7319e784",
+              "providerOfferHash": "0xf097bfa76765936f5bbcd78cfd23cea437dc6ed4939a66603a45a9e1e2e66bd8",
+              "providerQuoteHash": "0xaac6fa3c4af39539095331e507dea96b875b26084ffc9fafb27e6bed59b44d5c",
+              "canonicalRequestHash": "0x6dafea8cb3553869537f4f4643fb31f6a478838f81967374cbf496e0dfd7cf51",
+              "grossAmount": "250000",
+              "token": "0xc648DB599F8eca8F96854B7a8D16F8f3552C0428",
+              "splitter": "0xC88C22F5501023b81A291959c0C3c7bA8Be57a37",
+              "orderNonce": "0x698715df0f12815c2899be7896c96638fd58b0d8c5c7ddcf9b53d14a51ada70d",
+              "issuedAt": 1790000000,
+              "validBefore": 1790000120
+            },
+            "signature": "0xc29897ee1151828c70c82db14b8632332a2abb2e24cb58c3aa49f1e49bedd37d31b607cb1bbc3a178d85c62a128403469b5d1838473639cb8b7631f81324abca1c"
+          },
+          "request": {
+            "title": "Synthetic fixture note",
+            "body": "Written by the gateway's provider-wire fixtures."
+          },
+          "evidenceBundle": {
+            "deposit": {
+              "transactionHash": "0x570dd5fa19566e259fc94b547cda3dd2f7e5c4aa7198d8dd35a1ec2582249549",
+              "blockNumber": "35000000",
+              "blockHash": "0x0636b0db68d0e1c0baa37e797d32a1dd05f60df2bac4aa835f78627143ee6d62",
+              "transactionIndex": 7,
+              "logIndex": 12,
+              "evidenceHash": "0xdeb50cfe6d7d949b1d143c43a3c82e1ece1609eca6e71a8fad635e4a0e8c6d51",
+              "canonicalEvidence": {
+                "synthetic": "provider-wire fixture deposit; no chain holds it",
+                "orderId": "ord_00000000-0000-4000-8000-000000000001",
+                "transactionHash": "0x570dd5fa19566e259fc94b547cda3dd2f7e5c4aa7198d8dd35a1ec2582249549",
+                "blockNumber": "35000000",
+                "logIndex": 12
+              },
+              "sources": [
+                "synthetic-rpc-a",
+                "synthetic-rpc-b"
+              ]
+            },
+            "release": {
+              "transactionHash": "0x0bc3938a491551660ffc731adb1749c606ccdc8c159aa4805d23325f03f41459",
+              "blockNumber": "35000002",
+              "blockHash": "0xca4c191ec965ecf81ae95af29486b9cc95bc20bb17b2acefe39c4198f44bea3f",
+              "transactionIndex": 3,
+              "logIndex": 5,
+              "releaseSequence": "1",
+              "evidenceHash": "0x57f58c3734fdfd4207d336cf8713eeb358070b25410bae51afc07b81ffe63123",
+              "canonicalEvidence": {
+                "synthetic": "provider-wire fixture release; no chain holds it",
+                "orderId": "ord_00000000-0000-4000-8000-000000000001",
+                "transactionHash": "0x0bc3938a491551660ffc731adb1749c606ccdc8c159aa4805d23325f03f41459",
+                "blockNumber": "35000002",
+                "releaseSequence": "1",
+                "providerNetAmount": "237500",
+                "daskiCommissionAmount": "12500"
+              },
+              "sources": [
+                "synthetic-rpc-a",
+                "synthetic-rpc-b"
+              ]
+            }
+          }
+        }
+      },
+      "expect": "reject"
+    },
+    {
+      "id": "status.quote-request-envelope",
+      "handler": "status",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "Cross-type: a quote request is not a status query; never answer it with outcome_policy.",
+      "provider": {
+        "now": 1790000900
+      },
+      "check": {
+        "kind": "field",
+        "envelope": "query",
+        "path": "query.artifactType",
+        "actual": "ProviderQuoteRequestV1",
+        "expected": "DispatchStatusQueryV1"
+      },
+      "http": {
+        "method": "POST",
+        "url": "https://provider.example/standard-rail/dispatch/status",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "query": {
+            "artifactType": "ProviderQuoteRequestV1",
+            "schemaVersion": 1,
+            "environment": "testnet",
+            "chainId": 84532,
+            "audience": "https://provider.example",
+            "signerKeyId": "gateway-dispatch",
+            "issuedAt": 1790000895,
+            "validBefore": 1790000955,
+            "payload": {
+              "outcomeId": "create-note",
+              "listingManifestHash": "0x2efa3883986e0ef9f11acf05ad5c70f9da45b5293026344c0b38c87a7319e784",
+              "requestHash": "0x1bf2ac01775ea9f4293cb261f84a0f40d93f45a68e3e26bfdbcbd1ebdeb0e708",
+              "request": {
+                "title": "Synthetic fixture note",
+                "body": "Written by the gateway's provider-wire fixtures."
+              },
+              "payer": "0x52a321854c93234c5281fe3f3846dd817784343f"
+            },
+            "signature": "0xc50f0d3e161afd670c19bb503eaeb07226133b171901e427c28db93acf9f74536801f510ae1c79ad21686459a8655956fc4daea9b694cb96f56e7d6f7196b2df1c"
+          }
+        }
+      },
+      "expect": "reject"
+    },
+    {
+      "id": "status.expired",
+      "handler": "status",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "An expired status query must not be answered, least of all with outcome_policy.",
+      "provider": {
+        "now": 1790000900
+      },
+      "check": {
+        "kind": "window",
+        "envelope": "query",
+        "problem": "expired"
+      },
+      "http": {
+        "method": "POST",
+        "url": "https://provider.example/standard-rail/dispatch/status",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "query": {
+            "artifactType": "DispatchStatusQueryV1",
+            "schemaVersion": 1,
+            "environment": "testnet",
+            "chainId": 84532,
+            "audience": "https://provider.example",
+            "signerKeyId": "gateway-dispatch",
+            "issuedAt": 1790000600,
+            "validBefore": 1790000660,
+            "payload": {
+              "orderId": "ord_00000000-0000-4000-8000-000000000001",
+              "dispatchHash": "0x68df0a341c25d30f3e22b9585038fa7f0abd2a19f6de59ca88df83e9978a282f",
+              "issuedAt": 1790000600,
+              "validBefore": 1790000660
+            },
+            "signature": "0xa22ab022f1a75407596b0a1a2813753948523e59c2dc117e0a0309ece0a66402513b9259668eb07391a5ffe7cee8d4c0408150e0747ae75917c027e57d64e5301c"
+          }
+        }
+      },
+      "expect": "reject"
+    },
+    {
+      "id": "status.wrong-audience",
+      "handler": "status",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "A status query for another provider's audience.",
+      "provider": {
+        "now": 1790000900
+      },
+      "check": {
+        "kind": "field",
+        "envelope": "query",
+        "path": "query.audience",
+        "actual": "https://other-provider.example",
+        "expected": "https://provider.example"
+      },
+      "http": {
+        "method": "POST",
+        "url": "https://provider.example/standard-rail/dispatch/status",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "query": {
+            "artifactType": "DispatchStatusQueryV1",
+            "schemaVersion": 1,
+            "environment": "testnet",
+            "chainId": 84532,
+            "audience": "https://other-provider.example",
+            "signerKeyId": "gateway-dispatch",
+            "issuedAt": 1790000895,
+            "validBefore": 1790000955,
+            "payload": {
+              "orderId": "ord_00000000-0000-4000-8000-000000000001",
+              "dispatchHash": "0x68df0a341c25d30f3e22b9585038fa7f0abd2a19f6de59ca88df83e9978a282f",
+              "issuedAt": 1790000895,
+              "validBefore": 1790000955
+            },
+            "signature": "0x7d2117b2c024e1ce8aaafba6746ae0198f48c15d4ebe3b59dedefb8f9b113c452f5f66ef2d66d6771903b8d59da49905ed00cef5da86b8fae1f485fa04d5e9d71c"
+          }
+        }
+      },
+      "expect": "reject"
+    },
+    {
+      "id": "status.signed-by-unrecognized-key",
+      "handler": "status",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "Signed by a key no gateway uses.",
+      "provider": {
+        "now": 1790000900
+      },
+      "check": {
+        "kind": "signer",
+        "envelope": "query",
+        "signedBy": "unrecognized"
+      },
+      "http": {
+        "method": "POST",
+        "url": "https://provider.example/standard-rail/dispatch/status",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "query": {
+            "artifactType": "DispatchStatusQueryV1",
+            "schemaVersion": 1,
+            "environment": "testnet",
+            "chainId": 84532,
+            "audience": "https://provider.example",
+            "signerKeyId": "gateway-dispatch",
+            "issuedAt": 1790000895,
+            "validBefore": 1790000955,
+            "payload": {
+              "orderId": "ord_00000000-0000-4000-8000-000000000001",
+              "dispatchHash": "0x68df0a341c25d30f3e22b9585038fa7f0abd2a19f6de59ca88df83e9978a282f",
+              "issuedAt": 1790000895,
+              "validBefore": 1790000955
+            },
+            "signature": "0x6d00c0dbfdec2ca8dc8b7420009be728c477c6020ef74261e6b33aa05411d34402d3b235de52e4b480a776a640922998aab5f3a3ce06e1dd46f9feada506cf7e1c"
+          }
+        }
+      },
+      "expect": "reject"
+    },
+    {
+      "id": "status.payload-window-mismatch",
+      "handler": "status",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "The payload's window must equal the envelope's.",
+      "provider": {
+        "now": 1790000900
+      },
+      "check": {
+        "kind": "binding",
+        "left": "query.payload.issuedAt",
+        "right": "query.issuedAt",
+        "compare": "equal"
+      },
+      "http": {
+        "method": "POST",
+        "url": "https://provider.example/standard-rail/dispatch/status",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "query": {
+            "artifactType": "DispatchStatusQueryV1",
+            "schemaVersion": 1,
+            "environment": "testnet",
+            "chainId": 84532,
+            "audience": "https://provider.example",
+            "signerKeyId": "gateway-dispatch",
+            "issuedAt": 1790000895,
+            "validBefore": 1790000955,
+            "payload": {
+              "orderId": "ord_00000000-0000-4000-8000-000000000001",
+              "dispatchHash": "0x68df0a341c25d30f3e22b9585038fa7f0abd2a19f6de59ca88df83e9978a282f",
+              "issuedAt": 1790000600,
+              "validBefore": 1790000660
+            },
+            "signature": "0xe61586aae7c4226c0783e03010d9ab43a1d257ebc2d64dbb777e47b5b5b7715741915527249b5af1f2a620562020ee5ece2bb796ded383880e4529fcf93f88601b"
+          }
+        }
+      },
+      "expect": "reject"
+    },
+    {
+      "id": "lifecycle.grant-signed-by-dispatch-key",
+      "handler": "lifecycle",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "Lifecycle grants are signed by gateway-lifecycle, not gateway-dispatch.",
+      "provider": {
+        "now": 1790000900
+      },
+      "check": {
+        "kind": "signer",
+        "envelope": "grant",
+        "signedBy": "gatewayDispatch"
+      },
+      "http": {
+        "method": "POST",
+        "url": "https://provider.example/standard-rail/lifecycle",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "orderId": "ord_00000000-0000-4000-8000-000000000001",
+          "providerTaskId": "00000000-0000-4000-8000-00000000a001",
+          "action": "status",
+          "request": {},
+          "authorization": {
+            "type": "DaskiReadCap",
+            "scope": "status"
+          },
+          "grant": {
+            "artifactType": "ProviderLifecycleGrantV1",
+            "schemaVersion": 1,
+            "environment": "testnet",
+            "chainId": 84532,
+            "audience": "https://provider.example",
+            "signerKeyId": "gateway-lifecycle",
+            "issuedAt": 1790000895,
+            "validBefore": 1790001015,
+            "payload": {
+              "orderId": "ord_00000000-0000-4000-8000-000000000001",
+              "providerTaskId": "00000000-0000-4000-8000-00000000a001",
+              "action": "status",
+              "requestHash": "0xb48d38f93eaa084033fc5970bf96e559c33c4cdc07d889ab00b4d63f9590739d",
+              "authorizationHash": "0x76a73d8f587e039d82fa39a50b1a060f83849a7a0a1019033b6510646b4ecbf5",
+              "payer": "0x52a321854C93234C5281Fe3f3846Dd817784343F"
+            },
+            "signature": "0x9c067e307325e8e33f1514240e160c6b9431c4fb31ad7ef2d15b418dcc10416e61b8471761f2e4a9e145f32c38a5a5bda5cfed7a0a7075b38f4f2c28ddd31adb1c"
+          },
+          "payer": "0x52a321854C93234C5281Fe3f3846Dd817784343F",
+          "gatewayAudience": "https://gateway.example"
+        }
+      },
+      "expect": "reject"
+    },
+    {
+      "id": "lifecycle.grant-expired",
+      "handler": "lifecycle",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "The grant's validBefore has passed.",
+      "provider": {
+        "now": 1790001100
+      },
+      "check": {
+        "kind": "window",
+        "envelope": "grant",
+        "problem": "expired"
+      },
+      "http": {
+        "method": "POST",
+        "url": "https://provider.example/standard-rail/lifecycle",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "orderId": "ord_00000000-0000-4000-8000-000000000001",
+          "providerTaskId": "00000000-0000-4000-8000-00000000a001",
+          "action": "status",
+          "request": {},
+          "authorization": {
+            "type": "DaskiReadCap",
+            "scope": "status"
+          },
+          "grant": {
+            "artifactType": "ProviderLifecycleGrantV1",
+            "schemaVersion": 1,
+            "environment": "testnet",
+            "chainId": 84532,
+            "audience": "https://provider.example",
+            "signerKeyId": "gateway-lifecycle",
+            "issuedAt": 1790000900,
+            "validBefore": 1790001020,
+            "payload": {
+              "orderId": "ord_00000000-0000-4000-8000-000000000001",
+              "providerTaskId": "00000000-0000-4000-8000-00000000a001",
+              "action": "status",
+              "requestHash": "0xb48d38f93eaa084033fc5970bf96e559c33c4cdc07d889ab00b4d63f9590739d",
+              "authorizationHash": "0x76a73d8f587e039d82fa39a50b1a060f83849a7a0a1019033b6510646b4ecbf5",
+              "payer": "0x52a321854C93234C5281Fe3f3846Dd817784343F"
+            },
+            "signature": "0xf798cb142e54c4770b540fa3608dc9aab1e6892fdabcb515bd05c898c7e3208558c806d74702a053e592ae5ee3fc52595a5b55563eff0c36a05d6facc0b85f571c"
+          },
+          "payer": "0x52a321854C93234C5281Fe3f3846Dd817784343F",
+          "gatewayAudience": "https://gateway.example"
+        }
+      },
+      "expect": "reject"
+    },
+    {
+      "id": "lifecycle.grant-wrong-audience",
+      "handler": "lifecycle",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "A grant for another provider's audience.",
+      "provider": {
+        "now": 1790000900
+      },
+      "check": {
+        "kind": "field",
+        "envelope": "grant",
+        "path": "grant.audience",
+        "actual": "https://other-provider.example",
+        "expected": "https://provider.example"
+      },
+      "http": {
+        "method": "POST",
+        "url": "https://provider.example/standard-rail/lifecycle",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "orderId": "ord_00000000-0000-4000-8000-000000000001",
+          "providerTaskId": "00000000-0000-4000-8000-00000000a001",
+          "action": "status",
+          "request": {},
+          "authorization": {
+            "type": "DaskiReadCap",
+            "scope": "status"
+          },
+          "grant": {
+            "artifactType": "ProviderLifecycleGrantV1",
+            "schemaVersion": 1,
+            "environment": "testnet",
+            "chainId": 84532,
+            "audience": "https://other-provider.example",
+            "signerKeyId": "gateway-lifecycle",
+            "issuedAt": 1790000895,
+            "validBefore": 1790001015,
+            "payload": {
+              "orderId": "ord_00000000-0000-4000-8000-000000000001",
+              "providerTaskId": "00000000-0000-4000-8000-00000000a001",
+              "action": "status",
+              "requestHash": "0xb48d38f93eaa084033fc5970bf96e559c33c4cdc07d889ab00b4d63f9590739d",
+              "authorizationHash": "0x76a73d8f587e039d82fa39a50b1a060f83849a7a0a1019033b6510646b4ecbf5",
+              "payer": "0x52a321854C93234C5281Fe3f3846Dd817784343F"
+            },
+            "signature": "0x6c39a0be8d21ce844e1976551dabbb98c2d9640d05ffec92abf8de9d8fe5b35533cd7c550087b9146b7158653d5b0acc3b4d122c0295cf6d74a2d413df38de421b"
+          },
+          "payer": "0x52a321854C93234C5281Fe3f3846Dd817784343F",
+          "gatewayAudience": "https://gateway.example"
+        }
+      },
+      "expect": "reject"
+    },
+    {
+      "id": "lifecycle.read-capability-for-cancel",
+      "handler": "lifecycle",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "A read capability never authorizes a mutation, even under a valid grant.",
+      "provider": {
+        "now": 1790000900
+      },
+      "check": {
+        "kind": "capability",
+        "rule": "authorization {type: DaskiReadCap} is accepted only for actions status and artifact"
+      },
+      "http": {
+        "method": "POST",
+        "url": "https://provider.example/standard-rail/lifecycle",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "orderId": "ord_00000000-0000-4000-8000-000000000001",
+          "providerTaskId": "00000000-0000-4000-8000-00000000a001",
+          "action": "cancel",
+          "request": {},
+          "authorization": {
+            "type": "DaskiReadCap",
+            "scope": "cancel"
+          },
+          "grant": {
+            "artifactType": "ProviderLifecycleGrantV1",
+            "schemaVersion": 1,
+            "environment": "testnet",
+            "chainId": 84532,
+            "audience": "https://provider.example",
+            "signerKeyId": "gateway-lifecycle",
+            "issuedAt": 1790000895,
+            "validBefore": 1790001015,
+            "payload": {
+              "orderId": "ord_00000000-0000-4000-8000-000000000001",
+              "providerTaskId": "00000000-0000-4000-8000-00000000a001",
+              "action": "cancel",
+              "requestHash": "0xb48d38f93eaa084033fc5970bf96e559c33c4cdc07d889ab00b4d63f9590739d",
+              "authorizationHash": "0x98a8321d7263a6ccd65d0068d1ebc5d4cd5a3e250f321df9a7adce16a196d6cd",
+              "payer": "0x52a321854C93234C5281Fe3f3846Dd817784343F"
+            },
+            "signature": "0x4433c66d355a4d29af1e8718a544af9269b73e9b8d4543e8df9e3d0021ddb4aa3efa80e89ad5ba7ebe1c79ce05bc52bbef9e95108c3168bf21eb1e057276394d1b"
+          },
+          "payer": "0x52a321854C93234C5281Fe3f3846Dd817784343F",
+          "gatewayAudience": "https://gateway.example"
+        }
+      },
+      "expect": "reject"
+    },
+    {
+      "id": "lifecycle.read-capability-scope-mismatch",
+      "handler": "lifecycle",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "The read capability's scope must equal the action.",
+      "provider": {
+        "now": 1790000900
+      },
+      "check": {
+        "kind": "binding",
+        "left": "authorization.scope",
+        "right": "action",
+        "compare": "equal"
+      },
+      "http": {
+        "method": "POST",
+        "url": "https://provider.example/standard-rail/lifecycle",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "orderId": "ord_00000000-0000-4000-8000-000000000001",
+          "providerTaskId": "00000000-0000-4000-8000-00000000a001",
+          "action": "status",
+          "request": {},
+          "authorization": {
+            "type": "DaskiReadCap",
+            "scope": "artifact"
+          },
+          "grant": {
+            "artifactType": "ProviderLifecycleGrantV1",
+            "schemaVersion": 1,
+            "environment": "testnet",
+            "chainId": 84532,
+            "audience": "https://provider.example",
+            "signerKeyId": "gateway-lifecycle",
+            "issuedAt": 1790000895,
+            "validBefore": 1790001015,
+            "payload": {
+              "orderId": "ord_00000000-0000-4000-8000-000000000001",
+              "providerTaskId": "00000000-0000-4000-8000-00000000a001",
+              "action": "status",
+              "requestHash": "0xb48d38f93eaa084033fc5970bf96e559c33c4cdc07d889ab00b4d63f9590739d",
+              "authorizationHash": "0xeed0f284107c25d76f401315a913c89305d92067dbc365ea1a9400f25a20c5e3",
+              "payer": "0x52a321854C93234C5281Fe3f3846Dd817784343F"
+            },
+            "signature": "0x8efa5075fc17476c9d6d72d38b95a2b9ca3b5a43ecdb2451ba61dfaa272082ed567f03f39360d3ff6b7e5f8495a6c06c1f747c6c888e0b081bac749eb051a61b1c"
+          },
+          "payer": "0x52a321854C93234C5281Fe3f3846Dd817784343F",
+          "gatewayAudience": "https://gateway.example"
+        }
+      },
+      "expect": "reject"
+    },
+    {
+      "id": "lifecycle.cross-order-grant",
+      "handler": "lifecycle",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "A grant for another order presented with this order.",
+      "provider": {
+        "now": 1790000900
+      },
+      "check": {
+        "kind": "binding",
+        "left": "grant.payload.orderId",
+        "right": "orderId",
+        "compare": "equal"
+      },
+      "http": {
+        "method": "POST",
+        "url": "https://provider.example/standard-rail/lifecycle",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "orderId": "ord_00000000-0000-4000-8000-000000000001",
+          "providerTaskId": "00000000-0000-4000-8000-00000000a001",
+          "action": "status",
+          "request": {},
+          "authorization": {
+            "type": "DaskiReadCap",
+            "scope": "status"
+          },
+          "grant": {
+            "artifactType": "ProviderLifecycleGrantV1",
+            "schemaVersion": 1,
+            "environment": "testnet",
+            "chainId": 84532,
+            "audience": "https://provider.example",
+            "signerKeyId": "gateway-lifecycle",
+            "issuedAt": 1790000895,
+            "validBefore": 1790001015,
+            "payload": {
+              "orderId": "ord_00000000-0000-4000-8000-000000000002",
+              "providerTaskId": "00000000-0000-4000-8000-00000000a001",
+              "action": "status",
+              "requestHash": "0xb48d38f93eaa084033fc5970bf96e559c33c4cdc07d889ab00b4d63f9590739d",
+              "authorizationHash": "0x76a73d8f587e039d82fa39a50b1a060f83849a7a0a1019033b6510646b4ecbf5",
+              "payer": "0x52a321854C93234C5281Fe3f3846Dd817784343F"
+            },
+            "signature": "0xfd0689ba070432d039f79b6d84dd1dd54607b6c8481a393f19d7cdbfb64509370fd8f68b4be6a80ef0510d0e3c39ae4ca2909a18a56c47ef72f4c6741e52fe5f1c"
+          },
+          "payer": "0x52a321854C93234C5281Fe3f3846Dd817784343F",
+          "gatewayAudience": "https://gateway.example"
+        }
+      },
+      "expect": "reject"
+    },
+    {
+      "id": "lifecycle.request-changed",
+      "handler": "lifecycle",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "The request changed after the grant bound its hash.",
+      "provider": {
+        "now": 1790000900
+      },
+      "check": {
+        "kind": "binding",
+        "left": "grant.payload.requestHash",
+        "right": "request",
+        "compare": "hash"
+      },
+      "http": {
+        "method": "POST",
+        "url": "https://provider.example/standard-rail/lifecycle",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "orderId": "ord_00000000-0000-4000-8000-000000000001",
+          "providerTaskId": "00000000-0000-4000-8000-00000000a001",
+          "action": "status",
+          "request": {
+            "verbose": true
+          },
+          "authorization": {
+            "type": "DaskiReadCap",
+            "scope": "status"
+          },
+          "grant": {
+            "artifactType": "ProviderLifecycleGrantV1",
+            "schemaVersion": 1,
+            "environment": "testnet",
+            "chainId": 84532,
+            "audience": "https://provider.example",
+            "signerKeyId": "gateway-lifecycle",
+            "issuedAt": 1790000895,
+            "validBefore": 1790001015,
+            "payload": {
+              "orderId": "ord_00000000-0000-4000-8000-000000000001",
+              "providerTaskId": "00000000-0000-4000-8000-00000000a001",
+              "action": "status",
+              "requestHash": "0xb48d38f93eaa084033fc5970bf96e559c33c4cdc07d889ab00b4d63f9590739d",
+              "authorizationHash": "0x76a73d8f587e039d82fa39a50b1a060f83849a7a0a1019033b6510646b4ecbf5",
+              "payer": "0x52a321854C93234C5281Fe3f3846Dd817784343F"
+            },
+            "signature": "0x9fd1cc5b43cebc1f928ab1c2a5d1c96a05c09adc6e97236a28c4dbf8c4c223c722c8f3556503bbfa3f4a9e1590b678d30e54027d919129c1a77229ab21fafb2e1c"
+          },
+          "payer": "0x52a321854C93234C5281Fe3f3846Dd817784343F",
+          "gatewayAudience": "https://gateway.example"
+        }
+      },
+      "expect": "reject"
+    },
+    {
+      "id": "lifecycle.payer-changed",
+      "handler": "lifecycle",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "The body names another payer than the grant.",
+      "provider": {
+        "now": 1790000900
+      },
+      "check": {
+        "kind": "binding",
+        "left": "grant.payload.payer",
+        "right": "payer",
+        "compare": "equal"
+      },
+      "http": {
+        "method": "POST",
+        "url": "https://provider.example/standard-rail/lifecycle",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "orderId": "ord_00000000-0000-4000-8000-000000000001",
+          "providerTaskId": "00000000-0000-4000-8000-00000000a001",
+          "action": "status",
+          "request": {},
+          "authorization": {
+            "type": "DaskiReadCap",
+            "scope": "status"
+          },
+          "grant": {
+            "artifactType": "ProviderLifecycleGrantV1",
+            "schemaVersion": 1,
+            "environment": "testnet",
+            "chainId": 84532,
+            "audience": "https://provider.example",
+            "signerKeyId": "gateway-lifecycle",
+            "issuedAt": 1790000895,
+            "validBefore": 1790001015,
+            "payload": {
+              "orderId": "ord_00000000-0000-4000-8000-000000000001",
+              "providerTaskId": "00000000-0000-4000-8000-00000000a001",
+              "action": "status",
+              "requestHash": "0xb48d38f93eaa084033fc5970bf96e559c33c4cdc07d889ab00b4d63f9590739d",
+              "authorizationHash": "0x76a73d8f587e039d82fa39a50b1a060f83849a7a0a1019033b6510646b4ecbf5",
+              "payer": "0x52a321854C93234C5281Fe3f3846Dd817784343F"
+            },
+            "signature": "0x9fd1cc5b43cebc1f928ab1c2a5d1c96a05c09adc6e97236a28c4dbf8c4c223c722c8f3556503bbfa3f4a9e1590b678d30e54027d919129c1a77229ab21fafb2e1c"
+          },
+          "payer": "0xc858D0448ECF6aC1f50717625d11E52cE79216e8",
+          "gatewayAudience": "https://gateway.example"
+        }
+      },
+      "expect": "reject"
+    },
+    {
+      "id": "lifecycle.payer-signed-for-other-audience",
+      "handler": "lifecycle",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "The payer signed this action for another gateway audience; the grant is valid.",
+      "provider": {
+        "now": 1790000900
+      },
+      "check": {
+        "kind": "payer-signature",
+        "signedBy": "payer",
+        "audience": "https://other-gateway.example"
+      },
+      "http": {
+        "method": "POST",
+        "url": "https://provider.example/standard-rail/lifecycle",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "orderId": "ord_00000000-0000-4000-8000-000000000001",
+          "providerTaskId": "00000000-0000-4000-8000-00000000a001",
+          "action": "cancel",
+          "request": {},
+          "authorization": {
+            "orderId": "ord_00000000-0000-4000-8000-000000000001",
+            "action": "cancel",
+            "method": "POST",
+            "absoluteResourceUri": "https://gateway.example/orders/providerWireFixtureOrderHandle-000000000001/actions/cancel",
+            "requestHash": "0xb48d38f93eaa084033fc5970bf96e559c33c4cdc07d889ab00b4d63f9590739d",
+            "nonce": "0x67ee5a9ad064483b58ed6bf585afd34790761c58856a2d1654ef6e85f966dc39",
+            "issuedAt": 1790000895,
+            "validBefore": 1790001195,
+            "signature": "0x658e54f6fb12228e07e0ca46045b2121f0891d32597086ebb7ed1458f851dfbc37f11bfc497eed3c20727c6100788d8fe42ed77ce2b198ddb42fab65749d0fdd1c"
+          },
+          "grant": {
+            "artifactType": "ProviderLifecycleGrantV1",
+            "schemaVersion": 1,
+            "environment": "testnet",
+            "chainId": 84532,
+            "audience": "https://provider.example",
+            "signerKeyId": "gateway-lifecycle",
+            "issuedAt": 1790000900,
+            "validBefore": 1790001020,
+            "payload": {
+              "orderId": "ord_00000000-0000-4000-8000-000000000001",
+              "providerTaskId": "00000000-0000-4000-8000-00000000a001",
+              "action": "cancel",
+              "requestHash": "0xb48d38f93eaa084033fc5970bf96e559c33c4cdc07d889ab00b4d63f9590739d",
+              "authorizationHash": "0xe233d7167851a297f2b64cb669bafc56c5aca0be4c542f12dc48f812bcd440b9",
+              "payer": "0x52a321854C93234C5281Fe3f3846Dd817784343F"
+            },
+            "signature": "0x3b62442ed8ac6ebe58e0c5f6317e04cd2c9656cbf6a8f97a8763981ca3ff42992e557a8f83b1c543f994bb65d73c24f30a433bfacca46be0dded78459c1f3ac51b"
+          },
+          "payer": "0x52a321854C93234C5281Fe3f3846Dd817784343F",
+          "gatewayAudience": "https://gateway.example"
+        }
+      },
+      "expect": "reject"
+    },
+    {
+      "id": "lifecycle.payer-signed-by-other-key",
+      "handler": "lifecycle",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "The authorization is signed by someone other than the order's payer.",
+      "provider": {
+        "now": 1790000900
+      },
+      "check": {
+        "kind": "payer-signature",
+        "signedBy": "unrecognized",
+        "audience": "https://gateway.example"
+      },
+      "http": {
+        "method": "POST",
+        "url": "https://provider.example/standard-rail/lifecycle",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "orderId": "ord_00000000-0000-4000-8000-000000000001",
+          "providerTaskId": "00000000-0000-4000-8000-00000000a001",
+          "action": "cancel",
+          "request": {},
+          "authorization": {
+            "orderId": "ord_00000000-0000-4000-8000-000000000001",
+            "action": "cancel",
+            "method": "POST",
+            "absoluteResourceUri": "https://gateway.example/orders/providerWireFixtureOrderHandle-000000000001/actions/cancel",
+            "requestHash": "0xb48d38f93eaa084033fc5970bf96e559c33c4cdc07d889ab00b4d63f9590739d",
+            "nonce": "0x67ee5a9ad064483b58ed6bf585afd34790761c58856a2d1654ef6e85f966dc39",
+            "issuedAt": 1790000895,
+            "validBefore": 1790001195,
+            "signature": "0x87fb5fda9879bca2d550251b352757303913e2e780289967ef5237ca50156b8248eb98662f0249bac9a3abb5afc9d45bf0e31b5cf5d1d5b266801ea14bc9dd071b"
+          },
+          "grant": {
+            "artifactType": "ProviderLifecycleGrantV1",
+            "schemaVersion": 1,
+            "environment": "testnet",
+            "chainId": 84532,
+            "audience": "https://provider.example",
+            "signerKeyId": "gateway-lifecycle",
+            "issuedAt": 1790000900,
+            "validBefore": 1790001020,
+            "payload": {
+              "orderId": "ord_00000000-0000-4000-8000-000000000001",
+              "providerTaskId": "00000000-0000-4000-8000-00000000a001",
+              "action": "cancel",
+              "requestHash": "0xb48d38f93eaa084033fc5970bf96e559c33c4cdc07d889ab00b4d63f9590739d",
+              "authorizationHash": "0x5f0a21989b8a289d1d9331be43c652ccbcae1c89c3ce8fba64efdeaf0b62a5f4",
+              "payer": "0x52a321854C93234C5281Fe3f3846Dd817784343F"
+            },
+            "signature": "0xf92bf0244da6d698b30be339b92ff24b56a65910245a30c80500a9e0d8d398d01ba95560d39c2f5461f59642f50dd09784bf5a8ebbaa519e5d1d6439502bbc0e1c"
+          },
+          "payer": "0x52a321854C93234C5281Fe3f3846Dd817784343F",
+          "gatewayAudience": "https://gateway.example"
+        }
+      },
+      "expect": "reject"
+    }
+  ]
+}

@@ -1,0 +1,1163 @@
+{
+  "schemaVersion": 1,
+  "surface": "POST quoteUrl with {request: ProviderQuoteRequestV1}; answer {outcomeId, listingManifestHash, requestHash, grossAmount, payer, issuedAt, validBefore, signature}",
+  "signature": "EIP-191 by the provider authority key over keccak256(canonicalJson of the seven unsigned fields)",
+  "requests": {
+    "fixed-payer-lowercase": {
+      "listing": "fixed",
+      "gateway": {
+        "now": 1790000000
+      },
+      "http": {
+        "method": "POST",
+        "url": "https://provider.example/standard-rail/quote",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "request": {
+            "artifactType": "ProviderQuoteRequestV1",
+            "schemaVersion": 1,
+            "environment": "testnet",
+            "chainId": 84532,
+            "audience": "https://provider.example",
+            "signerKeyId": "gateway-dispatch",
+            "issuedAt": 1790000000,
+            "validBefore": 1790000060,
+            "payload": {
+              "outcomeId": "create-note",
+              "listingManifestHash": "0x2efa3883986e0ef9f11acf05ad5c70f9da45b5293026344c0b38c87a7319e784",
+              "requestHash": "0x1bf2ac01775ea9f4293cb261f84a0f40d93f45a68e3e26bfdbcbd1ebdeb0e708",
+              "request": {
+                "title": "Synthetic fixture note",
+                "body": "Written by the gateway's provider-wire fixtures."
+              },
+              "payer": "0x52a321854c93234c5281fe3f3846dd817784343f"
+            },
+            "signature": "0xff9dbcafa3dc8cb90bea0b791b49df3349b75de33e019643ca3450b101f0fb175fe4d03b3c0e9ce334eea57421a14a839974f9a827b041ae34df5ab759915e491c"
+          }
+        },
+        "bodyText": "{\"request\":{\"artifactType\":\"ProviderQuoteRequestV1\",\"schemaVersion\":1,\"environment\":\"testnet\",\"chainId\":84532,\"audience\":\"https://provider.example\",\"signerKeyId\":\"gateway-dispatch\",\"issuedAt\":1790000000,\"validBefore\":1790000060,\"payload\":{\"outcomeId\":\"create-note\",\"listingManifestHash\":\"0x2efa3883986e0ef9f11acf05ad5c70f9da45b5293026344c0b38c87a7319e784\",\"requestHash\":\"0x1bf2ac01775ea9f4293cb261f84a0f40d93f45a68e3e26bfdbcbd1ebdeb0e708\",\"request\":{\"title\":\"Synthetic fixture note\",\"body\":\"Written by the gateway's provider-wire fixtures.\"},\"payer\":\"0x52a321854c93234c5281fe3f3846dd817784343f\"},\"signature\":\"0xff9dbcafa3dc8cb90bea0b791b49df3349b75de33e019643ca3450b101f0fb175fe4d03b3c0e9ce334eea57421a14a839974f9a827b041ae34df5ab759915e491c\"}}"
+      },
+      "issuedQuoteV1": {
+        "artifactType": "QuoteV1",
+        "schemaVersion": 1,
+        "environment": "testnet",
+        "chainId": 84532,
+        "audience": "https://gateway.example",
+        "signerKeyId": "gateway-quote",
+        "issuedAt": 1790000000,
+        "validBefore": 1790000120,
+        "payload": {
+          "listingManifestHash": "0x2efa3883986e0ef9f11acf05ad5c70f9da45b5293026344c0b38c87a7319e784",
+          "providerOfferHash": "0xf097bfa76765936f5bbcd78cfd23cea437dc6ed4939a66603a45a9e1e2e66bd8",
+          "providerQuoteHash": "0xaac6fa3c4af39539095331e507dea96b875b26084ffc9fafb27e6bed59b44d5c",
+          "canonicalRequestHash": "0x6dafea8cb3553869537f4f4643fb31f6a478838f81967374cbf496e0dfd7cf51",
+          "grossAmount": "250000",
+          "token": "0xc648DB599F8eca8F96854B7a8D16F8f3552C0428",
+          "splitter": "0xC88C22F5501023b81A291959c0C3c7bA8Be57a37",
+          "orderNonce": "0x698715df0f12815c2899be7896c96638fd58b0d8c5c7ddcf9b53d14a51ada70d",
+          "issuedAt": 1790000000,
+          "validBefore": 1790000120
+        },
+        "signature": "0xc29897ee1151828c70c82db14b8632332a2abb2e24cb58c3aa49f1e49bedd37d31b607cb1bbc3a178d85c62a128403469b5d1838473639cb8b7631f81324abca1c"
+      }
+    },
+    "fixed-payer-null": {
+      "listing": "fixed",
+      "gateway": {
+        "now": 1790000000
+      },
+      "http": {
+        "method": "POST",
+        "url": "https://provider.example/standard-rail/quote",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "request": {
+            "artifactType": "ProviderQuoteRequestV1",
+            "schemaVersion": 1,
+            "environment": "testnet",
+            "chainId": 84532,
+            "audience": "https://provider.example",
+            "signerKeyId": "gateway-dispatch",
+            "issuedAt": 1790000000,
+            "validBefore": 1790000060,
+            "payload": {
+              "outcomeId": "create-note",
+              "listingManifestHash": "0x2efa3883986e0ef9f11acf05ad5c70f9da45b5293026344c0b38c87a7319e784",
+              "requestHash": "0x1bf2ac01775ea9f4293cb261f84a0f40d93f45a68e3e26bfdbcbd1ebdeb0e708",
+              "request": {
+                "title": "Synthetic fixture note",
+                "body": "Written by the gateway's provider-wire fixtures."
+              },
+              "payer": null
+            },
+            "signature": "0x1bc255d0402db389607a60686379e7923475bac19b08102f58ed808f98a98ab045d8888fe8bdc4e8b6014c99ee35b4e6e4c743ca6e5edca999bb5a6a1df29aec1b"
+          }
+        },
+        "bodyText": "{\"request\":{\"artifactType\":\"ProviderQuoteRequestV1\",\"schemaVersion\":1,\"environment\":\"testnet\",\"chainId\":84532,\"audience\":\"https://provider.example\",\"signerKeyId\":\"gateway-dispatch\",\"issuedAt\":1790000000,\"validBefore\":1790000060,\"payload\":{\"outcomeId\":\"create-note\",\"listingManifestHash\":\"0x2efa3883986e0ef9f11acf05ad5c70f9da45b5293026344c0b38c87a7319e784\",\"requestHash\":\"0x1bf2ac01775ea9f4293cb261f84a0f40d93f45a68e3e26bfdbcbd1ebdeb0e708\",\"request\":{\"title\":\"Synthetic fixture note\",\"body\":\"Written by the gateway's provider-wire fixtures.\"},\"payer\":null},\"signature\":\"0x1bc255d0402db389607a60686379e7923475bac19b08102f58ed808f98a98ab045d8888fe8bdc4e8b6014c99ee35b4e6e4c743ca6e5edca999bb5a6a1df29aec1b\"}}"
+      }
+    },
+    "dynamic-payer-lowercase": {
+      "listing": "dynamic",
+      "gateway": {
+        "now": 1790000000
+      },
+      "http": {
+        "method": "POST",
+        "url": "https://provider.example/standard-rail/quote",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "request": {
+            "artifactType": "ProviderQuoteRequestV1",
+            "schemaVersion": 1,
+            "environment": "testnet",
+            "chainId": 84532,
+            "audience": "https://provider.example",
+            "signerKeyId": "gateway-dispatch",
+            "issuedAt": 1790000000,
+            "validBefore": 1790000060,
+            "payload": {
+              "outcomeId": "create-quoted-note",
+              "listingManifestHash": "0x12d55826595f179b93fb43234d3bfd570754ab0031df206cd8083fda1b17bab4",
+              "requestHash": "0x20404d8356d4eaf5179d7f4bf81dfc0cd772e530d8f82e158c1f38a1343fbf48",
+              "request": {
+                "title": "Synthetic quoted note",
+                "body": "Priced by the provider for each request."
+              },
+              "payer": "0x52a321854c93234c5281fe3f3846dd817784343f"
+            },
+            "signature": "0xe36537830205b66467e1718cca7d60ef2e196da76f48e702418a9a9ce8ada4a469c723365e865cb8352eb71dc32f0ae893f57da41f25ff28e30568b82e3ad0bd1c"
+          }
+        },
+        "bodyText": "{\"request\":{\"artifactType\":\"ProviderQuoteRequestV1\",\"schemaVersion\":1,\"environment\":\"testnet\",\"chainId\":84532,\"audience\":\"https://provider.example\",\"signerKeyId\":\"gateway-dispatch\",\"issuedAt\":1790000000,\"validBefore\":1790000060,\"payload\":{\"outcomeId\":\"create-quoted-note\",\"listingManifestHash\":\"0x12d55826595f179b93fb43234d3bfd570754ab0031df206cd8083fda1b17bab4\",\"requestHash\":\"0x20404d8356d4eaf5179d7f4bf81dfc0cd772e530d8f82e158c1f38a1343fbf48\",\"request\":{\"title\":\"Synthetic quoted note\",\"body\":\"Priced by the provider for each request.\"},\"payer\":\"0x52a321854c93234c5281fe3f3846dd817784343f\"},\"signature\":\"0xe36537830205b66467e1718cca7d60ef2e196da76f48e702418a9a9ce8ada4a469c723365e865cb8352eb71dc32f0ae893f57da41f25ff28e30568b82e3ad0bd1c\"}}"
+      }
+    }
+  },
+  "responses": [
+    {
+      "id": "fixed.payer-lowercase.accepted",
+      "request": "fixed-payer-lowercase",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "A 120-second fixed quote echoing the lowercase payer literally.",
+      "provider": {
+        "now": 1790000000,
+        "signer": "providerAuthority",
+        "grossAmount": "250000",
+        "payer": "0x52a321854c93234c5281fe3f3846dd817784343f",
+        "issuedAt": 1790000000,
+        "validBefore": 1790000120
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "outcomeId": "create-note",
+          "listingManifestHash": "0x2efa3883986e0ef9f11acf05ad5c70f9da45b5293026344c0b38c87a7319e784",
+          "requestHash": "0x1bf2ac01775ea9f4293cb261f84a0f40d93f45a68e3e26bfdbcbd1ebdeb0e708",
+          "grossAmount": "250000",
+          "payer": "0x52a321854c93234c5281fe3f3846dd817784343f",
+          "issuedAt": 1790000000,
+          "validBefore": 1790000120,
+          "signature": "0x831c58f70bb34355d80262c47bdbb0d3ee8c6817936b9a24a4d77ae01ca63a4257f4b54b9f4826ef890364f12b1bd666017b16d627b409a3aee1f9e4ebea691d1b"
+        }
+      },
+      "gateway": {
+        "receivedAt": 1790000001,
+        "verdict": "accepted",
+        "grossAmount": "250000",
+        "providerQuoteHash": "0xaac6fa3c4af39539095331e507dea96b875b26084ffc9fafb27e6bed59b44d5c",
+        "issuedAt": 1790000000,
+        "validBefore": 1790000120
+      }
+    },
+    {
+      "id": "fixed.payer-null.accepted",
+      "request": "fixed-payer-null",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "A fixed quote for a request without a payer echoes null.",
+      "provider": {
+        "now": 1790000000,
+        "signer": "providerAuthority",
+        "grossAmount": "250000",
+        "payer": null,
+        "issuedAt": 1790000000,
+        "validBefore": 1790000120
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "outcomeId": "create-note",
+          "listingManifestHash": "0x2efa3883986e0ef9f11acf05ad5c70f9da45b5293026344c0b38c87a7319e784",
+          "requestHash": "0x1bf2ac01775ea9f4293cb261f84a0f40d93f45a68e3e26bfdbcbd1ebdeb0e708",
+          "grossAmount": "250000",
+          "payer": null,
+          "issuedAt": 1790000000,
+          "validBefore": 1790000120,
+          "signature": "0x4961945088f40d6f882b8ca18e73831c5354ec7c7cc9a52b3a3ff95fb6cf30b47ba5a1a45204f48bdee30814ad030c1467eff58912d2929ee77e0ebc5874dfb51c"
+        }
+      },
+      "gateway": {
+        "receivedAt": 1790000001,
+        "verdict": "accepted",
+        "grossAmount": "250000",
+        "providerQuoteHash": "0x2141b5d21a6da9c40cb6182c8b8b67d6b4293bcfe9e9b7b8f003121d198e4205",
+        "issuedAt": 1790000000,
+        "validBefore": 1790000120
+      }
+    },
+    {
+      "id": "fixed.payer-checksummed.rejected",
+      "request": "fixed-payer-lowercase",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "The payer is compared literally: an EIP-55 echo of a lowercase payer is refused.",
+      "provider": {
+        "now": 1790000000,
+        "signer": "providerAuthority",
+        "grossAmount": "250000",
+        "payer": "0x52a321854C93234C5281Fe3f3846Dd817784343F",
+        "issuedAt": 1790000000,
+        "validBefore": 1790000120
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "outcomeId": "create-note",
+          "listingManifestHash": "0x2efa3883986e0ef9f11acf05ad5c70f9da45b5293026344c0b38c87a7319e784",
+          "requestHash": "0x1bf2ac01775ea9f4293cb261f84a0f40d93f45a68e3e26bfdbcbd1ebdeb0e708",
+          "grossAmount": "250000",
+          "payer": "0x52a321854C93234C5281Fe3f3846Dd817784343F",
+          "issuedAt": 1790000000,
+          "validBefore": 1790000120,
+          "signature": "0x7e1ef2b937ace030733836568b83203504a20401f4eda88c3ef94d325d49c9f21b54bcd81c3caf172a07d4943834760a4e1e457b251c71fa0d564191b8bdc9801c"
+        }
+      },
+      "gateway": {
+        "receivedAt": 1790000001,
+        "verdict": "rejected",
+        "code": "PROVIDER_QUOTE_UNAVAILABLE"
+      }
+    },
+    {
+      "id": "fixed.payer-dropped.rejected",
+      "request": "fixed-payer-lowercase",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "A quote must bind the payer it was asked for.",
+      "provider": {
+        "now": 1790000000,
+        "signer": "providerAuthority",
+        "grossAmount": "250000",
+        "payer": null,
+        "issuedAt": 1790000000,
+        "validBefore": 1790000120
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "outcomeId": "create-note",
+          "listingManifestHash": "0x2efa3883986e0ef9f11acf05ad5c70f9da45b5293026344c0b38c87a7319e784",
+          "requestHash": "0x1bf2ac01775ea9f4293cb261f84a0f40d93f45a68e3e26bfdbcbd1ebdeb0e708",
+          "grossAmount": "250000",
+          "payer": null,
+          "issuedAt": 1790000000,
+          "validBefore": 1790000120,
+          "signature": "0x4961945088f40d6f882b8ca18e73831c5354ec7c7cc9a52b3a3ff95fb6cf30b47ba5a1a45204f48bdee30814ad030c1467eff58912d2929ee77e0ebc5874dfb51c"
+        }
+      },
+      "gateway": {
+        "receivedAt": 1790000001,
+        "verdict": "rejected",
+        "code": "PROVIDER_QUOTE_UNAVAILABLE"
+      }
+    },
+    {
+      "id": "fixed.window-equals-minimum.rejected",
+      "request": "fixed-payer-lowercase",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "At receipt the remaining window must exceed the 30-second payment window; exactly 30 is refused.",
+      "provider": {
+        "now": 1790000000,
+        "signer": "providerAuthority",
+        "grossAmount": "250000",
+        "payer": "0x52a321854c93234c5281fe3f3846dd817784343f",
+        "issuedAt": 1790000000,
+        "validBefore": 1790000031
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "outcomeId": "create-note",
+          "listingManifestHash": "0x2efa3883986e0ef9f11acf05ad5c70f9da45b5293026344c0b38c87a7319e784",
+          "requestHash": "0x1bf2ac01775ea9f4293cb261f84a0f40d93f45a68e3e26bfdbcbd1ebdeb0e708",
+          "grossAmount": "250000",
+          "payer": "0x52a321854c93234c5281fe3f3846dd817784343f",
+          "issuedAt": 1790000000,
+          "validBefore": 1790000031,
+          "signature": "0xa43b5eecb64056c3be278919fb9c93224f18ac3d27f37040a7f478470de337ff26b594183262eb441fc64708fafec0c9926bc93660492145757fa0e0aa526a2c1c"
+        }
+      },
+      "gateway": {
+        "receivedAt": 1790000001,
+        "verdict": "rejected",
+        "code": "PROVIDER_QUOTE_UNAVAILABLE"
+      }
+    },
+    {
+      "id": "fixed.window-one-past-minimum.accepted",
+      "request": "fixed-payer-lowercase",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "31 seconds remaining at receipt is enough.",
+      "provider": {
+        "now": 1790000000,
+        "signer": "providerAuthority",
+        "grossAmount": "250000",
+        "payer": "0x52a321854c93234c5281fe3f3846dd817784343f",
+        "issuedAt": 1790000000,
+        "validBefore": 1790000032
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "outcomeId": "create-note",
+          "listingManifestHash": "0x2efa3883986e0ef9f11acf05ad5c70f9da45b5293026344c0b38c87a7319e784",
+          "requestHash": "0x1bf2ac01775ea9f4293cb261f84a0f40d93f45a68e3e26bfdbcbd1ebdeb0e708",
+          "grossAmount": "250000",
+          "payer": "0x52a321854c93234c5281fe3f3846dd817784343f",
+          "issuedAt": 1790000000,
+          "validBefore": 1790000032,
+          "signature": "0x0776707fe8a8ba679310e1d1cf3cc65f140e09d9ba2a6b6cf29087f6846f503a7aa97ae072eb57ea04454029e43c027fbe22e59d7ee6c0d7ea6d6cf0ccf4c4061c"
+        }
+      },
+      "gateway": {
+        "receivedAt": 1790000001,
+        "verdict": "accepted",
+        "grossAmount": "250000",
+        "providerQuoteHash": "0x7008f12d2917f3cded339fe0225c527d50871a13d92ae7c369ccbb5a8660bd5c",
+        "issuedAt": 1790000000,
+        "validBefore": 1790000032
+      }
+    },
+    {
+      "id": "fixed.lifetime-300.accepted",
+      "request": "fixed-payer-lowercase",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "A fixed quote may last 300 seconds.",
+      "provider": {
+        "now": 1790000000,
+        "signer": "providerAuthority",
+        "grossAmount": "250000",
+        "payer": "0x52a321854c93234c5281fe3f3846dd817784343f",
+        "issuedAt": 1790000000,
+        "validBefore": 1790000300
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "outcomeId": "create-note",
+          "listingManifestHash": "0x2efa3883986e0ef9f11acf05ad5c70f9da45b5293026344c0b38c87a7319e784",
+          "requestHash": "0x1bf2ac01775ea9f4293cb261f84a0f40d93f45a68e3e26bfdbcbd1ebdeb0e708",
+          "grossAmount": "250000",
+          "payer": "0x52a321854c93234c5281fe3f3846dd817784343f",
+          "issuedAt": 1790000000,
+          "validBefore": 1790000300,
+          "signature": "0xa112b25812242b153d7088be1f78e4ed519b0b7b8cc79d082b8bafc90ba07cb03eda509378efc41f8df76a3d88cfaac4f45aa0cf4869b1c1cdac84c29c5785031c"
+        }
+      },
+      "gateway": {
+        "receivedAt": 1790000001,
+        "verdict": "accepted",
+        "grossAmount": "250000",
+        "providerQuoteHash": "0x455f6354409392edb2d94ca86e8d6e117211e34989c7ea782148640a29ca9bef",
+        "issuedAt": 1790000000,
+        "validBefore": 1790000300
+      }
+    },
+    {
+      "id": "fixed.lifetime-301.rejected",
+      "request": "fixed-payer-lowercase",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "A fixed quote may not last 301 seconds.",
+      "provider": {
+        "now": 1790000000,
+        "signer": "providerAuthority",
+        "grossAmount": "250000",
+        "payer": "0x52a321854c93234c5281fe3f3846dd817784343f",
+        "issuedAt": 1790000000,
+        "validBefore": 1790000301
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "outcomeId": "create-note",
+          "listingManifestHash": "0x2efa3883986e0ef9f11acf05ad5c70f9da45b5293026344c0b38c87a7319e784",
+          "requestHash": "0x1bf2ac01775ea9f4293cb261f84a0f40d93f45a68e3e26bfdbcbd1ebdeb0e708",
+          "grossAmount": "250000",
+          "payer": "0x52a321854c93234c5281fe3f3846dd817784343f",
+          "issuedAt": 1790000000,
+          "validBefore": 1790000301,
+          "signature": "0xca64219af3f25d86325d431f1ddc16dd5fa7116720aed320e17deaa743c0f4ad3d505dfc8e334e1663925f013f7aec4c948a51a6547e8dacfd95a92e04ff295d1c"
+        }
+      },
+      "gateway": {
+        "receivedAt": 1790000001,
+        "verdict": "rejected",
+        "code": "PROVIDER_QUOTE_UNAVAILABLE"
+      }
+    },
+    {
+      "id": "fixed.issued-30s-before-receipt.accepted",
+      "request": "fixed-payer-lowercase",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "issuedAt may trail receipt by 30 seconds.",
+      "provider": {
+        "now": 1789999971,
+        "signer": "providerAuthority",
+        "grossAmount": "250000",
+        "payer": "0x52a321854c93234c5281fe3f3846dd817784343f",
+        "issuedAt": 1789999971,
+        "validBefore": 1790000091
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "outcomeId": "create-note",
+          "listingManifestHash": "0x2efa3883986e0ef9f11acf05ad5c70f9da45b5293026344c0b38c87a7319e784",
+          "requestHash": "0x1bf2ac01775ea9f4293cb261f84a0f40d93f45a68e3e26bfdbcbd1ebdeb0e708",
+          "grossAmount": "250000",
+          "payer": "0x52a321854c93234c5281fe3f3846dd817784343f",
+          "issuedAt": 1789999971,
+          "validBefore": 1790000091,
+          "signature": "0xc4cd8da09d2296f282beaf3a30e39529d4258eb8c041ad0f85ee292d7f6a206067f328aaa707f69883a51d30cb7a4986561c6238fd0c2f246c60520f16922a7f1c"
+        }
+      },
+      "gateway": {
+        "receivedAt": 1790000001,
+        "verdict": "accepted",
+        "grossAmount": "250000",
+        "providerQuoteHash": "0xdbba660ac192722c845ab97c607cace59ed7d3ff669f29e10ee186547f7a2cdc",
+        "issuedAt": 1789999971,
+        "validBefore": 1790000091
+      }
+    },
+    {
+      "id": "fixed.issued-31s-before-receipt.rejected",
+      "request": "fixed-payer-lowercase",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "issuedAt may not trail receipt by 31 seconds.",
+      "provider": {
+        "now": 1789999970,
+        "signer": "providerAuthority",
+        "grossAmount": "250000",
+        "payer": "0x52a321854c93234c5281fe3f3846dd817784343f",
+        "issuedAt": 1789999970,
+        "validBefore": 1790000090
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "outcomeId": "create-note",
+          "listingManifestHash": "0x2efa3883986e0ef9f11acf05ad5c70f9da45b5293026344c0b38c87a7319e784",
+          "requestHash": "0x1bf2ac01775ea9f4293cb261f84a0f40d93f45a68e3e26bfdbcbd1ebdeb0e708",
+          "grossAmount": "250000",
+          "payer": "0x52a321854c93234c5281fe3f3846dd817784343f",
+          "issuedAt": 1789999970,
+          "validBefore": 1790000090,
+          "signature": "0x0a5adff1d1bf07f211ccc1c50c44ffeb3cab77e053a691a08cda8aa1fd155bce74360a7eae7caf6d3c2599b52d5abe9edbb9f5d56169c31db2eea2e56055fb3f1c"
+        }
+      },
+      "gateway": {
+        "receivedAt": 1790000001,
+        "verdict": "rejected",
+        "code": "PROVIDER_QUOTE_UNAVAILABLE"
+      }
+    },
+    {
+      "id": "fixed.issued-30s-after-receipt.accepted",
+      "request": "fixed-payer-lowercase",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "issuedAt may lead receipt by 30 seconds.",
+      "provider": {
+        "now": 1790000031,
+        "signer": "providerAuthority",
+        "grossAmount": "250000",
+        "payer": "0x52a321854c93234c5281fe3f3846dd817784343f",
+        "issuedAt": 1790000031,
+        "validBefore": 1790000151
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "outcomeId": "create-note",
+          "listingManifestHash": "0x2efa3883986e0ef9f11acf05ad5c70f9da45b5293026344c0b38c87a7319e784",
+          "requestHash": "0x1bf2ac01775ea9f4293cb261f84a0f40d93f45a68e3e26bfdbcbd1ebdeb0e708",
+          "grossAmount": "250000",
+          "payer": "0x52a321854c93234c5281fe3f3846dd817784343f",
+          "issuedAt": 1790000031,
+          "validBefore": 1790000151,
+          "signature": "0x6bd5775a4bc898619d76a9616b4556db64c6c4623818f69f37bda4fc97badf4575a35e62b9272bf5887fcfd35fff6a4d415152e0d7a790a78b508270db040f3a1c"
+        }
+      },
+      "gateway": {
+        "receivedAt": 1790000001,
+        "verdict": "accepted",
+        "grossAmount": "250000",
+        "providerQuoteHash": "0xfe8b3ea8002f5af404ea5abbd762103cdc7baf78aad1f6f7c4d23ccdcf591daf",
+        "issuedAt": 1790000031,
+        "validBefore": 1790000151
+      }
+    },
+    {
+      "id": "fixed.issued-31s-after-receipt.rejected",
+      "request": "fixed-payer-lowercase",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "issuedAt may not lead receipt by 31 seconds.",
+      "provider": {
+        "now": 1790000032,
+        "signer": "providerAuthority",
+        "grossAmount": "250000",
+        "payer": "0x52a321854c93234c5281fe3f3846dd817784343f",
+        "issuedAt": 1790000032,
+        "validBefore": 1790000152
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "outcomeId": "create-note",
+          "listingManifestHash": "0x2efa3883986e0ef9f11acf05ad5c70f9da45b5293026344c0b38c87a7319e784",
+          "requestHash": "0x1bf2ac01775ea9f4293cb261f84a0f40d93f45a68e3e26bfdbcbd1ebdeb0e708",
+          "grossAmount": "250000",
+          "payer": "0x52a321854c93234c5281fe3f3846dd817784343f",
+          "issuedAt": 1790000032,
+          "validBefore": 1790000152,
+          "signature": "0x1f98caf5ca4316742e3b13545589ac60136110ee6d31f348400c008c8e9a7ca5002e4534eacbff6f16776a214052241ce9f2074c799f6d8ae3ae7c0dafd28b431c"
+        }
+      },
+      "gateway": {
+        "receivedAt": 1790000001,
+        "verdict": "rejected",
+        "code": "PROVIDER_QUOTE_UNAVAILABLE"
+      }
+    },
+    {
+      "id": "fixed.price-differs.rejected",
+      "request": "fixed-payer-lowercase",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "A fixed listing's quote must carry its fixed gross amount.",
+      "provider": {
+        "now": 1790000000,
+        "signer": "providerAuthority",
+        "grossAmount": "250001",
+        "payer": "0x52a321854c93234c5281fe3f3846dd817784343f",
+        "issuedAt": 1790000000,
+        "validBefore": 1790000120
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "outcomeId": "create-note",
+          "listingManifestHash": "0x2efa3883986e0ef9f11acf05ad5c70f9da45b5293026344c0b38c87a7319e784",
+          "requestHash": "0x1bf2ac01775ea9f4293cb261f84a0f40d93f45a68e3e26bfdbcbd1ebdeb0e708",
+          "grossAmount": "250001",
+          "payer": "0x52a321854c93234c5281fe3f3846dd817784343f",
+          "issuedAt": 1790000000,
+          "validBefore": 1790000120,
+          "signature": "0xd0437255ff906591ac52313a9e363a71160824eb6909048e11b5f73f526b32b03627d1277f91d3d0bf4527850e7202fcc0a748acc2bfb0d4daeb96df0c86aea21c"
+        }
+      },
+      "gateway": {
+        "receivedAt": 1790000001,
+        "verdict": "rejected",
+        "code": "PROVIDER_QUOTE_UNAVAILABLE"
+      }
+    },
+    {
+      "id": "fixed.signed-by-terminal-key.rejected",
+      "request": "fixed-payer-lowercase",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "Quotes are signed by the provider authority key.",
+      "provider": {
+        "now": 1790000000,
+        "signer": "providerTerminalAttestation",
+        "grossAmount": "250000",
+        "payer": "0x52a321854c93234c5281fe3f3846dd817784343f",
+        "issuedAt": 1790000000,
+        "validBefore": 1790000120
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "outcomeId": "create-note",
+          "listingManifestHash": "0x2efa3883986e0ef9f11acf05ad5c70f9da45b5293026344c0b38c87a7319e784",
+          "requestHash": "0x1bf2ac01775ea9f4293cb261f84a0f40d93f45a68e3e26bfdbcbd1ebdeb0e708",
+          "grossAmount": "250000",
+          "payer": "0x52a321854c93234c5281fe3f3846dd817784343f",
+          "issuedAt": 1790000000,
+          "validBefore": 1790000120,
+          "signature": "0x752a76112b644af98f62c9b02e686af93e91ba3d65c323a5a04b546acebb9651695f1394aced69646a800d8f4cf6d722d9d1a29ab65557aeb44a65e45b0e8b201c"
+        }
+      },
+      "gateway": {
+        "receivedAt": 1790000001,
+        "verdict": "rejected",
+        "code": "PROVIDER_QUOTE_UNAVAILABLE"
+      }
+    },
+    {
+      "id": "fixed.changed-after-signing.rejected",
+      "request": "fixed-payer-lowercase",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "The signature covers all seven quote fields.",
+      "provider": {
+        "now": 1790000000,
+        "signer": "providerAuthority",
+        "grossAmount": "250000",
+        "payer": "0x52a321854c93234c5281fe3f3846dd817784343f",
+        "issuedAt": 1790000000,
+        "validBefore": 1790000120
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "outcomeId": "create-note",
+          "listingManifestHash": "0x2efa3883986e0ef9f11acf05ad5c70f9da45b5293026344c0b38c87a7319e784",
+          "requestHash": "0x1bf2ac01775ea9f4293cb261f84a0f40d93f45a68e3e26bfdbcbd1ebdeb0e708",
+          "grossAmount": "250000",
+          "payer": "0x52a321854c93234c5281fe3f3846dd817784343f",
+          "issuedAt": 1790000000,
+          "validBefore": 1790000119,
+          "signature": "0x831c58f70bb34355d80262c47bdbb0d3ee8c6817936b9a24a4d77ae01ca63a4257f4b54b9f4826ef890364f12b1bd666017b16d627b409a3aee1f9e4ebea691d1b"
+        }
+      },
+      "gateway": {
+        "receivedAt": 1790000001,
+        "verdict": "rejected",
+        "code": "PROVIDER_QUOTE_UNAVAILABLE"
+      }
+    },
+    {
+      "id": "fixed.request-hash-differs.rejected",
+      "request": "fixed-payer-lowercase",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "The quote must bind the request hash it was asked for.",
+      "provider": {
+        "now": 1790000000,
+        "signer": "providerAuthority",
+        "grossAmount": "250000",
+        "payer": "0x52a321854c93234c5281fe3f3846dd817784343f",
+        "issuedAt": 1790000000,
+        "validBefore": 1790000120,
+        "bound": {
+          "requestHash": "0xdeea7c1acf3bf23c6368505eab700bba33519c38c0780c26719cc11181d2836e"
+        }
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "outcomeId": "create-note",
+          "listingManifestHash": "0x2efa3883986e0ef9f11acf05ad5c70f9da45b5293026344c0b38c87a7319e784",
+          "requestHash": "0xdeea7c1acf3bf23c6368505eab700bba33519c38c0780c26719cc11181d2836e",
+          "grossAmount": "250000",
+          "payer": "0x52a321854c93234c5281fe3f3846dd817784343f",
+          "issuedAt": 1790000000,
+          "validBefore": 1790000120,
+          "signature": "0x3d3c58009adf15a34b547496629f7bf09abf7f3679cab00629b138f2aa15be026712c31789e6144a285ef7e2aa519e41ff4a03b4c236d9296ba74a87fd3c6a1b1c"
+        }
+      },
+      "gateway": {
+        "receivedAt": 1790000001,
+        "verdict": "rejected",
+        "code": "PROVIDER_QUOTE_UNAVAILABLE"
+      }
+    },
+    {
+      "id": "fixed.listing-hash-differs.rejected",
+      "request": "fixed-payer-lowercase",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "The quote must bind the listing manifest hash.",
+      "provider": {
+        "now": 1790000000,
+        "signer": "providerAuthority",
+        "grossAmount": "250000",
+        "payer": "0x52a321854c93234c5281fe3f3846dd817784343f",
+        "issuedAt": 1790000000,
+        "validBefore": 1790000120,
+        "bound": {
+          "listingManifestHash": "0x12d55826595f179b93fb43234d3bfd570754ab0031df206cd8083fda1b17bab4"
+        }
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "outcomeId": "create-note",
+          "listingManifestHash": "0x12d55826595f179b93fb43234d3bfd570754ab0031df206cd8083fda1b17bab4",
+          "requestHash": "0x1bf2ac01775ea9f4293cb261f84a0f40d93f45a68e3e26bfdbcbd1ebdeb0e708",
+          "grossAmount": "250000",
+          "payer": "0x52a321854c93234c5281fe3f3846dd817784343f",
+          "issuedAt": 1790000000,
+          "validBefore": 1790000120,
+          "signature": "0x260301027e9f58fe0bf016641c694ac859bab47397dc49a6d8c16f2c41b76470733c6497cb9f4ba09b22e8de3ae23a25d320c7b9d131a5e363f0aa3b5bc555a41c"
+        }
+      },
+      "gateway": {
+        "receivedAt": 1790000001,
+        "verdict": "rejected",
+        "code": "PROVIDER_QUOTE_UNAVAILABLE"
+      }
+    },
+    {
+      "id": "fixed.extra-key.rejected",
+      "request": "fixed-payer-lowercase",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "Exactly eight keys: an unsigned extra key is refused.",
+      "provider": {
+        "now": 1790000000,
+        "signer": "providerAuthority",
+        "grossAmount": "250000",
+        "payer": "0x52a321854c93234c5281fe3f3846dd817784343f",
+        "issuedAt": 1790000000,
+        "validBefore": 1790000120
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "outcomeId": "create-note",
+          "listingManifestHash": "0x2efa3883986e0ef9f11acf05ad5c70f9da45b5293026344c0b38c87a7319e784",
+          "requestHash": "0x1bf2ac01775ea9f4293cb261f84a0f40d93f45a68e3e26bfdbcbd1ebdeb0e708",
+          "grossAmount": "250000",
+          "payer": "0x52a321854c93234c5281fe3f3846dd817784343f",
+          "issuedAt": 1790000000,
+          "validBefore": 1790000120,
+          "signature": "0x831c58f70bb34355d80262c47bdbb0d3ee8c6817936b9a24a4d77ae01ca63a4257f4b54b9f4826ef890364f12b1bd666017b16d627b409a3aee1f9e4ebea691d1b",
+          "currency": "USDC"
+        }
+      },
+      "gateway": {
+        "receivedAt": 1790000001,
+        "verdict": "rejected",
+        "code": "INTERNAL_ERROR",
+        "message": "provider quote response fields are invalid"
+      }
+    },
+    {
+      "id": "fixed.duplicate-key.rejected",
+      "request": "fixed-payer-lowercase",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "A body with a duplicate key is refused.",
+      "provider": {
+        "now": 1790000000,
+        "signer": "providerAuthority",
+        "grossAmount": "250000",
+        "payer": "0x52a321854c93234c5281fe3f3846dd817784343f",
+        "issuedAt": 1790000000,
+        "validBefore": 1790000120
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json"
+        },
+        "bodyText": "{\"grossAmount\":\"1\",\"outcomeId\":\"create-note\",\"listingManifestHash\":\"0x2efa3883986e0ef9f11acf05ad5c70f9da45b5293026344c0b38c87a7319e784\",\"requestHash\":\"0x1bf2ac01775ea9f4293cb261f84a0f40d93f45a68e3e26bfdbcbd1ebdeb0e708\",\"grossAmount\":\"250000\",\"payer\":\"0x52a321854c93234c5281fe3f3846dd817784343f\",\"issuedAt\":1790000000,\"validBefore\":1790000120,\"signature\":\"0x831c58f70bb34355d80262c47bdbb0d3ee8c6817936b9a24a4d77ae01ca63a4257f4b54b9f4826ef890364f12b1bd666017b16d627b409a3aee1f9e4ebea691d1b\"}"
+      },
+      "gateway": {
+        "receivedAt": 1790000001,
+        "verdict": "rejected",
+        "message": "Duplicate JSON key grossAmount"
+      }
+    },
+    {
+      "id": "fixed.compressed.rejected",
+      "request": "fixed-payer-lowercase",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "A compressed body is refused before it is read.",
+      "provider": {
+        "now": 1790000000,
+        "signer": "providerAuthority",
+        "grossAmount": "250000",
+        "payer": "0x52a321854c93234c5281fe3f3846dd817784343f",
+        "issuedAt": 1790000000,
+        "validBefore": 1790000120
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json",
+          "content-encoding": "gzip"
+        },
+        "body": {
+          "outcomeId": "create-note",
+          "listingManifestHash": "0x2efa3883986e0ef9f11acf05ad5c70f9da45b5293026344c0b38c87a7319e784",
+          "requestHash": "0x1bf2ac01775ea9f4293cb261f84a0f40d93f45a68e3e26bfdbcbd1ebdeb0e708",
+          "grossAmount": "250000",
+          "payer": "0x52a321854c93234c5281fe3f3846dd817784343f",
+          "issuedAt": 1790000000,
+          "validBefore": 1790000120,
+          "signature": "0x831c58f70bb34355d80262c47bdbb0d3ee8c6817936b9a24a4d77ae01ca63a4257f4b54b9f4826ef890364f12b1bd666017b16d627b409a3aee1f9e4ebea691d1b"
+        },
+        "bodyEncoding": "gzip"
+      },
+      "gateway": {
+        "receivedAt": 1790000001,
+        "verdict": "rejected",
+        "message": "BOUNDED_JSON_MEDIA_TYPE_INVALID"
+      }
+    },
+    {
+      "id": "fixed.text-plain.rejected",
+      "request": "fixed-payer-lowercase",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "Only application/json is read.",
+      "provider": {
+        "now": 1790000000,
+        "signer": "providerAuthority",
+        "grossAmount": "250000",
+        "payer": "0x52a321854c93234c5281fe3f3846dd817784343f",
+        "issuedAt": 1790000000,
+        "validBefore": 1790000120
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "text/plain"
+        },
+        "bodyText": "{\"outcomeId\":\"create-note\",\"listingManifestHash\":\"0x2efa3883986e0ef9f11acf05ad5c70f9da45b5293026344c0b38c87a7319e784\",\"requestHash\":\"0x1bf2ac01775ea9f4293cb261f84a0f40d93f45a68e3e26bfdbcbd1ebdeb0e708\",\"grossAmount\":\"250000\",\"payer\":\"0x52a321854c93234c5281fe3f3846dd817784343f\",\"issuedAt\":1790000000,\"validBefore\":1790000120,\"signature\":\"0x831c58f70bb34355d80262c47bdbb0d3ee8c6817936b9a24a4d77ae01ca63a4257f4b54b9f4826ef890364f12b1bd666017b16d627b409a3aee1f9e4ebea691d1b\"}"
+      },
+      "gateway": {
+        "receivedAt": 1790000001,
+        "verdict": "rejected",
+        "message": "BOUNDED_JSON_MEDIA_TYPE_INVALID"
+      }
+    },
+    {
+      "id": "dynamic.accepted",
+      "request": "dynamic-payer-lowercase",
+      "appliesTo": [
+        "daski-io/provider-full"
+      ],
+      "purpose": "A dynamic quote may last its policy's 180 seconds.",
+      "provider": {
+        "now": 1790000000,
+        "signer": "providerAuthority",
+        "grossAmount": "400000",
+        "payer": "0x52a321854c93234c5281fe3f3846dd817784343f",
+        "issuedAt": 1790000000,
+        "validBefore": 1790000180
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "outcomeId": "create-quoted-note",
+          "listingManifestHash": "0x12d55826595f179b93fb43234d3bfd570754ab0031df206cd8083fda1b17bab4",
+          "requestHash": "0x20404d8356d4eaf5179d7f4bf81dfc0cd772e530d8f82e158c1f38a1343fbf48",
+          "grossAmount": "400000",
+          "payer": "0x52a321854c93234c5281fe3f3846dd817784343f",
+          "issuedAt": 1790000000,
+          "validBefore": 1790000180,
+          "signature": "0x76471f9a5ab9e0ef9068ea4b0ff2658e85cefb2bd73ccb27d6fc49b378ddb6c60585b4f6e9f6141dec2f6b6b2f04971f9c713749560fd01c32a1a431de5d381b1c"
+        }
+      },
+      "gateway": {
+        "receivedAt": 1790000001,
+        "verdict": "accepted",
+        "grossAmount": "400000",
+        "providerQuoteHash": "0x0647e41e6787a3c6a26c1e7fdae3863a7e3a1ea2e47403646bfd6b549f0b74d8",
+        "issuedAt": 1790000000,
+        "validBefore": 1790000180
+      }
+    },
+    {
+      "id": "dynamic.lifetime-181.rejected",
+      "request": "dynamic-payer-lowercase",
+      "appliesTo": [
+        "daski-io/provider-full"
+      ],
+      "purpose": "A dynamic quote may not outlast its policy.",
+      "provider": {
+        "now": 1790000000,
+        "signer": "providerAuthority",
+        "grossAmount": "400000",
+        "payer": "0x52a321854c93234c5281fe3f3846dd817784343f",
+        "issuedAt": 1790000000,
+        "validBefore": 1790000181
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "outcomeId": "create-quoted-note",
+          "listingManifestHash": "0x12d55826595f179b93fb43234d3bfd570754ab0031df206cd8083fda1b17bab4",
+          "requestHash": "0x20404d8356d4eaf5179d7f4bf81dfc0cd772e530d8f82e158c1f38a1343fbf48",
+          "grossAmount": "400000",
+          "payer": "0x52a321854c93234c5281fe3f3846dd817784343f",
+          "issuedAt": 1790000000,
+          "validBefore": 1790000181,
+          "signature": "0x7043bd79f769d28bd6d06ffa87cb216394923145d41da3146e3f44f90dadfe486ce0c0966b5e3ede0d89667269ab61c364b6abf753c602476f2206f8607421c71c"
+        }
+      },
+      "gateway": {
+        "receivedAt": 1790000001,
+        "verdict": "rejected",
+        "code": "PROVIDER_QUOTE_UNAVAILABLE"
+      }
+    },
+    {
+      "id": "dynamic.minimum-releasable.accepted",
+      "request": "dynamic-payer-lowercase",
+      "appliesTo": [
+        "daski-io/provider-full"
+      ],
+      "purpose": "At 500 bps the smallest releasable gross amount is 20 atomic units.",
+      "provider": {
+        "now": 1790000000,
+        "signer": "providerAuthority",
+        "grossAmount": "20",
+        "payer": "0x52a321854c93234c5281fe3f3846dd817784343f",
+        "issuedAt": 1790000000,
+        "validBefore": 1790000120
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "outcomeId": "create-quoted-note",
+          "listingManifestHash": "0x12d55826595f179b93fb43234d3bfd570754ab0031df206cd8083fda1b17bab4",
+          "requestHash": "0x20404d8356d4eaf5179d7f4bf81dfc0cd772e530d8f82e158c1f38a1343fbf48",
+          "grossAmount": "20",
+          "payer": "0x52a321854c93234c5281fe3f3846dd817784343f",
+          "issuedAt": 1790000000,
+          "validBefore": 1790000120,
+          "signature": "0xb2b970cb29e2b00c661650803c996bf55ac73d112ad9acbbb83d8576dd7475d671ede726c9c34252a904ce307fdc3b5ac141a5360aeac61c926f868376267b791b"
+        }
+      },
+      "gateway": {
+        "receivedAt": 1790000001,
+        "verdict": "accepted",
+        "grossAmount": "20",
+        "providerQuoteHash": "0xec9bcd18cf99db43951db49bc9e303219737d4df3d4aebe3f70d78866fd1ec5d",
+        "issuedAt": 1790000000,
+        "validBefore": 1790000120
+      }
+    },
+    {
+      "id": "dynamic.below-minimum-releasable.rejected",
+      "request": "dynamic-payer-lowercase",
+      "appliesTo": [
+        "daski-io/provider-full"
+      ],
+      "purpose": "19 atomic units cannot be released at 500 bps.",
+      "provider": {
+        "now": 1790000000,
+        "signer": "providerAuthority",
+        "grossAmount": "19",
+        "payer": "0x52a321854c93234c5281fe3f3846dd817784343f",
+        "issuedAt": 1790000000,
+        "validBefore": 1790000120
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "outcomeId": "create-quoted-note",
+          "listingManifestHash": "0x12d55826595f179b93fb43234d3bfd570754ab0031df206cd8083fda1b17bab4",
+          "requestHash": "0x20404d8356d4eaf5179d7f4bf81dfc0cd772e530d8f82e158c1f38a1343fbf48",
+          "grossAmount": "19",
+          "payer": "0x52a321854c93234c5281fe3f3846dd817784343f",
+          "issuedAt": 1790000000,
+          "validBefore": 1790000120,
+          "signature": "0x2ef93ea026eeac337cb9de3763226f274bb22493cece6ee8597f71563704626a314cdaaf9bd8d356db0714601fcba6a36d613cc4bee6ad35a44144afa4f25fd31b"
+        }
+      },
+      "gateway": {
+        "receivedAt": 1790000001,
+        "verdict": "rejected",
+        "code": "PROVIDER_QUOTE_UNAVAILABLE"
+      }
+    },
+    {
+      "id": "refusal.field-errors",
+      "request": "fixed-payer-lowercase",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "A 4xx with structured fieldErrors declines the request before any payment.",
+      "response": {
+        "status": 422,
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "fieldErrors": [
+            {
+              "path": "/title",
+              "rule": "maxLength",
+              "message": "Title is too long."
+            }
+          ]
+        }
+      },
+      "gateway": {
+        "receivedAt": 1790000001,
+        "verdict": "rejected",
+        "code": "PROVIDER_QUOTE_REJECTED",
+        "fieldErrors": [
+          {
+            "path": "/title",
+            "rule": "maxLength",
+            "message": "Title is too long."
+          }
+        ]
+      }
+    },
+    {
+      "id": "refusal.unavailable",
+      "request": "fixed-payer-lowercase",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "Any 5xx is an unavailable quote, never a decline.",
+      "response": {
+        "status": 503,
+        "headers": {},
+        "bodyText": ""
+      },
+      "gateway": {
+        "receivedAt": 1790000001,
+        "verdict": "rejected",
+        "code": "PROVIDER_QUOTE_UNAVAILABLE"
+      }
+    }
+  ],
+  "notes": [
+    "The accepted fixed-payer-lowercase answer is the one the order in context.json was issued from: QuoteV1.providerQuoteHash 0xaac6fa3c4af39539095331e507dea96b875b26084ffc9fafb27e6bed59b44d5c is its hash."
+  ]
+}

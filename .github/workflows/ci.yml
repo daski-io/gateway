@@ -169,6 +169,22 @@ jobs:
             exit 1
           fi
 
+      # test/fixtures/provider-wire/ is the synthetic provider contract the
+      # gateway's builders send and its reference provider answers, generated
+      # by test/providerWireFixtures.test.ts. daski-io/provider and
+      # daski-io/provider-full vendor it verbatim and pin manifest.json's
+      # checksums, so the committed bytes must be exactly what regeneration
+      # writes.
+      - name: Provider wire fixtures are freshly generated and committed
+        run: |
+          UPDATE_PROVIDER_WIRE_FIXTURES=1 NODE_ENV=test npx vitest run test/providerWireFixtures.test.ts
+          git diff --exit-code -- test/fixtures/provider-wire
+          untracked="$(git ls-files --others --exclude-standard -- test/fixtures/provider-wire)"
+          if [ -n "$untracked" ]; then
+            echo "uncommitted provider wire fixtures: $untracked"
+            exit 1
+          fi
+
       - name: Boot actual Dockerfile image on representative existing state
         run: |
           docker build --build-arg SOURCE_SHA="$CANDIDATE_SHA" -t gateway-startup:$CANDIDATE_SHA .

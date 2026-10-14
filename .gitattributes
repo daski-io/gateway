@@ -1,0 +1,3 @@
+# Vendored byte for byte by the provider starters and pinned by sha256: never
+# rewrite line endings on checkout.
+test/fixtures/provider-wire/** -text

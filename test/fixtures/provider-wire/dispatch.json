@@ -1,0 +1,1931 @@
+{
+  "schemaVersion": 1,
+  "surface": "POST dispatchUrl with {dispatch: StandardRailDispatchV2, quote: QuoteV1, request, evidenceBundle}; answer {taskId, dispatchHash, signature, state, operations} plus terminalAttestation for completed, failed and canceled",
+  "signature": "signature: EIP-191 by the provider authority key over keccak256(canonicalJson({taskId, dispatchHash, state, operations})); terminalAttestation.signature: EIP-191 by the terminal attestation key over keccak256(canonicalJson(payload)), payload {taskId, dispatchHash, state, resultHash, completedAt}",
+  "verdicts": {
+    "accepted": "The gateway resolves the dispatch to the task and moves the order to orderStateAfter.",
+    "refused": "Definite refusal before admission: the gateway records it and later sends a fresh envelope with a new nonce.",
+    "ambiguous": "The gateway cannot trust the answer and polls dispatch status for the original dispatch hash."
+  },
+  "requests": {
+    "initial": {
+      "purpose": "The first dispatch of the paid order in context.json.",
+      "gateway": {
+        "now": 1790000060
+      },
+      "dispatchHash": "0x68df0a341c25d30f3e22b9585038fa7f0abd2a19f6de59ca88df83e9978a282f",
+      "http": {
+        "method": "POST",
+        "url": "https://provider.example/standard-rail/dispatch",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "dispatch": {
+            "artifactType": "StandardRailDispatchV2",
+            "schemaVersion": 2,
+            "environment": "testnet",
+            "chainId": 84532,
+            "audience": "https://provider.example",
+            "signerKeyId": "gateway-dispatch",
+            "issuedAt": 1790000060,
+            "validBefore": 1790000360,
+            "payload": {
+              "environment": "testnet",
+              "chainId": 84532,
+              "gatewayAudience": "https://gateway.example",
+              "providerAudience": "https://provider.example",
+              "providerControlProfileHash": "0x3f4c52f6d596c9911e0bf03aab74941011a1792d9c70086fe0ef06dc76f5734c",
+              "orderId": "ord_00000000-0000-4000-8000-000000000001",
+              "orderKey": "0x6ca8ece73f2c70035c9d42d864493af5223ba77205724148ce886556a5de4651",
+              "serviceId": "0x7d456d91e036748dfdb7b570d333491cd2000bc86db43fbf95047d166cb7a864",
+              "reputationEligible": true,
+              "reputationContract": "0x9b5AA6961eC02F0bB6185047FF72af37c68e179f",
+              "outcomeSchemaUid": "0x0aba7e41cb05ad3911e8e0a4fcdd5aa5e6033e65bc8827f69b2da8a8cdd74f3a",
+              "dispatchNonce": "0xc846b3e56a3549ded8ebaf1e631f68e7a6461a5874b069b83b498d206acbb4df",
+              "payer": "0x52a321854C93234C5281Fe3f3846Dd817784343F",
+              "listingManifestHash": "0x2efa3883986e0ef9f11acf05ad5c70f9da45b5293026344c0b38c87a7319e784",
+              "providerOfferHash": "0xf097bfa76765936f5bbcd78cfd23cea437dc6ed4939a66603a45a9e1e2e66bd8",
+              "quoteHash": "0xeea01f1009984e1a47d440e6177fbfe5811b1c9090f13ab721aeadb0db5b56ad",
+              "bindingProfile": "recipe-bound-v2",
+              "canonicalRequestHash": "0x6dafea8cb3553869537f4f4643fb31f6a478838f81967374cbf496e0dfd7cf51",
+              "orderNonce": "0x698715df0f12815c2899be7896c96638fd58b0d8c5c7ddcf9b53d14a51ada70d",
+              "buyerIdentityProofHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+              "activeRailProfileHash": "0x533df1c2dfc04f1070c2ac142f340a84be0afcce45c66945b6d56d4b8ed16b0a",
+              "facilitatorConfirmationHash": "0x2ddd22f6e1f3d2ed00b20bef98a41526021ecee8cff64c696a0e9364b3cd6f59",
+              "settlementTxHash": "0x570dd5fa19566e259fc94b547cda3dd2f7e5c4aa7198d8dd35a1ec2582249549",
+              "depositEvidenceHash": "0xdeb50cfe6d7d949b1d143c43a3c82e1ece1609eca6e71a8fad635e4a0e8c6d51",
+              "depositBlockNumber": "35000000",
+              "depositBlockHash": "0x0636b0db68d0e1c0baa37e797d32a1dd05f60df2bac4aa835f78627143ee6d62",
+              "depositTransactionIndex": 7,
+              "depositLogIndex": 12,
+              "releaseTxHash": "0x0bc3938a491551660ffc731adb1749c606ccdc8c159aa4805d23325f03f41459",
+              "releaseEvidenceHash": "0x57f58c3734fdfd4207d336cf8713eeb358070b25410bae51afc07b81ffe63123",
+              "releaseBlockNumber": "35000002",
+              "releaseBlockHash": "0xca4c191ec965ecf81ae95af29486b9cc95bc20bb17b2acefe39c4198f44bea3f",
+              "releaseTransactionIndex": 3,
+              "releaseLogIndex": 5,
+              "releaseSequence": "1",
+              "grossAmount": "250000",
+              "providerNetAmount": "237500",
+              "daskiCommissionAmount": "12500",
+              "canonicalProviderRequestHash": "0x1bf2ac01775ea9f4293cb261f84a0f40d93f45a68e3e26bfdbcbd1ebdeb0e708",
+              "dispatchDeadlineSeconds": 300,
+              "issuedAt": 1790000060,
+              "validBefore": 1790000360
+            },
+            "signature": "0x029c66b21003c1908884ba884ec8d4d97ad7e25f512ff29266a49ce4ce1cc80c23accdc2ff9393ac08dd57b35b8e14156761d573876a420cd06626c728b3893c1b"
+          },
+          "quote": {
+            "artifactType": "QuoteV1",
+            "schemaVersion": 1,
+            "environment": "testnet",
+            "chainId": 84532,
+            "audience": "https://gateway.example",
+            "signerKeyId": "gateway-quote",
+            "issuedAt": 1790000000,
+            "validBefore": 1790000120,
+            "payload": {
+              "listingManifestHash": "0x2efa3883986e0ef9f11acf05ad5c70f9da45b5293026344c0b38c87a7319e784",
+              "providerOfferHash": "0xf097bfa76765936f5bbcd78cfd23cea437dc6ed4939a66603a45a9e1e2e66bd8",
+              "providerQuoteHash": "0xaac6fa3c4af39539095331e507dea96b875b26084ffc9fafb27e6bed59b44d5c",
+              "canonicalRequestHash": "0x6dafea8cb3553869537f4f4643fb31f6a478838f81967374cbf496e0dfd7cf51",
+              "grossAmount": "250000",
+              "token": "0xc648DB599F8eca8F96854B7a8D16F8f3552C0428",
+              "splitter": "0xC88C22F5501023b81A291959c0C3c7bA8Be57a37",
+              "orderNonce": "0x698715df0f12815c2899be7896c96638fd58b0d8c5c7ddcf9b53d14a51ada70d",
+              "issuedAt": 1790000000,
+              "validBefore": 1790000120
+            },
+            "signature": "0xc29897ee1151828c70c82db14b8632332a2abb2e24cb58c3aa49f1e49bedd37d31b607cb1bbc3a178d85c62a128403469b5d1838473639cb8b7631f81324abca1c"
+          },
+          "request": {
+            "title": "Synthetic fixture note",
+            "body": "Written by the gateway's provider-wire fixtures."
+          },
+          "evidenceBundle": {
+            "deposit": {
+              "transactionHash": "0x570dd5fa19566e259fc94b547cda3dd2f7e5c4aa7198d8dd35a1ec2582249549",
+              "blockNumber": "35000000",
+              "blockHash": "0x0636b0db68d0e1c0baa37e797d32a1dd05f60df2bac4aa835f78627143ee6d62",
+              "transactionIndex": 7,
+              "logIndex": 12,
+              "evidenceHash": "0xdeb50cfe6d7d949b1d143c43a3c82e1ece1609eca6e71a8fad635e4a0e8c6d51",
+              "canonicalEvidence": {
+                "synthetic": "provider-wire fixture deposit; no chain holds it",
+                "orderId": "ord_00000000-0000-4000-8000-000000000001",
+                "transactionHash": "0x570dd5fa19566e259fc94b547cda3dd2f7e5c4aa7198d8dd35a1ec2582249549",
+                "blockNumber": "35000000",
+                "logIndex": 12
+              },
+              "sources": [
+                "synthetic-rpc-a",
+                "synthetic-rpc-b"
+              ]
+            },
+            "release": {
+              "transactionHash": "0x0bc3938a491551660ffc731adb1749c606ccdc8c159aa4805d23325f03f41459",
+              "blockNumber": "35000002",
+              "blockHash": "0xca4c191ec965ecf81ae95af29486b9cc95bc20bb17b2acefe39c4198f44bea3f",
+              "transactionIndex": 3,
+              "logIndex": 5,
+              "releaseSequence": "1",
+              "evidenceHash": "0x57f58c3734fdfd4207d336cf8713eeb358070b25410bae51afc07b81ffe63123",
+              "canonicalEvidence": {
+                "synthetic": "provider-wire fixture release; no chain holds it",
+                "orderId": "ord_00000000-0000-4000-8000-000000000001",
+                "transactionHash": "0x0bc3938a491551660ffc731adb1749c606ccdc8c159aa4805d23325f03f41459",
+                "blockNumber": "35000002",
+                "releaseSequence": "1",
+                "providerNetAmount": "237500",
+                "daskiCommissionAmount": "12500"
+              },
+              "sources": [
+                "synthetic-rpc-a",
+                "synthetic-rpc-b"
+              ]
+            }
+          }
+        },
+        "bodyText": "{\"dispatch\":{\"artifactType\":\"StandardRailDispatchV2\",\"schemaVersion\":2,\"environment\":\"testnet\",\"chainId\":84532,\"audience\":\"https://provider.example\",\"signerKeyId\":\"gateway-dispatch\",\"issuedAt\":1790000060,\"validBefore\":1790000360,\"payload\":{\"environment\":\"testnet\",\"chainId\":84532,\"gatewayAudience\":\"https://gateway.example\",\"providerAudience\":\"https://provider.example\",\"providerControlProfileHash\":\"0x3f4c52f6d596c9911e0bf03aab74941011a1792d9c70086fe0ef06dc76f5734c\",\"orderId\":\"ord_00000000-0000-4000-8000-000000000001\",\"orderKey\":\"0x6ca8ece73f2c70035c9d42d864493af5223ba77205724148ce886556a5de4651\",\"serviceId\":\"0x7d456d91e036748dfdb7b570d333491cd2000bc86db43fbf95047d166cb7a864\",\"reputationEligible\":true,\"reputationContract\":\"0x9b5AA6961eC02F0bB6185047FF72af37c68e179f\",\"outcomeSchemaUid\":\"0x0aba7e41cb05ad3911e8e0a4fcdd5aa5e6033e65bc8827f69b2da8a8cdd74f3a\",\"dispatchNonce\":\"0xc846b3e56a3549ded8ebaf1e631f68e7a6461a5874b069b83b498d206acbb4df\",\"payer\":\"0x52a321854C93234C5281Fe3f3846Dd817784343F\",\"listingManifestHash\":\"0x2efa3883986e0ef9f11acf05ad5c70f9da45b5293026344c0b38c87a7319e784\",\"providerOfferHash\":\"0xf097bfa76765936f5bbcd78cfd23cea437dc6ed4939a66603a45a9e1e2e66bd8\",\"quoteHash\":\"0xeea01f1009984e1a47d440e6177fbfe5811b1c9090f13ab721aeadb0db5b56ad\",\"bindingProfile\":\"recipe-bound-v2\",\"canonicalRequestHash\":\"0x6dafea8cb3553869537f4f4643fb31f6a478838f81967374cbf496e0dfd7cf51\",\"orderNonce\":\"0x698715df0f12815c2899be7896c96638fd58b0d8c5c7ddcf9b53d14a51ada70d\",\"buyerIdentityProofHash\":\"0x0000000000000000000000000000000000000000000000000000000000000000\",\"activeRailProfileHash\":\"0x533df1c2dfc04f1070c2ac142f340a84be0afcce45c66945b6d56d4b8ed16b0a\",\"facilitatorConfirmationHash\":\"0x2ddd22f6e1f3d2ed00b20bef98a41526021ecee8cff64c696a0e9364b3cd6f59\",\"settlementTxHash\":\"0x570dd5fa19566e259fc94b547cda3dd2f7e5c4aa7198d8dd35a1ec2582249549\",\"depositEvidenceHash\":\"0xdeb50cfe6d7d949b1d143c43a3c82e1ece1609eca6e71a8fad635e4a0e8c6d51\",\"depositBlockNumber\":\"35000000\",\"depositBlockHash\":\"0x0636b0db68d0e1c0baa37e797d32a1dd05f60df2bac4aa835f78627143ee6d62\",\"depositTransactionIndex\":7,\"depositLogIndex\":12,\"releaseTxHash\":\"0x0bc3938a491551660ffc731adb1749c606ccdc8c159aa4805d23325f03f41459\",\"releaseEvidenceHash\":\"0x57f58c3734fdfd4207d336cf8713eeb358070b25410bae51afc07b81ffe63123\",\"releaseBlockNumber\":\"35000002\",\"releaseBlockHash\":\"0xca4c191ec965ecf81ae95af29486b9cc95bc20bb17b2acefe39c4198f44bea3f\",\"releaseTransactionIndex\":3,\"releaseLogIndex\":5,\"releaseSequence\":\"1\",\"grossAmount\":\"250000\",\"providerNetAmount\":\"237500\",\"daskiCommissionAmount\":\"12500\",\"canonicalProviderRequestHash\":\"0x1bf2ac01775ea9f4293cb261f84a0f40d93f45a68e3e26bfdbcbd1ebdeb0e708\",\"dispatchDeadlineSeconds\":300,\"issuedAt\":1790000060,\"validBefore\":1790000360},\"signature\":\"0x029c66b21003c1908884ba884ec8d4d97ad7e25f512ff29266a49ce4ce1cc80c23accdc2ff9393ac08dd57b35b8e14156761d573876a420cd06626c728b3893c1b\"},\"quote\":{\"artifactType\":\"QuoteV1\",\"schemaVersion\":1,\"environment\":\"testnet\",\"chainId\":84532,\"audience\":\"https://gateway.example\",\"signerKeyId\":\"gateway-quote\",\"issuedAt\":1790000000,\"validBefore\":1790000120,\"payload\":{\"listingManifestHash\":\"0x2efa3883986e0ef9f11acf05ad5c70f9da45b5293026344c0b38c87a7319e784\",\"providerOfferHash\":\"0xf097bfa76765936f5bbcd78cfd23cea437dc6ed4939a66603a45a9e1e2e66bd8\",\"providerQuoteHash\":\"0xaac6fa3c4af39539095331e507dea96b875b26084ffc9fafb27e6bed59b44d5c\",\"canonicalRequestHash\":\"0x6dafea8cb3553869537f4f4643fb31f6a478838f81967374cbf496e0dfd7cf51\",\"grossAmount\":\"250000\",\"token\":\"0xc648DB599F8eca8F96854B7a8D16F8f3552C0428\",\"splitter\":\"0xC88C22F5501023b81A291959c0C3c7bA8Be57a37\",\"orderNonce\":\"0x698715df0f12815c2899be7896c96638fd58b0d8c5c7ddcf9b53d14a51ada70d\",\"issuedAt\":1790000000,\"validBefore\":1790000120},\"signature\":\"0xc29897ee1151828c70c82db14b8632332a2abb2e24cb58c3aa49f1e49bedd37d31b607cb1bbc3a178d85c62a128403469b5d1838473639cb8b7631f81324abca1c\"},\"request\":{\"title\":\"Synthetic fixture note\",\"body\":\"Written by the gateway's provider-wire fixtures.\"},\"evidenceBundle\":{\"deposit\":{\"transactionHash\":\"0x570dd5fa19566e259fc94b547cda3dd2f7e5c4aa7198d8dd35a1ec2582249549\",\"blockNumber\":\"35000000\",\"blockHash\":\"0x0636b0db68d0e1c0baa37e797d32a1dd05f60df2bac4aa835f78627143ee6d62\",\"transactionIndex\":7,\"logIndex\":12,\"evidenceHash\":\"0xdeb50cfe6d7d949b1d143c43a3c82e1ece1609eca6e71a8fad635e4a0e8c6d51\",\"canonicalEvidence\":{\"synthetic\":\"provider-wire fixture deposit; no chain holds it\",\"orderId\":\"ord_00000000-0000-4000-8000-000000000001\",\"transactionHash\":\"0x570dd5fa19566e259fc94b547cda3dd2f7e5c4aa7198d8dd35a1ec2582249549\",\"blockNumber\":\"35000000\",\"logIndex\":12},\"sources\":[\"synthetic-rpc-a\",\"synthetic-rpc-b\"]},\"release\":{\"transactionHash\":\"0x0bc3938a491551660ffc731adb1749c606ccdc8c159aa4805d23325f03f41459\",\"blockNumber\":\"35000002\",\"blockHash\":\"0xca4c191ec965ecf81ae95af29486b9cc95bc20bb17b2acefe39c4198f44bea3f\",\"transactionIndex\":3,\"logIndex\":5,\"releaseSequence\":\"1\",\"evidenceHash\":\"0x57f58c3734fdfd4207d336cf8713eeb358070b25410bae51afc07b81ffe63123\",\"canonicalEvidence\":{\"synthetic\":\"provider-wire fixture release; no chain holds it\",\"orderId\":\"ord_00000000-0000-4000-8000-000000000001\",\"transactionHash\":\"0x0bc3938a491551660ffc731adb1749c606ccdc8c159aa4805d23325f03f41459\",\"blockNumber\":\"35000002\",\"releaseSequence\":\"1\",\"providerNetAmount\":\"237500\",\"daskiCommissionAmount\":\"12500\"},\"sources\":[\"synthetic-rpc-a\",\"synthetic-rpc-b\"]}}}"
+      }
+    },
+    "retry-after-refusal": {
+      "purpose": "After a definite refusal the gateway sends a fresh envelope for the same order: new nonce, issuedAt and dispatch hash, the same QuoteV1.",
+      "gateway": {
+        "now": 1790000070
+      },
+      "dispatchHash": "0xa241a01ce64c1fdb1503502d670db831fefc5e8636d0af9c161d3b425ca83600",
+      "http": {
+        "method": "POST",
+        "url": "https://provider.example/standard-rail/dispatch",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "dispatch": {
+            "artifactType": "StandardRailDispatchV2",
+            "schemaVersion": 2,
+            "environment": "testnet",
+            "chainId": 84532,
+            "audience": "https://provider.example",
+            "signerKeyId": "gateway-dispatch",
+            "issuedAt": 1790000070,
+            "validBefore": 1790000370,
+            "payload": {
+              "environment": "testnet",
+              "chainId": 84532,
+              "gatewayAudience": "https://gateway.example",
+              "providerAudience": "https://provider.example",
+              "providerControlProfileHash": "0x3f4c52f6d596c9911e0bf03aab74941011a1792d9c70086fe0ef06dc76f5734c",
+              "orderId": "ord_00000000-0000-4000-8000-000000000001",
+              "orderKey": "0x6ca8ece73f2c70035c9d42d864493af5223ba77205724148ce886556a5de4651",
+              "serviceId": "0x7d456d91e036748dfdb7b570d333491cd2000bc86db43fbf95047d166cb7a864",
+              "reputationEligible": true,
+              "reputationContract": "0x9b5AA6961eC02F0bB6185047FF72af37c68e179f",
+              "outcomeSchemaUid": "0x0aba7e41cb05ad3911e8e0a4fcdd5aa5e6033e65bc8827f69b2da8a8cdd74f3a",
+              "dispatchNonce": "0x6b5681e16eb5a6ef5ec07e331cf9a324454b7cecfc22a49d91d97585eb43e614",
+              "payer": "0x52a321854C93234C5281Fe3f3846Dd817784343F",
+              "listingManifestHash": "0x2efa3883986e0ef9f11acf05ad5c70f9da45b5293026344c0b38c87a7319e784",
+              "providerOfferHash": "0xf097bfa76765936f5bbcd78cfd23cea437dc6ed4939a66603a45a9e1e2e66bd8",
+              "quoteHash": "0xeea01f1009984e1a47d440e6177fbfe5811b1c9090f13ab721aeadb0db5b56ad",
+              "bindingProfile": "recipe-bound-v2",
+              "canonicalRequestHash": "0x6dafea8cb3553869537f4f4643fb31f6a478838f81967374cbf496e0dfd7cf51",
+              "orderNonce": "0x698715df0f12815c2899be7896c96638fd58b0d8c5c7ddcf9b53d14a51ada70d",
+              "buyerIdentityProofHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+              "activeRailProfileHash": "0x533df1c2dfc04f1070c2ac142f340a84be0afcce45c66945b6d56d4b8ed16b0a",
+              "facilitatorConfirmationHash": "0x2ddd22f6e1f3d2ed00b20bef98a41526021ecee8cff64c696a0e9364b3cd6f59",
+              "settlementTxHash": "0x570dd5fa19566e259fc94b547cda3dd2f7e5c4aa7198d8dd35a1ec2582249549",
+              "depositEvidenceHash": "0xdeb50cfe6d7d949b1d143c43a3c82e1ece1609eca6e71a8fad635e4a0e8c6d51",
+              "depositBlockNumber": "35000000",
+              "depositBlockHash": "0x0636b0db68d0e1c0baa37e797d32a1dd05f60df2bac4aa835f78627143ee6d62",
+              "depositTransactionIndex": 7,
+              "depositLogIndex": 12,
+              "releaseTxHash": "0x0bc3938a491551660ffc731adb1749c606ccdc8c159aa4805d23325f03f41459",
+              "releaseEvidenceHash": "0x57f58c3734fdfd4207d336cf8713eeb358070b25410bae51afc07b81ffe63123",
+              "releaseBlockNumber": "35000002",
+              "releaseBlockHash": "0xca4c191ec965ecf81ae95af29486b9cc95bc20bb17b2acefe39c4198f44bea3f",
+              "releaseTransactionIndex": 3,
+              "releaseLogIndex": 5,
+              "releaseSequence": "1",
+              "grossAmount": "250000",
+              "providerNetAmount": "237500",
+              "daskiCommissionAmount": "12500",
+              "canonicalProviderRequestHash": "0x1bf2ac01775ea9f4293cb261f84a0f40d93f45a68e3e26bfdbcbd1ebdeb0e708",
+              "dispatchDeadlineSeconds": 300,
+              "issuedAt": 1790000070,
+              "validBefore": 1790000370
+            },
+            "signature": "0x2ae5664a5ea08367c1ed06a9481d3f0c9bb733ffd23190d7e301fe041a3a27aa37d7c60fa14fed362e11100e715072f4881b8ade2b67c7b439e3281f977a3b911b"
+          },
+          "quote": {
+            "artifactType": "QuoteV1",
+            "schemaVersion": 1,
+            "environment": "testnet",
+            "chainId": 84532,
+            "audience": "https://gateway.example",
+            "signerKeyId": "gateway-quote",
+            "issuedAt": 1790000000,
+            "validBefore": 1790000120,
+            "payload": {
+              "listingManifestHash": "0x2efa3883986e0ef9f11acf05ad5c70f9da45b5293026344c0b38c87a7319e784",
+              "providerOfferHash": "0xf097bfa76765936f5bbcd78cfd23cea437dc6ed4939a66603a45a9e1e2e66bd8",
+              "providerQuoteHash": "0xaac6fa3c4af39539095331e507dea96b875b26084ffc9fafb27e6bed59b44d5c",
+              "canonicalRequestHash": "0x6dafea8cb3553869537f4f4643fb31f6a478838f81967374cbf496e0dfd7cf51",
+              "grossAmount": "250000",
+              "token": "0xc648DB599F8eca8F96854B7a8D16F8f3552C0428",
+              "splitter": "0xC88C22F5501023b81A291959c0C3c7bA8Be57a37",
+              "orderNonce": "0x698715df0f12815c2899be7896c96638fd58b0d8c5c7ddcf9b53d14a51ada70d",
+              "issuedAt": 1790000000,
+              "validBefore": 1790000120
+            },
+            "signature": "0xc29897ee1151828c70c82db14b8632332a2abb2e24cb58c3aa49f1e49bedd37d31b607cb1bbc3a178d85c62a128403469b5d1838473639cb8b7631f81324abca1c"
+          },
+          "request": {
+            "title": "Synthetic fixture note",
+            "body": "Written by the gateway's provider-wire fixtures."
+          },
+          "evidenceBundle": {
+            "deposit": {
+              "transactionHash": "0x570dd5fa19566e259fc94b547cda3dd2f7e5c4aa7198d8dd35a1ec2582249549",
+              "blockNumber": "35000000",
+              "blockHash": "0x0636b0db68d0e1c0baa37e797d32a1dd05f60df2bac4aa835f78627143ee6d62",
+              "transactionIndex": 7,
+              "logIndex": 12,
+              "evidenceHash": "0xdeb50cfe6d7d949b1d143c43a3c82e1ece1609eca6e71a8fad635e4a0e8c6d51",
+              "canonicalEvidence": {
+                "synthetic": "provider-wire fixture deposit; no chain holds it",
+                "orderId": "ord_00000000-0000-4000-8000-000000000001",
+                "transactionHash": "0x570dd5fa19566e259fc94b547cda3dd2f7e5c4aa7198d8dd35a1ec2582249549",
+                "blockNumber": "35000000",
+                "logIndex": 12
+              },
+              "sources": [
+                "synthetic-rpc-a",
+                "synthetic-rpc-b"
+              ]
+            },
+            "release": {
+              "transactionHash": "0x0bc3938a491551660ffc731adb1749c606ccdc8c159aa4805d23325f03f41459",
+              "blockNumber": "35000002",
+              "blockHash": "0xca4c191ec965ecf81ae95af29486b9cc95bc20bb17b2acefe39c4198f44bea3f",
+              "transactionIndex": 3,
+              "logIndex": 5,
+              "releaseSequence": "1",
+              "evidenceHash": "0x57f58c3734fdfd4207d336cf8713eeb358070b25410bae51afc07b81ffe63123",
+              "canonicalEvidence": {
+                "synthetic": "provider-wire fixture release; no chain holds it",
+                "orderId": "ord_00000000-0000-4000-8000-000000000001",
+                "transactionHash": "0x0bc3938a491551660ffc731adb1749c606ccdc8c159aa4805d23325f03f41459",
+                "blockNumber": "35000002",
+                "releaseSequence": "1",
+                "providerNetAmount": "237500",
+                "daskiCommissionAmount": "12500"
+              },
+              "sources": [
+                "synthetic-rpc-a",
+                "synthetic-rpc-b"
+              ]
+            }
+          }
+        },
+        "bodyText": "{\"dispatch\":{\"artifactType\":\"StandardRailDispatchV2\",\"schemaVersion\":2,\"environment\":\"testnet\",\"chainId\":84532,\"audience\":\"https://provider.example\",\"signerKeyId\":\"gateway-dispatch\",\"issuedAt\":1790000070,\"validBefore\":1790000370,\"payload\":{\"environment\":\"testnet\",\"chainId\":84532,\"gatewayAudience\":\"https://gateway.example\",\"providerAudience\":\"https://provider.example\",\"providerControlProfileHash\":\"0x3f4c52f6d596c9911e0bf03aab74941011a1792d9c70086fe0ef06dc76f5734c\",\"orderId\":\"ord_00000000-0000-4000-8000-000000000001\",\"orderKey\":\"0x6ca8ece73f2c70035c9d42d864493af5223ba77205724148ce886556a5de4651\",\"serviceId\":\"0x7d456d91e036748dfdb7b570d333491cd2000bc86db43fbf95047d166cb7a864\",\"reputationEligible\":true,\"reputationContract\":\"0x9b5AA6961eC02F0bB6185047FF72af37c68e179f\",\"outcomeSchemaUid\":\"0x0aba7e41cb05ad3911e8e0a4fcdd5aa5e6033e65bc8827f69b2da8a8cdd74f3a\",\"dispatchNonce\":\"0x6b5681e16eb5a6ef5ec07e331cf9a324454b7cecfc22a49d91d97585eb43e614\",\"payer\":\"0x52a321854C93234C5281Fe3f3846Dd817784343F\",\"listingManifestHash\":\"0x2efa3883986e0ef9f11acf05ad5c70f9da45b5293026344c0b38c87a7319e784\",\"providerOfferHash\":\"0xf097bfa76765936f5bbcd78cfd23cea437dc6ed4939a66603a45a9e1e2e66bd8\",\"quoteHash\":\"0xeea01f1009984e1a47d440e6177fbfe5811b1c9090f13ab721aeadb0db5b56ad\",\"bindingProfile\":\"recipe-bound-v2\",\"canonicalRequestHash\":\"0x6dafea8cb3553869537f4f4643fb31f6a478838f81967374cbf496e0dfd7cf51\",\"orderNonce\":\"0x698715df0f12815c2899be7896c96638fd58b0d8c5c7ddcf9b53d14a51ada70d\",\"buyerIdentityProofHash\":\"0x0000000000000000000000000000000000000000000000000000000000000000\",\"activeRailProfileHash\":\"0x533df1c2dfc04f1070c2ac142f340a84be0afcce45c66945b6d56d4b8ed16b0a\",\"facilitatorConfirmationHash\":\"0x2ddd22f6e1f3d2ed00b20bef98a41526021ecee8cff64c696a0e9364b3cd6f59\",\"settlementTxHash\":\"0x570dd5fa19566e259fc94b547cda3dd2f7e5c4aa7198d8dd35a1ec2582249549\",\"depositEvidenceHash\":\"0xdeb50cfe6d7d949b1d143c43a3c82e1ece1609eca6e71a8fad635e4a0e8c6d51\",\"depositBlockNumber\":\"35000000\",\"depositBlockHash\":\"0x0636b0db68d0e1c0baa37e797d32a1dd05f60df2bac4aa835f78627143ee6d62\",\"depositTransactionIndex\":7,\"depositLogIndex\":12,\"releaseTxHash\":\"0x0bc3938a491551660ffc731adb1749c606ccdc8c159aa4805d23325f03f41459\",\"releaseEvidenceHash\":\"0x57f58c3734fdfd4207d336cf8713eeb358070b25410bae51afc07b81ffe63123\",\"releaseBlockNumber\":\"35000002\",\"releaseBlockHash\":\"0xca4c191ec965ecf81ae95af29486b9cc95bc20bb17b2acefe39c4198f44bea3f\",\"releaseTransactionIndex\":3,\"releaseLogIndex\":5,\"releaseSequence\":\"1\",\"grossAmount\":\"250000\",\"providerNetAmount\":\"237500\",\"daskiCommissionAmount\":\"12500\",\"canonicalProviderRequestHash\":\"0x1bf2ac01775ea9f4293cb261f84a0f40d93f45a68e3e26bfdbcbd1ebdeb0e708\",\"dispatchDeadlineSeconds\":300,\"issuedAt\":1790000070,\"validBefore\":1790000370},\"signature\":\"0x2ae5664a5ea08367c1ed06a9481d3f0c9bb733ffd23190d7e301fe041a3a27aa37d7c60fa14fed362e11100e715072f4881b8ade2b67c7b439e3281f977a3b911b\"},\"quote\":{\"artifactType\":\"QuoteV1\",\"schemaVersion\":1,\"environment\":\"testnet\",\"chainId\":84532,\"audience\":\"https://gateway.example\",\"signerKeyId\":\"gateway-quote\",\"issuedAt\":1790000000,\"validBefore\":1790000120,\"payload\":{\"listingManifestHash\":\"0x2efa3883986e0ef9f11acf05ad5c70f9da45b5293026344c0b38c87a7319e784\",\"providerOfferHash\":\"0xf097bfa76765936f5bbcd78cfd23cea437dc6ed4939a66603a45a9e1e2e66bd8\",\"providerQuoteHash\":\"0xaac6fa3c4af39539095331e507dea96b875b26084ffc9fafb27e6bed59b44d5c\",\"canonicalRequestHash\":\"0x6dafea8cb3553869537f4f4643fb31f6a478838f81967374cbf496e0dfd7cf51\",\"grossAmount\":\"250000\",\"token\":\"0xc648DB599F8eca8F96854B7a8D16F8f3552C0428\",\"splitter\":\"0xC88C22F5501023b81A291959c0C3c7bA8Be57a37\",\"orderNonce\":\"0x698715df0f12815c2899be7896c96638fd58b0d8c5c7ddcf9b53d14a51ada70d\",\"issuedAt\":1790000000,\"validBefore\":1790000120},\"signature\":\"0xc29897ee1151828c70c82db14b8632332a2abb2e24cb58c3aa49f1e49bedd37d31b607cb1bbc3a178d85c62a128403469b5d1838473639cb8b7631f81324abca1c\"},\"request\":{\"title\":\"Synthetic fixture note\",\"body\":\"Written by the gateway's provider-wire fixtures.\"},\"evidenceBundle\":{\"deposit\":{\"transactionHash\":\"0x570dd5fa19566e259fc94b547cda3dd2f7e5c4aa7198d8dd35a1ec2582249549\",\"blockNumber\":\"35000000\",\"blockHash\":\"0x0636b0db68d0e1c0baa37e797d32a1dd05f60df2bac4aa835f78627143ee6d62\",\"transactionIndex\":7,\"logIndex\":12,\"evidenceHash\":\"0xdeb50cfe6d7d949b1d143c43a3c82e1ece1609eca6e71a8fad635e4a0e8c6d51\",\"canonicalEvidence\":{\"synthetic\":\"provider-wire fixture deposit; no chain holds it\",\"orderId\":\"ord_00000000-0000-4000-8000-000000000001\",\"transactionHash\":\"0x570dd5fa19566e259fc94b547cda3dd2f7e5c4aa7198d8dd35a1ec2582249549\",\"blockNumber\":\"35000000\",\"logIndex\":12},\"sources\":[\"synthetic-rpc-a\",\"synthetic-rpc-b\"]},\"release\":{\"transactionHash\":\"0x0bc3938a491551660ffc731adb1749c606ccdc8c159aa4805d23325f03f41459\",\"blockNumber\":\"35000002\",\"blockHash\":\"0xca4c191ec965ecf81ae95af29486b9cc95bc20bb17b2acefe39c4198f44bea3f\",\"transactionIndex\":3,\"logIndex\":5,\"releaseSequence\":\"1\",\"evidenceHash\":\"0x57f58c3734fdfd4207d336cf8713eeb358070b25410bae51afc07b81ffe63123\",\"canonicalEvidence\":{\"synthetic\":\"provider-wire fixture release; no chain holds it\",\"orderId\":\"ord_00000000-0000-4000-8000-000000000001\",\"transactionHash\":\"0x0bc3938a491551660ffc731adb1749c606ccdc8c159aa4805d23325f03f41459\",\"blockNumber\":\"35000002\",\"releaseSequence\":\"1\",\"providerNetAmount\":\"237500\",\"daskiCommissionAmount\":\"12500\"},\"sources\":[\"synthetic-rpc-a\",\"synthetic-rpc-b\"]}}}"
+      }
+    },
+    "delayed-first-dispatch": {
+      "purpose": "A timely-paid order dispatched for the first time 26 hours after its quote expired, inside the snapshot's recovery window; the QuoteV1 is unchanged.",
+      "gateway": {
+        "now": 1790093600
+      },
+      "dispatchHash": "0xa3bd591b88189f6e7ac63a7e3e7b28c7de9716b05b124b92c153d464badf0e6a",
+      "http": {
+        "method": "POST",
+        "url": "https://provider.example/standard-rail/dispatch",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "dispatch": {
+            "artifactType": "StandardRailDispatchV2",
+            "schemaVersion": 2,
+            "environment": "testnet",
+            "chainId": 84532,
+            "audience": "https://provider.example",
+            "signerKeyId": "gateway-dispatch",
+            "issuedAt": 1790093600,
+            "validBefore": 1790093900,
+            "payload": {
+              "environment": "testnet",
+              "chainId": 84532,
+              "gatewayAudience": "https://gateway.example",
+              "providerAudience": "https://provider.example",
+              "providerControlProfileHash": "0x3f4c52f6d596c9911e0bf03aab74941011a1792d9c70086fe0ef06dc76f5734c",
+              "orderId": "ord_00000000-0000-4000-8000-000000000001",
+              "orderKey": "0x6ca8ece73f2c70035c9d42d864493af5223ba77205724148ce886556a5de4651",
+              "serviceId": "0x7d456d91e036748dfdb7b570d333491cd2000bc86db43fbf95047d166cb7a864",
+              "reputationEligible": true,
+              "reputationContract": "0x9b5AA6961eC02F0bB6185047FF72af37c68e179f",
+              "outcomeSchemaUid": "0x0aba7e41cb05ad3911e8e0a4fcdd5aa5e6033e65bc8827f69b2da8a8cdd74f3a",
+              "dispatchNonce": "0x09b20c8693764568e269603353a33ba476dbceac8409159d3a4233291435e51e",
+              "payer": "0x52a321854C93234C5281Fe3f3846Dd817784343F",
+              "listingManifestHash": "0x2efa3883986e0ef9f11acf05ad5c70f9da45b5293026344c0b38c87a7319e784",
+              "providerOfferHash": "0xf097bfa76765936f5bbcd78cfd23cea437dc6ed4939a66603a45a9e1e2e66bd8",
+              "quoteHash": "0xeea01f1009984e1a47d440e6177fbfe5811b1c9090f13ab721aeadb0db5b56ad",
+              "bindingProfile": "recipe-bound-v2",
+              "canonicalRequestHash": "0x6dafea8cb3553869537f4f4643fb31f6a478838f81967374cbf496e0dfd7cf51",
+              "orderNonce": "0x698715df0f12815c2899be7896c96638fd58b0d8c5c7ddcf9b53d14a51ada70d",
+              "buyerIdentityProofHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+              "activeRailProfileHash": "0x533df1c2dfc04f1070c2ac142f340a84be0afcce45c66945b6d56d4b8ed16b0a",
+              "facilitatorConfirmationHash": "0x2ddd22f6e1f3d2ed00b20bef98a41526021ecee8cff64c696a0e9364b3cd6f59",
+              "settlementTxHash": "0x570dd5fa19566e259fc94b547cda3dd2f7e5c4aa7198d8dd35a1ec2582249549",
+              "depositEvidenceHash": "0xdeb50cfe6d7d949b1d143c43a3c82e1ece1609eca6e71a8fad635e4a0e8c6d51",
+              "depositBlockNumber": "35000000",
+              "depositBlockHash": "0x0636b0db68d0e1c0baa37e797d32a1dd05f60df2bac4aa835f78627143ee6d62",
+              "depositTransactionIndex": 7,
+              "depositLogIndex": 12,
+              "releaseTxHash": "0x0bc3938a491551660ffc731adb1749c606ccdc8c159aa4805d23325f03f41459",
+              "releaseEvidenceHash": "0x57f58c3734fdfd4207d336cf8713eeb358070b25410bae51afc07b81ffe63123",
+              "releaseBlockNumber": "35000002",
+              "releaseBlockHash": "0xca4c191ec965ecf81ae95af29486b9cc95bc20bb17b2acefe39c4198f44bea3f",
+              "releaseTransactionIndex": 3,
+              "releaseLogIndex": 5,
+              "releaseSequence": "1",
+              "grossAmount": "250000",
+              "providerNetAmount": "237500",
+              "daskiCommissionAmount": "12500",
+              "canonicalProviderRequestHash": "0x1bf2ac01775ea9f4293cb261f84a0f40d93f45a68e3e26bfdbcbd1ebdeb0e708",
+              "dispatchDeadlineSeconds": 300,
+              "issuedAt": 1790093600,
+              "validBefore": 1790093900
+            },
+            "signature": "0x6b4d7cefc6d84639954d61b72e47eaa2dbe1419dd4ff4fb8687ceda783df53dc16e3a2d4d1c1991100250cf2bb2c70908b4473746f32652aa6f5c86301b1dd231b"
+          },
+          "quote": {
+            "artifactType": "QuoteV1",
+            "schemaVersion": 1,
+            "environment": "testnet",
+            "chainId": 84532,
+            "audience": "https://gateway.example",
+            "signerKeyId": "gateway-quote",
+            "issuedAt": 1790000000,
+            "validBefore": 1790000120,
+            "payload": {
+              "listingManifestHash": "0x2efa3883986e0ef9f11acf05ad5c70f9da45b5293026344c0b38c87a7319e784",
+              "providerOfferHash": "0xf097bfa76765936f5bbcd78cfd23cea437dc6ed4939a66603a45a9e1e2e66bd8",
+              "providerQuoteHash": "0xaac6fa3c4af39539095331e507dea96b875b26084ffc9fafb27e6bed59b44d5c",
+              "canonicalRequestHash": "0x6dafea8cb3553869537f4f4643fb31f6a478838f81967374cbf496e0dfd7cf51",
+              "grossAmount": "250000",
+              "token": "0xc648DB599F8eca8F96854B7a8D16F8f3552C0428",
+              "splitter": "0xC88C22F5501023b81A291959c0C3c7bA8Be57a37",
+              "orderNonce": "0x698715df0f12815c2899be7896c96638fd58b0d8c5c7ddcf9b53d14a51ada70d",
+              "issuedAt": 1790000000,
+              "validBefore": 1790000120
+            },
+            "signature": "0xc29897ee1151828c70c82db14b8632332a2abb2e24cb58c3aa49f1e49bedd37d31b607cb1bbc3a178d85c62a128403469b5d1838473639cb8b7631f81324abca1c"
+          },
+          "request": {
+            "title": "Synthetic fixture note",
+            "body": "Written by the gateway's provider-wire fixtures."
+          },
+          "evidenceBundle": {
+            "deposit": {
+              "transactionHash": "0x570dd5fa19566e259fc94b547cda3dd2f7e5c4aa7198d8dd35a1ec2582249549",
+              "blockNumber": "35000000",
+              "blockHash": "0x0636b0db68d0e1c0baa37e797d32a1dd05f60df2bac4aa835f78627143ee6d62",
+              "transactionIndex": 7,
+              "logIndex": 12,
+              "evidenceHash": "0xdeb50cfe6d7d949b1d143c43a3c82e1ece1609eca6e71a8fad635e4a0e8c6d51",
+              "canonicalEvidence": {
+                "synthetic": "provider-wire fixture deposit; no chain holds it",
+                "orderId": "ord_00000000-0000-4000-8000-000000000001",
+                "transactionHash": "0x570dd5fa19566e259fc94b547cda3dd2f7e5c4aa7198d8dd35a1ec2582249549",
+                "blockNumber": "35000000",
+                "logIndex": 12
+              },
+              "sources": [
+                "synthetic-rpc-a",
+                "synthetic-rpc-b"
+              ]
+            },
+            "release": {
+              "transactionHash": "0x0bc3938a491551660ffc731adb1749c606ccdc8c159aa4805d23325f03f41459",
+              "blockNumber": "35000002",
+              "blockHash": "0xca4c191ec965ecf81ae95af29486b9cc95bc20bb17b2acefe39c4198f44bea3f",
+              "transactionIndex": 3,
+              "logIndex": 5,
+              "releaseSequence": "1",
+              "evidenceHash": "0x57f58c3734fdfd4207d336cf8713eeb358070b25410bae51afc07b81ffe63123",
+              "canonicalEvidence": {
+                "synthetic": "provider-wire fixture release; no chain holds it",
+                "orderId": "ord_00000000-0000-4000-8000-000000000001",
+                "transactionHash": "0x0bc3938a491551660ffc731adb1749c606ccdc8c159aa4805d23325f03f41459",
+                "blockNumber": "35000002",
+                "releaseSequence": "1",
+                "providerNetAmount": "237500",
+                "daskiCommissionAmount": "12500"
+              },
+              "sources": [
+                "synthetic-rpc-a",
+                "synthetic-rpc-b"
+              ]
+            }
+          }
+        },
+        "bodyText": "{\"dispatch\":{\"artifactType\":\"StandardRailDispatchV2\",\"schemaVersion\":2,\"environment\":\"testnet\",\"chainId\":84532,\"audience\":\"https://provider.example\",\"signerKeyId\":\"gateway-dispatch\",\"issuedAt\":1790093600,\"validBefore\":1790093900,\"payload\":{\"environment\":\"testnet\",\"chainId\":84532,\"gatewayAudience\":\"https://gateway.example\",\"providerAudience\":\"https://provider.example\",\"providerControlProfileHash\":\"0x3f4c52f6d596c9911e0bf03aab74941011a1792d9c70086fe0ef06dc76f5734c\",\"orderId\":\"ord_00000000-0000-4000-8000-000000000001\",\"orderKey\":\"0x6ca8ece73f2c70035c9d42d864493af5223ba77205724148ce886556a5de4651\",\"serviceId\":\"0x7d456d91e036748dfdb7b570d333491cd2000bc86db43fbf95047d166cb7a864\",\"reputationEligible\":true,\"reputationContract\":\"0x9b5AA6961eC02F0bB6185047FF72af37c68e179f\",\"outcomeSchemaUid\":\"0x0aba7e41cb05ad3911e8e0a4fcdd5aa5e6033e65bc8827f69b2da8a8cdd74f3a\",\"dispatchNonce\":\"0x09b20c8693764568e269603353a33ba476dbceac8409159d3a4233291435e51e\",\"payer\":\"0x52a321854C93234C5281Fe3f3846Dd817784343F\",\"listingManifestHash\":\"0x2efa3883986e0ef9f11acf05ad5c70f9da45b5293026344c0b38c87a7319e784\",\"providerOfferHash\":\"0xf097bfa76765936f5bbcd78cfd23cea437dc6ed4939a66603a45a9e1e2e66bd8\",\"quoteHash\":\"0xeea01f1009984e1a47d440e6177fbfe5811b1c9090f13ab721aeadb0db5b56ad\",\"bindingProfile\":\"recipe-bound-v2\",\"canonicalRequestHash\":\"0x6dafea8cb3553869537f4f4643fb31f6a478838f81967374cbf496e0dfd7cf51\",\"orderNonce\":\"0x698715df0f12815c2899be7896c96638fd58b0d8c5c7ddcf9b53d14a51ada70d\",\"buyerIdentityProofHash\":\"0x0000000000000000000000000000000000000000000000000000000000000000\",\"activeRailProfileHash\":\"0x533df1c2dfc04f1070c2ac142f340a84be0afcce45c66945b6d56d4b8ed16b0a\",\"facilitatorConfirmationHash\":\"0x2ddd22f6e1f3d2ed00b20bef98a41526021ecee8cff64c696a0e9364b3cd6f59\",\"settlementTxHash\":\"0x570dd5fa19566e259fc94b547cda3dd2f7e5c4aa7198d8dd35a1ec2582249549\",\"depositEvidenceHash\":\"0xdeb50cfe6d7d949b1d143c43a3c82e1ece1609eca6e71a8fad635e4a0e8c6d51\",\"depositBlockNumber\":\"35000000\",\"depositBlockHash\":\"0x0636b0db68d0e1c0baa37e797d32a1dd05f60df2bac4aa835f78627143ee6d62\",\"depositTransactionIndex\":7,\"depositLogIndex\":12,\"releaseTxHash\":\"0x0bc3938a491551660ffc731adb1749c606ccdc8c159aa4805d23325f03f41459\",\"releaseEvidenceHash\":\"0x57f58c3734fdfd4207d336cf8713eeb358070b25410bae51afc07b81ffe63123\",\"releaseBlockNumber\":\"35000002\",\"releaseBlockHash\":\"0xca4c191ec965ecf81ae95af29486b9cc95bc20bb17b2acefe39c4198f44bea3f\",\"releaseTransactionIndex\":3,\"releaseLogIndex\":5,\"releaseSequence\":\"1\",\"grossAmount\":\"250000\",\"providerNetAmount\":\"237500\",\"daskiCommissionAmount\":\"12500\",\"canonicalProviderRequestHash\":\"0x1bf2ac01775ea9f4293cb261f84a0f40d93f45a68e3e26bfdbcbd1ebdeb0e708\",\"dispatchDeadlineSeconds\":300,\"issuedAt\":1790093600,\"validBefore\":1790093900},\"signature\":\"0x6b4d7cefc6d84639954d61b72e47eaa2dbe1419dd4ff4fb8687ceda783df53dc16e3a2d4d1c1991100250cf2bb2c70908b4473746f32652aa6f5c86301b1dd231b\"},\"quote\":{\"artifactType\":\"QuoteV1\",\"schemaVersion\":1,\"environment\":\"testnet\",\"chainId\":84532,\"audience\":\"https://gateway.example\",\"signerKeyId\":\"gateway-quote\",\"issuedAt\":1790000000,\"validBefore\":1790000120,\"payload\":{\"listingManifestHash\":\"0x2efa3883986e0ef9f11acf05ad5c70f9da45b5293026344c0b38c87a7319e784\",\"providerOfferHash\":\"0xf097bfa76765936f5bbcd78cfd23cea437dc6ed4939a66603a45a9e1e2e66bd8\",\"providerQuoteHash\":\"0xaac6fa3c4af39539095331e507dea96b875b26084ffc9fafb27e6bed59b44d5c\",\"canonicalRequestHash\":\"0x6dafea8cb3553869537f4f4643fb31f6a478838f81967374cbf496e0dfd7cf51\",\"grossAmount\":\"250000\",\"token\":\"0xc648DB599F8eca8F96854B7a8D16F8f3552C0428\",\"splitter\":\"0xC88C22F5501023b81A291959c0C3c7bA8Be57a37\",\"orderNonce\":\"0x698715df0f12815c2899be7896c96638fd58b0d8c5c7ddcf9b53d14a51ada70d\",\"issuedAt\":1790000000,\"validBefore\":1790000120},\"signature\":\"0xc29897ee1151828c70c82db14b8632332a2abb2e24cb58c3aa49f1e49bedd37d31b607cb1bbc3a178d85c62a128403469b5d1838473639cb8b7631f81324abca1c\"},\"request\":{\"title\":\"Synthetic fixture note\",\"body\":\"Written by the gateway's provider-wire fixtures.\"},\"evidenceBundle\":{\"deposit\":{\"transactionHash\":\"0x570dd5fa19566e259fc94b547cda3dd2f7e5c4aa7198d8dd35a1ec2582249549\",\"blockNumber\":\"35000000\",\"blockHash\":\"0x0636b0db68d0e1c0baa37e797d32a1dd05f60df2bac4aa835f78627143ee6d62\",\"transactionIndex\":7,\"logIndex\":12,\"evidenceHash\":\"0xdeb50cfe6d7d949b1d143c43a3c82e1ece1609eca6e71a8fad635e4a0e8c6d51\",\"canonicalEvidence\":{\"synthetic\":\"provider-wire fixture deposit; no chain holds it\",\"orderId\":\"ord_00000000-0000-4000-8000-000000000001\",\"transactionHash\":\"0x570dd5fa19566e259fc94b547cda3dd2f7e5c4aa7198d8dd35a1ec2582249549\",\"blockNumber\":\"35000000\",\"logIndex\":12},\"sources\":[\"synthetic-rpc-a\",\"synthetic-rpc-b\"]},\"release\":{\"transactionHash\":\"0x0bc3938a491551660ffc731adb1749c606ccdc8c159aa4805d23325f03f41459\",\"blockNumber\":\"35000002\",\"blockHash\":\"0xca4c191ec965ecf81ae95af29486b9cc95bc20bb17b2acefe39c4198f44bea3f\",\"transactionIndex\":3,\"logIndex\":5,\"releaseSequence\":\"1\",\"evidenceHash\":\"0x57f58c3734fdfd4207d336cf8713eeb358070b25410bae51afc07b81ffe63123\",\"canonicalEvidence\":{\"synthetic\":\"provider-wire fixture release; no chain holds it\",\"orderId\":\"ord_00000000-0000-4000-8000-000000000001\",\"transactionHash\":\"0x0bc3938a491551660ffc731adb1749c606ccdc8c159aa4805d23325f03f41459\",\"blockNumber\":\"35000002\",\"releaseSequence\":\"1\",\"providerNetAmount\":\"237500\",\"daskiCommissionAmount\":\"12500\"},\"sources\":[\"synthetic-rpc-a\",\"synthetic-rpc-b\"]}}}"
+      }
+    }
+  },
+  "responses": [
+    {
+      "id": "submitted.accepted",
+      "request": "initial",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "An admitted dispatch answered submitted: no attestation, all-null operations at revision 0.",
+      "provider": {
+        "now": 1790000061,
+        "taskId": "00000000-0000-4000-8000-00000000a001",
+        "state": "submitted",
+        "operations": {
+          "schemaVersion": 1,
+          "revision": 0,
+          "observedAt": 1790000061,
+          "fulfillment": null,
+          "support": null,
+          "recovery": null
+        },
+        "signer": "providerAuthority"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "taskId": "00000000-0000-4000-8000-00000000a001",
+          "dispatchHash": "0x68df0a341c25d30f3e22b9585038fa7f0abd2a19f6de59ca88df83e9978a282f",
+          "state": "submitted",
+          "operations": {
+            "schemaVersion": 1,
+            "revision": 0,
+            "observedAt": 1790000061,
+            "fulfillment": null,
+            "support": null,
+            "recovery": null
+          },
+          "signature": "0x2eeb35cb5507f5f4418b3128424df79ef27081d02db4c8e555e8f578adacb5c60f0ba7d6e4e760da73c792c15bb62a76da75592b775872ce43e277f91bb5804d1b"
+        }
+      },
+      "gateway": {
+        "orderState": "RELEASE_FINAL",
+        "receivedAt": 1790000061,
+        "verdict": "accepted",
+        "orderStateAfter": "DISPATCHED",
+        "providerTaskId": "00000000-0000-4000-8000-00000000a001"
+      }
+    },
+    {
+      "id": "working.accepted",
+      "request": "initial",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "An admitted dispatch answered working: no attestation, all-null operations at revision 0.",
+      "provider": {
+        "now": 1790000061,
+        "taskId": "00000000-0000-4000-8000-00000000a001",
+        "state": "working",
+        "operations": {
+          "schemaVersion": 1,
+          "revision": 0,
+          "observedAt": 1790000061,
+          "fulfillment": null,
+          "support": null,
+          "recovery": null
+        },
+        "signer": "providerAuthority"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "taskId": "00000000-0000-4000-8000-00000000a001",
+          "dispatchHash": "0x68df0a341c25d30f3e22b9585038fa7f0abd2a19f6de59ca88df83e9978a282f",
+          "state": "working",
+          "operations": {
+            "schemaVersion": 1,
+            "revision": 0,
+            "observedAt": 1790000061,
+            "fulfillment": null,
+            "support": null,
+            "recovery": null
+          },
+          "signature": "0x6ed27fd5b5163d02a21f54a03529b6a648463fe77bc3d13fad9759f56706fd2c463d804d297f0a9cff2b6108eb81b3cfe797738f55fdcd5845eaf4c9f21951de1b"
+        }
+      },
+      "gateway": {
+        "orderState": "RELEASE_FINAL",
+        "receivedAt": 1790000061,
+        "verdict": "accepted",
+        "orderStateAfter": "DISPATCHED",
+        "providerTaskId": "00000000-0000-4000-8000-00000000a001"
+      }
+    },
+    {
+      "id": "input-required.accepted",
+      "request": "initial",
+      "appliesTo": [
+        "daski-io/provider-full"
+      ],
+      "purpose": "An admitted dispatch answered input-required: no attestation, all-null operations at revision 0.",
+      "provider": {
+        "now": 1790000061,
+        "taskId": "00000000-0000-4000-8000-00000000a001",
+        "state": "input-required",
+        "operations": {
+          "schemaVersion": 1,
+          "revision": 0,
+          "observedAt": 1790000061,
+          "fulfillment": null,
+          "support": null,
+          "recovery": null
+        },
+        "signer": "providerAuthority"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "taskId": "00000000-0000-4000-8000-00000000a001",
+          "dispatchHash": "0x68df0a341c25d30f3e22b9585038fa7f0abd2a19f6de59ca88df83e9978a282f",
+          "state": "input-required",
+          "operations": {
+            "schemaVersion": 1,
+            "revision": 0,
+            "observedAt": 1790000061,
+            "fulfillment": null,
+            "support": null,
+            "recovery": null
+          },
+          "signature": "0xc6fc16bb57291ebdf3ad3cdd7fdcc6d8c627cc04b8a85947c0531ca4e44f03e404197e1fbc123e627d1b501c85536066b500fac8707aff3b4e27bd37f676479a1b"
+        }
+      },
+      "gateway": {
+        "orderState": "RELEASE_FINAL",
+        "receivedAt": 1790000061,
+        "verdict": "accepted",
+        "orderStateAfter": "INPUT_REQUIRED",
+        "providerTaskId": "00000000-0000-4000-8000-00000000a001"
+      }
+    },
+    {
+      "id": "completed.accepted",
+      "request": "initial",
+      "appliesTo": [
+        "daski-io/provider"
+      ],
+      "purpose": "A synchronous completion: the dispatch attestation binds the frozen result's hash; the result itself is not inline.",
+      "provider": {
+        "now": 1790000061,
+        "taskId": "00000000-0000-4000-8000-00000000a001",
+        "state": "completed",
+        "operations": {
+          "schemaVersion": 1,
+          "revision": 0,
+          "observedAt": 1790000061,
+          "fulfillment": null,
+          "support": null,
+          "recovery": null
+        },
+        "result": {
+          "status": "completed",
+          "message": "Note created.",
+          "artifacts": [
+            {
+              "name": "note",
+              "data": {
+                "note": "note-0001",
+                "title": "Synthetic fixture note",
+                "characters": 48
+              }
+            }
+          ]
+        },
+        "resultHash": "0x24656d0d9dcb863d5fdbf82efbd143139ad7e904ff2cadadc91b39e3552978eb",
+        "completedAt": 1790000061,
+        "signer": "providerAuthority",
+        "terminalSigner": "providerTerminalAttestation"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "taskId": "00000000-0000-4000-8000-00000000a001",
+          "dispatchHash": "0x68df0a341c25d30f3e22b9585038fa7f0abd2a19f6de59ca88df83e9978a282f",
+          "state": "completed",
+          "operations": {
+            "schemaVersion": 1,
+            "revision": 0,
+            "observedAt": 1790000061,
+            "fulfillment": null,
+            "support": null,
+            "recovery": null
+          },
+          "signature": "0x5301522c5599b41c5e52845f934b0292a5ef0a72c9fd7c1d69ed1c3fede5e85b78d02f9f82650e996d0ec822583df8e45e7a6aef99caa23d445e6f1bff8d77491c",
+          "terminalAttestation": {
+            "payload": {
+              "taskId": "00000000-0000-4000-8000-00000000a001",
+              "dispatchHash": "0x68df0a341c25d30f3e22b9585038fa7f0abd2a19f6de59ca88df83e9978a282f",
+              "state": "completed",
+              "resultHash": "0x24656d0d9dcb863d5fdbf82efbd143139ad7e904ff2cadadc91b39e3552978eb",
+              "completedAt": 1790000061
+            },
+            "signature": "0xdba30ceef2dc4ebd58c09c2e782fdbd626368890fbcf3caa574f33d42ec746f3510480fcd66a6db40eb6299c1ff8706a58983a8388ba4f545b5a094e50ea7d9a1c"
+          }
+        }
+      },
+      "gateway": {
+        "orderState": "RELEASE_FINAL",
+        "receivedAt": 1790000061,
+        "verdict": "accepted",
+        "orderStateAfter": "FULFILLED",
+        "providerTaskId": "00000000-0000-4000-8000-00000000a001"
+      }
+    },
+    {
+      "id": "failed.accepted",
+      "request": "initial",
+      "appliesTo": [
+        "daski-io/provider"
+      ],
+      "purpose": "A synchronous failure is attested like a completion.",
+      "provider": {
+        "now": 1790000061,
+        "taskId": "00000000-0000-4000-8000-00000000a001",
+        "state": "failed",
+        "operations": {
+          "schemaVersion": 1,
+          "revision": 0,
+          "observedAt": 1790000061,
+          "fulfillment": null,
+          "support": null,
+          "recovery": null
+        },
+        "result": {
+          "status": "failed",
+          "errorCode": "service_execution_failed"
+        },
+        "resultHash": "0x5ff10ff1a0b6ff5ed019c2f9b8c5a60f24bdfce6ed3748a7584b3cc1e7a77c9c",
+        "completedAt": 1790000061,
+        "signer": "providerAuthority",
+        "terminalSigner": "providerTerminalAttestation"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "taskId": "00000000-0000-4000-8000-00000000a001",
+          "dispatchHash": "0x68df0a341c25d30f3e22b9585038fa7f0abd2a19f6de59ca88df83e9978a282f",
+          "state": "failed",
+          "operations": {
+            "schemaVersion": 1,
+            "revision": 0,
+            "observedAt": 1790000061,
+            "fulfillment": null,
+            "support": null,
+            "recovery": null
+          },
+          "signature": "0xa43f54afbe17d7279dadfe76357e883bb7576ee6a5dd21b86db39f8a50dae0aa472bc30e3ad03742adbec4b5a034b79ac5e487d919558bf4dfd5b1f86d9e60921b",
+          "terminalAttestation": {
+            "payload": {
+              "taskId": "00000000-0000-4000-8000-00000000a001",
+              "dispatchHash": "0x68df0a341c25d30f3e22b9585038fa7f0abd2a19f6de59ca88df83e9978a282f",
+              "state": "failed",
+              "resultHash": "0x5ff10ff1a0b6ff5ed019c2f9b8c5a60f24bdfce6ed3748a7584b3cc1e7a77c9c",
+              "completedAt": 1790000061
+            },
+            "signature": "0xef40a896c30e1351d8797846590971d0547196324f73ba17e3821d7419c71838463ad2fdec1768c49011f500f83615595bc3892b91edba674ef18ea3b4f431fe1c"
+          }
+        }
+      },
+      "gateway": {
+        "orderState": "RELEASE_FINAL",
+        "receivedAt": 1790000061,
+        "verdict": "accepted",
+        "orderStateAfter": "PROVIDER_FAILED",
+        "providerTaskId": "00000000-0000-4000-8000-00000000a001"
+      }
+    },
+    {
+      "id": "accepted.operations-300s-old",
+      "request": "initial",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "Operations observed 300 s before receipt are fresh.",
+      "provider": {
+        "now": 1790000061,
+        "taskId": "00000000-0000-4000-8000-00000000a001",
+        "state": "working",
+        "operations": {
+          "schemaVersion": 1,
+          "revision": 0,
+          "observedAt": 1789999761,
+          "fulfillment": null,
+          "support": null,
+          "recovery": null
+        },
+        "signer": "providerAuthority"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "taskId": "00000000-0000-4000-8000-00000000a001",
+          "dispatchHash": "0x68df0a341c25d30f3e22b9585038fa7f0abd2a19f6de59ca88df83e9978a282f",
+          "state": "working",
+          "operations": {
+            "schemaVersion": 1,
+            "revision": 0,
+            "observedAt": 1789999761,
+            "fulfillment": null,
+            "support": null,
+            "recovery": null
+          },
+          "signature": "0xc02587a6842c8a5472f49c46287ab31f1838540308cf0952b133d4185889d3c643fe9050fc54c82a290ddb7b2a5aec19b910400ce25b2ca347d187bfb070690c1c"
+        }
+      },
+      "gateway": {
+        "orderState": "RELEASE_FINAL",
+        "receivedAt": 1790000061,
+        "verdict": "accepted",
+        "orderStateAfter": "DISPATCHED",
+        "providerTaskId": "00000000-0000-4000-8000-00000000a001"
+      }
+    },
+    {
+      "id": "rejected.operations-301s-old",
+      "request": "initial",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "Operations observed 301 s before receipt are refused.",
+      "provider": {
+        "now": 1790000061,
+        "taskId": "00000000-0000-4000-8000-00000000a001",
+        "state": "working",
+        "operations": {
+          "schemaVersion": 1,
+          "revision": 0,
+          "observedAt": 1789999760,
+          "fulfillment": null,
+          "support": null,
+          "recovery": null
+        },
+        "signer": "providerAuthority"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "taskId": "00000000-0000-4000-8000-00000000a001",
+          "dispatchHash": "0x68df0a341c25d30f3e22b9585038fa7f0abd2a19f6de59ca88df83e9978a282f",
+          "state": "working",
+          "operations": {
+            "schemaVersion": 1,
+            "revision": 0,
+            "observedAt": 1789999760,
+            "fulfillment": null,
+            "support": null,
+            "recovery": null
+          },
+          "signature": "0x0420b638ac2a98835fe85474c545822355fdeb9fe1c89de793d4659850eb30c166ebd6f808aae834601dcb6c3a5ad3ffa5b671350bbcba34ede02dcf3d88c2021c"
+        }
+      },
+      "gateway": {
+        "orderState": "RELEASE_FINAL",
+        "receivedAt": 1790000061,
+        "verdict": "ambiguous",
+        "orderStateAfter": "DISPATCH_AMBIGUOUS"
+      }
+    },
+    {
+      "id": "accepted.operations-30s-ahead",
+      "request": "initial",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "Operations observed 30 s after receipt are fresh.",
+      "provider": {
+        "now": 1790000061,
+        "taskId": "00000000-0000-4000-8000-00000000a001",
+        "state": "working",
+        "operations": {
+          "schemaVersion": 1,
+          "revision": 0,
+          "observedAt": 1790000091,
+          "fulfillment": null,
+          "support": null,
+          "recovery": null
+        },
+        "signer": "providerAuthority"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "taskId": "00000000-0000-4000-8000-00000000a001",
+          "dispatchHash": "0x68df0a341c25d30f3e22b9585038fa7f0abd2a19f6de59ca88df83e9978a282f",
+          "state": "working",
+          "operations": {
+            "schemaVersion": 1,
+            "revision": 0,
+            "observedAt": 1790000091,
+            "fulfillment": null,
+            "support": null,
+            "recovery": null
+          },
+          "signature": "0x45ac8691e64280413f832e47498cdb555f5d43476c14beda1401a28a6c7dcba808642b420b7b99c36dcbc69178b54e49853bc54a199a353d1b8cf3b737844a921c"
+        }
+      },
+      "gateway": {
+        "orderState": "RELEASE_FINAL",
+        "receivedAt": 1790000061,
+        "verdict": "accepted",
+        "orderStateAfter": "DISPATCHED",
+        "providerTaskId": "00000000-0000-4000-8000-00000000a001"
+      }
+    },
+    {
+      "id": "rejected.operations-31s-ahead",
+      "request": "initial",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "Operations observed 31 s after receipt are refused.",
+      "provider": {
+        "now": 1790000061,
+        "taskId": "00000000-0000-4000-8000-00000000a001",
+        "state": "working",
+        "operations": {
+          "schemaVersion": 1,
+          "revision": 0,
+          "observedAt": 1790000092,
+          "fulfillment": null,
+          "support": null,
+          "recovery": null
+        },
+        "signer": "providerAuthority"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "taskId": "00000000-0000-4000-8000-00000000a001",
+          "dispatchHash": "0x68df0a341c25d30f3e22b9585038fa7f0abd2a19f6de59ca88df83e9978a282f",
+          "state": "working",
+          "operations": {
+            "schemaVersion": 1,
+            "revision": 0,
+            "observedAt": 1790000092,
+            "fulfillment": null,
+            "support": null,
+            "recovery": null
+          },
+          "signature": "0xf1d9300465838c585d349ecd18f5bcd4d14d4c8408819911c17b4282aa7c117b3d9f050ba90ee4af68c7ccb9489bd755dd0bb10fcd9fc7073396ac5e1095ae3c1b"
+        }
+      },
+      "gateway": {
+        "orderState": "RELEASE_FINAL",
+        "receivedAt": 1790000061,
+        "verdict": "ambiguous",
+        "orderStateAfter": "DISPATCH_AMBIGUOUS"
+      }
+    },
+    {
+      "id": "refused.quote-window",
+      "request": "initial",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "A definite refusal before any admission: the gateway records it and later sends a fresh envelope.",
+      "provider": {
+        "now": 1790000061
+      },
+      "response": {
+        "status": 409,
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "error": "dispatch_rejected",
+          "reason": "quote_window"
+        }
+      },
+      "gateway": {
+        "orderState": "RELEASE_FINAL",
+        "receivedAt": 1790000061,
+        "verdict": "refused",
+        "orderStateAfter": "DISPATCH_STARTED",
+        "refusal": {
+          "status": 409,
+          "reason": "dispatch_rejected"
+        }
+      }
+    },
+    {
+      "id": "refused.service-unavailable",
+      "request": "initial",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "A synchronous provider that cannot execute yet refuses before admission.",
+      "provider": {
+        "now": 1790000061
+      },
+      "response": {
+        "status": 503,
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "error": "dispatch_rejected",
+          "reason": "service_unavailable"
+        }
+      },
+      "gateway": {
+        "orderState": "RELEASE_FINAL",
+        "receivedAt": 1790000061,
+        "verdict": "refused",
+        "orderStateAfter": "DISPATCH_STARTED",
+        "refusal": {
+          "status": 503,
+          "reason": "dispatch_rejected"
+        }
+      }
+    },
+    {
+      "id": "ambiguous.empty-503",
+      "request": "initial",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "An empty 503 is the deliberate ambiguous answer: the gateway polls status for the original hash.",
+      "provider": {
+        "now": 1790000061
+      },
+      "response": {
+        "status": 503,
+        "headers": {},
+        "bodyText": ""
+      },
+      "gateway": {
+        "orderState": "RELEASE_FINAL",
+        "receivedAt": 1790000061,
+        "verdict": "ambiguous",
+        "orderStateAfter": "DISPATCH_AMBIGUOUS"
+      }
+    },
+    {
+      "id": "ambiguous.json-without-error",
+      "request": "initial",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "JSON without an error key proves nothing.",
+      "provider": {
+        "now": 1790000061
+      },
+      "response": {
+        "status": 500,
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "message": "internal"
+        }
+      },
+      "gateway": {
+        "orderState": "RELEASE_FINAL",
+        "receivedAt": 1790000061,
+        "verdict": "ambiguous",
+        "orderStateAfter": "DISPATCH_AMBIGUOUS"
+      }
+    },
+    {
+      "id": "ambiguous.null-error",
+      "request": "initial",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "A null error proves nothing.",
+      "provider": {
+        "now": 1790000061
+      },
+      "response": {
+        "status": 500,
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "error": null
+        }
+      },
+      "gateway": {
+        "orderState": "RELEASE_FINAL",
+        "receivedAt": 1790000061,
+        "verdict": "ambiguous",
+        "orderStateAfter": "DISPATCH_AMBIGUOUS"
+      }
+    },
+    {
+      "id": "ambiguous.edge-page",
+      "request": "initial",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "An edge or proxy page proves nothing.",
+      "provider": {
+        "now": 1790000061
+      },
+      "response": {
+        "status": 502,
+        "headers": {
+          "content-type": "text/html"
+        },
+        "bodyText": "<html>Bad gateway</html>"
+      },
+      "gateway": {
+        "orderState": "RELEASE_FINAL",
+        "receivedAt": 1790000061,
+        "verdict": "ambiguous",
+        "orderStateAfter": "DISPATCH_AMBIGUOUS"
+      }
+    },
+    {
+      "id": "ambiguous.error-with-200",
+      "request": "initial",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "A 2xx carrying an error is not a refusal and not a valid answer.",
+      "provider": {
+        "now": 1790000061
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "error": "dispatch_rejected"
+        }
+      },
+      "gateway": {
+        "orderState": "RELEASE_FINAL",
+        "receivedAt": 1790000061,
+        "verdict": "ambiguous",
+        "orderStateAfter": "DISPATCH_AMBIGUOUS"
+      }
+    },
+    {
+      "id": "rejected.executing-state",
+      "request": "initial",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "The internal executing state is never a wire state.",
+      "provider": {
+        "now": 1790000061
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "taskId": "00000000-0000-4000-8000-00000000a001",
+          "dispatchHash": "0x68df0a341c25d30f3e22b9585038fa7f0abd2a19f6de59ca88df83e9978a282f",
+          "state": "executing",
+          "operations": {
+            "schemaVersion": 1,
+            "revision": 0,
+            "observedAt": 1790000061,
+            "fulfillment": null,
+            "support": null,
+            "recovery": null
+          },
+          "signature": "0xe8848cead2ad8eedc960c1729c13b59ac32da5c9e54a6e0f9f1ff9fe2f74b61b2f0cd9d0647ed03cf6ca9ebca5dc87e25ea5d44b06aed9fed774235e9873972c1b"
+        }
+      },
+      "gateway": {
+        "orderState": "RELEASE_FINAL",
+        "receivedAt": 1790000061,
+        "verdict": "ambiguous",
+        "orderStateAfter": "DISPATCH_AMBIGUOUS"
+      }
+    },
+    {
+      "id": "rejected.inline-result",
+      "request": "initial",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "A dispatch answer never carries the result inline.",
+      "provider": {
+        "now": 1790000061
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "taskId": "00000000-0000-4000-8000-00000000a001",
+          "dispatchHash": "0x68df0a341c25d30f3e22b9585038fa7f0abd2a19f6de59ca88df83e9978a282f",
+          "state": "completed",
+          "operations": {
+            "schemaVersion": 1,
+            "revision": 0,
+            "observedAt": 1790000061,
+            "fulfillment": null,
+            "support": null,
+            "recovery": null
+          },
+          "signature": "0x5301522c5599b41c5e52845f934b0292a5ef0a72c9fd7c1d69ed1c3fede5e85b78d02f9f82650e996d0ec822583df8e45e7a6aef99caa23d445e6f1bff8d77491c",
+          "terminalAttestation": {
+            "payload": {
+              "taskId": "00000000-0000-4000-8000-00000000a001",
+              "dispatchHash": "0x68df0a341c25d30f3e22b9585038fa7f0abd2a19f6de59ca88df83e9978a282f",
+              "state": "completed",
+              "resultHash": "0x24656d0d9dcb863d5fdbf82efbd143139ad7e904ff2cadadc91b39e3552978eb",
+              "completedAt": 1790000061
+            },
+            "signature": "0xdba30ceef2dc4ebd58c09c2e782fdbd626368890fbcf3caa574f33d42ec746f3510480fcd66a6db40eb6299c1ff8706a58983a8388ba4f545b5a094e50ea7d9a1c"
+          },
+          "result": {
+            "status": "completed",
+            "message": "Note created.",
+            "artifacts": [
+              {
+                "name": "note",
+                "data": {
+                  "note": "note-0001",
+                  "title": "Synthetic fixture note",
+                  "characters": 48
+                }
+              }
+            ]
+          }
+        }
+      },
+      "gateway": {
+        "orderState": "RELEASE_FINAL",
+        "receivedAt": 1790000061,
+        "verdict": "ambiguous",
+        "orderStateAfter": "DISPATCH_AMBIGUOUS"
+      }
+    },
+    {
+      "id": "rejected.extra-key",
+      "request": "initial",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "Exactly the accepted keys.",
+      "provider": {
+        "now": 1790000061
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "taskId": "00000000-0000-4000-8000-00000000a001",
+          "dispatchHash": "0x68df0a341c25d30f3e22b9585038fa7f0abd2a19f6de59ca88df83e9978a282f",
+          "state": "working",
+          "operations": {
+            "schemaVersion": 1,
+            "revision": 0,
+            "observedAt": 1790000061,
+            "fulfillment": null,
+            "support": null,
+            "recovery": null
+          },
+          "signature": "0x6ed27fd5b5163d02a21f54a03529b6a648463fe77bc3d13fad9759f56706fd2c463d804d297f0a9cff2b6108eb81b3cfe797738f55fdcd5845eaf4c9f21951de1b",
+          "note": "extra"
+        }
+      },
+      "gateway": {
+        "orderState": "RELEASE_FINAL",
+        "receivedAt": 1790000061,
+        "verdict": "ambiguous",
+        "orderStateAfter": "DISPATCH_AMBIGUOUS"
+      }
+    },
+    {
+      "id": "rejected.missing-operations",
+      "request": "initial",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "operations is required.",
+      "provider": {
+        "now": 1790000061
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "taskId": "00000000-0000-4000-8000-00000000a001",
+          "dispatchHash": "0x68df0a341c25d30f3e22b9585038fa7f0abd2a19f6de59ca88df83e9978a282f",
+          "state": "working",
+          "signature": "0x6ed27fd5b5163d02a21f54a03529b6a648463fe77bc3d13fad9759f56706fd2c463d804d297f0a9cff2b6108eb81b3cfe797738f55fdcd5845eaf4c9f21951de1b"
+        }
+      },
+      "gateway": {
+        "orderState": "RELEASE_FINAL",
+        "receivedAt": 1790000061,
+        "verdict": "ambiguous",
+        "orderStateAfter": "DISPATCH_AMBIGUOUS"
+      }
+    },
+    {
+      "id": "rejected.terminal-without-attestation",
+      "request": "initial",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "A terminal state requires its attestation.",
+      "provider": {
+        "now": 1790000061
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "taskId": "00000000-0000-4000-8000-00000000a001",
+          "dispatchHash": "0x68df0a341c25d30f3e22b9585038fa7f0abd2a19f6de59ca88df83e9978a282f",
+          "state": "completed",
+          "operations": {
+            "schemaVersion": 1,
+            "revision": 0,
+            "observedAt": 1790000061,
+            "fulfillment": null,
+            "support": null,
+            "recovery": null
+          },
+          "signature": "0x5301522c5599b41c5e52845f934b0292a5ef0a72c9fd7c1d69ed1c3fede5e85b78d02f9f82650e996d0ec822583df8e45e7a6aef99caa23d445e6f1bff8d77491c"
+        }
+      },
+      "gateway": {
+        "orderState": "RELEASE_FINAL",
+        "receivedAt": 1790000061,
+        "verdict": "ambiguous",
+        "orderStateAfter": "DISPATCH_AMBIGUOUS"
+      }
+    },
+    {
+      "id": "rejected.attestation-on-pending",
+      "request": "initial",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "Only terminal states carry an attestation.",
+      "provider": {
+        "now": 1790000061
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "taskId": "00000000-0000-4000-8000-00000000a001",
+          "dispatchHash": "0x68df0a341c25d30f3e22b9585038fa7f0abd2a19f6de59ca88df83e9978a282f",
+          "state": "working",
+          "operations": {
+            "schemaVersion": 1,
+            "revision": 0,
+            "observedAt": 1790000061,
+            "fulfillment": null,
+            "support": null,
+            "recovery": null
+          },
+          "signature": "0x6ed27fd5b5163d02a21f54a03529b6a648463fe77bc3d13fad9759f56706fd2c463d804d297f0a9cff2b6108eb81b3cfe797738f55fdcd5845eaf4c9f21951de1b",
+          "terminalAttestation": {
+            "payload": {
+              "taskId": "00000000-0000-4000-8000-00000000a001",
+              "dispatchHash": "0x68df0a341c25d30f3e22b9585038fa7f0abd2a19f6de59ca88df83e9978a282f",
+              "state": "completed",
+              "resultHash": "0x24656d0d9dcb863d5fdbf82efbd143139ad7e904ff2cadadc91b39e3552978eb",
+              "completedAt": 1790000061
+            },
+            "signature": "0xdba30ceef2dc4ebd58c09c2e782fdbd626368890fbcf3caa574f33d42ec746f3510480fcd66a6db40eb6299c1ff8706a58983a8388ba4f545b5a094e50ea7d9a1c"
+          }
+        }
+      },
+      "gateway": {
+        "orderState": "RELEASE_FINAL",
+        "receivedAt": 1790000061,
+        "verdict": "ambiguous",
+        "orderStateAfter": "DISPATCH_AMBIGUOUS"
+      }
+    },
+    {
+      "id": "rejected.other-dispatch-hash",
+      "request": "initial",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "The answer must name the dispatch hash it was asked for.",
+      "provider": {
+        "now": 1790000061
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "taskId": "00000000-0000-4000-8000-00000000a001",
+          "dispatchHash": "0xa241a01ce64c1fdb1503502d670db831fefc5e8636d0af9c161d3b425ca83600",
+          "state": "working",
+          "operations": {
+            "schemaVersion": 1,
+            "revision": 0,
+            "observedAt": 1790000061,
+            "fulfillment": null,
+            "support": null,
+            "recovery": null
+          },
+          "signature": "0x8e82892d1c1a96ca803017a5bcb2a32041f3e51069434b35112b978b211f2fd46fc7336c0daa6c7eef1f4f01fb791dcfdc7a1cbb395c5f0395889acaaf07dd4b1c"
+        }
+      },
+      "gateway": {
+        "orderState": "RELEASE_FINAL",
+        "receivedAt": 1790000061,
+        "verdict": "ambiguous",
+        "orderStateAfter": "DISPATCH_AMBIGUOUS"
+      }
+    },
+    {
+      "id": "rejected.signed-by-terminal-key",
+      "request": "initial",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "The answer is signed by the provider authority key.",
+      "provider": {
+        "now": 1790000061
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "taskId": "00000000-0000-4000-8000-00000000a001",
+          "dispatchHash": "0x68df0a341c25d30f3e22b9585038fa7f0abd2a19f6de59ca88df83e9978a282f",
+          "state": "working",
+          "operations": {
+            "schemaVersion": 1,
+            "revision": 0,
+            "observedAt": 1790000061,
+            "fulfillment": null,
+            "support": null,
+            "recovery": null
+          },
+          "signature": "0x540fc862b9b5622a208133756d4bc4f6b00f7fde0c499be6edc6e0bc9b43bb0824a9e1b5d6c907a4b96e9f2871b0e8074280f61196c6d43d3590c56b96cee4b31b"
+        }
+      },
+      "gateway": {
+        "orderState": "RELEASE_FINAL",
+        "receivedAt": 1790000061,
+        "verdict": "ambiguous",
+        "orderStateAfter": "DISPATCH_AMBIGUOUS"
+      }
+    },
+    {
+      "id": "rejected.state-changed-after-signing",
+      "request": "initial",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "The signature covers taskId, dispatchHash, state and operations.",
+      "provider": {
+        "now": 1790000061
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "taskId": "00000000-0000-4000-8000-00000000a001",
+          "dispatchHash": "0x68df0a341c25d30f3e22b9585038fa7f0abd2a19f6de59ca88df83e9978a282f",
+          "state": "submitted",
+          "operations": {
+            "schemaVersion": 1,
+            "revision": 0,
+            "observedAt": 1790000061,
+            "fulfillment": null,
+            "support": null,
+            "recovery": null
+          },
+          "signature": "0x6ed27fd5b5163d02a21f54a03529b6a648463fe77bc3d13fad9759f56706fd2c463d804d297f0a9cff2b6108eb81b3cfe797738f55fdcd5845eaf4c9f21951de1b"
+        }
+      },
+      "gateway": {
+        "orderState": "RELEASE_FINAL",
+        "receivedAt": 1790000061,
+        "verdict": "ambiguous",
+        "orderStateAfter": "DISPATCH_AMBIGUOUS"
+      }
+    },
+    {
+      "id": "rejected.operations-changed-after-signing",
+      "request": "initial",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "The signature covers the operations.",
+      "provider": {
+        "now": 1790000061
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "taskId": "00000000-0000-4000-8000-00000000a001",
+          "dispatchHash": "0x68df0a341c25d30f3e22b9585038fa7f0abd2a19f6de59ca88df83e9978a282f",
+          "state": "working",
+          "operations": {
+            "schemaVersion": 1,
+            "revision": 1,
+            "observedAt": 1790000061,
+            "fulfillment": null,
+            "support": null,
+            "recovery": null
+          },
+          "signature": "0x6ed27fd5b5163d02a21f54a03529b6a648463fe77bc3d13fad9759f56706fd2c463d804d297f0a9cff2b6108eb81b3cfe797738f55fdcd5845eaf4c9f21951de1b"
+        }
+      },
+      "gateway": {
+        "orderState": "RELEASE_FINAL",
+        "receivedAt": 1790000061,
+        "verdict": "ambiguous",
+        "orderStateAfter": "DISPATCH_AMBIGUOUS"
+      }
+    },
+    {
+      "id": "rejected.task-id-too-long",
+      "request": "initial",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "taskId is 1 to 128 characters.",
+      "provider": {
+        "now": 1790000061
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "taskId": "ttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt",
+          "dispatchHash": "0x68df0a341c25d30f3e22b9585038fa7f0abd2a19f6de59ca88df83e9978a282f",
+          "state": "working",
+          "operations": {
+            "schemaVersion": 1,
+            "revision": 0,
+            "observedAt": 1790000061,
+            "fulfillment": null,
+            "support": null,
+            "recovery": null
+          },
+          "signature": "0xd47549f8daaed993a125400c73c1e709600d219ebb538cab0f4c66a96a225ca20a3ea0a5325cd92bd92f5cddd8c81fe78437c353c7d71fa038a8927483be9d001c"
+        }
+      },
+      "gateway": {
+        "orderState": "RELEASE_FINAL",
+        "receivedAt": 1790000061,
+        "verdict": "ambiguous",
+        "orderStateAfter": "DISPATCH_AMBIGUOUS"
+      }
+    },
+    {
+      "id": "rejected.attestation-signed-by-authority-key",
+      "request": "initial",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "Terminal attestations are signed by the terminal attestation key.",
+      "provider": {
+        "now": 1790000061
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "taskId": "00000000-0000-4000-8000-00000000a001",
+          "dispatchHash": "0x68df0a341c25d30f3e22b9585038fa7f0abd2a19f6de59ca88df83e9978a282f",
+          "state": "completed",
+          "operations": {
+            "schemaVersion": 1,
+            "revision": 0,
+            "observedAt": 1790000061,
+            "fulfillment": null,
+            "support": null,
+            "recovery": null
+          },
+          "signature": "0x5301522c5599b41c5e52845f934b0292a5ef0a72c9fd7c1d69ed1c3fede5e85b78d02f9f82650e996d0ec822583df8e45e7a6aef99caa23d445e6f1bff8d77491c",
+          "terminalAttestation": {
+            "payload": {
+              "taskId": "00000000-0000-4000-8000-00000000a001",
+              "dispatchHash": "0x68df0a341c25d30f3e22b9585038fa7f0abd2a19f6de59ca88df83e9978a282f",
+              "state": "completed",
+              "resultHash": "0x24656d0d9dcb863d5fdbf82efbd143139ad7e904ff2cadadc91b39e3552978eb",
+              "completedAt": 1790000061
+            },
+            "signature": "0x74db2c75fcd2c50bbb235ca94a2bfff3a19907a5f56adf589030f9917de670510723f04ab6b1029761061bd1df21295508c53152b0ccfb8048aa09cb9a237b841c"
+          }
+        }
+      },
+      "gateway": {
+        "orderState": "RELEASE_FINAL",
+        "receivedAt": 1790000061,
+        "verdict": "ambiguous",
+        "orderStateAfter": "DISPATCH_AMBIGUOUS"
+      }
+    },
+    {
+      "id": "rejected.attestation-for-other-state",
+      "request": "initial",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "The attestation names the answer's state.",
+      "provider": {
+        "now": 1790000061
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "taskId": "00000000-0000-4000-8000-00000000a001",
+          "dispatchHash": "0x68df0a341c25d30f3e22b9585038fa7f0abd2a19f6de59ca88df83e9978a282f",
+          "state": "completed",
+          "operations": {
+            "schemaVersion": 1,
+            "revision": 0,
+            "observedAt": 1790000061,
+            "fulfillment": null,
+            "support": null,
+            "recovery": null
+          },
+          "signature": "0x5301522c5599b41c5e52845f934b0292a5ef0a72c9fd7c1d69ed1c3fede5e85b78d02f9f82650e996d0ec822583df8e45e7a6aef99caa23d445e6f1bff8d77491c",
+          "terminalAttestation": {
+            "payload": {
+              "taskId": "00000000-0000-4000-8000-00000000a001",
+              "dispatchHash": "0x68df0a341c25d30f3e22b9585038fa7f0abd2a19f6de59ca88df83e9978a282f",
+              "state": "failed",
+              "resultHash": "0x24656d0d9dcb863d5fdbf82efbd143139ad7e904ff2cadadc91b39e3552978eb",
+              "completedAt": 1790000061
+            },
+            "signature": "0xd2a51d4c3ba1681b8497955f5212dd1d920ec1c9a5b771d44d24759ffbfea38a6699adbcdce58f8c01a33627459e96bac81a20474532ad00a54a9e84bc4564121c"
+          }
+        }
+      },
+      "gateway": {
+        "orderState": "RELEASE_FINAL",
+        "receivedAt": 1790000061,
+        "verdict": "ambiguous",
+        "orderStateAfter": "DISPATCH_AMBIGUOUS"
+      }
+    },
+    {
+      "id": "rejected.attestation-completed-in-future",
+      "request": "initial",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "completedAt may lead the gateway's clock by at most 30 seconds.",
+      "provider": {
+        "now": 1790000061
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "taskId": "00000000-0000-4000-8000-00000000a001",
+          "dispatchHash": "0x68df0a341c25d30f3e22b9585038fa7f0abd2a19f6de59ca88df83e9978a282f",
+          "state": "completed",
+          "operations": {
+            "schemaVersion": 1,
+            "revision": 0,
+            "observedAt": 1790000061,
+            "fulfillment": null,
+            "support": null,
+            "recovery": null
+          },
+          "signature": "0x5301522c5599b41c5e52845f934b0292a5ef0a72c9fd7c1d69ed1c3fede5e85b78d02f9f82650e996d0ec822583df8e45e7a6aef99caa23d445e6f1bff8d77491c",
+          "terminalAttestation": {
+            "payload": {
+              "taskId": "00000000-0000-4000-8000-00000000a001",
+              "dispatchHash": "0x68df0a341c25d30f3e22b9585038fa7f0abd2a19f6de59ca88df83e9978a282f",
+              "state": "completed",
+              "resultHash": "0x24656d0d9dcb863d5fdbf82efbd143139ad7e904ff2cadadc91b39e3552978eb",
+              "completedAt": 1790000092
+            },
+            "signature": "0x2befb5d7ffb49fe969d886186031921e563bcc7689087ba7d034ebefd0873f03432f8e9b4db34377df61580df4bdfa02298279eb59c51772f084595cc4804d8e1c"
+          }
+        }
+      },
+      "gateway": {
+        "orderState": "RELEASE_FINAL",
+        "receivedAt": 1790000061,
+        "verdict": "ambiguous",
+        "orderStateAfter": "DISPATCH_AMBIGUOUS"
+      }
+    },
+    {
+      "id": "rejected.attestation-changed-after-signing",
+      "request": "initial",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "The attestation signature covers its whole payload.",
+      "provider": {
+        "now": 1790000061
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "taskId": "00000000-0000-4000-8000-00000000a001",
+          "dispatchHash": "0x68df0a341c25d30f3e22b9585038fa7f0abd2a19f6de59ca88df83e9978a282f",
+          "state": "completed",
+          "operations": {
+            "schemaVersion": 1,
+            "revision": 0,
+            "observedAt": 1790000061,
+            "fulfillment": null,
+            "support": null,
+            "recovery": null
+          },
+          "signature": "0x5301522c5599b41c5e52845f934b0292a5ef0a72c9fd7c1d69ed1c3fede5e85b78d02f9f82650e996d0ec822583df8e45e7a6aef99caa23d445e6f1bff8d77491c",
+          "terminalAttestation": {
+            "payload": {
+              "taskId": "00000000-0000-4000-8000-00000000a001",
+              "dispatchHash": "0x68df0a341c25d30f3e22b9585038fa7f0abd2a19f6de59ca88df83e9978a282f",
+              "state": "completed",
+              "resultHash": "0xa334413221ef185199dae191658c690300446c02cbdaac87dde7364b1980b94c",
+              "completedAt": 1790000061
+            },
+            "signature": "0xdba30ceef2dc4ebd58c09c2e782fdbd626368890fbcf3caa574f33d42ec746f3510480fcd66a6db40eb6299c1ff8706a58983a8388ba4f545b5a094e50ea7d9a1c"
+          }
+        }
+      },
+      "gateway": {
+        "orderState": "RELEASE_FINAL",
+        "receivedAt": 1790000061,
+        "verdict": "ambiguous",
+        "orderStateAfter": "DISPATCH_AMBIGUOUS"
+      }
+    },
+    {
+      "id": "rejected.lifecycle-form-attestation",
+      "request": "initial",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "Cross-type reuse: a lifecycle attestation (orderId instead of dispatchHash) is not a dispatch attestation.",
+      "provider": {
+        "now": 1790000061
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "taskId": "00000000-0000-4000-8000-00000000a001",
+          "dispatchHash": "0x68df0a341c25d30f3e22b9585038fa7f0abd2a19f6de59ca88df83e9978a282f",
+          "state": "completed",
+          "operations": {
+            "schemaVersion": 1,
+            "revision": 0,
+            "observedAt": 1790000061,
+            "fulfillment": null,
+            "support": null,
+            "recovery": null
+          },
+          "signature": "0x5301522c5599b41c5e52845f934b0292a5ef0a72c9fd7c1d69ed1c3fede5e85b78d02f9f82650e996d0ec822583df8e45e7a6aef99caa23d445e6f1bff8d77491c",
+          "terminalAttestation": {
+            "payload": {
+              "orderId": "ord_00000000-0000-4000-8000-000000000001",
+              "taskId": "00000000-0000-4000-8000-00000000a001",
+              "state": "completed",
+              "resultHash": "0x24656d0d9dcb863d5fdbf82efbd143139ad7e904ff2cadadc91b39e3552978eb",
+              "completedAt": 1790000061
+            },
+            "signature": "0xbb522dae17e5bd34db8d8859c1071877cbb8452ad217e81d8925a2c085f7636a43e7e3678c105b33bd5c2bf4c66f4aac0737d7d0bca511e885e8f54fc1890ac91c"
+          }
+        }
+      },
+      "gateway": {
+        "orderState": "RELEASE_FINAL",
+        "receivedAt": 1790000061,
+        "verdict": "ambiguous",
+        "orderStateAfter": "DISPATCH_AMBIGUOUS"
+      }
+    },
+    {
+      "id": "rejected.quote-answer-reused",
+      "request": "initial",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "Cross-type reuse: a signed quote answer is not a dispatch answer.",
+      "provider": {
+        "now": 1790000061
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "outcomeId": "create-note",
+          "listingManifestHash": "0x2efa3883986e0ef9f11acf05ad5c70f9da45b5293026344c0b38c87a7319e784",
+          "requestHash": "0x1bf2ac01775ea9f4293cb261f84a0f40d93f45a68e3e26bfdbcbd1ebdeb0e708",
+          "grossAmount": "250000",
+          "payer": "0x52a321854c93234c5281fe3f3846dd817784343f",
+          "issuedAt": 1790000000,
+          "validBefore": 1790000120,
+          "signature": "0x831c58f70bb34355d80262c47bdbb0d3ee8c6817936b9a24a4d77ae01ca63a4257f4b54b9f4826ef890364f12b1bd666017b16d627b409a3aee1f9e4ebea691d1b"
+        }
+      },
+      "gateway": {
+        "orderState": "RELEASE_FINAL",
+        "receivedAt": 1790000061,
+        "verdict": "ambiguous",
+        "orderStateAfter": "DISPATCH_AMBIGUOUS"
+      }
+    },
+    {
+      "id": "rejected.duplicate-key",
+      "request": "initial",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "A body with a duplicate key is refused.",
+      "provider": {
+        "now": 1790000061
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json"
+        },
+        "bodyText": "{\"state\":\"completed\",\"taskId\":\"00000000-0000-4000-8000-00000000a001\",\"dispatchHash\":\"0x68df0a341c25d30f3e22b9585038fa7f0abd2a19f6de59ca88df83e9978a282f\",\"state\":\"working\",\"operations\":{\"schemaVersion\":1,\"revision\":0,\"observedAt\":1790000061,\"fulfillment\":null,\"support\":null,\"recovery\":null},\"signature\":\"0x6ed27fd5b5163d02a21f54a03529b6a648463fe77bc3d13fad9759f56706fd2c463d804d297f0a9cff2b6108eb81b3cfe797738f55fdcd5845eaf4c9f21951de1b\"}"
+      },
+      "gateway": {
+        "orderState": "RELEASE_FINAL",
+        "receivedAt": 1790000061,
+        "verdict": "ambiguous",
+        "orderStateAfter": "DISPATCH_AMBIGUOUS"
+      }
+    },
+    {
+      "id": "rejected.compressed",
+      "request": "initial",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "A compressed body is refused before it is read.",
+      "provider": {
+        "now": 1790000061
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json",
+          "content-encoding": "gzip"
+        },
+        "body": {
+          "taskId": "00000000-0000-4000-8000-00000000a001",
+          "dispatchHash": "0x68df0a341c25d30f3e22b9585038fa7f0abd2a19f6de59ca88df83e9978a282f",
+          "state": "working",
+          "operations": {
+            "schemaVersion": 1,
+            "revision": 0,
+            "observedAt": 1790000061,
+            "fulfillment": null,
+            "support": null,
+            "recovery": null
+          },
+          "signature": "0x6ed27fd5b5163d02a21f54a03529b6a648463fe77bc3d13fad9759f56706fd2c463d804d297f0a9cff2b6108eb81b3cfe797738f55fdcd5845eaf4c9f21951de1b"
+        },
+        "bodyEncoding": "gzip"
+      },
+      "gateway": {
+        "orderState": "RELEASE_FINAL",
+        "receivedAt": 1790000061,
+        "verdict": "ambiguous",
+        "orderStateAfter": "DISPATCH_AMBIGUOUS"
+      }
+    },
+    {
+      "id": "rejected.text-plain",
+      "request": "initial",
+      "appliesTo": [
+        "daski-io/provider",
+        "daski-io/provider-full"
+      ],
+      "purpose": "Only application/json is read.",
+      "provider": {
+        "now": 1790000061
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "text/plain"
+        },
+        "bodyText": "{\"taskId\":\"00000000-0000-4000-8000-00000000a001\",\"dispatchHash\":\"0x68df0a341c25d30f3e22b9585038fa7f0abd2a19f6de59ca88df83e9978a282f\",\"state\":\"working\",\"operations\":{\"schemaVersion\":1,\"revision\":0,\"observedAt\":1790000061,\"fulfillment\":null,\"support\":null,\"recovery\":null},\"signature\":\"0x6ed27fd5b5163d02a21f54a03529b6a648463fe77bc3d13fad9759f56706fd2c463d804d297f0a9cff2b6108eb81b3cfe797738f55fdcd5845eaf4c9f21951de1b\"}"
+      },
+      "gateway": {
+        "orderState": "RELEASE_FINAL",
+        "receivedAt": 1790000061,
+        "verdict": "ambiguous",
+        "orderStateAfter": "DISPATCH_AMBIGUOUS"
+      }
+    }
+  ]
+}

@@ -34,6 +34,23 @@ the retained production coordinator promotes `main`.
   for the provider lifecycle body). `test/wire-fixtures/index.json` lists which
   consumer vendors which file; the coordinator fails PREP when a vendored copy
   differs byte for byte.
+- A change to what the gateway sends a provider or accepts from one (quote,
+  intake, dispatch, dispatch status, lifecycle, operations, terminal evidence,
+  lifecycle refusals, fulfillment deadlines) regenerates
+  `test/fixtures/provider-wire/`
+  (`UPDATE_PROVIDER_WIRE_FIXTURES=1 npx vitest run test/providerWireFixtures.test.ts`)
+  and keeps `test/providerWireConsumer.test.ts` green, which holds every
+  provider answer in the set to its declared verdict under the gateway's own
+  validation. The set is synthetic: test-only keys derived from public
+  labels, `.example` endpoints, a fixed clock and planned nonces, with every
+  file's sha256 in its `manifest.json`. `daski-io/provider` and
+  `daski-io/provider-full` vendor the directory verbatim at
+  `test/fixtures/provider-wire/`, record the gateway commit and the sha256 of
+  `manifest.json` in `test/fixtures/provider-wire.source.json`, verify the
+  checksums offline in CI and never download fixtures at test time (the
+  directory's `README.md` describes the procedure). Gateway maintainers own
+  this contract and both starter maintainers review a change to it; a release
+  that changes it names the new gateway commit for the starters to re-vendor.
 - A migration in `src/db/migrations/` ships with its compatibility test: the
   complete clean-schema run in `test/migrationsPostgres.test.ts` must still
   pass, a migration that reshapes existing rows gets a PostgreSQL-backed test
@@ -74,8 +91,9 @@ CI and Release image runs both passed.
 | --- | --- |
 | CI `validate` / Build | `npm run build` compiles `src/` with `tsconfig.build.json`, copies migrations into `dist/`, and records `dist/build-identity.json` binding source inputs, lockfile, Dockerfile, outputs and toolchain. |
 | CI `validate` / Typecheck (src + test) | `npm run typecheck` type-checks the whole repository including `test/`, so the mock layer cannot drift from the real interfaces. |
-| CI `validate` / Test | `npm test` runs the vitest suite against PostgreSQL 16 (pgvector) on port 5433: complete clean-schema migrations, PostgreSQL-backed state and admission behaviour, signed artifacts, and `test/wireFixtures.test.ts` asserting that the committed fixtures equal what the real builders emit. |
+| CI `validate` / Test | `npm test` runs the vitest suite against PostgreSQL 16 (pgvector) on port 5433: complete clean-schema migrations, PostgreSQL-backed state and admission behaviour, signed artifacts, `test/wireFixtures.test.ts` asserting that the committed fixtures equal what the real builders emit, and `test/providerWireConsumer.test.ts` with `test/providerWireOperationsPostgres.test.ts` running every provider-wire answer through the gateway's own quote, intake, dispatch, dispatch status, lifecycle, operations and deadline code. |
 | CI `validate` / Wire fixtures are freshly generated and committed | Regenerates `test/wire-fixtures/` with `UPDATE_WIRE_FIXTURES=1` and fails on any byte difference (`git diff --exit-code -- test/wire-fixtures`) or untracked fixture, so the committed files are exactly what the builders emit and the consumers' vendored copies compare byte for byte. |
+| CI `validate` / Provider wire fixtures are freshly generated and committed | Regenerates `test/fixtures/provider-wire/` with `UPDATE_PROVIDER_WIRE_FIXTURES=1` and fails on any byte difference (`git diff --exit-code -- test/fixtures/provider-wire`) or untracked file, so the files and `manifest.json` checksums the starters pin are exactly what the gateway sends and its reference provider answers. |
 | CI `validate` / Boot actual Dockerfile image on representative existing state | Builds the Dockerfile for the candidate SHA and runs `npm run test:startup -- --image ...`: the image's build identity matches the local build, and `dist/index.js` boots read-only on migrated representative state with split migration/runtime roles until both health endpoints answer; then again with `--fixture post-epoch`, the state an epoch reset leaves (every migration applied, only the four lineage tables `standard_rail_artifacts`, `standard_provider_servicing_admissions`, `standard_service_registrations` and `standard_service_listings` populated, every other table empty) with a manifest that chains onto those rows, the class of the 2026-09-15 boot failure. |
 | CI `validate` / Actual serving prior runtime on expanded schema | Runs on every push and pull request. `scripts/reliability/prior-runtime.sh <base>` with `base` pinned in `ci.yml` to the gateway commit production serves (`2e4bb7acf2b6e01697c8692d40b258c6f22bf0a8`, observed read-only on 2026-10-05 and updated through review when the deployed baseline changes, never inferred from `develop`) builds that commit in a temporary worktree and runs the startup proof with `--prior-root`: the candidate's complete migrations prepare a disposable database, and the serving commit's compiled `dist/index.js` boots on it, with state its own fixture signs, until both health endpoints answer. `.tmp/gateway-prior-runtime-evidence.json` records both build identities, the `prior-runtime-expanded-schema` check and the migrations only the candidate carries; release qualification requires its `priorIdentity.sourceSha` to be the serving commit. |
 | CI `validate` / Prior runtime on expanded schema (migration changes) | Runs only when `git diff --name-only <base> HEAD` lists a file under `src/db/migrations/`; the base is the pull request base, else the head the push replaced, else the parent commit. The same script proves that base commit's runtime boots on the candidate's schema and writes `.tmp/gateway-prior-head-runtime-evidence.json`. |

@@ -1,0 +1,523 @@
+{
+  "schemaVersion": 1,
+  "synthetic": "Every identifier, key, URL, amount and chain position here is invented for these fixtures; none exists on any network.",
+  "environment": "testnet",
+  "chainId": 84532,
+  "times": {
+    "intake": 1789999940,
+    "quote": 1790000000,
+    "quoteReceived": 1790000001,
+    "depositBlock": 1790000030,
+    "releaseBlock": 1790000034,
+    "releaseObserved": 1790000050,
+    "dispatch": 1790000060,
+    "dispatchAnswered": 1790000061,
+    "retry": 1790000070,
+    "noClaimWithinGrace": 1790000419,
+    "noClaimAfterGrace": 1790000420,
+    "statusWorking": 1790000600,
+    "midway": 1790000900,
+    "completed": 1790003600,
+    "statusCompleted": 1790003700,
+    "lifecycleCompleted": 1790004000,
+    "support": 1790004200,
+    "delayedDispatch": 1790093600
+  },
+  "gateway": {
+    "publicUrl": "https://gateway.example",
+    "audience": "https://gateway.example",
+    "signers": {
+      "gateway-dispatch": "0xcD2843D358786e4906ecA1E889C7Fb8d3174fE98",
+      "gateway-quote": "0x3C5a5eC86C046B930A6E238b0843E6ef89001195",
+      "gateway-lifecycle": "0xe0e61a0d749777fb54A117De56D707238c1D3AA9"
+    },
+    "reputationContract": "0x9b5AA6961eC02F0bB6185047FF72af37c68e179f",
+    "reputationOutcomeSchemaUid": "0x0aba7e41cb05ad3911e8e0a4fcdd5aa5e6033e65bc8827f69b2da8a8cdd74f3a",
+    "activeRailProfileHash": "0x533df1c2dfc04f1070c2ac142f340a84be0afcce45c66945b6d56d4b8ed16b0a"
+  },
+  "provider": {
+    "providerAgentId": "4242",
+    "audience": "https://provider.example",
+    "controlProfile": {
+      "providerAgentId": "4242",
+      "providerAudience": "https://provider.example",
+      "origin": "https://provider.example",
+      "quoteUrl": "https://provider.example/standard-rail/quote",
+      "dispatchUrl": "https://provider.example/standard-rail/dispatch",
+      "dispatchStatusUrl": "https://provider.example/standard-rail/dispatch/status",
+      "lifecycleUrl": "https://provider.example/standard-rail/lifecycle",
+      "timeoutMs": 10000,
+      "maxResponseBytes": 65536
+    },
+    "controlProfileHash": "0x3f4c52f6d596c9911e0bf03aab74941011a1792d9c70086fe0ef06dc76f5734c",
+    "authorityKey": "0x8aa1C85a57A852fC365b0cFad757140a99F3EF8a",
+    "terminalAttestationKey": "0x9203340e79D61EC5270d1C0A592Badb9F6548e91",
+    "payee": "0x557FC1762BBa493b1da9781868b5C2569Cf21B91",
+    "controlledWallets": []
+  },
+  "listings": {
+    "fixed": {
+      "outcomeId": "create-note",
+      "skillId": "create-note",
+      "serviceId": "0x7d456d91e036748dfdb7b570d333491cd2000bc86db43fbf95047d166cb7a864",
+      "listingManifestHash": "0x2efa3883986e0ef9f11acf05ad5c70f9da45b5293026344c0b38c87a7319e784",
+      "providerOfferHash": "0xf097bfa76765936f5bbcd78cfd23cea437dc6ed4939a66603a45a9e1e2e66bd8",
+      "bindingProfile": "recipe-bound-v2",
+      "pricingMode": "fixed",
+      "fixedGrossAmount": "250000",
+      "commissionBps": 500,
+      "token": "0xc648DB599F8eca8F96854B7a8D16F8f3552C0428",
+      "splitter": "0xC88C22F5501023b81A291959c0C3c7bA8Be57a37",
+      "providerPayee": "0x557FC1762BBa493b1da9781868b5C2569Cf21B91",
+      "daskiCommissionReceiver": "0x8809FDDB6A4EA133D9672506A21CE7c881064EEB",
+      "absoluteResourceUri": "https://gateway.example/outcomes/4242/create-note",
+      "requestSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "title"
+        ],
+        "properties": {
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80
+          },
+          "body": {
+            "type": "string",
+            "maxLength": 2000
+          }
+        }
+      },
+      "responseSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "status"
+        ],
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "completed"
+            ]
+          },
+          "message": {
+            "type": "string",
+            "maxLength": 500
+          },
+          "artifacts": {
+            "type": "array",
+            "maxItems": 4,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "name",
+                "data"
+              ],
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 64
+                },
+                "data": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "note",
+                    "title",
+                    "characters"
+                  ],
+                  "properties": {
+                    "note": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 128
+                    },
+                    "title": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 80
+                    },
+                    "characters": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 2000
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "deadlinePolicy": {
+        "draftSeconds": 300,
+        "minimumPaymentWindowSeconds": 30,
+        "verificationSeconds": 120,
+        "settlementEvidenceSeconds": 900,
+        "releaseEvidenceSeconds": 900,
+        "dispatchSeconds": 300,
+        "fulfillmentSeconds": 2592000
+      },
+      "quotePolicy": null
+    },
+    "dynamic": {
+      "outcomeId": "create-quoted-note",
+      "skillId": "create-quoted-note",
+      "serviceId": "0x7d456d91e036748dfdb7b570d333491cd2000bc86db43fbf95047d166cb7a864",
+      "listingManifestHash": "0x12d55826595f179b93fb43234d3bfd570754ab0031df206cd8083fda1b17bab4",
+      "providerOfferHash": "0x016f7e6cab5eb28fe779d307a74b96ea424ee204934b4a73bba3276a33ca69a0",
+      "bindingProfile": "recipe-bound-v2",
+      "pricingMode": "dynamic",
+      "fixedGrossAmount": "0",
+      "commissionBps": 500,
+      "token": "0xc648DB599F8eca8F96854B7a8D16F8f3552C0428",
+      "splitter": "0xAe6F654Fb4d4CF8F64AdF40b35e2aCCe9e1cA532",
+      "providerPayee": "0x557FC1762BBa493b1da9781868b5C2569Cf21B91",
+      "daskiCommissionReceiver": "0x8809FDDB6A4EA133D9672506A21CE7c881064EEB",
+      "absoluteResourceUri": "https://gateway.example/outcomes/4242/create-quoted-note",
+      "requestSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "title"
+        ],
+        "properties": {
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80
+          },
+          "body": {
+            "type": "string",
+            "maxLength": 2000
+          }
+        }
+      },
+      "responseSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "status"
+        ],
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "completed"
+            ]
+          },
+          "message": {
+            "type": "string",
+            "maxLength": 500
+          },
+          "artifacts": {
+            "type": "array",
+            "maxItems": 4,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "name",
+                "data"
+              ],
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 64
+                },
+                "data": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "note",
+                    "title",
+                    "characters"
+                  ],
+                  "properties": {
+                    "note": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 128
+                    },
+                    "title": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 80
+                    },
+                    "characters": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 2000
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "deadlinePolicy": {
+        "draftSeconds": 300,
+        "minimumPaymentWindowSeconds": 30,
+        "verificationSeconds": 120,
+        "settlementEvidenceSeconds": 900,
+        "releaseEvidenceSeconds": 900,
+        "dispatchSeconds": 300,
+        "fulfillmentSeconds": 2592000
+      },
+      "quotePolicy": {
+        "maximumLifetimeSeconds": 180,
+        "minimumPaymentWindowSeconds": 30,
+        "personalizedPricing": false
+      }
+    }
+  },
+  "order": {
+    "orderId": "ord_00000000-0000-4000-8000-000000000001",
+    "orderKey": "0x6ca8ece73f2c70035c9d42d864493af5223ba77205724148ce886556a5de4651",
+    "orderHandle": "providerWireFixtureOrderHandle-000000000001",
+    "providerTaskId": "00000000-0000-4000-8000-00000000a001",
+    "payer": "0x52a321854C93234C5281Fe3f3846Dd817784343F",
+    "quotePayer": "0x52a321854c93234c5281fe3f3846dd817784343f",
+    "request": {
+      "title": "Synthetic fixture note",
+      "body": "Written by the gateway's provider-wire fixtures."
+    },
+    "requestHash": "0x1bf2ac01775ea9f4293cb261f84a0f40d93f45a68e3e26bfdbcbd1ebdeb0e708",
+    "canonicalRequestHash": "0x6dafea8cb3553869537f4f4643fb31f6a478838f81967374cbf496e0dfd7cf51",
+    "providerQuoteHash": "0xaac6fa3c4af39539095331e507dea96b875b26084ffc9fafb27e6bed59b44d5c",
+    "quoteHash": "0xeea01f1009984e1a47d440e6177fbfe5811b1c9090f13ab721aeadb0db5b56ad",
+    "orderNonce": "0x698715df0f12815c2899be7896c96638fd58b0d8c5c7ddcf9b53d14a51ada70d",
+    "facilitatorConfirmationHash": "0x2ddd22f6e1f3d2ed00b20bef98a41526021ecee8cff64c696a0e9364b3cd6f59",
+    "payment": {
+      "grossAmount": "250000",
+      "providerNetAmount": "237500",
+      "daskiCommissionAmount": "12500",
+      "deposit": {
+        "transactionHash": "0x570dd5fa19566e259fc94b547cda3dd2f7e5c4aa7198d8dd35a1ec2582249549",
+        "blockNumber": "35000000",
+        "blockHash": "0x0636b0db68d0e1c0baa37e797d32a1dd05f60df2bac4aa835f78627143ee6d62",
+        "transactionIndex": 7,
+        "logIndex": 12,
+        "blockTimestamp": 1790000030
+      },
+      "release": {
+        "transactionHash": "0x0bc3938a491551660ffc731adb1749c606ccdc8c159aa4805d23325f03f41459",
+        "blockNumber": "35000002",
+        "blockHash": "0xca4c191ec965ecf81ae95af29486b9cc95bc20bb17b2acefe39c4198f44bea3f",
+        "transactionIndex": 3,
+        "logIndex": 5,
+        "releaseSequence": "1",
+        "blockTimestamp": 1790000034
+      }
+    }
+  },
+  "results": {
+    "serviceResult": {
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "status"
+        ],
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "completed"
+            ]
+          },
+          "message": {
+            "type": "string",
+            "maxLength": 500
+          },
+          "artifacts": {
+            "type": "array",
+            "maxItems": 4,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "name",
+                "data"
+              ],
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 64
+                },
+                "data": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "note",
+                    "title",
+                    "characters"
+                  ],
+                  "properties": {
+                    "note": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 128
+                    },
+                    "title": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 80
+                    },
+                    "characters": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 2000
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "completed": {
+        "status": "completed",
+        "message": "Note created.",
+        "artifacts": [
+          {
+            "name": "note",
+            "data": {
+              "note": "note-0001",
+              "title": "Synthetic fixture note",
+              "characters": 48
+            }
+          }
+        ]
+      },
+      "failed": {
+        "status": "failed",
+        "errorCode": "service_execution_failed"
+      }
+    },
+    "taskProjection": {
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "note",
+          "title",
+          "characters"
+        ],
+        "properties": {
+          "note": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80
+          },
+          "characters": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 2000
+          },
+          "accessCode": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          }
+        }
+      },
+      "completed": {
+        "id": "00000000-0000-4000-8000-00000000a001",
+        "status": {
+          "state": "TASK_STATE_COMPLETED",
+          "message": {
+            "role": "ROLE_AGENT",
+            "parts": [
+              {
+                "kind": "text",
+                "text": "Note created."
+              }
+            ]
+          }
+        },
+        "artifacts": [
+          {
+            "artifactId": "note",
+            "name": "note_created",
+            "parts": [
+              {
+                "kind": "data",
+                "data": {
+                  "note": "note-0001",
+                  "title": "Synthetic fixture note",
+                  "characters": 48
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "revealed": {
+        "id": "00000000-0000-4000-8000-00000000a001",
+        "status": {
+          "state": "TASK_STATE_COMPLETED",
+          "message": {
+            "role": "ROLE_AGENT",
+            "parts": [
+              {
+                "kind": "text",
+                "text": "Note created."
+              }
+            ]
+          }
+        },
+        "artifacts": [
+          {
+            "artifactId": "note",
+            "name": "note_created",
+            "parts": [
+              {
+                "kind": "data",
+                "data": {
+                  "note": "note-0001",
+                  "title": "Synthetic fixture note",
+                  "characters": 48,
+                  "accessCode": "synthetic-access-code-0001"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "canceled": {
+        "id": "00000000-0000-4000-8000-00000000a001",
+        "status": {
+          "state": "TASK_STATE_CANCELED",
+          "message": {
+            "role": "ROLE_AGENT",
+            "parts": [
+              {
+                "kind": "text",
+                "text": "Canceled at the buyer's request."
+              }
+            ]
+          }
+        }
+      }
+    }
+  },
+  "support": {
+    "requestId": "support-0001",
+    "messageId": "00000000-0000-4000-8000-0000000000b1",
+    "reviewId": "00000000-0000-4000-8000-0000000000b2",
+    "acceptedAt": 1790004200
+  }
+}
