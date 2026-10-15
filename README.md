@@ -389,7 +389,12 @@ failure still takes effect immediately. An expired deadline fails the gateway
 order without cancelling or refunding the provider's task, whose later
 completion stays readable. Operators can
 [revive a deadline-failed order](docs/operator-recovery.md) when its existing
-provider task is still active.
+provider task is still active. No dispatch envelope, first or fresh, is signed
+for an order more than 30 days after its quote expired
+(`MAX_FIRST_DISPATCH_QUOTE_AGE_SECONDS`): the order is held instead
+(`LEGAL_HOLD`, `first_dispatch_quote_age_exceeded`), and providers may retire a
+quote once that bound and their own margin have passed
+([operator recovery](docs/operator-recovery.md)).
 
 Admitted DNS and capacity waits appear in signed order `operations.fulfillment`.
 They pause the fulfillment clock; stale progress creates an incident, without

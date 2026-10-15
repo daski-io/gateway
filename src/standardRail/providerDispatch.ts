@@ -8,6 +8,7 @@ import type { Config } from "../config.js";
 import { discardResponseBody, readBoundedJsonResponse } from "./boundedJson.js";
 import { canonicalHash } from "./canonical.js";
 import type { StandardRailConfig } from "./config.js";
+import { MAX_FIRST_DISPATCH_QUOTE_AGE_SECONDS } from "./dispatchQuoteAge.js";
 import type { EvidenceResult, ReleaseEvidenceResult } from "./evidence.js";
 import { StandardRailJournal } from "./journal.js";
 import { isReputationEligiblePayer } from "./reputationEligibility.js";
@@ -175,8 +176,16 @@ export class StandardProviderDispatch {
         canonicalHash(dispatch.payload) !== canonicalHash(expectedPayload)
       ) throw new Error("Persisted dispatch does not match the order");
     } else {
-      const nonce = `0x${randomBytes(32).toString("hex")}` as Hex;
       const now = Math.floor(Date.now() / 1_000);
+      // Providers retire a quote once no new dispatch for it can arrive: past
+      // the bound nothing is signed, persisted or sent, and the paid order
+      // waits for an operator. The envelope's issuedAt is this same instant.
+      const quoteValidBefore = order.quote.payload.validBefore;
+      if (!Number.isSafeInteger(quoteValidBefore)) throw new Error("Order quote validity is invalid");
+      if (now > quoteValidBefore + MAX_FIRST_DISPATCH_QUOTE_AGE_SECONDS) {
+        return this.store.transition(order, "LEGAL_HOLD", "first_dispatch_quote_age_exceeded");
+      }
+      const nonce = `0x${randomBytes(32).toString("hex")}` as Hex;
       const payload = buildPayload(
         nonce,
         now,

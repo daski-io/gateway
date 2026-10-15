@@ -13,7 +13,8 @@ driver must finish first. A failed precondition returns HTTP 409 with
 The action records exactly one `PROVIDER_FAILED` → `RELEASE_FINAL` transition with
 reason `operator_redispatch`, archives the previous claim in the audit record and
 reserves a new claim ID. It returns `{ orderId, state: "RELEASE_FINAL", claimId }`.
-Recovery creates the signed dispatch with a fresh nonce on its next due tick.
+Recovery creates the signed dispatch with a fresh nonce on its next due tick,
+within the first-dispatch quote age bound below.
 Repeated calls after revival return 409. Failed orders retain their terminal
 payment and reputation state. Signed reads can report a separate provider
 recovery without redispatching the order.
@@ -33,6 +34,8 @@ provider states and unavailable or invalid status responses return 409 with
 A redispatch without an existing task starts a fresh fulfillment window at the
 operator action; the original release evidence is preserved. This lets an already expired order
 be retried without immediately failing against its original release deadline.
+It does not extend the quote age bound: an order whose quote expired more than
+30 days before that tick is held instead of dispatched.
 
 `POST /operator/v1/reputation/:operationId/retry` first reconciles stored
 transactions against the chain, then brings pending work forward. A transaction
@@ -74,7 +77,8 @@ envelopes after 10, 20, 40, then 60 seconds, bounded by the checkout snapshot's
 explicit revival). This initial dispatch window is separate from the fulfillment
 deadline below and does not use a recorded longer duration. A five-minute
 envelope expiry does not end the window, so a timely-paid order is still
-dispatched, with a fresh envelope, days after its quote expired. Transport
+dispatched, with a fresh envelope, days after its quote expired, up to the
+quote age bound below. Transport
 failures, timeouts and responses without a usable JSON error remain ambiguous;
 recovery only polls their existing dispatch hash. Once that envelope has expired
 (its `validBefore` plus 60 seconds), a status answer of 404 with a JSON `error`
@@ -86,6 +90,22 @@ reason }`) and retries with a fresh envelope like any refusal. The provider keep
 at most one task per order. Before expiry, or on any other status answer, recovery
 keeps polling. Each recovery batch visits an
 order at most once, including when a status query leaves its state unchanged.
+
+No new dispatch envelope is signed for an order more than 2,592,000 seconds
+(30 days, `MAX_FIRST_DISPATCH_QUOTE_AGE_SECONDS`) after its quote's
+`validBefore`: not the first dispatch, a fresh envelope after a refusal or a
+no-claim answer, nor the first dispatch after an operator redispatch. The
+gateway then signs, records and sends nothing, and moves the order from
+`RELEASE_FINAL`, `DISPATCH_STARTED` or `DISPATCH_AMBIGUOUS` to `LEGAL_HOLD` with
+reason `first_dispatch_quote_age_exceeded`. At exactly 30 days the envelope is still
+sent; its `issuedAt` is the instant compared, so a provider that applies the
+same bound to the quote a dispatch carries never refuses one the gateway sends.
+Status polls of an envelope already sent continue past the bound. Providers
+rely on this guarantee to stop treating a quote as an obligation, and to prune
+it, once the bound and their own margin have passed. `LEGAL_HOLD` has no exit,
+so the redispatch endpoint does not apply to such an order. Its release is
+proven, so it does not stop the listing's other purchases settling; they wait
+only for a hold that never proved its release.
 
 The default fulfillment deadline is 2,592,000 seconds (30 days). An accepted
 order in `DISPATCHED` or `INPUT_REQUIRED` fails at its original dispatch

@@ -5,7 +5,10 @@ import { canonicalHash } from "../src/standardRail/canonical.js";
 import { privateKeyToAccount } from "viem/accounts";
 import { describe, expect, it, vi } from "vitest";
 import type { Hex } from "viem";
+import { MAX_FIRST_DISPATCH_QUOTE_AGE_SECONDS } from "../src/standardRail/dispatchQuoteAge.js";
 import { StandardProviderDispatch } from "../src/standardRail/providerDispatch.js";
+import { signEnvelope } from "../src/standardRail/signing.js";
+import { assertTransition } from "../src/standardRail/stateMachine.js";
 import type { EvidenceResult, ReleaseEvidenceResult } from "../src/standardRail/evidence.js";
 import type {
   SignedEnvelope,
@@ -17,6 +20,12 @@ import {
   parseStandardRailDispatchV2,
   STANDARD_DISPATCH_V2_KEYS,
 } from "../src/standardRail/wireContracts.js";
+
+// Signing is unchanged; the quote-age tests check that nothing was signed.
+vi.mock("../src/standardRail/signing.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/standardRail/signing.js")>();
+  return { ...actual, signEnvelope: vi.fn(actual.signEnvelope) };
+});
 
 const hash = (byte: string): Hex => `0x${byte.repeat(64)}` as Hex;
 const address = (byte: string): Hex => `0x${byte.repeat(40)}` as Hex;
@@ -80,7 +89,8 @@ function listing(): StandardListing {
   } as unknown as StandardListing;
 }
 
-function order(): StandardOrderRecord {
+/** A paid order whose QuoteV1 expired at `quoteValidBefore` (by default two minutes from now). */
+function order(quoteValidBefore = Math.floor(Date.now() / 1_000) + 120): StandardOrderRecord {
   return {
     orderId: "order-1",
     orderKey: hash("3"),
@@ -98,7 +108,7 @@ function order(): StandardOrderRecord {
     grossAmount: "100",
     providerNetAmount: "90",
     daskiCommissionAmount: "10",
-    quote: { artifactType: "QuoteV1" },
+    quote: { artifactType: "QuoteV1", payload: { validBefore: quoteValidBefore } },
   } as unknown as StandardOrderRecord;
 }
 
@@ -666,6 +676,147 @@ describe("dispatch refusal recovery", () => {
         expect(provider.posted).toHaveLength(1);
         await expectOneFreshDispatch(driver, provider, current);
       } finally { vi.useRealTimers(); }
+    });
+  });
+
+  describe("first-dispatch quote age", () => {
+    // Whole seconds, so the bound's edge is an exact instant.
+    const start = new Date("2026-10-15T12:00:00.000Z");
+    const startSeconds = start.getTime() / 1_000;
+
+    async function accepted(dispatchHash: Hex): Promise<Response> {
+      const response = { taskId: "accepted-task", dispatchHash, state: "working",
+        operations: { schemaVersion: 1, revision: 0, observedAt: Math.floor(Date.now()/1000), fulfillment: null, support: null, recovery: null } };
+      const signature = await privateKeyToAccount(privateKey).signMessage({ message: { raw: canonicalHash(response) } });
+      return Response.json({ ...response, signature });
+    }
+
+    it("lets every state that signs a fresh envelope be held", () => {
+      for (const state of ["RELEASE_FINAL", "DISPATCH_STARTED", "DISPATCH_AMBIGUOUS"] as const) {
+        expect(() => assertTransition(state, "LEGAL_HOLD")).not.toThrow();
+      }
+    });
+
+    it("holds an order whose quote expired more than 30 days ago, signing, claiming and sending nothing", async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(start);
+      try {
+        const fetcher = vi.fn(async () => Response.json({}));
+        const driver = retrying(fetcher);
+        const aged = order(startSeconds - MAX_FIRST_DISPATCH_QUOTE_AGE_SECONDS - 1);
+        vi.mocked(signEnvelope).mockClear();
+        expect((await driver.dispatch(aged)).state).toBe("LEGAL_HOLD");
+        expect(driver.transition).toHaveBeenCalledExactlyOnceWith(aged, "LEGAL_HOLD", "first_dispatch_quote_age_exceeded");
+        expect(signEnvelope).not.toHaveBeenCalled();
+        expect(driver.claims).toHaveLength(0);
+        expect(fetcher).not.toHaveBeenCalled();
+      } finally { vi.useRealTimers(); }
+    });
+
+    it.each([["a day inside the bound", 86_400], ["exactly at the bound", 0]])(
+      "dispatches an order whose quote is %s", async (_case, remainingSeconds) => {
+        vi.useFakeTimers();
+        vi.setSystemTime(start);
+        try {
+          const fetcher = vi.fn(async (_url: string, init: RequestInit) =>
+            accepted(canonicalHash((JSON.parse(String(init.body)) as { dispatch: unknown }).dispatch)));
+          const driver = retrying(fetcher);
+          const quoteValidBefore = startSeconds - MAX_FIRST_DISPATCH_QUOTE_AGE_SECONDS + remainingSeconds;
+          expect((await driver.dispatch(order(quoteValidBefore))).state).toBe("DISPATCHED");
+          expect(fetcher).toHaveBeenCalledExactlyOnceWith("https://provider.example/dispatch", expect.objectContaining({ method: "POST" }));
+          // Providers judge the envelope's own issuedAt against the quote it carries.
+          expect(driver.claims).toHaveLength(1);
+          expect(driver.claims[0]!.payload.issuedAt - quoteValidBefore)
+            .toBe(MAX_FIRST_DISPATCH_QUOTE_AGE_SECONDS - remainingSeconds);
+        } finally { vi.useRealTimers(); }
+      },
+    );
+
+    it("holds a refused dispatch whose quote passed the bound before its retry fell due", async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(start);
+      try {
+        const fetcher = vi.fn(async () => Response.json({ error: "not_ready" }, { status: 409 }));
+        const driver = retrying(fetcher);
+        // Five seconds of the bound remain at the refused dispatch; its retry is due ten seconds later.
+        let current = await driver.dispatch(order(startSeconds - MAX_FIRST_DISPATCH_QUOTE_AGE_SECONDS + 5));
+        expect(current.state).toBe("DISPATCH_STARTED");
+        expect(driver.refusals).toHaveLength(1);
+        vi.setSystemTime(start.getTime() + 10_000);
+        vi.mocked(signEnvelope).mockClear();
+        current = await driver.dispatch(current);
+        expect(current.state).toBe("LEGAL_HOLD");
+        expect(driver.transition.mock.calls.map(([value, state, reason]) => [value.state, state, reason])).toEqual([
+          ["RELEASE_FINAL", "DISPATCH_STARTED", "dispatch_invocation_persisted"],
+          ["DISPATCH_STARTED", "LEGAL_HOLD", "first_dispatch_quote_age_exceeded"],
+        ]);
+        expect(signEnvelope).not.toHaveBeenCalled();
+        expect(driver.claims).toHaveLength(1);
+        expect(fetcher).toHaveBeenCalledOnce();
+      } finally { vi.useRealTimers(); }
+    });
+
+    it("holds an ambiguous dispatch the provider proved absent once its quote passed the bound", async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(start);
+      try {
+        const fetcher = vi.fn(async (url: string) => url.endsWith("/dispatch/status")
+          ? Response.json({ error: "dispatch_status_unavailable", reason: "outcome_policy" }, { status: 404 })
+          : new Response("upstream error", { status: 502 }));
+        const driver = retrying(fetcher);
+        // The bound passes 100 seconds after the first dispatch, while its envelope is still polled.
+        let current = await driver.dispatch(order(startSeconds - MAX_FIRST_DISPATCH_QUOTE_AGE_SECONDS + 100));
+        expect(current.state).toBe("DISPATCH_AMBIGUOUS");
+        // Past the envelope's validBefore and grace, the provider's no-claim answer proves it absent.
+        vi.setSystemTime(start.getTime() + 361_000);
+        current = await driver.dispatch(current);
+        expect(current.state).toBe("DISPATCH_AMBIGUOUS");
+        expect(driver.refusals).toHaveLength(1);
+        vi.setSystemTime(start.getTime() + 371_000);
+        vi.mocked(signEnvelope).mockClear();
+        current = await driver.dispatch(current);
+        expect(current.state).toBe("LEGAL_HOLD");
+        expect(driver.transition).toHaveBeenLastCalledWith(
+          expect.objectContaining({ state: "DISPATCH_AMBIGUOUS" }), "LEGAL_HOLD", "first_dispatch_quote_age_exceeded");
+        expect(signEnvelope).not.toHaveBeenCalled();
+        expect(driver.claims).toHaveLength(1);
+        expect(fetcher.mock.calls.map(([url]) => url))
+          .toEqual(["https://provider.example/dispatch", "https://provider.example/dispatch/status"]);
+      } finally { vi.useRealTimers(); }
+    });
+
+    it("keeps polling an envelope already sent, however far past the bound", async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(start);
+      try {
+        const fetcher = vi.fn(async (url: string, init: RequestInit) => {
+          // The edge lost the answer to a dispatch the provider accepted.
+          if (!url.endsWith("/dispatch/status")) throw new Error("upstream error");
+          const { query } = JSON.parse(String(init.body)) as { query: { payload: { dispatchHash: Hex } } };
+          return accepted(query.payload.dispatchHash);
+        });
+        const driver = retrying(fetcher);
+        let current = await driver.dispatch(order(startSeconds - MAX_FIRST_DISPATCH_QUOTE_AGE_SECONDS));
+        expect(current.state).toBe("DISPATCH_AMBIGUOUS");
+        vi.setSystemTime(start.getTime() + 86_400_000);
+        current = await driver.dispatch(current);
+        expect(current.state).toBe("DISPATCHED");
+        expect(fetcher).toHaveBeenLastCalledWith("https://provider.example/dispatch/status", expect.anything());
+        expect(driver.claims).toHaveLength(1);
+        expect(driver.transition.mock.calls.map(([, state]) => state))
+          .toEqual(["DISPATCH_STARTED", "DISPATCH_AMBIGUOUS", "DISPATCHED"]);
+      } finally { vi.useRealTimers(); }
+    });
+
+    it.each([Number.NaN, "1790000000"])("signs nothing for a quote whose validBefore is %s", async (validBefore) => {
+      const fetcher = vi.fn(async () => Response.json({}));
+      const driver = retrying(fetcher);
+      vi.mocked(signEnvelope).mockClear();
+      await expect(driver.dispatch(order(validBefore as number))).rejects.toThrow("Order quote validity is invalid");
+      expect(signEnvelope).not.toHaveBeenCalled();
+      expect(driver.claims).toHaveLength(0);
+      expect(driver.transition).not.toHaveBeenCalled();
+      expect(fetcher).not.toHaveBeenCalled();
     });
   });
 });

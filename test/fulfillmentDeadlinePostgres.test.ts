@@ -4,6 +4,7 @@ import { privateKeyToAccount } from "viem/accounts";
 import type { Hex } from "viem";
 import { createPool, runMigrations, type Pool } from "../src/db/pool.js";
 import { canonicalHash } from "../src/standardRail/canonical.js";
+import { MAX_FIRST_DISPATCH_QUOTE_AGE_SECONDS } from "../src/standardRail/dispatchQuoteAge.js";
 import type { EvidenceResult, ReleaseEvidenceResult } from "../src/standardRail/evidence.js";
 import { StandardRailIncidentStore } from "../src/standardRail/incidents.js";
 import { StandardRailJournal } from "../src/standardRail/journal.js";
@@ -112,7 +113,10 @@ async function dispatchEnvelope(n: number): Promise<SignedEnvelope<StandardRailD
   });
 }
 
-/** A paid order with its proven deposit and release, dispatched when its state says so. */
+/**
+ * A paid order with its proven deposit and release, dispatched when its state
+ * says so. Its quote expired as its release was observed.
+ */
 async function seed(pool: Pool, n: number, args: {
   state: "DISPATCHED" | "RELEASE_FINAL";
   fulfillmentSeconds: number;
@@ -124,20 +128,20 @@ async function seed(pool: Pool, n: number, args: {
   const handle = `handle-${n}`;
   const dispatched = args.state === "DISPATCHED";
   const { deposit, release } = evidence(n);
+  const observedAgo = args.releaseObservedSecondsAgo ?? (args.resolvedSecondsAgo ?? 0) + MINUTE;
   await pool.query(`INSERT INTO standard_orders (
     order_id,order_key,order_handle,handle_hash,state,provider_agent_id,outcome_id,binding_profile,
     listing_manifest_hash,provider_offer_hash,canonical_listing,quote_hash,canonical_quote,canonical_request_hash,
     canonical_request,order_nonce,intent_id,authorization_key,payment_payload_hash,payer,gross_amount,
     provider_net_amount,daski_commission_amount,settlement_tx_hash,deposit_evidence_hash,release_tx_hash,
     release_evidence_hash,provider_task_id,rail_epoch,listing_epoch,expires_at)
-    VALUES ($1,$2,$3,$4,$5,'7','audit','recipe-bound-v2',$6,$7,$8,$9,'{"artifactType":"QuoteV1"}',$10,'{}',$11,$12,$13,$14,$15,
+    VALUES ($1,$2,$3,$4,$5,'7','audit','recipe-bound-v2',$6,$7,$8,$9,$21,$10,'{}',$11,$12,$13,$14,$15,
       100,90,10,$16,$17,$18,$19,$20,1,1,now()+interval '1 hour')`,
   [id, filled(n, 1), handle, createHash("sha256").update(handle).digest(), args.state, bytes(LISTING_HASH), filled(n, 2),
     listing(args.fulfillmentSeconds, args.purchaseReadiness ?? null), filled(n, 3), filled(n, 4), filled(n, 5),
     `int_00000000-0000-4000-8000-${String(n).padStart(12, "0")}`, filled(n, 6), filled(n, 7), payer.address,
     deposit.transactionHash, bytes(deposit.evidenceHash), release.transactionHash, bytes(release.evidenceHash),
-    dispatched ? taskOf(id) : null]);
-  const observedAgo = args.releaseObservedSecondsAgo ?? (args.resolvedSecondsAgo ?? 0) + MINUTE;
+    dispatched ? taskOf(id) : null, { artifactType: "QuoteV1", payload: { validBefore: nowSeconds() - observedAgo } }]);
   for (const [kind, proof, canonical] of [["deposit", deposit, depositEvidence(n)], ["release", release, releaseEvidence(n)]] as const) {
     await pool.query(`INSERT INTO standard_chain_evidence (evidence_hash,order_id,evidence_kind,chain_id,block_number,
       block_hash,transaction_hash,transaction_index,log_index,source_fingerprints,canonical_evidence,observed_at)
@@ -250,6 +254,12 @@ async function resolvedAt(pool: Pool, id: string): Promise<Date> {
 async function resolvedSecondsAgo(pool: Pool, id: string, seconds: number): Promise<void> {
   await pool.query("UPDATE standard_dispatch_claims SET resolved_at=now()-make_interval(secs=>$2) WHERE order_id=$1",
     [id, seconds]);
+}
+/** Moves the order's quote expiry back: `seconds` have now passed since it. */
+async function quoteExpiredSecondsAgo(pool: Pool, id: string, seconds: number): Promise<void> {
+  await pool.query(`UPDATE standard_orders
+    SET canonical_quote=jsonb_set(canonical_quote,'{payload,validBefore}',to_jsonb($2::bigint)) WHERE order_id=$1`,
+  [id, nowSeconds() - seconds]);
 }
 async function waitSeconds(pool: Pool, id: string): Promise<string> {
   return (await pool.query<{ wait_seconds: string }>("SELECT wait_seconds FROM standard_order_operations WHERE order_id=$1",
@@ -440,6 +450,48 @@ describe("initial dispatch recovery (postgres)", () => {
     expect(await transitions(pool, late)).toEqual([{ from_state: "RELEASE_FINAL", to_state: "PROVIDER_FAILED",
       reason_code: "provider_dispatch_fulfillment_deadline_elapsed" }]);
     expect(gw.servicingFulfillmentSeconds).not.toHaveBeenCalled();
+  });
+
+  it("holds a refused order whose quote passes the first-dispatch bound before its retry, sending nothing new", async () => {
+    const desk = providerDesk();
+    const gw = gateway(pool, desk);
+    const id = await seed(pool, 1, { state: "RELEASE_FINAL", fulfillmentSeconds: 45 * 24 * HOUR,
+      releaseObservedSecondsAgo: MAX_FIRST_DISPATCH_QUOTE_AGE_SECONDS - MINUTE });
+    desk.refuseDispatches = 1;
+    expect((await dispatch(gw, 1)).state).toBe("DISPATCH_STARTED");
+    // By the time its retry falls due, the quote is past the bound.
+    await quoteExpiredSecondsAgo(pool, id, MAX_FIRST_DISPATCH_QUOTE_AGE_SECONDS + MINUTE);
+    await pool.query("UPDATE standard_dispatch_recovery SET next_attempt_at=now()-interval '1 second' WHERE order_id=$1", [id]);
+    expect((await dispatch(gw, 1)).state).toBe("LEGAL_HOLD");
+    expect(desk.dispatched).toHaveLength(1);
+    expect(await transitions(pool, id)).toEqual([
+      { from_state: "RELEASE_FINAL", to_state: "DISPATCH_STARTED", reason_code: "dispatch_invocation_persisted" },
+      { from_state: "DISPATCH_STARTED", to_state: "LEGAL_HOLD", reason_code: "first_dispatch_quote_age_exceeded" },
+    ]);
+    // The refused envelope stays the order's only claim.
+    expect((await pool.query("SELECT canonical_dispatch FROM standard_dispatch_claims WHERE order_id=$1", [id])).rows)
+      .toEqual([{ canonical_dispatch: desk.dispatched[0] }]);
+  });
+
+  it("holds a redispatched order whose quote is past the bound, and its listing's purchases still settle", async () => {
+    const desk = providerDesk();
+    const gw = gateway(pool, desk);
+    const id = await seed(pool, 1, { state: "RELEASE_FINAL", fulfillmentSeconds: 72 * HOUR,
+      releaseObservedSecondsAgo: MAX_FIRST_DISPATCH_QUOTE_AGE_SECONDS + HOUR });
+    expect((await dispatch(gw, 1)).state).toBe("PROVIDER_FAILED");
+    // The redispatch opens a fresh dispatch window, but the quote is past the bound.
+    await expect(new StandardRailOperator(pool).redispatch(id)).resolves.toMatchObject({ state: "RELEASE_FINAL" });
+    expect((await dispatch(gw, 1)).state).toBe("LEGAL_HOLD");
+    expect(desk.dispatched).toHaveLength(0);
+    expect((await pool.query("SELECT 1 FROM standard_dispatch_claims WHERE order_id=$1", [id])).rowCount).toBe(0);
+    expect(await transitions(pool, id)).toEqual([
+      { from_state: "RELEASE_FINAL", to_state: "PROVIDER_FAILED", reason_code: "provider_dispatch_fulfillment_deadline_elapsed" },
+      { from_state: "PROVIDER_FAILED", to_state: "RELEASE_FINAL", reason_code: "operator_redispatch" },
+      { from_state: "RELEASE_FINAL", to_state: "LEGAL_HOLD", reason_code: "first_dispatch_quote_age_exceeded" },
+    ]);
+    // Its release is proven, so the hold does not stop the listing's next purchase settling.
+    const next = await seed(pool, 2, { state: "RELEASE_FINAL", fulfillmentSeconds: 72 * HOUR });
+    expect(await gw.store.listingSettlementFrozen(LISTING_HASH, next)).toBe(false);
   });
 });
 
