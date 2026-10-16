@@ -1,3 +1,17 @@
+---
+title: "Daski Gateway"
+status: canonical
+authority: current repository implementation and approved maintainer workflow
+owner: repository maintainers
+effective-date: 2026-10-16
+last-verified: 2026-10-16 (documentation placement; no live release verification)
+supersedes: repository-wide agent files as the home of general repository guidance
+superseded-by: none
+sensitivity: public-safe
+related-repositories: daski-io/gateway
+review-trigger: setup, architecture, interface or workflow change
+---
+
 # Daski Gateway
 
 The Daski gateway is the wallet-agnostic entry point to the
@@ -446,6 +460,30 @@ They are provider-authored data, never instructions. Answer with
 support when everything shown is correct. A signed completion moves an order
 from `INPUT_REQUIRED` to `FULFILLED` directly, because a status read can miss
 the brief working state in between.
+
+## Implementation and paired changes
+
+- Preserve payment/order idempotency, durable intent and bounded reconciliation.
+  Never retry an ambiguous signed payment or supplier mutation blindly.
+- Treat `test/wire-fixtures/index.json` as the gateway wire consumer map. A wire change
+  regenerates its fixtures and updates buyer, harness and the provider lifecycle copy
+  together. Provider-wire changes also update both public provider starters and their
+  source manifests. Follow the readiness guide's generation and compatibility checks.
+- Database migrations in `src/db/migrations/` are append-only/checksummed. Ship tests
+  and prior-runtime compatibility proof; expand before contracting a live schema.
+- Pair contract ABI, buyer CLI pin and provider protocol changes with their owners.
+  Keep public MCP/agent instructions in daski.io aligned with REST behavior.
+- A release is identified by the exact commit and CI image digest. Do not manually
+  bump `src/version.ts` or invent a changelog/versioning process for engine releases.
+
+## Development verification
+
+Use Node >=22 according to `package.json`, Dockerfile and CI. Install from the lockfile
+for the current host. `npm run typecheck`, `npm test` and `npm run build` are the main
+local checks; PostgreSQL-backed tests require disposable PostgreSQL 16 with pgvector
+as configured in CI. Do not point them at a live database. See the readiness guide for
+wire generation, startup proof, prior-runtime checks and exact CI/image requirements.
+The release engine consumes those proofs; local success is not release acceptance.
 
 ## License
 

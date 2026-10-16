@@ -16,7 +16,7 @@ review-trigger: release process, interface or CI change
 
 Releases are run by the release engine in the coordinator
 ([daski-io/deploy-mainnet](https://github.com/daski-io/deploy-mainnet)) for both
-sandbox and production. Its current `AGENTS.md` and engine runbook define the
+sandbox and production. Its current `README.md` and engine runbook define the
 owner-authorized release entrypoint and any additional GO stops. Even `prep`
 can sign a catalog epoch or propose a governance batch; it is not an unsigned
 local check. The engine checks that CI

@@ -33,9 +33,15 @@ npm-debug.log*
 .DS_Store
 Thumbs.db
 
-# Local agent state; shared instructions are tracked at the repository root.
+# Local agent state
 .claude/
 
 # Misc
 tmp/
 .tmp/
+
+# Repository-wide agent instructions are private workspace material.
+# Public setup and contributor guidance belongs in README.md.
+AGENTS.md
+AGENT.md
+CLAUDE.md
