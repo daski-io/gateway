@@ -33,11 +33,15 @@ npm-debug.log*
 .DS_Store
 Thumbs.db
 
-# Local AI coding-agent state and instructions
+# Local agent state
 .claude/
-CLAUDE.md
-AGENTS.md
 
 # Misc
 tmp/
 .tmp/
+
+# Repository-wide agent instructions are private workspace material.
+# Public setup and contributor guidance belongs in README.md.
+AGENTS.md
+AGENT.md
+CLAUDE.md
