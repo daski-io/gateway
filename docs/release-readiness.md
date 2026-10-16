@@ -1,9 +1,25 @@
+---
+title: Release readiness
+status: canonical
+authority: current release-engine implementation and approved owner decisions
+owner: repository maintainers
+effective-date: 2026-10-16
+last-verified: 2026-10-16
+supersedes: split-coordinator and pre-handover descriptions where inconsistent
+superseded-by: none
+sensitivity: public-safe
+related-repositories: daski-io/gateway; daski-io/deploy-mainnet
+review-trigger: release process, interface or CI change
+---
+
 # Release readiness
 
 Releases are run by the release engine in the coordinator
-([daski-io/deploy-mainnet](https://github.com/daski-io/deploy-mainnet)) with two
-commands per target: `prep` prints exactly what the release deploys and the
-wording that authorizes it, and `go` ships it. The engine only checks that CI
+([daski-io/deploy-mainnet](https://github.com/daski-io/deploy-mainnet)) for both
+sandbox and production. Its current `AGENTS.md` and engine runbook define the
+owner-authorized release entrypoint and any additional GO stops. Even `prep`
+can sign a catalog epoch or propose a governance batch; it is not an unsigned
+local check. The engine checks that CI
 passed on the exact commit and deploys the artifact that CI built: the
 `ghcr.io/daski-io/gateway:<sha>` image whose immutable digest the Release image
 workflow records. Railway is asked for that digest; no service deploys from a
@@ -16,8 +32,8 @@ first, and production promotes the combination the sandbox last served. After
 a release is verified serving, the engine fast-forwards `sandbox` (testnet) or
 `main` (production) to the commit it released, as history; neither branch
 triggers a deploy. The testnet sandbox has been released this way since
-2026-10-04. Production moves to the engine at its installation; until then
-the retained production coordinator promotes `main`.
+2026-10-04, as has production. The retired coordinator is not the release
+path for either handed-over target.
 
 ## Definition of done for develop
 
