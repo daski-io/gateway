@@ -1,5 +1,20 @@
+import { createPublicClient } from "viem";
+import { base } from "viem/chains";
 import { describe, expect, it } from "vitest";
+import { rpcReadTransport } from "../src/rpc/readTransport.js";
 import { loadLogsPaged, loadNewestLogs } from "../src/standardRail/chainLogPagination.js";
+import { stubRpcFetch, type StubbedRpcReply } from "./helpers/rpcStub.js";
+
+/** A real viem client whose eth_getLogs answers `reply` for ranges wider than `limit` blocks. */
+function logsClient(limit: bigint, reply: StubbedRpcReply) {
+  const fetchFn = stubRpcFetch(({ params }) => {
+    const [filter] = params as [{ fromBlock: string; toBlock: string }];
+    const span = BigInt(filter.toBlock) - BigInt(filter.fromBlock) + 1n;
+    return span > limit ? reply : { result: [] };
+  });
+  const client = createPublicClient({ chain: base, transport: rpcReadTransport("https://rpc.example.test/", { fetchFn }) });
+  return { fetchFn, load: (fromBlock: bigint, toBlock: bigint) => client.getLogs({ fromBlock, toBlock }) };
+}
 
 describe("loadLogsPaged", () => {
   it("does not treat cumulative history as a correctness limit", async () => {
@@ -72,6 +87,30 @@ describe("loadLogsPaged", () => {
 
     expect(logs).toEqual([1n, 2n, 3n, 4n, 5n, 6n, 7n, 8n]);
     expect(calls).toContainEqual([1n, 8n]);
+  });
+
+  it.each([
+    ["Infura's result limit", { error: {
+      code: -32005, message: "query returned more than 10000 results. Try with this block range [0x1, 0x400].",
+    } }],
+    ["a response size limit", { error: {
+      code: -32602, message: "Log response size exceeded. You can make eth_getLogs requests with up to a 2K block range",
+    } }],
+    ["a block range limit", { error: { code: -32000, message: "block range too large" } }],
+  ] as const)("bisects %s from a real node answer", async (_label, reply) => {
+    const { fetchFn, load } = logsClient(1_000n, reply);
+    await expect(loadLogsPaged({ fromBlock: 1n, toBlock: 4_000n, maximumPageEvents: 10, load })).resolves.toEqual([]);
+    expect(fetchFn.calls.length).toBeGreaterThan(1);
+  });
+
+  it.each([
+    ["an internal error", { error: { code: -32603, message: "Internal error" } }],
+    ["a rate limit", { error: { code: -32005, message: "Too Many Requests" } }],
+    ["an HTTP 502", new Response("Bad Gateway", { status: 502 })],
+  ] as const)("does not split a range on %s: one request, then the failover", async (_label, reply) => {
+    const { fetchFn, load } = logsClient(0n, reply);
+    await expect(loadLogsPaged({ fromBlock: 1n, toBlock: 4_000n, maximumPageEvents: 10, load })).rejects.toThrow();
+    expect(fetchFn.calls).toHaveLength(1);
   });
 
   it("propagates a provider error for a dense single block", async () => {

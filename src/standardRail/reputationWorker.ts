@@ -25,6 +25,8 @@ import {
 } from "./facilitatorNonceLock.js";
 import type { StandardRailConfig } from "./config.js";
 import { withRpcFailover } from "../rpc/failover.js";
+import { classifyBroadcastFailure } from "../rpc/classification.js";
+import { rpcReadTransport } from "../rpc/readTransport.js";
 import { finalizeReputationOperation, reviewReceiptUid, type ReviewAttestationEvidence } from "./reputationFinalization.js";
 import {
   encodeReputationOperation,
@@ -100,7 +102,7 @@ function decryptRaw(value: Buffer, key: Buffer, operationId: string): Hex {
 export class StandardReputationWorker {
   private readonly account;
   private readonly broadcastClient;
-  private readonly evidenceClients: Array<{ host: string; client: ReturnType<typeof createPublicClient> }>;
+  private readonly evidenceClients: Array<{ host: string; url?: string; client: ReturnType<typeof createPublicClient> }>;
   private timer: NodeJS.Timeout | null = null;
   private running: Promise<void> | null = null;
   private nextKind = 0;
@@ -124,24 +126,24 @@ export class StandardReputationWorker {
       transport: http(config.evidenceRpcUrls[0], { retryCount: 0, timeout: 20_000 }),
     });
     this.evidenceClients = config.evidenceRpcUrls.map((url) => ({
+      url,
       host: new URL(url).hostname,
       client: createPublicClient({
         chain,
-        transport: orderedRpcTransport(http(url, { retryCount: 0, timeout: 20_000 }), { scope: url, maxPerMinute: config.rpcReadMaxPerMinute }),
+        transport: orderedRpcTransport(rpcReadTransport(url), { scope: url, maxPerMinute: config.rpcReadMaxPerMinute }),
       }),
     }));
   }
   private observe<Result>(
+    operation: string,
     work: (endpoint: (typeof this.evidenceClients)[number]) => Promise<Result>,
     terminal?: (error: unknown) => boolean,
   ): Promise<Result> {
     return withRpcFailover(this.evidenceClients, work, {
+      operation: "reputation." + operation,
       terminal,
-      onFallback: ({ primaryHost, selectedHost }) => {
-        logger.warn("standard reputation RPC fallback selected", {
-          primaryHost,
-          selectedHost,
-        });
+      onFallback: (detail) => {
+        logger.warn("standard reputation RPC fallback selected", detail);
       },
     });
   }
@@ -161,7 +163,7 @@ export class StandardReputationWorker {
   }
 
   async accountHealth(): Promise<Record<string, unknown>> {
-    const observation = await this.observe(async ({ client }) => {
+    const observation = await this.observe("accountHealth", async ({ client }) => {
       const [finalizedNonce, pendingNonce, balance] = await Promise.all([
         client.getTransactionCount({ address: this.account.address, blockTag: "finalized" }),
         client.getTransactionCount({ address: this.account.address, blockTag: "pending" }),
@@ -336,7 +338,7 @@ export class StandardReputationWorker {
   ): Promise<void> {
     let observation;
     try {
-      observation = await this.observe(async ({ client }) => {
+      observation = await this.observe("reconcile", async ({ client }) => {
         let receipt;
         try {
           receipt = await client.getTransactionReceipt({ hash: transaction.transaction_hash });
@@ -465,13 +467,13 @@ export class StandardReputationWorker {
       if (Number(budget.rows[0]?.count ?? 0) >= 5) { await this.parkReview(operation,"authorization_group_budget_exhausted","authorization_live"); return false; }
     }
     try {
-      const observed = await this.observe(({client}) => observeEasProfile(client as unknown as PublicClient,this.chain.id,this.config.easAddress), error => error instanceof EasIncompatible);
+      const observed = await this.observe("easProfile", ({client}) => observeEasProfile(client as unknown as PublicClient,this.chain.id,this.config.easAddress), error => error instanceof EasIncompatible);
       const profileId = intent.profileId ?? "eas-native-1.2.0";
       if (observed.profileId !== profileId) { await this.parkReview(operation,"eas_incompatible"); return false; }
       if (signedDeadlineExpired(profileId,intent.request.deadline,BigInt(observed.timestamp))) {
         await this.parkReview(operation,"signed_deadline_expired"); return false;
       }
-      await this.observe(({client}) => client.call({account:this.account.address,to:encoded.destination,data:encoded.data,value:0n,gas:encoded.gas}),isReviewExecutionRejection);
+      await this.observe("simulate", ({client}) => client.call({account:this.account.address,to:encoded.destination,data:encoded.data,value:0n,gas:encoded.gas}),isReviewExecutionRejection);
       return true;
     } catch (error) {
       if (error instanceof EasIncompatible) { await this.parkReview(operation,"eas_incompatible"); return false; }
@@ -482,7 +484,7 @@ export class StandardReputationWorker {
 
   private async readReceiptAttestation(operation: OperationRow, receipt: TransactionReceipt): Promise<ReviewAttestationEvidence> {
     const uid = reviewReceiptUid(receipt,this.config.easAddress,operation.canonical_intent);
-    return this.observe(async ({client}) => {
+    return this.observe("attestation", async ({client}) => {
       const evidence = await client.readContract({address:this.config.easAddress,abi:reviewAttestationAbi,
         functionName:"getAttestation",args:[uid],blockNumber:receipt.blockNumber});
       const block = await client.getBlock({blockNumber:receipt.blockNumber});
@@ -552,7 +554,7 @@ export class StandardReputationWorker {
 
   private async highestObservedNonce(): Promise<number> {
     try {
-      return await this.observe(async ({ client }) => {
+      return await this.observe("nonce", async ({ client }) => {
         const [latest, pending] = await Promise.all([
           client.getTransactionCount({ address: this.account.address, blockTag: "latest" }),
           client.getTransactionCount({ address: this.account.address, blockTag: "pending" }),
@@ -623,7 +625,7 @@ export class StandardReputationWorker {
 
   private async transactionVisible(hash: Hex): Promise<boolean> {
     try {
-      return await this.observe(async ({ client }) => {
+      return await this.observe("transactionVisible", async ({ client }) => {
         try {
           await client.getTransaction({ hash });
           return true;
@@ -729,12 +731,14 @@ export class StandardReputationWorker {
       }
     } catch (error) {
       if (error instanceof AmbiguousReputationWrite) throw error;
-      const message = error instanceof Error ? error.message : String(error);
-      if (/already known|known transaction/i.test(message)) {
+      // Classified from the node's own answer only: viem's message embeds the
+      // endpoint URL and these raw transaction bytes, whose hex can spell "fee".
+      const outcome = classifyBroadcastFailure(error);
+      if (outcome === "already_known") {
         await this.markBroadcastAndDefer(operation.operation_id, transaction.transaction_id);
-      } else if (/nonce too low|replacement transaction underpriced/i.test(message)) {
+      } else if (outcome === "nonce_conflict") {
         await this.resolveNonceConflict(operation, transaction);
-      } else if (/insufficient funds|intrinsic gas|invalid sender|fee|max fee|base fee/i.test(message)) {
+      } else if (outcome === "balance_fee") {
         const signed = parseTransaction(raw);
         logger.warn("standard reputation fee reserve required", {
           operationId: operation.operation_id,
@@ -826,7 +830,7 @@ export class StandardReputationWorker {
     let receipt;
     let finalizedNonce;
     try {
-      receipt = await this.observe(async ({ client }) => {
+      receipt = await this.observe("nonceConflictReceipt", async ({ client }) => {
         try {
           return await client.getTransactionReceipt({ hash: transaction.transaction_hash });
         } catch (error) {
@@ -836,7 +840,7 @@ export class StandardReputationWorker {
       });
       // The nonce floor is read at the configured finality tag: a transaction
       // whose nonce is already consumed there was replaced, not delayed.
-      finalizedNonce = receipt ? null : await this.observe(({ client }) =>
+      finalizedNonce = receipt ? null : await this.observe("finalizedNonce", ({ client }) =>
         client.getTransactionCount({ address: this.account.address, blockTag: this.config.finalityTag }));
     } catch {
       throw new ReputationRpcUnavailable();

@@ -18,6 +18,7 @@ import type { FacilitatorNonceLock } from "./facilitatorNonceLock.js";
 import type { StandardRailConfig } from "./config.js";
 import { withRpcFailover } from "../rpc/failover.js";
 import { orderedRpcTransport } from "../rpc/orderedTransport.js";
+import { rpcReadTransport } from "../rpc/readTransport.js";
 import { logger } from "../util/logger.js";
 import { canonicalHash } from "./canonical.js";
 import { chainLogsHash } from "./chainLogHash.js";
@@ -199,7 +200,7 @@ export class StandardChainEvidence {
       host: new URL(url).hostname,
       client: createPublicClient({
         chain,
-        transport: orderedRpcTransport(http(url, { retryCount: 0, timeout: 20_000 }), { scope: url, maxPerMinute: config.rpcReadMaxPerMinute, priority: "payment" }),
+        transport: orderedRpcTransport(rpcReadTransport(url), { scope: url, maxPerMinute: config.rpcReadMaxPerMinute, priority: "payment" }),
       }),
     }));
     // Sanctions screening runs before any money moves, for every claimed
@@ -216,7 +217,7 @@ export class StandardChainEvidence {
       host: new URL(url).hostname,
       client: createPublicClient({
         chain,
-        transport: orderedRpcTransport(http(url, { retryCount: 0, timeout: 20_000 }), {
+        transport: orderedRpcTransport(rpcReadTransport(url), {
           scope: url, maxPerMinute: config.rpcReadMaxPerMinute, maxQueued: SCREENING_MAX_QUEUED_READS,
         }),
       }),
@@ -229,15 +230,14 @@ export class StandardChainEvidence {
   }
 
   private observe<Result>(
+    operation: string,
     work: (endpoint: (typeof this.clients)[number]) => Promise<Result>,
     endpoints: typeof this.clients = this.clients,
   ): Promise<Result> {
     return withRpcFailover(endpoints, work, {
-      onFallback: ({ primaryHost, selectedHost }) => {
-        logger.warn("standard-rail RPC fallback selected", {
-          primaryHost,
-          selectedHost,
-        });
+      operation,
+      onFallback: (detail) => {
+        logger.warn("standard-rail RPC fallback selected", detail);
       },
     });
   }
@@ -295,13 +295,13 @@ export class StandardChainEvidence {
         functionName: "releaseAll",
       });
       const deadline = Date.now() + RELEASE_INCLUSION_DEADLINE_MS;
-      await this.observe(({ client }) => this.includedReceipt(client, submitted, deadline));
+      await this.observe("evidence.releaseInclusion", ({ client }) => this.includedReceipt(client, submitted, deadline));
       return submitted;
     });
   }
 
   async finalizedBlockTimestamp(blockNumber: bigint, expectedHash: Hex): Promise<number> {
-    const block = await this.observe(({ client }) => client.getBlock({ blockNumber }));
+    const block = await this.observe("evidence.blockTimestamp", ({ client }) => client.getBlock({ blockNumber }));
     if (block.hash !== expectedHash || block.timestamp > BigInt(Number.MAX_SAFE_INTEGER)) {
       throw new Error("Finalized evidence block timestamp is unavailable");
     }
@@ -313,7 +313,7 @@ export class StandardChainEvidence {
       this.config.manifest.chainEvidencePolicy.chainId !== chainId ||
       this.config.manifest.chainEvidencePolicy.environment !== this.config.environment
     ) throw new Error("Chain evidence policy domain mismatch");
-    await this.observe(async ({ client }) => {
+    await this.observe("evidence.canonicalToken", async ({ client }) => {
       const head = await client.getBlockNumber();
       await this.tokenPolicyFacts(client, head);
     });
@@ -358,7 +358,7 @@ export class StandardChainEvidence {
     oracle: Address,
     expectedRuntimeCodeHash: Hex,
   ): Promise<void> {
-    await this.observe(async ({ client }) => {
+    await this.observe("evidence.screeningOracle", async ({ client }) => {
       const head = await client.getBlockNumber();
       const code = await client.getBytecode({
         address: getAddress(oracle),
@@ -378,7 +378,7 @@ export class StandardChainEvidence {
   }): Promise<EvidenceResult> {
     const finalityDeadline = args.order.updatedAt.getTime() +
       args.listing.deadlinePolicy.settlementEvidenceSeconds * 1_000;
-    const observation = await this.observe(async ({ client, host }) => {
+    const observation = await this.observe("evidence.proveDeposit", async ({ client, host }) => {
       const { receipt, head } = await this.finalizedReceipt(client, args.transactionHash, finalityDeadline);
       if (
         receipt.status !== "success" ||
@@ -436,7 +436,7 @@ export class StandardChainEvidence {
     }
     const unique = [...new Set(accounts.map((account) => getAddress(account).toLowerCase()))]
       .map((account) => getAddress(account));
-    const observation = await this.observe(async ({ client }) => {
+    const observation = await this.observe("screening.assertNotSanctioned", async ({ client }) => {
       const head = await client.getBlockNumber();
       // Aggregate the per-account reads into one pinned eth_call; keyed RPC quota is the constraint.
       const [code, results] = await Promise.all([
@@ -461,7 +461,7 @@ export class StandardChainEvidence {
   }
 
   async authorizationUsed(token: Address, payer: Address, nonce: Hex): Promise<boolean> {
-    return this.observe(({ client }) =>
+    return this.observe("evidence.authorizationUsed", ({ client }) =>
       client.readContract({
         address: token,
         abi: transferAuthorizationAbi,
@@ -476,7 +476,7 @@ export class StandardChainEvidence {
     token: Address; payer: Address; nonce: Hex; validBefore: number; fromBlock: bigint;
     onObserved?: (observation: Record<string, unknown>) => Promise<void>;
   }): Promise<Record<string, unknown> | null> {
-    return this.observe(async ({ client }) => {
+    return this.observe("evidence.authorizationUnpaid", async ({ client }) => {
       const block = await client.getBlock({ blockTag: this.config.finalityTag });
       if (!block.hash) return null;
       await this.tokenPolicyFacts(client, block.number);
@@ -512,7 +512,7 @@ export class StandardChainEvidence {
     payer: Address;
     nonce: Hex;
   }): Promise<Hex | null> {
-    return this.observe(async ({ client }) => {
+    return this.observe("evidence.findSettlement", async ({ client }) => {
       const head = await client.getBlockNumber();
       const logs = await this.boundedLogs({
         fromBlock: BigInt(args.listing.manifest.payload.splitterActivationBlockNumber) + 1n,
@@ -552,7 +552,7 @@ export class StandardChainEvidence {
     const splitter = getAddress(args.listing.manifest.payload.splitterAddress);
     const releaseReference = await this.coveringRelease(args, splitter, args.fence ?? (<T>(work: () => Promise<T>) => work()));
     const hash = releaseReference.transactionHash;
-    const selected = await this.observe(async ({ client, host }) => {
+    const selected = await this.observe("evidence.proveRelease", async ({ client, host }) => {
       // findCoveringRelease already selected a finalized log. Read the receipt
       // and head directly and bind both below; a retried observation must not
       // re-enter viem's shared receipt watcher for the same transaction.
@@ -745,7 +745,7 @@ export class StandardChainEvidence {
     fence: <T>(work: () => Promise<T>) => Promise<T>,
   ): Promise<ReleaseReference> {
     const findRelease = (finalOnly = true) =>
-      this.observe(({ client }) => this.findCoveringRelease(client, args, finalOnly));
+      this.observe("evidence.findCoveringRelease", ({ client }) => this.findCoveringRelease(client, args, finalOnly));
     const deadline = Date.now() + RELEASE_FINALITY_DEADLINE_MS;
     for (;;) {
       const final = await findRelease();
@@ -771,7 +771,7 @@ export class StandardChainEvidence {
       for (;;) {
         await new Promise(resolve => setTimeout(resolve, wait));
         if (!mined || Date.now() >= deadline) break;
-        const head = await this.observe(({ client }) => client.getBlockNumber());
+        const head = await this.observe("evidence.releaseFinalityHead", ({ client }) => client.getBlockNumber());
         if (hasRequiredConfirmations(head, mined.blockNumber, this.config.finalityConfirmations)) break;
         const missing = Number(mined.blockNumber + BigInt(this.config.finalityConfirmations - 1) - head);
         wait = Math.min(Math.max(RELEASE_POLL_MS, missing * blockMs), Math.max(0, deadline - Date.now()));

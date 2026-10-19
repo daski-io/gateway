@@ -3,7 +3,6 @@ import {
   ContractFunctionRevertedError,
   createPublicClient,
   getAddress,
-  http,
   zeroHash,
   type Address,
   type Chain,
@@ -13,6 +12,7 @@ import type { Config } from "../config.js";
 import { withRpcFailover } from "../rpc/failover.js";
 import { logger } from "../util/logger.js";
 import { orderedRpcTransport } from "../rpc/orderedTransport.js";
+import { rpcReadTransport } from "../rpc/readTransport.js";
 import {
   agentIndexAbi,
   reputationStorageAbi,
@@ -181,33 +181,32 @@ export class ViemMarketplaceChainReader implements MarketplaceChainReader {
     // Registry reads refresh caches off the request path, so each selected
     // endpoint serializes its calls while explicit failover owns whole-read retries.
     this.clients = rpcUrls.map((url) => ({
+      url,
       host: new URL(url).hostname,
       client: createPublicClient({
         chain,
-        transport: orderedRpcTransport(http(url, {
-          retryCount: 0,
-          timeout: 20_000,
-        }), { scope: url, maxPerMinute: config.rpcReadMaxPerMinute }),
+        transport: orderedRpcTransport(rpcReadTransport(url), {
+          scope: url, maxPerMinute: config.rpcReadMaxPerMinute,
+        }),
       }),
     }));
   }
 
   private observe<Result>(
+    operation: string,
     work: (endpoint: (typeof this.clients)[number]) => Promise<Result>,
   ): Promise<Result> {
     return withRpcFailover(this.clients, work, {
+      operation: "marketplace." + operation,
       terminal: (error) => error instanceof MarketplaceNotFoundError,
-      onFallback: ({ primaryHost, selectedHost }) => {
-        logger.warn("marketplace RPC fallback selected", {
-          primaryHost,
-          selectedHost,
-        });
+      onFallback: (detail) => {
+        logger.warn("marketplace RPC fallback selected", detail);
       },
     });
   }
 
   async resolveWallet(wallet: Address): Promise<{ agentId: string; found: boolean }> {
-    const [agentId, found] = await this.observe(({ client }) => client.readContract({
+    const [agentId, found] = await this.observe("resolveWallet", ({ client }) => client.readContract({
       address: this.addresses.agentIndex,
       abi: agentIndexAbi,
       functionName: "resolve",
@@ -252,7 +251,7 @@ export class ViemMarketplaceChainReader implements MarketplaceChainReader {
   }
 
   async listProviders(offset: number, limit: number): Promise<unknown> {
-    return this.observe(async ({ client }) => {
+    return this.observe("listProviders", async ({ client }) => {
       const blockNumber = (await client.getBlock({ blockTag: this.finalityTag })).number;
       const [total, ids] = await Promise.all([
         client.readContract({
@@ -310,7 +309,7 @@ export class ViemMarketplaceChainReader implements MarketplaceChainReader {
   }
 
   async getProvider(agentId: bigint): Promise<unknown> {
-    return this.observe(async ({ client }) => {
+    return this.observe("getProvider", async ({ client }) => {
       const [finalizedBlock, safeBlock] = await Promise.all([
         client.getBlock({ blockTag: this.finalityTag }),
         client.getBlock({ blockTag: "safe" }),
@@ -350,7 +349,7 @@ export class ViemMarketplaceChainReader implements MarketplaceChainReader {
   }
 
   async getService(serviceId: Hex): Promise<MarketplaceServiceRecord> {
-    return this.observe(async ({ client }) => {
+    return this.observe("getService", async ({ client }) => {
       const [finalizedBlock, safeBlock] = await Promise.all([
         client.getBlock({ blockTag: this.finalityTag }),
         client.getBlock({ blockTag: "safe" }),
@@ -411,7 +410,7 @@ export class ViemMarketplaceChainReader implements MarketplaceChainReader {
         if (!supportsOrderRecoveries(version.result)) return null;
         if (recovered.status === "failure") throw recovered.error;
         return recovered.result.toString();
-      }, { attempts: 1, terminal: isContractRevert });
+      }, { attempts: 1, terminal: isContractRevert, operation: "marketplace.readRecovered" });
     } catch {
       return null;
     }
