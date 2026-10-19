@@ -27,6 +27,8 @@ export interface CreatePoolOptions {
   statementTimeoutMs?: number;
   /** Session `lock_timeout` applied in the startup packet; `0` disables. */
   lockTimeoutMs?: number;
+  /** Names the pool in connection-error logs, which never carry the connection string. */
+  name?: string;
 }
 
 const DEFAULT_CONNECTION_TIMEOUT_MS = 10_000;
@@ -65,11 +67,39 @@ export function createPool(opts: CreatePoolOptions): Pool {
   const connectionTimeout = positiveMilliseconds(
     "connectionTimeoutMs", opts.connectionTimeoutMs, DEFAULT_CONNECTION_TIMEOUT_MS,
   );
-  return new pg.Pool({
+  const pool = new pg.Pool({
     connectionString: opts.connectionString,
     ...(opts.max === undefined ? {} : { max: opts.max }),
     ...(startup.length > 0 ? { options: startup.join(" ") } : {}),
     ...(connectionTimeout > 0 ? { connectionTimeoutMillis: connectionTimeout } : {}),
+  });
+  reportConnectionErrors(pool, opts.name ?? "database");
+  return pool;
+}
+
+/**
+ * A pooled connection the database ends (a restart or failover ends them
+ * all) makes its pg client emit 'error': the pool re-emits an idle client's,
+ * and a checked-out client emits it to its holder. An 'error' event nobody
+ * listens to throws and would end the process. Here it is logged, once per
+ * client, and the process keeps serving: the pool has already discarded an
+ * idle client, the holder's current or next query fails and its release
+ * discards that client, and the next checkout connects afresh. The log
+ * carries the pool's name and the sanitized error (its name, code and stack
+ * frames), never the connection string.
+ */
+function reportConnectionErrors(pool: pg.Pool, name: string): void {
+  const reported = new WeakSet<object>();
+  const report = (error: Error, client: object | undefined): void => {
+    if (client !== undefined) {
+      if (reported.has(client)) return;
+      reported.add(client);
+    }
+    logger.error("database connection lost", { pool: name, error });
+  };
+  pool.on("error", (error, client) => report(error, client));
+  pool.on("connect", (client) => {
+    client.on("error", (error) => report(error, client));
   });
 }
 

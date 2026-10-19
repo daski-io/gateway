@@ -385,7 +385,10 @@ lives in [daski-io/deploy-mainnet](https://github.com/daski-io/deploy-mainnet).
 - `src/mcp/` retains request context and compatibility result helpers; the
   MCP server and tool definitions belong to the website repository.
 - `src/db/` contains migration history and the standard runtime database
-  boundary.
+  boundary. A pooled connection the database ends, as a restart ends them
+  all, is logged as `database connection lost` with the pool's name and the
+  sanitized error; the gateway keeps serving and the next checkout connects
+  again.
 
 The provider workflow and signed wire contract are documented in
 [docs/service-registration-v1.md](docs/service-registration-v1.md); the

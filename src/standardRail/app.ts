@@ -159,6 +159,7 @@ export async function createStandardApp(options: {
   });
   if (!options.pool) {
     const migrationPool = createPool({
+      name: "migration",
       connectionString: options.standardRailConfig.migrationDatabaseUrl,
       max: 1,
       connectionTimeoutMs: 10_000,
@@ -177,6 +178,7 @@ export async function createStandardApp(options: {
     }
   }
   const pool = options.pool ?? createPool({
+    name: "runtime",
     connectionString: options.config.databaseUrl,
     max: 10,
   });
@@ -184,6 +186,7 @@ export async function createStandardApp(options: {
   const federationPermitPool = options.federationPermitPool ?? (options.pool
     ? pool
     : createPool({
+      name: "federation-permit",
       connectionString: options.config.databaseUrl,
       max: options.standardRailConfig.abuse.federationGlobalConcurrency,
     }));
@@ -192,6 +195,7 @@ export async function createStandardApp(options: {
   // the query pool, so a lock holder can never be starved of a client by the
   // work it is itself serializing.
   const lockPool = options.pool ? pool : createPool({
+    name: "advisory-lock",
     connectionString: options.config.databaseUrl,
     max: LOCK_POOL_SIZE,
   });
