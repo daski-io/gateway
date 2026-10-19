@@ -10,13 +10,22 @@ import {
   asStandardRailError,
   isTransientDatabaseError,
   logStandardRailError,
+  PAYMENT_ADMISSION_RETRY_AFTER_SECONDS,
   StandardRailError,
   standardRailError,
   standardRailPublicError,
   standardRailClientError,
+  type StandardRailErrorCode,
 } from "./errors.js";
 import { isPayerSignatureShape } from "./payerSignature.js";
 import { LIFECYCLE_RETRY_AFTER_SECONDS } from "./lifecycleRefusal.js";
+
+/** The wait a retryable answer names in Retry-After, for the codes that carry one. */
+function retryAfterSeconds(code: StandardRailErrorCode | undefined): number | undefined {
+  if (code === "PROVIDER_LIFECYCLE_UNAVAILABLE") return LIFECYCLE_RETRY_AFTER_SECONDS;
+  if (code === "PAYMENT_ADMISSION_UNAVAILABLE") return PAYMENT_ADMISSION_RETRY_AFTER_SECONDS;
+  return undefined;
+}
 
 const PAYMENT_HEADER = "payment-signature";
 const ORDER_ACTIONS = [
@@ -461,6 +470,8 @@ export function createStandardRailRouter(service: StandardRailService, publicUrl
       const { status, ...envelope } = publicError;
       const classified = asStandardRailError(error);
       if (classified) logStandardRailError(classified);
+      const retryAfter = retryAfterSeconds(envelope.code);
+      if (retryAfter !== undefined) res.setHeader("Retry-After", String(retryAfter));
       res.status(status).json({ error: envelope });
     }
   });
@@ -567,9 +578,8 @@ export function createStandardRailRouter(service: StandardRailService, publicUrl
     });
     const failure = standardRailClientError(classified, origin);
     res.setHeader("DASKI-NEXT-ACTION", failure.next_action);
-    if (classified.code === "PROVIDER_LIFECYCLE_UNAVAILABLE") {
-      res.setHeader("Retry-After", String(LIFECYCLE_RETRY_AFTER_SECONDS));
-    }
+    const retryAfter = retryAfterSeconds(classified.code);
+    if (retryAfter !== undefined) res.setHeader("Retry-After", String(retryAfter));
     res.status(classified.status).json({
       error: standardRailPublicError(classified, origin),
     });

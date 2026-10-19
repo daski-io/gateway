@@ -24,7 +24,9 @@ import type { Config } from "../config.js";
 import type { Pool } from "../db/pool.js";
 import { canonicalHash } from "./canonical.js";
 import { asStandardRailError, standardRailError } from "./errors.js";
+import { paymentAdmissionFailure, type ClaimedOrderReading } from "./paymentAdmission.js";
 import { retryTransientRead } from "../db/transientRead.js";
+import { TransactionOutcomeUnknownError } from "../db/transientTransaction.js";
 import type { StandardRailConfig } from "./config.js";
 import type {
   EvidenceResult,
@@ -2100,9 +2102,9 @@ export class StandardRailService {
         capacityLimit: listing.capacityPolicy.maxOpenOrders,
       });
     } catch (error) {
-      const claimed = await this.store.findByIntentId(intentId);
-      if (claimed?.order.paymentPayloadHash === paymentHash) return { ...claimed, replay: true };
-      throw error;
+      return this.claimFailed(error, {
+        orderId: order.orderId, intentId, paymentHash, authorizationKey: authorization.authorizationKey,
+      });
     }
     return this.purchaseResponses.run({ handle: intended.handle, order, replay: false }, () =>
       this.driveClaimedOrder(intended.handle, order, (claimed) => this.settleClaimedOrder({
@@ -2113,6 +2115,48 @@ export class StandardRailService {
         body: args.body,
         payment,
       })));
+  }
+
+  // The claim did not commit, or this request cannot tell that it did. It ran
+  // before any facilitator call. The identical submission that lost a race to
+  // its own duplicate, or whose lost COMMIT did commit, is a replay; anything
+  // else is answered by what the database decided (paymentAdmission.ts).
+  private async claimFailed(error: unknown, args: {
+    orderId: string;
+    intentId: string;
+    paymentHash: Hex;
+    authorizationKey: Hex;
+  }): Promise<{ handle: string; order: StandardOrderRecord; replay: boolean }> {
+    // A lost COMMIT is answered as PAYMENT_PENDING_RECONCILIATION, which is
+    // logged as in progress; the lost commit itself is a warning.
+    if (error instanceof TransactionOutcomeUnknownError) {
+      logger.warn("payment claim commit outcome unknown", { orderId: args.orderId, intentId: args.intentId });
+    }
+    let current: ClaimedOrderReading = "unread";
+    try {
+      const claimed = await this.store.findByIntentId(args.intentId);
+      if (claimed?.order.paymentPayloadHash === args.paymentHash) return { ...claimed, replay: true };
+      current = claimed?.order ?? null;
+    } catch {
+      // Answered below without the order: paymentAdmissionFailure never
+      // reads an unknown order as unclaimed.
+    }
+    if (error instanceof Error && error.message === "PAYMENT_AUTHORIZATION_ALREADY_CLAIMED") {
+      // The same changed-authorization replay the pre-claim check records,
+      // found by the claim when the other order claimed it concurrently.
+      const holder = await this.store.findByAuthorizationKey(args.authorizationKey).catch(() => null);
+      if (holder) {
+        await this.incidents.record({
+          kind: "changed_payment_authorization_replay",
+          orderId: holder.order.orderId,
+          state: holder.order.state,
+          details: { intentId: args.intentId, presentedPaymentHash: args.paymentHash },
+        }).catch(() => undefined);
+      }
+    }
+    throw paymentAdmissionFailure(error, {
+      orderId: args.orderId, intentId: args.intentId, paymentPayloadHash: args.paymentHash, current,
+    });
   }
 
   // Runs `work` as the claimed order's driver. The request leases the order

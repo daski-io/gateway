@@ -72,6 +72,30 @@
       "correlationId": "00000000-0000-4000-8000-00000000c0de"
     }
   },
+  "paymentAdmissionUnavailable": {
+    "error": {
+      "code": "PAYMENT_ADMISSION_UNAVAILABLE",
+      "message": "The payment could not be admitted right now; nothing was claimed or settled",
+      "phase": "payment_validation",
+      "retryable": true,
+      "requiresNewSignature": false,
+      "paymentMayHaveSettled": false,
+      "docs": "https://sandbox-gateway.daski.io/skills/buy.md#errors",
+      "correlationId": "00000000-0000-4000-8000-00000000c0de"
+    }
+  },
+  "outcomeCapacityExhausted": {
+    "error": {
+      "code": "OUTCOME_CAPACITY_EXHAUSTED",
+      "message": "The outcome has reached its open-order capacity; nothing was claimed or settled",
+      "phase": "payment_validation",
+      "retryable": true,
+      "requiresNewSignature": false,
+      "paymentMayHaveSettled": false,
+      "docs": "https://sandbox-gateway.daski.io/skills/buy.md#errors",
+      "correlationId": "00000000-0000-4000-8000-00000000c0de"
+    }
+  },
   "requestSchemaInvalid": {
     "error": {
       "code": "REQUEST_SCHEMA_INVALID",

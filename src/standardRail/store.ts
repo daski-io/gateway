@@ -1,7 +1,9 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
+import type { PoolClient } from "pg";
 import { keccak256, toBytes } from "viem";
 import { withAdvisoryLock } from "../db/advisoryLock.js";
 import type { Pool } from "../db/pool.js";
+import { runTransientTransaction } from "../db/transientTransaction.js";
 import type { Hex } from "../types.js";
 import { assertTransition, isTerminalState } from "./stateMachine.js";
 import type {
@@ -21,6 +23,8 @@ const hex = (value: Buffer | null): Hex | null =>
 const RAIL_FENCE_WAIT_MS = 10_000;
 /** Never-paid drafts are audit noise; paid orders are kept indefinitely. */
 const UNPAID_DRAFT_RETENTION = "1 day";
+/** The UNIQUE constraint on standard_orders.authorization_key (migration 031). */
+const AUTHORIZATION_KEY_CONSTRAINT = "standard_orders_authorization_key_key";
 
 export const RECOVERABLE_ORDER_STATES = [
   "CHALLENGE_ISSUED", "ATTEMPT_OPENED", "VERIFIED", "VERIFY_REJECTED",
@@ -607,6 +611,27 @@ export class StandardRailStore {
       : null;
   }
 
+  /**
+   * Claims a validated payment authorization for its CHALLENGE_ISSUED order
+   * and opens its settlement attempt, before any facilitator call. Refusals
+   * are plain errors named by their message (PAYMENT_AUTHORIZATION_ALREADY_CLAIMED,
+   * ORDER_NOT_FOUND, READINESS_PAYER_MISMATCH, ORDER_ADMISSION_CONFLICT,
+   * OUTCOME_CAPACITY_EXHAUSTED) or the release fences' SALE_SUSPENDED and
+   * CONTRACT_RETIRED; nothing is kept from a refused claim.
+   *
+   * READ COMMITTED, with every lock taken before the reads that depend on it:
+   * the order row lock before its state, the listing's capacity lock before
+   * the open-order count, and, in the database's own triggers, the stop-sale
+   * lock before the sale controls and the retirement guard row before the
+   * retirements. Each statement then reads what committed before its lock
+   * was granted. SERIALIZABLE fixed the snapshot at the first statement,
+   * before those locks were granted, so a claim that waited behind another
+   * claim of the same listing always failed with 40001 (see walletStore.issue),
+   * and its predicate locks also failed unrelated purchases. One order per
+   * authorization is the unique index's to enforce: a concurrent claim of the
+   * same authorization for another order fails it with 23505. The transaction
+   * is retried whole on 40001/40P01; it has no external effect to repeat.
+   */
   async claimAuthorization(args: {
     orderId: string;
     expectedVersion: number;
@@ -617,46 +642,73 @@ export class StandardRailStore {
     facilitatorProfileHash: Hex;
     capacityLimit: number;
   }): Promise<StandardOrderRecord> {
-    const client = await this.pool.connect();
+    return runTransientTransaction(this.pool, (client) => this.claimInTransaction(client, args), {
+      operation: "standard_rail.claim_authorization",
+      isolation: "READ COMMITTED",
+    });
+  }
+
+  private async claimInTransaction(client: PoolClient, args: {
+    orderId: string;
+    expectedVersion: number;
+    authorizationKey: Hex;
+    payer: Hex;
+    encryptedPayload: Buffer;
+    paymentPayloadHash: Hex;
+    facilitatorProfileHash: Hex;
+    capacityLimit: number;
+  }): Promise<StandardOrderRecord> {
+    const conflict = await client.query<{ order_id: string }>(
+      "SELECT order_id FROM standard_orders WHERE authorization_key=$1 FOR UPDATE",
+      [bytes(args.authorizationKey)],
+    );
+    if (conflict.rows[0] && conflict.rows[0].order_id !== args.orderId) {
+      throw new Error("PAYMENT_AUTHORIZATION_ALREADY_CLAIMED");
+    }
+    // A concurrent claim of this order waits here, then reads the state the
+    // first one committed.
+    const target = await client.query<{
+      listing_manifest_hash: Buffer; expected_payer: string | null;
+      state: StandardOrderState; version: string; open: boolean;
+    }>(
+      `SELECT listing_manifest_hash,expected_payer,state,version::text AS version,expires_at>now() AS open
+         FROM standard_orders WHERE order_id=$1 FOR UPDATE`,
+      [args.orderId],
+    );
+    const order = target.rows[0];
+    if (!order) throw new Error("ORDER_NOT_FOUND");
+    if (order.expected_payer && order.expected_payer !== args.payer.toLowerCase()) {
+      throw new Error("READINESS_PAYER_MISMATCH");
+    }
+    if (order.state !== "CHALLENGE_ISSUED" || Number(order.version) !== args.expectedVersion || !order.open) {
+      throw new Error("ORDER_ADMISSION_CONFLICT");
+    }
+    const listingHash = order.listing_manifest_hash;
+    // Every open reservation of this listing is created under this lock,
+    // which is held to commit: the count below sees each one committed before.
+    await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))", [
+      `capacity:${listingHash.toString("hex")}`,
+    ]);
+    const capacity = await client.query<{ count: string }>(
+      `SELECT count(*)::text AS count FROM standard_capacity_reservations cr
+       JOIN standard_orders o ON o.order_id=cr.order_id
+       LEFT JOIN standard_order_operations op ON op.order_id=o.order_id
+       WHERE cr.listing_manifest_hash=$1 AND cr.state='open' AND NOT (
+         coalesce(o.canonical_listing->>'purchaseReadiness'='payer_dns',false) AND
+         coalesce(op.safe_projection->'fulfillment'->>'phase' IN ('dns_pending','waiting_capacity'),false))`,
+      [listingHash],
+    );
+    if (BigInt(capacity.rows[0]?.count ?? "0") >= BigInt(args.capacityLimit)) {
+      throw new Error("OUTCOME_CAPACITY_EXHAUSTED");
+    }
+    await client.query(
+      `INSERT INTO standard_capacity_reservations(order_id,listing_manifest_hash,state)
+       VALUES ($1,$2,'open') ON CONFLICT (order_id) DO NOTHING`,
+      [args.orderId, listingHash],
+    );
+    let result;
     try {
-      await client.query("BEGIN ISOLATION LEVEL SERIALIZABLE");
-      const conflict = await client.query<{ order_id: string }>(
-        "SELECT order_id FROM standard_orders WHERE authorization_key=$1 FOR UPDATE",
-        [bytes(args.authorizationKey)],
-      );
-      if (conflict.rows[0] && conflict.rows[0].order_id !== args.orderId) {
-        throw new Error("PAYMENT_AUTHORIZATION_ALREADY_CLAIMED");
-      }
-      const target = await client.query<{ listing_manifest_hash: Buffer; expected_payer: string | null }>(
-        "SELECT listing_manifest_hash,expected_payer FROM standard_orders WHERE order_id=$1 FOR UPDATE",
-        [args.orderId],
-      );
-      if (!target.rows[0]) throw new Error("ORDER_NOT_FOUND");
-      if (target.rows[0].expected_payer && target.rows[0].expected_payer !== args.payer.toLowerCase()) {
-        throw new Error("READINESS_PAYER_MISMATCH");
-      }
-      const listingHash = target.rows[0].listing_manifest_hash;
-      await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))", [
-        `capacity:${listingHash.toString("hex")}`,
-      ]);
-      const capacity = await client.query<{ count: string }>(
-        `SELECT count(*)::text AS count FROM standard_capacity_reservations cr
-         JOIN standard_orders o ON o.order_id=cr.order_id
-         LEFT JOIN standard_order_operations op ON op.order_id=o.order_id
-         WHERE cr.listing_manifest_hash=$1 AND cr.state='open' AND NOT (
-           coalesce(o.canonical_listing->>'purchaseReadiness'='payer_dns',false) AND
-           coalesce(op.safe_projection->'fulfillment'->>'phase' IN ('dns_pending','waiting_capacity'),false))`,
-        [listingHash],
-      );
-      if (BigInt(capacity.rows[0]?.count ?? "0") >= BigInt(args.capacityLimit)) {
-        throw new Error("OUTCOME_CAPACITY_EXHAUSTED");
-      }
-      await client.query(
-        `INSERT INTO standard_capacity_reservations(order_id,listing_manifest_hash,state)
-         VALUES ($1,$2,'open') ON CONFLICT (order_id) DO NOTHING`,
-        [args.orderId, listingHash],
-      );
-      const result = await client.query<OrderRow>(
+      result = await client.query<OrderRow>(
         `UPDATE standard_orders SET state='ATTEMPT_OPENED',authorization_key=$1,
            payer=$2,encrypted_payment_payload=$3,payment_payload_hash=$4,version=version+1,updated_at=now()
          WHERE order_id=$5 AND state='CHALLENGE_ISSUED' AND version=$6 AND expires_at>now()
@@ -666,27 +718,27 @@ export class StandardRailStore {
           bytes(args.paymentPayloadHash), args.orderId, args.expectedVersion,
         ],
       );
-      if (!result.rows[0]) throw new Error("ORDER_ADMISSION_CONFLICT");
-      await client.query(
-        `INSERT INTO standard_settlement_attempts
-          (order_id,attempt_id,facilitator_profile_hash)
-         VALUES ($1,$2,$3) ON CONFLICT (order_id) DO NOTHING`,
-        [args.orderId, `attempt_${randomUUID()}`, bytes(args.facilitatorProfileHash)],
-      );
-      await client.query(
-        `INSERT INTO standard_order_transitions
-          (order_id,from_state,to_state,reason_code,fence)
-         VALUES ($1,'CHALLENGE_ISSUED','ATTEMPT_OPENED','authorization_claimed',0)`,
-        [args.orderId],
-      );
-      await client.query("COMMIT");
-      return record(result.rows[0]);
     } catch (error) {
-      await client.query("ROLLBACK");
+      if ((error as { code?: unknown; constraint?: unknown }).code === "23505" &&
+          (error as { constraint?: unknown }).constraint === AUTHORIZATION_KEY_CONSTRAINT) {
+        throw new Error("PAYMENT_AUTHORIZATION_ALREADY_CLAIMED", { cause: error });
+      }
       throw error;
-    } finally {
-      client.release();
     }
+    if (!result.rows[0]) throw new Error("ORDER_ADMISSION_CONFLICT");
+    await client.query(
+      `INSERT INTO standard_settlement_attempts
+        (order_id,attempt_id,facilitator_profile_hash)
+       VALUES ($1,$2,$3) ON CONFLICT (order_id) DO NOTHING`,
+      [args.orderId, `attempt_${randomUUID()}`, bytes(args.facilitatorProfileHash)],
+    );
+    await client.query(
+      `INSERT INTO standard_order_transitions
+        (order_id,from_state,to_state,reason_code,fence)
+       VALUES ($1,'CHALLENGE_ISSUED','ATTEMPT_OPENED','authorization_claimed',0)`,
+      [args.orderId],
+    );
+    return record(result.rows[0]);
   }
 
   async transition(

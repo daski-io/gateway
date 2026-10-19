@@ -212,6 +212,15 @@ function standardRailErrorFixture() {
     providerLifecycleUnavailable: http(new StandardRailError("PROVIDER_LIFECYCLE_UNAVAILABLE", {
       correlationId: CORRELATION_ID,
     })),
+    // A paid submission whose claim did not commit (served with Retry-After):
+    // nothing was claimed, and the identical signed submission is the retry.
+    paymentAdmissionUnavailable: http(new StandardRailError("PAYMENT_ADMISSION_UNAVAILABLE", {
+      correlationId: CORRELATION_ID,
+    })),
+    // The listing's open-order capacity refused the claim; nothing was claimed.
+    outcomeCapacityExhausted: http(new StandardRailError("OUTCOME_CAPACITY_EXHAUSTED", {
+      correlationId: CORRELATION_ID,
+    })),
     requestSchemaInvalid: http(new StandardRailError("REQUEST_SCHEMA_INVALID", {
       message: "Request body does not match the outcome schema",
       fieldErrors: [{ path: "/registrantState", rule: "pattern", message: "must match pattern" }],

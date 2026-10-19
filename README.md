@@ -418,6 +418,27 @@ lives in [daski-io/deploy-mainnet](https://github.com/daski-io/deploy-mainnet).
   sanitized error; the gateway keeps serving and the next checkout connects
   again.
 
+A paid submission is admitted by one database transaction that claims its
+authorization for the order and opens the settlement attempt, before any
+facilitator call. It runs at READ COMMITTED and takes each lock before the
+reads that depend on it: the order row before the order's state, the listing's
+capacity lock before its open orders are counted, and, inside the database's
+own triggers, the stop-sale lock before the sale controls and the retirement
+guard row before the retirements. The unique authorization index keeps one
+order per authorization. A serialization failure or deadlock reruns the whole
+transaction, at most four attempts with jittered 25–400 ms pauses. A refused
+claim is answered by name: HTTP 409 `OUTCOME_CAPACITY_EXHAUSTED` when the
+listing's open orders fill its capacity, and the existing
+`PAYMENT_IDENTIFIER_CONFLICT`, `AUTHORIZATION_MISMATCH` and `CHALLENGE_EXPIRED`
+for an authorization another order holds, a payer other than the readiness
+quote's, and a challenge that can no longer be paid. A claim the database could
+not commit (its retries exhausted, or the database refused or lost the
+connection before the commit) answers the retryable HTTP 503
+`PAYMENT_ADMISSION_UNAVAILABLE` with `Retry-After: 2`: nothing was claimed or
+settled, and the identical signed submission is the retry. A connection lost
+while committing answers `PAYMENT_PENDING_RECONCILIATION`, because the claim
+may have been recorded.
+
 The provider workflow and signed wire contract are documented in
 [docs/service-registration-v1.md](docs/service-registration-v1.md); the
 provider owner-swap notice in [docs/owner-swaps-v1.md](docs/owner-swaps-v1.md). Checkout uses

@@ -40,6 +40,8 @@ export type StandardRailErrorCode =
   | "SIGNATURE_VERIFICATION_UNAVAILABLE"
   | "SIGNATURE_VERIFICATION_BUSY"
   | "FACILITATOR_REJECTED"
+  | "OUTCOME_CAPACITY_EXHAUSTED"
+  | "PAYMENT_ADMISSION_UNAVAILABLE"
   | "PAYMENT_PENDING_RECONCILIATION"
   | "PAYMENT_IDENTIFIER_UNKNOWN"
   | "PAYMENT_IDENTIFIER_CONFLICT"
@@ -278,6 +280,36 @@ const DEFAULTS: Record<StandardRailErrorCode, ErrorDefaults> = {
     requiresNewSignature: true,
     paymentMayHaveSettled: false,
     nextAction: "Correct verify failures; after settle, reconcile before re-signing.",
+  },
+  // The listing already holds its open-order capacity. The claim was refused
+  // before any facilitator call: the same signed submission may be sent again
+  // while its challenge is valid, and a later challenge needs a new signature.
+  OUTCOME_CAPACITY_EXHAUSTED: {
+    status: 409,
+    message: "The outcome has reached its open-order capacity; nothing was claimed or settled",
+    phase: "payment_validation",
+    retryable: true,
+    requiresNewSignature: false,
+    paymentMayHaveSettled: false,
+    nextAction:
+      "Try again later: resend the identical signed purchase while its challenge is valid, or request a " +
+      "fresh challenge once it expires. Nothing was claimed or settled.",
+  },
+  // The database could not record the payment claim this time: a
+  // serialization failure or deadlock past the bounded retry, or a database
+  // that refused or lost the connection before the claim committed. The claim
+  // runs before any facilitator call and rolled back, so the identical signed
+  // submission is the retry, and the rail answers it as one purchase.
+  PAYMENT_ADMISSION_UNAVAILABLE: {
+    status: 503,
+    message: "The payment could not be admitted right now; nothing was claimed or settled",
+    phase: "payment_validation",
+    retryable: true,
+    requiresNewSignature: false,
+    paymentMayHaveSettled: false,
+    nextAction:
+      "Wait for Retry-After, then resend the identical signed purchase; do not sign again. " +
+      "Nothing was claimed or settled.",
   },
   PAYMENT_PENDING_RECONCILIATION: {
     status: 409,
@@ -730,6 +762,9 @@ export function logStandardRailError(error: StandardRailError): void {
  * Never a client fault, so never a denial.
  */
 const TRANSIENT_DATABASE_CODES = new Set(["40001", "40P01"]);
+
+/** Retry-After for PAYMENT_ADMISSION_UNAVAILABLE. */
+export const PAYMENT_ADMISSION_RETRY_AFTER_SECONDS = 2;
 
 export function isTransientDatabaseError(error: unknown): boolean {
   return typeof error === "object" && error !== null &&
