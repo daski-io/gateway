@@ -94,6 +94,17 @@ signature or payer hold. Resuming sales does not silently submit those parked
 authorizations. Work already paid or whose submission was admitted remains
 recoverable under its original contract.
 
+The current runtime claims a payment at READ COMMITTED. The stop lock is taken
+before the sale controls are read, so a claim that waited behind a stop reads
+it and is refused, and a stop that waited behind a claim parks the
+authorization that claim committed; the retirement guard row orders claims and
+retirement the same way. The guard-row writes remain for an overlapping prior
+runtime, whose SERIALIZABLE claim fails when its snapshot predates a stop or
+retirement. Such a prior-runtime claim also counts open-order capacity from its
+snapshot, which misses a reservation a current-runtime claim of the same
+listing committed after that snapshot was taken: during an overlap, such
+racing claims can admit more open orders than the listing's capacity.
+
 Stopped status separates gateway submission from payment observation. It reports
 the finalized block/nonce observation and authorization expiry when available.
 Absence of a payment observation is not proof of unpaid status. Cancellation or

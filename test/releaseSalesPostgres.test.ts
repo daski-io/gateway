@@ -34,8 +34,8 @@ describe("durable scoped stop-sale", () => {
         return {release:()=>client.release(),query:async(sql:string,values?:unknown[])=>{
           const result=await client.query(sql,values);
           if(sql.startsWith("SELECT listing_manifest_hash,expected_payer")) {
-            // The claim already has a SERIALIZABLE snapshot. The other order's
-            // legacy settle UPDATE must not invalidate it.
+            // The claim is inside its transaction, holding its order row. The
+            // other order's legacy settle UPDATE must neither block nor fail it.
             interleaved=true;
             expect(await new StandardRailJournal(pool).markSettleInvoked("settling")).toBe(true);
           }
