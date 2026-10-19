@@ -5,6 +5,7 @@ import {
   REVIEWED_USDC_DOMAINS,
   type UsdcDomainConfig,
 } from "./payment/usdcDomain.js";
+import { MEMORY_REPORT_INTERVAL_MS } from "./runtime/memoryReport.js";
 import type { ChainId, Hex } from "./types.js";
 import { isHexAddress } from "./util/evmValidation.js";
 import { resolveFinalityTag, type FinalityTag } from "./util/finalityTag.js";
@@ -51,6 +52,8 @@ export interface Config {
   publicReadMaxPerMinute: number;
   publicReadGlobalMaxPerMinute: number;
   shutdownGraceMs: number;
+  /** How often a serving gateway logs its memory; 0 turns the report off. */
+  memoryReportIntervalMs: number;
 }
 
 function integer(
@@ -73,6 +76,19 @@ function booleanValue(name: string, raw: string | undefined, fallback: boolean):
   if (raw === "true") return true;
   if (raw === "false") return false;
   throw new Error(`${name} must be either 'true' or 'false'`);
+}
+
+// At least ten seconds keeps the report a low-volume line; at most a day stays
+// within the timer range (a longer interval would fire continuously).
+function memoryReportIntervalMs(raw: string | undefined): number {
+  const value = integer("MEMORY_REPORT_INTERVAL_MS", raw, MEMORY_REPORT_INTERVAL_MS, {
+    allowZero: true,
+    maximum: 86_400_000,
+  });
+  if (value !== 0 && value < 10_000) {
+    throw new Error("MEMORY_REPORT_INTERVAL_MS must be 0 (off) or at least 10000");
+  }
+  return value;
 }
 
 function chainId(raw: string | undefined): ChainId {
@@ -262,5 +278,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       6000,
     ),
     shutdownGraceMs: integer("SHUTDOWN_GRACE_MS", env.SHUTDOWN_GRACE_MS, 25_000),
+    memoryReportIntervalMs: memoryReportIntervalMs(env.MEMORY_REPORT_INTERVAL_MS),
   };
 }

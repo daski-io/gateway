@@ -315,6 +315,10 @@ core groups are:
 - Public projection: `CHAIN_PROJECTION_REFRESH_MS` sets how often the public
   reputation projection behind the chain document and the activity endpoint
   is refreshed in the background.
+- Process memory: a serving gateway logs one `process memory` line every
+  `MEMORY_REPORT_INTERVAL_MS` (300000, five minutes; `0` turns it off) with
+  `rssMb`, `heapUsedMb`, `heapTotalMb`, `externalMb`, `arrayBuffersMb` and
+  `heapSizeLimitMb`, in MiB.
 - Payer accounts: `PAYER_ACCOUNT_TYPES` (`eoa` by default; `eoa,contract`
   admits deployed contract accounts whose `isValidSignature` verifies the
   EIP-712 hash through one bounded `eth_call`) and
@@ -385,7 +389,10 @@ lives in [daski-io/deploy-mainnet](https://github.com/daski-io/deploy-mainnet).
 - `src/mcp/` retains request context and compatibility result helpers; the
   MCP server and tool definitions belong to the website repository.
 - `src/db/` contains migration history and the standard runtime database
-  boundary.
+  boundary. A pooled connection the database ends, as a restart ends them
+  all, is logged as `database connection lost` with the pool's name and the
+  sanitized error; the gateway keeps serving and the next checkout connects
+  again.
 
 The provider workflow and signed wire contract are documented in
 [docs/service-registration-v1.md](docs/service-registration-v1.md); the

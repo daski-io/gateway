@@ -10,6 +10,7 @@ import { createRateLimitQueries } from "../db/rateLimitQueries.js";
 import { createStandardGatewayHttp } from "../http/gatewayApp.js";
 import type { McpWiring } from "../mcp/httpTransport.js";
 import { ApplicationLifecycle } from "../runtime/applicationLifecycle.js";
+import { startMemoryReports } from "../runtime/memoryReport.js";
 import { logger } from "../util/logger.js";
 import type { StandardRailConfig } from "./config.js";
 
@@ -159,6 +160,7 @@ export async function createStandardApp(options: {
   });
   if (!options.pool) {
     const migrationPool = createPool({
+      name: "migration",
       connectionString: options.standardRailConfig.migrationDatabaseUrl,
       max: 1,
       connectionTimeoutMs: 10_000,
@@ -177,6 +179,7 @@ export async function createStandardApp(options: {
     }
   }
   const pool = options.pool ?? createPool({
+    name: "runtime",
     connectionString: options.config.databaseUrl,
     max: 10,
   });
@@ -184,6 +187,7 @@ export async function createStandardApp(options: {
   const federationPermitPool = options.federationPermitPool ?? (options.pool
     ? pool
     : createPool({
+      name: "federation-permit",
       connectionString: options.config.databaseUrl,
       max: options.standardRailConfig.abuse.federationGlobalConcurrency,
     }));
@@ -192,6 +196,7 @@ export async function createStandardApp(options: {
   // the query pool, so a lock holder can never be starved of a client by the
   // work it is itself serializing.
   const lockPool = options.pool ? pool : createPool({
+    name: "advisory-lock",
     connectionString: options.config.databaseUrl,
     max: LOCK_POOL_SIZE,
   });
@@ -218,11 +223,21 @@ export async function createStandardApp(options: {
   }, RATE_LIMIT_PRUNE_INTERVAL_MS);
   pruneRateLimits.unref();
 
+  // Started with the background work, so only a serving process reports.
+  let stopMemoryReports: (() => void) | null = null;
+  const startBackground = (): void => {
+    standardRailStart();
+    if (stopMemoryReports || lifecycle.isStopping()) return;
+    stopMemoryReports = startMemoryReports({ intervalMs: options.config.memoryReportIntervalMs });
+  };
+
   let shutdownPromise: Promise<void> | null = null;
   const shutdown = (httpClosed: Promise<void> = Promise.resolve()): Promise<void> => {
     if (shutdownPromise) return shutdownPromise;
     lifecycle.beginShutdown();
     clearInterval(pruneRateLimits);
+    stopMemoryReports?.();
+    stopMemoryReports = null;
     shutdownPromise = (async () => {
       const drains = await Promise.allSettled([
         httpClosed,
@@ -245,7 +260,7 @@ export async function createStandardApp(options: {
     app,
     pool,
     mcp,
-    startBackground: standardRailStart,
+    startBackground,
     beginShutdown: () => lifecycle.beginShutdown(),
     shutdown,
   };

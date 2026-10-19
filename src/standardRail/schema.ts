@@ -1,14 +1,152 @@
 import vm from "node:vm";
-import Ajv, { type ValidateFunction } from "ajv";
+import Ajv, { type Options, type ValidateFunction } from "ajv";
 import Ajv2020 from "ajv/dist/2020.js";
+import type AjvCore from "ajv/dist/core.js";
 import {
   assertBoundedJsonValue,
   REQUEST_JSON_BUDGET,
   RESPONSE_JSON_BUDGET,
 } from "./jsonBounds.js";
 
-const ajv = new Ajv({ allErrors: true, strict: true });
-const ajv2020 = new Ajv2020({ allErrors: true, strict: true });
+const AJV_OPTIONS: Options = { allErrors: true, strict: true };
+const DRAFT_2020_12 = "https://json-schema.org/draft/2020-12/schema";
+/** Deeper values have no reusable text; they compile alone (see `plainJsonText`). */
+const SCHEMA_TEXT_MAX_DEPTH = 64;
+
+/**
+ * How much one Ajv instance compiles before it is replaced: distinct schemas,
+ * counting ones Ajv rejected, and their total JSON text in UTF-16 code units.
+ * The defaults hold many times the schemas a catalog refresh compiles (each
+ * listed skill's input and result schema, in card and database key order,
+ * plus the action catalogs') and keep one instance to tens of MB of heap.
+ */
+export interface SchemaCompilerLimits {
+  maxSchemas: number;
+  maxTextLength: number;
+}
+
+export const SCHEMA_COMPILER_LIMITS: Readonly<SchemaCompilerLimits> = Object.freeze({
+  maxSchemas: 1_024,
+  maxTextLength: 2 * 1024 * 1024,
+});
+
+export interface SchemaCompilerStats {
+  /** How many times the Ajv instance has been replaced. */
+  generation: number;
+  /** Validators held for reuse. */
+  validators: number;
+  /** Schemas the current instance compiled, including those Ajv rejected. */
+  compiled: number;
+  /** JSON text length of those schemas. */
+  textLength: number;
+  /** Values (schemas, patterns, functions) the current instance's generated code holds. */
+  scopeValues: number;
+}
+
+// The JSON text of a schema made only of plain JSON data, keys in their own
+// order, or null for anything else: undefined, a non-finite number, a
+// function, a class instance, a sparse array, a cycle or deeper nesting.
+function plainJsonText(schema: Record<string, unknown>): string | null {
+  const plain = (value: unknown, depth: number): boolean => {
+    if (value === null || typeof value === "string" || typeof value === "boolean") return true;
+    if (typeof value === "number") return Number.isFinite(value);
+    if (typeof value !== "object" || depth >= SCHEMA_TEXT_MAX_DEPTH) return false;
+    if (Array.isArray(value)) {
+      if (Object.getPrototypeOf(value) !== Array.prototype) return false;
+      for (let index = 0; index < value.length; index += 1) {
+        if (!(index in value) || !plain(value[index], depth + 1)) return false;
+      }
+      return true;
+    }
+    if (Object.getPrototypeOf(value) !== Object.prototype) return false;
+    const record = value as Record<string, unknown>;
+    return Object.keys(record).every((key) => plain(record[key], depth + 1));
+  };
+  return plain(schema, 0) ? JSON.stringify(schema) : null;
+}
+
+/**
+ * Compiles schemas of one draft with bounded retention. Ajv keeps everything
+ * an instance compiles: its cache is keyed by schema object identity, and
+ * every compilation adds the schema, its patterns and its generated code to
+ * the instance's scope, including one Ajv rejects. Provider cards are parsed
+ * afresh on every catalog refresh, so a long-lived instance retained each
+ * parsed copy of every skill schema and the heap grew with every refresh.
+ *
+ * A validator is reused for every schema with the same JSON text. The text
+ * keeps the schema's own key order, because Ajv reports property errors in
+ * that order: a reused validator answers exactly as compiling that schema
+ * would. Validators are compiled from a private copy of the text, so no
+ * caller can change a validator another caller holds by mutating its own
+ * schema. Once the instance has compiled `maxSchemas` schemas or
+ * `maxTextLength` of text it is replaced and the cache starts empty;
+ * validators already returned keep working and are collected with their
+ * instance once nothing holds them. A validator reports `errors` for its
+ * latest call only, so callers read them synchronously after validating.
+ */
+export class SchemaCompiler {
+  private ajv: AjvCore;
+  private validators = new Map<string, ValidateFunction>();
+  private compiled = 0;
+  private textLength = 0;
+  private generation = 0;
+
+  constructor(
+    private readonly createAjv: () => AjvCore,
+    private readonly limits: Readonly<SchemaCompilerLimits> = SCHEMA_COMPILER_LIMITS,
+  ) {
+    this.ajv = createAjv();
+  }
+
+  compile(schema: Record<string, unknown>): ValidateFunction {
+    const text = plainJsonText(schema);
+    // No text identifies such a schema: it compiles on an instance of its
+    // own, which goes when the caller drops the validator.
+    if (text === null) return this.createAjv().compile(schema);
+    const cached = this.validators.get(text);
+    if (cached) return cached;
+    if (
+      this.compiled > 0 &&
+      (this.compiled >= this.limits.maxSchemas ||
+        this.textLength + text.length > this.limits.maxTextLength)
+    ) this.replace();
+    // Counted first: a schema Ajv rejects still leaves state in the instance,
+    // and a rejection is not cached, so the next attempt fails the same way.
+    this.compiled += 1;
+    this.textLength += text.length;
+    const validate = this.ajv.compile(JSON.parse(text) as Record<string, unknown>);
+    this.validators.set(text, validate);
+    return validate;
+  }
+
+  stats(): SchemaCompilerStats {
+    let scopeValues = 0;
+    for (const values of Object.values(this.ajv.scope.get())) scopeValues += values?.length ?? 0;
+    return {
+      generation: this.generation,
+      validators: this.validators.size,
+      compiled: this.compiled,
+      textLength: this.textLength,
+      scopeValues,
+    };
+  }
+
+  private replace(): void {
+    this.ajv = this.createAjv();
+    this.validators = new Map();
+    this.compiled = 0;
+    this.textLength = 0;
+    this.generation += 1;
+  }
+}
+
+const draft07 = new SchemaCompiler(() => new Ajv(AJV_OPTIONS));
+const draft2020 = new SchemaCompiler(() => new Ajv2020(AJV_OPTIONS));
+
+export function schemaCompilerStats(): Record<"draft-07" | "2020-12", SchemaCompilerStats> {
+  return { "draft-07": draft07.stats(), "2020-12": draft2020.stats() };
+}
+
 const UNSAFE_PROPERTY_NAMES = new Set(["__proto__", "constructor", "prototype"]);
 const RECORD_REQUIRED_KEYS = [
   "type", "properties", "additionalProperties", "maxProperties", "propertyNames",
@@ -200,9 +338,7 @@ function compileClosedObjectSchema(
     schema.additionalProperties !== false ||
     !schema.properties || typeof schema.properties !== "object" || Array.isArray(schema.properties)
   ) throw new Error(`Outcome ${label} schema must be a closed JSON object schema`);
-  return (schema.$schema === "https://json-schema.org/draft/2020-12/schema"
-    ? ajv2020
-    : ajv).compile(schema);
+  return (schema.$schema === DRAFT_2020_12 ? draft2020 : draft07).compile(schema);
 }
 
 export function compileClosedRequestSchema(schema: Record<string, unknown>): ValidateFunction {
