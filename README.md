@@ -315,6 +315,10 @@ core groups are:
 - Public projection: `CHAIN_PROJECTION_REFRESH_MS` sets how often the public
   reputation projection behind the chain document and the activity endpoint
   is refreshed in the background.
+- Process memory: a serving gateway logs one `process memory` line every
+  `MEMORY_REPORT_INTERVAL_MS` (300000, five minutes; `0` turns it off) with
+  `rssMb`, `heapUsedMb`, `heapTotalMb`, `externalMb`, `arrayBuffersMb` and
+  `heapSizeLimitMb`, in MiB.
 - Payer accounts: `PAYER_ACCOUNT_TYPES` (`eoa` by default; `eoa,contract`
   admits deployed contract accounts whose `isValidSignature` verifies the
   EIP-712 hash through one bounded `eth_call`) and

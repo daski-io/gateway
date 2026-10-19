@@ -45,6 +45,17 @@ describe("standard-only gateway configuration", () => {
     expect(() => loadConfig({ ...environment(), DOCS_URL })).toThrow(/DOCS_URL/);
   });
 
+  it("reports memory every five minutes unless MEMORY_REPORT_INTERVAL_MS is 0 or 10 seconds to a day", () => {
+    expect(loadConfig(environment()).memoryReportIntervalMs).toBe(300_000);
+    for (const [value, expected] of [["0", 0], ["10000", 10_000], ["86400000", 86_400_000]] as const) {
+      expect(loadConfig({ ...environment(), MEMORY_REPORT_INTERVAL_MS: value }).memoryReportIntervalMs).toBe(expected);
+    }
+    for (const value of ["9999", "1", "86400001", "-1", "1.5", "five minutes"]) {
+      expect(() => loadConfig({ ...environment(), MEMORY_REPORT_INTERVAL_MS: value }))
+        .toThrow(/MEMORY_REPORT_INTERVAL_MS/);
+    }
+  });
+
   it("rejects the retired payment-rail selector", () => {
     expect(() => loadConfig({ ...environment(), PAYMENT_RAIL: "standard" }))
       .toThrow(/PAYMENT_RAIL is retired/);

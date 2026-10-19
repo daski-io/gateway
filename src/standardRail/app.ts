@@ -10,6 +10,7 @@ import { createRateLimitQueries } from "../db/rateLimitQueries.js";
 import { createStandardGatewayHttp } from "../http/gatewayApp.js";
 import type { McpWiring } from "../mcp/httpTransport.js";
 import { ApplicationLifecycle } from "../runtime/applicationLifecycle.js";
+import { startMemoryReports } from "../runtime/memoryReport.js";
 import { logger } from "../util/logger.js";
 import type { StandardRailConfig } from "./config.js";
 
@@ -222,11 +223,21 @@ export async function createStandardApp(options: {
   }, RATE_LIMIT_PRUNE_INTERVAL_MS);
   pruneRateLimits.unref();
 
+  // Started with the background work, so only a serving process reports.
+  let stopMemoryReports: (() => void) | null = null;
+  const startBackground = (): void => {
+    standardRailStart();
+    if (stopMemoryReports || lifecycle.isStopping()) return;
+    stopMemoryReports = startMemoryReports({ intervalMs: options.config.memoryReportIntervalMs });
+  };
+
   let shutdownPromise: Promise<void> | null = null;
   const shutdown = (httpClosed: Promise<void> = Promise.resolve()): Promise<void> => {
     if (shutdownPromise) return shutdownPromise;
     lifecycle.beginShutdown();
     clearInterval(pruneRateLimits);
+    stopMemoryReports?.();
+    stopMemoryReports = null;
     shutdownPromise = (async () => {
       const drains = await Promise.allSettled([
         httpClosed,
@@ -249,7 +260,7 @@ export async function createStandardApp(options: {
     app,
     pool,
     mcp,
-    startBackground: standardRailStart,
+    startBackground,
     beginShutdown: () => lifecycle.beginShutdown(),
     shutdown,
   };
