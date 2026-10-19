@@ -387,10 +387,11 @@ export function createPayerSignatureVerifier(
       }, {
         attempts: 1,
         baseDelayMs: 0,
+        operation: "payerSignature.verify",
         terminal: (error) =>
           error instanceof ExplicitVerificationFailure || error instanceof VerificationDeadlineExceeded,
-        onFallback: ({ primaryHost, selectedHost }) => {
-          logger.warn("payer signature verification RPC fallback selected", { primaryHost, selectedHost });
+        onFallback: (detail) => {
+          logger.warn("payer signature verification RPC fallback selected", detail);
         },
       });
     } finally { clearTimeout(timer); abort.abort(); }
@@ -498,6 +499,7 @@ export function createContractVerificationEndpoint(args: {
     }),
   });
   return {
+    url: args.url,
     host: new URL(args.url).hostname,
     client: {
       async getCode({ address, signal, deadline }) {

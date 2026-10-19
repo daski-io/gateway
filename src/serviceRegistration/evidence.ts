@@ -2,7 +2,6 @@ import {
   createPublicClient,
   encodeAbiParameters,
   getAddress,
-  http,
   keccak256,
   parseAbi,
   stringToHex,
@@ -17,6 +16,7 @@ import type {
 } from "../marketplace/reader.js";
 import { withRpcFailover } from "../rpc/failover.js";
 import { orderedRpcTransport } from "../rpc/orderedTransport.js";
+import { rpcReadTransport } from "../rpc/readTransport.js";
 import { canonicalHash } from "../standardRail/canonical.js";
 import type { StandardRailConfig } from "../standardRail/config.js";
 import type {
@@ -168,6 +168,7 @@ export interface RegistrationEvidenceVerifier {
 }
 
 interface RpcEndpoint {
+  url: string;
   host: string;
   client: ReturnType<typeof createPublicClient>;
 }
@@ -188,6 +189,7 @@ implements RegistrationEvidenceVerifier {
   ) {
     this.policy = dynamicRegistrationPolicy(config, railConfig);
     this.clients = railConfig.evidenceRpcUrls.map((url) => ({
+      url,
       host: new URL(url).hostname,
       client: createPublicClient({
         chain,
@@ -195,18 +197,18 @@ implements RegistrationEvidenceVerifier {
         // at the shared endpoint, but after the payment proofs of listings
         // already selling, which keep at least every other slot: a
         // registration backlog takes no more from them than ordinary reads.
-        transport: orderedRpcTransport(http(url, {
-          retryCount: 0,
-          timeout: 20_000,
-        }), { scope: url, maxPerMinute: railConfig.rpcReadMaxPerMinute, priority: "registration" }),
+        transport: orderedRpcTransport(rpcReadTransport(url), {
+          scope: url, maxPerMinute: railConfig.rpcReadMaxPerMinute, priority: "registration",
+        }),
       }),
     }));
   }
 
   private observe<Result>(
+    operation: string,
     work: (endpoint: RpcEndpoint) => Promise<Result>,
   ): Promise<Result> {
-    return withRpcFailover(this.clients, work);
+    return withRpcFailover(this.clients, work, { operation: "registration." + operation });
   }
 
   private async verifyFinalTransaction(
@@ -221,7 +223,7 @@ implements RegistrationEvidenceVerifier {
       listingCommitmentHash: Hex;
     },
   ): Promise<{ blockNumber: bigint; blockHash: Hex }> {
-    return this.observe(async ({ client }) => {
+    return this.observe("verifyFinalTransaction", async ({ client }) => {
       const [transaction, receipt, final] = await Promise.all([
         client.getTransaction({ hash: args.transactionHash }),
         client.getTransactionReceipt({ hash: args.transactionHash }),
@@ -302,7 +304,7 @@ implements RegistrationEvidenceVerifier {
       listingCommitmentHash,
     });
     const blockNumber = deployment.blockNumber;
-    return this.observe(async ({ client }) => {
+    return this.observe("verifySplitter", async ({ client }) => {
       const code = await client.getCode({
         address: args.listing.splitterAddress!,
         blockNumber,

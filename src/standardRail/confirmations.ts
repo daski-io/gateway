@@ -390,7 +390,7 @@ export class StandardConfirmations {
       }
       return await this.state.observeWith(({ client }) => (client as unknown as EasReadClient).readContract({
         address: this.config.easAddress, abi: easNonceAbi, functionName: "getNonce", args: [payer],
-      }));
+      }), "confirmation.easNonce");
     } catch {
       throw standardRailError("CONFIRMATION_SPONSORSHIP_UNAVAILABLE");
     }
@@ -400,7 +400,8 @@ export class StandardConfirmations {
     try {
       if (this.easClient?.readProfile) return await this.easClient.readProfile(blockTag);
       return await this.state.observeWith(({ client }) =>
-        observeEasProfile(client as unknown as PublicClient, this.chainId, this.config.easAddress, blockTag));
+        observeEasProfile(client as unknown as PublicClient, this.chainId, this.config.easAddress, blockTag),
+      "confirmation.easProfile");
     } catch (error) {
       throw standardRailError(error instanceof EasIncompatible
         ? "CONFIRMATION_EAS_INCOMPATIBLE" : "CONFIRMATION_SPONSORSHIP_UNAVAILABLE");

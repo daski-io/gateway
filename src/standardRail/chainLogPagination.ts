@@ -1,3 +1,5 @@
+import { isLogRangeLimitError } from "../rpc/classification.js";
+
 interface LogRange<T> {
   fromBlock: bigint;
   toBlock: bigint;
@@ -21,7 +23,10 @@ export async function loadLogsPaged<T>(args: LogRange<T>): Promise<T[]> {
     try {
       page = await args.load(fromBlock, toBlock);
     } catch (error) {
-      if (fromBlock === toBlock) throw error;
+      // Only a range or result-count refusal is answered by a smaller range.
+      // Any other failure is the endpoint's: splitting would multiply the
+      // requests to a failing endpoint, so it goes to the RPC failover.
+      if (fromBlock === toBlock || !isLogRangeLimitError(error)) throw error;
       const midpoint = fromBlock + (toBlock - fromBlock) / 2n;
       await loadRange(fromBlock, midpoint);
       await loadRange(midpoint + 1n, toBlock);

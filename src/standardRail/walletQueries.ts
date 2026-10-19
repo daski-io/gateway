@@ -1,8 +1,8 @@
 import { orderedRpcTransport } from "../rpc/orderedTransport.js";
+import { rpcReadTransport } from "../rpc/readTransport.js";
 import {
   createPublicClient,
   getAddress,
-  http,
   parseAbi,
   type Address,
   type Chain,
@@ -58,10 +58,11 @@ export class StandardWalletQueries {
     chain: Chain,
   ) {
     this.clients = config.evidenceRpcUrls.map((url) => ({
+      url,
       host: new URL(url).hostname,
       client: createPublicClient({
         chain,
-        transport: orderedRpcTransport(http(url, { retryCount: 0, timeout: 20_000 }), { scope: url, maxPerMinute: config.rpcReadMaxPerMinute }),
+        transport: orderedRpcTransport(rpcReadTransport(url), { scope: url, maxPerMinute: config.rpcReadMaxPerMinute }),
       }),
     }));
     this.reputationContract = config.reputationContract;
@@ -73,14 +74,13 @@ export class StandardWalletQueries {
   private readonly finalityTag: FinalityTag;
 
   private observe<Result>(
+    operation: string,
     work: (endpoint: (typeof this.clients)[number]) => Promise<Result>,
   ): Promise<Result> {
     return withRpcFailover(this.clients, work, {
-      onFallback: ({ primaryHost, selectedHost }) => {
-        logger.warn("standard wallet RPC fallback selected", {
-          primaryHost,
-          selectedHost,
-        });
+      operation: "wallet." + operation,
+      onFallback: (detail) => {
+        logger.warn("standard wallet RPC fallback selected", detail);
       },
     });
   }
@@ -126,7 +126,7 @@ export class StandardWalletQueries {
     );
     const rows = result.rows.slice(0, args.limit);
     const hasMore = result.rows.length > args.limit;
-    const { records, recoveries } = await this.observe(async ({ client }) => {
+    const { records, recoveries } = await this.observe("listOrders", async ({ client }) => {
       const block = await client.getBlock({ blockTag: this.finalityTag });
       // A page can contain 100 rows; keep only a bounded batch in the ordered
       // transport while preserving the caller's requested page and pinned block.
@@ -237,7 +237,7 @@ export class StandardWalletQueries {
       request,
     });
     const address = getAddress(payer);
-    return this.observe(async ({ client }) => {
+    return this.observe("getReputation", async ({ client }) => {
       const block = await client.getBlock({ blockTag: this.finalityTag });
       const [[eligible, confirmed, notConfirmed], totalPaid, totalRefunded] = await Promise.all([
         client.readContract({

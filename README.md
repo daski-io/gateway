@@ -295,6 +295,30 @@ core groups are:
 - Evidence and screening: `BASE_RPC_URL`, optional `BASE_RPC_FALLBACK_URLS`,
   `STANDARD_RAIL_SPLITTER_FACTORY_RUNTIME_CODE_HASH`,
   `STANDARD_RAIL_SPLITTER_CREATION_CODE_HASH`, and `SANCTIONS_ORACLE_ADDRESS`.
+- RPC failover: a read runs as one observation on one endpoint, with any
+  block it pins, trying `BASE_RPC_URL` first and each fallback in order. A
+  deterministic answer (a revert that returned data, invalid params, an
+  unknown method) is final. An endpoint fault (JSON-RPC `-32603`, an unknown
+  block, HTTP 5xx, a network error) moves to the next endpoint at once; a
+  rate limit or a timeout retries the same endpoint after a backoff that
+  honors `Retry-After`; the last available endpoint keeps a bounded retry.
+  Each endpoint has a circuit breaker shared by the whole process: three
+  consecutive faults, or more than 20% of at least ten observations within a
+  minute, open it, and an open endpoint is skipped for one minute, doubling
+  up to ten minutes while the probe after each cooldown fails. One
+  observation probes it and a success closes it. A local pacing refusal
+  never counts, and when every endpoint is open they are all still tried,
+  least recently opened first. Transitions log `RPC endpoint circuit opened`,
+  `half-open` and `closed` with the endpoint host; endpoint faults log
+  `RPC endpoint attempt failed` with host, method, code, attempt and latency,
+  at most once a minute per kind; fallback selections name the operation and
+  the primary's reason. URLs with paths, request bodies and keys are never
+  logged. A read times out after 5 seconds (head, nonce, balance, code and
+  calls at a block tag) or 15 seconds (`eth_getLogs`, multicalls and reads
+  pinned to a block); explicit caller deadlines still apply. A log range is
+  split only when the endpoint refuses its size or result count. A failed
+  reputation broadcast is classified from the node's own error, never from
+  the composed message that carries the raw transaction.
 - Signing role: `FACILITATOR_PRIVATE_KEY` for protocol artifacts and
   gas-funded Testnet reputation writes.
 - Reputation fees: `REPUTATION_MAX_FEE_PER_GAS_WEI` defaults to 3 gwei on

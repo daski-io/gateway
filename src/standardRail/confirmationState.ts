@@ -1,7 +1,7 @@
 import { orderedRpcTransport } from "../rpc/orderedTransport.js";
+import { rpcReadTransport } from "../rpc/readTransport.js";
 import {
   createPublicClient,
-  http,
   parseAbi,
   type Address,
   type Chain,
@@ -88,7 +88,7 @@ export type CapabilityEpochWriter = (orderId: string, client: { query: Pool["que
  * same observation carries no change.
  */
 export class StandardConfirmationState {
-  private readonly clients: Array<{ host: string; client: ConfirmationReadClient }>;
+  private readonly clients: Array<{ host: string; client: ConfirmationReadClient; url?: string }>;
   private readonly reputationContract: Address;
   /** The tag whose reads are stored; `latest` reads are only ever returned. */
   readonly finalityTag: FinalityTag;
@@ -103,10 +103,11 @@ export class StandardConfirmationState {
     this.reputationContract = config.reputationContract;
     this.finalityTag = config.finalityTag;
     this.clients = clients ?? config.evidenceRpcUrls.map((url) => ({
+      url,
       host: new URL(url).hostname,
       client: createPublicClient({
         chain,
-        transport: orderedRpcTransport(http(url, { retryCount: 0, timeout: 20_000 }), { scope: url, maxPerMinute: config.rpcReadMaxPerMinute }),
+        transport: orderedRpcTransport(rpcReadTransport(url), { scope: url, maxPerMinute: config.rpcReadMaxPerMinute }),
       }) as unknown as ConfirmationReadClient,
     }));
   }
@@ -114,10 +115,12 @@ export class StandardConfirmationState {
   /** Runs one chain read through the state's endpoints with the shared failover. */
   observeWith<Result>(
     work: (endpoint: { host: string; client: ConfirmationReadClient }) => Promise<Result>,
+    operation = "confirmation.read",
   ): Promise<Result> {
     return withRpcFailover(this.clients, work, {
-      onFallback: ({ primaryHost, selectedHost }) => {
-        logger.warn("confirmation state RPC fallback selected", { primaryHost, selectedHost });
+      operation,
+      onFallback: (detail) => {
+        logger.warn("confirmation state RPC fallback selected", detail);
       },
     });
   }
@@ -158,8 +161,9 @@ export class StandardConfirmationState {
         blockHash: block.hash.toLowerCase() as Hex,
       };
     }, {
-      onFallback: ({ primaryHost, selectedHost }) => {
-        logger.warn("confirmation state RPC fallback selected", { primaryHost, selectedHost });
+      operation: "confirmation.observe",
+      onFallback: (detail) => {
+        logger.warn("confirmation state RPC fallback selected", detail);
       },
     });
   }

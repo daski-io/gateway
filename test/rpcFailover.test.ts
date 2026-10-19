@@ -1,14 +1,20 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { baseSepolia } from "viem/chains";
 import type { Pool } from "../src/db/pool.js";
 import type { StandardRailConfig } from "../src/standardRail/config.js";
 import { StandardConfirmationState } from "../src/standardRail/confirmationState.js";
-import { withRpcFailover } from "../src/rpc/failover.js";
+import { resetRpcEndpointHealth } from "../src/rpc/endpointHealth.js";
+import { resetRpcFailoverLogThrottle, withRpcFailover } from "../src/rpc/failover.js";
 
 const endpoints = [
   { host: "primary.example", client: "primary" },
   { host: "fallback.example", client: "fallback" },
 ] as const;
+
+beforeEach(() => {
+  resetRpcEndpointHealth();
+  resetRpcFailoverLogThrottle();
+});
 
 describe("withRpcFailover", () => {
   it("does not contact a fallback when the primary succeeds", async () => {
@@ -20,20 +26,25 @@ describe("withRpcFailover", () => {
     expect(observe).toHaveBeenCalledWith(endpoints[0]);
   });
 
-  it("exhausts primary retries before selecting a fallback", async () => {
+  it("retries an observation's own failure on the primary before selecting a fallback", async () => {
+    // An error that is not an RPC fault (an assertion of the observation)
+    // keeps the bounded retry on each endpoint and never moves its health.
     const selected: string[] = [];
     const onFallback = vi.fn();
     const result = await withRpcFailover(endpoints, async ({ client }) => {
       selected.push(client);
       if (client === "primary") throw new Error("primary unavailable");
       return client;
-    }, { attempts: 3, baseDelayMs: 0, onFallback });
+    }, { attempts: 3, baseDelayMs: 0, onFallback, operation: "test.read" });
 
     expect(result).toBe("fallback");
     expect(selected).toEqual(["primary", "primary", "primary", "fallback"]);
     expect(onFallback).toHaveBeenCalledWith({
       primaryHost: "primary.example",
       selectedHost: "fallback.example",
+      operation: "test.read",
+      reason: "unclassified",
+      suppressed: 0,
     });
   });
 

@@ -16,7 +16,6 @@ import type { PaymentPayload, PaymentRequired, PaymentRequirements } from "@x402
 import {
   createPublicClient,
   getAddress,
-  http,
   parseAbi,
   recoverMessageAddress,
   type Hex,
@@ -90,6 +89,7 @@ import { StandardRailCatalog } from "./catalog.js";
 import { StandardProviderDispatch } from "./providerDispatch.js";
 import { StandardOperationalHealth } from "./operationalHealth.js";
 import { withRpcFailover } from "../rpc/failover.js";
+import { rpcReadTransport } from "../rpc/readTransport.js";
 import {
   orderActionChallengeIssued, orderActionSignRequest,
   type OrderAction,
@@ -1919,6 +1919,7 @@ export class StandardRailService {
       try {
         const chain = this.appConfig.chainId === 8453 ? base : baseSepolia;
         const clients = this.railConfig.evidenceRpcUrls.map((url) => ({
+          url,
           host: new URL(url).hostname,
           client: createPublicClient({
             chain,
@@ -1926,7 +1927,7 @@ export class StandardRailService {
             // payment and registration proofs, rather than failing when another
             // read holds the next slot (2026-10-12: several agents asking for
             // challenges within 200 ms got none but the first's balance).
-            transport: orderedRpcTransport(http(url, { retryCount: 0, timeout: 10_000 }), { scope: url, maxPerMinute: this.railConfig.rpcReadMaxPerMinute, maxWaitMs: PREFLIGHT_BALANCE_WAIT_MS }),
+            transport: orderedRpcTransport(rpcReadTransport(url), { scope: url, maxPerMinute: this.railConfig.rpcReadMaxPerMinute, maxWaitMs: PREFLIGHT_BALANCE_WAIT_MS }),
           }),
         }));
         const balance = await withRpcFailover(
@@ -1937,7 +1938,7 @@ export class StandardRailService {
             functionName: "balanceOf",
             args: [payer],
           }),
-          { attempts: 1, baseDelayMs: 0 },
+          { attempts: 1, baseDelayMs: 0, operation: "preflight.balance" },
         );
         usdcBalance = balance.toString();
         sufficient = balance >= BigInt(required.amount);

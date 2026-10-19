@@ -1,7 +1,7 @@
 import { orderedRpcTransport } from "../rpc/orderedTransport.js";
+import { rpcReadTransport } from "../rpc/readTransport.js";
 import {
   createPublicClient,
-  http,
   type Address,
   type Chain,
   type Hex,
@@ -118,23 +118,23 @@ export class DirectReputationReader {
   ) {
     this.refreshIntervalMs = config.chainProjectionRefreshMs ?? DEFAULT_REFRESH_MILLISECONDS;
     this.clients = config.evidenceRpcUrls.map((url) => ({
+      url,
       host: new URL(url).hostname,
       client: createPublicClient({
         chain,
-        transport: orderedRpcTransport(http(url, { retryCount: 0, timeout: 20_000 }), { scope: url, maxPerMinute: config.rpcReadMaxPerMinute }),
+        transport: orderedRpcTransport(rpcReadTransport(url), { scope: url, maxPerMinute: config.rpcReadMaxPerMinute }),
       }),
     }));
   }
 
   private observe<Result>(
+    operation: string,
     work: (endpoint: (typeof this.clients)[number]) => Promise<Result>,
   ): Promise<Result> {
     return withRpcFailover(this.clients, work, {
-      onFallback: ({ primaryHost, selectedHost }) => {
-        logger.warn("direct reputation RPC fallback selected", {
-          primaryHost,
-          selectedHost,
-        });
+      operation: "reputationProjection." + operation,
+      onFallback: (detail) => {
+        logger.warn("direct reputation RPC fallback selected", detail);
       },
     });
   }
@@ -221,7 +221,7 @@ export class DirectReputationReader {
   }
 
   private async readOutcomes(outcomes: OutcomeDescriptor[]): Promise<ReputationSnapshot> {
-    const { block, chainRows, settlementRows, recoveries } = await this.observe(async ({ client }) => {
+    const { block, chainRows, settlementRows, recoveries } = await this.observe("refresh", async ({ client }) => {
       const block = await client.getBlock({ blockTag: "safe" });
       const count = await client.readContract({
         address: this.config.reputationContract,
@@ -428,7 +428,7 @@ export class DirectReputationReader {
     );
     if (payers.length === 0) return emptyBuyers;
     try {
-      return await this.observe(async ({ client }) => {
+      return await this.observe("resolveBuyers", async ({ client }) => {
         const buyers = new Map<Address, BuyerIdentity>(
           payers.map((payer) => [payer, { agentId: null, name: null }]),
         );

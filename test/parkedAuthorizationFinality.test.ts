@@ -8,7 +8,7 @@ function harness(timestamp: bigint, used: boolean, canceled: boolean) {
     readContract: vi.fn(async () => used) };
   const evidence = Object.assign(Object.create(StandardChainEvidence.prototype), {
     config: { finalityTag: "finalized", manifest: { chainEvidencePolicy: { payload: { maximumLogPageEvents: 100 } } } },
-    observe: (work: (endpoint: unknown) => Promise<unknown>) => work({ client }),
+    observe: (_operation: string, work: (endpoint: unknown) => Promise<unknown>) => work({ client }),
     tokenPolicyFacts: vi.fn(async () => undefined),
     boundedLogs: async () => canceled ? [{ transactionHash: hash }] : [],
   }) as StandardChainEvidence;
