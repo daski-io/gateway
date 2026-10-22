@@ -71,7 +71,8 @@ async function seed({ profileId = "eas-native-1.2.0", deadline = "100", group, l
   const canonicalTypedData = {
     domain: { name: "EAS", version: p.domainVersion, chainId: 8453, verifyingContract: easAddress },
     types: p.attestTypes, primaryType: "Attest",
-    message: { schema:hex("5"), recipient:payer, expirationTime:"0", revocable:true, refUID:hex("0"), data:"0x1234",
+    message: { ...(p.attestTypes.Attest.some(field => field.name === "attester") ? {attester:payer} : {}),
+      schema:hex("5"), recipient:payer, expirationTime:"0", revocable:true, refUID:hex("0"), data:"0x1234",
       nonce:"7", ...(p.signedDeadline ? {value:"0",deadline} : {}) },
   };
   const signature = parseSignature(await signer.signTypedData(canonicalTypedData as never));
@@ -202,6 +203,16 @@ describe("review recovery proofs and PostgreSQL atomicity", () => {
     const second=await seed();
     await pool.query("UPDATE standard_confirmation_preparations_v2 SET payer=$2 WHERE preparation_id=$1",[second.preparationId,"0x"+"b".repeat(40)]);
     expect(await proof(second.operationId)).toMatchObject({disposition:"unresolved",reason:"unrecognized-stored-authorization"});
+  });
+  it("recognizes 1.4.1-beta.3 authorizations only with the payer signed as attester",async()=>{
+    const live=await seed({profileId:"eas-native-1.4.1-beta.3",deadline:"500"});
+    expect((await proof(live.operationId)).disposition).toBe("authorization-live");
+    const dropped=await seed({profileId:"eas-native-1.4.1-beta.3",deadline:"500"});
+    await pool.query("UPDATE standard_confirmation_preparations_v2 SET canonical_typed_data=canonical_typed_data #- '{message,attester}' WHERE preparation_id=$1",[dropped.preparationId]);
+    expect(await proof(dropped.operationId)).toMatchObject({disposition:"unresolved",reason:"unrecognized-stored-authorization"});
+    const other=await seed({profileId:"eas-native-1.4.1-beta.3",deadline:"500"});
+    await pool.query("UPDATE standard_reputation_operations SET canonical_intent=jsonb_set(canonical_intent,'{request,attester}',to_jsonb($2::text)) WHERE operation_id=$1",[other.operationId,"0x"+"b".repeat(40)]);
+    expect(await proof(other.operationId)).toMatchObject({disposition:"unresolved",reason:"unrecognized-stored-authorization"});
   });
   it("refuses unknown typed-data shapes and treats equal signed deadline as still live",async()=>{
     const {operationId,preparationId}=await seed({deadline:"500"});

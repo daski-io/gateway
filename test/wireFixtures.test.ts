@@ -372,7 +372,7 @@ function confirmationDirectCallFixture() {
 }
 
 /**
- * Both deployed sponsored profiles, produced by the same typed-data and result
+ * Every deployed sponsored profile, produced by the same typed-data and result
  * builders as live prepare. Facts are inputs for independent consumer validation.
  */
 function confirmationSponsoredPreparationFixture() {
@@ -396,13 +396,12 @@ function confirmationSponsoredPreparationFixture() {
         revocationAvailable: true, finalAttestation: false };
       const result = (action: "confirmation" | "revoke-confirmation") => sponsoredConfirmationPreparationResult({
         summary,
-        preparationId: index === 0
-          ? (action === "confirmation" ? "00000000-0000-4000-8000-000000000101" : "00000000-0000-4000-8000-000000000102")
-          : (action === "confirmation" ? "00000000-0000-4000-8000-000000000201" : "00000000-0000-4000-8000-000000000202"),
+        preparationId: `00000000-0000-4000-8000-000000000${index + 1}0${action === "confirmation" ? 1 : 2}`,
         currentRefUid: facts.currentUid,
         typedData: sponsoredConfirmationTypedData({
           profileId: profile.id, chainId: facts.chainId, easAddress: eas, action, schema: facts.schemaUid,
           currentUid: facts.currentUid, nonce: BigInt(facts.nonce), deadline: BigInt(facts.admissionDeadline),
+          signer: facts.payer,
           ...(action === "confirmation" ? { recipient: facts.recipient,
             data: encodeAbiParameters(parseAbiParameters("bytes32 orderKey,uint8 confirmation"), [facts.orderKey, 1]) } : {}),
         }),

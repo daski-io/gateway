@@ -16,7 +16,7 @@ import {
 import { privateKeyToAccount } from "viem/accounts";
 import { PostgresFacilitatorNonceLock, type FacilitatorNonceLock } from "./facilitatorNonceLock.js";
 import type { Pool } from "../db/pool.js";
-import { easProfile, observeEasProfile, EasIncompatible, type EasProfileObservation } from "./easProfiles.js";
+import { easProfile, observeEasProfile, EasIncompatible, type EasProfileId, type EasProfileObservation } from "./easProfiles.js";
 import { canonicalHash } from "./canonical.js";
 import type { StandardRailConfig } from "./config.js";
 import {
@@ -87,7 +87,7 @@ const easDirectAbi = parseAbi([
 
 
 interface PreparationRow {
-  profile_id: "eas-native-1.0.1" | "eas-native-1.2.0";
+  profile_id: EasProfileId;
   signed_deadline: string | null;
   profile_observation: EasProfileObservation | null;
   protocol_v2: boolean;
@@ -128,18 +128,23 @@ export function sponsoredConfirmationTypedData(args: {
   data?: Hex;
   nonce: bigint;
   deadline: bigint;
+  /** The payer; profiles from eas-native-1.4.1-beta.3 sign it as attester or revoker. */
+  signer: Address;
 }): PreparationRow["canonical_typed_data"] {
   const profile = easProfile(args.profileId);
   const domain = { name: "EAS", version: profile.domainVersion, chainId: args.chainId,
     verifyingContract: args.easAddress };
+  const fields: readonly { name: string }[] = args.action === "confirmation" ? profile.attestTypes.Attest : profile.revokeTypes.Revoke;
+  const signer = fields.some(field => field.name === "attester") ? { attester: getAddress(args.signer) }
+    : fields.some(field => field.name === "revoker") ? { revoker: getAddress(args.signer) } : {};
   const typedData = args.action === "confirmation" ? {
     domain, types: profile.attestTypes, primaryType: "Attest" as const,
-    message: { schema: args.schema, recipient: args.recipient!,
+    message: { ...signer, schema: args.schema, recipient: args.recipient!,
       expirationTime: "0", revocable: true, refUID: args.currentUid,
       data: args.data!, value: "0", nonce: args.nonce.toString(), deadline: args.deadline.toString() },
   } : {
     domain, types: profile.revokeTypes, primaryType: "Revoke" as const,
-    message: { schema: args.schema, uid: args.currentUid, value: "0", nonce: args.nonce.toString(),
+    message: { ...signer, schema: args.schema, uid: args.currentUid, value: "0", nonce: args.nonce.toString(),
       deadline: args.deadline.toString() },
   };
   if (!profile.signedDeadline) {
@@ -679,7 +684,7 @@ export class StandardConfirmations {
       const profile = easProfile(args.profile.profileId);
       const typedData = sponsoredConfirmationTypedData({
         profileId: profile.id, chainId: this.chainId, easAddress: this.config.easAddress,
-        action, schema, currentUid: current.currentUid, nonce, deadline,
+        action, schema, currentUid: current.currentUid, nonce, deadline, signer: payer,
         ...(action === "confirmation" ? { recipient: this.recipientOf(current),
           data: this.attestData(order, args.confirmation!) } : {}),
       });

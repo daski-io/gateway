@@ -1,6 +1,6 @@
 import { encodeAbiParameters, getAddress, keccak256, parseAbi, parseAbiParameters, toBytes, type Address, type Hex, type PublicClient } from "viem";
 
-export const EAS_PROFILE_IDS = ["eas-native-1.0.1", "eas-native-1.2.0"] as const;
+export const EAS_PROFILE_IDS = ["eas-native-1.0.1", "eas-native-1.2.0", "eas-native-1.4.1-beta.3"] as const;
 export type EasProfileId = typeof EAS_PROFILE_IDS[number];
 export const EAS_IMPLEMENTATION_SLOT = "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc" as Hex;
 export const EAS_IDENTITY_ABI = parseAbi([
@@ -19,6 +19,9 @@ const revokeFields = [{ name: "schema", type: "bytes32" }, { name: "uid", type: 
 const nonceField = { name: "nonce", type: "uint256" } as const;
 const valueField = { name: "value", type: "uint256" } as const;
 const deadlineField = { name: "deadline", type: "uint64" } as const;
+// From 1.4.1-beta.3 (signing domain 1.3.0) the signed struct names its signer.
+const attesterField = { name: "attester", type: "address" } as const;
+const revokerField = { name: "revoker", type: "address" } as const;
 
 export const EAS_PROFILES = {
   "eas-native-1.0.1": {
@@ -36,6 +39,15 @@ export const EAS_PROFILES = {
     revokeTypeHash: "0x2d4116d8c9824e4c316453e5c2843a1885580374159ce8768603c49085ef424c",
     attestTypes: { Attest: [...baseFields, valueField, nonceField, deadlineField] },
     revokeTypes: { Revoke: [...revokeFields, valueField, nonceField, deadlineField] },
+  },
+  // Base Sepolia's predeploy upgrade at block 48858051 (2026-10-22).
+  "eas-native-1.4.1-beta.3": {
+    id: "eas-native-1.4.1-beta.3", chainId:84532, implementation:"0xc919d2C8d3a7B617feA7604b68D862027bD02e64", contractVersion: "1.4.1-beta.3", domainVersion: "1.3.0", signedDeadline: true,
+    implementationCodeHash: "0x5b1a9eac43a2752a4f6b83617cd580cf17abc5b15812c3cea6c26c4dd68fa721",
+    attestTypeHash: "0xfeb2925a02bae3dae48d424a0437a2b6ac939aa9230ddc55a1a76f065d988076",
+    revokeTypeHash: "0xb5d556f07587ec0f08cf386545cc4362c702a001650c2058002615ee5c9d1e75",
+    attestTypes: { Attest: [attesterField, ...baseFields, valueField, nonceField, deadlineField] },
+    revokeTypes: { Revoke: [revokerField, ...revokeFields, valueField, nonceField, deadlineField] },
   },
 } as const;
 export type EasProfile = typeof EAS_PROFILES[EasProfileId];

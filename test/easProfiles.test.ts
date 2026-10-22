@@ -3,8 +3,8 @@ import { describe, expect, it } from "vitest";
 import { keccak256, toBytes, type PublicClient } from "viem";
 import { EAS_PROFILES, EasIncompatible, easDomainSeparator, observeEasProfile, signedDeadlineExpired } from "../src/standardRail/easProfiles.js";
 
-for (const chainId of [8453, 84532]) {
-  const fixture = JSON.parse(readFileSync(new URL("./fixtures/eas/base-" + chainId + ".json", import.meta.url), "utf8"));
+for (const [file, chainId] of [["base-8453.json", 8453], ["base-84532.json", 84532], ["base-84532-eas-1.4.1-beta.3.json", 84532]] as const) {
+  const fixture = JSON.parse(readFileSync(new URL("./fixtures/eas/" + file, import.meta.url), "utf8"));
   function client(overrides: Record<string, unknown> = {}): PublicClient {
     const values: Record<string, unknown> = { version: fixture.version, getDomainSeparator: fixture.getDomainSeparator,
       getAttestTypeHash: fixture.getAttestTypeHash, getRevokeTypeHash: fixture.getRevokeTypeHash, ...overrides };
@@ -16,10 +16,11 @@ for (const chainId of [8453, 84532]) {
       readContract: async ({ functionName }: { functionName: string }) => values[functionName],
     } as unknown as PublicClient;
   }
-  describe("native EAS profile on chain " + chainId, () => {
+  describe("native EAS " + fixture.version + " profile on chain " + chainId, () => {
     it("accepts the exact pinned deployed runtime and independently recomputed domain/types", async () => {
       const observed = await observeEasProfile(client(), chainId, fixture.eas.address, "finalized");
       const profile = EAS_PROFILES[observed.profileId];
+      expect(profile.contractVersion).toBe(fixture.version);
       expect(observed.implementationCodeHash).toBe(keccak256(fixture.eas.runtimeCode));
       expect(observed.blockHash).toBe(fixture.blockHash);
       expect(easDomainSeparator(chainId, fixture.eas.address, profile.domainVersion)).toBe(fixture.getDomainSeparator);
@@ -29,7 +30,7 @@ for (const chainId of [8453, 84532]) {
       expect(hash("Revoke", profile.revokeTypes.Revoke)).toBe(fixture.getRevokeTypeHash);
     });
     it.each([
-      { version: "1.4.1-beta.3" },
+      { version: fixture.version === "1.4.1-beta.3" ? "1.2.0" : "1.4.1-beta.3" },
       { getDomainSeparator: "0x" + "ff".repeat(32) },
       { getAttestTypeHash: "0x" + "ff".repeat(32) },
       { getRevokeTypeHash: "0x" + "ff".repeat(32) },
@@ -44,10 +45,12 @@ for (const chainId of [8453, 84532]) {
     });
   });
 }
-it("the observed Sepolia runtime expires strictly AFTER its deadline; legacy and zero never expire", () => {
+it("the observed Sepolia runtimes expire strictly AFTER their deadline; legacy and zero never expire", () => {
   expect(signedDeadlineExpired("eas-native-1.2.0", "100", 99n)).toBe(false);
   expect(signedDeadlineExpired("eas-native-1.2.0", "100", 100n)).toBe(false);
   expect(signedDeadlineExpired("eas-native-1.2.0", "100", 101n)).toBe(true);
   expect(signedDeadlineExpired("eas-native-1.2.0", "0", 101n)).toBe(false);
+  expect(signedDeadlineExpired("eas-native-1.4.1-beta.3", "100", 100n)).toBe(false);
+  expect(signedDeadlineExpired("eas-native-1.4.1-beta.3", "100", 101n)).toBe(true);
   expect(signedDeadlineExpired("eas-native-1.0.1", null, 100000n)).toBe(false);
 });

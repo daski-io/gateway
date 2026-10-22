@@ -17,6 +17,7 @@ import {
   StandardConfirmations,
 } from "../src/standardRail/confirmations.js";
 import { canonicalHash } from "../src/standardRail/canonical.js";
+import { EAS_PROFILES, type EasProfileId } from "../src/standardRail/easProfiles.js";
 import type { StandardOrderRecord } from "../src/standardRail/types.js";
 
 /// Spec B6 and B7: submission counting in both modes, sponsored refused for a
@@ -47,7 +48,7 @@ interface ChainRecordState {
 const chain = {
   finalized: { block: 100n, confirmation: 0, submissionsUsed: 0, currentUid: ZERO_UID } as ChainRecordState,
   latest: { block: 105n, confirmation: 0, submissionsUsed: 0, currentUid: ZERO_UID } as ChainRecordState,
-  profileId: "eas-native-1.2.0" as "eas-native-1.0.1" | "eas-native-1.2.0",
+  profileId: "eas-native-1.2.0" as EasProfileId,
   easNonce: 7n,
   finalProfileTimestamp: null as bigint | null,
   finalProfileUnavailable: false,
@@ -121,7 +122,7 @@ function confirmations(overrides: Partial<StandardRailConfig> = {}, network: Cha
       chain.profileReadTags.push(tag);
       if (tag !== "latest" && chain.finalProfileUnavailable) throw new Error("finality RPC unavailable");
       const view = tag === "latest" ? "latest" : "finalized";
-      return { profileId: chain.profileId, contractVersion:chain.profileId.slice(11),domainVersion:chain.profileId.slice(11),
+      return { profileId: chain.profileId, contractVersion:EAS_PROFILES[chain.profileId].contractVersion,domainVersion:EAS_PROFILES[chain.profileId].domainVersion,
         implementation:EAS, implementationCodeHash:hash("a"),domainSeparator:hash("b"),
         chainId:network.id,easAddress:EAS,blockNumber:chain[view].block.toString(),blockHash:blockHash(view,chain[view].block),
         timestamp:String(tag === "latest" ? Math.floor(Date.now()/1000) : chain.finalProfileTimestamp ?? BigInt(Math.floor(Date.now()/1000))) };
@@ -794,6 +795,40 @@ describe("profile-aware review admission", () => {
   });
 });
 
+describe("Base Sepolia EAS 1.4.1-beta.3 reviews", () => {
+  beforeEach(async () => { await resetSponsorships(); chain.profileId = "eas-native-1.4.1-beta.3"; });
+  for (const action of ["confirmation", "revoke-confirmation"] as const) {
+    it(`signs the payer into the ${action} struct under signing domain 1.3.0 and relays it as that profile`, async () => {
+      if (action === "revoke-confirmation") {
+        chain.latest.currentUid = hash("c");
+        chain.latest.submissionsUsed = 1;
+      }
+      const { prepared, submitted } = await sponsoredSubmit(confirmations(), action);
+      const typed = prepared.result.signableTypedData as { domain: Record<string, unknown>;
+        types: Record<string, { name: string; type: string }[]>; message: Record<string, unknown> };
+      const signer = action === "confirmation" ? "attester" : "revoker";
+      expect(prepared.result).toMatchObject({ profileId: "eas-native-1.4.1-beta.3", contractVersion: "1.4.1-beta.3",
+        domainVersion: "1.3.0", signedDeadline: typed.message.deadline });
+      expect(typed.domain).toMatchObject({ name: "EAS", version: "1.3.0" });
+      expect(typed.types[action === "confirmation" ? "Attest" : "Revoke"]![0]).toEqual({ name: signer, type: "address" });
+      expect(typed.message[signer]).toBe(getAddress(order.payer!));
+      const operationId = (submitted as { expected: { operationId: string } }).expected.operationId;
+      const intent = (await pool.query("SELECT canonical_intent FROM standard_reputation_operations WHERE operation_id=$1",
+        [operationId])).rows[0].canonical_intent;
+      expect(intent).toMatchObject({ profileId: "eas-native-1.4.1-beta.3", request: { [signer]: getAddress(order.payer!) } });
+      expect((await pool.query("SELECT profile_id,signed_deadline FROM standard_confirmation_preparations_v2")).rows)
+        .toEqual([{ profile_id: "eas-native-1.4.1-beta.3", signed_deadline: String(typed.message.deadline) }]);
+    });
+  }
+  it("still admits only reviewed profiles, and the new one only with its signed deadline's profile shape", async () => {
+    await sponsoredSubmit(confirmations(), "confirmation");
+    await expect(pool.query("UPDATE standard_confirmation_preparations_v2 SET profile_id='eas-native-1.4.2'"))
+      .rejects.toThrow(/violates check constraint "standard_confirmation_preparations_v2_(profile_id_)?check"/);
+    await expect(pool.query("UPDATE standard_confirmation_preparations_v2 SET signed_deadline=0"))
+      .rejects.toThrow(/standard_confirmation_preparations_v2_check/);
+  });
+});
+
 describe("historical unadmitted review preparation recovery", () => {
   const prepare = { phase: "prepare", submission: "sponsored", reviewProtocol: 2,
     confirmation: "Confirmed", acknowledgeFinalTransition: false };
@@ -812,7 +847,7 @@ describe("historical unadmitted review preparation recovery", () => {
     const action = args.action ?? "confirmation";
     const typed = structuredClone(sponsoredConfirmationTypedData({ profileId: "eas-native-1.2.0",
       chainId: args.chainId ?? 84532, easAddress: EAS, action, schema: SCHEMA,
-      currentUid: chain.latest.currentUid, nonce: chain.easNonce, deadline,
+      currentUid: chain.latest.currentUid, nonce: chain.easNonce, deadline, signer: payerKey.address,
       recipient: address("b"), data: `0x${order.orderKey.slice(2)}${"0".repeat(63)}1` as Hex }));
     args.mutate?.(typed);
     const preparationId = randomUUID();
