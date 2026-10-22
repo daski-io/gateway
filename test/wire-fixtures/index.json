@@ -162,6 +162,20 @@
         "daski-buyer packages/pay/src/commands/confirmation.ts validateConfirmationPreparation"
       ]
     },
+    "confirmation-sponsored-preparation-eas-1.4.1-beta.3.json": {
+      "consumers": [
+        "daski-test",
+        "daski-buyer"
+      ],
+      "emittedBy": [
+        "src/standardRail/confirmations.ts sponsoredConfirmationTypedData (eas-native-1.4.1-beta.3: the payer signed as attester or revoker)",
+        "src/standardRail/confirmations.ts sponsoredConfirmationPreparationResult (the sponsored-mode prepare result)"
+      ],
+      "parsedBy": [
+        "daski-test scripts/standardConfirmation.ts performConfirmationTransition",
+        "daski-buyer packages/pay/src/commands/confirmation.ts validateConfirmationPreparation"
+      ]
+    },
     "order-status-input-request.json": {
       "consumers": [
         "daski-test",
