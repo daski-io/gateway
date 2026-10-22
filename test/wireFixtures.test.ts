@@ -13,7 +13,7 @@ import {
   sponsoredConfirmationPreparationResult, sponsoredConfirmationTypedData,
 } from "../src/standardRail/confirmations.js";
 import { encodeAbiParameters, parseAbiParameters } from "viem";
-import { EAS_PROFILES, easDomainSeparator, type EasProfileObservation } from "../src/standardRail/easProfiles.js";
+import { EAS_PROFILES, easDomainSeparator, type EasProfileId, type EasProfileObservation } from "../src/standardRail/easProfiles.js";
 import { StandardRailError, standardRailPublicError } from "../src/standardRail/errors.js";
 import { orderActionChallengeIssued } from "../src/standardRail/orderAuthorization.js";
 import { orderBindingExtension, paymentIdentifierExtension } from "../src/standardRail/payment.js";
@@ -372,14 +372,18 @@ function confirmationDirectCallFixture() {
 }
 
 /**
- * Every deployed sponsored profile, produced by the same typed-data and result
+ * Deployed sponsored profiles, produced by the same typed-data and result
  * builders as live prepare. Facts are inputs for independent consumer validation.
+ * confirmation-sponsored-preparation.json keeps exactly the two profiles that
+ * consumers released before Base Sepolia's 2026-10-22 EAS upgrade assert, since
+ * the release engine runs each released consumer against these fixtures; every
+ * later profile has its own file.
  */
-function confirmationSponsoredPreparationFixture() {
+function confirmationSponsoredPreparationFixture(ids: readonly EasProfileId[]) {
   const eas = "0x4200000000000000000000000000000000000021" as const;
   return {
     schemaVersion: 1,
-    profiles: Object.values(EAS_PROFILES).map((profile, index) => {
+    profiles: Object.values(EAS_PROFILES).map((profile, index) => ({ profile, index })).filter(({ profile }) => ids.includes(profile.id)).map(({ profile, index }) => {
       const facts = {
         chainId: profile.chainId, eas, schemaUid: hash("5"), reputationStorage: address("c"),
         orderKey: hash("1"), payer: address("a"), recipient: address("b"), currentUid: hash("2"),
@@ -418,7 +422,8 @@ const fixtures: Record<string, () => unknown | Promise<unknown>> = {
   "mcp-tool-surface.json": mcpSurfaceFixture,
   "confirmation-request-shapes.json": confirmationRequestShapesFixture,
   "confirmation-direct-call.json": confirmationDirectCallFixture,
-  "confirmation-sponsored-preparation.json": confirmationSponsoredPreparationFixture,
+  "confirmation-sponsored-preparation.json": () => confirmationSponsoredPreparationFixture(["eas-native-1.0.1", "eas-native-1.2.0"]),
+  "confirmation-sponsored-preparation-eas-1.4.1-beta.3.json": () => confirmationSponsoredPreparationFixture(["eas-native-1.4.1-beta.3"]),
   "mcp-result.json": mcpResultFixture,
   "payment-challenge-prepared.json": preparedPaymentChallengeFixture,
   "payment-required-extensions.json": paymentRequiredExtensionsFixture,
