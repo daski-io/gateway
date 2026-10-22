@@ -4,11 +4,11 @@
  */
 export const PINNED_BUYER_CLI = {
   package: "@daski/pay",
-  version: "0.5.7",
+  version: "0.5.8",
   repository: "git+https://github.com/daski-io/buyer.git",
   /** Verifies the registry entry is Daski's before anything is installed. */
-  verify: "npm view @daski/pay@0.5.7 repository.url",
-  install: "npm install -g @daski/pay@0.5.7",
+  verify: "npm view @daski/pay@0.5.8 repository.url",
+  install: "npm install -g @daski/pay@0.5.8",
 } as const;
 
 /**
