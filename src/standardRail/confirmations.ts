@@ -633,7 +633,13 @@ export class StandardConfirmations {
         predecessor = prior.rows[0];
         if (!predecessor) throw standardRailError("CONFIRMATION_PREPARATION_STALE");
         if (predecessor.protocol_v2) {
-          if (predecessor.profile_id !== args.profile.profileId) throw standardRailError("CONFIRMATION_PREPARATION_STALE");
+          // A preparation under another EAS profile signed that profile's domain and struct
+          // (Base Sepolia's 1.2.0 before its 2026-10-22 upgrade). Once the deployment at the
+          // configured finality is the live profile, it can never verify, so only its
+          // replacement can execute; until then it stays held.
+          if (predecessor.profile_id !== args.profile.profileId &&
+              (await this.profile(this.config.finalityTag)).profileId !== args.profile.profileId)
+            throw standardRailError("CONFIRMATION_PREPARATION_STALE");
         } else if (!args.supersedesPreparationId || predecessor.consumed_at || predecessor.admitted_operation_id ||
             !historicalProofs.has(predecessor.preparation_id)) {
           // An admitted historical operation belongs to operator recovery;
@@ -668,7 +674,9 @@ export class StandardConfirmations {
       const existing = live.rows[0];
       if (existing) {
         const existingUid = existing.current_uid ? `0x${existing.current_uid.toString("hex")}` : ZERO_UID;
-        const equivalent = existing.order_id === order.orderId && existing.operation === operation &&
+        // Typed data issued under another EAS profile is never reissued as this one's.
+        const equivalent = existing.profile_id === args.profile.profileId &&
+          existing.order_id === order.orderId && existing.operation === operation &&
           existing.confirmation === args.confirmation && existingUid === current.currentUid.toLowerCase() &&
           Number(existing.submissions_used) === submissionsUsed &&
           existing.final_transition_acknowledged === finalAttestation;
