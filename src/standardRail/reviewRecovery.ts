@@ -73,6 +73,9 @@ export class StandardReviewRecovery {
       {schema:request?.schema,uid:request?.data?.uid,value:request?.data?.value,nonce:row.eas_nonce};
     if (p.signedDeadline) expectedMessage.deadline = request?.deadline;
     else delete expectedMessage.value;
+    const fields: readonly { name: string }[] = primaryType === "Attest" ? p.attestTypes.Attest : p.revokeTypes.Revoke;
+    if (fields.some(field => field.name === "attester")) expectedMessage.attester = request?.attester;
+    if (fields.some(field => field.name === "revoker")) expectedMessage.revoker = request?.revoker;
     let recovered: string;
     try {
       const signature = serializeSignature({...request.signature,v:BigInt(request.signature.v)});

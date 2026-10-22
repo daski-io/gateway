@@ -16,7 +16,7 @@ import {
 import { privateKeyToAccount } from "viem/accounts";
 import { PostgresFacilitatorNonceLock, type FacilitatorNonceLock } from "./facilitatorNonceLock.js";
 import type { Pool } from "../db/pool.js";
-import { easProfile, observeEasProfile, EasIncompatible, type EasProfileObservation } from "./easProfiles.js";
+import { easProfile, observeEasProfile, EasIncompatible, type EasProfileId, type EasProfileObservation } from "./easProfiles.js";
 import { canonicalHash } from "./canonical.js";
 import type { StandardRailConfig } from "./config.js";
 import {
@@ -87,7 +87,7 @@ const easDirectAbi = parseAbi([
 
 
 interface PreparationRow {
-  profile_id: "eas-native-1.0.1" | "eas-native-1.2.0";
+  profile_id: EasProfileId;
   signed_deadline: string | null;
   profile_observation: EasProfileObservation | null;
   protocol_v2: boolean;
@@ -128,18 +128,23 @@ export function sponsoredConfirmationTypedData(args: {
   data?: Hex;
   nonce: bigint;
   deadline: bigint;
+  /** The payer; profiles from eas-native-1.4.1-beta.3 sign it as attester or revoker. */
+  signer: Address;
 }): PreparationRow["canonical_typed_data"] {
   const profile = easProfile(args.profileId);
   const domain = { name: "EAS", version: profile.domainVersion, chainId: args.chainId,
     verifyingContract: args.easAddress };
+  const fields: readonly { name: string }[] = args.action === "confirmation" ? profile.attestTypes.Attest : profile.revokeTypes.Revoke;
+  const signer = fields.some(field => field.name === "attester") ? { attester: getAddress(args.signer) }
+    : fields.some(field => field.name === "revoker") ? { revoker: getAddress(args.signer) } : {};
   const typedData = args.action === "confirmation" ? {
     domain, types: profile.attestTypes, primaryType: "Attest" as const,
-    message: { schema: args.schema, recipient: args.recipient!,
+    message: { ...signer, schema: args.schema, recipient: args.recipient!,
       expirationTime: "0", revocable: true, refUID: args.currentUid,
       data: args.data!, value: "0", nonce: args.nonce.toString(), deadline: args.deadline.toString() },
   } : {
     domain, types: profile.revokeTypes, primaryType: "Revoke" as const,
-    message: { schema: args.schema, uid: args.currentUid, value: "0", nonce: args.nonce.toString(),
+    message: { ...signer, schema: args.schema, uid: args.currentUid, value: "0", nonce: args.nonce.toString(),
       deadline: args.deadline.toString() },
   };
   if (!profile.signedDeadline) {
@@ -628,19 +633,26 @@ export class StandardConfirmations {
         predecessor = prior.rows[0];
         if (!predecessor) throw standardRailError("CONFIRMATION_PREPARATION_STALE");
         if (predecessor.protocol_v2) {
-          if (predecessor.profile_id !== args.profile.profileId) throw standardRailError("CONFIRMATION_PREPARATION_STALE");
+          // A preparation under another EAS profile signed that profile's domain and struct
+          // (Base Sepolia's 1.2.0 before its 2026-10-22 upgrade). Once the deployment at the
+          // configured finality is the live profile, it can never verify, so only its
+          // replacement can execute; until then it stays held.
+          if (predecessor.profile_id !== args.profile.profileId &&
+              (await this.profile(this.config.finalityTag)).profileId !== args.profile.profileId)
+            throw standardRailError("CONFIRMATION_PREPARATION_STALE");
         } else if (!args.supersedesPreparationId || predecessor.consumed_at || predecessor.admitted_operation_id ||
             !historicalProofs.has(predecessor.preparation_id)) {
           // An admitted historical operation belongs to operator recovery;
           // only an unadmitted, provably expired signature can use this path.
           throw standardRailError("CONFIRMATION_PREPARATION_STALE");
         }
-        // A repeated explicit replacement resumes the existing candidate.
+        // A repeated explicit replacement resumes the existing candidate. One issued under
+        // another profile is retired with the group below instead, like its predecessor.
         const replacement = await client.query<PreparationRow>(`SELECT * FROM standard_confirmation_preparations_v2
           WHERE supersedes_preparation_id=$1 AND relay_candidate=true ORDER BY created_at DESC LIMIT 1`,
           [predecessor.preparation_id]);
-        if (replacement.rows[0]) {
-          const r = replacement.rows[0];
+        const r = replacement.rows[0];
+        if (r && r.profile_id === args.profile.profileId) {
           if (r.order_id !== order.orderId || r.confirmation !== args.confirmation || r.operation !== operation)
             throw standardRailError("CONFIRMATION_AUTHORIZATION_STILL_LIVE");
           await client.query("COMMIT");
@@ -663,7 +675,9 @@ export class StandardConfirmations {
       const existing = live.rows[0];
       if (existing) {
         const existingUid = existing.current_uid ? `0x${existing.current_uid.toString("hex")}` : ZERO_UID;
-        const equivalent = existing.order_id === order.orderId && existing.operation === operation &&
+        // Typed data issued under another EAS profile is never reissued as this one's.
+        const equivalent = existing.profile_id === args.profile.profileId &&
+          existing.order_id === order.orderId && existing.operation === operation &&
           existing.confirmation === args.confirmation && existingUid === current.currentUid.toLowerCase() &&
           Number(existing.submissions_used) === submissionsUsed &&
           existing.final_transition_acknowledged === finalAttestation;
@@ -679,7 +693,7 @@ export class StandardConfirmations {
       const profile = easProfile(args.profile.profileId);
       const typedData = sponsoredConfirmationTypedData({
         profileId: profile.id, chainId: this.chainId, easAddress: this.config.easAddress,
-        action, schema, currentUid: current.currentUid, nonce, deadline,
+        action, schema, currentUid: current.currentUid, nonce, deadline, signer: payer,
         ...(action === "confirmation" ? { recipient: this.recipientOf(current),
           data: this.attestData(order, args.confirmation!) } : {}),
       });

@@ -139,7 +139,7 @@ describe("standard rail metadata", () => {
     expect(mcp.confirmation).toEqual({
       modes: ["sponsored", "direct"],
       reviewProtocol: 2,
-      supportedProfiles: ["eas-native-1.0.1", "eas-native-1.2.0"],
+      supportedProfiles: ["eas-native-1.0.1", "eas-native-1.2.0", "eas-native-1.4.1-beta.3"],
       directReview: { circleEstimate:true, circleExecute:false },
       sponsoredRequires: "eoa",
       attestationCap: 3,
