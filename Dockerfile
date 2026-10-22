@@ -8,7 +8,7 @@
 # Digest) and update this line. Docker Hub images, this base and the syntax
 # frontend above, come through Google's mirror with the same digests:
 # anonymous Docker Hub pulls from shared CI runners hit its rate limit.
-FROM mirror.gcr.io/library/node:22-bookworm-slim@sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5 AS base
+FROM mirror.gcr.io/library/node:22-bookworm-slim@sha256:de170b39439eb0e5a3444ad7d60b015614a381e10fecae2e30ec9e735122f38d AS base
 # Debian security updates for PCRE2 and Perl in the Node image. The develop
 # image scan (release-image.yml) fails on fixable MEDIUM+ findings.
 RUN apt-get update \
