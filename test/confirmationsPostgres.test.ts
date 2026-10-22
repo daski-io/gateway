@@ -853,6 +853,29 @@ describe("Base Sepolia EAS 1.4.1-beta.3 reviews", () => {
     expect((await pool.query("SELECT canonical_intent->>'profileId' AS profile FROM standard_reputation_operations WHERE kind='confirmation-v2'")).rows)
       .toEqual([{ profile: "eas-native-1.4.1-beta.3" }]);
   });
+  it("retires a pre-upgrade replacement with its group instead of resuming it under the new profile", async () => {
+    chain.profileId = "eas-native-1.2.0";
+    const subject = confirmations();
+    const prepare = { phase: "prepare", submission: "sponsored", reviewProtocol: 2, confirmation: "Confirmed", acknowledgeFinalTransition: false };
+    const first = await subject.handle(order, "confirmation", prepare, eoa);
+    const replace = { ...prepare, supersedesPreparationId: first.result.preparationId, acknowledgeSameNonce: true };
+    const earlier = await subject.handle(order, "confirmation", replace, eoa);
+    expect(earlier.result.profileId).toBe("eas-native-1.2.0");
+    chain.profileId = "eas-native-1.4.1-beta.3";
+    const next = await subject.handle(order, "confirmation", replace, eoa);
+    expect(next.result).toMatchObject({ profileId: "eas-native-1.4.1-beta.3", domainVersion: "1.3.0" });
+    expect(next.result.preparationId).not.toBe(earlier.result.preparationId);
+    expect((next.result.signableTypedData as { domain: Record<string, unknown> }).domain.version).toBe("1.3.0");
+    const rows = (await pool.query(`SELECT preparation_id,profile_id,consumed_at IS NOT NULL AS consumed,relay_candidate
+      FROM standard_confirmation_preparations_v2 ORDER BY created_at`)).rows;
+    expect(rows).toEqual([
+      { preparation_id: first.result.preparationId, profile_id: "eas-native-1.2.0", consumed: true, relay_candidate: false },
+      { preparation_id: earlier.result.preparationId, profile_id: "eas-native-1.2.0", consumed: true, relay_candidate: false },
+      { preparation_id: next.result.preparationId, profile_id: "eas-native-1.4.1-beta.3", consumed: false, relay_candidate: true },
+    ]);
+    // Repeating the replacement now resumes the new candidate.
+    expect((await subject.handle(order, "confirmation", replace, eoa)).result.preparationId).toBe(next.result.preparationId);
+  });
   it("still admits only reviewed profiles, and the new one only with its signed deadline's profile shape", async () => {
     await sponsoredSubmit(confirmations(), "confirmation");
     await expect(pool.query("UPDATE standard_confirmation_preparations_v2 SET profile_id='eas-native-1.4.2'"))

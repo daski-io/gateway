@@ -646,12 +646,13 @@ export class StandardConfirmations {
           // only an unadmitted, provably expired signature can use this path.
           throw standardRailError("CONFIRMATION_PREPARATION_STALE");
         }
-        // A repeated explicit replacement resumes the existing candidate.
+        // A repeated explicit replacement resumes the existing candidate. One issued under
+        // another profile is retired with the group below instead, like its predecessor.
         const replacement = await client.query<PreparationRow>(`SELECT * FROM standard_confirmation_preparations_v2
           WHERE supersedes_preparation_id=$1 AND relay_candidate=true ORDER BY created_at DESC LIMIT 1`,
           [predecessor.preparation_id]);
-        if (replacement.rows[0]) {
-          const r = replacement.rows[0];
+        const r = replacement.rows[0];
+        if (r && r.profile_id === args.profile.profileId) {
           if (r.order_id !== order.orderId || r.confirmation !== args.confirmation || r.operation !== operation)
             throw standardRailError("CONFIRMATION_AUTHORIZATION_STILL_LIVE");
           await client.query("COMMIT");
