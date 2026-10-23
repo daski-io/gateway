@@ -321,6 +321,13 @@ core groups are:
   the composed message that carries the raw transaction.
 - Signing role: `FACILITATOR_PRIVATE_KEY` for protocol artifacts and
   gas-funded Testnet reputation writes.
+- Manifest trust: `STANDARD_RAIL_TRUSTED_SIGNERS_JSON` maps each manifest
+  `signerKeyId` to one address or a list of up to eight. Unset, it trusts the
+  signing key's own address under `gateway-protocol`; set, it replaces that
+  default. Every envelope hash covers its signature, so issued artifacts are
+  never re-signed: when the key that signs new manifest artifacts changes,
+  list the earlier address beside the new one for as long as the manifest
+  carries what it signed.
 - Reputation fees: `REPUTATION_MAX_FEE_PER_GAS_WEI` defaults to 3 gwei on
   Base mainnet (8453) and Base Sepolia (84532), and 100 gwei elsewhere; an
   explicit value overrides this. With the default 1,500,000 registration

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { gzipSync } from "node:zlib";
-import { keccak256 } from "viem";
+import { getAddress, keccak256 } from "viem";
+import { privateKeyToAccount } from "viem/accounts";
 import { loadStandardRailConfig } from "../src/standardRail/config.js";
 
 const protocolKey = `0x${"11".repeat(32)}`;
@@ -233,5 +234,41 @@ describe("customer rate limits", () => {
     for (const name of ["WALLET_CHALLENGES_PER_CLIENT_PER_MINUTE", "PROTECTED_READS_PER_PAYER_PER_MINUTE"]) {
       expect(() => loadStandardRailConfig({ ...standardEnv(), [name]: "0" })).toThrow(new RegExp(name));
     }
+  });
+});
+
+describe("trusted manifest signers", () => {
+  const first = "0x1111111111111111111111111111111111111111";
+  const second = "0x2222222222222222222222222222222222222222";
+
+  it("defaults to the protocol key's own address under gateway-protocol", () => {
+    const config = loadStandardRailConfig(standardEnv());
+    expect([...config.trustedSigners]).toEqual([
+      ["gateway-protocol", [privateKeyToAccount(protocolKey as `0x${string}`).address]],
+    ]);
+  });
+
+  it("accepts one address or several per key ID", () => {
+    const config = loadStandardRailConfig({
+      ...standardEnv(),
+      STANDARD_RAIL_TRUSTED_SIGNERS_JSON: JSON.stringify({ "gateway-protocol": [first, second], legacy: first }),
+    });
+    expect(config.trustedSigners.get("gateway-protocol")).toEqual([getAddress(first), getAddress(second)]);
+    expect(config.trustedSigners.get("legacy")).toEqual([getAddress(first)]);
+  });
+
+  it.each([
+    ["an empty list", { "gateway-protocol": [] }],
+    ["a zero address", { "gateway-protocol": [`0x${"00".repeat(20)}`] }],
+    ["a repeated address", { "gateway-protocol": [first, first.toUpperCase().replace("0X", "0x")] }],
+    ["a non-address entry", { "gateway-protocol": [first, 7] }],
+    ["more than eight addresses", { "gateway-protocol": Array.from({ length: 9 }, (_, index) =>
+      `0x${(index + 1).toString(16).padStart(40, "0")}`) }],
+    ["a list instead of a map", [first]],
+  ])("rejects %s", (_label, value) => {
+    expect(() => loadStandardRailConfig({
+      ...standardEnv(),
+      STANDARD_RAIL_TRUSTED_SIGNERS_JSON: JSON.stringify(value),
+    })).toThrow(/STANDARD_RAIL_TRUSTED_SIGNERS_JSON is malformed/);
   });
 });

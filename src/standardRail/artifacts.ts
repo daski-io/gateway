@@ -19,7 +19,7 @@ export interface ArtifactTrust {
   environment: string;
   chainId: number;
   gatewayAudience: string;
-  signers: ReadonlyMap<string, Address>;
+  signers: ReadonlyMap<string, Address | readonly Address[]>;
   splitterFactoryRuntimeCodeHash: `0x${string}`;
   splitterCreationCodeHash: `0x${string}`;
 }
@@ -48,13 +48,14 @@ export async function verifyEnvelope<T>(
   if (envelope.issuedAt > nowSeconds || envelope.validBefore <= nowSeconds) {
     throw new Error(`${expectedType} artifact is outside its validity window`);
   }
-  const expectedSigner = trust.signers.get(envelope.signerKeyId);
-  if (!expectedSigner) throw new Error(`Unknown artifact signer ${envelope.signerKeyId}`);
+  const trusted = trust.signers.get(envelope.signerKeyId);
+  const expectedSigners = typeof trusted === "string" ? [trusted] : trusted ?? [];
+  if (expectedSigners.length === 0) throw new Error(`Unknown artifact signer ${envelope.signerKeyId}`);
   const recovered = await recoverMessageAddress({
     message: { raw: artifactPayloadHash(envelope as unknown as Record<string, unknown> & { signature?: `0x${string}` }) },
     signature: envelope.signature,
   });
-  if (getAddress(recovered) !== getAddress(expectedSigner)) {
+  if (!expectedSigners.some((signer) => getAddress(signer) === getAddress(recovered))) {
     throw new Error(`${expectedType} artifact signature is invalid`);
   }
 }
