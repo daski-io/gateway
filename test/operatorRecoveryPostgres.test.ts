@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { localGatewaySigners } from "../src/standardRail/signer.js";
 import { describe, expect, it, vi } from "vitest";
 import { createPool, runMigrations, type Pool } from "../src/db/pool.js";
 import { TransactionNotFoundError, TransactionReceiptNotFoundError, keccak256, parseTransaction, type Hex } from "viem";
@@ -164,8 +165,7 @@ async function setIntent(pool: Pool, id: string, deadline: number) {
 }
 function reputationWorker(pool: Pool) {
   const worker = new StandardReputationWorker(pool, {
-    reputationRelayerPrivateKey: `0x${"11".repeat(32)}`,
-    reputationOrderPrivateKey: `0x${"11".repeat(32)}`,
+    signers: localGatewaySigners(`0x${"11".repeat(32)}`),
     reputationContract: `0x${"22".repeat(20)}`,
     evidenceRpcUrls: ["https://rpc.example.test"], encryptionKey: Buffer.alloc(32, 1),
     recoveryIntervalMs: 10_000, finalityConfirmations: 1, finalityTag: "finalized",

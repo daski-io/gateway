@@ -20,7 +20,7 @@ function handler(
   return (req: Request, res: Response, next: NextFunction) => {
     void work(req, res).catch((error: unknown) => {
       if (error instanceof RegistrationError) {
-        if (error.status === 429) res.setHeader("Retry-After", "10");
+        if (error.status === 429 || error.status === 503) res.setHeader("Retry-After", "10");
         res.status(error.status).json({
           error: {
             code: error.code,

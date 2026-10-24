@@ -8,6 +8,7 @@ import {
 } from "../marketplace/reader.js";
 import { canonicalHash } from "../standardRail/canonical.js";
 import type { StandardRailConfig } from "../standardRail/config.js";
+import { SignerUnavailable } from "../standardRail/signer.js";
 import { logger } from "../util/logger.js";
 import {
   registrationAuthReason,
@@ -482,7 +483,11 @@ export class ServiceRegistrationService {
           railConfig: this.railConfig,
           prior: active,
         });
-      } catch {
+      } catch (error) {
+        if (error instanceof SignerUnavailable) {
+          throw new RegistrationError(503, "REGISTRATION_SIGNER_UNAVAILABLE",
+            "The gateway could not sign the registration preparation right now; retry later.");
+        }
         throw new RegistrationError(
           409,
           "REGISTRATION_CONTRACT_MISMATCH",

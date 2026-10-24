@@ -12,7 +12,7 @@ const h = (n: number) => "0x" + Buffer.alloc(32,n).toString("hex");
 const serviceId=h(4), listingManifestHash=h(3);
 const scope={kind:"listing" as const,providerAgentId:"7",serviceId,listingManifestHash};
 const privateKey=("0x"+"11".repeat(32)) as Hex;
-const signing={environment:"test",chainId:84532,privateKey,providerAudience:()=>"https://provider.test"};
+const signing={environment:"test",chainId:84532,account:privateKeyToAccount(privateKey),providerAudience:()=>"https://provider.test"};
 let admin: Pool, pool: Pool, schema: string, api: ReleaseRetirements;
 beforeEach(async()=>{
   schema="retirement_"+randomUUID().replaceAll("-","");

@@ -25,7 +25,7 @@ describe("recovery lifecycle projection",()=>{
     const transition=vi.fn();
     const service=Object.assign(Object.create(StandardRailService.prototype),{
       releaseSales: { assertOpen: async () => undefined, isParked: async () => false, parkedStatus: async () => null },
-    salesOutage: { assertOpen: async () => undefined, status: async () => ({ salesOpen: true }) },
+    salesOutage: { assertOpen: async () => undefined, status: async () => ({ salesOpen: true }) }, signerHealth: () => true,
       store:{persistOperations,transition},validateResponse:vi.fn(async()=>undefined),signedReceipt:async()=>null,
     }) as {applyLifecycleResult:(order:StandardOrderRecord,listing:StandardListing,response:unknown,action:string,handle:string)=>Promise<unknown>};
     await expect(service.applyLifecycleResult(order,listing,response,"artifact","handle")).resolves.toMatchObject({
@@ -62,7 +62,7 @@ describe("recovery lifecycle projection",()=>{
     const persistOperations=vi.fn(async()=>undefined),transition=vi.fn(),validateResponse=vi.fn();
     const service=Object.assign(Object.create(StandardRailService.prototype),{
       releaseSales: { assertOpen: async () => undefined, isParked: async () => false, parkedStatus: async () => null },
-    salesOutage: { assertOpen: async () => undefined, status: async () => ({ salesOpen: true }) },
+    salesOutage: { assertOpen: async () => undefined, status: async () => ({ salesOpen: true }) }, signerHealth: () => true,
       store:{persistOperations,transition},validateResponse,signedReceipt:async()=>null,
     }) as {applyLifecycleResult:(order:StandardOrderRecord,listing:StandardListing,response:unknown,action:string,handle:string,request:Record<string,unknown>)=>Promise<unknown>};
     await expect(service.applyLifecycleResult(order,listing,response,"support","handle",{requestId:"older_request"}))
@@ -79,7 +79,7 @@ describe("recovery lifecycle projection",()=>{
     const providerFetch=vi.fn();
     const service=Object.assign(Object.create(StandardRailService.prototype),{
       releaseSales: { assertOpen: async () => undefined, isParked: async () => false, parkedStatus: async () => null },
-    salesOutage: { assertOpen: async () => undefined, status: async () => ({ salesOpen: true }) },
+    salesOutage: { assertOpen: async () => undefined, status: async () => ({ salesOpen: true }) }, signerHealth: () => true,
       assertAdmissionOpen:vi.fn(),assertRailFence:async()=>undefined,
       listing:async()=>({purchaseReadiness:"payer_dns"}),validateRequest:async()=>undefined,providerFetch,
     }) as StandardRailService;

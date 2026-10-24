@@ -3,6 +3,7 @@ import { embeddedReleaseCapabilities } from "./releaseCapabilities.js";
 import { assertWorkerCompatibility } from "./workerCompatibility.js";
 import { ReleaseSales } from "./releaseSales.js";
 import { SalesOutage } from "./salesOutage.js";
+import { signerStatuses, signersHealthy, verifySigners, type SignerStatus } from "./signer.js";
 import { ReleaseRetirements } from "./releaseRetirements.js";
 import { compactBazaarExtension, discoveryOpenApi, facilitatorDiscoveryPayment } from "./discovery.js";
 import { GATEWAY_VERSION } from "../version.js";
@@ -28,7 +29,9 @@ import {
   asStandardRailError,
   isSalesOutageRefusal,
   salesPausedFromDatabase,
+  signerUnavailableError,
   standardRailError,
+  type StandardRailPhase,
 } from "./errors.js";
 import { paymentAdmissionFailure, type ClaimedOrderReading } from "./paymentAdmission.js";
 import { retryTransientRead } from "../db/transientRead.js";
@@ -252,7 +255,7 @@ export class StandardRailService {
     this.releaseSales = new ReleaseSales(pool);
     this.salesOutage = new SalesOutage(pool, railConfig.environment);
     this.releaseRetirements = new ReleaseRetirements(pool, {
-      environment: railConfig.environment, chainId: appConfig.chainId, privateKey: railConfig.dispatchPrivateKey,
+      environment: railConfig.environment, chainId: appConfig.chainId, account: railConfig.signers.artifact("gateway-dispatch").account,
       providerAudience: providerAgentId => {
         const audiences = [...new Set(railConfig.manifest.providerControlProfiles
           .filter(profile => profile.payload.providerAgentId === providerAgentId).map(profile => profile.payload.providerAudience))];
@@ -389,6 +392,9 @@ export class StandardRailService {
     ) throw new Error("Standard-rail manifest does not match this runtime");
     await this.assetFederation.activateAdmissions({ readOnly: true });
     await this.validateLocalCommerce();
+    // Privy signing: each wallet must hold its configured address and this
+    // role's signer before the gateway serves.
+    await verifySigners(this.railConfig.signers);
     await this.store.admitManifest(this.railConfig.manifest);
     this.locallyReady = true;
   }
@@ -407,6 +413,8 @@ export class StandardRailService {
     this.readinessInterval = setInterval(() => {
       void this.assetFederation.activateAdmissions().catch(() => undefined);
       void this.refreshDependencyReadiness().catch(() => undefined);
+      void verifySigners(this.railConfig.signers).catch((error) =>
+        logger.warn("gateway signer attachment check failed", { error }));
     }, this.railConfig.readinessIntervalMs);
     this.readinessInterval.unref();
   }
@@ -466,7 +474,7 @@ export class StandardRailService {
 
   private async readReleaseCapabilities() {
     const executableListings = (await this.validateLocalCommerce()).map(item => ({ ...item,
-      localPrerequisites: ["FACILITATOR_PRIVATE_KEY","STANDARD_RAIL_ENCRYPTION_KEY","CDP_API_KEY_ID",
+      localPrerequisites: [...this.railConfig.signers.prerequisites,"STANDARD_RAIL_ENCRYPTION_KEY","CDP_API_KEY_ID",
         "CDP_API_KEY_SECRET","STANDARD_RAIL_MANIFEST_JSON","BASE_RPC_URL"],
     }));
     const { artifact, artifactManifestHash } = embeddedReleaseCapabilities();
@@ -530,6 +538,20 @@ export class StandardRailService {
 
   areDependenciesReady(): boolean {
     return this.dependenciesReady;
+  }
+
+  /** Both signing roles healthy: attached, and no refusal or run of unavailable answers. */
+  signerHealth(): boolean {
+    return signersHealthy(this.railConfig.signers);
+  }
+
+  signerStatuses(): SignerStatus[] {
+    return signerStatuses(this.railConfig.signers);
+  }
+
+  /** New challenges, claims and submissions wait for healthy signers. */
+  private assertSignersHealthy(phase: StandardRailPhase, captured = false): void {
+    if (!this.signerHealth()) throw signerUnavailableError({ phase, captured });
   }
 
   // /health/ready is unauthenticated and rate limited only at the public
@@ -707,9 +729,10 @@ export class StandardRailService {
     if (this.paymentAuthorizationValidBefore(order) <= Math.floor(Date.now() / 1_000) + 10) {
       return order;
     }
-    // A sales outage submits nothing new. The authorization stays as it is and
-    // settles once sales reopen, while it is still valid.
-    if (!(await this.salesOutage.status()).salesOpen) return order;
+    // A sales outage or an unhealthy signer submits nothing new. The
+    // authorization stays as it is and settles once both recover, while it
+    // is still valid.
+    if (!this.signerHealth() || !(await this.salesOutage.status()).salesOpen) return order;
     const requirements = paymentRequirements(
       this.appConfig,
       listing,
@@ -974,8 +997,9 @@ export class StandardRailService {
               policy.finalityBlockTimeSeconds
           ) * 1_000;
           if (Date.now() < finalNoCaptureAt) {
-            // Left unsubmitted on purpose: it settles when sales reopen.
-            if (!(await this.salesOutage.status()).salesOpen) return;
+            // Left unsubmitted on purpose: it settles when sales reopen and
+            // the signers are healthy.
+            if (!this.signerHealth() || !(await this.salesOutage.status()).salesOpen) return;
             throw new Error("Settlement authorization is not final");
           }
           if (await this.settlementCaptured(order)) {
@@ -1298,7 +1322,7 @@ export class StandardRailService {
       chainId: this.appConfig.chainId,
       audience: order.payer ?? this.railConfig.gatewayAudience,
       signerKeyId: "gateway-receipt",
-      privateKey: this.railConfig.receiptPrivateKey,
+      account: this.railConfig.signers.artifact("gateway-receipt").account,
       issuedAt: now,
       validBefore: Math.floor(order.expiresAt.getTime() / 1_000) + 31_536_000,
       payload,
@@ -1328,7 +1352,7 @@ export class StandardRailService {
       return { receipt, x402OfferReceipt: null, x402PaymentResponse: null };
     }
     const x402OfferReceipt = await createX402OfferReceipt({
-      privateKey: this.railConfig.receiptPrivateKey,
+      account: this.railConfig.signers.artifact("gateway-receipt").account,
       network: this.appConfig.x402Network,
       resourceUrl: order.listing.commitment.payload.absoluteResourceUri,
       payer: order.payer,
@@ -1591,7 +1615,7 @@ export class StandardRailService {
       chainId: this.appConfig.chainId,
       audience: listing.providerControlProfile.payload.providerAudience,
       signerKeyId: "gateway-lifecycle",
-      privateKey: this.railConfig.lifecyclePrivateKey,
+      account: this.railConfig.signers.artifact("gateway-lifecycle").account,
       issuedAt: grantIssuedAt,
       validBefore: grantIssuedAt + 120,
       payload: {
@@ -1806,6 +1830,7 @@ export class StandardRailService {
   }): Promise<{ handle: string; order: StandardOrderRecord; paymentRequired: PaymentRequired }> {
     this.assertAdmissionOpen();
     await this.salesOutage.assertOpen("challenge");
+    this.assertSignersHealthy("challenge");
     await this.assertRailFence();
     const listing = await this.listing(args.providerAgentId, args.outcomeId);
     await this.releaseSales.assertOpen(args.providerAgentId, listing.runtimeCommitmentHash);
@@ -1869,7 +1894,7 @@ export class StandardRailService {
       chainId: this.appConfig.chainId,
       audience: this.railConfig.gatewayAudience,
       signerKeyId: "gateway-quote",
-      privateKey: this.railConfig.quotePrivateKey,
+      account: this.railConfig.signers.artifact("gateway-quote").account,
       issuedAt: quoteIssuedAt,
       validBefore: expiresAt,
       payload: {
@@ -1912,7 +1937,7 @@ export class StandardRailService {
   async getOutcomeRequirements(args: { providerAgentId: string; outcomeId: string; request: Record<string, unknown> }) {
     const listing = await this.listing(args.providerAgentId, args.outcomeId);
     return getIntakeRequirements({ listing, request: args.request, environment: this.railConfig.environment,
-      chainId: this.appConfig.chainId, privateKey: this.railConfig.dispatchPrivateKey,
+      chainId: this.appConfig.chainId, account: this.railConfig.signers.artifact("gateway-dispatch").account,
       timeoutMs: this.railConfig.dispatchTimeoutMs,
       fetchProvider: (endpoint, init) => this.providerFetch(listing, endpoint, init, true) });
   }
@@ -2086,6 +2111,7 @@ export class StandardRailService {
     }
     // Replays and conflicts are answered above; nothing new is claimed now.
     await this.salesOutage.assertOpen("payment_validation");
+    this.assertSignersHealthy("payment_validation");
     const listing = await this.listing(args.providerAgentId, args.outcomeId);
     const requirements = paymentRequirements(
       this.appConfig,
@@ -2322,6 +2348,9 @@ export class StandardRailService {
       );
       return order;
     }
+    // An unhealthy signer stops the submission; the authorization waits for
+    // it to recover. (The database refuses an outage's invocation below.)
+    this.assertSignersHealthy("facilitator_settle", true);
     let mayInvokeFacilitator: boolean;
     try { mayInvokeFacilitator = await this.journal.markSettleInvoked(order.orderId); }
     catch (error) {
@@ -2530,7 +2559,7 @@ export class StandardRailService {
       chainId: this.appConfig.chainId,
       audience: listing.providerControlProfile.payload.providerAudience,
       signerKeyId: "gateway-dispatch",
-      privateKey: this.railConfig.dispatchPrivateKey,
+      account: this.railConfig.signers.artifact("gateway-dispatch").account,
       issuedAt: now,
       validBefore: now + 60,
       payload: {

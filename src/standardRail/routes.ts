@@ -11,6 +11,7 @@ import {
   isTransientDatabaseError,
   logStandardRailError,
   PAYMENT_ADMISSION_RETRY_AFTER_SECONDS,
+  SIGNER_RETRY_AFTER_SECONDS,
   StandardRailError,
   standardRailError,
   standardRailPublicError,
@@ -19,17 +20,31 @@ import {
 } from "./errors.js";
 import { isPayerSignatureShape } from "./payerSignature.js";
 import { LIFECYCLE_RETRY_AFTER_SECONDS } from "./lifecycleRefusal.js";
+import { SignerRefused, SignerUnavailable } from "./signer.js";
 
 /** The wait a retryable answer names in Retry-After, for the codes that carry one. */
 function retryAfterSeconds(code: StandardRailErrorCode | undefined): number | undefined {
   if (code === "PROVIDER_LIFECYCLE_UNAVAILABLE") return LIFECYCLE_RETRY_AFTER_SECONDS;
   if (code === "PAYMENT_ADMISSION_UNAVAILABLE") return PAYMENT_ADMISSION_RETRY_AFTER_SECONDS;
+  if (code === "SIGNER_UNAVAILABLE") return SIGNER_RETRY_AFTER_SECONDS;
   return undefined;
 }
 
 /** An answer's own wait (SALES_PAUSED: until sales reopen), else its code's. */
 function errorRetryAfter(error: StandardRailError | null, code: StandardRailErrorCode | undefined): number | undefined {
   return error?.retryAfterSeconds ?? retryAfterSeconds(code);
+}
+
+// A paid purchase is answered even when its receipt cannot be signed yet:
+// 202 with the handle, and the receipt follows on the order's status read.
+async function receiptsOrPending(service: StandardRailService, order: Awaited<ReturnType<StandardRailService["submitPayment"]>>["order"]) {
+  try {
+    return await service.purchaseReceipts(order);
+  } catch (error) {
+    if (!(error instanceof SignerUnavailable || error instanceof SignerRefused)) throw error;
+    logStandardRailError(asStandardRailError(error)!);
+    return { receipt: null, x402OfferReceipt: null, x402PaymentResponse: null };
+  }
 }
 
 const PAYMENT_HEADER = "payment-signature";
@@ -93,6 +108,7 @@ function sendWalletError(
   origin: string,
   fallback = "WALLET_ACCESS_DENIED",
 ): void {
+  if (error instanceof SignerUnavailable || error instanceof SignerRefused) error = asStandardRailError(error);
   // Typed refusals from signature verification (SIGNATURE_INVALID,
   // SIGNATURE_COUNTERFACTUAL_REJECTED, SIGNATURE_VERIFICATION_UNAVAILABLE,
   // SIGNATURE_VERIFICATION_BUSY, WALLET_AUTHORIZATION_INVALID) keep their
@@ -182,7 +198,7 @@ export function createStandardRailRouter(service: StandardRailService, publicUrl
         return;
       }
       const result = await service.submitPayment({ ...args, payment: input.paymentPayload as unknown as PaymentPayload });
-      const receipts = await service.purchaseReceipts(result.order);
+      const receipts = await receiptsOrPending(service, result.order);
       if (receipts.x402PaymentResponse) res.setHeader("PAYMENT-RESPONSE", encoded(receipts.x402PaymentResponse));
       const accepted = receipts.receipt !== null && ["DISPATCHED", "FULFILLED", "INPUT_REQUIRED"].includes(result.order.state);
       const submission = await service.submissionStatus(result.order);
@@ -457,7 +473,7 @@ export function createStandardRailRouter(service: StandardRailService, publicUrl
       // A replayed identical authorization answers exactly like the first
       // submission: the same handle, the order's current state, and its
       // receipt when one exists. One reply shape, whichever attempt arrives.
-      const receipts = await service.purchaseReceipts(result.order);
+      const receipts = await receiptsOrPending(service, result.order);
       if (receipts.x402PaymentResponse) {
         res.setHeader("PAYMENT-RESPONSE", encoded(receipts.x402PaymentResponse));
       }

@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { logger } from "../util/logger.js";
 import { RequestSchemaError } from "./schema.js";
+import { SignerRefused, SignerUnavailable } from "./signer.js";
 import type { PurchaseReadiness } from "./readinessSchema.js";
 
 export const STANDARD_RAIL_PHASES = [
@@ -69,6 +70,7 @@ export type StandardRailErrorCode =
   | "ORDER_ACTION_CONFLICT"
   | "PROVIDER_LIFECYCLE_UNAVAILABLE"
   | "SALES_PAUSED"
+  | "SIGNER_UNAVAILABLE"
   | "INTERNAL_ERROR";
 
 export interface StandardRailFieldError {
@@ -552,6 +554,17 @@ const DEFAULTS: Record<StandardRailErrorCode, ErrorDefaults> = {
     paymentMayHaveSettled: false,
     nextAction: "Wait for Retry-After (sales reopen at until), then retry the same request.",
   },
+  // A gateway signing role cannot sign right now or is unhealthy (Privy
+  // signing): nothing new is quoted, claimed or submitted until it recovers.
+  SIGNER_UNAVAILABLE: {
+    status: 503,
+    message: "Gateway signing is temporarily unavailable; nothing was charged",
+    phase: "internal",
+    retryable: true,
+    requiresNewSignature: false,
+    paymentMayHaveSettled: false,
+    nextAction: "Wait for Retry-After, then retry the same request.",
+  },
   INTERNAL_ERROR: {
     status: 500,
     message: "Internal server error",
@@ -682,6 +695,28 @@ export function salesPausedError(args: {
   });
 }
 
+/** Retry-After for SIGNER_UNAVAILABLE. */
+export const SIGNER_RETRY_AFTER_SECONDS = 30;
+
+/** SIGNER_UNAVAILABLE; `captured` as for salesPausedError. */
+export function signerUnavailableError(args: {
+  phase: StandardRailPhase;
+  captured?: boolean;
+  cause?: unknown;
+}): StandardRailError {
+  return standardRailError("SIGNER_UNAVAILABLE", {
+    phase: args.phase,
+    retryAfterSeconds: SIGNER_RETRY_AFTER_SECONDS,
+    cause: args.cause,
+    ...(args.captured ? {
+      message: "Gateway signing became unavailable before this authorization was submitted; it may still settle when signing recovers",
+      paymentMayHaveSettled: true,
+      nextAction: "Do not sign again. After Retry-After, resend the identical purchase or read the order by its " +
+        "handle: the gateway submits this authorization once signing recovers, while it is still valid.",
+    } : {}),
+  });
+}
+
 /**
  * The database refuses an admission or settlement invocation during an outage
  * with SALE_SUSPENDED, which prior runtimes already handle, and marks it as
@@ -763,6 +798,10 @@ export function asStandardRailError(error: unknown): StandardRailError | null {
   if (error instanceof RequestSchemaError) return requestError(error);
   // A claim refused by the database once an outage started after the gate.
   if (isSalesOutageRefusal(error)) return salesPausedFromDatabase(error, { phase: "payment_validation" });
+  if (error instanceof SignerUnavailable) return signerUnavailableError({ phase: "internal", cause: error });
+  if (error instanceof SignerRefused) {
+    return standardRailError("INTERNAL_ERROR", { internalMessage: error.message, cause: error });
+  }
   if (error instanceof Error) return LEGACY_ERRORS.get(error.message)?.() ?? null;
   return null;
 }

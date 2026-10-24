@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { localGatewaySigners } from "../src/standardRail/signer.js";
 import { encodeAbiParameters, encodeEventTopics, getAddress, pad, parseAbiItem, toHex, type Hex } from "viem";
 import { baseSepolia } from "viem/chains";
 import type { StandardRailConfig } from "../src/standardRail/config.js";
@@ -31,7 +32,7 @@ function search(history: ReturnType<typeof releasedLog>[]) {
     return history.filter(log => log.blockNumber >= fromBlock && log.blockNumber <= toBlock &&
       log.topics[3] === pad(toHex(args.releaseSequence), { size: 32 }));
   });
-  const evidence = new StandardChainEvidence({ evidenceRpcUrls: ["https://rpc-a.example"], releasePrivateKey: `0x${"11".repeat(32)}`,
+  const evidence = new StandardChainEvidence({ evidenceRpcUrls: ["https://rpc-a.example"], signers: localGatewaySigners(`0x${"11".repeat(32)}`),
     finalityConfirmations: 12 } as unknown as StandardRailConfig, baseSepolia, unusedLock);
   const previousRelease = (current: ReturnType<typeof releasedLog>, sequence: bigint) =>
     (evidence as unknown as { previousRelease(...args: unknown[]): Promise<{ blockNumber: bigint; releaseSequence: bigint } | null> })

@@ -1,4 +1,5 @@
 import { createCipheriv } from "node:crypto";
+import { localGatewaySigners } from "../src/standardRail/signer.js";
 import { keccak256, type Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { base } from "viem/chains";
@@ -17,7 +18,7 @@ it("logs the reserve of the persisted signed transaction on balance_fee, even af
   const ciphertext = Buffer.concat([cipher.update(raw, "utf8"), cipher.final()]);
   const query = vi.fn(async () => ({ rowCount: 1, rows: [] }));
   const worker = new StandardReputationWorker({ query } as never, {
-    reputationRelayerPrivateKey: `0x${"11".repeat(32)}`,
+    signers: localGatewaySigners(`0x${"11".repeat(32)}`),
     evidenceRpcUrls: ["https://rpc.example.test"], encryptionKey: key,
     reputationMaxFeePerGasWei: 3_000_000_000n,
     reputationRetryDelaysSeconds: [10,20,40,60],

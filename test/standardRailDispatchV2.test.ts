@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { localGatewaySigners } from "../src/standardRail/signer.js";
 import { createPool, runMigrations } from "../src/db/pool.js";
 import { StandardRailJournal } from "../src/standardRail/journal.js";
 import { canonicalHash } from "../src/standardRail/canonical.js";
@@ -132,13 +133,8 @@ function service(args: {
     gatewayAudience: "gateway.example",
     reputationContract: address("6"),
     reputationOutcomeSchemaUid: hash("9"),
-    dispatchPrivateKey: privateKey,
-    quotePrivateKey: privateKey,
-    receiptPrivateKey: privateKey,
-    lifecyclePrivateKey: privateKey,
-    releasePrivateKey: privateKey,
-    reputationOrderPrivateKey: privateKey,
-    reputationRelayerPrivateKey: privateKey,
+    signers: localGatewaySigners(privateKey),
+    trustedSigners: new Map(),
     dispatchTimeoutMs: 1_000,
     manifest: { providerIdentitySnapshots: [] },
   };
@@ -278,10 +274,8 @@ describe("dispatch refusal recovery", () => {
     dispatchListing.commitment.payload.providerAuthorityKey = privateKeyToAccount(privateKey).address;
     const dispatcher = new StandardProviderDispatch(
       { chainId: 84532 },
-      { environment: "testnet", gatewayAudience: "gateway.example", dispatchPrivateKey: privateKey,
+      { environment: "testnet", gatewayAudience: "gateway.example", signers: localGatewaySigners(privateKey), trustedSigners: new Map(),
         reputationContract: address("6"), reputationOutcomeSchemaUid: hash("9"),
-        quotePrivateKey: privateKey, receiptPrivateKey: privateKey, lifecyclePrivateKey: privateKey,
-        releasePrivateKey: privateKey, reputationOrderPrivateKey: privateKey, reputationRelayerPrivateKey: privateKey,
         dispatchTimeoutMs: 1000, manifest: { providerIdentitySnapshots: [] } } as never,
       {
         resolveDispatch,

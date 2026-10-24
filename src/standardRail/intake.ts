@@ -2,14 +2,15 @@ import { getAddress, recoverMessageAddress, type Hex } from "viem";
 import { canonicalHash } from "./canonical.js";
 import { discardResponseBody, readBoundedJsonResponse } from "./boundedJson.js";
 import { assertBoundedJsonValue, REQUEST_JSON_BUDGET, INTAKE_RESPONSE_JSON_BUDGET } from "./jsonBounds.js";
-import { signEnvelope } from "./signing.js";
+import { signEnvelope, type MessageSigner } from "./signing.js";
 import { standardRailError } from "./errors.js";
+import { SignerRefused, SignerUnavailable } from "./signer.js";
 import type { StandardListing } from "./types.js";
 
 /** Fetch signed intake data through the provider's already admitted quote endpoint. */
 export async function getIntakeRequirements(args: {
   listing: StandardListing; request: Record<string, unknown>;
-  environment: string; chainId: number; privateKey: Hex; timeoutMs: number;
+  environment: string; chainId: number; account: MessageSigner; timeoutMs: number;
   fetchProvider: (endpoint: string, init: RequestInit) => Promise<Response>;
 }): Promise<Record<string, unknown>> {
   try {
@@ -25,7 +26,7 @@ export async function getIntakeRequirements(args: {
     const envelope = await signEnvelope({
       artifactType: "ProviderIntakeRequestV1", environment: args.environment, chainId: args.chainId,
       audience: listing.providerControlProfile.payload.providerAudience, signerKeyId: "gateway-dispatch",
-      privateKey: args.privateKey, issuedAt: now, validBefore: now + 60,
+      account: args.account, issuedAt: now, validBefore: now + 60,
       payload: { outcomeId: listing.commitment.payload.outcomeId, listingManifestHash: listing.runtimeCommitmentHash,
         requestHash, request: args.request },
     });
@@ -61,6 +62,8 @@ export async function getIntakeRequirements(args: {
     if (getAddress(signer) !== getAddress(listing.commitment.payload.providerAuthorityKey)) throw new Error("Invalid intake signer");
     return { providerAgentId: listing.commitment.payload.providerAgentId, ...payload };
   } catch (error) {
+    // The gateway's own signer failing is not the provider's fault.
+    if (error instanceof SignerUnavailable || error instanceof SignerRefused) throw error;
     throw standardRailError("PROVIDER_INTAKE_UNAVAILABLE", { cause: error });
   }
 }

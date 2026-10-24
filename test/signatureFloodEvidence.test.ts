@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import { localGatewaySigners } from "../src/standardRail/signer.js";
 import { describe, expect, it } from "vitest";
 import { createPublicClient, http, keccak256, type Address, type Hex } from "viem";
 import { base } from "viem/chains";
@@ -45,7 +46,7 @@ describe("payment proofs under a contract-signature verification flood and pre-p
     let done = false;
     try {
       const evidence = new StandardChainEvidence({evidenceRpcUrls: [stub.url], rpcReadMaxPerMinute: DEFAULT_BUDGET,
-        finalityConfirmations: 5, environment: "mainnet", releasePrivateKey: ("0x" + "11".repeat(32)) as Hex,
+        finalityConfirmations: 5, environment: "mainnet", signers: localGatewaySigners(("0x" + "11".repeat(32)) as Hex),
         manifest: {chainEvidencePolicy: {payload: policy}}} as never, base,
         {run: (work: () => Promise<unknown>) => work()} as never);
       const callers = new AsyncLocalStorage<string>();

@@ -1,4 +1,5 @@
 import { once } from "node:events";
+import { localGatewaySigners } from "../src/standardRail/signer.js";
 import express from "express";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
@@ -86,7 +87,7 @@ function fixture(statuses: number[]) {
     };
     return Response.json(await signEnvelope({
       artifactType: "ProviderAssetActionResponseV1", environment: "test", chainId,
-      audience: origin, signerKeyId: "fixture", privateKey: providerKey,
+      audience: origin, signerKeyId: "fixture", account: privateKeyToAccount(providerKey),
       issuedAt: now, validBefore: now + 60, payload,
     }));
   });
@@ -94,7 +95,7 @@ function fixture(statuses: number[]) {
   const federation = { activateAdmissions: async () => undefined, activeServicing: vi.fn(() => active),
     carriedServicing: vi.fn(() => active) };
   const api = new StandardAssetActions(pool as never, {
-    environment: "test", gatewayAudience: origin, lifecyclePrivateKey: generatePrivateKey(),
+    environment: "test", gatewayAudience: origin, signers: localGatewaySigners(generatePrivateKey()),
     manifest: { actionCatalogs: [catalogEnvelope] },
   } as never, chainId, { consume } as never, federation as never, providerFetch);
   return { api, consume, providerFetch, pool, federation, active, body: { payer, providerAgentId: "42", ...request, authorization } };

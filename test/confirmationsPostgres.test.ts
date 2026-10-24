@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { localGatewaySigners } from "../src/standardRail/signer.js";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { decodeFunctionData, getAddress, parseAbi, type Address, type Chain, type Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
@@ -104,7 +105,7 @@ const order = {
 
 function config(overrides: Partial<StandardRailConfig> = {}): StandardRailConfig {
   return {
-    reputationRelayerPrivateKey: `0x${"33".repeat(32)}`,
+    signers: localGatewaySigners(`0x${"33".repeat(32)}`),
     evidenceRpcUrls: ["https://rpc.example"],
     reputationContract: REPUTATION,
     finalityTag: "finalized",

@@ -1,4 +1,5 @@
 import type { Server } from "node:http";
+import { localGatewaySigners } from "../src/standardRail/signer.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { keccak256, type Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
@@ -58,7 +59,7 @@ const config = {
 } as Config;
 const railConfig = {
   environment: "testnet",
-  releasePrivateKey: hash("a"), dispatchPrivateKey: hash("a"),
+  signers: localGatewaySigners(hash("a")),
   facilitatorBaseUrl: "https://facilitator.example",
   evidenceRpcUrls: ["https://rpc.example"],
   splitterCreationCodeHash: keccak256(creationCode),
@@ -167,7 +168,7 @@ async function setup(paymentRequired = true) {
   });
   const domain = {
     environment: "testnet", chainId: 84532, audience: config.publicUrl,
-    signerKeyId: "provider-authority", privateKey: providerKey,
+    signerKeyId: "provider-authority", account: privateKeyToAccount(providerKey),
     issuedAt: Math.floor(now.getTime() / 1000), validBefore: Math.floor(now.getTime() / 1000) + 600,
   };
   const intent = await signEnvelope({
@@ -283,10 +284,10 @@ describe("gateway authority freshness", () => {
     vi.spyOn(ServiceRegistrationStore.prototype, "acknowledgedRevisionFence").mockResolvedValue(null);
     vi.spyOn(ServiceRegistrationStore.prototype, "consumeFenceBudget").mockResolvedValue(1);
     const commit = vi.spyOn(ServiceRegistrationStore.prototype, "acknowledgeRevisionFence");
-    let fence = await signEnvelope({ ...test.intent, privateKey: providerKey,
+    let fence = await signEnvelope({ ...test.intent, account: privateKeyToAccount(providerKey),
       payload: { ...test.intent.payload, targetRevision: 1 } });
     if (kind === "signature") fence.signature = ("0x" + "00".repeat(65)) as Hex;
-    if (kind === "domain") fence = await signEnvelope({ ...fence, privateKey: providerKey, audience: "https://wrong.example" });
+    if (kind === "domain") fence = await signEnvelope({ ...fence, account: privateKeyToAccount(providerKey), audience: "https://wrong.example" });
     if (kind === "service") test.getService.mockResolvedValue({ ...test.chainService, serviceSlug: "wrong-service" });
     if (kind === "authority") test.getProvider.mockResolvedValue({ ...test.provider, identity: { owner: address("4"), agentWallet: address("5") } });
     const response = await fetch(test.root + "/internal/release/v1/registration-fences", {
@@ -418,7 +419,7 @@ describe("registration evidence rejection diagnostics", () => {
       case "validity_invalid": raw = { ...test.evidence, validBefore: test.evidence.issuedAt + 601 }; break;
       case "envelope_expired": vi.setSystemTime(test.now.getTime() + 600_000); break;
       case "signature_invalid": raw = { ...test.evidence, signature: "0x" }; break;
-      case "signer_mismatch": raw = await signEnvelope({ ...test.evidence, privateKey: hash("3") }); break;
+      case "signer_mismatch": raw = await signEnvelope({ ...test.evidence, account: privateKeyToAccount(hash("3")) }); break;
       case "payload_invalid": raw = { ...test.evidence, payload: { ...test.evidence.payload, expectedState: "ACTIVE" } }; break;
       case "authority_invalid": test.getProvider.mockResolvedValue({ ...test.provider, active: false }); break;
       case "authority_unavailable": test.getProvider.mockRejectedValue(new Error("private RPC details")); break;

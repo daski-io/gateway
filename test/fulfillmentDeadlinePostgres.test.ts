@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { localGatewaySigners } from "../src/standardRail/signer.js";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { privateKeyToAccount } from "viem/accounts";
 import type { Hex } from "viem";
@@ -40,8 +41,7 @@ const LISTING_HASH = `0x${"4".repeat(64)}` as Hex;
 const RAIL_PROFILE_HASH = `0x${"0".repeat(64)}` as Hex;
 const railConfig = {
   environment: "testnet", gatewayAudience: GATEWAY_AUDIENCE, encryptionKey: Buffer.alloc(32, 7),
-  dispatchPrivateKey: KEY, quotePrivateKey: KEY, receiptPrivateKey: KEY, lifecyclePrivateKey: KEY,
-  releasePrivateKey: KEY, reputationOrderPrivateKey: KEY, reputationRelayerPrivateKey: KEY, dispatchTimeoutMs: 3_000,
+  signers: localGatewaySigners(KEY), trustedSigners: new Map(), dispatchTimeoutMs: 3_000,
   reputationContract: `0x${"6".repeat(40)}` as Hex, reputationOutcomeSchemaUid: `0x${"9".repeat(64)}` as Hex,
   manifest: { providerIdentitySnapshots: [] },
 };
@@ -94,7 +94,7 @@ async function dispatchEnvelope(n: number): Promise<SignedEnvelope<StandardRailD
   const { deposit, release } = evidence(n);
   return signEnvelope<StandardRailDispatchV2, 2>({
     artifactType: "StandardRailDispatchV2", schemaVersion: 2, environment: "testnet", chainId: CHAIN_ID,
-    audience: PROVIDER_AUDIENCE, signerKeyId: "gateway-dispatch", privateKey: KEY, issuedAt, validBefore: issuedAt + 300,
+    audience: PROVIDER_AUDIENCE, signerKeyId: "gateway-dispatch", account: privateKeyToAccount(KEY), issuedAt, validBefore: issuedAt + 300,
     payload: {
       environment: "testnet", chainId: CHAIN_ID, gatewayAudience: GATEWAY_AUDIENCE, providerAudience: PROVIDER_AUDIENCE,
       providerControlProfileHash: `0x${"1".repeat(64)}`, orderId: orderId(n), orderKey: value(1), serviceId: SERVICE_ID,

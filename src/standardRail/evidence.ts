@@ -13,7 +13,6 @@ import {
   type Chain,
   type Hex,
 } from "viem";
-import { privateKeyToAccount } from "viem/accounts";
 import type { FacilitatorNonceLock } from "./facilitatorNonceLock.js";
 import type { StandardRailConfig } from "./config.js";
 import { withRpcFailover } from "../rpc/failover.js";
@@ -223,7 +222,7 @@ export class StandardChainEvidence {
       }),
     }));
     this.wallet = createWalletClient({
-      account: privateKeyToAccount(config.releasePrivateKey),
+      account: config.signers.sender.account,
       chain,
       transport: http(config.evidenceRpcUrls[0], { retryCount: 0, timeout: 20_000 }),
     }).extend(publicActions);

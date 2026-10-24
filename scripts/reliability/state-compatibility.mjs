@@ -5,6 +5,7 @@ import {resolve,join} from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {execFileSync} from 'node:child_process';
 import {keccak256} from 'viem';
+import {privateKeyToAccount} from 'viem/accounts';
 import {baseSepolia} from 'viem/chains';
 import {createPool,runMigrations} from '../../dist/db/pool.js';
 import {StandardRailStore} from '../../dist/standardRail/store.js';
@@ -15,6 +16,7 @@ import {encryptPaymentPayload} from '../../dist/standardRail/secrets.js';
 import {ReleaseSales} from '../../dist/standardRail/releaseSales.js';
 import {canonicalHash} from '../../dist/standardRail/canonical.js';
 import {signEnvelope} from '../../dist/standardRail/signing.js';
+import {localGatewaySigners} from '../../dist/standardRail/signer.js';
 import {root,verifyBuildIdentity} from '../build-identity.mjs';
 const hash=n=>'0x'+n.repeat(64),address=n=>'0x'+n.repeat(40);
 const digest=value=>'sha256:'+createHash('sha256').update(JSON.stringify(value)).digest('hex');
@@ -85,7 +87,7 @@ export async function proveStateCompatibility({priorRoot,databaseUrl}) {
       grossAmount:'100',providerNetAmount:'90',daskiCommissionAmount:'10',canonicalProviderRequestHash:canonicalHash({fixture:true}),
       dispatchDeadlineSeconds:300,issuedAt:now,validBefore:now+300};
     const dispatch=await signEnvelope({artifactType:'StandardRailDispatchV2',schemaVersion:2,environment:'testnet',chainId:84532,
-      audience:p.providerAudience,signerKeyId:'fixture',privateKey:key,issuedAt:now,validBefore:now+300,payload:p});
+      audience:p.providerAudience,signerKeyId:'fixture',account:privateKeyToAccount(key),issuedAt:now,validBefore:now+300,payload:p});
     const dispatchHash=canonicalHash(dispatch);
     assert.equal(await candidateJournal.claimDispatch({orderId,nonce:p.dispatchNonce,dispatchHash,requestHash:p.canonicalProviderRequestHash,
       dispatch,request:{fixture:true}}),true);
@@ -101,7 +103,8 @@ export async function proveStateCompatibility({priorRoot,databaseUrl}) {
     // Candidate's real encrypted transaction writer; fallback decrypts and
     // validates the exact chain/destination/calldata/hash before handing bytes
     // to an in-memory transport. No RPC or chain mutation occurs.
-    const config={reputationRelayerPrivateKey:key,evidenceRpcUrls:['https://rpc.invalid'],encryptionKey,
+    // The candidate reads its signer roles; a prior fallback reads its raw relayer key.
+    const config={signers:localGatewaySigners(key),reputationRelayerPrivateKey:key,evidenceRpcUrls:['https://rpc.invalid'],encryptionKey,
       easAddress:'0x4200000000000000000000000000000000000021',reputationConfirmationGasLimit:500000n,
       reputationMaxFeePerGasWei:1000000000n,reputationMaxPriorityFeePerGasWei:1000000n,reputationRetryDelaysSeconds:[1,2,3,4]};
     const intent={operation:'revoke-confirmation',profileId:'eas-native-1.2.0',orderKey:hash('1'),orderId,outcomeId:'outcome',submissionsUsed:1,

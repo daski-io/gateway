@@ -13,7 +13,6 @@ import {
   type Hex,
   type PublicClient,
 } from "viem";
-import { privateKeyToAccount } from "viem/accounts";
 import { PostgresFacilitatorNonceLock, type FacilitatorNonceLock } from "./facilitatorNonceLock.js";
 import type { Pool } from "../db/pool.js";
 import { easProfile, observeEasProfile, EasIncompatible, type EasProfileId, type EasProfileObservation } from "./easProfiles.js";
@@ -340,7 +339,7 @@ export class StandardConfirmations {
     chain: Chain,
     private readonly state: StandardConfirmationState,
     private readonly easClient?: EasReadClient,
-    private readonly reviewLock: FacilitatorNonceLock = new PostgresFacilitatorNonceLock(pool, chain.id, privateKeyToAccount(config.reputationRelayerPrivateKey).address),
+    private readonly reviewLock: FacilitatorNonceLock = new PostgresFacilitatorNonceLock(pool, chain.id, config.signers.sender.address),
   ) {
     this.chainId = chain.id;
   }

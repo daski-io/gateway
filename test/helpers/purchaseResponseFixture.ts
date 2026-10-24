@@ -98,7 +98,7 @@ export function purchaseHarness(stage: Stage = "settlement") {
   const purchaseResponses = new StandardPurchaseResponses();
   const service = Object.create(StandardRailService.prototype) as StandardRailService;
   Object.assign(service, { releaseSales: { assertOpen: async () => undefined, isParked: async () => false, parkedStatus: async () => null },
-    salesOutage: { assertOpen: async () => undefined, status: async () => ({ salesOpen: true }) },
+    salesOutage: { assertOpen: async () => undefined, status: async () => ({ salesOpen: true }) }, signerHealth: () => true,
     store, journal, facilitator, evidence, dispatch, purchaseResponses,
     appConfig: { publicUrl: "https://gateway.example", chainId: 84532, x402Network: "eip155:84532", usdc: { name: "USDC", version: "2" } },
     railConfig: { leaseSeconds: 45, encryptionKey: Buffer.alloc(32, 7),

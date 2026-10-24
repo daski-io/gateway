@@ -208,7 +208,12 @@ export function createStandardMetaRouter(args: {
       : operator
         ? observed
         : publicOperations(observed);
-    const ready = databaseReady && admissionOpen && dependenciesReady && !args.lifecycle.isStopping();
+    // Each role's backend and health; addresses only for the operator, as
+    // the public surface names only the relayer.
+    const signers = args.service.signerStatuses().map((signer) => operator ? signer
+      : { role: signer.role, backend: signer.backend, status: signer.status });
+    const signersReady = signers.every((signer) => signer.status === "healthy");
+    const ready = databaseReady && admissionOpen && dependenciesReady && signersReady && !args.lifecycle.isStopping();
     res.status(ready ? 200 : 503).json({
       status: ready ? "ready" : "unready",
       version: GATEWAY_VERSION,
@@ -222,7 +227,9 @@ export function createStandardMetaRouter(args: {
         database: databaseReady ? "ready" : "unready",
         admission: admissionOpen ? "ready" : "expired",
         standardRail: dependenciesReady ? "ready" : "unready",
+        signers: signersReady ? "ready" : "unready",
       },
+      signers,
       operations,
       sales,
     });

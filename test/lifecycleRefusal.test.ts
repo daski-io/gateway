@@ -1,4 +1,5 @@
 import express from "express";
+import { localGatewaySigners } from "../src/standardRail/signer.js";
 import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -153,7 +154,7 @@ describe("provider lifecycle refusals at the buyer surface", () => {
       store: { findByHandle: async () => order },
       appConfig: { chainId: 84532, publicUrl: "https://gateway.example" },
       railConfig: { encryptionKey: key, gatewayAudience: "gateway.example", environment: "testnet",
-        lifecyclePrivateKey: `0x${"34".repeat(32)}`, dispatchTimeoutMs: 3_000 },
+        signers: localGatewaySigners(`0x${"34".repeat(32)}`), dispatchTimeoutMs: 3_000 },
       providerFetch,
     }) as StandardRailService;
     const app = express(); app.use(express.json());

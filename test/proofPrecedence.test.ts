@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { localGatewaySigners } from "../src/standardRail/signer.js";
 import { createPublicClient, http, keccak256, type Address, type Hex, type PublicClient } from "viem";
 import { base } from "viem/chains";
 import { orderedRpcTransport } from "../src/rpc/orderedTransport.js";
@@ -22,7 +23,7 @@ function endpoint() {
   vi.stubGlobal("fetch", rpc.fetchFn);
   const url = `https://rpc-${Math.random().toString(16).slice(2)}.invalid/`;
   const evidence = new StandardChainEvidence({ evidenceRpcUrls: [url], rpcReadMaxPerMinute: RATE,
-    finalityConfirmations: 5, environment: "mainnet", releasePrivateKey: ("0x" + "11".repeat(32)) as Hex,
+    finalityConfirmations: 5, environment: "mainnet", signers: localGatewaySigners(("0x" + "11".repeat(32)) as Hex),
     manifest: { chainEvidencePolicy: { payload: policy } } } as never, base,
     { run: (work: () => Promise<unknown>) => work() } as never);
   return { rpc, url, evidence };

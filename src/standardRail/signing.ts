@@ -1,7 +1,9 @@
-import { privateKeyToAccount } from "viem/accounts";
-import type { Hex } from "../types.js";
+import type { LocalAccount } from "viem/accounts";
 import { artifactPayloadHash } from "./canonical.js";
 import type { SignedEnvelope } from "./types.js";
+
+/** Signs EIP-191 over raw bytes: a gateway signer role's account, or a local key's. */
+export type MessageSigner = Pick<LocalAccount, "signMessage">;
 
 export async function signEnvelope<T, Version extends 1 | 2 = 1>(args: {
   artifactType: string;
@@ -10,7 +12,7 @@ export async function signEnvelope<T, Version extends 1 | 2 = 1>(args: {
   chainId: number;
   audience: string;
   signerKeyId: string;
-  privateKey: Hex;
+  account: MessageSigner;
   issuedAt: number;
   validBefore: number;
   payload: T;
@@ -26,7 +28,7 @@ export async function signEnvelope<T, Version extends 1 | 2 = 1>(args: {
     validBefore: args.validBefore,
     payload: args.payload,
   };
-  const signature = await privateKeyToAccount(args.privateKey).signMessage({
+  const signature = await args.account.signMessage({
     message: { raw: artifactPayloadHash(unsigned) },
   });
   return { ...unsigned, signature };

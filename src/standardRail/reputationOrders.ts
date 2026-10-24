@@ -1,5 +1,4 @@
 import { getAddress, type Hex } from "viem";
-import { privateKeyToAccount } from "viem/accounts";
 import { canonicalHash, providerIdentitySnapshotHash } from "./canonical.js";
 import type { StandardRailConfig } from "./config.js";
 import type { StandardChainEvidence } from "./evidence.js";
@@ -120,7 +119,7 @@ export async function buildReputationRegistration(args: {
     reputationEligible: isReputationEligiblePayer(args.order.payer, args.listing, args.config),
     validBefore: BigInt(now + args.config.reputationPermitTtlSeconds),
   };
-  const signature = await privateKeyToAccount(args.config.reputationOrderPrivateKey).signTypedData({
+  const signature = await args.config.signers.identity.account.signTypedData({
     domain: {
       name: "Daski Reputation",
       version: "1",
@@ -159,7 +158,7 @@ export async function refreshReputationPermit(
   chainId: number,
 ): Promise<ReputationOperationIntent> {
   const validBefore = BigInt(Math.floor(Date.now() / 1_000) + config.reputationPermitTtlSeconds);
-  const account = privateKeyToAccount(config.reputationOrderPrivateKey);
+  const account = config.signers.identity.account;
   const domain = {
     name: "Daski Reputation" as const,
     version: "1" as const,

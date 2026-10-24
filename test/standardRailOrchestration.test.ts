@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { localGatewaySigners } from "../src/standardRail/signer.js";
 import { type Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import type { PaymentPayload } from "@x402/core/types";
@@ -19,7 +20,7 @@ type ServiceHarness = StandardRailService & Record<string, unknown>;
 function harness(fields: Record<string, unknown>): ServiceHarness {
   const service = Object.create(StandardRailService.prototype) as ServiceHarness;
   Object.assign(service, { releaseSales: { assertOpen: async () => undefined, isParked: async () => false, parkedStatus: async () => null },
-    salesOutage: { assertOpen: async () => undefined, status: async () => ({ salesOpen: true }) }, purchaseResponses: new StandardPurchaseResponses(), ...fields });
+    salesOutage: { assertOpen: async () => undefined, status: async () => ({ salesOpen: true }) }, signerHealth: () => true, purchaseResponses: new StandardPurchaseResponses(), ...fields });
   return service;
 }
 
@@ -306,7 +307,7 @@ describe("standard rail orchestration", () => {
       appConfig: { chainId: 84532 },
       railConfig: {
         environment: "testnet",
-        dispatchPrivateKey: `0x${"11".repeat(32)}`,
+        signers: localGatewaySigners(`0x${"11".repeat(32)}`),
         dispatchTimeoutMs: 5_000,
       },
       providerFetch: vi.fn(async () => ({ ok: false, status: quoteStatus.value })),
@@ -384,7 +385,7 @@ describe("standard rail orchestration", () => {
       appConfig: { chainId: 84532 },
       railConfig: {
         environment: "testnet",
-        dispatchPrivateKey: `0x${"11".repeat(32)}`,
+        signers: localGatewaySigners(`0x${"11".repeat(32)}`),
         dispatchTimeoutMs: 5_000,
       },
       providerFetch,
