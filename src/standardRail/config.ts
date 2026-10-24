@@ -28,7 +28,7 @@ export interface StandardRailConfig {
   receiptPrivateKey: Hex;
   lifecyclePrivateKey: Hex;
   releasePrivateKey: Hex;
-  trustedSigners: ReadonlyMap<string, Address>;
+  trustedSigners: ReadonlyMap<string, readonly Address[]>;
   manifest: StandardRailManifest;
   splitterFactoryRuntimeCodeHash: Hex;
   splitterCreationCodeHash: Hex;
@@ -257,12 +257,30 @@ function booleanFlag(env: NodeJS.ProcessEnv, name: string, fallback: boolean): b
   throw new Error(`${name} must be either 'true' or 'false'`);
 }
 
-function parseTrustedSigners(raw: string | undefined, protocolAddress: Address): ReadonlyMap<string, Address> {
-  if (!raw?.trim()) return new Map([["gateway-protocol", protocolAddress]]);
+const MAX_SIGNERS_PER_KEY_ID = 8;
+
+// A key ID maps to one address, or to several while artifacts signed by a
+// rotated-out key are still carried beside those of its successor: every
+// envelope hash covers its signature, so issued artifacts are never re-signed.
+function parseTrustedSigners(
+  raw: string | undefined,
+  protocolAddress: Address,
+): ReadonlyMap<string, readonly Address[]> {
+  if (!raw?.trim()) return new Map([["gateway-protocol", [protocolAddress]]]);
   try {
     assertNoDuplicateJsonKeys(raw);
-    const parsed = JSON.parse(raw) as Record<string, string>;
-    return new Map(Object.entries(parsed).map(([keyId, address]) => [keyId, getAddress(address)]));
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("not an object");
+    return new Map(Object.entries(parsed).map(([keyId, value]) => {
+      const entries = typeof value === "string" ? [value] : value;
+      if (
+        !Array.isArray(entries) || entries.length === 0 || entries.length > MAX_SIGNERS_PER_KEY_ID ||
+        entries.some((entry) => typeof entry !== "string" || /^0x0{40}$/i.test(entry))
+      ) throw new Error("invalid signer list");
+      const addresses = entries.map((entry: string) => getAddress(entry));
+      if (new Set(addresses).size !== addresses.length) throw new Error("duplicate signer");
+      return [keyId, addresses] as const;
+    }));
   } catch {
     throw new Error("STANDARD_RAIL_TRUSTED_SIGNERS_JSON is malformed");
   }
