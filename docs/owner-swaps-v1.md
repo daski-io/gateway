@@ -59,8 +59,8 @@ The closed `SignedEnvelope` used by service registration
 canonical artifact-payload hash by the provider's current owner or agent
 wallet, read live from `ProviderRegistry` and ERC-8004 at the gateway's
 configured finality tag (`CHAIN_FINALITY_TAG`: `safe` by default on Base
-Sepolia, `finalized` on Base mainnet), the same read service registration
-uses.
+Sepolia, `finalized` on Base mainnet; `latest` only off Base mainnet), the
+same read service registration uses.
 
 Payload fields, all required, none other:
 

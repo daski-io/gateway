@@ -27,7 +27,8 @@ export interface Config {
   chainId: ChainId;
   network: "base" | "base-sepolia";
   /** Chain-read finality for registration evidence and marketplace reads:
-   * testnet observes the `safe` tag, mainnet the `finalized` tag. */
+   * testnet observes the `safe` tag, mainnet the `finalized` tag; `latest`
+   * only off Base mainnet. */
   finalityTag: FinalityTag;
   x402Network: Network;
   databaseUrl: string;
@@ -99,7 +100,8 @@ function chainId(raw: string | undefined): ChainId {
 
 // Testnet defaults to `safe` and Base mainnet to `finalized`; production sets
 // CHAIN_FINALITY_TAG=safe since the owner decision of 2026-10-24.
-// CHAIN_FINALITY_TAG overrides the default in either direction.
+// CHAIN_FINALITY_TAG overrides the default in either direction; `latest` is
+// for the testnet rehearsal and refused on Base mainnet.
 function finalityTag(
   raw: string | undefined,
   configuredChainId: ChainId,

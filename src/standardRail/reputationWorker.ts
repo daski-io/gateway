@@ -842,6 +842,13 @@ export class StandardReputationWorker {
     let receipt;
     let finalizedNonce;
     try {
+      // The nonce floor is read at the configured finality tag, before the
+      // receipt: a transaction whose nonce was already consumed there and that
+      // still has no receipt afterwards was replaced, not delayed. In this
+      // order our own transaction mined between the reads is found by the
+      // receipt read, even when the tag is `latest`.
+      finalizedNonce = await this.observe("finalizedNonce", ({ client }) =>
+        client.getTransactionCount({ address: this.account.address, blockTag: this.config.finalityTag }));
       receipt = await this.observe("nonceConflictReceipt", async ({ client }) => {
         try {
           return await client.getTransactionReceipt({ hash: transaction.transaction_hash });
@@ -850,10 +857,6 @@ export class StandardReputationWorker {
           throw error;
         }
       });
-      // The nonce floor is read at the configured finality tag: a transaction
-      // whose nonce is already consumed there was replaced, not delayed.
-      finalizedNonce = receipt ? null : await this.observe("finalizedNonce", ({ client }) =>
-        client.getTransactionCount({ address: this.account.address, blockTag: this.config.finalityTag }));
     } catch {
       throw new ReputationRpcUnavailable();
     }
@@ -861,7 +864,7 @@ export class StandardReputationWorker {
       await this.reconcile(operation, transaction);
       return;
     }
-    if (hasFinalizedNonceConflict([BigInt(finalizedNonce!)], BigInt(transaction.nonce))) {
+    if (hasFinalizedNonceConflict([BigInt(finalizedNonce)], BigInt(transaction.nonce))) {
       const result = await this.pool.query(
         `WITH marked AS (
            UPDATE standard_reputation_transactions SET state='failed',updated_at=now()

@@ -147,8 +147,18 @@ describe("payer account types and owner swaps", () => {
     expect(loadStandardRailConfig({ ...standardEnv(), CHAIN_ID: "8453" }).finalityTag).toBe("finalized");
     expect(loadStandardRailConfig({ ...standardEnv(), CHAIN_FINALITY_TAG: "finalized" }).finalityTag).toBe("finalized");
     expect(loadStandardRailConfig({ ...standardEnv(), CHAIN_ID: "8453", CHAIN_FINALITY_TAG: "safe" }).finalityTag).toBe("safe");
-    expect(() => loadStandardRailConfig({ ...standardEnv(), CHAIN_FINALITY_TAG: "latest" }))
-      .toThrow(/CHAIN_FINALITY_TAG/);
+    for (const raw of ["", "pending", "earliest", "LATEST", " safe"]) {
+      expect(() => loadStandardRailConfig({ ...standardEnv(), CHAIN_FINALITY_TAG: raw }))
+        .toThrow(/CHAIN_FINALITY_TAG must be/);
+    }
+  });
+
+  it("accepts CHAIN_FINALITY_TAG=latest off Base mainnet and refuses it on Base mainnet", () => {
+    expect(loadStandardRailConfig({ ...standardEnv(), CHAIN_FINALITY_TAG: "latest" }).finalityTag).toBe("latest");
+    expect(loadStandardRailConfig({ ...standardEnv(), CHAIN_ID: "84532", CHAIN_FINALITY_TAG: "latest" }).finalityTag)
+      .toBe("latest");
+    expect(() => loadStandardRailConfig({ ...standardEnv(), CHAIN_ID: "8453", CHAIN_FINALITY_TAG: "latest" }))
+      .toThrow("CHAIN_FINALITY_TAG=latest is refused on Base mainnet");
   });
 
   it("admits deployed contract accounts on testnet when configured", () => {

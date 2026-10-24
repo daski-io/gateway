@@ -75,7 +75,7 @@ export interface StandardRailConfig {
   /**
    * The block tag read as final by confirmation state, order-history
    * reputation reads, and relayer nonce recovery (CHAIN_FINALITY_TAG: `safe`
-   * on testnet, `finalized` on Base mainnet).
+   * on testnet, `finalized` on Base mainnet; `latest` only off Base mainnet).
    */
   finalityTag: FinalityTag;
   /** One deadline for a contract-account verification: code lookup, call, one failover. */

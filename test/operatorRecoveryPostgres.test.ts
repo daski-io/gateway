@@ -11,6 +11,7 @@ import { StandardRailOperator } from "../src/standardRail/operator.js";
 import { StandardRailJournal } from "../src/standardRail/journal.js";
 import { StandardRailStore } from "../src/standardRail/store.js";
 import { assertTransition, isTerminalState } from "../src/standardRail/stateMachine.js";
+import type { FinalityTag } from "../src/util/finalityTag.js";
 
 const databaseUrl = process.env.DATABASE_URL_TEST ?? "postgresql://postgres:password@localhost:5433/daski_gateway_test";
 const orderId = "ord_12345678-1234-4123-8123-123456789abc";
@@ -163,12 +164,12 @@ async function setIntent(pool: Pool, id: string, deadline: number) {
   await pool.query("UPDATE standard_reputation_operations SET canonical_intent=$2,intent_hash=$3 WHERE operation_id=$1",
     [id, intent, Buffer.from(canonicalHash(intent).slice(2), "hex")]);
 }
-function reputationWorker(pool: Pool) {
+function reputationWorker(pool: Pool, finalityTag: FinalityTag = "finalized") {
   const worker = new StandardReputationWorker(pool, {
     signers: localGatewaySigners(`0x${"11".repeat(32)}`),
     reputationContract: `0x${"22".repeat(20)}`,
     evidenceRpcUrls: ["https://rpc.example.test"], encryptionKey: Buffer.alloc(32, 1),
-    recoveryIntervalMs: 10_000, finalityConfirmations: 1, finalityTag: "finalized",
+    recoveryIntervalMs: 10_000, finalityConfirmations: 1, finalityTag,
     reputationPermitTtlSeconds: 900, reputationRegisterGasLimit: 1_500_000n,
     reputationMaxFeePerGasWei: 3_000_000_000n, reputationMaxPriorityFeePerGasWei: 1_000_000_000n,
     reputationRetryDelaysSeconds: [10, 20, 40, 60],
@@ -225,6 +226,40 @@ describe("reputation retry chain reconciliation (postgres)", () => {
     expect((await pool.query("SELECT state FROM standard_reputation_transactions")).rows).toEqual([{ state: "broadcast" }]);
     expect(send).not.toHaveBeenCalled();
     expect((await pool.query("SELECT * FROM standard_operator_actions")).rows).toHaveLength(0);
+  }), 60_000);
+
+  it("reads the nonce floor at the configured tag before the receipt, so its own transaction mined in between is no replacement", async () => fixture(async (pool) => {
+    const id = await operation(pool, "pending", "balance_fee");
+    const tx = await transaction(pool, id, "broadcast");
+    const { worker, rpc } = reputationWorker(pool, "latest");
+    const reconcile = vi.spyOn(worker as unknown as { reconcile(): Promise<void> }, "reconcile").mockResolvedValue();
+    const resolve = async () => {
+      const operationRow = (await pool.query("SELECT * FROM standard_reputation_operations WHERE operation_id=$1", [id])).rows[0];
+      const transactionRow = (await pool.query("SELECT * FROM standard_reputation_transactions WHERE transaction_id=$1", [tx])).rows[0];
+      await (worker as unknown as { resolveNonceConflict(o: unknown, t: unknown): Promise<void> })
+        .resolveNonceConflict(operationRow, transactionRow);
+    };
+    // Nonce 1 is mined while the check runs: the floor read at latest already counts it.
+    let mined = false;
+    rpc.getTransactionCount.mockImplementation(async () => { mined = true; return 2; });
+    rpc.getTransactionReceipt.mockImplementation(async () => {
+      if (!mined) throw new TransactionReceiptNotFoundError({ hash: `0x${"55".repeat(32)}` });
+      return { blockNumber: 100n, blockHash: "block", status: "success" };
+    });
+    await resolve();
+    expect(rpc.getTransactionCount).toHaveBeenCalledWith(expect.objectContaining({ blockTag: "latest" }));
+    expect(reconcile).toHaveBeenCalledOnce();
+    expect((await pool.query("SELECT state FROM standard_reputation_transactions WHERE transaction_id=$1", [tx])).rows[0].state).toBe("broadcast");
+    expect((await pool.query("SELECT state,last_error_class FROM standard_reputation_operations WHERE operation_id=$1", [id])).rows[0])
+      .toEqual({ state: "pending", last_error_class: "balance_fee" });
+    // A floor past the nonce and still no receipt afterwards: replaced.
+    mined = false;
+    rpc.getTransactionCount.mockImplementation(async () => 2);
+    await resolve();
+    expect(reconcile).toHaveBeenCalledOnce();
+    expect((await pool.query("SELECT state FROM standard_reputation_transactions WHERE transaction_id=$1", [tx])).rows[0].state).toBe("failed");
+    expect((await pool.query("SELECT state,last_error_class FROM standard_reputation_operations WHERE operation_id=$1", [id])).rows[0])
+      .toEqual({ state: "operator_attention", last_error_class: "nonce_conflict" });
   }), 60_000);
 
   it("never resends an expired prepared permit and refreshes it on the following tick", async () => fixture(async (pool) => {
