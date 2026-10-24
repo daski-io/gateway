@@ -23,6 +23,9 @@ export const DEFAULT_SIGNER_TIMEOUT_MS = 5_000;
 // The relayer signs inside a database transaction and its nonce lock: a slow
 // signer must never hold them for the 90-second lock wait.
 export const MAX_SIGNER_TIMEOUT_MS = 5_000;
+// A result that cannot be parsed or recovered can never be broadcast, so it
+// proves nothing about tampering: an ordinary refusal of that method.
+const NON_EVIDENTIAL_MISMATCHES = new Set(["SIGNED_ENCODING_MISMATCH", "SIGNED_SIGNATURE_MISMATCH"]);
 /** Consecutive unavailable answers that mark a role unhealthy. */
 const UNAVAILABLE_THRESHOLD = 3;
 /** How often an unhealthy role is probed, so it can recover without live traffic. */
@@ -184,7 +187,7 @@ export class GatewaySigner {
     } catch (caught) {
       const error = classify(this.role, method, caught);
       if (error instanceof SignerRefused) {
-        if (error.reason.startsWith("SIGNED_")) this.mismatch = error.reason;
+        if (error.reason.startsWith("SIGNED_") && !NON_EVIDENTIAL_MISMATCHES.has(error.reason)) this.mismatch = error.reason;
         else this.refusedMethods.set(method, error.reason);
         this.refusals += 1;
         logger.error("gateway signer refused", { role: this.role, method, reason: error.reason, ...facts });

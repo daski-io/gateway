@@ -352,10 +352,16 @@ core groups are:
   32-byte message; sender: a `releaseAll()` that is never broadcast and
   carries an unreachable nonce), so it recovers without live traffic; the
   role policies must allow both. `SIGNER_TIMEOUT_MS` covers the whole
-  request, response body included. Known limit before switching to Privy:
+  request, response body included. A `signed_result_mismatch` (a signed
+  transaction whose fields or signer differ from the request) keeps the role
+  unhealthy until the gateway restarts, after the operator has checked the
+  Privy wallet and its activity log. Known limits before switching to Privy:
   the reputation permit is still signed before `RELEASE_FINAL`, so an
   identity outage longer than the listing's `releaseEvidenceSeconds` moves
-  in-flight paid orders to `LEGAL_HOLD`; releases have no fee ceiling. An unhealthy signer stops new challenges, claims and
+  in-flight paid orders to `LEGAL_HOLD`; a refused typed-data signature
+  (permits, x402 receipts) is never probed, so with no paid order in flight
+  the identity role recovers only through a restart; releases have no fee
+  ceiling. An unhealthy signer stops new challenges, claims and
   submissions like a [sales outage](docs/release-controls.md#sales-outage)
   (503 `SIGNER_UNAVAILABLE`, `Retry-After: 30`; a claimed authorization
   waits and may still settle); paid orders continue, and the relayer defers

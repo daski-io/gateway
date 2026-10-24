@@ -499,3 +499,19 @@ describe("what restores a role", () => {
     expect(Date.now() - started).toBeLessThan(2_000);
   });
 });
+
+describe("unusable signer answers", () => {
+  it("treats an unparseable signed transaction as a refusal the probe can clear, not as tampering", async () => {
+    vi.spyOn(logger, "error").mockImplementation(() => undefined);
+    let malformed = true;
+    const api = privyApi({ respond: (call) => malformed && call.body?.method === "eth_signTransaction"
+      ? new Response(JSON.stringify({ method: "eth_signTransaction", data: { signed_transaction: "0x1234", encoding: "rlp" } }),
+        { headers: { "content-type": "application/json" } }) : null });
+    const signers = loadGatewaySigners(privyEnv(), { fetch: api.fetch });
+    await expect(signers.sender.account.signTransaction(transaction())).rejects.toMatchObject({ reason: "SIGNED_ENCODING_MISMATCH" });
+    expect(signers.sender.status()).toMatchObject({ status: "unhealthy", reason: "signature_refused" });
+    malformed = false;
+    await probeSigners(signers, 84532);
+    expect(signers.sender.healthy()).toBe(true);
+  });
+});
