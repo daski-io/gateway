@@ -432,6 +432,7 @@ function gatewayService(fields: Record<string, unknown>): Harness {
   return Object.assign(Object.create(StandardRailService.prototype) as Harness, {
     appConfig: APP_CONFIG, railConfig: railConfig(), purchaseResponses: new StandardPurchaseResponses(),
     releaseSales: { assertOpen: async () => undefined, isParked: async () => false, parkedStatus: async () => null },
+    salesOutage: { assertOpen: async () => undefined, status: async () => ({ salesOpen: true }) },
     assertAdmissionOpen: () => undefined, assertRailFence: async () => undefined,
     catalog: catalogHarness(), incidents: { record: async () => undefined },
     ...fields,

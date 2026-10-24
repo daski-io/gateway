@@ -68,6 +68,7 @@ export type StandardRailErrorCode =
   | "ORDER_ACTION_UNSUPPORTED"
   | "ORDER_ACTION_CONFLICT"
   | "PROVIDER_LIFECYCLE_UNAVAILABLE"
+  | "SALES_PAUSED"
   | "INTERNAL_ERROR";
 
 export interface StandardRailFieldError {
@@ -540,6 +541,17 @@ const DEFAULTS: Record<StandardRailErrorCode, ErrorDefaults> = {
       "Wait for Retry-After, then retry at most three times with the same request, keeping any requestId. " +
       "A signed action needs a fresh order action authorization; a read capability is reused. Then read the order status.",
   },
+  // The operator's sales outage (docs/release-controls.md): no challenge,
+  // claim or settlement invocation starts until `until`. Paid orders continue.
+  SALES_PAUSED: {
+    status: 503,
+    message: "New sales are paused for a short maintenance window; nothing was charged",
+    phase: "challenge",
+    retryable: true,
+    requiresNewSignature: false,
+    paymentMayHaveSettled: false,
+    nextAction: "Wait for Retry-After (sales reopen at until), then retry the same request.",
+  },
   INTERNAL_ERROR: {
     status: 500,
     message: "Internal server error",
@@ -571,6 +583,11 @@ export interface StandardRailErrorOptions {
   facilitatorReason?: string;
   /** Whether the chain would still accept the operation outside sponsorship. */
   chainEligible?: boolean;
+  /** SALES_PAUSED: when sales reopen (ISO 8601) and the operator's stated reason. */
+  until?: string;
+  reason?: string;
+  /** The Retry-After this answer carries, when it names its own. */
+  retryAfterSeconds?: number;
   /** Fixed correlation id — wire fixtures only; production ids are random. */
   correlationId?: string;
 }
@@ -591,6 +608,9 @@ export class StandardRailError extends Error {
   readonly nextAction: string;
   readonly facilitatorReason?: string;
   readonly chainEligible?: boolean;
+  readonly until?: string;
+  readonly reason?: string;
+  readonly retryAfterSeconds?: number;
   readonly correlationId: string;
   readonly logContext: Record<string, unknown>;
 
@@ -613,6 +633,9 @@ export class StandardRailError extends Error {
     this.nextAction = options.nextAction ?? defaults.nextAction;
     this.facilitatorReason = options.facilitatorReason;
     this.chainEligible = options.chainEligible;
+    this.until = options.until;
+    this.reason = options.reason;
+    this.retryAfterSeconds = options.retryAfterSeconds;
     this.correlationId = options.correlationId ?? randomUUID();
     this.logContext = options.logContext ?? {};
   }
@@ -623,6 +646,64 @@ export function standardRailError(
   options: StandardRailErrorOptions = {},
 ): StandardRailError {
   return new StandardRailError(code, options);
+}
+
+const MAX_SALES_PAUSED_RETRY_AFTER_SECONDS = 3_600;
+
+/**
+ * SALES_PAUSED for an active outage. `captured`: the buyer's authorization is
+ * already claimed and verified but was not submitted. The gateway submits it
+ * after the outage while it is valid, so the payment may still settle: the
+ * buyer reconciles and must not sign again.
+ */
+export function salesPausedError(args: {
+  reason: string;
+  until: string;
+  retryAfterSeconds?: number;
+  phase: StandardRailPhase;
+  captured?: boolean;
+  cause?: unknown;
+}): StandardRailError {
+  const remaining = Math.ceil((Date.parse(args.until) - Date.now()) / 1_000);
+  const retryAfterSeconds = Math.min(MAX_SALES_PAUSED_RETRY_AFTER_SECONDS,
+    Math.max(1, args.retryAfterSeconds ?? (Number.isFinite(remaining) ? remaining : 1)));
+  return standardRailError("SALES_PAUSED", {
+    phase: args.phase,
+    until: args.until,
+    reason: args.reason,
+    retryAfterSeconds,
+    cause: args.cause,
+    ...(args.captured ? {
+      message: "New sales were paused before this authorization was submitted; it may still settle when sales reopen",
+      paymentMayHaveSettled: true,
+      nextAction: "Do not sign again. After Retry-After, resend the identical purchase or read the order by its " +
+        "handle: the gateway submits this authorization once sales reopen, while it is still valid.",
+    } : {}),
+  });
+}
+
+/**
+ * The database refuses an admission or settlement invocation during an outage
+ * with SALE_SUSPENDED, which prior runtimes already handle, and marks it as
+ * the outage in its detail (migration 062).
+ */
+export function isSalesOutageRefusal(error: unknown): error is Error & { hint?: string } {
+  return error instanceof Error && error.message === "SALE_SUSPENDED" &&
+    (error as { detail?: unknown }).detail === "SALES_PAUSED";
+}
+
+export function salesPausedFromDatabase(
+  error: Error & { hint?: string },
+  options: { phase: StandardRailPhase; captured?: boolean },
+): StandardRailError {
+  let outage: { reason?: unknown; until?: unknown } = {};
+  try { outage = JSON.parse(error.hint ?? "{}") as typeof outage; } catch { /* reported without detail */ }
+  const until = typeof outage.until === "string" && Number.isFinite(Date.parse(outage.until))
+    ? new Date(outage.until).toISOString() : new Date().toISOString();
+  return salesPausedError({
+    reason: typeof outage.reason === "string" ? outage.reason : "Sales are paused",
+    until, phase: options.phase, captured: options.captured, cause: error,
+  });
 }
 
 function requestError(error: RequestSchemaError): StandardRailError {
@@ -680,6 +761,8 @@ const LEGACY_ERRORS = new Map<string, LegacyFactory>([
 export function asStandardRailError(error: unknown): StandardRailError | null {
   if (error instanceof StandardRailError) return error;
   if (error instanceof RequestSchemaError) return requestError(error);
+  // A claim refused by the database once an outage started after the gate.
+  if (isSalesOutageRefusal(error)) return salesPausedFromDatabase(error, { phase: "payment_validation" });
   if (error instanceof Error) return LEGACY_ERRORS.get(error.message)?.() ?? null;
   return null;
 }
@@ -698,6 +781,8 @@ export interface StandardRailPublicError {
   fieldErrors?: readonly StandardRailFieldError[];
   facilitatorReason?: string;
   chainEligible?: boolean;
+  until?: string;
+  reason?: string;
   docs: string;
   correlationId: string;
 }
@@ -720,6 +805,8 @@ export function standardRailPublicError(
     ...(error.readiness ? { readiness: error.readiness } : {}),
     ...(error.facilitatorReason === undefined ? {} : { facilitatorReason: error.facilitatorReason }),
     ...(error.chainEligible === undefined ? {} : { chainEligible: error.chainEligible }),
+    ...(error.until === undefined ? {} : { until: error.until }),
+    ...(error.reason === undefined ? {} : { reason: error.reason }),
     docs: `${publicUrl.replace(/\/$/, "")}/skills/buy.md#errors`,
     correlationId: error.correlationId,
   };

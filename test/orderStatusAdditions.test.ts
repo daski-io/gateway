@@ -31,6 +31,7 @@ function harness(orderState: StandardOrderRecord["state"] = "INPUT_REQUIRED") {
   const transition = vi.fn(async (order: StandardOrderRecord, to: StandardOrderRecord["state"]) => ({ ...order, state: to }));
   const service = Object.assign(Object.create(StandardRailService.prototype), {
     releaseSales: { assertOpen: async () => undefined, isParked: async () => false, parkedStatus: async () => null },
+    salesOutage: { assertOpen: async () => undefined, status: async () => ({ salesOpen: true }) },
     store: { persistOperations, transition }, validateResponse: vi.fn(async () => undefined), signedReceipt: async () => null,
     confirmationState: { stored: async () => null }, submissionStatus: async () => null,
   }) as { applyLifecycleResult: Apply };

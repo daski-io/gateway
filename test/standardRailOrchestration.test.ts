@@ -18,7 +18,8 @@ type ServiceHarness = StandardRailService & Record<string, unknown>;
 
 function harness(fields: Record<string, unknown>): ServiceHarness {
   const service = Object.create(StandardRailService.prototype) as ServiceHarness;
-  Object.assign(service, { releaseSales: { assertOpen: async () => undefined, isParked: async () => false, parkedStatus: async () => null }, purchaseResponses: new StandardPurchaseResponses(), ...fields });
+  Object.assign(service, { releaseSales: { assertOpen: async () => undefined, isParked: async () => false, parkedStatus: async () => null },
+    salesOutage: { assertOpen: async () => undefined, status: async () => ({ salesOpen: true }) }, purchaseResponses: new StandardPurchaseResponses(), ...fields });
   return service;
 }
 
@@ -549,5 +550,79 @@ describe("live fulfillment deadline", () => {
         expect(transition).not.toHaveBeenCalled();
       }
     } finally { vi.useRealTimers(); }
+  });
+});
+
+describe("new sales during a sales outage", () => {
+  const until = new Date(Date.now() + 300_000).toISOString();
+  const pausedOutage = () => ({
+    assertOpen: vi.fn(async (phase: string) => {
+      const { salesPausedError } = await import("../src/standardRail/errors.js");
+      throw salesPausedError({ reason: "Maintenance", until, retryAfterSeconds: 300, phase: phase as never });
+    }),
+    status: vi.fn(async () => ({ salesOpen: false, reason: "Maintenance", since: until, until })),
+  });
+  const payment = {
+    accepted: { asset: address("1") },
+    payload: { authorization: { from: address("2"), nonce: hash("3") } },
+    extensions: {
+      "payment-identifier": {
+        info: { required: true, id: "int_12345678-1234-4123-8123-123456789abc" },
+        schema: { type: "object" },
+      },
+    },
+  } as unknown as PaymentPayload;
+
+  it("refuses a challenge before quoting or drafting anything", async () => {
+    const listing = vi.fn();
+    const findOpenDraft = vi.fn();
+    const service = harness({
+      salesOutage: pausedOutage(),
+      assertAdmissionOpen: vi.fn(),
+      assertRailFence: vi.fn(async () => undefined),
+      listing,
+      store: { findOpenDraft },
+    });
+    await expect(service.issueChallenge({ providerAgentId: "7", outcomeId: "outcome", body: {} }))
+      .rejects.toMatchObject({ code: "SALES_PAUSED", status: 503, phase: "challenge", until, reason: "Maintenance",
+        retryAfterSeconds: 300, requiresNewSignature: false, paymentMayHaveSettled: false });
+    expect(listing).not.toHaveBeenCalled();
+    expect(findOpenDraft).not.toHaveBeenCalled();
+  });
+
+  it("refuses an unclaimed purchase before validating it, but still answers replays and conflicts", async () => {
+    const body = { sku: "one" };
+    const order = {
+      orderId: "order-1", providerAgentId: "7", outcomeId: "outcome", canonicalRequest: body,
+      intentId: "int_12345678-1234-4123-8123-123456789abc", paymentPayloadHash: null, state: "CHALLENGE_ISSUED",
+      listingManifestHash: hash("4"), expiresAt: new Date(Date.now() + 60_000),
+    } as unknown as StandardOrderRecord;
+    const listing = vi.fn();
+    const base = (fields: Record<string, unknown>) => harness({
+      salesOutage: pausedOutage(),
+      appConfig: { chainId: 84532 },
+      assertAdmissionOpen: vi.fn(),
+      assertRailFence: vi.fn(async () => undefined),
+      incidents: { record: vi.fn(async () => undefined) },
+      listing,
+      ...fields,
+    });
+    const unclaimed = base({ store: { findByIntentId: vi.fn(async () => ({ handle: "handle-1", order })),
+      findByAuthorizationKey: vi.fn(async () => null) } });
+    await expect(unclaimed.submitPayment({ providerAgentId: "7", outcomeId: "outcome", body, payment }))
+      .rejects.toMatchObject({ code: "SALES_PAUSED", phase: "payment_validation", until, paymentMayHaveSettled: false });
+    expect(listing).not.toHaveBeenCalled();
+
+    // Another order holds this authorization: the conflict answer, not the pause.
+    const held = { ...order, orderId: "order-2", intentId: "int_22222222-2222-4222-8222-222222222222" };
+    const conflicted = base({ store: { findByIntentId: vi.fn(async () => ({ handle: "handle-1", order })),
+      findByAuthorizationKey: vi.fn(async () => ({ handle: "handle-2", order: held })) } });
+    await expect(conflicted.submitPayment({ providerAgentId: "7", outcomeId: "outcome", body, payment }))
+      .rejects.toMatchObject({ code: "PAYMENT_IDENTIFIER_CONFLICT" });
+
+    const claimed = { ...order, paymentPayloadHash: canonicalHash(payment) } as StandardOrderRecord;
+    const replaying = base({ store: { findByIntentId: vi.fn(async () => ({ handle: "handle-1", order: claimed })) } });
+    await expect(replaying.submitPayment({ providerAgentId: "7", outcomeId: "outcome", body, payment }))
+      .resolves.toEqual({ handle: "handle-1", order: claimed, replay: true });
   });
 });

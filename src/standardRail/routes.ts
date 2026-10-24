@@ -27,6 +27,11 @@ function retryAfterSeconds(code: StandardRailErrorCode | undefined): number | un
   return undefined;
 }
 
+/** An answer's own wait (SALES_PAUSED: until sales reopen), else its code's. */
+function errorRetryAfter(error: StandardRailError | null, code: StandardRailErrorCode | undefined): number | undefined {
+  return error?.retryAfterSeconds ?? retryAfterSeconds(code);
+}
+
 const PAYMENT_HEADER = "payment-signature";
 const ORDER_ACTIONS = [
   "status",
@@ -470,7 +475,7 @@ export function createStandardRailRouter(service: StandardRailService, publicUrl
       const { status, ...envelope } = publicError;
       const classified = asStandardRailError(error);
       if (classified) logStandardRailError(classified);
-      const retryAfter = retryAfterSeconds(envelope.code);
+      const retryAfter = errorRetryAfter(classified, envelope.code);
       if (retryAfter !== undefined) res.setHeader("Retry-After", String(retryAfter));
       res.status(status).json({ error: envelope });
     }
@@ -578,7 +583,7 @@ export function createStandardRailRouter(service: StandardRailService, publicUrl
     });
     const failure = standardRailClientError(classified, origin);
     res.setHeader("DASKI-NEXT-ACTION", failure.next_action);
-    const retryAfter = retryAfterSeconds(classified.code);
+    const retryAfter = errorRetryAfter(classified, classified.code);
     if (retryAfter !== undefined) res.setHeader("Retry-After", String(retryAfter));
     res.status(classified.status).json({
       error: standardRailPublicError(classified, origin),

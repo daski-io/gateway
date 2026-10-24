@@ -1,4 +1,5 @@
 import { parseSaleRequest, parseSaleScope } from "./releaseSales.js";
+import { parseSalesOutageEnd, parseSalesOutageStart } from "./salesOutage.js";
 import { RetirementBlocked } from "./releaseRetirements.js";
 import { EAS_PROFILE_IDS } from "./easProfiles.js";
 import { timingSafeEqual } from "node:crypto";
@@ -137,6 +138,37 @@ export function createStandardMetaRouter(args: {
     try { res.setHeader("Cache-Control", "no-store"); res.json(await args.service.releaseSales.state(parseSaleScope(req.query))); }
     catch (error) { next(error); }
   });
+  // The sales outage: POST starts or extends it, DELETE ends it, GET reads it.
+  router.all("/internal/release/v1/sales-outage", async (req, res, next) => {
+    if (!["GET", "POST", "DELETE"].includes(req.method)) { next(); return; }
+    if (!operatorAuthorized(req, args.config.catalogOperatorToken)) {
+      res.status(401).json({ error: { code: "OPERATOR_UNAUTHORIZED" } }); return;
+    }
+    try {
+      res.setHeader("Cache-Control", "no-store");
+      const outage = args.service.salesOutage;
+      res.json(req.method === "POST" ? await outage.start(parseSalesOutageStart(req.body))
+        : req.method === "DELETE" ? await outage.end(parseSalesOutageEnd(req.body))
+          : await outage.operatorState());
+    } catch (error) {
+      if (error instanceof Error && error.message === "INVALID_SALES_OUTAGE_REQUEST") {
+        res.status(400).json({ error: { code: error.message } }); return;
+      }
+      next(error);
+    }
+  });
+  // Unauthenticated and unthrottled like liveness: one shared database read
+  // per replica a second serves every caller.
+  router.get("/public/v1/status", async (_req, res, next) => {
+    try {
+      const status = await args.service.salesOutage.publicStatus();
+      res.setHeader("Cache-Control", "max-age=5");
+      res.json(status);
+    } catch (error) {
+      res.setHeader("Cache-Control", "no-store");
+      next(error);
+    }
+  });
   for (const method of ["get", "post"] as const) {
     router[method]("/internal/release/v1/retirements", async (req, res, next) => {
       if (!operatorAuthorized(req, args.config.catalogOperatorToken)) {
@@ -163,11 +195,17 @@ export function createStandardMetaRouter(args: {
     const admissionOpen = args.service.isAdmissionOpen();
     const dependenciesReady = args.service.areDependenciesReady();
     const observed = databaseReady ? await args.service.operationalHealth().catch(() => null) : null;
+    const operator = operatorAuthorized(req, args.config.catalogOperatorToken);
+    // An outage is deliberate: it is reported, never a readiness failure.
+    const sales = databaseReady
+      ? await (operator ? args.service.salesOutage.operatorState() : args.service.salesOutage.publicStatus())
+        .catch(() => null)
+      : null;
     // Relayer balance and nonces stay with the operator: on the public
     // surface they let anyone time a sponsorship drain or spot under-funding.
     const operations = observed === null
       ? null
-      : operatorAuthorized(req, args.config.catalogOperatorToken)
+      : operator
         ? observed
         : publicOperations(observed);
     const ready = databaseReady && admissionOpen && dependenciesReady && !args.lifecycle.isStopping();
@@ -186,6 +224,7 @@ export function createStandardMetaRouter(args: {
         standardRail: dependenciesReady ? "ready" : "unready",
       },
       operations,
+      sales,
     });
   });
   router.get("/.well-known/daski-chain.json", async (_req, res, next) => {
