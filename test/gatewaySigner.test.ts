@@ -239,7 +239,7 @@ describe("Privy signers", () => {
     await expect(signers.sender.account.signTransaction(transaction())).rejects.toMatchObject({
       name: "SignerRefused", reason: "SIGNED_GAS_MISMATCH",
     });
-    expect(signers.sender.status()).toMatchObject({ status: "unhealthy", reason: "signature_refused", refusals: 1 });
+    expect(signers.sender.status()).toMatchObject({ status: "unhealthy", reason: "signed_result_mismatch", refusals: 1 });
     expect(signersHealthy(signers)).toBe(false);
     // Another signer's signature over the requested fields is refused too.
     const impostor = privyApi({
@@ -427,5 +427,75 @@ describe("recovery of an unhealthy role", () => {
     const sign = vi.spyOn(signers.identity.account, "signMessage");
     await probeSigners(signers, 84532);
     expect(sign).not.toHaveBeenCalled();
+  });
+});
+
+describe("what restores a role", () => {
+  const ok = (body: unknown) => new Response(JSON.stringify(body), { headers: { "content-type": "application/json" } });
+  const typed = {
+    domain: { name: "x402 receipt", version: "1", chainId: 1 },
+    types: { Receipt: [{ name: "payer", type: "address" }] },
+    primaryType: "Receipt" as const,
+    message: { payer: `0x${"55".repeat(20)}` as Hex },
+  };
+
+  it("clears a refusal only when that same method succeeds", async () => {
+    vi.spyOn(logger, "error").mockImplementation(() => undefined);
+    let refuseTyped = true;
+    const api = privyApi({ respond: (call) => refuseTyped && call.body?.method === "eth_signTypedData_v4"
+      ? new Response(JSON.stringify({ error: "denied" }), { status: 403, headers: { "content-type": "application/json" } }) : null });
+    const signers = loadGatewaySigners(privyEnv(), { fetch: api.fetch });
+    await expect(signers.identity.account.signTypedData(typed)).rejects.toBeInstanceOf(SignerRefused);
+    // A message signature works, but the typed-data refusal stands, and the
+    // probe, which cannot exercise typed data harmlessly, does not run.
+    await signers.identity.account.signMessage({ message: { raw: `0x${"05".repeat(32)}` } });
+    const before = api.calls.length;
+    await probeSigners(signers, 84532);
+    expect(api.calls.length).toBe(before);
+    expect(signers.identity.status()).toMatchObject({ status: "unhealthy", reason: "signature_refused" });
+    refuseTyped = false;
+    await signers.identity.account.signTypedData(typed);
+    expect(signers.identity.healthy()).toBe(true);
+  });
+
+  it("keeps a signed-result mismatch until restart", async () => {
+    vi.spyOn(logger, "error").mockImplementation(() => undefined);
+    let tamper = true;
+    const api = privyApi({ respond: async (call) => {
+      if (!tamper || call.body?.method !== "eth_signTransaction") return null;
+      return ok({ method: "eth_signTransaction", data: { signed_transaction: await sender.signTransaction(transaction({ gas: 1n })),
+        encoding: "rlp" } });
+    } });
+    const signers = loadGatewaySigners(privyEnv(), { fetch: api.fetch });
+    await expect(signers.sender.account.signTransaction(transaction())).rejects.toMatchObject({ reason: "SIGNED_GAS_MISMATCH" });
+    tamper = false;
+    await signers.sender.account.signTransaction(transaction());
+    await probeSigners(signers, 84532);
+    expect(signers.sender.status()).toMatchObject({ status: "unhealthy", reason: "signed_result_mismatch" });
+  });
+
+  it("re-reads a detached role on the probe tick and restores it once reattached", async () => {
+    let detached = true;
+    const api = privyApi({ respond: (call) => detached && call.url === "/v1/key_quorums/quorum-identity"
+      ? ok({ id: "quorum-identity", authorization_keys: [{ public_key: p256().publicKey, display_name: null }],
+        authorization_threshold: 1, display_name: null, user_ids: null }) : null });
+    const signers = loadGatewaySigners(privyEnv(), { fetch: api.fetch });
+    await expect(verifySigners(signers)).rejects.toThrow("not attached");
+    expect(signers.identity.status()).toMatchObject({ status: "unhealthy", reason: "signer_detached" });
+    detached = false;
+    await probeSigners(signers, 84532);
+    expect(signers.identity.healthy()).toBe(true);
+  });
+
+  it("bounds the whole request, response body included, by SIGNER_TIMEOUT_MS", async () => {
+    vi.spyOn(logger, "warn").mockImplementation(() => undefined);
+    const api = privyApi({ respond: (call) => call.body?.method === "personal_sign"
+      ? new Response(new ReadableStream({ start() { /* headers arrive, the body never completes */ } }),
+        { headers: { "content-type": "application/json" } }) : null });
+    const signers = loadGatewaySigners(privyEnv({ SIGNER_TIMEOUT_MS: "300" }), { fetch: api.fetch });
+    const started = Date.now();
+    await expect(signers.identity.account.signMessage({ message: { raw: `0x${"06".repeat(32)}` } }))
+      .rejects.toBeInstanceOf(SignerUnavailable);
+    expect(Date.now() - started).toBeLessThan(2_000);
   });
 });

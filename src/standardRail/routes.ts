@@ -237,7 +237,12 @@ export function createStandardRailRouter(service: StandardRailService, publicUrl
         outcomeId: String(req.params.outcomeId), request: req.body.request }));
     } catch (error) {
       const failure = standardPaymentError(error, origin);
-      if (failure) { res.status(failure.status).json(failure); return; }
+      if (failure) {
+        const retryAfter = errorRetryAfter(asStandardRailError(error), failure.code);
+        if (retryAfter !== undefined) res.setHeader("Retry-After", String(retryAfter));
+        res.status(failure.status).json(failure);
+        return;
+      }
       next(error);
     }
   });

@@ -200,3 +200,53 @@ describe("readiness", () => {
       .toEqual({ role: "identity", backend: "privy", address: payer, status: "unhealthy", reason: "signature_refused", refusals: 1 });
   });
 });
+
+describe("signer health wired into the gates and paid-order reads", () => {
+  it("closes new challenges once a real Privy role is refused, saying nothing was charged", async () => {
+    vi.spyOn(logger, "error").mockImplementation(() => undefined);
+    const { loadGatewaySigners: load } = await import("../src/standardRail/signer.js");
+    const { generateKeyPairSync } = await import("node:crypto");
+    const key = generateKeyPairSync("ec", { namedCurve: "P-256" }).privateKey.export({ format: "der", type: "pkcs8" }).toString("base64");
+    const refuse = async () => new Response(JSON.stringify({ error: "denied" }), { status: 403, headers: { "content-type": "application/json" } });
+    const signers = load({ SIGNER_BACKEND: "privy", PRIVY_APP_ID: "app", PRIVY_APP_SECRET: "secret-for-tests",
+      PRIVY_IDENTITY_WALLET_ID: "wallet", PRIVY_IDENTITY_ADDRESS: payer, PRIVY_IDENTITY_AUTHORIZATION_PRIVATE_KEY: key },
+    { fetch: refuse as never });
+    const service = Object.assign(Object.create(StandardRailService.prototype), {
+      railConfig: { signers },
+      salesOutage: { assertOpen: async () => undefined, status: async () => ({ salesOpen: true }) },
+      assertAdmissionOpen: vi.fn(), assertRailFence: vi.fn(async () => undefined), listing: vi.fn(),
+    }) as unknown as Harness;
+    expect(signers.identity.healthy()).toBe(true);
+    await expect(signers.identity.account.signMessage({ message: { raw: hash("1") } })).rejects.toBeInstanceOf(SignerRefused);
+    const refused = await service.issueChallenge({ providerAgentId: "7", outcomeId: "outcome", body: {} })
+      .then(() => null, (caught: unknown) => caught);
+    expect(refused).toMatchObject({ code: "SIGNER_UNAVAILABLE", paymentMayHaveSettled: false,
+      message: "Gateway signing is temporarily unavailable; nothing was charged" });
+  });
+
+  it("answers a paid order's read with receipt null while its receipt cannot be signed", async () => {
+    vi.spyOn(logger, "warn").mockImplementation(() => undefined);
+    const service = Object.assign(Object.create(StandardRailService.prototype), {
+      signedReceipt: vi.fn(async () => { throw new SignerUnavailable("identity", "personal_sign"); }),
+    }) as unknown as { receiptOrPending(order: unknown): Promise<unknown> };
+    await expect(service.receiptOrPending({ orderId: "ord_1" })).resolves.toBeNull();
+    const broken = Object.assign(Object.create(StandardRailService.prototype), {
+      signedReceipt: vi.fn(async () => { throw new Error("Persisted receipt does not match"); }),
+    }) as unknown as { receiptOrPending(order: unknown): Promise<unknown> };
+    await expect(broken.receiptOrPending({ orderId: "ord_1" })).rejects.toThrow("Persisted receipt does not match");
+  });
+
+  it("gives intake's signer 503 a Retry-After", async () => {
+    const app = express();
+    app.use(express.json());
+    app.use(createStandardRailRouter({ getOutcomeRequirements: async () => {
+      throw new SignerUnavailable("identity", "personal_sign");
+    } } as never, "https://gateway.example"));
+    const url = await serve(app);
+    const response = await fetch(`${url}/outcomes/7/outcome/requirements`, { method: "POST",
+      headers: { "content-type": "application/json" }, body: JSON.stringify({ request: {} }) });
+    expect(response.status).toBe(503);
+    expect(response.headers.get("retry-after")).toBe("30");
+    expect(await response.json()).toMatchObject({ code: "SIGNER_UNAVAILABLE", message: "Gateway signing is temporarily unavailable" });
+  });
+});

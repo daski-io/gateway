@@ -6,6 +6,8 @@ import { SalesOutage } from "./salesOutage.js";
 import {
   probeSigners,
   SIGNER_PROBE_INTERVAL_MS,
+  SignerRefused,
+  SignerUnavailable,
   signerStatuses,
   signersHealthy,
   verifySigners,
@@ -567,7 +569,7 @@ export class StandardRailService {
 
   /** New challenges, claims and submissions wait for healthy signers. */
   private assertSignersHealthy(phase: StandardRailPhase, captured = false): void {
-    if (!this.signerHealth()) throw signerUnavailableError({ phase, captured });
+    if (!this.signerHealth()) throw signerUnavailableError({ phase, gate: true, captured });
   }
 
   // /health/ready is unauthenticated and rate limited only at the public
@@ -1013,8 +1015,9 @@ export class StandardRailService {
               policy.finalityBlockTimeSeconds
           ) * 1_000;
           if (Date.now() < finalNoCaptureAt) {
-            // Left unsubmitted on purpose: it settles when sales reopen and
-            // the signers are healthy.
+            // While sales are paused or a signer is unhealthy, an unsettled
+            // authorization is expected: a claimed one waits to be submitted,
+            // a submitted one keeps being reconciled. Nothing to report yet.
             if (!this.signerHealth() || !(await this.salesOutage.status()).salesOpen) return;
             throw new Error("Settlement authorization is not final");
           }
@@ -1259,6 +1262,17 @@ export class StandardRailService {
     authorization: WalletAuthorizationTransport;
   }) {
     return this.assetActions.perform(args);
+  }
+
+  /** A paid order's receipt, or null while it cannot be signed: the read still answers. */
+  private async receiptOrPending(order: StandardOrderRecord) {
+    try {
+      return await this.signedReceipt(order);
+    } catch (error) {
+      if (!(error instanceof SignerUnavailable || error instanceof SignerRefused)) throw error;
+      logger.warn("order receipt pending: gateway signer unavailable", { orderId: order.orderId, code: error.name });
+      return null;
+    }
   }
 
   async signedReceipt(order: StandardOrderRecord) {
@@ -1615,7 +1629,7 @@ export class StandardRailService {
         orderHandle: args.handle,
         state: order.state,
         orderKey: order.orderKey,
-        receipt: await this.signedReceipt(order),
+        receipt: await this.receiptOrPending(order),
         confirmationFinal: await this.confirmationState.stored(order.orderId),
       };
     }
@@ -1830,7 +1844,7 @@ export class StandardRailService {
       orderState: order.state,
       fulfillmentState: operationsSchema.parse(response.operations).recovery?.state === "completed"
         ? "recovered" : response.state,
-      receipt: await this.signedReceipt(order),
+      receipt: await this.receiptOrPending(order),
       ...(action === "status"
         ? { confirmationFinal: await this.confirmationState.stored(order.orderId),
             submission: await this.submissionStatus(order) }

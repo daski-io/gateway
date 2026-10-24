@@ -344,11 +344,18 @@ core groups are:
   field before it is persisted. `PRIVY_<ROLE>_ADDRESS`, when set in local
   mode, must match the key. `/health/ready` reports each role's backend and
   status (addresses for the operator token) and fails while a role is
-  unhealthy: detached, refused, or three unavailable answers in a row until
-  a signature succeeds. Every 30 seconds an unhealthy role signs a harmless
-  probe (identity: a fixed 32-byte message; sender: a `releaseAll()` that is
-  never broadcast and carries an unreachable nonce), so it recovers without
-  live traffic; the role policies must allow both. An unhealthy signer stops new challenges, claims and
+  unhealthy: detached, a refused method until that method succeeds again,
+  three unavailable answers in a row until any signature succeeds, or a
+  signed transaction unlike its request (a tampering signal, until restart).
+  Every 30 seconds an unhealthy role is re-read if detached, or signs a
+  harmless probe when the probe can clear its state (identity: a fixed
+  32-byte message; sender: a `releaseAll()` that is never broadcast and
+  carries an unreachable nonce), so it recovers without live traffic; the
+  role policies must allow both. `SIGNER_TIMEOUT_MS` covers the whole
+  request, response body included. Known limit before switching to Privy:
+  the reputation permit is still signed before `RELEASE_FINAL`, so an
+  identity outage longer than the listing's `releaseEvidenceSeconds` moves
+  in-flight paid orders to `LEGAL_HOLD`; releases have no fee ceiling. An unhealthy signer stops new challenges, claims and
   submissions like a [sales outage](docs/release-controls.md#sales-outage)
   (503 `SIGNER_UNAVAILABLE`, `Retry-After: 30`; a claimed authorization
   waits and may still settle); paid orders continue, and the relayer defers

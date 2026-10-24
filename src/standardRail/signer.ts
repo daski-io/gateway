@@ -71,7 +71,10 @@ interface RequestFacts { target?: string; selector?: string; chainId?: number }
 export class GatewaySigner {
   readonly account: LocalAccount;
   private consecutiveUnavailable = 0;
-  private refused = false;
+  /** Policy refusals by method: each clears only when that method succeeds. */
+  private readonly refusedMethods = new Map<string, string>();
+  /** A signed result unlike its request: a tampering signal, kept until restart. */
+  private mismatch: string | null = null;
   private detached: string | null = null;
   private refusals = 0;
 
@@ -111,14 +114,20 @@ export class GatewaySigner {
     });
   }
 
-  /** Healthy: attached (Privy), no refusal and fewer than three unavailable answers since the last success. */
+  /**
+   * Healthy: attached (Privy), no signed-result mismatch since start, no
+   * outstanding refusal of any method, and fewer than three unavailable
+   * answers in a row.
+   */
   healthy(): boolean {
-    return this.detached === null && !this.refused && this.consecutiveUnavailable < UNAVAILABLE_THRESHOLD;
+    return this.detached === null && this.mismatch === null && this.refusedMethods.size === 0 &&
+      this.consecutiveUnavailable < UNAVAILABLE_THRESHOLD;
   }
 
   status(): SignerStatus {
-    const reason = this.detached ?? (this.refused ? "signature_refused"
-      : this.consecutiveUnavailable >= UNAVAILABLE_THRESHOLD ? "signer_unavailable" : undefined);
+    const reason = this.detached ?? (this.mismatch ? "signed_result_mismatch"
+      : this.refusedMethods.size ? "signature_refused"
+        : this.consecutiveUnavailable >= UNAVAILABLE_THRESHOLD ? "signer_unavailable" : undefined);
     return { role: this.role, backend: this.backend, address: this.address,
       status: this.healthy() ? "healthy" : "unhealthy", ...(reason ? { reason } : {}), refusals: this.refusals };
   }
@@ -146,7 +155,14 @@ export class GatewaySigner {
    * order in flight could never recover.
    */
   async probe(chainId: number): Promise<void> {
-    if (this.backend === "local" || this.healthy() || this.detached !== null) return;
+    if (this.backend === "local" || this.healthy()) return;
+    // A detached signer is re-read, not probed; a mismatch waits for a restart.
+    if (this.detached !== null) return this.verify();
+    if (this.mismatch !== null) return;
+    // Probe only what a probe can clear: unavailability, or a refusal of the
+    // one method each role can probe harmlessly.
+    const method = this.role === "identity" ? "personal_sign" : "eth_signTransaction";
+    if (this.consecutiveUnavailable < UNAVAILABLE_THRESHOLD && !this.refusedMethods.has(method)) return;
     if (this.role === "identity") {
       await this.account.signMessage({ message: { raw: PROBE_MESSAGE } });
       return;
@@ -163,12 +179,13 @@ export class GatewaySigner {
     try {
       const result = await work();
       this.consecutiveUnavailable = 0;
-      this.refused = false;
+      this.refusedMethods.delete(method);
       return result;
     } catch (caught) {
       const error = classify(this.role, method, caught);
       if (error instanceof SignerRefused) {
-        this.refused = true;
+        if (error.reason.startsWith("SIGNED_")) this.mismatch = error.reason;
+        else this.refusedMethods.set(method, error.reason);
         this.refusals += 1;
         logger.error("gateway signer refused", { role: this.role, method, reason: error.reason, ...facts });
       } else {
@@ -228,9 +245,10 @@ export async function assertSignedAsRequested(
   const accessList = (parsed as { accessList?: readonly unknown[] }).accessList ?? [];
   const requestedAccessList = (request as { accessList?: readonly unknown[] }).accessList ?? [];
   if (accessList.length !== 0 || requestedAccessList.length !== 0) throw mismatch("ACCESS_LIST");
-  if (getAddress(await recoverTransactionAddress({ serializedTransaction: signed as never })) !== address) {
-    throw mismatch("SIGNER");
-  }
+  let signer: Address;
+  try { signer = getAddress(await recoverTransactionAddress({ serializedTransaction: signed as never })); }
+  catch { throw mismatch("SIGNATURE"); }
+  if (signer !== address) throw mismatch("SIGNER");
 }
 
 /** The envelope key IDs the identity role signs under. */
@@ -256,6 +274,31 @@ export function signersHealthy(signers: GatewaySigners): boolean {
 
 export function signerStatuses(signers: GatewaySigners): SignerStatus[] {
   return [signers.identity.status(), signers.sender.status()];
+}
+
+/**
+ * The SDK's timeout stops at the response headers and the body is read
+ * afterwards. Reads the body under the same deadline, so SIGNER_TIMEOUT_MS
+ * bounds the whole request: the relayer signs under a lock.
+ */
+export function boundedFetch(base: typeof fetch, timeoutMs: number): typeof fetch {
+  return async (input, init) => {
+    const deadline = AbortSignal.timeout(timeoutMs);
+    const signal = init?.signal ? AbortSignal.any([init.signal, deadline]) : deadline;
+    const response = await base(input, { ...init, signal });
+    const timedOut = new Promise<never>((_, reject) => {
+      const fail = () => reject(signal.reason ?? new DOMException("The signer request timed out", "TimeoutError"));
+      if (signal.aborted) fail(); else signal.addEventListener("abort", fail, { once: true });
+    });
+    try {
+      const body = await Promise.race([response.arrayBuffer(), timedOut]);
+      const empty = [101, 204, 205, 304].includes(response.status);
+      return new Response(empty ? null : body, { status: response.status, statusText: response.statusText, headers: response.headers });
+    } catch (error) {
+      void response.body?.cancel().catch(() => undefined);
+      throw error;
+    }
+  };
 }
 
 /** Probes every unhealthy Privy role once; failures are already counted and logged. */
@@ -386,9 +429,10 @@ export function loadGatewaySigners(
   const appSecret = env.PRIVY_APP_SECRET?.trim();
   if (!appId) throw new Error("PRIVY_APP_ID is required for SIGNER_BACKEND=privy");
   if (!appSecret) throw new Error("PRIVY_APP_SECRET is required for SIGNER_BACKEND=privy");
+  const timeout = signerTimeout(env);
   const client = new PrivyClient({
-    appId, appSecret, timeout: signerTimeout(env), maxRetries: 0,
-    ...(options.fetch ? { fetch: options.fetch } : {}),
+    appId, appSecret, timeout, maxRetries: 0,
+    fetch: boundedFetch(options.fetch ?? globalThis.fetch, timeout),
   });
   const identity = privyRole(env, "identity", null);
   const sender = privyRole(env, "sender", identity);

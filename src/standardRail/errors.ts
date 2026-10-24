@@ -558,7 +558,7 @@ const DEFAULTS: Record<StandardRailErrorCode, ErrorDefaults> = {
   // signing): nothing new is quoted, claimed or submitted until it recovers.
   SIGNER_UNAVAILABLE: {
     status: 503,
-    message: "Gateway signing is temporarily unavailable; nothing was charged",
+    message: "Gateway signing is temporarily unavailable",
     phase: "internal",
     retryable: true,
     requiresNewSignature: false,
@@ -701,6 +701,8 @@ export const SIGNER_RETRY_AFTER_SECONDS = 30;
 /** SIGNER_UNAVAILABLE; `captured` as for salesPausedError. */
 export function signerUnavailableError(args: {
   phase: StandardRailPhase;
+  /** A sales gate refused before anything was claimed or charged. */
+  gate?: boolean;
   captured?: boolean;
   cause?: unknown;
 }): StandardRailError {
@@ -708,6 +710,7 @@ export function signerUnavailableError(args: {
     phase: args.phase,
     retryAfterSeconds: SIGNER_RETRY_AFTER_SECONDS,
     cause: args.cause,
+    ...(args.gate && !args.captured ? { message: "Gateway signing is temporarily unavailable; nothing was charged" } : {}),
     ...(args.captured ? {
       message: "Gateway signing became unavailable before this authorization was submitted; it may still settle when signing recovers",
       paymentMayHaveSettled: true,
