@@ -289,7 +289,9 @@ core groups are:
 
 - Runtime and database: `NODE_ENV`, `CHAIN_ID`, `CHAIN_FINALITY_TAG` (the block
   tag read as final: `safe` on Base Sepolia and `finalized` on Base mainnet by
-  default; production sets `safe` since the owner decision of 2026-10-24),
+  default; production sets `safe` since the owner decision of 2026-10-24;
+  `latest`, which reads the newest blocks with no reorg protection, is only for
+  the testnet rehearsal and refused at boot on Base mainnet),
   `PUBLIC_URL`, `DATABASE_URL`, `MIGRATION_DATABASE_URL`, and
   `EDGE_SECRET`. `DOCS_URL` is the public website origin used for guide and
   MCP links, defaulting to `https://sandbox.daski.io` on Base Sepolia and

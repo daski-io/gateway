@@ -3,10 +3,11 @@ import { baseSepolia } from "viem/chains";
 import type { Pool } from "../src/db/pool.js";
 import type { StandardRailConfig } from "../src/standardRail/config.js";
 import { StandardConfirmationState } from "../src/standardRail/confirmationState.js";
+import type { FinalityTag } from "../src/util/finalityTag.js";
 
 const orderKey = `0x${"ab".repeat(32)}` as const;
 
-function stateWith(finalityTag: "safe" | "finalized") {
+function stateWith(finalityTag: FinalityTag) {
   const getBlock = vi.fn(async ({ blockTag }: { blockTag: string }) => ({
     number: blockTag === "latest" ? 105n : 100n,
     hash: `0x${(blockTag === "latest" ? "05" : "00").repeat(32)}`,
@@ -43,6 +44,14 @@ describe("confirmation state finality tag", () => {
       expect(getBlock).toHaveBeenCalledWith({ blockTag: tag });
       expect(observation).toMatchObject({ state: "Confirmed", blockNumber: "100" });
     }
+  });
+
+  it("reads and stores the final view at latest when the testnet rehearsal configures latest", async () => {
+    const { state, getBlock } = stateWith("latest");
+    const observation = await state.observeFinal(orderKey);
+    expect(getBlock).toHaveBeenCalledWith({ blockTag: "latest" });
+    expect(getBlock).not.toHaveBeenCalledWith({ blockTag: "safe" });
+    expect(observation).toMatchObject({ state: "Confirmed", blockNumber: "105" });
   });
 
   it("keeps a latest read a latest read whatever the tag", async () => {

@@ -11,6 +11,7 @@ import {
 import { baseSepolia } from "viem/chains";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Config } from "../src/config.js";
+import type { FinalityTag } from "../src/util/finalityTag.js";
 import { reputationStorageAbi } from "../src/marketplace/abis.js";
 import { CachedMarketplaceChainReader } from "../src/marketplace/cachedReader.js";
 import { ViemMarketplaceChainReader, type MarketplaceChainReader } from "../src/marketplace/reader.js";
@@ -37,7 +38,7 @@ function recoveryAnswers(options: { version?: unknown; count?: unknown } = {}): 
 }
 
 function reader(
-  finalityTag: "safe" | "finalized" = "finalized",
+  finalityTag: FinalityTag = "finalized",
   recoveryBatch: RecoveryBatch = recoveryAnswers(),
 ) {
   const instance = new ViemMarketplaceChainReader({
@@ -146,6 +147,26 @@ describe("marketplace reputation reads", () => {
     expect(getBlock).not.toHaveBeenCalledWith({ blockTag: "finalized" });
     expect(readContract).toHaveBeenCalledWith(expect.objectContaining({
       functionName: "getProvider",
+      blockNumber: 110n,
+    }));
+  });
+
+  it("observes the newest block for registry reads when the testnet rehearsal configures latest", async () => {
+    const { instance, getBlock, readContract } = reader("latest");
+
+    await expect(instance.getProvider(7n)).resolves.toMatchObject({
+      agentId: "7",
+      standardReputation: { transactions: "6", safeBlock: "110" },
+    });
+
+    expect(getBlock).toHaveBeenCalledWith({ blockTag: "latest" });
+    expect(getBlock).not.toHaveBeenCalledWith({ blockTag: "finalized" });
+    expect(readContract).toHaveBeenCalledWith(expect.objectContaining({
+      functionName: "getProvider",
+      blockNumber: 100n,
+    }));
+    expect(readContract).toHaveBeenCalledWith(expect.objectContaining({
+      functionName: "getProviderStats",
       blockNumber: 110n,
     }));
   });

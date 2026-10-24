@@ -45,6 +45,20 @@ describe("standard-only gateway configuration", () => {
     expect(() => loadConfig({ ...environment(), DOCS_URL })).toThrow(/DOCS_URL/);
   });
 
+  it("reads latest only off Base mainnet: CHAIN_FINALITY_TAG=latest is refused at boot on chain 8453", () => {
+    expect(loadConfig(environment()).finalityTag).toBe("safe");
+    expect(loadConfig({ ...environment(), CHAIN_FINALITY_TAG: "latest" }).finalityTag).toBe("latest");
+    const { USDC_ADDRESS, USDC_DOMAIN_SEPARATOR, USDC_NAME, ...rest } = environment();
+    const mainnet = { ...rest, CHAIN_ID: "8453", NODE_ENV: "production", EDGE_SECRET: "e".repeat(64),
+      PUBLIC_URL: "https://gateway.daski.io", SANCTIONS_ORACLE_MODE: "production",
+      SANCTIONS_ORACLE_ADDRESS: BASE_MAINNET_SANCTIONS_ORACLE };
+    expect(loadConfig(mainnet).finalityTag).toBe("finalized");
+    expect(loadConfig({ ...mainnet, CHAIN_FINALITY_TAG: "safe" }).finalityTag).toBe("safe");
+    expect(loadConfig({ ...mainnet, CHAIN_FINALITY_TAG: "finalized" }).finalityTag).toBe("finalized");
+    expect(() => loadConfig({ ...mainnet, CHAIN_FINALITY_TAG: "latest" }))
+      .toThrow("CHAIN_FINALITY_TAG=latest is refused on Base mainnet");
+  });
+
   it("reports memory every five minutes unless MEMORY_REPORT_INTERVAL_MS is 0 or 10 seconds to a day", () => {
     expect(loadConfig(environment()).memoryReportIntervalMs).toBe(300_000);
     for (const [value, expected] of [["0", 0], ["10000", 10_000], ["86400000", 86_400_000]] as const) {

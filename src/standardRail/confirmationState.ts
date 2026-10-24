@@ -81,7 +81,8 @@ export type CapabilityEpochWriter = (orderId: string, client: { query: Pool["que
  * `getRecord` read pinned by block hash to the block the configured finality
  * tag returned (`safe` on testnet, `finalized` on Base mainnet), and only
  * when that block is higher than the stored one. A `latest` read is returned
- * to callers but never stored. The capability
+ * to callers but never stored, unless the configured tag is itself `latest`
+ * (the testnet rehearsal). The capability
  * epoch moves only when the stored state or current UID changes, and it
  * moves in the same transaction as the state: a stored transition whose
  * invalidation was lost would never be repaired, since a repeat of the
@@ -90,7 +91,7 @@ export type CapabilityEpochWriter = (orderId: string, client: { query: Pool["que
 export class StandardConfirmationState {
   private readonly clients: Array<{ host: string; client: ConfirmationReadClient; url?: string }>;
   private readonly reputationContract: Address;
-  /** The tag whose reads are stored; `latest` reads are only ever returned. */
+  /** The tag whose reads are stored; other `latest` reads are only ever returned. */
   readonly finalityTag: FinalityTag;
 
   constructor(

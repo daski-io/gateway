@@ -11,6 +11,7 @@ import {
 import type { Config } from "../config.js";
 import { withRpcFailover } from "../rpc/failover.js";
 import { logger } from "../util/logger.js";
+import type { FinalityTag } from "../util/finalityTag.js";
 import { orderedRpcTransport } from "../rpc/orderedTransport.js";
 import { rpcReadTransport } from "../rpc/readTransport.js";
 import {
@@ -167,7 +168,7 @@ export class ViemMarketplaceChainReader implements MarketplaceChainReader {
   private readonly clients;
   // Registry reads observe the configured finality tag (testnet `safe`,
   // mainnet `finalized`); reputation reads stay on `safe` everywhere.
-  private readonly finalityTag: "safe" | "finalized";
+  private readonly finalityTag: FinalityTag;
 
   constructor(
     config: Pick<Config, "marketplaceContracts" | "finalityTag"> & Partial<Pick<Config, "rpcReadMaxPerMinute">>,
