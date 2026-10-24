@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { localGatewaySigners } from "../src/standardRail/signer.js";
 import { base } from "viem/chains";
 import { StandardChainEvidence } from "../src/standardRail/evidence.js";
 import { createContractVerificationEndpoint, createPayerSignatureVerifier } from "../src/standardRail/payerSignature.js";
@@ -11,7 +12,7 @@ describe("concurrent paid proofs through actual viem and JSON-RPC", () => {
   const stub=await startStub({latency:()=>50});
   try {
    const evidence=new StandardChainEvidence({evidenceRpcUrls:[stub.url],rpcReadMaxPerMinute:300,finalityConfirmations:5,
-    environment:"mainnet",releasePrivateKey:("0x"+"11".repeat(32)) as Hex,
+    environment:"mainnet",signers:localGatewaySigners(("0x"+"11".repeat(32)) as Hex),
     manifest:{chainEvidencePolicy:{payload:policy}}} as never,base,{run:(work:()=>Promise<unknown>)=>work()} as never);
    const started=Date.now();
    await Promise.all(Array.from({length:count},async()=>{

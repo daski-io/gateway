@@ -1,4 +1,5 @@
 import { randomBytes, randomUUID } from "node:crypto";
+import { privateKeyToAccount } from "viem/accounts";
 import type { PoolClient } from "pg";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createPool, runMigrations, type Pool } from "../src/db/pool.js";
@@ -292,7 +293,7 @@ describe("release fences around a READ COMMITTED claim", () => {
   it("makes a retirement wait for an admitting claim, then refuse the claimed order's obligation", async () => {
     await order("a", 3);
     const retirements = new ReleaseRetirements(pool, {
-      environment: "test", chainId: 84532, privateKey: `0x${"11".repeat(32)}`,
+      environment: "test", chainId: 84532, account: privateKeyToAccount(`0x${"11".repeat(32)}`),
       providerAudience: () => "https://provider.test",
     });
     const pause = pauseAfter(CLAIM_UPDATE);

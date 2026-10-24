@@ -1,6 +1,7 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { base } from "viem/chains";
 import { StandardReputationWorker } from "../src/standardRail/reputationWorker.js";
+import { localGatewaySigners } from "../src/standardRail/signer.js";
 import { observeEasProfile } from "../src/standardRail/easProfiles.js";
 import { unlockedFacilitatorNonceLock } from "../src/standardRail/facilitatorNonceLock.js";
 vi.mock("../src/standardRail/easProfiles.js",async importOriginal => ({...await importOriginal<object>(),observeEasProfile:vi.fn()}));
@@ -14,7 +15,7 @@ function setup(opts:{paused?:boolean;candidate?:boolean;count?:number;simulation
     :sql.includes("SELECT p.relay_candidate") ? [{relay_candidate:opts.candidate??true,authorization_group:"group"}]
     :sql.includes("count(*)") ? [{count:String(opts.count??0)}] : [],rowCount:1}));
   const call=opts.simulationError ? vi.fn().mockRejectedValue(opts.simulationError) : vi.fn().mockResolvedValue({data:"0x"});
-  const worker=new StandardReputationWorker({query} as never,{reputationRelayerPrivateKey:`0x${"22".repeat(32)}`,
+  const worker=new StandardReputationWorker({query} as never,{signers:localGatewaySigners(`0x${"22".repeat(32)}`),
     evidenceRpcUrls:["https://rpc.example"],easAddress:address} as never,base,unlockedFacilitatorNonceLock);
   Object.assign(worker,{evidenceClients:[{host:"rpc.example",client:{call}}]});
   return {query,call,worker:worker as unknown as {reviewCanSend(o:unknown,e:unknown,preparing:boolean):Promise<boolean>;fail(o:unknown,r:string,id:string):Promise<void>}};

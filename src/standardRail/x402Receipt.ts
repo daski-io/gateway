@@ -1,6 +1,5 @@
 import { signReceiptEIP712, type EIP712SignedReceipt } from "@x402/extensions/offer-receipt";
-import { privateKeyToAccount } from "viem/accounts";
-import type { Hex } from "viem";
+import type { LocalAccount } from "viem/accounts";
 
 // Wire shape pinned to x402-foundation/x402 commit
 // 94f9951a84b942921a3822f1ac2904dc3917c2d5 (2026-08-31).
@@ -33,7 +32,7 @@ export const X402_RECEIPT_SCHEMA = {
 } as const;
 
 export async function createX402OfferReceipt(args: {
-  privateKey: Hex;
+  account: Pick<LocalAccount, "signTypedData">;
   network: string;
   resourceUrl: string;
   payer: string;
@@ -48,10 +47,9 @@ export async function createX402OfferReceipt(args: {
     issuedAt: args.issuedAt,
     transaction: args.transaction,
   };
-  const account = privateKeyToAccount(args.privateKey);
   const signature = await signReceiptEIP712(
     payload,
-    (parameters) => account.signTypedData(parameters as Parameters<typeof account.signTypedData>[0]),
+    (parameters) => args.account.signTypedData(parameters as Parameters<LocalAccount["signTypedData"]>[0]),
   );
   return { format: "eip712", payload, signature };
 }

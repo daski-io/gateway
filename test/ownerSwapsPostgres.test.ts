@@ -98,7 +98,7 @@ async function envelope(
     chainId: options.chainId ?? 84532,
     audience: options.audience ?? PUBLIC_URL,
     signerKeyId: "provider-authority",
-    privateKey: options.privateKey ?? authorityKey,
+    account: privateKeyToAccount(options.privateKey ?? authorityKey),
     issuedAt,
     validBefore: issuedAt + 300,
     payload: value,

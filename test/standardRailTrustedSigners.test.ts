@@ -27,7 +27,7 @@ function envelope(privateKey: `0x${string}`, signerKeyId = "gateway-protocol") {
     chainId: 84532,
     audience: "https://gateway.example.test",
     signerKeyId,
-    privateKey,
+    account: privateKeyToAccount(privateKey),
     issuedAt: now - 10,
     validBefore: now + 3_600,
     payload: { policyId: "rotation-test" },

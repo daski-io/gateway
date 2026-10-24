@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { localGatewaySigners } from "../src/standardRail/signer.js";
 import { getAddress, type Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { verifyReceiptSignatureEIP712 } from "@x402/extensions/offer-receipt";
@@ -48,7 +49,7 @@ type ServiceHarness = StandardRailService & Record<string, unknown>;
 function serviceHarness(fields: Record<string, unknown>): ServiceHarness {
   const service = Object.create(StandardRailService.prototype) as ServiceHarness;
   Object.assign(service, { releaseSales: { assertOpen: async () => undefined, isParked: async () => false, parkedStatus: async () => null },
-    salesOutage: { assertOpen: async () => undefined, status: async () => ({ salesOpen: true }) }, purchaseResponses: new StandardPurchaseResponses(), ...fields });
+    salesOutage: { assertOpen: async () => undefined, status: async () => ({ salesOpen: true }) }, signerHealth: () => true, purchaseResponses: new StandardPurchaseResponses(), ...fields });
   return service;
 }
 
@@ -246,13 +247,11 @@ describe("agentic purchase DX contracts", () => {
           },
           validAfterBackstopSeconds: 3_600,
           encryptionKey: Buffer.alloc(32, 7),
-          quotePrivateKey: hash("6"),
-          dispatchPrivateKey: hash("7"),
-          receiptPrivateKey: hash("8"),
-          lifecyclePrivateKey: hash("9"),
-          releasePrivateKey: hash("b"),
-          reputationOrderPrivateKey: hash("c"),
-          reputationRelayerPrivateKey: hash("d"),
+          signers: localGatewaySigners(hash("c"), hash("b"), { artifactKeys: {
+            "gateway-quote": hash("6"), "gateway-dispatch": hash("7"), "gateway-receipt": hash("8"),
+            "gateway-lifecycle": hash("9"),
+          } }),
+          trustedSigners: new Map(),
         },
         assertAdmissionOpen: vi.fn(),
         assertRailFence: vi.fn(async () => undefined),
@@ -428,7 +427,7 @@ describe("agentic purchase DX contracts", () => {
 
   it("places a Foundation-shaped receipt in the x402 settlement extension", async () => {
     const receipt = await createX402OfferReceipt({
-      privateKey: `0x${"33".repeat(32)}` as Hex,
+      account: privateKeyToAccount(`0x${"33".repeat(32)}` as Hex),
       network: config.x402Network,
       resourceUrl: listing.commitment.payload.absoluteResourceUri,
       payer: account.address,

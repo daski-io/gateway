@@ -1042,7 +1042,7 @@ async function negativesDocument(story: Story): Promise<Doc> {
     const value = { ...envelope, ...patch } as Envelope;
     return await signEnvelope({
       artifactType: value.artifactType, schemaVersion: value.schemaVersion as 1, environment: value.environment,
-      chainId: value.chainId, audience: value.audience, signerKeyId: value.signerKeyId, privateKey: PRIVATE_KEYS[key],
+      chainId: value.chainId, audience: value.audience, signerKeyId: value.signerKeyId, account: privateKeyToAccount(PRIVATE_KEYS[key]),
       issuedAt: value.issuedAt, validBefore: value.validBefore, payload: value.payload,
     }) as Envelope;
   };

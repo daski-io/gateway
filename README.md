@@ -324,8 +324,50 @@ core groups are:
   split only when the endpoint refuses its size or result count. A failed
   reputation broadcast is classified from the node's own error, never from
   the composed message that carries the raw transaction.
-- Signing role: `FACILITATOR_PRIVATE_KEY` for protocol artifacts and
-  gas-funded Testnet reputation writes.
+- Signing roles: `identity` signs protocol artifacts (quotes, dispatch,
+  intake, lifecycle and asset-action grants, receipts, registration
+  preparations, retirement receipts) and reputation permits; `sender` signs
+  release and reputation relayer transactions, and its address keys the
+  nonce locks. `SIGNER_BACKEND=local` (default) uses `FACILITATOR_PRIVATE_KEY`
+  for both, or `GATEWAY_SENDER_PRIVATE_KEY` for the sender when set: the
+  behavior before Privy signing. `SIGNER_BACKEND=privy` signs through Privy
+  server wallets: `PRIVY_APP_ID`, `PRIVY_APP_SECRET` and, per role,
+  `PRIVY_IDENTITY_*` / `PRIVY_SENDER_*` (`WALLET_ID`, `ADDRESS`,
+  `AUTHORIZATION_PRIVATE_KEY`, a base64 PKCS8 P-256 key); the sender shares
+  the identity's wallet when its three variables are unset. The addresses are
+  configuration: before serving, the gateway checks each wallet still has its
+  address and this role's signer attached with an override policy, and
+  refuses to start otherwise. `SIGNER_TIMEOUT_MS` (default and maximum 5000)
+  bounds every Privy request, with no retries: the relayer signs inside a
+  database transaction. Messages are signed only as raw bytes (EIP-191),
+  never as bare hashes, and a signed transaction must match every requested
+  field before it is persisted. `PRIVY_<ROLE>_ADDRESS`, when set in local
+  mode, must match the key. `/health/ready` reports each role's backend and
+  status (addresses for the operator token) and fails while a role is
+  unhealthy: detached, a refused method until that method succeeds again,
+  three unavailable answers in a row until any signature succeeds, or a
+  signed transaction unlike its request (a tampering signal, until restart).
+  Every 30 seconds an unhealthy role is re-read if detached, or signs a
+  harmless probe when the probe can clear its state (identity: a fixed
+  32-byte message; sender: a `releaseAll()` that is never broadcast and
+  carries an unreachable nonce), so it recovers without live traffic; the
+  role policies must allow both. `SIGNER_TIMEOUT_MS` covers the whole
+  request, response body included. A `signed_result_mismatch` (a signed
+  transaction whose fields or signer differ from the request) keeps the role
+  unhealthy until the gateway restarts, after the operator has checked the
+  Privy wallet and its activity log. Known limits before switching to Privy:
+  the reputation permit is still signed before `RELEASE_FINAL`, so an
+  identity outage longer than the listing's `releaseEvidenceSeconds` moves
+  in-flight paid orders to `LEGAL_HOLD`; a refused typed-data signature
+  (permits, x402 receipts) is never probed, so with no paid order in flight
+  the identity role recovers only through a restart; releases have no fee
+  ceiling. An unhealthy signer stops new challenges, claims and
+  submissions like a [sales outage](docs/release-controls.md#sales-outage)
+  (503 `SIGNER_UNAVAILABLE`, `Retry-After: 30`; a claimed authorization
+  waits and may still settle); paid orders continue, and the relayer defers
+  without spending its retry attempts. The release prerequisites the gateway
+  reports name the active backend's variables, so the engine's
+  `DASKI_COMMERCE_BASELINE_JSON` changes with a switch to Privy.
 - Manifest trust: `STANDARD_RAIL_TRUSTED_SIGNERS_JSON` maps each manifest
   `signerKeyId` to one address or a list of up to eight. Unset, it trusts the
   signing key's own address under `gateway-protocol`; set, it replaces that

@@ -160,7 +160,7 @@ async function prepareControlProfile(args: {
   endpoint: string;
   policyVersionHash: Hex;
   config: Pick<Config, "chainId" | "publicUrl">;
-  railConfig: Pick<StandardRailConfig, "environment" | "dispatchPrivateKey">;
+  railConfig: Pick<StandardRailConfig, "environment" | "signers">;
 }) {
   const action = args.skill.contract.assetAction;
   if (!action) return null;
@@ -194,7 +194,7 @@ async function prepareControlProfile(args: {
     chainId: args.config.chainId,
     audience: args.config.publicUrl,
     signerKeyId: "gateway-protocol",
-    privateKey: args.railConfig.dispatchPrivateKey,
+    account: args.railConfig.signers.artifact("gateway-protocol").account,
     issuedAt: now,
     validBefore: now + 315_360_000,
     payload,
@@ -209,7 +209,7 @@ async function prepareListing(args: {
   card: ProviderServiceCard;
   skill: PublishedSkillContract;
   config: Pick<Config, "chainId" | "publicUrl">;
-  railConfig: Pick<StandardRailConfig, "environment" | "dispatchPrivateKey">;
+  railConfig: Pick<StandardRailConfig, "environment" | "signers">;
   policy: DynamicRegistrationPolicy;
   providerIntentHash: Hex;
   priorListing?: PreparedListing;
@@ -306,7 +306,7 @@ async function prepareListing(args: {
     chainId: args.config.chainId,
     audience: args.config.publicUrl,
     signerKeyId: "gateway-protocol",
-    privateKey: args.railConfig.dispatchPrivateKey,
+    account: args.railConfig.signers.artifact("gateway-protocol").account,
     issuedAt: now,
     validBefore: now + 315_360_000,
     payload,

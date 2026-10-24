@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { localGatewaySigners } from "../src/standardRail/signer.js";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { privateKeyToAccount } from "viem/accounts";
 import type { Hex } from "viem";
@@ -108,7 +109,7 @@ function gateway(providerFetch: ReturnType<typeof supportDesk>["fetch"]) {
     appConfig: { chainId: 84532, publicUrl: "https://gateway.example" },
     railConfig: {
       gatewayAudience: "https://gateway.example", encryptionKey: Buffer.alloc(32, 7), environment: "testnet",
-      lifecyclePrivateKey: `0x${"33".repeat(32)}`, dispatchTimeoutMs: 3_000,
+      signers: localGatewaySigners(`0x${"33".repeat(32)}`), dispatchTimeoutMs: 3_000,
       abuse: { walletChallengesOutstandingGlobal: 1_000, assetStateChangesPerPayerPerMinute: 1_000 },
     },
     assertRailFence: async () => undefined,

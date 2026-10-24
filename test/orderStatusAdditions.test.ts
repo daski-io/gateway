@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { localGatewaySigners } from "../src/standardRail/signer.js";
 import { privateKeyToAccount } from "viem/accounts";
 import type { Hex } from "viem";
 import { canonicalHash } from "../src/standardRail/canonical.js";
@@ -31,7 +32,7 @@ function harness(orderState: StandardOrderRecord["state"] = "INPUT_REQUIRED") {
   const transition = vi.fn(async (order: StandardOrderRecord, to: StandardOrderRecord["state"]) => ({ ...order, state: to }));
   const service = Object.assign(Object.create(StandardRailService.prototype), {
     releaseSales: { assertOpen: async () => undefined, isParked: async () => false, parkedStatus: async () => null },
-    salesOutage: { assertOpen: async () => undefined, status: async () => ({ salesOpen: true }) },
+    salesOutage: { assertOpen: async () => undefined, status: async () => ({ salesOpen: true }) }, signerHealth: () => true,
     store: { persistOperations, transition }, validateResponse: vi.fn(async () => undefined), signedReceipt: async () => null,
     confirmationState: { stored: async () => null }, submissionStatus: async () => null,
   }) as { applyLifecycleResult: Apply };
@@ -129,7 +130,7 @@ describe("order status additions", () => {
       store: { findByHandle: async () => order },
       appConfig: { chainId: 84532, publicUrl: "https://gateway.example" },
       railConfig: { encryptionKey: key, gatewayAudience: "gateway.example", environment: "testnet",
-        lifecyclePrivateKey: `0x${"34".repeat(32)}`, dispatchTimeoutMs: 3_000 },
+        signers: localGatewaySigners(`0x${"34".repeat(32)}`), dispatchTimeoutMs: 3_000 },
       providerFetch,
     }) as StandardRailService;
     const { readCapability } = issueReadCapability({

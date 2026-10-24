@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { localGatewaySigners } from "../src/standardRail/signer.js";
 import type { Hex } from "viem";
 import { baseSepolia } from "viem/chains";
 import type { StandardRailConfig } from "../src/standardRail/config.js";
@@ -34,7 +35,7 @@ function harness(world: World, whileLocking: () => void = () => undefined) {
   const getBlockNumber = vi.fn(async () => world.head ?? 200n);
   const evidence = new StandardChainEvidence({
     evidenceRpcUrls: ["https://rpc-a.example"],
-    releasePrivateKey: `0x${"11".repeat(32)}`,
+    signers: localGatewaySigners(`0x${"11".repeat(32)}`),
     finalityConfirmations: 12,
     manifest: { chainEvidencePolicy: { payload: { finalityBlockTimeSeconds: 2 } } },
   } as unknown as StandardRailConfig, baseSepolia, nonceLock);

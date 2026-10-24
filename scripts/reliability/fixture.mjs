@@ -14,7 +14,7 @@ export async function startupFixture() {
   const envelope = (artifactType, payload) => signEnvelope({ artifactType,
     schemaVersion: Number(artifactType.match(/V(\d+)$/)[1]), environment: 'testnet', chainId: 84532,
     audience: 'https://gateway.reliability.invalid', signerKeyId: 'reliability-test',
-    privateKey: testKey, issuedAt: now, validBefore: now + 7200, payload });
+    account: privateKeyToAccount(testKey), issuedAt: now, validBefore: now + 7200, payload });
   const tokenCode = '0x60016000'; const implementationCode = '0x60026000'; const oracleCode = '0x60036000';
   const domain = '0x71f17a3b2ff373b803d70a5a07c046c1a2bc8e89c09ef722fcb047abe94c9818';
   const facilitatorProfile = await envelope('FacilitatorProfileV1', {
@@ -60,7 +60,7 @@ export async function startupFixture() {
 }
 export async function conflictingCatalogFixture(input) {
   const next = JSON.parse(JSON.stringify(input));
-  const resign = async item => signEnvelope({...item, privateKey:testKey});
+  const resign = async item => signEnvelope({...item, account:privateKeyToAccount(testKey)});
   next.manifest.actionCatalogs[0].payload.actionCatalogEpoch += 1;
   next.manifest.actionCatalogs[0] = await resign(next.manifest.actionCatalogs[0]);
   next.manifest.servicingAdmissions[0].payload.actionCatalogEpoch += 1;
@@ -72,7 +72,7 @@ export async function conflictingCatalogFixture(input) {
 
 export async function advancedCatalogFixture(input) {
   const next=await conflictingCatalogFixture(input);
-  const resign=async item=>signEnvelope({...item,privateKey:testKey});
+  const resign=async item=>signEnvelope({...item,account:privateKeyToAccount(testKey)});
   const profile=next.manifest.providerControlProfiles[0]; profile.payload.servicingProfileEpoch+=1;
   next.manifest.providerControlProfiles[0]=await resign(profile);
   const catalog=next.manifest.actionCatalogs[0]; catalog.payload.servicingProfileEpoch+=1;
@@ -103,13 +103,13 @@ export async function postEpochFixture(input) {
   const prior=input.manifest, now=prior.activeRailProfile.payload.activatedAt;
   const rail=next.manifest.activeRailProfile;
   Object.assign(rail.payload,{railEpoch:'2',priorRailEpoch:'1',priorActiveRailProfileHash:canonicalHash(prior.activeRailProfile)});
-  next.manifest.activeRailProfile=await signEnvelope({...rail,privateKey:testKey});
+  next.manifest.activeRailProfile=await signEnvelope({...rail,account:privateKeyToAccount(testKey)});
   next.priorArtifacts=[{envelope:prior.facilitatorProfile,epoch:prior.facilitatorProfile.payload.profileEpoch},
     {envelope:prior.activeRailProfile,epoch:prior.activeRailProfile.payload.railEpoch},{envelope:prior.railCapabilityRequirements},
     {envelope:prior.chainEvidencePolicy},...[...prior.servicingAdmissions,...prior.actionCatalogs,...prior.providerControlProfiles].map(envelope=>({envelope}))];
   // One active free listing, the shape test/serviceRegistrationStorePostgres.test.ts admits.
   const envelope=(artifactType,payload)=>signEnvelope({artifactType,schemaVersion:1,environment:'testnet',chainId:84532,
-    audience:'https://gateway.reliability.invalid',signerKeyId:'reliability-test',privateKey:testKey,issuedAt:now,validBefore:now+7200,payload});
+    audience:'https://gateway.reliability.invalid',signerKeyId:'reliability-test',account:privateKeyToAccount(testKey),issuedAt:now,validBefore:now+7200,payload});
   const serviceId=hash('a'), registrationId=randomUUID(), listingId=randomUUID(), payee=address('c'), wallet=privateKeyToAccount(testKey).address.toLowerCase();
   const skill={skillId:'track-orbit',skillContractHash:hash('5')};
   const intent=await envelope('ProviderServiceRegistrationIntentV1',{providerAgentId:'1',serviceId,serviceSlug:'orbital-logistics',serviceVersion:'1',

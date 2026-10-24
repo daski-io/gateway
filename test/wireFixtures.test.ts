@@ -1,4 +1,5 @@
 import { orderStatusAdditionsSchema, PROVIDER_LIFECYCLE_HEADERS } from "../src/standardRail/orderStatusView.js";
+import { privateKeyToAccount } from "viem/accounts";
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -244,7 +245,7 @@ async function providerLifecycleRequestFixture() {
     chainId: CHAIN_ID,
     audience: PROVIDER_AUDIENCE,
     signerKeyId: "gateway-lifecycle",
-    privateKey: FIXTURE_SIGNER_KEY,
+    account: privateKeyToAccount(FIXTURE_SIGNER_KEY),
     issuedAt: ISSUED_AT,
     validBefore: ISSUED_AT + 120,
     payload: {

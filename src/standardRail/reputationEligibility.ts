@@ -1,5 +1,4 @@
 import { getAddress } from "viem";
-import { privateKeyToAccount } from "viem/accounts";
 import type { StandardRailConfig } from "./config.js";
 import type { StandardListing } from "./types.js";
 
@@ -8,15 +7,6 @@ export function isReputationEligiblePayer(
   listing: StandardListing,
   config: StandardRailConfig,
 ): boolean {
-  const privateKeys = [
-    config.quotePrivateKey,
-    config.dispatchPrivateKey,
-    config.receiptPrivateKey,
-    config.lifecyclePrivateKey,
-    config.releasePrivateKey,
-    config.reputationOrderPrivateKey,
-    config.reputationRelayerPrivateKey,
-  ];
   const controlled = new Set([
     listing.commitment.payload.providerAuthorityKey,
     listing.commitment.payload.providerTerminalAttestationKey,
@@ -26,7 +16,13 @@ export function isReputationEligiblePayer(
     listing.providerOwner,
     listing.providerAgentWallet,
     ...listing.screeningPolicy.providerControlledWallets,
-    ...privateKeys.map((key) => privateKeyToAccount(key).address),
+    // The gateway's own roles, and every manifest signer it trusts, retired
+    // keys included: none of them may earn buyer reputation.
+    config.signers.identity.address,
+    config.signers.sender.address,
+    ...(["gateway-protocol", "gateway-quote", "gateway-dispatch", "gateway-lifecycle", "gateway-receipt"] as const)
+      .map((keyId) => config.signers.artifact(keyId).address),
+    ...[...config.trustedSigners.values()].flat(),
   ].map((address) => getAddress(address).toLowerCase()));
   return !controlled.has(getAddress(payer).toLowerCase());
 }

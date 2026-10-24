@@ -4,6 +4,7 @@ import { TransactionReceiptNotFoundError, parseSignature, type Hex } from "viem"
 import { privateKeyToAccount } from "viem/accounts";
 import { createPool, runMigrations, type Pool } from "../src/db/pool.js";
 import type { StandardRailConfig } from "../src/standardRail/config.js";
+import { localGatewaySigners } from "../src/standardRail/signer.js";
 import type { StandardConfirmationState } from "../src/standardRail/confirmationState.js";
 import { easProfile, observeEasProfile, type EasProfileId } from "../src/standardRail/easProfiles.js";
 import { StandardReviewRecovery } from "../src/standardRail/reviewRecovery.js";
@@ -20,7 +21,7 @@ const signer = privateKeyToAccount(("0x" + "11".repeat(32)) as Hex);
 const payer = signer.address.toLowerCase() as Hex;
 const easAddress = `0x${"e".repeat(40)}` as const;
 const orderId = "ord_11111111-1111-4111-8111-111111111111";
-const config = { reputationRelayerPrivateKey: `0x${"33".repeat(32)}`, easAddress, finalityTag: "finalized" } as StandardRailConfig;
+const config = { signers: localGatewaySigners(`0x${"33".repeat(32)}`), easAddress, finalityTag: "finalized" } as unknown as StandardRailConfig;
 let bootstrap: Pool, pool: Pool;
 let subject: StandardReviewRecovery;
 let nonce: bigint, timestamp: bigint, blockHash: Hex;

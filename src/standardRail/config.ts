@@ -3,10 +3,10 @@ import { parseCommerceBaseline, parseTargetEpochs, type CommerceBaseline } from 
 import { createHash } from "node:crypto";
 import { gunzipSync } from "node:zlib";
 import { getAddress, keccak256, type Address, type Hex } from "viem";
-import { privateKeyToAccount } from "viem/accounts";
 import { assertNoDuplicateJsonKeys } from "./canonical.js";
 import { PAYER_ACCOUNT_TYPES, type PayerAccountType } from "./payerSignature.js";
 import { resolveFinalityTag, type FinalityTag } from "../util/finalityTag.js";
+import { loadGatewaySigners, type GatewaySigners } from "./signer.js";
 import type { StandardRailManifest } from "./types.js";
 
 export interface StandardRailConfig {
@@ -23,11 +23,8 @@ export interface StandardRailConfig {
   facilitatorApiKeySecret: string;
   evidenceRpcUrls: readonly [string, ...string[]];
   encryptionKey: Buffer;
-  quotePrivateKey: Hex;
-  dispatchPrivateKey: Hex;
-  receiptPrivateKey: Hex;
-  lifecyclePrivateKey: Hex;
-  releasePrivateKey: Hex;
+  /** identity: protocol artifacts, receipts, reputation permits; sender: release and relayer transactions. */
+  signers: GatewaySigners;
   trustedSigners: ReadonlyMap<string, readonly Address[]>;
   manifest: StandardRailManifest;
   splitterFactoryRuntimeCodeHash: Hex;
@@ -62,8 +59,6 @@ export interface StandardRailConfig {
   reputationOutcomeSchemaUid: Hex;
   reputationConfirmationSchemaUid: Hex;
   reputationRetryDelaysSeconds: readonly [number, number, number, number];
-  reputationOrderPrivateKey: Hex;
-  reputationRelayerPrivateKey: Hex;
   reputationPermitTtlSeconds: number;
   reputationMaxFeePerGasWei: bigint;
   reputationMaxPriorityFeePerGasWei: bigint;
@@ -142,14 +137,6 @@ function required(env: NodeJS.ProcessEnv, name: string): string {
   const value = env[name]?.trim();
   if (!value) throw new Error(`${name} is required`);
   return value;
-}
-
-function privateKey(env: NodeJS.ProcessEnv, name: string): Hex {
-  const value = required(env, name);
-  if (!/^0x[0-9a-fA-F]{64}$/.test(value) || /^0x0+$/.test(value)) {
-    throw new Error(`${name} must be a non-zero 32-byte private key`);
-  }
-  return value as Hex;
 }
 
 function integer(env: NodeJS.ProcessEnv, name: string, fallback: number): number {
@@ -288,11 +275,11 @@ function parseTrustedSigners(
 
 export function loadStandardRailConfig(
   env: NodeJS.ProcessEnv = process.env,
+  options: { signerFetch?: typeof fetch } = {},
 ): StandardRailConfig {
   const sandboxFacilitatorTransport=parseSandboxFacilitatorTransport(env);
   const manifest = parseManifest(required(env, "STANDARD_RAIL_MANIFEST_JSON"));
-  const protocolPrivateKey = privateKey(env, "FACILITATOR_PRIVATE_KEY");
-  const protocolAddress = privateKeyToAccount(protocolPrivateKey).address;
+  const signers = loadGatewaySigners(env, options.signerFetch ? { fetch: options.signerFetch } : {});
   const encryptionHex = required(env, "STANDARD_RAIL_ENCRYPTION_KEY");
   if (!/^[0-9a-fA-F]{64}$/.test(encryptionHex)) {
     throw new Error("STANDARD_RAIL_ENCRYPTION_KEY must be 32 bytes of hex without 0x");
@@ -349,12 +336,8 @@ export function loadStandardRailConfig(
     facilitatorApiKeySecret: required(env, "CDP_API_KEY_SECRET"),
     evidenceRpcUrls: evidenceRpcUrls as [string, ...string[]],
     encryptionKey,
-    quotePrivateKey: protocolPrivateKey,
-    dispatchPrivateKey: protocolPrivateKey,
-    receiptPrivateKey: protocolPrivateKey,
-    lifecyclePrivateKey: protocolPrivateKey,
-    releasePrivateKey: protocolPrivateKey,
-    trustedSigners: parseTrustedSigners(env.STANDARD_RAIL_TRUSTED_SIGNERS_JSON, protocolAddress),
+    signers,
+    trustedSigners: parseTrustedSigners(env.STANDARD_RAIL_TRUSTED_SIGNERS_JSON, signers.identity.address),
     manifest,
     splitterFactoryRuntimeCodeHash: hash(env, "STANDARD_RAIL_SPLITTER_FACTORY_RUNTIME_CODE_HASH"),
     splitterCreationCodeHash,
@@ -400,8 +383,6 @@ export function loadStandardRailConfig(
     reputationOutcomeSchemaUid: hash(env, "EAS_OUTCOME_SCHEMA_UID"),
     reputationConfirmationSchemaUid: hash(env, "EAS_CONFIRMATION_SCHEMA_UID"),
     reputationRetryDelaysSeconds: DEFAULTS.reputationRetryDelaysSeconds,
-    reputationOrderPrivateKey: protocolPrivateKey,
-    reputationRelayerPrivateKey: protocolPrivateKey,
     reputationPermitTtlSeconds: integer(env, "REPUTATION_PERMIT_TTL_SECONDS", 900),
     reputationMaxFeePerGasWei: maxFee,
     reputationMaxPriorityFeePerGasWei: priorityFee,

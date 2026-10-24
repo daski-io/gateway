@@ -1,4 +1,5 @@
 import { TransactionReceiptNotFoundError, keccak256 } from "viem";
+import { localGatewaySigners } from "../src/standardRail/signer.js";
 import { describe, expect, it, vi } from "vitest";
 import { baseSepolia } from "viem/chains";
 import type { Pool } from "../src/db/pool.js";
@@ -71,7 +72,7 @@ describe("standard rail hardened mechanisms", () => {
       } as RegisterIntent;
       const config = {
         reputationPermitTtlSeconds: 900,
-        reputationOrderPrivateKey: privateKey,
+        signers: localGatewaySigners(privateKey),
         reputationContract: "0x9999999999999999999999999999999999999999",
       } as unknown as StandardRailConfig;
       const refreshed = await refreshReputationPermit(intent, config, 84_532);
@@ -107,7 +108,7 @@ describe("standard rail hardened mechanisms", () => {
     };
     const evidence = new StandardChainEvidence({
       evidenceRpcUrls: ["https://rpc-a.example", "https://rpc-b.example"],
-      releasePrivateKey: privateKey,
+      signers: localGatewaySigners(privateKey),
       manifest: { chainEvidencePolicy: { payload: { maximumSourceLagBlocks: 4 } } },
     } as unknown as StandardRailConfig, baseSepolia, unlockedFacilitatorNonceLock);
     // Screening reads through its own client, never the payment-proof one.
@@ -156,7 +157,7 @@ describe("standard rail hardened mechanisms", () => {
     } as unknown as Pool;
     const reconciler = { reconcile: vi.fn(async () => ({ final: { blockNumber: anchor }, changed: false })) };
     const worker = new StandardReputationWorker(pool, {
-      reputationRelayerPrivateKey: privateKey,
+      signers: localGatewaySigners(privateKey),
       evidenceRpcUrls: ["https://rpc-a.example"],
     } as unknown as StandardRailConfig, baseSepolia, undefined, undefined, reconciler);
     await (worker as unknown as { runBatch(): Promise<void> }).runBatch();
@@ -199,7 +200,7 @@ describe("standard rail hardened mechanisms", () => {
       }),
     } as unknown as Pool;
     const worker = new StandardReputationWorker(pool, {
-      reputationRelayerPrivateKey: privateKey,
+      signers: localGatewaySigners(privateKey),
       evidenceRpcUrls: ["https://rpc-a.example", "https://rpc-b.example"],
     } as unknown as StandardRailConfig, baseSepolia);
     Object.assign(worker as unknown as { evidenceClients: unknown[] }, {

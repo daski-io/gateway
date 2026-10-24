@@ -1,6 +1,5 @@
 import { createHash } from "node:crypto";
 import { recoverTypedDataAddress, serializeSignature, TransactionReceiptNotFoundError, type Hex, type PublicClient } from "viem";
-import { privateKeyToAccount } from "viem/accounts";
 import type { Pool } from "../db/pool.js";
 import type { StandardRailConfig } from "./config.js";
 import type { StandardConfirmationState } from "./confirmationState.js";
@@ -39,7 +38,7 @@ export class StandardReviewRecovery {
     lock?: FacilitatorNonceLock,
     private readonly reconcile: (operationId: string) => Promise<void> = async () => undefined,
   ) {
-    this.lock = lock ?? new PostgresFacilitatorNonceLock(pool,chainId,privateKeyToAccount(config.reputationRelayerPrivateKey).address);
+    this.lock = lock ?? new PostgresFacilitatorNonceLock(pool,chainId,config.signers.sender.address);
   }
   async inventory(limit = 100, cursor?: string) {
     const rows = await this.pool.query<ReviewRow>(`${reviewsSql}

@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { localGatewaySigners } from "../src/standardRail/signer.js";
 import { baseSepolia } from "viem/chains";
 import type { Pool } from "../src/db/pool.js";
 import { StandardChainEvidence } from "../src/standardRail/evidence.js";
@@ -57,7 +58,7 @@ describe("facilitator nonce coordination", () => {
     };
     const evidence = new StandardChainEvidence({
       evidenceRpcUrls: ["https://rpc-a.example", "https://rpc-b.example"],
-      releasePrivateKey: privateKey,
+      signers: localGatewaySigners(privateKey),
       finalityConfirmations: 12,
     } as unknown as StandardRailConfig, baseSepolia, nonceLock);
     Object.assign(evidence as unknown as { wallet: unknown; clients: unknown[] }, {
@@ -88,7 +89,7 @@ describe("facilitator nonce coordination", () => {
 
   it("uses the highest latest-or-pending nonce from the selected RPC", async () => {
     const worker = new StandardReputationWorker({} as Pool, {
-      reputationRelayerPrivateKey: privateKey,
+      signers: localGatewaySigners(privateKey),
       evidenceRpcUrls: ["https://rpc-a.example", "https://rpc-b.example"],
     } as unknown as StandardRailConfig, baseSepolia, unlockedFacilitatorNonceLock);
     const fallback = { getTransactionCount: vi.fn(async () => 13) };
@@ -131,7 +132,7 @@ describe("facilitator nonce coordination", () => {
     const worker = new StandardReputationWorker({ query: async () => ({ rows: [{
       transaction_id: "tx-1", nonce: "12", transaction_hash: hash("b"), state: "prepared",
     }] }) } as unknown as Pool, {
-      reputationRelayerPrivateKey: privateKey,
+      signers: localGatewaySigners(privateKey),
       evidenceRpcUrls: ["https://rpc-a.example", "https://rpc-b.example"],
     } as unknown as StandardRailConfig, baseSepolia, nonceLock);
     const conflict = vi.fn(async () => {

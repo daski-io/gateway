@@ -327,7 +327,7 @@ describe("outage answers on the purchase routes and readiness", () => {
     const app = express();
     app.use(createStandardMetaRouter({ config: { catalogOperatorToken: TOKEN, x402Network: "eip155:84532", chainId: 84532 } as never,
       pool, lifecycle: { isStopping: () => false } as never, railConfig: {} as never,
-      service: { salesOutage: outage, isAdmissionOpen: () => true, areDependenciesReady: () => true,
+      service: { salesOutage: outage, signerStatuses: () => [], isAdmissionOpen: () => true, areDependenciesReady: () => true,
         operationalHealth: async () => ({}), railProfileHash: `0x${"aa".repeat(32)}` } as never }));
     const base = await serve(app);
     const open = await fetch(`${base}/health/ready`);

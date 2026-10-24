@@ -51,7 +51,7 @@ async function intent(
     chainId: 84_532,
     audience,
     signerKeyId: "provider-authority",
-    privateKey,
+    account: privateKeyToAccount(privateKey),
     issuedAt: now - 1,
     validBefore: now + 300,
     payload: {

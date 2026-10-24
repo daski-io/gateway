@@ -1,4 +1,5 @@
 import { createCipheriv } from "node:crypto";
+import { localGatewaySigners } from "../src/standardRail/signer.js";
 import { keccak256, parseTransaction, type Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { base, baseSepolia } from "viem/chains";
@@ -12,7 +13,7 @@ for (const chain of [base, baseSepolia]) {
     it(`${chain.id}: persisted review ${change === "none" ? "broadcasts canonical zero value" : `rejects changed ${change}`}`, async () => {
       const account = privateKeyToAccount(`0x${"11".repeat(32)}`);
       const key = Buffer.alloc(32, 1);
-      const config = { reputationRelayerPrivateKey: `0x${"11".repeat(32)}`,
+      const config = { signers: localGatewaySigners(`0x${"11".repeat(32)}`),
         evidenceRpcUrls: ["https://rpc.example.test"], encryptionKey: key,
         easAddress: "0x4200000000000000000000000000000000000021",
         reputationConfirmationGasLimit: 500000n } as unknown as StandardRailConfig;

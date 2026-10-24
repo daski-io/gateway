@@ -1,7 +1,6 @@
 import { createStandardOperatorRouter, StandardRailOperator } from "../standardRail/operator.js";
 import express, { type Express } from "express";
 import { base, baseSepolia } from "viem/chains";
-import { privateKeyToAccount } from "viem/accounts";
 import type { Config } from "../config.js";
 import type { Pool } from "../db/pool.js";
 import type { McpWiring } from "../mcp/httpTransport.js";
@@ -100,7 +99,7 @@ export async function createStandardGatewayHttp(
   const nonceLock = new PostgresFacilitatorNonceLock(
     lockPool,
     chain.id,
-    privateKeyToAccount(options.standardRailConfig.releasePrivateKey).address,
+    options.standardRailConfig.signers.sender.address,
   );
   const evidence = new StandardChainEvidence(
     options.standardRailConfig,

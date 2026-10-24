@@ -1,8 +1,7 @@
 import type { Pool } from "../db/pool.js";
 import type { PoolClient } from "pg";
-import type { Hex } from "../types.js";
 import { canonicalHash } from "./canonical.js";
-import { signEnvelope } from "./signing.js";
+import { signEnvelope, type MessageSigner } from "./signing.js";
 
 export type RetirementScope = {
   kind: "listing"; providerAgentId: string; serviceId: string; listingManifestHash: string;
@@ -36,7 +35,7 @@ interface ReceiptRow { receipt_payload: RetirementPayload; provider_audience: st
 
 export class ReleaseRetirements {
   constructor(private readonly pool: Pool, private readonly signing: {
-    environment: string; chainId: number; privateKey: Hex;
+    environment: string; chainId: number; account: MessageSigner;
     providerAudience: (providerAgentId: string) => string;
   }) {}
 
@@ -75,7 +74,7 @@ export class ReleaseRetirements {
       requestId: row.receipt_payload.requestId, retiredAt: row.receipt_payload.retiredAt,
       receipt: await signEnvelope({ artifactType: "GatewayContractRetirementV1", schemaVersion: 1,
         environment: this.signing.environment, chainId: this.signing.chainId, audience: row.provider_audience,
-        signerKeyId: "gateway-dispatch", privateKey: this.signing.privateKey, issuedAt: now, validBefore: now + 86400,
+        signerKeyId: "gateway-dispatch", account: this.signing.account, issuedAt: now, validBefore: now + 86400,
         payload: row.receipt_payload }) };
   }
 

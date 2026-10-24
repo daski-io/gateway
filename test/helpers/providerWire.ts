@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { localGatewaySigners } from "../../src/standardRail/signer.js";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { gzipSync } from "node:zlib";
@@ -401,10 +402,12 @@ async function settle<T>(work: Promise<T>): Promise<Outcome<T>> {
 function railConfig() {
   return {
     environment: ENVIRONMENT, gatewayAudience: GATEWAY_URL, encryptionKey: Buffer.alloc(32, 0x5f),
-    dispatchPrivateKey: PRIVATE_KEYS.gatewayDispatch, quotePrivateKey: PRIVATE_KEYS.gatewayQuote,
-    lifecyclePrivateKey: PRIVATE_KEYS.gatewayLifecycle, receiptPrivateKey: GATEWAY_INTERNAL_KEYS.receipt,
-    releasePrivateKey: GATEWAY_INTERNAL_KEYS.release, reputationOrderPrivateKey: GATEWAY_INTERNAL_KEYS.reputationOrder,
-    reputationRelayerPrivateKey: GATEWAY_INTERNAL_KEYS.reputationRelayer,
+    // The synthetic contract keeps one key per envelope key ID.
+    signers: localGatewaySigners(GATEWAY_INTERNAL_KEYS.reputationOrder, GATEWAY_INTERNAL_KEYS.release, { artifactKeys: {
+      "gateway-dispatch": PRIVATE_KEYS.gatewayDispatch, "gateway-quote": PRIVATE_KEYS.gatewayQuote,
+      "gateway-lifecycle": PRIVATE_KEYS.gatewayLifecycle, "gateway-receipt": GATEWAY_INTERNAL_KEYS.receipt,
+    } }),
+    trustedSigners: new Map(),
     dispatchTimeoutMs: 10_000, challengeTtlSeconds: 300, orderReadCapTtlSeconds: 1_800,
     reputationContract: REPUTATION_CONTRACT, reputationOutcomeSchemaUid: OUTCOME_SCHEMA_UID,
     abuse: { walletChallengesOutstandingGlobal: 1_000, assetStateChangesPerPayerPerMinute: 10 },
@@ -432,7 +435,7 @@ function gatewayService(fields: Record<string, unknown>): Harness {
   return Object.assign(Object.create(StandardRailService.prototype) as Harness, {
     appConfig: APP_CONFIG, railConfig: railConfig(), purchaseResponses: new StandardPurchaseResponses(),
     releaseSales: { assertOpen: async () => undefined, isParked: async () => false, parkedStatus: async () => null },
-    salesOutage: { assertOpen: async () => undefined, status: async () => ({ salesOpen: true }) },
+    salesOutage: { assertOpen: async () => undefined, status: async () => ({ salesOpen: true }) }, signerHealth: () => true,
     assertAdmissionOpen: () => undefined, assertRailFence: async () => undefined,
     catalog: catalogHarness(), incidents: { record: async () => undefined },
     ...fields,
@@ -488,7 +491,7 @@ export async function driveIntake(args: {
   let request: WireRequest | null = null;
   const outcome = await settle(getIntakeRequirements({
     listing: args.listing, request: args.request, environment: ENVIRONMENT, chainId: CHAIN_ID,
-    privateKey: PRIVATE_KEYS.gatewayDispatch, timeoutMs: 10_000,
+    account: privateKeyToAccount(PRIVATE_KEYS.gatewayDispatch), timeoutMs: 10_000,
     fetchProvider: async (url, init) => {
       request = wireRequest(url, init);
       return args.respond(request);

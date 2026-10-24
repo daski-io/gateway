@@ -14,7 +14,6 @@ import {
   type TransactionReceipt,
   type PublicClient,
 } from "viem";
-import { privateKeyToAccount } from "viem/accounts";
 import type { PoolClient } from "pg";
 import type { Pool } from "../db/pool.js";
 import { logger } from "../util/logger.js";
@@ -26,6 +25,7 @@ import {
 import type { StandardRailConfig } from "./config.js";
 import { withRpcFailover } from "../rpc/failover.js";
 import { classifyBroadcastFailure } from "../rpc/classification.js";
+import { SignerRefused, SignerUnavailable } from "./signer.js";
 import { rpcReadTransport } from "../rpc/readTransport.js";
 import { finalizeReputationOperation, reviewReceiptUid, type ReviewAttestationEvidence } from "./reputationFinalization.js";
 import {
@@ -115,12 +115,12 @@ export class StandardReputationWorker {
       new PostgresFacilitatorNonceLock(
         pool,
         chain.id,
-        privateKeyToAccount(config.reputationRelayerPrivateKey).address,
+        config.signers.sender.address,
       ),
     private readonly onRecordFinalized: () => void = () => undefined,
     private readonly confirmationState: ConfirmationStateReconciler | null = null,
   ) {
-    this.account = privateKeyToAccount(config.reputationRelayerPrivateKey);
+    this.account = config.signers.sender.account;
     this.broadcastClient = createPublicClient({
       chain,
       transport: http(config.evidenceRpcUrls[0], { retryCount: 0, timeout: 20_000 }),
@@ -213,9 +213,12 @@ export class StandardReputationWorker {
       try {
         await this.process(operation);
       } catch (error) {
-        if (!(error instanceof AmbiguousReputationWrite)) {
-          await this.fail(operation, error instanceof ReputationRpcUnavailable
-            ? "rpc_finality" : "application_fault");
+        // A signer outage spends none of the five attempts (about nine hours);
+        // nothing was persisted, so the operation simply waits for it.
+        if (error instanceof SignerUnavailable) await this.deferForSigner(operation.operation_id);
+        else if (!(error instanceof AmbiguousReputationWrite)) {
+          await this.fail(operation, error instanceof ReputationRpcUnavailable ? "rpc_finality"
+            : error instanceof SignerRefused ? "signer_refused" : "application_fault");
         }
       }
     }
@@ -815,6 +818,15 @@ export class StandardReputationWorker {
             SET next_attempt_at=now()+interval '2 minutes',updated_at=now()
           WHERE operation_id=$1 AND state='final'`,
       [operationId]);
+  }
+
+  private async deferForSigner(operationId: string): Promise<void> {
+    await this.pool.query(
+      `UPDATE standard_reputation_operations
+          SET next_attempt_at=now()+interval '30 seconds',updated_at=now()
+        WHERE operation_id=$1 AND state IN ('pending','broadcast')`,
+      [operationId],
+    );
   }
 
   private async defer(operationId: string): Promise<void> {

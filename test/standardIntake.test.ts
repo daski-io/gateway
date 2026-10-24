@@ -16,7 +16,7 @@ const listing = { runtimeCommitmentHash: canonicalHash(schema), requestSchema: s
 
 function discover(overrides: Record<string, unknown> = {}, signer = provider) {
   return getIntakeRequirements({ listing, request: { state: "WY" }, environment: "testnet", chainId: 84532,
-    privateKey: key, timeoutMs: 5000, fetchProvider: async (url, init) => {
+    account: privateKeyToAccount(key), timeoutMs: 5000, fetchProvider: async (url, init) => {
       expect(url).toBe("https://provider.example/quote");
       const request = JSON.parse(String(init.body)).request;
       expect(request.artifactType).toBe("ProviderIntakeRequestV1");
@@ -60,7 +60,7 @@ describe("signed provider intake discovery", () => {
       .rejects.toMatchObject({ code: "PROVIDER_INTAKE_UNAVAILABLE" });
     let fetched = false;
     await expect(getIntakeRequirements({ listing, request: { ["x".repeat(129)]: "invalid buyer key" },
-      environment: "testnet", chainId: 84532, privateKey: key, timeoutMs: 5000,
+      environment: "testnet", chainId: 84532, account: privateKeyToAccount(key), timeoutMs: 5000,
       fetchProvider: async () => { fetched = true; return Response.json({}); },
     })).rejects.toMatchObject({ code: "REQUEST_SCHEMA_INVALID" });
     expect(fetched).toBe(false);

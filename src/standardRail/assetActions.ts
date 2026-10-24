@@ -309,7 +309,7 @@ export class StandardAssetActions {
       chainId: this.chainId,
       audience: profile.providerAudience,
       signerKeyId: "gateway-lifecycle",
-      privateKey: this.config.lifecyclePrivateKey,
+      account: this.config.signers.artifact("gateway-lifecycle").account,
       issuedAt: now,
       validBefore: Math.min(now + 300, admission.validBefore),
       payload: {

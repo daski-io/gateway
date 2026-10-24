@@ -42,9 +42,11 @@ describe("standard rail environment contract", () => {
   it("reuses the existing gateway signer, RPC, and EAS variables", () => {
     const config = loadStandardRailConfig(standardEnv());
 
-    expect(config.quotePrivateKey).toBe(protocolKey);
-    expect(config.receiptPrivateKey).toBe(protocolKey);
-    expect(config.reputationRelayerPrivateKey).toBe(protocolKey);
+    const protocolAddress = privateKeyToAccount(protocolKey as `0x${string}`).address;
+    expect(config.signers.backend).toBe("local");
+    expect(config.signers.identity.address).toBe(protocolAddress);
+    expect(config.signers.sender.address).toBe(protocolAddress);
+    expect(config.signers.prerequisites).toEqual(["FACILITATOR_PRIVATE_KEY"]);
     expect(config.evidenceRpcUrls).toEqual([
       "https://primary-rpc.example.test",
       "https://fallback-rpc.example.test",
