@@ -168,6 +168,10 @@ steady-state prompt is `Use Daski to [your task]`.
   additive `recovery` (see [recovered orders](#recovered-orders)).
 - `/mcp` redirects to the website's MCP server.
 - `/health/live` and `/health/ready` report process and dependency readiness.
+- `GET /public/v1/status` answers `{"salesOpen":true}`, or `salesOpen: false`
+  with the operator's `reason`, `since` and `until` during a
+  [sales outage](docs/release-controls.md#sales-outage), when new quotes,
+  purchases and settlements answer 503 `SALES_PAUSED` with `Retry-After`.
 
 The website MCP surface also exposes read-only provider discovery, identity resolution,
 and service lookup tools. Identity and catalog registration remain independent
@@ -274,7 +278,8 @@ Release capability and commerce readiness use
 and local prerequisite names. `STANDARD_RAIL_ASSET_ACTION_TARGET_EPOCHS_JSON`
 is parsed for compatibility; the durable authenticated target controls activation.
 See [runtime release controls](docs/release-controls.md) for the schemas,
-scoped stop-sale, registration fences and compatibility evidence.
+scoped stop-sale, the environment-wide sales outage, registration fences and
+compatibility evidence.
 
 
 - `CONFIRMATION_CIRCLE_EXECUTION_QUALIFIED` defaults to `false`; set `true` only after the Circle direct-review execution and read-only resume qualification has passed for the target.

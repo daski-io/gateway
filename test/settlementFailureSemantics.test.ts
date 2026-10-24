@@ -16,7 +16,8 @@ interface ServiceHarness {
 
 function harness(fields: Record<string, unknown>): ServiceHarness {
   const service = Object.create(StandardRailService.prototype) as unknown as ServiceHarness;
-  Object.assign(service, { releaseSales: { assertOpen: async () => undefined, isParked: async () => false, parkedStatus: async () => null } }, fields);
+  Object.assign(service, { releaseSales: { assertOpen: async () => undefined, isParked: async () => false, parkedStatus: async () => null },
+    salesOutage: { assertOpen: async () => undefined, status: async () => ({ salesOpen: true }) } }, fields);
   return service;
 }
 
@@ -216,5 +217,62 @@ describe("recovery of a deposit proven on chain without a facilitator settle rec
       "DEPOSIT_FINAL:proven_deposit_accepted_as_settlement",
     ]);
     expect(transitions[0]!.changes).toEqual({ settlementTxHash: hash("7"), depositEvidenceHash: hash("8") });
+  });
+});
+
+describe("settlement during a sales outage", () => {
+  const until = new Date(Date.now() + 600_000).toISOString();
+  const paused = () => ({
+    assertOpen: vi.fn(async (phase: string, options: { captured?: boolean } = {}) => {
+      const { salesPausedError } = await import("../src/standardRail/errors.js");
+      throw salesPausedError({ reason: "Provider identity switch", until, retryAfterSeconds: 600, phase: phase as never,
+        captured: options.captured });
+    }),
+    status: vi.fn(async () => ({ salesOpen: false, reason: "Provider identity switch", since: until, until })),
+  });
+
+  it("refuses to submit a claimed authorization on the request path and never asks for a new signature", async () => {
+    const { service, journal, transitions } = settlementHarness({ salesOutage: paused() });
+    await expect(service.settleClaimedOrder(settleArgs())).rejects.toMatchObject({
+      code: "SALES_PAUSED", status: 503, phase: "facilitator_settle", retryable: true,
+      requiresNewSignature: false, paymentMayHaveSettled: false, until, reason: "Provider identity switch",
+      retryAfterSeconds: 600,
+    });
+    expect(transitions).toEqual([{ to: "VERIFIED", reason: "facilitator_verified" }]);
+    expect(journal.markSettleInvoked).not.toHaveBeenCalled();
+  });
+
+  it("answers the database's refusal of a racing outage the same way", async () => {
+    const refusal = Object.assign(new Error("SALE_SUSPENDED"), {
+      code: "P0001", detail: "SALES_PAUSED", hint: JSON.stringify({ reason: "Maintenance", since: until, until }),
+    });
+    const { service, journal } = settlementHarness({});
+    journal.markSettleInvoked.mockRejectedValueOnce(refusal);
+    const error = await service.settleClaimedOrder(settleArgs()).then(() => null, (caught: unknown) => caught);
+    expect(error).toMatchObject({ code: "SALES_PAUSED", phase: "facilitator_settle", requiresNewSignature: false,
+      until, reason: "Maintenance" });
+    expect((error as { nextAction: string }).nextAction).toMatch(/^Do not sign again/);
+  });
+
+  it("keeps a scoped stop's answer: the VERIFIED order, nothing submitted", async () => {
+    const { service, journal } = settlementHarness({});
+    journal.markSettleInvoked.mockRejectedValueOnce(Object.assign(new Error("SALE_SUSPENDED"), { code: "P0001" }));
+    await expect(service.settleClaimedOrder(settleArgs())).resolves.toMatchObject({ state: "VERIFIED" });
+  });
+
+  it("leaves a claimed authorization unsubmitted in recovery while sales are paused", async () => {
+    const order = { ...claimedOrder("VERIFIED"), encryptedPaymentPayload: Buffer.from("x"), paymentPayloadHash: hash("a") };
+    const verify = vi.fn();
+    const markSettleInvoked = vi.fn();
+    const service = harness({
+      salesOutage: paused(),
+      storedPayment: vi.fn(() => ({})),
+      paymentAuthorizationValidBefore: vi.fn(() => Math.floor(Date.now() / 1_000) + 600),
+      facilitator: { verify },
+      journal: { markSettleInvoked },
+    }) as unknown as { resumePreSettlement(order: StandardOrderRecord, listing: StandardListing): Promise<StandardOrderRecord> };
+    await expect(service.resumePreSettlement(order, listing)).resolves.toBe(order);
+    expect(verify).not.toHaveBeenCalled();
+    expect(markSettleInvoked).not.toHaveBeenCalled();
   });
 });

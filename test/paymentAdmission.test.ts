@@ -156,6 +156,31 @@ describe("purchase HTTP answers to a claim that did not commit", () => {
     expect(h.facilitator.settle).toHaveBeenCalledOnce();
   });
 
+  it.each(["json", "header"] as const)("on the %s endpoint: a claim the database refused for an outage is SALES_PAUSED with its Retry-After", async (format) => {
+    vi.spyOn(logger, "error").mockImplementation(() => undefined);
+    const h = purchaseHarness();
+    const until = new Date(Date.now() + 120_000).toISOString();
+    h.store.claimAuthorization.mockImplementationOnce(async () => {
+      throw Object.assign(new Error("SALE_SUSPENDED"), { code: "P0001", detail: "SALES_PAUSED",
+        hint: JSON.stringify({ reason: "Provider identity switch", since: until, until }) });
+    });
+    const http = await serve(h);
+    try {
+      const refused = await submit(http.url, format, h);
+      expect(refused.status).toBe(503);
+      const retryAfter = Number(refused.headers.get("retry-after"));
+      expect(retryAfter).toBeGreaterThan(100);
+      expect(retryAfter).toBeLessThanOrEqual(120);
+      const body = await refused.json() as { error: Record<string, unknown> };
+      expect(body.error).toMatchObject({
+        code: "SALES_PAUSED", phase: "payment_validation", retryable: true, requiresNewSignature: false,
+        paymentMayHaveSettled: false, until, reason: "Provider identity switch",
+      });
+      expect(h.current().state).toBe("CHALLENGE_ISSUED");
+      expect(h.facilitator.verify).not.toHaveBeenCalled();
+    } finally { await http.close(); }
+  });
+
   it("answers a capacity refusal 409 without Retry-After or a 500", async () => {
     vi.spyOn(logger, "warn").mockImplementation(() => undefined);
     const h = purchaseHarness();

@@ -112,6 +112,68 @@ expiry with an unused nonce at a finalized block is required before terminal
 unpaid state; a used nonce alone does not prove payment or cancellation.
 An externally relayed matching payment follows the original bound recovery path.
 
+## Sales outage
+
+One switch per environment stops every new sale at the gateway for a short,
+bounded time, for planned changes such as a provider identity switch. The
+gateway's database serves one environment, so `standard_sales_outage` holds one
+preseeded row (`active`, `reason`, `since`, `until`, `set_by`, `revision`);
+`standard_sales_outage_audit` records every start, extension and end.
+
+Operator endpoints take the catalog operator bearer token and answer
+`Cache-Control: no-store`:
+
+- `POST /internal/release/v1/sales-outage` with `{"minutes":10,"reason":"...","setBy":"..."}`
+  starts an outage. `minutes` is an integer from 1 to 60 and defaults to 10;
+  `reason` (1 to 200 printable characters) is required and shown publicly;
+  `setBy` is optional (default `catalog-operator`). Starting while an outage is
+  active extends its end to now plus `minutes` when that is later; it never
+  shortens it and keeps `since`. Anything else answers 400
+  `INVALID_SALES_OUTAGE_REQUEST`.
+- `DELETE /internal/release/v1/sales-outage` (optional `{"setBy":"..."}`) ends an
+  active outage now. Ending an inactive or expired one changes nothing.
+- `GET /internal/release/v1/sales-outage` reads it.
+
+Each answers the public status below plus `setBy` while active and the row's
+`revision`. Every change is logged (`sales outage started`, `extended`,
+`ended`) and audited.
+
+`GET /public/v1/status` is unauthenticated and answers `{"salesOpen":true}` or
+`{"salesOpen":false,"reason":"...","since":"<ISO 8601>","until":"<ISO 8601>"}`
+with `Cache-Control: max-age=5`. Like liveness it is not charged to a rate-limit
+bucket: each replica serves every caller from one database read a second. The
+website and its MCP read it. `/health/ready` reports the same object as
+`sales` (with `setBy` and `revision` for the operator token); an outage never
+makes readiness fail.
+
+An outage ends by itself when `until` passes: nothing runs at expiry and every
+reader compares `until` with the database clock. While it is active the
+gateway answers HTTP 503 `SALES_PAUSED` with `Retry-After` (seconds until
+`until`, at most 3,600), and the error carries `until` and `reason`, for:
+
+- new quotes and payment challenges;
+- purchases: a signed submission that has not yet claimed its authorization;
+- settlement of an authorization that was claimed but not yet submitted, on
+  the request path (the error says not to sign again: the claimed
+  authorization is submitted after the outage while it is valid) and in
+  recovery, which leaves it as it is.
+
+The database enforces it too: `standard_assert_sale_open()`, which every
+admission and settlement-invocation trigger calls, locks the outage row and
+raises `SALE_SUSPENDED` with detail `SALES_PAUSED`. An overlapping prior
+runtime therefore refuses a claim (its existing `SALE_SUSPENDED` answer) and
+leaves a settlement unsubmitted during a deploy. The row lock orders a start
+with admissions: a start waits for an admission that locked first, an
+admission that waited behind a start reads it, and a REPEATABLE READ or
+SERIALIZABLE snapshot older than the start fails and retries. Migration 062
+grants the incumbent runtime role the read it needs before the candidate
+configures runtime privileges.
+
+Work already paid continues: deposit and release proofs, reputation permits
+and registration, dispatch, lifecycle, receipts, order actions and reviews are
+not gated, so no paid order reaches `LEGAL_HOLD` or a deadline because of an
+outage. Replays of an already claimed submission still answer its order.
+
 ## Compatibility evidence
 
 The PostgreSQL tests exercise incumbent restricted-role writes before candidate

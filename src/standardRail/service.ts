@@ -2,6 +2,7 @@ import { orderedRpcTransport } from "../rpc/orderedTransport.js";
 import { embeddedReleaseCapabilities } from "./releaseCapabilities.js";
 import { assertWorkerCompatibility } from "./workerCompatibility.js";
 import { ReleaseSales } from "./releaseSales.js";
+import { SalesOutage } from "./salesOutage.js";
 import { ReleaseRetirements } from "./releaseRetirements.js";
 import { compactBazaarExtension, discoveryOpenApi, facilitatorDiscoveryPayment } from "./discovery.js";
 import { GATEWAY_VERSION } from "../version.js";
@@ -23,7 +24,12 @@ import {
 import type { Config } from "../config.js";
 import type { Pool } from "../db/pool.js";
 import { canonicalHash } from "./canonical.js";
-import { asStandardRailError, standardRailError } from "./errors.js";
+import {
+  asStandardRailError,
+  isSalesOutageRefusal,
+  salesPausedFromDatabase,
+  standardRailError,
+} from "./errors.js";
 import { paymentAdmissionFailure, type ClaimedOrderReading } from "./paymentAdmission.js";
 import { retryTransientRead } from "../db/transientRead.js";
 import { TransactionOutcomeUnknownError } from "../db/transientTransaction.js";
@@ -228,6 +234,7 @@ export class StandardRailService {
   readonly railProfileHash: Hex;
   readonly releaseSales: ReleaseSales;
   readonly releaseRetirements: ReleaseRetirements;
+  readonly salesOutage: SalesOutage;
 
   constructor(
     private readonly appConfig: Config,
@@ -243,6 +250,7 @@ export class StandardRailService {
   ) {
     this.store = new StandardRailStore(pool, lockPool);
     this.releaseSales = new ReleaseSales(pool);
+    this.salesOutage = new SalesOutage(pool, railConfig.environment);
     this.releaseRetirements = new ReleaseRetirements(pool, {
       environment: railConfig.environment, chainId: appConfig.chainId, privateKey: railConfig.dispatchPrivateKey,
       providerAudience: providerAgentId => {
@@ -699,6 +707,9 @@ export class StandardRailService {
     if (this.paymentAuthorizationValidBefore(order) <= Math.floor(Date.now() / 1_000) + 10) {
       return order;
     }
+    // A sales outage submits nothing new. The authorization stays as it is and
+    // settles once sales reopen, while it is still valid.
+    if (!(await this.salesOutage.status()).salesOpen) return order;
     const requirements = paymentRequirements(
       this.appConfig,
       listing,
@@ -1790,6 +1801,7 @@ export class StandardRailService {
     payerAddress?: Hex;
   }): Promise<{ handle: string; order: StandardOrderRecord; paymentRequired: PaymentRequired }> {
     this.assertAdmissionOpen();
+    await this.salesOutage.assertOpen("challenge");
     await this.assertRailFence();
     const listing = await this.listing(args.providerAgentId, args.outcomeId);
     await this.releaseSales.assertOpen(args.providerAgentId, listing.runtimeCommitmentHash);
@@ -2038,6 +2050,7 @@ export class StandardRailService {
       }
       return { ...intended, replay: true };
     }
+    await this.salesOutage.assertOpen("payment_validation");
     await this.releaseSales.assertOpen(args.providerAgentId, intended.order.listingManifestHash);
     if (intended.order.expiresAt.getTime() <= Date.now()) {
       throw standardRailError("CHALLENGE_EXPIRED", {
@@ -2304,9 +2317,15 @@ export class StandardRailService {
       );
       return order;
     }
+    // An outage that started after this claim stops the submission; the
+    // database refuses the invocation too if it starts in between.
+    await this.salesOutage.assertOpen("facilitator_settle", { captured: true });
     let mayInvokeFacilitator: boolean;
     try { mayInvokeFacilitator = await this.journal.markSettleInvoked(order.orderId); }
     catch (error) {
+      if (isSalesOutageRefusal(error)) {
+        throw salesPausedFromDatabase(error, { phase: "facilitator_settle", captured: true });
+      }
       if (error instanceof Error && ["SALE_SUSPENDED", "AUTHORIZATION_PARKED"].includes(error.message)) return order;
       throw error;
     }
