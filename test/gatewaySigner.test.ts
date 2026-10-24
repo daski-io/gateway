@@ -10,6 +10,7 @@ import {
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { canonicalHash } from "../src/standardRail/canonical.js";
+import { commercePrerequisites } from "../src/standardRail/service.js";
 import { signEnvelope } from "../src/standardRail/signing.js";
 import {
   loadGatewaySigners,
@@ -57,7 +58,8 @@ describe("local signers", () => {
     const signers = loadGatewaySigners({ FACILITATOR_PRIVATE_KEY: identityKey, GATEWAY_SENDER_PRIVATE_KEY: senderKey,
       PRIVY_IDENTITY_ADDRESS: identity.address, PRIVY_SENDER_ADDRESS: sender.address });
     expect(signers.sender.address).toBe(sender.address);
-    expect(signers.prerequisites).toEqual(["FACILITATOR_PRIVATE_KEY", "GATEWAY_SENDER_PRIVATE_KEY"]);
+    // Local mode reports what it always has, whatever optional keys are set.
+    expect(signers.prerequisites).toEqual(["FACILITATOR_PRIVATE_KEY"]);
     expect(() => loadGatewaySigners({ FACILITATOR_PRIVATE_KEY: identityKey, PRIVY_IDENTITY_ADDRESS: sender.address }))
       .toThrow("PRIVY_IDENTITY_ADDRESS does not match the identity key");
     expect(() => loadGatewaySigners({})).toThrow("FACILITATOR_PRIVATE_KEY must be a non-zero 32-byte private key");
@@ -513,5 +515,50 @@ describe("unusable signer answers", () => {
     malformed = false;
     await probeSigners(signers, 84532);
     expect(signers.sender.healthy()).toBe(true);
+  });
+});
+
+describe("release prerequisites across the switch", () => {
+  const today = ["FACILITATOR_PRIVATE_KEY", "STANDARD_RAIL_ENCRYPTION_KEY", "CDP_API_KEY_ID", "CDP_API_KEY_SECRET",
+    "STANDARD_RAIL_MANIFEST_JSON", "BASE_RPC_URL"];
+
+  it("keeps local mode's report exactly as before, optional sender key and staged Privy names included", () => {
+    expect(commercePrerequisites(loadGatewaySigners({ FACILITATOR_PRIVATE_KEY: identityKey }))).toEqual(today);
+    expect(commercePrerequisites(loadGatewaySigners({ FACILITATOR_PRIVATE_KEY: identityKey,
+      GATEWAY_SENDER_PRIVATE_KEY: senderKey }))).toEqual(today);
+    // A partial staging without SIGNER_BACKEND=privy stays local and lists no Privy name.
+    expect(commercePrerequisites(loadGatewaySigners({ FACILITATOR_PRIVATE_KEY: identityKey, PRIVY_APP_ID: "app-test",
+      PRIVY_IDENTITY_WALLET_ID: "wallet-identity" }))).toEqual(today);
+  });
+
+  it("boots Privy mode with FACILITATOR_PRIVATE_KEY still set and never signs with it", async () => {
+    const leftover = `0x${"99".repeat(32)}` as Hex;
+    const api = privyApi();
+    const signers = loadGatewaySigners(privyEnv({ FACILITATOR_PRIVATE_KEY: leftover, PRIVY_SENDER_WALLET_ID: "",
+      PRIVY_SENDER_ADDRESS: "", PRIVY_SENDER_AUTHORIZATION_PRIVATE_KEY: "" }), { fetch: api.fetch });
+    expect(signers.backend).toBe("privy");
+    expect(signers.identity.address).toBe(identity.address);
+    expect(signers.sender.address).toBe(identity.address);
+    const raw = `0x${"07".repeat(32)}` as Hex;
+    const signature = await signers.identity.account.signMessage({ message: { raw } });
+    expect(await recoverMessageAddress({ message: { raw }, signature })).toBe(identity.address);
+    expect(await recoverMessageAddress({ message: { raw }, signature })).not.toBe(privateKeyToAccount(leftover).address);
+    expect(api.calls.filter((call) => call.body?.method === "personal_sign")).toHaveLength(1);
+    expect(commercePrerequisites(signers)).toEqual(["PRIVY_APP_ID", "PRIVY_APP_SECRET", "PRIVY_IDENTITY_WALLET_ID",
+      "PRIVY_IDENTITY_ADDRESS", "PRIVY_IDENTITY_AUTHORIZATION_PRIVATE_KEY", ...today.slice(1)]);
+  });
+
+  it("does not start Privy mode, so reports nothing, while a required Privy name is missing", () => {
+    const { fetch } = privyApi();
+    for (const [name, refusal] of [
+      ["PRIVY_APP_ID", "PRIVY_APP_ID is required"],
+      ["PRIVY_APP_SECRET", "PRIVY_APP_SECRET is required"],
+      ["PRIVY_IDENTITY_WALLET_ID", "must all be set for SIGNER_BACKEND=privy"],
+      ["PRIVY_IDENTITY_ADDRESS", "must all be set for SIGNER_BACKEND=privy"],
+      ["PRIVY_IDENTITY_AUTHORIZATION_PRIVATE_KEY", "must all be set for SIGNER_BACKEND=privy"],
+    ] as const) {
+      expect(() => loadGatewaySigners(privyEnv({ [name]: "", FACILITATOR_PRIVATE_KEY: identityKey }), { fetch }))
+        .toThrow(refusal);
+    }
   });
 });

@@ -289,7 +289,8 @@ core groups are:
 
 - Runtime and database: `NODE_ENV`, `CHAIN_ID`, `CHAIN_FINALITY_TAG` (the block
   tag read as final: `safe` on Base Sepolia and `finalized` on Base mainnet by
-  default), `PUBLIC_URL`, `DATABASE_URL`, `MIGRATION_DATABASE_URL`, and
+  default; production sets `safe` since the owner decision of 2026-10-24),
+  `PUBLIC_URL`, `DATABASE_URL`, `MIGRATION_DATABASE_URL`, and
   `EDGE_SECRET`. `DOCS_URL` is the public website origin used for guide and
   MCP links, defaulting to `https://sandbox.daski.io` on Base Sepolia and
   `https://daski.io` on Base mainnet. Override it for local or preview sites;
@@ -366,8 +367,12 @@ core groups are:
   (503 `SIGNER_UNAVAILABLE`, `Retry-After: 30`; a claimed authorization
   waits and may still settle); paid orders continue, and the relayer defers
   without spending its retry attempts. The release prerequisites the gateway
-  reports name the active backend's variables, so the engine's
-  `DASKI_COMMERCE_BASELINE_JSON` changes with a switch to Privy.
+  reports name the active backend's variables: local mode always reports
+  `FACILITATOR_PRIVATE_KEY` (never the optional sender key); Privy mode,
+  which starts only with every required name set, reports the `PRIVY_*`
+  names. Privy mode ignores `FACILITATOR_PRIVATE_KEY`: it boots with the
+  variable still set and never signs with it. The engine's
+  `DASKI_COMMERCE_BASELINE_JSON` follows the serving fleet's report.
 - Manifest trust: `STANDARD_RAIL_TRUSTED_SIGNERS_JSON` maps each manifest
   `signerKeyId` to one address or a list of up to eight. Unset, it trusts the
   signing key's own address under `gateway-protocol`; set, it replaces that
