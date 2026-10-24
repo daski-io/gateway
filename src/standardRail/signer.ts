@@ -262,7 +262,12 @@ export interface GatewaySigners {
   readonly backend: SignerBackend;
   readonly identity: GatewaySigner;
   readonly sender: GatewaySigner;
-  /** Environment variable names the active backend needs: release prerequisites. */
+  /**
+   * Environment variable names the active backend needs: release
+   * prerequisites. Local mode: FACILITATOR_PRIVATE_KEY, as always. Privy mode,
+   * which only starts with every required name set: the PRIVY_* names (it
+   * ignores FACILITATOR_PRIVATE_KEY, which may still be set from before).
+   */
   readonly prerequisites: readonly string[];
   /**
    * The signer for an artifact key ID: always the identity role at runtime.
@@ -341,7 +346,6 @@ function local(role: SignerRole, key: Hex): GatewaySigner {
 
 /** Local signers from raw keys: today's behavior, and every test's. */
 export function localGatewaySigners(identityKey: Hex, senderKey: Hex = identityKey, options: {
-  prerequisites?: readonly string[];
   artifactKeys?: Partial<Record<GatewayArtifactKeyId, Hex>>;
 } = {}): GatewaySigners {
   const identity = local("identity", identityKey);
@@ -351,7 +355,7 @@ export function localGatewaySigners(identityKey: Hex, senderKey: Hex = identityK
     backend: "local",
     identity,
     sender: local("sender", senderKey),
-    prerequisites: options.prerequisites ?? ["FACILITATOR_PRIVATE_KEY"],
+    prerequisites: ["FACILITATOR_PRIVATE_KEY"],
     artifact: (keyId) => artifacts.get(keyId) ?? identity,
   };
 }
@@ -418,8 +422,10 @@ export function loadGatewaySigners(
     const identityKey = privateKey(env.FACILITATOR_PRIVATE_KEY, "FACILITATOR_PRIVATE_KEY");
     const senderRaw = env.GATEWAY_SENDER_PRIVATE_KEY?.trim();
     const senderKey = senderRaw ? privateKey(senderRaw, "GATEWAY_SENDER_PRIVATE_KEY") : identityKey;
-    const signers = localGatewaySigners(identityKey, senderKey,
-      { prerequisites: ["FACILITATOR_PRIVATE_KEY", ...(senderRaw ? ["GATEWAY_SENDER_PRIVATE_KEY"] : [])] });
+    // Local mode reports exactly the prerequisite it always has: the release
+    // engine records what the serving fleet reports into the commerce
+    // baseline, so an optional sender key must not become a requirement.
+    const signers = localGatewaySigners(identityKey, senderKey);
     for (const signer of [signers.identity, signers.sender]) {
       const name = `PRIVY_${signer.role.toUpperCase()}_ADDRESS`;
       const expected = configuredAddress(env, name, false);

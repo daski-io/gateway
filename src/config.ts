@@ -97,8 +97,9 @@ function chainId(raw: string | undefined): ChainId {
   return value;
 }
 
-// Testnet deploys do not wait on L1-derived finality; mainnet always does.
-// CHAIN_FINALITY_TAG exists as an explicit override for either direction.
+// Testnet defaults to `safe` and Base mainnet to `finalized`; production sets
+// CHAIN_FINALITY_TAG=safe since the owner decision of 2026-10-24.
+// CHAIN_FINALITY_TAG overrides the default in either direction.
 function finalityTag(
   raw: string | undefined,
   configuredChainId: ChainId,

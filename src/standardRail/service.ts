@@ -11,6 +11,7 @@ import {
   signerStatuses,
   signersHealthy,
   verifySigners,
+  type GatewaySigners,
   type SignerStatus,
 } from "./signer.js";
 import { ReleaseRetirements } from "./releaseRetirements.js";
@@ -122,6 +123,12 @@ import { StandardPurchaseResponses } from "./purchaseResponse.js";
 
 // How long a challenge's optional balance read waits for an RPC slot.
 const PREFLIGHT_BALANCE_WAIT_MS = 5_000;
+
+/** The environment names every offered listing needs, as release capabilities report them. */
+export function commercePrerequisites(signers: Pick<GatewaySigners, "prerequisites">): string[] {
+  return [...signers.prerequisites, "STANDARD_RAIL_ENCRYPTION_KEY", "CDP_API_KEY_ID",
+    "CDP_API_KEY_SECRET", "STANDARD_RAIL_MANIFEST_JSON", "BASE_RPC_URL"];
+}
 
 /** A fixed-price readiness quote may last at most the sealed draft window; the
  *  challenge is still clamped to the listing's own draft window. */
@@ -490,8 +497,7 @@ export class StandardRailService {
 
   private async readReleaseCapabilities() {
     const executableListings = (await this.validateLocalCommerce()).map(item => ({ ...item,
-      localPrerequisites: [...this.railConfig.signers.prerequisites,"STANDARD_RAIL_ENCRYPTION_KEY","CDP_API_KEY_ID",
-        "CDP_API_KEY_SECRET","STANDARD_RAIL_MANIFEST_JSON","BASE_RPC_URL"],
+      localPrerequisites: commercePrerequisites(this.railConfig.signers),
     }));
     const { artifact, artifactManifestHash } = embeddedReleaseCapabilities();
     const current = await this.pool.query<{ admission_hash: Buffer }>(
