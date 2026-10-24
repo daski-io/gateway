@@ -1,7 +1,10 @@
 import { createPrivateKey, createPublicKey } from "node:crypto";
 import {
   getAddress,
+  keccak256,
   parseTransaction,
+  stringToBytes,
+  toFunctionSelector,
   recoverTransactionAddress,
   type Address,
   type Hex,
@@ -22,6 +25,14 @@ export const DEFAULT_SIGNER_TIMEOUT_MS = 5_000;
 export const MAX_SIGNER_TIMEOUT_MS = 5_000;
 /** Consecutive unavailable answers that mark a role unhealthy. */
 const UNAVAILABLE_THRESHOLD = 3;
+/** How often an unhealthy role is probed, so it can recover without live traffic. */
+export const SIGNER_PROBE_INTERVAL_MS = 30_000;
+// Harmless probe requests within each role's policy: a fixed 32-byte message
+// for identity; for sender a signed, never broadcast releaseAll() whose nonce
+// no account will ever reach.
+const PROBE_MESSAGE = keccak256(stringToBytes("daski-gateway-signer-probe-v1"));
+const PROBE_TARGET = "0x000000000000000000000000000000000000dEaD";
+const PROBE_NONCE = Number.MAX_SAFE_INTEGER;
 const PRIVY_KEY_PREFIXES = ["wallet-auth:", "wallet-api:"];
 
 /** The signer could not answer (timeout, network, 5xx, 429): retryable. */
@@ -129,6 +140,24 @@ export class GatewaySigner {
     }
   }
 
+  /**
+   * Signs a harmless probe while the role is unhealthy. The gates refuse new
+   * sales before anything is signed, so without it a role that failed with no
+   * order in flight could never recover.
+   */
+  async probe(chainId: number): Promise<void> {
+    if (this.backend === "local" || this.healthy() || this.detached !== null) return;
+    if (this.role === "identity") {
+      await this.account.signMessage({ message: { raw: PROBE_MESSAGE } });
+      return;
+    }
+    await this.account.signTransaction({
+      type: "eip1559", chainId, nonce: PROBE_NONCE, to: PROBE_TARGET,
+      data: toFunctionSelector("function releaseAll() returns (uint256)"), value: 0n,
+      gas: 50_000n, maxFeePerGas: 1n, maxPriorityFeePerGas: 1n,
+    });
+  }
+
   private async observe<T>(method: string, facts: RequestFacts, work: () => Promise<T>): Promise<T> {
     if (this.backend === "local") return work();
     try {
@@ -227,6 +256,11 @@ export function signersHealthy(signers: GatewaySigners): boolean {
 
 export function signerStatuses(signers: GatewaySigners): SignerStatus[] {
   return [signers.identity.status(), signers.sender.status()];
+}
+
+/** Probes every unhealthy Privy role once; failures are already counted and logged. */
+export async function probeSigners(signers: GatewaySigners, chainId: number): Promise<void> {
+  await Promise.allSettled([signers.identity.probe(chainId), signers.sender.probe(chainId)]);
 }
 
 /** Verifies every Privy role; local roles need nothing. */

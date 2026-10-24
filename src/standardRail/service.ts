@@ -3,7 +3,14 @@ import { embeddedReleaseCapabilities } from "./releaseCapabilities.js";
 import { assertWorkerCompatibility } from "./workerCompatibility.js";
 import { ReleaseSales } from "./releaseSales.js";
 import { SalesOutage } from "./salesOutage.js";
-import { signerStatuses, signersHealthy, verifySigners, type SignerStatus } from "./signer.js";
+import {
+  probeSigners,
+  SIGNER_PROBE_INTERVAL_MS,
+  signerStatuses,
+  signersHealthy,
+  verifySigners,
+  type SignerStatus,
+} from "./signer.js";
 import { ReleaseRetirements } from "./releaseRetirements.js";
 import { compactBazaarExtension, discoveryOpenApi, facilitatorDiscoveryPayment } from "./discovery.js";
 import { GATEWAY_VERSION } from "../version.js";
@@ -232,6 +239,7 @@ export class StandardRailService {
     value: Promise<Awaited<ReturnType<StandardOperationalHealth["read"]>>>;
   } | null = null;
   private readinessInterval: NodeJS.Timeout | null = null;
+  private signerProbeInterval: NodeJS.Timeout | null = null;
   private readinessRetry: NodeJS.Timeout | null = null;
   private readinessRefresh: Promise<void> | null = null;
   readonly railProfileHash: Hex;
@@ -417,6 +425,12 @@ export class StandardRailService {
         logger.warn("gateway signer attachment check failed", { error }));
     }, this.railConfig.readinessIntervalMs);
     this.readinessInterval.unref();
+    // An unhealthy signer gets a harmless probe: live sales are refused
+    // before anything is signed, so they cannot restore its health.
+    this.signerProbeInterval = setInterval(() => {
+      void probeSigners(this.railConfig.signers, this.appConfig.chainId);
+    }, SIGNER_PROBE_INTERVAL_MS);
+    this.signerProbeInterval.unref();
   }
 
   private async validateLocalCommerce() {
@@ -518,6 +532,8 @@ export class StandardRailService {
   async stop(): Promise<void> {
     if (this.readinessInterval) clearInterval(this.readinessInterval);
     this.readinessInterval = null;
+    if (this.signerProbeInterval) clearInterval(this.signerProbeInterval);
+    this.signerProbeInterval = null;
     if (this.readinessRetry) clearTimeout(this.readinessRetry);
     this.readinessRetry = null;
     await this.readinessRefresh?.catch(() => undefined);

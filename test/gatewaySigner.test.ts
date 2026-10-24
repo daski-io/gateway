@@ -4,6 +4,7 @@ import {
   parseTransaction,
   recoverMessageAddress,
   recoverTypedDataAddress,
+  toFunctionSelector,
   type Hex,
   type TransactionSerializable,
 } from "viem";
@@ -12,6 +13,7 @@ import { canonicalHash } from "../src/standardRail/canonical.js";
 import { signEnvelope } from "../src/standardRail/signing.js";
 import {
   loadGatewaySigners,
+  probeSigners,
   signerStatuses,
   signersHealthy,
   SignerRefused,
@@ -338,5 +340,92 @@ describe("Privy signers", () => {
     down = true;
     await expect(verifySigners(signers)).rejects.toBeInstanceOf(SignerUnavailable);
     expect(signersHealthy(signers)).toBe(true);
+  });
+});
+
+describe("the release path through viem", () => {
+  const RELEASE_ALL = toFunctionSelector("function releaseAll() returns (uint256)");
+  // viem prepares the transaction (nonce, gas, fees), the role signs it, and
+  // only a transaction matching every requested field is broadcast.
+  async function release(account: import("viem/accounts").LocalAccount) {
+    const { createWalletClient, custom, parseAbi, keccak256 } = await import("viem");
+    const { baseSepolia } = await import("viem/chains");
+    const sent: Hex[] = [];
+    const transport = custom({
+      request: async ({ method, params }: { method: string; params?: unknown[] }) => {
+        switch (method) {
+          case "eth_chainId": return "0x14a34";
+          case "eth_getTransactionCount": return "0x0";
+          case "eth_estimateGas": return "0x186a0";
+          case "eth_maxPriorityFeePerGas": return "0xf4240";
+          case "eth_getBlockByNumber": return { baseFeePerGas: "0x3b9aca00", number: "0x1", timestamp: "0x1",
+            hash: `0x${"ab".repeat(32)}`, transactions: [] };
+          case "eth_sendRawTransaction": { const raw = (params as Hex[])[0]!; sent.push(raw); return keccak256(raw); }
+          default: throw new Error(`unexpected ${method}`);
+        }
+      },
+    });
+    const wallet = createWalletClient({ account, chain: baseSepolia, transport });
+    const hash = await wallet.writeContract({ address: `0x${"77".repeat(20)}`, abi: parseAbi(["function releaseAll() returns (uint256)"]),
+      functionName: "releaseAll" });
+    return { hash, sent };
+  }
+
+  it("signs and broadcasts releaseAll with a local sender, nonce 0 and value 0 included", async () => {
+    const { sent } = await release(loadGatewaySigners({ FACILITATOR_PRIVATE_KEY: identityKey, GATEWAY_SENDER_PRIVATE_KEY: senderKey })
+      .sender.account);
+    expect(sent).toHaveLength(1);
+    expect(parseTransaction(sent[0]!)).toMatchObject({ type: "eip1559", chainId: 84532, nonce: 0, gas: 100_000n,
+      to: `0x${"77".repeat(20)}`, data: RELEASE_ALL });
+  });
+
+  it("does the same through Privy, which receives no nonce or value and fills nothing", async () => {
+    const api = privyApi();
+    const { sent } = await release(loadGatewaySigners(privyEnv(), { fetch: api.fetch }).sender.account);
+    expect(sent).toHaveLength(1);
+    expect(parseTransaction(sent[0]!)).toMatchObject({ chainId: 84532, nonce: 0, gas: 100_000n });
+    const tx = (api.calls.at(-1)!.body!.params as { transaction: Record<string, unknown> }).transaction;
+    expect(tx).toMatchObject({ type: 2, chain_id: 84532, to: `0x${"77".repeat(20)}`, data: RELEASE_ALL });
+    expect(tx.nonce).toBeUndefined();
+  });
+});
+
+describe("recovery of an unhealthy role", () => {
+  it("probes only unhealthy Privy roles, within each role's policy, and recovers on success", async () => {
+    vi.spyOn(logger, "error").mockImplementation(() => undefined);
+    vi.spyOn(logger, "warn").mockImplementation(() => undefined);
+    let failing = true;
+    const api = privyApi({ respond: (call) => failing && call.body?.method
+      ? new Response(JSON.stringify({ error: "denied" }), { status: 403, headers: { "content-type": "application/json" } }) : null });
+    const signers = loadGatewaySigners(privyEnv(), { fetch: api.fetch });
+    await probeSigners(signers, 84532);
+    expect(api.calls).toHaveLength(0);
+
+    const message = { message: { raw: `0x${"04".repeat(32)}` as Hex } };
+    await expect(signers.identity.account.signMessage(message)).rejects.toBeInstanceOf(SignerRefused);
+    await expect(signers.sender.account.signTransaction(transaction())).rejects.toBeInstanceOf(SignerRefused);
+    expect(signersHealthy(signers)).toBe(false);
+    // Still refused: the probes fail and the roles stay unhealthy.
+    await probeSigners(signers, 84532);
+    expect(signersHealthy(signers)).toBe(false);
+
+    failing = false;
+    const before = api.calls.length;
+    await probeSigners(signers, 84532);
+    expect(signersHealthy(signers)).toBe(true);
+    const probes = api.calls.slice(before).map((call) => call.body);
+    expect(probes).toHaveLength(2);
+    expect(probes.find((body) => body?.method === "personal_sign")).toMatchObject({ params: { encoding: "hex" } });
+    const sent = (probes.find((body) => body?.method === "eth_signTransaction")!.params as { transaction: Record<string, unknown> }).transaction;
+    expect(sent).toMatchObject({ chain_id: 84532, to: "0x000000000000000000000000000000000000dEaD", nonce: Number.MAX_SAFE_INTEGER,
+      data: toFunctionSelector("function releaseAll() returns (uint256)") });
+    expect(sent.value).toBeUndefined();
+  });
+
+  it("never probes a local role", async () => {
+    const signers = loadGatewaySigners({ FACILITATOR_PRIVATE_KEY: identityKey });
+    const sign = vi.spyOn(signers.identity.account, "signMessage");
+    await probeSigners(signers, 84532);
+    expect(sign).not.toHaveBeenCalled();
   });
 });
