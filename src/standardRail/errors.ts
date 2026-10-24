@@ -652,8 +652,9 @@ const MAX_SALES_PAUSED_RETRY_AFTER_SECONDS = 3_600;
 
 /**
  * SALES_PAUSED for an active outage. `captured`: the buyer's authorization is
- * already claimed and verified but was not submitted; it must not be signed
- * again, because the gateway submits it after the outage while it is valid.
+ * already claimed and verified but was not submitted. The gateway submits it
+ * after the outage while it is valid, so the payment may still settle: the
+ * buyer reconciles and must not sign again.
  */
 export function salesPausedError(args: {
   reason: string;
@@ -673,7 +674,8 @@ export function salesPausedError(args: {
     retryAfterSeconds,
     cause: args.cause,
     ...(args.captured ? {
-      message: "New sales were paused before this authorization was submitted; nothing was charged yet",
+      message: "New sales were paused before this authorization was submitted; it may still settle when sales reopen",
+      paymentMayHaveSettled: true,
       nextAction: "Do not sign again. After Retry-After, resend the identical purchase or read the order by its " +
         "handle: the gateway submits this authorization once sales reopen, while it is still valid.",
     } : {}),

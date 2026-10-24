@@ -590,36 +590,38 @@ describe("new sales during a sales outage", () => {
     expect(findOpenDraft).not.toHaveBeenCalled();
   });
 
-  it("refuses an unclaimed purchase but still answers an identical replay", async () => {
+  it("refuses an unclaimed purchase before validating it, but still answers replays and conflicts", async () => {
     const body = { sku: "one" };
     const order = {
       orderId: "order-1", providerAgentId: "7", outcomeId: "outcome", canonicalRequest: body,
-      intentId: "int_12345678-1234-4123-8123-123456789abc", paymentPayloadHash: null,
+      intentId: "int_12345678-1234-4123-8123-123456789abc", paymentPayloadHash: null, state: "CHALLENGE_ISSUED",
       listingManifestHash: hash("4"), expiresAt: new Date(Date.now() + 60_000),
     } as unknown as StandardOrderRecord;
-    const assertOpen = vi.fn(async () => undefined);
-    const findByAuthorizationKey = vi.fn();
-    const service = harness({
+    const listing = vi.fn();
+    const base = (fields: Record<string, unknown>) => harness({
       salesOutage: pausedOutage(),
-      releaseSales: { assertOpen },
       appConfig: { chainId: 84532 },
       assertAdmissionOpen: vi.fn(),
       assertRailFence: vi.fn(async () => undefined),
-      store: { findByIntentId: vi.fn(async () => ({ handle: "handle-1", order })), findByAuthorizationKey },
+      incidents: { record: vi.fn(async () => undefined) },
+      listing,
+      ...fields,
     });
-    await expect(service.submitPayment({ providerAgentId: "7", outcomeId: "outcome", body, payment }))
-      .rejects.toMatchObject({ code: "SALES_PAUSED", phase: "payment_validation", until });
-    expect(assertOpen).not.toHaveBeenCalled();
-    expect(findByAuthorizationKey).not.toHaveBeenCalled();
+    const unclaimed = base({ store: { findByIntentId: vi.fn(async () => ({ handle: "handle-1", order })),
+      findByAuthorizationKey: vi.fn(async () => null) } });
+    await expect(unclaimed.submitPayment({ providerAgentId: "7", outcomeId: "outcome", body, payment }))
+      .rejects.toMatchObject({ code: "SALES_PAUSED", phase: "payment_validation", until, paymentMayHaveSettled: false });
+    expect(listing).not.toHaveBeenCalled();
+
+    // Another order holds this authorization: the conflict answer, not the pause.
+    const held = { ...order, orderId: "order-2", intentId: "int_22222222-2222-4222-8222-222222222222" };
+    const conflicted = base({ store: { findByIntentId: vi.fn(async () => ({ handle: "handle-1", order })),
+      findByAuthorizationKey: vi.fn(async () => ({ handle: "handle-2", order: held })) } });
+    await expect(conflicted.submitPayment({ providerAgentId: "7", outcomeId: "outcome", body, payment }))
+      .rejects.toMatchObject({ code: "PAYMENT_IDENTIFIER_CONFLICT" });
 
     const claimed = { ...order, paymentPayloadHash: canonicalHash(payment) } as StandardOrderRecord;
-    const replaying = harness({
-      salesOutage: pausedOutage(),
-      appConfig: { chainId: 84532 },
-      assertAdmissionOpen: vi.fn(),
-      assertRailFence: vi.fn(async () => undefined),
-      store: { findByIntentId: vi.fn(async () => ({ handle: "handle-1", order: claimed })) },
-    });
+    const replaying = base({ store: { findByIntentId: vi.fn(async () => ({ handle: "handle-1", order: claimed })) } });
     await expect(replaying.submitPayment({ providerAgentId: "7", outcomeId: "outcome", body, payment }))
       .resolves.toEqual({ handle: "handle-1", order: claimed, replay: true });
   });

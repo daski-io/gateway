@@ -7,6 +7,7 @@ import { createPool, runMigrations, type Pool } from "../src/db/pool.js";
 import { asStandardRailError, isSalesOutageRefusal } from "../src/standardRail/errors.js";
 import { StandardRailJournal } from "../src/standardRail/journal.js";
 import { createStandardMetaRouter } from "../src/standardRail/meta.js";
+import { createStandardRailRouter } from "../src/standardRail/routes.js";
 import { parseSalesOutageEnd, parseSalesOutageStart, SalesOutage } from "../src/standardRail/salesOutage.js";
 import { StandardRailStore } from "../src/standardRail/store.js";
 import type { Hex } from "../src/types.js";
@@ -287,6 +288,60 @@ describe("the outage endpoints", () => {
     expect(await ended.json()).toEqual({ salesOpen: true, revision: 2 });
     expect(await (await fetch(`${base}/public/v1/status`)).json()).toEqual({ salesOpen: true });
     expect((await audit()).map((row) => [row.action, row.set_by])).toEqual([["start", "catalog-operator"], ["end", "owner"]]);
+  });
+});
+
+describe("outage answers on the purchase routes and readiness", () => {
+  async function serve(app: express.Express) {
+    server = await new Promise<Server>((resolve) => { const listener = app.listen(0, "127.0.0.1", () => resolve(listener)); });
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("no listener");
+    return `http://127.0.0.1:${address.port}`;
+  }
+
+  it("answers a paused challenge 503 with Retry-After, until and reason on both purchase routes", async () => {
+    const outage = new SalesOutage(pool, "testnet");
+    await outage.start({ minutes: 5, reason: "Provider identity switch", setBy: "owner" });
+    const refuse = async () => { await outage.assertOpen("challenge"); throw new Error("unreachable"); };
+    const app = express();
+    app.use(express.json());
+    app.use(createStandardRailRouter({ preparePaymentChallenge: refuse, issueChallenge: refuse } as never, "https://gateway.example"));
+    const base = await serve(app);
+    const status = await outage.status();
+    if (status.salesOpen) throw new Error("expected a paused state");
+    for (const path of ["/outcomes/7/outcome/quote", "/outcomes/7/outcome"]) {
+      const response = await fetch(`${base}${path}`, { method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify(path.endsWith("/quote") ? { request: {} } : {}) });
+      expect(response.status).toBe(503);
+      const retryAfter = Number(response.headers.get("retry-after"));
+      expect(retryAfter).toBeGreaterThan(290);
+      expect(retryAfter).toBeLessThanOrEqual(300);
+      const body = await response.json() as { error: Record<string, unknown> };
+      expect(body.error).toMatchObject({ code: "SALES_PAUSED", phase: "challenge", retryable: true, requiresNewSignature: false,
+        paymentMayHaveSettled: false, until: status.until, reason: "Provider identity switch" });
+    }
+  });
+
+  it("reports the outage in /health/ready without failing readiness, with setBy only for the operator", async () => {
+    const outage = new SalesOutage(pool, "testnet");
+    const app = express();
+    app.use(createStandardMetaRouter({ config: { catalogOperatorToken: TOKEN, x402Network: "eip155:84532", chainId: 84532 } as never,
+      pool, lifecycle: { isStopping: () => false } as never, railConfig: {} as never,
+      service: { salesOutage: outage, isAdmissionOpen: () => true, areDependenciesReady: () => true,
+        operationalHealth: async () => ({}), railProfileHash: `0x${"aa".repeat(32)}` } as never }));
+    const base = await serve(app);
+    const open = await fetch(`${base}/health/ready`);
+    expect(open.status).toBe(200);
+    expect((await open.json() as { sales: unknown }).sales).toEqual({ salesOpen: true });
+    await outage.start({ minutes: 10, reason: "Maintenance", setBy: "owner" });
+    const status = await outage.status();
+    // The public read is memoized for a second; a fresh router instance would not be.
+    await new Promise((resolve) => setTimeout(resolve, 1_100));
+    const paused = await fetch(`${base}/health/ready`);
+    expect(paused.status).toBe(200);
+    expect((await paused.json() as { status: string; sales: unknown })).toMatchObject({ status: "ready", sales: status });
+    const operator = await fetch(`${base}/health/ready`, { headers: { authorization: `Bearer ${TOKEN}` } });
+    expect((await operator.json() as { sales: unknown }).sales).toEqual({ ...status, setBy: "owner", revision: 1 });
   });
 });
 

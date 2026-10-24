@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { createPool, runMigrations } from "../src/db/pool.js";
 import { ReleaseSales } from "../src/standardRail/releaseSales.js";
+import { SalesOutage } from "../src/standardRail/salesOutage.js";
 import { ServiceRegistrationStore } from "../src/serviceRegistration/store.js";
 
 const databaseUrl = process.env.DATABASE_URL_TEST ??
@@ -34,11 +35,17 @@ describe("release migrations under incumbent runtime privileges", () => {
       expect((await runtime.query("SELECT current_user,rolsuper FROM pg_roles WHERE rolname=current_user")).rows[0])
         .toEqual({ current_user: role, rolsuper: false });
       for (const table of ["standard_registration_revision_fences", "standard_sale_controls",
-        "standard_parked_authorizations", "standard_asset_action_targets", "standard_contract_retirements"]) {
+        "standard_parked_authorizations", "standard_asset_action_targets", "standard_contract_retirements",
+        "standard_sales_outage"]) {
         const privileges = (await runtime.query("SELECT has_table_privilege(current_user,$1,'SELECT') AS read,has_table_privilege(current_user,$1,'INSERT,UPDATE,DELETE') AS write", [schema + "." + table])).rows[0];
         expect(privileges).toEqual({ read: true, write: false });
         expect((await pool.query("SELECT has_table_privilege($1,$2,'SELECT') AS read", [observer,schema + "." + table])).rows[0].read).toBe(false);
       }
+      // FOR SHARE needs UPDATE on one column: the key only, never the outage itself.
+      expect((await runtime.query("SELECT has_column_privilege(current_user,$1,'active','UPDATE') AS active,"
+        + "has_column_privilege(current_user,$1,'singleton','UPDATE') AS key,has_table_privilege(current_user,$2,'SELECT') AS audit",
+        [schema + ".standard_sales_outage", schema + ".standard_sales_outage_audit"])).rows[0])
+        .toEqual({ active: false, key: true, audit: false });
 
       const registration = randomUUID();
       const registrationSql = [
@@ -92,6 +99,13 @@ describe("release migrations under incumbent runtime privileges", () => {
         .rejects.toMatchObject({ code: "40001" });
       await runtime.query("ROLLBACK");
       await pool.query("DELETE FROM standard_sale_controls WHERE request_id='race-stop'");
+      // The sales outage reaches the incumbent through its own admission
+      // trigger: SALE_SUSPENDED, detailed as the outage, until it ends.
+      const outage = new SalesOutage(pool, "testnet");
+      await outage.start({ minutes: 10, reason: "Maintenance", setBy: "owner" });
+      await expect(runtime.query("UPDATE standard_orders SET state='ATTEMPT_OPENED' WHERE order_id='legacy'"))
+        .rejects.toMatchObject({ message: "SALE_SUSPENDED", detail: "SALES_PAUSED" });
+      await outage.end({ setBy: "owner" });
       await runtime.query("UPDATE standard_orders SET state='ATTEMPT_OPENED' WHERE order_id='legacy'");
       await runtime.query("INSERT INTO standard_settlement_attempts(order_id,attempt_id,facilitator_profile_hash) VALUES('legacy','legacy-attempt',$1)", [hash]);
       await pool.query([

@@ -28,7 +28,8 @@ CREATE TABLE standard_sales_outage_audit (
 );
 
 -- The incumbent runtime calls the function below from its admission triggers
--- before the candidate configures runtime privileges. FOR SHARE needs UPDATE.
+-- before the candidate configures runtime privileges. FOR SHARE needs UPDATE
+-- on one column: the key, which nothing changes, so it cannot alter the row.
 DO $sales_outage_reads$
 DECLARE incumbent record;
 BEGIN
@@ -42,7 +43,7 @@ BEGIN
       AND privilege.privilege_type IN ('INSERT','UPDATE')
       AND privilege.grantee<>relation.relowner
   LOOP
-    EXECUTE format('GRANT SELECT,UPDATE ON TABLE %I.standard_sales_outage TO %I', current_schema(), incumbent.rolname);
+    EXECUTE format('GRANT SELECT,UPDATE(singleton) ON TABLE %I.standard_sales_outage TO %I', current_schema(), incumbent.rolname);
   END LOOP;
 END $sales_outage_reads$;
 

@@ -231,27 +231,29 @@ describe("settlement during a sales outage", () => {
     status: vi.fn(async () => ({ salesOpen: false, reason: "Provider identity switch", since: until, until })),
   });
 
-  it("refuses to submit a claimed authorization on the request path and never asks for a new signature", async () => {
-    const { service, journal, transitions } = settlementHarness({ salesOutage: paused() });
-    await expect(service.settleClaimedOrder(settleArgs())).rejects.toMatchObject({
-      code: "SALES_PAUSED", status: 503, phase: "facilitator_settle", retryable: true,
-      requiresNewSignature: false, paymentMayHaveSettled: false, until, reason: "Provider identity switch",
-      retryAfterSeconds: 600,
-    });
-    expect(transitions).toEqual([{ to: "VERIFIED", reason: "facilitator_verified" }]);
-    expect(journal.markSettleInvoked).not.toHaveBeenCalled();
-  });
-
-  it("answers the database's refusal of a racing outage the same way", async () => {
+  it("refuses to submit a claimed authorization once the database reports an outage, and says it may still settle", async () => {
     const refusal = Object.assign(new Error("SALE_SUSPENDED"), {
-      code: "P0001", detail: "SALES_PAUSED", hint: JSON.stringify({ reason: "Maintenance", since: until, until }),
+      code: "P0001", detail: "SALES_PAUSED", hint: JSON.stringify({ reason: "Provider identity switch", since: until, until }),
     });
-    const { service, journal } = settlementHarness({});
+    const { service, journal, transitions } = settlementHarness({});
     journal.markSettleInvoked.mockRejectedValueOnce(refusal);
     const error = await service.settleClaimedOrder(settleArgs()).then(() => null, (caught: unknown) => caught);
-    expect(error).toMatchObject({ code: "SALES_PAUSED", phase: "facilitator_settle", requiresNewSignature: false,
-      until, reason: "Maintenance" });
+    // The authorization is captured and settles after the outage while it is
+    // valid: the buyer reconciles and never signs again.
+    expect(error).toMatchObject({ code: "SALES_PAUSED", status: 503, phase: "facilitator_settle", retryable: true,
+      requiresNewSignature: false, paymentMayHaveSettled: true, until, reason: "Provider identity switch" });
+    expect((error as { retryAfterSeconds: number }).retryAfterSeconds).toBeGreaterThan(590);
     expect((error as { nextAction: string }).nextAction).toMatch(/^Do not sign again/);
+    expect(transitions).toEqual([{ to: "VERIFIED", reason: "facilitator_verified" }]);
+    expect(journal.markSettleInvoked).toHaveBeenCalledOnce();
+  });
+
+  it("reads no outage state of its own on the request path: a failing read cannot answer for a captured payment", async () => {
+    const outage = { assertOpen: vi.fn(async () => { throw new Error("pool exhausted"); }), status: vi.fn() };
+    const { service, journal } = settlementHarness({ salesOutage: outage });
+    await service.settleClaimedOrder(settleArgs()).catch(() => undefined);
+    expect(outage.assertOpen).not.toHaveBeenCalled();
+    expect(journal.markSettleInvoked).toHaveBeenCalledOnce();
   });
 
   it("keeps a scoped stop's answer: the VERIFIED order, nothing submitted", async () => {
@@ -274,5 +276,27 @@ describe("settlement during a sales outage", () => {
     await expect(service.resumePreSettlement(order, listing)).resolves.toBe(order);
     expect(verify).not.toHaveBeenCalled();
     expect(markSettleInvoked).not.toHaveBeenCalled();
+  });
+
+  it("waits quietly in recovery while paused, but still looks for a deposit relayed meanwhile", async () => {
+    const order = { ...claimedOrder("VERIFIED"), encryptedPaymentPayload: Buffer.from("x"), paymentPayloadHash: hash("a") };
+    const findSettlementTransaction = vi.fn(async () => null);
+    const recovery = (salesOutage: unknown) => harness({
+      salesOutage,
+      appConfig: { chainId: 84532 },
+      railConfig: { finalityConfirmations: 12, manifest: { chainEvidencePolicy: { payload: {
+        maximumSourceLagBlocks: 10, finalityBlockTimeSeconds: 2 } } } },
+      assertRailFence: vi.fn(async () => undefined),
+      resumePreSettlement: vi.fn(async (value: StandardOrderRecord) => value),
+      paymentNonce: vi.fn(() => hash("6")),
+      paymentAuthorizationValidBefore: vi.fn(() => Math.floor(Date.now() / 1_000) + 600),
+      store: { findById: vi.fn(async () => order) },
+      journal: { settlementRecord: vi.fn(async () => null) },
+      evidence: { findSettlementTransaction },
+    });
+    await expect(recovery(paused()).resumePaidOrder(order)).resolves.toBeUndefined();
+    expect(findSettlementTransaction).toHaveBeenCalledOnce();
+    const open = { assertOpen: vi.fn(async () => undefined), status: vi.fn(async () => ({ salesOpen: true })) };
+    await expect(recovery(open).resumePaidOrder(order)).rejects.toThrow("Settlement authorization is not final");
   });
 });

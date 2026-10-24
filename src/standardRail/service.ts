@@ -973,7 +973,11 @@ export class StandardRailService {
             (this.railConfig.finalityConfirmations + policy.maximumSourceLagBlocks) *
               policy.finalityBlockTimeSeconds
           ) * 1_000;
-          if (Date.now() < finalNoCaptureAt) throw new Error("Settlement authorization is not final");
+          if (Date.now() < finalNoCaptureAt) {
+            // Left unsubmitted on purpose: it settles when sales reopen.
+            if (!(await this.salesOutage.status()).salesOpen) return;
+            throw new Error("Settlement authorization is not final");
+          }
           if (await this.settlementCaptured(order)) {
             if (Date.now() < order.updatedAt.getTime() +
               listing.deadlinePolicy.settlementEvidenceSeconds * 1_000) {
@@ -2050,7 +2054,6 @@ export class StandardRailService {
       }
       return { ...intended, replay: true };
     }
-    await this.salesOutage.assertOpen("payment_validation");
     await this.releaseSales.assertOpen(args.providerAgentId, intended.order.listingManifestHash);
     if (intended.order.expiresAt.getTime() <= Date.now()) {
       throw standardRailError("CHALLENGE_EXPIRED", {
@@ -2081,6 +2084,8 @@ export class StandardRailService {
     if (order.state !== "CHALLENGE_ISSUED") {
       return { handle: intended.handle, order, replay: false };
     }
+    // Replays and conflicts are answered above; nothing new is claimed now.
+    await this.salesOutage.assertOpen("payment_validation");
     const listing = await this.listing(args.providerAgentId, args.outcomeId);
     const requirements = paymentRequirements(
       this.appConfig,
@@ -2317,12 +2322,11 @@ export class StandardRailService {
       );
       return order;
     }
-    // An outage that started after this claim stops the submission; the
-    // database refuses the invocation too if it starts in between.
-    await this.salesOutage.assertOpen("facilitator_settle", { captured: true });
     let mayInvokeFacilitator: boolean;
     try { mayInvokeFacilitator = await this.journal.markSettleInvoked(order.orderId); }
     catch (error) {
+      // An outage that started after this claim: the database refused the
+      // invocation, and the authorization waits for sales to reopen.
       if (isSalesOutageRefusal(error)) {
         throw salesPausedFromDatabase(error, { phase: "facilitator_settle", captured: true });
       }

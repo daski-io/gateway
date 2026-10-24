@@ -105,9 +105,10 @@ export class SalesOutage {
     const now = Date.now();
     if (this.publicMemo && this.publicMemo.expiresAt > now) return this.publicMemo.value;
     const value = this.status();
-    const memo = { expiresAt: now + PUBLIC_STATUS_MEMO_MS, value };
-    this.publicMemo = memo;
-    value.catch(() => { if (this.publicMemo === memo) this.publicMemo = null; });
+    // A failed read is shared for its second too, so a failing database is
+    // not asked once per caller.
+    this.publicMemo = { expiresAt: now + PUBLIC_STATUS_MEMO_MS, value };
+    value.catch(() => undefined);
     return value;
   }
 
