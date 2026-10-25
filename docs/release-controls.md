@@ -204,12 +204,13 @@ dispatch stays ambiguous for recovery. The first acceptance per agent, signer
 and committed key is logged.
 
 The gateway sees a switch only once `setAgentWallet` is final at its finality
-tag, plus up to a minute of cache. Until then a provider signing with the new
-wallet gets the non-retryable `PROVIDER_LIFECYCLE_SIGNATURE_INVALID` on old
-orders, and quotes for versions committing the old wallet fail. A switch keeps
-the provider signing with the committed key until the gateway's finality tag
-holds the new wallet and versions committing it are live, or runs inside a
-sales outage that covers that lag.
+tag, plus up to a minute of cache. Until then an action on an old order that
+the provider signed with the new wallet answers 500 `INTERNAL_ERROR` (logged as
+`PROVIDER_LIFECYCLE_SIGNATURE_INVALID`); a sales outage does not cover this,
+since order actions are not gated. A quote signed with the new wallet never
+passes for a version committing the old one. A switch therefore keeps the
+provider signing with the committed key until the gateway's finality tag holds
+the new wallet and versions committing it are live.
 
 ## Compatibility evidence
 
