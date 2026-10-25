@@ -72,6 +72,9 @@ export class ChainProviderAgentWallets implements ProviderAgentWallets {
         blockNumber: block.number,
       }));
     }, {
+      // On an order action's request path: one try per endpoint, no backoff;
+      // the caller answers a retryable outage instead.
+      attempts: 1,
       operation: "providerAuthority.agentWallet",
       onFallback: (detail) => {
         logger.warn("provider authority RPC fallback selected", detail);
@@ -79,6 +82,9 @@ export class ChainProviderAgentWallets implements ProviderAgentWallets {
     });
   }
 }
+
+// One log line per agent, signer and committed key while the process runs.
+const announced = new Set<string>();
 
 /**
  * Whether a provider signature on an order of this listing is the provider's.
@@ -97,5 +103,14 @@ export async function providerSignatureAccepted(args: {
   const signer = getAddress(args.signer);
   if (signer === getAddress(args.committedKey)) return true;
   const wallet = await args.wallets.agentWallet(args.providerAgentId);
-  return wallet !== zeroAddress && signer === getAddress(wallet);
+  if (wallet === zeroAddress || signer !== getAddress(wallet)) return false;
+  const key = args.providerAgentId + ":" + signer + ":" + getAddress(args.committedKey);
+  if (!announced.has(key)) {
+    if (announced.size >= MAXIMUM_ENTRIES) announced.clear();
+    announced.add(key);
+    logger.info("provider signature accepted from the agent's current wallet", {
+      providerAgentId: args.providerAgentId, signer, committedKey: getAddress(args.committedKey),
+    });
+  }
+  return true;
 }

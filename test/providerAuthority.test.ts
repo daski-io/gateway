@@ -89,6 +89,20 @@ describe("chain agent wallet reads", () => {
     }));
   });
 
+  it("reads the wallet again once the minute's cache expires", async () => {
+    vi.useFakeTimers({ now: new Date("2026-10-25T20:00:00Z"), toFake: ["Date"] });
+    try {
+      const { reader, readContract } = chainReader();
+      await reader.agentWallet("8327");
+      vi.setSystemTime(new Date("2026-10-25T20:00:59Z"));
+      await reader.agentWallet("8327");
+      expect(readContract).toHaveBeenCalledTimes(1);
+      vi.setSystemTime(new Date("2026-10-25T20:01:01Z"));
+      await reader.agentWallet("8327");
+      expect(readContract).toHaveBeenCalledTimes(2);
+    } finally { vi.useRealTimers(); }
+  });
+
   it("does not cache a failed read", async () => {
     const { reader, readContract } = chainReader();
     readContract.mockRejectedValue(new Error("rpc down"));
@@ -110,14 +124,14 @@ describe("old orders' lifecycle after an authority switch", () => {
       store: { persistOperations, transition: vi.fn() }, validateResponse: vi.fn(async () => undefined),
       signedReceipt: async () => null, confirmationState: { stored: async () => null }, submissionStatus: async () => null,
     }) as { applyLifecycleResult: (order: StandardOrderRecord, listing: StandardListing, response: unknown,
-      action: string, handle: string) => Promise<Record<string, unknown>> };
+      action: string, handle: string, request?: Record<string, unknown>, readCapability?: boolean) => Promise<Record<string, unknown>> };
     const order = { orderId: "ord", providerTaskId: "task", state: "FULFILLED", orderKey: hash("1") } as StandardOrderRecord;
     return { service, order, persistOperations };
   }
 
-  async function completedStatus(lifecycleSigner = current, attestationSigner = current) {
+  async function completedStatus(lifecycleSigner = current, attestationSigner = current, attestedState = "completed") {
     const operations = { schemaVersion: 1, revision: 1, observedAt: 1_790_000_000, fulfillment: null, support: null, recovery: null };
-    const attestationPayload = { orderId: "ord", taskId: "task", state: "completed", resultHash: hash("a"), completedAt: 1_790_000_000 };
+    const attestationPayload = { orderId: "ord", taskId: "task", state: attestedState, resultHash: hash("a"), completedAt: 1_790_000_000 };
     const unsigned = {
       orderId: "ord", taskId: "task", state: "completed", operations,
       terminalAttestation: {
@@ -153,10 +167,22 @@ describe("old orders' lifecycle after an authority switch", () => {
       .rejects.toThrow("PROVIDER_TERMINAL_ATTESTATION_INVALID");
   });
 
-  it("answers a retryable lifecycle outage when the agent wallet cannot be read", async () => {
+  it("answers a retryable lifecycle outage when the agent wallet cannot be read, keeping a read capability", async () => {
     const { service, order } = harness({ agentWallet: async () => { throw new Error("rpc down"); } });
     await expect(service.applyLifecycleResult(order, oldListing, await completedStatus(), "status", "handle"))
-      .rejects.toMatchObject({ code: "PROVIDER_LIFECYCLE_UNAVAILABLE" });
+      .rejects.toMatchObject({ code: "PROVIDER_LIFECYCLE_UNAVAILABLE", requiresNewSignature: true });
+    await expect(service.applyLifecycleResult(order, oldListing, await completedStatus(), "status", "handle", undefined, true))
+      .rejects.toMatchObject({ code: "PROVIDER_LIFECYCLE_UNAVAILABLE", requiresNewSignature: false });
+  });
+
+  it("refuses a mis-bound terminal attestation without reading the chain", async () => {
+    const reader = wallets();
+    const { service, order } = harness(reader);
+    // Lifecycle signed by the committed key; the attestation, by another key, attests a different state.
+    const response = await completedStatus(committed, current, "failed");
+    await expect(service.applyLifecycleResult(order, oldListing, response, "status", "handle"))
+      .rejects.toThrow("PROVIDER_TERMINAL_ATTESTATION_INVALID");
+    expect(reader.agentWallet).not.toHaveBeenCalled();
   });
 });
 
@@ -184,6 +210,13 @@ describe("old orders' dispatch responses after an authority switch", () => {
     const subject = dispatcher(wallets());
     await expect(subject.validateDispatchResponse(oldListing, hash("d"), await response())).resolves.toBeTruthy();
     await expect(subject.terminalEvidence(oldListing, hash("d"), await terminal())).resolves.toBeTruthy();
+  });
+
+  it("refuses a mis-bound dispatch attestation without reading the chain", async () => {
+    const reader = wallets();
+    await expect(dispatcher(reader).terminalEvidence(oldListing, hash("e"), await terminal()))
+      .rejects.toThrow("provider_terminal_attestation_invalid");
+    expect(reader.agentWallet).not.toHaveBeenCalled();
   });
 
   it("refuses any other signer, and the new wallet where no switch is known", async () => {

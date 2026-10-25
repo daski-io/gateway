@@ -493,15 +493,15 @@ export class StandardProviderDispatch {
       signature: attestation.signature as Hex,
     });
     if (
+      attestation.payload.taskId !== body.taskId ||
+      attestation.payload.dispatchHash !== dispatchHash ||
+      attestation.payload.state !== body.state ||
       !await providerSignatureAccepted({
         signer: terminalSigner,
         committedKey: listing.commitment.payload.providerTerminalAttestationKey,
         providerAgentId: listing.commitment.payload.providerAgentId,
         wallets: this.providerWallets,
-      }) ||
-      attestation.payload.taskId !== body.taskId ||
-      attestation.payload.dispatchHash !== dispatchHash ||
-      attestation.payload.state !== body.state
+      })
     ) throw new Error("provider_terminal_attestation_invalid");
     return { payload: attestation.payload, signature: attestation.signature };
   }

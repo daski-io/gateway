@@ -1711,6 +1711,7 @@ export class StandardRailService {
       args.action as "status" | "input" | "cancel" | "artifact" | "support",
       args.handle,
       args.request,
+      Boolean(args.readCapability),
     );
     if (["input", "cancel", "support"].includes(args.action)) {
       await this.store.bumpCapabilityEpoch(order.orderId);
@@ -1722,15 +1723,20 @@ export class StandardRailService {
    * A provider signature on one of this listing's orders: by the key the
    * version committed, or, after a provider authority switch, by the provider
    * agent's current agent wallet. A wallet that cannot be read now answers as
-   * a retryable lifecycle outage; the provider's action may have taken effect.
+   * a retryable lifecycle outage; the provider's action may have taken effect,
+   * and a read capability is reused, as for the provider's own outage.
    */
-  private async providerSigned(signer: Hex, listing: StandardListing, committedKey: string): Promise<boolean> {
+  private async providerSigned(
+    signer: Hex, listing: StandardListing, committedKey: string, readCapability: boolean,
+  ): Promise<boolean> {
     try {
       return await providerSignatureAccepted({
         signer, committedKey, providerAgentId: listing.commitment.payload.providerAgentId, wallets: this.providerWallets,
       });
     } catch (error) {
-      throw standardRailError("PROVIDER_LIFECYCLE_UNAVAILABLE", { cause: error });
+      throw standardRailError("PROVIDER_LIFECYCLE_UNAVAILABLE", {
+        cause: error, ...(readCapability ? { requiresNewSignature: false } : {}),
+      });
     }
   }
 
@@ -1741,6 +1747,7 @@ export class StandardRailService {
     action: "status" | "input" | "cancel" | "artifact" | "support",
     handle: string,
     request?: Record<string, unknown>,
+    readCapability = false,
   ): Promise<unknown> {
     if (!result || typeof result !== "object") throw standardRailError("INTERNAL_ERROR", {
         phase: "dispatch",
@@ -1778,7 +1785,7 @@ export class StandardRailService {
       message: { raw: canonicalHash(signedResponse) },
       signature: signature as Hex,
     });
-    if (!await this.providerSigned(authority, listing, listing.commitment.payload.providerAuthorityKey)) {
+    if (!await this.providerSigned(authority, listing, listing.commitment.payload.providerAuthorityKey, readCapability)) {
       throw standardRailError("INTERNAL_ERROR", {
         phase: "dispatch",
         internalMessage: "PROVIDER_LIFECYCLE_SIGNATURE_INVALID",
@@ -1848,12 +1855,12 @@ export class StandardRailService {
         signature: attestation.signature as Hex,
       });
       if (
-        !await this.providerSigned(signer, listing, listing.commitment.payload.providerTerminalAttestationKey) ||
         attestation.payload.orderId !== initial.orderId ||
         attestation.payload.taskId !== initial.providerTaskId ||
         attestation.payload.state !== response.state ||
         (action !== "artifact" && action !== "support" && "result" in response &&
-          attestation.payload.resultHash !== canonicalHash(response.result))
+          attestation.payload.resultHash !== canonicalHash(response.result)) ||
+        !await this.providerSigned(signer, listing, listing.commitment.payload.providerTerminalAttestationKey, readCapability)
       ) throw standardRailError("INTERNAL_ERROR", {
         phase: "dispatch",
         internalMessage: "PROVIDER_TERMINAL_ATTESTATION_INVALID",

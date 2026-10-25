@@ -199,8 +199,17 @@ any other signer only when it is the listing's provider agent's current
 Every other key is refused as before. Quotes and intake stay bound to the
 committed key, so a version registered before the switch never sells under the
 new wallet. When the wallet cannot be read, an order action answers the
-retryable `PROVIDER_LIFECYCLE_UNAVAILABLE` and a dispatch stays ambiguous for
-recovery.
+retryable `PROVIDER_LIFECYCLE_UNAVAILABLE` (a read capability is reused) and a
+dispatch stays ambiguous for recovery. The first acceptance per agent, signer
+and committed key is logged.
+
+The gateway sees a switch only once `setAgentWallet` is final at its finality
+tag, plus up to a minute of cache. Until then a provider signing with the new
+wallet gets the non-retryable `PROVIDER_LIFECYCLE_SIGNATURE_INVALID` on old
+orders, and quotes for versions committing the old wallet fail. A switch keeps
+the provider signing with the committed key until the gateway's finality tag
+holds the new wallet and versions committing it are live, or runs inside a
+sales outage that covers that lag.
 
 ## Compatibility evidence
 
