@@ -194,17 +194,16 @@ export class ReleaseRetirements {
         (SELECT count(*)::int FROM standard_reputation_operations r JOIN orders USING(order_id)
           WHERE r.state NOT IN ('final','aborted_unattested','blocked_parent_aborted','confirmation_failed','superseded')
             OR (r.state='final' AND r.kind IN ('confirmation','confirmation-v2') AND r.confirmation_reconciled_at IS NULL)) AS "reputationOperations",
-        -- A failed attempt is settled once mined (final_at), retired by review recovery, or replaced: the
+        -- A failed attempt is settled once mined (final_at), retired by review recovery, or superseded: the
         -- worker fails an unmined attempt (expired permit, broadcast not found) and sends a new one, and once
-        -- the operation is final through another transaction and a different final transaction of the same
+        -- the operation is final through another transaction and a final transaction of the same chain and
         -- relayer holds a nonce at or after the attempt's, its nonce is spent and it can never be mined.
         (SELECT count(*)::int FROM standard_reputation_transactions t JOIN standard_reputation_operations r USING(operation_id) JOIN orders USING(order_id)
           WHERE t.state<>'final' AND NOT (t.state='failed' AND (t.final_at IS NOT NULL OR EXISTS(
             SELECT 1 FROM standard_review_recovery rr WHERE rr.operation_id=r.operation_id) OR (r.state='final' AND EXISTS(
-              SELECT 1 FROM standard_reputation_transactions x WHERE x.operation_id=t.operation_id AND x.state='final'
-                AND x.transaction_id<>t.transaction_id) AND EXISTS(
+              SELECT 1 FROM standard_reputation_transactions x WHERE x.operation_id=t.operation_id AND x.state='final') AND EXISTS(
               SELECT 1 FROM standard_reputation_transactions n WHERE n.chain_id=t.chain_id AND n.relayer_address=t.relayer_address
-                AND n.state='final' AND n.transaction_id<>t.transaction_id AND n.nonce>=t.nonce))))) AS "unresolvedTransactions",
+                AND n.state='final' AND n.nonce>=t.nonce))))) AS "unresolvedTransactions",
         (SELECT count(*)::int FROM standard_review_preparations p JOIN orders USING(order_id)
           WHERE (p.signed_deadline IS NULL OR p.signed_deadline>extract(epoch FROM now()))
             AND NOT EXISTS(SELECT 1 FROM standard_review_sponsorships s JOIN standard_review_recovery r USING(operation_id)

@@ -199,9 +199,9 @@ Migration 058 keeps generic confirmation, revocation, reputation reconciliation
 and support bookkeeping available on fulfilled orders after contract retirement.
 New order, settlement, dispatch and asset-action admission remain fenced.
 A retirement counts a failed reputation transaction as settled once it was
-mined (`final_at`), retired by review recovery, or replaced before mining: its
-operation is final through another transaction, and a different final
-transaction of the same relayer holds a nonce at or after its own, so it can
+mined (`final_at`) or retired by review recovery, or once its nonce is spent by
+a final transaction of the same chain and relayer (one at or after its own
+nonce) while its operation is final through another transaction: it can then
 never be mined. Any other failed attempt still blocks the retirement.
 Required RPC evidence tests run the actual release and registration proof methods
 through the ordered transport at the default budget and slow archive latency.
