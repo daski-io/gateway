@@ -1,3 +1,4 @@
+import { COMMITTED_KEYS_ONLY } from "../../src/standardRail/providerAuthority.js";
 import { createHash } from "node:crypto";
 import { localGatewaySigners } from "../../src/standardRail/signer.js";
 import path from "node:path";
@@ -571,6 +572,7 @@ export async function driveDispatch(args: {
       return args.respond(run.request);
     },
     RAIL_PROFILE_HASH,
+    COMMITTED_KEYS_ONLY,
   );
   try {
     run.order = await dispatcher.dispatch(args.order, args.order.listing, BUYER_REQUESTS.fixed,

@@ -1,3 +1,4 @@
+import { COMMITTED_KEYS_ONLY } from "../src/standardRail/providerAuthority.js";
 import { randomUUID } from "node:crypto";
 import { localGatewaySigners } from "../src/standardRail/signer.js";
 import { createPool, runMigrations } from "../src/db/pool.js";
@@ -165,6 +166,7 @@ function service(args: {
       return new Response(null, { status: 503 });
     },
     hash("0"),
+    COMMITTED_KEYS_ONLY,
   );
 }
 
@@ -290,7 +292,7 @@ describe("dispatch refusal recovery", () => {
         },
       } as never,
       { transition, persistOperations: vi.fn(async () => undefined) } as never,
-      (_listing, url, init) => fetcher(url, init), hash("0"),
+      (_listing, url, init) => fetcher(url, init), hash("0"), COMMITTED_KEYS_ONLY,
     );
     return { dispatch: (value: StandardOrderRecord) => dispatcher.dispatch(value, dispatchListing, {}, hash("1"), evidence()),
       dispatcher, dispatchListing, recovery, refusals, claims, transition, resolveDispatch };

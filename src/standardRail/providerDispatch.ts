@@ -1,6 +1,5 @@
 import { randomBytes } from "node:crypto";
 import {
-  getAddress,
   recoverMessageAddress,
   type Hex,
 } from "viem";
@@ -23,6 +22,7 @@ import type {
 } from "./types.js";
 import { buildStandardEvidenceBundleV2 } from "./wireContracts.js";
 import { operationsSchema } from "./operationsSchema.js";
+import { providerSignatureAccepted, type ProviderAgentWallets } from "./providerAuthority.js";
 
 const ZERO_HASH = `0x${"00".repeat(32)}` as Hex;
 // A dispatch envelope the provider could still be accepting is never replaced:
@@ -68,6 +68,7 @@ export class StandardProviderDispatch {
     private readonly store: StandardRailStore,
     private readonly providerFetch: ProviderFetch,
     private readonly railProfileHash: Hex,
+    private readonly providerWallets: ProviderAgentWallets,
   ) {}
 
   async dispatch(
@@ -451,10 +452,14 @@ export class StandardProviderDispatch {
       message: { raw: responseHash },
       signature: body.signature as Hex,
     });
-    if (
-      getAddress(signer) !==
-        getAddress(listing.commitment.payload.providerAuthorityKey)
-    ) throw new Error("provider_dispatch_response_signature_invalid");
+    // After a provider authority switch the provider signs old versions'
+    // orders with its new agent wallet (providerAuthority.ts).
+    if (!await providerSignatureAccepted({
+      signer,
+      committedKey: listing.commitment.payload.providerAuthorityKey,
+      providerAgentId: listing.commitment.payload.providerAgentId,
+      wallets: this.providerWallets,
+    })) throw new Error("provider_dispatch_response_signature_invalid");
     return { body: { ...body, taskId: body.taskId }, responseHash, terminal };
   }
 
@@ -488,10 +493,12 @@ export class StandardProviderDispatch {
       signature: attestation.signature as Hex,
     });
     if (
-      getAddress(terminalSigner) !==
-        getAddress(
-          listing.commitment.payload.providerTerminalAttestationKey,
-        ) ||
+      !await providerSignatureAccepted({
+        signer: terminalSigner,
+        committedKey: listing.commitment.payload.providerTerminalAttestationKey,
+        providerAgentId: listing.commitment.payload.providerAgentId,
+        wallets: this.providerWallets,
+      }) ||
       attestation.payload.taskId !== body.taskId ||
       attestation.payload.dispatchHash !== dispatchHash ||
       attestation.payload.state !== body.state
