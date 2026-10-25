@@ -1,3 +1,4 @@
+import { COMMITTED_KEYS_ONLY } from "../src/standardRail/providerAuthority.js";
 import { describe, expect, it, vi } from "vitest";
 import { privateKeyToAccount } from "viem/accounts";
 import type { Hex } from "viem";
@@ -52,7 +53,7 @@ describe("paid result projection",()=>{
   const account=privateKeyToAccount(("0x"+"11".repeat(32)) as Hex);
   const order={orderId:"order",providerTaskId:"task",state:"FULFILLED",orderKey:"key"};
   const listing={responseSchema:schema,commitment:{payload:{providerAuthorityKey:account.address,providerTerminalAttestationKey:account.address}}};
-  const service=Object.assign(Object.create(StandardRailService.prototype),{catalog:catalog(),store:{persistOperations:vi.fn()},signedReceipt:async()=>({})});
+  const service=Object.assign(Object.create(StandardRailService.prototype),{providerWallets:COMMITTED_KEYS_ONLY,catalog:catalog(),store:{persistOperations:vi.fn()},signedReceipt:async()=>({})});
   async function response(result=task()) {
    const payload={orderId:"order",taskId:"task",state:"completed",resultHash:canonicalHash(result),completedAt:Math.floor(Date.now()/1000)};
    const unsigned={orderId:"order",taskId:"task",state:"completed",result,

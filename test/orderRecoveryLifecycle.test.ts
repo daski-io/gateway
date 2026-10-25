@@ -1,3 +1,4 @@
+import { COMMITTED_KEYS_ONLY } from "../src/standardRail/providerAuthority.js";
 import { describe, expect, it, vi } from "vitest";
 import { privateKeyToAccount } from "viem/accounts";
 import type { Hex } from "viem";
@@ -23,7 +24,7 @@ describe("recovery lifecycle projection",()=>{
     const response={...payload,signature:await signer.signMessage({message:{raw:canonicalHash(payload)}})};
     const persistOperations=vi.fn(async()=>undefined);
     const transition=vi.fn();
-    const service=Object.assign(Object.create(StandardRailService.prototype),{
+    const service=Object.assign(Object.create(StandardRailService.prototype),{providerWallets:COMMITTED_KEYS_ONLY,
       releaseSales: { assertOpen: async () => undefined, isParked: async () => false, parkedStatus: async () => null },
     salesOutage: { assertOpen: async () => undefined, status: async () => ({ salesOpen: true }) }, signerHealth: () => true,
       store:{persistOperations,transition},validateResponse:vi.fn(async()=>undefined),signedReceipt:async()=>null,
@@ -60,7 +61,7 @@ describe("recovery lifecycle projection",()=>{
       terminalAttestation:{payload:terminal,signature:await signer.signMessage({message:{raw:canonicalHash(terminal)}})}};
     const response={...payload,signature:await signer.signMessage({message:{raw:canonicalHash(payload)}})};
     const persistOperations=vi.fn(async()=>undefined),transition=vi.fn(),validateResponse=vi.fn();
-    const service=Object.assign(Object.create(StandardRailService.prototype),{
+    const service=Object.assign(Object.create(StandardRailService.prototype),{providerWallets:COMMITTED_KEYS_ONLY,
       releaseSales: { assertOpen: async () => undefined, isParked: async () => false, parkedStatus: async () => null },
     salesOutage: { assertOpen: async () => undefined, status: async () => ({ salesOpen: true }) }, signerHealth: () => true,
       store:{persistOperations,transition},validateResponse,signedReceipt:async()=>null,
@@ -77,7 +78,7 @@ describe("recovery lifecycle projection",()=>{
 
   it("refuses a payer-aware quote before provider admission when payerAddress is missing",async()=>{
     const providerFetch=vi.fn();
-    const service=Object.assign(Object.create(StandardRailService.prototype),{
+    const service=Object.assign(Object.create(StandardRailService.prototype),{providerWallets:COMMITTED_KEYS_ONLY,
       releaseSales: { assertOpen: async () => undefined, isParked: async () => false, parkedStatus: async () => null },
     salesOutage: { assertOpen: async () => undefined, status: async () => ({ salesOpen: true }) }, signerHealth: () => true,
       assertAdmissionOpen:vi.fn(),assertRailFence:async()=>undefined,

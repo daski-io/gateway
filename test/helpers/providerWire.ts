@@ -1,3 +1,4 @@
+import { COMMITTED_KEYS_ONLY } from "../../src/standardRail/providerAuthority.js";
 import { createHash } from "node:crypto";
 import { localGatewaySigners } from "../../src/standardRail/signer.js";
 import path from "node:path";
@@ -433,6 +434,7 @@ interface ServicePrivates {
 type Harness = Pick<StandardRailService, "issueChallenge" | "issueActionChallenge" | "performAction"> & ServicePrivates;
 function gatewayService(fields: Record<string, unknown>): Harness {
   return Object.assign(Object.create(StandardRailService.prototype) as Harness, {
+    providerWallets: COMMITTED_KEYS_ONLY,
     appConfig: APP_CONFIG, railConfig: railConfig(), purchaseResponses: new StandardPurchaseResponses(),
     releaseSales: { assertOpen: async () => undefined, isParked: async () => false, parkedStatus: async () => null },
     salesOutage: { assertOpen: async () => undefined, status: async () => ({ salesOpen: true }) }, signerHealth: () => true,
@@ -571,6 +573,7 @@ export async function driveDispatch(args: {
       return args.respond(run.request);
     },
     RAIL_PROFILE_HASH,
+    COMMITTED_KEYS_ONLY,
   );
   try {
     run.order = await dispatcher.dispatch(args.order, args.order.listing, BUYER_REQUESTS.fixed,

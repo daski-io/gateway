@@ -186,6 +186,32 @@ and registration, dispatch, lifecycle, receipts, order actions and reviews are
 not gated, so no paid order reaches `LEGAL_HOLD` or a deadline because of an
 outage. Replays of an already claimed submission still answer its order.
 
+## Provider authority switches
+
+A listing version commits the provider agent's wallet it was registered with
+(`providerAuthorityKey`, `providerTerminalAttestationKey`). When a provider
+authority switch moves the agent wallet in IdentityRegistry, the provider signs
+every order with its new wallet, old versions' orders included. For an
+existing order the gateway accepts a lifecycle response, a dispatch response or
+a terminal attestation signed by the committed key without a chain read, and
+any other signer only when it is the listing's provider agent's current
+`getAgentWallet`, read at the configured finality tag and cached for a minute.
+Every other key is refused as before. Quotes and intake stay bound to the
+committed key, so a version registered before the switch never sells under the
+new wallet. When the wallet cannot be read, an order action answers the
+retryable `PROVIDER_LIFECYCLE_UNAVAILABLE` (a read capability is reused) and a
+dispatch stays ambiguous for recovery. The first acceptance per agent, signer
+and committed key is logged.
+
+The gateway sees a switch only once `setAgentWallet` is final at its finality
+tag, plus up to a minute of cache. Until then an action on an old order that
+the provider signed with the new wallet answers 500 `INTERNAL_ERROR` (logged as
+`PROVIDER_LIFECYCLE_SIGNATURE_INVALID`); a sales outage does not cover this,
+since order actions are not gated. A quote signed with the new wallet never
+passes for a version committing the old one. A switch therefore keeps the
+provider signing with the committed key until the gateway's finality tag holds
+the new wallet and versions committing it are live.
+
 ## Compatibility evidence
 
 The PostgreSQL tests exercise incumbent restricted-role writes before candidate

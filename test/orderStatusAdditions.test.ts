@@ -1,3 +1,4 @@
+import { COMMITTED_KEYS_ONLY } from "../src/standardRail/providerAuthority.js";
 import { describe, expect, it, vi } from "vitest";
 import { localGatewaySigners } from "../src/standardRail/signer.js";
 import { privateKeyToAccount } from "viem/accounts";
@@ -30,7 +31,7 @@ type Apply = (order: StandardOrderRecord, listing: StandardListing, response: un
 function harness(orderState: StandardOrderRecord["state"] = "INPUT_REQUIRED") {
   const persistOperations = vi.fn(async () => undefined);
   const transition = vi.fn(async (order: StandardOrderRecord, to: StandardOrderRecord["state"]) => ({ ...order, state: to }));
-  const service = Object.assign(Object.create(StandardRailService.prototype), {
+  const service = Object.assign(Object.create(StandardRailService.prototype), {providerWallets:COMMITTED_KEYS_ONLY,
     releaseSales: { assertOpen: async () => undefined, isParked: async () => false, parkedStatus: async () => null },
     salesOutage: { assertOpen: async () => undefined, status: async () => ({ salesOpen: true }) }, signerHealth: () => true,
     store: { persistOperations, transition }, validateResponse: vi.fn(async () => undefined), signedReceipt: async () => null,
@@ -125,7 +126,7 @@ describe("order status additions", () => {
         timeoutMs: 3_000, maxResponseBytes: 65_536,
       } } },
     } as unknown as StandardOrderRecord;
-    const service = Object.assign(Object.create(StandardRailService.prototype), {
+    const service = Object.assign(Object.create(StandardRailService.prototype), {providerWallets:COMMITTED_KEYS_ONLY,
       assertRailFence: async () => undefined,
       store: { findByHandle: async () => order },
       appConfig: { chainId: 84532, publicUrl: "https://gateway.example" },

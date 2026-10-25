@@ -1,3 +1,4 @@
+import { COMMITTED_KEYS_ONLY } from "../src/standardRail/providerAuthority.js";
 import { createHash, randomUUID } from "node:crypto";
 import { localGatewaySigners } from "../src/standardRail/signer.js";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -210,7 +211,7 @@ function gateway(pool: Pool, desk: ReturnType<typeof providerDesk>) {
   const store = new StandardRailStore(pool);
   const journal = new StandardRailJournal(pool);
   const dispatcher = new StandardProviderDispatch({ chainId: CHAIN_ID }, railConfig as never, journal, store,
-    desk.fetch as never, RAIL_PROFILE_HASH);
+    desk.fetch as never, RAIL_PROFILE_HASH, COMMITTED_KEYS_ONLY);
   const servicing: { seconds: number | null | Error } = { seconds: null };
   const servicingFulfillmentSeconds = vi.fn(async (_order: StandardOrderRecord): Promise<number | null> => {
     if (servicing.seconds instanceof Error) throw servicing.seconds;
