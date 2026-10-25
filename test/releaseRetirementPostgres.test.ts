@@ -263,8 +263,9 @@ it("settles a failed reputation attempt only once it was replaced, its operation
   const bare=await operation("bare","final");
   await attempt(bare,3002,"failed");
   expect((await pending()).unresolvedTransactions).toBe(2);
+  // Once final, the open attempt is settled although its operation's final went through another relayer
+  // (G after the signer switch): F1's nonce 3000 is spent by F1's own later finals. Bare's attempt remains.
   await pool.query("UPDATE standard_reputation_operations SET state='final' WHERE operation_id=$1",[open]);
-  // Final through another relayer (G after the signer switch): F1's nonce 3000 is spent by F1's own later finals.
   expect((await pending()).unresolvedTransactions).toBe(1);
   await pool.query("DELETE FROM standard_reputation_transactions WHERE operation_id=$1",[bare]);
   expect((await pending()).unresolvedTransactions).toBe(0);

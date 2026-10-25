@@ -194,7 +194,7 @@ export class ReleaseRetirements {
         (SELECT count(*)::int FROM standard_reputation_operations r JOIN orders USING(order_id)
           WHERE r.state NOT IN ('final','aborted_unattested','blocked_parent_aborted','confirmation_failed','superseded')
             OR (r.state='final' AND r.kind IN ('confirmation','confirmation-v2') AND r.confirmation_reconciled_at IS NULL)) AS "reputationOperations",
-        -- A failed attempt is settled once mined (final_at), retired by review recovery, or superseded: the
+        -- A failed attempt is settled once mined (final_at), retired by review recovery, or replaced: the
         -- worker fails an unmined attempt (expired permit, broadcast not found) and sends a new one, and once
         -- the operation is final through another transaction and a final transaction of the same chain and
         -- relayer holds a nonce at or after the attempt's, its nonce is spent and it can never be mined.
