@@ -224,6 +224,65 @@ it("rejects stale asset epoch activation even when the old snapshot cannot see r
   } finally {await legacy.query("ROLLBACK");legacy.release();}
 },60_000);
 
+it("settles a failed reputation attempt only once it was replaced, its operation final and its nonce spent",async()=>{
+  // Sandbox 2026-10-15: registerOrder attempts at F1 nonces 3041 and 3043 were failed unmined (permit expired),
+  // replaced at the same nonces, and blocked retiring the listing although both operations were final.
+  const f1="0x0800000000000000000000000000000000000001", g="0x0800000000000000000000000000000000000002";
+  let next=20;
+  const operation=async(orderId:string,state:string)=>{
+    await order(orderId,"NOT_SETTLED",listingManifestHash,next++);
+    return (await pool.query<{operation_id:string}>(`INSERT INTO standard_reputation_operations(order_id,kind,logical_key,intent_hash,canonical_intent,state)
+      VALUES($1,'register',$2,$2,'{}',$3) RETURNING operation_id`,[orderId,Buffer.alloc(32,next++),state])).rows[0]!.operation_id;
+  };
+  const attempt=async(operationId:string,nonce:number,state:"failed"|"final",relayer=f1,chainId=84532)=>{
+    const id=next++;
+    await pool.query(`INSERT INTO standard_reputation_transactions(operation_id,chain_id,relayer_address,nonce,destination,value,
+      intent_hash,calldata_hash,encrypted_raw_transaction,transaction_hash,state,final_at)
+      VALUES($1,$7,$2,$3,'destination',0,$4,$4,$4,$5,$6,CASE WHEN $6='final' THEN now() END)`,
+      [operationId,relayer,nonce,Buffer.alloc(32,id),"0x"+id.toString(16).padStart(2,"0").repeat(32),state,chainId]);
+  };
+  const replaced=await operation("replaced","final");
+  await attempt(replaced,3041,"failed");
+  expect((await pending()).unresolvedTransactions).toBe(1);
+  await attempt(replaced,3041,"final");
+  expect((await pending()).unresolvedTransactions).toBe(0);
+  // A replacement at a lower nonce leaves the attempt's nonce unspent until a later transaction of its relayer is final.
+  const lower=await operation("lower","final");
+  await attempt(lower,3050,"failed");
+  await attempt(lower,3045,"final");
+  expect((await pending()).unresolvedTransactions).toBe(1);
+  await attempt(replaced,3052,"final");
+  expect((await pending()).unresolvedTransactions).toBe(0);
+  // An operation that is not final keeps its failed attempt, even behind a spent nonce and a final attempt of its own.
+  const open=await operation("open","pending");
+  await attempt(open,3000,"failed");
+  expect(await pending()).toMatchObject({unresolvedTransactions:1,reputationOperations:1});
+  await attempt(open,3001,"final",g);
+  expect((await pending()).unresolvedTransactions).toBe(1);
+  // A final operation without another final transaction of its own keeps it too.
+  const bare=await operation("bare","final");
+  await attempt(bare,3002,"failed");
+  expect((await pending()).unresolvedTransactions).toBe(2);
+  // Once final, the open attempt is settled although its operation's final went through another relayer
+  // (G after the signer switch): F1's nonce 3000 is spent by F1's own later finals. Bare's attempt remains.
+  await pool.query("UPDATE standard_reputation_operations SET state='final' WHERE operation_id=$1",[open]);
+  expect((await pending()).unresolvedTransactions).toBe(1);
+  await pool.query("DELETE FROM standard_reputation_transactions WHERE operation_id=$1",[bare]);
+  expect((await pending()).unresolvedTransactions).toBe(0);
+  // Another chain's final never spends this chain's nonce.
+  const chain=await operation("chain","final");
+  await attempt(chain,3070,"failed");
+  await attempt(chain,3070,"final",f1,8453);
+  expect((await pending()).unresolvedTransactions).toBe(1);
+  await attempt(chain,3071,"final");
+  expect((await pending()).unresolvedTransactions).toBe(0);
+  // Another relayer's final never spends this relayer's nonce.
+  const switched=await operation("switched","final");
+  await attempt(switched,4000,"failed");
+  await attempt(switched,4000,"final",g);
+  expect((await pending()).unresolvedTransactions).toBe(1);
+},60_000);
+
 it("preserves buyer review and reputation rights after fulfilled listing retirement",async()=>{
   await order("completed","FULFILLED");
   await pool.query("UPDATE standard_orders SET deposit_evidence_hash=$1,release_evidence_hash=$1 WHERE order_id='completed'",[Buffer.alloc(32,9)]);
