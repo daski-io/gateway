@@ -126,7 +126,17 @@ recorded duration start from their snapshot; no unrecorded extension is assumed.
 database failure delays an evaluation without moving its origin. Other order
 terms continue to use the immutable checkout snapshot. A provider reporting
 failure still fails through reconciliation immediately; an active status does
-not restart the clock.
+not restart the clock. When a dispatch status read gets no usable answer (the
+provider is unreachable, returns an error status, or sends an unreadable body),
+a signed completion the gateway already stored for the order's task fulfills the
+order with reason `stored_provider_completion`, so an outage does not fail work
+the provider proved complete. An answer the provider does give decides that pass
+instead, including a signed failure that contradicts the stored completion, an
+explicit no-claim 404 or a 409 conflict: the order stays open until its deadline,
+and a rejected answer is logged only when no wait or deadline ends the pass first.
+Each pass decides on its own, so a later pass that gets no usable answer still
+fulfills the order from the stored completion. A stored failure waits for the
+deadline.
 
 An expired deadline records `PROVIDER_FAILED` with reason
 `signed_provider_deadline_elapsed`. It neither cancels nor refunds the
@@ -136,7 +146,7 @@ artifact with `fulfillmentState: "completed"` while `orderState` stays
 `PROVIDER_FAILED` and the signed payment receipt is unchanged. Only the operator
 revival above returns such an order to `DISPATCHED`; it keeps the original
 dispatch resolution and recorded duration, so the order fails again unless a
-longer duration has become available.
+longer duration has become available or a stored completion applies as above.
 
 For listings admitting payer DNS readiness, signed `dns_pending` and
 `waiting_capacity` observations suspend that clock. The provider's cumulative

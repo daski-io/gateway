@@ -36,6 +36,17 @@ class ProviderDispatchUnknown extends Error {
   }
 }
 
+/**
+ * No status came back that could stand against stored evidence: the provider
+ * was unreachable, failed, or sent an unreadable body. An explicit no-claim 404
+ * and a 409 conflict are the provider's own statements and are not this.
+ */
+export class ProviderDispatchStatusUnavailable extends Error {
+  constructor(cause?: unknown) {
+    super("PROVIDER_DISPATCH_STATUS_UNAVAILABLE", { cause });
+  }
+}
+
 type ProviderFetch = (
   listing: StandardListing,
   endpoint: string,
@@ -355,7 +366,7 @@ export class StandardProviderDispatch {
           listing.providerControlProfile.payload.timeoutMs,
         )),
       },
-    );
+    ).catch((error: unknown) => { throw new ProviderDispatchStatusUnavailable(error); });
     if (!response.ok) {
       // Only the provider's own 404 saying it holds no claim for this dispatch
       // (reason outcome_policy) means it never accepted it. It answers the same
@@ -377,12 +388,13 @@ export class StandardProviderDispatch {
       } else {
         await discardResponseBody(response);
       }
-      throw new Error("PROVIDER_DISPATCH_STATUS_UNAVAILABLE");
+      if (response.status === 409) throw new Error("PROVIDER_DISPATCH_STATUS_UNAVAILABLE");
+      throw new ProviderDispatchStatusUnavailable();
     }
     return readBoundedJsonResponse(
       response,
       listing.providerControlProfile.payload.maxResponseBytes,
-    );
+    ).catch((error: unknown) => { throw new ProviderDispatchStatusUnavailable(error); });
   }
 
   /** Read and authenticate status without resolving a claim or changing an order. */

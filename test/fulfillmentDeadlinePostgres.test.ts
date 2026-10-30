@@ -170,6 +170,11 @@ function providerDesk() {
     result: { reportUrl: "https://provider.example/reports/1" },
     completedAt: 0,
     refuseDispatches: 0,
+    dispatchStatusDown: false,
+    dispatchStatusUnreachable: false,
+    dispatchStatusAnswer: null as (() => Response) | null,
+    dispatchTerminal: false,
+    duringLifecycle: null as (() => Promise<unknown>) | null,
     dispatched: [] as SignedEnvelope<StandardRailDispatchV2, 2>[],
   };
   const operations = () => ({ schemaVersion: 1, revision: desk.revision, observedAt: nowSeconds(),
@@ -180,9 +185,17 @@ function providerDesk() {
   const fetch = vi.fn(async (_listing: unknown, url: string, init: RequestInit) => {
     const body = JSON.parse(String(init.body));
     if (url.endsWith("/dispatch/status")) {
+      if (desk.dispatchStatusUnreachable) throw new TypeError("fetch failed");
+      if (desk.dispatchStatusAnswer) return desk.dispatchStatusAnswer();
+      if (desk.dispatchStatusDown) return Response.json({ error: "unavailable" }, { status: 503 });
       const query = body.query.payload as { orderId: string; dispatchHash: Hex };
-      return signed({ taskId: taskOf(query.orderId), dispatchHash: query.dispatchHash, state: desk.state,
-        operations: operations() });
+      const answer = { taskId: taskOf(query.orderId), dispatchHash: query.dispatchHash, state: desk.state,
+        operations: operations() };
+      if (!desk.dispatchTerminal) return signed(answer);
+      const payload = { taskId: answer.taskId, dispatchHash: answer.dispatchHash, state: desk.state,
+        resultHash: canonicalHash(desk.result), completedAt: desk.completedAt };
+      return Response.json({ ...answer, signature: await sign(answer),
+        terminalAttestation: { payload, signature: await sign(payload) } });
     }
     if (url.endsWith("/dispatch")) {
       const dispatch = body.dispatch as SignedEnvelope<StandardRailDispatchV2, 2>;
@@ -194,6 +207,7 @@ function providerDesk() {
       return signed({ taskId: taskOf(dispatch.payload.orderId), dispatchHash: canonicalHash(dispatch), state: "working",
         operations: operations() });
     }
+    await desk.duringLifecycle?.();
     const answer: Record<string, unknown> = { orderId: body.orderId, taskId: body.providerTaskId, state: desk.state,
       operations: operations() };
     if (body.action === "artifact") answer.result = desk.result;
@@ -493,6 +507,173 @@ describe("initial dispatch recovery (postgres)", () => {
     // Its release is proven, so the hold does not stop the listing's next purchase settling.
     const next = await seed(pool, 2, { state: "RELEASE_FINAL", fulfillmentSeconds: 72 * HOUR });
     expect(await gw.store.listingSettlementFrozen(LISTING_HASH, next)).toBe(false);
+  });
+});
+
+/** A signed provider terminal already stored, as a read that lost its transition leaves it. */
+async function storeTerminal(gw: ReturnType<typeof gateway>, id: string, state: "completed" | "failed", args: {
+  fulfillment?: Record<string, unknown>; taskId?: string;
+} = {}): Promise<void> {
+  const payload = { orderId: id, taskId: args.taskId ?? taskOf(id), state, resultHash: `0x${"ab".repeat(32)}`, completedAt: nowSeconds() - 5 };
+  await gw.store.persistOperations(id, { schemaVersion: 1, revision: 1, observedAt: nowSeconds(),
+    fulfillment: args.fulfillment ?? null, support: null, recovery: null }, {
+    payload, signature: await provider.signMessage({ message: { raw: canonicalHash(payload) } }),
+  });
+}
+
+const storedCompletion = { from_state: "DISPATCHED", to_state: "FULFILLED", reason_code: "stored_provider_completion" };
+
+describe("stored provider terminal (postgres)", () => {
+  it("fulfills a stored completion past the deadline while dispatch status stays down", async () => {
+    const desk = providerDesk();
+    desk.dispatchStatusDown = true;
+    const gw = gateway(pool, desk);
+    const id = await seed(pool, 1, { state: "DISPATCHED", fulfillmentSeconds: 12 * HOUR, resolvedSecondsAgo: 13 * HOUR });
+    await storeTerminal(gw, id, "completed");
+
+    await gw.resume(id);
+
+    expect(await transitions(pool, id)).toEqual([storedCompletion]);
+  });
+
+  it("fulfills a stored completion before the deadline while dispatch status is unreachable", async () => {
+    const desk = providerDesk();
+    desk.dispatchStatusUnreachable = true;
+    const gw = gateway(pool, desk);
+    const id = await seed(pool, 1, { state: "DISPATCHED", fulfillmentSeconds: 12 * HOUR, resolvedSecondsAgo: HOUR });
+    await storeTerminal(gw, id, "completed");
+
+    await gw.resume(id);
+
+    expect(await transitions(pool, id)).toEqual([storedCompletion]);
+  });
+
+  it("fulfills a stored completion ahead of an admitted wait", async () => {
+    const desk = providerDesk();
+    desk.dispatchStatusDown = true;
+    const gw = gateway(pool, desk);
+    const id = await seed(pool, 1, { state: "DISPATCHED", fulfillmentSeconds: 12 * HOUR, resolvedSecondsAgo: HOUR,
+      purchaseReadiness: "payer_dns" });
+    await storeTerminal(gw, id, "completed", { fulfillment: { phase: "dns_pending", reasons: [], pendingSince: nowSeconds() - MINUTE,
+      lastCheckedAt: nowSeconds(), nextCheckAt: nowSeconds() + MINUTE, missingRecords: [], accumulatedWaitSeconds: 0 } });
+
+    await gw.resume(id);
+
+    expect(await transitions(pool, id)).toEqual([storedCompletion]);
+  });
+
+  it("fulfills an INPUT_REQUIRED order from a stored completion", async () => {
+    const desk = providerDesk();
+    desk.dispatchStatusDown = true;
+    const gw = gateway(pool, desk);
+    const id = await seed(pool, 1, { state: "DISPATCHED", fulfillmentSeconds: 12 * HOUR, resolvedSecondsAgo: HOUR });
+    await pool.query("UPDATE standard_orders SET state='INPUT_REQUIRED' WHERE order_id=$1", [id]);
+    await storeTerminal(gw, id, "completed");
+
+    await gw.resume(id);
+
+    expect(await transitions(pool, id)).toEqual([{ ...storedCompletion, from_state: "INPUT_REQUIRED" }]);
+  });
+
+  it("carries a status read that lost its fence through a dispatch status outage", async () => {
+    const desk = providerDesk();
+    desk.dispatchStatusDown = true;
+    desk.state = "completed";
+    desk.completedAt = nowSeconds() - 5;
+    const gw = gateway(pool, desk);
+    const id = await seed(pool, 1, { state: "DISPATCHED", fulfillmentSeconds: 12 * HOUR, resolvedSecondsAgo: HOUR });
+    desk.duringLifecycle = () => gw.store.leaseOrder(id, "standard-recovery-worker", 45);
+    const { readCapability } = issueReadCapability({ key: railConfig.encryptionKey, orderId: id, payer: payer.address,
+      audience: GATEWAY_AUDIENCE, capabilityEpoch: 0, ttlSeconds: 60 });
+
+    await expect(gw.service.performAction({ handle: "handle-1", action: "status", request: {}, readCapability }))
+      .resolves.toMatchObject({ state: "completed", orderState: "DISPATCHED" });
+    await gw.resume(id);
+
+    expect(await transitions(pool, id)).toEqual([storedCompletion]);
+  });
+
+  it("keeps the order open when the provider's signed status contradicts the stored completion", async () => {
+    const desk = providerDesk();
+    desk.state = "failed";
+    desk.dispatchTerminal = true;
+    desk.completedAt = nowSeconds() - 5;
+    const gw = gateway(pool, desk);
+    const id = await seed(pool, 1, { state: "DISPATCHED", fulfillmentSeconds: 12 * HOUR, resolvedSecondsAgo: HOUR });
+    await storeTerminal(gw, id, "completed");
+
+    await expect(gw.resume(id)).rejects.toThrow("provider_original_terminal_changed");
+
+    expect(await transitions(pool, id)).toEqual([]);
+  });
+
+  it("keeps the order open when a fresh signed status says the task is active", async () => {
+    const gw = gateway(pool, providerDesk());
+    const id = await seed(pool, 1, { state: "DISPATCHED", fulfillmentSeconds: 12 * HOUR, resolvedSecondsAgo: HOUR });
+    await storeTerminal(gw, id, "completed");
+
+    await gw.resume(id);
+
+    expect(await transitions(pool, id)).toEqual([]);
+  });
+
+  it.each([
+    ["a validator 404", () => Response.json({ error: "invalid", reason: "validator" }, { status: 404 })],
+    ["an unreadable 200", () => new Response("{", { headers: { "content-type": "application/json" } })],
+  ])("treats %s as no answer", async (_name, answer) => {
+    const desk = providerDesk();
+    desk.dispatchStatusAnswer = answer;
+    const gw = gateway(pool, desk);
+    const id = await seed(pool, 1, { state: "DISPATCHED", fulfillmentSeconds: 12 * HOUR, resolvedSecondsAgo: HOUR });
+    await storeTerminal(gw, id, "completed");
+
+    await gw.resume(id);
+
+    expect(await transitions(pool, id)).toEqual([storedCompletion]);
+  });
+
+  it.each([
+    ["a no-claim 404", () => Response.json({ error: "no_claim", reason: "outcome_policy" }, { status: 404 })],
+    ["a 409 conflict", () => Response.json({ error: "dispatch_conflict" }, { status: 409 })],
+  ])("lets %s stand against a stored completion, up to the deadline", async (_name, answer) => {
+    const desk = providerDesk();
+    desk.dispatchStatusAnswer = answer;
+    const gw = gateway(pool, desk);
+    const id = await seed(pool, 1, { state: "DISPATCHED", fulfillmentSeconds: 12 * HOUR, resolvedSecondsAgo: HOUR });
+    await storeTerminal(gw, id, "completed");
+
+    await expect(gw.resume(id)).rejects.toThrow();
+    expect(await transitions(pool, id)).toEqual([]);
+
+    await resolvedSecondsAgo(pool, id, 13 * HOUR);
+    await gw.resume(id);
+    expect(await transitions(pool, id)).toEqual([deadlineFailure]);
+  });
+
+  it("ignores a stored completion for another task", async () => {
+    const desk = providerDesk();
+    desk.dispatchStatusDown = true;
+    const gw = gateway(pool, desk);
+    const id = await seed(pool, 1, { state: "DISPATCHED", fulfillmentSeconds: 12 * HOUR, resolvedSecondsAgo: HOUR });
+    await storeTerminal(gw, id, "completed", { taskId: "task-from-an-earlier-dispatch" });
+
+    await expect(gw.resume(id)).rejects.toThrow("PROVIDER_DISPATCH_STATUS_UNAVAILABLE");
+
+    expect(await transitions(pool, id)).toEqual([]);
+  });
+
+  it("leaves a stored failure to the deadline", async () => {
+    const desk = providerDesk();
+    const gw = gateway(pool, desk);
+    const id = await seed(pool, 1, { state: "DISPATCHED", fulfillmentSeconds: 12 * HOUR, resolvedSecondsAgo: HOUR });
+    await storeTerminal(gw, id, "failed");
+
+    await gw.resume(id);
+    expect(await transitions(pool, id)).toEqual([]);
+
+    await resolvedSecondsAgo(pool, id, 13 * HOUR);
+    await gw.resume(id);
+    expect(await transitions(pool, id)).toEqual([deadlineFailure]);
   });
 });
 
