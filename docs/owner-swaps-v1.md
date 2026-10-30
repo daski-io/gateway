@@ -12,7 +12,9 @@ mirrors the eligibility the provider granted.
 
 The route is off by default (`OWNER_SWAPS_ENABLED=false`) and budgeted per
 provider per day (`OWNER_SWAPS_PER_PROVIDER_PER_DAY`, 50; first acceptances
-only). Requests join the `service-registration` rate-limit groups.
+only). Requests join the `service-registration` rate-limit groups. A
+deployment turns the route on with a `Release-Variable` trailer, not by hand,
+and before any provider that delivers to it turns its own swaps on.
 
 ## Resource
 
