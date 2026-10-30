@@ -207,7 +207,11 @@ export class ReleaseRetirements {
         (SELECT count(*)::int FROM standard_review_preparations p JOIN orders USING(order_id)
           WHERE (p.signed_deadline IS NULL OR p.signed_deadline>extract(epoch FROM now()))
             AND NOT EXISTS(SELECT 1 FROM standard_review_sponsorships s JOIN standard_review_recovery r USING(operation_id)
-              WHERE s.preparation_id=p.preparation_id)) AS "relayableReviewAuthorizations",
+              WHERE s.preparation_id=p.preparation_id)
+            -- A final operation mined this authorization, which spent its EAS nonce; without a signed deadline
+            -- (eas-native-1.0.1) nothing else would ever end its count.
+            AND NOT EXISTS(SELECT 1 FROM standard_review_sponsorships s JOIN standard_reputation_operations r USING(operation_id)
+              WHERE s.preparation_id=p.preparation_id AND r.state='final')) AS "relayableReviewAuthorizations",
         (SELECT count(*)::int FROM standard_review_sponsorships s JOIN orders USING(order_id) WHERE s.state='reserved') AS "sponsorshipReservations",
         (SELECT count(*)::int FROM standard_security_incidents s JOIN orders USING(order_id) WHERE s.resolved_at IS NULL) AS "securityIncidents"`,
       [scope.providerAgentId,bytes(scope.serviceId),bytes(scope.listingManifestHash),scope.serviceId]);

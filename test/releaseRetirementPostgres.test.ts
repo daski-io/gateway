@@ -83,6 +83,29 @@ describe("contract retirement durable proof",()=>{
     await expect(api.retire({...scope,requestId:"signed-auth-live"})).rejects.toBeInstanceOf(RetirementBlocked);
   },60_000);
 
+  it("stops counting a review authorization without a signed deadline once its operation is final",async()=>{
+    await order("reviewed","FULFILLED");
+    await pool.query("UPDATE standard_orders SET deposit_evidence_hash=$1,release_evidence_hash=$1 WHERE order_id='reviewed'",[Buffer.alloc(32,9)]);
+    await pool.query("INSERT INTO standard_rail_receipts(order_id,receipt_hash,canonical_receipt) VALUES('reviewed',$1,'{}')",[Buffer.alloc(32,9)]);
+    const preparation=(await pool.query<{preparation_id:string}>(`INSERT INTO standard_confirmation_preparations_v2
+      (order_id,order_key,payer,operation,submissions_used,eas_nonce,deadline,request_hash,canonical_typed_data,
+       final_transition_acknowledged,expires_at,profile_id,signed_deadline,profile_observation,authorization_group)
+      VALUES('reviewed',$1,'0x2222222222222222222222222222222222222222','attest-confirmation',0,0,1,$2,'{}',
+       false,now()-interval '1 day','eas-native-1.0.1',NULL,'{}',$3) RETURNING preparation_id`,
+      [Buffer.alloc(32,1),Buffer.alloc(32,10),randomUUID()])).rows[0]!.preparation_id;
+    const operation=(await pool.query<{operation_id:string}>(`INSERT INTO standard_reputation_operations
+      (order_id,kind,logical_key,intent_hash,canonical_intent,state)
+      VALUES('reviewed','confirmation-v2',$1,$1,'{}','broadcast') RETURNING operation_id`,[Buffer.alloc(32,11)])).rows[0]!.operation_id;
+    await pool.query(`INSERT INTO standard_confirmation_sponsorships_v2(preparation_id,operation_id,order_id,payer,utc_day,state)
+      VALUES($1,$2,'reviewed','0x2222222222222222222222222222222222222222',CURRENT_DATE,'reserved')`,[preparation,operation]);
+    expect(await pending()).toMatchObject({relayableReviewAuthorizations:1});
+    await pool.query("UPDATE standard_reputation_operations SET state='final',confirmation_reconciled_at=now() WHERE operation_id=$1",[operation]);
+    await pool.query("UPDATE standard_confirmation_sponsorships_v2 SET state='charged' WHERE operation_id=$1",[operation]);
+    expect(await pending()).toMatchObject({relayableReviewAuthorizations:0,reputationOperations:0,sponsorshipReservations:0});
+    await expect(api.retire({...scope,requestId:"final-review"})).resolves.toBeDefined();
+    expect((await api.state(scope)).retired).toBe(true);
+  },60_000);
+
   it("rejects a stale SERIALIZABLE legacy writer after the fence commits",async()=>{
     await order();
     const legacy=await pool.connect();
