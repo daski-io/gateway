@@ -131,10 +131,12 @@ provider is unreachable, returns an error status, or sends an unreadable body),
 a signed completion the gateway already stored for the order's task fulfills the
 order with reason `stored_provider_completion`, so an outage does not fail work
 the provider proved complete. An answer the provider does give decides that pass
-instead, including an explicit no-claim 404 or a 409 conflict: the order stays
-open, and a rejected answer stays in the recovery error log. Each pass decides on
-its own, so a later pass that gets no usable answer still fulfills the order from
-the stored completion. A stored failure waits for the deadline.
+instead, including a signed failure that contradicts the stored completion, an
+explicit no-claim 404 or a 409 conflict: the order stays open until its deadline,
+and a rejected answer is logged only when no wait or deadline ends the pass first.
+Each pass decides on its own, so a later pass that gets no usable answer still
+fulfills the order from the stored completion. A stored failure waits for the
+deadline.
 
 An expired deadline records `PROVIDER_FAILED` with reason
 `signed_provider_deadline_elapsed`. It neither cancels nor refunds the
