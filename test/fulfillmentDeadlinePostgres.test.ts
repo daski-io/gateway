@@ -172,6 +172,7 @@ function providerDesk() {
     refuseDispatches: 0,
     dispatchStatusDown: false,
     dispatchStatusUnreachable: false,
+    dispatchStatusAnswer: null as (() => Response) | null,
     dispatchTerminal: false,
     duringLifecycle: null as (() => Promise<unknown>) | null,
     dispatched: [] as SignedEnvelope<StandardRailDispatchV2, 2>[],
@@ -185,6 +186,7 @@ function providerDesk() {
     const body = JSON.parse(String(init.body));
     if (url.endsWith("/dispatch/status")) {
       if (desk.dispatchStatusUnreachable) throw new TypeError("fetch failed");
+      if (desk.dispatchStatusAnswer) return desk.dispatchStatusAnswer();
       if (desk.dispatchStatusDown) return Response.json({ error: "unavailable" }, { status: 503 });
       const query = body.query.payload as { orderId: string; dispatchHash: Hex };
       const answer = { taskId: taskOf(query.orderId), dispatchHash: query.dispatchHash, state: desk.state,
@@ -613,6 +615,39 @@ describe("stored provider terminal (postgres)", () => {
     await gw.resume(id);
 
     expect(await transitions(pool, id)).toEqual([]);
+  });
+
+  it.each([
+    ["a validator 404", () => Response.json({ error: "invalid", reason: "validator" }, { status: 404 })],
+    ["an unreadable 200", () => new Response("{", { headers: { "content-type": "application/json" } })],
+  ])("treats %s as no answer", async (_name, answer) => {
+    const desk = providerDesk();
+    desk.dispatchStatusAnswer = answer;
+    const gw = gateway(pool, desk);
+    const id = await seed(pool, 1, { state: "DISPATCHED", fulfillmentSeconds: 12 * HOUR, resolvedSecondsAgo: HOUR });
+    await storeTerminal(gw, id, "completed");
+
+    await gw.resume(id);
+
+    expect(await transitions(pool, id)).toEqual([storedCompletion]);
+  });
+
+  it.each([
+    ["a no-claim 404", () => Response.json({ error: "no_claim", reason: "outcome_policy" }, { status: 404 })],
+    ["a 409 conflict", () => Response.json({ error: "dispatch_conflict" }, { status: 409 })],
+  ])("lets %s stand against a stored completion, up to the deadline", async (_name, answer) => {
+    const desk = providerDesk();
+    desk.dispatchStatusAnswer = answer;
+    const gw = gateway(pool, desk);
+    const id = await seed(pool, 1, { state: "DISPATCHED", fulfillmentSeconds: 12 * HOUR, resolvedSecondsAgo: HOUR });
+    await storeTerminal(gw, id, "completed");
+
+    await expect(gw.resume(id)).rejects.toThrow();
+    expect(await transitions(pool, id)).toEqual([]);
+
+    await resolvedSecondsAgo(pool, id, 13 * HOUR);
+    await gw.resume(id);
+    expect(await transitions(pool, id)).toEqual([deadlineFailure]);
   });
 
   it("ignores a stored completion for another task", async () => {

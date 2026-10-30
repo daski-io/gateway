@@ -36,7 +36,11 @@ class ProviderDispatchUnknown extends Error {
   }
 }
 
-/** No authenticated status came back: an outage or a malformed answer, never a provider's refusal. */
+/**
+ * No status came back that could stand against stored evidence: the provider
+ * was unreachable, failed, or sent an unreadable body. An explicit no-claim 404
+ * and a 409 conflict are the provider's own statements and are not this.
+ */
 export class ProviderDispatchStatusUnavailable extends Error {
   constructor(cause?: unknown) {
     super("PROVIDER_DISPATCH_STATUS_UNAVAILABLE", { cause });
@@ -384,6 +388,7 @@ export class StandardProviderDispatch {
       } else {
         await discardResponseBody(response);
       }
+      if (response.status === 409) throw new Error("PROVIDER_DISPATCH_STATUS_UNAVAILABLE");
       throw new ProviderDispatchStatusUnavailable();
     }
     return readBoundedJsonResponse(

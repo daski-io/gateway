@@ -925,10 +925,10 @@ export class StandardRailService {
         reconciliationError instanceof ProviderDispatchStatusUnavailable &&
         stored?.state === "completed" && stored.taskId === order.providerTaskId
       ) {
-        logger.warn("order fulfilled from its stored completion during a dispatch status outage", {
-          orderId: order.orderId, from: order.state,
-        });
         await this.store.transition(order, "FULFILLED", "stored_provider_completion");
+        logger.warn("order fulfilled from its stored completion during a dispatch status outage", {
+          orderId: order.orderId, from: order.state, error: reconciliationError,
+        });
         return;
       }
       const clock = fulfillmentClock(cached?.operations ?? null, listing.purchaseReadiness === "payer_dns",
