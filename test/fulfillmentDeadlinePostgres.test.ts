@@ -170,6 +170,7 @@ function providerDesk() {
     result: { reportUrl: "https://provider.example/reports/1" },
     completedAt: 0,
     refuseDispatches: 0,
+    dispatchStatusDown: false,
     dispatched: [] as SignedEnvelope<StandardRailDispatchV2, 2>[],
   };
   const operations = () => ({ schemaVersion: 1, revision: desk.revision, observedAt: nowSeconds(),
@@ -180,6 +181,7 @@ function providerDesk() {
   const fetch = vi.fn(async (_listing: unknown, url: string, init: RequestInit) => {
     const body = JSON.parse(String(init.body));
     if (url.endsWith("/dispatch/status")) {
+      if (desk.dispatchStatusDown) return Response.json({ error: "unavailable" }, { status: 503 });
       const query = body.query.payload as { orderId: string; dispatchHash: Hex };
       return signed({ taskId: taskOf(query.orderId), dispatchHash: query.dispatchHash, state: desk.state,
         operations: operations() });
@@ -493,6 +495,73 @@ describe("initial dispatch recovery (postgres)", () => {
     // Its release is proven, so the hold does not stop the listing's next purchase settling.
     const next = await seed(pool, 2, { state: "RELEASE_FINAL", fulfillmentSeconds: 72 * HOUR });
     expect(await gw.store.listingSettlementFrozen(LISTING_HASH, next)).toBe(false);
+  });
+});
+
+/** A signed provider terminal already stored, as a read that lost its transition leaves it. */
+async function storeTerminal(
+  gw: ReturnType<typeof gateway>, id: string, state: "completed" | "failed", fulfillment: Record<string, unknown> | null = null,
+): Promise<void> {
+  const payload = { orderId: id, taskId: taskOf(id), state, resultHash: `0x${"ab".repeat(32)}`, completedAt: nowSeconds() - 5 };
+  await gw.store.persistOperations(id, { schemaVersion: 1, revision: 1, observedAt: nowSeconds(),
+    fulfillment, support: null, recovery: null }, {
+    payload, signature: await provider.signMessage({ message: { raw: canonicalHash(payload) } }),
+  });
+}
+
+const storedCompletion = { from_state: "DISPATCHED", to_state: "FULFILLED", reason_code: "provider_terminal_completed" };
+
+describe("stored provider terminal (postgres)", () => {
+  it("fulfills a stored completion past the deadline while dispatch status stays down", async () => {
+    const desk = providerDesk();
+    desk.dispatchStatusDown = true;
+    const gw = gateway(pool, desk);
+    const id = await seed(pool, 1, { state: "DISPATCHED", fulfillmentSeconds: 12 * HOUR, resolvedSecondsAgo: 13 * HOUR });
+    await storeTerminal(gw, id, "completed");
+
+    await gw.resume(id);
+
+    expect(await transitions(pool, id)).toEqual([storedCompletion]);
+  });
+
+  it("fulfills a stored completion before the deadline without waiting for dispatch status", async () => {
+    const desk = providerDesk();
+    desk.dispatchStatusDown = true;
+    const gw = gateway(pool, desk);
+    const id = await seed(pool, 1, { state: "DISPATCHED", fulfillmentSeconds: 12 * HOUR, resolvedSecondsAgo: HOUR });
+    await storeTerminal(gw, id, "completed");
+
+    await gw.resume(id);
+
+    expect(await transitions(pool, id)).toEqual([storedCompletion]);
+  });
+
+  it("fulfills a stored completion ahead of an admitted wait", async () => {
+    const desk = providerDesk();
+    desk.dispatchStatusDown = true;
+    const gw = gateway(pool, desk);
+    const id = await seed(pool, 1, { state: "DISPATCHED", fulfillmentSeconds: 12 * HOUR, resolvedSecondsAgo: HOUR,
+      purchaseReadiness: "payer_dns" });
+    await storeTerminal(gw, id, "completed", { phase: "dns_pending", reasons: [], pendingSince: nowSeconds() - MINUTE,
+      lastCheckedAt: nowSeconds(), nextCheckAt: nowSeconds() + MINUTE, missingRecords: [], accumulatedWaitSeconds: 0 });
+
+    await gw.resume(id);
+
+    expect(await transitions(pool, id)).toEqual([storedCompletion]);
+  });
+
+  it("leaves a stored failure to the deadline, so a revived order is not failed again early", async () => {
+    const desk = providerDesk();
+    const gw = gateway(pool, desk);
+    const id = await seed(pool, 1, { state: "DISPATCHED", fulfillmentSeconds: 12 * HOUR, resolvedSecondsAgo: HOUR });
+    await storeTerminal(gw, id, "failed");
+
+    await gw.resume(id);
+    expect(await transitions(pool, id)).toEqual([]);
+
+    await resolvedSecondsAgo(pool, id, 13 * HOUR);
+    await gw.resume(id);
+    expect(await transitions(pool, id)).toEqual([deadlineFailure]);
   });
 });
 

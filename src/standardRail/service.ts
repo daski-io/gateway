@@ -914,6 +914,14 @@ export class StandardRailService {
         reconciliationError = error;
       }
       const cached = await this.store.loadOperations(order.orderId);
+      // A signed completion is stored before its transition, which a request
+      // can lose to a fence or a failure. It stands without another provider
+      // answer, so a dispatch-status outage cannot run a completed order into
+      // its deadline. A stored failure waits: a revived order can carry one.
+      if (cached?.originalTerminal?.payload.state === "completed") {
+        await this.store.transition(order, "FULFILLED", "provider_terminal_completed");
+        return;
+      }
       const clock = fulfillmentClock(cached?.operations ?? null, listing.purchaseReadiness === "payer_dns",
         Math.floor(Date.now()/1000), cached?.accumulatedWaitSeconds ?? 0);
       if (clock.waiting) {

@@ -126,7 +126,9 @@ recorded duration start from their snapshot; no unrecorded extension is assumed.
 database failure delays an evaluation without moving its origin. Other order
 terms continue to use the immutable checkout snapshot. A provider reporting
 failure still fails through reconciliation immediately; an active status does
-not restart the clock.
+not restart the clock. A signed completion the gateway has already stored
+fulfills the order on the next recovery pass, even when dispatch status is
+unavailable, so the deadline does not fail work the provider proved complete.
 
 An expired deadline records `PROVIDER_FAILED` with reason
 `signed_provider_deadline_elapsed`. It neither cancels nor refunds the
