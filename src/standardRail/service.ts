@@ -1897,7 +1897,7 @@ export class StandardRailService {
   // another request can move it, or only lease it (a fence bump), meanwhile.
   // The provider's evidence is already stored and recovery reconciles the same
   // provider state, so a fenced-out request answers with the order as it is
-  // now and retries nothing: the fence belongs to whoever moved it.
+  // now rather than reapplying an answer read before the order moved.
   private async applyProviderState(
     order: StandardOrderRecord,
     to: StandardOrderRecord["state"],

@@ -536,7 +536,9 @@ and `operations.recovery`, while the original failed order and its Failed reputa
 outcome remain unchanged. A recovery the provider also records on chain is a
 separate recovery record that the reputation contract keeps beside that outcome
 (see [recovered orders](#recovered-orders)). Status and artifact reads always
-obtain fresh provider evidence.
+obtain fresh provider evidence. When recovery or another request is working on
+the order at that moment, the provider's `state` can be ahead of `orderState`;
+`orderState` catches up on a later read or recovery pass.
 
 A provider can refuse an order action with an exact body whose only key is
 `error`, at most 1 KiB of uncompressed JSON. 409 `unsupported_action` answers

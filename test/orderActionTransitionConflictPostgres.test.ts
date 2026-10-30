@@ -7,6 +7,7 @@ import { canonicalHash } from "../src/standardRail/canonical.js";
 import { StandardRailIncidentStore } from "../src/standardRail/incidents.js";
 import { StandardRailJournal } from "../src/standardRail/journal.js";
 import { createPayerSignatureVerifier } from "../src/standardRail/payerSignature.js";
+import { StandardProviderDispatch } from "../src/standardRail/providerDispatch.js";
 import { StandardRailService } from "../src/standardRail/service.js";
 import { StandardRailStore } from "../src/standardRail/store.js";
 
@@ -25,6 +26,12 @@ const ORDER_ID = "ord_12345678-1234-4123-8123-123456789abc";
 const HANDLE = "handle-action-conflict";
 const TASK_ID = "task-action-conflict";
 const LIFECYCLE_URL = "https://provider.example/standard-rail/lifecycle";
+const DISPATCH_STATUS_URL = "https://provider.example/standard-rail/dispatch-status";
+const DISPATCH_HASH = `0x${"cd".repeat(32)}` as const;
+// A provider's terminal identity is fixed, so every answer carries the same one.
+const NOW = Math.floor(Date.now() / 1_000);
+const RESULT_HASH = `0x${"ab".repeat(32)}`;
+const OPERATIONS = { schemaVersion: 1, revision: 1, observedAt: NOW, fulfillment: null, support: null, recovery: null };
 
 const schema = `action_conflict_${randomUUID().replaceAll("-", "")}`;
 let bootstrap: Pool;
@@ -55,6 +62,7 @@ beforeEach(async () => {
     } },
     providerControlProfile: { payload: {
       providerAudience: "https://provider.example", lifecycleUrl: LIFECYCLE_URL,
+      dispatchStatusUrl: DISPATCH_STATUS_URL,
       timeoutMs: 3_000, maxResponseBytes: 65_536,
     } },
   };
@@ -67,26 +75,45 @@ beforeEach(async () => {
   [ORDER_ID, bytes, HANDLE, createHash("sha256").update(HANDLE).digest(), listing, payer.address, TASK_ID]);
 });
 
-/** A provider answering every status with a signed terminal `completed`, after `during` runs. */
-function completedProvider(during: () => Promise<void> = async () => undefined) {
+const signed = (value: unknown) => providerAuthority.signMessage({ message: { raw: canonicalHash(value) } });
+
+/** A provider answering every lifecycle action with `state`, signed, after `during` runs. */
+function lifecycleProvider(state: "working" | "completed", during: () => Promise<void> = async () => undefined) {
   return vi.fn(async (_listing: unknown, url: string) => {
     expect(url).toBe(LIFECYCLE_URL);
     await during();
-    const now = Math.floor(Date.now() / 1_000);
-    const payload = { orderId: ORDER_ID, taskId: TASK_ID, state: "completed", resultHash: `0x${"ab".repeat(32)}`, completedAt: now };
+    const payload = { orderId: ORDER_ID, taskId: TASK_ID, state, resultHash: RESULT_HASH, completedAt: NOW };
     const body = {
-      orderId: ORDER_ID, taskId: TASK_ID, state: "completed",
-      operations: { schemaVersion: 1, revision: 1, observedAt: now, fulfillment: null, support: null, recovery: null },
-      terminalAttestation: {
-        payload, signature: await providerAuthority.signMessage({ message: { raw: canonicalHash(payload) } }),
-      },
+      orderId: ORDER_ID, taskId: TASK_ID, state, operations: OPERATIONS,
+      ...(state === "completed" ? { terminalAttestation: { payload, signature: await signed(payload) } } : {}),
     };
-    return Response.json({ ...body,
-      signature: await providerAuthority.signMessage({ message: { raw: canonicalHash(body) } }) });
+    return Response.json({ ...body, signature: await signed(body) });
   });
 }
 
-function gateway(providerFetch: ReturnType<typeof completedProvider>) {
+const completedProvider = (during?: () => Promise<void>) => lifecycleProvider("completed", during);
+
+/** The recovery worker's dispatcher, against a provider reporting the same terminal state. */
+function recoveryDispatcher() {
+  const providerFetch = vi.fn(async (_listing: unknown, url: string) => {
+    expect(url).toBe(DISPATCH_STATUS_URL);
+    const payload = { taskId: TASK_ID, dispatchHash: DISPATCH_HASH, state: "completed", resultHash: RESULT_HASH, completedAt: NOW };
+    const body = { taskId: TASK_ID, dispatchHash: DISPATCH_HASH, state: "completed", operations: OPERATIONS };
+    return Response.json({ ...body, signature: await signed(body),
+      terminalAttestation: { payload, signature: await signed(payload) } });
+  });
+  return Object.assign(Object.create(StandardProviderDispatch.prototype), {
+    appConfig: { chainId: 84532 },
+    railConfig: {
+      environment: "testnet", signers: localGatewaySigners(`0x${"33".repeat(32)}`), dispatchTimeoutMs: 3_000,
+    },
+    journal: { resolveDispatch: async () => undefined },
+    store,
+    providerFetch,
+  }) as StandardProviderDispatch;
+}
+
+function gateway(providerFetch: ReturnType<typeof lifecycleProvider>) {
   return Object.assign(Object.create(StandardRailService.prototype), {
     appConfig: { chainId: 84532, publicUrl: "https://gateway.example" },
     railConfig: {
@@ -106,16 +133,18 @@ function gateway(providerFetch: ReturnType<typeof completedProvider>) {
   }) as StandardRailService;
 }
 
-async function status(service: StandardRailService): Promise<Record<string, unknown>> {
+async function act(service: StandardRailService, action: "status" | "input"): Promise<Record<string, unknown>> {
   const request = {};
   const { signRequest, ...challenge } = await service.issueActionChallenge({
-    handle: HANDLE, action: "status", request, clientKey: "203.0.113.7",
+    handle: HANDLE, action, request, clientKey: "203.0.113.7",
   }) as Record<string, unknown> & { signRequest: Parameters<typeof payer.signTypedData>[0] };
   const authorization = { ...challenge, signature: await payer.signTypedData(signRequest) };
   return await service.performAction({
-    handle: HANDLE, action: "status", request, authorization: authorization as never,
+    handle: HANDLE, action, request, authorization: authorization as never,
   }) as Record<string, unknown>;
 }
+
+const status = (service: StandardRailService) => act(service, "status");
 
 async function current() {
   const order = await store.findById(ORDER_ID);
@@ -151,7 +180,19 @@ describe("order action fenced out of its transition (postgres)", () => {
     expect(await incidentCount()).toBe(0);
   }, 60_000);
 
-  it("lets the next status apply the provider's state once the fence has settled", async () => {
+  it("lets recovery apply the provider's state after a fenced-out status", async () => {
+    const service = gateway(completedProvider(async () => {
+      await store.leaseOrder(ORDER_ID, "standard-recovery-worker", 45);
+    }));
+    await status(service);
+
+    const recovered = await recoveryDispatcher().reconcile(await current(), (await current()).listing, DISPATCH_HASH);
+
+    expect(recovered.state).toBe("FULFILLED");
+    expect(await fulfilledTransitions()).toBe(1);
+  }, 60_000);
+
+  it("lets the next status apply the provider's state", async () => {
     let leased = false;
     const service = gateway(completedProvider(async () => {
       if (leased) return;
@@ -195,11 +236,24 @@ describe("order action fenced out of its transition (postgres)", () => {
     expect(await incidentCount()).toBe(0);
   }, 60_000);
 
+  it("still moves the capability epoch when a fenced-out input took effect at the provider", async () => {
+    await pool.query("UPDATE standard_orders SET state='INPUT_REQUIRED'");
+    const service = gateway(lifecycleProvider("working", async () => {
+      await store.leaseOrder(ORDER_ID, "standard-recovery-worker", 45);
+    }));
+
+    const answer = await act(service, "input");
+
+    expect(answer).toMatchObject({ state: "working", orderState: "INPUT_REQUIRED" });
+    expect((await current()).capabilityEpoch).toBe(1);
+  }, 60_000);
+
   it("still surfaces any other transition failure", async () => {
     const service = gateway(completedProvider());
-    vi.spyOn(store, "transition").mockRejectedValueOnce(new Error("connection terminated"));
+    const transition = vi.spyOn(store, "transition").mockRejectedValueOnce(new Error("connection terminated"));
 
     await expect(status(service)).rejects.toThrow("connection terminated");
     expect((await current()).state).toBe("DISPATCHED");
+    transition.mockRestore();
   }, 60_000);
 });
