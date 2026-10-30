@@ -36,6 +36,13 @@ class ProviderDispatchUnknown extends Error {
   }
 }
 
+/** No authenticated status came back: an outage or a malformed answer, never a provider's refusal. */
+export class ProviderDispatchStatusUnavailable extends Error {
+  constructor(cause?: unknown) {
+    super("PROVIDER_DISPATCH_STATUS_UNAVAILABLE", { cause });
+  }
+}
+
 type ProviderFetch = (
   listing: StandardListing,
   endpoint: string,
@@ -355,7 +362,7 @@ export class StandardProviderDispatch {
           listing.providerControlProfile.payload.timeoutMs,
         )),
       },
-    );
+    ).catch((error: unknown) => { throw new ProviderDispatchStatusUnavailable(error); });
     if (!response.ok) {
       // Only the provider's own 404 saying it holds no claim for this dispatch
       // (reason outcome_policy) means it never accepted it. It answers the same
@@ -377,12 +384,12 @@ export class StandardProviderDispatch {
       } else {
         await discardResponseBody(response);
       }
-      throw new Error("PROVIDER_DISPATCH_STATUS_UNAVAILABLE");
+      throw new ProviderDispatchStatusUnavailable();
     }
     return readBoundedJsonResponse(
       response,
       listing.providerControlProfile.payload.maxResponseBytes,
-    );
+    ).catch((error: unknown) => { throw new ProviderDispatchStatusUnavailable(error); });
   }
 
   /** Read and authenticate status without resolving a claim or changing an order. */

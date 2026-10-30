@@ -107,7 +107,7 @@ import { discardResponseBody, readBoundedJsonResponse as readBoundedJson } from 
 import { providerLifecycleRefusal } from "./lifecycleRefusal.js";
 import { StandardProviderTransport } from "./providerTransport.js";
 import { StandardRailCatalog } from "./catalog.js";
-import { StandardProviderDispatch } from "./providerDispatch.js";
+import { ProviderDispatchStatusUnavailable, StandardProviderDispatch } from "./providerDispatch.js";
 import { StandardOperationalHealth } from "./operationalHealth.js";
 import { withRpcFailover } from "../rpc/failover.js";
 import { rpcReadTransport } from "../rpc/readTransport.js";
@@ -915,11 +915,20 @@ export class StandardRailService {
       }
       const cached = await this.store.loadOperations(order.orderId);
       // A signed completion is stored before its transition, which a request
-      // can lose to a fence or a failure. It stands without another provider
-      // answer, so a dispatch-status outage cannot run a completed order into
-      // its deadline. A stored failure waits: a revived order can carry one.
-      if (cached?.originalTerminal?.payload.state === "completed") {
-        await this.store.transition(order, "FULFILLED", "provider_terminal_completed");
+      // can lose to a fence or a failure. While the provider gives no answer
+      // it stands for the task it names, so an outage cannot run a completed
+      // order into its deadline. Any answer the provider does give decides
+      // instead: a rejected one keeps its error and an active one keeps the
+      // order open. A stored failure waits for the deadline.
+      const stored = cached?.originalTerminal?.payload;
+      if (
+        reconciliationError instanceof ProviderDispatchStatusUnavailable &&
+        stored?.state === "completed" && stored.taskId === order.providerTaskId
+      ) {
+        logger.warn("order fulfilled from its stored completion during a dispatch status outage", {
+          orderId: order.orderId, from: order.state,
+        });
+        await this.store.transition(order, "FULFILLED", "stored_provider_completion");
         return;
       }
       const clock = fulfillmentClock(cached?.operations ?? null, listing.purchaseReadiness === "payer_dns",
