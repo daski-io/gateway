@@ -1824,9 +1824,9 @@ export class StandardRailService {
       await this.store.persistOperations(order.orderId, response.operations, null);
     }
     if (response.state === "input-required" && order.state === "DISPATCHED") {
-      order = await this.store.transition(order, "INPUT_REQUIRED", "provider_input_required");
+      order = await this.applyProviderState(order, "INPUT_REQUIRED", "provider_input_required");
     } else if (response.state === "working" && order.state === "INPUT_REQUIRED") {
-      order = await this.store.transition(order, "DISPATCHED", "provider_input_accepted");
+      order = await this.applyProviderState(order, "DISPATCHED", "provider_input_accepted");
     } else if (["completed", "failed", "canceled"].includes(String(response.state))) {
       const attestation = response.terminalAttestation;
       if (!attestation?.payload || typeof attestation.signature !== "string") {
@@ -1869,9 +1869,9 @@ export class StandardRailService {
         payload: attestation.payload, signature: attestation.signature,
       });
       if (response.state === "completed" && ["DISPATCHED", "INPUT_REQUIRED"].includes(order.state)) {
-        order = await this.store.transition(order, "FULFILLED", "provider_terminal_completed");
+        order = await this.applyProviderState(order, "FULFILLED", "provider_terminal_completed");
       } else if (["failed", "canceled"].includes(String(response.state)) && ["DISPATCHED", "INPUT_REQUIRED"].includes(order.state)) {
-        order = await this.store.transition(order, "PROVIDER_FAILED", "provider_terminal_failed");
+        order = await this.applyProviderState(order, "PROVIDER_FAILED", "provider_terminal_failed");
       }
     }
     // Every order action answers with the order handle and the gateway's own
@@ -1890,6 +1890,26 @@ export class StandardRailService {
             submission: await this.submissionStatus(order) }
         : {}),
     };
+  }
+
+  // Moves the order to what the provider just reported. The order was read
+  // before the provider call and this request holds no lease, so recovery or
+  // another request can move it, or only lease it (a fence bump), meanwhile.
+  // The provider's evidence is already stored and recovery reconciles the same
+  // provider state, so a fenced-out request answers with the order as it is
+  // now rather than reapplying an answer read before the order moved.
+  private async applyProviderState(
+    order: StandardOrderRecord,
+    to: StandardOrderRecord["state"],
+    reason: string,
+  ): Promise<StandardOrderRecord> {
+    try {
+      return await this.store.transition(order, to, reason);
+    } catch (error) {
+      if (!isTransitionConflict(error)) throw error;
+      logger.info("order action fenced out of its transition", { orderId: order.orderId, from: order.state, to });
+      return await this.store.findById(order.orderId) ?? order;
+    }
   }
 
   async issueChallenge(args: {
