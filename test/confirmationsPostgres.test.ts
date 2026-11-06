@@ -119,6 +119,9 @@ function config(overrides: Partial<StandardRailConfig> = {}): StandardRailConfig
   } as unknown as StandardRailConfig;
 }
 
+const FIRST_CONTRACT_VERSION: Record<EasProfileId, string> = {
+  "eas-native-1.0.1": "1.0.1", "eas-native-1.2.0": "1.2.0", "eas-native-1.4.1-beta.3": "1.4.1-beta.3" };
+
 function confirmations(overrides: Partial<StandardRailConfig> = {}, network: Chain = baseSepolia): StandardConfirmations {
   return new StandardConfirmations(pool, config(overrides), network, state, {
     readProfile: async (tag = "latest") => {
@@ -126,7 +129,7 @@ function confirmations(overrides: Partial<StandardRailConfig> = {}, network: Cha
       if (tag !== "latest" && chain.finalProfileUnavailable) throw new Error("finality RPC unavailable");
       const view = tag === "latest" ? "latest" : "finalized";
       const profileId = tag !== "latest" && chain.finalProfileId ? chain.finalProfileId : chain.profileId;
-      return { profileId, contractVersion:EAS_PROFILES[profileId].contractVersion,domainVersion:EAS_PROFILES[profileId].domainVersion,
+      return { profileId, contractVersion:FIRST_CONTRACT_VERSION[profileId],domainVersion:EAS_PROFILES[profileId].domainVersion,
         implementation:EAS, implementationCodeHash:hash("a"),domainSeparator:hash("b"),
         chainId:network.id,easAddress:EAS,blockNumber:chain[view].block.toString(),blockHash:blockHash(view,chain[view].block),
         timestamp:String(tag === "latest" ? Math.floor(Date.now()/1000) : chain.finalProfileTimestamp ?? BigInt(Math.floor(Date.now()/1000))) };

@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import type { Hex } from "viem";
+import type { Address, Hex } from "viem";
 import { mcpError, mcpJson } from "../src/mcp/util.js";
 import { mcpSurfaceFixture } from "./helpers/mcpSurfaceFixture.js";
 import { compactBazaarExtension } from "../src/standardRail/discovery.js";
@@ -380,19 +380,29 @@ function confirmationDirectCallFixture() {
  * the release engine runs each released consumer against these fixtures; every
  * later profile has its own file.
  */
+/** The deployment each fixture entry was generated from, so the files stay byte-for-byte stable. */
+const FIXTURE_DEPLOYMENTS: Record<EasProfileId, { chainId: number; contractVersion: string; implementation: Address; implementationCodeHash: Hex }> = {
+  "eas-native-1.0.1": { chainId: 8453, contractVersion: "1.0.1", implementation: "0xbEb5Fc579115071764c7423A4f12eDde41f106Ed",
+    implementationCodeHash: "0x16b293cd7ed66fa1e03076e5847c59b146a83c187d991c42fe6056b3c1cc0513" },
+  "eas-native-1.2.0": { chainId: 84532, contractVersion: "1.2.0", implementation: "0xC0D3c0D3C0d3c0D3c0D3C0D3c0D3c0d3c0d30021",
+    implementationCodeHash: "0x703f246f804f8d4b315fd7b5fc504671f726230373571e02b69794d0f2614fd7" },
+  "eas-native-1.4.1-beta.3": { chainId: 84532, contractVersion: "1.4.1-beta.3", implementation: "0xc919d2C8d3a7B617feA7604b68D862027bD02e64",
+    implementationCodeHash: "0x5b1a9eac43a2752a4f6b83617cd580cf17abc5b15812c3cea6c26c4dd68fa721" },
+};
+
 function confirmationSponsoredPreparationFixture(ids: readonly EasProfileId[]) {
   const eas = "0x4200000000000000000000000000000000000021" as const;
   return {
     schemaVersion: 1,
     profiles: Object.values(EAS_PROFILES).map((profile, index) => ({ profile, index })).filter(({ profile }) => ids.includes(profile.id)).map(({ profile, index }) => {
       const facts = {
-        chainId: profile.chainId, eas, schemaUid: hash("5"), reputationStorage: address("c"),
+        chainId: FIXTURE_DEPLOYMENTS[profile.id].chainId, eas, schemaUid: hash("5"), reputationStorage: address("c"),
         orderKey: hash("1"), payer: address("a"), recipient: address("b"), currentUid: hash("2"),
         nonce: "7", submissionsUsed: 1, timestamp: ISSUED_AT, admissionDeadline: String(ISSUED_AT + 300),
       };
       const observation: EasProfileObservation = {
-        profileId: profile.id, contractVersion: profile.contractVersion, domainVersion: profile.domainVersion,
-        implementation: profile.implementation, implementationCodeHash: profile.implementationCodeHash,
+        profileId: profile.id, contractVersion: FIXTURE_DEPLOYMENTS[profile.id].contractVersion, domainVersion: profile.domainVersion,
+        implementation: FIXTURE_DEPLOYMENTS[profile.id].implementation, implementationCodeHash: FIXTURE_DEPLOYMENTS[profile.id].implementationCodeHash,
         domainSeparator: easDomainSeparator(facts.chainId, eas, profile.domainVersion),
         chainId: facts.chainId, easAddress: eas, blockNumber: "12345", blockHash: hash("d"),
         timestamp: String(facts.timestamp),
