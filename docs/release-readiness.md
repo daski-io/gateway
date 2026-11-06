@@ -116,7 +116,7 @@ CI and Release image runs both passed.
 | CI `validate` / Archive qualified compiled runtime, Preserve candidate build and startup identity | Uploads the qualified `dist`, `build-identity.json`, the startup proofs, the serving-baseline prior-runtime evidence and, when it ran, the previous-head prior-runtime evidence as `gateway-runtime-proof-<sha>` for 30 days. |
 | CI `validate` / Audit dependencies | `npm audit --audit-level=high` fails on a high-severity advisory; registry transport failures are retried, not treated as findings. |
 | Release image `image` / `docker/build-push-action` | Builds and pushes `ghcr.io/daski-io/gateway:<sha>` with `SOURCE_SHA` bound, provenance (`mode=max`) and an SBOM, and outputs the immutable digest. |
-| Release image `image` / Pull the pushed image by digest, Scan the pushed image | Pulls the exact pushed digest back and runs Trivy 0.67.2 (pinned by digest) with `--severity MEDIUM,HIGH,CRITICAL --ignore-unfixed --exit-code 1`: the shipped image carries no fixable MEDIUM-or-higher OS or Node package advisory. The Dockerfile keeps this green by installing Debian's patched PCRE2 and Perl and removing npm/npx from the runtime stage. |
+| Release image `image` / Pull the pushed image by digest, Scan the pushed image | Pulls the exact pushed digest back and runs Trivy 0.67.2 (pinned by digest) with `--severity MEDIUM,HIGH,CRITICAL --ignore-unfixed --exit-code 1`: the shipped image carries no fixable MEDIUM-or-higher OS or Node package advisory. The Dockerfile keeps this green by installing Debian's patched PCRE2, Perl and APT and removing npm/npx from the runtime stage. |
 | Release image `image` / `actions/attest-build-provenance`, Record immutable image | Attests build provenance (public repositories) and uploads `release-image-<sha>` with the digest the release engine deploys. A failed scan stops before this step, so no candidate artifact exists for a vulnerable image. |
 
 ## Hand-off to the release agent
@@ -154,8 +154,8 @@ runs `scripts/check-release-trailers.mjs` over every pushed commit.
 
 ## Follow-ups
 
-- The Dockerfile pins `libpcre2-8-0=10.42-1+deb12u2` and `perl-base=5.36.0-7+deb12u4`
-  (as the provider does). When Debian supersedes either package the build
+- The Dockerfile pins `libpcre2-8-0=10.42-1+deb12u2`, `perl-base=5.36.0-7+deb12u4`
+  and `apt=2.6.2 libapt-pkg6.0=2.6.2` (as the provider does). When Debian supersedes either package the build
   fails loudly; bump the pin or move to a base image that already carries the
   fix. A new Debian security update for another base-image package fails the
   image scan the same way, and is pinned the same way.
