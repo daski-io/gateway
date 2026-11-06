@@ -27,12 +27,13 @@ on:
       - main
       - "hotfix/**"
 
-# Cancel superseded runs on the same ref (rapid develop pushes, PR
-# synchronize). Cancellation only ever hits runs for outdated commits, so a
-# PR head never carries a cancelled check in its rollup.
+# A newer commit on the same pull request cancels its superseded run. Push
+# runs are never cancelled or replaced: each push run gets a group of its own,
+# because a shared group would still drop a waiting push run, and release
+# tooling reads the push run of the exact commit as its proof.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event_name == 'push' && github.run_id || github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'push' }}
 
 permissions:
   contents: read
