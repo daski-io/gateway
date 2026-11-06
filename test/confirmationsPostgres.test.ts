@@ -880,6 +880,45 @@ describe("Base Sepolia EAS 1.4.1-beta.3 reviews", () => {
     // Repeating the replacement now resumes the new candidate.
     expect((await subject.handle(order, "confirmation", replace, eoa)).result.preparationId).toBe(next.result.preparationId);
   });
+  // Base's 2026-11-04 EAS upgrade moved from the deadline-free 1.0.1 format to 1.4.1-beta.3, the format Base
+  // Sepolia already used: the same profile is qualified on both chains by its signing format.
+  for (const action of ["confirmation", "revoke-confirmation"] as const) {
+    it(`signs the payer into the ${action} struct on Base under 1.4.1-beta.3`, async () => {
+      chain.profileId = "eas-native-1.4.1-beta.3";
+      if (action === "revoke-confirmation") {
+        chain.latest.currentUid = hash("c");
+        chain.latest.submissionsUsed = 1;
+      }
+      const { prepared } = await sponsoredSubmit(confirmations({}, base), action);
+      const typed = prepared.result.signableTypedData as { domain: Record<string, unknown>; message: Record<string, unknown> };
+      expect(prepared.result).toMatchObject({ profileId: "eas-native-1.4.1-beta.3", domainVersion: "1.3.0", signedDeadline: typed.message.deadline });
+      expect(typed.domain).toMatchObject({ name: "EAS", version: "1.3.0", chainId: 8453 });
+      expect(typed.message[action === "confirmation" ? "attester" : "revoker"]).toBe(getAddress(order.payer!));
+    });
+  }
+  it("replaces a pre-upgrade Base 1.0.1 preparation with a 1.4.1-beta.3 one only once finality shows the upgrade", async () => {
+    chain.profileId = "eas-native-1.0.1";
+    const subject = confirmations({}, base);
+    const prepare = { phase: "prepare", submission: "sponsored", reviewProtocol: 2, confirmation: "Confirmed", acknowledgeFinalTransition: false };
+    const old = await subject.handle(order, "confirmation", prepare, eoa);
+    expect(old.result).toMatchObject({ profileId: "eas-native-1.0.1", signedDeadline: null });
+    chain.profileId = "eas-native-1.4.1-beta.3";
+    chain.finalProfileId = "eas-native-1.0.1";
+    const replace = { ...prepare, supersedesPreparationId: old.result.preparationId, acknowledgeSameNonce: true };
+    await expect(subject.handle(order, "confirmation", replace, eoa)).rejects.toMatchObject({ code: "CONFIRMATION_PREPARATION_STALE" });
+    chain.finalProfileId = null;
+    const next = await subject.handle(order, "confirmation", replace, eoa);
+    expect(next.result).toMatchObject({ profileId: "eas-native-1.4.1-beta.3", domainVersion: "1.3.0" });
+    expect((next.result.signableTypedData as { domain: Record<string, unknown> }).domain.chainId).toBe(8453);
+    expect((await pool.query(`SELECT profile_id,consumed_at IS NOT NULL AS consumed,supersedes_preparation_id
+      FROM standard_confirmation_preparations_v2 ORDER BY created_at`)).rows).toEqual([
+      { profile_id: "eas-native-1.0.1", consumed: true, supersedes_preparation_id: null },
+      { profile_id: "eas-native-1.4.1-beta.3", consumed: false, supersedes_preparation_id: old.result.preparationId },
+    ]);
+    const signature = await signPreparation(next.result.signableTypedData as Record<string, unknown>);
+    await expect(subject.handle(order, "confirmation", { phase: "submit", submission: "sponsored", reviewProtocol: 2,
+      preparationId: next.result.preparationId, signature }, eoa)).rejects.toMatchObject({ code: "CONFIRMATION_SUBMISSION_PENDING" });
+  });
   it("still admits only reviewed profiles, and the new one only with its signed deadline's profile shape", async () => {
     await sponsoredSubmit(confirmations(), "confirmation");
     await expect(pool.query("UPDATE standard_confirmation_preparations_v2 SET profile_id='eas-native-1.4.2'"))

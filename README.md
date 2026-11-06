@@ -238,9 +238,13 @@ not a configuration option.
 
 Sponsored reviews require `reviewProtocol: 2` on new prepare/submit requests.
 Use the buyer version advertised in `/.well-known/mcp.json`. The gateway and
-buyer independently verify pinned EAS implementation, domain and signed types:
-Base native 1.0.1 and Base Sepolia native 1.2.0 use different delegation formats.
-An unknown implementation disables new sponsored sends while receipt reconciliation continues.
+buyer independently qualify the chain's EAS predeploy by its signing format: the
+EIP-712 domain, recomputed for the chain and predeploy, and the signed Attest and
+Revoke types. Base and Base Sepolia upgrade the predeploy in place; an upgrade that
+keeps a known format keeps working, whatever its implementation or `version()`.
+Both chains now present the 1.4.1-beta.3 format (signing domain 1.3.0, payer signed
+as attester or revoker). An unknown format disables new sponsored sends while
+receipt reconciliation continues.
 
 A pending response includes its operation ID. A failed or unresolved submission
 returns an error; only a finalized successful receipt reports success. Keep the
