@@ -17,6 +17,10 @@ name: CI
 # main listed there, every develop push while a release PR was open validated
 # twice (seen on PR #14).
 on:
+  # GitHub's merge queue retests each pull request on top of develop and the
+  # pull requests queued ahead of it, then merges only if this run passes.
+  merge_group:
+    types: [checks_requested]
   pull_request:
     branches:
       - develop
@@ -209,14 +213,14 @@ jobs:
 
       # A rollback, and the old instance during a deploy, run the previous
       # runtime on the schema this candidate migrated. When the change touches
-      # a migration, build the base commit (the pull request base, else the
-      # head this push replaced, else the parent) and prove its runtime still
-      # boots there. Its receipt has its own name: the serving-baseline receipt
+      # a migration, build the base commit (the pull request or merge queue
+      # base, else the head this push replaced, else the parent) and prove its
+      # runtime still boots there. Its receipt has its own name: the serving-baseline receipt
       # above is the one release qualification reads.
       - name: Prior runtime on expanded schema (migration changes)
         shell: bash
         env:
-          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
           BEFORE: ${{ github.event.before }}
         run: |
           set -euo pipefail
@@ -298,11 +302,11 @@ jobs:
         shell: bash
         env:
           EVENT: ${{ github.event_name }}
-          BASE: ${{ github.event.pull_request.base.sha }}
+          BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
           BEFORE: ${{ github.event.before }}
         run: |
           set -euo pipefail
-          if [ "$EVENT" = "pull_request" ]; then
+          if [ "$EVENT" = "pull_request" ] || [ "$EVENT" = "merge_group" ]; then
             range="$BASE..HEAD"
           elif [ -n "$BEFORE" ] && [ "$BEFORE" != "0000000000000000000000000000000000000000" ] && git cat-file -e "$BEFORE" 2>/dev/null; then
             range="$BEFORE..HEAD"
