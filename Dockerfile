@@ -9,10 +9,11 @@
 # frontend above, come through Google's mirror with the same digests:
 # anonymous Docker Hub pulls from shared CI runners hit its rate limit.
 FROM mirror.gcr.io/library/node:22-bookworm-slim@sha256:de170b39439eb0e5a3444ad7d60b015614a381e10fecae2e30ec9e735122f38d AS base
-# Debian security updates for PCRE2 and Perl in the Node image. The develop
+# Debian security updates for PCRE2, Perl and APT in the Node image. The develop
 # image scan (release-image.yml) fails on fixable MEDIUM+ findings.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends libpcre2-8-0=10.42-1+deb12u2 perl-base=5.36.0-7+deb12u4 \
+    apt=2.6.2 libapt-pkg6.0=2.6.2 \
  && rm -rf /var/lib/apt/lists/*
 
 FROM base AS builder
