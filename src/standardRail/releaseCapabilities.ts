@@ -4,6 +4,8 @@ import { createHash } from "node:crypto";
 export interface ReleaseCapabilityManifest {
   schemaVersion: 1; role: "gateway"; commit: string;
   paidContracts: unknown[]; assetActions: unknown[]; intentFormats: string[]; workerFormats: string[];
+  /** Encodings of public JSON variables this gateway decodes; absent before brotli support. */
+  variableEncodings?: string[];
 }
 export function parseReleaseCapabilityManifest(bytes: Buffer) {
   const artifact = JSON.parse(bytes.toString("utf8")) as ReleaseCapabilityManifest;

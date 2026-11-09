@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { gzipSync } from "node:zlib";
+import { brotliCompressSync, gzipSync } from "node:zlib";
 import { getAddress, keccak256 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { loadStandardRailConfig } from "../src/standardRail/config.js";
@@ -77,6 +77,39 @@ describe("standard rail environment contract", () => {
     const env = standardEnv();
     env.STANDARD_RAIL_MANIFEST_JSON = JSON.stringify({ providerControlProfiles: [] });
     expect(() => loadStandardRailConfig(env)).toThrow(/MANIFEST_JSON is malformed/);
+  });
+
+  it("accepts a brotli manifest value with the same content as gzip", () => {
+    const manifest = JSON.stringify({ providerControlProfiles: [], actionCatalogs: [{ marker: "x".repeat(5_000) }] });
+    const gzip = standardEnv();
+    gzip.STANDARD_RAIL_MANIFEST_JSON = `gzip-base64:${gzipSync(manifest).toString("base64")}`;
+    const brotli = standardEnv();
+    brotli.STANDARD_RAIL_MANIFEST_JSON = `br-base64:${brotliCompressSync(manifest).toString("base64")}`;
+    expect(loadStandardRailConfig(brotli).manifest).toEqual(loadStandardRailConfig(gzip).manifest);
+  });
+
+  it("bounds a brotli manifest to the same decoded size as gzip", () => {
+    const env = standardEnv();
+    const oversized = JSON.stringify({ providerControlProfiles: [], padding: "x".repeat(1_000_001) });
+    env.STANDARD_RAIL_MANIFEST_JSON = `br-base64:${brotliCompressSync(oversized).toString("base64")}`;
+    expect(() => loadStandardRailConfig(env)).toThrow(/MANIFEST_JSON is malformed/);
+  });
+
+  it.each([
+    ["an unknown prefix", "zstd-base64:AAAA"],
+    ["non-base64 brotli", "br-base64:not base64!"],
+    ["brotli bytes that do not decode", `br-base64:${Buffer.from("not brotli").toString("base64")}`],
+  ])("rejects a manifest value with %s", (_label, value) => {
+    const env = standardEnv();
+    env.STANDARD_RAIL_MANIFEST_JSON = value;
+    expect(() => loadStandardRailConfig(env)).toThrow(/MANIFEST_JSON is malformed/);
+  });
+
+  it("keeps splitter creation code gzip-only", () => {
+    const env = standardEnv();
+    env.STANDARD_RAIL_SPLITTER_CREATION_CODE =
+      `br-base64:${brotliCompressSync(creationCode).toString("base64")}`;
+    expect(() => loadStandardRailConfig(env)).toThrow(/SPLITTER_CREATION_CODE is malformed/);
   });
 
   it("rejects splitter creation code that does not match its pinned hash", () => {
