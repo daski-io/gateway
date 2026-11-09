@@ -25,3 +25,9 @@ it("compiled runtime reports its embedded image commit even with stale platform 
   expect(version.GATEWAY_SOURCE_SHA).toBe(manifest.commit);
   expect(version.GATEWAY_COMMIT).toBe(manifest.commit.slice(0, 12));
 });
+
+it("the built release capabilities tell the release engine this gateway reads a brotli manifest", async () => {
+  const { readFileSync } = await import("node:fs");
+  const manifest = JSON.parse(readFileSync(new URL("../dist/release-capabilities.json", import.meta.url), "utf8"));
+  expect(manifest.variableEncodings).toEqual(["gzip-base64", "br-base64"]);
+});

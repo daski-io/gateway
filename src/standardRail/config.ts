@@ -1,7 +1,7 @@
 import {parseSandboxFacilitatorTransport,type SandboxFacilitatorTransport} from "./sandboxFacilitatorTransport.js";
 import { parseCommerceBaseline, parseTargetEpochs, type CommerceBaseline } from "./releaseBaseline.js";
 import { createHash } from "node:crypto";
-import { gunzipSync } from "node:zlib";
+import { brotliDecompressSync, gunzipSync } from "node:zlib";
 import { getAddress, keccak256, type Address, type Hex } from "viem";
 import { assertNoDuplicateJsonKeys } from "./canonical.js";
 import { PAYER_ACCOUNT_TYPES, type PayerAccountType } from "./payerSignature.js";
@@ -178,13 +178,30 @@ function databaseUrl(raw: string): string {
   return raw;
 }
 
-function gunzipEnvelope(name: string, text: string, maxOutputLength: number): string {
+// Public JSON travels compressed and base64-encoded in a Railway variable,
+// which holds at most 32,768 bytes. gzip's 32 KB window cannot match the
+// definitions each signed catalog epoch repeats, so the release engine sends
+// the manifest as brotli (large window) once gzip no longer fits. The engine
+// does so only for a gateway whose release capabilities list "br-base64" in
+// variableEncodings (scripts/release-capability-input.json).
+const ENVELOPE_DECODERS = {
+  "gzip-base64:": (bytes: Buffer, maxOutputLength: number) => gunzipSync(bytes, { maxOutputLength }),
+  "br-base64:": (bytes: Buffer, maxOutputLength: number) => brotliDecompressSync(bytes, { maxOutputLength }),
+} as const;
+type EnvelopePrefix = keyof typeof ENVELOPE_DECODERS;
+
+function decodeEnvelope(
+  name: string,
+  text: string,
+  maxOutputLength: number,
+  prefixes: readonly EnvelopePrefix[] = ["gzip-base64:"],
+): string {
   try {
-    const prefix = "gzip-base64:";
-    if (!text.startsWith(prefix)) throw new Error();
+    const prefix = prefixes.find((value) => text.startsWith(value));
+    if (!prefix) throw new Error();
     const encoded = text.slice(prefix.length);
     if (!/^[A-Za-z0-9+/]+={0,2}$/.test(encoded)) throw new Error();
-    return gunzipSync(Buffer.from(encoded, "base64"), { maxOutputLength }).toString("utf8");
+    return ENVELOPE_DECODERS[prefix](Buffer.from(encoded, "base64"), maxOutputLength).toString("utf8");
   } catch {
     throw new Error(`${name} is malformed`);
   }
@@ -192,7 +209,7 @@ function gunzipEnvelope(name: string, text: string, maxOutputLength: number): st
 
 function parseManifest(text: string): StandardRailManifest {
   try {
-    const decoded = gunzipEnvelope("STANDARD_RAIL_MANIFEST_JSON", text, 1_000_000);
+    const decoded = decodeEnvelope("STANDARD_RAIL_MANIFEST_JSON", text, 1_000_000, ["gzip-base64:", "br-base64:"]);
     assertNoDuplicateJsonKeys(decoded);
     return JSON.parse(decoded) as StandardRailManifest;
   } catch {
@@ -209,7 +226,7 @@ function address(env: NodeJS.ProcessEnv, name: string): Address {
 }
 
 function parseSplitterCreationCode(env: NodeJS.ProcessEnv, expectedHash: Hex): Hex {
-  const decoded = gunzipEnvelope(
+  const decoded = decodeEnvelope(
     "STANDARD_RAIL_SPLITTER_CREATION_CODE",
     required(env, "STANDARD_RAIL_SPLITTER_CREATION_CODE"),
     300_000,
