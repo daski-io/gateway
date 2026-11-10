@@ -84,6 +84,34 @@
           }
         }
       ],
+      "ownerActions": [
+        {
+          "actionId": "get-sample-report",
+          "name": "Get Sample Report",
+          "description": "Read the latest report for a sample you own. Free; wallet-authorized.",
+          "documentationUrl": "https://provider.example/skills/get-sample-report.md",
+          "assetType": "lab-sample",
+          "destructive": false,
+          "paymentRequired": false
+        },
+        {
+          "actionId": "discard-sample",
+          "name": "discard-sample",
+          "description": null,
+          "documentationUrl": null,
+          "assetType": "lab-sample",
+          "destructive": true,
+          "paymentRequired": false
+        }
+      ],
+      "freeSkills": [
+        {
+          "skillId": "get-pricing",
+          "name": "Get Pricing",
+          "description": "Current analysis prices. Free; call the provider directly.",
+          "documentationUrl": "https://provider.example/skills/get-pricing.md"
+        }
+      ],
       "freshness": {
         "lastValidatedAt": "2026-08-26T12:00:00.000Z",
         "presentationStaleAfterSeconds": 86400,

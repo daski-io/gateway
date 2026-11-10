@@ -721,6 +721,14 @@ export class ServiceRegistrationStore {
     return result.rows.map(mapRow);
   }
 
+  /** Every provider's current servicing admission, as activated. */
+  async currentServicingAdmissions(): Promise<unknown[]> {
+    const result = await this.pool.query<{ canonical_admission: unknown }>(
+      "SELECT canonical_admission FROM standard_provider_servicing_admissions WHERE current",
+    );
+    return result.rows.map((row) => row.canonical_admission);
+  }
+
   async listRefreshCandidates(limit: number): Promise<StoredRegistration[]> {
     const result = await this.pool.query<RegistrationRow>(
       `SELECT * FROM standard_service_registrations

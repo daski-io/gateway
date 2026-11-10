@@ -205,3 +205,80 @@ it("retains unknown contract fields in the contract identity while accepting the
   ext.skillContractSetHash = canonicalHash([{ skillId: skill.skillId, skillContractHash: skill.skillContractHash }]);
   expect(parseProviderServiceCard(raw, expected).skills[0]!.skillContractHash).not.toBe(previous);
 });
+
+describe("supplementary skill presentations", () => {
+  function withOtherSkills(a2aSkills: unknown, v1Skills: unknown) {
+    const raw = card() as ReturnType<typeof card> & { skills?: unknown };
+    raw.skills = a2aSkills;
+    Object.assign(raw.extensions["https://daski.io/a2a/v1"], { skills: v1Skills });
+    return raw;
+  }
+
+  it("keeps the card's unregistered skills for display, outside the contract", () => {
+    const plain = parseProviderServiceCard(card(), expected);
+    const parsed = parseProviderServiceCard(withOtherSkills([
+      { id: "reserve-orbit", name: "Reserve orbit", description: "Registered." },
+      {
+        id: "get-orbit",
+        name: "Get Orbit",
+        description: "Read a reserved orbit.\nOwner only.",
+        tags: ["free"],
+        documentationUrl: "https://provider.example/skills/get-orbit.md",
+      },
+      { id: "get-pricing", name: "Get Pricing", description: "Free price list." },
+    ], {
+      "get-orbit": { access: "gateway-managed-wallet", paymentRequired: false, assetType: "orbital-slot" },
+      "get-pricing": { access: "open-free-a2a", paymentRequired: false, assetType: null },
+    }), expected);
+
+    expect(parsed.supplementarySkills).toEqual([
+      {
+        skillId: "get-orbit",
+        name: "Get Orbit",
+        description: "Read a reserved orbit.\nOwner only.",
+        tags: ["free"],
+        documentationUrl: "https://provider.example/skills/get-orbit.md",
+        access: "gateway-managed-wallet",
+        paymentRequired: false,
+        assetType: "orbital-slot",
+      },
+      {
+        skillId: "get-pricing",
+        name: "Get Pricing",
+        description: "Free price list.",
+        tags: [],
+        documentationUrl: null,
+        access: "open-free-a2a",
+        paymentRequired: false,
+        assetType: null,
+      },
+    ]);
+    expect(parsed.serviceContractHash).toBe(plain.serviceContractHash);
+    expect(parsed.skillContractSetHash).toBe(plain.skillContractSetHash);
+    expect(listingReuseScopeHash(parsed)).toBe(listingReuseScopeHash(plain));
+  });
+
+  it("leaves out malformed entries without failing the card", () => {
+    const parsed = parseProviderServiceCard(withOtherSkills([
+      null,
+      "get-orbit",
+      { id: "Bad Id", name: "x", description: "x" },
+      { id: "no-name", description: "x" },
+      { id: "bad-docs", name: "Docs", description: "x", documentationUrl: "http://insecure.example/" },
+      { id: "control", name: "Bad\u0001", description: "x" },
+      { id: "lone", name: "Lone", description: "\ud800" },
+      { id: "kept", name: "Kept", description: "Fine." },
+      { id: "kept", name: "Duplicate", description: "Ignored." },
+    ], "not-an-object"), expected);
+
+    expect(parsed.supplementarySkills).toEqual([{
+      skillId: "kept", name: "Kept", description: "Fine.", tags: [],
+      documentationUrl: null, access: null, paymentRequired: null, assetType: null,
+    }]);
+    expect(() => canonicalHash(parsed)).not.toThrow();
+  });
+
+  it("is empty when the card has no A2A skill list", () => {
+    expect(parseProviderServiceCard(card(), expected).supplementarySkills).toEqual([]);
+  });
+});
