@@ -8,6 +8,11 @@ import {
 } from "../marketplace/reader.js";
 import { canonicalHash } from "../standardRail/canonical.js";
 import type { StandardRailConfig } from "../standardRail/config.js";
+import type {
+  AssetActionDefinitionV1,
+  ProviderServicingAdmissionV1,
+  SignedEnvelope,
+} from "../standardRail/types.js";
 import { SignerRefused, SignerUnavailable } from "../standardRail/signer.js";
 import { logger } from "../util/logger.js";
 import {
@@ -173,14 +178,80 @@ function registrationView(record: StoredRegistration) {
   };
 }
 
+// The manifest's envelopes never change at runtime: hash each once.
+const envelopeHashes = new WeakMap<object, Hex>();
+function envelopeHash(envelope: object): Hex {
+  let found = envelopeHashes.get(envelope);
+  if (!found) {
+    found = canonicalHash(envelope);
+    envelopeHashes.set(envelope, found);
+  }
+  return found;
+}
+
+// What a service's owners can do with an asset they bought, beyond its
+// registered listings: the active signed catalog's actions for this service,
+// presented with the card's copy. Free and wallet-authorized; never a listing.
+function ownerActionsView(
+  record: StoredRegistration,
+  actions: readonly AssetActionDefinitionV1[],
+) {
+  const registered = new Set(record.card.skills.map((skill) => skill.skillId));
+  const presentations = new Map(
+    (record.card.supplementarySkills ?? []).map((item) => [item.skillId, item]),
+  );
+  return actions
+    .filter((action) =>
+      action.serviceId.toLowerCase() === record.serviceId.toLowerCase() &&
+      !registered.has(action.actionId))
+    .map((action) => {
+      const presentation = presentations.get(action.actionId);
+      return {
+        actionId: action.actionId,
+        name: presentation?.name ?? action.actionId,
+        description: presentation?.description ?? null,
+        documentationUrl: presentation?.documentationUrl ?? null,
+        assetType: action.assetType,
+        destructive: action.destructive,
+        paymentRequired: false,
+      };
+    });
+}
+
+// Free skills the provider serves on its own A2A endpoint, outside gateway
+// commerce: the card's open free skills that are neither listings nor owner
+// actions.
+function freeSkillsView(
+  record: StoredRegistration,
+  ownerActionIds: ReadonlySet<string>,
+) {
+  const registered = new Set(record.card.skills.map((skill) => skill.skillId));
+  return (record.card.supplementarySkills ?? [])
+    .filter((item) =>
+      item.access === "open-free-a2a" && item.paymentRequired === false &&
+      !registered.has(item.skillId) && !ownerActionIds.has(item.skillId))
+    .map((item) => ({
+      skillId: item.skillId,
+      name: item.name,
+      description: item.description,
+      documentationUrl: item.documentationUrl,
+    }));
+}
+
 export function publicServiceView(
   record: StoredRegistration,
   runtimeCommitments: ReadonlyMap<string, {
     runtimeCommitmentHash: `0x${string}`;
     runtimeCommitment: unknown;
   }> = new Map(),
+  assetActions: readonly AssetActionDefinitionV1[] = [],
 ) {
   const listings = new Map(record.prepared.listings.map((item) => [item.skillId, item]));
+  const ownerActions = ownerActionsView(record, assetActions);
+  const freeSkills = freeSkillsView(
+    record,
+    new Set(ownerActions.map((action) => action.actionId)),
+  );
   return {
     gatewayRegistrationId: record.registrationId,
     providerAgentId: record.providerAgentId,
@@ -209,6 +280,8 @@ export function publicServiceView(
         },
       };
     }),
+    ownerActions,
+    freeSkills,
     freshness: {
       lastValidatedAt: record.lastRefreshedAt?.toISOString() ?? null,
       presentationStaleAfterSeconds: 86_400,
@@ -879,15 +952,64 @@ export class ServiceRegistrationService {
   }
 
   async listPublic(limit: number) {
+    const [records, actions] = await Promise.all([
+      this.store.listPublic(limit),
+      this.activeAssetActions(),
+    ]);
     return {
-      services: (await this.store.listPublic(limit))
-        .map((record) => publicServiceView(record)),
+      services: records.map((record) =>
+        publicServiceView(record, new Map(), actions.get(record.providerAgentId))),
     };
+  }
+
+  // Each provider's currently admitted asset actions, checked the way the
+  // gateway resolves an action (StandardAssetFederation, StandardAssetActions):
+  // the current admission must be one this manifest carries, with its control
+  // profile, servicing enabled and in its window; the catalog is the one it
+  // binds; each action is in its window and matches its definition hash. A
+  // display enrichment: a failed read leaves the public views without owner
+  // actions.
+  private async activeAssetActions(): Promise<ReadonlyMap<string, AssetActionDefinitionV1[]>> {
+    const actions = new Map<string, AssetActionDefinitionV1[]>();
+    try {
+      const manifest = this.railConfig.manifest;
+      if (!manifest?.actionCatalogs?.length) return actions;
+      const now = Math.floor(Date.now() / 1_000);
+      const admissions = await this.store.currentServicingAdmissions() as
+        SignedEnvelope<ProviderServicingAdmissionV1>[];
+      for (const admission of admissions) {
+        const payload = admission?.payload;
+        if (
+          !payload?.servicingEnabled || payload.validFrom > now || payload.validBefore <= now
+        ) continue;
+        const admissionHash = canonicalHash(admission);
+        if (!manifest.servicingAdmissions.some((item) => envelopeHash(item) === admissionHash)) continue;
+        if (!manifest.providerControlProfiles.some((item) =>
+          item.payload.providerAgentId === payload.providerAgentId &&
+          envelopeHash(item) === payload.providerControlProfileHash)) continue;
+        const catalog = manifest.actionCatalogs.find((item) =>
+          item.payload.providerAgentId === payload.providerAgentId &&
+          envelopeHash(item) === payload.actionCatalogHash);
+        if (!catalog) continue;
+        actions.set(payload.providerAgentId, catalog.payload.actions.filter((action) => {
+          if (action.validFrom > now || action.validBefore <= now) return false;
+          const { actionDefinitionHash, ...preimage } = action;
+          return actionDefinitionHash === canonicalHash(preimage);
+        }));
+      }
+    } catch (error) {
+      logger.warn("public owner actions unavailable", {
+        errorMessage: error instanceof Error ? error.message : String(error),
+      });
+      return new Map();
+    }
+    return actions;
   }
 
   async getPublic(serviceId: Hex) {
     const record = await this.store.getPublicByServiceId(serviceId);
     if (!record) throw new RegistrationError(404, "SERVICE_NOT_FOUND", "Visible service not found.");
+    const actions = await this.activeAssetActions();
     const commitments = new Map(
       (await this.store.listingCommitments(
         record.prepared.listings.map((listing) => listing.listingId),
@@ -899,7 +1021,7 @@ export class ServiceRegistrationService {
         }] as const),
     );
     return {
-      ...publicServiceView(record, commitments),
+      ...publicServiceView(record, commitments, actions.get(record.providerAgentId)),
       ...await this.publicReputation(record),
     };
   }

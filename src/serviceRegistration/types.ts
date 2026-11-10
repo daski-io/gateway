@@ -87,6 +87,24 @@ export interface PublishedSkillContract {
   };
 }
 
+/**
+ * Presentation of a card skill that is not a registered listing: an owner
+ * action on a purchased asset or a free skill called on the provider's own
+ * A2A endpoint. Display only: it binds nothing, is outside every hashed
+ * contract and never makes a skill purchasable.
+ */
+export interface SupplementarySkillPresentation {
+  skillId: string;
+  name: string;
+  description: string;
+  tags: string[];
+  documentationUrl: string | null;
+  /** The card's Daski v1 access mode, for example "open-free-a2a". */
+  access: string | null;
+  paymentRequired: boolean | null;
+  assetType: string | null;
+}
+
 export interface ProviderServiceCard {
   name: string;
   description: string;
@@ -116,6 +134,10 @@ export interface ProviderServiceCard {
   serviceContractHash: Hex;
   skillContractSetHash: Hex;
   skills: PublishedSkillContract[];
+  /**
+   * Absent on cards stored before it existed; the next refresh fills it.
+   */
+  supplementarySkills?: SupplementarySkillPresentation[];
 }
 
 export interface GatewayListingPreparationV1 {

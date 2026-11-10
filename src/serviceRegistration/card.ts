@@ -7,6 +7,7 @@ import {
 import type {
   ProviderServiceCard,
   PublishedSkillContract,
+  SupplementarySkillPresentation,
 } from "./types.js";
 import {
   parseAssetAction,
@@ -225,6 +226,58 @@ function parseSkill(
   };
 }
 
+const SUPPLEMENTARY_SKILL_LIMIT = 128;
+
+// The card's other skills, for display: those its A2A skill list presents
+// that are not registered listings. Lenient by design: a malformed entry is
+// left out and never fails the card, because none of it binds commerce.
+export function parseSupplementarySkills(
+  card: Record<string, unknown>,
+  serviceExtension: Record<string, unknown>,
+  registered: ReadonlySet<string>,
+): SupplementarySkillPresentation[] {
+  const a2aSkills = Array.isArray(card.skills) ? card.skills : [];
+  const daski = serviceExtension.skills && typeof serviceExtension.skills === "object" &&
+    !Array.isArray(serviceExtension.skills)
+    ? serviceExtension.skills as Record<string, unknown>
+    : {};
+  const found: SupplementarySkillPresentation[] = [];
+  const seen = new Set<string>();
+  for (const raw of a2aSkills.slice(0, SUPPLEMENTARY_SKILL_LIMIT)) {
+    try {
+      const value = record(raw, "A2A skill");
+      const skillId = normalizedId(value.id, "skill id", 96);
+      if (registered.has(skillId) || seen.has(skillId)) continue;
+      const meta = Object.hasOwn(daski, skillId) &&
+        daski[skillId] && typeof daski[skillId] === "object" && !Array.isArray(daski[skillId])
+        ? daski[skillId] as Record<string, unknown>
+        : {};
+      const entry: SupplementarySkillPresentation = {
+        skillId,
+        name: text(value.name, "skill name", 160),
+        description: multilineText(value.description, "skill description", 32_000),
+        tags: value.tags === undefined ? [] : stringArray(value.tags, "skill tags", 64),
+        documentationUrl: value.documentationUrl === undefined
+          ? null
+          : httpsUrl(value.documentationUrl, "skill documentation URL"),
+        access: typeof meta.access === "string" && /^[a-z0-9-]{1,64}$/.test(meta.access)
+          ? meta.access
+          : null,
+        paymentRequired: typeof meta.paymentRequired === "boolean" ? meta.paymentRequired : null,
+        assetType: typeof meta.assetType === "string" && /^[a-z0-9][a-z0-9-]{0,127}$/.test(meta.assetType)
+          ? meta.assetType
+          : null,
+      };
+      canonicalHash(entry); // The stored card is hashed: drop what cannot be.
+      seen.add(skillId);
+      found.push(entry);
+    } catch {
+      continue;
+    }
+  }
+  return found;
+}
+
 export function parseProviderServiceCard(
   raw: unknown,
   expected: {
@@ -386,5 +439,10 @@ export function parseProviderServiceCard(
     serviceContractHash,
     skillContractSetHash,
     skills,
+    supplementarySkills: parseSupplementarySkills(
+      card,
+      serviceExtension,
+      new Set(skills.map((skill) => skill.skillId)),
+    ),
   };
 }

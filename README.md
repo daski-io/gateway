@@ -124,6 +124,18 @@ steady-state prompt is `Use Daski to [your task]`.
   the provider's and the service's on-chain reputation counters as
   `providerReputation` and `serviceReputation`, each with the additive
   `recovered` (see [recovered orders](#recovered-orders)).
+  Both views list, besides the registered `skills`, the service's
+  `ownerActions` and `freeSkills`. `ownerActions` are the actions of the
+  provider's currently admitted signed asset-action catalog for that service
+  that are not registered listings: `actionId`, `name`, `description`,
+  `documentationUrl`, `assetType`, `destructive` and `paymentRequired: false`.
+  An owner runs them on an asset it bought through `/wallet/assets/action`.
+  `freeSkills` are the card's open free A2A skills (`access: "open-free-a2a"`)
+  that are neither listings nor owner actions; buyers call them on the
+  provider's own A2A endpoint. Names and descriptions come from the provider
+  card's A2A skill list, refreshed with the card, and bind nothing; an owner
+  action the card does not present shows its `actionId` as its name and a null
+  description. A failed admission read lists no owner actions.
 - `/public/v2/registry/*` exposes read-only ERC-8004 identity, Daski provider
   and service catalog state. The provider and service reads carry the on-chain
   reputation counters as `standardReputation`, with the additive `recovered`.
