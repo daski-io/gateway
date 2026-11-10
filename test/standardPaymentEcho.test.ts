@@ -190,6 +190,22 @@ describe("standard payment extension echo", () => {
     expect((challenge.extensions!["daski-sign-request"] as { submitAs: { paymentPayload: { extensions: Record<string, unknown> } } }).submitAs.paymentPayload.extensions).not.toHaveProperty("bazaar");
   });
 
+  it("keeps the longest live outcome's sign-ready challenge below the 5 KiB buyer budget", () => {
+    // AI Inference's outcome ids are the longest live (24 characters); the challenge repeats them.
+    const outcomeId = "create-inference-account";
+    const long = { ...listing,
+      commitment: { payload: { ...listing.commitment.payload, outcomeId,
+        absoluteResourceUri: `https://sandbox-gateway.daski.io/outcomes/8327/${outcomeId}` } },
+      offer: { payload: { skillId: outcomeId } } } as unknown as StandardListing;
+    const challenge = paymentRequired({ config, listing: long, order: { ...order, listing: long },
+      railProfileHash: RAIL_PROFILE_HASH, requirements: paymentRequirements(config, long, GROSS_AMOUNT, 120),
+      payerAddress: address("b"),
+    });
+    // Measured: the live sandbox challenge (5163 bytes before this trim) is 417 bytes larger
+    // than this fixture (4746 before), from its catalog declaration and order data.
+    expect(Buffer.byteLength(JSON.stringify(challenge), "utf8")).toBeLessThan(5 * 1024 - 420);
+  });
+
   it("rejects a tampered bazaar declaration", async () => {
     const payment = await signedPayment((issued) => ({
       ...issued,

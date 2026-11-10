@@ -225,13 +225,14 @@ export function paymentRequired(args: {
         message,
       },
       submitAs: {
-        how: "Sign eip712 exactly. Retry the identical call with _meta[\"x402/payment\"] or paymentPayload using the object below.",
+        // Kept short: the whole sign-ready challenge must stay under the 5 KiB buyer budget.
+        how: "Sign eip712 into payload.signature; resend this paymentPayload.",
         paymentPayload: {
           x402Version: 2,
           resource: challenge.resource,
           accepted: args.requirements,
           payload: {
-            signature: "<0x…65-byte hex from signing>",
+            signature: "",
             authorization: message,
           },
           extensions: paymentExtensions,
