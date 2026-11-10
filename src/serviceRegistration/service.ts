@@ -178,6 +178,17 @@ function registrationView(record: StoredRegistration) {
   };
 }
 
+// The manifest's envelopes never change at runtime: hash each once.
+const envelopeHashes = new WeakMap<object, Hex>();
+function envelopeHash(envelope: object): Hex {
+  let found = envelopeHashes.get(envelope);
+  if (!found) {
+    found = canonicalHash(envelope);
+    envelopeHashes.set(envelope, found);
+  }
+  return found;
+}
+
 // What a service's owners can do with an asset they bought, beyond its
 // registered listings: the active signed catalog's actions for this service,
 // presented with the card's copy. Free and wallet-authorized; never a listing.
@@ -239,7 +250,7 @@ export function publicServiceView(
   const ownerActions = ownerActionsView(record, assetActions);
   const freeSkills = freeSkillsView(
     record,
-    new Set(assetActions.map((action) => action.actionId)),
+    new Set(ownerActions.map((action) => action.actionId)),
   );
   return {
     gatewayRegistrationId: record.registrationId,
@@ -951,14 +962,18 @@ export class ServiceRegistrationService {
     };
   }
 
-  // Each provider's currently admitted asset actions, read from the activated
-  // admission and the manifest's signed catalog it binds. A display
-  // enrichment: a failed read leaves the public views without owner actions.
+  // Each provider's currently admitted asset actions, checked the way the
+  // gateway resolves an action (StandardAssetFederation, StandardAssetActions):
+  // the current admission must be one this manifest carries, with its control
+  // profile, servicing enabled and in its window; the catalog is the one it
+  // binds; each action is in its window and matches its definition hash. A
+  // display enrichment: a failed read leaves the public views without owner
+  // actions.
   private async activeAssetActions(): Promise<ReadonlyMap<string, AssetActionDefinitionV1[]>> {
     const actions = new Map<string, AssetActionDefinitionV1[]>();
     try {
-      const catalogs = this.railConfig.manifest?.actionCatalogs ?? [];
-      if (catalogs.length === 0) return actions;
+      const manifest = this.railConfig.manifest;
+      if (!manifest?.actionCatalogs?.length) return actions;
       const now = Math.floor(Date.now() / 1_000);
       const admissions = await this.store.currentServicingAdmissions() as
         SignedEnvelope<ProviderServicingAdmissionV1>[];
@@ -967,12 +982,20 @@ export class ServiceRegistrationService {
         if (
           !payload?.servicingEnabled || payload.validFrom > now || payload.validBefore <= now
         ) continue;
-        const catalog = catalogs.find((item) =>
+        const admissionHash = canonicalHash(admission);
+        if (!manifest.servicingAdmissions.some((item) => envelopeHash(item) === admissionHash)) continue;
+        if (!manifest.providerControlProfiles.some((item) =>
           item.payload.providerAgentId === payload.providerAgentId &&
-          canonicalHash(item) === payload.actionCatalogHash);
+          envelopeHash(item) === payload.providerControlProfileHash)) continue;
+        const catalog = manifest.actionCatalogs.find((item) =>
+          item.payload.providerAgentId === payload.providerAgentId &&
+          envelopeHash(item) === payload.actionCatalogHash);
         if (!catalog) continue;
-        actions.set(payload.providerAgentId, catalog.payload.actions.filter((action) =>
-          action.validFrom <= now && action.validBefore > now));
+        actions.set(payload.providerAgentId, catalog.payload.actions.filter((action) => {
+          if (action.validFrom > now || action.validBefore <= now) return false;
+          const { actionDefinitionHash, ...preimage } = action;
+          return actionDefinitionHash === canonicalHash(preimage);
+        }));
       }
     } catch (error) {
       logger.warn("public owner actions unavailable", {

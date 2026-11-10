@@ -83,9 +83,9 @@ function registrationFromFixture(): StoredRegistration {
   } as unknown as StoredRegistration;
 }
 
-function action(
+function unhashedAction(
   actionId: string,
-  overrides: Partial<AssetActionDefinitionV1> = {},
+  overrides: Partial<AssetActionDefinitionV1>,
 ): AssetActionDefinitionV1 {
   const service = fixture.services[0];
   return {
@@ -105,9 +105,17 @@ function action(
     retentionSeconds: 60,
     validFrom: 0,
     validBefore: 4_102_444_800,
-    actionDefinitionHash: hash("9"),
+    actionDefinitionHash: hash("0"),
     ...overrides,
   };
+}
+
+function action(
+  actionId: string,
+  overrides: Partial<AssetActionDefinitionV1> = {},
+): AssetActionDefinitionV1 {
+  const { actionDefinitionHash: _unsigned, ...preimage } = unhashedAction(actionId, overrides);
+  return { ...preimage, actionDefinitionHash: canonicalHash(preimage) };
 }
 
 // The signed catalog's actions behind the fixture's owner actions, plus an
@@ -224,10 +232,20 @@ describe("public v3 services contract", () => {
 });
 
 describe("public owner actions", () => {
-  function catalogService(admissions: unknown[] | Error, overrides: { validBefore?: number; servicingEnabled?: boolean } = {}) {
+  function catalogService(admissions: unknown[] | Error, overrides: {
+    validBefore?: number;
+    servicingEnabled?: boolean;
+    admissionInManifest?: boolean;
+    controlProfileInManifest?: boolean;
+    actions?: AssetActionDefinitionV1[];
+  } = {}) {
     const registration = registrationFromFixture();
+    const controlProfile = {
+      payload: { providerAgentId: registration.providerAgentId, origin: "https://provider.example" },
+      signature: "0x03",
+    };
     const catalog = {
-      payload: { providerAgentId: registration.providerAgentId, actions: CATALOG_ACTIONS },
+      payload: { providerAgentId: registration.providerAgentId, actions: overrides.actions ?? CATALOG_ACTIONS },
       signature: "0x01",
     };
     const stale = {
@@ -237,11 +255,13 @@ describe("public owner actions", () => {
     const admission = {
       payload: {
         providerAgentId: registration.providerAgentId,
+        providerControlProfileHash: canonicalHash(controlProfile),
         actionCatalogHash: canonicalHash(catalog),
         servicingEnabled: overrides.servicingEnabled ?? true,
         validFrom: 0,
         validBefore: overrides.validBefore ?? 4_102_444_800,
       },
+      signature: "0x04",
     };
     const store = {
       getPublicByServiceId: vi.fn(async () => registration),
@@ -249,7 +269,7 @@ describe("public owner actions", () => {
       listingCommitments: vi.fn(async () => []),
       currentServicingAdmissions: vi.fn(async () => {
         if (admissions instanceof Error) throw admissions;
-        return admissions.length ? admissions : [admission];
+        return admissions.length ? admissions : [structuredClone(admission)];
       }),
     };
     const marketplace = {
@@ -257,9 +277,14 @@ describe("public owner actions", () => {
       getService: vi.fn(async () => { throw new Error("rpc offline"); }),
       readRecovered: vi.fn(),
     };
+    const manifest = {
+      actionCatalogs: [stale, catalog],
+      servicingAdmissions: overrides.admissionInManifest === false ? [] : [admission],
+      providerControlProfiles: overrides.controlProfileInManifest === false ? [] : [controlProfile],
+    };
     const service = new ServiceRegistrationService(
       {} as Config,
-      { manifest: { actionCatalogs: [stale, catalog] } } as unknown as StandardRailConfig,
+      { manifest } as unknown as StandardRailConfig,
       store as unknown as ServiceRegistrationStore,
       marketplace as unknown as MarketplaceChainReader,
       {} as never,
@@ -281,6 +306,8 @@ describe("public owner actions", () => {
     { label: "the admission read fails", admissions: new Error("db offline") },
     { label: "the admission has expired", admissions: [], validBefore: 1 },
     { label: "servicing is disabled", admissions: [], servicingEnabled: false },
+    { label: "the manifest does not carry the current admission", admissions: [], admissionInManifest: false },
+    { label: "the manifest has no matching control profile", admissions: [], controlProfileInManifest: false },
   ])("lists no owner actions when $label", async ({ admissions, ...overrides }) => {
     const { registration, service } = catalogService(admissions, overrides);
 
@@ -289,6 +316,24 @@ describe("public owner actions", () => {
     expect(detail.ownerActions).toEqual([]);
     // Free skills come from the card alone.
     expect(detail.freeSkills).toEqual(fixture.services[0].freeSkills);
+  });
+
+  it("leaves out an action whose definition hash does not match it", async () => {
+    const tampered = { ...action("get-sample-report"), destructive: true };
+    const { registration, service } = catalogService([], {
+      actions: [tampered, action("discard-sample", { destructive: true })],
+    });
+
+    expect((await service.getPublic(registration.serviceId)).ownerActions.map((item) => item.actionId))
+      .toEqual(["discard-sample"]);
+  });
+
+  it("keeps a free skill whose id is another service's owner action", () => {
+    const view = publicServiceView(registrationFromFixture(), new Map(), [
+      ...CATALOG_ACTIONS,
+      action("get-pricing", { serviceId: hash("c") }),
+    ]);
+    expect(view.freeSkills.map((item) => item.skillId)).toEqual(["get-pricing"]);
   });
 
   it("presents a stored card from before supplementary skills with bare owner actions", () => {
