@@ -5,10 +5,17 @@ import type { Pool } from "../db/pool.js";
 import { authorizedOperator } from "../serviceRegistration/routes.js";
 import { canonicalHash } from "./canonical.js";
 import type { StandardProviderDispatch } from "./providerDispatch.js";
-import type { StandardListing } from "./types.js";
+import type { SignedEnvelope, StandardListing, StandardRailDispatchV2 } from "./types.js";
+import type { Hex } from "viem";
 import { assertTransition } from "./stateMachine.js";
 
 export class OperatorConflict extends Error {}
+
+/** States in which recovery still owns an order's dispatch and no task is bound. */
+const ADOPTABLE_STATES = ["DISPATCH_STARTED", "DISPATCH_AMBIGUOUS"];
+/** Refused envelopes asked about per adoption, oldest first. */
+const MAX_ADOPTION_CANDIDATES = 500;
+const bytes = (value: Hex): Buffer => Buffer.from(value.slice(2), "hex");
 
 /** Operator changes and their audit records commit together. */
 export class StandardRailOperator {
@@ -18,7 +25,91 @@ export class StandardRailOperator {
     private readonly providerStatus: StandardProviderDispatch["statusForRevival"] = async () => {
       throw new Error("provider_status_unavailable");
     },
+    private readonly providerHeld: StandardProviderDispatch["heldDispatch"] = async () => {
+      throw new Error("provider_status_unavailable");
+    },
   ) {}
+
+  /**
+   * Adopts the refused envelope the provider actually holds. A provider that
+   * claimed an order and then answered with a refusal (Nov 11 testnet: an
+   * error after its claim was answered 409) makes recovery sign new
+   * envelopes, which it rejects as changed replays, so the order can never
+   * reach its task. Each refused envelope is asked about with an
+   * authenticated status query; the first one the provider holds becomes the
+   * order's claim again, and recovery then reads its status on its next tick.
+   * Nothing is sent to the provider but status queries.
+   */
+  async adoptDispatch(orderId: string): Promise<{
+    orderId: string; state: string; dispatchHash: Hex; providerTaskId: string;
+  }> {
+    const current = await this.pool.query<{ state: string; provider_task_id: string | null;
+      canonical_listing: StandardListing; busy: boolean }>(
+      `SELECT state,provider_task_id,canonical_listing,lease_until>now() AS busy
+         FROM standard_orders WHERE order_id=$1`, [orderId]);
+    const order = current.rows[0];
+    if (!order) throw new OperatorConflict("order_not_found");
+    if (!ADOPTABLE_STATES.includes(order.state)) throw new OperatorConflict("order_not_dispatching");
+    if (order.provider_task_id !== null) throw new OperatorConflict("provider_task_present");
+    const refused = await this.pool.query<{ dispatch_hash: Buffer; canonical_dispatch: SignedEnvelope<StandardRailDispatchV2, 2> }>(
+      `SELECT dispatch_hash,canonical_dispatch FROM (
+         SELECT DISTINCT ON (dispatch_hash) dispatch_hash,canonical_dispatch,id
+           FROM standard_dispatch_refusals WHERE order_id=$1 ORDER BY dispatch_hash,id) first_refusals
+        ORDER BY id LIMIT $2`, [orderId, MAX_ADOPTION_CANDIDATES]);
+    let adopted: { dispatch: SignedEnvelope<StandardRailDispatchV2, 2>; hash: Hex; taskId: string; state: string } | null = null;
+    for (const row of refused.rows) {
+      const hash = canonicalHash(row.canonical_dispatch);
+      if (hash !== `0x${row.dispatch_hash.toString("hex")}`) continue;
+      let held: { taskId: string; state: string } | null;
+      try {
+        held = await this.providerHeld(orderId, order.canonical_listing, hash);
+      } catch {
+        throw new OperatorConflict("provider_status_unavailable_or_invalid");
+      }
+      if (held) { adopted = { dispatch: row.canonical_dispatch, hash, ...held }; break; }
+    }
+    if (!adopted) throw new OperatorConflict("provider_holds_no_refused_dispatch");
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const locked = await client.query<{ state: string; provider_task_id: string | null; busy: boolean }>(
+        `SELECT state,provider_task_id,lease_until>now() AS busy FROM standard_orders WHERE order_id=$1 FOR UPDATE`,
+        [orderId]);
+      const row = locked.rows[0];
+      if (!row || !ADOPTABLE_STATES.includes(row.state) || row.provider_task_id !== null) {
+        throw new OperatorConflict("order_changed");
+      }
+      if (row.busy) throw new OperatorConflict("order_driver_active");
+      await client.query("SELECT order_id FROM standard_dispatch_recovery WHERE order_id=$1 FOR UPDATE", [orderId]);
+      const claims = await client.query<{ dispatch_hash: Buffer; canonical_request: unknown;
+        resolved_at: Date | null; provider_task_id: string | null }>(
+        `SELECT dispatch_hash,canonical_request,resolved_at,provider_task_id FROM standard_dispatch_claims
+          WHERE order_id=$1 FOR UPDATE`, [orderId]);
+      const claim = claims.rows[0];
+      if (!claim) throw new OperatorConflict("dispatch_claim_missing");
+      if (claim.resolved_at || claim.provider_task_id !== null) throw new OperatorConflict("dispatch_claim_resolved");
+      if (canonicalHash(claim.canonical_request) !== adopted.dispatch.payload.canonicalProviderRequestHash) {
+        throw new OperatorConflict("dispatch_request_mismatch");
+      }
+      await client.query(
+        `UPDATE standard_dispatch_claims SET dispatch_nonce=$2,dispatch_hash=$3,canonical_dispatch=$4,
+           invocation_state='invoked',invoked_at=now()
+         WHERE order_id=$1`,
+        [orderId, bytes(adopted.dispatch.payload.dispatchNonce), bytes(adopted.hash), adopted.dispatch]);
+      await client.query(
+        "UPDATE standard_dispatch_recovery SET retry_pending=false,next_attempt_at=now() WHERE order_id=$1", [orderId]);
+      await client.query(
+        `INSERT INTO standard_operator_actions (actor,action,target_id,details)
+         VALUES ('catalog-operator','operator_dispatch_adopted',$1,$2)`,
+        [orderId, JSON.stringify({ dispatchHash: adopted.hash, replacedDispatchHash: `0x${claim.dispatch_hash.toString("hex")}`,
+          providerTaskId: adopted.taskId, providerState: adopted.state })]);
+      await client.query("COMMIT");
+      return { orderId, state: row.state, dispatchHash: adopted.hash, providerTaskId: adopted.taskId };
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally { client.release(); }
+  }
 
   async redispatch(orderId: string): Promise<
     { orderId: string; state: "RELEASE_FINAL"; claimId: string } |
@@ -183,6 +274,7 @@ export function createStandardOperatorRouter(operator: StandardRailOperator, tok
   const router = Router();
   const paths = [
     ["/operator/v1/orders/:id/redispatch", (id: string) => operator.redispatch(id)],
+    ["/operator/v1/orders/:id/adopt-dispatch", (id: string) => operator.adoptDispatch(id)],
     ["/operator/v1/reputation/:id/retry", (id: string) => operator.retryReputation(id)],
   ] as const;
   for (const [path, action] of paths) {

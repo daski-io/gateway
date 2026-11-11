@@ -37,6 +37,25 @@ be retried without immediately failing against its original release deadline.
 It does not extend the quote age bound: an order whose quote expired more than
 30 days before that tick is held instead of dispatched.
 
+`POST /operator/v1/orders/:orderId/adopt-dispatch` recovers an order whose
+provider claimed a dispatch and then answered it with a refusal. Recovery
+treats a structured refusal as definite and signs a new envelope, which such a
+provider rejects as a changed replay, so the order would retry until its
+fulfillment window ends without ever reaching the task. The action requires
+`DISPATCH_STARTED` or `DISPATCH_AMBIGUOUS`, no provider task and no live order
+driver. It sends the provider only authenticated status queries, one per
+distinct refused envelope of the order, oldest first (at most 500), and adopts
+the first envelope whose signed status the provider returns: that envelope
+becomes the order's unresolved claim again, the pending retry is cleared, and
+`operator_dispatch_adopted` is audited with the adopted and replaced envelope
+hashes and the provider's task and state. The order's state is unchanged; on
+its next tick recovery reads the adopted envelope's status and records the
+task as it would after an unknown dispatch outcome. It returns
+`{ orderId, state, dispatchHash, providerTaskId }`. When the provider holds
+none of the refused envelopes, a status query fails or is invalid, or the
+claim's request differs from the envelope's, it returns 409 with
+`error.reason` and changes nothing.
+
 `POST /operator/v1/reputation/:operationId/retry` first reconciles stored
 transactions against the chain, then brings pending work forward. A transaction
 marked `broadcast` but absent from both transaction and receipt lookups after
