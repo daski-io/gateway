@@ -548,6 +548,11 @@ export class StandardRailService {
     return this.dispatcher.statusForRevival(order, listing, dispatchHash);
   }
 
+  providerHeldDispatch(orderId: string, listing: StandardListing, dispatchHash: Hex):
+    Promise<{ taskId: string; state: string } | null> {
+    return this.dispatcher.heldDispatch(orderId, listing, dispatchHash);
+  }
+
   async stop(): Promise<void> {
     if (this.readinessInterval) clearInterval(this.readinessInterval);
     this.readinessInterval = null;

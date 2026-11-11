@@ -397,6 +397,24 @@ export class StandardProviderDispatch {
     ).catch((error: unknown) => { throw new ProviderDispatchStatusUnavailable(error); });
   }
 
+  /**
+   * The provider's authenticated claim on one of this order's envelopes, read
+   * without resolving a claim or changing the order; null only when the
+   * provider itself answers that it holds no claim for that envelope.
+   */
+  async heldDispatch(orderId: string, listing: StandardListing, dispatchHash: Hex):
+    Promise<{ taskId: string; state: string } | null> {
+    let value: unknown;
+    try {
+      value = await this.queryProviderDispatchStatus(listing, orderId, dispatchHash);
+    } catch (error) {
+      if (error instanceof ProviderDispatchUnknown) return null;
+      throw error;
+    }
+    const { body } = await this.validateDispatchResponse(listing, dispatchHash, value);
+    return { taskId: body.taskId, state: String(body.state) };
+  }
+
   /** Read and authenticate status without resolving a claim or changing an order. */
   async statusForRevival(
     order: Pick<StandardOrderRecord, "orderId" | "providerTaskId">,

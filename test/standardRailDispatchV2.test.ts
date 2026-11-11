@@ -334,6 +334,53 @@ describe("dispatch refusal recovery", () => {
     expect(driver.claims).toHaveLength(0);
   });
 
+  describe("adopting a refused envelope the provider holds", () => {
+    const operations = () => ({ schemaVersion: 1, revision: 0, observedAt: Math.floor(Date.now() / 1000),
+      fulfillment: null, support: null, recovery: null });
+    const signed = async (dispatchHash: Hex, key: Hex = privateKey) => {
+      const body = { taskId: "held-task", dispatchHash, state: "working", operations: operations() };
+      return { ...body, signature: await privateKeyToAccount(key).signMessage({ message: { raw: canonicalHash(body) } }) };
+    };
+
+    it.each(["held", "absent", "wrong-signer", "unavailable"])("reads %s status for one envelope without changing anything", async (condition) => {
+      const driver = retrying(async () => {
+        if (condition === "absent") return Response.json({ error: "dispatch_status_unavailable", reason: "outcome_policy" }, { status: 404 });
+        if (condition === "unavailable") return new Response(null, { status: 503 });
+        return Response.json(await signed(hash("1"), condition === "wrong-signer" ? hash("2") : privateKey));
+      });
+      const read = driver.dispatcher.heldDispatch(order().orderId, driver.dispatchListing, hash("1"));
+      if (condition === "held") await expect(read).resolves.toEqual({ taskId: "held-task", state: "working" });
+      else if (condition === "absent") await expect(read).resolves.toBeNull();
+      else await expect(read).rejects.toThrow();
+      expect(driver.transition).not.toHaveBeenCalled();
+      expect(driver.resolveDispatch).not.toHaveBeenCalled();
+    });
+
+    it("binds the provider's task on the next recovery tick once the refused envelope is the claim again", async () => {
+      const sent: string[] = [];
+      let refused: Hex | null = null;
+      const driver = retrying(async (url, init) => {
+        sent.push(url);
+        if (url.endsWith("/dispatch")) {
+          // The provider claimed this envelope, then answered it with a refusal.
+          refused = canonicalHash((JSON.parse(String(init.body)) as { dispatch: unknown }).dispatch);
+          return Response.json({ error: "dispatch_rejected", reason: "validator" }, { status: 409 });
+        }
+        const query = (JSON.parse(String(init.body)) as { query: { payload: { dispatchHash: Hex } } }).query;
+        return Response.json(await signed(query.payload.dispatchHash));
+      });
+      const current = await driver.dispatch(order());
+      expect(driver.refusals).toHaveLength(1);
+      // adopt-dispatch: the refused envelope is the unresolved claim again, its retry cleared.
+      driver.recovery.retry_pending = false;
+      const next = await driver.dispatch(current);
+      expect(next).toMatchObject({ state: "DISPATCHED", providerTaskId: "held-task" });
+      expect(sent).toEqual(["https://provider.example/dispatch", "https://provider.example/dispatch/status"]);
+      expect(driver.claims).toHaveLength(1);
+      expect(driver.resolveDispatch).toHaveBeenCalledWith(order().orderId, "held-task", expect.any(String), refused);
+    });
+  });
+
   it("records a 409 refusal, waits for backoff and signs a fresh envelope beyond five minutes", async () => {
     vi.useFakeTimers();
     try {
