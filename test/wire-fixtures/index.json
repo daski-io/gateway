@@ -57,6 +57,19 @@
         "daski-test scripts/agentic/purchaseRecovery.ts assertPaymentBinding"
       ]
     },
+    "payment-required-sign-ready.json": {
+      "consumers": [
+        "daski-test",
+        "daski-buyer"
+      ],
+      "emittedBy": [
+        "src/standardRail/payment.ts paymentRequired (payerAddress given: daski-sign-request version 2)"
+      ],
+      "parsedBy": [
+        "daski-test scripts/standardExactEvmClient.ts createServerProposedPayment",
+        "daski-buyer packages/x402-scheme/src/signRequest.ts parseSignRequest"
+      ]
+    },
     "wallet-challenge.json": {
       "consumers": [
         "daski-test",

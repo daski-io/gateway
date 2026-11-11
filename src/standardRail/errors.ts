@@ -185,7 +185,7 @@ const DEFAULTS: Record<StandardRailErrorCode, ErrorDefaults> = {
     retryable: true,
     requiresNewSignature: true,
     paymentMayHaveSettled: false,
-    nextAction: "Use submitAs.paymentPayload from a fresh sign-ready challenge without adding fields.",
+    nextAction: "Build the payment as daski-sign-request submitAs.how says, from a fresh challenge, without adding fields.",
   },
   AUTHORIZATION_SHAPE_INVALID: {
     status: 400,

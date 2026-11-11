@@ -118,7 +118,7 @@ function signReady(validAfter = now - 5) {
   });
   const signRequest = challenge.extensions?.["daski-sign-request"] as {
     eip712: Parameters<typeof account.signTypedData>[0];
-    submitAs: { paymentPayload: Record<string, unknown> };
+    submitAs: { how: string; echoExtensions: string[] };
   };
   const authorization = {
     ...(signRequest.eip712.message as Record<string, unknown>),
@@ -140,17 +140,19 @@ async function signedPayment(validAfter = now - 5, echoSignRequest = false) {
       value: BigInt(order.grossAmount),
     },
   });
-  const template = prepared.signRequest.submitAs.paymentPayload;
+  // Follow submitAs.how literally: copy resource, accepts[0] and the named
+  // extensions from the challenge; nothing else.
+  const issued = prepared.challenge.extensions ?? {};
   const extensions = {
-    ...(template.extensions as Record<string, unknown>),
-    ...(echoSignRequest
-      ? { "daski-sign-request": prepared.challenge.extensions?.["daski-sign-request"] }
-      : {}),
+    ...Object.fromEntries(prepared.signRequest.submitAs.echoExtensions.map((key) => [key, issued[key]])),
+    ...(echoSignRequest ? { "daski-sign-request": issued["daski-sign-request"] } : {}),
   };
   return {
     prepared,
     payment: {
-      ...template,
+      x402Version: 2,
+      resource: prepared.challenge.resource,
+      accepted: prepared.challenge.accepts[0],
       payload: { signature, authorization: prepared.authorization },
       extensions,
     },

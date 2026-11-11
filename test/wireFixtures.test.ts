@@ -17,7 +17,11 @@ import { encodeAbiParameters, parseAbiParameters } from "viem";
 import { EAS_PROFILES, easDomainSeparator, type EasProfileId, type EasProfileObservation } from "../src/standardRail/easProfiles.js";
 import { StandardRailError, standardRailPublicError } from "../src/standardRail/errors.js";
 import { orderActionChallengeIssued } from "../src/standardRail/orderAuthorization.js";
-import { orderBindingExtension, paymentIdentifierExtension } from "../src/standardRail/payment.js";
+import {
+  orderBindingExtension, paymentIdentifierExtension, paymentRequired, paymentRequirements,
+} from "../src/standardRail/payment.js";
+import type { Config } from "../src/config.js";
+import type { StandardListing, StandardOrderRecord } from "../src/standardRail/types.js";
 import { signEnvelope } from "../src/standardRail/signing.js";
 import { utf8Hash, walletChallenge, ZERO_HASH } from "../src/standardRail/walletAuthorization.js";
 import {
@@ -140,6 +144,51 @@ function paymentRequiredExtensionsFixture() {
       "recipe-bound-v2": orderBindingExtension({ bindingProfile: "recipe-bound-v2", ...deal }),
     },
   };
+}
+
+// The sign-ready challenge: what a buyer that supplied payerAddress receives.
+// The payer is the public Hardhat key above, so consumers can sign it offline;
+// the challenge is issued at ISSUED_AT and the order expires 300 s later.
+function paymentRequiredSignReadyFixture() {
+  const config = {
+    chainId: CHAIN_ID,
+    x402Network: "eip155:84532",
+    publicUrl: PUBLIC_URL,
+    usdc: { name: "USDC", version: "2" },
+  } as unknown as Config;
+  const outcomeId = "register-domain";
+  const listing = {
+    commitment: { payload: {
+      canonicalToken: "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+      outcomeId,
+      absoluteResourceUri: `${PUBLIC_URL}/outcomes/8327/${outcomeId}`,
+      bindingProfile: "recipe-bound-v2",
+      commissionBps: 500,
+    } },
+    manifest: { payload: { splitterAddress: address("2") } },
+    offer: { payload: { skillId: outcomeId } },
+    terms: { providerLegalName: "Example Provider LLC", marketplaceTermsUrl: "https://daski.io/terms" },
+  } as unknown as StandardListing;
+  const extensions = paymentRequiredExtensionsFixture();
+  const order = {
+    listingManifestHash: hash("1"),
+    providerOfferHash: hash("2"),
+    quoteHash: hash("3"),
+    canonicalRequestHash: hash("4"),
+    orderNonce: hash("5"),
+    intentId: INTENT_ID,
+    expiresAt: new Date((ISSUED_AT + 300) * 1_000),
+    listing: { bazaarDeclaration: extensions.bazaar },
+  } as unknown as StandardOrderRecord;
+  return paymentRequired({
+    config,
+    listing,
+    order,
+    requirements: paymentRequirements(config, listing, "5990000", 300),
+    railProfileHash: hash("9"),
+    payerAddress: privateKeyToAccount(FIXTURE_SIGNER_KEY).address,
+    nowSeconds: ISSUED_AT,
+  });
 }
 
 function walletChallengeFixture() {
@@ -438,6 +487,7 @@ const fixtures: Record<string, () => unknown | Promise<unknown>> = {
   "mcp-result.json": mcpResultFixture,
   "payment-challenge-prepared.json": preparedPaymentChallengeFixture,
   "payment-required-extensions.json": paymentRequiredExtensionsFixture,
+  "payment-required-sign-ready.json": paymentRequiredSignReadyFixture,
   "wallet-challenge.json": walletChallengeFixture,
   "order-action-challenge.json": orderActionChallengeFixture,
   "standard-rail-error.json": standardRailErrorFixture,
