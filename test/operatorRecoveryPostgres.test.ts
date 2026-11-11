@@ -391,14 +391,18 @@ describe("operator deadline revival (postgres)", () => {
 // with a refusal. Recovery kept signing new envelopes, which the provider
 // rejected as changed replays, so the order could never reach its task.
 describe("operator dispatch adoption (postgres)", () => {
-  const envelope = (n: number) => ({ payload: { dispatchNonce: `0x${String(n).repeat(64).slice(0, 64)}` as Hex,
-    canonicalProviderRequestHash: canonicalHash({}), attempt: n } });
-  async function refused(pool: Pool, count: number) {
+  // Envelopes recovery signed for the same order differ only in nonce and signing time.
+  const envelope = (n: number, terms: Record<string, unknown> = {}) => ({
+    artifactType: "StandardRailDispatchV2", schemaVersion: 2, issuedAt: 1_000 * n, validBefore: 1_000 * n + 300,
+    signature: `0x${String(n).repeat(130).slice(0, 130)}`,
+    payload: { dispatchNonce: `0x${String(n).repeat(64).slice(0, 64)}` as Hex, canonicalProviderRequestHash: canonicalHash({}),
+      issuedAt: 1_000 * n, validBefore: 1_000 * n + 300, reputationEligible: true, ...terms } });
+  async function refused(pool: Pool, count: number, first: Record<string, unknown> = {}) {
     await release(pool);
     const recovery = await new StandardRailJournal(pool).dispatchRecovery(orderId);
     await pool.query("UPDATE standard_orders SET state='DISPATCH_STARTED'");
     await pool.query("UPDATE standard_dispatch_recovery SET retry_pending=true,refusals=$1", [count]);
-    const envelopes = Array.from({ length: count }, (_, i) => envelope(i + 1));
+    const envelopes = Array.from({ length: count }, (_, i) => envelope(i + 1, i === 0 ? first : {}));
     for (const value of envelopes) {
       await pool.query(`INSERT INTO standard_dispatch_refusals
         (order_id,claim_id,dispatch_hash,canonical_dispatch,http_status,reason) VALUES ($1,$2,$3,$4,409,'"dispatch_rejected"')`,
@@ -432,15 +436,17 @@ describe("operator dispatch adoption (postgres)", () => {
         replacedDispatchHash: canonicalHash(envelopes[2]), providerTaskId: "task-held", providerState: "working" } }]);
   }), 60_000);
 
-  it.each(["none-held", "unavailable", "task", "state", "busy", "request"])("refuses %s without mutation", async (condition) =>
+  it.each(["none-held", "unavailable", "task", "state", "busy", "request", "stale"])("refuses %s without mutation", async (condition) =>
     fixture(async (pool) => {
-      const envelopes = await refused(pool, 2);
+      // "stale": the held envelope was signed under terms recovery no longer signs (for example a new rail profile).
+      const envelopes = await refused(pool, 2, condition === "stale" ? { reputationEligible: false } : {});
       let reason = "provider_holds_no_refused_dispatch";
       if (condition === "unavailable") reason = "provider_status_unavailable_or_invalid";
       if (condition === "task") { await pool.query("UPDATE standard_orders SET provider_task_id='task'"); reason = "provider_task_present"; }
       if (condition === "state") { await pool.query("UPDATE standard_orders SET state='DISPATCHED'"); reason = "order_not_dispatching"; }
       if (condition === "busy") { await pool.query("UPDATE standard_orders SET lease_until=now()+interval '1 minute'"); reason = "order_driver_active"; }
       if (condition === "request") { await pool.query(`UPDATE standard_dispatch_claims SET canonical_request='{"changed":true}'`); reason = "dispatch_request_mismatch"; }
+      if (condition === "stale") reason = "adopted_dispatch_stale";
       const held = vi.fn(async () => {
         if (condition === "unavailable") throw new Error("provider unavailable");
         return condition === "none-held" ? null : { taskId: "task-held", state: "working" };
@@ -448,7 +454,7 @@ describe("operator dispatch adoption (postgres)", () => {
       const claims = (await pool.query("SELECT * FROM standard_dispatch_claims")).rows;
       const recovery = (await pool.query("SELECT * FROM standard_dispatch_recovery")).rows;
       await expect(new StandardRailOperator(pool, undefined, undefined, held).adoptDispatch(orderId)).rejects.toThrow(reason);
-      if (["task", "state"].includes(condition)) expect(held).not.toHaveBeenCalled();
+      if (["task", "state", "busy"].includes(condition)) expect(held).not.toHaveBeenCalled();
       expect((await pool.query("SELECT * FROM standard_dispatch_claims")).rows).toEqual(claims);
       expect((await pool.query("SELECT * FROM standard_dispatch_recovery")).rows).toEqual(recovery);
       expect((await pool.query("SELECT * FROM standard_operator_actions")).rows).toEqual([]);

@@ -52,9 +52,12 @@ hashes and the provider's task and state. The order's state is unchanged; on
 its next tick recovery reads the adopted envelope's status and records the
 task as it would after an unknown dispatch outcome. It returns
 `{ orderId, state, dispatchHash, providerTaskId }`. When the provider holds
-none of the refused envelopes, a status query fails or is invalid, or the
-claim's request differs from the envelope's, it returns 409 with
-`error.reason` and changes nothing.
+none of the refused envelopes, a status query fails or is invalid, the
+claim's request differs from the envelope's, or the held envelope differs
+from the current claim beyond its nonce and signing time (recovery would
+refuse it as not matching the order: `adopted_dispatch_stale`), it returns
+409 with `error.reason` and changes nothing. A live order driver is refused
+before any status query.
 
 `POST /operator/v1/reputation/:operationId/retry` first reconciles stored
 transactions against the chain, then brings pending work forward. A transaction

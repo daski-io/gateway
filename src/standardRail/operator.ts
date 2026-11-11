@@ -17,6 +17,14 @@ const ADOPTABLE_STATES = ["DISPATCH_STARTED", "DISPATCH_AMBIGUOUS"];
 const MAX_ADOPTION_CANDIDATES = 500;
 const bytes = (value: Hex): Buffer => Buffer.from(value.slice(2), "hex");
 
+/** An envelope's binding terms: everything but its nonce, signing time and signature. */
+function envelopeTerms(envelope: SignedEnvelope<StandardRailDispatchV2, 2>): Hex {
+  const { signature: _signature, issuedAt, validBefore, payload, ...domain } = envelope;
+  const { dispatchNonce: _nonce, issuedAt: payloadIssuedAt, validBefore: payloadValidBefore, ...terms } = payload;
+  return canonicalHash({ domain, terms, lifetime: validBefore - issuedAt,
+    payloadLifetime: payloadValidBefore - payloadIssuedAt });
+}
+
 /** Operator changes and their audit records commit together. */
 export class StandardRailOperator {
   constructor(
@@ -51,6 +59,7 @@ export class StandardRailOperator {
     if (!order) throw new OperatorConflict("order_not_found");
     if (!ADOPTABLE_STATES.includes(order.state)) throw new OperatorConflict("order_not_dispatching");
     if (order.provider_task_id !== null) throw new OperatorConflict("provider_task_present");
+    if (order.busy) throw new OperatorConflict("order_driver_active");
     const refused = await this.pool.query<{ dispatch_hash: Buffer; canonical_dispatch: SignedEnvelope<StandardRailDispatchV2, 2> }>(
       `SELECT dispatch_hash,canonical_dispatch FROM (
          SELECT DISTINCT ON (dispatch_hash) dispatch_hash,canonical_dispatch,id
@@ -82,14 +91,22 @@ export class StandardRailOperator {
       if (row.busy) throw new OperatorConflict("order_driver_active");
       await client.query("SELECT order_id FROM standard_dispatch_recovery WHERE order_id=$1 FOR UPDATE", [orderId]);
       const claims = await client.query<{ dispatch_hash: Buffer; canonical_request: unknown;
+        canonical_dispatch: SignedEnvelope<StandardRailDispatchV2, 2>;
         resolved_at: Date | null; provider_task_id: string | null }>(
-        `SELECT dispatch_hash,canonical_request,resolved_at,provider_task_id FROM standard_dispatch_claims
-          WHERE order_id=$1 FOR UPDATE`, [orderId]);
+        `SELECT dispatch_hash,canonical_request,canonical_dispatch,resolved_at,provider_task_id
+           FROM standard_dispatch_claims WHERE order_id=$1 FOR UPDATE`, [orderId]);
       const claim = claims.rows[0];
       if (!claim) throw new OperatorConflict("dispatch_claim_missing");
       if (claim.resolved_at || claim.provider_task_id !== null) throw new OperatorConflict("dispatch_claim_resolved");
       if (canonicalHash(claim.canonical_request) !== adopted.dispatch.payload.canonicalProviderRequestHash) {
         throw new OperatorConflict("dispatch_request_mismatch");
+      }
+      // Recovery rebuilds a persisted envelope from the current order, listing
+      // and rail profile and refuses any difference. The current claim was
+      // signed by recovery under that configuration, so an adopted envelope
+      // must equal it apart from its nonce and signing time.
+      if (envelopeTerms(adopted.dispatch) !== envelopeTerms(claim.canonical_dispatch)) {
+        throw new OperatorConflict("adopted_dispatch_stale");
       }
       await client.query(
         `UPDATE standard_dispatch_claims SET dispatch_nonce=$2,dispatch_hash=$3,canonical_dispatch=$4,
