@@ -154,6 +154,14 @@ export function orderBindingExtension(args: {
   return undefined;
 }
 
+/** Version 2 replaced the version 1 `submitAs.paymentPayload` copy with a rule
+ *  and the list of extensions to echo. `eip712` is unchanged. */
+export const SIGN_REQUEST_VERSION = 2;
+export const SIGN_REQUEST_SUBMIT_RULE =
+  "Sign eip712. Send {x402Version:2, resource, accepted:accepts[0], " +
+  "payload:{signature, authorization:eip712.message}, extensions} with resource, " +
+  "accepts[0] and each echoExtensions entry copied unchanged from this challenge.";
+
 export function paymentRequired(args: {
   config: Config;
   requirements: PaymentRequirements;
@@ -210,7 +218,7 @@ export function paymentRequired(args: {
   challenge.extensions = {
     ...extensions,
     "daski-sign-request": {
-      version: 1,
+      version: SIGN_REQUEST_VERSION,
       signaturePurpose: "daski-standard-purchase",
       expiresAt,
       eip712: {
@@ -224,19 +232,12 @@ export function paymentRequired(args: {
         types: EIP3009_TYPES,
         message,
       },
+      // A rule, not a copy: the payload's resource, accepted and extensions are
+      // already in this challenge, and repeating them cost about 2 KB of the
+      // 5 KiB buyer budget. echoExtensions names the issued extensions to echo.
       submitAs: {
-        // Kept short: the whole sign-ready challenge must stay under the 5 KiB buyer budget.
-        how: "Sign eip712 into payload.signature; resend this paymentPayload.",
-        paymentPayload: {
-          x402Version: 2,
-          resource: challenge.resource,
-          accepted: args.requirements,
-          payload: {
-            signature: "",
-            authorization: message,
-          },
-          extensions: paymentExtensions,
-        },
+        how: SIGN_REQUEST_SUBMIT_RULE,
+        echoExtensions: Object.keys(paymentExtensions),
       },
     },
   };

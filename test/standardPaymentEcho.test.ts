@@ -187,7 +187,9 @@ describe("standard payment extension echo", () => {
       requirements: paymentRequirements(config, listing, GROSS_AMOUNT, 120), payerAddress: address("b"),
     });
     expect(Buffer.byteLength(JSON.stringify(challenge), "utf8")).toBeLessThan(5 * 1024);
-    expect((challenge.extensions!["daski-sign-request"] as { submitAs: { paymentPayload: { extensions: Record<string, unknown> } } }).submitAs.paymentPayload.extensions).not.toHaveProperty("bazaar");
+    const { submitAs } = challenge.extensions!["daski-sign-request"] as { submitAs: { echoExtensions: string[] } };
+    expect(submitAs.echoExtensions).toEqual(
+      Object.keys(challenge.extensions!).filter((key) => key !== "bazaar" && key !== "daski-sign-request"));
   });
 
   it("keeps the longest live outcome's sign-ready challenge below the 5 KiB buyer budget", () => {
@@ -201,9 +203,10 @@ describe("standard payment extension echo", () => {
       railProfileHash: RAIL_PROFILE_HASH, requirements: paymentRequirements(config, long, GROSS_AMOUNT, 120),
       payerAddress: address("b"),
     });
-    // Measured: the live sandbox challenge (5163 bytes before this trim) is 417 bytes larger
-    // than this fixture (4746 before), from its catalog declaration and order data.
-    expect(Buffer.byteLength(JSON.stringify(challenge), "utf8")).toBeLessThan(5 * 1024 - 420);
+    // Measured: the live sandbox challenge (5163 bytes before PR 93, 5079 after) is 417 bytes
+    // larger than this fixture, from its catalog declaration and order data. Version 2's
+    // submitAs rule keeps about 1.5 KB of headroom; hold at least 1 KiB of it.
+    expect(Buffer.byteLength(JSON.stringify(challenge), "utf8")).toBeLessThan(4 * 1024 - 420);
   });
 
   it("rejects a tampered bazaar declaration", async () => {
