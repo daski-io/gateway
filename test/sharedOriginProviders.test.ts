@@ -53,7 +53,10 @@ import {
 // (test/fixtures/rail-manifest-examples/). Everything below runs the gateway's
 // own code over it: the manifest check, the card check, registration
 // preparation, listing assembly, the quote, intake, dispatch, dispatch-status
-// and lifecycle calls, the asset list and the retained-contract check.
+// and lifecycle calls, the asset list and the retained-contract check. The
+// last section gives one of the providers more than one control profile, as a
+// manifest carries them while a provider moves to another wallet, and pins
+// which of them the provider is sold through.
 
 const committed = JSON.parse(
   readFileSync(path.join(RAIL_MANIFEST_EXAMPLES_DIR, "examples.json"), "utf8"),
@@ -234,30 +237,53 @@ async function register(providerAgentId: string): Promise<Registered> {
   return { providerAgentId, profile, owner: owner.address, chainService, record, listingId: listing.listingId, listingHash };
 }
 
+/** What a test changes in the stored state the catalog reads. */
+interface StoredState {
+  /** The agent wallet a provider's registration names, where it is not the shared wallet. */
+  agentWallets?: Record<string, Address>;
+  /** The profile hash recorded as a provider's current one, or null for none, where it is not the default below. */
+  currentProfileHashes?: Record<string, Hex | null>;
+}
+
 /** The registration store as the catalog reads it, over the two registrations. */
-function registrationStore(): ServiceRegistrationStore {
-  const records = () => [...registered.values()].map((provider) => provider.record);
+function registrationStore(state: StoredState = {}): ServiceRegistrationStore {
+  const recordOf = (provider: Registered): StoredRegistration => {
+    const agentWallet = state.agentWallets?.[provider.providerAgentId];
+    return agentWallet ? { ...provider.record, providerAgentWallet: agentWallet } : provider.record;
+  };
+  const records = () => [...registered.values()].map(recordOf);
+  const recorded = state.currentProfileHashes ?? {};
   return {
     listActiveByProvider: async (providerAgentId: string) =>
       records().filter((record) => record.providerAgentId === providerAgentId),
     listVisibleForReadiness: async () => records(),
     listPublic: async () => records(),
-    registrationForListingHash: async (hash: string) =>
-      [...registered.values()].find((provider) => provider.listingHash === hash)?.record ?? null,
+    registrationForListingHash: async (hash: string) => {
+      const provider = [...registered.values()].find((candidate) => candidate.listingHash === hash);
+      return provider ? recordOf(provider) : null;
+    },
     listingCommitments: async (ids: readonly string[]) =>
       ids.flatMap((id) => listingRows.has(id) ? [listingRows.get(id)!] : []),
     getArtifact: async () => null,
     // The servicing-admission table names a current profile for an admitted
     // provider only. Without a row the catalog takes the manifest's profile.
     currentProviderControlProfileHash: async (providerAgentId: string) =>
-      providerAgentId === admission.payload.providerAgentId ? admission.payload.providerControlProfileHash : null,
+      providerAgentId in recorded ? recorded[providerAgentId]
+        : providerAgentId === admission.payload.providerAgentId ? admission.payload.providerControlProfileHash : null,
   } as unknown as ServiceRegistrationStore;
 }
 
-const catalog = () => new StandardRailCatalog(
-  railConfig, appConfig, registrationStore(), async () => undefined,
+const catalog = (config: StandardRailConfig = railConfig, state: StoredState = {}) => new StandardRailCatalog(
+  config, appConfig, registrationStore(state), async () => undefined,
   { forOutcomes: async () => { throw new Error("reputation offline"); } } as unknown as DirectReputationReader,
 );
+/** The gateway's start-up check of a manifest, under this file's trust inputs. */
+const startUpCheck = (value: StandardRailManifest) => verifyStandardRailManifest(value, {
+  environment: ENVIRONMENT, chainId: appConfig.chainId, gatewayAudience: railConfig.gatewayAudience,
+  signers: railConfig.trustedSigners,
+  splitterFactoryRuntimeCodeHash: railConfig.splitterFactoryRuntimeCodeHash,
+  splitterCreationCodeHash: railConfig.splitterCreationCodeHash,
+});
 /** The listing a purchase is sold from, read while the registrations are fresh. */
 function listingOf(providerAgentId: string): Promise<StandardListing> {
   at(NOW);
@@ -274,12 +300,7 @@ afterAll(() => { vi.useRealTimers(); });
 describe("a manifest with two providers on one origin", () => {
   it("verifies under the gateway's start-up check", async () => {
     at(NOW);
-    await expect(verifyStandardRailManifest(manifest, {
-      environment: ENVIRONMENT, chainId: appConfig.chainId, gatewayAudience: railConfig.gatewayAudience,
-      signers: railConfig.trustedSigners,
-      splitterFactoryRuntimeCodeHash: railConfig.splitterFactoryRuntimeCodeHash,
-      splitterCreationCodeHash: railConfig.splitterCreationCodeHash,
-    })).resolves.toBeUndefined();
+    await expect(startUpCheck(manifest)).resolves.toBeUndefined();
   });
 
   it("carries one origin, one provider wallet and one audience, and a path for each provider", () => {
@@ -388,8 +409,14 @@ describe("listings of two providers on one origin", () => {
 
 interface Sent { url: string; body: Record<string, unknown> }
 
-/** The gateway's quote, intake, dispatch, dispatch-status and lifecycle calls for one provider's listing. */
-async function callsFor(listing: StandardListing): Promise<Record<"quote" | "intake" | "dispatch" | "dispatchStatus" | "lifecycle", Sent>> {
+type Calls = Record<"quote" | "intake" | "dispatch" | "dispatchStatus" | "lifecycle", Sent>;
+
+/**
+ * The gateway's quote, intake, dispatch, dispatch-status and lifecycle calls
+ * for one provider's listing. The provider answers the quote with the key
+ * given: the one shared wallet unless a test names another.
+ */
+async function callsFor(listing: StandardListing, providerWalletKey: Hex = PRIVATE_KEYS.sharedProviderWallet): Promise<Calls> {
   const sent: Sent[] = [];
   const through = (answer: (request: WireRequest) => Response | Promise<Response>) => (request: WireRequest) =>
     new StandardProviderTransport((async (url: string | URL | Request) => {
@@ -397,7 +424,7 @@ async function callsFor(listing: StandardListing): Promise<Record<"quote" | "int
       return answer(request);
     }) as typeof fetch).fetch(listing, request.url, { method: request.method, headers: request.headers, body: request.bodyText });
   const last = () => sent[sent.length - 1]!;
-  const sharedWallet = privateKeyToAccount(PRIVATE_KEYS.sharedProviderWallet);
+  const providerWallet = privateKeyToAccount(providerWalletKey);
   const payer = privateKeyToAccount(WIRE_KEYS.payer).address.toLowerCase() as Hex;
 
   at(AT.quote);
@@ -406,9 +433,9 @@ async function callsFor(listing: StandardListing): Promise<Record<"quote" | "int
       (request.body.request as { payload: { outcomeId: string; listingManifestHash: Hex; requestHash: Hex } }).payload;
     const answer = { outcomeId, listingManifestHash, requestHash, grossAmount: PRICE, payer,
       issuedAt: AT.quote, validBefore: AT.quote + 120 };
-    // The provider answers with the one shared wallet, whichever provider was asked.
+    // By default the provider answers with the one shared wallet, whichever provider was asked.
     return httpResponse(json(200, { ...answer,
-      signature: await sharedWallet.signMessage({ message: { raw: canonicalHash(answer) } }) }));
+      signature: await providerWallet.signMessage({ message: { raw: canonicalHash(answer) } }) }));
   }) });
   if (!quoted.outcome.ok) throw quoted.outcome.error;
   expect(quoted.outcome.value.grossAmount).toBe(PRICE);
@@ -640,5 +667,187 @@ describe("the retained-contract check for two providers on one origin", () => {
     const paused = { providerAudience: "https://shared.example/", outcomes: executable(PROVIDERS).map((outcome) =>
       outcome.providerAgentId === PROFILE_ONLY_PROVIDER ? { ...outcome, executable: false } : outcome) };
     expect((await refresh(PROFILE_ONLY_PROVIDER, "CARD_CONTRACT_DRIFT", paused)).retained).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// More than one control profile for a provider. A profile names one provider
+// wallet, so a manifest carries two profiles for a provider that is moving
+// from one wallet to another. A provider with no servicing admission is sold
+// through the profile that names the agent wallet of its registration. Such a
+// move keeps the provider's URLs; the added profiles here have paths of their
+// own as well, so that every call shows which profile it was sent under.
+
+describe("a provider with more than one control profile", () => {
+  const NEXT_WALLET_KEY = synthetic("next provider wallet key");
+  const NEXT_WALLET = privateKeyToAccount(NEXT_WALLET_KEY).address;
+  const KEY_REFUSAL = "Provider control profile key is not the provider wallet";
+  const PROFILE_REFUSAL = "Provider control profile is not admitted";
+  type Profile = SignedEnvelope<ProviderControlProfileV1>;
+  /** The provider's registration names the next wallet as its agent wallet. */
+  const moved = (providerAgentId: string): StoredState => ({ agentWallets: { [providerAgentId]: NEXT_WALLET } });
+
+  /** A further profile for a provider: a later epoch, the wallet it names, and URLs under a path of that epoch. */
+  function profileAt(providerAgentId: string, servicingProfileEpoch: number, assetResponseKey: Address): Promise<Profile> {
+    const { signature: _signature, payload, ...domain } = profileOf(providerAgentId);
+    const urls = Object.fromEntries(ENDPOINTS.map((name) =>
+      [name, payload[name].replace("/standard-rail/", `/epoch-${servicingProfileEpoch}/standard-rail/`)]),
+    ) as Pick<ProviderControlProfileV1, typeof ENDPOINTS[number]>;
+    return signEnvelope({
+      ...domain, account: privateKeyToAccount(PRIVATE_KEYS.manifestSigner),
+      payload: { ...payload, ...urls, servicingProfileEpoch, assetResponseKey },
+    });
+  }
+
+  /** The committed manifest with one provider's profiles replaced, as a gateway that passed its start-up check holds it. */
+  async function carrying(providerAgentId: string, profiles: Profile[]): Promise<StandardRailConfig> {
+    const changed: StandardRailManifest = { ...manifest, providerControlProfiles: [
+      ...manifest.providerControlProfiles.filter((profile) => profile.payload.providerAgentId !== providerAgentId),
+      ...profiles,
+    ] };
+    at(NOW);
+    await expect(startUpCheck(changed)).resolves.toBeUndefined();
+    return { ...railConfig, manifest: changed };
+  }
+
+  /** The listing a provider is sold from under that manifest and stored state. */
+  function listed(config: StandardRailConfig, state: StoredState = {}, providerAgentId: string = PROFILE_ONLY_PROVIDER) {
+    at(NOW);
+    return catalog(config, state).listing(providerAgentId, OUTCOME_ID);
+  }
+
+  /** Every call went to the profile's own URLs under its hash, and none to another profile of the provider. */
+  function expectCalledAt(calls: Calls, profile: Profile, others: Profile[]) {
+    const { quoteUrl, dispatchUrl, dispatchStatusUrl, lifecycleUrl } = profile.payload;
+    expect(Object.fromEntries(Object.entries(calls).map(([name, call]) => [name, call.url]))).toEqual({
+      quote: quoteUrl, intake: quoteUrl, dispatch: dispatchUrl, dispatchStatus: dispatchStatusUrl, lifecycle: lifecycleUrl,
+    });
+    const dispatched = (calls.dispatch.body.dispatch as { payload: { providerControlProfileHash: Hex } }).payload;
+    expect(dispatched.providerControlProfileHash).toBe(canonicalHash(profile));
+    for (const other of others) {
+      const urls = ENDPOINTS.map((name) => other.payload[name]);
+      for (const call of Object.values(calls)) expect(urls).not.toContain(call.url);
+      expect(dispatched.providerControlProfileHash).not.toBe(canonicalHash(other));
+    }
+  }
+
+  it("is sold through the profile that names its new wallet once its registration names that wallet", async () => {
+    const first = profileOf(PROFILE_ONLY_PROVIDER);
+    const next = await profileAt(PROFILE_ONLY_PROVIDER, 2, NEXT_WALLET);
+    const config = await carrying(PROFILE_ONLY_PROVIDER, [first, next]);
+
+    const listing = await listed(config, moved(PROFILE_ONLY_PROVIDER));
+    expect(listing.providerControlProfile).toEqual(next);
+    expect(listing.commitment.payload.providerControlProfileHash).toBe(canonicalHash(next));
+    expect(listing.commitment.payload.providerAuthorityKey).toBe(NEXT_WALLET);
+    expect(listing.providerAgentWallet).toBe(NEXT_WALLET);
+    expect(listing.runtimeCommitmentHash).toBe(registered.get(PROFILE_ONLY_PROVIDER)!.listingHash);
+
+    // It is on sale: public and in the readiness inventory, beside the other provider on its own profile.
+    at(NOW);
+    const current = catalog(config, moved(PROFILE_ONLY_PROVIDER));
+    const rows = await current.listOutcomes();
+    expect(rows.map((row) => row.providerAgentId)).toEqual([...PROVIDERS]);
+    const inventory = await current.validateCommerce(rows.map((row) => row.listingManifestHash));
+    expect(inventory.map((item) => item.listingManifestHash)).toContain(listing.runtimeCommitmentHash);
+    expect((await current.listing(ADMITTED_PROVIDER, OUTCOME_ID)).providerControlProfile).toEqual(profileOf(ADMITTED_PROVIDER));
+
+    // The provider answers with its new wallet, and every call goes to the new profile's URLs.
+    expectCalledAt(await callsFor(listing, NEXT_WALLET_KEY), next, [first]);
+  });
+
+  it("is still sold through its first profile while its registration names the first wallet", async () => {
+    const first = profileOf(PROFILE_ONLY_PROVIDER);
+    const next = await profileAt(PROFILE_ONLY_PROVIDER, 2, NEXT_WALLET);
+    // The same two profiles in the other order: the wallet decides, not the place in the manifest.
+    const config = await carrying(PROFILE_ONLY_PROVIDER, [next, first]);
+
+    const listing = await listed(config);
+    expect(listing.providerControlProfile).toEqual(first);
+    expect(listing.commitment.payload.providerControlProfileHash).toBe(canonicalHash(first));
+    expect(listing.commitment.payload.providerAuthorityKey).toBe(SHARED_WALLET);
+    expectCalledAt(await callsFor(listing), first, [next]);
+  });
+
+  it("is sold through the highest epoch of several profiles that name its wallet", async () => {
+    const first = profileOf(PROFILE_ONLY_PROVIDER);
+    const second = await profileAt(PROFILE_ONLY_PROVIDER, 2, SHARED_WALLET);
+    const third = await profileAt(PROFILE_ONLY_PROVIDER, 3, SHARED_WALLET);
+    const fourth = await profileAt(PROFILE_ONLY_PROVIDER, 4, NEXT_WALLET);
+    // The highest epoch for the shared wallet is neither first nor last in the manifest, nor the highest of all.
+    const config = await carrying(PROFILE_ONLY_PROVIDER, [second, third, first, fourth]);
+
+    const listing = await listed(config);
+    expect(listing.providerControlProfile).toEqual(third);
+    expectCalledAt(await callsFor(listing), third, [first, second, fourth]);
+    expect((await listed(config, moved(PROFILE_ONLY_PROVIDER))).providerControlProfile).toEqual(fourth);
+  });
+
+  it("is not sold when none of its profiles names its wallet, with the refusals a single profile gives", async () => {
+    const config = await carrying(PROFILE_ONLY_PROVIDER,
+      [profileOf(PROFILE_ONLY_PROVIDER), await profileAt(PROFILE_ONLY_PROVIDER, 2, NEXT_WALLET)]);
+    const elsewhere: StoredState = { agentWallets: { [PROFILE_ONLY_PROVIDER]: syntheticAddress("another wallet") } };
+    await expect(listed(config, elsewhere)).rejects.toMatchObject({ message: KEY_REFUSAL });
+    at(NOW);
+    expect((await catalog(config, elsewhere).listOutcomes()).map((row) => row.providerAgentId)).toEqual([ADMITTED_PROVIDER]);
+
+    // A provider the manifest carries no profile for keeps the refusal of its own.
+    await expect(listed(await carrying(PROFILE_ONLY_PROVIDER, []))).rejects.toMatchObject({ message: PROFILE_REFUSAL });
+  });
+
+  it("is sold as before when it carries one profile, whatever that profile's epoch", async () => {
+    const only = await profileAt(PROFILE_ONLY_PROVIDER, 5, SHARED_WALLET);
+    const config = await carrying(PROFILE_ONLY_PROVIDER, [only]);
+
+    const listing = await listed(config);
+    expect(listing.providerControlProfile).toEqual(only);
+    expectCalledAt(await callsFor(listing), only, [profileOf(PROFILE_ONLY_PROVIDER)]);
+    await expect(listed(config, moved(PROFILE_ONLY_PROVIDER))).rejects.toMatchObject({ message: KEY_REFUSAL });
+  });
+
+  it("is sold through the profile recorded as its current one, whatever wallets and epochs its profiles name", async () => {
+    const admitted = profileOf(ADMITTED_PROVIDER);
+    const later = await profileAt(ADMITTED_PROVIDER, 2, SHARED_WALLET);
+    const sameWallet = await carrying(ADMITTED_PROVIDER, [later, admitted]);
+    // Its current admission names the first profile: a later one for the same wallet does not replace it.
+    const listing = await listed(sameWallet, {}, ADMITTED_PROVIDER);
+    expect(listing.providerControlProfile).toEqual(admitted);
+    expectCalledAt(await callsFor(listing), admitted, [later]);
+    // The later profile is the one sold through only once it is the recorded one.
+    const recorded: StoredState = { currentProfileHashes: { [ADMITTED_PROVIDER]: canonicalHash(later) } };
+    expect((await listed(sameWallet, recorded, ADMITTED_PROVIDER)).providerControlProfile).toEqual(later);
+
+    // A profile for another wallet is not taken for a registration that names that wallet.
+    const twoWallets = await carrying(ADMITTED_PROVIDER, [admitted, await profileAt(ADMITTED_PROVIDER, 2, NEXT_WALLET)]);
+    await expect(listed(twoWallets, moved(ADMITTED_PROVIDER), ADMITTED_PROVIDER)).rejects.toMatchObject({ message: KEY_REFUSAL });
+    // Nor does one replace a recorded profile the manifest does not carry.
+    const missing: StoredState = {
+      ...moved(ADMITTED_PROVIDER), currentProfileHashes: { [ADMITTED_PROVIDER]: synthetic("a profile the manifest does not carry") },
+    };
+    await expect(listed(twoWallets, missing, ADMITTED_PROVIDER)).rejects.toMatchObject({ message: PROFILE_REFUSAL });
+  });
+
+  it("keeps its first profile, as asset calls do, while it is admitted for servicing and no admission is recorded yet", async () => {
+    const admitted = profileOf(ADMITTED_PROVIDER);
+    const later = await profileAt(ADMITTED_PROVIDER, 2, SHARED_WALLET);
+    const config = await carrying(ADMITTED_PROVIDER, [later, admitted]);
+    const unrecorded: StoredState = { currentProfileHashes: { [ADMITTED_PROVIDER]: null } };
+    expect((await listed(config, unrecorded, ADMITTED_PROVIDER)).providerControlProfile).toEqual(admitted);
+
+    // Asset calls start from the same profile: the one the provider's first admission names.
+    const idle = { rows: [] as unknown[] };
+    const pool = {
+      query: async () => idle, connect: async () => ({ query: async () => idle, release: () => undefined }),
+    } as unknown as Pool;
+    const assets = new StandardAssetFederation(pool, config, CHAIN_ID, {} as StandardWalletStore,
+      async () => { throw new Error("no provider is called"); });
+    at(NOW);
+    await assets.activateAdmissions({ readOnly: true });
+    expect(assets.activeServicing(ADMITTED_PROVIDER)?.listing.providerControlProfile).toEqual(admitted);
+
+    // Meanwhile it is not sold by wallet through a profile that no admission names.
+    const twoWallets = await carrying(ADMITTED_PROVIDER, [admitted, await profileAt(ADMITTED_PROVIDER, 2, NEXT_WALLET)]);
+    await expect(listed(twoWallets, { ...unrecorded, ...moved(ADMITTED_PROVIDER) }, ADMITTED_PROVIDER))
+      .rejects.toMatchObject({ message: KEY_REFUSAL });
   });
 });

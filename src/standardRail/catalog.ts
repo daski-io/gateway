@@ -227,6 +227,8 @@ export class StandardRailCatalog {
     string,
     SignedEnvelope<ProviderControlProfileV1>
   >();
+  /** Providers the manifest admits for servicing: an admission names their profile. */
+  private readonly servicingProviders: ReadonlySet<string>;
   private readonly validators = new Map<
     Hex,
     { request: ValidateFunction; response: ValidateFunction }
@@ -264,6 +266,9 @@ export class StandardRailCatalog {
     for (const profile of railConfig.manifest.providerControlProfiles) {
       this.controlProfiles.set(canonicalHash(profile), profile);
     }
+    this.servicingProviders = new Set(
+      railConfig.manifest.servicingAdmissions.map((admission) => admission.payload.providerAgentId),
+    );
   }
 
   async publicArtifact(hash: string): Promise<unknown | null> {
@@ -641,6 +646,33 @@ export class StandardRailCatalog {
     return listings;
   }
 
+  /**
+   * The control profile of a provider with no current servicing admission on
+   * record, among the profiles the manifest carries for it.
+   *
+   * A provider the manifest admits for servicing keeps its lowest-epoch
+   * profile until an admission is recorded. That is the profile its first
+   * admission names, the one asset calls use meanwhile.
+   *
+   * Any other provider is sold through the profile whose key is the agent
+   * wallet of the registration, so a manifest can carry one profile per
+   * wallet while a provider moves from one wallet to the next. Epochs are
+   * unique per provider: of several profiles naming that wallet the highest
+   * epoch replaces the others. When none names it the lowest-epoch profile is
+   * returned, and the caller refuses the listing for its key.
+   */
+  private carriedControlProfile(
+    record: Pick<StoredRegistration, "providerAgentId" | "providerAgentWallet">,
+  ): SignedEnvelope<ProviderControlProfileV1> | undefined {
+    const carried = [...this.controlProfiles.values()]
+      .filter((profile) => profile.payload.providerAgentId === record.providerAgentId)
+      .sort((a, b) => a.payload.servicingProfileEpoch - b.payload.servicingProfileEpoch);
+    if (this.servicingProviders.has(record.providerAgentId)) return carried[0];
+    const wallet = record.providerAgentWallet.toLowerCase();
+    return carried.filter((profile) => profile.payload.assetResponseKey.toLowerCase() === wallet).at(-1) ??
+      carried[0];
+  }
+
   private async assembleListing(
     record: StoredRegistration,
     prepared: PreparedListing,
@@ -685,8 +717,7 @@ export class StandardRailCatalog {
     const checkpoint = checkpointFacts(row.activationCheckpoint);
     const currentProfileHash = await this.registrations.currentProviderControlProfileHash(record.providerAgentId);
     const controlProfile = currentProfileHash ? this.controlProfiles.get(currentProfileHash)
-      : [...this.controlProfiles.values()].filter(profile => profile.payload.providerAgentId === record.providerAgentId)
-        .sort((a,b) => a.payload.servicingProfileEpoch - b.payload.servicingProfileEpoch)[0];
+      : this.carriedControlProfile(record);
     if (!controlProfile) {
       throw new Error("Provider control profile is not admitted");
     }
