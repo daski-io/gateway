@@ -67,6 +67,16 @@ path for either handed-over target.
   directory's `README.md` describes the procedure). Gateway maintainers own
   this contract and both starter maintainers review a change to it; a release
   that changes it names the new gateway commit for the starters to re-vendor.
+- A change to the manifest rules in `src/standardRail/artifacts.ts`
+  (`verifyStandardRailManifest`) keeps `test/fixtures/rail-manifest-examples/`
+  current: complete synthetic manifests, accepted and refused, each with the
+  exact verdict of the start-up check. Regenerate with
+  `UPDATE_RAIL_MANIFEST_EXAMPLES=1 npx vitest run test/railManifestExamples.test.ts`;
+  the test fails on any byte difference or unlisted file. A repository that
+  replays these rules before a gateway reads a manifest vendors the directory
+  verbatim and pins `manifest.json`'s checksums (the directory's `README.md`
+  describes the procedure), so a changed set names the new gateway commit for
+  it to re-vendor.
 - A migration in `src/db/migrations/` ships with its compatibility test: the
   complete clean-schema run in `test/migrationsPostgres.test.ts` must still
   pass, a migration that reshapes existing rows gets a PostgreSQL-backed test
