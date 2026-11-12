@@ -212,6 +212,19 @@ passes for a version committing the old one. A switch therefore keeps the
 provider signing with the committed key until the gateway's finality tag holds
 the new wallet and versions committing it are live.
 
+A provider control profile in the manifest names one wallet
+(`assetResponseKey`), and a listing is sold only through a profile that names
+the agent wallet of its registration. A provider the manifest admits for
+servicing is sold through the profile its current servicing admission names;
+before one is recorded, through its lowest-epoch profile, which its first
+admission names. For any other provider the manifest may carry one profile per
+wallet while a switch runs. Each of its registrations is sold through the
+profile that names that registration's agent wallet, the one with the highest
+`servicingProfileEpoch` when several name it, and is not sold when none does.
+The profile for the new wallet can therefore be added before the provider
+switches and the old one removed afterwards: nothing in the manifest has to
+change at the moment of the switch.
+
 ## Compatibility evidence
 
 The PostgreSQL tests exercise incumbent restricted-role writes before candidate
