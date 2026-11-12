@@ -1,3 +1,5 @@
 # Vendored byte for byte by the provider starters and pinned by sha256: never
 # rewrite line endings on checkout.
 test/fixtures/provider-wire/** -text
+# Vendored byte for byte by repositories that replay the manifest rules.
+test/fixtures/rail-manifest-examples/** -text

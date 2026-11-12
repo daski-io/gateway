@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "name": "daski-rail-manifest-examples",
+  "synthetic": true,
+  "owner": "daski-io/gateway",
+  "consumers": [
+    "daski-io/deploy-mainnet"
+  ],
+  "generator": "test/railManifestExamples.test.ts (UPDATE_RAIL_MANIFEST_EXAMPLES=1 npx vitest run test/railManifestExamples.test.ts)",
+  "verifier": "test/railManifestExamples.test.ts",
+  "hash": "sha256 of the exact file bytes",
+  "files": {
+    "README.md": {
+      "sha256": "369062fecac32b90ecda5e74dacd57ee0a670cabc987f70744ef38a511b5abd9",
+      "purpose": "How the set is generated, verified and vendored."
+    },
+    "examples.json": {
+      "sha256": "dc1c801d142989aff321aa0751ce458f935d7cc4fc454771dcac34be3392379d",
+      "purpose": "The trust inputs, the clock, the synthetic keys and every example manifest with its verdict."
+    }
+  }
+}
