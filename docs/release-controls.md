@@ -26,7 +26,11 @@ array is not wildcard proof: the gateway compiles dynamically registered
 contracts. Runtime `runtimeMappings` (also `executableListings`) names the exact
 listing and skill hashes actually compiled on that instance.
 `carriedAdmissions` names all locally carried signed admission bundles;
-`currentAdmissions` names only database-current admissions. A coordinator must
+`currentAdmissions` names only database-current admissions; `controlProfiles`
+names each control profile of the manifest this process verified at start
+(`providerAgentId`, `profileHash`, `servicingProfileEpoch`, `assetResponseKey`,
+`providerAudience`), never one that `/public/v2/artifacts` still answers because
+an earlier start stored it. A coordinator must
 bind prospective contract qualification to the exact image digest and contract
 hash, and sample every potentially serving deployment.
 
@@ -223,7 +227,12 @@ profile that names that registration's agent wallet, the one with the highest
 `servicingProfileEpoch` when several name it, and is not sold when none does.
 The profile for the new wallet can therefore be added before the provider
 switches and the old one removed afterwards: nothing in the manifest has to
-change at the moment of the switch.
+change at the moment of the switch. The release capabilities declare this rule
+as `controlProfileSelection: "agent-wallet"`, and an image without it is
+treated as selecting the lowest epoch. An image built before `35d0095` does
+sell such a provider through its lowest-epoch profile, so after a rollback to
+one of those a manifest carrying two profiles that name one wallet sells
+through the lower epoch, under that profile's hash and limits, with no error.
 
 ## Compatibility evidence
 
