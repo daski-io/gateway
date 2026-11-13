@@ -6,6 +6,13 @@ export interface ReleaseCapabilityManifest {
   paidContracts: unknown[]; assetActions: unknown[]; intentFormats: string[]; workerFormats: string[];
   /** Encodings of public JSON variables this gateway decodes; absent before brotli support. */
   variableEncodings?: string[];
+  /**
+   * How a provider without a current servicing admission is sold when the
+   * manifest carries several of its control profiles: "agent-wallet", through
+   * the profile naming its registration's agent wallet (catalog.ts). Absent
+   * on images that sold through the lowest epoch.
+   */
+  controlProfileSelection?: "agent-wallet";
 }
 export function parseReleaseCapabilityManifest(bytes: Buffer) {
   const artifact = JSON.parse(bytes.toString("utf8")) as ReleaseCapabilityManifest;

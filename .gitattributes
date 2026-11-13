@@ -3,3 +3,5 @@
 test/fixtures/provider-wire/** -text
 # Vendored byte for byte by repositories that replay the manifest rules.
 test/fixtures/rail-manifest-examples/** -text
+# Copied byte for byte by the release engine: never rewrite line endings.
+test/fixtures/release-capabilities-answer.json -text

@@ -31,3 +31,9 @@ it("the built release capabilities tell the release engine this gateway reads a 
   const manifest = JSON.parse(readFileSync(new URL("../dist/release-capabilities.json", import.meta.url), "utf8"));
   expect(manifest.variableEncodings).toEqual(["gzip-base64", "br-base64"]);
 });
+
+it("the built release capabilities tell the release engine that this gateway sells a provider through the profile naming its wallet", async () => {
+  const { readFileSync } = await import("node:fs");
+  const manifest = JSON.parse(readFileSync(new URL("../dist/release-capabilities.json", import.meta.url), "utf8"));
+  expect(manifest.controlProfileSelection).toBe("agent-wallet");
+});

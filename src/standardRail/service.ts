@@ -524,10 +524,18 @@ export class StandardRailService {
         canonicalHash(catalog) === admission.payload.actionCatalogHash)?.payload.actions.map(action =>
           ({serviceId:action.serviceId,actionDefinitionHash:action.actionDefinitionHash})) ?? null,
     }));
+    // The profiles of the manifest this process verified when it started.
+    // The artifact route also answers every profile an earlier start stored,
+    // so only this list says what the answering deployment carries.
+    const controlProfiles = this.railConfig.manifest.providerControlProfiles.map(profile => ({
+      providerAgentId: profile.payload.providerAgentId, profileHash: canonicalHash(profile),
+      servicingProfileEpoch: profile.payload.servicingProfileEpoch,
+      assetResponseKey: profile.payload.assetResponseKey, providerAudience: profile.payload.providerAudience,
+    }));
     return {
       ...artifact, artifactManifestHash, deploymentId: process.env.RAILWAY_DEPLOYMENT_ID ?? null,
       network: this.appConfig.x402Network,
-      executableListings, runtimeMappings: executableListings, carriedAdmissions,
+      executableListings, runtimeMappings: executableListings, carriedAdmissions, controlProfiles,
       retirements: await this.releaseRetirements.inventory(),
       retainedAdmissions: await this.releaseRetirements.retainedAdmissions(),
       currentAdmissions: carriedAdmissions.filter(item => current.rows.some(row =>

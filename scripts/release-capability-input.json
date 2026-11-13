@@ -14,5 +14,6 @@
   "variableEncodings": [
     "gzip-base64",
     "br-base64"
-  ]
+  ],
+  "controlProfileSelection": "agent-wallet"
 }

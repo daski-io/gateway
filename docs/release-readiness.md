@@ -77,6 +77,13 @@ path for either handed-over target.
   verbatim and pins `manifest.json`'s checksums (the directory's `README.md`
   describes the procedure), so a changed set names the new gateway commit for
   it to re-vendor.
+- A change to the release-controls capabilities answer
+  (`GET /internal/release/v1/capabilities`) regenerates
+  `test/fixtures/release-capabilities-answer.json`
+  (`UPDATE_RELEASE_CAPABILITIES_ANSWER=1 npx vitest run test/carriedControlProfilesPostgres.test.ts`);
+  the test fails on any byte difference. The release engine copies the file
+  byte for byte, so a changed file names the new gateway commit for it to copy
+  again.
 - A migration in `src/db/migrations/` ships with its compatibility test: the
   complete clean-schema run in `test/migrationsPostgres.test.ts` must still
   pass, a migration that reshapes existing rows gets a PostgreSQL-backed test

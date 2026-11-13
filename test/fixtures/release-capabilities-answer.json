@@ -1,0 +1,202 @@
+{
+  "schemaVersion": 1,
+  "contract": "The gateway's release-controls capabilities answer, GET /internal/release/v1/capabilities (catalog operator bearer token; Cache-Control: no-store), as two deployments of one gateway serve it over one database: the first started with a manifest carrying a seller's control profile, the second with the same manifest less that profile. Added by the gateway; the release engine copies this file byte for byte.",
+  "synthetic": true,
+  "owner": "daski-io/gateway",
+  "consumers": [
+    "daski-io/deploy-mainnet"
+  ],
+  "generator": "test/carriedControlProfilesPostgres.test.ts (UPDATE_RELEASE_CAPABILITIES_ANSWER=1 npx vitest run test/carriedControlProfilesPostgres.test.ts)",
+  "route": {
+    "method": "GET",
+    "path": "/internal/release/v1/capabilities",
+    "authorization": "Bearer <catalog operator token>",
+    "cacheControl": "no-store"
+  },
+  "controlProfileFields": [
+    "providerAgentId",
+    "profileHash",
+    "servicingProfileEpoch",
+    "assetResponseKey",
+    "providerAudience"
+  ],
+  "rules": [
+    "controlProfiles has one row per ProviderControlProfileV1 envelope of the manifest the answering process verified when it started, in that manifest's order, and nothing else. It is never read from the database.",
+    "profileHash is the canonical hash of the signed envelope: the hash GET /public/v2/artifacts/<hash> answers and an order's stored listing names as providerControlProfileHash.",
+    "GET /public/v2/artifacts/<hash> also answers 200 for every profile any earlier start over the same database stored, and tells caches the answer is immutable. A 200 there says the hash is known, not that the answering deployment carries it.",
+    "deploymentId names the answering deployment (Railway's RAILWAY_DEPLOYMENT_ID), null outside Railway. While two deployments answer, each lists its own manifest's profiles.",
+    "controlProfileSelection comes from the image's release-capabilities.json. \"agent-wallet\": a provider without a current servicing admission is sold through the carried profile whose assetResponseKey is the agent wallet of the registration being sold, the highest servicingProfileEpoch of those. An image without the field sells through the provider's lowest-epoch profile.",
+    "An image built before controlProfiles answers without that field.",
+    "artifactRoute is what GET /public/v2/artifacts/<hash> answered on that deployment for provider 41's profile, seller 9001's profile and a hash no gateway started with.",
+    "commit and artifactManifestHash identify the build. Here they are the placeholders below; the test that writes this file checks them against the build and replaces exactly those two values."
+  ],
+  "placeholders": {
+    "commit": "0123456789abcdef0123456789abcdef01234567",
+    "artifactManifestHash": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "answers": [
+    {
+      "name": "first deployment",
+      "started": "with a manifest carrying provider 41, admitted for servicing, and seller 9001's control profile",
+      "artifactRoute": {
+        "0xdfeb0e7472a1b5328a3d12b9f0043c6bb989fdd3d493d29a3faf1dcfaf2c775a": 200,
+        "0x21877af79be1d96f399170db1ba92d0df1a502733d96227f7d8a17dd29ff78d7": 200,
+        "0xe15c8cb6afd82789224a14dd833f0373a21b7bbdf0adcea8c70856f512ec7592": 404
+      },
+      "answer": {
+        "schemaVersion": 1,
+        "role": "gateway",
+        "commit": "0123456789abcdef0123456789abcdef01234567",
+        "paidContracts": [],
+        "assetActions": [],
+        "intentFormats": [
+          "ProviderServiceRegistrationIntentV1",
+          "ProviderServiceRegistrationIntentV1:targetRevision"
+        ],
+        "workerFormats": [
+          "standard-orders-v1",
+          "dispatch-journal-v2",
+          "review-journal-v1"
+        ],
+        "variableEncodings": [
+          "gzip-base64",
+          "br-base64"
+        ],
+        "controlProfileSelection": "agent-wallet",
+        "artifactManifestHash": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        "deploymentId": "00000000-0000-4000-8000-0000000000d1",
+        "network": "eip155:84532",
+        "executableListings": [],
+        "runtimeMappings": [],
+        "carriedAdmissions": [
+          {
+            "providerAgentId": "41",
+            "admissionHash": "0x2586289e056899c3a20c7797e517a6d4c4314db6408f28bd4881311a34134035",
+            "epoch": 1,
+            "actionIds": [],
+            "actionCatalogHash": "0xafb7683185883a6b75986dbd9c514fa8da4f2f6626c881e96504057a09faf708",
+            "catalogKnown": true,
+            "actions": []
+          }
+        ],
+        "controlProfiles": [
+          {
+            "providerAgentId": "41",
+            "profileHash": "0xdfeb0e7472a1b5328a3d12b9f0043c6bb989fdd3d493d29a3faf1dcfaf2c775a",
+            "servicingProfileEpoch": 1,
+            "assetResponseKey": "0x7A76A259Cbd0625C81E4B4511ef856229e035c8A",
+            "providerAudience": "https://provider.example/"
+          },
+          {
+            "providerAgentId": "9001",
+            "profileHash": "0x21877af79be1d96f399170db1ba92d0df1a502733d96227f7d8a17dd29ff78d7",
+            "servicingProfileEpoch": 1,
+            "assetResponseKey": "0x556595a1084C9a5bd604E2eAd741E31F64FBFe0E",
+            "providerAudience": "https://sellers.example/"
+          }
+        ],
+        "retirements": [],
+        "retainedAdmissions": [
+          {
+            "providerAgentId": "41",
+            "admissionHash": "0x2586289e056899c3a20c7797e517a6d4c4314db6408f28bd4881311a34134035",
+            "epoch": 1,
+            "current": true,
+            "actionCatalogHash": "0xafb7683185883a6b75986dbd9c514fa8da4f2f6626c881e96504057a09faf708",
+            "catalogKnown": true,
+            "actions": []
+          }
+        ],
+        "currentAdmissions": [
+          {
+            "providerAgentId": "41",
+            "admissionHash": "0x2586289e056899c3a20c7797e517a6d4c4314db6408f28bd4881311a34134035",
+            "epoch": 1,
+            "actionIds": [],
+            "actionCatalogHash": "0xafb7683185883a6b75986dbd9c514fa8da4f2f6626c881e96504057a09faf708",
+            "catalogKnown": true,
+            "actions": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "second deployment",
+      "started": "over the same database, with the same manifest less seller 9001's control profile",
+      "artifactRoute": {
+        "0xdfeb0e7472a1b5328a3d12b9f0043c6bb989fdd3d493d29a3faf1dcfaf2c775a": 200,
+        "0x21877af79be1d96f399170db1ba92d0df1a502733d96227f7d8a17dd29ff78d7": 200,
+        "0xe15c8cb6afd82789224a14dd833f0373a21b7bbdf0adcea8c70856f512ec7592": 404
+      },
+      "answer": {
+        "schemaVersion": 1,
+        "role": "gateway",
+        "commit": "0123456789abcdef0123456789abcdef01234567",
+        "paidContracts": [],
+        "assetActions": [],
+        "intentFormats": [
+          "ProviderServiceRegistrationIntentV1",
+          "ProviderServiceRegistrationIntentV1:targetRevision"
+        ],
+        "workerFormats": [
+          "standard-orders-v1",
+          "dispatch-journal-v2",
+          "review-journal-v1"
+        ],
+        "variableEncodings": [
+          "gzip-base64",
+          "br-base64"
+        ],
+        "controlProfileSelection": "agent-wallet",
+        "artifactManifestHash": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        "deploymentId": "00000000-0000-4000-8000-0000000000d2",
+        "network": "eip155:84532",
+        "executableListings": [],
+        "runtimeMappings": [],
+        "carriedAdmissions": [
+          {
+            "providerAgentId": "41",
+            "admissionHash": "0x2586289e056899c3a20c7797e517a6d4c4314db6408f28bd4881311a34134035",
+            "epoch": 1,
+            "actionIds": [],
+            "actionCatalogHash": "0xafb7683185883a6b75986dbd9c514fa8da4f2f6626c881e96504057a09faf708",
+            "catalogKnown": true,
+            "actions": []
+          }
+        ],
+        "controlProfiles": [
+          {
+            "providerAgentId": "41",
+            "profileHash": "0xdfeb0e7472a1b5328a3d12b9f0043c6bb989fdd3d493d29a3faf1dcfaf2c775a",
+            "servicingProfileEpoch": 1,
+            "assetResponseKey": "0x7A76A259Cbd0625C81E4B4511ef856229e035c8A",
+            "providerAudience": "https://provider.example/"
+          }
+        ],
+        "retirements": [],
+        "retainedAdmissions": [
+          {
+            "providerAgentId": "41",
+            "admissionHash": "0x2586289e056899c3a20c7797e517a6d4c4314db6408f28bd4881311a34134035",
+            "epoch": 1,
+            "current": true,
+            "actionCatalogHash": "0xafb7683185883a6b75986dbd9c514fa8da4f2f6626c881e96504057a09faf708",
+            "catalogKnown": true,
+            "actions": []
+          }
+        ],
+        "currentAdmissions": [
+          {
+            "providerAgentId": "41",
+            "admissionHash": "0x2586289e056899c3a20c7797e517a6d4c4314db6408f28bd4881311a34134035",
+            "epoch": 1,
+            "actionIds": [],
+            "actionCatalogHash": "0xafb7683185883a6b75986dbd9c514fa8da4f2f6626c881e96504057a09faf708",
+            "catalogKnown": true,
+            "actions": []
+          }
+        ]
+      }
+    }
+  ]
+}
