@@ -228,10 +228,11 @@ profile that names that registration's agent wallet, the one with the highest
 The profile for the new wallet can therefore be added before the provider
 switches and the old one removed afterwards: nothing in the manifest has to
 change at the moment of the switch. The release capabilities declare this rule
-as `controlProfileSelection: "agent-wallet"`; an image without it sells such a
-provider through its lowest-epoch profile, so after a rollback to that image a
-manifest carrying two profiles that name one wallet sells through the lower
-epoch, under that profile's hash and limits, with no error.
+as `controlProfileSelection: "agent-wallet"`, and an image without it is
+treated as selecting the lowest epoch. An image built before `35d0095` does
+sell such a provider through its lowest-epoch profile, so after a rollback to
+one of those a manifest carrying two profiles that name one wallet sells
+through the lower epoch, under that profile's hash and limits, with no error.
 
 ## Compatibility evidence
 

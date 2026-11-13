@@ -388,10 +388,10 @@ const RULES = [
     "carries it.",
   "deploymentId names the answering deployment (Railway's RAILWAY_DEPLOYMENT_ID), null outside Railway. While two " +
     "deployments answer, each lists its own manifest's profiles.",
-  "controlProfileSelection comes from the image's release-capabilities.json. \"agent-wallet\": a provider without a " +
-    "current servicing admission is sold through the carried profile whose assetResponseKey is the agent wallet of " +
-    "the registration being sold, the highest servicingProfileEpoch of those. An image without the field sells " +
-    "through the provider's lowest-epoch profile.",
+  "controlProfileSelection comes from the image's release-capabilities.json. \"agent-wallet\": a provider the " +
+    "manifest does not admit for servicing is sold through the carried profile whose assetResponseKey is the agent " +
+    "wallet of the registration being sold, the highest servicingProfileEpoch of those. An image without the field " +
+    "is treated as selecting the lowest epoch.",
   "An image built before controlProfiles answers without that field.",
   "artifactRoute is what GET /public/v2/artifacts/<hash> answered on that deployment for provider 41's profile, " +
     "seller 9001's profile and a hash no gateway started with.",

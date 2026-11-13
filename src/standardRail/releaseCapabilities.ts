@@ -7,10 +7,10 @@ export interface ReleaseCapabilityManifest {
   /** Encodings of public JSON variables this gateway decodes; absent before brotli support. */
   variableEncodings?: string[];
   /**
-   * How a provider without a current servicing admission is sold when the
+   * How a provider the manifest does not admit for servicing is sold when the
    * manifest carries several of its control profiles: "agent-wallet", through
-   * the profile naming its registration's agent wallet (catalog.ts). Absent
-   * on images that sold through the lowest epoch.
+   * the profile naming its registration's agent wallet (catalog.ts). An image
+   * without the field is treated as selecting the lowest epoch.
    */
   controlProfileSelection?: "agent-wallet";
 }
