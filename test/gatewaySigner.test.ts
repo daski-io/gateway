@@ -446,8 +446,8 @@ describe("the release path through viem", () => {
       expect(error).toHaveBeenCalledOnce();
     });
 
-    it("counts a refusal of the plain retry as an ordinary refusal: one retry only", async () => {
-      vi.spyOn(logger, "error").mockImplementation(() => undefined);
+    it("counts a refusal of the plain retry as an ordinary refusal: one retry only, attribution stays on", async () => {
+      const errors = vi.spyOn(logger, "error").mockImplementation(() => undefined);
       const api = privyApi({ respond: (call) => call.body?.method === "eth_signTransaction" ? denied() : null });
       const signers = loadGatewaySigners(privyEnv({ BASE_BUILDER_CODE: CODE }), { fetch: api.fetch });
       const failure = await signers.sender.attributed((suffix) => release(signers.sender.account, suffix))
@@ -459,7 +459,26 @@ describe("the release path through viem", () => {
       expect(chain.some((link) => link instanceof AttributionRefused)).toBe(false);
       expect(signRequests(api).map(signedData)).toEqual([ATTRIBUTED, RELEASE_ALL]);
       expect(signers.sender.status()).toMatchObject({ status: "unhealthy", reason: "signature_refused", refusals: 1 });
-      expect(signers.attribution.current()).toBeNull();
+      // The code was not shown to be the cause: no builder-code error, and the next request still carries it.
+      expect(errors.mock.calls.some(([message]) => String(message).includes("builder code"))).toBe(false);
+      expect(signers.attribution.current()).toBe(SUFFIX);
+    });
+
+    it("leaves attribution on when the plain retry is unavailable, and counts it as unavailable", async () => {
+      const errors = vi.spyOn(logger, "error").mockImplementation(() => undefined);
+      vi.spyOn(logger, "warn").mockImplementation(() => undefined);
+      let calls = 0;
+      const api = privyApi({ respond: (call) => {
+        if (call.body?.method !== "eth_signTransaction") return null;
+        calls += 1;
+        return calls === 1 ? denied() : new Response("{}", { status: 503, headers: { "content-type": "application/json" } });
+      } });
+      const signers = loadGatewaySigners(privyEnv({ BASE_BUILDER_CODE: CODE }), { fetch: api.fetch });
+      await expect(signers.sender.attributed((suffix) => release(signers.sender.account, suffix))).rejects.toThrow();
+      expect(signRequests(api).map(signedData)).toEqual([ATTRIBUTED, RELEASE_ALL]);
+      expect(signers.sender.status()).toMatchObject({ refusals: 0 });
+      expect(errors.mock.calls.some(([message]) => String(message).includes("builder code"))).toBe(false);
+      expect(signers.attribution.current()).toBe(SUFFIX);
     });
 
     it("never retries a signed result unlike its request: that stays a mismatch until restart", async () => {

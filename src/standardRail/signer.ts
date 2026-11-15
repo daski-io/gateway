@@ -147,8 +147,11 @@ export class GatewaySigner {
    * Runs `send` with the builder-code suffix to append to the transaction
    * data before signing (undefined when attribution is off). When this
    * role's remote signer refuses the attributed transaction as a policy
-   * denial, attribution stops until restart and `send` runs once more
-   * without the suffix; that refusal never marks the role unhealthy.
+   * denial, `send` runs once more without the suffix; that first refusal
+   * never marks the role unhealthy. Only a plain retry that succeeds shows
+   * the code was the cause, so only then does attribution stop until
+   * restart (and log once). Any other answer to the plain retry counts for
+   * the role as usual, and attribution stays on.
    */
   async attributed<T>(send: (suffix: Hex | undefined) => Promise<T>): Promise<T> {
     const suffix = this.attribution.current();
@@ -158,8 +161,9 @@ export class GatewaySigner {
     } catch (error) {
       const refusal = attributionRefusal(error);
       if (!refusal) throw error;
+      const result = await send(undefined);
       this.attribution.refuse(this.role, refusal.policyReason);
-      return send(undefined);
+      return result;
     }
   }
 
