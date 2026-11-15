@@ -1,5 +1,6 @@
 import { createPrivateKey, createPublicKey } from "node:crypto";
 import {
+  concatHex,
   getAddress,
   keccak256,
   parseTransaction,
@@ -14,6 +15,7 @@ import { privateKeyToAccount, toAccount, type LocalAccount } from "viem/accounts
 import { APIConnectionError, APIError, PrivyAPIError, PrivyClient } from "@privy-io/node";
 import { createViemAccount } from "@privy-io/node/viem";
 import { logger } from "../util/logger.js";
+import { BuilderAttribution, parseBuilderCode } from "./builderCode.js";
 
 export const SIGNER_ROLES = ["identity", "sender"] as const;
 export type SignerRole = typeof SIGNER_ROLES[number];
@@ -54,6 +56,28 @@ export class SignerRefused extends Error {
   }
 }
 
+/**
+ * A remote signer's policy refused a transaction carrying this process's
+ * builder code. Not counted against the role: the caller sends the same
+ * transaction once more without the code (GatewaySigner.attributed).
+ */
+export class AttributionRefused extends SignerRefused {
+  constructor(role: SignerRole, method: string, readonly policyReason: string, options?: { cause?: unknown }) {
+    super(role, method, "BUILDER_CODE_REFUSED", options);
+    this.name = "AttributionRefused";
+  }
+}
+
+/** An AttributionRefused anywhere in a cause chain (viem wraps what an account throws). */
+function attributionRefusal(error: unknown): AttributionRefused | null {
+  let current = error;
+  for (let depth = 0; depth < 10 && current && typeof current === "object"; depth += 1) {
+    if (current instanceof AttributionRefused) return current;
+    current = (current as { cause?: unknown }).cause;
+  }
+  return null;
+}
+
 export interface SignerStatus {
   role: SignerRole;
   backend: SignerBackend;
@@ -87,6 +111,8 @@ export class GatewaySigner {
     readonly address: Address,
     inner: LocalAccount,
     private readonly attachment: (() => Promise<void>) | null = null,
+    /** The builder code appended to the transactions this role signs; shared by a signer set. */
+    readonly attribution: BuilderAttribution = new BuilderAttribution(),
   ) {
     this.account = toAccount({
       address,
@@ -112,9 +138,29 @@ export class GatewaySigner {
           const signed = await inner.signTransaction(transaction, options);
           await assertSignedAsRequested(role, address, transaction, signed);
           return signed;
-        });
+        }, this.attribution.carries(transaction.data));
       },
     });
+  }
+
+  /**
+   * Runs `send` with the builder-code suffix to append to the transaction
+   * data before signing (undefined when attribution is off). When this
+   * role's remote signer refuses the attributed transaction as a policy
+   * denial, attribution stops until restart and `send` runs once more
+   * without the suffix; that refusal never marks the role unhealthy.
+   */
+  async attributed<T>(send: (suffix: Hex | undefined) => Promise<T>): Promise<T> {
+    const suffix = this.attribution.current();
+    if (suffix === null) return send(undefined);
+    try {
+      return await send(suffix);
+    } catch (error) {
+      const refusal = attributionRefusal(error);
+      if (!refusal) throw error;
+      this.attribution.refuse(this.role, refusal.policyReason);
+      return send(undefined);
+    }
   }
 
   /**
@@ -170,14 +216,16 @@ export class GatewaySigner {
       await this.account.signMessage({ message: { raw: PROBE_MESSAGE } });
       return;
     }
-    await this.account.signTransaction({
+    // The probe carries the builder code exactly as a real release would.
+    const releaseAll = toFunctionSelector("function releaseAll() returns (uint256)");
+    await this.attributed((suffix) => this.account.signTransaction({
       type: "eip1559", chainId, nonce: PROBE_NONCE, to: PROBE_TARGET,
-      data: toFunctionSelector("function releaseAll() returns (uint256)"), value: 0n,
+      data: suffix ? concatHex([releaseAll, suffix]) : releaseAll, value: 0n,
       gas: 50_000n, maxFeePerGas: 1n, maxPriorityFeePerGas: 1n,
-    });
+    }));
   }
 
-  private async observe<T>(method: string, facts: RequestFacts, work: () => Promise<T>): Promise<T> {
+  private async observe<T>(method: string, facts: RequestFacts, work: () => Promise<T>, attributed = false): Promise<T> {
     if (this.backend === "local") return work();
     try {
       const result = await work();
@@ -186,6 +234,12 @@ export class GatewaySigner {
       return result;
     } catch (caught) {
       const error = classify(this.role, method, caught);
+      // A policy denial of a transaction carrying the builder code may be the
+      // code itself (policies decode calldata by ABI): the caller retries
+      // without it, and only that answer counts for the role.
+      if (attributed && error instanceof SignerRefused && !error.reason.startsWith("SIGNED_")) {
+        throw new AttributionRefused(this.role, method, error.reason, { cause: error });
+      }
       if (error instanceof SignerRefused) {
         if (error.reason.startsWith("SIGNED_") && !NON_EVIDENTIAL_MISMATCHES.has(error.reason)) this.mismatch = error.reason;
         else this.refusedMethods.set(method, error.reason);
@@ -269,6 +323,8 @@ export interface GatewaySigners {
    * ignores FACILITATOR_PRIVATE_KEY, which may still be set from before).
    */
   readonly prerequisites: readonly string[];
+  /** BASE_BUILDER_CODE: appended to the release and relayer transactions, off when unset. */
+  readonly attribution: BuilderAttribution;
   /**
    * The signer for an artifact key ID: always the identity role at runtime.
    * Only the synthetic provider-wire contract gives each key ID its own key.
@@ -339,23 +395,27 @@ function configuredAddress(env: NodeJS.ProcessEnv, name: string, required: boole
   return getAddress(value);
 }
 
-function local(role: SignerRole, key: Hex): GatewaySigner {
+function local(role: SignerRole, key: Hex, attribution: BuilderAttribution): GatewaySigner {
   const account = privateKeyToAccount(key);
-  return new GatewaySigner(role, "local", account.address, account);
+  return new GatewaySigner(role, "local", account.address, account, null, attribution);
 }
 
 /** Local signers from raw keys: today's behavior, and every test's. */
 export function localGatewaySigners(identityKey: Hex, senderKey: Hex = identityKey, options: {
   artifactKeys?: Partial<Record<GatewayArtifactKeyId, Hex>>;
+  /** A builder code to append to sender transactions; none by default. */
+  builderCode?: string | null;
 } = {}): GatewaySigners {
-  const identity = local("identity", identityKey);
+  const attribution = new BuilderAttribution(options.builderCode ?? null);
+  const identity = local("identity", identityKey, attribution);
   const artifacts = new Map(Object.entries(options.artifactKeys ?? {})
-    .map(([keyId, key]) => [keyId, local("identity", key!)] as const));
+    .map(([keyId, key]) => [keyId, local("identity", key!, attribution)] as const));
   return {
     backend: "local",
     identity,
-    sender: local("sender", senderKey),
+    sender: local("sender", senderKey, attribution),
     prerequisites: ["FACILITATOR_PRIVATE_KEY"],
+    attribution,
     artifact: (keyId) => artifacts.get(keyId) ?? identity,
   };
 }
@@ -418,6 +478,7 @@ export function loadGatewaySigners(
   options: { fetch?: typeof fetch } = {},
 ): GatewaySigners {
   const backend = env.SIGNER_BACKEND?.trim() || "local";
+  const builderCode = parseBuilderCode(env.BASE_BUILDER_CODE);
   if (backend === "local") {
     const identityKey = privateKey(env.FACILITATOR_PRIVATE_KEY, "FACILITATOR_PRIVATE_KEY");
     const senderRaw = env.GATEWAY_SENDER_PRIVATE_KEY?.trim();
@@ -425,7 +486,7 @@ export function loadGatewaySigners(
     // Local mode reports exactly the prerequisite it always has: the release
     // engine records what the serving fleet reports into the commerce
     // baseline, so an optional sender key must not become a requirement.
-    const signers = localGatewaySigners(identityKey, senderKey);
+    const signers = localGatewaySigners(identityKey, senderKey, { builderCode });
     for (const signer of [signers.identity, signers.sender]) {
       const name = `PRIVY_${signer.role.toUpperCase()}_ADDRESS`;
       const expected = configuredAddress(env, name, false);
@@ -445,6 +506,7 @@ export function loadGatewaySigners(
   });
   const identity = privyRole(env, "identity", null);
   const sender = privyRole(env, "sender", identity);
+  const attribution = new BuilderAttribution(builderCode);
   const signer = (role: PrivyRole) => new GatewaySigner(role.role, "privy", role.address,
     createViemAccount(client, {
       walletId: role.walletId, address: role.address,
@@ -468,7 +530,7 @@ export function loadGatewaySigners(
         })) return;
       }
       throw new Error(`The ${role.role} signer is not attached to its Privy wallet with an override policy`);
-    });
+    }, attribution);
   const identitySigner = signer(identity);
   return {
     backend: "privy",
@@ -476,6 +538,7 @@ export function loadGatewaySigners(
     sender: signer(sender),
     prerequisites: ["PRIVY_APP_ID", "PRIVY_APP_SECRET", ...identity.names,
       ...(sender.names === identity.names ? [] : sender.names)],
+    attribution,
     artifact: () => identitySigner,
   };
 }

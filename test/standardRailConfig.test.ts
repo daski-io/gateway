@@ -225,6 +225,21 @@ describe("payer account types and owner swaps", () => {
   });
 });
 
+describe("builder code", () => {
+  it("is off by default and when empty, appended when set, and refuses to boot on any other value", () => {
+    expect(loadStandardRailConfig(standardEnv()).signers.attribution.current()).toBeNull();
+    expect(loadStandardRailConfig({ ...standardEnv(), BASE_BUILDER_CODE: "" }).signers.attribution.current()).toBeNull();
+    const config = loadStandardRailConfig({ ...standardEnv(), BASE_BUILDER_CODE: "bc_0h3q8lqm" });
+    expect(config.signers.attribution.code).toBe("bc_0h3q8lqm");
+    expect(config.signers.sender.attribution).toBe(config.signers.attribution);
+    expect(config.signers.attribution.current()).toBe("0x62635f30683371386c716d0b0080218021802180218021802180218021");
+    for (const value of ["BC_0H3Q8LQM", "bc-0h3q8lqm", "x".repeat(33)]) {
+      expect(() => loadStandardRailConfig({ ...standardEnv(), BASE_BUILDER_CODE: value }))
+        .toThrow("BASE_BUILDER_CODE must be 1 to 32 characters of a-z, 0-9 and _");
+    }
+  });
+});
+
 describe("public projection refresh cadence", () => {
   it("defaults to one minute and accepts a positive override", () => {
     expect(loadStandardRailConfig(standardEnv()).chainProjectionRefreshMs).toBe(60_000);

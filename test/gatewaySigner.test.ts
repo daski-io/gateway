@@ -13,6 +13,7 @@ import { canonicalHash } from "../src/standardRail/canonical.js";
 import { commercePrerequisites } from "../src/standardRail/service.js";
 import { signEnvelope } from "../src/standardRail/signing.js";
 import {
+  AttributionRefused,
   loadGatewaySigners,
   probeSigners,
   signerStatuses,
@@ -349,7 +350,7 @@ describe("the release path through viem", () => {
   const RELEASE_ALL = toFunctionSelector("function releaseAll() returns (uint256)");
   // viem prepares the transaction (nonce, gas, fees), the role signs it, and
   // only a transaction matching every requested field is broadcast.
-  async function release(account: import("viem/accounts").LocalAccount) {
+  async function release(account: import("viem/accounts").LocalAccount, dataSuffix?: Hex) {
     const { createWalletClient, custom, parseAbi, keccak256 } = await import("viem");
     const { baseSepolia } = await import("viem/chains");
     const sent: Hex[] = [];
@@ -369,7 +370,7 @@ describe("the release path through viem", () => {
     });
     const wallet = createWalletClient({ account, chain: baseSepolia, transport });
     const hash = await wallet.writeContract({ address: `0x${"77".repeat(20)}`, abi: parseAbi(["function releaseAll() returns (uint256)"]),
-      functionName: "releaseAll" });
+      functionName: "releaseAll", dataSuffix });
     return { hash, sent };
   }
 
@@ -389,6 +390,111 @@ describe("the release path through viem", () => {
     const tx = (api.calls.at(-1)!.body!.params as { transaction: Record<string, unknown> }).transaction;
     expect(tx).toMatchObject({ type: 2, chain_id: 84532, to: `0x${"77".repeat(20)}`, data: RELEASE_ALL });
     expect(tx.nonce).toBeUndefined();
+  });
+
+  describe("with a builder code", () => {
+    const CODE = "bc_0h3q8lqm";
+    const SUFFIX = "0x62635f30683371386c716d0b0080218021802180218021802180218021" as Hex;
+    const ATTRIBUTED = `${RELEASE_ALL}${SUFFIX.slice(2)}`;
+    const signedData = (call: Call) =>
+      String((call.body?.params as { transaction?: { data?: string } } | undefined)?.transaction?.data ?? "");
+    const signRequests = (api: { calls: Call[] }) => api.calls.filter((call) => call.body?.method === "eth_signTransaction");
+    const denied = () => new Response(JSON.stringify({ error: "Policy denied" }), { status: 403, headers: { "content-type": "application/json" } });
+    // A policy whose calldata decoder refuses trailing bytes.
+    const refusesSuffix = (call: Call) => call.body?.method === "eth_signTransaction" && signedData(call).endsWith("80218021") ? denied() : null;
+
+    it("appends the suffix before a local sender signs", async () => {
+      const signers = loadGatewaySigners({ FACILITATOR_PRIVATE_KEY: identityKey, BASE_BUILDER_CODE: CODE });
+      const { sent } = await signers.sender.attributed((suffix) => release(signers.sender.account, suffix));
+      expect(parseTransaction(sent[0]!).data).toBe(ATTRIBUTED);
+    });
+
+    it("appends nothing when BASE_BUILDER_CODE is unset", async () => {
+      const signers = loadGatewaySigners({ FACILITATOR_PRIVATE_KEY: identityKey });
+      const { sent } = await signers.sender.attributed((suffix) => release(signers.sender.account, suffix));
+      expect(parseTransaction(sent[0]!).data).toBe(RELEASE_ALL);
+    });
+
+    it("sends the suffix to Privy, and the signed transaction passes the signed-as-requested check", async () => {
+      const api = privyApi();
+      const signers = loadGatewaySigners(privyEnv({ BASE_BUILDER_CODE: CODE }), { fetch: api.fetch });
+      const { sent } = await signers.sender.attributed((suffix) => release(signers.sender.account, suffix));
+      expect(parseTransaction(sent[0]!).data).toBe(ATTRIBUTED);
+      expect(signRequests(api).map(signedData)).toEqual([ATTRIBUTED]);
+      expect(signers.sender.status()).toMatchObject({ status: "healthy", refusals: 0 });
+    });
+
+    it("retries a policy refusal once without the code, keeps it off, and leaves the role healthy", async () => {
+      const error = vi.spyOn(logger, "error").mockImplementation(() => undefined);
+      const api = privyApi({ respond: refusesSuffix });
+      const signers = loadGatewaySigners(privyEnv({ BASE_BUILDER_CODE: CODE }), { fetch: api.fetch });
+      const { sent } = await signers.sender.attributed((suffix) => release(signers.sender.account, suffix));
+      expect(parseTransaction(sent[0]!).data).toBe(RELEASE_ALL);
+      expect(signRequests(api).map(signedData)).toEqual([ATTRIBUTED, RELEASE_ALL]);
+      expect(signers.sender.status()).toMatchObject({ status: "healthy", refusals: 0 });
+      expect(signersHealthy(signers)).toBe(true);
+      expect(signers.attribution.current()).toBeNull();
+      expect(error).toHaveBeenCalledOnce();
+      expect(error).toHaveBeenCalledWith(expect.stringContaining("builder code refused by the signer policy"),
+        { role: "sender", builderCode: CODE, reason: "HTTP_403" });
+
+      // Off until restart: the next release asks Privy once, without the code.
+      const before = signRequests(api).length;
+      const next = await signers.sender.attributed((suffix) => release(signers.sender.account, suffix));
+      expect(parseTransaction(next.sent[0]!).data).toBe(RELEASE_ALL);
+      expect(signRequests(api).slice(before).map(signedData)).toEqual([RELEASE_ALL]);
+      expect(error).toHaveBeenCalledOnce();
+    });
+
+    it("counts a refusal of the plain retry as an ordinary refusal: one retry only", async () => {
+      vi.spyOn(logger, "error").mockImplementation(() => undefined);
+      const api = privyApi({ respond: (call) => call.body?.method === "eth_signTransaction" ? denied() : null });
+      const signers = loadGatewaySigners(privyEnv({ BASE_BUILDER_CODE: CODE }), { fetch: api.fetch });
+      const failure = await signers.sender.attributed((suffix) => release(signers.sender.account, suffix))
+        .catch((caught: unknown) => caught);
+      const chain: unknown[] = [];
+      for (let link = failure; link instanceof Error; link = link.cause) chain.push(link);
+      // viem wraps what the account throws: the plain refusal is what surfaces.
+      expect(chain.find((link) => link instanceof SignerRefused)).toMatchObject({ name: "SignerRefused", reason: "HTTP_403" });
+      expect(chain.some((link) => link instanceof AttributionRefused)).toBe(false);
+      expect(signRequests(api).map(signedData)).toEqual([ATTRIBUTED, RELEASE_ALL]);
+      expect(signers.sender.status()).toMatchObject({ status: "unhealthy", reason: "signature_refused", refusals: 1 });
+      expect(signers.attribution.current()).toBeNull();
+    });
+
+    it("never retries a signed result unlike its request: that stays a mismatch until restart", async () => {
+      vi.spyOn(logger, "error").mockImplementation(() => undefined);
+      const stripped = privyApi({ respond: async (call) => {
+        if (call.body?.method !== "eth_signTransaction") return null;
+        // Privy drops the trailing bytes and signs the bare call.
+        const tx = (call.body.params as { transaction: Record<string, string | number> }).transaction;
+        const signed = await sender.signTransaction({ type: "eip1559", chainId: Number(tx.chain_id), nonce: 0,
+          to: tx.to as Hex, data: RELEASE_ALL, gas: BigInt(tx.gas_limit!), maxFeePerGas: BigInt(tx.max_fee_per_gas!),
+          maxPriorityFeePerGas: BigInt(tx.max_priority_fee_per_gas!) });
+        return new Response(JSON.stringify({ method: "eth_signTransaction", data: { signed_transaction: signed, encoding: "rlp" } }),
+          { headers: { "content-type": "application/json" } });
+      } });
+      const signers = loadGatewaySigners(privyEnv({ BASE_BUILDER_CODE: CODE }), { fetch: stripped.fetch });
+      await expect(signers.sender.attributed((suffix) => release(signers.sender.account, suffix))).rejects.toThrow();
+      expect(signRequests(stripped)).toHaveLength(1);
+      expect(signers.sender.status()).toMatchObject({ status: "unhealthy", reason: "signed_result_mismatch" });
+      expect(signers.attribution.current()).toBe(SUFFIX);
+    });
+
+    it("probes an unhealthy sender with the code, and falls back without it like a release", async () => {
+      vi.spyOn(logger, "error").mockImplementation(() => undefined);
+      let refuseAll = true;
+      const api = privyApi({ respond: (call) => refuseAll && call.body?.method ? denied() : refusesSuffix(call) });
+      const signers = loadGatewaySigners(privyEnv({ BASE_BUILDER_CODE: CODE }), { fetch: api.fetch });
+      await expect(signers.sender.account.signTransaction(transaction())).rejects.toBeInstanceOf(SignerRefused);
+      expect(signers.sender.healthy()).toBe(false);
+      refuseAll = false;
+      const before = signRequests(api).length;
+      await probeSigners(signers, 84532);
+      expect(signRequests(api).slice(before).map(signedData)).toEqual([ATTRIBUTED, RELEASE_ALL]);
+      expect(signers.sender.status()).toMatchObject({ status: "healthy", refusals: 1 });
+      expect(signers.attribution.current()).toBeNull();
+    });
   });
 });
 

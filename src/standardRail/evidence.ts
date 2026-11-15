@@ -283,16 +283,19 @@ export class StandardChainEvidence {
    * holds only until the transaction is included: orders of every listing
    * share this wallet, and none waits for another release's finality. A
    * release that already covers the deposit, even one not yet final, is
-   * never duplicated (`covered`, asked again under the lock).
+   * never duplicated (`covered`, asked again under the lock). The calldata
+   * carries the builder code when one is configured (BASE_BUILDER_CODE);
+   * a signer that refuses it gets the same release without it.
    */
   private async submitRelease(splitter: Address, covered: () => Promise<boolean> = async () => false): Promise<Hex | null> {
     return this.nonceLock.run(async () => {
       if (await covered()) return null;
-      const submitted = await this.wallet.writeContract({
+      const submitted = await this.config.signers.sender.attributed((dataSuffix) => this.wallet.writeContract({
         address: splitter,
         abi: splitterAbi,
         functionName: "releaseAll",
-      });
+        dataSuffix,
+      }));
       const deadline = Date.now() + RELEASE_INCLUSION_DEADLINE_MS;
       await this.observe("evidence.releaseInclusion", ({ client }) => this.includedReceipt(client, submitted, deadline));
       return submitted;

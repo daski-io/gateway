@@ -8,9 +8,16 @@ import { StandardReputationWorker } from "../src/standardRail/reputationWorker.j
 import { encodeReputationOperation, type RevokeConfirmationIntent } from "../src/standardRail/reputationOperation.js";
 import type { StandardRailConfig } from "../src/standardRail/config.js";
 
+// The builder code a journaled review may carry after its calldata (ERC-8021, schema 0).
+const SUFFIX = "62635f30683371386c716d0b0080218021802180218021802180218021";
+const CHANGES = ["none", "attributed", "value", "chain", "destination", "calldata", "trailing", "malformed-suffix", "hash"] as const;
+const ACCEPTED = new Set<string>(["none", "attributed"]);
+
 for (const chain of [base, baseSepolia]) {
-  for (const change of ["none", "value", "chain", "destination", "calldata", "hash"] as const) {
-    it(`${chain.id}: persisted review ${change === "none" ? "broadcasts canonical zero value" : `rejects changed ${change}`}`, async () => {
+  for (const change of CHANGES) {
+    const title = change === "none" ? "broadcasts canonical zero value"
+      : change === "attributed" ? "broadcasts calldata followed by a builder code" : `rejects changed ${change}`;
+    it(`${chain.id}: persisted review ${title}`, async () => {
       const account = privateKeyToAccount(`0x${"11".repeat(32)}`);
       const key = Buffer.alloc(32, 1);
       const config = { signers: localGatewaySigners(`0x${"11".repeat(32)}`),
@@ -28,7 +35,10 @@ for (const chain of [base, baseSepolia]) {
       const raw = await account.signTransaction({ chainId: change === "chain" ? 1 : chain.id,
         type: "eip1559", nonce: 1, to: change === "destination" ? account.address : encoded.destination,
         gas: encoded.gas, maxFeePerGas: 1000000000n, maxPriorityFeePerGas: 1000000n,
-        value: change === "value" ? 1n : 0n, data: change === "calldata" ? "0x12" : encoded.data });
+        value: change === "value" ? 1n : 0n, data: change === "calldata" ? "0x12"
+          : change === "attributed" ? `${encoded.data}${SUFFIX}`
+            : change === "trailing" ? `${encoded.data}deadbeef`
+              : change === "malformed-suffix" ? `${encoded.data}${SUFFIX.slice(0, 24)}01${SUFFIX.slice(26)}` : encoded.data });
       if (change === "none") expect(parseTransaction(raw).value).toBeUndefined();
       const iv = Buffer.alloc(12, 2);
       const cipher = createCipheriv("aes-256-gcm", key, iv);
@@ -46,7 +56,7 @@ for (const chain of [base, baseSepolia]) {
         transaction_hash: change === "hash" ? `0x${"77".repeat(32)}` : keccak256(raw),
         encrypted_raw_transaction: Buffer.concat([iv, cipher.getAuthTag(), encrypted]),
       });
-      if (change === "none") {
+      if (ACCEPTED.has(change)) {
         expect(send).toHaveBeenCalledExactlyOnceWith({ serializedTransaction: raw });
         expect(query).toHaveBeenCalledWith(expect.stringContaining("WITH marked"), ["operation-1", "transaction-1"]);
       } else {
