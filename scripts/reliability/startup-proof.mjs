@@ -97,7 +97,9 @@ export async function proveStartup(input, databaseUrl, options={}) {
       'PAYER_ACCOUNT_TYPES','PAYER_SIGNATURE_VERIFY_TIMEOUT_MS','CONFORMANCE_EVIDENCE_RECORDED','CONFIRMATION_CIRCLE_EXECUTION_QUALIFIED',
       'OWNER_SWAPS_ENABLED','OWNER_SWAPS_PER_PROVIDER_PER_DAY',
       // The finality settings the candidate projection carries: the rehearsal must run the requested tag and depth, not the defaults.
-      'CHAIN_FINALITY_TAG','STANDARD_RAIL_FINALITY_CONFIRMATIONS'];
+      'CHAIN_FINALITY_TAG','STANDARD_RAIL_FINALITY_CONFIRMATIONS',
+      // The public ERC-8021 builder code the gateway appends to its own transactions.
+      'BASE_BUILDER_CODE'];
     for(const [key,value] of Object.entries(input.runtimeConfig ?? {})) {
       assert.ok(publicSettings.includes(key),`unsupported public runtime setting ${key}`); assert.equal(typeof value,'string');
     }

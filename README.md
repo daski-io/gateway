@@ -397,6 +397,23 @@ core groups are:
   names. Privy mode ignores `FACILITATOR_PRIVATE_KEY`: it boots with the
   variable still set and never signs with it. The engine's
   `DASKI_COMMERCE_BASELINE_JSON` follows the serving fleet's report.
+- Builder code: `BASE_BUILDER_CODE` (unset or empty: off) is a Base builder
+  code, 1 to 32 characters of `a-z`, `0-9` and `_`; any other value stops the
+  gateway from starting. When set, the sender appends its
+  [ERC-8021](https://docs.base.org/apps/builder-codes/app-developers) schema-0
+  suffix (`code ‖ length ‖ 0x00 ‖ 0x8021…8021`) to the calldata of every
+  transaction it builds, `releaseAll()` and the reputation relayer's, before
+  signing: the signed-as-requested check, the relayer journal and its calldata
+  hash, and every resend carry those exact bytes. Contracts ignore the trailing
+  bytes. Typed data, messages and calldata prepared for others (a provider's
+  splitter deployment) never carry it. When a Privy policy refuses an
+  attributed transaction, the same transaction is signed once more without the
+  code, attribution stays off until the gateway restarts, and one error
+  (`builder code refused by the signer policy`) names the role; that refusal
+  neither marks the role unhealthy nor stops sales. The unhealthy-role probe
+  carries the code like a real release. Verifiers of the gateway's and
+  providers' transactions accept the expected calldata alone or followed by
+  exactly one well-formed schema-0 suffix (any codes) and nothing else.
 - Manifest trust: `STANDARD_RAIL_TRUSTED_SIGNERS_JSON` maps each manifest
   `signerKeyId` to one address or a list of up to eight. Unset, it trusts the
   signing key's own address under `gateway-protocol`; set, it replaces that
