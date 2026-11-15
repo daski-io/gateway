@@ -17,6 +17,7 @@ import type {
 import { withRpcFailover } from "../rpc/failover.js";
 import { orderedRpcTransport } from "../rpc/orderedTransport.js";
 import { rpcReadTransport } from "../rpc/readTransport.js";
+import { matchesWithAttribution } from "../standardRail/builderCode.js";
 import { canonicalHash } from "../standardRail/canonical.js";
 import type { StandardRailConfig } from "../standardRail/config.js";
 import type {
@@ -112,7 +113,9 @@ export function assertSplitterDeploymentTransaction(args: {
     getAddress(transaction.to) !== getAddress(args.factory) ||
     getAddress(receipt.to) !== getAddress(args.factory) ||
     transaction.value !== 0n ||
-    !sameHex(transaction.input, args.transactionData)
+    // The prepared calldata, which carries no builder code; the provider may
+    // append one ERC-8021 suffix when it sends, and nothing else.
+    !matchesWithAttribution(transaction.input, args.transactionData)
   ) throw new Error("registration transaction does not match preparation");
 
   const expectedTopics = [
@@ -311,8 +314,9 @@ implements RegistrationEvidenceVerifier {
       });
       // Immutables live in runtime code, so every splitter hashes differently;
       // authenticity comes from the verified chain: trusted factory runtime,
-      // exact deployment calldata over the pinned creation code, and the
-      // CREATE2 address match. The observed hash is recorded, not pinned.
+      // exact deployment calldata over the pinned creation code (a trailing
+      // builder code is ignored by the factory), and the CREATE2 address
+      // match. The observed hash is recorded, not pinned.
       if (!code) {
         throw new Error("splitter has no runtime bytecode at its deployment block");
       }

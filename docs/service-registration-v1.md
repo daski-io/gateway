@@ -124,7 +124,11 @@ The payload contains `registrationId`, the canonical
 `splitterTransactionHashes[]`, and a unique 32-byte `evidenceNonce`.
 Evidence is rechecked against finalized canonical receipts, factory bytecode,
 CREATE2 address derivation, emitted deployment data, and live splitter
-immutables before activation.
+immutables before activation. A deployment transaction's input must be the
+prepared `transaction.data`, which never carries a builder code, either alone
+or followed by exactly one well-formed ERC-8021 schema-0 attribution suffix
+that the provider appended when it sent the transaction; any other trailing
+bytes are refused.
 
 ### Evidence authentication failures
 
