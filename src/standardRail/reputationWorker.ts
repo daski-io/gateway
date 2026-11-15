@@ -1,6 +1,7 @@
 import { orderedRpcTransport } from "../rpc/orderedTransport.js";
 import { createCipheriv, createDecipheriv, randomBytes, randomUUID } from "node:crypto";
 import {
+  concatHex,
   createPublicClient,
   getAddress,
   http,
@@ -26,6 +27,7 @@ import type { StandardRailConfig } from "./config.js";
 import { withRpcFailover } from "../rpc/failover.js";
 import { classifyBroadcastFailure } from "../rpc/classification.js";
 import { SignerRefused, SignerUnavailable } from "./signer.js";
+import { matchesWithAttribution } from "./builderCode.js";
 import { rpcReadTransport } from "../rpc/readTransport.js";
 import { finalizeReputationOperation, reviewReceiptUid, type ReviewAttestationEvidence } from "./reputationFinalization.js";
 import {
@@ -589,16 +591,22 @@ export class StandardReputationWorker {
       if (occupied === nonce) nonce += 1;
       else if (occupied > nonce) break;
     }
-    const raw = await this.account.signTransaction({
-      chainId: this.chain.id,
-      to: encoded.destination,
-      data: encoded.data,
-      value: 0n,
-      nonce,
-      gas: encoded.gas,
-      maxFeePerGas: this.config.reputationMaxFeePerGasWei,
-      maxPriorityFeePerGas: this.config.reputationMaxPriorityFeePerGasWei,
-      type: "eip1559",
+    // The builder code, when configured, is part of the signed calldata: the
+    // journal, its calldata hash and every later send carry exactly these bytes.
+    const { raw, data } = await this.config.signers.sender.attributed(async (suffix) => {
+      const data = suffix ? concatHex([encoded.data, suffix]) : encoded.data;
+      const raw = await this.account.signTransaction({
+        chainId: this.chain.id,
+        to: encoded.destination,
+        data,
+        value: 0n,
+        nonce,
+        gas: encoded.gas,
+        maxFeePerGas: this.config.reputationMaxFeePerGasWei,
+        maxPriorityFeePerGas: this.config.reputationMaxPriorityFeePerGasWei,
+        type: "eip1559",
+      });
+      return { raw, data };
     });
     const hash = keccak256(raw);
     const id = randomUUID();
@@ -610,7 +618,7 @@ export class StandardReputationWorker {
        VALUES ($1,$2,$3,$4,$5,$6,0,$7,$8,$9,$10,'prepared')`,
       [id, operation.operation_id, this.chain.id, this.account.address.toLowerCase(), nonce.toString(),
         getAddress(encoded.destination).toLowerCase(), operation.intent_hash,
-        bytes(keccak256(encoded.data)), encrypted, hash],
+        bytes(keccak256(data)), encrypted, hash],
     );
     await client.query(
       "UPDATE standard_reputation_operations SET state='broadcast',updated_at=now() WHERE operation_id=$1",
@@ -714,8 +722,11 @@ export class StandardReputationWorker {
     if (operation.kind === "confirmation" || operation.kind === "confirmation-v2") {
       const encoded = encodeReputationOperation(operation.canonical_intent,this.config);
       const decoded = parseTransaction(raw);
+      // The journaled calldata is the rebuilt one, alone or followed by the
+      // builder code it was signed with (one ERC-8021 suffix, nothing else).
       if (keccak256(raw) !== transaction.transaction_hash || decoded.chainId !== this.chain.id || (decoded.value ?? 0n) !== 0n ||
-          decoded.to?.toLowerCase() !== encoded.destination.toLowerCase() || decoded.data?.toLowerCase() !== encoded.data.toLowerCase()) {
+          decoded.to?.toLowerCase() !== encoded.destination.toLowerCase() ||
+          decoded.data === undefined || !matchesWithAttribution(decoded.data, encoded.data)) {
         await this.parkReview(operation,"transaction_intent_mismatch"); return;
       }
     }

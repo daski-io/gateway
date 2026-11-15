@@ -93,6 +93,35 @@ describe("splitter registration evidence", () => {
       .toThrow("does not match preparation");
   });
 
+  it("accepts the prepared calldata followed by one ERC-8021 builder code suffix the provider appended", () => {
+    for (const suffix of [
+      "62635f30683371386c716d0b0080218021802180218021802180218021", // bc_0h3q8lqm
+      "62635f62376b33703964610b0080218021802180218021802180218021", // bc_b7k3p9da
+    ]) {
+      const attributed = validAssertion();
+      attributed.transaction.input = `${transactionData}${suffix}` as Hex;
+      expect(() => assertSplitterDeploymentTransaction(attributed)).not.toThrow();
+    }
+  });
+
+  it("rejects any other trailing bytes after the prepared calldata", () => {
+    const suffix = "62635f30683371386c716d0b0080218021802180218021802180218021";
+    for (const trailing of [
+      "00",
+      "deadbeef",
+      suffix.slice(0, -2), // truncated
+      `${suffix}00`, // extra byte after the marker
+      `00${suffix}`, // extra byte before the suffix
+      `${suffix.slice(0, 24)}01${suffix.slice(26)}`, // schema id 1
+      `${suffix}${suffix}`, // two suffixes
+    ]) {
+      const changed = validAssertion();
+      changed.transaction.input = `${transactionData}${trailing}` as Hex;
+      expect(() => assertSplitterDeploymentTransaction(changed), trailing)
+        .toThrow("does not match preparation");
+    }
+  });
+
   it("requires exactly one matching trusted-factory deployment event", () => {
     const missing = validAssertion();
     missing.receipt.logs = [];
