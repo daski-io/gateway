@@ -1,9 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import type { Address, Hex } from "viem";
-import { createPool, runMigrations } from "../src/db/pool.js";
+import { createPool, runMigrations, type Pool } from "../src/db/pool.js";
 import { ServiceRegistrationStore } from "../src/serviceRegistration/store.js";
 import type {
+  PreparedListing,
   PreparedServiceRegistration,
   ProviderServiceCard,
   ProviderServiceRegistrationEvidenceEnvelope,
@@ -408,5 +409,292 @@ describe("release-safe registration handover", () => {
     expect(await store.acknowledgedRevisionFence(canonicalHash(higher))).toMatchObject({ targetRevision: 2, committed: true });
     expect(await store.acknowledgedRevisionFence(canonicalHash(refreshed))).toMatchObject({ targetRevision: 2, committed: true });
     await expect(store.acknowledgeRevisionFence(pending.signed)).rejects.toThrow("REGISTRATION_REVISION_FENCED");
+  }), 60_000);
+});
+
+// A provider pauses a service through card refresh alone: every skill's
+// acceptingNewOrders false, the service-level flag (inside the service
+// contract hash) left true. The public index and its detail view follow the
+// listing rows the refresh writes.
+describe("public service index availability", () => {
+  interface SkillSpec { skillId: string; paid: boolean }
+  const mixed: SkillSpec[] = [
+    { skillId: "track-orbit", paid: true },
+    { skillId: "move-orbit", paid: true },
+    { skillId: "get-pricing", paid: false },
+  ];
+
+  async function isolated(work: (store: ServiceRegistrationStore, pool: Pool) => Promise<void>) {
+    const schema = `public_index_${randomUUID().replaceAll("-", "")}`;
+    const bootstrap = createPool({ connectionString: databaseUrl, max: 1 });
+    await bootstrap.query(`CREATE SCHEMA "${schema}"`);
+    const pool = createPool({ connectionString: databaseUrl, searchPath: `${schema},public`, max: 2 });
+    try {
+      await runMigrations(pool);
+      await work(new ServiceRegistrationStore(pool), pool);
+    } finally {
+      await pool.end();
+      await bootstrap.query(`DROP SCHEMA "${schema}" CASCADE`).catch(() => undefined);
+      await bootstrap.end();
+    }
+  }
+
+  function serviceCard(id: Hex, skills: readonly SkillSpec[], accepting: readonly string[]): ProviderServiceCard {
+    const base = card("Orbital Logistics");
+    const template = base.skills[0]!;
+    return {
+      ...base,
+      service: { ...base.service, serviceId: id, acceptingNewOrders: true },
+      skills: skills.map((skill) => ({
+        ...template,
+        skillId: skill.skillId,
+        acceptingNewOrders: accepting.includes(skill.skillId),
+        contract: {
+          ...template.contract,
+          pricing: { USDC: { type: "one-time", fixed_amount: skill.paid ? "1000000" : "0" } },
+          paymentRequired: skill.paid,
+        },
+      })),
+    };
+  }
+
+  function servicePrepared(
+    id: Hex,
+    registrationId: string,
+    skills: readonly SkillSpec[],
+    prior: readonly PreparedListing[],
+  ): PreparedServiceRegistration {
+    const base = prepared({ registrationId, reused: false });
+    return {
+      ...base,
+      serviceId: id,
+      listings: skills.map((skill, index): PreparedListing => {
+        const reused = prior.find((listing) => listing.skillId === skill.skillId);
+        if (reused) return { ...reused, reused: true };
+        const listingId = randomUUID();
+        return {
+          ...base.listings[0]!,
+          listingId,
+          listingKey: `0x${(index + 1).toString(16).padStart(64, "0")}` as Hex,
+          skillId: skill.skillId,
+          paymentRequired: skill.paid,
+          splitterAddress: skill.paid ? address(String(index + 4)) : null,
+          preparation: skill.paid
+            ? envelope("GatewayListingPreparationV1", {
+              registrationId, listingId, listingEpoch: "1",
+            }) as unknown as PreparedListing["preparation"]
+            : null,
+        };
+      }),
+    };
+  }
+
+  async function register(
+    store: ServiceRegistrationStore,
+    id: Hex,
+    skills: readonly SkillSpec[],
+    nonce: string,
+    supersedes: PreparedServiceRegistration | null = null,
+  ): Promise<PreparedServiceRegistration> {
+    const base = intent(nonce);
+    const signed = { ...base, payload: { ...base.payload, serviceId: id } };
+    const document = serviceCard(id, skills, skills.map((skill) => skill.skillId));
+    const draft = servicePrepared(id, randomUUID(), skills, supersedes?.listings ?? []);
+    await store.create({
+      intent: signed, requestHash: canonicalHash(signed), idempotencyKey: `public-index-${nonce}`,
+      serviceId: id, card: document, cardHash: canonicalHash(document), prepared: draft,
+      providerOwner: address("a"), providerAgentWallet: address("b"), providerSigner: address("a"),
+      supersedesRegistrationId: supersedes?.registrationId ?? null,
+    });
+    await store.recordEvidencePending({ registrationId: draft.registrationId, evidence: evidence(draft, nonce) });
+    await store.activate(draft.registrationId, []);
+    return draft;
+  }
+
+  // As the refresh loop writes it: each listing follows its skill's flag.
+  async function publish(
+    store: ServiceRegistrationStore,
+    registration: PreparedServiceRegistration,
+    skills: readonly SkillSpec[],
+    accepting: readonly string[],
+  ): Promise<void> {
+    const document = serviceCard(registration.serviceId, skills, accepting);
+    await store.refreshed({
+      registrationId: registration.registrationId,
+      card: document,
+      cardHash: canonicalHash(document),
+      chainActive: true,
+      listingAvailability: registration.listings.map((listing) => ({
+        listingId: listing.listingId,
+        acceptingNewOrders: accepting.includes(listing.skillId),
+      })),
+    });
+  }
+
+  async function shown(store: ServiceRegistrationStore, id: Hex) {
+    return {
+      index: (await store.listPublic(100))
+        .filter((record) => record.serviceId === id)
+        .map((record) => record.registrationId),
+      detail: (await store.getPublicByServiceId(id))?.registrationId ?? null,
+    };
+  }
+
+  it("hides a service none of whose paid listings takes new orders and restores it on resume", async () => isolated(async (store) => {
+    const registration = await register(store, serviceId, mixed, "1");
+    const listed = { index: [registration.registrationId], detail: registration.registrationId };
+    const hidden = { index: [], detail: null };
+    expect(await shown(store, serviceId)).toEqual(listed);
+
+    await publish(store, registration, mixed, []);
+    expect(await shown(store, serviceId)).toEqual(hidden);
+    // Paused through the skills alone: the registration stays active,
+    // visible and healthy, with its service-level flag untouched.
+    expect(await store.get(registration.registrationId)).toMatchObject({
+      state: "ACTIVE", marketplaceEnabled: true, cardAcceptingOrders: true,
+      chainActive: true, registrationHealthy: true,
+    });
+
+    // A paid service takes new orders only through its paid listings.
+    await publish(store, registration, mixed, ["get-pricing"]);
+    expect(await shown(store, serviceId)).toEqual(hidden);
+
+    await publish(store, registration, mixed, ["move-orbit"]);
+    expect(await shown(store, serviceId)).toEqual(listed);
+
+    await publish(store, registration, mixed, []);
+    expect(await shown(store, serviceId)).toEqual(hidden);
+    await publish(store, registration, mixed, mixed.map((skill) => skill.skillId));
+    expect(await shown(store, serviceId)).toEqual(listed);
+  }), 60_000);
+
+  it("follows the rows of reused listings, which stay under the first registration", async () => isolated(async (store) => {
+    const first = await register(store, serviceId, mixed, "2");
+    const second = await register(store, serviceId, mixed, "3", first);
+    expect(second.listings.every((listing) => listing.reused)).toBe(true);
+    expect(await shown(store, serviceId)).toEqual({
+      index: [second.registrationId], detail: second.registrationId,
+    });
+
+    await publish(store, second, mixed, []);
+    expect(await shown(store, serviceId)).toEqual({ index: [], detail: null });
+
+    await publish(store, second, mixed, ["track-orbit"]);
+    expect(await shown(store, serviceId)).toEqual({
+      index: [second.registrationId], detail: second.registrationId,
+    });
+  }), 60_000);
+
+  it("judges a service without a paid listing by its free listings", async () => isolated(async (store) => {
+    const free: SkillSpec[] = [{ skillId: "get-pricing", paid: false }];
+    const registration = await register(store, serviceId, free, "4");
+    const listed = { index: [registration.registrationId], detail: registration.registrationId };
+    expect(await shown(store, serviceId)).toEqual(listed);
+
+    await publish(store, registration, free, []);
+    expect(await shown(store, serviceId)).toEqual({ index: [], detail: null });
+
+    await publish(store, registration, free, ["get-pricing"]);
+    expect(await shown(store, serviceId)).toEqual(listed);
+  }), 60_000);
+
+  it("applies a refresh in one transaction, and only to an active registration", async () => isolated(async (store) => {
+    const registration = await register(store, serviceId, mixed, "5");
+    const open = mixed.map((skill) => skill.skillId);
+    const paused = serviceCard(serviceId, mixed, []);
+    await expect(store.refreshed({
+      registrationId: registration.registrationId,
+      card: paused,
+      cardHash: canonicalHash(paused),
+      chainActive: true,
+      listingAvailability: [
+        ...registration.listings.map((listing) => ({ listingId: listing.listingId, acceptingNewOrders: false })),
+        { listingId: "not-a-listing-id", acceptingNewOrders: false },
+      ],
+    })).rejects.toThrow();
+    // Nothing of the failed refresh landed: neither the card nor any flag.
+    expect((await store.get(registration.registrationId))?.card)
+      .toEqual(serviceCard(serviceId, mixed, open));
+    expect((await store.listingCommitments(registration.listings.map((listing) => listing.listingId)))
+      .map((row) => row.acceptingNewOrders)).toEqual([true, true, true]);
+    expect(await shown(store, serviceId)).toEqual({
+      index: [registration.registrationId], detail: registration.registrationId,
+    });
+
+    // A refresh that lands after its registration was superseded writes
+    // nothing, so its card cannot pause the listings the successor reused.
+    const successor = await register(store, serviceId, mixed, "6", registration);
+    await publish(store, registration, mixed, []);
+    expect(await shown(store, serviceId)).toEqual({
+      index: [successor.registrationId], detail: successor.registrationId,
+    });
+  }), 60_000);
+
+  // 3,000 services with two paid listings and one free one each; every odd
+  // service is paused (only its free listing accepts). The listings must be
+  // read through their primary key: a lookup that scans the listings table per
+  // candidate registration took seconds at this size.
+  it("reads listings through their primary key at scale", async () => isolated(async (_store, pool) => {
+    await pool.query(`
+      INSERT INTO standard_service_registrations
+       (registration_id,provider_agent_id,service_id,service_slug,service_version,
+        agent_card_url,service_wallet,provider_owner,provider_agent_wallet,provider_signer,
+        idempotency_key,provider_payee,registration_nonce,request_hash,canonical_intent,
+        prepared_json,card_json,card_hash,skill_contract_set_hash,state,marketplace_enabled,
+        card_accepting_orders,chain_active,registration_healthy,last_refreshed_at,activated_at)
+      SELECT registration_id,'42',decode(lpad(to_hex(g),64,'0'),'hex'),'service-'||g,'1',
+        'https://provider.example/card.json','0x'||repeat('3',40),'0x'||repeat('a',40),
+        '0x'||repeat('b',40),'0x'||repeat('a',40),'scale-key-'||g,'0x'||repeat('2',40),
+        decode(lpad(to_hex(g),64,'0'),'hex'),decode(lpad(to_hex(g),64,'0'),'hex'),'{}'::jsonb,
+        jsonb_build_object('listings',jsonb_build_array(
+          jsonb_build_object('listingId',gen_random_uuid(),'paymentRequired',true),
+          jsonb_build_object('listingId',gen_random_uuid(),'paymentRequired',true),
+          jsonb_build_object('listingId',gen_random_uuid(),'paymentRequired',false))),
+        '{}'::jsonb,decode(lpad(to_hex(g),64,'0'),'hex'),decode(lpad(to_hex(g),64,'0'),'hex'),
+        'ACTIVE',true,true,true,true,now(),now() - g * interval '1 second'
+      FROM (SELECT g, gen_random_uuid() AS registration_id FROM generate_series(1,3000) g) seeded;
+      INSERT INTO standard_service_listings
+       (listing_id,registration_id,listing_key,skill_id,skill_contract_hash,payment_required,
+        accepting_new_orders,deployment_required,splitter_address,preparation_json,state)
+      SELECT (item->>'listingId')::uuid,r.registration_id,decode(lpad(to_hex(position::int),64,'0'),'hex'),
+        'skill-'||position,decode(repeat('5',64),'hex'),(item->>'paymentRequired')::boolean,
+        NOT (item->>'paymentRequired')::boolean OR get_byte(r.service_id,31) % 2 = 0,false,
+        CASE WHEN (item->>'paymentRequired')::boolean THEN '0x'||repeat('4',40) END,
+        CASE WHEN (item->>'paymentRequired')::boolean THEN '{}'::jsonb END,'ACTIVE'
+      FROM standard_service_registrations r,
+           jsonb_array_elements(r.prepared_json->'listings') WITH ORDINALITY AS listed(item,position);
+      ANALYZE standard_service_registrations;
+      ANALYZE standard_service_listings;`);
+    const sent: Array<{ text: string; values: unknown[] }> = [];
+    const recording = new Proxy(pool, {
+      get(target, property, receiver) {
+        if (property !== "query") return Reflect.get(target, property, receiver);
+        return (text: string, values: unknown[] = []) => {
+          sent.push({ text, values });
+          return target.query(text, values);
+        };
+      },
+    });
+    const observed = new ServiceRegistrationStore(recording);
+    const open = (id: Hex) => parseInt(id.slice(-2), 16) % 2 === 0;
+    const listed = await observed.listPublic(500);
+    expect(listed).toHaveLength(500);
+    expect(listed.every((record) => open(record.serviceId))).toBe(true);
+    const id = (n: number) => `0x${n.toString(16).padStart(64, "0")}` as Hex;
+    expect(await observed.getPublicByServiceId(id(2))).not.toBeNull();
+    expect(await observed.getPublicByServiceId(id(3))).toBeNull();
+    expect(sent).toHaveLength(3);
+
+    interface PlanNode { "Node Type": string; "Relation Name"?: string; "Index Name"?: string; Plans?: PlanNode[] }
+    const nodes = (node: PlanNode): PlanNode[] => [node, ...(node.Plans ?? []).flatMap(nodes)];
+    for (const { text, values } of sent) {
+      const explained = await pool.query<{ "QUERY PLAN": Array<{ Plan: PlanNode }> }>(
+        `EXPLAIN (FORMAT JSON) ${text}`, values);
+      const plan = nodes(explained.rows[0]!["QUERY PLAN"][0]!.Plan);
+      expect(plan.filter((node) =>
+        node["Relation Name"] === "standard_service_listings" && node["Node Type"] === "Seq Scan"))
+        .toEqual([]);
+      expect(plan.some((node) => node["Index Name"] === "standard_service_listings_pkey")).toBe(true);
+    }
   }), 60_000);
 });

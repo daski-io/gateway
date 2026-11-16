@@ -190,3 +190,24 @@ to their immutable historical listing snapshots.
 Operator visibility changes are authenticated and audited. Visibility affects
 discovery and future commerce only; it does not invalidate chain state or
 interrupt already admitted order recovery.
+
+## Pausing a service
+
+Each skill's `acceptingNewOrders` is availability, outside every contract
+hash. A provider pauses a skill by publishing its card with that skill's
+`acceptingNewOrders: false`, and resumes it by publishing `true` again. Each
+card refresh copies the flags onto the skill's listing, with no new signed
+revision, listing version or splitter. A paused skill leaves discovery and
+outcomes, and new orders for it are refused.
+
+To pause a whole service, publish every skill with `acceptingNewOrders:
+false`. Leave the service-level `acceptingNewOrders` unchanged: it is part of
+`serviceContractHash`, and changing it is contract drift that needs a new
+signed revision. `GET /public/v3/services` and
+`GET /public/v3/services/{serviceId}` show a service only while one of its
+paid listings accepts new orders. Free listings, such as owner actions, do not
+keep a service with paid listings in the index while every paid one is
+paused; a service without a paid listing stays listed while one of its free
+listings accepts. The refresh that pauses the last such listing removes the
+service from both views, and the refresh that resumes one brings it back.
+Orders already admitted are unaffected.

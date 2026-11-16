@@ -166,6 +166,34 @@ async function persistArtifact(
 /** Registration quarantine code for a skill schema whose validation overran its CPU budget. */
 export const SCHEMA_BUDGET_QUARANTINE_CODE = "SCHEMA_VALIDATION_BUDGET_EXCEEDED";
 
+// Who the public service index and its detail view show: an active, visible,
+// healthy registration validated within the presentation window, at least one
+// of whose listings takes new orders. A provider pauses a whole service by
+// publishing every skill with acceptingNewOrders false; the service-level
+// flag is part of serviceContractHash and stays true. Each refresh copies the
+// skill flags onto the listing rows, so the service leaves the index on the
+// refresh that pauses its last accepting skill and returns on the one that
+// resumes any. A service with paid listings takes new orders only through
+// them, so its free listings (owner actions, free calls) never keep it listed
+// while every paid one is paused; a service without a paid listing is judged
+// by its free ones. The listings are the registration's prepared ones, not
+// the rows under its id: a reused listing keeps its row under the
+// registration that first admitted it. The join from the prepared ids keeps
+// each lookup on the listings primary key; an IN over them scans the whole
+// listings table for every candidate registration.
+const PUBLIC_REGISTRATION = `
+  r.state='ACTIVE' AND r.marketplace_enabled AND r.card_accepting_orders
+  AND r.chain_active AND r.registration_healthy
+  AND r.last_refreshed_at >= now() - interval '24 hours'
+  AND EXISTS (
+    SELECT 1
+      FROM jsonb_array_elements(r.prepared_json->'listings') AS item
+      JOIN standard_service_listings l
+        ON l.listing_id=(item->>'listingId')::uuid
+     WHERE l.state='ACTIVE' AND l.accepting_new_orders
+       AND (l.payment_required
+         OR NOT ((r.prepared_json->'listings') @> '[{"paymentRequired":true}]')))`;
+
 export class ServiceRegistrationStore {
   private mutations = 0;
 
@@ -630,10 +658,8 @@ export class ServiceRegistrationStore {
   getPublicByServiceId(serviceId: `0x${string}`): Promise<StoredRegistration | null> {
     return selectOne(
       this.pool,
-      `SELECT * FROM standard_service_registrations
-        WHERE service_id=$1 AND state='ACTIVE' AND marketplace_enabled
-          AND card_accepting_orders AND chain_active AND registration_healthy
-          AND last_refreshed_at >= now() - interval '24 hours'`,
+      `SELECT r.* FROM standard_service_registrations r
+        WHERE r.service_id=$1 AND ${PUBLIC_REGISTRATION}`,
       [bytes(serviceId)],
     );
   }
@@ -710,11 +736,9 @@ export class ServiceRegistrationStore {
 
   async listPublic(limit: number): Promise<StoredRegistration[]> {
     const result = await this.pool.query<RegistrationRow>(
-      `SELECT * FROM standard_service_registrations
-        WHERE state='ACTIVE' AND marketplace_enabled AND card_accepting_orders
-          AND chain_active AND registration_healthy
-          AND last_refreshed_at >= now() - interval '24 hours'
-        ORDER BY activated_at DESC,registration_id
+      `SELECT r.* FROM standard_service_registrations r
+        WHERE ${PUBLIC_REGISTRATION}
+        ORDER BY r.activated_at DESC,r.registration_id
         LIMIT $1`,
       [limit],
     );
@@ -779,32 +803,50 @@ export class ServiceRegistrationStore {
       acceptingNewOrders: boolean;
     }[];
   }): Promise<void> {
-    for (const listing of args.listingAvailability ?? []) {
-      await this.pool.query(
-        `UPDATE standard_service_listings
-            SET accepting_new_orders=$2,updated_at=now()
-          WHERE listing_id=$1`,
-        [listing.listingId, listing.acceptingNewOrders],
+    // One transaction, so readers of the public index never see a card half
+    // applied: a provider moving from one open skill to another is never
+    // briefly without one. The registration row is locked before its
+    // listings, in the order activation takes them, and a registration no
+    // longer active (superseded meanwhile) writes nothing, so its card never
+    // overwrites the availability of listings its successor reused.
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const result = await client.query(
+        `UPDATE standard_service_registrations
+            SET card_json=$2,card_hash=$3,skill_contract_set_hash=$4,
+                card_accepting_orders=$5,chain_active=$6,registration_healthy=true,
+                refresh_failures=0,last_refresh_error_code=NULL,drift_since=NULL,
+                last_refresh_attempted_at=now(),last_refreshed_at=now(),
+                updated_at=now()
+          WHERE registration_id=$1 AND state='ACTIVE'`,
+        [
+          args.registrationId,
+          args.card,
+          bytes(args.cardHash),
+          bytes(args.card.skillContractSetHash),
+          args.card.service.acceptingNewOrders,
+          args.chainActive,
+        ],
       );
+      if (result.rowCount === 1) {
+        for (const listing of args.listingAvailability ?? []) {
+          await client.query(
+            `UPDATE standard_service_listings
+                SET accepting_new_orders=$2,updated_at=now()
+              WHERE listing_id=$1`,
+            [listing.listingId, listing.acceptingNewOrders],
+          );
+        }
+      }
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK").catch(() => undefined);
+      throw error;
+    } finally {
+      client.release();
+      this.mutations += 1;
     }
-    await this.pool.query(
-      `UPDATE standard_service_registrations
-          SET card_json=$2,card_hash=$3,skill_contract_set_hash=$4,
-              card_accepting_orders=$5,chain_active=$6,registration_healthy=true,
-              refresh_failures=0,last_refresh_error_code=NULL,drift_since=NULL,
-              last_refresh_attempted_at=now(),last_refreshed_at=now(),
-              updated_at=now()
-        WHERE registration_id=$1 AND state='ACTIVE'`,
-      [
-        args.registrationId,
-        args.card,
-        bytes(args.cardHash),
-        bytes(args.card.skillContractSetHash),
-        args.card.service.acceptingNewOrders,
-        args.chainActive,
-      ],
-    );
-    this.mutations += 1;
   }
 
   async stopNewCommerce(
