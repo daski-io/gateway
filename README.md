@@ -120,7 +120,11 @@ steady-state prompt is `Use Daski to [your task]`.
   purchase whose local order is missing displays an unknown skill, never
   another skill from the same service.
 - `/public/v3/services` publishes the service-first dynamic catalog when the
-  registration route group is enabled. `/public/v3/services/:serviceId` adds
+  registration route group is enabled. It and the detail view show a service
+  only while it takes new orders: one of its paid listings is active and
+  accepting, or, for a service without a paid listing, one of its free
+  listings (see [pausing a service](docs/service-registration-v1.md#pausing-a-service)).
+  `/public/v3/services/:serviceId` adds
   the provider's and the service's on-chain reputation counters as
   `providerReputation` and `serviceReputation`, each with the additive
   `recovered` (see [recovered orders](#recovered-orders)).

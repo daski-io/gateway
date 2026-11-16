@@ -582,6 +582,9 @@ export class StandardRailCatalog {
     return matches[0]!;
   }
 
+  // Availability is checked per listing, not here: assembleListing requires
+  // the purchased listing itself to be active and accepting new orders,
+  // stricter than the any-listing condition of the store's listPublic.
   private commerceOpen(record: StoredRegistration): boolean {
     return (
       record.state === "ACTIVE" &&

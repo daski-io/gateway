@@ -4,6 +4,7 @@ import type { Address, Hex } from "viem";
 import { createPool, runMigrations } from "../src/db/pool.js";
 import { ServiceRegistrationStore } from "../src/serviceRegistration/store.js";
 import type {
+  PreparedListing,
   PreparedServiceRegistration,
   ProviderServiceCard,
   ProviderServiceRegistrationEvidenceEnvelope,
@@ -408,5 +409,192 @@ describe("release-safe registration handover", () => {
     expect(await store.acknowledgedRevisionFence(canonicalHash(higher))).toMatchObject({ targetRevision: 2, committed: true });
     expect(await store.acknowledgedRevisionFence(canonicalHash(refreshed))).toMatchObject({ targetRevision: 2, committed: true });
     await expect(store.acknowledgeRevisionFence(pending.signed)).rejects.toThrow("REGISTRATION_REVISION_FENCED");
+  }), 60_000);
+});
+
+// A provider pauses a service through card refresh alone: every skill's
+// acceptingNewOrders false, the service-level flag (inside the service
+// contract hash) left true. The public index and its detail view follow the
+// listing rows the refresh writes.
+describe("public service index availability", () => {
+  interface SkillSpec { skillId: string; paid: boolean }
+  const mixed: SkillSpec[] = [
+    { skillId: "track-orbit", paid: true },
+    { skillId: "move-orbit", paid: true },
+    { skillId: "get-pricing", paid: false },
+  ];
+
+  async function isolated(work: (store: ServiceRegistrationStore) => Promise<void>) {
+    const schema = `public_index_${randomUUID().replaceAll("-", "")}`;
+    const bootstrap = createPool({ connectionString: databaseUrl, max: 1 });
+    await bootstrap.query(`CREATE SCHEMA "${schema}"`);
+    const pool = createPool({ connectionString: databaseUrl, searchPath: `${schema},public`, max: 2 });
+    try {
+      await runMigrations(pool);
+      await work(new ServiceRegistrationStore(pool));
+    } finally {
+      await pool.end();
+      await bootstrap.query(`DROP SCHEMA "${schema}" CASCADE`).catch(() => undefined);
+      await bootstrap.end();
+    }
+  }
+
+  function serviceCard(id: Hex, skills: readonly SkillSpec[], accepting: readonly string[]): ProviderServiceCard {
+    const base = card("Orbital Logistics");
+    const template = base.skills[0]!;
+    return {
+      ...base,
+      service: { ...base.service, serviceId: id, acceptingNewOrders: true },
+      skills: skills.map((skill) => ({
+        ...template,
+        skillId: skill.skillId,
+        acceptingNewOrders: accepting.includes(skill.skillId),
+        contract: {
+          ...template.contract,
+          pricing: { USDC: { type: "one-time", fixed_amount: skill.paid ? "1000000" : "0" } },
+          paymentRequired: skill.paid,
+        },
+      })),
+    };
+  }
+
+  function servicePrepared(
+    id: Hex,
+    registrationId: string,
+    skills: readonly SkillSpec[],
+    prior: readonly PreparedListing[],
+  ): PreparedServiceRegistration {
+    const base = prepared({ registrationId, reused: false });
+    return {
+      ...base,
+      serviceId: id,
+      listings: skills.map((skill, index): PreparedListing => {
+        const reused = prior.find((listing) => listing.skillId === skill.skillId);
+        if (reused) return { ...reused, reused: true };
+        const listingId = randomUUID();
+        return {
+          ...base.listings[0]!,
+          listingId,
+          listingKey: `0x${(index + 1).toString(16).padStart(64, "0")}` as Hex,
+          skillId: skill.skillId,
+          paymentRequired: skill.paid,
+          splitterAddress: skill.paid ? address(String(index + 4)) : null,
+          preparation: skill.paid
+            ? envelope("GatewayListingPreparationV1", {
+              registrationId, listingId, listingEpoch: "1",
+            }) as unknown as PreparedListing["preparation"]
+            : null,
+        };
+      }),
+    };
+  }
+
+  async function register(
+    store: ServiceRegistrationStore,
+    id: Hex,
+    skills: readonly SkillSpec[],
+    nonce: string,
+    supersedes: PreparedServiceRegistration | null = null,
+  ): Promise<PreparedServiceRegistration> {
+    const base = intent(nonce);
+    const signed = { ...base, payload: { ...base.payload, serviceId: id } };
+    const document = serviceCard(id, skills, skills.map((skill) => skill.skillId));
+    const draft = servicePrepared(id, randomUUID(), skills, supersedes?.listings ?? []);
+    await store.create({
+      intent: signed, requestHash: canonicalHash(signed), idempotencyKey: `public-index-${nonce}`,
+      serviceId: id, card: document, cardHash: canonicalHash(document), prepared: draft,
+      providerOwner: address("a"), providerAgentWallet: address("b"), providerSigner: address("a"),
+      supersedesRegistrationId: supersedes?.registrationId ?? null,
+    });
+    await store.recordEvidencePending({ registrationId: draft.registrationId, evidence: evidence(draft, nonce) });
+    await store.activate(draft.registrationId, []);
+    return draft;
+  }
+
+  // As the refresh loop writes it: each listing follows its skill's flag.
+  async function publish(
+    store: ServiceRegistrationStore,
+    registration: PreparedServiceRegistration,
+    skills: readonly SkillSpec[],
+    accepting: readonly string[],
+  ): Promise<void> {
+    const document = serviceCard(registration.serviceId, skills, accepting);
+    await store.refreshed({
+      registrationId: registration.registrationId,
+      card: document,
+      cardHash: canonicalHash(document),
+      chainActive: true,
+      listingAvailability: registration.listings.map((listing) => ({
+        listingId: listing.listingId,
+        acceptingNewOrders: accepting.includes(listing.skillId),
+      })),
+    });
+  }
+
+  async function shown(store: ServiceRegistrationStore, id: Hex) {
+    return {
+      index: (await store.listPublic(100))
+        .filter((record) => record.serviceId === id)
+        .map((record) => record.registrationId),
+      detail: (await store.getPublicByServiceId(id))?.registrationId ?? null,
+    };
+  }
+
+  it("hides a service none of whose paid listings takes new orders and restores it on resume", async () => isolated(async (store) => {
+    const registration = await register(store, serviceId, mixed, "1");
+    const listed = { index: [registration.registrationId], detail: registration.registrationId };
+    const hidden = { index: [], detail: null };
+    expect(await shown(store, serviceId)).toEqual(listed);
+
+    await publish(store, registration, mixed, []);
+    expect(await shown(store, serviceId)).toEqual(hidden);
+    // Paused through the skills alone: the registration stays active,
+    // visible and healthy, with its service-level flag untouched.
+    expect(await store.get(registration.registrationId)).toMatchObject({
+      state: "ACTIVE", marketplaceEnabled: true, cardAcceptingOrders: true,
+      chainActive: true, registrationHealthy: true,
+    });
+
+    // A paid service takes new orders only through its paid listings.
+    await publish(store, registration, mixed, ["get-pricing"]);
+    expect(await shown(store, serviceId)).toEqual(hidden);
+
+    await publish(store, registration, mixed, ["move-orbit"]);
+    expect(await shown(store, serviceId)).toEqual(listed);
+
+    await publish(store, registration, mixed, []);
+    expect(await shown(store, serviceId)).toEqual(hidden);
+    await publish(store, registration, mixed, mixed.map((skill) => skill.skillId));
+    expect(await shown(store, serviceId)).toEqual(listed);
+  }), 60_000);
+
+  it("follows the rows of reused listings, which stay under the first registration", async () => isolated(async (store) => {
+    const first = await register(store, serviceId, mixed, "2");
+    const second = await register(store, serviceId, mixed, "3", first);
+    expect(second.listings.every((listing) => listing.reused)).toBe(true);
+    expect(await shown(store, serviceId)).toEqual({
+      index: [second.registrationId], detail: second.registrationId,
+    });
+
+    await publish(store, second, mixed, []);
+    expect(await shown(store, serviceId)).toEqual({ index: [], detail: null });
+
+    await publish(store, second, mixed, ["track-orbit"]);
+    expect(await shown(store, serviceId)).toEqual({
+      index: [second.registrationId], detail: second.registrationId,
+    });
+  }), 60_000);
+
+  it("judges a service without a paid listing by its free listings", async () => isolated(async (store) => {
+    const free: SkillSpec[] = [{ skillId: "get-pricing", paid: false }];
+    const registration = await register(store, serviceId, free, "4");
+    const listed = { index: [registration.registrationId], detail: registration.registrationId };
+    expect(await shown(store, serviceId)).toEqual(listed);
+
+    await publish(store, registration, free, []);
+    expect(await shown(store, serviceId)).toEqual({ index: [], detail: null });
+
+    await publish(store, registration, free, ["get-pricing"]);
+    expect(await shown(store, serviceId)).toEqual(listed);
   }), 60_000);
 });

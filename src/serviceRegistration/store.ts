@@ -166,6 +166,32 @@ async function persistArtifact(
 /** Registration quarantine code for a skill schema whose validation overran its CPU budget. */
 export const SCHEMA_BUDGET_QUARANTINE_CODE = "SCHEMA_VALIDATION_BUDGET_EXCEEDED";
 
+// Who the public service index and its detail view show: an active, visible,
+// healthy registration validated within the presentation window, at least one
+// of whose listings takes new orders. A provider pauses a whole service by
+// publishing every skill with acceptingNewOrders false; the service-level
+// flag is part of serviceContractHash and stays true. Each refresh copies the
+// skill flags onto the listing rows, so the service leaves the index on the
+// refresh that pauses its last accepting skill and returns on the one that
+// resumes any. A service with paid listings takes new orders only through
+// them, so its free listings (owner actions, free calls) never keep it listed
+// while every paid one is paused; a service without a paid listing is judged
+// by its free ones. The listings are the registration's prepared ones, not
+// the rows under its id: a reused listing keeps its row under the
+// registration that first admitted it.
+const PUBLIC_REGISTRATION = `
+  r.state='ACTIVE' AND r.marketplace_enabled AND r.card_accepting_orders
+  AND r.chain_active AND r.registration_healthy
+  AND r.last_refreshed_at >= now() - interval '24 hours'
+  AND EXISTS (
+    SELECT 1 FROM standard_service_listings l
+     WHERE l.listing_id IN (
+             SELECT (item->>'listingId')::uuid
+               FROM jsonb_array_elements(r.prepared_json->'listings') AS item)
+       AND l.state='ACTIVE' AND l.accepting_new_orders
+       AND (l.payment_required
+         OR NOT ((r.prepared_json->'listings') @> '[{"paymentRequired":true}]')))`;
+
 export class ServiceRegistrationStore {
   private mutations = 0;
 
@@ -630,10 +656,8 @@ export class ServiceRegistrationStore {
   getPublicByServiceId(serviceId: `0x${string}`): Promise<StoredRegistration | null> {
     return selectOne(
       this.pool,
-      `SELECT * FROM standard_service_registrations
-        WHERE service_id=$1 AND state='ACTIVE' AND marketplace_enabled
-          AND card_accepting_orders AND chain_active AND registration_healthy
-          AND last_refreshed_at >= now() - interval '24 hours'`,
+      `SELECT r.* FROM standard_service_registrations r
+        WHERE r.service_id=$1 AND ${PUBLIC_REGISTRATION}`,
       [bytes(serviceId)],
     );
   }
@@ -710,11 +734,9 @@ export class ServiceRegistrationStore {
 
   async listPublic(limit: number): Promise<StoredRegistration[]> {
     const result = await this.pool.query<RegistrationRow>(
-      `SELECT * FROM standard_service_registrations
-        WHERE state='ACTIVE' AND marketplace_enabled AND card_accepting_orders
-          AND chain_active AND registration_healthy
-          AND last_refreshed_at >= now() - interval '24 hours'
-        ORDER BY activated_at DESC,registration_id
+      `SELECT r.* FROM standard_service_registrations r
+        WHERE ${PUBLIC_REGISTRATION}
+        ORDER BY r.activated_at DESC,r.registration_id
         LIMIT $1`,
       [limit],
     );
