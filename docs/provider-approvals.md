@@ -166,8 +166,13 @@ with `Cache-Control: no-store`:
   and then removed, gets that record under the next epoch, recorded already
   revoked (audited with `blocked: true`): an invite never approves a provider
   that ever held an approval, so it stays off sale until the operator's `PUT`,
-  which reinstates that record. Otherwise 404 `PROVIDER_APPROVAL_NOT_FOUND`:
-  nothing current to revoke, a provider already blocked, or none hosted.
+  which reinstates that record. 404 `PROVIDER_APPROVAL_NOT_FOUND` means it
+  holds no current approval but held one, revoked or blocked before: nothing
+  more to do. 409 means it never held one and nothing was recorded:
+  `PROVIDER_NOT_HOSTED` without an active hosted registration, or the
+  record's refusal code for one that cannot build a record; an invite cannot
+  approve such a provider either until it has a hosted registration that
+  builds one.
 
 `reason` is 1 to 200 printable characters. Each change is recorded with its
 reason in `standard_operator_actions` (`operator_provider_approved`,

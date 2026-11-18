@@ -387,10 +387,12 @@ describe("approval by invite", () => {
     expect(await approvalService.approveByOperator("9381", { reason: "back on sale", operator: "release-desk" }))
       .toMatchObject({ approved: true, created: true, reinstated: true, recordHash: built(registration).recordHash });
 
-    // A provider with no hosted registration has nothing to block.
+    // A provider with no hosted registration has nothing to block: told apart from one already blocked.
     await insertRegistration(pool, { providerAgentId: "9382", card: hostedCard("9382", hostedStandardRail("9382", OTHER_ORIGIN)) });
     await expect(approvalService.revokeByOperator("9382", { reason: "x", operator: "release-desk" }))
-      .rejects.toMatchObject({ status: 404 });
+      .rejects.toMatchObject({ status: 409, code: "PROVIDER_NOT_HOSTED" });
+    await expect(approvalService.revokeByOperator("9383", { reason: "x", operator: "release-desk" }))
+      .rejects.toMatchObject({ status: 409, code: "PROVIDER_NOT_HOSTED" });
     expect(await approvalRows("9382")).toEqual([]);
   });
 

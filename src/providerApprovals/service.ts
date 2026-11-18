@@ -319,12 +319,15 @@ export class ProviderApprovalService {
    * held one, such as a seller the release engine admitted with a manifest
    * profile and later removed, gets one recorded already revoked, built from
    * its newest active hosted registration, so no invite approves it
-   * afterwards; the operator's PUT can still approve it. 404 when there is
-   * nothing to revoke or block.
+   * afterwards; the operator's PUT can still approve it. 404 when it holds no
+   * current approval but held one (revoked or blocked before); 409 when it
+   * never held one and has no hosted registration that builds a record
+   * (PROVIDER_NOT_HOSTED, or the refusal code).
    */
   async revokeByOperator(providerAgentId: string, request: { reason: string; operator: string }) {
     const record = await this.args.registrations.newestHostedRegistration(providerAgentId, [...this.origins]);
     let block: ((minimumEpoch: number) => { record: ProviderApprovalRecord; recordHash: Hex }) | undefined;
+    let unblockable = "PROVIDER_NOT_HOSTED";
     if (record) {
       try {
         this.build(record);
@@ -332,6 +335,7 @@ export class ProviderApprovalService {
       } catch (error) {
         // An unbuildable registration is never approved by invite either.
         if (!(error instanceof ProviderApprovalRefused)) throw error;
+        unblockable = error.code;
       }
     }
     const revoked = await this.args.approvals.revoke({
@@ -342,6 +346,11 @@ export class ProviderApprovalService {
       }),
     });
     if (!revoked) {
+      // Never approved and nothing to block it under: an operator removing it learns that nothing was recorded.
+      if (!block && !await this.args.approvals.latest(providerAgentId)) {
+        throw new ProviderApprovalError(409, unblockable,
+          "The provider never held an approval and has no hosted registration it could be blocked under.");
+      }
       throw new ProviderApprovalError(404, "PROVIDER_APPROVAL_NOT_FOUND", "The provider holds no current approval.");
     }
     logger.info("provider approval revoked by operator", { providerAgentId, recordHash: revoked.recordHash });
