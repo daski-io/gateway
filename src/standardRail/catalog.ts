@@ -6,6 +6,7 @@ import { getAddress, type Hex } from "viem";
 import type { Config } from "../config.js";
 import type { SplitterActivationCheckpoint } from "../serviceRegistration/evidence.js";
 import type { RuntimeListingCommitmentV1 } from "../serviceRegistration/runtimeCommitment.js";
+import type { ProviderApprovalReader } from "../providerApprovals/store.js";
 import {
   SCHEMA_BUDGET_QUARANTINE_CODE,
   type ServiceRegistrationStore,
@@ -235,12 +236,14 @@ export class StandardRailCatalog {
   >();
   /** Listings whose schema validation overran the CPU budget on this replica. */
   private readonly quarantined = new Set<Hex>();
-  private discoveryMemo: { version: number; expiresAt: number; rows: Promise<DiscoveryOutcome[]> } | null = null;
+  private discoveryMemo: { version: string; expiresAt: number; rows: Promise<DiscoveryOutcome[]> } | null = null;
   private catalogMemo: {
-    version: number;
+    version: string;
     expiresAt: number;
     rows: Promise<PublicOutcomeV1[]>;
   } | null = null;
+  /** HOSTED_PROVIDER_ORIGINS: registrations on these origins may be sold through an approval record. */
+  private readonly hostedOrigins: ReadonlySet<string>;
 
   constructor(
     private readonly railConfig: StandardRailConfig,
@@ -248,7 +251,12 @@ export class StandardRailCatalog {
     private readonly registrations: ServiceRegistrationStore,
     private readonly refreshRegistration: (record: StoredRegistration) => Promise<void>,
     private readonly reputationReader: DirectReputationReader,
+    private readonly approvals?: {
+      reader: ProviderApprovalReader;
+      hostedOrigins: readonly string[];
+    },
   ) {
+    this.hostedOrigins = new Set(approvals?.hostedOrigins ?? []);
     for (const artifact of [
       railConfig.manifest.facilitatorProfile,
       railConfig.manifest.railCapabilityRequirements,
@@ -282,6 +290,11 @@ export class StandardRailCatalog {
       | SignedEnvelope<unknown, number>
       | null;
     if (registered) return registered;
+    // An approval record is immutable under its hash, revoked or not.
+    if (this.approvals && this.hostedOrigins.size > 0) {
+      const approved = await this.approvals.reader.recordByHash(key);
+      if (approved) return approved;
+    }
     // Rehydrate schema references after a process restart from the current
     // admitted listings before declaring the immutable hash unavailable.
     await this.listOutcomes();
@@ -422,10 +435,21 @@ export class StandardRailCatalog {
     return loaded;
   }
 
-  async listOutcomes(): Promise<PublicOutcomeV1[]> {
+  /**
+   * The memo key: the registration store's mutation counter and, when hosted
+   * approvals are on, the approvals this process has seen change. Null for a
+   * store without a counter (test doubles), which is never memoized.
+   */
+  private memoVersion(): string | null {
     const version = (this.registrations as Partial<ServiceRegistrationStore>).mutationVersion;
+    if (typeof version !== "number") return null;
+    return `${version}:${this.hostedOrigins.size > 0 ? this.approvals?.reader.version ?? 0 : 0}`;
+  }
+
+  async listOutcomes(): Promise<PublicOutcomeV1[]> {
+    const version = this.memoVersion();
     // A store without a mutation counter (test doubles) is never memoized.
-    if (typeof version !== "number") return this.assembleOutcomes();
+    if (version === null) return this.assembleOutcomes();
     const now = Date.now();
     const memo = this.catalogMemo;
     if (memo && memo.version === version && memo.expiresAt > now) return memo.rows;
@@ -450,8 +474,8 @@ export class StandardRailCatalog {
   }
 
   async discoveryOutcomes(): Promise<DiscoveryOutcome[]> {
-    const version = (this.registrations as Partial<ServiceRegistrationStore>).mutationVersion;
-    if (typeof version !== "number") return this.assembleDiscoveryOutcomes();
+    const version = this.memoVersion();
+    if (version === null) return this.assembleDiscoveryOutcomes();
     const now = Date.now();
     const memo = this.discoveryMemo;
     if (memo && memo.version === version && memo.expiresAt > now) return memo.rows;
@@ -676,6 +700,28 @@ export class StandardRailCatalog {
       carried[0];
   }
 
+  /**
+   * The approval record of a hosted provider (docs/provider-approvals.md),
+   * used only when the manifest carries no control profile for the provider:
+   * for a registration on one of HOSTED_PROVIDER_ORIGINS, the provider's
+   * current approval, when it was built for that registration's origin.
+   */
+  private async approvedControlProfile(
+    record: StoredRegistration,
+  ): Promise<SignedEnvelope<ProviderControlProfileV1> | undefined> {
+    if (!this.approvals || this.hostedOrigins.size === 0) return undefined;
+    const origin = record.card.standardRail.origin;
+    let hosted: string;
+    try { hosted = new URL(origin).origin; } catch { return undefined; }
+    if (!this.hostedOrigins.has(hosted)) return undefined;
+    const approved = await this.approvals.reader.currentRecord(record.providerAgentId);
+    if (
+      !approved || approved.payload.providerAgentId !== record.providerAgentId ||
+      approved.payload.origin !== origin
+    ) return undefined;
+    return approved;
+  }
+
   private async assembleListing(
     record: StoredRegistration,
     prepared: PreparedListing,
@@ -719,8 +765,10 @@ export class StandardRailCatalog {
     }
     const checkpoint = checkpointFacts(row.activationCheckpoint);
     const currentProfileHash = await this.registrations.currentProviderControlProfileHash(record.providerAgentId);
+    // A servicing admission's profile, else a carried manifest profile; only
+    // when the manifest carries none for the provider, its approval record.
     const controlProfile = currentProfileHash ? this.controlProfiles.get(currentProfileHash)
-      : this.carriedControlProfile(record);
+      : this.carriedControlProfile(record) ?? await this.approvedControlProfile(record);
     if (!controlProfile) {
       throw new Error("Provider control profile is not admitted");
     }

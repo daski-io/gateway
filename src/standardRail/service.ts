@@ -121,6 +121,7 @@ import { createX402OfferReceipt, x402PaymentResponse } from "./x402Receipt.js";
 import { getIntakeRequirements } from "./intake.js";
 import { StandardPurchaseResponses } from "./purchaseResponse.js";
 import { ChainProviderAgentWallets, providerSignatureAccepted, type ProviderAgentWallets } from "./providerAuthority.js";
+import { ProviderApprovalStore } from "../providerApprovals/store.js";
 
 // How long a challenge's optional balance read waits for an RPC slot.
 const PREFLIGHT_BALANCE_WAIT_MS = 5_000;
@@ -258,6 +259,8 @@ export class StandardRailService {
   readonly releaseSales: ReleaseSales;
   readonly releaseRetirements: ReleaseRetirements;
   readonly salesOutage: SalesOutage;
+  /** Hosted provider approvals (docs/provider-approvals.md), shared with the approval routes and sweep. */
+  readonly providerApprovals: ProviderApprovalStore;
 
   constructor(
     private readonly appConfig: Config,
@@ -274,13 +277,19 @@ export class StandardRailService {
     this.store = new StandardRailStore(pool, lockPool);
     this.releaseSales = new ReleaseSales(pool);
     this.salesOutage = new SalesOutage(pool, railConfig.environment);
+    this.providerApprovals = new ProviderApprovalStore(pool, appConfig.chainId);
     this.releaseRetirements = new ReleaseRetirements(pool, {
       environment: railConfig.environment, chainId: appConfig.chainId, account: railConfig.signers.artifact("gateway-dispatch").account,
-      providerAudience: providerAgentId => {
+      providerAudience: async providerAgentId => {
         const audiences = [...new Set(railConfig.manifest.providerControlProfiles
           .filter(profile => profile.payload.providerAgentId === providerAgentId).map(profile => profile.payload.providerAudience))];
-        if (audiences.length !== 1) throw new Error("RETIREMENT_PROVIDER_AUDIENCE_REQUIRED");
-        return audiences[0]!;
+        if (audiences.length > 1) throw new Error("RETIREMENT_PROVIDER_AUDIENCE_REQUIRED");
+        if (audiences.length === 1) return audiences[0]!;
+        // A provider the manifest carries no profile for is addressed as its
+        // approval record addresses it, current or last revoked.
+        const approved = await this.providerApprovals.latest(providerAgentId);
+        if (!approved) throw new Error("RETIREMENT_PROVIDER_AUDIENCE_REQUIRED");
+        return approved.record.payload.providerAudience;
       },
     });
     this.incidents = new StandardRailIncidentStore(pool);
@@ -365,6 +374,7 @@ export class StandardRailService {
       registrations,
       refreshRegistration,
       this.reputationReader,
+      { reader: this.providerApprovals, hostedOrigins: appConfig.hostedProviderOrigins ?? [] },
     );
     this.railProfileHash = canonicalHash(railConfig.manifest.activeRailProfile);
     this.providerWallets = new ChainProviderAgentWallets({

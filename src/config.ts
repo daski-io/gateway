@@ -19,6 +19,12 @@ export interface Config {
   dynamicServiceRegistrationEnabled: boolean;
   catalogOperatorToken: string | null;
   catalogRefreshIntervalMs: number;
+  /**
+   * Origins of hosted provider runtimes (HOSTED_PROVIDER_ORIGINS). A provider
+   * whose registration's card origin is one of them can be approved by the
+   * gateway itself (docs/provider-approvals.md); empty turns approvals off.
+   */
+  hostedProviderOrigins: string[];
   nodeEnv: string;
   port: number;
   edgeSecret: string | null;
@@ -170,6 +176,26 @@ function catalogOperatorToken(raw: string | undefined, enabled: boolean): string
   return value;
 }
 
+// Comma-separated bare HTTPS origins; empty or unset turns hosted provider
+// approvals off. Each is kept as its URL origin (no trailing slash).
+function hostedProviderOrigins(raw: string | undefined): string[] {
+  const origins = (raw ?? "").split(",").map((value) => value.trim()).filter((value) => value !== "")
+    .map((value) => {
+      let url: URL;
+      try {
+        url = new URL(value);
+      } catch {
+        throw new Error("HOSTED_PROVIDER_ORIGINS must list HTTPS origins");
+      }
+      if (
+        url.protocol !== "https:" || url.username || url.password ||
+        url.pathname !== "/" || url.search || url.hash
+      ) throw new Error("HOSTED_PROVIDER_ORIGINS must list bare credential-free HTTPS origins");
+      return url.origin;
+    });
+  return [...new Set(origins)];
+}
+
 function sanctionsMode(raw: string | undefined): SanctionsOracleMode {
   if (raw === undefined) return "production";
   if (raw === "production" || raw === "mock") return raw;
@@ -241,6 +267,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     catalogRefreshIntervalMs: integer(
       "CATALOG_REFRESH_INTERVAL_MS", env.CATALOG_REFRESH_INTERVAL_MS, 240_000,
     ),
+    hostedProviderOrigins: hostedProviderOrigins(env.HOSTED_PROVIDER_ORIGINS),
     databaseUrl: databaseUrl(env.DATABASE_URL),
     publicUrl: httpUrl("PUBLIC_URL", env.PUBLIC_URL, production),
     docsUrl: docsUrl(env.DOCS_URL, configuredChainId, production),

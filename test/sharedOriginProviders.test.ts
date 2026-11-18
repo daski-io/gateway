@@ -22,6 +22,8 @@ import { dynamicRegistrationPolicy, prepareServiceRegistration } from "../src/se
 import { buildRuntimeListingCommitment, runtimeCommitmentHash } from "../src/serviceRegistration/runtimeCommitment.js";
 import { ServiceRegistrationService } from "../src/serviceRegistration/service.js";
 import type { ServiceRegistrationStore, StoredRegistration } from "../src/serviceRegistration/store.js";
+import { buildProviderApprovalRecord, PROVIDER_APPROVAL_SIGNER_KEY_ID } from "../src/providerApprovals/record.js";
+import type { ProviderApprovalReader } from "../src/providerApprovals/store.js";
 import { verifyStandardRailManifest } from "../src/standardRail/artifacts.js";
 import { StandardAssetFederation } from "../src/standardRail/assetFederation.js";
 import { canonicalHash } from "../src/standardRail/canonical.js";
@@ -43,7 +45,7 @@ import {
 import {
   ADDRESSES, ADMITTED_PROVIDER, CHAIN_ID, ENVIRONMENT, GATEWAY_AUDIENCE, NOW, PRIVATE_KEYS, PROFILE_ONLY_PROVIDER,
   RAIL_MANIFEST_EXAMPLES_DIR, SERVICE, SHARED_AUDIENCE, SHARED_ORIGIN, TOKEN, TRUST, providerBase, serviceIdOf,
-  type RailManifestExamples,
+  sharedOriginProfile, type RailManifestExamples,
 } from "./helpers/railManifestExamples.js";
 
 // Two providers on one origin. They share an HTTPS origin, one provider wallet
@@ -168,8 +170,10 @@ interface ListingRow {
 const listingRows = new Map<string, ListingRow>();
 const registered = new Map<string, Registered>();
 
-async function register(providerAgentId: string): Promise<Registered> {
-  const profile = profileOf(providerAgentId);
+async function register(
+  providerAgentId: string,
+  profile: SignedEnvelope<ProviderControlProfileV1> = profileOf(providerAgentId),
+): Promise<Registered> {
   const serviceId = serviceIdOf(providerAgentId);
   const agentCardUrl = `${providerBase(providerAgentId)}/.well-known/agent-card.json`;
   const owner = privateKeyToAccount(synthetic(`owner key of provider ${providerAgentId}`));
@@ -273,9 +277,14 @@ function registrationStore(state: StoredState = {}): ServiceRegistrationStore {
   } as unknown as ServiceRegistrationStore;
 }
 
-const catalog = (config: StandardRailConfig = railConfig, state: StoredState = {}) => new StandardRailCatalog(
+const catalog = (
+  config: StandardRailConfig = railConfig,
+  state: StoredState = {},
+  approvals?: ConstructorParameters<typeof StandardRailCatalog>[5],
+) => new StandardRailCatalog(
   config, appConfig, registrationStore(state), async () => undefined,
   { forOutcomes: async () => { throw new Error("reputation offline"); } } as unknown as DirectReputationReader,
+  approvals,
 );
 /** The gateway's start-up check of a manifest, under this file's trust inputs. */
 const startUpCheck = (value: StandardRailManifest) => verifyStandardRailManifest(value, {
@@ -849,5 +858,163 @@ describe("a provider with more than one control profile", () => {
     const twoWallets = await carrying(ADMITTED_PROVIDER, [admitted, await profileAt(ADMITTED_PROVIDER, 2, NEXT_WALLET)]);
     await expect(listed(twoWallets, { ...unrecorded, ...moved(ADMITTED_PROVIDER) }, ADMITTED_PROVIDER))
       .rejects.toMatchObject({ message: KEY_REFUSAL });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// A provider the gateway approved (docs/provider-approvals.md). A third
+// provider on the shared origin, which the configuration names as a hosted
+// provider origin, carries no profile in the manifest: the gateway sells it
+// through the approval record it built from the provider's registration.
+// Every call goes to the record's URLs under the record's hash, as it would
+// under a signed profile with that payload.
+
+describe("a provider the gateway approved", () => {
+  const APPROVED = "7013";
+  type Profile = SignedEnvelope<ProviderControlProfileV1>;
+  const PROFILE_REFUSAL = "Provider control profile is not admitted";
+  let record: Profile;
+
+  /** The approvals the catalog reads, as the approval store answers them. */
+  function reader(current: Record<string, Profile>, stored: Profile[] = Object.values(current)): ProviderApprovalReader {
+    return {
+      version: 0,
+      currentRecord: async (providerAgentId: string) => current[providerAgentId] ?? null,
+      recordByHash: async (hash: string) => stored.find((item) => canonicalHash(item) === hash) ?? null,
+    };
+  }
+  const hosted = (current: Record<string, Profile>, hostedOrigins: string[] = [SHARED_ORIGIN]) =>
+    ({ reader: reader(current), hostedOrigins });
+  function listed(approvals: ConstructorParameters<typeof StandardRailCatalog>[5], providerAgentId = APPROVED) {
+    at(NOW);
+    return catalog(railConfig, {}, approvals).listing(providerAgentId, OUTCOME_ID);
+  }
+
+  beforeAll(async () => {
+    // Registered with the texts a hosted runtime publishes for it; the manifest carries no profile for it.
+    const texts = { payload: sharedOriginProfile(APPROVED) } as Profile;
+    registered.set(APPROVED, await register(APPROVED, texts));
+    const provider = registered.get(APPROVED)!;
+    record = buildProviderApprovalRecord({
+      domain: { environment: ENVIRONMENT, chainId: CHAIN_ID, gatewayAudience: GATEWAY_AUDIENCE },
+      registration: provider.record,
+      manifestProfiles: manifest.providerControlProfiles,
+    }).record;
+    provider.profile = record;
+    expect(manifest.providerControlProfiles.some((profile) => profile.payload.providerAgentId === APPROVED)).toBe(false);
+  });
+  afterAll(() => { registered.delete(APPROVED); });
+
+  it("is sold through its approval record, under the record's hash", async () => {
+    const listing = await listed(hosted({ [APPROVED]: record }));
+    expect(listing.providerControlProfile).toEqual(record);
+    expect(listing.providerControlProfile.signerKeyId).toBe(PROVIDER_APPROVAL_SIGNER_KEY_ID);
+    expect(listing.commitment.payload.providerControlProfileHash).toBe(canonicalHash(record));
+    expect(listing.commitment.payload.providerAuthorityKey).toBe(SHARED_WALLET);
+    expect(listing.runtimeCommitmentHash).toBe(registered.get(APPROVED)!.listingHash);
+
+    // Public, in the readiness inventory and on the detail view, beside the two manifest providers.
+    at(NOW);
+    const current = catalog(railConfig, {}, hosted({ [APPROVED]: record }));
+    const rows = await current.listOutcomes();
+    expect(rows.map((row) => [row.providerAgentId, row.providerAudience])).toEqual(
+      [...PROVIDERS, APPROVED].map((providerAgentId) => [providerAgentId, SHARED_AUDIENCE]));
+    const inventory = await current.validateCommerce(rows.map((row) => row.listingManifestHash));
+    expect(inventory.map((item) => item.listingManifestHash)).toContain(listing.runtimeCommitmentHash);
+    await expect(current.getOutcome(APPROVED, OUTCOME_ID)).resolves.toMatchObject({ providerAgentId: APPROVED });
+    // The record resolves by its hash on the artifact route, as a manifest profile does.
+    await expect(current.publicArtifact(canonicalHash(record))).resolves.toEqual(record);
+    // The manifest providers keep their signed profiles.
+    expect((await current.listing(PROFILE_ONLY_PROVIDER, OUTCOME_ID)).providerControlProfile)
+      .toEqual(profileOf(PROFILE_ONLY_PROVIDER));
+  });
+
+  it("is called at the record's URLs, addressed to the record's audience, under the record's hash", async () => {
+    const calls = await callsFor(await listed(hosted({ [APPROVED]: record })));
+    const { quoteUrl, dispatchUrl, dispatchStatusUrl, lifecycleUrl, providerAudience } = record.payload;
+    expect(Object.fromEntries(Object.entries(calls).map(([name, call]) => [name, call.url]))).toEqual({
+      quote: quoteUrl, intake: quoteUrl, dispatch: dispatchUrl, dispatchStatus: dispatchStatusUrl, lifecycle: lifecycleUrl,
+    });
+    for (const call of Object.values(calls)) expect(new URL(call.url).pathname.startsWith(`/p/${APPROVED}/`)).toBe(true);
+    const envelope = (value: unknown) => value as { audience: string; payload: Record<string, unknown> };
+    for (const signed of [calls.quote.body.request, calls.intake.body.request, calls.dispatch.body.dispatch,
+      calls.dispatchStatus.body.query, calls.lifecycle.body.grant]) {
+      expect(envelope(signed).audience).toBe(providerAudience);
+    }
+    expect(envelope(calls.dispatch.body.dispatch).payload).toMatchObject({
+      providerAudience, providerControlProfileHash: canonicalHash(record),
+      listingManifestHash: registered.get(APPROVED)!.listingHash, serviceId: serviceIdOf(APPROVED),
+    });
+  });
+
+  it("enters and leaves the memoized public catalog as soon as the approvals it read change", async () => {
+    const current: Record<string, Profile> = {};
+    const approvals = { ...reader({}), version: 0, currentRecord: async (id: string) => current[id] ?? null };
+    // A registration store with a mutation counter, as the real one has: the catalog memoizes its rows.
+    const store = Object.assign(registrationStore(), { mutationVersion: 1 });
+    const memoized = new StandardRailCatalog(railConfig, appConfig, store, async () => undefined,
+      { forOutcomes: async () => { throw new Error("reputation offline"); } } as unknown as DirectReputationReader,
+      { reader: approvals, hostedOrigins: [SHARED_ORIGIN] });
+    const sold = async () => { at(NOW); return (await memoized.listOutcomes()).map((row) => row.providerAgentId); };
+    expect(await sold()).toEqual([...PROVIDERS]);
+    current[APPROVED] = record;
+    // Unseen by the approvals it reads, the memo stands.
+    expect(await sold()).toEqual([...PROVIDERS]);
+    approvals.version += 1;
+    expect(await sold()).toEqual([...PROVIDERS, APPROVED]);
+    delete current[APPROVED];
+    approvals.version += 1;
+    expect(await sold()).toEqual([...PROVIDERS]);
+  });
+
+  it("is not sold without a current approval", async () => {
+    await expect(listed(hosted({}))).rejects.toMatchObject({ message: PROFILE_REFUSAL });
+    await expect(listed(undefined)).rejects.toMatchObject({ message: PROFILE_REFUSAL });
+    at(NOW);
+    expect((await catalog(railConfig, {}, hosted({})).listOutcomes()).map((row) => row.providerAgentId))
+      .toEqual([...PROVIDERS]);
+  });
+
+  it("is not sold through an approval while its origin is not a hosted provider origin", async () => {
+    await expect(listed(hosted({ [APPROVED]: record }, []))).rejects.toMatchObject({ message: PROFILE_REFUSAL });
+    await expect(listed(hosted({ [APPROVED]: record }, ["https://hosted.example"])))
+      .rejects.toMatchObject({ message: PROFILE_REFUSAL });
+    // Nor is its record served by hash while approvals are off.
+    at(NOW);
+    expect(await catalog(railConfig, {}, hosted({ [APPROVED]: record }, [])).publicArtifact(canonicalHash(record)))
+      .toBeNull();
+  });
+
+  it("is not sold through a record built for another origin or another provider", async () => {
+    const elsewhere = { ...record, payload: { ...record.payload, origin: "https://elsewhere.example" } };
+    await expect(listed(hosted({ [APPROVED]: elsewhere }))).rejects.toMatchObject({ message: PROFILE_REFUSAL });
+    const another = { ...record, payload: { ...record.payload, providerAgentId: PROFILE_ONLY_PROVIDER } };
+    await expect(listed(hosted({ [APPROVED]: another }))).rejects.toMatchObject({ message: PROFILE_REFUSAL });
+  });
+
+  it("is not sold through an approval whose key is not its registration's wallet", async () => {
+    const otherKey = { ...record, payload: { ...record.payload, assetResponseKey: syntheticAddress("another wallet") } };
+    await expect(listed(hosted({ [APPROVED]: otherKey })))
+      .rejects.toMatchObject({ message: "Provider control profile key is not the provider wallet" });
+  });
+
+  it("never replaces a profile the manifest carries, nor a servicing admission's", async () => {
+    const approvalFor = (providerAgentId: string) => buildProviderApprovalRecord({
+      domain: { environment: ENVIRONMENT, chainId: CHAIN_ID, gatewayAudience: GATEWAY_AUDIENCE },
+      registration: registered.get(providerAgentId)!.record,
+      manifestProfiles: manifest.providerControlProfiles,
+    }).record;
+    const approvals = hosted({
+      [PROFILE_ONLY_PROVIDER]: approvalFor(PROFILE_ONLY_PROVIDER), [ADMITTED_PROVIDER]: approvalFor(ADMITTED_PROVIDER),
+    });
+    // An approval of a manifest provider takes the epoch after the manifest's.
+    expect(approvalFor(PROFILE_ONLY_PROVIDER).payload.servicingProfileEpoch).toBe(2);
+    expect((await listed(approvals, PROFILE_ONLY_PROVIDER)).providerControlProfile).toEqual(profileOf(PROFILE_ONLY_PROVIDER));
+    expect((await listed(approvals, ADMITTED_PROVIDER)).providerControlProfile).toEqual(profileOf(ADMITTED_PROVIDER));
+    // A manifest profile for another wallet still refuses the listing rather than falling back to the approval.
+    at(NOW);
+    const elsewhere: StoredState = { agentWallets: { [PROFILE_ONLY_PROVIDER]: syntheticAddress("another wallet") } };
+    await expect(catalog(railConfig, elsewhere, approvals).listing(PROFILE_ONLY_PROVIDER, OUTCOME_ID))
+      .rejects.toMatchObject({ message: "Provider control profile key is not the provider wallet" });
   });
 });

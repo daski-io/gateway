@@ -36,7 +36,7 @@ interface ReceiptRow { receipt_payload: RetirementPayload; provider_audience: st
 export class ReleaseRetirements {
   constructor(private readonly pool: Pool, private readonly signing: {
     environment: string; chainId: number; account: MessageSigner;
-    providerAudience: (providerAgentId: string) => string;
+    providerAudience: (providerAgentId: string) => string | Promise<string>;
   }) {}
 
   async inventory(): Promise<RetirementPayload[]> {
@@ -122,7 +122,7 @@ export class ReleaseRetirements {
       else {
         const blockers = await this.blockers(client,scope);
         if (Object.values(blockers).some(count => count > 0)) throw new RetirementBlocked(scope,blockers);
-        const providerAudience = this.signing.providerAudience(scope.providerAgentId);
+        const providerAudience = await this.signing.providerAudience(scope.providerAgentId);
         if (!providerAudience) throw new Error("RETIREMENT_PROVIDER_AUDIENCE_REQUIRED");
         const payload: RetirementPayload = { requestId, scope, retiredAt: new Date().toISOString() };
         await client.query(
