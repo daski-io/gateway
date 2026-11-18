@@ -6,6 +6,7 @@ import {
 import { artifactPayloadHash, canonicalHash } from "./canonical.js";
 import type {
   AssetActionDefinitionV1,
+  ProviderControlProfileV1,
   SignedEnvelope,
   StandardRailManifest,
 } from "./types.js";
@@ -80,6 +81,52 @@ function verifyClosedEnvelope(envelope: SignedEnvelope<unknown, number>, label: 
   requireClosedKeys(envelope as unknown as Record<string, unknown>, ENVELOPE_KEYS, label);
 }
 
+/**
+ * The rules a control profile's payload must pass: the start-up check applies
+ * them to every manifest profile, and the gateway to every approval record it
+ * builds (src/providerApprovals/record.ts). Uniqueness of a provider's epochs
+ * is checked by the caller.
+ */
+export function assertProviderControlProfilePayload(control: ProviderControlProfileV1): void {
+  requireClosedKeys(control as unknown as Record<string, unknown>, [
+    "providerAgentId", "providerAudience", "origin", "quoteUrl", "dispatchUrl",
+    "dispatchStatusUrl", "lifecycleUrl", "assetQueryUrl", "assetActionUrl",
+    "assetResponseKeyId", "assetResponseKey", "servicingProfileEpoch",
+    "tlsPolicy", "workloadAuthentication",
+    "maxResponseBytes", "timeoutMs",
+  ], "provider control profile payload");
+  const origin = new URL(control.origin);
+  if (origin.href !== `${origin.origin}/` || origin.protocol !== "https:" || origin.username || origin.password) {
+    throw new Error("Provider control profile origin must be a credential-free HTTPS origin");
+  }
+  for (const [name, value] of Object.entries({
+    quoteUrl: control.quoteUrl,
+    dispatchUrl: control.dispatchUrl,
+    dispatchStatusUrl: control.dispatchStatusUrl,
+    lifecycleUrl: control.lifecycleUrl,
+    assetQueryUrl: control.assetQueryUrl,
+    assetActionUrl: control.assetActionUrl,
+  })) {
+    const url = new URL(value);
+    if (
+      url.protocol !== "https:" || url.username || url.password || url.hash ||
+      url.origin !== origin.origin || url.search
+    ) {
+      throw new Error(`${name} must be a credential-free query-free URL on the pinned provider origin`);
+    }
+  }
+  if (
+    !/^[1-9]\d*$/.test(control.providerAgentId) || !control.providerAudience ||
+    control.assetResponseKeyId !== "provider-wallet" ||
+    !/^0x[0-9a-fA-F]{40}$/.test(control.assetResponseKey) ||
+    !Number.isSafeInteger(control.servicingProfileEpoch) || control.servicingProfileEpoch < 1 ||
+    control.tlsPolicy !== "webpki-v1" || control.workloadAuthentication !== "signed-envelopes-v1" ||
+    !Number.isSafeInteger(control.maxResponseBytes) || control.maxResponseBytes <= 0 ||
+    control.maxResponseBytes > 1_000_000 || !Number.isSafeInteger(control.timeoutMs) ||
+    control.timeoutMs < 1_000 || control.timeoutMs > 120_000
+  ) throw new Error("Provider control profile policy is invalid");
+}
+
 export async function verifyStandardRailManifest(
   manifest: StandardRailManifest,
   trust: ArtifactTrust,
@@ -103,44 +150,10 @@ export async function verifyStandardRailManifest(
     verifyClosedEnvelope(profile, "provider control profile envelope");
     await verifyEnvelope(profile, "ProviderControlProfileV1", trust);
     const control = profile.payload;
-    requireClosedKeys(control as unknown as Record<string, unknown>, [
-      "providerAgentId", "providerAudience", "origin", "quoteUrl", "dispatchUrl",
-      "dispatchStatusUrl", "lifecycleUrl", "assetQueryUrl", "assetActionUrl",
-      "assetResponseKeyId", "assetResponseKey", "servicingProfileEpoch",
-      "tlsPolicy", "workloadAuthentication",
-      "maxResponseBytes", "timeoutMs",
-    ], "provider control profile payload");
-    const origin = new URL(control.origin);
-    if (origin.href !== `${origin.origin}/` || origin.protocol !== "https:" || origin.username || origin.password) {
-      throw new Error("Provider control profile origin must be a credential-free HTTPS origin");
+    assertProviderControlProfilePayload(control);
+    if (controlProfileIds.has(control.providerAgentId + ":" + control.servicingProfileEpoch)) {
+      throw new Error("Provider control profile policy is invalid");
     }
-    for (const [name, value] of Object.entries({
-      quoteUrl: control.quoteUrl,
-      dispatchUrl: control.dispatchUrl,
-      dispatchStatusUrl: control.dispatchStatusUrl,
-      lifecycleUrl: control.lifecycleUrl,
-      assetQueryUrl: control.assetQueryUrl,
-      assetActionUrl: control.assetActionUrl,
-    })) {
-      const url = new URL(value);
-      if (
-        url.protocol !== "https:" || url.username || url.password || url.hash ||
-        url.origin !== origin.origin || url.search
-      ) {
-        throw new Error(`${name} must be a credential-free query-free URL on the pinned provider origin`);
-      }
-    }
-    if (
-      !/^[1-9]\d*$/.test(control.providerAgentId) || !control.providerAudience ||
-      controlProfileIds.has(control.providerAgentId + ":" + control.servicingProfileEpoch) ||
-      control.assetResponseKeyId !== "provider-wallet" ||
-      !/^0x[0-9a-fA-F]{40}$/.test(control.assetResponseKey) ||
-      !Number.isSafeInteger(control.servicingProfileEpoch) || control.servicingProfileEpoch < 1 ||
-      control.tlsPolicy !== "webpki-v1" || control.workloadAuthentication !== "signed-envelopes-v1" ||
-      !Number.isSafeInteger(control.maxResponseBytes) || control.maxResponseBytes <= 0 ||
-      control.maxResponseBytes > 1_000_000 || !Number.isSafeInteger(control.timeoutMs) ||
-      control.timeoutMs < 1_000 || control.timeoutMs > 120_000
-    ) throw new Error("Provider control profile policy is invalid");
     controlProfileIds.add(control.providerAgentId + ":" + control.servicingProfileEpoch);
   }
   for (const admission of manifest.servicingAdmissions) {
