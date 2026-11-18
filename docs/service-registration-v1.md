@@ -191,6 +191,21 @@ Operator visibility changes are authenticated and audited. Visibility affects
 discovery and future commerce only; it does not invalidate chain state or
 interrupt already admitted order recovery.
 
+## Provider website
+
+`GET /public/v3/services` and `GET /public/v3/services/{serviceId}` carry a
+top-level `providerWebsiteUrl`: the `external_url` of the provider's ERC-8004
+registration file, the file its identity registry `tokenURI` names, or `null`.
+The gateway fetches an HTTPS file like an AgentCard (public addresses only, no
+redirects, at most 512 KiB, 10 seconds) and reads an inline `data:` file in
+place; it fetches no other scheme. Only a credential-free HTTPS URL of at most
+2,048 characters without a fragment is shown. It is a display enrichment: an
+answer is used for an hour, a failed read keeps the last answer for up to 24
+hours and is retried after five minutes, at most two files are read at once,
+and a view waits at most 1.5 seconds for a provider it has never read before
+showing `null`. It is not the A2A origin (`standardRail.origin`), which is an
+API endpoint, and it carries no authority.
+
 ## Pausing a service
 
 Each skill's `acceptingNewOrders` is availability, outside every contract

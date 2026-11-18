@@ -130,7 +130,12 @@ const CATALOG_ACTIONS = [
 describe("public v3 services contract", () => {
   it("matches the gateway-owned golden response consumed by the website", () => {
     expect({
-      services: [publicServiceView(registrationFromFixture(), new Map(), CATALOG_ACTIONS)],
+      services: [publicServiceView(
+        registrationFromFixture(),
+        new Map(),
+        CATALOG_ACTIONS,
+        fixture.services[0].providerWebsiteUrl,
+      )],
     }).toEqual(fixture);
     expect(fixture.services[0].skills[0]).toMatchObject({ acceptingNewOrders: true });
     expect(fixture.services[0].skills[0].contract).not.toHaveProperty("acceptingNewOrders");
