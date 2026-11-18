@@ -1,0 +1,69 @@
+{
+  "schemaVersion": 1,
+  "contract": "The gateway's public answer for a hosted provider's approval, GET /public/v3/providers/:agentId/approval (no authentication; Cache-Control: public, max-age=10), before and after the provider was approved. Synthetic: example hosts, label-derived wallets, a fixed approval time. Added by the gateway.",
+  "synthetic": true,
+  "owner": "daski-io/gateway",
+  "consumers": [
+    "hosted provider runtimes that check approval records"
+  ],
+  "generator": "test/providerApprovalsPostgres.test.ts (UPDATE_PROVIDER_APPROVAL_ANSWER=1 npx vitest run test/providerApprovalsPostgres.test.ts)",
+  "route": {
+    "method": "GET",
+    "path": "/public/v3/providers/:agentId/approval",
+    "cacheControl": "public, max-age=10"
+  },
+  "rules": [
+    "approved is true only while the gateway sells the provider through its approval record: the provider holds a current approval on the gateway's chain, approvals are on for the record's origin, and no servicing admission or manifest profile names a control profile for the provider. Otherwise approved is false, with no other field.",
+    "record is the ProviderControlProfileV1 envelope the gateway built when it approved the provider and stored; signerKeyId is gateway-approval-v1, issuedAt and validBefore are 0 and signature is 0x: it is never signed.",
+    "recordHash is the canonical hash of record exactly as served (canonicalHash in src/standardRail/canonical.ts: keys sorted, no whitespace, keccak256), signature included. It is the providerControlProfileHash the gateway's dispatches carry for the provider.",
+    "environment, chainId and audience are those the gateway's manifest profiles carry. providerAudience, origin and the six URLs are the provider card's standard-rail values as the gateway stored them; assetResponseKey is the registration's agent wallet, checksummed; servicingProfileEpoch is one more than the highest epoch of the provider's manifest profiles and earlier approval records, else 1, and never names two records.",
+    "approvedAt is when the current approval was made (ISO 8601)."
+  ],
+  "answers": [
+    {
+      "name": "not approved",
+      "providerAgentId": "9001",
+      "answer": {
+        "approved": false
+      }
+    },
+    {
+      "name": "approved",
+      "providerAgentId": "9001",
+      "answer": {
+        "approved": true,
+        "approvedAt": "2026-11-18T12:00:00.000Z",
+        "record": {
+          "chainId": 84532,
+          "payload": {
+            "origin": "https://hosted.example",
+            "quoteUrl": "https://hosted.example/p/9001/standard-rail/quote",
+            "timeoutMs": 90000,
+            "tlsPolicy": "webpki-v1",
+            "dispatchUrl": "https://hosted.example/p/9001/standard-rail/dispatch",
+            "lifecycleUrl": "https://hosted.example/p/9001/standard-rail/lifecycle",
+            "assetQueryUrl": "https://hosted.example/p/9001/standard-rail/assets/query",
+            "assetActionUrl": "https://hosted.example/p/9001/standard-rail/assets/action",
+            "providerAgentId": "9001",
+            "assetResponseKey": "0x259A2D30e45cfAda58e81d1A4f6A215CcDe38FfD",
+            "maxResponseBytes": 524288,
+            "providerAudience": "https://hosted.example/",
+            "dispatchStatusUrl": "https://hosted.example/p/9001/standard-rail/dispatch/status",
+            "assetResponseKeyId": "provider-wallet",
+            "servicingProfileEpoch": 1,
+            "workloadAuthentication": "signed-envelopes-v1"
+          },
+          "audience": "https://gateway.example",
+          "issuedAt": 0,
+          "signature": "0x",
+          "environment": "testnet",
+          "signerKeyId": "gateway-approval-v1",
+          "validBefore": 0,
+          "artifactType": "ProviderControlProfileV1",
+          "schemaVersion": 1
+        },
+        "recordHash": "0xfa1da7927d165dae399fc33146d2c4e21b1638eb11842c5070dcdbc977cae542"
+      }
+    }
+  ]
+}

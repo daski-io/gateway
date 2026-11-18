@@ -1,4 +1,5 @@
 import { createRateLimitQueries } from "../db/rateLimitQueries.js";
+import type { PoolClient } from "pg";
 import type { Pool } from "../db/pool.js";
 import { canonicalHash } from "../standardRail/canonical.js";
 import type { SignedEnvelope } from "../standardRail/types.js";
@@ -162,6 +163,9 @@ async function persistArtifact(
     ],
   );
 }
+
+/** Which of a provider's registrations is newest: the last activated, then the greatest id. */
+const NEWEST_REGISTRATION_ORDER = "r.activated_at DESC NULLS LAST,r.registration_id DESC";
 
 /** Registration quarantine code for a skill schema whose validation overran its CPU budget. */
 export const SCHEMA_BUDGET_QUARANTINE_CODE = "SCHEMA_VALIDATION_BUDGET_EXCEEDED";
@@ -762,6 +766,63 @@ export class ServiceRegistrationStore {
       [limit],
     );
     return result.rows.map(mapRow);
+  }
+
+  /**
+   * Each provider's newest active registration on one of the hosted provider
+   * origins (newest by activation) that needs an approval by invite
+   * (docs/provider-approvals.md): the provider never held an approval on this
+   * chain, or holds a current one made by invite whose response key is not
+   * that newest registration's agent wallet, which is healthy and active on
+   * chain. Only the newest registration is ever compared, so an older service
+   * still registered under a previous wallet never turns the key back. In
+   * agent id order, after `afterProviderAgentId` when given.
+   */
+  async listHostedApprovalCandidates(
+    origins: readonly string[],
+    chainId: number,
+    limit: number,
+    afterProviderAgentId: string | null = null,
+  ): Promise<StoredRegistration[]> {
+    if (origins.length === 0) return [];
+    const result = await this.pool.query<RegistrationRow>(
+      `SELECT n.* FROM (
+         SELECT DISTINCT ON (r.provider_agent_id::numeric) r.* FROM standard_service_registrations r
+          WHERE r.state='ACTIVE' AND r.card_json->'standardRail'->>'origin'=ANY($1::text[])
+            AND ($4::numeric IS NULL OR r.provider_agent_id::numeric>$4::numeric)
+          ORDER BY r.provider_agent_id::numeric,${NEWEST_REGISTRATION_ORDER}) n
+        WHERE NOT EXISTS (SELECT 1 FROM standard_provider_approvals a
+                           WHERE a.provider_agent_id=n.provider_agent_id AND a.chain_id=$2)
+           OR (n.registration_healthy AND n.chain_active AND EXISTS (
+                SELECT 1 FROM standard_provider_approvals a
+                 WHERE a.provider_agent_id=n.provider_agent_id AND a.chain_id=$2 AND a.revoked_at IS NULL
+                   AND a.approved_by LIKE 'invite:%'
+                   AND lower(a.record_json->'payload'->>'assetResponseKey')<>n.provider_agent_wallet))
+        ORDER BY n.provider_agent_id::numeric
+        LIMIT $3`,
+      [[...origins], chainId, limit, afterProviderAgentId],
+    );
+    return result.rows.map(mapRow);
+  }
+
+  /**
+   * A provider's newest active registration on one of the hosted provider
+   * origins, by activation: the one its approval is built from. `db` lets a
+   * caller read it inside its own transaction.
+   */
+  async newestHostedRegistration(
+    providerAgentId: string,
+    origins: readonly string[],
+    db: Pick<Pool, "query"> | Pick<PoolClient, "query"> = this.pool,
+  ): Promise<StoredRegistration | null> {
+    if (origins.length === 0) return null;
+    const result = await (db as Pick<Pool, "query">).query<RegistrationRow>(
+      `SELECT r.* FROM standard_service_registrations r
+        WHERE r.provider_agent_id=$1 AND r.state='ACTIVE' AND r.card_json->'standardRail'->>'origin'=ANY($2::text[])
+        ORDER BY ${NEWEST_REGISTRATION_ORDER} LIMIT 1`,
+      [providerAgentId, [...origins]],
+    );
+    return result.rows[0] ? mapRow(result.rows[0]) : null;
   }
 
   async currentProviderControlProfileHash(providerAgentId: string): Promise<string | null> {

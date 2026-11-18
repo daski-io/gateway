@@ -27,6 +27,8 @@ import { signEnvelope } from "../src/standardRail/signing.js";
 import type {
   ProviderControlProfileV1, SignedEnvelope, StandardOrderRecord, StandardRailDispatchV2, StandardRailManifest,
 } from "../src/standardRail/types.js";
+import { insertRegistration } from "./helpers/approvalRegistrations.js";
+import { hostedCard, hostedStandardRail } from "./helpers/hostedProvider.js";
 
 // Control profiles across gateway starts. A gateway reads its manifest once,
 // when it starts, and stores every envelope of it; nothing deletes a stored
@@ -249,7 +251,7 @@ const zip = (value: string) => `gzip-base64:${gzipSync(value).toString("base64")
 const bytes = (value: Hex) => Buffer.from(value.slice(2), "hex");
 
 /** The variables of a gateway that starts with this manifest; every value is synthetic. */
-function environment(manifest: StandardRailManifest): NodeJS.ProcessEnv {
+function environment(manifest: StandardRailManifest, extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
   const key = generateKeyPairSync("ed25519").privateKey.export({ format: "jwk" });
   const creationCode = "0x60046000";
   return {
@@ -280,6 +282,7 @@ function environment(manifest: StandardRailManifest): NodeJS.ProcessEnv {
     EAS_ADDRESS: syntheticAddress("eas"), EAS_OUTCOME_SCHEMA_UID: syntheticHash("outcome schema"),
     EAS_CONFIRMATION_SCHEMA_UID: syntheticHash("confirmation schema"),
     CATALOG_OPERATOR_TOKEN: OPERATOR_TOKEN,
+    ...extra,
   };
 }
 
@@ -294,8 +297,10 @@ const running: Gateway[] = [];
  * A gateway started with this manifest over the pool's schema, serving HTTP
  * on a loopback port. `sellerFetch` stands in for the network to sellers.
  */
-async function startGateway(pool: Pool, manifest: StandardRailManifest, sellerFetch?: typeof fetch): Promise<Gateway> {
-  const env = environment(manifest);
+async function startGateway(
+  pool: Pool, manifest: StandardRailManifest, sellerFetch?: typeof fetch, extra: NodeJS.ProcessEnv = {},
+): Promise<Gateway> {
+  const env = environment(manifest, extra);
   const initialize = StandardRailService.prototype.initialize;
   let service: StandardRailService | undefined;
   const captured = vi.spyOn(StandardRailService.prototype, "initialize")
@@ -393,6 +398,11 @@ const RULES = [
     "wallet of the registration being sold, the highest servicingProfileEpoch of those. An image without the field " +
     "is treated as selecting the lowest epoch.",
   "An image built before controlProfiles answers without that field.",
+  "providerApprovals is \"database\" when the image's release-capabilities.json declares it and the deployment's " +
+    "HOSTED_PROVIDER_ORIGINS names an origin: the gateway then approves hosted providers itself and sells a provider " +
+    "the manifest carries no profile for through the approval record it stored (docs/provider-approvals.md). It is " +
+    "\"off\" otherwise, as for both deployments here, which set no hosted origin. controlProfiles still lists manifest " +
+    "profiles only. An image without the field sells only providers the manifest carries a profile for.",
   "artifactRoute is what GET /public/v2/artifacts/<hash> answered on that deployment for provider 41's profile, " +
     "seller 9001's profile and a hash no gateway started with.",
   "commit and artifactManifestHash identify the build. Here they are the placeholders below; the test that writes " +
@@ -678,6 +688,72 @@ describe("control profiles across gateway starts (postgres)", () => {
       const retired = await retire(restarted, sellerScope, "retire-seller-listing");
       expect(retired.status).toBe(200);
       expect(retired.body).toMatchObject({ retired: true, receipt: { audience: m.sellerProfile.payload.providerAudience } });
+    } finally {
+      await stopAll();
+      await db.close();
+    }
+  }, 60_000);
+  it("approves a hosted seller the manifest carries no profile for, serves its approval and addresses its retirement", async () => {
+    const m = await manifests();
+    const db = await database(m);
+    try {
+      // A seller on the sellers' origin, which this gateway names as a hosted provider origin, with no profile.
+      const HOSTED_SELLER = "9002";
+      expect(m.withSeller.providerControlProfiles.map((item) => item.payload.providerAgentId)).not.toContain(HOSTED_SELLER);
+      const gateway = await startGateway(db.pool, m.withSeller, undefined, { HOSTED_PROVIDER_ORIGINS: `${SELLERS_ORIGIN}/` });
+      const registration = await insertRegistration(db.pool, {
+        providerAgentId: HOSTED_SELLER, card: hostedCard(HOSTED_SELLER, hostedStandardRail(HOSTED_SELLER, SELLERS_ORIGIN)),
+      });
+      const scope = await retirableListing(db.pool, HOSTED_SELLER, 33);
+      const approval = () => fetch(`${gateway.url}/public/v3/providers/${HOSTED_SELLER}/approval`);
+      const operator = (method: string, body: unknown) => fetch(`${gateway.url}/operator/v1/providers/${HOSTED_SELLER}/approval`, {
+        method, headers: { authorization: `Bearer ${OPERATOR_TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+
+      expect(await (await approval()).json()).toEqual({ approved: false });
+      // Before an approval nothing addresses the seller.
+      expect(await retire(gateway, scope, "retire-hosted-seller-listing")).toEqual({
+        status: 409, body: { error: { code: "RETIREMENT_PROVIDER_AUDIENCE_REQUIRED" } },
+      });
+
+      const approved = await operator("PUT", { reason: "approved by hand in the test" });
+      expect(approved.status).toBe(200);
+      const answer = await (await approval()).json() as { approved: boolean; record: Profile; recordHash: Hex };
+      expect(answer).toMatchObject({ approved: true, recordHash: canonicalHash(answer.record) });
+      expect(answer.record).toMatchObject({
+        environment: ENVIRONMENT, chainId: CHAIN_ID, audience: GATEWAY_AUDIENCE, signerKeyId: "gateway-approval-v1",
+        issuedAt: 0, validBefore: 0, signature: "0x",
+        payload: { providerAgentId: HOSTED_SELLER, origin: SELLERS_ORIGIN, providerAudience: `${SELLERS_ORIGIN}/`,
+          assetResponseKey: registration.agentWallet, servicingProfileEpoch: 1 },
+      });
+      // The record's envelope domain is exactly a manifest profile's for this gateway.
+      const { payload: _sellerPayload, signature: _sellerSignature, issuedAt: _i, validBefore: _v, signerKeyId: _k,
+        ...manifestDomain } = m.sellerProfile;
+      const { payload: _payload, signature: _signature, issuedAt: _ri, validBefore: _rv, signerKeyId: _rk,
+        ...recordDomain } = answer.record;
+      expect(recordDomain).toEqual(manifestDomain);
+      // It resolves by hash on the artifact route, and the capability answer declares approvals.
+      const artifact = await fetch(`${gateway.url}/public/v2/artifacts/${answer.recordHash}`);
+      expect(artifact.status).toBe(200);
+      expect(await artifact.json()).toEqual(answer.record);
+      const answered = await capabilities(gateway, DEPLOYMENTS.first);
+      expect(answered.providerApprovals).toBe("database");
+      // A deployment of the same image without hosted origins says approvals are off.
+      const off = await startGateway(db.pool, m.withSeller);
+      expect((await capabilities(off, DEPLOYMENTS.second)).providerApprovals).toBe("off");
+      expect(answered.controlProfiles.map((item) => item.providerAgentId)).not.toContain(HOSTED_SELLER);
+
+      // A retirement of the seller's listing is addressed to the record's audience.
+      const retired = await retire(gateway, scope, "retire-hosted-seller-listing");
+      expect(retired.status).toBe(200);
+      expect(retired.body).toMatchObject({ retired: true, receipt: { audience: `${SELLERS_ORIGIN}/` } });
+
+      // Revoked by hand, the seller is no longer approved.
+      expect((await operator("DELETE", { reason: "revoked in the test" })).status).toBe(200);
+      expect(await (await approval()).json()).toEqual({ approved: false });
+      const actions = await db.pool.query<{ action: string }>("SELECT action FROM standard_operator_actions ORDER BY id");
+      expect(actions.rows.map((row) => row.action)).toEqual(["operator_provider_approved", "operator_provider_approval_revoked"]);
     } finally {
       await stopAll();
       await db.close();

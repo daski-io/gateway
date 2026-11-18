@@ -70,6 +70,18 @@ describe("standard-only gateway configuration", () => {
     }
   });
 
+  it("reads HOSTED_PROVIDER_ORIGINS as bare HTTPS origins, and none when it is empty or unset", () => {
+    expect(loadConfig(environment()).hostedProviderOrigins).toEqual([]);
+    expect(loadConfig({ ...environment(), HOSTED_PROVIDER_ORIGINS: " , " }).hostedProviderOrigins).toEqual([]);
+    expect(loadConfig({ ...environment(),
+      HOSTED_PROVIDER_ORIGINS: "https://hosted.example/, https://Other.Example:8443,https://hosted.example" })
+      .hostedProviderOrigins).toEqual(["https://hosted.example", "https://other.example:8443"]);
+    for (const value of ["http://hosted.example", "https://hosted.example/p/1", "https://hosted.example?x=1",
+      "https://user:secret@hosted.example", "hosted.example", "https://hosted.example#a"]) {
+      expect(() => loadConfig({ ...environment(), HOSTED_PROVIDER_ORIGINS: value })).toThrow(/HOSTED_PROVIDER_ORIGINS/);
+    }
+  });
+
   it("rejects the retired payment-rail selector", () => {
     expect(() => loadConfig({ ...environment(), PAYMENT_RAIL: "standard" }))
       .toThrow(/PAYMENT_RAIL is retired/);

@@ -12,6 +12,8 @@ import { fetchProviderCardJson } from "../serviceRegistration/cardFetch.js";
 import { ViemRegistrationEvidenceVerifier } from "../serviceRegistration/evidence.js";
 import { withRequestClientKey } from "../mcp/requestContext.js";
 import { OwnerSwapService } from "../serviceRegistration/ownerSwaps.js";
+import { createProviderApprovalRouter } from "../providerApprovals/routes.js";
+import { ProviderApprovalService } from "../providerApprovals/service.js";
 import { createServiceRegistrationRouter } from "../serviceRegistration/routes.js";
 import { ServiceRegistrationService } from "../serviceRegistration/service.js";
 import { ServiceRegistrationStore } from "../serviceRegistration/store.js";
@@ -145,6 +147,18 @@ export async function createStandardGatewayHttp(
     lockPool,
   );
   await standardRail.initialize();
+  // Hosted provider approvals (docs/provider-approvals.md): on activation of
+  // a hosted registration, on a one-minute sweep, and by the operator. The
+  // admission report is read through the same bounded, origin-pinned GET as
+  // provider cards.
+  const providerApprovals = new ProviderApprovalService({
+    config: options.config,
+    railConfig: options.standardRailConfig,
+    registrations: registrationStore,
+    approvals: standardRail.providerApprovals,
+    loadJson: (url) => fetchProviderCardJson(url, options.a2aFetch ?? fetch),
+  });
+  registrationService.onActivated((record) => providerApprovals.activated(record));
   if (options.config.dynamicServiceRegistrationEnabled) {
     app.use(createServiceRegistrationRouter({
       config: options.config,
@@ -162,6 +176,10 @@ export async function createStandardGatewayHttp(
       }),
     }));
   }
+  app.use(createProviderApprovalRouter({
+    service: providerApprovals,
+    operatorToken: options.config.catalogOperatorToken,
+  }));
   app.use(createStandardMetaRouter({
     config: options.config,
     pool: options.pool,
@@ -197,8 +215,10 @@ export async function createStandardGatewayHttp(
       if (options.lifecycle.isStopping()) return;
       standardRail.startBackground();
       registrationService.start();
+      providerApprovals.start();
     },
     standardRailStop: async () => {
+      await providerApprovals.stop();
       await registrationService.stop();
       await standardRail.stop();
     },

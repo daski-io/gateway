@@ -15,6 +15,13 @@ if (!input.variableEncodings.includes("gzip-base64") ||
 // profile naming its registration's agent wallet. An image without this field
 // is treated as selecting the lowest epoch.
 if (input.controlProfileSelection !== "agent-wallet") throw new Error("Invalid control profile selection");
+// How hosted providers without a manifest control profile are admitted:
+// "database", this image can approve them itself and store the record
+// (docs/provider-approvals.md). The live capabilities answer repeats it only
+// while HOSTED_PROVIDER_ORIGINS names an origin and says "off" otherwise; the
+// release engine stops admitting invited hosted providers into the manifest
+// for a gateway whose live answer says "database".
+if (input.providerApprovals !== "database") throw new Error("Invalid provider approvals");
 for (const [field, id, digest] of [["paidContracts", "skillId", "skillContractHash"], ["assetActions", "actionId", "definitionHash"]]) {
   const seen = new Set();
   for (const row of input[field]) {
@@ -29,4 +36,5 @@ writeFileSync("dist/release-capabilities.json", JSON.stringify({ schemaVersion: 
   paidContracts: input.paidContracts, assetActions: input.assetActions,
   intentFormats: input.intentFormats, workerFormats: input.workerFormats,
   variableEncodings: input.variableEncodings,
-  controlProfileSelection: input.controlProfileSelection }, null, 2)+"\n");
+  controlProfileSelection: input.controlProfileSelection,
+  providerApprovals: input.providerApprovals }, null, 2)+"\n");

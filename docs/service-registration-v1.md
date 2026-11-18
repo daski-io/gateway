@@ -38,6 +38,14 @@ not crawled or automatically shown by this gateway.
 - `GET /public/v3/services`
 - `GET /public/v3/services/{serviceId}`
 - `PUT /operator/v1/services/{registrationId}/visibility`
+- `GET /public/v3/providers/{agentId}/approval`,
+  `PUT` and `DELETE /operator/v1/providers/{agentId}/approval`
+  ([hosted provider approvals](provider-approvals.md))
+
+A paid listing is sold through its provider's control profile. A provider
+registered on one of `HOSTED_PROVIDER_ORIGINS` that the manifest carries no
+profile for is sold once the gateway approves it: on activation and on a
+one-minute sweep when its invite authorizes admission, or by an operator.
 
 The initial POST requires an `Idempotency-Key` of 8–128 URL-safe characters.
 The same provider/key/body returns the persisted resource; using the same key

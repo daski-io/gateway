@@ -187,3 +187,16 @@ refresh this projection; the background worker refreshes failures with observed
 open support or unfinished recovery at most every five minutes. A new recovery
 that the gateway has never observed is discovered on the next authorized read.
 `fulfillmentState: "recovered"` is operational fulfillment, not a reputation rewrite.
+
+## Hosted provider approvals
+
+`PUT /operator/v1/providers/:agentId/approval` approves a hosted provider by
+hand, building its approval record from its newest active hosted registration,
+and `DELETE` on the same path revokes the current approval. Both take
+`{ "reason": "…" }` and an optional `"operator"` label, and record the change
+with its reason in `standard_operator_actions` (`operator_provider_approved`,
+`operator_provider_approval_revoked`), the actor being the label
+(`catalog-operator` by default). A revoked provider is not approved again by
+invite; only another `PUT` approves it, with the same record and hash when its
+registration is unchanged. See
+[hosted provider approvals](provider-approvals.md#approving).

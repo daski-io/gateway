@@ -140,6 +140,12 @@ steady-state prompt is `Use Daski to [your task]`.
   card's A2A skill list, refreshed with the card, and bind nothing; an owner
   action the card does not present shows its `actionId` as its name and a null
   description. A failed admission read lists no owner actions.
+- `GET /public/v3/providers/:agentId/approval` answers whether the gateway
+  sells a hosted provider through an approval it made itself: `{ approved:
+  true, approvedAt, record, recordHash }` with the stored, unsigned
+  `ProviderControlProfileV1` record the provider is sold through, or
+  `{ approved: false }`, also while a manifest profile or servicing admission
+  takes precedence ([hosted provider approvals](docs/provider-approvals.md)).
 - `/public/v2/registry/*` exposes read-only ERC-8004 identity, Daski provider
   and service catalog state. The provider and service reads carry the on-chain
   reputation counters as `standardReputation`, with the additive `recovered`.
@@ -433,7 +439,15 @@ core groups are:
   predate a configuration change). Account health also exposes registration
   and confirmation reserves for newly prepared transactions.
 - Operator recovery: the bearer `CATALOG_OPERATOR_TOKEN` authorizes the
-  audited [order redispatch, reputation retry and hidden-service inventory endpoints](docs/operator-recovery.md).
+  audited [order redispatch, reputation retry and hidden-service inventory endpoints](docs/operator-recovery.md)
+  and the [hosted provider approval endpoints](docs/provider-approvals.md#approving).
+- Hosted provider approvals: `HOSTED_PROVIDER_ORIGINS`, comma-separated bare
+  HTTPS origins of hosted provider runtimes (empty or unset: off). A provider
+  registered on one of them that the manifest carries no control profile for
+  is approved by the gateway itself, when its invite authorizes admission or by
+  an operator, and sold through the approval record the gateway stores
+  ([hosted provider approvals](docs/provider-approvals.md)). Keep it set while
+  approved providers sell.
 - Dynamic catalog: `DYNAMIC_SERVICE_REGISTRATION_ENABLED`,
   `CATALOG_OPERATOR_TOKEN`, and `CATALOG_REFRESH_INTERVAL_MS`. Registration
   routes are enabled by default and require an operator token. Disabling the
