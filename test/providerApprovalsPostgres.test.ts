@@ -4,6 +4,7 @@ import type { AddressInfo } from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import express from "express";
+import { keccak256, stringToHex } from "viem";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Config } from "../src/config.js";
 import { createPool, runMigrations, type Pool } from "../src/db/pool.js";
@@ -525,6 +526,95 @@ describe("approval by invite", () => {
     refusing.delete("9332");
     expect(await approvalService.approveByInvite(await record(stillDeclined))).toBe("rotated");
     expect((await stored("9332"))?.record.payload.assetResponseKey).toBe(stillDeclined.agentWallet);
+  });
+
+  describe("a provider with two services", () => {
+    const serviceOf = (label: string) => keccak256(stringToHex(`provider approval test service: ${label}`));
+    const hour = 3_600_000;
+
+    it("rotates once toward its newest registration and never back toward an older service under the previous wallet", async () => {
+      // Service B registered under the first wallet and was approved by invite.
+      const older = await insertRegistration(pool, { providerAgentId: "9341", serviceId: serviceOf("9341 B"),
+        agentWallet: approvalWallet("first wallet of 9341"), activatedAt: new Date(Date.now() - hour) });
+      const { asked, approvalService } = service(() => report(older));
+      expect(await approvalService.approveByInvite(await record(older))).toBe("approved");
+      // Service A registered later under a new wallet; B is still active under the first.
+      const newer = await insertRegistration(pool, { providerAgentId: "9341", serviceId: serviceOf("9341 A"),
+        owner: older.owner, agentWallet: approvalWallet("second wallet of 9341") });
+      asked.length = 0;
+      for (let pass = 0; pass < 4; pass += 1) await approvalService.sweep();
+      expect(asked).toEqual([`${HOSTED_ORIGIN}/p/9341/standard-rail/admission`]);
+      expect((await stored("9341"))?.record).toEqual(built(newer, CHAIN_ID, 2).record);
+      expect((await approvalRows("9341")).map((row) => row.epoch)).toEqual([1, 2]);
+      // Asked again on behalf of the older service, it builds from the newest and changes nothing.
+      const olderRecord = (await new ServiceRegistrationStore(pool).listActiveByProvider("9341"))
+        .find((item) => item.registrationId === older.registrationId)!;
+      expect(await approvalService.approveByInvite(olderRecord)).toBe("already-approved");
+      expect(asked).toHaveLength(1);
+      expect((await approvalRows("9341")).map((row) => row.epoch)).toEqual([1, 2]);
+    });
+
+    it("approves first from its newest registration, whichever service asks", async () => {
+      const older = await insertRegistration(pool, { providerAgentId: "9342", serviceId: serviceOf("9342 B"),
+        agentWallet: approvalWallet("first wallet of 9342"), activatedAt: new Date(Date.now() - hour) });
+      const newer = await insertRegistration(pool, { providerAgentId: "9342", serviceId: serviceOf("9342 A"),
+        owner: older.owner, agentWallet: approvalWallet("second wallet of 9342") });
+      const { approvalService } = service(() => report(older));
+      const olderRecord = (await new ServiceRegistrationStore(pool).listActiveByProvider("9342"))
+        .find((item) => item.registrationId === older.registrationId)!;
+      expect(await approvalService.approveByInvite(olderRecord)).toBe("approved");
+      expect((await stored("9342"))?.record).toEqual(built(newer).record);
+      await approvalService.sweep();
+      expect((await approvalRows("9342")).map((row) => row.epoch)).toEqual([1]);
+    });
+
+    it("rotates only toward a newest registration that is healthy and active on chain", async () => {
+      const older = await insertRegistration(pool, { providerAgentId: "9343", serviceId: serviceOf("9343 B"),
+        agentWallet: approvalWallet("first wallet of 9343"), activatedAt: new Date(Date.now() - hour) });
+      const { asked, approvalService } = service(() => report(older));
+      expect(await approvalService.approveByInvite(await record(older))).toBe("approved");
+      const quarantined = await insertRegistration(pool, { providerAgentId: "9343", serviceId: serviceOf("9343 A"),
+        owner: older.owner, agentWallet: approvalWallet("second wallet of 9343"), healthy: false });
+      asked.length = 0;
+      await approvalService.sweep();
+      expect(asked).toEqual([]);
+      const quarantinedRecord = (await new ServiceRegistrationStore(pool).listActiveByProvider("9343"))
+        .find((item) => item.registrationId === quarantined.registrationId)!;
+      expect(await approvalService.approveByInvite(quarantinedRecord)).toBe("already-approved");
+      expect((await stored("9343"))?.record).toEqual(built(older).record);
+      // Once it sells, the key rotates toward it.
+      await pool.query("UPDATE standard_service_registrations SET registration_healthy=true,chain_active=true WHERE registration_id=$1",
+        [quarantined.registrationId]);
+      await approvalService.sweep();
+      expect((await stored("9343"))?.record).toEqual(built(quarantined, CHAIN_ID, 2).record);
+    });
+
+    it("rotates nothing when a newer registration appeared while the runtime was asked", async () => {
+      const older = await insertRegistration(pool, { providerAgentId: "9344", serviceId: serviceOf("9344 B"),
+        agentWallet: approvalWallet("first wallet of 9344"), activatedAt: new Date(Date.now() - 2 * hour) });
+      const first = service(() => report(older));
+      expect(await first.approvalService.approveByInvite(await record(older))).toBe("approved");
+      const middle = await insertRegistration(pool, { providerAgentId: "9344", serviceId: serviceOf("9344 A"),
+        owner: older.owner, agentWallet: approvalWallet("second wallet of 9344"), activatedAt: new Date(Date.now() - hour) });
+      let newest: SeededRegistration | undefined;
+      const { approvalService } = service(() => report(older));
+      const racing = new ProviderApprovalService({
+        config, railConfig, registrations: new ServiceRegistrationStore(pool), approvals: new ProviderApprovalStore(pool, CHAIN_ID),
+        loadJson: async () => {
+          // A third service registers under yet another wallet before the report arrives.
+          newest ??= await insertRegistration(pool, { providerAgentId: "9344", serviceId: serviceOf("9344 C"),
+            owner: older.owner, agentWallet: approvalWallet("third wallet of 9344") });
+          return report(older);
+        },
+      });
+      const middleRecord = (await new ServiceRegistrationStore(pool).listActiveByProvider("9344"))
+        .find((item) => item.registrationId === middle.registrationId)!;
+      expect(await racing.approveByInvite(middleRecord)).toBe("superseded");
+      expect((await stored("9344"))?.record).toEqual(built(older).record);
+      // The next sweep rotates toward the newest.
+      await approvalService.sweep();
+      expect((await stored("9344"))?.record).toEqual(built(newest!, CHAIN_ID, 2).record);
+    });
   });
 
   it("sweeps in agent id order, continuing where the last sweep stopped and wrapping round", async () => {

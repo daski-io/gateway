@@ -29,6 +29,10 @@ export async function insertRegistration(pool: Pool, args: {
   activatedAt?: Date;
   owner?: Hex;
   agentWallet?: Hex;
+  /** Another service of the provider: a service id of its own. */
+  serviceId?: Hex;
+  /** Quarantined, as a refresh leaves a registration whose chain authority drifted. */
+  healthy?: boolean;
 }): Promise<SeededRegistration> {
   const card = args.card ?? hostedCard(args.providerAgentId);
   const owner = args.owner ?? approvalWallet(`owner of ${args.providerAgentId}`);
@@ -42,13 +46,13 @@ export async function insertRegistration(pool: Pool, args: {
        provider_owner,provider_agent_wallet,provider_signer,idempotency_key,provider_payee,registration_nonce,
        request_hash,canonical_intent,prepared_json,card_json,card_hash,skill_contract_set_hash,state,
        marketplace_enabled,card_accepting_orders,chain_active,registration_healthy,activated_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$8,$10,$7,$11,$12,'{}',$13,$14,$15,$16,$17,true,true,true,true,$18)`,
-    [registrationId, args.providerAgentId, bytes(serviceIdOf(args.providerAgentId)), SERVICE.slug, SERVICE.version,
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$8,$10,$7,$11,$12,'{}',$13,$14,$15,$16,$17,true,true,$19,$19,$18)`,
+    [registrationId, args.providerAgentId, bytes(args.serviceId ?? serviceIdOf(args.providerAgentId)), SERVICE.slug, SERVICE.version,
       hostedCardUrl(args.providerAgentId, new URL(card.standardRail.origin).origin),
       approvalWallet(`payee of ${args.providerAgentId}`).toLowerCase(), owner.toLowerCase(), agentWallet.toLowerCase(),
       `seed-${registrationId}`, filler("nonce"), filler("request"),
       { registrationId, listings: [] }, card, bytes(canonicalHash(card)), bytes(card.skillContractSetHash),
-      args.state ?? "ACTIVE", args.activatedAt ?? new Date()],
+      args.state ?? "ACTIVE", args.activatedAt ?? new Date(), args.healthy ?? true],
   );
   return { registrationId, providerAgentId: args.providerAgentId, owner, agentWallet, card };
 }

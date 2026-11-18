@@ -33,7 +33,8 @@ export class ProviderApprovalError extends Error {
 }
 
 export type InviteApprovalOutcome =
-  | "approved" | "rotated" | "already-approved" | "previously-approved" | "not-hosted" | "unavailable" | "refused";
+  | "approved" | "rotated" | "already-approved" | "previously-approved" | "superseded" | "not-hosted"
+  | "unavailable" | "refused";
 
 export interface ProviderApprovalStatus {
   approved: boolean;
@@ -95,7 +96,7 @@ export class ProviderApprovalService {
     railConfig: Pick<StandardRailConfig, "environment" | "gatewayAudience" | "manifest">;
     registrations: Pick<
       ServiceRegistrationStore,
-      "listActiveByProvider" | "listHostedApprovalCandidates" | "currentProviderControlProfileHash"
+      "listHostedApprovalCandidates" | "newestHostedRegistration" | "currentProviderControlProfileHash"
     >;
     approvals: ProviderApprovalStore;
     /** The gateway's bounded, origin-pinned JSON GET for provider documents (cardFetch.ts). */
@@ -148,11 +149,16 @@ export class ProviderApprovalService {
   /**
    * Approves the provider of an active hosted registration when the hosted
    * runtime reports its invite authorizes admission and was redeemed by the
-   * registration's owner. A provider that holds or ever held an approval on
-   * this chain is left to the operator, so a revocation is never undone here;
-   * the one exception is a current approval made by invite that the
-   * registration now builds with another agent wallet and nothing else
-   * changed, which is replaced when the invite still authorizes admission.
+   * registration's owner. The record is always built from the provider's
+   * newest active hosted registration, whichever registration asked, and that
+   * registration is confirmed still the newest under the provider's lock. A
+   * provider that holds or ever held an approval on this chain is left to the
+   * operator, so a revocation is never undone here; the one exception is a
+   * current approval made by invite that the newest registration, healthy and
+   * active on chain, builds with another agent wallet and nothing else
+   * changed, which is replaced when the invite still authorizes admission. An
+   * older service still registered under a previous wallet never turns the
+   * key back.
    */
   approveByInvite(record: StoredRegistration): Promise<InviteApprovalOutcome> {
     const running = this.inviteWork.get(record.providerAgentId);
@@ -164,13 +170,18 @@ export class ProviderApprovalService {
     return work;
   }
 
-  private async inviteApproval(record: StoredRegistration): Promise<InviteApprovalOutcome> {
-    const providerAgentId = record.providerAgentId;
-    if (record.state !== "ACTIVE" || !this.isHosted(record)) return "not-hosted";
+  private async inviteApproval(asking: StoredRegistration): Promise<InviteApprovalOutcome> {
+    const providerAgentId = asking.providerAgentId;
+    if (asking.state !== "ACTIVE" || !this.isHosted(asking)) return "not-hosted";
+    const origins = [...this.origins];
+    const record = await this.args.registrations.newestHostedRegistration(providerAgentId, origins);
+    if (!record) return "not-hosted";
     const latest = await this.args.approvals.latest(providerAgentId);
     if (latest?.revokedAt) return "previously-approved";
     if (latest) {
       if (!latest.approvedBy.startsWith("invite:")) return "already-approved";
+      // A key is rotated only toward a registration that is selling.
+      if (!record.registrationHealthy || !record.chainActive) return "already-approved";
       let fresh: ProviderApprovalRecord;
       try {
         fresh = this.build(record, latest.record.payload.servicingProfileEpoch).record;
@@ -196,10 +207,19 @@ export class ProviderApprovalService {
         providerAgentId, chainId: this.args.config.chainId, providerOwner: record.providerOwner,
       });
       this.build(record); // refuses an unbuildable registration before taking the provider's lock
+      let superseded = false;
       const { approval, created, replaced } = await this.args.approvals.approve({
         providerAgentId, build: (minimumEpoch) => this.build(record, minimumEpoch),
         approvedBy: `invite:${inviteId}`, mode: "invite",
+        // Still the newest active hosted registration, and for a rotation still selling.
+        confirm: async (client, change) => {
+          const newest = await this.args.registrations.newestHostedRegistration(providerAgentId, origins, client);
+          superseded = newest?.registrationId !== record.registrationId ||
+            (change === "rotate" && (!newest.registrationHealthy || !newest.chainActive));
+          return !superseded;
+        },
       });
+      if (superseded) return "superseded";
       // Under the lock the provider may have turned out approved or revoked meanwhile.
       if (!created || !approval) return approval ? "already-approved" : "previously-approved";
       logger.info(replaced ? "provider approval response key rotated by invite" : "provider approved by invite", {
@@ -257,9 +277,9 @@ export class ProviderApprovalService {
 
   /** Builds the record from the provider's newest active hosted registration and approves it. */
   async approveByOperator(providerAgentId: string, request: { reason: string; operator: string }) {
-    const hosted = (await this.args.registrations.listActiveByProvider(providerAgentId))
-      .filter((record) => this.isHosted(record));
-    const record = hosted.at(-1);
+    const record = this.enabled
+      ? await this.args.registrations.newestHostedRegistration(providerAgentId, [...this.origins])
+      : null;
     if (!record) {
       throw new ProviderApprovalError(409, "PROVIDER_NOT_HOSTED",
         "The provider has no active registration on a hosted provider origin.");

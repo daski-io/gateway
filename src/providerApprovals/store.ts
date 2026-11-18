@@ -215,7 +215,9 @@ export class ProviderApprovalStore implements ProviderApprovalReader {
    *   chain, so a revocation is never undone. The one change it makes to an
    *   existing approval is a response key rotation: a current approval made by
    *   invite that the registration now builds with another agent wallet, and
-   *   otherwise the same, is replaced.
+   *   otherwise the same, is replaced. `confirm`, when given, is asked under
+   *   the lock, on the transaction's connection, before either change; it
+   *   refuses one whose source registration is no longer the right one.
    *
    * The audit row, when given, commits with the outcome.
    */
@@ -224,6 +226,7 @@ export class ProviderApprovalStore implements ProviderApprovalReader {
     build: (minimumEpoch: number) => { record: ProviderApprovalRecord; recordHash: Hex };
     approvedBy: string;
     mode: "invite" | "operator";
+    confirm?: (client: PoolClient, change: "approve" | "rotate") => Promise<boolean>;
     audit?: (outcome: ProviderApprovalOutcome) => ProviderApprovalAudit;
   }): Promise<ProviderApprovalOutcome> {
     const { providerAgentId } = args;
@@ -259,7 +262,8 @@ export class ProviderApprovalStore implements ProviderApprovalReader {
       if (args.mode === "invite") {
         const rotation = current !== null && current.approvedBy.startsWith("invite:") &&
           differsOnlyInResponseKey(built(current.record.payload.servicingProfileEpoch).record, current.record);
-        result = rows.length === 0 || rotation
+        const change = rows.length === 0 ? "approve" : rotation ? "rotate" : null;
+        result = change && (!args.confirm || await args.confirm(client, change))
           ? await this.insert(client, currentRow ?? null, current, built(await nextEpoch()), args.approvedBy, false)
           : { approval: current, created: false, replaced: null, reinstated: false };
       } else if (current && unchanged(current)) {

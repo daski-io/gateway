@@ -90,8 +90,10 @@ A row whose record no longer hashes to its `record_hash` is never served.
 registration, and on a sweep every minute of active hosted registrations, the
 gateway reads the hosted runtime's admission report for each provider that
 never held an approval on this chain, and for each provider whose current
-approval was made by invite under another agent wallet than its registration's
-(a response key rotation, below):
+approval was made by invite under another agent wallet than its newest
+registration's (a response key rotation, below). A provider's record is always
+built from its **newest active hosted registration** (the last activated),
+whichever of its registrations asked:
 
     GET <card origin>/p/<agent id>/standard-rail/admission
 
@@ -117,16 +119,24 @@ runtime may read the provider's public status meanwhile. The log records each
 outcome with the provider's agent id and a refusal code, never a wallet.
 
 The approval itself is decided again under the provider's lock, after the
-report arrived. A provider that holds or ever held an approval on this chain is
-not approved by invite, so a revocation, even one made while the report was
-being read, is never undone; only an operator approves it again.
+report arrived, where the registration it is built from is confirmed still the
+provider's newest active hosted registration (otherwise nothing changes and a
+later sweep starts again from the newest). A provider that holds or ever held
+an approval on this chain is not approved by invite, so a revocation, even one
+made while the report was being read, is never undone; only an operator
+approves it again.
 
 **Response key rotation.** The one change an invite makes to an existing
 approval: when the provider's current approval was made by invite and its
-newest active hosted registration now builds a record that differs from it
-only in `assetResponseKey` (the provider registered a new agent wallet), and
-the admission report still authorizes the invite, the approval is replaced by
-the new record under the next epoch. Any other change is left to an operator.
+newest active hosted registration, healthy and active on chain, now builds a
+record that differs from it only in `assetResponseKey` (the provider
+registered a new agent wallet), and the admission report still authorizes the
+invite, the approval is replaced by the new record under the next epoch. Only
+the newest registration is compared, so a provider with a second service still
+registered under its previous wallet rotates once, toward the newest, and never
+back; that older registration is not sold through the new record, as a
+refresh quarantines it once the wallet moved on chain. Any other change is left
+to an operator.
 
 **By an operator.** Behind `Authorization: Bearer <CATALOG_OPERATOR_TOKEN>`,
 with `Cache-Control: no-store`:
