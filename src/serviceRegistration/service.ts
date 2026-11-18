@@ -295,6 +295,7 @@ export class ServiceRegistrationService {
   private refreshWork: Promise<void> | null = null;
   private activeRegistrationWork = 0;
   private readonly evidenceWork = new Map<string, Promise<void>>();
+  private activationListener: ((record: StoredRegistration) => void) | null = null;
 
   constructor(
     private readonly config: Config,
@@ -710,6 +711,14 @@ export class ServiceRegistrationService {
         commitments,
         [...checkpoints].map(([listingId, checkpoint]) => ({ listingId, checkpoint })),
       );
+      // The activation is complete: a failed read or listener never reports it failed.
+      const listener = this.activationListener;
+      if (listener) {
+        const activated = await this.store.get(registrationId).catch(() => null);
+        if (activated?.state === "ACTIVE") {
+          try { listener(activated); } catch { /* the listener reports its own failures */ }
+        }
+      }
     })().catch((error: unknown) => {
       logger.warn("registration evidence verification failed; awaiting resubmission", {
         registrationId,
@@ -719,6 +728,14 @@ export class ServiceRegistrationService {
       this.evidenceWork.delete(registrationId);
     });
     this.evidenceWork.set(registrationId, work);
+  }
+
+  /**
+   * Called with each registration this process activates, once it is ACTIVE.
+   * The listener must not throw or wait: activation is already complete.
+   */
+  onActivated(listener: (record: StoredRegistration) => void): void {
+    this.activationListener = listener;
   }
 
   /** Await in-flight evidence verification (deterministic tests, shutdown). */

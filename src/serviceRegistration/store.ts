@@ -764,6 +764,29 @@ export class ServiceRegistrationStore {
     return result.rows.map(mapRow);
   }
 
+  /**
+   * Each provider's newest active registration on one of the hosted provider
+   * origins, for providers that never held an approval on this chain
+   * (docs/provider-approvals.md).
+   */
+  async listHostedApprovalCandidates(
+    origins: readonly string[],
+    chainId: number,
+    limit: number,
+  ): Promise<StoredRegistration[]> {
+    if (origins.length === 0) return [];
+    const result = await this.pool.query<RegistrationRow>(
+      `SELECT DISTINCT ON (r.provider_agent_id) r.* FROM standard_service_registrations r
+        WHERE r.state='ACTIVE' AND r.card_json->'standardRail'->>'origin'=ANY($1::text[])
+          AND NOT EXISTS (SELECT 1 FROM standard_provider_approvals a
+                           WHERE a.provider_agent_id=r.provider_agent_id AND a.chain_id=$2)
+        ORDER BY r.provider_agent_id,r.activated_at DESC,r.registration_id
+        LIMIT $3`,
+      [[...origins], chainId, limit],
+    );
+    return result.rows.map(mapRow);
+  }
+
   async currentProviderControlProfileHash(providerAgentId: string): Promise<string | null> {
     const rows = await this.pool.query<{ profile_hash: Buffer }>(
       "SELECT profile_hash FROM standard_provider_servicing_admissions WHERE provider_agent_id=$1 AND current",
