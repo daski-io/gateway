@@ -141,6 +141,37 @@ describe("public v3 services contract", () => {
     expect(fixture.services[0].skills[0].contract).not.toHaveProperty("acceptingNewOrders");
   });
 
+  it("carries the provider's website from its registration file on the index and the detail view", async () => {
+    const registration = registrationFromFixture();
+    const website = fixture.services[0].providerWebsiteUrl;
+    const file = `data:application/json;base64,${Buffer.from(JSON.stringify({ external_url: website })).toString("base64")}`;
+    const marketplace = {
+      getAgentUri: vi.fn(async () => file),
+      getProvider: vi.fn(async () => ({ agentId: registration.providerAgentId, standardReputation: PROVIDER_REPUTATION })),
+      getService: vi.fn(async () => ({ serviceId: registration.serviceId, standardReputation: SERVICE_REPUTATION })),
+      readRecovered: vi.fn(async () => null),
+    };
+    const store = {
+      listPublic: vi.fn(async () => [registration]),
+      getPublicByServiceId: vi.fn(async () => registration),
+      listingCommitments: vi.fn(async () => []),
+    };
+    const service = new ServiceRegistrationService(
+      {} as Config,
+      {} as StandardRailConfig,
+      store as unknown as ServiceRegistrationStore,
+      marketplace as unknown as MarketplaceChainReader,
+      {} as never,
+    );
+    expect((await service.listPublic(25)).services).toEqual([
+      publicServiceView(registration, new Map(), undefined, website),
+    ]);
+    expect(await service.getPublic(registration.serviceId)).toMatchObject({ providerWebsiteUrl: website });
+    // One chain read: the detail view answered from the index's read.
+    expect(marketplace.getAgentUri).toHaveBeenCalledTimes(1);
+    expect(marketplace.getAgentUri).toHaveBeenCalledWith(BigInt(registration.providerAgentId));
+  });
+
   it.each([
     {
       label: "the recovered figures",

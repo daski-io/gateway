@@ -37,6 +37,8 @@ export interface MarketplaceChainReader {
   resolveWallet(wallet: Address): Promise<{ agentId: string; found: boolean }>;
   listProviders(offset: number, limit: number): Promise<unknown>;
   getProvider(agentId: bigint): Promise<unknown>;
+  /** The agent's registration file URI (identity registry `tokenURI`): one read, never cached. */
+  getAgentUri(agentId: bigint): Promise<string>;
   getService(serviceId: Hex): Promise<MarketplaceServiceRecord>;
   /**
    * How many of the provider's or service's Failed orders were later
@@ -214,6 +216,16 @@ export class ViemMarketplaceChainReader implements MarketplaceChainReader {
       args: [wallet],
     }));
     return { agentId: agentId.toString(), found };
+  }
+
+  async getAgentUri(agentId: bigint): Promise<string> {
+    return this.observe("getAgentUri", ({ client }) => notFoundOnRevert("agent", agentId.toString(), () =>
+      client.readContract({
+        address: this.addresses.identityRegistry,
+        abi: identityRegistryAbi,
+        functionName: "tokenURI",
+        args: [agentId],
+      })));
   }
 
   private async getIdentity(

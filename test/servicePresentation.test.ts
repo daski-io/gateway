@@ -46,6 +46,7 @@ function reader(providerAgentId = "8327"): MarketplaceChainReader {
     getProvider: vi.fn(),
     getService: vi.fn(async () => serviceRecord(providerAgentId)),
     readRecovered: vi.fn(),
+    getAgentUri: vi.fn(),
   };
 }
 

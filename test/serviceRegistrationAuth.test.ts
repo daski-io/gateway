@@ -36,6 +36,9 @@ function marketplace(
     readRecovered: async () => {
       throw new Error("not used");
     },
+    getAgentUri: async () => {
+      throw new Error("not used");
+    },
   } as MarketplaceChainReader;
 }
 

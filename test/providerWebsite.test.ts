@@ -1,10 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 import { providerWebsite, ProviderWebsites } from "../src/serviceRegistration/providerWebsite.js";
+import { logger } from "../src/util/logger.js";
 
 const FILE_URI = "https://provider.example/.well-known/agent.json";
 
 function chainWith(agentUri: unknown) {
-  return { getProvider: vi.fn(async () => ({ identity: { agentUri } })) };
+  return { getAgentUri: vi.fn(async () => agentUri as string) };
 }
 
 describe("provider website from the registration file", () => {
@@ -30,7 +31,7 @@ describe("ProviderWebsites", () => {
     const websites = new ProviderWebsites(chain, load, () => now);
 
     await expect(websites.websites(["41", "41"])).resolves.toEqual(new Map([["41", "https://provider.example/"]]));
-    expect(chain.getProvider).toHaveBeenCalledWith(41n);
+    expect(chain.getAgentUri).toHaveBeenCalledWith(41n);
     expect(load).toHaveBeenCalledWith(FILE_URI);
 
     now += 59 * 60_000;
@@ -86,7 +87,7 @@ describe("ProviderWebsites", () => {
   });
 
   it("never fails a view, and waits only briefly for a provider never read", async () => {
-    const failing = new ProviderWebsites({ getProvider: vi.fn(async () => { throw new Error("rpc offline"); }) });
+    const failing = new ProviderWebsites({ getAgentUri: vi.fn(async () => { throw new Error("rpc offline"); }) });
     await expect(failing.websites(["41"])).resolves.toEqual(new Map([["41", null]]));
 
     let release!: (value: unknown) => void;
@@ -117,5 +118,44 @@ describe("ProviderWebsites", () => {
     expect([...answer.values()]).toEqual(Array(5).fill("https://provider.example/"));
     expect(load).toHaveBeenCalledTimes(5);
     expect(most).toBe(2);
+  });
+
+  it("waits only before a provider's first attempt, and logs a failing provider once until it recovers", async () => {
+    let now = 1_000_000;
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => undefined);
+    try {
+      // A host that hangs: every fetch outlasts the view's wait.
+      let hang = true;
+      const load = vi.fn(() => hang
+        ? new Promise<never>((_, reject) => setTimeout(() => reject(new Error("timeout")), 30))
+        : Promise.resolve({ external_url: "https://provider.example/" }));
+      const websites = new ProviderWebsites(chainWith(FILE_URI), load, () => now, 10);
+      const timed = async () => {
+        const started = Date.now();
+        await websites.websites(["41"]);
+        return Date.now() - started;
+      };
+      expect(await timed()).toBeGreaterThanOrEqual(9);
+      await vi.waitFor(() => expect(warn).toHaveBeenCalledTimes(1));
+      // Due again after five minutes: read again behind the view, which no longer waits.
+      now += 6 * 60_000;
+      expect(await timed()).toBeLessThan(9);
+      await vi.waitFor(() => expect(load).toHaveBeenCalledTimes(2));
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(warn).toHaveBeenCalledTimes(1);
+      hang = false;
+      now += 6 * 60_000;
+      await websites.websites(["41"]);
+      await vi.waitFor(async () =>
+        expect(await websites.websites(["41"])).toEqual(new Map([["41", "https://provider.example/"]])));
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("refuses an inline file with a duplicated key, as a fetched one is", async () => {
+    const twice = `data:application/json,${encodeURIComponent('{"external_url":"https://a.example/","external_url":"https://b.example/"}')}`;
+    const websites = new ProviderWebsites(chainWith(twice));
+    await expect(websites.websites(["7"])).resolves.toEqual(new Map([["7", null]]));
   });
 });
