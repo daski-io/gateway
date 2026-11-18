@@ -160,8 +160,14 @@ with `Cache-Control: no-store`:
   409 with the refusal code.
 - `DELETE /operator/v1/providers/:agentId/approval` with `{ "reason": "…" }`
   revokes the current approval and answers
-  `{ approved: false, revokedAt, recordHash }`, or 404
-  `PROVIDER_APPROVAL_NOT_FOUND`.
+  `{ approved: false, revokedAt, recordHash }`. A provider that never held an
+  approval on this chain but has an active hosted registration that builds a
+  record, such as a seller the release engine admitted with a manifest profile
+  and then removed, gets that record under the next epoch, recorded already
+  revoked (audited with `blocked: true`): an invite never approves a provider
+  that ever held an approval, so it stays off sale until the operator's `PUT`,
+  which reinstates that record. Otherwise 404 `PROVIDER_APPROVAL_NOT_FOUND`:
+  nothing current to revoke, a provider already blocked, or none hosted.
 
 `reason` is 1 to 200 printable characters. Each change is recorded with its
 reason in `standard_operator_actions` (`operator_provider_approved`,

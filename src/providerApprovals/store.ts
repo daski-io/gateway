@@ -309,11 +309,19 @@ export class ProviderApprovalStore implements ProviderApprovalReader {
     return { approval, created: true, replaced, reinstated };
   }
 
-  /** Revokes the provider's current approval; null when it holds none. */
+  /**
+   * Revokes the provider's current approval; null when it holds none. With
+   * `block`, a provider that never held an approval on this chain gets one
+   * recorded already revoked, built from `block` under the next epoch, so an
+   * invite never approves it (approveByInvite leaves a provider that ever
+   * held one to the operator); a provider whose approvals are all revoked
+   * needs none and gets null.
+   */
   async revoke(args: {
     providerAgentId: string;
     revokedBy: string;
-    audit?: (revoked: ProviderApproval) => ProviderApprovalAudit;
+    audit?: (revoked: ProviderApproval, blocked: boolean) => ProviderApprovalAudit;
+    block?: (minimumEpoch: number) => { record: ProviderApprovalRecord; recordHash: Hex };
   }): Promise<ProviderApproval | null> {
     const revoked = await this.transaction(args.providerAgentId, async (client) => {
       const result = await client.query<ApprovalRow>(
@@ -322,7 +330,30 @@ export class ProviderApprovalStore implements ProviderApprovalReader {
           WHERE provider_agent_id=$1 AND chain_id=$2 AND revoked_at IS NULL RETURNING ${COLUMNS}`,
         [args.providerAgentId, this.chainId, args.revokedBy],
       );
-      const row = result.rows[0];
+      let row = result.rows[0];
+      let blocked = false;
+      if (!row && args.block) {
+        const held = await client.query(
+          `SELECT 1 FROM standard_provider_approvals WHERE provider_agent_id=$1 AND chain_id=$2 LIMIT 1`,
+          [args.providerAgentId, this.chainId],
+        );
+        if ((held.rowCount ?? 0) === 0) {
+          const candidate = args.block(1);
+          if (candidate.record.payload.providerAgentId !== args.providerAgentId) {
+            throw new Error("PROVIDER_APPROVAL_PROVIDER_MISMATCH");
+          }
+          if (candidate.record.chainId !== this.chainId) throw new Error("PROVIDER_APPROVAL_CHAIN_MISMATCH");
+          if (canonicalHash(candidate.record) !== candidate.recordHash) throw new Error("PROVIDER_APPROVAL_HASH_MISMATCH");
+          row = (await client.query<ApprovalRow>(
+            `WITH now_at AS (SELECT clock_timestamp() AS at)
+             INSERT INTO standard_provider_approvals
+               (provider_agent_id,chain_id,approved_at,approved_by,revoked_at,revoked_by,record_json,record_hash,updated_at)
+             SELECT $1,$2,at,$3,at,$3,$4,$5,at FROM now_at RETURNING ${COLUMNS}`,
+            [args.providerAgentId, this.chainId, args.revokedBy, candidate.record, bytes(candidate.recordHash)],
+          )).rows[0];
+          blocked = true;
+        }
+      }
       if (!row) return null;
       const approval = mapRow(row) ?? {
         // A corrupt row is still revoked; its record is not served again.
@@ -330,7 +361,7 @@ export class ProviderApprovalStore implements ProviderApprovalReader {
         approvedAt: row.approved_at, approvedBy: row.approved_by, revokedAt: row.revoked_at, revokedBy: row.revoked_by,
         record: row.record_json, recordHash: `0x${row.record_hash.toString("hex")}` as Hex,
       };
-      if (args.audit) await this.audit(client, args.providerAgentId, args.audit(approval));
+      if (args.audit) await this.audit(client, args.providerAgentId, args.audit(approval, blocked));
       return approval;
     });
     if (revoked) this.invalidate();

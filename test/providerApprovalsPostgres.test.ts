@@ -361,6 +361,39 @@ describe("approval by invite", () => {
   const record = async (registration: SeededRegistration) =>
     (await new ServiceRegistrationStore(pool).listActiveByProvider(registration.providerAgentId))[0]!;
 
+  it("never approves by invite a hosted provider the operator revoked before it ever held an approval", async () => {
+    // A seller the release engine admitted with a manifest profile and then removed holds no approval here.
+    const registration = await insertRegistration(pool, { providerAgentId: "9381" });
+    const { asked, approvalService } = service(() => report(registration));
+    const revoked = await approvalService.revokeByOperator("9381", { reason: "removed by the engine", operator: "release-desk" });
+    expect(revoked).toMatchObject({ approved: false, recordHash: built(registration).recordHash });
+    expect(await approvalRows("9381")).toMatchObject([{ approved_by: "operator:release-desk",
+      revoked_by: "operator:release-desk", epoch: 1 }]);
+    expect((await approvalRows("9381"))[0]!.revoked_at).toBeInstanceOf(Date);
+    expect(await stored("9381")).toBeNull();
+    expect(await operatorActions()).toEqual([{ actor: "release-desk", action: "operator_provider_approval_revoked",
+      target_id: "9381", details: { chainId: CHAIN_ID, reason: "removed by the engine",
+        recordHash: built(registration).recordHash, blocked: true } }]);
+
+    // Its invite still authorizes admission; the runtime is not even asked.
+    expect(await approvalService.approveByInvite(await record(registration))).toBe("previously-approved");
+    await approvalService.sweep();
+    expect(asked).toEqual([]);
+    expect(await stored("9381")).toBeNull();
+    // Nothing is left to revoke or block.
+    await expect(approvalService.revokeByOperator("9381", { reason: "again", operator: "release-desk" }))
+      .rejects.toMatchObject({ status: 404, code: "PROVIDER_APPROVAL_NOT_FOUND" });
+    // The operator can still approve it by hand: the blocked record, reinstated.
+    expect(await approvalService.approveByOperator("9381", { reason: "back on sale", operator: "release-desk" }))
+      .toMatchObject({ approved: true, created: true, reinstated: true, recordHash: built(registration).recordHash });
+
+    // A provider with no hosted registration has nothing to block.
+    await insertRegistration(pool, { providerAgentId: "9382", card: hostedCard("9382", hostedStandardRail("9382", OTHER_ORIGIN)) });
+    await expect(approvalService.revokeByOperator("9382", { reason: "x", operator: "release-desk" }))
+      .rejects.toMatchObject({ status: 404 });
+    expect(await approvalRows("9382")).toEqual([]);
+  });
+
   it("approves a hosted provider whose invite authorizes admission, from its runtime's admission report", async () => {
     const registration = await insertRegistration(pool, { providerAgentId: "9301" });
     const { asked, approvalService } = service(() => report(registration));
@@ -731,7 +764,7 @@ describe("the approval routes", () => {
           chainId: CHAIN_ID, reason: "checked again", registrationId: registration.registrationId,
           recordHash: expected.recordHash, created: false, reinstated: false, replacedRecordHash: null } },
         { actor: "catalog-operator", action: "operator_provider_approval_revoked", target_id: "9401", details: {
-          chainId: CHAIN_ID, reason: "seller asked to stop", recordHash: expected.recordHash } },
+          chainId: CHAIN_ID, reason: "seller asked to stop", recordHash: expected.recordHash, blocked: false } },
       ]);
       expect((await pool.query("SELECT revoked_by FROM standard_provider_approvals")).rows)
         .toEqual([{ revoked_by: "operator:catalog-operator" }]);

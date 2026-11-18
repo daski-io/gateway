@@ -1,4 +1,5 @@
 import type { Config } from "../config.js";
+import type { Hex } from "viem";
 import type { ServiceRegistrationStore, StoredRegistration } from "../serviceRegistration/store.js";
 import type { StandardRailConfig } from "../standardRail/config.js";
 import { logger } from "../util/logger.js";
@@ -313,12 +314,31 @@ export class ProviderApprovalService {
     return { ...statusView(approval), created, reinstated, inUse: await this.inUse(approval) };
   }
 
+  /**
+   * Revokes the provider's current approval. A hosted provider that never
+   * held one, such as a seller the release engine admitted with a manifest
+   * profile and later removed, gets one recorded already revoked, built from
+   * its newest active hosted registration, so no invite approves it
+   * afterwards; the operator's PUT can still approve it. 404 when there is
+   * nothing to revoke or block.
+   */
   async revokeByOperator(providerAgentId: string, request: { reason: string; operator: string }) {
+    const record = await this.args.registrations.newestHostedRegistration(providerAgentId, [...this.origins]);
+    let block: ((minimumEpoch: number) => { record: ProviderApprovalRecord; recordHash: Hex }) | undefined;
+    if (record) {
+      try {
+        this.build(record);
+        block = (minimumEpoch) => this.build(record, minimumEpoch);
+      } catch (error) {
+        // An unbuildable registration is never approved by invite either.
+        if (!(error instanceof ProviderApprovalRefused)) throw error;
+      }
+    }
     const revoked = await this.args.approvals.revoke({
-      providerAgentId, revokedBy: `operator:${request.operator}`,
-      audit: (approval) => ({
+      providerAgentId, revokedBy: `operator:${request.operator}`, block,
+      audit: (approval, blocked) => ({
         actor: request.operator, action: "operator_provider_approval_revoked",
-        details: { chainId: this.args.config.chainId, reason: request.reason, recordHash: approval.recordHash },
+        details: { chainId: this.args.config.chainId, reason: request.reason, recordHash: approval.recordHash, blocked },
       }),
     });
     if (!revoked) {
