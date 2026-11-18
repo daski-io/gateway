@@ -3,7 +3,7 @@ import type { Hex } from "viem";
 import type { Pool } from "../db/pool.js";
 import { canonicalHash } from "../standardRail/canonical.js";
 import { logger } from "../util/logger.js";
-import type { ProviderApprovalRecord } from "./record.js";
+import { differsOnlyInResponseKey, type ProviderApprovalRecord } from "./record.js";
 
 /// standard_provider_approvals (migration 063): one current approval per
 /// provider and chain, older and revoked rows kept. The catalog reads current
@@ -26,6 +26,17 @@ export interface ProviderApproval {
   revokedBy: string | null;
   record: ProviderApprovalRecord;
   recordHash: Hex;
+}
+
+/** What an approval did: the provider's current approval after it, and whether it was recorded anew. */
+export interface ProviderApprovalOutcome {
+  /** Null only for an invite that changed nothing for a provider without a current approval. */
+  approval: ProviderApproval | null;
+  created: boolean;
+  /** The current approval this one revoked and replaced. */
+  replaced: ProviderApproval | null;
+  /** The newest revoked record, recorded again unchanged. */
+  reinstated: boolean;
 }
 
 /** An operator action recorded with the change, in its transaction. */
@@ -191,24 +202,30 @@ export class ProviderApprovalStore implements ProviderApprovalReader {
   }
 
   /**
-   * Records an approval of one provider. `build` makes the record for an
-   * epoch of at least the one it is given, and runs under the provider's lock,
-   * so a record never takes an epoch an earlier approval record of the
-   * provider holds. A provider holding a current approval keeps it unless
-   * `replace` is set; it also keeps it when the record built for the current
-   * record's own epoch is that record, so an unchanged provider is never
-   * approved anew. Otherwise the current approval is revoked and the new
-   * record, one epoch above every earlier one, recorded. The audit row, when
-   * given, commits with the outcome.
+   * Records an approval of one provider, under the provider's lock. `build`
+   * makes the record for an epoch of at least the one it is given; a new
+   * record takes the epoch after every earlier approval record of the
+   * provider, so an epoch never names two records.
+   *
+   * - `operator`: a current approval the registration still builds, at its own
+   *   epoch, is kept; any other current approval is revoked and replaced. With
+   *   no current approval, the newest revoked record is reinstated, the same
+   *   record and hash, when the registration still builds it at its epoch.
+   * - `invite`: approves only a provider with no approval row at all on this
+   *   chain, so a revocation is never undone. The one change it makes to an
+   *   existing approval is a response key rotation: a current approval made by
+   *   invite that the registration now builds with another agent wallet, and
+   *   otherwise the same, is replaced.
+   *
+   * The audit row, when given, commits with the outcome.
    */
   async approve(args: {
     providerAgentId: string;
     build: (minimumEpoch: number) => { record: ProviderApprovalRecord; recordHash: Hex };
     approvedBy: string;
-    replace: boolean;
-    audit?: (outcome: { created: boolean; replaced: ProviderApproval | null; approval: ProviderApproval }) =>
-      ProviderApprovalAudit;
-  }): Promise<{ approval: ProviderApproval; created: boolean; replaced: ProviderApproval | null }> {
+    mode: "invite" | "operator";
+    audit?: (outcome: ProviderApprovalOutcome) => ProviderApprovalAudit;
+  }): Promise<ProviderApprovalOutcome> {
     const { providerAgentId } = args;
     const built = (minimumEpoch: number) => {
       const candidate = args.build(minimumEpoch);
@@ -220,46 +237,72 @@ export class ProviderApprovalStore implements ProviderApprovalReader {
       return candidate;
     };
     const outcome = await this.transaction(providerAgentId, async (client) => {
-      const existing = await client.query<ApprovalRow>(
+      const rows = (await client.query<ApprovalRow>(
         `SELECT ${COLUMNS} FROM standard_provider_approvals
-          WHERE provider_agent_id=$1 AND chain_id=$2 AND revoked_at IS NULL FOR UPDATE`,
+          WHERE provider_agent_id=$1 AND chain_id=$2
+          ORDER BY standard_provider_approvals.approval_id DESC FOR UPDATE`,
         [providerAgentId, this.chainId],
-      );
-      const current = existing.rows[0] ? mapRow(existing.rows[0]) : null;
-      let result: { approval: ProviderApproval; created: boolean; replaced: ProviderApproval | null } | null = null;
-      if (current && (!args.replace ||
-          built(current.record.payload.servicingProfileEpoch).recordHash === current.recordHash)) {
-        result = { approval: current, created: false, replaced: null };
-      }
-      if (!result) {
+      )).rows;
+      const currentRow = rows.find((row) => row.revoked_at === null);
+      const current = currentRow ? mapRow(currentRow) : null;
+      const unchanged = (approval: ProviderApproval | null) =>
+        approval !== null && built(approval.record.payload.servicingProfileEpoch).recordHash === approval.recordHash;
+      const nextEpoch = async () => {
         const epochs = await client.query<{ highest: string | null }>(
           `SELECT max((record_json->'payload'->>'servicingProfileEpoch')::bigint)::text AS highest
              FROM standard_provider_approvals WHERE provider_agent_id=$1 AND chain_id=$2`,
           [providerAgentId, this.chainId],
         );
-        const candidate = built(Number(epochs.rows[0]?.highest ?? 0) + 1);
-        if (existing.rows[0]) {
-          await client.query(
-            `UPDATE standard_provider_approvals SET revoked_at=now(),revoked_by=$2,updated_at=now()
-              WHERE approval_id=$1::bigint`,
-            [existing.rows[0].approval_id, args.approvedBy],
-          );
-        }
-        const inserted = await client.query<ApprovalRow>(
-          `INSERT INTO standard_provider_approvals
-             (provider_agent_id,chain_id,approved_by,record_json,record_hash)
-           VALUES ($1,$2,$3,$4,$5) RETURNING ${COLUMNS}`,
-          [providerAgentId, this.chainId, args.approvedBy, candidate.record, bytes(candidate.recordHash)],
-        );
-        const approval = mapRow(inserted.rows[0]!);
-        if (!approval) throw new Error("PROVIDER_APPROVAL_HASH_MISMATCH");
-        result = { approval, created: true, replaced: current };
+        return Number(epochs.rows[0]?.highest ?? 0) + 1;
+      };
+      let result: ProviderApprovalOutcome;
+      if (args.mode === "invite") {
+        const rotation = current !== null && current.approvedBy.startsWith("invite:") &&
+          differsOnlyInResponseKey(built(current.record.payload.servicingProfileEpoch).record, current.record);
+        result = rows.length === 0 || rotation
+          ? await this.insert(client, currentRow ?? null, current, built(await nextEpoch()), args.approvedBy, false)
+          : { approval: current, created: false, replaced: null, reinstated: false };
+      } else if (current && unchanged(current)) {
+        result = { approval: current, created: false, replaced: null, reinstated: false };
+      } else {
+        const newest = !currentRow && rows[0] ? mapRow(rows[0]) : null;
+        result = newest && unchanged(newest)
+          ? await this.insert(client, null, null, newest, args.approvedBy, true)
+          : await this.insert(client, currentRow ?? null, current, built(await nextEpoch()), args.approvedBy, false);
       }
       if (args.audit) await this.audit(client, providerAgentId, args.audit(result));
       return result;
     });
     if (outcome.created) this.invalidate();
     return outcome;
+  }
+
+  /** Revokes the row it replaces, if any, and records the new current approval. */
+  private async insert(
+    client: PoolClient,
+    replacedRow: ApprovalRow | null,
+    replaced: ProviderApproval | null,
+    candidate: { record: ProviderApprovalRecord; recordHash: Hex },
+    approvedBy: string,
+    reinstated: boolean,
+  ): Promise<ProviderApprovalOutcome> {
+    if (replacedRow) {
+      await client.query(
+        `UPDATE standard_provider_approvals
+            SET revoked_at=GREATEST(clock_timestamp(),approved_at),revoked_by=$2,updated_at=clock_timestamp()
+          WHERE approval_id=$1::bigint`,
+        [replacedRow.approval_id, approvedBy],
+      );
+    }
+    const inserted = await client.query<ApprovalRow>(
+      `INSERT INTO standard_provider_approvals
+         (provider_agent_id,chain_id,approved_at,approved_by,record_json,record_hash,updated_at)
+       VALUES ($1,$2,clock_timestamp(),$3,$4,$5,clock_timestamp()) RETURNING ${COLUMNS}`,
+      [candidate.record.payload.providerAgentId, this.chainId, approvedBy, candidate.record, bytes(candidate.recordHash)],
+    );
+    const approval = mapRow(inserted.rows[0]!);
+    if (!approval) throw new Error("PROVIDER_APPROVAL_HASH_MISMATCH");
+    return { approval, created: true, replaced, reinstated };
   }
 
   /** Revokes the provider's current approval; null when it holds none. */
@@ -270,7 +313,8 @@ export class ProviderApprovalStore implements ProviderApprovalReader {
   }): Promise<ProviderApproval | null> {
     const revoked = await this.transaction(args.providerAgentId, async (client) => {
       const result = await client.query<ApprovalRow>(
-        `UPDATE standard_provider_approvals SET revoked_at=now(),revoked_by=$3,updated_at=now()
+        `UPDATE standard_provider_approvals
+            SET revoked_at=GREATEST(clock_timestamp(),approved_at),revoked_by=$3,updated_at=clock_timestamp()
           WHERE provider_agent_id=$1 AND chain_id=$2 AND revoked_at IS NULL RETURNING ${COLUMNS}`,
         [args.providerAgentId, this.chainId, args.revokedBy],
       );

@@ -1,13 +1,14 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { getAddress, keccak256, stringToHex, type Hex } from "viem";
+import { getAddress, keccak256, stringToHex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import {
   acceptInviteAdmission,
   approvalProfileEpoch,
+  assertHostedLayout,
   buildProviderApprovalRecord,
-  isProviderApprovalRecord,
+  differsOnlyInResponseKey,
   PROVIDER_APPROVAL_SIGNER_KEY_ID,
   ProviderApprovalRefused,
 } from "../src/providerApprovals/record.js";
@@ -176,15 +177,28 @@ describe("the approval record", () => {
     expect(refusal(() => build({ providerAgentWallet: "0x1234" }))).toBe("PROVIDER_APPROVAL_WALLET_INVALID");
   });
 
-  it("is told from other envelopes by its fixed fields", () => {
+  it("is held to the hosted runtime's layout: the bare origin, its audience and every URL under the seller's path", () => {
     const { record } = build();
-    expect(isProviderApprovalRecord(record, DOMAIN)).toBe(true);
-    expect(isProviderApprovalRecord(JSON.parse(JSON.stringify(record)), DOMAIN)).toBe(true);
-    for (const changed of [
-      { ...record, signature: "0x00" as Hex }, { ...record, signerKeyId: "gateway-protocol" },
-      { ...record, issuedAt: 1 }, { ...record, chainId: 8453 }, { ...record, audience: "https://other.example" },
-      { ...record, extra: true }, { ...record, payload: { ...record.payload, timeoutMs: 0 } },
-    ]) expect(isProviderApprovalRecord(changed, DOMAIN)).toBe(false);
+    expect(() => assertHostedLayout(record)).not.toThrow();
+    const changed = (payload: Partial<ProviderControlProfileV1>) => ({ ...record, payload: { ...record.payload, ...payload } });
+    for (const payload of [
+      { origin: `${HOSTED_ORIGIN}/` },
+      { providerAudience: HOSTED_ORIGIN },
+      { quoteUrl: `${HOSTED_ORIGIN}/p/9102/standard-rail/quote` },
+      { dispatchUrl: `${hostedBase(PROVIDER)}/standard-rail/dispatch/` },
+      { lifecycleUrl: `${HOSTED_ORIGIN}/standard-rail/lifecycle` },
+      { assetActionUrl: `${hostedBase(PROVIDER)}/standard-rail/assets/actions` },
+    ]) expect(refusal(() => assertHostedLayout(changed(payload)))).toBe("PROVIDER_APPROVAL_NOT_HOSTED_LAYOUT");
+  });
+
+  it("tells a response key rotation from any other change", () => {
+    const { record } = build();
+    const rotated = build({ providerAgentWallet: wallet("next agent wallet") }).record;
+    expect(differsOnlyInResponseKey(rotated, record)).toBe(true);
+    expect(differsOnlyInResponseKey(record, record)).toBe(false);
+    expect(differsOnlyInResponseKey({ ...rotated, payload: { ...rotated.payload, servicingProfileEpoch: 2 } }, record)).toBe(false);
+    expect(differsOnlyInResponseKey({ ...rotated, payload: { ...rotated.payload, providerAudience: "https://other.example/" } },
+      record)).toBe(false);
   });
 });
 

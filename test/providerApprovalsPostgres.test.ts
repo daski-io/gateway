@@ -76,9 +76,9 @@ const builder = (registration: SeededRegistration, chainId = CHAIN_ID) => (minim
 const built = (registration: SeededRegistration, chainId = CHAIN_ID, minimumEpoch = 1) =>
   builder(registration, chainId)(minimumEpoch);
 const approveAs = (
-  store: ProviderApprovalStore, registration: SeededRegistration, approvedBy: string, replace: boolean,
+  store: ProviderApprovalStore, registration: SeededRegistration, approvedBy: string, mode: "invite" | "operator",
   extra: Partial<Parameters<ProviderApprovalStore["approve"]>[0]> = {},
-) => store.approve({ providerAgentId: registration.providerAgentId, build: builder(registration), approvedBy, replace, ...extra });
+) => store.approve({ providerAgentId: registration.providerAgentId, build: builder(registration), approvedBy, mode, ...extra });
 const operatorActions = async () => (await pool.query<{ actor: string; action: string; target_id: string; details: Record<string, unknown> }>(
   "SELECT actor,action,target_id,details FROM standard_operator_actions ORDER BY id")).rows;
 const approvalRows = async (providerAgentId: string) => (await pool.query<{
@@ -91,6 +91,7 @@ const hex = (value: Buffer) => `0x${value.toString("hex")}`;
 describe("the approval table (migration 063)", () => {
   it("holds one current approval per provider and chain, one record per epoch, and keeps every row", async () => {
     const registration = await insertRegistration(pool, { providerAgentId: "9201" });
+    const other = { ...registration, agentWallet: approvalWallet("other wallet of 9201") };
     const insert = (chainId: number, value: { record: ProviderApprovalRecord; recordHash: string } = built(registration),
       by = "operator:catalog-operator") => pool.query(
       `INSERT INTO standard_provider_approvals (provider_agent_id,chain_id,approved_by,record_json,record_hash)
@@ -100,11 +101,20 @@ describe("the approval table (migration 063)", () => {
     await expect(insert(CHAIN_ID, built(registration, CHAIN_ID, 2))).rejects.toMatchObject({ code: "23505" });
     // Another chain's approval of the same provider is its own.
     await insert(8453, built(registration, 8453));
-    // A revoked row stays, and the provider may hold a new current one, under another epoch only.
     await pool.query("UPDATE standard_provider_approvals SET revoked_at=now(),revoked_by='operator:catalog-operator' WHERE chain_id=$1", [CHAIN_ID]);
-    await expect(insert(CHAIN_ID)).rejects.toMatchObject({ code: "23505" });
-    await insert(CHAIN_ID, built(registration, CHAIN_ID, 2));
-    expect((await approvalRows("9201")).map((row) => row.epoch)).toEqual([1, 1, 2]);
+    // A revoked row stays. A new current row may repeat its record, never give its epoch to another record.
+    await expect(insert(CHAIN_ID, built(other))).rejects.toMatchObject({ code: "23505", message: "PROVIDER_APPROVAL_EPOCH_CONFLICT" });
+    await insert(CHAIN_ID);
+    await pool.query(`UPDATE standard_provider_approvals SET revoked_at=now(),revoked_by='operator:catalog-operator'
+      WHERE chain_id=$1 AND revoked_at IS NULL`, [CHAIN_ID]);
+    await insert(CHAIN_ID, built(other, CHAIN_ID, 2));
+    expect((await approvalRows("9201")).map((row) => row.epoch)).toEqual([1, 1, 1, 2]);
+    // Nor may an update give a row's epoch to another record.
+    const conflicting = built(other, CHAIN_ID, 1);
+    await expect(pool.query(`UPDATE standard_provider_approvals SET record_json=$1,record_hash=$2
+      WHERE provider_agent_id='9201' AND chain_id=$3 AND revoked_at IS NULL`,
+    [conflicting.record, Buffer.from(conflicting.recordHash.slice(2), "hex"), CHAIN_ID]))
+      .rejects.toMatchObject({ code: "23505" });
     // The record must name the row's provider and chain; approvers are labelled.
     await expect(pool.query(
       `INSERT INTO standard_provider_approvals (provider_agent_id,chain_id,approved_by,record_json,record_hash)
@@ -117,49 +127,83 @@ describe("the approval table (migration 063)", () => {
 });
 
 describe("the approval store", () => {
-  it("records an approval once, keeps it against an invite and replaces it only for the operator", async () => {
+  it("records an approval once, rotates an invite's key, reinstates an unchanged record and never reuses an epoch", async () => {
     const store = new ProviderApprovalStore(pool, CHAIN_ID);
     const registration = await insertRegistration(pool, { providerAgentId: "9211" });
     const first = built(registration);
-    const created = await approveAs(store, registration, "invite:a1b2c3d4e5f6", false);
-    expect(created).toMatchObject({ created: true, replaced: null });
+    const created = await approveAs(store, registration, "invite:a1b2c3d4e5f6", "invite");
+    expect(created).toMatchObject({ created: true, replaced: null, reinstated: false });
     expect(created.approval).toMatchObject({ providerAgentId: "9211", chainId: CHAIN_ID, approvedBy: "invite:a1b2c3d4e5f6",
       revokedAt: null, record: first.record, recordHash: first.recordHash });
-    // Approved again by hand from the same registration: the same record, unchanged.
-    expect(await approveAs(store, registration, "operator:catalog-operator", true))
+    // Approved again from the same registration, by hand or by invite: the same record, unchanged.
+    expect(await approveAs(store, registration, "operator:catalog-operator", "operator"))
       .toMatchObject({ created: false, approval: { approvedBy: "invite:a1b2c3d4e5f6" } });
+    expect(await approveAs(store, registration, "invite:a1b2c3d4e5f6", "invite")).toMatchObject({ created: false });
 
-    // After the wallet moved: an invite never replaces, the operator does, under the next epoch.
+    // The provider's agent wallet moved: an invite rotates the key of its own approval, under the next epoch.
     const moved = { ...registration, agentWallet: approvalWallet("next wallet of 9211") };
-    expect(await approveAs(store, moved, "invite:a1b2c3d4e5f6", false))
-      .toMatchObject({ created: false, approval: { recordHash: first.recordHash } });
     const second = built(moved, CHAIN_ID, 2);
-    const replaced = await approveAs(store, moved, "operator:release-desk", true);
-    expect(replaced).toMatchObject({ created: true, replaced: { recordHash: first.recordHash },
-      approval: { record: second.record, recordHash: second.recordHash, approvedBy: "operator:release-desk" } });
-    expect(await approveAs(store, moved, "operator:release-desk", true)).toMatchObject({ created: false });
+    expect(await approveAs(store, moved, "invite:a1b2c3d4e5f6", "invite")).toMatchObject({ created: true,
+      replaced: { recordHash: first.recordHash }, approval: { recordHash: second.recordHash, approvedBy: "invite:a1b2c3d4e5f6" } });
+    // A change beyond the key is left to the operator, who replaces the approval under the next epoch.
+    const elsewhere = { ...moved, card: hostedCard("9211", hostedStandardRail("9211", OTHER_ORIGIN)) };
+    expect(await approveAs(store, elsewhere, "invite:a1b2c3d4e5f6", "invite"))
+      .toMatchObject({ created: false, approval: { recordHash: second.recordHash } });
+    const third = built(elsewhere, CHAIN_ID, 3);
+    expect(await approveAs(store, elsewhere, "operator:release-desk", "operator")).toMatchObject({ created: true,
+      replaced: { recordHash: second.recordHash }, approval: { record: third.record, approvedBy: "operator:release-desk" } });
     expect((await approvalRows("9211")).map((row) => [row.approved_by, row.revoked_by, hex(row.record_hash), row.epoch]))
       .toEqual([
-        ["invite:a1b2c3d4e5f6", "operator:release-desk", first.recordHash, 1],
-        ["operator:release-desk", null, second.recordHash, 2],
+        ["invite:a1b2c3d4e5f6", "invite:a1b2c3d4e5f6", first.recordHash, 1],
+        ["invite:a1b2c3d4e5f6", "operator:release-desk", second.recordHash, 2],
+        ["operator:release-desk", null, third.recordHash, 3],
       ]);
-    expect((await store.read("9211"))?.recordHash).toBe(second.recordHash);
-    // Both records stay resolvable by hash.
-    expect(await store.recordByHash(first.recordHash)).toEqual(first.record);
-    expect(await store.recordByHash(second.recordHash)).toEqual(second.record);
+    // Every record stays resolvable by hash.
+    for (const item of [first, second, third]) expect(await store.recordByHash(item.recordHash)).toEqual(item.record);
 
     const revoked = await store.revoke({ providerAgentId: "9211", revokedBy: "operator:catalog-operator" });
-    expect(revoked).toMatchObject({ recordHash: second.recordHash, revokedBy: "operator:catalog-operator" });
+    expect(revoked).toMatchObject({ recordHash: third.recordHash, revokedBy: "operator:catalog-operator" });
     expect(revoked?.revokedAt).toBeInstanceOf(Date);
     expect(await store.read("9211")).toBeNull();
-    expect((await store.latest("9211"))?.recordHash).toBe(second.recordHash);
+    expect((await store.latest("9211"))?.recordHash).toBe(third.recordHash);
     expect(await store.revoke({ providerAgentId: "9211", revokedBy: "operator:catalog-operator" })).toBeNull();
     expect(await store.latest("9212")).toBeNull();
+    // An invite never undoes a revocation.
+    expect(await approveAs(store, elsewhere, "invite:a1b2c3d4e5f6", "invite"))
+      .toEqual({ approval: null, created: false, replaced: null, reinstated: false });
 
-    // Approved again, even with the first wallet's payload, it never reuses an earlier epoch.
-    expect((await approveAs(store, registration, "operator:catalog-operator", true)).approval.record)
-      .toEqual(built(registration, CHAIN_ID, 3).record);
-    expect((await approvalRows("9211")).map((row) => row.epoch)).toEqual([1, 2, 3]);
+    // Approved again by hand from the registration it was revoked under: the same record and hash again.
+    expect(await approveAs(store, elsewhere, "operator:catalog-operator", "operator")).toMatchObject({
+      created: true, reinstated: true, approval: { record: third.record, recordHash: third.recordHash } });
+    await store.revoke({ providerAgentId: "9211", revokedBy: "operator:catalog-operator" });
+    // From another registration: a new record under the next epoch, never an earlier epoch.
+    expect(await approveAs(store, registration, "operator:catalog-operator", "operator"))
+      .toMatchObject({ created: true, reinstated: false, approval: { record: built(registration, CHAIN_ID, 4).record } });
+    expect((await approvalRows("9211")).map((row) => row.epoch)).toEqual([1, 2, 3, 3, 4]);
+  });
+
+  it("revokes with a time no earlier than the approval it revokes, whenever its transaction began", async () => {
+    const store = new ProviderApprovalStore(pool, CHAIN_ID);
+    const registration = await insertRegistration(pool, { providerAgentId: "9213" });
+    const record = built(registration);
+    const holder = await pool.connect();
+    try {
+      // Another writer holds the provider's lock while the revocation begins and waits for it.
+      await holder.query("BEGIN");
+      await holder.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))", [`standard:provider-approval:${CHAIN_ID}:9213`]);
+      const revoking = store.revoke({ providerAgentId: "9213", revokedBy: "operator:catalog-operator" });
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      await holder.query(`INSERT INTO standard_provider_approvals (provider_agent_id,chain_id,approved_at,approved_by,record_json,record_hash)
+        VALUES ('9213',$1,clock_timestamp(),'operator:catalog-operator',$2,$3)`,
+      [CHAIN_ID, record.record, Buffer.from(record.recordHash.slice(2), "hex")]);
+      await holder.query("COMMIT");
+      const revoked = await revoking;
+      expect(revoked?.recordHash).toBe(record.recordHash);
+      expect(revoked!.revokedAt!.getTime()).toBeGreaterThanOrEqual(revoked!.approvedAt.getTime());
+    } finally {
+      await holder.query("ROLLBACK").catch(() => undefined);
+      holder.release();
+    }
   });
 
   it("takes the epoch after the manifest's and every earlier approval's, under the provider's lock", async () => {
@@ -171,16 +215,18 @@ describe("the approval store", () => {
       // As if the manifest carried epochs up to 4 for this provider.
       return built(registration, CHAIN_ID, Math.max(minimumEpoch, 5));
     };
-    await store.approve({ providerAgentId: "9215", build, approvedBy: "operator:catalog-operator", replace: true });
+    await store.approve({ providerAgentId: "9215", build, approvedBy: "operator:catalog-operator", mode: "operator" });
     await store.revoke({ providerAgentId: "9215", revokedBy: "operator:catalog-operator" });
-    await store.approve({ providerAgentId: "9215", build: builder(registration), approvedBy: "operator:catalog-operator", replace: true });
+    // The revoked record is not what this registration builds now: a new record, above it.
+    await approveAs(store, { ...registration, agentWallet: approvalWallet("moved wallet of 9215") },
+      "operator:catalog-operator", "operator");
     expect(asked).toEqual([1]);
     expect((await approvalRows("9215")).map((row) => row.epoch)).toEqual([5, 6]);
     // Two operators approving different records at once both get their own epoch.
     const other = { ...registration, agentWallet: approvalWallet("other wallet of 9215") };
     await Promise.all([
-      approveAs(store, other, "operator:first-desk", true),
-      approveAs(store, { ...registration, agentWallet: approvalWallet("third wallet of 9215") }, "operator:second-desk", true),
+      approveAs(store, other, "operator:first-desk", "operator"),
+      approveAs(store, { ...registration, agentWallet: approvalWallet("third wallet of 9215") }, "operator:second-desk", "operator"),
     ]);
     const epochs = (await approvalRows("9215")).map((row) => row.epoch);
     expect(epochs).toEqual([5, 6, 7, 8]);
@@ -190,13 +236,13 @@ describe("the approval store", () => {
     const store = new ProviderApprovalStore(pool, CHAIN_ID);
     const registration = await insertRegistration(pool, { providerAgentId: "9221" });
     const record = built(registration);
-    await expect(approveAs(store, registration, "operator:catalog-operator", true,
+    await expect(approveAs(store, registration, "operator:catalog-operator", "operator",
       { audit: () => { throw new Error("audit refused"); } })).rejects.toThrow("audit refused");
     expect(await store.read("9221")).toBeNull();
     expect(await operatorActions()).toEqual([]);
-    await approveAs(store, registration, "operator:catalog-operator", true, {
+    await approveAs(store, registration, "operator:catalog-operator", "operator", {
       audit: ({ approval }) => ({ actor: "catalog-operator", action: "operator_provider_approved",
-        details: { recordHash: approval.recordHash } }) });
+        details: { recordHash: approval?.recordHash } }) });
     expect(await operatorActions()).toEqual([{ actor: "catalog-operator", action: "operator_provider_approved",
       target_id: "9221", details: { recordHash: record.recordHash } }]);
   });
@@ -205,7 +251,7 @@ describe("the approval store", () => {
     const store = new ProviderApprovalStore(pool, CHAIN_ID);
     const registration = await insertRegistration(pool, { providerAgentId: "9231" });
     const approve = (build: Parameters<ProviderApprovalStore["approve"]>[0]["build"]) =>
-      store.approve({ providerAgentId: "9231", build, approvedBy: "operator:catalog-operator", replace: true });
+      store.approve({ providerAgentId: "9231", build, approvedBy: "operator:catalog-operator", mode: "operator" });
     await expect(approve(builder(registration, 8453))).rejects.toThrow("PROVIDER_APPROVAL_CHAIN_MISMATCH");
     await expect(approve(() => ({ ...built(registration), recordHash: built(registration, 8453).recordHash })))
       .rejects.toThrow("PROVIDER_APPROVAL_HASH_MISMATCH");
@@ -218,7 +264,7 @@ describe("the approval store", () => {
     const store = new ProviderApprovalStore(pool, CHAIN_ID);
     const registration = await insertRegistration(pool, { providerAgentId: "9241" });
     const record = built(registration);
-    await approveAs(store, registration, "operator:catalog-operator", true);
+    await approveAs(store, registration, "operator:catalog-operator", "operator");
     await pool.query(`UPDATE standard_provider_approvals SET record_json=jsonb_set(record_json,'{payload,timeoutMs}','1000')`);
     expect(await store.read("9241")).toBeNull();
     expect(await new ProviderApprovalStore(pool, CHAIN_ID).currentRecord("9241")).toBeNull();
@@ -235,7 +281,7 @@ describe("the approval store", () => {
     expect(await there.currentRecord("9251")).toBeNull();
     const before = { here: here.version, there: there.version };
 
-    await approveAs(here, registration, "operator:catalog-operator", true);
+    await approveAs(here, registration, "operator:catalog-operator", "operator");
     expect(await here.currentRecord("9251")).toEqual(record.record);
     expect(here.version).toBeGreaterThan(before.here);
     // The other replica's snapshot is still the one it read.
@@ -273,7 +319,7 @@ describe("the approval store", () => {
     } as unknown as Pool;
     const store = new ProviderApprovalStore(flaky, CHAIN_ID, () => clock);
     const registration = await insertRegistration(pool, { providerAgentId: "9261" });
-    await approveAs(new ProviderApprovalStore(pool, CHAIN_ID), registration, "operator:catalog-operator", true);
+    await approveAs(new ProviderApprovalStore(pool, CHAIN_ID), registration, "operator:catalog-operator", "operator");
     const [first, second] = await Promise.all([store.currentRecord("9261"), store.currentRecord("9262")]);
     expect(first?.payload.providerAgentId).toBe("9261");
     expect(second).toBeNull();
@@ -379,7 +425,7 @@ describe("approval by invite", () => {
       .rejects.toMatchObject({ status: 409, code: "PROVIDER_NOT_HOSTED" });
 
     const revoked = await insertRegistration(pool, { providerAgentId: "9304" });
-    await approveAs(approvals, revoked, "operator:catalog-operator", true);
+    await approveAs(approvals, revoked, "operator:catalog-operator", "operator");
     await approvals.revoke({ providerAgentId: "9304", revokedBy: "operator:catalog-operator" });
     expect(await approvalService.approveByInvite(await record(revoked))).toBe("previously-approved");
     expect(asked).toEqual([]);
@@ -397,7 +443,7 @@ describe("approval by invite", () => {
       if (url.includes("/p/9312/")) return report(unauthorized, { admissionAuthorized: false, authorizedAt: null });
       return new Error("unexpected");
     });
-    await approveAs(approvals, revoked, "operator:catalog-operator", true);
+    await approveAs(approvals, revoked, "operator:catalog-operator", "operator");
     await approvals.revoke({ providerAgentId: "9315", revokedBy: "operator:catalog-operator" });
 
     await approvalService.sweep();
@@ -411,6 +457,91 @@ describe("approval by invite", () => {
     asked.length = 0;
     await approvalService.sweep();
     expect(asked).toEqual([`${HOSTED_ORIGIN}/p/9312/standard-rail/admission`]);
+  });
+
+  it("never undoes a revocation made while it asked the runtime", async () => {
+    const registration = await insertRegistration(pool, { providerAgentId: "9306" });
+    const approvals = new ProviderApprovalStore(pool, CHAIN_ID);
+    const approvalService = new ProviderApprovalService({
+      config, railConfig, registrations: new ServiceRegistrationStore(pool), approvals,
+      loadJson: async () => {
+        // Meanwhile an operator approves the provider and revokes it.
+        await approveAs(approvals, registration, "operator:catalog-operator", "operator");
+        await approvals.revoke({ providerAgentId: "9306", revokedBy: "operator:catalog-operator" });
+        return report(registration);
+      },
+    });
+    expect(await approvalService.approveByInvite(await record(registration))).toBe("previously-approved");
+    expect(await stored("9306")).toBeNull();
+    expect((await approvalRows("9306")).map((row) => row.approved_by)).toEqual(["operator:catalog-operator"]);
+  });
+
+  it("rotates the key of an approval it made when the provider registers a new agent wallet and its invite still admits it", async () => {
+    const reregister = async (registration: SeededRegistration, wallet: string) => {
+      await pool.query("UPDATE standard_service_registrations SET state='SUPERSEDED' WHERE registration_id=$1",
+        [registration.registrationId]);
+      return insertRegistration(pool, { providerAgentId: registration.providerAgentId, owner: registration.owner,
+        agentWallet: approvalWallet(wallet) });
+    };
+    const refusing = new Set<string>();
+    const answers = new Map<string, SeededRegistration>();
+    const { asked, approvals, approvalService } = service((url) => {
+      const seller = [...answers.values()].find((item) => url.includes(`/p/${item.providerAgentId}/`))!;
+      return refusing.has(seller.providerAgentId)
+        ? report(seller, { admissionAuthorized: false, authorizedAt: null }) : report(seller);
+    });
+    const first = await insertRegistration(pool, { providerAgentId: "9331" });
+    const declined = await insertRegistration(pool, { providerAgentId: "9332" });
+    const byHand = await insertRegistration(pool, { providerAgentId: "9333" });
+    for (const item of [first, declined]) {
+      answers.set(item.providerAgentId, item);
+      expect(await approvalService.approveByInvite(await record(item))).toBe("approved");
+    }
+    await approveAs(approvals, byHand, "operator:catalog-operator", "operator");
+
+    // Each registers again under a new agent wallet.
+    const moved = await reregister(first, "rotated wallet of 9331");
+    answers.set("9331", moved);
+    const movedByHand = await reregister(byHand, "rotated wallet of 9333");
+    const stillDeclined = await reregister(declined, "rotated wallet of 9332");
+    answers.set("9332", stillDeclined);
+    // The invite of 9332 no longer admits it.
+    refusing.add("9332");
+    asked.length = 0;
+    // Only invite-made approvals under another wallet are candidates.
+    await approvalService.sweep();
+    expect(asked).toEqual([`${HOSTED_ORIGIN}/p/9331/standard-rail/admission`, `${HOSTED_ORIGIN}/p/9332/standard-rail/admission`]);
+    expect(await stored("9331")).toMatchObject({ approvedBy: "invite:invite9331",
+      record: built(moved, CHAIN_ID, 2).record });
+    expect((await approvalRows("9331")).map((row) => row.epoch)).toEqual([1, 2]);
+    // The provider approved by hand keeps its approval: only an operator changes it.
+    expect(await approvalService.approveByInvite(await record(movedByHand))).toBe("already-approved");
+    expect((await stored("9333"))?.record).toEqual(built(byHand).record);
+
+    // An invite that no longer admits the provider leaves its approval as it was.
+    expect((await stored("9332"))?.record).toEqual(built(declined).record);
+    expect(await approvalService.approveByInvite(await record(stillDeclined))).toBe("refused");
+    // Once its invite admits it again, the key is rotated.
+    refusing.delete("9332");
+    expect(await approvalService.approveByInvite(await record(stillDeclined))).toBe("rotated");
+    expect((await stored("9332"))?.record.payload.assetResponseKey).toBe(stillDeclined.agentWallet);
+  });
+
+  it("sweeps in agent id order, continuing where the last sweep stopped and wrapping round", async () => {
+    const ids = [...Array.from({ length: 29 }, (_, index) => String(9601 + index)), "100000"];
+    const seeded = new Map<string, SeededRegistration>();
+    for (const id of ids) seeded.set(id, await insertRegistration(pool, { providerAgentId: id }));
+    const { asked, approvalService } = service((url) => {
+      const id = /\/p\/([0-9]+)\//.exec(url)![1]!;
+      return report(seeded.get(id)!, { admissionAuthorized: false, authorizedAt: null });
+    });
+    const askedIds = () => asked.splice(0).map((url) => /\/p\/([0-9]+)\//.exec(url)![1]);
+    await approvalService.sweep();
+    expect(askedIds()).toEqual(ids.slice(0, 25));
+    await approvalService.sweep();
+    expect(askedIds()).toEqual([...ids.slice(25), ...ids.slice(0, 20)]);
+    await approvalService.sweep();
+    expect(askedIds()).toEqual([...ids.slice(20), ...ids.slice(0, 15)]);
   });
 
   it("approves on activation without waiting for it, and sweeps once a minute until stopped", async () => {
@@ -505,19 +636,19 @@ describe("the approval routes", () => {
       expect(await operatorActions()).toEqual([
         { actor: "catalog-operator", action: "operator_provider_approved", target_id: "9401", details: {
           chainId: CHAIN_ID, reason: "invite checked by hand", registrationId: registration.registrationId,
-          recordHash: expected.recordHash, created: true, replacedRecordHash: null } },
+          recordHash: expected.recordHash, created: true, reinstated: false, replacedRecordHash: null } },
         { actor: "release-desk", action: "operator_provider_approved", target_id: "9401", details: {
           chainId: CHAIN_ID, reason: "checked again", registrationId: registration.registrationId,
-          recordHash: expected.recordHash, created: false, replacedRecordHash: null } },
+          recordHash: expected.recordHash, created: false, reinstated: false, replacedRecordHash: null } },
         { actor: "catalog-operator", action: "operator_provider_approval_revoked", target_id: "9401", details: {
           chainId: CHAIN_ID, reason: "seller asked to stop", recordHash: expected.recordHash } },
       ]);
       expect((await pool.query("SELECT revoked_by FROM standard_provider_approvals")).rows)
         .toEqual([{ revoked_by: "operator:catalog-operator" }]);
 
-      // A new approval by hand after a revocation is a new row.
+      // Approved again by hand after the revocation: a new row with the same record and hash.
       expect((await http.call("PUT", "/operator/v1/providers/9401/approval", { reason: "resumed" })).body)
-        .toMatchObject({ approved: true, created: true });
+        .toMatchObject({ approved: true, created: true, reinstated: true, recordHash: expected.recordHash });
       expect(await approvalRows("9401")).toHaveLength(2);
     } finally {
       await http.close();
@@ -549,6 +680,11 @@ describe("the approval routes", () => {
         .toMatchObject({ status: 409, body: { error: { code: "PROVIDER_NOT_HOSTED" } } });
       expect(await http.call("PUT", "/operator/v1/providers/9404/approval", { reason: "x" }))
         .toMatchObject({ status: 409, body: { error: { code: "PROVIDER_NOT_HOSTED" } } });
+      // On a hosted origin, but not at the paths the hosted runtime serves a seller under.
+      await insertRegistration(pool, { providerAgentId: "9405", card: hostedCard("9405", {
+        ...hostedStandardRail("9405"), quoteUrl: `${HOSTED_ORIGIN}/sellers/9405/standard-rail/quote` }) });
+      expect(await http.call("PUT", "/operator/v1/providers/9405/approval", { reason: "x" }))
+        .toMatchObject({ status: 409, body: { error: { code: "PROVIDER_APPROVAL_NOT_HOSTED_LAYOUT" } } });
       expect(await operatorActions()).toEqual([]);
       expect((await pool.query("SELECT count(*)::int AS n FROM standard_provider_approvals")).rows[0].n).toBe(0);
     } finally {

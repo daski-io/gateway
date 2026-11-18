@@ -50,16 +50,27 @@ stored, so its hash never changes:
 - `assetResponseKey` is the registration's agent wallet, checksummed, and
   `assetResponseKeyId` `provider-wallet`;
 - `tlsPolicy` `webpki-v1`, `workloadAuthentication` `signed-envelopes-v1`,
-  `maxResponseBytes` 524,288 and `timeoutMs` 90,000;
+  `maxResponseBytes` 524,288 and `timeoutMs` 90,000. A hosted runtime expects
+  the same two values of a seller's profile: they must equal its
+  `HOSTED_PROFILE_MAX_RESPONSE_BYTES` and `HOSTED_PROFILE_TIMEOUT_MS`, whose
+  defaults they are, so change them together;
 - `servicingProfileEpoch` is one more than the highest epoch any manifest
   profile of the provider carries and any earlier approval record of the
-  provider on this chain, else 1. It is chosen under the provider's lock, so an
-  epoch never names two different records of a provider.
+  provider on this chain, else 1. It is chosen under the provider's lock, and
+  an epoch never names two different records of a provider: a later row may
+  only repeat the record an earlier row holds under that epoch.
 
 The payload must pass the rules the start-up check applies to a manifest
 profile (`assertProviderControlProfilePayload` in `src/standardRail/artifacts.ts`):
 a credential-free HTTPS origin, and URLs on that origin without credentials,
-query or fragment. A registration whose card would not pass is not approved.
+query or fragment. It must also have exactly the layout a hosted runtime serves
+a seller under: `origin` the bare origin, `providerAudience` the origin with a
+trailing slash, and the six URLs `<origin>/p/<agent id>` followed by
+`/standard-rail/quote`, `/standard-rail/dispatch`,
+`/standard-rail/dispatch/status`, `/standard-rail/lifecycle`,
+`/standard-rail/assets/query` and `/standard-rail/assets/action`. A
+registration whose card would not pass is not approved
+(`PROVIDER_APPROVAL_PROFILE_INVALID`, `PROVIDER_APPROVAL_NOT_HOSTED_LAYOUT`).
 The record's hash is `canonicalHash(record)` (`src/standardRail/canonical.ts`),
 signature included; it is the `providerControlProfileHash` every listing,
 quote and dispatch of the provider carries.
@@ -67,17 +78,20 @@ quote and dispatch of the provider carries.
 Approvals live in `standard_provider_approvals` (migration 063): one row per
 approval with `approved_at`, `approved_by` (`invite:<invite id>` or
 `operator:<label>`), `revoked_at`, `revoked_by`, `record_json` and
-`record_hash`. A provider holds at most one current approval per chain and one
-record per epoch; revoking or replacing one sets `revoked_at`, and every row is
-kept. A row whose
-record no longer hashes to its `record_hash` is never served.
+`record_hash`. A provider holds at most one current approval per chain, and a
+trigger refuses a row that would give an epoch of the provider to another
+record; revoking or replacing one sets `revoked_at` (never earlier than its
+`approved_at`, whenever the revoking transaction began), and every row is kept.
+A row whose record no longer hashes to its `record_hash` is never served.
 
 ## Approving
 
 **By invite, automatically.** When this gateway activates a hosted
 registration, and on a sweep every minute of active hosted registrations, the
 gateway reads the hosted runtime's admission report for each provider that
-never held an approval on this chain:
+never held an approval on this chain, and for each provider whose current
+approval was made by invite under another agent wallet than its registration's
+(a response key rotation, below):
 
     GET <card origin>/p/<agent id>/standard-rail/admission
 
@@ -94,13 +108,25 @@ seconds). It approves when the answer is
 with the provider's own agent id, this gateway's chain, an invite whose
 admission is authorized, and a redeeming wallet that is the registration's
 provider owner (compared case-insensitively). Other fields are ignored. Any
-other answer, or none, leaves the provider unapproved, and a later sweep asks
-again: at most 25 providers per sweep, those asked least recently first. One
-sweep runs at a time, and it stops when the gateway shuts down. The log records
-each outcome with the provider's agent id and a refusal code, never a wallet.
+other answer, or none, leaves the provider as it was, and a later sweep asks
+again. A sweep asks about at most 25 providers, in agent id order after the
+last provider the previous sweep asked about, wrapping round to the first, so
+every candidate is asked in turn. One sweep runs at a time, and it stops when
+the gateway shuts down. Nothing is locked while the runtime is asked: the
+runtime may read the provider's public status meanwhile. The log records each
+outcome with the provider's agent id and a refusal code, never a wallet.
 
-A provider whose approval was revoked is never approved again by invite; only
-an operator approves it again.
+The approval itself is decided again under the provider's lock, after the
+report arrived. A provider that holds or ever held an approval on this chain is
+not approved by invite, so a revocation, even one made while the report was
+being read, is never undone; only an operator approves it again.
+
+**Response key rotation.** The one change an invite makes to an existing
+approval: when the provider's current approval was made by invite and its
+newest active hosted registration now builds a record that differs from it
+only in `assetResponseKey` (the provider registered a new agent wallet), and
+the admission report still authorizes the invite, the approval is replaced by
+the new record under the next epoch. Any other change is left to an operator.
 
 **By an operator.** Behind `Authorization: Bearer <CATALOG_OPERATOR_TOKEN>`,
 with `Cache-Control: no-store`:
@@ -111,10 +137,15 @@ with `Cache-Control: no-store`:
   hosted registration and approves it. A current approval whose record the
   registration still builds, at its own epoch, is kept (`created: false`); one
   it no longer builds, for example after the provider's wallet moved, is
-  revoked and replaced by a record under the next epoch. It answers
-  `{ approved: true, approvedAt, record, recordHash, created, inUse }`, where
-  `inUse` says whether the catalog sells the provider through this record now
-  (see below). A provider without an active hosted registration
+  revoked and replaced by a record under the next epoch. A provider with no
+  current approval whose newest revoked record the registration still builds,
+  at that record's epoch, gets that same record and hash again
+  (`reinstated: true`), so revoking and approving again changes nothing a
+  runtime holds; otherwise it gets a new record under the next epoch. It
+  answers `{ approved: true, approvedAt, record, recordHash, created,
+  reinstated, inUse }`, where `inUse` says whether the catalog sells the
+  provider through this record now (see below). A provider without an active
+  hosted registration
   answers 409 `PROVIDER_NOT_HOSTED`; one whose card cannot make a valid record,
   409 with the refusal code.
 - `DELETE /operator/v1/providers/:agentId/approval` with `{ "reason": "…" }`
@@ -174,10 +205,13 @@ actions, as a profile-only provider has none.
 
 ## Release
 
-The release capabilities declare `providerApprovals: "database"`
-(`scripts/release-capability-input.json`). A release engine that reads it stops
-admitting invited hosted providers into the manifest; profiles already in the
-manifest stay and keep precedence. An image without the field sells only
+The image's release capabilities declare `providerApprovals: "database"`
+(`scripts/release-capability-input.json`). The live capabilities answer
+(`GET /internal/release/v1/capabilities`) repeats it only while
+`HOSTED_PROVIDER_ORIGINS` names an origin, and answers `"off"` otherwise. A
+release engine that reads `"database"` there stops admitting invited hosted
+providers into the manifest; profiles already in the manifest stay and keep
+precedence. An image without the field sells only
 providers the manifest carries a profile for, so a rollback past this change
 stops sales of providers approved only here until they are admitted again.
 Keep `HOSTED_PROVIDER_ORIGINS` set while approved providers sell: unset, they

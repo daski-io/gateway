@@ -4,25 +4,26 @@ import type { StandardRailConfig } from "../standardRail/config.js";
 import { logger } from "../util/logger.js";
 import {
   acceptInviteAdmission,
+  assertHostedLayout,
   buildProviderApprovalRecord,
+  differsOnlyInResponseKey,
   ProviderApprovalRefused,
   type ProviderApprovalRecord,
 } from "./record.js";
-import type { ProviderApproval, ProviderApprovalStore } from "./store.js";
+import type { ProviderApproval, ProviderApprovalOutcome, ProviderApprovalStore } from "./store.js";
 
 /// Approving hosted providers (docs/provider-approvals.md). A provider whose
 /// registration's card origin is one of HOSTED_PROVIDER_ORIGINS is approved
 /// automatically when its invite authorizes admission, on activation and on a
 /// one-minute sweep, or by an operator. The approval is the stored record the
 /// catalog sells the provider through when the manifest carries no control
-/// profile for it.
+/// profile for it. Automatic approval also rotates an invite-made approval's
+/// response key when the provider registers a new agent wallet.
 
-/** How often active hosted registrations without an approval are looked at. */
+/** How often active hosted registrations needing an approval are looked at. */
 export const PROVIDER_APPROVAL_SWEEP_MS = 60_000;
-/** Providers asked about per sweep, least recently asked first. */
+/** Providers asked about per sweep, in agent id order, continuing where the last sweep stopped. */
 const SWEEP_BATCH = 25;
-/** Candidates a sweep reads from the database. */
-const SWEEP_CANDIDATES = 500;
 const DEFAULT_OPERATOR = "catalog-operator";
 
 export class ProviderApprovalError extends Error {
@@ -32,7 +33,7 @@ export class ProviderApprovalError extends Error {
 }
 
 export type InviteApprovalOutcome =
-  | "approved" | "already-approved" | "previously-approved" | "not-hosted" | "unavailable" | "refused";
+  | "approved" | "rotated" | "already-approved" | "previously-approved" | "not-hosted" | "unavailable" | "refused";
 
 export interface ProviderApprovalStatus {
   approved: boolean;
@@ -86,8 +87,8 @@ export class ProviderApprovalService {
   private sweepTimer: NodeJS.Timeout | null = null;
   private sweepWork: Promise<void> | null = null;
   private readonly inviteWork = new Map<string, Promise<InviteApprovalOutcome>>();
-  /** When each provider was last asked about by invite, for a fair sweep. */
-  private readonly lastAsked = new Map<string, number>();
+  /** The last provider the previous sweep asked about; the next sweep continues after it. */
+  private sweepCursor: string | null = null;
 
   constructor(private readonly args: {
     config: Pick<Config, "chainId" | "hostedProviderOrigins">;
@@ -115,8 +116,9 @@ export class ProviderApprovalService {
     return origin !== null && this.origins.has(origin);
   }
 
+  /** The record a hosted registration builds, refused unless its texts are the hosted runtime's layout. */
   private build(record: StoredRegistration, minimumEpoch = 1) {
-    return buildProviderApprovalRecord({
+    const built = buildProviderApprovalRecord({
       domain: {
         environment: this.args.railConfig.environment,
         chainId: this.args.config.chainId,
@@ -126,6 +128,8 @@ export class ProviderApprovalService {
       manifestProfiles: this.args.railConfig.manifest.providerControlProfiles,
       minimumEpoch,
     });
+    assertHostedLayout(built.record);
+    return built;
   }
 
   /**
@@ -145,7 +149,10 @@ export class ProviderApprovalService {
    * Approves the provider of an active hosted registration when the hosted
    * runtime reports its invite authorizes admission and was redeemed by the
    * registration's owner. A provider that holds or ever held an approval on
-   * this chain is left to the operator: a revocation is never undone here.
+   * this chain is left to the operator, so a revocation is never undone here;
+   * the one exception is a current approval made by invite that the
+   * registration now builds with another agent wallet and nothing else
+   * changed, which is replaced when the invite still authorizes admission.
    */
   approveByInvite(record: StoredRegistration): Promise<InviteApprovalOutcome> {
     const running = this.inviteWork.get(record.providerAgentId);
@@ -161,8 +168,19 @@ export class ProviderApprovalService {
     const providerAgentId = record.providerAgentId;
     if (record.state !== "ACTIVE" || !this.isHosted(record)) return "not-hosted";
     const latest = await this.args.approvals.latest(providerAgentId);
-    if (latest) return latest.revokedAt === null ? "already-approved" : "previously-approved";
-    this.lastAsked.set(providerAgentId, Date.now());
+    if (latest?.revokedAt) return "previously-approved";
+    if (latest) {
+      if (!latest.approvedBy.startsWith("invite:")) return "already-approved";
+      let fresh: ProviderApprovalRecord;
+      try {
+        fresh = this.build(record, latest.record.payload.servicingProfileEpoch).record;
+      } catch (error) {
+        if (!(error instanceof ProviderApprovalRefused)) throw error;
+        logger.info("provider approval by invite refused", { providerAgentId, code: error.code });
+        return "refused";
+      }
+      if (!differsOnlyInResponseKey(fresh, latest.record)) return "already-approved";
+    }
     const url = new URL(`/p/${providerAgentId}/standard-rail/admission`, record.card.standardRail.origin).toString();
     // Nothing is locked while the runtime is asked: it may read this
     // provider's public approval status meanwhile.
@@ -178,16 +196,17 @@ export class ProviderApprovalService {
         providerAgentId, chainId: this.args.config.chainId, providerOwner: record.providerOwner,
       });
       this.build(record); // refuses an unbuildable registration before taking the provider's lock
-      const { approval, created } = await this.args.approvals.approve({
+      const { approval, created, replaced } = await this.args.approvals.approve({
         providerAgentId, build: (minimumEpoch) => this.build(record, minimumEpoch),
-        approvedBy: `invite:${inviteId}`, replace: false,
+        approvedBy: `invite:${inviteId}`, mode: "invite",
       });
-      if (!created) return "already-approved";
-      logger.info("provider approved by invite", {
+      // Under the lock the provider may have turned out approved or revoked meanwhile.
+      if (!created || !approval) return approval ? "already-approved" : "previously-approved";
+      logger.info(replaced ? "provider approval response key rotated by invite" : "provider approved by invite", {
         providerAgentId, inviteId, recordHash: approval.recordHash,
         servicingProfileEpoch: approval.record.payload.servicingProfileEpoch,
       });
-      return "approved";
+      return replaced ? "rotated" : "approved";
     } catch (error) {
       if (!(error instanceof ProviderApprovalRefused)) throw error;
       logger.info("provider approval by invite refused", { providerAgentId, code: error.code });
@@ -195,18 +214,25 @@ export class ProviderApprovalService {
     }
   }
 
-  /** One pass over active hosted registrations whose provider never held an approval. */
+  /**
+   * One pass over active hosted registrations whose provider never held an
+   * approval, or holds one made by invite under another agent wallet: up to
+   * SWEEP_BATCH providers in agent id order after the last one asked,
+   * wrapping round to the first, so every candidate is asked in turn.
+   */
   async sweep(): Promise<void> {
     if (!this.enabled) return;
-    const candidates = await this.args.registrations.listHostedApprovalCandidates(
-      [...this.origins], this.args.config.chainId, SWEEP_CANDIDATES,
+    const page = (after: string | null, limit: number) => this.args.registrations.listHostedApprovalCandidates(
+      [...this.origins], this.args.config.chainId, limit, after,
     );
-    const batch = candidates
-      .filter((record) => this.isHosted(record))
-      .sort((left, right) =>
-        (this.lastAsked.get(left.providerAgentId) ?? 0) - (this.lastAsked.get(right.providerAgentId) ?? 0))
-      .slice(0, SWEEP_BATCH);
-    for (const record of batch) {
+    let batch = await page(this.sweepCursor, SWEEP_BATCH);
+    if (batch.length < SWEEP_BATCH && this.sweepCursor !== null) {
+      const asked = new Set(batch.map((record) => record.providerAgentId));
+      batch = [...batch, ...(await page(null, SWEEP_BATCH - batch.length))
+        .filter((record) => !asked.has(record.providerAgentId))];
+    }
+    this.sweepCursor = batch.at(-1)?.providerAgentId ?? null;
+    for (const record of batch.filter((candidate) => this.isHosted(candidate))) {
       try {
         await this.approveByInvite(record);
       } catch (error) {
@@ -238,17 +264,17 @@ export class ProviderApprovalService {
       throw new ProviderApprovalError(409, "PROVIDER_NOT_HOSTED",
         "The provider has no active registration on a hosted provider origin.");
     }
-    let outcome: Awaited<ReturnType<ProviderApprovalStore["approve"]>>;
+    let outcome: ProviderApprovalOutcome;
     try {
       this.build(record); // refuses an unbuildable registration before taking the provider's lock
       outcome = await this.args.approvals.approve({
         providerAgentId, build: (minimumEpoch) => this.build(record, minimumEpoch),
-        approvedBy: `operator:${request.operator}`, replace: true,
+        approvedBy: `operator:${request.operator}`, mode: "operator",
         audit: (result) => ({
           actor: request.operator, action: "operator_provider_approved",
           details: {
             chainId: this.args.config.chainId, reason: request.reason, registrationId: record.registrationId,
-            recordHash: result.approval.recordHash, created: result.created,
+            recordHash: result.approval?.recordHash ?? null, created: result.created, reinstated: result.reinstated,
             replacedRecordHash: result.replaced?.recordHash ?? null,
           },
         }),
@@ -259,11 +285,12 @@ export class ProviderApprovalService {
       }
       throw error;
     }
-    const { approval, created, replaced } = outcome;
+    const { approval, created, replaced, reinstated } = outcome;
+    if (!approval) throw new Error("PROVIDER_APPROVAL_MISSING");
     logger.info("provider approved by operator", {
-      providerAgentId, recordHash: approval.recordHash, created, replaced: replaced !== null,
+      providerAgentId, recordHash: approval.recordHash, created, reinstated, replaced: replaced !== null,
     });
-    return { ...statusView(approval), created, inUse: await this.inUse(approval) };
+    return { ...statusView(approval), created, reinstated, inUse: await this.inUse(approval) };
   }
 
   async revokeByOperator(providerAgentId: string, request: { reason: string; operator: string }) {

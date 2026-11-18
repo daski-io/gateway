@@ -766,23 +766,31 @@ export class ServiceRegistrationStore {
 
   /**
    * Each provider's newest active registration on one of the hosted provider
-   * origins, for providers that never held an approval on this chain
-   * (docs/provider-approvals.md).
+   * origins that needs an approval by invite (docs/provider-approvals.md): the
+   * provider never held an approval on this chain, or holds a current one made
+   * by invite whose response key is not this registration's agent wallet. In
+   * agent id order, after `afterProviderAgentId` when given.
    */
   async listHostedApprovalCandidates(
     origins: readonly string[],
     chainId: number,
     limit: number,
+    afterProviderAgentId: string | null = null,
   ): Promise<StoredRegistration[]> {
     if (origins.length === 0) return [];
     const result = await this.pool.query<RegistrationRow>(
-      `SELECT DISTINCT ON (r.provider_agent_id) r.* FROM standard_service_registrations r
+      `SELECT DISTINCT ON (r.provider_agent_id::numeric) r.* FROM standard_service_registrations r
         WHERE r.state='ACTIVE' AND r.card_json->'standardRail'->>'origin'=ANY($1::text[])
-          AND NOT EXISTS (SELECT 1 FROM standard_provider_approvals a
-                           WHERE a.provider_agent_id=r.provider_agent_id AND a.chain_id=$2)
-        ORDER BY r.provider_agent_id,r.activated_at DESC,r.registration_id
+          AND ($4::numeric IS NULL OR r.provider_agent_id::numeric>$4::numeric)
+          AND (NOT EXISTS (SELECT 1 FROM standard_provider_approvals a
+                            WHERE a.provider_agent_id=r.provider_agent_id AND a.chain_id=$2)
+            OR EXISTS (SELECT 1 FROM standard_provider_approvals a
+                        WHERE a.provider_agent_id=r.provider_agent_id AND a.chain_id=$2 AND a.revoked_at IS NULL
+                          AND a.approved_by LIKE 'invite:%'
+                          AND lower(a.record_json->'payload'->>'assetResponseKey')<>r.provider_agent_wallet))
+        ORDER BY r.provider_agent_id::numeric,r.activated_at DESC,r.registration_id
         LIMIT $3`,
-      [[...origins], chainId, limit],
+      [[...origins], chainId, limit, afterProviderAgentId],
     );
     return result.rows.map(mapRow);
   }

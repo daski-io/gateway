@@ -14,7 +14,12 @@ import type { ProviderControlProfileV1, SignedEnvelope } from "../standardRail/t
 /** The signer key id of every approval record; no key is behind it. */
 export const PROVIDER_APPROVAL_SIGNER_KEY_ID = "gateway-approval-v1";
 
-/** The payload fields every approval record carries unchanged. */
+/**
+ * The payload fields every approval record carries unchanged. A hosted
+ * provider runtime expects the same response bound and timeout of a seller's
+ * profile (its HOSTED_PROFILE_MAX_RESPONSE_BYTES and HOSTED_PROFILE_TIMEOUT_MS,
+ * 524,288 and 90,000 by default): change them together.
+ */
 export const PROVIDER_APPROVAL_CONSTANTS = {
   assetResponseKeyId: "provider-wallet",
   tlsPolicy: "webpki-v1",
@@ -45,11 +50,6 @@ export interface ProviderApprovalSource {
   providerAgentWallet: string;
   card: Pick<ProviderServiceCard, "providerAgentId" | "standardRail">;
 }
-
-const ENVELOPE_KEYS = [
-  "artifactType", "schemaVersion", "environment", "chainId", "audience",
-  "signerKeyId", "issuedAt", "validBefore", "payload", "signature",
-].sort().join(",");
 
 const CARD_TEXTS = [
   "providerAudience", "origin", "quoteUrl", "dispatchUrl", "dispatchStatusUrl",
@@ -143,24 +143,38 @@ export function buildProviderApprovalRecord(args: {
   return { record, recordHash: canonicalHash(record) };
 }
 
-/** Whether a stored record is an approval record of this domain, built as above. */
-export function isProviderApprovalRecord(value: unknown, domain: ProviderApprovalDomain): value is ProviderApprovalRecord {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
-  const envelope = value as Record<string, unknown>;
-  const keys = Object.keys(envelope).sort().join(",");
+/** The endpoint paths below a seller's base, as a hosted provider runtime builds them. */
+export const HOSTED_ENDPOINT_PATHS = {
+  quoteUrl: "/standard-rail/quote",
+  dispatchUrl: "/standard-rail/dispatch",
+  dispatchStatusUrl: "/standard-rail/dispatch/status",
+  lifecycleUrl: "/standard-rail/lifecycle",
+  assetQueryUrl: "/standard-rail/assets/query",
+  assetActionUrl: "/standard-rail/assets/action",
+} as const;
+
+/**
+ * Refuses a record whose texts are not exactly those a hosted provider
+ * runtime builds for the seller: the bare origin, the origin with a slash as
+ * audience, and every URL at `<origin>/p/<agent id>` plus its fixed path.
+ */
+export function assertHostedLayout(record: ProviderApprovalRecord): void {
+  const { origin, providerAgentId } = record.payload;
+  let bare: string;
+  try { bare = new URL(origin).origin; } catch { throw new ProviderApprovalRefused("PROVIDER_APPROVAL_NOT_HOSTED_LAYOUT"); }
+  const base = `${bare}/p/${providerAgentId}`;
   if (
-    keys !== ENVELOPE_KEYS || envelope.artifactType !== "ProviderControlProfileV1" ||
-    envelope.schemaVersion !== 1 || envelope.environment !== domain.environment ||
-    envelope.chainId !== domain.chainId || envelope.audience !== domain.gatewayAudience ||
-    envelope.signerKeyId !== PROVIDER_APPROVAL_SIGNER_KEY_ID || envelope.issuedAt !== 0 ||
-    envelope.validBefore !== 0 || envelope.signature !== "0x"
-  ) return false;
-  try {
-    assertProviderControlProfilePayload(envelope.payload as ProviderControlProfileV1);
-    return true;
-  } catch {
-    return false;
-  }
+    origin !== bare || record.payload.providerAudience !== `${bare}/` ||
+    Object.entries(HOSTED_ENDPOINT_PATHS).some(([name, path]) =>
+      record.payload[name as keyof typeof HOSTED_ENDPOINT_PATHS] !== `${base}${path}`)
+  ) throw new ProviderApprovalRefused("PROVIDER_APPROVAL_NOT_HOSTED_LAYOUT");
+}
+
+/** Whether two records differ in their response key and in nothing else. */
+export function differsOnlyInResponseKey(left: ProviderApprovalRecord, right: ProviderApprovalRecord): boolean {
+  return left.payload.assetResponseKey !== right.payload.assetResponseKey &&
+    canonicalHash({ ...left, payload: { ...left.payload, assetResponseKey: right.payload.assetResponseKey } }) ===
+      canonicalHash(right);
 }
 
 /** What an accepted invite admission report contributes to the approval. */

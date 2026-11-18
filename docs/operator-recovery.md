@@ -197,5 +197,6 @@ and `DELETE` on the same path revokes the current approval. Both take
 with its reason in `standard_operator_actions` (`operator_provider_approved`,
 `operator_provider_approval_revoked`), the actor being the label
 (`catalog-operator` by default). A revoked provider is not approved again by
-invite; only another `PUT` approves it. See
+invite; only another `PUT` approves it, with the same record and hash when its
+registration is unchanged. See
 [hosted provider approvals](provider-approvals.md#approving).
