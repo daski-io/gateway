@@ -84,6 +84,13 @@ path for either handed-over target.
   the test fails on any byte difference. The release engine copies the file
   byte for byte, so a changed file names the new gateway commit for it to copy
   again.
+- A change to the public provider approval answer
+  (`GET /public/v3/providers/:agentId/approval`, docs/provider-approvals.md)
+  regenerates `test/fixtures/provider-approval-answer.json`
+  (`UPDATE_PROVIDER_APPROVAL_ANSWER=1 npx vitest run test/providerApprovalsPostgres.test.ts`);
+  the test fails on any byte difference. A hosted provider runtime that checks
+  approval records may vendor the file, so a changed file names the new gateway
+  commit for it to copy again.
 - A migration in `src/db/migrations/` ships with its compatibility test: the
   complete clean-schema run in `test/migrationsPostgres.test.ts` must still
   pass, a migration that reshapes existing rows gets a PostgreSQL-backed test
