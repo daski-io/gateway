@@ -543,7 +543,12 @@ export class StandardRailService {
       assetResponseKey: profile.payload.assetResponseKey, providerAudience: profile.payload.providerAudience,
     }));
     return {
-      ...artifact, artifactManifestHash, deploymentId: process.env.RAILWAY_DEPLOYMENT_ID ?? null,
+      ...artifact,
+      // The image can approve hosted providers (its release-capabilities.json);
+      // this deployment does only while HOSTED_PROVIDER_ORIGINS names an origin.
+      providerApprovals: artifact.providerApprovals === "database" &&
+        (this.appConfig.hostedProviderOrigins?.length ?? 0) > 0 ? "database" : "off",
+      artifactManifestHash, deploymentId: process.env.RAILWAY_DEPLOYMENT_ID ?? null,
       network: this.appConfig.x402Network,
       executableListings, runtimeMappings: executableListings, carriedAdmissions, controlProfiles,
       retirements: await this.releaseRetirements.inventory(),

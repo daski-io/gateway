@@ -15,9 +15,11 @@ export interface ReleaseCapabilityManifest {
   controlProfileSelection?: "agent-wallet";
   /**
    * How hosted providers without a manifest control profile are admitted:
-   * "database", the gateway approves them itself and keeps the approval
-   * record in its database (docs/provider-approvals.md). An image without the
-   * field sells only providers the manifest carries a profile for.
+   * "database", the image can approve them itself and keep the approval
+   * record in its database (docs/provider-approvals.md). The live
+   * capabilities answer says "database" only while HOSTED_PROVIDER_ORIGINS
+   * names an origin, "off" otherwise. An image without the field sells only
+   * providers the manifest carries a profile for.
    */
   providerApprovals?: "database";
 }

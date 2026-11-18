@@ -239,10 +239,12 @@ gateway itself when it is registered on one of `HOSTED_PROVIDER_ORIGINS`, and
 is then sold through the unsigned approval record the gateway stored
 ([hosted provider approvals](provider-approvals.md)). That record is used only
 after a servicing admission's profile and every carried profile, so a provider
-in the manifest keeps its signed profile. The release capabilities declare it
-as `providerApprovals: "database"`; the capabilities answer's
-`controlProfiles` still lists the manifest's profiles only. An image without
-the field sells only providers the manifest carries a profile for.
+in the manifest keeps its signed profile. The image's release capabilities
+declare it as `providerApprovals: "database"`; the live capabilities answer
+says `"database"` only while `HOSTED_PROVIDER_ORIGINS` names an origin and
+`"off"` otherwise, and its `controlProfiles` still lists the manifest's
+profiles only. An image without the field sells only providers the manifest
+carries a profile for.
 
 ## Compatibility evidence
 

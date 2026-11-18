@@ -398,10 +398,11 @@ const RULES = [
     "wallet of the registration being sold, the highest servicingProfileEpoch of those. An image without the field " +
     "is treated as selecting the lowest epoch.",
   "An image built before controlProfiles answers without that field.",
-  "providerApprovals comes from the image's release-capabilities.json. \"database\": the gateway approves hosted " +
-    "providers itself and sells a provider the manifest carries no profile for through the approval record it stored " +
-    "(docs/provider-approvals.md); controlProfiles still lists manifest profiles only. An image without the field " +
-    "sells only providers the manifest carries a profile for.",
+  "providerApprovals is \"database\" when the image's release-capabilities.json declares it and the deployment's " +
+    "HOSTED_PROVIDER_ORIGINS names an origin: the gateway then approves hosted providers itself and sells a provider " +
+    "the manifest carries no profile for through the approval record it stored (docs/provider-approvals.md). It is " +
+    "\"off\" otherwise, as for both deployments here, which set no hosted origin. controlProfiles still lists manifest " +
+    "profiles only. An image without the field sells only providers the manifest carries a profile for.",
   "artifactRoute is what GET /public/v2/artifacts/<hash> answered on that deployment for provider 41's profile, " +
     "seller 9001's profile and a hash no gateway started with.",
   "commit and artifactManifestHash identify the build. Here they are the placeholders below; the test that writes " +
@@ -738,6 +739,9 @@ describe("control profiles across gateway starts (postgres)", () => {
       expect(await artifact.json()).toEqual(answer.record);
       const answered = await capabilities(gateway, DEPLOYMENTS.first);
       expect(answered.providerApprovals).toBe("database");
+      // A deployment of the same image without hosted origins says approvals are off.
+      const off = await startGateway(db.pool, m.withSeller);
+      expect((await capabilities(off, DEPLOYMENTS.second)).providerApprovals).toBe("off");
       expect(answered.controlProfiles.map((item) => item.providerAgentId)).not.toContain(HOSTED_SELLER);
 
       // A retirement of the seller's listing is addressed to the record's audience.
