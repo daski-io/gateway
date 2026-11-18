@@ -71,6 +71,7 @@ const marketplace = {
     agentId: agentId.toString(), active: providerActive.value, identity: { ...identity },
   }),
   readRecovered: async () => { throw new Error("not used"); },
+  getAgentUri: async () => { throw new Error("not used"); },
 } as MarketplaceChainReader;
 
 function payload(overrides: Partial<ProviderOwnerSwapV1> = {}): ProviderOwnerSwapV1 {

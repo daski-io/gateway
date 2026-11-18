@@ -3,6 +3,7 @@
     {
       "gatewayRegistrationId": "4ce2f9c8-2980-49ad-a919-3e0acf1ea4e7",
       "providerAgentId": "41",
+      "providerWebsiteUrl": "https://example-research.example/",
       "serviceId": "0xabababababababababababababababababababababababababababababababab",
       "agentCardUrl": "https://provider.example/agent-cards/lab-analysis.json",
       "providerPayee": "0x1212121212121212121212121212121212121212",

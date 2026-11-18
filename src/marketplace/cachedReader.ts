@@ -39,6 +39,13 @@ export class CachedMarketplaceChainReader implements MarketplaceChainReader {
     return this.cached(`provider:${agentId}`, () => this.source.getProvider(agentId));
   }
 
+  // Not cached here: its one caller (providerWebsite.ts) caches the answer
+  // it derives and paces its reads, so a stale-while-revalidate reload never
+  // escapes that pacing.
+  getAgentUri(agentId: bigint): Promise<string> {
+    return this.source.getAgentUri(agentId);
+  }
+
   getService(serviceId: Hex): Promise<MarketplaceServiceRecord> {
     return this.cached(`service:${serviceId.toLowerCase()}`, () => this.source.getService(serviceId));
   }

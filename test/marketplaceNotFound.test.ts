@@ -342,6 +342,7 @@ function stubReader(overrides: Partial<MarketplaceChainReader>): MarketplaceChai
     getProvider: vi.fn(async (agentId: bigint) => ({ agentId: agentId.toString() })),
     getService: vi.fn(async () => { throw new Error("not exercised"); }),
     readRecovered: vi.fn(async () => null),
+    getAgentUri: vi.fn(async () => "https://agent.example/agent.json"),
     ...overrides,
   };
 }

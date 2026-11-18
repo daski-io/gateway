@@ -37,6 +37,7 @@ function reader(): MarketplaceChainReader {
       },
     })),
     readRecovered: vi.fn(async () => "1"),
+    getAgentUri: vi.fn(async () => "https://agent.example/agent.json"),
   };
 }
 
