@@ -15,5 +15,6 @@
     "gzip-base64",
     "br-base64"
   ],
-  "controlProfileSelection": "agent-wallet"
+  "controlProfileSelection": "agent-wallet",
+  "providerApprovals": "database"
 }

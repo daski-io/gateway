@@ -37,3 +37,9 @@ it("the built release capabilities tell the release engine that this gateway sel
   const manifest = JSON.parse(readFileSync(new URL("../dist/release-capabilities.json", import.meta.url), "utf8"));
   expect(manifest.controlProfileSelection).toBe("agent-wallet");
 });
+
+it("the built release capabilities tell the release engine that this gateway approves hosted providers itself", async () => {
+  const { readFileSync } = await import("node:fs");
+  const manifest = JSON.parse(readFileSync(new URL("../dist/release-capabilities.json", import.meta.url), "utf8"));
+  expect(manifest.providerApprovals).toBe("database");
+});
