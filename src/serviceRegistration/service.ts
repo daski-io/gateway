@@ -24,6 +24,7 @@ import {
 import { parseProviderServiceCard } from "./card.js";
 import { SCHEMA_BUDGET_QUARANTINE_CODE } from "./store.js";
 import { fetchProviderCardJson } from "./cardFetch.js";
+import { ProviderWebsites } from "./providerWebsite.js";
 import type { RegistrationEvidenceVerifier } from "./evidence.js";
 import {
   computeServiceId,
@@ -245,6 +246,8 @@ export function publicServiceView(
     runtimeCommitment: unknown;
   }> = new Map(),
   assetActions: readonly AssetActionDefinitionV1[] = [],
+  // The provider's website from its ERC-8004 registration file (providerWebsite.ts).
+  providerWebsiteUrl: string | null = null,
 ) {
   const listings = new Map(record.prepared.listings.map((item) => [item.skillId, item]));
   const ownerActions = ownerActionsView(record, assetActions);
@@ -255,6 +258,7 @@ export function publicServiceView(
   return {
     gatewayRegistrationId: record.registrationId,
     providerAgentId: record.providerAgentId,
+    providerWebsiteUrl,
     serviceId: record.serviceId,
     agentCardUrl: record.agentCardUrl,
     providerPayee: record.providerPayee,
@@ -295,6 +299,7 @@ export class ServiceRegistrationService {
   private refreshWork: Promise<void> | null = null;
   private activeRegistrationWork = 0;
   private readonly evidenceWork = new Map<string, Promise<void>>();
+  private readonly providerWebsites: ProviderWebsites;
 
   constructor(
     private readonly config: Config,
@@ -307,7 +312,9 @@ export class ServiceRegistrationService {
     // The reader public views present reputation through. Authority,
     // activation and refresh keep the live `marketplace`.
     private readonly publicMarketplace: MarketplaceChainReader = marketplace,
-  ) {}
+  ) {
+    this.providerWebsites = new ProviderWebsites(publicMarketplace, cardLoader);
+  }
 
   policy() {
     const policy = dynamicRegistrationPolicy(this.config, this.railConfig);
@@ -956,9 +963,16 @@ export class ServiceRegistrationService {
       this.store.listPublic(limit),
       this.activeAssetActions(),
     ]);
+    const websites = await this.providerWebsites.websites(
+      records.map((record) => record.providerAgentId),
+    );
     return {
-      services: records.map((record) =>
-        publicServiceView(record, new Map(), actions.get(record.providerAgentId))),
+      services: records.map((record) => publicServiceView(
+        record,
+        new Map(),
+        actions.get(record.providerAgentId),
+        websites.get(record.providerAgentId) ?? null,
+      )),
     };
   }
 
@@ -1020,9 +1034,18 @@ export class ServiceRegistrationService {
           runtimeCommitment: item.runtimeCommitment,
         }] as const),
     );
+    const [websites, reputation] = await Promise.all([
+      this.providerWebsites.websites([record.providerAgentId]),
+      this.publicReputation(record),
+    ]);
     return {
-      ...publicServiceView(record, commitments, actions.get(record.providerAgentId)),
-      ...await this.publicReputation(record),
+      ...publicServiceView(
+        record,
+        commitments,
+        actions.get(record.providerAgentId),
+        websites.get(record.providerAgentId) ?? null,
+      ),
+      ...reputation,
     };
   }
 
