@@ -35,7 +35,8 @@ not crawled or automatically shown by this gateway.
 - `POST /v1/service-registrations`
 - `GET /v1/service-registrations/{registrationId}`
 - `POST /v1/service-registrations/{registrationId}/evidence`
-- `GET /public/v3/services`
+- `GET /public/v3/services`, optionally `?limit=` (1 to 100, 50 by default)
+  and `?providerAgentId=` (one provider's services, filtered before the limit)
 - `GET /public/v3/services/{serviceId}`
 - `PUT /operator/v1/services/{registrationId}/visibility`
 - `GET /public/v3/providers/{agentId}/approval`,

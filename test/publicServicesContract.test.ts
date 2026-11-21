@@ -1,9 +1,12 @@
+import express from "express";
 import { readFileSync } from "node:fs";
+import type { AddressInfo } from "node:net";
 import { describe, expect, it, vi } from "vitest";
 import type { Hex } from "viem";
 import type { Config } from "../src/config.js";
 import { CachedMarketplaceChainReader } from "../src/marketplace/cachedReader.js";
 import type { MarketplaceChainReader, RecoveredFigure } from "../src/marketplace/reader.js";
+import { createServiceRegistrationRouter } from "../src/serviceRegistration/routes.js";
 import { publicServiceView, ServiceRegistrationService } from "../src/serviceRegistration/service.js";
 import type { ServiceRegistrationStore, StoredRegistration } from "../src/serviceRegistration/store.js";
 import { canonicalHash } from "../src/standardRail/canonical.js";
@@ -170,6 +173,68 @@ describe("public v3 services contract", () => {
     // One chain read: the detail view answered from the index's read.
     expect(marketplace.getAgentUri).toHaveBeenCalledTimes(1);
     expect(marketplace.getAgentUri).toHaveBeenCalledWith(BigInt(registration.providerAgentId));
+  });
+
+  it("filters the index by provider only when asked, and refuses a malformed provider", async () => {
+    const registration = registrationFromFixture();
+    const website = fixture.services[0].providerWebsiteUrl;
+    const file = `data:application/json;base64,${Buffer.from(JSON.stringify({ external_url: website })).toString("base64")}`;
+    const marketplace = { getAgentUri: vi.fn(async () => file) };
+    const store = { listPublic: vi.fn(async (_limit: number, _providerAgentId?: string | null) => [registration]) };
+    const service = new ServiceRegistrationService(
+      {} as Config,
+      {} as StandardRailConfig,
+      store as unknown as ServiceRegistrationStore,
+      marketplace as unknown as MarketplaceChainReader,
+      {} as never,
+    );
+    const app = express();
+    app.use(createServiceRegistrationRouter({
+      config: { dynamicServiceRegistrationEnabled: true, catalogOperatorToken: "operator-test-token" } as Config,
+      service,
+    }));
+    const server = app.listen(0, "127.0.0.1");
+    await new Promise<void>((resolve) => server.once("listening", resolve));
+    const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}/public/v3/services`;
+    try {
+      // Without the filter: the same store read and the same bytes as before.
+      const unfiltered = await fetch(base);
+      expect(unfiltered.status).toBe(200);
+      expect(unfiltered.headers.get("cache-control")).toBe("public, max-age=30, stale-while-revalidate=300");
+      const body = await unfiltered.text();
+      expect(body).toBe(JSON.stringify({ services: [publicServiceView(registration, new Map(), undefined, website)] }));
+      expect(store.listPublic).toHaveBeenLastCalledWith(50, null);
+      await fetch(base + "?limit=100");
+      expect(store.listPublic).toHaveBeenLastCalledWith(100, null);
+
+      const filtered = await fetch(`${base}?limit=100&providerAgentId=${registration.providerAgentId}`);
+      expect(filtered.status).toBe(200);
+      expect(filtered.headers.get("cache-control")).toBe("public, max-age=30, stale-while-revalidate=300");
+      expect(await filtered.text()).toBe(body);
+      expect(store.listPublic).toHaveBeenLastCalledWith(100, registration.providerAgentId);
+      for (const id of ["0", "9".repeat(78)]) {
+        expect((await fetch(`${base}?providerAgentId=${id}`)).status).toBe(200);
+        expect(store.listPublic).toHaveBeenLastCalledWith(50, id);
+      }
+
+      const calls = store.listPublic.mock.calls.length;
+      for (const query of [
+        "providerAgentId=", "providerAgentId=abc", "providerAgentId=07", "providerAgentId=-1",
+        "providerAgentId=1.5", "providerAgentId=1e3", "providerAgentId=0x1", "providerAgentId=%207",
+        "providerAgentId=7%20", "providerAgentId=+7", `providerAgentId=1${"0".repeat(78)}`,
+        "providerAgentId=7&providerAgentId=8",
+      ]) {
+        const refused = await fetch(`${base}?${query}`);
+        expect(refused.status, query).toBe(400);
+        expect(await refused.json()).toEqual({ error: {
+          code: "INVALID_PROVIDER_AGENT_ID",
+          message: "providerAgentId must be a decimal provider agent id.",
+        } });
+      }
+      expect(store.listPublic).toHaveBeenCalledTimes(calls);
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+    }
   });
 
   it.each([
