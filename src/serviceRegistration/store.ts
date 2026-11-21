@@ -738,13 +738,19 @@ export class ServiceRegistrationStore {
     return result.rows.map(mapRow);
   }
 
-  async listPublic(limit: number): Promise<StoredRegistration[]> {
+  /**
+   * The public index, newest first. `providerAgentId` keeps one provider's
+   * services, filtered before the limit; without it the query is unchanged.
+   */
+  async listPublic(limit: number, providerAgentId: string | null = null): Promise<StoredRegistration[]> {
+    const byProvider = providerAgentId === null ? "" : `
+        AND r.provider_agent_id=$2`;
     const result = await this.pool.query<RegistrationRow>(
       `SELECT r.* FROM standard_service_registrations r
-        WHERE ${PUBLIC_REGISTRATION}
+        WHERE ${PUBLIC_REGISTRATION}${byProvider}
         ORDER BY r.activated_at DESC,r.registration_id
         LIMIT $1`,
-      [limit],
+      providerAgentId === null ? [limit] : [limit, providerAgentId],
     );
     return result.rows.map(mapRow);
   }

@@ -68,6 +68,20 @@ function pageLimit(raw: unknown): number {
   return value;
 }
 
+// The public catalog's optional provider filter: one decimal agent id, as
+// stored (migration 036). Applied in the query, before the page limit.
+function providerFilter(raw: unknown): string | null {
+  if (raw === undefined) return null;
+  if (typeof raw !== "string" || !/^(0|[1-9][0-9]{0,77})$/.test(raw)) {
+    throw new RegistrationError(
+      400,
+      "INVALID_PROVIDER_AGENT_ID",
+      "providerAgentId must be a decimal provider agent id.",
+    );
+  }
+  return raw;
+}
+
 function idempotencyKey(req: Request): string {
   const value = req.header("idempotency-key");
   if (!value || !IDEMPOTENCY_KEY.test(value)) {
@@ -165,7 +179,8 @@ export function createServiceRegistrationRouter(args: {
 
   router.get("/public/v3/services", handler(async (req, res) => {
     res.setHeader("Cache-Control", "public, max-age=30, stale-while-revalidate=300");
-    res.json(await args.service.listPublic(pageLimit(req.query.limit)));
+    const limit = pageLimit(req.query.limit);
+    res.json(await args.service.listPublic(limit, providerFilter(req.query.providerAgentId)));
   }));
 
   router.get("/public/v3/services/:serviceId", handler(async (req, res) => {

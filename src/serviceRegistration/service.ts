@@ -975,9 +975,9 @@ export class ServiceRegistrationService {
     };
   }
 
-  async listPublic(limit: number) {
+  async listPublic(limit: number, providerAgentId: string | null = null) {
     const [records, actions] = await Promise.all([
-      this.store.listPublic(limit),
+      this.store.listPublic(limit, providerAgentId),
       this.activeAssetActions(),
     ]);
     const websites = await this.providerWebsites.websites(

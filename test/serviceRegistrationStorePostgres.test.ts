@@ -630,11 +630,11 @@ describe("public service index availability", () => {
     });
   }), 60_000);
 
-  // 3,000 services with two paid listings and one free one each; every odd
-  // service is paused (only its free listing accepts). The listings must be
-  // read through their primary key: a lookup that scans the listings table per
-  // candidate registration took seconds at this size.
-  it("reads listings through their primary key at scale", async () => isolated(async (_store, pool) => {
+  // `count` services with two paid listings and one free one each, the n-th
+  // activated n seconds ago (n = 1 is the newest); every odd service is paused
+  // (only its free listing accepts). Services after `providerFrom` belong to
+  // provider 7, the others to provider 42.
+  async function seedServices(pool: Pool, count: number, providerFrom = count) {
     await pool.query(`
       INSERT INTO standard_service_registrations
        (registration_id,provider_agent_id,service_id,service_slug,service_version,
@@ -642,7 +642,8 @@ describe("public service index availability", () => {
         idempotency_key,provider_payee,registration_nonce,request_hash,canonical_intent,
         prepared_json,card_json,card_hash,skill_contract_set_hash,state,marketplace_enabled,
         card_accepting_orders,chain_active,registration_healthy,last_refreshed_at,activated_at)
-      SELECT registration_id,'42',decode(lpad(to_hex(g),64,'0'),'hex'),'service-'||g,'1',
+      SELECT registration_id,CASE WHEN g > $2 THEN '7' ELSE '42' END,
+        decode(lpad(to_hex(g),64,'0'),'hex'),'service-'||g,'1',
         'https://provider.example/card.json','0x'||repeat('3',40),'0x'||repeat('a',40),
         '0x'||repeat('b',40),'0x'||repeat('a',40),'scale-key-'||g,'0x'||repeat('2',40),
         decode(lpad(to_hex(g),64,'0'),'hex'),decode(lpad(to_hex(g),64,'0'),'hex'),'{}'::jsonb,
@@ -652,7 +653,9 @@ describe("public service index availability", () => {
           jsonb_build_object('listingId',gen_random_uuid(),'paymentRequired',false))),
         '{}'::jsonb,decode(lpad(to_hex(g),64,'0'),'hex'),decode(lpad(to_hex(g),64,'0'),'hex'),
         'ACTIVE',true,true,true,true,now(),now() - g * interval '1 second'
-      FROM (SELECT g, gen_random_uuid() AS registration_id FROM generate_series(1,3000) g) seeded;
+      FROM (SELECT g, gen_random_uuid() AS registration_id FROM generate_series(1,$1::int) g) seeded`,
+    [count, providerFrom]);
+    await pool.query(`
       INSERT INTO standard_service_listings
        (listing_id,registration_id,listing_key,skill_id,skill_contract_hash,payment_required,
         accepting_new_orders,deployment_required,splitter_address,preparation_json,state)
@@ -665,6 +668,16 @@ describe("public service index availability", () => {
            jsonb_array_elements(r.prepared_json->'listings') WITH ORDINALITY AS listed(item,position);
       ANALYZE standard_service_registrations;
       ANALYZE standard_service_listings;`);
+  }
+
+  interface PlanNode { "Node Type": string; "Relation Name"?: string; "Index Name"?: string; Plans?: PlanNode[] }
+  const nodes = (node: PlanNode): PlanNode[] => [node, ...(node.Plans ?? []).flatMap(nodes)];
+  const open = (id: Hex) => parseInt(id.slice(-2), 16) % 2 === 0;
+
+  // The listings must be read through their primary key: a lookup that scans
+  // the listings table per candidate registration took seconds at this size.
+  it("reads listings through their primary key at scale", async () => isolated(async (_store, pool) => {
+    await seedServices(pool, 3000);
     const sent: Array<{ text: string; values: unknown[] }> = [];
     const recording = new Proxy(pool, {
       get(target, property, receiver) {
@@ -676,7 +689,6 @@ describe("public service index availability", () => {
       },
     });
     const observed = new ServiceRegistrationStore(recording);
-    const open = (id: Hex) => parseInt(id.slice(-2), 16) % 2 === 0;
     const listed = await observed.listPublic(500);
     expect(listed).toHaveLength(500);
     expect(listed.every((record) => open(record.serviceId))).toBe(true);
@@ -685,8 +697,6 @@ describe("public service index availability", () => {
     expect(await observed.getPublicByServiceId(id(3))).toBeNull();
     expect(sent).toHaveLength(3);
 
-    interface PlanNode { "Node Type": string; "Relation Name"?: string; "Index Name"?: string; Plans?: PlanNode[] }
-    const nodes = (node: PlanNode): PlanNode[] => [node, ...(node.Plans ?? []).flatMap(nodes)];
     for (const { text, values } of sent) {
       const explained = await pool.query<{ "QUERY PLAN": Array<{ Plan: PlanNode }> }>(
         `EXPLAIN (FORMAT JSON) ${text}`, values);
@@ -695,6 +705,53 @@ describe("public service index availability", () => {
         node["Relation Name"] === "standard_service_listings" && node["Node Type"] === "Seq Scan"))
         .toEqual([]);
       expect(plan.some((node) => node["Index Name"] === "standard_service_listings_pkey")).toBe(true);
+    }
+  }), 60_000);
+
+  // A provider's services are filtered before the limit: provider 7 holds the
+  // 100 oldest of 300 services (50 of them open), so the newest 100 of the
+  // whole index hold none of them, while its own index lists all 50, newest
+  // first. Without the filter the query and its answer stay as they were.
+  it("filters the index by provider before the limit", async () => isolated(async (store, pool) => {
+    await seedServices(pool, 300, 200);
+    const sent: Array<{ text: string; values: unknown[] }> = [];
+    const recording = new Proxy(pool, {
+      get(target, property, receiver) {
+        if (property !== "query") return Reflect.get(target, property, receiver);
+        return (text: string, values: unknown[] = []) => {
+          sent.push({ text, values });
+          return target.query(text, values);
+        };
+      },
+    });
+    const observed = new ServiceRegistrationStore(recording);
+
+    const unfiltered = await observed.listPublic(100);
+    expect(unfiltered).toHaveLength(100);
+    expect(unfiltered.every((record) => record.providerAgentId === "42")).toBe(true);
+    expect(sent[0]!.values).toEqual([100]);
+    expect(sent[0]!.text).not.toContain("provider_agent_id");
+    expect((await store.listPublic(100, null)).map((record) => record.registrationId))
+      .toEqual(unfiltered.map((record) => record.registrationId));
+
+    const seventh = await observed.listPublic(100, "7");
+    expect(seventh.map((record) => record.serviceSlug))
+      .toEqual(Array.from({ length: 50 }, (_, i) => `service-${202 + 2 * i}`));
+    expect(seventh.every((record) => record.providerAgentId === "7" && open(record.serviceId))).toBe(true);
+    expect((await store.listPublic(10, "7")).map((record) => record.registrationId))
+      .toEqual(seventh.slice(0, 10).map((record) => record.registrationId));
+    expect(await observed.listPublic(100, "8")).toEqual([]);
+    expect((await store.listPublic(100, "42")).map((record) => record.registrationId))
+      .toEqual(unfiltered.map((record) => record.registrationId));
+
+    expect(sent.map((query) => query.values)).toEqual([[100], [100, "7"], [100, "8"]]);
+    for (const { text, values } of sent) {
+      const explained = await pool.query<{ "QUERY PLAN": Array<{ Plan: PlanNode }> }>(
+        `EXPLAIN (FORMAT JSON) ${text}`, values);
+      const plan = nodes(explained.rows[0]!["QUERY PLAN"][0]!.Plan);
+      expect(plan.filter((node) =>
+        node["Relation Name"] === "standard_service_listings" && node["Node Type"] === "Seq Scan"))
+        .toEqual([]);
     }
   }), 60_000);
 });
