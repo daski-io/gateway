@@ -81,7 +81,7 @@ describe("recovery lifecycle projection",()=>{
     const service=Object.assign(Object.create(StandardRailService.prototype),{providerWallets:COMMITTED_KEYS_ONLY,
       releaseSales: { assertOpen: async () => undefined, isParked: async () => false, parkedStatus: async () => null },
     salesOutage: { assertOpen: async () => undefined, status: async () => ({ salesOpen: true }) }, signerHealth: () => true,
-      assertAdmissionOpen:vi.fn(),assertRailFence:async()=>undefined,
+      assertRailFence:async()=>undefined,
       listing:async()=>({purchaseReadiness:"payer_dns"}),validateRequest:async()=>undefined,providerFetch,
     }) as StandardRailService;
     await expect(service.issueChallenge({providerAgentId:"7",outcomeId:"create-mailbox",body:{}}))

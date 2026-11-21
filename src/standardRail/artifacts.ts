@@ -46,7 +46,12 @@ export async function verifyEnvelope<T>(
   ) {
     throw new Error(`${expectedType} artifact domain mismatch`);
   }
-  if (envelope.issuedAt > nowSeconds || envelope.validBefore <= nowSeconds) {
+  // The manifest's envelopes are long-lived: an envelope issued in the future
+  // is refused, but none expires. Its validBefore, like the rail and
+  // facilitator profiles' admission and recovery dates and the windows of
+  // admissions and action definitions, is informational and enters only the
+  // chronology checks below.
+  if (envelope.issuedAt > nowSeconds) {
     throw new Error(`${expectedType} artifact is outside its validity window`);
   }
   const trusted = trust.signers.get(envelope.signerKeyId);

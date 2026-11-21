@@ -38,7 +38,6 @@ describe("standard rail orchestration", () => {
     const createDraft = vi.fn();
     const service = harness({
       railConfig: { manifest: { activeRailProfile: { payload: { railEpoch: "7" } } } },
-      assertAdmissionOpen: vi.fn(),
       assertRailFence: vi.fn(async () => undefined),
       listing: vi.fn(() => listing),
       verifyListingIdentity: vi.fn(async () => undefined),
@@ -84,7 +83,6 @@ describe("standard rail orchestration", () => {
     const existing = { handle: "handle-1", order };
     const service = harness({
       appConfig: { chainId: 84532 },
-      assertAdmissionOpen: vi.fn(),
       assertRailFence: vi.fn(async () => undefined),
       store: { loadOperations: vi.fn(async () => null), persistOperations: vi.fn(async () => undefined), findByIntentId: vi.fn(async () => existing) },
       incidents: { record: vi.fn() },
@@ -132,7 +130,6 @@ describe("standard rail orchestration", () => {
     const findByAuthorizationKey = vi.fn();
     const service = harness({
       appConfig: { chainId: 84532 },
-      assertAdmissionOpen: vi.fn(),
       assertRailFence: vi.fn(async () => undefined),
       store: { loadOperations: vi.fn(async () => null), persistOperations: vi.fn(async () => undefined), findByIntentId, findByAuthorizationKey },
       incidents: { record: vi.fn() },
@@ -177,7 +174,6 @@ describe("standard rail orchestration", () => {
     } as StandardOrderRecord;
     const service = harness({
       appConfig: { chainId: 84532 },
-      assertAdmissionOpen: vi.fn(),
       assertRailFence: vi.fn(async () => undefined),
       store: { loadOperations: vi.fn(async () => null), persistOperations: vi.fn(async () => undefined), findByIntentId: vi.fn(async () => ({ handle: "handle-1", order })) },
       incidents: { record: vi.fn() },
@@ -579,7 +575,6 @@ describe("new sales during a sales outage", () => {
     const findOpenDraft = vi.fn();
     const service = harness({
       salesOutage: pausedOutage(),
-      assertAdmissionOpen: vi.fn(),
       assertRailFence: vi.fn(async () => undefined),
       listing,
       store: { findOpenDraft },
@@ -602,7 +597,6 @@ describe("new sales during a sales outage", () => {
     const base = (fields: Record<string, unknown>) => harness({
       salesOutage: pausedOutage(),
       appConfig: { chainId: 84532 },
-      assertAdmissionOpen: vi.fn(),
       assertRailFence: vi.fn(async () => undefined),
       incidents: { record: vi.fn(async () => undefined) },
       listing,

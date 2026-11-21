@@ -192,7 +192,6 @@ export function createStandardMetaRouter(args: {
   }
   router.get("/health/ready", async (req, res) => {
     const databaseReady = await args.pool.query("SELECT 1").then(() => true, () => false);
-    const admissionOpen = args.service.isAdmissionOpen();
     const dependenciesReady = args.service.areDependenciesReady();
     const observed = databaseReady ? await args.service.operationalHealth().catch(() => null) : null;
     const operator = operatorAuthorized(req, args.config.catalogOperatorToken);
@@ -213,7 +212,7 @@ export function createStandardMetaRouter(args: {
     const signers = args.service.signerStatuses().map((signer) => operator ? signer
       : { role: signer.role, backend: signer.backend, status: signer.status });
     const signersReady = signers.every((signer) => signer.status === "healthy");
-    const ready = databaseReady && admissionOpen && dependenciesReady && signersReady && !args.lifecycle.isStopping();
+    const ready = databaseReady && dependenciesReady && signersReady && !args.lifecycle.isStopping();
     res.status(ready ? 200 : 503).json({
       status: ready ? "ready" : "unready",
       version: GATEWAY_VERSION,
@@ -225,7 +224,9 @@ export function createStandardMetaRouter(args: {
       railProfileHash: args.service.railProfileHash,
       dependencies: {
         database: databaseReady ? "ready" : "unready",
-        admission: admissionOpen ? "ready" : "expired",
+        // The signed rail no longer closes admission at a date; the field
+        // stays for readers of this shape.
+        admission: "ready",
         standardRail: dependenciesReady ? "ready" : "unready",
         signers: signersReady ? "ready" : "unready",
       },

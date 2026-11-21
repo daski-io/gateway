@@ -277,8 +277,10 @@ export class StandardAssetFederation {
   activeServicing(providerAgentId: string): ActiveServicing | null {
     const now = Math.floor(Date.now() / 1_000);
     const admissionEnvelope = this.activeAdmissions.get(providerAgentId);
+    // An admission takes effect from its validFrom and does not expire: its
+    // validBefore is informational.
     if (!admissionEnvelope || !admissionEnvelope.payload.servicingEnabled ||
-      admissionEnvelope.payload.validFrom > now || admissionEnvelope.payload.validBefore <= now) return null;
+      admissionEnvelope.payload.validFrom > now) return null;
     const controlProfile = this.config.manifest.providerControlProfiles.find((item) =>
       item.payload.providerAgentId === providerAgentId &&
       canonicalHash(item) === admissionEnvelope.payload.providerControlProfileHash
@@ -375,7 +377,7 @@ export class StandardAssetFederation {
       signerKeyId: "gateway-lifecycle",
       account: this.config.signers.artifact("gateway-lifecycle").account,
       issuedAt: now,
-      validBefore: Math.min(now + 300, active.admissionEnvelope.payload.validBefore),
+      validBefore: now + 300,
       payload: {
         payer: args.payer,
         providerAgentId: args.providerAgentId,

@@ -103,7 +103,7 @@ export function purchaseHarness(stage: Stage = "settlement") {
     appConfig: { publicUrl: "https://gateway.example", chainId: 84532, x402Network: "eip155:84532", usdc: { name: "USDC", version: "2" } },
     railConfig: { leaseSeconds: 45, encryptionKey: Buffer.alloc(32, 7),
       manifest: { activeRailProfile: { payload: { facilitatorProfileHash: hash("8") } } } },
-    assertAdmissionOpen: vi.fn(), assertRailFence: vi.fn(async () => undefined),
+    assertRailFence: vi.fn(async () => undefined),
     listing: vi.fn(async () => listing), screenParticipants: vi.fn(async () => undefined),
     verifyListingIdentity: vi.fn(async () => undefined),
     withRailFence: (work: () => Promise<unknown>) => work(),

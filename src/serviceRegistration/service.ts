@@ -996,10 +996,10 @@ export class ServiceRegistrationService {
   // Each provider's currently admitted asset actions, checked the way the
   // gateway resolves an action (StandardAssetFederation, StandardAssetActions):
   // the current admission must be one this manifest carries, with its control
-  // profile, servicing enabled and in its window; the catalog is the one it
-  // binds; each action is in its window and matches its definition hash. A
-  // display enrichment: a failed read leaves the public views without owner
-  // actions.
+  // profile, servicing enabled and past its validFrom; the catalog is the one
+  // it binds; each action is past its validFrom and matches its definition
+  // hash. Neither expires. A display enrichment: a failed read leaves the
+  // public views without owner actions.
   private async activeAssetActions(): Promise<ReadonlyMap<string, AssetActionDefinitionV1[]>> {
     const actions = new Map<string, AssetActionDefinitionV1[]>();
     try {
@@ -1011,7 +1011,7 @@ export class ServiceRegistrationService {
       for (const admission of admissions) {
         const payload = admission?.payload;
         if (
-          !payload?.servicingEnabled || payload.validFrom > now || payload.validBefore <= now
+          !payload?.servicingEnabled || payload.validFrom > now
         ) continue;
         const admissionHash = canonicalHash(admission);
         if (!manifest.servicingAdmissions.some((item) => envelopeHash(item) === admissionHash)) continue;
@@ -1023,7 +1023,7 @@ export class ServiceRegistrationService {
           envelopeHash(item) === payload.actionCatalogHash);
         if (!catalog) continue;
         actions.set(payload.providerAgentId, catalog.payload.actions.filter((action) => {
-          if (action.validFrom > now || action.validBefore <= now) return false;
+          if (action.validFrom > now) return false;
           const { actionDefinitionHash, ...preimage } = action;
           return actionDefinitionHash === canonicalHash(preimage);
         }));

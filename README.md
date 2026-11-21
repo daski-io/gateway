@@ -435,6 +435,19 @@ core groups are:
   never re-signed: when the key that signs new manifest artifacts changes,
   list the earlier address beside the new one for as long as the manifest
   carries what it signed.
+- Manifest validity: the manifest's envelopes are long-lived. The start-up
+  check refuses one issued after the gateway's clock, but none of them
+  expires. Their `validBefore`, the rail and facilitator profiles'
+  `admissionValidBefore` and `recoveryValidBefore`, and the `validBefore` of a
+  servicing admission or an action definition are informational: they stay
+  in the signed bytes and in `/public/v2/artifacts/:hash`, and are still
+  checked for order (admission closes after activation, recovery after
+  admission and no later than its envelope, a definition no later than its
+  catalog's envelope), but a past date stops no sale, recovery, owner action
+  or start. Admissions and action definitions take effect from their
+  `validFrom`. `/health/ready` reports `dependencies.admission` as `ready`.
+  Short-lived envelopes keep their expiry: quotes, dispatches, intake
+  answers, wallet authorizations, grants, provider responses and cursors.
 - Reputation fees: `REPUTATION_MAX_FEE_PER_GAS_WEI` defaults to 3 gwei on
   Base mainnet (8453) and Base Sepolia (84532), and 100 gwei elsewhere; an
   explicit value overrides this. With the default 1,500,000 registration

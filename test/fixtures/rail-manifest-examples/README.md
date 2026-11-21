@@ -24,7 +24,8 @@ The files are generated. Do not edit them by hand.
 - `trust` is what the gateway is configured with: its environment, chain id and
   audience, and the signer addresses it trusts per key ID.
 - `clock.now` is the instant, in unix seconds, at which every verdict holds. An
-  envelope is valid while `issuedAt <= now < validBefore`.
+  envelope is valid once `issuedAt <= now`. Its `validBefore` is
+  informational: the manifest's envelopes are long-lived and none expires.
 - `keys` holds the synthetic keys with their labels. A signature is EIP-191
   `personal_sign` over the raw 32-byte keccak256 of the canonical JSON of the
   envelope without its `signature`. Canonical JSON sorts object keys by UTF-16
@@ -43,9 +44,16 @@ The files are generated. Do not edit them by hand.
     signature.
 
 The check is `verifyStandardRailManifest` in `src/standardRail/artifacts.ts`:
-every envelope's type, domain, validity window and signer, the control profile
-rules, and the bindings between servicing admissions, action catalogs and
-control profiles. Decoding a manifest from its transport encoding and the size
+every envelope's type, domain, issuance (not after `now`) and signer, the
+control profile rules, the action definition rules (among them that a
+definition's `validBefore` is after its `validFrom` and not after its catalog
+envelope's), and the bindings between servicing admissions, action catalogs
+and control profiles. No date in a manifest is an expiry: not an envelope's
+`validBefore`, not the rail and facilitator profiles' `admissionValidBefore`
+and `recoveryValidBefore`, and not the `validBefore` of a servicing admission
+or an action definition. The verdicts therefore hold at any later clock too,
+except that an envelope issued after `clock.now` becomes valid once the clock
+reaches its `issuedAt`. Decoding a manifest from its transport encoding and the size
 limit on it are outside this set.
 
 ## What the accepted examples establish
@@ -55,6 +63,10 @@ limit on it are outside this set.
 - A control profile needs no servicing admission and no action catalog. An
   admission needs a carried profile and catalog of its own agent.
 - An origin verifies with or without a trailing slash.
+- A manifest is read for years after it is signed: one whose every date is
+  before the clock (`accepted.past-valid-before`), or with one envelope whose
+  `validBefore` is the clock (`accepted.profile-past-valid-before`), starts a
+  gateway.
 
 `test/sharedOriginProviders.test.ts` sells through `accepted.shared-origin`:
 both providers' listings assemble, each provider's calls go to its own path,

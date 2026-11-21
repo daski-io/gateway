@@ -438,7 +438,7 @@ function gatewayService(fields: Record<string, unknown>): Harness {
     appConfig: APP_CONFIG, railConfig: railConfig(), purchaseResponses: new StandardPurchaseResponses(),
     releaseSales: { assertOpen: async () => undefined, isParked: async () => false, parkedStatus: async () => null },
     salesOutage: { assertOpen: async () => undefined, status: async () => ({ salesOpen: true }) }, signerHealth: () => true,
-    assertAdmissionOpen: () => undefined, assertRailFence: async () => undefined,
+    assertRailFence: async () => undefined,
     catalog: catalogHarness(), incidents: { record: async () => undefined },
     ...fields,
   });

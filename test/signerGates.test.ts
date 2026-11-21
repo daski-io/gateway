@@ -57,7 +57,7 @@ const listing = {
 describe("an unhealthy signer stops new sales like an outage", () => {
   it("refuses a challenge before quoting anything", async () => {
     const quote = vi.fn();
-    const service = harness({ assertAdmissionOpen: vi.fn(), assertRailFence: vi.fn(async () => undefined), listing: quote });
+    const service = harness({ assertRailFence: vi.fn(async () => undefined), listing: quote });
     await expect(service.issueChallenge({ providerAgentId: "7", outcomeId: "outcome", body: {} })).rejects.toMatchObject({
       code: "SIGNER_UNAVAILABLE", status: 503, phase: "challenge", retryable: true, retryAfterSeconds: 30,
       requiresNewSignature: false, paymentMayHaveSettled: false,
@@ -181,7 +181,7 @@ describe("readiness", () => {
     const app = express();
     app.use(createStandardMetaRouter({ config: { catalogOperatorToken: token, x402Network: "eip155:84532", chainId: 84532 } as never,
       pool: { query: async () => ({ rows: [] }) } as never, lifecycle: { isStopping: () => false } as never, railConfig: {} as never,
-      service: { signerStatuses: statuses, isAdmissionOpen: () => true, areDependenciesReady: () => true,
+      service: { signerStatuses: statuses, areDependenciesReady: () => true,
         operationalHealth: async () => ({}), railProfileHash: hash("a"),
         salesOutage: { publicStatus: async () => ({ salesOpen: true }), operatorState: async () => ({ salesOpen: true, revision: 0 }) } } as never }));
     const url = await serve(app);
@@ -214,7 +214,7 @@ describe("signer health wired into the gates and paid-order reads", () => {
     const service = Object.assign(Object.create(StandardRailService.prototype), {
       railConfig: { signers },
       salesOutage: { assertOpen: async () => undefined, status: async () => ({ salesOpen: true }) },
-      assertAdmissionOpen: vi.fn(), assertRailFence: vi.fn(async () => undefined), listing: vi.fn(),
+      assertRailFence: vi.fn(async () => undefined), listing: vi.fn(),
     }) as unknown as Harness;
     expect(signers.identity.healthy()).toBe(true);
     await expect(signers.identity.account.signMessage({ message: { raw: hash("1") } })).rejects.toBeInstanceOf(SignerRefused);
