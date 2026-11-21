@@ -5,7 +5,7 @@
   "check": "src/standardRail/artifacts.ts verifyStandardRailManifest(manifest, trust), with the clock at clock.now",
   "clock": {
     "now": 1790000000,
-    "note": "Unix seconds. An envelope is valid while issuedAt <= now < validBefore."
+    "note": "Unix seconds. An envelope is valid once issuedAt <= now; its validBefore is informational and never expires it."
   },
   "trust": {
     "environment": "testnet",
@@ -742,6 +742,490 @@
               "timeoutMs": 90000
             },
             "signature": "0x0d8337555c242d03f762eaf42b2f167591704101ee124dee015a5ff238f4a524566a55d56b8ca489da8657b828e07fc582c095e887085309f35c418174a0f3031c"
+          }
+        ]
+      }
+    },
+    {
+      "id": "accepted.profile-past-valid-before",
+      "verdict": "accepted",
+      "purpose": "One profile's validBefore is the clock's now. A manifest envelope that is issued is never too old: its validBefore is informational.",
+      "gatewayError": null,
+      "manifest": {
+        "facilitatorProfile": {
+          "artifactType": "FacilitatorProfileV1",
+          "schemaVersion": 1,
+          "environment": "testnet",
+          "chainId": 84532,
+          "audience": "https://gateway.example",
+          "signerKeyId": "gateway-protocol",
+          "issuedAt": 1789996400,
+          "validBefore": 1805552000,
+          "payload": {
+            "profileEpoch": "1",
+            "profileId": "example-v1",
+            "baseUrl": "https://facilitator.example",
+            "scheme": "exact",
+            "network": "eip155:84532",
+            "asset": "0x7B9D68278E583B4d7EB502B827A592E9cC2c9216",
+            "assetTransferMethod": "eip3009",
+            "authenticationMethod": "cdp-jwt-v1",
+            "credentialPolicyHash": "0x09f1c40d02ca698e4337206734684314495af8df6ce1329113e7ab14ac7f65f9",
+            "tlsPolicyHash": "0x6be2b17ca54c630ba9a83fefa6b73190c352371ea6d2157baba98d160188f775",
+            "allowedExtensionSetHash": "0xa9afb64ba9ccd8c3fabb33c13629aefc451e6a232fd93d906631bb474c39321c",
+            "settlementCalldataPolicyHash": "0x930576bf0f0a6837d9f2f0b7a7d2d8a2eb9b531fd2f3957a1febacf0a1ef5b6a",
+            "verifyTimeout": 10000,
+            "settleTimeout": 30000,
+            "responseSchemaHash": "0x0f0030b2cdb2761b896f41e6fcf1a05e59b6a015bf2458993bfcf8a2391d629b",
+            "screeningPolicyHash": "0x2e9d4f775e4f2e8b7355ec199925b73dffc3fe292d3ba7f09e340e5d473391d6",
+            "evidenceAdapterHash": "0x88b99bccf54b4131a0ce7db0c718961fd24b7c6253ce3aa642c2d28e9b1f4aaa",
+            "activatedAt": 1789996400,
+            "admissionValidBefore": 1802960000,
+            "recoveryValidBefore": 1805552000
+          },
+          "signature": "0xc59ae052529eaf76693eb247d3e6cab852e8f28759530625953c7784a524b2977d70dc86c3767de1c68a3a685f6a09a14424726fb7341408e688218501816cd61c"
+        },
+        "railCapabilityRequirements": {
+          "artifactType": "RailCapabilityRequirementsV1",
+          "schemaVersion": 1,
+          "environment": "testnet",
+          "chainId": 84532,
+          "audience": "https://gateway.example",
+          "signerKeyId": "gateway-protocol",
+          "issuedAt": 1789996400,
+          "validBefore": 1805552000,
+          "payload": {
+            "requirementId": "example-v1",
+            "scheme": "exact",
+            "network": "eip155:84532",
+            "asset": "0x7B9D68278E583B4d7EB502B827A592E9cC2c9216",
+            "assetTransferMethod": "eip3009",
+            "authenticatedResponseEvidence": "cdp-jwt-v1",
+            "screeningCoverage": "gateway-and-facilitator-v1",
+            "calldataSemantics": "transferWithAuthorization-v1",
+            "allowedExtensionSetHash": "0xa9afb64ba9ccd8c3fabb33c13629aefc451e6a232fd93d906631bb474c39321c"
+          },
+          "signature": "0x275a75ee10144d04fb2f26154de609e97120616f7eaf9ee9e9a90419e62f3b82179addc793cdab3c2a3e5e6538e9d89d163ca659bcaf2631ae0991b2246873be1c"
+        },
+        "activeRailProfile": {
+          "artifactType": "ActiveRailProfileV1",
+          "schemaVersion": 1,
+          "environment": "testnet",
+          "chainId": 84532,
+          "audience": "https://gateway.example",
+          "signerKeyId": "gateway-protocol",
+          "issuedAt": 1789996400,
+          "validBefore": 1805552000,
+          "payload": {
+            "railEpoch": "1",
+            "facilitatorProfileHash": "0xdeb10ec45939769cc9b27acf954c358b0332eacbd34742c94fb1419d6db37c4a",
+            "priorRailEpoch": "0",
+            "priorActiveRailProfileHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+            "environment": "testnet",
+            "chainId": 84532,
+            "activatedAt": 1789996400,
+            "admissionValidBefore": 1802960000,
+            "recoveryValidBefore": 1805552000
+          },
+          "signature": "0x25f228dfb416da53b7d6db1257922fc11bab7747b0d25c289aa40774f289256376a7a85b283ff53f4fbda0e09e2d29a0ca36245e907514abdfd4e8e60f564ae31b"
+        },
+        "chainEvidencePolicy": {
+          "artifactType": "ChainEvidencePolicyV2",
+          "schemaVersion": 2,
+          "environment": "testnet",
+          "chainId": 84532,
+          "audience": "https://gateway.example",
+          "signerKeyId": "gateway-protocol",
+          "issuedAt": 1789996400,
+          "validBefore": 1805552000,
+          "payload": {
+            "policyId": "example-v1",
+            "canonicalToken": "0x7B9D68278E583B4d7EB502B827A592E9cC2c9216",
+            "canonicalTokenRuntimeCodeHash": "0x2e5e140630a13a8b1a69c60fa8014ae445f1560a6fda59287e8c1522ae82d45e",
+            "tokenImplementationAddress": "0xf40800fCADCCfB50D235982d20605029e9798b91",
+            "tokenImplementationRuntimeCodeHash": "0xb2c8f65757fb6d5391c832f7aafb3a78eaf4417b17dd875369cf95bb93150f2f",
+            "tokenImplementationSlot": "0x4f48081a54dae9f966ca8f3a0705839a87448835d73e468e9b24c6d40821ce9f",
+            "tokenDomainSeparator": "0x97d0d1afcab52d7e02ba7779b103dd9c3e788aa59ed12d7237c82544795e748c",
+            "maximumSourceLagBlocks": 10,
+            "finalityBlockTimeSeconds": 2,
+            "maximumLogPageEvents": 1000
+          },
+          "signature": "0x3e26ef6bac4c06a475a8b022cb06d93a66f483b7967e4cb9f03a0287557d1214292c6595b9eba14056bd51544d082fc60bcddbb7acc556bc6942aa11df419a671c"
+        },
+        "servicingAdmissions": [
+          {
+            "artifactType": "ProviderServicingAdmissionV1",
+            "schemaVersion": 1,
+            "environment": "testnet",
+            "chainId": 84532,
+            "audience": "https://gateway.example",
+            "signerKeyId": "gateway-protocol",
+            "issuedAt": 1789996400,
+            "validBefore": 1805552000,
+            "payload": {
+              "providerAgentId": "701",
+              "providerControlProfileHash": "0xc6574e40c6b7821729772ce640bc98f83e216d00027b882571b323a7856da5a6",
+              "servicingProfileEpoch": 1,
+              "actionCatalogHash": "0xa1ceaa757a987b3091809ab95718b8b3ce703e9271f78e2b233a7dacb70eb1c2",
+              "actionCatalogSchemaHash": "0x271612473b7e45aa4373647eed7cc7663b4eb2a5a69819eb5614878da403a337",
+              "actionCatalogEpoch": 1,
+              "servicingEnabled": true,
+              "previousAdmissionHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+              "validFrom": 1789996400,
+              "validBefore": 1805552000
+            },
+            "signature": "0x0e5cbf7e46d66c3a754772803ba54b1c1ecd96064b175ea17d271e2bf19ab4bf30c795d3cad02951257219a70566ba2596354f21aab35f77f13f79100f4597821c"
+          }
+        ],
+        "actionCatalogs": [
+          {
+            "artifactType": "ProviderAssetActionCatalogV1",
+            "schemaVersion": 1,
+            "environment": "testnet",
+            "chainId": 84532,
+            "audience": "https://gateway.example",
+            "signerKeyId": "gateway-protocol",
+            "issuedAt": 1789996400,
+            "validBefore": 1805552000,
+            "payload": {
+              "providerAgentId": "701",
+              "providerControlProfileHash": "0xc6574e40c6b7821729772ce640bc98f83e216d00027b882571b323a7856da5a6",
+              "servicingProfileEpoch": 1,
+              "actionCatalogSchemaHash": "0x271612473b7e45aa4373647eed7cc7663b4eb2a5a69819eb5614878da403a337",
+              "actionCatalogEpoch": 1,
+              "actions": [
+                {
+                  "providerAgentId": "701",
+                  "serviceId": "0xe1a399413284a645e791e560bc38f3d272cb7a902f273e26b1d8b2d1afcbbca0",
+                  "serviceSlug": "note-keeping",
+                  "actionId": "read-note",
+                  "assetType": "note",
+                  "ownershipPolicy": "owner-only",
+                  "destructive": false,
+                  "requestSchema": {
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": false
+                  },
+                  "responseSchema": {
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": false
+                  },
+                  "confirmationSummarySchema": null,
+                  "confirmationSummaryTemplate": null,
+                  "endpoint": "https://shared.example/p/701/standard-rail/assets/action",
+                  "replayPolicy": "stable-result",
+                  "retentionSeconds": 3600,
+                  "validFrom": 1789996400,
+                  "validBefore": 1805552000,
+                  "actionDefinitionHash": "0x6abdc130d73dce294ca8859abe77627665636ab5bc4b97533bbd130360fd6701"
+                }
+              ]
+            },
+            "signature": "0xc3df05e34b9a8948638c8c4fdc229bf59dbf52a456fe6aa9d3d32e85ebdd4b250d0abdd773cf95af86f403b90a4a661e4547932214751b68eed07f65fae8036b1c"
+          }
+        ],
+        "providerControlProfiles": [
+          {
+            "artifactType": "ProviderControlProfileV1",
+            "schemaVersion": 1,
+            "environment": "testnet",
+            "chainId": 84532,
+            "audience": "https://gateway.example",
+            "signerKeyId": "gateway-protocol",
+            "issuedAt": 1789996400,
+            "validBefore": 1805552000,
+            "payload": {
+              "providerAgentId": "701",
+              "providerAudience": "https://shared.example/",
+              "origin": "https://shared.example",
+              "quoteUrl": "https://shared.example/p/701/standard-rail/quote",
+              "dispatchUrl": "https://shared.example/p/701/standard-rail/dispatch",
+              "dispatchStatusUrl": "https://shared.example/p/701/standard-rail/dispatch/status",
+              "lifecycleUrl": "https://shared.example/p/701/standard-rail/lifecycle",
+              "assetQueryUrl": "https://shared.example/p/701/standard-rail/assets/query",
+              "assetActionUrl": "https://shared.example/p/701/standard-rail/assets/action",
+              "assetResponseKeyId": "provider-wallet",
+              "assetResponseKey": "0x3Eb6eff18cD4b9E5a2be199858E8eb0D464ACe8D",
+              "servicingProfileEpoch": 1,
+              "tlsPolicy": "webpki-v1",
+              "workloadAuthentication": "signed-envelopes-v1",
+              "maxResponseBytes": 524288,
+              "timeoutMs": 90000
+            },
+            "signature": "0xa34bfca346095ad48e649d4edcd301e0f4e308636a90b6ad470ab95f1043c1921eb1d19748929330b138b762c41dc36a634513ef4ed3f5cb2562bacf44e4ce071c"
+          },
+          {
+            "artifactType": "ProviderControlProfileV1",
+            "schemaVersion": 1,
+            "environment": "testnet",
+            "chainId": 84532,
+            "audience": "https://gateway.example",
+            "signerKeyId": "gateway-protocol",
+            "issuedAt": 1789996400,
+            "validBefore": 1790000000,
+            "payload": {
+              "providerAgentId": "7012",
+              "providerAudience": "https://shared.example/",
+              "origin": "https://shared.example",
+              "quoteUrl": "https://shared.example/p/7012/standard-rail/quote",
+              "dispatchUrl": "https://shared.example/p/7012/standard-rail/dispatch",
+              "dispatchStatusUrl": "https://shared.example/p/7012/standard-rail/dispatch/status",
+              "lifecycleUrl": "https://shared.example/p/7012/standard-rail/lifecycle",
+              "assetQueryUrl": "https://shared.example/p/7012/standard-rail/assets/query",
+              "assetActionUrl": "https://shared.example/p/7012/standard-rail/assets/action",
+              "assetResponseKeyId": "provider-wallet",
+              "assetResponseKey": "0x3Eb6eff18cD4b9E5a2be199858E8eb0D464ACe8D",
+              "servicingProfileEpoch": 1,
+              "tlsPolicy": "webpki-v1",
+              "workloadAuthentication": "signed-envelopes-v1",
+              "maxResponseBytes": 524288,
+              "timeoutMs": 90000
+            },
+            "signature": "0xd7e8e6d37d1926107ab491ab57ed34c1ba0cf4ae06eeebd92e39113eb4f7ee426007b6d5873b853adc217755cdbf37f380a156b93ada35b05f6ca12654d07a3c1c"
+          }
+        ]
+      }
+    },
+    {
+      "id": "accepted.past-valid-before",
+      "verdict": "accepted",
+      "purpose": "accepted.shared-origin signed long before the clock, as a manifest is read years after its signing: every envelope's validBefore, both profiles' admissionValidBefore and recoveryValidBefore, the admission's and the action definition's validBefore are all before the clock's now. None of them is an expiry.",
+      "gatewayError": null,
+      "manifest": {
+        "facilitatorProfile": {
+          "artifactType": "FacilitatorProfileV1",
+          "schemaVersion": 1,
+          "environment": "testnet",
+          "chainId": 84532,
+          "audience": "https://gateway.example",
+          "signerKeyId": "gateway-protocol",
+          "issuedAt": 1772720000,
+          "validBefore": 1789136000,
+          "payload": {
+            "profileEpoch": "1",
+            "profileId": "example-v1",
+            "baseUrl": "https://facilitator.example",
+            "scheme": "exact",
+            "network": "eip155:84532",
+            "asset": "0x7B9D68278E583B4d7EB502B827A592E9cC2c9216",
+            "assetTransferMethod": "eip3009",
+            "authenticationMethod": "cdp-jwt-v1",
+            "credentialPolicyHash": "0x09f1c40d02ca698e4337206734684314495af8df6ce1329113e7ab14ac7f65f9",
+            "tlsPolicyHash": "0x6be2b17ca54c630ba9a83fefa6b73190c352371ea6d2157baba98d160188f775",
+            "allowedExtensionSetHash": "0xa9afb64ba9ccd8c3fabb33c13629aefc451e6a232fd93d906631bb474c39321c",
+            "settlementCalldataPolicyHash": "0x930576bf0f0a6837d9f2f0b7a7d2d8a2eb9b531fd2f3957a1febacf0a1ef5b6a",
+            "verifyTimeout": 10000,
+            "settleTimeout": 30000,
+            "responseSchemaHash": "0x0f0030b2cdb2761b896f41e6fcf1a05e59b6a015bf2458993bfcf8a2391d629b",
+            "screeningPolicyHash": "0x2e9d4f775e4f2e8b7355ec199925b73dffc3fe292d3ba7f09e340e5d473391d6",
+            "evidenceAdapterHash": "0x88b99bccf54b4131a0ce7db0c718961fd24b7c6253ce3aa642c2d28e9b1f4aaa",
+            "activatedAt": 1772720000,
+            "admissionValidBefore": 1788185600,
+            "recoveryValidBefore": 1789049600
+          },
+          "signature": "0xd491c0cf1ad2ab0f1efbd792a14b96c5f3b1320c4fbe5ff17883cf6dbff2f1422a4c2ab06b350c02d0ff3e0f7e4439de7913f109a73a017b44eb6951028184181c"
+        },
+        "railCapabilityRequirements": {
+          "artifactType": "RailCapabilityRequirementsV1",
+          "schemaVersion": 1,
+          "environment": "testnet",
+          "chainId": 84532,
+          "audience": "https://gateway.example",
+          "signerKeyId": "gateway-protocol",
+          "issuedAt": 1772720000,
+          "validBefore": 1789136000,
+          "payload": {
+            "requirementId": "example-v1",
+            "scheme": "exact",
+            "network": "eip155:84532",
+            "asset": "0x7B9D68278E583B4d7EB502B827A592E9cC2c9216",
+            "assetTransferMethod": "eip3009",
+            "authenticatedResponseEvidence": "cdp-jwt-v1",
+            "screeningCoverage": "gateway-and-facilitator-v1",
+            "calldataSemantics": "transferWithAuthorization-v1",
+            "allowedExtensionSetHash": "0xa9afb64ba9ccd8c3fabb33c13629aefc451e6a232fd93d906631bb474c39321c"
+          },
+          "signature": "0x76c0c3be923229bfeb867b457b50b6807b7825084f951197ee971324576228d54b86d57c07b97c788301bcf72e0d21cf19b218103896a7e9803e5d3f9b1f29661c"
+        },
+        "activeRailProfile": {
+          "artifactType": "ActiveRailProfileV1",
+          "schemaVersion": 1,
+          "environment": "testnet",
+          "chainId": 84532,
+          "audience": "https://gateway.example",
+          "signerKeyId": "gateway-protocol",
+          "issuedAt": 1772720000,
+          "validBefore": 1789136000,
+          "payload": {
+            "railEpoch": "1",
+            "facilitatorProfileHash": "0x74ae221dd74041c1601602c4efabe60ce60978f7402794f5151f8e7e236e97eb",
+            "priorRailEpoch": "0",
+            "priorActiveRailProfileHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+            "environment": "testnet",
+            "chainId": 84532,
+            "activatedAt": 1772720000,
+            "admissionValidBefore": 1788185600,
+            "recoveryValidBefore": 1789049600
+          },
+          "signature": "0xe10be75a1106dc98d04f6a76d5d0fcbc4ceb27719a6700433481b38566c1a9e175063d11f3ec0f896216d43fba28ac8e5379e654ffb439b8479c48a8e20c3ef21b"
+        },
+        "chainEvidencePolicy": {
+          "artifactType": "ChainEvidencePolicyV2",
+          "schemaVersion": 2,
+          "environment": "testnet",
+          "chainId": 84532,
+          "audience": "https://gateway.example",
+          "signerKeyId": "gateway-protocol",
+          "issuedAt": 1772720000,
+          "validBefore": 1789136000,
+          "payload": {
+            "policyId": "example-v1",
+            "canonicalToken": "0x7B9D68278E583B4d7EB502B827A592E9cC2c9216",
+            "canonicalTokenRuntimeCodeHash": "0x2e5e140630a13a8b1a69c60fa8014ae445f1560a6fda59287e8c1522ae82d45e",
+            "tokenImplementationAddress": "0xf40800fCADCCfB50D235982d20605029e9798b91",
+            "tokenImplementationRuntimeCodeHash": "0xb2c8f65757fb6d5391c832f7aafb3a78eaf4417b17dd875369cf95bb93150f2f",
+            "tokenImplementationSlot": "0x4f48081a54dae9f966ca8f3a0705839a87448835d73e468e9b24c6d40821ce9f",
+            "tokenDomainSeparator": "0x97d0d1afcab52d7e02ba7779b103dd9c3e788aa59ed12d7237c82544795e748c",
+            "maximumSourceLagBlocks": 10,
+            "finalityBlockTimeSeconds": 2,
+            "maximumLogPageEvents": 1000
+          },
+          "signature": "0x9ab071b6922108bbb8412152384de4728a0ed624b715ef17dd5c3530da9859834bf6cdfdb1cc2465adc703c4f7b108ac3bbb22d5d2cfff081d80c891973a9aaf1b"
+        },
+        "servicingAdmissions": [
+          {
+            "artifactType": "ProviderServicingAdmissionV1",
+            "schemaVersion": 1,
+            "environment": "testnet",
+            "chainId": 84532,
+            "audience": "https://gateway.example",
+            "signerKeyId": "gateway-protocol",
+            "issuedAt": 1772720000,
+            "validBefore": 1789136000,
+            "payload": {
+              "providerAgentId": "701",
+              "providerControlProfileHash": "0x6da721026b24d7b3a0baf46191a2acb3f1b4c0f2d404d4328719a79c873869d1",
+              "servicingProfileEpoch": 1,
+              "actionCatalogHash": "0x832a5a140f4f9b62706284a0ab9be49dd77d183f42d10606ff0f292283627951",
+              "actionCatalogSchemaHash": "0x271612473b7e45aa4373647eed7cc7663b4eb2a5a69819eb5614878da403a337",
+              "actionCatalogEpoch": 1,
+              "servicingEnabled": true,
+              "previousAdmissionHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+              "validFrom": 1772720000,
+              "validBefore": 1789049600
+            },
+            "signature": "0x6f0b09c0aecb22072120633e0a3881d1689b60e96310b70b9d8a247a326a96ee15bb0199ada41b8f25762b5bafc96f188935cb556aebc0f0df6449eb25a06c831b"
+          }
+        ],
+        "actionCatalogs": [
+          {
+            "artifactType": "ProviderAssetActionCatalogV1",
+            "schemaVersion": 1,
+            "environment": "testnet",
+            "chainId": 84532,
+            "audience": "https://gateway.example",
+            "signerKeyId": "gateway-protocol",
+            "issuedAt": 1772720000,
+            "validBefore": 1789136000,
+            "payload": {
+              "providerAgentId": "701",
+              "providerControlProfileHash": "0x6da721026b24d7b3a0baf46191a2acb3f1b4c0f2d404d4328719a79c873869d1",
+              "servicingProfileEpoch": 1,
+              "actionCatalogSchemaHash": "0x271612473b7e45aa4373647eed7cc7663b4eb2a5a69819eb5614878da403a337",
+              "actionCatalogEpoch": 1,
+              "actions": [
+                {
+                  "providerAgentId": "701",
+                  "serviceId": "0xe1a399413284a645e791e560bc38f3d272cb7a902f273e26b1d8b2d1afcbbca0",
+                  "serviceSlug": "note-keeping",
+                  "actionId": "read-note",
+                  "assetType": "note",
+                  "ownershipPolicy": "owner-only",
+                  "destructive": false,
+                  "requestSchema": {
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": false
+                  },
+                  "responseSchema": {
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": false
+                  },
+                  "confirmationSummarySchema": null,
+                  "confirmationSummaryTemplate": null,
+                  "endpoint": "https://shared.example/p/701/standard-rail/assets/action",
+                  "replayPolicy": "stable-result",
+                  "retentionSeconds": 3600,
+                  "validFrom": 1772720000,
+                  "validBefore": 1789049600,
+                  "actionDefinitionHash": "0xabb84f422d48e4fdc002be21d6833ca3932bff7ed0b5755799c8cf85700b91f1"
+                }
+              ]
+            },
+            "signature": "0xa907a576c78a220944e4a547f07ec11c426949241de0e6d2d669c30ea0ff53fb5efb40aa58ebeb60d26be3d625f1fb22b9f230f68f541dada227334c5761d9281c"
+          }
+        ],
+        "providerControlProfiles": [
+          {
+            "artifactType": "ProviderControlProfileV1",
+            "schemaVersion": 1,
+            "environment": "testnet",
+            "chainId": 84532,
+            "audience": "https://gateway.example",
+            "signerKeyId": "gateway-protocol",
+            "issuedAt": 1772720000,
+            "validBefore": 1789136000,
+            "payload": {
+              "providerAgentId": "701",
+              "providerAudience": "https://shared.example/",
+              "origin": "https://shared.example",
+              "quoteUrl": "https://shared.example/p/701/standard-rail/quote",
+              "dispatchUrl": "https://shared.example/p/701/standard-rail/dispatch",
+              "dispatchStatusUrl": "https://shared.example/p/701/standard-rail/dispatch/status",
+              "lifecycleUrl": "https://shared.example/p/701/standard-rail/lifecycle",
+              "assetQueryUrl": "https://shared.example/p/701/standard-rail/assets/query",
+              "assetActionUrl": "https://shared.example/p/701/standard-rail/assets/action",
+              "assetResponseKeyId": "provider-wallet",
+              "assetResponseKey": "0x3Eb6eff18cD4b9E5a2be199858E8eb0D464ACe8D",
+              "servicingProfileEpoch": 1,
+              "tlsPolicy": "webpki-v1",
+              "workloadAuthentication": "signed-envelopes-v1",
+              "maxResponseBytes": 524288,
+              "timeoutMs": 90000
+            },
+            "signature": "0x7111c20a685b21613d1647ad6ba830ab2dbc1aa54c7cef87c9de271b9ecc3ff71fd24c8baf580631851384c916e6bf52034913ff141b5ce3d4d9960fe07198531c"
+          },
+          {
+            "artifactType": "ProviderControlProfileV1",
+            "schemaVersion": 1,
+            "environment": "testnet",
+            "chainId": 84532,
+            "audience": "https://gateway.example",
+            "signerKeyId": "gateway-protocol",
+            "issuedAt": 1772720000,
+            "validBefore": 1789136000,
+            "payload": {
+              "providerAgentId": "7012",
+              "providerAudience": "https://shared.example/",
+              "origin": "https://shared.example",
+              "quoteUrl": "https://shared.example/p/7012/standard-rail/quote",
+              "dispatchUrl": "https://shared.example/p/7012/standard-rail/dispatch",
+              "dispatchStatusUrl": "https://shared.example/p/7012/standard-rail/dispatch/status",
+              "lifecycleUrl": "https://shared.example/p/7012/standard-rail/lifecycle",
+              "assetQueryUrl": "https://shared.example/p/7012/standard-rail/assets/query",
+              "assetActionUrl": "https://shared.example/p/7012/standard-rail/assets/action",
+              "assetResponseKeyId": "provider-wallet",
+              "assetResponseKey": "0x3Eb6eff18cD4b9E5a2be199858E8eb0D464ACe8D",
+              "servicingProfileEpoch": 1,
+              "tlsPolicy": "webpki-v1",
+              "workloadAuthentication": "signed-envelopes-v1",
+              "maxResponseBytes": 524288,
+              "timeoutMs": 90000
+            },
+            "signature": "0x761d2487784d4103e7c9fd182137caddd60860e6b21c40c414009d44983cdd2e3973a681430221a64cce412bff08762e2ef059d0cd39d00a4fe691df618a48931b"
           }
         ]
       }
@@ -3680,248 +4164,6 @@
       }
     },
     {
-      "id": "refused.profile-expired",
-      "verdict": "refused",
-      "purpose": "One profile expires before the rest of the manifest: validBefore is the clock's now.",
-      "gatewayError": "ProviderControlProfileV1 artifact is outside its validity window",
-      "manifest": {
-        "facilitatorProfile": {
-          "artifactType": "FacilitatorProfileV1",
-          "schemaVersion": 1,
-          "environment": "testnet",
-          "chainId": 84532,
-          "audience": "https://gateway.example",
-          "signerKeyId": "gateway-protocol",
-          "issuedAt": 1789996400,
-          "validBefore": 1805552000,
-          "payload": {
-            "profileEpoch": "1",
-            "profileId": "example-v1",
-            "baseUrl": "https://facilitator.example",
-            "scheme": "exact",
-            "network": "eip155:84532",
-            "asset": "0x7B9D68278E583B4d7EB502B827A592E9cC2c9216",
-            "assetTransferMethod": "eip3009",
-            "authenticationMethod": "cdp-jwt-v1",
-            "credentialPolicyHash": "0x09f1c40d02ca698e4337206734684314495af8df6ce1329113e7ab14ac7f65f9",
-            "tlsPolicyHash": "0x6be2b17ca54c630ba9a83fefa6b73190c352371ea6d2157baba98d160188f775",
-            "allowedExtensionSetHash": "0xa9afb64ba9ccd8c3fabb33c13629aefc451e6a232fd93d906631bb474c39321c",
-            "settlementCalldataPolicyHash": "0x930576bf0f0a6837d9f2f0b7a7d2d8a2eb9b531fd2f3957a1febacf0a1ef5b6a",
-            "verifyTimeout": 10000,
-            "settleTimeout": 30000,
-            "responseSchemaHash": "0x0f0030b2cdb2761b896f41e6fcf1a05e59b6a015bf2458993bfcf8a2391d629b",
-            "screeningPolicyHash": "0x2e9d4f775e4f2e8b7355ec199925b73dffc3fe292d3ba7f09e340e5d473391d6",
-            "evidenceAdapterHash": "0x88b99bccf54b4131a0ce7db0c718961fd24b7c6253ce3aa642c2d28e9b1f4aaa",
-            "activatedAt": 1789996400,
-            "admissionValidBefore": 1802960000,
-            "recoveryValidBefore": 1805552000
-          },
-          "signature": "0xc59ae052529eaf76693eb247d3e6cab852e8f28759530625953c7784a524b2977d70dc86c3767de1c68a3a685f6a09a14424726fb7341408e688218501816cd61c"
-        },
-        "railCapabilityRequirements": {
-          "artifactType": "RailCapabilityRequirementsV1",
-          "schemaVersion": 1,
-          "environment": "testnet",
-          "chainId": 84532,
-          "audience": "https://gateway.example",
-          "signerKeyId": "gateway-protocol",
-          "issuedAt": 1789996400,
-          "validBefore": 1805552000,
-          "payload": {
-            "requirementId": "example-v1",
-            "scheme": "exact",
-            "network": "eip155:84532",
-            "asset": "0x7B9D68278E583B4d7EB502B827A592E9cC2c9216",
-            "assetTransferMethod": "eip3009",
-            "authenticatedResponseEvidence": "cdp-jwt-v1",
-            "screeningCoverage": "gateway-and-facilitator-v1",
-            "calldataSemantics": "transferWithAuthorization-v1",
-            "allowedExtensionSetHash": "0xa9afb64ba9ccd8c3fabb33c13629aefc451e6a232fd93d906631bb474c39321c"
-          },
-          "signature": "0x275a75ee10144d04fb2f26154de609e97120616f7eaf9ee9e9a90419e62f3b82179addc793cdab3c2a3e5e6538e9d89d163ca659bcaf2631ae0991b2246873be1c"
-        },
-        "activeRailProfile": {
-          "artifactType": "ActiveRailProfileV1",
-          "schemaVersion": 1,
-          "environment": "testnet",
-          "chainId": 84532,
-          "audience": "https://gateway.example",
-          "signerKeyId": "gateway-protocol",
-          "issuedAt": 1789996400,
-          "validBefore": 1805552000,
-          "payload": {
-            "railEpoch": "1",
-            "facilitatorProfileHash": "0xdeb10ec45939769cc9b27acf954c358b0332eacbd34742c94fb1419d6db37c4a",
-            "priorRailEpoch": "0",
-            "priorActiveRailProfileHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
-            "environment": "testnet",
-            "chainId": 84532,
-            "activatedAt": 1789996400,
-            "admissionValidBefore": 1802960000,
-            "recoveryValidBefore": 1805552000
-          },
-          "signature": "0x25f228dfb416da53b7d6db1257922fc11bab7747b0d25c289aa40774f289256376a7a85b283ff53f4fbda0e09e2d29a0ca36245e907514abdfd4e8e60f564ae31b"
-        },
-        "chainEvidencePolicy": {
-          "artifactType": "ChainEvidencePolicyV2",
-          "schemaVersion": 2,
-          "environment": "testnet",
-          "chainId": 84532,
-          "audience": "https://gateway.example",
-          "signerKeyId": "gateway-protocol",
-          "issuedAt": 1789996400,
-          "validBefore": 1805552000,
-          "payload": {
-            "policyId": "example-v1",
-            "canonicalToken": "0x7B9D68278E583B4d7EB502B827A592E9cC2c9216",
-            "canonicalTokenRuntimeCodeHash": "0x2e5e140630a13a8b1a69c60fa8014ae445f1560a6fda59287e8c1522ae82d45e",
-            "tokenImplementationAddress": "0xf40800fCADCCfB50D235982d20605029e9798b91",
-            "tokenImplementationRuntimeCodeHash": "0xb2c8f65757fb6d5391c832f7aafb3a78eaf4417b17dd875369cf95bb93150f2f",
-            "tokenImplementationSlot": "0x4f48081a54dae9f966ca8f3a0705839a87448835d73e468e9b24c6d40821ce9f",
-            "tokenDomainSeparator": "0x97d0d1afcab52d7e02ba7779b103dd9c3e788aa59ed12d7237c82544795e748c",
-            "maximumSourceLagBlocks": 10,
-            "finalityBlockTimeSeconds": 2,
-            "maximumLogPageEvents": 1000
-          },
-          "signature": "0x3e26ef6bac4c06a475a8b022cb06d93a66f483b7967e4cb9f03a0287557d1214292c6595b9eba14056bd51544d082fc60bcddbb7acc556bc6942aa11df419a671c"
-        },
-        "servicingAdmissions": [
-          {
-            "artifactType": "ProviderServicingAdmissionV1",
-            "schemaVersion": 1,
-            "environment": "testnet",
-            "chainId": 84532,
-            "audience": "https://gateway.example",
-            "signerKeyId": "gateway-protocol",
-            "issuedAt": 1789996400,
-            "validBefore": 1805552000,
-            "payload": {
-              "providerAgentId": "701",
-              "providerControlProfileHash": "0xc6574e40c6b7821729772ce640bc98f83e216d00027b882571b323a7856da5a6",
-              "servicingProfileEpoch": 1,
-              "actionCatalogHash": "0xa1ceaa757a987b3091809ab95718b8b3ce703e9271f78e2b233a7dacb70eb1c2",
-              "actionCatalogSchemaHash": "0x271612473b7e45aa4373647eed7cc7663b4eb2a5a69819eb5614878da403a337",
-              "actionCatalogEpoch": 1,
-              "servicingEnabled": true,
-              "previousAdmissionHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
-              "validFrom": 1789996400,
-              "validBefore": 1805552000
-            },
-            "signature": "0x0e5cbf7e46d66c3a754772803ba54b1c1ecd96064b175ea17d271e2bf19ab4bf30c795d3cad02951257219a70566ba2596354f21aab35f77f13f79100f4597821c"
-          }
-        ],
-        "actionCatalogs": [
-          {
-            "artifactType": "ProviderAssetActionCatalogV1",
-            "schemaVersion": 1,
-            "environment": "testnet",
-            "chainId": 84532,
-            "audience": "https://gateway.example",
-            "signerKeyId": "gateway-protocol",
-            "issuedAt": 1789996400,
-            "validBefore": 1805552000,
-            "payload": {
-              "providerAgentId": "701",
-              "providerControlProfileHash": "0xc6574e40c6b7821729772ce640bc98f83e216d00027b882571b323a7856da5a6",
-              "servicingProfileEpoch": 1,
-              "actionCatalogSchemaHash": "0x271612473b7e45aa4373647eed7cc7663b4eb2a5a69819eb5614878da403a337",
-              "actionCatalogEpoch": 1,
-              "actions": [
-                {
-                  "providerAgentId": "701",
-                  "serviceId": "0xe1a399413284a645e791e560bc38f3d272cb7a902f273e26b1d8b2d1afcbbca0",
-                  "serviceSlug": "note-keeping",
-                  "actionId": "read-note",
-                  "assetType": "note",
-                  "ownershipPolicy": "owner-only",
-                  "destructive": false,
-                  "requestSchema": {
-                    "type": "object",
-                    "properties": {},
-                    "additionalProperties": false
-                  },
-                  "responseSchema": {
-                    "type": "object",
-                    "properties": {},
-                    "additionalProperties": false
-                  },
-                  "confirmationSummarySchema": null,
-                  "confirmationSummaryTemplate": null,
-                  "endpoint": "https://shared.example/p/701/standard-rail/assets/action",
-                  "replayPolicy": "stable-result",
-                  "retentionSeconds": 3600,
-                  "validFrom": 1789996400,
-                  "validBefore": 1805552000,
-                  "actionDefinitionHash": "0x6abdc130d73dce294ca8859abe77627665636ab5bc4b97533bbd130360fd6701"
-                }
-              ]
-            },
-            "signature": "0xc3df05e34b9a8948638c8c4fdc229bf59dbf52a456fe6aa9d3d32e85ebdd4b250d0abdd773cf95af86f403b90a4a661e4547932214751b68eed07f65fae8036b1c"
-          }
-        ],
-        "providerControlProfiles": [
-          {
-            "artifactType": "ProviderControlProfileV1",
-            "schemaVersion": 1,
-            "environment": "testnet",
-            "chainId": 84532,
-            "audience": "https://gateway.example",
-            "signerKeyId": "gateway-protocol",
-            "issuedAt": 1789996400,
-            "validBefore": 1805552000,
-            "payload": {
-              "providerAgentId": "701",
-              "providerAudience": "https://shared.example/",
-              "origin": "https://shared.example",
-              "quoteUrl": "https://shared.example/p/701/standard-rail/quote",
-              "dispatchUrl": "https://shared.example/p/701/standard-rail/dispatch",
-              "dispatchStatusUrl": "https://shared.example/p/701/standard-rail/dispatch/status",
-              "lifecycleUrl": "https://shared.example/p/701/standard-rail/lifecycle",
-              "assetQueryUrl": "https://shared.example/p/701/standard-rail/assets/query",
-              "assetActionUrl": "https://shared.example/p/701/standard-rail/assets/action",
-              "assetResponseKeyId": "provider-wallet",
-              "assetResponseKey": "0x3Eb6eff18cD4b9E5a2be199858E8eb0D464ACe8D",
-              "servicingProfileEpoch": 1,
-              "tlsPolicy": "webpki-v1",
-              "workloadAuthentication": "signed-envelopes-v1",
-              "maxResponseBytes": 524288,
-              "timeoutMs": 90000
-            },
-            "signature": "0xa34bfca346095ad48e649d4edcd301e0f4e308636a90b6ad470ab95f1043c1921eb1d19748929330b138b762c41dc36a634513ef4ed3f5cb2562bacf44e4ce071c"
-          },
-          {
-            "artifactType": "ProviderControlProfileV1",
-            "schemaVersion": 1,
-            "environment": "testnet",
-            "chainId": 84532,
-            "audience": "https://gateway.example",
-            "signerKeyId": "gateway-protocol",
-            "issuedAt": 1789996400,
-            "validBefore": 1790000000,
-            "payload": {
-              "providerAgentId": "7012",
-              "providerAudience": "https://shared.example/",
-              "origin": "https://shared.example",
-              "quoteUrl": "https://shared.example/p/7012/standard-rail/quote",
-              "dispatchUrl": "https://shared.example/p/7012/standard-rail/dispatch",
-              "dispatchStatusUrl": "https://shared.example/p/7012/standard-rail/dispatch/status",
-              "lifecycleUrl": "https://shared.example/p/7012/standard-rail/lifecycle",
-              "assetQueryUrl": "https://shared.example/p/7012/standard-rail/assets/query",
-              "assetActionUrl": "https://shared.example/p/7012/standard-rail/assets/action",
-              "assetResponseKeyId": "provider-wallet",
-              "assetResponseKey": "0x3Eb6eff18cD4b9E5a2be199858E8eb0D464ACe8D",
-              "servicingProfileEpoch": 1,
-              "tlsPolicy": "webpki-v1",
-              "workloadAuthentication": "signed-envelopes-v1",
-              "maxResponseBytes": 524288,
-              "timeoutMs": 90000
-            },
-            "signature": "0xd7e8e6d37d1926107ab491ab57ed34c1ba0cf4ae06eeebd92e39113eb4f7ee426007b6d5873b853adc217755cdbf37f380a156b93ada35b05f6ca12654d07a3c1c"
-          }
-        ]
-      }
-    },
-    {
       "id": "refused.profile-not-yet-valid",
       "verdict": "refused",
       "purpose": "One profile is issued a second after the clock's now.",
@@ -5061,6 +5303,248 @@
               ]
             },
             "signature": "0x53661bb461a7a67dfba7c5dc230a61c293ed33439630e54f246c13c2be0d0a6b62796c014c7235ef748722709018d707bb51719d68150346d198a4e1c237968b1c"
+          }
+        ],
+        "providerControlProfiles": [
+          {
+            "artifactType": "ProviderControlProfileV1",
+            "schemaVersion": 1,
+            "environment": "testnet",
+            "chainId": 84532,
+            "audience": "https://gateway.example",
+            "signerKeyId": "gateway-protocol",
+            "issuedAt": 1789996400,
+            "validBefore": 1805552000,
+            "payload": {
+              "providerAgentId": "701",
+              "providerAudience": "https://shared.example/",
+              "origin": "https://shared.example",
+              "quoteUrl": "https://shared.example/p/701/standard-rail/quote",
+              "dispatchUrl": "https://shared.example/p/701/standard-rail/dispatch",
+              "dispatchStatusUrl": "https://shared.example/p/701/standard-rail/dispatch/status",
+              "lifecycleUrl": "https://shared.example/p/701/standard-rail/lifecycle",
+              "assetQueryUrl": "https://shared.example/p/701/standard-rail/assets/query",
+              "assetActionUrl": "https://shared.example/p/701/standard-rail/assets/action",
+              "assetResponseKeyId": "provider-wallet",
+              "assetResponseKey": "0x3Eb6eff18cD4b9E5a2be199858E8eb0D464ACe8D",
+              "servicingProfileEpoch": 1,
+              "tlsPolicy": "webpki-v1",
+              "workloadAuthentication": "signed-envelopes-v1",
+              "maxResponseBytes": 524288,
+              "timeoutMs": 90000
+            },
+            "signature": "0xa34bfca346095ad48e649d4edcd301e0f4e308636a90b6ad470ab95f1043c1921eb1d19748929330b138b762c41dc36a634513ef4ed3f5cb2562bacf44e4ce071c"
+          },
+          {
+            "artifactType": "ProviderControlProfileV1",
+            "schemaVersion": 1,
+            "environment": "testnet",
+            "chainId": 84532,
+            "audience": "https://gateway.example",
+            "signerKeyId": "gateway-protocol",
+            "issuedAt": 1789996400,
+            "validBefore": 1805552000,
+            "payload": {
+              "providerAgentId": "7012",
+              "providerAudience": "https://shared.example/",
+              "origin": "https://shared.example",
+              "quoteUrl": "https://shared.example/p/7012/standard-rail/quote",
+              "dispatchUrl": "https://shared.example/p/7012/standard-rail/dispatch",
+              "dispatchStatusUrl": "https://shared.example/p/7012/standard-rail/dispatch/status",
+              "lifecycleUrl": "https://shared.example/p/7012/standard-rail/lifecycle",
+              "assetQueryUrl": "https://shared.example/p/7012/standard-rail/assets/query",
+              "assetActionUrl": "https://shared.example/p/7012/standard-rail/assets/action",
+              "assetResponseKeyId": "provider-wallet",
+              "assetResponseKey": "0x3Eb6eff18cD4b9E5a2be199858E8eb0D464ACe8D",
+              "servicingProfileEpoch": 1,
+              "tlsPolicy": "webpki-v1",
+              "workloadAuthentication": "signed-envelopes-v1",
+              "maxResponseBytes": 524288,
+              "timeoutMs": 90000
+            },
+            "signature": "0x0d8337555c242d03f762eaf42b2f167591704101ee124dee015a5ff238f4a524566a55d56b8ca489da8657b828e07fc582c095e887085309f35c418174a0f3031c"
+          }
+        ]
+      }
+    },
+    {
+      "id": "refused.action-outlives-its-catalog",
+      "verdict": "refused",
+      "purpose": "An action definition's validBefore is after its catalog envelope's: a definition never names a later date than the catalog that signs it.",
+      "gatewayError": "Provider action definition is invalid",
+      "manifest": {
+        "facilitatorProfile": {
+          "artifactType": "FacilitatorProfileV1",
+          "schemaVersion": 1,
+          "environment": "testnet",
+          "chainId": 84532,
+          "audience": "https://gateway.example",
+          "signerKeyId": "gateway-protocol",
+          "issuedAt": 1789996400,
+          "validBefore": 1805552000,
+          "payload": {
+            "profileEpoch": "1",
+            "profileId": "example-v1",
+            "baseUrl": "https://facilitator.example",
+            "scheme": "exact",
+            "network": "eip155:84532",
+            "asset": "0x7B9D68278E583B4d7EB502B827A592E9cC2c9216",
+            "assetTransferMethod": "eip3009",
+            "authenticationMethod": "cdp-jwt-v1",
+            "credentialPolicyHash": "0x09f1c40d02ca698e4337206734684314495af8df6ce1329113e7ab14ac7f65f9",
+            "tlsPolicyHash": "0x6be2b17ca54c630ba9a83fefa6b73190c352371ea6d2157baba98d160188f775",
+            "allowedExtensionSetHash": "0xa9afb64ba9ccd8c3fabb33c13629aefc451e6a232fd93d906631bb474c39321c",
+            "settlementCalldataPolicyHash": "0x930576bf0f0a6837d9f2f0b7a7d2d8a2eb9b531fd2f3957a1febacf0a1ef5b6a",
+            "verifyTimeout": 10000,
+            "settleTimeout": 30000,
+            "responseSchemaHash": "0x0f0030b2cdb2761b896f41e6fcf1a05e59b6a015bf2458993bfcf8a2391d629b",
+            "screeningPolicyHash": "0x2e9d4f775e4f2e8b7355ec199925b73dffc3fe292d3ba7f09e340e5d473391d6",
+            "evidenceAdapterHash": "0x88b99bccf54b4131a0ce7db0c718961fd24b7c6253ce3aa642c2d28e9b1f4aaa",
+            "activatedAt": 1789996400,
+            "admissionValidBefore": 1802960000,
+            "recoveryValidBefore": 1805552000
+          },
+          "signature": "0xc59ae052529eaf76693eb247d3e6cab852e8f28759530625953c7784a524b2977d70dc86c3767de1c68a3a685f6a09a14424726fb7341408e688218501816cd61c"
+        },
+        "railCapabilityRequirements": {
+          "artifactType": "RailCapabilityRequirementsV1",
+          "schemaVersion": 1,
+          "environment": "testnet",
+          "chainId": 84532,
+          "audience": "https://gateway.example",
+          "signerKeyId": "gateway-protocol",
+          "issuedAt": 1789996400,
+          "validBefore": 1805552000,
+          "payload": {
+            "requirementId": "example-v1",
+            "scheme": "exact",
+            "network": "eip155:84532",
+            "asset": "0x7B9D68278E583B4d7EB502B827A592E9cC2c9216",
+            "assetTransferMethod": "eip3009",
+            "authenticatedResponseEvidence": "cdp-jwt-v1",
+            "screeningCoverage": "gateway-and-facilitator-v1",
+            "calldataSemantics": "transferWithAuthorization-v1",
+            "allowedExtensionSetHash": "0xa9afb64ba9ccd8c3fabb33c13629aefc451e6a232fd93d906631bb474c39321c"
+          },
+          "signature": "0x275a75ee10144d04fb2f26154de609e97120616f7eaf9ee9e9a90419e62f3b82179addc793cdab3c2a3e5e6538e9d89d163ca659bcaf2631ae0991b2246873be1c"
+        },
+        "activeRailProfile": {
+          "artifactType": "ActiveRailProfileV1",
+          "schemaVersion": 1,
+          "environment": "testnet",
+          "chainId": 84532,
+          "audience": "https://gateway.example",
+          "signerKeyId": "gateway-protocol",
+          "issuedAt": 1789996400,
+          "validBefore": 1805552000,
+          "payload": {
+            "railEpoch": "1",
+            "facilitatorProfileHash": "0xdeb10ec45939769cc9b27acf954c358b0332eacbd34742c94fb1419d6db37c4a",
+            "priorRailEpoch": "0",
+            "priorActiveRailProfileHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+            "environment": "testnet",
+            "chainId": 84532,
+            "activatedAt": 1789996400,
+            "admissionValidBefore": 1802960000,
+            "recoveryValidBefore": 1805552000
+          },
+          "signature": "0x25f228dfb416da53b7d6db1257922fc11bab7747b0d25c289aa40774f289256376a7a85b283ff53f4fbda0e09e2d29a0ca36245e907514abdfd4e8e60f564ae31b"
+        },
+        "chainEvidencePolicy": {
+          "artifactType": "ChainEvidencePolicyV2",
+          "schemaVersion": 2,
+          "environment": "testnet",
+          "chainId": 84532,
+          "audience": "https://gateway.example",
+          "signerKeyId": "gateway-protocol",
+          "issuedAt": 1789996400,
+          "validBefore": 1805552000,
+          "payload": {
+            "policyId": "example-v1",
+            "canonicalToken": "0x7B9D68278E583B4d7EB502B827A592E9cC2c9216",
+            "canonicalTokenRuntimeCodeHash": "0x2e5e140630a13a8b1a69c60fa8014ae445f1560a6fda59287e8c1522ae82d45e",
+            "tokenImplementationAddress": "0xf40800fCADCCfB50D235982d20605029e9798b91",
+            "tokenImplementationRuntimeCodeHash": "0xb2c8f65757fb6d5391c832f7aafb3a78eaf4417b17dd875369cf95bb93150f2f",
+            "tokenImplementationSlot": "0x4f48081a54dae9f966ca8f3a0705839a87448835d73e468e9b24c6d40821ce9f",
+            "tokenDomainSeparator": "0x97d0d1afcab52d7e02ba7779b103dd9c3e788aa59ed12d7237c82544795e748c",
+            "maximumSourceLagBlocks": 10,
+            "finalityBlockTimeSeconds": 2,
+            "maximumLogPageEvents": 1000
+          },
+          "signature": "0x3e26ef6bac4c06a475a8b022cb06d93a66f483b7967e4cb9f03a0287557d1214292c6595b9eba14056bd51544d082fc60bcddbb7acc556bc6942aa11df419a671c"
+        },
+        "servicingAdmissions": [
+          {
+            "artifactType": "ProviderServicingAdmissionV1",
+            "schemaVersion": 1,
+            "environment": "testnet",
+            "chainId": 84532,
+            "audience": "https://gateway.example",
+            "signerKeyId": "gateway-protocol",
+            "issuedAt": 1789996400,
+            "validBefore": 1805552000,
+            "payload": {
+              "providerAgentId": "701",
+              "providerControlProfileHash": "0xc6574e40c6b7821729772ce640bc98f83e216d00027b882571b323a7856da5a6",
+              "servicingProfileEpoch": 1,
+              "actionCatalogHash": "0xff8614c27eb9d3c6e3354de5e4411226a90f695af4f6fdc2bf487743beecfa62",
+              "actionCatalogSchemaHash": "0x271612473b7e45aa4373647eed7cc7663b4eb2a5a69819eb5614878da403a337",
+              "actionCatalogEpoch": 1,
+              "servicingEnabled": true,
+              "previousAdmissionHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+              "validFrom": 1789996400,
+              "validBefore": 1805552000
+            },
+            "signature": "0xf7d5f65ac0b20b1b333b6a5cea9fb7fdd4a810f7373f392f99e2379cbf1051237a68f616e2e7969291a0e89a0b2a76b7cbb72c59b925591cf68b2a9bfa2725c51b"
+          }
+        ],
+        "actionCatalogs": [
+          {
+            "artifactType": "ProviderAssetActionCatalogV1",
+            "schemaVersion": 1,
+            "environment": "testnet",
+            "chainId": 84532,
+            "audience": "https://gateway.example",
+            "signerKeyId": "gateway-protocol",
+            "issuedAt": 1789996400,
+            "validBefore": 1805552000,
+            "payload": {
+              "providerAgentId": "701",
+              "providerControlProfileHash": "0xc6574e40c6b7821729772ce640bc98f83e216d00027b882571b323a7856da5a6",
+              "servicingProfileEpoch": 1,
+              "actionCatalogSchemaHash": "0x271612473b7e45aa4373647eed7cc7663b4eb2a5a69819eb5614878da403a337",
+              "actionCatalogEpoch": 1,
+              "actions": [
+                {
+                  "providerAgentId": "701",
+                  "serviceId": "0xe1a399413284a645e791e560bc38f3d272cb7a902f273e26b1d8b2d1afcbbca0",
+                  "serviceSlug": "note-keeping",
+                  "actionId": "read-note",
+                  "assetType": "note",
+                  "ownershipPolicy": "owner-only",
+                  "destructive": false,
+                  "requestSchema": {
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": false
+                  },
+                  "responseSchema": {
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": false
+                  },
+                  "confirmationSummarySchema": null,
+                  "confirmationSummaryTemplate": null,
+                  "endpoint": "https://shared.example/p/701/standard-rail/assets/action",
+                  "replayPolicy": "stable-result",
+                  "retentionSeconds": 3600,
+                  "validFrom": 1789996400,
+                  "validBefore": 1805552001,
+                  "actionDefinitionHash": "0xa4cd5f5bc3cefd99014d8196eb1ec39b4568d938f028b4687ff4c0d943216210"
+                }
+              ]
+            },
+            "signature": "0x12d8c3154229b2afbaa4643c4feadcb4b43195b05a09efe0217510b8262ca8986c9a2a445fb7945fbe31d0b4f947e0b2ff7c68e698ae68b370c4b5037f2962be1b"
           }
         ],
         "providerControlProfiles": [

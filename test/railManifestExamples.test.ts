@@ -3,10 +3,12 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { Address } from "viem";
+import { privateKeyToAccount } from "viem/accounts";
 import { verifyStandardRailManifest, type ArtifactTrust } from "../src/standardRail/artifacts.js";
+import { signEnvelope } from "../src/standardRail/signing.js";
 import {
-  ADDRESSES, EXAMPLES_CONSUMERS, EXAMPLES_SCHEMA_VERSION, RAIL_MANIFEST_EXAMPLES_DIR, buildRailManifestExamples,
-  serializeExamples, type KeyName, type RailManifestExamples,
+  ADDRESSES, EXAMPLES_CONSUMERS, EXAMPLES_SCHEMA_VERSION, PRIVATE_KEYS, RAIL_MANIFEST_EXAMPLES_DIR,
+  buildRailManifestExamples, serializeExamples, type KeyName, type RailManifestExamples,
 } from "./helpers/railManifestExamples.js";
 
 // Example rail manifests (test/fixtures/rail-manifest-examples/): complete
@@ -113,13 +115,34 @@ describe("rail manifest examples", () => {
     }
   });
 
-  it("accepts no example once its envelopes have expired", async () => {
+  // A manifest is read for years after it is signed: no date in it expires
+  // the gateway's start. Only an envelope issued after the clock is refused.
+  it.each([
+    ["at its envelopes' validBefore", (set: RailManifestExamples) =>
+      set.examples.find((example) => example.id === "accepted.shared-origin")!.manifest.activeRailProfile.validBefore],
+    ["on 2027-04-01", () => Date.UTC(2027, 3, 1) / 1_000],
+    ["on 2032-06-01", () => Date.UTC(2032, 5, 1) / 1_000],
+  ] as const)("gives every example its verdict %s, except that nothing is issued later", async (_label, clock) => {
     const set = committed();
+    const now = clock(set);
     vi.useFakeTimers({ toFake: ["Date"] });
-    for (const example of set.examples.filter((candidate) => candidate.verdict === "accepted")) {
-      vi.setSystemTime(example.manifest.activeRailProfile.validBefore * 1_000);
-      await expect(verifyStandardRailManifest(example.manifest, trustOf(set)), example.id)
-        .rejects.toThrow("outside its validity window");
+    vi.setSystemTime(now * 1_000);
+    for (const example of set.examples) {
+      const check = verifyStandardRailManifest(example.manifest, trustOf(set));
+      // Issued a second after the set's clock, long before this one.
+      if (example.verdict === "accepted" || example.id === "refused.profile-not-yet-valid") {
+        await expect(check, example.id).resolves.toBeUndefined();
+      } else {
+        await expect(check, example.id).rejects.toThrow(new Error(example.gatewayError!));
+      }
     }
+    // A profile issued a second after this clock is still refused.
+    const { manifest } = set.examples.find((example) => example.id === "accepted.shared-origin")!;
+    const [admitted, profileOnly] = manifest.providerControlProfiles;
+    const { signature: _signature, ...unsigned } = profileOnly;
+    const future = await signEnvelope({ ...unsigned, issuedAt: now + 1,
+      account: privateKeyToAccount(PRIVATE_KEYS.manifestSigner) });
+    await expect(verifyStandardRailManifest({ ...manifest, providerControlProfiles: [admitted, future] }, trustOf(set)))
+      .rejects.toThrow(new Error("ProviderControlProfileV1 artifact is outside its validity window"));
   });
 });

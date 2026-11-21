@@ -169,13 +169,9 @@ export class StandardAssetActions {
       actionCatalogEpoch: resolved.active.admissionEnvelope.payload.actionCatalogEpoch,
       actionDefinitionHash: resolved.definition.actionDefinitionHash,
       stageValidBefore: resolved.definition.destructive && followUp === null && recovery === null
-        ? Math.min(
-            Math.floor(Date.now() / 1_000) +
-              Math.min(86_400, resolved.definition.retentionSeconds) +
-              Math.ceil(resolved.active.listing.providerControlProfile.payload.timeoutMs / 1_000),
-            resolved.definition.validBefore,
-            resolved.active.admissionEnvelope.payload.validBefore,
-          )
+        ? Math.floor(Date.now() / 1_000) +
+            Math.min(86_400, resolved.definition.retentionSeconds) +
+            Math.ceil(resolved.active.listing.providerControlProfile.payload.timeoutMs / 1_000)
         : null,
     });
     const grant = await this.grant(resolved, payer, request, walletHash, args.authorization);
@@ -263,9 +259,11 @@ export class StandardAssetActions {
       canonicalHash(item) === active.admissionEnvelope.payload.actionCatalogHash
     );
     const definition = catalogEnvelope?.payload.actions.find((item) => item.actionId === actionId);
+    // A definition takes effect from its validFrom and does not expire: its
+    // validBefore is informational, as its admission's is.
     const now = Math.floor(Date.now() / 1_000);
     if (
-      !catalogEnvelope || !definition || definition.validFrom > now || definition.validBefore <= now ||
+      !catalogEnvelope || !definition || definition.validFrom > now ||
       definition.actionDefinitionHash !== canonicalHash(omitHash(definition))
     ) throw new Error("ASSET_ACTION_NOT_ADMITTED");
     return { active, catalogEnvelope, definition };
@@ -311,7 +309,7 @@ export class StandardAssetActions {
       signerKeyId: "gateway-lifecycle",
       account: this.config.signers.artifact("gateway-lifecycle").account,
       issuedAt: now,
-      validBefore: Math.min(now + 300, admission.validBefore),
+      validBefore: now + 300,
       payload: {
         payer,
         providerAgentId: admission.providerAgentId,
@@ -381,8 +379,6 @@ export class StandardAssetActions {
       Number(payload.stageValidBefore) <= Math.min(
         envelope.issuedAt + 86_400,
         envelope.issuedAt + resolved.definition.retentionSeconds,
-        resolved.definition.validBefore,
-        resolved.active.admissionEnvelope.payload.validBefore,
       )
     );
     if (

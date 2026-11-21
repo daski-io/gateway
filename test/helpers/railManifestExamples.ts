@@ -46,6 +46,31 @@ export const ADDRESSES = Object.fromEntries(
 export const NOW = 1_790_000_000;
 const ISSUED_AT = NOW - 3_600;
 const VALID_BEFORE = NOW + 180 * 86_400;
+/**
+ * The window of a manifest signed long before the clock, every date of it
+ * past: issued 200 days before NOW, its envelopes' validBefore 10 days before
+ * NOW, admission closing 11 days and recovery 1 day before that, as the
+ * engine's genesis ceremony lays them out.
+ */
+const PAST = {
+  issuedAt: NOW - 200 * 86_400,
+  validBefore: NOW - 10 * 86_400,
+  admissionValidBefore: NOW - 21 * 86_400,
+  recoveryValidBefore: NOW - 11 * 86_400,
+} as const;
+/** The dates an envelope, its rail profiles and its servicing are signed with. */
+interface Window {
+  issuedAt: number;
+  validBefore: number;
+  admissionValidBefore: number;
+  recoveryValidBefore: number;
+}
+const CURRENT: Window = {
+  issuedAt: ISSUED_AT,
+  validBefore: VALID_BEFORE,
+  admissionValidBefore: VALID_BEFORE - 30 * 86_400,
+  recoveryValidBefore: VALID_BEFORE,
+};
 
 export const ENVIRONMENT = "testnet";
 export const CHAIN_ID = 84_532;
@@ -157,7 +182,8 @@ function envelope<T>(artifactType: string, payload: T, domain: Domain = {}): Pro
 const controlProfile = (payload: object, domain: Domain = {}) =>
   envelope("ProviderControlProfileV1", payload as ProviderControlProfileV1, domain);
 
-async function railArtifacts() {
+async function railArtifacts(window: Window = CURRENT) {
+  const domain = { issuedAt: window.issuedAt, validBefore: window.validBefore };
   const allowedExtensionSetHash = syntheticHash("allowed extension set");
   const facilitatorProfile = await envelope("FacilitatorProfileV1", {
     profileEpoch: "1", profileId: "example-v1", baseUrl: "https://facilitator.example",
@@ -167,8 +193,9 @@ async function railArtifacts() {
     settlementCalldataPolicyHash: syntheticHash("settlement calldata policy"), verifyTimeout: 10_000,
     settleTimeout: 30_000, responseSchemaHash: syntheticHash("response schema"),
     screeningPolicyHash: syntheticHash("screening policy"), evidenceAdapterHash: syntheticHash("evidence adapter"),
-    activatedAt: ISSUED_AT, admissionValidBefore: VALID_BEFORE - 30 * 86_400, recoveryValidBefore: VALID_BEFORE,
-  });
+    activatedAt: window.issuedAt, admissionValidBefore: window.admissionValidBefore,
+    recoveryValidBefore: window.recoveryValidBefore,
+  }, domain);
   return {
     facilitatorProfile,
     railCapabilityRequirements: await envelope("RailCapabilityRequirementsV1", {
@@ -176,12 +203,13 @@ async function railArtifacts() {
       assetTransferMethod: "eip3009", authenticatedResponseEvidence: "cdp-jwt-v1",
       screeningCoverage: "gateway-and-facilitator-v1", calldataSemantics: "transferWithAuthorization-v1",
       allowedExtensionSetHash,
-    }),
+    }, domain),
     activeRailProfile: await envelope("ActiveRailProfileV1", {
       railEpoch: "1", facilitatorProfileHash: canonicalHash(facilitatorProfile), priorRailEpoch: "0",
       priorActiveRailProfileHash: `0x${"00".repeat(32)}`, environment: ENVIRONMENT, chainId: CHAIN_ID,
-      activatedAt: ISSUED_AT, admissionValidBefore: VALID_BEFORE - 30 * 86_400, recoveryValidBefore: VALID_BEFORE,
-    }),
+      activatedAt: window.issuedAt, admissionValidBefore: window.admissionValidBefore,
+      recoveryValidBefore: window.recoveryValidBefore,
+    }, domain),
     chainEvidencePolicy: await envelope("ChainEvidencePolicyV2", {
       policyId: "example-v1", canonicalToken: TOKEN,
       canonicalTokenRuntimeCodeHash: syntheticHash("token runtime code"),
@@ -190,7 +218,7 @@ async function railArtifacts() {
       tokenImplementationSlot: syntheticHash("token implementation slot"),
       tokenDomainSeparator: syntheticHash("token domain separator"),
       maximumSourceLagBlocks: 10, finalityBlockTimeSeconds: 2, maximumLogPageEvents: 1_000,
-    }),
+    }, domain),
   };
 }
 
@@ -198,8 +226,13 @@ async function railArtifacts() {
 async function servicing(profile: Envelope<ProviderControlProfileV1>, change: {
   endpoint?: string;
   actionDefinitionHash?: Hex;
+  action?: Record<string, unknown>;
   admission?: Record<string, unknown>;
+  window?: Window;
 } = {}) {
+  // Admission and action windows end at the recovery date, as the engine's genesis ceremony signs them.
+  const window = change.window ?? CURRENT;
+  const domain = { issuedAt: window.issuedAt, validBefore: window.validBefore };
   const providerAgentId = profile.payload.providerAgentId;
   const emptyObject = { type: "object", properties: {}, additionalProperties: false };
   const definition = {
@@ -207,20 +240,20 @@ async function servicing(profile: Envelope<ProviderControlProfileV1>, change: {
     assetType: "note", ownershipPolicy: "owner-only", destructive: false, requestSchema: emptyObject,
     responseSchema: emptyObject, confirmationSummarySchema: null, confirmationSummaryTemplate: null,
     endpoint: change.endpoint ?? profile.payload.assetActionUrl, replayPolicy: "stable-result",
-    retentionSeconds: 3_600, validFrom: ISSUED_AT, validBefore: VALID_BEFORE,
+    retentionSeconds: 3_600, validFrom: window.issuedAt, validBefore: window.recoveryValidBefore, ...change.action,
   };
   const actionCatalogSchemaHash = syntheticHash("action catalog schema");
   const catalog = await envelope("ProviderAssetActionCatalogV1", {
     providerAgentId, providerControlProfileHash: canonicalHash(profile), servicingProfileEpoch: 1,
     actionCatalogSchemaHash, actionCatalogEpoch: 1,
     actions: [{ ...definition, actionDefinitionHash: change.actionDefinitionHash ?? canonicalHash(definition) }],
-  });
+  }, domain);
   const admission = await envelope("ProviderServicingAdmissionV1", {
     providerAgentId, providerControlProfileHash: canonicalHash(profile), servicingProfileEpoch: 1,
     actionCatalogHash: canonicalHash(catalog), actionCatalogSchemaHash, actionCatalogEpoch: 1,
-    servicingEnabled: true, previousAdmissionHash: `0x${"00".repeat(32)}`, validFrom: ISSUED_AT,
-    validBefore: VALID_BEFORE, ...change.admission,
-  });
+    servicingEnabled: true, previousAdmissionHash: `0x${"00".repeat(32)}`, validFrom: window.issuedAt,
+    validBefore: window.recoveryValidBefore, ...change.admission,
+  }, domain);
   return { catalog, admission };
 }
 
@@ -251,7 +284,7 @@ export interface RailManifestExamples {
 
 const INVALID_POLICY = "Provider control profile policy is invalid";
 const INVALID_SIGNATURE = "ProviderControlProfileV1 artifact signature is invalid";
-const OUTSIDE_WINDOW = "ProviderControlProfileV1 artifact is outside its validity window";
+const NOT_YET_ISSUED = "ProviderControlProfileV1 artifact is outside its validity window";
 const UNBOUND_ADMISSION = "Servicing admission does not bind an active control profile and action catalog";
 const offOrigin = (name: string) => `${name} must be a credential-free query-free URL on the pinned provider origin`;
 
@@ -293,6 +326,19 @@ export async function buildRailManifestExamples(): Promise<RailManifestExamples>
     + "servicing, beside two profile-only providers on the shared origin.",
     manifest({ servicingAdmissions: [ownOriginServicing.admission], actionCatalogs: [ownOriginServicing.catalog],
       providerControlProfiles: [ownOrigin, admittedProfile, profileOnlyProfile] }));
+  accepted("profile-past-valid-before",
+    "One profile's validBefore is the clock's now. A manifest envelope that is issued is never too old: its "
+    + "validBefore is informational.", await withProfile(profileOnly, { validBefore: NOW }));
+  const pastRail = await railArtifacts(PAST);
+  const pastProfiles = await Promise.all([ADMITTED_PROVIDER, PROFILE_ONLY_PROVIDER].map((agentId) =>
+    controlProfile(sharedOriginProfile(agentId), { issuedAt: PAST.issuedAt, validBefore: PAST.validBefore })));
+  const pastServicing = await servicing(pastProfiles[0], { window: PAST });
+  accepted("past-valid-before",
+    "accepted.shared-origin signed long before the clock, as a manifest is read years after its signing: every "
+    + "envelope's validBefore, both profiles' admissionValidBefore and recoveryValidBefore, the admission's and the "
+    + "action definition's validBefore are all before the clock's now. None of them is an expiry.",
+    { ...pastRail, servicingAdmissions: [pastServicing.admission], actionCatalogs: [pastServicing.catalog],
+      providerControlProfiles: pastProfiles } as unknown as StandardRailManifest);
 
   refused("profile-origin-with-path", "A profile origin is a bare origin: the provider's path belongs in its URLs.",
     "Provider control profile origin must be a credential-free HTTPS origin",
@@ -324,9 +370,7 @@ export async function buildRailManifestExamples(): Promise<RailManifestExamples>
     "Unknown artifact signer provider-admission", await withProfile(profileOnly, { signerKeyId: "provider-admission" }));
   refused("profile-another-chain", "The envelope is signed for another chain.",
     "ProviderControlProfileV1 artifact domain mismatch", await withProfile(profileOnly, { chainId: 8_453 }));
-  refused("profile-expired", "One profile expires before the rest of the manifest: validBefore is the clock's now.",
-    OUTSIDE_WINDOW, await withProfile(profileOnly, { validBefore: NOW }));
-  refused("profile-not-yet-valid", "One profile is issued a second after the clock's now.", OUTSIDE_WINDOW,
+  refused("profile-not-yet-valid", "One profile is issued a second after the clock's now.", NOT_YET_ISSUED,
     await withProfile(profileOnly, { issuedAt: NOW + 1 }));
   refused("admission-without-carried-profile", "An admission must name a control profile the manifest carries.",
     UNBOUND_ADMISSION, manifest({ providerControlProfiles: [profileOnlyProfile] }));
@@ -343,13 +387,19 @@ export async function buildRailManifestExamples(): Promise<RailManifestExamples>
   refused("action-definition-hash-mismatch", "An action definition's hash is not the hash of the definition.",
     "Provider action definition is invalid",
     manifest({ servicingAdmissions: [forgedAction.admission], actionCatalogs: [forgedAction.catalog] }));
+  const outlivingAction = await servicing(admittedProfile, { action: { validBefore: VALID_BEFORE + 1 } });
+  refused("action-outlives-its-catalog",
+    "An action definition's validBefore is after its catalog envelope's: a definition never names a later date than "
+    + "the catalog that signs it.", "Provider action definition is invalid",
+    manifest({ servicingAdmissions: [outlivingAction.admission], actionCatalogs: [outlivingAction.catalog] }));
 
   return {
     schemaVersion: EXAMPLES_SCHEMA_VERSION,
     synthetic: true,
     purpose: "Complete standard-rail manifests with the verdict the gateway gives each when it starts.",
     check: "src/standardRail/artifacts.ts verifyStandardRailManifest(manifest, trust), with the clock at clock.now",
-    clock: { now: NOW, note: "Unix seconds. An envelope is valid while issuedAt <= now < validBefore." },
+    clock: { now: NOW, note: "Unix seconds. An envelope is valid once issuedAt <= now; its validBefore is "
+      + "informational and never expires it." },
     trust: TRUST,
     keys: {
       testOnly: true,

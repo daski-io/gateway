@@ -21,7 +21,6 @@ import { standardPaymentError } from "../src/standardRail/routes.js";
 import { standardRailError } from "../src/standardRail/errors.js";
 import { hasFinalizedNonceConflict } from "../src/standardRail/nonceConflict.js";
 import { providerOutcome } from "../src/standardRail/walletQueries.js";
-import { isAdmissionWindowOpen } from "../src/standardRail/service.js";
 
 describe("standard rail primitives", () => {
   it("detects a finalized nonce conflict across every configured source", () => {
@@ -33,12 +32,6 @@ describe("standard rail primitives", () => {
   it("does not present an unrecorded provider outcome as completed", () => {
     expect(providerOutcome(0, false)).toBe("Pending");
     expect(providerOutcome(0, true)).toBe("Completed");
-  });
-
-  it("closes admission when either signed rail deadline expires", () => {
-    expect(isAdmissionWindowOpen(200, 300, 199)).toBe(true);
-    expect(isAdmissionWindowOpen(200, 300, 200)).toBe(false);
-    expect(isAdmissionWindowOpen(400, 300, 300)).toBe(false);
   });
 
   it("maps only classified payment errors and never leaks internals", () => {

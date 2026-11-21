@@ -269,6 +269,7 @@ describe("public v3 services contract", () => {
 
 describe("public owner actions", () => {
   function catalogService(admissions: unknown[] | Error, overrides: {
+    validFrom?: number;
     validBefore?: number;
     servicingEnabled?: boolean;
     admissionInManifest?: boolean;
@@ -294,7 +295,7 @@ describe("public owner actions", () => {
         providerControlProfileHash: canonicalHash(controlProfile),
         actionCatalogHash: canonicalHash(catalog),
         servicingEnabled: overrides.servicingEnabled ?? true,
-        validFrom: 0,
+        validFrom: overrides.validFrom ?? 0,
         validBefore: overrides.validBefore ?? 4_102_444_800,
       },
       signature: "0x04",
@@ -340,7 +341,7 @@ describe("public owner actions", () => {
 
   it.each([
     { label: "the admission read fails", admissions: new Error("db offline") },
-    { label: "the admission has expired", admissions: [], validBefore: 1 },
+    { label: "the admission takes effect later", admissions: [], validFrom: 4_102_444_800 },
     { label: "servicing is disabled", admissions: [], servicingEnabled: false },
     { label: "the manifest does not carry the current admission", admissions: [], admissionInManifest: false },
     { label: "the manifest has no matching control profile", admissions: [], controlProfileInManifest: false },
@@ -352,6 +353,23 @@ describe("public owner actions", () => {
     expect(detail.ownerActions).toEqual([]);
     // Free skills come from the card alone.
     expect(detail.freeSkills).toEqual(fixture.services[0].freeSkills);
+  });
+
+  it("lists the actions of an admission and definitions past their validBefore, which do not expire", async () => {
+    const expired = CATALOG_ACTIONS.map((item) => action(item.actionId, { ...item, validBefore: 1 }));
+    const { registration, service } = catalogService([], { validBefore: 1, actions: expired });
+
+    expect((await service.getPublic(registration.serviceId)).ownerActions)
+      .toEqual(fixture.services[0].ownerActions);
+  });
+
+  it("leaves out an action whose definition takes effect later", async () => {
+    const { registration, service } = catalogService([], {
+      actions: [action("get-sample-report", { validFrom: 4_102_444_800 }), action("discard-sample", { destructive: true })],
+    });
+
+    expect((await service.getPublic(registration.serviceId)).ownerActions.map((item) => item.actionId))
+      .toEqual(["discard-sample"]);
   });
 
   it("leaves out an action whose definition hash does not match it", async () => {

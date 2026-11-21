@@ -136,14 +136,6 @@ export function commercePrerequisites(signers: Pick<GatewaySigners, "prerequisit
  *  challenge is still clamped to the listing's own draft window. */
 export const FIXED_READINESS_QUOTE_MAX_SECONDS = 300;
 
-export function isAdmissionWindowOpen(
-  railValidBefore: number,
-  facilitatorValidBefore: number,
-  nowSeconds = Math.floor(Date.now() / 1_000),
-): boolean {
-  return nowSeconds < Math.min(railValidBefore, facilitatorValidBefore);
-}
-
 /// The buyer-facing additions ride only on the payer-authorized status read
 /// and the answer to an order input; the input request only while the order
 /// waits for the buyer. Their values are the buyer's own: validated against
@@ -592,13 +584,6 @@ export class StandardRailService {
     ]);
   }
 
-  isAdmissionOpen(): boolean {
-    return isAdmissionWindowOpen(
-      this.railConfig.manifest.activeRailProfile.payload.admissionValidBefore,
-      this.railConfig.manifest.facilitatorProfile.payload.admissionValidBefore,
-    );
-  }
-
   areDependenciesReady(): boolean {
     return this.dependenciesReady;
   }
@@ -669,14 +654,6 @@ export class StandardRailService {
       void this.refreshDependencyReadiness().catch(() => undefined);
     }, Math.min(30_000, this.railConfig.readinessIntervalMs));
     this.readinessRetry.unref();
-  }
-
-  private assertAdmissionOpen(): void {
-    if (!this.isAdmissionOpen()) {
-      throw standardRailError("CHALLENGE_EXPIRED", {
-        message: "The active standard rail admission window has expired",
-      });
-    }
   }
 
   /** An unknown, consumed, expired, or tampered action challenge: one incident, one public code. */
@@ -1963,7 +1940,6 @@ export class StandardRailService {
     body: unknown;
     payerAddress?: Hex;
   }): Promise<{ handle: string; order: StandardOrderRecord; paymentRequired: PaymentRequired }> {
-    this.assertAdmissionOpen();
     await this.salesOutage.assertOpen("challenge");
     this.assertSignersHealthy("challenge");
     await this.assertRailFence();
@@ -2171,7 +2147,6 @@ export class StandardRailService {
     body: unknown;
     payment: PaymentPayload;
   }): Promise<{ handle: string; order: StandardOrderRecord; replay: boolean }> {
-    this.assertAdmissionOpen();
     await this.assertRailFence();
     const payment = normalizePaymentPayload(args.payment);
     const intentId = paymentIntentId(payment);

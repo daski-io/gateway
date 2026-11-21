@@ -255,7 +255,6 @@ describe("agentic purchase DX contracts", () => {
           } }),
           trustedSigners: new Map(),
         },
-        assertAdmissionOpen: vi.fn(),
         assertRailFence: vi.fn(async () => undefined),
         listing: vi.fn(async () => listing),
         incidents: { record: vi.fn(async () => undefined) },
