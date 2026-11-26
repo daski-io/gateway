@@ -312,6 +312,7 @@ export function createStandardMetaRouter(args: {
         "daski_submit_order_input",
         "daski_cancel_order",
         "daski_get_order_artifact",
+        "daski_get_order_deliverables",
         "daski_contact_order_support",
         "daski_confirm_delivery",
         "daski_revoke_delivery_confirmation",
