@@ -213,14 +213,15 @@ describe("sales tax on the order status", () => {
 
   const changed = (patch: Record<string, unknown>) => ({ ...SALES_TAX, ...patch });
   it.each([
-    ["jurisdiction taxes that miss the total", changed({ totalTaxUsd: "3.67", totalUsd: "3.67", paidUsd: "43.67" })],
-    ["fees that miss their total", changed({ totalFeesUsd: "0.31" })],
-    ["a total that is not tax plus fees", changed({ totalUsd: "3.60" })],
+    ["jurisdiction taxes that miss the total",
+      changed({ jurisdictions: [{ ...SALES_TAX.jurisdictions[0], taxUsd: "1.17" }, ...SALES_TAX.jurisdictions.slice(1)] })],
+    ["fees that miss their total", changed({ fees: [{ label: "Retail delivery fees", amountUsd: "0.31" }] })],
+    ["a total that is not tax plus fees", changed({ totalUsd: "3.60", priceUsd: "40.06", taxableAmountUsd: "40.06" })],
     ["a price and total that miss the paid amount", changed({ priceUsd: "40.01" })],
     ["a paid amount that is not the order's gross", changed({ priceUsd: "39.00", taxableAmountUsd: "39.00", paidUsd: "42.66" })],
     ["a taxable amount above the price", changed({ taxableAmountUsd: "40.01" })],
     ["tax said to be charged apart", changed({ includedInPaidAmount: false })],
-    ["an amount in floating point", changed({ totalFeesUsd: "0" })],
+    ["an amount without cents", changed({ totalFeesUsd: "0" })],
     ["a rate of 100% or more", changed({ jurisdictions: [{ ...SALES_TAX.jurisdictions[0], rate: "1.5" }] })],
     ["an extra key", changed({ address: "1437 Bannock St" })],
   ])("refuses a statement with %s without echoing it", async (_name, salesTax) => {
@@ -232,6 +233,15 @@ describe("sales tax on the order status", () => {
     expect(String((error as Error).message)).toContain("PROVIDER_ORDER_STATUS_VIEW_INVALID");
     expect(JSON.stringify(error)).not.toContain("Bannock");
     expect(JSON.stringify(error)).not.toContain("Denver");
+  });
+
+  it("accepts a sale assessed at zero, with no jurisdictions", async () => {
+    const zero = changed({ taxableAmountUsd: "0.00", jurisdictions: [], totalTaxUsd: "0.00", totalUsd: "0.00", paidUsd: "40.00" });
+    const { service, order, listing } = harness("DISPATCHED");
+    const { response } = await signed("working", { salesTax: zero });
+
+    await expect(service.applyLifecycleResult({ ...order, grossAmount: "40000000" }, listing, response, "status", "handle"))
+      .resolves.toMatchObject({ salesTax: zero });
   });
 
   it("checks the sums exactly, sub-cent digits and line rates included", () => {
