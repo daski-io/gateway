@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { COMMITTED_KEYS_ONLY } from "../src/standardRail/providerAuthority.js";
 import { describe, expect, it, vi } from "vitest";
 import { localGatewaySigners } from "../src/standardRail/signer.js";
@@ -27,18 +28,13 @@ const INPUT_REQUEST = {
   ],
 };
 const DOCUMENTS = [{ documentId: "8d42e3f9-1111-4222-8333-944455556666", title: "Rejection Notice", type: "Rejection Notice", receivedAt: 1 }];
-// A Denver sale of $40.00: Colorado tax included in the $43.66 the order paid.
+// The published wire fixture: a Denver sale of $40.00, Colorado tax included
+// in the $43.66 (43660000 atomic units) the order paid. The Blue T provider
+// vendors the same file and proves its builder emits it from its tax record.
 const GROSS = "43660000";
-const SALES_TAX = {
-  schemaVersion: 1, state: "CO", jurisdictionCode: "01-0006", priceUsd: "40.00", taxableAmountUsd: "40.00",
-  jurisdictions: [
-    { name: "Colorado", type: "state", rate: "0.029", taxUsd: "1.16" },
-    { name: "Denver", type: "city", rate: "0.0515", taxUsd: "2.06" },
-    { name: "Regional Transportation District", type: "district", rate: "0.01", taxUsd: "0.40" },
-    { name: "Scientific and Cultural Facilities District", type: "district", rate: "0.001", taxUsd: "0.04" },
-  ],
-  fees: [], totalTaxUsd: "3.66", totalFeesUsd: "0.00", totalUsd: "3.66", paidUsd: "43.66", includedInPaidAmount: true,
-};
+const SALES_TAX = (JSON.parse(readFileSync(new URL("./wire-fixtures/order-status-sales-tax.json", import.meta.url), "utf8")) as {
+  salesTax: { jurisdictions: Array<Record<string, string>> } & Record<string, unknown>;
+}).salesTax;
 
 type Apply = (order: StandardOrderRecord, listing: StandardListing, response: unknown, action: string, handle: string) => Promise<Record<string, unknown>>;
 
