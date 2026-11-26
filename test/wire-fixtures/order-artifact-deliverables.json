@@ -1,0 +1,125 @@
+{
+  "orderId": "ord_00000000-0000-4000-8000-000000000001",
+  "taskId": "task-00000000-0000-4000-8000-000000000003",
+  "state": "completed",
+  "operations": {
+    "schemaVersion": 1,
+    "revision": 3,
+    "observedAt": 1756769000,
+    "fulfillment": null,
+    "support": null,
+    "recovery": null
+  },
+  "result": {
+    "id": "task-00000000-0000-4000-8000-000000000003",
+    "status": {
+      "state": "TASK_STATE_COMPLETED",
+      "message": {
+        "role": "ROLE_AGENT",
+        "parts": [
+          {
+            "kind": "text",
+            "text": "API account created."
+          }
+        ]
+      }
+    },
+    "artifacts": [
+      {
+        "artifactId": "account",
+        "name": "api_account_created",
+        "parts": [
+          {
+            "kind": "data",
+            "data": {
+              "keyId": "key_0001",
+              "environment": "sandbox",
+              "keyPrefix": "ak_0001"
+            }
+          }
+        ]
+      },
+      {
+        "artifactId": "deliverables",
+        "name": "deliverables",
+        "parts": [
+          {
+            "kind": "data",
+            "data": {
+              "https://daski.io/deliverables/v1": {
+                "items": [
+                  {
+                    "kind": "artifact"
+                  },
+                  {
+                    "kind": "owner-action",
+                    "actionId": "get-api-key",
+                    "assetType": "api-account",
+                    "providerAssetId": "00000000-0000-4000-8000-00000000a5e7",
+                    "input": {
+                      "keyId": "key_0001"
+                    },
+                    "label": "API key"
+                  },
+                  {
+                    "kind": "owner-action",
+                    "actionId": "download-account-document",
+                    "assetType": "api-account",
+                    "providerAssetId": "00000000-0000-4000-8000-00000000a5e7",
+                    "input": {
+                      "documentId": "00000000-0000-4000-8000-00000000d0c1"
+                    },
+                    "label": "Account agreement (PDF)"
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "terminalAttestation": {
+    "payload": {
+      "orderId": "ord_00000000-0000-4000-8000-000000000001",
+      "taskId": "task-00000000-0000-4000-8000-000000000003",
+      "state": "completed",
+      "resultHash": "0x431026fad89bed267b06e42eddf44e61e4f6727bc6b086393a526113d2e45543",
+      "completedAt": 1756768940
+    },
+    "signature": "0x1f9ebfc1ea76a20e8fc869fc49ee6969441583967573c1dba1b7bce142a71f1c71bd999cb68f4f2360bc63f52c594374f003fd0335f0df4f2c75172320a8c1431b"
+  },
+  "signature": "0x535fbbc8f81374fbac178bf213dcf7aab62bfa54b8109743777312eeede35ab67a0195e6194a75e1550aa2b58e466ff6103a86f4993862c5d0a2100e89ca66971b",
+  "orderHandle": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+  "orderKey": "0x1111111111111111111111111111111111111111111111111111111111111111",
+  "orderState": "FULFILLED",
+  "fulfillmentState": "completed",
+  "receipt": null,
+  "deliverables": [
+    {
+      "kind": "artifact"
+    },
+    {
+      "kind": "owner-action",
+      "providerAgentId": "8327",
+      "actionId": "get-api-key",
+      "assetType": "api-account",
+      "providerAssetId": "00000000-0000-4000-8000-00000000a5e7",
+      "input": {
+        "keyId": "key_0001"
+      },
+      "label": "API key"
+    },
+    {
+      "kind": "owner-action",
+      "providerAgentId": "8327",
+      "actionId": "download-account-document",
+      "assetType": "api-account",
+      "providerAssetId": "00000000-0000-4000-8000-00000000a5e7",
+      "input": {
+        "documentId": "00000000-0000-4000-8000-00000000d0c1"
+      },
+      "label": "Account agreement (PDF)"
+    }
+  ]
+}

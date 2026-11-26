@@ -698,9 +698,10 @@ describe("deadline expiry (postgres)", () => {
     const lifecycleKeys = ["orderId", "taskId", "state", "operations", "terminalAttestation", "signature",
       "orderHandle", "orderKey", "orderState", "fulfillmentState", "receipt"];
     expect(Object.keys(status).sort()).toEqual([...lifecycleKeys, "confirmationFinal", "submission"].sort());
-    expect(Object.keys(artifact).sort()).toEqual([...lifecycleKeys, "result"].sort());
+    expect(Object.keys(artifact).sort()).toEqual([...lifecycleKeys, "result", "deliverables"].sort());
     expect(status).toMatchObject({ state: "completed", orderState: "PROVIDER_FAILED", fulfillmentState: "completed" });
-    expect(artifact).toMatchObject({ result: desk.result, orderState: "PROVIDER_FAILED", fulfillmentState: "completed" });
+    expect(artifact).toMatchObject({ result: desk.result, orderState: "PROVIDER_FAILED", fulfillmentState: "completed",
+      deliverables: [{ kind: "artifact" }] });
     // The receipt is the payment's own record, the same on every read.
     const receipt = artifact.receipt as SignedEnvelope<Record<string, unknown>, 2>;
     expect(receipt.payload.state).toBe("RELEASE_FINAL");

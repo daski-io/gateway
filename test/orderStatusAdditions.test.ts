@@ -154,7 +154,7 @@ describe("order status additions", () => {
     const headers = providerFetch.mock.calls[0]![2].headers as Record<string, string>;
     expect(headers).toEqual(PROVIDER_LIFECYCLE_HEADERS);
     expect(headers[ORDER_STATUS_VIEW_HEADER]).toBe("1");
-    expect(headers[ORDER_STATUS_ADDITIONS_HEADER]).toBe("salesTax");
+    expect(headers[ORDER_STATUS_ADDITIONS_HEADER]).toBe("salesTax, deliverables");
   });
 
   it("fulfills an order straight from input-required on a signed completion", async () => {

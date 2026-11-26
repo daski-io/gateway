@@ -14,9 +14,9 @@ import type {
   StandardRailDispatchV2,
 } from "../../src/standardRail/types.js";
 import {
-  ADDRESSES, AT, BUYER_REQUESTS, CHAIN_ID, COMMISSION_BPS, COMMISSION_RECEIVER, CONTROL_PROFILE, CONTROL_PROFILE_HASH,
+  ADDRESSES, ASSET_ACTIONS, AT, BUYER_REQUESTS, CHAIN_ID, COMMISSION_BPS, COMMISSION_RECEIVER, CONTROL_PROFILE, CONTROL_PROFILE_HASH,
   DEADLINE_POLICY, ENVIRONMENT, FACILITATOR_CONFIRMATION_HASH, FIXTURE_SCHEMA_VERSION, FULL, GATEWAY_URL, KEY_ROLES,
-  LISTINGS, LITE, NONCES, ORDER_HANDLE, ORDER_ID, ORDER_KEY, OUTCOME_SCHEMA_UID, PAYMENT, PRIVATE_KEYS, PROVIDER_AGENT_ID,
+  LISTINGS, LITE, NONCES, NOTE_ASSET_ID, ORDER_HANDLE, ORDER_ID, ORDER_KEY, OUTCOME_SCHEMA_UID, PAYMENT, PRIVATE_KEYS, PROVIDER_AGENT_ID,
   PROVIDER_ORIGIN, PROVIDER_PAYEE, RAIL_PROFILE_HASH, REPUTATION_CONTRACT, REQUEST_SCHEMA, RESULTS, SERVICE_ID,
   SERVICE_RESULT_SCHEMA, STARTERS, SUPPORT, TASK_ID, TASK_PROJECTION_SCHEMA, TOKEN,
   at, dispatchBody, driveChallenge, driveDispatch, driveIntake, driveLifecycle, fixtureListing, fixtureOrder,
@@ -759,6 +759,16 @@ async function lifecycleVectors(story: Story, kind: "lifecycle" | "terminal"): P
     "The artifact reveals protected fields; the attestation keeps the frozen unrevealed projection's hash.",
     { state: "completed", result: RESULTS.taskProjection.revealed, terminal: tp },
     { stored: "taskProjection", resultSchema: "taskProjection", ...accepted("FULFILLED") }, FULL);
+  await add("artifact.deliverables.accepted", "artifact.payer-signed.completed",
+    "When the lifecycle POST names deliverables in daski-order-status-additions, the artifact may carry the standard " +
+    "deliverables data part. The gateway lifts it out before the result schema, delivers the task unchanged and lists " +
+    "the artifact and each owner action it checked against the provider's signed asset-action catalog (assetActions).",
+    { state: "completed", result: RESULTS.taskProjection.withDeliverables, terminal: tp },
+    { stored: "taskProjection", resultSchema: "taskProjection", ...accepted("FULFILLED"),
+      assetActions: ASSET_ACTIONS,
+      deliverables: [{ kind: "artifact" }, { kind: "owner-action", providerAgentId: PROVIDER_AGENT_ID,
+        actionId: "get-note-access-code", assetType: "note", providerAssetId: NOTE_ASSET_ID,
+        input: { note: "note-0001" }, label: "Access code" }] }, FULL);
   const supportOps = operationsView(1, AT.support, { support: { reviewId: SUPPORT.reviewId, status: "open",
     lastAcceptedRequest: { requestId: SUPPORT.requestId, messageId: SUPPORT.messageId, acceptedAt: AT.support } } });
   const receipt = { supportReceipt: { requestId: SUPPORT.requestId, messageId: SUPPORT.messageId,
@@ -877,8 +887,9 @@ async function lifecycleDocument(story: Story): Promise<Doc> {
     surface: "POST lifecycleUrl with {orderId, providerTaskId, action, request, authorization, grant, payer, " +
       "gatewayAudience}; answer {orderId, taskId, state, operations, signature} plus result (artifact, " +
       "support), terminalAttestation (completed, failed, canceled), inputRequest/documents only when " +
-      "the daski-order-status-view header asks, and salesTax only when the daski-order-status-additions " +
-      "header names it",
+      "the daski-order-status-view header asks, salesTax only when the daski-order-status-additions " +
+      "header names it, and the deliverables data part (https://daski.io/deliverables/v1) in an artifact's " +
+      "result only when that header names deliverables",
     signature: "signature: EIP-191 by the provider authority key over keccak256(canonicalJson(answer without " +
       "signature)), terminalAttestation included; terminalAttestation.signature: EIP-191 by the " +
       "terminal attestation key over keccak256(canonicalJson(payload)), payload {orderId, taskId, " +
@@ -895,7 +906,9 @@ async function lifecycleDocument(story: Story): Promise<Doc> {
     },
     headers: (Object.values(story.lifecycles)[0] as LifecycleRequestFixture).http.headers,
     verdicts: {
-      accepted: "The gateway passes the signed answer to the buyer; the order moves to orderStateAfter.",
+      accepted: "The gateway passes the signed answer to the buyer; the order moves to orderStateAfter. An artifact " +
+        "read also answers deliverables: the artifact, then each owner action checked against assetActions " +
+        "(none named: the artifact alone).",
       refused: "The gateway names the refusal to the buyer with code and status.",
       rejected: "The gateway refuses the answer; the buyer sees an internal error and the provider's text is never shown.",
     },

@@ -218,6 +218,23 @@
       "parsedBy": [
         "daski-provider src/core/tax/orderStatus.ts orderStatusSalesTax (the provider emits the same shape from its tax record)"
       ]
+    },
+    "order-artifact-deliverables.json": {
+      "consumers": [
+        "daski-test",
+        "daski-buyer",
+        "daski-provider"
+      ],
+      "emittedBy": [
+        "src/standardRail/service.ts applyLifecycleResult (artifact read: the provider's signed answer with result as the provider signed it, deliverables part included, plus the order fields and deliverables)",
+        "src/standardRail/deliverables.ts liftDeliverablesPart, checkDeliverables (the part lifted out before schema projection; owner-action items checked against the provider's signed asset-action catalog)",
+        "src/standardRail/orderStatusView.ts ACCEPTED_ORDER_STATUS_ADDITIONS (a provider adds the part only when daski-order-status-additions names deliverables)"
+      ],
+      "parsedBy": [
+        "daski-buyer packages/pay/test/gatewayWire.test.ts (deliverables entries map onto POST /wallet/assets/action)",
+        "daski-test test/gatewayWireContracts.test.ts (deliverables shape)",
+        "daski-provider: the provider emits the same part in an artifact read's result when the gateway names deliverables"
+      ]
     }
   }
 }

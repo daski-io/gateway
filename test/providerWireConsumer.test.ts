@@ -232,6 +232,7 @@ async function runLifecycle(vector: Doc) {
     order, action: request.action as OrderAction, request: request.http.body.request,
     access: request.access === "readCapability" ? { readCapability: true } : { authorization: request.http.body.authorization },
     ledger: operationsLedger(stored(vector.gateway)),
+    assetActions: vector.gateway.assetActions,
     respond: (sent) => {
       sameRequest(sent, request.http);
       expect(sent.headers).toEqual(files.lifecycle.headers);
@@ -251,6 +252,10 @@ describe("lifecycle answers", () => {
       // The provider's signed answer reaches the buyer unchanged.
       for (const [key, value] of Object.entries(vector.response.body as Doc)) expect(delivered[key]).toEqual(value);
       expect(delivered.orderState).toBe(vector.gateway.orderStateAfter);
+      // An artifact read lists the checked deliverables, the artifact first.
+      if (files.lifecycle.requests[vector.request].action === "artifact") {
+        expect(delivered.deliverables).toEqual(vector.gateway.deliverables ?? [{ kind: "artifact" }]);
+      } else expect(delivered).not.toHaveProperty("deliverables");
     });
   }
 

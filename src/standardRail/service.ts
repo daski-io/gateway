@@ -88,6 +88,12 @@ import { StandardWalletQueries } from "./walletQueries.js";
 import type { WalletAuthorizationTransport } from "./types.js";
 import { StandardAssetFederation } from "./assetFederation.js";
 import { StandardAssetActions } from "./assetActions.js";
+import {
+  checkDeliverables,
+  liftDeliverablesPart,
+  type Deliverable,
+  type LiftedDeliverables,
+} from "./deliverables.js";
 import { buildReputationRegistration } from "./reputationOrders.js";
 import { isReputationEligiblePayer } from "./reputationEligibility.js";
 import { StandardReputationWorker } from "./reputationWorker.js";
@@ -1910,11 +1916,20 @@ export class StandardRailService {
         operationsSchema.parse(response.operations).recovery?.state !== "completed") {
       throw standardRailError("INTERNAL_ERROR", { internalMessage: "PROVIDER_ARTIFACT_NOT_FULFILLED" });
     }
+    let deliverables: Deliverable[] | null = null;
     if (action === "support") {
       const support = supportResultSchema.parse(response.result);
       if (support.supportReceipt.requestId !== request?.requestId) {
         throw standardRailError("INTERNAL_ERROR", { internalMessage: "PROVIDER_SUPPORT_RECEIPT_BINDING_INVALID" });
       }
+    }
+    else if (action === "artifact") {
+      // The deliverables part is lifted out before the listing's schema sees
+      // the result; the raw result, part included, still faces every bound
+      // and the passive-output check, and reaches the buyer unchanged.
+      const lifted = liftDeliverablesPart(response.result);
+      await this.validateResponse(listing, response.result, lifted.contractView);
+      deliverables = this.orderDeliverables(initial, listing, lifted.parts);
     }
     else if ("result" in response) await this.validateResponse(listing, response.result);
     let order = initial;
@@ -1987,7 +2002,34 @@ export class StandardRailService {
         ? { confirmationFinal: await this.confirmationState.stored(order.orderId),
             submission: await this.submissionStatus(order) }
         : {}),
+      ...(deliverables ? { deliverables } : {}),
     };
+  }
+
+  /**
+   * The checked deliverables of an artifact read. A bad pointer is dropped
+   * and logged, never fatal: the artifact is always listed first.
+   */
+  private orderDeliverables(
+    order: StandardOrderRecord,
+    listing: StandardListing,
+    parts: LiftedDeliverables["parts"],
+  ): Deliverable[] {
+    const providerAgentId = listing.commitment.payload.providerAgentId;
+    try {
+      const { deliverables, dropped } = checkDeliverables({
+        parts,
+        providerAgentId,
+        definition: (actionId) => this.assetActions.currentDefinition(providerAgentId, actionId),
+      });
+      if (dropped.length > 0) {
+        logger.warn("order deliverables dropped", { orderId: order.orderId, providerAgentId, dropped });
+      }
+      return deliverables;
+    } catch (error) {
+      logger.error("order deliverables could not be checked", { orderId: order.orderId, providerAgentId, error });
+      return [{ kind: "artifact" }];
+    }
   }
 
   // Moves the order to what the provider just reported. The order was read
@@ -2910,8 +2952,8 @@ export class StandardRailService {
     return this.catalog.validateRequest(listing, body);
   }
 
-  private validateResponse(listing: StandardListing, result: unknown): Promise<void> {
-    return this.catalog.validateResponse(listing, result);
+  private validateResponse(listing: StandardListing, result: unknown, contractView: unknown = result): Promise<void> {
+    return this.catalog.validateResponse(listing, result, contractView);
   }
 
   private screenParticipants(listing: StandardListing, payer?: Hex): Promise<void> {
