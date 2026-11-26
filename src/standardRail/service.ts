@@ -223,9 +223,11 @@ export function artifactNotAvailable(
     });
   }
   if (state === "INPUT_REQUIRED") {
+    // Reading the artifact again changes nothing until the payer answers.
     return standardRailError("ARTIFACT_NOT_AVAILABLE", {
       ...fixed,
       deliveryState: "awaiting_input",
+      retryable: false,
       message: "The order is waiting for the payer's input; it has no artifact yet",
       nextAction: "Read the order status for its inputRequest and answer it with daski_submit_order_input. " +
         "Artifacts are available once it is completed or completed after recovery.",

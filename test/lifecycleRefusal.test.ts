@@ -207,7 +207,8 @@ describe("provider lifecycle refusals at the buyer surface", () => {
     const { response, body } = await read("artifact", () => refusal(409, { error: "artifact_unavailable" }), state);
     expect(response.status).toBe(409);
     expect(response.headers.get("daski-next-action")).toMatch(next);
-    expect(body.error).toMatchObject({ code: "ARTIFACT_NOT_AVAILABLE", deliveryState, retryable: true });
+    expect(body.error).toMatchObject({ code: "ARTIFACT_NOT_AVAILABLE", deliveryState,
+      retryable: deliveryState !== "awaiting_input" });
   });
 
   it("keeps deliveryState to artifact reads", async () => {

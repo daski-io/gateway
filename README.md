@@ -626,8 +626,13 @@ at most three times with the same request before reading status. An artifact
 read refused with 409 `artifact_unavailable` still answers
 `ARTIFACT_NOT_AVAILABLE`. Any other status or body, including an extra key, an
 edge page or an oversized body, stays `INTERNAL_ERROR`, and no provider text
-reaches the buyer. An artifact read before the provider has a task for the
-order also answers `ARTIFACT_NOT_AVAILABLE`, without asking the provider.
+reaches the buyer. A payer-signed action spends its authorization before the
+provider is called and no refusal returns it: every retry carries a fresh
+authorization and the same request, so the provider's deduplication by its
+identity keeps one effect. A read capability is reused unchanged.
+
+An artifact read before the provider has a task for the order also answers
+`ARTIFACT_NOT_AVAILABLE`, without asking the provider.
 Every `ARTIFACT_NOT_AVAILABLE` carries `deliveryState`, from the gateway's own
 order state and never from the provider's body, so a client need not read the
 message:
@@ -635,14 +640,15 @@ message:
 | `deliveryState` | Order state | What the buyer does |
 | --- | --- | --- |
 | `delivering` | Paid and on its way: `FACILITATOR_CONFIRMED`, `DEPOSIT_FINAL`, `RELEASE_FINAL`, `DISPATCH_STARTED`, `DISPATCH_AMBIGUOUS` or `DISPATCHED`. Nothing failed | Read the status again shortly |
-| `awaiting_input` | `INPUT_REQUIRED` | Answer the status read's `inputRequest` |
+| `awaiting_input` | `INPUT_REQUIRED` | Answer the status read's `inputRequest`; not `retryable` |
 | `not_delivering` | Any other: payment not final or failed, failed, held or ended | Read the status to see why |
 
 For `delivering` the message still says the order is still being delivered,
-as buyer CLIs before this field read it. A payer-signed action spends its authorization before the
-provider is called and no refusal returns it: every retry carries a fresh
-authorization and the same request, so the provider's deduplication by its
-identity keeps one effect. A read capability is reused unchanged.
+as buyer CLIs before this field read it. The state is the gateway's last known
+one: a `DISPATCHED` order whose provider task has just failed reads as
+`delivering` until a status read or recovery catches `orderState` up, which the
+next step (read the status) does. `awaiting_input` is not `retryable`: reading
+again changes nothing until the payer answers.
 
 An order in `INPUT_REQUIRED` also carries the provider's `inputRequest` on the
 payer-authorized status read and on the answer to an order input. It holds a

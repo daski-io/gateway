@@ -55,7 +55,7 @@
       "code": "ARTIFACT_NOT_AVAILABLE",
       "message": "The order is waiting for the payer's input; it has no artifact yet",
       "phase": "dispatch",
-      "retryable": true,
+      "retryable": false,
       "requiresNewSignature": false,
       "paymentMayHaveSettled": false,
       "deliveryState": "awaiting_input",
