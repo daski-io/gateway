@@ -88,6 +88,12 @@ import { StandardWalletQueries } from "./walletQueries.js";
 import type { WalletAuthorizationTransport } from "./types.js";
 import { StandardAssetFederation } from "./assetFederation.js";
 import { StandardAssetActions } from "./assetActions.js";
+import {
+  checkDeliverables,
+  liftDeliverablesPart,
+  type Deliverable,
+  type LiftedDeliverables,
+} from "./deliverables.js";
 import { buildReputationRegistration } from "./reputationOrders.js";
 import { isReputationEligiblePayer } from "./reputationEligibility.js";
 import { StandardReputationWorker } from "./reputationWorker.js";
@@ -1910,13 +1916,23 @@ export class StandardRailService {
         operationsSchema.parse(response.operations).recovery?.state !== "completed") {
       throw standardRailError("INTERNAL_ERROR", { internalMessage: "PROVIDER_ARTIFACT_NOT_FULFILLED" });
     }
+    let deliverables: Deliverable[] | null = null;
     if (action === "support") {
       const support = supportResultSchema.parse(response.result);
       if (support.supportReceipt.requestId !== request?.requestId) {
         throw standardRailError("INTERNAL_ERROR", { internalMessage: "PROVIDER_SUPPORT_RECEIPT_BINDING_INVALID" });
       }
     }
-    else if ("result" in response) await this.validateResponse(listing, response.result);
+    else if ("result" in response) {
+      // The deliverables part is lifted out before the listing's schema sees
+      // the result, wherever a provider returns its task (an input answer can
+      // complete the order); the raw result, part included, still faces every
+      // bound and the passive-output check, and reaches the buyer unchanged.
+      // Only an artifact read lists the deliverables.
+      const lifted = liftDeliverablesPart(response.result);
+      await this.validateResponse(listing, response.result, lifted.contractView);
+      if (action === "artifact") deliverables = await this.orderDeliverables(initial, listing, lifted.parts);
+    }
     let order = initial;
     if (!["completed", "failed", "canceled"].includes(String(response.state))) {
       await this.store.persistOperations(order.orderId, response.operations, null);
@@ -1987,7 +2003,45 @@ export class StandardRailService {
         ? { confirmationFinal: await this.confirmationState.stored(order.orderId),
             submission: await this.submissionStatus(order) }
         : {}),
+      ...(deliverables ? { deliverables } : {}),
     };
+  }
+
+  /**
+   * The checked deliverables of an artifact read. A bad pointer is dropped
+   * and logged, never fatal: the artifact is always listed first. Items are
+   * checked against the admission a new asset action would resolve, so the
+   * replica activates the current one first, as a challenge does.
+   */
+  private async orderDeliverables(
+    order: StandardOrderRecord,
+    listing: StandardListing,
+    parts: LiftedDeliverables["parts"],
+  ): Promise<Deliverable[]> {
+    const providerAgentId = listing.commitment.payload.providerAgentId;
+    if (parts.length > 0) {
+      try {
+        await this.assetActions.activateCurrentAdmissions();
+      } catch (error) {
+        logger.warn("order deliverables checked against the last activated admission", {
+          orderId: order.orderId, providerAgentId, error,
+        });
+      }
+    }
+    try {
+      const { deliverables, dropped } = checkDeliverables({
+        parts,
+        providerAgentId,
+        definition: (actionId) => this.assetActions.currentDefinition(providerAgentId, actionId),
+      });
+      if (dropped.length > 0) {
+        logger.warn("order deliverables dropped", { orderId: order.orderId, providerAgentId, dropped });
+      }
+      return deliverables;
+    } catch (error) {
+      logger.error("order deliverables could not be checked", { orderId: order.orderId, providerAgentId, error });
+      return [{ kind: "artifact" }];
+    }
   }
 
   // Moves the order to what the provider just reported. The order was read
@@ -2910,8 +2964,8 @@ export class StandardRailService {
     return this.catalog.validateRequest(listing, body);
   }
 
-  private validateResponse(listing: StandardListing, result: unknown): Promise<void> {
-    return this.catalog.validateResponse(listing, result);
+  private validateResponse(listing: StandardListing, result: unknown, contractView: unknown = result): Promise<void> {
+    return this.catalog.validateResponse(listing, result, contractView);
   }
 
   private screenParticipants(listing: StandardListing, payer?: Hex): Promise<void> {

@@ -12,7 +12,7 @@
   "hash": "sha256 of the exact file bytes",
   "files": {
     "README.md": {
-      "sha256": "8b6da0f3521485e5de9933fdca25c31ef5c46ab2fcabafc7f57fa9d2becb3a3f",
+      "sha256": "81e917fd94c9c3c1203716a18fe91536e5b3820329e8784f3c1b64c4625134af",
       "purpose": "How the set is generated, compared, vendored and verified.",
       "consumers": [
         "daski-io/provider",
@@ -75,7 +75,7 @@
       "exercises": "dispatch status handler: POST dispatchStatusUrl"
     },
     "lifecycle.json": {
-      "sha256": "63b96728ada4165eddc854cc4fd27304528702437291fbfb480be36bdaa372f0",
+      "sha256": "448d272389bb9d856f38213f0770682d69d648546c25c60f97d3553d09d9ce48",
       "purpose": "Lifecycle POSTs with grant-attested read capabilities and payer-signed authorizations (status, artifact, support, input, cancel), their headers, answers and the named refusals.",
       "consumers": [
         "daski-io/provider",

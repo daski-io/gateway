@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { DELIVERABLES_ADDITION } from "./deliverables.js";
 
 /// The provider's buyer-facing additions to a payer-authorized order status
 /// read: the input request of an order waiting for the buyer, and the
@@ -121,12 +122,15 @@ export const orderStatusAdditionsSchema = z.object({
 export const ORDER_STATUS_VIEW_HEADER = "daski-order-status-view";
 
 /// The additions this gateway accepts beyond `inputRequest` and `documents`,
-/// by key, comma-separated. A provider adds one only when this header names
-/// it: a gateway released before it refuses the unknown key, and a provider
-/// released before it ignores the header. The existing view header stays
-/// unchanged so providers that predate this one keep their additions.
+/// by name, comma-separated: `salesTax` on status reads and order input
+/// answers, and `deliverables`, the standard deliverables data part
+/// (deliverables.ts) in an artifact read's result. A provider adds one only
+/// when this header names it: a gateway released before it refuses the
+/// unknown key or part, and a provider released before it ignores the header.
+/// The existing view header stays unchanged so providers that predate this
+/// one keep their additions.
 export const ORDER_STATUS_ADDITIONS_HEADER = "daski-order-status-additions";
-export const ACCEPTED_ORDER_STATUS_ADDITIONS = ["salesTax"] as const;
+export const ACCEPTED_ORDER_STATUS_ADDITIONS = ["salesTax", DELIVERABLES_ADDITION] as const;
 
 /** The headers of a provider lifecycle POST, published as a wire fixture. */
 export const PROVIDER_LIFECYCLE_HEADERS: Readonly<Record<string, string>> = Object.freeze({

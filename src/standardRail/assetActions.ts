@@ -251,6 +251,24 @@ export class StandardAssetActions {
     return this.resolve(args.providerAgentId, args.actionId, admissionHash);
   }
 
+  /** Activates each provider's current admission, as a new asset action does before it resolves one. */
+  async activateCurrentAdmissions(): Promise<void> {
+    await this.federation.activateAdmissions({ readOnly: true });
+  }
+
+  /**
+   * The definition a new POST /wallet/assets/action for this action resolves,
+   * or null when it would refuse it. Reads no database: the admission is the
+   * one this replica last activated (activateCurrentAdmissions).
+   */
+  currentDefinition(providerAgentId: string, actionId: string): AssetActionDefinitionV1 | null {
+    try {
+      return this.resolve(providerAgentId, actionId).definition;
+    } catch {
+      return null;
+    }
+  }
+
   private resolve(providerAgentId: string, actionId: string, boundHash?: Hex): ResolvedAction {
     const active = boundHash ? this.federation.carriedServicing(providerAgentId, boundHash) : this.federation.activeServicing(providerAgentId);
     if (!active) throw new Error("ASSET_ACTION_NOT_ADMITTED");

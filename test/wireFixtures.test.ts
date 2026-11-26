@@ -16,7 +16,11 @@ import {
 import { encodeAbiParameters, parseAbiParameters } from "viem";
 import { EAS_PROFILES, easDomainSeparator, type EasProfileId, type EasProfileObservation } from "../src/standardRail/easProfiles.js";
 import { StandardRailError, standardRailPublicError } from "../src/standardRail/errors.js";
-import { artifactNotAvailable } from "../src/standardRail/service.js";
+import { artifactNotAvailable, StandardRailService } from "../src/standardRail/service.js";
+import { StandardRailCatalog } from "../src/standardRail/catalog.js";
+import { compileClosedResponseSchema } from "../src/standardRail/schema.js";
+import { COMMITTED_KEYS_ONLY } from "../src/standardRail/providerAuthority.js";
+import { DELIVERABLES_PART_KEY } from "../src/standardRail/deliverables.js";
 import { orderActionChallengeIssued } from "../src/standardRail/orderAuthorization.js";
 import {
   orderBindingExtension, paymentIdentifierExtension, paymentRequired, paymentRequirements,
@@ -325,6 +329,83 @@ async function providerLifecycleRequestFixture() {
   };
 }
 
+// Hardhat's second well-known development key: a public test vector that
+// signs the synthetic provider's lifecycle answer, never a production signer.
+const FIXTURE_PROVIDER_KEY: Hex =
+  "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d";
+const FIXTURE_PROVIDER_AGENT_ID = "8327";
+
+/**
+ * The answer to an artifact read of a fulfilled order whose provider lists
+ * its deliverables: the provider's signed lifecycle answer exactly as it
+ * arrived, `result` (the A2A task) with the standard deliverables part
+ * included, then the gateway's order fields and `deliverables`, the checked
+ * list with {"kind": "artifact"} first. Each owner-action entry is what
+ * POST /wallet/assets/action takes besides payer and authorization, with the
+ * action's asset type. Produced by the gateway's own applyLifecycleResult over
+ * a synthetic provider whose signed asset-action catalog holds the two
+ * non-destructive actions named. A provider adds the part only when the
+ * lifecycle POST names `deliverables` in daski-order-status-additions.
+ */
+async function orderArtifactDeliverablesFixture() {
+  const provider = privateKeyToAccount(FIXTURE_PROVIDER_KEY);
+  const account = { keyId: "key_0001", environment: "sandbox", keyPrefix: "ak_0001" };
+  const text = { type: "string", minLength: 1, maxLength: 64 };
+  const listing = {
+    responseSchema: { type: "object", additionalProperties: false, required: ["keyId", "environment", "keyPrefix"],
+      properties: { keyId: text, environment: text, keyPrefix: text } },
+    commitment: { payload: { providerAgentId: FIXTURE_PROVIDER_AGENT_ID, providerAuthorityKey: provider.address,
+      providerTerminalAttestationKey: provider.address } },
+  };
+  const result = {
+    id: PROVIDER_TASK_ID,
+    status: { state: "TASK_STATE_COMPLETED",
+      message: { role: "ROLE_AGENT", parts: [{ kind: "text", text: "API account created." }] } },
+    artifacts: [
+      { artifactId: "account", name: "api_account_created", parts: [{ kind: "data", data: account }] },
+      { artifactId: "deliverables", name: "deliverables", parts: [{ kind: "data", data: { [DELIVERABLES_PART_KEY]: {
+        items: [
+          { kind: "artifact" },
+          { kind: "owner-action", actionId: "get-api-key", assetType: "api-account",
+            providerAssetId: "00000000-0000-4000-8000-00000000a5e7", input: { keyId: account.keyId }, label: "API key" },
+          { kind: "owner-action", actionId: "download-account-document", assetType: "api-account",
+            providerAssetId: "00000000-0000-4000-8000-00000000a5e7",
+            input: { documentId: "00000000-0000-4000-8000-00000000d0c1" }, label: "Account agreement (PDF)" },
+        ],
+      } } }] },
+    ],
+  };
+  const completedAt = ISSUED_AT - 60;
+  const attested = { orderId: ORDER_ID, taskId: PROVIDER_TASK_ID, state: "completed",
+    resultHash: canonicalHash(result), completedAt };
+  const unsigned = {
+    orderId: ORDER_ID, taskId: PROVIDER_TASK_ID, state: "completed",
+    operations: { schemaVersion: 1, revision: 3, observedAt: ISSUED_AT, fulfillment: null, support: null, recovery: null },
+    result,
+    terminalAttestation: { payload: attested, signature: await provider.signMessage({ message: { raw: canonicalHash(attested) } }) },
+  };
+  const answer = { ...unsigned, signature: await provider.signMessage({ message: { raw: canonicalHash(unsigned) } }) };
+  const actions: Record<string, { actionId: string; assetType: string; destructive: boolean }> = {
+    "get-api-key": { actionId: "get-api-key", assetType: "api-account", destructive: false },
+    "download-account-document": { actionId: "download-account-document", assetType: "api-account", destructive: false },
+  };
+  const service = Object.assign(Object.create(StandardRailService.prototype), {
+    providerWallets: COMMITTED_KEYS_ONLY,
+    catalog: Object.assign(Object.create(StandardRailCatalog.prototype), {
+      withinSchemaBudget: async (_listing: unknown, validate: () => void) => validate(),
+      compiled: () => ({ response: compileClosedResponseSchema(listing.responseSchema) }),
+    }),
+    store: { persistOperations: async () => undefined },
+    // No receipt in the fixture: an order without its settlement evidence answers null.
+    signedReceipt: async () => null,
+    assetActions: { activateCurrentAdmissions: async () => undefined,
+      currentDefinition: (providerAgentId: string, actionId: string) =>
+        providerAgentId === FIXTURE_PROVIDER_AGENT_ID ? actions[actionId] ?? null : null },
+  }) as { applyLifecycleResult(...args: unknown[]): Promise<unknown> };
+  const order = { orderId: ORDER_ID, providerTaskId: PROVIDER_TASK_ID, state: "FULFILLED", orderKey: hash("1") };
+  return service.applyLifecycleResult(order, listing, answer, "artifact", ORDER_HANDLE);
+}
+
 /**
  * The headers of every provider lifecycle POST. A provider adds the order
  * status view (below) only when they ask for it.
@@ -532,6 +613,7 @@ const fixtures: Record<string, () => unknown | Promise<unknown>> = {
   "provider-lifecycle-headers.json": providerLifecycleHeadersFixture,
   "order-status-input-request.json": orderStatusInputRequestFixture,
   "order-status-sales-tax.json": orderStatusSalesTaxFixture,
+  "order-artifact-deliverables.json": orderArtifactDeliverablesFixture,
 };
 
 describe("wire fixtures", () => {

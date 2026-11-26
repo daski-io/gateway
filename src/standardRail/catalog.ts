@@ -365,11 +365,16 @@ export class StandardRailCatalog {
       assertSchema(this.compiled(listing).request, body));
   }
 
-  async validateResponse(listing: StandardListing, result: unknown): Promise<void> {
+  /**
+   * The whole raw result faces the bounds and the passive-output check; the
+   * listing's schema checks `contractView`, the result as its contract sees
+   * it (an artifact read's result without its deliverables part).
+   */
+  async validateResponse(listing: StandardListing, result: unknown, contractView: unknown = result): Promise<void> {
     assertBoundedJsonValue(result, RESPONSE_JSON_BUDGET, "Response");
     assertPassiveProviderOutput(result);
     await this.withinSchemaBudget(listing, () =>
-      assertSchema(this.compiled(listing).response, projectContractResult(listing.responseSchema, result), "Response"));
+      assertSchema(this.compiled(listing).response, projectContractResult(listing.responseSchema, contractView), "Response"));
   }
 
   // A validation that overruns its CPU budget is a hostile or broken

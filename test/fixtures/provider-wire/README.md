@@ -23,7 +23,7 @@ The files are generated. Do not edit them by hand.
 | `intake.json` | `ProviderIntakeRequestV1` at the quote URL and intake answers. | intake |
 | `dispatch.json` | Dispatch POSTs (initial, fresh envelope after a refusal, first dispatch 26 hours after the quote) and answers: admitted states, definite refusals, ambiguity, rejected answers. | dispatch |
 | `dispatch-status.json` | `DispatchStatusQueryV1` polls for the original dispatch hash, admitted answers, the no-claim 404 and answers that never prove absence. | dispatch status |
-| `lifecycle.json` | Lifecycle POSTs under a grant-attested read capability or a payer-signed authorization, their headers, answers and the named refusals. | lifecycle |
+| `lifecycle.json` | Lifecycle POSTs under a grant-attested read capability or a payer-signed authorization, their headers, answers and the named refusals. An artifact may carry the deliverables data part only when the headers name `deliverables` (`artifact.deliverables.accepted`). | lifecycle |
 | `terminal-evidence.json` | Reads of a completed order whose terminal identity must equal the first attestation forever. | lifecycle, terminal freezing |
 | `operations.json` | Observation sequences and the gateway's freshness and revision verdicts. | every signed answer |
 | `deadlines.json` | Gateway fulfillment deadlines and the initial dispatch horizon. | none (gateway clocks) |

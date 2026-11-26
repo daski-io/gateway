@@ -17,6 +17,7 @@ vi.mock("node:crypto", async (importOriginal) => {
 
 import { FIXTURE_SCHEMA_VERSION, PROVIDER_WIRE_DIR, STARTERS, serializeFixture, sha256 } from "./helpers/providerWire.js";
 import { FIXTURE_FILES, buildProviderWireFixtures } from "./helpers/providerWireVectors.js";
+import { DELIVERABLES_PART_KEY } from "../src/standardRail/deliverables.js";
 
 // Canonical provider-wire fixtures (test/fixtures/provider-wire/). Every
 // request is what the gateway's own builders and signers send, driven with
@@ -96,6 +97,8 @@ describe("provider wire fixtures", () => {
     for (const name of readdirSync(PROVIDER_WIRE_DIR).filter((file) => file.endsWith(".json"))) {
       const text = readFileSync(path.join(PROVIDER_WIRE_DIR, name), "utf8");
       for (const url of text.match(/https?:\/\/[^\s"'`)]+/g) ?? []) {
+        // The deliverables part's key is a namespace identifier, never fetched.
+        if (url === DELIVERABLES_PART_KEY) continue;
         expect(new URL(url).hostname, `${name} names ${url}`).toMatch(/(^|\.)example$/);
       }
     }

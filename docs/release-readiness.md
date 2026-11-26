@@ -211,7 +211,8 @@ It requires disposable loopback PostgreSQL. Candidate code writes order authoriz
 
 Post-completion artifact delivery validates the projection declared by the exact
 paid listing schema: task-shaped contracts validate the task, and flat contracts
-validate their declared artifact data fields. The signed provider response and
+validate their declared artifact data fields. A standard deliverables data part
+is lifted out of the task before either check (README, Order deliverables). The signed provider response and
 its original artifacts remain unchanged, and passive-output validation checks
 the entire response. Runtime commerce capabilities bind the complete executable
 skill contract to an executable definition hash; only operator-owned pricing is

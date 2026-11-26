@@ -8,6 +8,7 @@ import { vi } from "vitest";
 import { getAddress, keccak256, stringToHex, type Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { canonicalHash } from "../../src/standardRail/canonical.js";
+import { DELIVERABLES_PART_KEY } from "../../src/standardRail/deliverables.js";
 import { StandardRailCatalog } from "../../src/standardRail/catalog.js";
 import type { EvidenceResult, ReleaseEvidenceResult } from "../../src/standardRail/evidence.js";
 import { getIntakeRequirements } from "../../src/standardRail/intake.js";
@@ -189,6 +190,10 @@ export const BUYER_REQUESTS = {
 } as const;
 
 const note = { note: "note-0001", title: BUYER_REQUESTS.fixed.title, characters: BUYER_REQUESTS.fixed.body.length };
+/** The note an order created, as the provider's asset index names it. */
+export const NOTE_ASSET_ID = "00000000-0000-4000-8000-00000000a0e1";
+/** The entries of the synthetic provider's signed asset-action catalog that the deliverables vector names. */
+export const ASSET_ACTIONS = [{ actionId: "get-note-access-code", assetType: "note", destructive: false }] as const;
 /** Results the reference provider freezes; resultHash is canonicalHash of the frozen value. */
 export const RESULTS = {
   serviceResult: {
@@ -206,6 +211,21 @@ export const RESULTS = {
       status: { state: "TASK_STATE_COMPLETED", message: { role: "ROLE_AGENT", parts: [{ kind: "text", text: "Note created." }] } },
       artifacts: [{ artifactId: "note", name: "note_created",
         parts: [{ kind: "data", data: { ...note, accessCode: "synthetic-access-code-0001" } }] }],
+    },
+    /** The completed task with the standard deliverables part, added only when the gateway names deliverables. */
+    withDeliverables: {
+      id: TASK_ID,
+      status: { state: "TASK_STATE_COMPLETED", message: { role: "ROLE_AGENT", parts: [{ kind: "text", text: "Note created." }] } },
+      artifacts: [
+        { artifactId: "note", name: "note_created", parts: [{ kind: "data", data: note }] },
+        { artifactId: "deliverables", name: "deliverables", parts: [{ kind: "data", data: { [DELIVERABLES_PART_KEY]: {
+          items: [
+            { kind: "artifact" },
+            { kind: "owner-action", actionId: "get-note-access-code", assetType: "note", providerAssetId: NOTE_ASSET_ID,
+              input: { note: note.note }, label: "Access code" },
+          ],
+        } } }] },
+      ],
     },
     canceled: {
       id: TASK_ID,
@@ -591,6 +611,8 @@ export async function driveLifecycle(args: {
   request: Record<string, unknown>;
   access: { readCapability: true } | { authorization: Record<string, unknown> };
   ledger?: OperationsLedger;
+  /** The provider's current signed asset-action catalog entries, as the deliverables check reads them. */
+  assetActions?: ReadonlyArray<{ actionId: string; assetType: string; destructive: boolean }>;
   respond: Respond;
 }): Promise<{ request: WireRequest | null; outcome: Outcome<unknown>; order: StandardOrderRecord }> {
   const ledger = args.ledger ?? operationsLedger();
@@ -614,6 +636,9 @@ export async function driveLifecycle(args: {
     signedReceipt: async () => ({ artifactType: "StandardRailReceiptV2" }),
     submissionStatus: async () => null,
     confirmationState: { stored: async () => null },
+    assetActions: { activateCurrentAdmissions: async () => undefined,
+      currentDefinition: (providerAgentId: string, actionId: string) => providerAgentId === PROVIDER_AGENT_ID
+        ? args.assetActions?.find((action) => action.actionId === actionId) ?? null : null },
     providerFetch: async (_listing: unknown, url: string, init: RequestInit) => {
       request = wireRequest(url, init);
       return args.respond(request);

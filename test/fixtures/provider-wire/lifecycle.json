@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "surface": "POST lifecycleUrl with {orderId, providerTaskId, action, request, authorization, grant, payer, gatewayAudience}; answer {orderId, taskId, state, operations, signature} plus result (artifact, support), terminalAttestation (completed, failed, canceled), inputRequest/documents only when the daski-order-status-view header asks, and salesTax only when the daski-order-status-additions header names it",
+  "surface": "POST lifecycleUrl with {orderId, providerTaskId, action, request, authorization, grant, payer, gatewayAudience}; answer {orderId, taskId, state, operations, signature} plus result (artifact, support), terminalAttestation (completed, failed, canceled), inputRequest/documents only when the daski-order-status-view header asks, salesTax only when the daski-order-status-additions header names it, and the deliverables data part (https://daski.io/deliverables/v1) in an artifact's result only when that header names deliverables",
   "signature": "signature: EIP-191 by the provider authority key over keccak256(canonicalJson(answer without signature)), terminalAttestation included; terminalAttestation.signature: EIP-191 by the terminal attestation key over keccak256(canonicalJson(payload)), payload {orderId, taskId, state, resultHash, completedAt}",
   "authorization": {
     "readCapability": "authorization is {type: \"DaskiReadCap\", scope: action}, for status and artifact only; the grant's authorizationHash is canonicalHash of it",
@@ -9,11 +9,11 @@
   },
   "headers": {
     "content-type": "application/json",
-    "daski-order-status-additions": "salesTax",
+    "daski-order-status-additions": "salesTax, deliverables",
     "daski-order-status-view": "1"
   },
   "verdicts": {
-    "accepted": "The gateway passes the signed answer to the buyer; the order moves to orderStateAfter.",
+    "accepted": "The gateway passes the signed answer to the buyer; the order moves to orderStateAfter. An artifact read also answers deliverables: the artifact, then each owner action checked against assetActions (none named: the artifact alone).",
     "refused": "The gateway names the refusal to the buyer with code and status.",
     "rejected": "The gateway refuses the answer; the buyer sees an internal error and the provider's text is never shown."
   },
@@ -30,7 +30,7 @@
         "url": "https://provider.example/standard-rail/lifecycle",
         "headers": {
           "content-type": "application/json",
-          "daski-order-status-additions": "salesTax",
+          "daski-order-status-additions": "salesTax, deliverables",
           "daski-order-status-view": "1"
         },
         "body": {
@@ -79,7 +79,7 @@
         "url": "https://provider.example/standard-rail/lifecycle",
         "headers": {
           "content-type": "application/json",
-          "daski-order-status-additions": "salesTax",
+          "daski-order-status-additions": "salesTax, deliverables",
           "daski-order-status-view": "1"
         },
         "body": {
@@ -128,7 +128,7 @@
         "url": "https://provider.example/standard-rail/lifecycle",
         "headers": {
           "content-type": "application/json",
-          "daski-order-status-additions": "salesTax",
+          "daski-order-status-additions": "salesTax, deliverables",
           "daski-order-status-view": "1"
         },
         "body": {
@@ -189,7 +189,7 @@
         "url": "https://provider.example/standard-rail/lifecycle",
         "headers": {
           "content-type": "application/json",
-          "daski-order-status-additions": "salesTax",
+          "daski-order-status-additions": "salesTax, deliverables",
           "daski-order-status-view": "1"
         },
         "body": {
@@ -245,7 +245,7 @@
         "url": "https://provider.example/standard-rail/lifecycle",
         "headers": {
           "content-type": "application/json",
-          "daski-order-status-additions": "salesTax",
+          "daski-order-status-additions": "salesTax, deliverables",
           "daski-order-status-view": "1"
         },
         "body": {
@@ -294,7 +294,7 @@
         "url": "https://provider.example/standard-rail/lifecycle",
         "headers": {
           "content-type": "application/json",
-          "daski-order-status-additions": "salesTax",
+          "daski-order-status-additions": "salesTax, deliverables",
           "daski-order-status-view": "1"
         },
         "body": {
@@ -343,7 +343,7 @@
         "url": "https://provider.example/standard-rail/lifecycle",
         "headers": {
           "content-type": "application/json",
-          "daski-order-status-additions": "salesTax",
+          "daski-order-status-additions": "salesTax, deliverables",
           "daski-order-status-view": "1"
         },
         "body": {
@@ -399,7 +399,7 @@
         "url": "https://provider.example/standard-rail/lifecycle",
         "headers": {
           "content-type": "application/json",
-          "daski-order-status-additions": "salesTax",
+          "daski-order-status-additions": "salesTax, deliverables",
           "daski-order-status-view": "1"
         },
         "body": {
@@ -455,7 +455,7 @@
         "url": "https://provider.example/standard-rail/lifecycle",
         "headers": {
           "content-type": "application/json",
-          "daski-order-status-additions": "salesTax",
+          "daski-order-status-additions": "salesTax, deliverables",
           "daski-order-status-view": "1"
         },
         "body": {
@@ -1052,6 +1052,257 @@
         "receivedAt": 1790004000,
         "verdict": "accepted",
         "orderStateAfter": "FULFILLED"
+      }
+    },
+    {
+      "id": "artifact.deliverables.accepted",
+      "request": "artifact.payer-signed.completed",
+      "appliesTo": [
+        "daski-io/provider-full"
+      ],
+      "purpose": "When the lifecycle POST names deliverables in daski-order-status-additions, the artifact may carry the standard deliverables data part. The gateway lifts it out before the result schema, delivers the task unchanged and lists the artifact and each owner action it checked against the provider's signed asset-action catalog (assetActions).",
+      "provider": {
+        "now": 1790004000,
+        "orderId": "ord_00000000-0000-4000-8000-000000000001",
+        "taskId": "00000000-0000-4000-8000-00000000a001",
+        "state": "completed",
+        "operations": {
+          "schemaVersion": 1,
+          "revision": 0,
+          "observedAt": 1790004000,
+          "fulfillment": null,
+          "support": null,
+          "recovery": null
+        },
+        "result": {
+          "id": "00000000-0000-4000-8000-00000000a001",
+          "status": {
+            "state": "TASK_STATE_COMPLETED",
+            "message": {
+              "role": "ROLE_AGENT",
+              "parts": [
+                {
+                  "kind": "text",
+                  "text": "Note created."
+                }
+              ]
+            }
+          },
+          "artifacts": [
+            {
+              "artifactId": "note",
+              "name": "note_created",
+              "parts": [
+                {
+                  "kind": "data",
+                  "data": {
+                    "note": "note-0001",
+                    "title": "Synthetic fixture note",
+                    "characters": 48
+                  }
+                }
+              ]
+            },
+            {
+              "artifactId": "deliverables",
+              "name": "deliverables",
+              "parts": [
+                {
+                  "kind": "data",
+                  "data": {
+                    "https://daski.io/deliverables/v1": {
+                      "items": [
+                        {
+                          "kind": "artifact"
+                        },
+                        {
+                          "kind": "owner-action",
+                          "actionId": "get-note-access-code",
+                          "assetType": "note",
+                          "providerAssetId": "00000000-0000-4000-8000-00000000a0e1",
+                          "input": {
+                            "note": "note-0001"
+                          },
+                          "label": "Access code"
+                        }
+                      ]
+                    }
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        "frozenResult": {
+          "id": "00000000-0000-4000-8000-00000000a001",
+          "status": {
+            "state": "TASK_STATE_COMPLETED",
+            "message": {
+              "role": "ROLE_AGENT",
+              "parts": [
+                {
+                  "kind": "text",
+                  "text": "Note created."
+                }
+              ]
+            }
+          },
+          "artifacts": [
+            {
+              "artifactId": "note",
+              "name": "note_created",
+              "parts": [
+                {
+                  "kind": "data",
+                  "data": {
+                    "note": "note-0001",
+                    "title": "Synthetic fixture note",
+                    "characters": 48
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        "resultHash": "0x134fb3658986682b4285c13c3b1bfb971117f62f9c4fdc6d0cfad262c1a31388",
+        "completedAt": 1790003600
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "orderId": "ord_00000000-0000-4000-8000-000000000001",
+          "taskId": "00000000-0000-4000-8000-00000000a001",
+          "state": "completed",
+          "operations": {
+            "schemaVersion": 1,
+            "revision": 0,
+            "observedAt": 1790004000,
+            "fulfillment": null,
+            "support": null,
+            "recovery": null
+          },
+          "result": {
+            "id": "00000000-0000-4000-8000-00000000a001",
+            "status": {
+              "state": "TASK_STATE_COMPLETED",
+              "message": {
+                "role": "ROLE_AGENT",
+                "parts": [
+                  {
+                    "kind": "text",
+                    "text": "Note created."
+                  }
+                ]
+              }
+            },
+            "artifacts": [
+              {
+                "artifactId": "note",
+                "name": "note_created",
+                "parts": [
+                  {
+                    "kind": "data",
+                    "data": {
+                      "note": "note-0001",
+                      "title": "Synthetic fixture note",
+                      "characters": 48
+                    }
+                  }
+                ]
+              },
+              {
+                "artifactId": "deliverables",
+                "name": "deliverables",
+                "parts": [
+                  {
+                    "kind": "data",
+                    "data": {
+                      "https://daski.io/deliverables/v1": {
+                        "items": [
+                          {
+                            "kind": "artifact"
+                          },
+                          {
+                            "kind": "owner-action",
+                            "actionId": "get-note-access-code",
+                            "assetType": "note",
+                            "providerAssetId": "00000000-0000-4000-8000-00000000a0e1",
+                            "input": {
+                              "note": "note-0001"
+                            },
+                            "label": "Access code"
+                          }
+                        ]
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          "terminalAttestation": {
+            "payload": {
+              "orderId": "ord_00000000-0000-4000-8000-000000000001",
+              "taskId": "00000000-0000-4000-8000-00000000a001",
+              "state": "completed",
+              "resultHash": "0x134fb3658986682b4285c13c3b1bfb971117f62f9c4fdc6d0cfad262c1a31388",
+              "completedAt": 1790003600
+            },
+            "signature": "0x0627d3a0c7a9266eaf1f593d21dd060356e81c90e164b91c5910e24d7d7220e541916647fd5a65aba31c6d0df4cb28bd3f89c8b618353b23bfcceca977e1effb1b"
+          },
+          "signature": "0x0c8875b9fb6468fa119a30651a72cc6462f58d389a6266427cfe67d2c68d75a074abb358ba440b9ab8d6e9c7e9509d98ec2c0627cbfe78201ad613e4145537931c"
+        }
+      },
+      "gateway": {
+        "orderState": "FULFILLED",
+        "resultSchema": "taskProjection",
+        "storedOperations": {
+          "schemaVersion": 1,
+          "revision": 0,
+          "observedAt": 1790003700,
+          "fulfillment": null,
+          "support": null,
+          "recovery": null
+        },
+        "storedTerminal": {
+          "payload": {
+            "taskId": "00000000-0000-4000-8000-00000000a001",
+            "dispatchHash": "0x68df0a341c25d30f3e22b9585038fa7f0abd2a19f6de59ca88df83e9978a282f",
+            "state": "completed",
+            "resultHash": "0x134fb3658986682b4285c13c3b1bfb971117f62f9c4fdc6d0cfad262c1a31388",
+            "completedAt": 1790003600
+          },
+          "signature": "0x35a0f7cfdb004ac84a877bba01ffc6e42e79fadc69991a37cb5cd52fc8c4cc316ee342954eb910937fef58f3ed521875b65651fb4d311c740a654067c2cc37c91b"
+        },
+        "receivedAt": 1790004000,
+        "verdict": "accepted",
+        "orderStateAfter": "FULFILLED",
+        "assetActions": [
+          {
+            "actionId": "get-note-access-code",
+            "assetType": "note",
+            "destructive": false
+          }
+        ],
+        "deliverables": [
+          {
+            "kind": "artifact"
+          },
+          {
+            "kind": "owner-action",
+            "providerAgentId": "4242",
+            "actionId": "get-note-access-code",
+            "assetType": "note",
+            "providerAssetId": "00000000-0000-4000-8000-00000000a0e1",
+            "input": {
+              "note": "note-0001"
+            },
+            "label": "Access code"
+          }
+        ]
       }
     },
     {

@@ -686,8 +686,70 @@ plus total to the paid amount, which must be the order's own gross. It returns
 the statement only on those authorized reads and never stores or logs it.
 Every provider lifecycle POST names the additions the gateway accepts beyond
 `inputRequest` and `documents` in `daski-order-status-additions` (now
-`salesTax`), and a provider adds one only when named. An order the provider
-never assessed, and any provider that computes no tax, carries no `salesTax`.
+`salesTax` and `deliverables`, below), and a provider adds one only when
+named. An order the provider never assessed, and any provider that computes no
+tax, carries no `salesTax`.
+
+### Order deliverables
+
+A fulfilled order's artifact read (`POST /orders/:handle/actions/artifact`)
+answers the provider's signed lifecycle answer, with `result` (the A2A task)
+exactly as the provider signed it, the order fields, and `deliverables`: what
+the buyer gets for the order. `{"kind": "artifact"}` is always first; it is the
+artifact itself, and the whole list when the provider names nothing else. Each
+other entry is an owner action that delivers part of the order, such as an API
+key or a document, with exactly what `POST /wallet/assets/action` takes besides
+`payer` and `authorization`, and the action's asset type:
+
+```json
+{"kind": "owner-action", "providerAgentId": "8327", "actionId": "get-api-key",
+ "assetType": "api-account", "providerAssetId": "00000000-0000-4000-8000-00000000a5e7",
+ "input": {"keyId": "key_0001"}, "label": "API key"}
+```
+
+`label` is a short display name, or null. After `FULFILLED`, a buyer reads the
+artifact, then runs each owner action with its own wallet authorization.
+[`test/wire-fixtures/order-artifact-deliverables.json`](test/wire-fixtures/order-artifact-deliverables.json)
+is a complete answer. A status read never carries `deliverables`.
+
+A provider lists them in one standard data part, in any artifact of the task
+(never in its status message):
+
+```json
+{"kind": "data", "data": {"https://daski.io/deliverables/v1": {"items": [
+  {"kind": "artifact"},
+  {"kind": "owner-action", "actionId": "get-api-key", "assetType": "api-account",
+   "providerAssetId": "00000000-0000-4000-8000-00000000a5e7", "input": {"keyId": "key_0001"},
+   "label": "API key"}
+]}}}
+```
+
+Items are `{"kind": "artifact"}` or an owner action with exactly `actionId`,
+`assetType`, `providerAssetId`, `input` and an optional `label`; at most 32. They
+are pointers and never carry a secret: the secret comes from the action, which
+`POST /wallet/assets/action` authorizes and checks on its own. `providerAssetId`
+is a lowercase UUID. `input` is a flat object of at most 16 keys and 2 KiB: each
+key an identifier (a letter, then letters, digits or `_`, at most 64) other than
+`operation`, each value null, a boolean, a finite number or a string of at most
+256 characters. `label` is 1 to 64 characters or null. No string may hold
+control, invisible formatting or line separator characters, because these
+values reach agents outside the untrusted `result`.
+
+The gateway lifts the part out before it projects a result onto the listing's
+schema, so no listing schema sees it; an order input answer that carries the
+provider's task is lifted the same way, but only an artifact read lists
+`deliverables`. It checks each owner action against the provider's current
+signed asset-action catalog, first activating the current admission as a new
+asset action does: the action exists as `POST /wallet/assets/action` resolves
+it, it is not destructive, and its asset type is the one the item names. An
+invalid item, a duplicate, a part beside other data, a second part or more than
+32 items is dropped and logged; it never fails the read. The raw part still
+faces every bound and the passive-output check, like the rest of the result.
+`result` keeps the part, because it is the provider's signed task: use
+`deliverables`, never the raw part. A gateway released before this one refuses
+an artifact whose task carries the part on a flat contract and on a closed
+task-shaped one, so every lifecycle POST names `deliverables` in
+`daski-order-status-additions`, and a provider adds the part only when named.
 
 ## Implementation and paired changes
 
