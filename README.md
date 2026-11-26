@@ -609,8 +609,8 @@ never replaces the newer stored view. A completed provider recovery appears as `
 and `operations.recovery`, while the original failed order and its Failed reputation
 outcome remain unchanged. A recovery the provider also records on chain is a
 separate recovery record that the reputation contract keeps beside that outcome
-(see [recovered orders](#recovered-orders)). Status and artifact reads always
-obtain fresh provider evidence. When recovery or another request is working on
+(see [recovered orders](#recovered-orders)). Once the provider has a task for
+the order, status and artifact reads always obtain fresh provider evidence. When recovery or another request is working on
 the order at that moment, the provider's `state` can be ahead of `orderState`;
 `orderState` catches up on a later read or recovery pass.
 
@@ -626,7 +626,12 @@ at most three times with the same request before reading status. An artifact
 read refused with 409 `artifact_unavailable` still answers
 `ARTIFACT_NOT_AVAILABLE`. Any other status or body, including an extra key, an
 edge page or an oversized body, stays `INTERNAL_ERROR`, and no provider text
-reaches the buyer. A payer-signed action spends its authorization before the
+reaches the buyer. An artifact read before the provider has a task for the
+order also answers `ARTIFACT_NOT_AVAILABLE`, without asking the provider. For
+a paid order still on its way to the provider (`FACILITATOR_CONFIRMED`,
+`DEPOSIT_FINAL`, `RELEASE_FINAL`, `DISPATCH_STARTED` or `DISPATCH_AMBIGUOUS`)
+its message says the order is still being delivered and its next action says
+to read the status again. A payer-signed action spends its authorization before the
 provider is called and no refusal returns it: every retry carries a fresh
 authorization and the same request, so the provider's deduplication by its
 identity keeps one effect. A read capability is reused unchanged.

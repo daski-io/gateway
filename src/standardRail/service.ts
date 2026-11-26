@@ -41,6 +41,7 @@ import {
   salesPausedFromDatabase,
   signerUnavailableError,
   standardRailError,
+  type StandardRailError,
   type StandardRailPhase,
 } from "./errors.js";
 import { paymentAdmissionFailure, type ClaimedOrderReading } from "./paymentAdmission.js";
@@ -177,6 +178,41 @@ function assertExactKeys(value: unknown, expected: readonly string[], label: str
       internalMessage: `${label} fields are invalid`,
     });
   }
+}
+
+/**
+ * A paid order on its way to the provider: settled, released and dispatching,
+ * or waiting for dispatch recovery to learn the provider's task. Its delivery
+ * is still ahead of it.
+ */
+const DELIVERY_PENDING_STATES: ReadonlySet<StandardOrderRecord["state"]> = new Set([
+  "FACILITATOR_CONFIRMED", "DEPOSIT_FINAL", "RELEASE_FINAL", "DISPATCH_STARTED", "DISPATCH_AMBIGUOUS",
+]);
+
+/** States an order enters only once its provider has a task for it. */
+const PROVIDER_TASK_STATES: ReadonlySet<StandardOrderRecord["state"]> = new Set([
+  "DISPATCHED", "INPUT_REQUIRED", "FULFILLED",
+]);
+
+/**
+ * An artifact read on an order the provider has no task for. There is no
+ * artifact to read, which is the documented ARTIFACT_NOT_AVAILABLE, never a
+ * server fault: answering INTERNAL_ERROR told agents to stop and report a paid
+ * order that was still being delivered (agent bench, November 2026). A paid
+ * order says so, and says to read its status again. A dispatched order without
+ * its task is the gateway's own inconsistency and stays an internal error.
+ */
+export function artifactWithoutProviderTask(state: StandardOrderRecord["state"]): StandardRailError {
+  if (PROVIDER_TASK_STATES.has(state)) {
+    return standardRailError("INTERNAL_ERROR", { phase: "dispatch", internalMessage: "PROVIDER_TASK_NOT_AVAILABLE" });
+  }
+  return DELIVERY_PENDING_STATES.has(state)
+    ? standardRailError("ARTIFACT_NOT_AVAILABLE", {
+        message: "The order is paid and still being delivered; it has no artifact yet",
+        nextAction: "Read the order status again shortly. Artifacts are available once it is completed or " +
+          "completed after recovery.",
+      })
+    : standardRailError("ARTIFACT_NOT_AVAILABLE");
 }
 
 function isTransitionConflict(error: unknown): boolean {
@@ -1672,6 +1708,7 @@ export class StandardRailService {
         confirmationFinal: await this.confirmationState.stored(order.orderId),
       };
     }
+    if (args.action === "artifact" && !order.providerTaskId) throw artifactWithoutProviderTask(order.state);
     if (!order.providerTaskId) throw standardRailError("INTERNAL_ERROR", {
         phase: "dispatch",
         internalMessage: "PROVIDER_TASK_NOT_AVAILABLE",
