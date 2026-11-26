@@ -32,6 +32,33 @@
       "retryable": true,
       "requiresNewSignature": false,
       "paymentMayHaveSettled": false,
+      "deliveryState": "not_delivering",
+      "docs": "https://sandbox-gateway.daski.io/skills/buy.md#errors",
+      "correlationId": "00000000-0000-4000-8000-00000000c0de"
+    }
+  },
+  "artifactStillBeingDelivered": {
+    "error": {
+      "code": "ARTIFACT_NOT_AVAILABLE",
+      "message": "The order is paid and still being delivered; it has no artifact yet",
+      "phase": "dispatch",
+      "retryable": true,
+      "requiresNewSignature": false,
+      "paymentMayHaveSettled": false,
+      "deliveryState": "delivering",
+      "docs": "https://sandbox-gateway.daski.io/skills/buy.md#errors",
+      "correlationId": "00000000-0000-4000-8000-00000000c0de"
+    }
+  },
+  "artifactAwaitingInput": {
+    "error": {
+      "code": "ARTIFACT_NOT_AVAILABLE",
+      "message": "The order is waiting for the payer's input; it has no artifact yet",
+      "phase": "dispatch",
+      "retryable": true,
+      "requiresNewSignature": false,
+      "paymentMayHaveSettled": false,
+      "deliveryState": "awaiting_input",
       "docs": "https://sandbox-gateway.daski.io/skills/buy.md#errors",
       "correlationId": "00000000-0000-4000-8000-00000000c0de"
     }

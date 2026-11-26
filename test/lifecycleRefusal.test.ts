@@ -9,7 +9,7 @@ import { LIFECYCLE_RETRY_AFTER_SECONDS, providerLifecycleRefusal } from "../src/
 import { issueReadCapability } from "../src/standardRail/readCapability.js";
 import { createStandardRailRouter } from "../src/standardRail/routes.js";
 import { StandardRailService } from "../src/standardRail/service.js";
-import type { StandardOrderRecord } from "../src/standardRail/types.js";
+import type { StandardOrderRecord, StandardOrderState } from "../src/standardRail/types.js";
 
 const refusal = (status: number, body: unknown) => new Response(JSON.stringify(body), {
   status, headers: { "content-type": "application/json" } });
@@ -140,9 +140,9 @@ describe("provider lifecycle refusals at the buyer surface", () => {
     server = undefined;
   });
 
-  async function read(action: "status" | "artifact", answer: () => Response) {
+  async function read(action: "status" | "artifact", answer: () => Response, state: StandardOrderState = "DISPATCHED") {
     const order = {
-      orderId: "ord", providerTaskId: "task", state: "DISPATCHED", payer: signer.address, capabilityEpoch: 0,
+      orderId: "ord", providerTaskId: "task", state, payer: signer.address, capabilityEpoch: 0,
       listing: { providerControlProfile: { payload: {
         providerAudience: "provider.example", lifecycleUrl: "https://provider.example/standard-rail/lifecycle",
         timeoutMs: 3_000, maxResponseBytes: 65_536,
@@ -193,6 +193,27 @@ describe("provider lifecycle refusals at the buyer surface", () => {
     const { response, body } = await read("artifact", () => refusal(409, { error: "artifact_unavailable" }));
     expect(response.status).toBe(409);
     expect(body.error).toMatchObject({ code: "ARTIFACT_NOT_AVAILABLE", retryable: true, requiresNewSignature: false });
+  });
+
+  // The provider names only that there is no artifact. Where the order's
+  // delivery stands comes from the gateway's own order state, never from the
+  // provider's body.
+  it.each([
+    ["DISPATCHED", "delivering", /^Read the order status again shortly/],
+    ["INPUT_REQUIRED", "awaiting_input", /inputRequest/],
+    ["FULFILLED", "not_delivering", /^Read the order status\. Artifacts/],
+    ["PROVIDER_FAILED", "not_delivering", /^Read the order status\. Artifacts/],
+  ] as const)("says where a %s order's delivery stands when its provider has no artifact", async (state, deliveryState, next) => {
+    const { response, body } = await read("artifact", () => refusal(409, { error: "artifact_unavailable" }), state);
+    expect(response.status).toBe(409);
+    expect(response.headers.get("daski-next-action")).toMatch(next);
+    expect(body.error).toMatchObject({ code: "ARTIFACT_NOT_AVAILABLE", deliveryState, retryable: true });
+  });
+
+  it("keeps deliveryState to artifact reads", async () => {
+    const { body } = await read("status", () => refusal(409, { error: "unsupported_action" }));
+    expect(body.error).toMatchObject({ code: "ORDER_ACTION_UNSUPPORTED" });
+    expect(body.error).not.toHaveProperty("deliveryState");
   });
 
   it.each([

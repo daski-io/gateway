@@ -13,7 +13,9 @@ const DELIVERING = "The order is paid and still being delivered; it has no artif
 const PLAIN = "The order has no artifact: it is neither completed nor recovered";
 
 // What an artifact read answers for an order without a provider task, in every
-// state. A new state fails the typecheck here until it is classified.
+// state: "delivering" and "plain" are ARTIFACT_NOT_AVAILABLE with deliveryState
+// delivering and not_delivering. A new state fails the typecheck here until it
+// is classified.
 const ANSWER: Record<StandardOrderState, "delivering" | "plain" | "internal"> = {
   DRAFT: "plain",
   CHALLENGE_ISSUED: "plain",
@@ -95,7 +97,7 @@ describe("an artifact read before the provider has the order", () => {
     expect(response.headers.get("daski-next-action")).toMatch(/^Read the order status again/);
     expect(body.error).toMatchObject({
       code: "ARTIFACT_NOT_AVAILABLE", phase: "dispatch", retryable: true, requiresNewSignature: false,
-      paymentMayHaveSettled: false, message: DELIVERING,
+      paymentMayHaveSettled: false, message: DELIVERING, deliveryState: "delivering",
     });
   });
 
@@ -110,7 +112,7 @@ describe("an artifact read before the provider has the order", () => {
     const { response, body } = await read("artifact", "NOT_SETTLED");
 
     expect(response.status).toBe(409);
-    expect(body.error).toMatchObject({ code: "ARTIFACT_NOT_AVAILABLE", message: PLAIN });
+    expect(body.error).toMatchObject({ code: "ARTIFACT_NOT_AVAILABLE", message: PLAIN, deliveryState: "not_delivering" });
   });
 
   it("says nothing about the order to a read the gateway does not authorize", async () => {
@@ -118,7 +120,7 @@ describe("an artifact read before the provider has the order", () => {
 
     expect(response.status).toBe(401);
     expect(body.error).toMatchObject({ code: "WALLET_AUTHORIZATION_INVALID" });
-    expect(JSON.stringify(body)).not.toContain("delivered");
+    expect(JSON.stringify(body)).not.toContain("deliver");
   });
 
   it.each(Object.entries(ANSWER) as Array<[StandardOrderState, "delivering" | "plain" | "internal"]>)(
@@ -126,10 +128,12 @@ describe("an artifact read before the provider has the order", () => {
       const error = artifactWithoutProviderTask(state);
       if (answer === "internal") {
         expect(error).toMatchObject({ code: "INTERNAL_ERROR", status: 500, message: "PROVIDER_TASK_NOT_AVAILABLE" });
+        expect(error.deliveryState).toBeUndefined();
       } else {
         expect(error).toMatchObject({
           code: "ARTIFACT_NOT_AVAILABLE", status: 409, retryable: true,
           publicMessage: answer === "delivering" ? DELIVERING : PLAIN,
+          deliveryState: answer === "delivering" ? "delivering" : "not_delivering",
         });
       }
     });

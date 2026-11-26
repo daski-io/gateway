@@ -73,6 +73,22 @@ export type StandardRailErrorCode =
   | "SIGNER_UNAVAILABLE"
   | "INTERNAL_ERROR";
 
+/**
+ * Where an order's delivery stands when it has no artifact to read
+ * (ARTIFACT_NOT_AVAILABLE), as the gateway's own order state shows it, so a
+ * client never has to infer it from the message:
+ *
+ *   - `delivering`: the order is paid and on its way to its result, before or
+ *     at the provider; nothing failed. Read its status again shortly.
+ *   - `awaiting_input`: the provider is waiting for the payer's input, which
+ *     the order status names (`inputRequest`).
+ *   - `not_delivering`: no delivery is under way. The order status shows why:
+ *     its payment is not final or failed, or it failed, is held or ended.
+ */
+export const ARTIFACT_DELIVERY_STATES = ["delivering", "awaiting_input", "not_delivering"] as const;
+
+export type ArtifactDeliveryState = typeof ARTIFACT_DELIVERY_STATES[number];
+
 export interface StandardRailFieldError {
   path: string;
   rule: string;
@@ -601,6 +617,8 @@ export interface StandardRailErrorOptions {
   reason?: string;
   /** The Retry-After this answer carries, when it names its own. */
   retryAfterSeconds?: number;
+  /** ARTIFACT_NOT_AVAILABLE: where the order's delivery stands. */
+  deliveryState?: ArtifactDeliveryState;
   /** Fixed correlation id — wire fixtures only; production ids are random. */
   correlationId?: string;
 }
@@ -624,6 +642,7 @@ export class StandardRailError extends Error {
   readonly until?: string;
   readonly reason?: string;
   readonly retryAfterSeconds?: number;
+  readonly deliveryState?: ArtifactDeliveryState;
   readonly correlationId: string;
   readonly logContext: Record<string, unknown>;
 
@@ -649,6 +668,7 @@ export class StandardRailError extends Error {
     this.until = options.until;
     this.reason = options.reason;
     this.retryAfterSeconds = options.retryAfterSeconds;
+    this.deliveryState = options.deliveryState;
     this.correlationId = options.correlationId ?? randomUUID();
     this.logContext = options.logContext ?? {};
   }
@@ -825,6 +845,7 @@ export interface StandardRailPublicError {
   chainEligible?: boolean;
   until?: string;
   reason?: string;
+  deliveryState?: ArtifactDeliveryState;
   docs: string;
   correlationId: string;
 }
@@ -849,6 +870,7 @@ export function standardRailPublicError(
     ...(error.chainEligible === undefined ? {} : { chainEligible: error.chainEligible }),
     ...(error.until === undefined ? {} : { until: error.until }),
     ...(error.reason === undefined ? {} : { reason: error.reason }),
+    ...(error.deliveryState === undefined ? {} : { deliveryState: error.deliveryState }),
     docs: `${publicUrl.replace(/\/$/, "")}/skills/buy.md#errors`,
     correlationId: error.correlationId,
   };
