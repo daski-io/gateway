@@ -655,6 +655,26 @@ support when everything shown is correct. A signed completion moves an order
 from `INPUT_REQUIRED` to `FULFILLED` directly, because a status read can miss
 the brief working state in between.
 
+An order the provider assessed for sales tax also carries the provider's
+`salesTax` statement on the payer-authorized status read and on the answer to
+an order input: the `state` and the rate map's `jurisdictionCode`, the
+pre-tax `priceUsd`, the `taxableAmountUsd`, each jurisdiction's `name`,
+`type`, `rate` and `taxUsd`, any `fees` with their `label` and `amountUsd`,
+`totalTaxUsd`, `totalFeesUsd`, `totalUsd`, the `paidUsd` and
+`includedInPaidAmount: true`. Amounts are US dollars as exact decimal
+strings. The tax and fees are part of the order's paid gross, not a separate
+charge; the payment requirement and the gateway's signed receipt state the
+gross only. A sale assessed at zero (every line exempt) shows zero tax and no
+jurisdictions. The gateway checks the statement against
+`src/standardRail/orderStatusView.ts` and that it adds up: jurisdiction taxes
+to the total tax, fees to the total fees, tax plus fees to the total, price
+plus total to the paid amount, which must be the order's own gross. It returns
+the statement only on those authorized reads and never stores or logs it.
+Every provider lifecycle POST names the additions the gateway accepts beyond
+`inputRequest` and `documents` in `daski-order-status-additions` (now
+`salesTax`), and a provider adds one only when named. An order the provider
+never assessed, and any provider that computes no tax, carries no `salesTax`.
+
 ## Implementation and paired changes
 
 - Preserve payment/order idempotency, durable intent and bounded reconciliation.

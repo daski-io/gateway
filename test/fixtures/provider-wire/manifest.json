@@ -75,7 +75,7 @@
       "exercises": "dispatch status handler: POST dispatchStatusUrl"
     },
     "lifecycle.json": {
-      "sha256": "f56fe2c733c9d79c13074cf758289329be0a9cad76db54eae58b9b3d8e3e1df1",
+      "sha256": "63b96728ada4165eddc854cc4fd27304528702437291fbfb480be36bdaa372f0",
       "purpose": "Lifecycle POSTs with grant-attested read capabilities and payer-signed authorizations (status, artifact, support, input, cancel), their headers, answers and the named refusals.",
       "consumers": [
         "daski-io/provider",

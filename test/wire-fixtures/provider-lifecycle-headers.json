@@ -1,4 +1,5 @@
 {
   "content-type": "application/json",
-  "daski-order-status-view": "1"
+  "daski-order-status-view": "1",
+  "daski-order-status-additions": "salesTax"
 }

@@ -876,8 +876,9 @@ async function lifecycleDocument(story: Story): Promise<Doc> {
     schemaVersion: FIXTURE_SCHEMA_VERSION,
     surface: "POST lifecycleUrl with {orderId, providerTaskId, action, request, authorization, grant, payer, " +
       "gatewayAudience}; answer {orderId, taskId, state, operations, signature} plus result (artifact, " +
-      "support), terminalAttestation (completed, failed, canceled) and inputRequest/documents only when " +
-      "the daski-order-status-view header asks",
+      "support), terminalAttestation (completed, failed, canceled), inputRequest/documents only when " +
+      "the daski-order-status-view header asks, and salesTax only when the daski-order-status-additions " +
+      "header names it",
     signature: "signature: EIP-191 by the provider authority key over keccak256(canonicalJson(answer without " +
       "signature)), terminalAttestation included; terminalAttestation.signature: EIP-191 by the " +
       "terminal attestation key over keccak256(canonicalJson(payload)), payload {orderId, taskId, " +

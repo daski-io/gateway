@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "surface": "POST lifecycleUrl with {orderId, providerTaskId, action, request, authorization, grant, payer, gatewayAudience}; answer {orderId, taskId, state, operations, signature} plus result (artifact, support), terminalAttestation (completed, failed, canceled) and inputRequest/documents only when the daski-order-status-view header asks",
+  "surface": "POST lifecycleUrl with {orderId, providerTaskId, action, request, authorization, grant, payer, gatewayAudience}; answer {orderId, taskId, state, operations, signature} plus result (artifact, support), terminalAttestation (completed, failed, canceled), inputRequest/documents only when the daski-order-status-view header asks, and salesTax only when the daski-order-status-additions header names it",
   "signature": "signature: EIP-191 by the provider authority key over keccak256(canonicalJson(answer without signature)), terminalAttestation included; terminalAttestation.signature: EIP-191 by the terminal attestation key over keccak256(canonicalJson(payload)), payload {orderId, taskId, state, resultHash, completedAt}",
   "authorization": {
     "readCapability": "authorization is {type: \"DaskiReadCap\", scope: action}, for status and artifact only; the grant's authorizationHash is canonicalHash of it",
@@ -9,6 +9,7 @@
   },
   "headers": {
     "content-type": "application/json",
+    "daski-order-status-additions": "salesTax",
     "daski-order-status-view": "1"
   },
   "verdicts": {
@@ -29,6 +30,7 @@
         "url": "https://provider.example/standard-rail/lifecycle",
         "headers": {
           "content-type": "application/json",
+          "daski-order-status-additions": "salesTax",
           "daski-order-status-view": "1"
         },
         "body": {
@@ -77,6 +79,7 @@
         "url": "https://provider.example/standard-rail/lifecycle",
         "headers": {
           "content-type": "application/json",
+          "daski-order-status-additions": "salesTax",
           "daski-order-status-view": "1"
         },
         "body": {
@@ -125,6 +128,7 @@
         "url": "https://provider.example/standard-rail/lifecycle",
         "headers": {
           "content-type": "application/json",
+          "daski-order-status-additions": "salesTax",
           "daski-order-status-view": "1"
         },
         "body": {
@@ -185,6 +189,7 @@
         "url": "https://provider.example/standard-rail/lifecycle",
         "headers": {
           "content-type": "application/json",
+          "daski-order-status-additions": "salesTax",
           "daski-order-status-view": "1"
         },
         "body": {
@@ -240,6 +245,7 @@
         "url": "https://provider.example/standard-rail/lifecycle",
         "headers": {
           "content-type": "application/json",
+          "daski-order-status-additions": "salesTax",
           "daski-order-status-view": "1"
         },
         "body": {
@@ -288,6 +294,7 @@
         "url": "https://provider.example/standard-rail/lifecycle",
         "headers": {
           "content-type": "application/json",
+          "daski-order-status-additions": "salesTax",
           "daski-order-status-view": "1"
         },
         "body": {
@@ -336,6 +343,7 @@
         "url": "https://provider.example/standard-rail/lifecycle",
         "headers": {
           "content-type": "application/json",
+          "daski-order-status-additions": "salesTax",
           "daski-order-status-view": "1"
         },
         "body": {
@@ -391,6 +399,7 @@
         "url": "https://provider.example/standard-rail/lifecycle",
         "headers": {
           "content-type": "application/json",
+          "daski-order-status-additions": "salesTax",
           "daski-order-status-view": "1"
         },
         "body": {
@@ -446,6 +455,7 @@
         "url": "https://provider.example/standard-rail/lifecycle",
         "headers": {
           "content-type": "application/json",
+          "daski-order-status-additions": "salesTax",
           "daski-order-status-view": "1"
         },
         "body": {

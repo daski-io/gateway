@@ -134,7 +134,7 @@
         "src/standardRail/orderStatusView.ts PROVIDER_LIFECYCLE_HEADERS (src/standardRail/service.ts performAction, provider lifecycle POST headers)"
       ],
       "parsedBy": [
-        "daski-provider src/core/standardRail/routes.ts POST /lifecycle (adds the order status view only when asked)"
+        "daski-provider src/core/standardRail/routes.ts POST /lifecycle (adds the order status view only when asked, and each addition the daski-order-status-additions header names)"
       ]
     },
     "confirmation-request-shapes.json": {
@@ -203,6 +203,18 @@
         "daski-buyer packages/pay/src/gateway/inputRequest.ts (order status display)",
         "daski-test scripts/orderOperations.ts inputRequestOf",
         "daski-provider src/core/standardRail/orderStatusView.ts orderStatusViewSchema (the provider emits the same shape)"
+      ]
+    },
+    "order-status-sales-tax.json": {
+      "consumers": [
+        "daski-provider"
+      ],
+      "emittedBy": [
+        "src/standardRail/service.ts applyLifecycleResult (passes the provider's salesTax through on status reads and order input answers when it adds up to the order's gross)",
+        "src/standardRail/orderStatusView.ts salesTaxSchema, salesTaxAddsUp"
+      ],
+      "parsedBy": [
+        "daski-provider src/core/tax/orderStatus.ts orderStatusSalesTax (the provider emits the same shape from its tax record)"
       ]
     }
   }

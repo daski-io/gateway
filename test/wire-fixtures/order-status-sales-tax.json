@@ -1,0 +1,41 @@
+{
+  "salesTax": {
+    "schemaVersion": 1,
+    "state": "CO",
+    "jurisdictionCode": "01-0006",
+    "priceUsd": "40.00",
+    "taxableAmountUsd": "40.00",
+    "jurisdictions": [
+      {
+        "name": "Colorado",
+        "type": "state",
+        "rate": "0.029",
+        "taxUsd": "1.16"
+      },
+      {
+        "name": "Denver",
+        "type": "city",
+        "rate": "0.0515",
+        "taxUsd": "2.06"
+      },
+      {
+        "name": "Regional Transportation District",
+        "type": "district",
+        "rate": "0.01",
+        "taxUsd": "0.40"
+      },
+      {
+        "name": "Scientific and Cultural Facilities District",
+        "type": "district",
+        "rate": "0.001",
+        "taxUsd": "0.04"
+      }
+    ],
+    "fees": [],
+    "totalTaxUsd": "3.66",
+    "totalFeesUsd": "0.00",
+    "totalUsd": "3.66",
+    "paidUsd": "43.66",
+    "includedInPaidAmount": true
+  }
+}
