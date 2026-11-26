@@ -21,7 +21,9 @@ import { StandardReviewRecovery } from "./reviewRecovery.js";
 import { createHmac, randomBytes, randomUUID } from "node:crypto";
 import { fulfillmentClock } from "./operationsStore.js";
 import { operationsSchema } from "./operationsSchema.js";
-import { inputRequestSchema, orderDocumentsSchema, PROVIDER_LIFECYCLE_HEADERS } from "./orderStatusView.js";
+import {
+  inputRequestSchema, orderDocumentsSchema, PROVIDER_LIFECYCLE_HEADERS, salesTaxAddsUp, salesTaxSchema,
+} from "./orderStatusView.js";
 import { supportResultSchema, validateSupportRequest } from "./supportRequest.js";
 import { readinessSchema, type PurchaseReadiness } from "./readinessSchema.js";
 import type { PaymentPayload, PaymentRequired, PaymentRequirements } from "@x402/core/types";
@@ -140,21 +142,26 @@ export const FIXED_READINESS_QUOTE_MAX_SECONDS = 300;
 /// and the answer to an order input; the input request only while the order
 /// waits for the buyer. Their values are the buyer's own: validated against
 /// the mirrored schema, passed through, never stored or echoed in errors.
+/// The sales tax statement must also add up to what this order paid.
 function assertOrderStatusAdditions(
-  response: { state?: unknown; inputRequest?: unknown; documents?: unknown },
+  response: { state?: unknown; inputRequest?: unknown; documents?: unknown; salesTax?: unknown },
   action: string,
+  orderGrossAmount: string,
 ): void {
   const hasRequest = "inputRequest" in response;
   const hasDocuments = "documents" in response;
-  if (!hasRequest && !hasDocuments) return;
+  const hasSalesTax = "salesTax" in response;
+  if (!hasRequest && !hasDocuments && !hasSalesTax) return;
   if ((action !== "status" && action !== "input") || (hasRequest && response.state !== "input-required")) {
     throw standardRailError("INTERNAL_ERROR", {
       phase: "dispatch",
       internalMessage: "PROVIDER_LIFECYCLE_UNEXPECTED_CONTENT",
     });
   }
+  const salesTax = hasSalesTax ? salesTaxSchema.safeParse(response.salesTax) : null;
   if ((hasRequest && !inputRequestSchema.safeParse(response.inputRequest).success) ||
-      (hasDocuments && !orderDocumentsSchema.safeParse(response.documents).success)) {
+      (hasDocuments && !orderDocumentsSchema.safeParse(response.documents).success) ||
+      (salesTax && (!salesTax.success || !salesTaxAddsUp(salesTax.data, orderGrossAmount)))) {
     throw standardRailError("INTERNAL_ERROR", {
       phase: "dispatch",
       internalMessage: "PROVIDER_ORDER_STATUS_VIEW_INVALID",
@@ -1782,15 +1789,17 @@ export class StandardRailService {
       terminalAttestation?: { payload?: Record<string, unknown>; signature?: unknown };
       inputRequest?: unknown;
       documents?: unknown;
+      salesTax?: unknown;
     };
     const lifecycleKeys = ["orderId", "taskId", "state", "signature", "operations"];
     if ("result" in response) lifecycleKeys.push("result");
     if ("terminalAttestation" in response) lifecycleKeys.push("terminalAttestation");
     if ("inputRequest" in response) lifecycleKeys.push("inputRequest");
     if ("documents" in response) lifecycleKeys.push("documents");
+    if ("salesTax" in response) lifecycleKeys.push("salesTax");
     assertExactKeys(response, lifecycleKeys, "provider lifecycle response");
     operationsSchema.parse(response.operations);
-    assertOrderStatusAdditions(response, action);
+    assertOrderStatusAdditions(response, action, initial.grossAmount);
     if (
       response.orderId !== initial.orderId || response.taskId !== initial.providerTaskId ||
       typeof response.signature !== "string" ||

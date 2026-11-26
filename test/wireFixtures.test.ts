@@ -1,4 +1,4 @@
-import { orderStatusAdditionsSchema, PROVIDER_LIFECYCLE_HEADERS } from "../src/standardRail/orderStatusView.js";
+import { orderStatusAdditionsSchema, PROVIDER_LIFECYCLE_HEADERS, salesTaxAddsUp } from "../src/standardRail/orderStatusView.js";
 import { privateKeyToAccount } from "viem/accounts";
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
@@ -330,6 +330,39 @@ function providerLifecycleHeadersFixture() {
 }
 
 /**
+ * The provider's sales tax statement exactly as the gateway passes it through
+ * on a payer-authorized status read of a taxed order: a synthetic Denver sale
+ * of $40.00 whose order paid a gross of 43660000 USDC atomic units. The gateway
+ * validates the shape and that it adds up to the order's own gross.
+ */
+const ORDER_STATUS_SALES_TAX_GROSS = "43660000";
+function orderStatusSalesTaxFixture() {
+  const additions = orderStatusAdditionsSchema.parse({
+    salesTax: {
+      schemaVersion: 1,
+      state: "CO",
+      jurisdictionCode: "01-0006",
+      priceUsd: "40.00",
+      taxableAmountUsd: "40.00",
+      jurisdictions: [
+        { name: "Colorado", type: "state", rate: "0.029", taxUsd: "1.16" },
+        { name: "Denver", type: "city", rate: "0.0515", taxUsd: "2.06" },
+        { name: "Regional Transportation District", type: "district", rate: "0.01", taxUsd: "0.40" },
+        { name: "Scientific and Cultural Facilities District", type: "district", rate: "0.001", taxUsd: "0.04" },
+      ],
+      fees: [],
+      totalTaxUsd: "3.66",
+      totalFeesUsd: "0.00",
+      totalUsd: "3.66",
+      paidUsd: "43.66",
+      includedInPaidAmount: true,
+    },
+  });
+  if (!salesTaxAddsUp(additions.salesTax!, ORDER_STATUS_SALES_TAX_GROSS)) throw new Error("sales tax fixture does not add up");
+  return additions;
+}
+
+/**
  * The provider's input request and order documents exactly as the gateway
  * passes them through on a payer-authorized status read (and an order input
  * answer). Values are synthetic; the shape is validated by the gateway's own
@@ -494,6 +527,7 @@ const fixtures: Record<string, () => unknown | Promise<unknown>> = {
   "provider-lifecycle-request.json": providerLifecycleRequestFixture,
   "provider-lifecycle-headers.json": providerLifecycleHeadersFixture,
   "order-status-input-request.json": orderStatusInputRequestFixture,
+  "order-status-sales-tax.json": orderStatusSalesTaxFixture,
 };
 
 describe("wire fixtures", () => {
