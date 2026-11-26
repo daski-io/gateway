@@ -44,6 +44,7 @@ import {
   signerUnavailableError,
   standardRailError,
   type StandardRailError,
+  type StandardRailErrorOptions,
   type StandardRailPhase,
 } from "./errors.js";
 import { paymentAdmissionFailure, type ClaimedOrderReading } from "./paymentAdmission.js";
@@ -188,12 +189,12 @@ function assertExactKeys(value: unknown, expected: readonly string[], label: str
 }
 
 /**
- * A paid order on its way to the provider: settled, released and dispatching,
- * or waiting for dispatch recovery to learn the provider's task. Its delivery
- * is still ahead of it.
+ * A paid order on its way to its result: settled, released and dispatching,
+ * waiting for dispatch recovery to learn the provider's task, or with the
+ * provider. Nothing has failed.
  */
-const DELIVERY_PENDING_STATES: ReadonlySet<StandardOrderRecord["state"]> = new Set([
-  "FACILITATOR_CONFIRMED", "DEPOSIT_FINAL", "RELEASE_FINAL", "DISPATCH_STARTED", "DISPATCH_AMBIGUOUS",
+const DELIVERING_STATES: ReadonlySet<StandardOrderRecord["state"]> = new Set([
+  "FACILITATOR_CONFIRMED", "DEPOSIT_FINAL", "RELEASE_FINAL", "DISPATCH_STARTED", "DISPATCH_AMBIGUOUS", "DISPATCHED",
 ]);
 
 /** States an order enters only once its provider has a task for it. */
@@ -202,24 +203,50 @@ const PROVIDER_TASK_STATES: ReadonlySet<StandardOrderRecord["state"]> = new Set(
 ]);
 
 /**
+ * ARTIFACT_NOT_AVAILABLE for an order in this state, with `deliveryState`
+ * saying where its delivery stands. A paid order still being delivered is not
+ * a failure: answering it like one told agents to stop and report an order
+ * that was on its way (agent bench, November 2026). The message keeps its
+ * wording, which buyer CLIs before `deliveryState` read.
+ */
+export function artifactNotAvailable(
+  state: StandardOrderRecord["state"],
+  fixed: Pick<StandardRailErrorOptions, "correlationId"> = {},
+): StandardRailError {
+  if (DELIVERING_STATES.has(state)) {
+    return standardRailError("ARTIFACT_NOT_AVAILABLE", {
+      ...fixed,
+      deliveryState: "delivering",
+      message: "The order is paid and still being delivered; it has no artifact yet",
+      nextAction: "Read the order status again shortly. Artifacts are available once it is completed or " +
+        "completed after recovery.",
+    });
+  }
+  if (state === "INPUT_REQUIRED") {
+    // Reading the artifact again changes nothing until the payer answers.
+    return standardRailError("ARTIFACT_NOT_AVAILABLE", {
+      ...fixed,
+      deliveryState: "awaiting_input",
+      retryable: false,
+      message: "The order is waiting for the payer's input; it has no artifact yet",
+      nextAction: "Read the order status for its inputRequest and answer it with daski_submit_order_input. " +
+        "Artifacts are available once it is completed or completed after recovery.",
+    });
+  }
+  return standardRailError("ARTIFACT_NOT_AVAILABLE", { ...fixed, deliveryState: "not_delivering" });
+}
+
+/**
  * An artifact read on an order the provider has no task for. There is no
  * artifact to read, which is the documented ARTIFACT_NOT_AVAILABLE, never a
- * server fault: answering INTERNAL_ERROR told agents to stop and report a paid
- * order that was still being delivered (agent bench, November 2026). A paid
- * order says so, and says to read its status again. A dispatched order without
- * its task is the gateway's own inconsistency and stays an internal error.
+ * server fault. A dispatched order without its task is the gateway's own
+ * inconsistency and stays an internal error.
  */
 export function artifactWithoutProviderTask(state: StandardOrderRecord["state"]): StandardRailError {
   if (PROVIDER_TASK_STATES.has(state)) {
     return standardRailError("INTERNAL_ERROR", { phase: "dispatch", internalMessage: "PROVIDER_TASK_NOT_AVAILABLE" });
   }
-  return DELIVERY_PENDING_STATES.has(state)
-    ? standardRailError("ARTIFACT_NOT_AVAILABLE", {
-        message: "The order is paid and still being delivered; it has no artifact yet",
-        nextAction: "Read the order status again shortly. Artifacts are available once it is completed or " +
-          "completed after recovery.",
-      })
-    : standardRailError("ARTIFACT_NOT_AVAILABLE");
+  return artifactNotAvailable(state);
 }
 
 function isTransitionConflict(error: unknown): boolean {
@@ -1764,7 +1791,10 @@ export class StandardRailService {
       },
     );
     if (!response.ok) {
-      throw await providerLifecycleRefusal(args.action, response, { readCapability: Boolean(args.readCapability) });
+      const refusal = await providerLifecycleRefusal(args.action, response, { readCapability: Boolean(args.readCapability) });
+      // The provider says only that there is no artifact; where the order's
+      // delivery stands is the gateway's own state to say.
+      throw refusal.code === "ARTIFACT_NOT_AVAILABLE" ? artifactNotAvailable(order.state) : refusal;
     }
     const providerResult = await readBoundedJson(
       response,

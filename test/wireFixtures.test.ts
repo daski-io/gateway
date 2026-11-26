@@ -16,6 +16,7 @@ import {
 import { encodeAbiParameters, parseAbiParameters } from "viem";
 import { EAS_PROFILES, easDomainSeparator, type EasProfileId, type EasProfileObservation } from "../src/standardRail/easProfiles.js";
 import { StandardRailError, standardRailPublicError } from "../src/standardRail/errors.js";
+import { artifactNotAvailable } from "../src/standardRail/service.js";
 import { orderActionChallengeIssued } from "../src/standardRail/orderAuthorization.js";
 import {
   orderBindingExtension, paymentIdentifierExtension, paymentRequired, paymentRequirements,
@@ -246,10 +247,13 @@ function standardRailErrorFixture() {
       serverTime: ISSUED_AT,
       correlationId: CORRELATION_ID,
     })),
-    // A read the provider refuses because the order has no artifact yet.
-    artifactNotAvailable: http(new StandardRailError("ARTIFACT_NOT_AVAILABLE", {
-      correlationId: CORRELATION_ID,
-    })),
+    // An artifact read on an order with no artifact (service.ts
+    // artifactNotAvailable). deliveryState says where its delivery stands:
+    // an order that ended without a result, one still on its way, and one
+    // waiting for the payer's input.
+    artifactNotAvailable: http(artifactNotAvailable("PROVIDER_FAILED", { correlationId: CORRELATION_ID })),
+    artifactStillBeingDelivered: http(artifactNotAvailable("DISPATCHED", { correlationId: CORRELATION_ID })),
+    artifactAwaitingInput: http(artifactNotAvailable("INPUT_REQUIRED", { correlationId: CORRELATION_ID })),
     // The provider's named lifecycle refusals (lifecycleRefusal.ts). The
     // unavailable answer is shown for a signed action: a read capability
     // retries with requiresNewSignature false.

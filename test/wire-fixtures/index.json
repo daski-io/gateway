@@ -107,11 +107,13 @@
       ],
       "emittedBy": [
         "src/standardRail/errors.ts standardRailPublicError",
+        "src/standardRail/service.ts artifactNotAvailable (ARTIFACT_NOT_AVAILABLE with deliveryState)",
         "src/mcp/util.ts mcpError"
       ],
       "parsedBy": [
         "daski-test scripts/standardGatewayError.ts parseStandardRailError",
-        "daski-buyer packages/pay/src/gateway/purchase.ts purchaseFailure"
+        "daski-buyer packages/pay/src/gateway/purchase.ts purchaseFailure",
+        "daski-buyer packages/pay/src/gateway/client.ts artifactDeliveryState (packages/pay/src/gateway/lifecycle.ts lifecycleFailure)"
       ]
     },
     "provider-lifecycle-request.json": {
