@@ -1,5 +1,4 @@
 import { canonicalHash, canonicalJson } from "./canonical.js";
-import { assertBoundedJsonValue, type JsonBudget } from "./jsonBounds.js";
 import type { AssetActionDefinitionV1 } from "./types.js";
 
 /**
@@ -32,6 +31,8 @@ export const DELIVERABLES_ADDITION = "deliverables";
 
 export const DELIVERABLE_ITEMS_MAX = 32;
 export const DELIVERABLE_INPUT_MAX_BYTES = 2_048;
+export const DELIVERABLE_INPUT_MAX_KEYS = 16;
+export const DELIVERABLE_INPUT_VALUE_MAX_LENGTH = 256;
 export const DELIVERABLE_LABEL_MAX_LENGTH = 64;
 
 export type ArtifactDeliverable = { kind: "artifact" };
@@ -73,8 +74,13 @@ const REQUIRED_ITEM_KEYS = ["kind", "actionId", "assetType", "providerAssetId", 
 const ACTION_ID = /^[a-z0-9][a-z0-9-]{0,95}$/;
 // A canonical lowercase UUID: a subset of what POST /wallet/assets/action accepts.
 const PROVIDER_ASSET_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f-\u009f]/u;
-const INPUT_BUDGET: JsonBudget = { maxDepth: 6, maxNodes: 128, maxKeyLength: 64, maxStringLength: 1_024 };
+// Control, invisible formatting (bidirectional overrides among them) and line
+// separator characters: provider text reaches agents outside the untrusted
+// result, so it must read as what it shows.
+const HIDDEN_CHARACTERS = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u;
+// An input is a flat object of identifiers and short scalar values, the shape
+// of a pointer: never a document, an instruction or a nested payload.
+const INPUT_KEY = /^[A-Za-z][A-Za-z0-9_]{0,63}$/;
 
 function object(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -118,17 +124,26 @@ export function liftDeliverablesPart(result: unknown): LiftedDeliverables {
   return parts.length === 0 ? { contractView: result, parts } : { contractView: { ...result, artifacts }, parts };
 }
 
-function inputWithinBounds(input: Record<string, unknown>): boolean {
+function boundedText(value: unknown, maxLength: number, minLength = 1): value is string {
+  return typeof value === "string" && value.length >= minLength && value.length <= maxLength &&
+    !HIDDEN_CHARACTERS.test(value);
+}
+
+function flatInput(input: Record<string, unknown>): boolean {
+  const entries = Object.entries(input);
+  if (entries.length > DELIVERABLE_INPUT_MAX_KEYS) return false;
+  for (const [key, value] of entries) {
+    // `operation` names the gateway's own follow-ups (confirm-destructive,
+    // cancel-staged-action, recover-action), never a first use.
+    if (!INPUT_KEY.test(key) || key === "operation") return false;
+    if (!(value === null || typeof value === "boolean" || (typeof value === "number" && Number.isFinite(value)) ||
+      boundedText(value, DELIVERABLE_INPUT_VALUE_MAX_LENGTH, 0))) return false;
+  }
   try {
-    assertBoundedJsonValue(input, INPUT_BUDGET, "Deliverable input");
     return Buffer.byteLength(canonicalJson(input), "utf8") <= DELIVERABLE_INPUT_MAX_BYTES;
   } catch {
     return false;
   }
-}
-
-function boundedText(value: unknown, maxLength: number): value is string {
-  return typeof value === "string" && value.length >= 1 && value.length <= maxLength && !CONTROL_CHARACTERS.test(value);
 }
 
 type ParsedItem = ArtifactDeliverable | Omit<OwnerActionDeliverable, "providerAgentId">;
@@ -145,10 +160,9 @@ function parseItem(raw: unknown): ParsedItem | null {
     typeof actionId !== "string" || !ACTION_ID.test(actionId) ||
     !boundedText(assetType, 128) ||
     typeof providerAssetId !== "string" || !PROVIDER_ASSET_ID.test(providerAssetId) ||
-    // `operation` names the gateway's own follow-ups (confirm-destructive,
-    // cancel-staged-action, recover-action), never a first use.
-    !object(input) || Object.hasOwn(input, "operation") || !inputWithinBounds(input) ||
-    (Object.hasOwn(raw, "label") && !boundedText(label, DELIVERABLE_LABEL_MAX_LENGTH))
+    !object(input) || !flatInput(input) ||
+    // A label is optional; null says the same as leaving it out.
+    (label !== undefined && label !== null && !boundedText(label, DELIVERABLE_LABEL_MAX_LENGTH))
   ) return null;
   return {
     kind: "owner-action", actionId, assetType, providerAssetId, input,

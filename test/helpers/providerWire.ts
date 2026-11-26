@@ -636,8 +636,9 @@ export async function driveLifecycle(args: {
     signedReceipt: async () => ({ artifactType: "StandardRailReceiptV2" }),
     submissionStatus: async () => null,
     confirmationState: { stored: async () => null },
-    assetActions: { currentDefinition: (providerAgentId: string, actionId: string) => providerAgentId === PROVIDER_AGENT_ID
-      ? args.assetActions?.find((action) => action.actionId === actionId) ?? null : null },
+    assetActions: { activateCurrentAdmissions: async () => undefined,
+      currentDefinition: (providerAgentId: string, actionId: string) => providerAgentId === PROVIDER_AGENT_ID
+        ? args.assetActions?.find((action) => action.actionId === actionId) ?? null : null },
     providerFetch: async (_listing: unknown, url: string, init: RequestInit) => {
       request = wireRequest(url, init);
       return args.respond(request);

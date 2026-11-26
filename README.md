@@ -712,7 +712,8 @@ artifact, then runs each owner action with its own wallet authorization.
 [`test/wire-fixtures/order-artifact-deliverables.json`](test/wire-fixtures/order-artifact-deliverables.json)
 is a complete answer. A status read never carries `deliverables`.
 
-A provider lists them in one standard data part, in any artifact of the task:
+A provider lists them in one standard data part, in any artifact of the task
+(never in its status message):
 
 ```json
 {"kind": "data", "data": {"https://daski.io/deliverables/v1": {"items": [
@@ -727,18 +728,27 @@ Items are `{"kind": "artifact"}` or an owner action with exactly `actionId`,
 `assetType`, `providerAssetId`, `input` and an optional `label`; at most 32. They
 are pointers and never carry a secret: the secret comes from the action, which
 `POST /wallet/assets/action` authorizes and checks on its own. `providerAssetId`
-is a lowercase UUID, `input` a JSON object of at most 2 KiB with no `operation`
-key, and `label` 1 to 64 characters. The gateway lifts the part out before it
-projects the result onto the listing's schema, so no listing schema sees it,
-and checks each owner action against the provider's current signed asset-action
-catalog: the action exists as `POST /wallet/assets/action` resolves it, it is
-not destructive, and its asset type is the one the item names. An invalid item,
-a duplicate, a part beside other data, a second part or more than 32 items is
-dropped and logged; it never fails the read. The raw part still faces every
-bound and the passive-output check, like the rest of the result. `result` keeps
-the part, because it is the provider's signed task: use `deliverables`, never
-the raw part. A gateway released before this fails an artifact read whose task
-carries the part, so every lifecycle POST names `deliverables` in
+is a lowercase UUID. `input` is a flat object of at most 16 keys and 2 KiB: each
+key an identifier (a letter, then letters, digits or `_`, at most 64) other than
+`operation`, each value null, a boolean, a finite number or a string of at most
+256 characters. `label` is 1 to 64 characters or null. No string may hold
+control, invisible formatting or line separator characters, because these
+values reach agents outside the untrusted `result`.
+
+The gateway lifts the part out before it projects a result onto the listing's
+schema, so no listing schema sees it; an order input answer that carries the
+provider's task is lifted the same way, but only an artifact read lists
+`deliverables`. It checks each owner action against the provider's current
+signed asset-action catalog, first activating the current admission as a new
+asset action does: the action exists as `POST /wallet/assets/action` resolves
+it, it is not destructive, and its asset type is the one the item names. An
+invalid item, a duplicate, a part beside other data, a second part or more than
+32 items is dropped and logged; it never fails the read. The raw part still
+faces every bound and the passive-output check, like the rest of the result.
+`result` keeps the part, because it is the provider's signed task: use
+`deliverables`, never the raw part. A gateway released before this one refuses
+an artifact whose task carries the part on a flat contract and on a closed
+task-shaped one, so every lifecycle POST names `deliverables` in
 `daski-order-status-additions`, and a provider adds the part only when named.
 
 ## Implementation and paired changes

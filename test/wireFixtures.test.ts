@@ -398,8 +398,9 @@ async function orderArtifactDeliverablesFixture() {
     store: { persistOperations: async () => undefined },
     // No receipt in the fixture: an order without its settlement evidence answers null.
     signedReceipt: async () => null,
-    assetActions: { currentDefinition: (providerAgentId: string, actionId: string) =>
-      providerAgentId === FIXTURE_PROVIDER_AGENT_ID ? actions[actionId] ?? null : null },
+    assetActions: { activateCurrentAdmissions: async () => undefined,
+      currentDefinition: (providerAgentId: string, actionId: string) =>
+        providerAgentId === FIXTURE_PROVIDER_AGENT_ID ? actions[actionId] ?? null : null },
   }) as { applyLifecycleResult(...args: unknown[]): Promise<unknown> };
   const order = { orderId: ORDER_ID, providerTaskId: PROVIDER_TASK_ID, state: "FULFILLED", orderKey: hash("1") };
   return service.applyLifecycleResult(order, listing, answer, "artifact", ORDER_HANDLE);

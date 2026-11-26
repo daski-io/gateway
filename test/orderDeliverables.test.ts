@@ -73,7 +73,7 @@ function catalog(): StandardRailCatalog {
   });
 }
 
-function harness(responseSchema: Record<string, unknown> = FLAT) {
+function harness(responseSchema: Record<string, unknown> = FLAT, assetActions?: unknown) {
   const order = { orderId: "order", providerTaskId: "task", state: "FULFILLED", orderKey: "key" };
   const listing = { responseSchema, commitment: { payload: {
     providerAgentId: PROVIDER, providerAuthorityKey: account.address, providerTerminalAttestationKey: account.address,
@@ -82,17 +82,17 @@ function harness(responseSchema: Record<string, unknown> = FLAT) {
     providerWallets: COMMITTED_KEYS_ONLY, catalog: catalog(), store: { persistOperations: vi.fn() },
     signedReceipt: async () => null,
     confirmationState: { stored: async () => null }, submissionStatus: async () => null,
-    assetActions: { currentDefinition: (providerAgentId: string, actionId: string) =>
-      providerAgentId === PROVIDER ? definition(actionId) : null },
+    assetActions: assetActions ?? { activateCurrentAdmissions: async () => undefined,
+      currentDefinition: (providerAgentId: string, actionId: string) => providerAgentId === PROVIDER ? definition(actionId) : null },
   });
-  const read = async (result: unknown, action: "artifact" | "status" = "artifact") => {
+  const read = async (result: unknown, action: "artifact" | "status" | "input" = "artifact") => {
     const now = Math.floor(Date.now() / 1000);
     const payload = { orderId: "order", taskId: "task", state: "completed", resultHash: canonicalHash(result), completedAt: now };
     const unsigned: Record<string, unknown> = {
       orderId: "order", taskId: "task", state: "completed",
       operations: { schemaVersion: 1, revision: 0, observedAt: now, fulfillment: null, support: null, recovery: null },
       terminalAttestation: { payload, signature: await account.signMessage({ message: { raw: canonicalHash(payload) } }) },
-      ...(action === "artifact" ? { result } : {}),
+      ...(action === "status" ? {} : { result }),
     };
     const signed: Record<string, unknown> = { ...unsigned, signature: await account.signMessage({ message: { raw: canonicalHash(unsigned) } }) };
     const answer = await service.applyLifecycleResult(order, listing, structuredClone(signed), action, "handle") as
@@ -172,10 +172,15 @@ describe("artifact read with deliverables", () => {
       { ...keyItem, providerAssetId: ASSET_ID.toUpperCase() },
       { ...keyItem, input: ["key_0001"] },
       { ...keyItem, input: { operation: "recover-action", keyId: "key_0001" } },
-      { ...keyItem, input: { keyId: "k".repeat(1_000), note: "n".repeat(1_100) } },
+      { ...keyItem, input: { keyId: "k".repeat(257) } },
+      { ...keyItem, input: { keyId: { id: "key_0001" } } },
+      { ...keyItem, input: { "<img src=x onerror=alert(1)>": "key_0001" } },
+      { ...keyItem, input: Object.fromEntries(Array.from({ length: 17 }, (_, index) => [`k${index}`, index])) },
+      { ...keyItem, input: { keyId: "key\u202e0001" } },
       { ...keyItem, label: "" },
       { ...keyItem, label: "x".repeat(65) },
-      { ...keyItem, label: null },
+      { ...keyItem, label: "API\u202ekey" },
+      { ...keyItem, label: 7 },
       { ...keyItem, kind: "download" },
       { kind: "artifact", label: "The artifact" },
       "get-api-key",
@@ -189,9 +194,7 @@ describe("artifact read with deliverables", () => {
     expect(message).toBe("order deliverables dropped");
     expect(details.dropped.map(({ reason, index }) => [index, reason])).toEqual([
       [0, "action_unknown"], [1, "action_destructive"], [2, "asset_type_mismatch"], [3, "asset_type_mismatch"],
-      [4, "item_invalid"], [5, "item_invalid"], [6, "item_invalid"], [7, "item_invalid"], [8, "item_invalid"],
-      [9, "item_invalid"], [10, "item_invalid"], [11, "item_invalid"], [12, "item_invalid"], [13, "item_invalid"],
-      [14, "item_invalid"], [15, "item_invalid"], [16, "item_invalid"], [18, "duplicate"],
+      ...Array.from({ length: 18 }, (_, offset) => [4 + offset, "item_invalid"]), [23, "duplicate"],
     ]);
     // A drop names the reason, never an item's input or anything it carried.
     expect(JSON.stringify(warn.mock.calls)).not.toContain("sk-secret-value");
@@ -217,6 +220,49 @@ describe("artifact read with deliverables", () => {
       expect(answer.deliverables).toEqual([{ kind: "artifact" }]);
       expect(answer.result).toEqual(signed.result);
     }
+  });
+
+  it("reads a null label as no label", async () => {
+    const { read } = harness();
+    const { answer } = await read(task([deliverablesPart([{ ...keyItem, label: null }, documentItem])]));
+    expect(answer.deliverables).toEqual([{ kind: "artifact" }, { ...listedKey, label: null }, listedDocument]);
+  });
+
+  it("accepts an input of identifier keys and scalar values", async () => {
+    const { read } = harness();
+    const input = { keyId: "key_0001", page: 2, latest: true, since: null, note: "" };
+    const { answer } = await read(task([deliverablesPart([{ ...keyItem, input }])]));
+    expect(answer.deliverables).toEqual([{ kind: "artifact" }, { ...listedKey, input }]);
+  });
+
+  it("lifts the part from an input answer's task too, and lists nothing there", async () => {
+    const { signed, answer } = await harness().read(task([deliverablesPart([keyItem])]), "input");
+    expect(answer.result).toEqual(signed.result);
+    expect(answer).not.toHaveProperty("deliverables");
+  });
+
+  it("checks items against a freshly activated admission, and still answers when activation fails", async () => {
+    const now = Math.floor(Date.now() / 1000);
+    const preimage = { ...definitions["get-api-key"], providerAgentId: PROVIDER, validFrom: now - 60, validBefore: now + 600 };
+    const catalogEnvelope = { payload: { providerAgentId: PROVIDER,
+      actions: [{ ...preimage, actionDefinitionHash: canonicalHash(preimage) }] } };
+    const active = { admissionEnvelope: { payload: { actionCatalogHash: canonicalHash(catalogEnvelope) } } };
+    let current: typeof active | null = null;
+    const activateAdmissions = vi.fn(async () => { current = active; });
+    const actions = new StandardAssetActions({} as never, { manifest: { actionCatalogs: [catalogEnvelope] } } as never,
+      84532, {} as never, { activateAdmissions, activeServicing: () => current } as never, async () => new Response(null));
+    const { read } = harness(FLAT, actions);
+
+    expect((await read(task())).answer.deliverables).toEqual([{ kind: "artifact" }]);
+    expect(activateAdmissions).not.toHaveBeenCalled();
+    // The replica had not activated the admission yet; the read activates it, as a challenge would.
+    expect((await read(task([deliverablesPart([keyItem])]))).answer.deliverables).toEqual([{ kind: "artifact" }, listedKey]);
+    expect(activateAdmissions).toHaveBeenCalledWith({ readOnly: true });
+
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => undefined);
+    activateAdmissions.mockRejectedValueOnce(new Error("database unavailable"));
+    expect((await read(task([deliverablesPart([keyItem])]))).answer.deliverables).toEqual([{ kind: "artifact" }, listedKey]);
+    expect(warn.mock.calls.map(([message]) => message)).toContain("order deliverables checked against the last activated admission");
   });
 
   it("still holds the raw part to the passive-output check", async () => {

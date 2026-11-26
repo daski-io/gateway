@@ -1923,15 +1923,16 @@ export class StandardRailService {
         throw standardRailError("INTERNAL_ERROR", { internalMessage: "PROVIDER_SUPPORT_RECEIPT_BINDING_INVALID" });
       }
     }
-    else if (action === "artifact") {
+    else if ("result" in response) {
       // The deliverables part is lifted out before the listing's schema sees
-      // the result; the raw result, part included, still faces every bound
-      // and the passive-output check, and reaches the buyer unchanged.
+      // the result, wherever a provider returns its task (an input answer can
+      // complete the order); the raw result, part included, still faces every
+      // bound and the passive-output check, and reaches the buyer unchanged.
+      // Only an artifact read lists the deliverables.
       const lifted = liftDeliverablesPart(response.result);
       await this.validateResponse(listing, response.result, lifted.contractView);
-      deliverables = this.orderDeliverables(initial, listing, lifted.parts);
+      if (action === "artifact") deliverables = await this.orderDeliverables(initial, listing, lifted.parts);
     }
-    else if ("result" in response) await this.validateResponse(listing, response.result);
     let order = initial;
     if (!["completed", "failed", "canceled"].includes(String(response.state))) {
       await this.store.persistOperations(order.orderId, response.operations, null);
@@ -2008,14 +2009,25 @@ export class StandardRailService {
 
   /**
    * The checked deliverables of an artifact read. A bad pointer is dropped
-   * and logged, never fatal: the artifact is always listed first.
+   * and logged, never fatal: the artifact is always listed first. Items are
+   * checked against the admission a new asset action would resolve, so the
+   * replica activates the current one first, as a challenge does.
    */
-  private orderDeliverables(
+  private async orderDeliverables(
     order: StandardOrderRecord,
     listing: StandardListing,
     parts: LiftedDeliverables["parts"],
-  ): Deliverable[] {
+  ): Promise<Deliverable[]> {
     const providerAgentId = listing.commitment.payload.providerAgentId;
+    if (parts.length > 0) {
+      try {
+        await this.assetActions.activateCurrentAdmissions();
+      } catch (error) {
+        logger.warn("order deliverables checked against the last activated admission", {
+          orderId: order.orderId, providerAgentId, error,
+        });
+      }
+    }
     try {
       const { deliverables, dropped } = checkDeliverables({
         parts,
