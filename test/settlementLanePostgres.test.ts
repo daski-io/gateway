@@ -89,4 +89,27 @@ describe("orders of one listing settle side by side", () => {
     const opened = await seeded(listing, "ATTEMPT_OPENED", { secondsAgo: 6, authorized: true });
     expect(await lease("settlement", [verified])).toBe(opened);
   });
+
+  it("carries unconfirmed settlements on the settlement lane after claimed and verified ones, at most every 30 seconds", async () => {
+    await pool.query("UPDATE standard_orders SET state='FULFILLED'");
+    const listing = hash("7");
+    const dispatched = await seeded(listing, "DISPATCHED", { secondsAgo: 7_200 });
+    const ambiguous = await seeded(listing, "SETTLEMENT_AMBIGUOUS", { secondsAgo: 20, authorized: true });
+    const invoked = await seeded(listing, "SETTLE_INVOKED", { secondsAgo: 600, authorized: true });
+    // Due 30 seconds after its last change, and never a dispatched order on this lane.
+    expect(await lease("settlement")).toBe(invoked);
+    expect(await lease("settlement")).toBeNull();
+    // A visit that changed nothing holds it back from both lanes for 30 seconds.
+    expect(await lease("all")).toBe(dispatched);
+    await pool.query("UPDATE standard_orders SET recovery_checked_at=now()-interval '31 seconds' WHERE order_id=$1", [invoked]);
+    expect(await lease("settlement")).toBe(invoked);
+    // Claimed or verified authorizations come first, even behind an unvisited unconfirmed settlement.
+    await pool.query(
+      "UPDATE standard_orders SET updated_at=now()-interval '31 seconds',recovery_checked_at=NULL WHERE order_id=$1", [ambiguous]);
+    const verified = await seeded(listing, "VERIFIED", { secondsAgo: 6, authorized: true });
+    await pool.query("UPDATE standard_orders SET recovery_checked_at=now()-interval '1 hour' WHERE order_id=$1", [verified]);
+    expect(await lease("settlement")).toBe(verified);
+    expect(await lease("settlement", [verified])).toBe(ambiguous);
+    expect(await lease("settlement", [verified])).toBeNull();
+  });
 });
