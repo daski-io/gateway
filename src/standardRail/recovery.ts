@@ -12,7 +12,8 @@ interface RecoveryOptions {
   cleanup(): Promise<void>;
 }
 
-// How often the settlement lane looks for claimed or verified authorizations.
+// How often the settlement lane looks for claimed or verified authorizations
+// and unconfirmed settlements.
 const SETTLEMENT_LANE_INTERVAL_MS = 2_000;
 
 export class StandardRailRecoveryWorker {

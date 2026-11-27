@@ -518,6 +518,13 @@ export class StandardRailStore {
              WHEN state IN ('RELEASE_FINAL','DISPATCH_STARTED','DISPATCH_AMBIGUOUS') THEN interval '10 seconds'
              ELSE interval '30 seconds' END
            AND NOT (order_id = ANY($2::text[]))
+           -- An unconfirmed settlement's visit changes nothing until its
+           -- authorization is final, yet scans the chain: whichever lane
+           -- visited it last, it waits 30 seconds for the next visit.
+           -- (A never-visited order has no check time and is due.)
+           AND NOT (state IN ('SETTLE_INVOKED','SETTLEMENT_AMBIGUOUS')
+             AND recovery_checked_at IS NOT NULL
+             AND recovery_checked_at > now() - interval '30 seconds')
          ORDER BY (state IN ('ATTEMPT_OPENED','VERIFIED')) DESC, recovery_checked_at ASC NULLS FIRST, updated_at ASC
          LIMIT 1 FOR UPDATE SKIP LOCKED`,
         [lane === "settlement" ? SETTLEMENT_LANE_ORDER_STATES : RECOVERABLE_ORDER_STATES, excludedOrderIds, lane === "all"],
