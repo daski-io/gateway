@@ -179,7 +179,8 @@ runs `scripts/check-release-trailers.mjs` over every pushed commit.
 ## Follow-ups
 
 - The Dockerfile pins `libpcre2-8-0=10.42-1+deb12u2`, `perl-base=5.36.0-7+deb12u4`
-  and `apt=2.6.2 libapt-pkg6.0=2.6.2` (as the provider does). When Debian supersedes either package the build
+  `apt=2.6.2 libapt-pkg6.0=2.6.2` and PAM `1.5.2-6+deb12u3` (`libpam0g`, `libpam-modules`, `libpam-modules-bin`,
+  `libpam-runtime`; CVE-2025-6020, 2026-11-27) (as the provider does). When Debian supersedes either package the build
   fails loudly; bump the pin or move to a base image that already carries the
   fix. A new Debian security update for another base-image package fails the
   image scan the same way, and is pinned the same way.
