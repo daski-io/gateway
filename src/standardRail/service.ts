@@ -291,8 +291,11 @@ const OPERATIONAL_HEALTH_MEMO_MS = 15_000;
 const PROJECTION_WARMUP_TIMEOUT_MS = 15_000;
 
 /**
- * One recovery pass for an ambiguous order (every 30 seconds) and its
- * scheduling, after the moment the authorization can be proven unpaid.
+ * Room after the moment an unpaid authorization can be proven, for the
+ * recovery pass that closes the order (with the recovery interval added). It
+ * is an expectation, not a promise: a busy recovery queue, chain reads that
+ * fail, or a capture whose evidence takes longer can leave the order pending
+ * past it.
  */
 const OUTCOME_KNOWN_MARGIN_MS = 60_000;
 
@@ -828,14 +831,19 @@ export class StandardRailService {
   }
 
   /**
-   * When the outcome of a settlement the gateway cannot confirm is known: by
-   * then recovery has either proven the payment and carried the order on, or
-   * proven it unpaid and closed it NOT_SETTLED. Null when the payment names no
-   * usable expiry.
+   * When the outcome of a settlement the gateway cannot confirm is expected to
+   * be known: by then recovery has usually either proven the payment and
+   * carried the order on, or proven it unpaid and closed it NOT_SETTLED. Null
+   * when the payment names no usable expiry.
    */
-  private settlementOutcomeKnownAt(payment: PaymentPayload): Date | null {
+  private settlementOutcomeExpectedAt(payment: PaymentPayload): Date | null {
     try {
-      return new Date(this.finalNoCaptureAtMs(authorizationValidBefore(payment)) + OUTCOME_KNOWN_MARGIN_MS);
+      const at = new Date(
+        this.finalNoCaptureAtMs(authorizationValidBefore(payment)) +
+          OUTCOME_KNOWN_MARGIN_MS + this.railConfig.recoveryIntervalMs,
+      );
+      at.toISOString();
+      return at;
     } catch {
       return null;
     }
@@ -2658,29 +2666,35 @@ export class StandardRailService {
       order = await this.store
         .transition(order, "SETTLEMENT_AMBIGUOUS", "settle_response_unknown")
         .catch(() => order);
-      // Recovery either proves the payment and carries the order on, or
-      // proves the authorization unpaid once it is final and closes the order.
-      // The buyer is told when that is known, so it neither signs again nor
-      // gives up before the answer.
-      const knownAt = this.settlementOutcomeKnownAt(args.payment);
+      // Recovery proves the payment and carries the order on, or proves the
+      // authorization unpaid once it is final and closes the order. The buyer
+      // is told when that is expected, so it neither signs again nor gives up
+      // before the answer.
+      const expectedAt = this.settlementOutcomeExpectedAt(args.payment);
+      const facilitatorFailure = facilitatorFailureSummary(error);
+      logger.warn("facilitator settle failed", {
+        orderId: order.orderId,
+        intentId: order.intentId,
+        facilitatorFailure,
+        ...(expectedAt === null ? {} : { outcomeExpectedBy: expectedAt.toISOString() }),
+      });
       throw standardRailError("PAYMENT_PENDING_RECONCILIATION", {
         cause: error,
-        ...(knownAt === null ? {} : {
-          until: knownAt.toISOString(),
+        ...(expectedAt === null ? {} : {
+          until: expectedAt.toISOString(),
           retryAfterSeconds: Math.min(
             MAX_OUTCOME_RETRY_AFTER_SECONDS,
-            Math.max(1, Math.ceil((knownAt.getTime() - Date.now()) / 1_000)),
+            Math.max(1, Math.ceil((expectedAt.getTime() - Date.now()) / 1_000)),
           ),
-          nextAction: "Do not sign again. This payment's outcome is known by `until`: the order then either " +
-            "proceeds as paid or closes as not settled. After that, reconcile by paymentIdentifier and buy " +
-            "again only if nothing settled.",
+          nextAction: "Do not sign again. This payment's outcome is expected by `until`. Then reconcile by " +
+            "paymentIdentifier: buy again only once it shows NOT_SETTLED. If it is still pending, check again later.",
         }),
         logContext: {
           orderId: order.orderId,
           intentId: order.intentId,
           payer: authorization.payer,
-          facilitatorFailure: facilitatorFailureSummary(error),
-          ...(knownAt === null ? {} : { outcomeKnownBy: knownAt.toISOString() }),
+          facilitatorFailure,
+          ...(expectedAt === null ? {} : { outcomeExpectedBy: expectedAt.toISOString() }),
         },
       });
     }

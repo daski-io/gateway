@@ -144,6 +144,7 @@ describe("settlement failure semantics after the authorization is claimed", () =
 describe("a settle call whose outcome the gateway cannot confirm", () => {
   const chainPolicy = {
     finalityConfirmations: 12,
+    recoveryIntervalMs: 10_000,
     manifest: {
       activeRailProfile: { payload: {} },
       chainEvidencePolicy: { payload: { maximumSourceLagBlocks: 8, finalityBlockTimeSeconds: 2 } },
@@ -152,32 +153,35 @@ describe("a settle call whose outcome the gateway cannot confirm", () => {
   const paymentValidBefore = (validBefore: unknown) =>
     ({ payload: { authorization: { validBefore } } } as unknown as PaymentPayload);
 
-  it("tells the buyer when the outcome is known and logs the facilitator's status and reason", async () => {
+  it("tells the buyer when the outcome is expected and logs the facilitator's status, reason and id", async () => {
     const validBefore = Math.floor(Date.now() / 1_000) + 240;
     const { service, transitions } = settlementHarness({
       railConfig: chainPolicy,
       facilitator: {
         verify: vi.fn(async () => ({ isValid: true, payer })),
-        settle: vi.fn(async () => { throw new FacilitatorHttpError("settle", 429, "rate_limited"); }),
+        settle: vi.fn(async () => {
+          throw new FacilitatorHttpError("settle", 429, { reason: "rate_limited", correlationId: "cdp-1" });
+        }),
       },
     });
     const error = await service.settleClaimedOrder({ ...settleArgs(), payment: paymentValidBefore(String(validBefore)) })
       .catch((caught: unknown) => caught) as Record<string, unknown> & { logContext: Record<string, unknown> };
-    // Expiry, then 12 confirmations and 8 blocks of lag at 2 seconds, then one recovery pass.
-    const knownBy = new Date((validBefore + 40) * 1_000 + 60_000).toISOString();
+    // Expiry, then 12 confirmations and 8 blocks of lag at 2 seconds, then a minute and the recovery interval.
+    const knownBy = new Date((validBefore + 40) * 1_000 + 70_000).toISOString();
     expect(error).toMatchObject({
       code: "PAYMENT_PENDING_RECONCILIATION",
       requiresNewSignature: false,
       paymentMayHaveSettled: true,
       until: knownBy,
     });
-    expect(error.retryAfterSeconds).toBeGreaterThan(330);
-    expect(error.retryAfterSeconds).toBeLessThanOrEqual(340);
+    expect(error.retryAfterSeconds).toBeGreaterThan(340);
+    expect(error.retryAfterSeconds).toBeLessThanOrEqual(350);
     expect(String(error.nextAction)).toContain("Do not sign again");
+    expect(String(error.nextAction)).toContain("only once it shows NOT_SETTLED");
     expect(error.logContext).toMatchObject({
       orderId: "ord_1",
-      outcomeKnownBy: knownBy,
-      facilitatorFailure: { errorName: "FacilitatorHttpError", status: 429, reason: "rate_limited" },
+      outcomeExpectedBy: knownBy,
+      facilitatorFailure: { errorName: "FacilitatorHttpError", status: 429, reason: "rate_limited", correlationId: "cdp-1" },
     });
     expect(transitions.at(-1)).toEqual({ to: "SETTLEMENT_AMBIGUOUS", reason: "settle_response_unknown" });
   });
@@ -187,7 +191,13 @@ describe("a settle call whose outcome the gateway cannot confirm", () => {
       railConfig: chainPolicy,
       facilitator: {
         verify: vi.fn(async () => ({ isValid: true, payer })),
-        settle: vi.fn(async () => { throw Object.assign(new TypeError("fetch failed"), { cause: { code: "ECONNRESET" } }); }),
+        // How node:https reports the facilitator timeout: an AbortError caused by the signal's TimeoutError.
+        settle: vi.fn(async () => {
+          throw Object.assign(new Error("The operation was aborted"), {
+            name: "AbortError", code: "ABORT_ERR",
+            cause: new DOMException("The operation was aborted due to timeout", "TimeoutError"),
+          });
+        }),
       },
     });
     const error = await service.settleClaimedOrder({ ...settleArgs(), payment: paymentValidBefore("soon") })
@@ -195,7 +205,9 @@ describe("a settle call whose outcome the gateway cannot confirm", () => {
     expect(error).toMatchObject({ code: "PAYMENT_PENDING_RECONCILIATION", nextAction: expect.stringContaining("Reconcile") });
     expect(error.until).toBeUndefined();
     expect(error.retryAfterSeconds).toBeUndefined();
-    expect(error.logContext.facilitatorFailure).toEqual({ errorName: "TypeError", message: "fetch failed", code: "ECONNRESET" });
+    expect(error.logContext.facilitatorFailure).toEqual({
+      errorName: "AbortError", message: "The operation was aborted", code: "ABORT_ERR", causeName: "TimeoutError",
+    });
   });
 });
 

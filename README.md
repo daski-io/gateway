@@ -576,15 +576,21 @@ may have been recorded.
 
 A settle call whose outcome the gateway cannot confirm (the facilitator
 refused it, timed out or could not be reached after it verified the payment)
-also answers HTTP 409 `PAYMENT_PENDING_RECONCILIATION`. The gateway never asks
-for a new signature then: recovery either finds and proves the payment on chain
-and carries the order on, or proves the authorization unpaid once it has
-expired and is final, and closes the order `NOT_SETTLED`. The answer says when
-that is known: `until` (ISO 8601: the authorization's expiry, plus the
-confirmations and source lag the chain evidence waits for, plus one recovery
-pass) and the matching `Retry-After`. The log line carries `facilitatorFailure`:
-the facilitator's HTTP status and the reason its answer names, or the error's
-kind, message and network code when it gave none.
+also answers HTTP 409 `PAYMENT_PENDING_RECONCILIATION`, as does a rail fence or
+lock failure around that call. The gateway never asks for a new signature then:
+recovery finds and proves the payment on chain and carries the order on, or
+proves the authorization unpaid once it has expired and is final and closes the
+order `NOT_SETTLED`; a capture whose evidence cannot be proven in time goes to
+`LEGAL_HOLD`. The answer says when the outcome is expected: `until` (ISO 8601:
+the authorization's expiry, plus the confirmations and source lag the chain
+evidence waits for, plus a minute and the recovery interval) and the matching
+`Retry-After`. It is an expectation: a busy recovery queue or failing chain
+reads can leave the order pending past it, so a buyer buys again only once the
+order shows `NOT_SETTLED`. A warning, `facilitator settle failed`, carries
+`facilitatorFailure`: the facilitator's HTTP status, the reason its answer
+names and its correlation id, or the error's kind, message, network code and
+cause when it gave none. A refusal's error code is `FACILITATOR_HTTP_<status>`,
+so logs that keep only an error's code show the status too.
 
 The provider workflow and signed wire contract are documented in
 [docs/service-registration-v1.md](docs/service-registration-v1.md); the
