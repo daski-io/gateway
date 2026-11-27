@@ -3,6 +3,7 @@ import { getAddress, type Hex } from "viem";
 import type { PaymentPayload, PaymentRequirements } from "@x402/core/types";
 import { facilitatorRefusalCode, StandardRailService } from "../src/standardRail/service.js";
 import { FacilitatorHttpError } from "../src/standardRail/facilitator.js";
+import { logger } from "../src/util/logger.js";
 import type { StandardListing, StandardOrderRecord } from "../src/standardRail/types.js";
 
 const hash = (byte: string): Hex => `0x${byte.repeat(64)}` as Hex;
@@ -164,8 +165,14 @@ describe("a settle call whose outcome the gateway cannot confirm", () => {
         }),
       },
     });
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => undefined);
     const error = await service.settleClaimedOrder({ ...settleArgs(), payment: paymentValidBefore(String(validBefore)) })
       .catch((caught: unknown) => caught) as Record<string, unknown> & { logContext: Record<string, unknown> };
+    expect(warn).toHaveBeenCalledWith("facilitator settle failed", expect.objectContaining({
+      orderId: "ord_1",
+      facilitatorFailure: expect.objectContaining({ status: 429, correlationId: "cdp-1" }),
+    }));
+    warn.mockRestore();
     // Expiry, then 12 confirmations and 8 blocks of lag at 2 seconds, then a minute and the recovery interval.
     const knownBy = new Date((validBefore + 40) * 1_000 + 70_000).toISOString();
     expect(error).toMatchObject({
