@@ -24,6 +24,141 @@ export interface StandardFacilitator {
   assertSupported(network: string): Promise<void>;
 }
 
+const FAILURE_TEXT_LIMIT = 200;
+const REFUSAL_REASON_FIELDS = ["errorReason", "invalidReason", "errorType", "errorMessage", "invalidMessage"] as const;
+
+/**
+ * A facilitator answer outside 2xx. It keeps the HTTP status and the reason
+ * the body names, if any, so a refused verify or settle can be told apart
+ * from an outage in the logs. It never holds the request or credentials.
+ */
+export class FacilitatorHttpError extends Error {
+  /** `FACILITATOR_HTTP_<status>`, so a log that keeps only an error's name and code still shows the status. */
+  readonly code: string;
+  readonly status: number;
+  readonly reason?: string;
+  /** The facilitator's own id for the refused request, which its support asks for. */
+  readonly correlationId?: string;
+
+  constructor(operation: string, status: number, details: { reason?: string; correlationId?: string } = {}) {
+    super(`Facilitator ${operation} rejected the request`);
+    this.name = "FacilitatorHttpError";
+    this.code = `FACILITATOR_HTTP_${status}`;
+    this.status = status;
+    if (details.reason !== undefined) this.reason = details.reason;
+    if (details.correlationId !== undefined) this.correlationId = details.correlationId;
+  }
+}
+
+function boundedText(value: string): string {
+  return value.replace(/[\u0000-\u001f\u007f]+/g, " ").slice(0, FAILURE_TEXT_LIMIT);
+}
+
+/** The facilitator's request id a refusal body names, if it is a plain id. */
+export function facilitatorCorrelationId(value: unknown): string | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const id = (value as Record<string, unknown>).correlationId;
+  return typeof id === "string" && /^[A-Za-z0-9._:-]{1,128}$/.test(id) ? id : undefined;
+}
+
+/**
+ * The refusal a facilitator answer outside 2xx stands for. Its body is read
+ * only for a reason and a request id; an unreadable body still reports the
+ * status.
+ */
+export async function facilitatorRefusal(operation: string, response: Response): Promise<FacilitatorHttpError> {
+  let body: unknown;
+  try {
+    body = await readBoundedFacilitatorJson(response, 16_000);
+  } catch {
+    body = undefined;
+  }
+  const reason = facilitatorRefusalReason(body);
+  const correlationId = facilitatorCorrelationId(body);
+  return new FacilitatorHttpError(operation, response.status, {
+    ...(reason === undefined ? {} : { reason }),
+    ...(correlationId === undefined ? {} : { correlationId }),
+  });
+}
+
+/** The reason a refusal body names, from the fields facilitators use for it. */
+export function facilitatorRefusalReason(value: unknown): string | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const parts = REFUSAL_REASON_FIELDS
+    .map((field) => (value as Record<string, unknown>)[field])
+    .filter((part): part is string => typeof part === "string" && part.length > 0);
+  return parts.length === 0 ? undefined : boundedText(parts.join(": "));
+}
+
+/**
+ * What a failed facilitator call can say in a log: the error's kind, the
+ * facilitator's HTTP status and reason when it answered, and otherwise the
+ * bounded message and network code (a timeout, a reset, a DNS refusal).
+ */
+export function facilitatorFailureSummary(error: unknown): Record<string, unknown> {
+  if (error instanceof FacilitatorHttpError) {
+    return {
+      errorName: error.name,
+      status: error.status,
+      ...(error.reason ? { reason: error.reason } : {}),
+      ...(error.correlationId ? { correlationId: error.correlationId } : {}),
+    };
+  }
+  if (error instanceof Error) {
+    // A timeout through node:https is an AbortError whose cause is the
+    // signal's TimeoutError (a DOMException with a numeric code): keep the
+    // first string code, and the cause's name.
+    const cause = error.cause as { name?: unknown; code?: unknown } | undefined;
+    const code = [cause?.code, (error as { code?: unknown }).code].find((value) => typeof value === "string");
+    const causeName = typeof cause?.name === "string" && cause.name !== error.name ? cause.name : undefined;
+    return {
+      errorName: error.name,
+      message: boundedText(error.message),
+      ...(typeof code === "string" ? { code: boundedText(code) } : {}),
+      ...(causeName === undefined ? {} : { causeName: boundedText(causeName) }),
+    };
+  }
+  return { errorName: typeof error };
+}
+
+/** A facilitator answer's JSON: application/json, unencoded, at most `maximumBytes`, with no duplicate keys. */
+export async function readBoundedFacilitatorJson(response: Response, maximumBytes: number): Promise<unknown> {
+  const mediaType = response.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase();
+  const encoding = response.headers.get("content-encoding")?.trim().toLowerCase();
+  if (mediaType !== "application/json" || (encoding && encoding !== "identity")) {
+    await discardResponseBody(response);
+    throw new Error("Facilitator response media type is invalid");
+  }
+  const declared = response.headers.get("content-length");
+  if (declared && (!/^\d+$/.test(declared) || Number(declared) > maximumBytes)) {
+    await discardResponseBody(response);
+    throw new Error("Facilitator response is too large");
+  }
+  if (!response.body) throw new Error("Facilitator response is empty");
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let length = 0;
+  while (true) {
+    const next = await reader.read();
+    if (next.done) break;
+    length += next.value.byteLength;
+    if (length > maximumBytes) {
+      await reader.cancel();
+      throw new Error("Facilitator response is too large");
+    }
+    chunks.push(next.value);
+  }
+  const buffer = new Uint8Array(length);
+  let offset = 0;
+  for (const chunk of chunks) {
+    buffer.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  const text = new TextDecoder("utf-8", { fatal: true }).decode(buffer);
+  assertNoDuplicateJsonKeys(text);
+  return JSON.parse(text);
+}
+
 export class CdpStandardFacilitator implements StandardFacilitator {
   private readonly baseUrl: string;
   private readonly host: string;
@@ -93,8 +228,8 @@ export class CdpStandardFacilitator implements StandardFacilitator {
         ? activeRequestSignal(AbortSignal.timeout(this.config.facilitatorTimeoutMs))
         : AbortSignal.timeout(this.config.facilitatorTimeoutMs),
     }, addresses[0]!);
-    const value = await this.readBoundedJson(response, 256_000);
-    if (!response.ok) throw new Error(`Facilitator ${operation} rejected the request`);
+    if (!response.ok) throw await facilitatorRefusal(operation, response);
+    const value = await readBoundedFacilitatorJson(response, 256_000);
     this.validateResponse(operation, value);
     const discovery = facilitatorDiscoveryStatus(response.headers.get("extension-responses"));
     if (discovery) {
@@ -103,43 +238,6 @@ export class CdpStandardFacilitator implements StandardFacilitator {
       else logger.info("Facilitator Bazaar discovery status", details);
     }
     return value as T;
-  }
-
-  private async readBoundedJson(response: Response, maximumBytes: number): Promise<unknown> {
-    const mediaType = response.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase();
-    const encoding = response.headers.get("content-encoding")?.trim().toLowerCase();
-    if (mediaType !== "application/json" || (encoding && encoding !== "identity")) {
-      await discardResponseBody(response);
-      throw new Error("Facilitator response media type is invalid");
-    }
-    const declared = response.headers.get("content-length");
-    if (declared && (!/^\d+$/.test(declared) || Number(declared) > maximumBytes)) {
-      await discardResponseBody(response);
-      throw new Error("Facilitator response is too large");
-    }
-    if (!response.body) throw new Error("Facilitator response is empty");
-    const reader = response.body.getReader();
-    const chunks: Uint8Array[] = [];
-    let length = 0;
-    while (true) {
-      const next = await reader.read();
-      if (next.done) break;
-      length += next.value.byteLength;
-      if (length > maximumBytes) {
-        await reader.cancel();
-        throw new Error("Facilitator response is too large");
-      }
-      chunks.push(next.value);
-    }
-    const buffer = new Uint8Array(length);
-    let offset = 0;
-    for (const chunk of chunks) {
-      buffer.set(chunk, offset);
-      offset += chunk.byteLength;
-    }
-    const text = new TextDecoder("utf-8", { fatal: true }).decode(buffer);
-    assertNoDuplicateJsonKeys(text);
-    return JSON.parse(text);
   }
 
   private validateResponse(operation: string, value: unknown): void {

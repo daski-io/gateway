@@ -612,7 +612,11 @@ export interface StandardRailErrorOptions {
   facilitatorReason?: string;
   /** Whether the chain would still accept the operation outside sponsorship. */
   chainEligible?: boolean;
-  /** SALES_PAUSED: when sales reopen (ISO 8601) and the operator's stated reason. */
+  /**
+   * SALES_PAUSED: when sales reopen (ISO 8601), with the operator's stated reason.
+   * PAYMENT_PENDING_RECONCILIATION after a settle the gateway could not confirm:
+   * when the payment's outcome is expected to be known.
+   */
   until?: string;
   reason?: string;
   /** The Retry-After this answer carries, when it names its own. */
