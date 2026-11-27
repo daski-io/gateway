@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { getAddress, type Hex } from "viem";
 import type { PaymentPayload, PaymentRequirements } from "@x402/core/types";
 import { facilitatorRefusalCode, StandardRailService } from "../src/standardRail/service.js";
+import { FacilitatorHttpError } from "../src/standardRail/facilitator.js";
 import type { StandardListing, StandardOrderRecord } from "../src/standardRail/types.js";
 
 const hash = (byte: string): Hex => `0x${byte.repeat(64)}` as Hex;
@@ -137,6 +138,64 @@ describe("settlement failure semantics after the authorization is claimed", () =
     await service.settleClaimedOrder(settleArgs()).catch(() => undefined);
     expect(store.listingSettlementFrozen).toHaveBeenCalledOnce();
     expect(journal.markSettleInvoked).toHaveBeenCalledOnce();
+  });
+});
+
+describe("a settle call whose outcome the gateway cannot confirm", () => {
+  const chainPolicy = {
+    finalityConfirmations: 12,
+    manifest: {
+      activeRailProfile: { payload: {} },
+      chainEvidencePolicy: { payload: { maximumSourceLagBlocks: 8, finalityBlockTimeSeconds: 2 } },
+    },
+  };
+  const paymentValidBefore = (validBefore: unknown) =>
+    ({ payload: { authorization: { validBefore } } } as unknown as PaymentPayload);
+
+  it("tells the buyer when the outcome is known and logs the facilitator's status and reason", async () => {
+    const validBefore = Math.floor(Date.now() / 1_000) + 240;
+    const { service, transitions } = settlementHarness({
+      railConfig: chainPolicy,
+      facilitator: {
+        verify: vi.fn(async () => ({ isValid: true, payer })),
+        settle: vi.fn(async () => { throw new FacilitatorHttpError("settle", 429, "rate_limited"); }),
+      },
+    });
+    const error = await service.settleClaimedOrder({ ...settleArgs(), payment: paymentValidBefore(String(validBefore)) })
+      .catch((caught: unknown) => caught) as Record<string, unknown> & { logContext: Record<string, unknown> };
+    // Expiry, then 12 confirmations and 8 blocks of lag at 2 seconds, then one recovery pass.
+    const knownBy = new Date((validBefore + 40) * 1_000 + 60_000).toISOString();
+    expect(error).toMatchObject({
+      code: "PAYMENT_PENDING_RECONCILIATION",
+      requiresNewSignature: false,
+      paymentMayHaveSettled: true,
+      until: knownBy,
+    });
+    expect(error.retryAfterSeconds).toBeGreaterThan(330);
+    expect(error.retryAfterSeconds).toBeLessThanOrEqual(340);
+    expect(String(error.nextAction)).toContain("Do not sign again");
+    expect(error.logContext).toMatchObject({
+      orderId: "ord_1",
+      outcomeKnownBy: knownBy,
+      facilitatorFailure: { errorName: "FacilitatorHttpError", status: 429, reason: "rate_limited" },
+    });
+    expect(transitions.at(-1)).toEqual({ to: "SETTLEMENT_AMBIGUOUS", reason: "settle_response_unknown" });
+  });
+
+  it("keeps the plain answer when the payment names no usable expiry", async () => {
+    const { service } = settlementHarness({
+      railConfig: chainPolicy,
+      facilitator: {
+        verify: vi.fn(async () => ({ isValid: true, payer })),
+        settle: vi.fn(async () => { throw Object.assign(new TypeError("fetch failed"), { cause: { code: "ECONNRESET" } }); }),
+      },
+    });
+    const error = await service.settleClaimedOrder({ ...settleArgs(), payment: paymentValidBefore("soon") })
+      .catch((caught: unknown) => caught) as Record<string, unknown> & { logContext: Record<string, unknown> };
+    expect(error).toMatchObject({ code: "PAYMENT_PENDING_RECONCILIATION", nextAction: expect.stringContaining("Reconcile") });
+    expect(error.until).toBeUndefined();
+    expect(error.retryAfterSeconds).toBeUndefined();
+    expect(error.logContext.facilitatorFailure).toEqual({ errorName: "TypeError", message: "fetch failed", code: "ECONNRESET" });
   });
 });
 

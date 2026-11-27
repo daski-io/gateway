@@ -574,6 +574,18 @@ settled, and the identical signed submission is the retry. A connection lost
 while committing answers `PAYMENT_PENDING_RECONCILIATION`, because the claim
 may have been recorded.
 
+A settle call whose outcome the gateway cannot confirm (the facilitator
+refused it, timed out or could not be reached after it verified the payment)
+also answers HTTP 409 `PAYMENT_PENDING_RECONCILIATION`. The gateway never asks
+for a new signature then: recovery either finds and proves the payment on chain
+and carries the order on, or proves the authorization unpaid once it has
+expired and is final, and closes the order `NOT_SETTLED`. The answer says when
+that is known: `until` (ISO 8601: the authorization's expiry, plus the
+confirmations and source lag the chain evidence waits for, plus one recovery
+pass) and the matching `Retry-After`. The log line carries `facilitatorFailure`:
+the facilitator's HTTP status and the reason its answer names, or the error's
+kind, message and network code when it gave none.
+
 The provider workflow and signed wire contract are documented in
 [docs/service-registration-v1.md](docs/service-registration-v1.md); the
 provider owner-swap notice in [docs/owner-swaps-v1.md](docs/owner-swaps-v1.md). Checkout uses

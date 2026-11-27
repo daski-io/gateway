@@ -56,7 +56,7 @@ import type {
   ReleaseEvidenceResult,
   StandardChainEvidence,
 } from "./evidence.js";
-import type { StandardFacilitator } from "./facilitator.js";
+import { facilitatorFailureSummary, type StandardFacilitator } from "./facilitator.js";
 import { StandardRailJournal } from "./journal.js";
 import {
   paymentRequired,
@@ -289,6 +289,26 @@ const OPERATIONAL_HEALTH_MEMO_MS = 15_000;
 // Startup waits this long for the first public reputation projection so the
 // first visitor does not pay for it; a slower chain finishes in the background.
 const PROJECTION_WARMUP_TIMEOUT_MS = 15_000;
+
+/**
+ * One recovery pass for an ambiguous order (every 30 seconds) and its
+ * scheduling, after the moment the authorization can be proven unpaid.
+ */
+const OUTCOME_KNOWN_MARGIN_MS = 60_000;
+
+/** The longest wait a pending settlement names in Retry-After. */
+const MAX_OUTCOME_RETRY_AFTER_SECONDS = 3_600;
+
+/** The authorization's `validBefore`, in seconds. */
+function authorizationValidBefore(payment: PaymentPayload): number {
+  const value = (payment.payload.authorization as { validBefore?: unknown } | undefined)?.validBefore;
+  if ((typeof value !== "string" && typeof value !== "number") || !/^\d+$/.test(String(value))) {
+    throw new Error("Recovery authorization validity is malformed");
+  }
+  const seconds = Number(value);
+  if (!Number.isSafeInteger(seconds) || seconds <= 0) throw new Error("Recovery authorization validity is invalid");
+  return seconds;
+}
 
 export class StandardRailService {
   private readonly store: StandardRailStore;
@@ -792,14 +812,33 @@ export class StandardRailService {
   }
 
   private paymentAuthorizationValidBefore(order: StandardOrderRecord): number {
-    const payment = this.storedPayment(order);
-    const value = (payment.payload.authorization as { validBefore?: unknown } | undefined)?.validBefore;
-    if ((typeof value !== "string" && typeof value !== "number") || !/^\d+$/.test(String(value))) {
-      throw new Error("Recovery authorization validity is malformed");
+    return authorizationValidBefore(this.storedPayment(order));
+  }
+
+  /**
+   * When an authorization that settled nothing can be proven unpaid: its
+   * expiry plus the confirmations and source lag the chain evidence waits for.
+   */
+  private finalNoCaptureAtMs(validBefore: number): number {
+    const policy = this.railConfig.manifest.chainEvidencePolicy.payload;
+    return (
+      validBefore +
+      (this.railConfig.finalityConfirmations + policy.maximumSourceLagBlocks) * policy.finalityBlockTimeSeconds
+    ) * 1_000;
+  }
+
+  /**
+   * When the outcome of a settlement the gateway cannot confirm is known: by
+   * then recovery has either proven the payment and carried the order on, or
+   * proven it unpaid and closed it NOT_SETTLED. Null when the payment names no
+   * usable expiry.
+   */
+  private settlementOutcomeKnownAt(payment: PaymentPayload): Date | null {
+    try {
+      return new Date(this.finalNoCaptureAtMs(authorizationValidBefore(payment)) + OUTCOME_KNOWN_MARGIN_MS);
+    } catch {
+      return null;
     }
-    const seconds = Number(value);
-    if (!Number.isSafeInteger(seconds) || seconds <= 0) throw new Error("Recovery authorization validity is invalid");
-    return seconds;
   }
 
   private storedPayment(order: StandardOrderRecord): PaymentPayload {
@@ -899,7 +938,12 @@ export class StandardRailService {
     let settlement;
     try {
       settlement = await this.withRailFence(() => this.facilitator.settle(facilitatorDiscoveryPayment(this.appConfig, listing, payment), requirements));
-    } catch {
+    } catch (error) {
+      logger.warn("facilitator settle failed during recovery", {
+        orderId: order.orderId,
+        intentId: order.intentId,
+        facilitatorFailure: facilitatorFailureSummary(error),
+      });
       return this.store.transition(order, "SETTLEMENT_AMBIGUOUS", "recovered_settle_response_unknown");
     }
     if (
@@ -1123,12 +1167,7 @@ export class StandardRailService {
             await this.store.transition(order, "NOT_SETTLED", "parked_authorization_finalized_unpaid", { encryptedPaymentPayload: null });
             return;
           }
-          const policy = this.railConfig.manifest.chainEvidencePolicy.payload;
-          const finalNoCaptureAt = (
-            this.paymentAuthorizationValidBefore(order) +
-            (this.railConfig.finalityConfirmations + policy.maximumSourceLagBlocks) *
-              policy.finalityBlockTimeSeconds
-          ) * 1_000;
+          const finalNoCaptureAt = this.finalNoCaptureAtMs(this.paymentAuthorizationValidBefore(order));
           if (Date.now() < finalNoCaptureAt) {
             // While sales are paused or a signer is unhealthy, an unsettled
             // authorization is expected: a claimed one waits to be submitted,
@@ -2535,7 +2574,12 @@ export class StandardRailService {
         message: "The external facilitator could not be reached; this authorization was voided",
         nextAction: "This authorization will not settle. Request a fresh challenge and sign again.",
         cause: error,
-        logContext: { orderId: order.orderId, intentId: order.intentId, payer: authorization.payer },
+        logContext: {
+          orderId: order.orderId,
+          intentId: order.intentId,
+          payer: authorization.payer,
+          facilitatorFailure: facilitatorFailureSummary(error),
+        },
       });
     }
     const facilitatorVerified = Boolean(
@@ -2614,12 +2658,29 @@ export class StandardRailService {
       order = await this.store
         .transition(order, "SETTLEMENT_AMBIGUOUS", "settle_response_unknown")
         .catch(() => order);
+      // Recovery either proves the payment and carries the order on, or
+      // proves the authorization unpaid once it is final and closes the order.
+      // The buyer is told when that is known, so it neither signs again nor
+      // gives up before the answer.
+      const knownAt = this.settlementOutcomeKnownAt(args.payment);
       throw standardRailError("PAYMENT_PENDING_RECONCILIATION", {
         cause: error,
+        ...(knownAt === null ? {} : {
+          until: knownAt.toISOString(),
+          retryAfterSeconds: Math.min(
+            MAX_OUTCOME_RETRY_AFTER_SECONDS,
+            Math.max(1, Math.ceil((knownAt.getTime() - Date.now()) / 1_000)),
+          ),
+          nextAction: "Do not sign again. This payment's outcome is known by `until`: the order then either " +
+            "proceeds as paid or closes as not settled. After that, reconcile by paymentIdentifier and buy " +
+            "again only if nothing settled.",
+        }),
         logContext: {
           orderId: order.orderId,
           intentId: order.intentId,
           payer: authorization.payer,
+          facilitatorFailure: facilitatorFailureSummary(error),
+          ...(knownAt === null ? {} : { outcomeKnownBy: knownAt.toISOString() }),
         },
       });
     }

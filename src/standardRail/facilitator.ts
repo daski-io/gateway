@@ -24,6 +24,59 @@ export interface StandardFacilitator {
   assertSupported(network: string): Promise<void>;
 }
 
+const FAILURE_TEXT_LIMIT = 200;
+const REFUSAL_REASON_FIELDS = ["errorReason", "invalidReason", "errorType", "errorMessage"] as const;
+
+/**
+ * A facilitator answer outside 2xx. It keeps the HTTP status and the reason
+ * the body names, if any, so a refused verify or settle can be told apart
+ * from an outage in the logs. It never holds the request or credentials.
+ */
+export class FacilitatorHttpError extends Error {
+  readonly status: number;
+  readonly reason?: string;
+
+  constructor(operation: string, status: number, reason?: string) {
+    super(`Facilitator ${operation} rejected the request`);
+    this.name = "FacilitatorHttpError";
+    this.status = status;
+    if (reason !== undefined) this.reason = reason;
+  }
+}
+
+function boundedText(value: string): string {
+  return value.replace(/[\u0000-\u001f\u007f]+/g, " ").slice(0, FAILURE_TEXT_LIMIT);
+}
+
+/** The reason a refusal body names, from the fields facilitators use for it. */
+export function facilitatorRefusalReason(value: unknown): string | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const parts = REFUSAL_REASON_FIELDS
+    .map((field) => (value as Record<string, unknown>)[field])
+    .filter((part): part is string => typeof part === "string" && part.length > 0);
+  return parts.length === 0 ? undefined : boundedText(parts.join(": "));
+}
+
+/**
+ * What a failed facilitator call can say in a log: the error's kind, the
+ * facilitator's HTTP status and reason when it answered, and otherwise the
+ * bounded message and network code (a timeout, a reset, a DNS refusal).
+ */
+export function facilitatorFailureSummary(error: unknown): Record<string, unknown> {
+  if (error instanceof FacilitatorHttpError) {
+    return { errorName: error.name, status: error.status, ...(error.reason ? { reason: error.reason } : {}) };
+  }
+  if (error instanceof Error) {
+    const code = (error.cause as { code?: unknown } | undefined)?.code ?? (error as { code?: unknown }).code;
+    return {
+      errorName: error.name,
+      message: boundedText(error.message),
+      ...(typeof code === "string" ? { code: boundedText(code) } : {}),
+    };
+  }
+  return { errorName: typeof error };
+}
+
 export class CdpStandardFacilitator implements StandardFacilitator {
   private readonly baseUrl: string;
   private readonly host: string;
@@ -93,8 +146,16 @@ export class CdpStandardFacilitator implements StandardFacilitator {
         ? activeRequestSignal(AbortSignal.timeout(this.config.facilitatorTimeoutMs))
         : AbortSignal.timeout(this.config.facilitatorTimeoutMs),
     }, addresses[0]!);
+    if (!response.ok) {
+      let reason: string | undefined;
+      try {
+        reason = facilitatorRefusalReason(await this.readBoundedJson(response, 16_000));
+      } catch {
+        // An unreadable refusal body still reports its status.
+      }
+      throw new FacilitatorHttpError(operation, response.status, reason);
+    }
     const value = await this.readBoundedJson(response, 256_000);
-    if (!response.ok) throw new Error(`Facilitator ${operation} rejected the request`);
     this.validateResponse(operation, value);
     const discovery = facilitatorDiscoveryStatus(response.headers.get("extension-responses"));
     if (discovery) {
