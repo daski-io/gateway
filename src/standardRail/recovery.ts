@@ -31,7 +31,9 @@ export class StandardRailRecoveryWorker {
     // A claimed or verified authorization expires unless it settles, so its
     // recovery runs on its own lane and never waits behind a batch busy with
     // slower work, such as polling a provider (2026-10-10: a verified order
-    // expired unsettled while its listing was free).
+    // expired unsettled while its listing was free). An unconfirmed
+    // settlement rides the same lane, so it closes near the time its buyer
+    // was told.
     this.settlementTimer = setInterval(
       () => this.scheduleSettlement(),
       Math.min(SETTLEMENT_LANE_INTERVAL_MS, this.options.config.recoveryIntervalMs),

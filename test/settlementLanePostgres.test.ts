@@ -89,4 +89,21 @@ describe("orders of one listing settle side by side", () => {
     const opened = await seeded(listing, "ATTEMPT_OPENED", { secondsAgo: 6, authorized: true });
     expect(await lease("settlement", [verified])).toBe(opened);
   });
+
+  it("carries unconfirmed settlements on the settlement lane, after claimed and verified ones, every 30 seconds", async () => {
+    await pool.query("UPDATE standard_orders SET state='FULFILLED'");
+    const listing = hash("7");
+    const dispatched = await seeded(listing, "DISPATCHED", { secondsAgo: 7_200 });
+    const ambiguous = await seeded(listing, "SETTLEMENT_AMBIGUOUS", { secondsAgo: 20, authorized: true });
+    const invoked = await seeded(listing, "SETTLE_INVOKED", { secondsAgo: 600, authorized: true });
+    expect(await lease("settlement")).toBe(invoked);
+    expect(await lease("settlement", [invoked])).toBeNull();
+    await pool.query("UPDATE standard_orders SET updated_at=now()-interval '31 seconds' WHERE order_id=$1", [ambiguous]);
+    expect(await lease("settlement", [invoked])).toBe(ambiguous);
+    const verified = await seeded(listing, "VERIFIED", { secondsAgo: 6, authorized: true });
+    expect(await lease("settlement", [invoked])).toBe(verified);
+    // The main lane still recovers them too, and the settlement lane never takes a dispatched order.
+    expect(await lease("all", [invoked, verified, dispatched])).toBe(ambiguous);
+    expect(await lease("settlement", [invoked, verified, ambiguous])).toBeNull();
+  });
 });
