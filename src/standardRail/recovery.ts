@@ -79,6 +79,23 @@ export class StandardRailRecoveryWorker {
       );
       if (!order) return;
       skipped.push(order.orderId);
+      // A visit can outlast its lease: chain scans for an unconfirmed
+      // settlement took longer than 45 seconds on the sandbox (2026-11-28).
+      // With both lanes able to lease an order, the other lane then took it
+      // and every closing transition met a newer fence, so the order never
+      // closed. The lease is renewed while the visit runs.
+      const leaseSeconds = this.options.config.leaseSeconds;
+      const renewal = setInterval(() => {
+        this.options.store.renewLease(order.orderId, workerId, order.leaseFence, leaseSeconds)
+          .then((renewed) => {
+            if (renewed) return;
+            // Another driver holds the order now; its fence protects it.
+            clearInterval(renewal);
+            logger.warn("standard-rail recovery lease lost", { orderId: order.orderId, lane, fence: order.leaseFence });
+          })
+          .catch((error) => logger.warn("standard-rail recovery lease renewal failed", { orderId: order.orderId, lane, error }));
+      }, Math.max(1_000, Math.floor((leaseSeconds * 1_000) / 3)));
+      renewal.unref();
       try {
         if (await this.isDue(order)) await this.recover(order);
       } catch (error) {
@@ -87,6 +104,8 @@ export class StandardRailRecoveryWorker {
           state: order.state,
           error,
         });
+      } finally {
+        clearInterval(renewal);
       }
       // Transitions keep a live lease with its driver, so the worker hands
       // the order back explicitly once it is done with it; the next due
