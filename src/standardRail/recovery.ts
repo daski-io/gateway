@@ -87,7 +87,13 @@ export class StandardRailRecoveryWorker {
       const leaseSeconds = this.options.config.leaseSeconds;
       const renewal = setInterval(() => {
         this.options.store.renewLease(order.orderId, workerId, order.leaseFence, leaseSeconds)
-          .catch((error) => logger.warn("standard-rail recovery lease renewal failed", { orderId: order.orderId, error }));
+          .then((renewed) => {
+            if (renewed) return;
+            // Another driver holds the order now; its fence protects it.
+            clearInterval(renewal);
+            logger.warn("standard-rail recovery lease lost", { orderId: order.orderId, lane, fence: order.leaseFence });
+          })
+          .catch((error) => logger.warn("standard-rail recovery lease renewal failed", { orderId: order.orderId, lane, error }));
       }, Math.max(1_000, Math.floor((leaseSeconds * 1_000) / 3)));
       renewal.unref();
       try {
